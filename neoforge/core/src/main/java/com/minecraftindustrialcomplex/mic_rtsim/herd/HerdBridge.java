@@ -96,6 +96,8 @@ public final class HerdBridge implements SessionPlugin {
         public final ResourceKey<Level> dimension;
         public final String species;
         final List<Member> members = new ArrayList<>();
+        /** The look the command gave each member: HERD_MATERIALIZE's variant (GameTests compare the bodies). */
+        final Map<Long, Integer> variants = new HashMap<>();
         /** The anchor walks from (ax, az) at t0 to (tx, tz), reached at {@code arrive}. */
         double ax, az, tx, tz;
         long t0, arrive;
@@ -151,6 +153,11 @@ public final class HerdBridge implements SessionPlugin {
 
         public List<Member> members() {
             return List.copyOf(members);
+        }
+
+        /** The variant HERD_MATERIALIZE gave a member, or -1. */
+        public int variantOf(long member) {
+            return variants.getOrDefault(member, -1);
         }
     }
 
@@ -461,6 +468,7 @@ public final class HerdBridge implements SessionPlugin {
             bodies[i] = a;
             Member m = new Member(g, b.getLong(o + HerdRecords.Materialize.M_MEMBER), a, xs[i] + 0.5 - cx, zs[i] + 0.5 - cz);
             m.wasSheared = HerdBodies.sheared(a);
+            g.variants.put(m.member, b.getInt(o + HerdRecords.Materialize.M_VARIANT));
             g.members.add(m);
         }
         // Registered before any joins: the join check already knows them.
@@ -589,6 +597,11 @@ public final class HerdBridge implements SessionPlugin {
 
     public int embodied() {
         return byAgent.size();
+    }
+
+    /** Every embodied group (GameTests). */
+    public List<Group> groups() {
+        return List.copyOf(byAgent.values());
     }
 
     // ---- the tick -------------------------------------------------------------------------------
