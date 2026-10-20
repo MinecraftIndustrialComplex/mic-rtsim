@@ -1,0 +1,16 @@
+[package]
+name = "rtsim-trade"
+description = "mic-rtsim's storehouse markets: labour costs, price as a function of stock, production regimes, money, exchange, player trades (C13, PLAN.md §8.4, §8.5)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+rtsim-kernel.workspace = true
+rtsim-settle.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
