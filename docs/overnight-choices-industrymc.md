@@ -179,8 +179,8 @@ so a single-threaded read costs about the same there.
   source block's own. It refreshes every 100 ticks. Lines: name and state (with the freeze reason), the
   top goods per real hour (F30) with "would have made" for simulated states, the next breakpoint. Good
   names are translatable components, so each client reads its own language.
-- **H22.** IND_LEDGER_REQUEST at most once per 20 ticks per district; the chat ledger shows what is known
-  at once and the engine's next reply when it comes (200 ticks, then it says none came).
+- **H22.** (Superseded.) IND_LEDGER_REQUEST and IND_LEDGER are gone from the wire; `/rtsim district info`
+  and `debug` print only what Java holds, with no engine round trip (I18 as decided, IR14).
 - **H27.** Read-only mode (I-A) is the engine's (F25): Java applies what the engine sends and has no
   switch of its own.
 

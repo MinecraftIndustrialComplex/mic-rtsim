@@ -28,7 +28,7 @@ import java.util.function.BiFunction;
 /**
  * The industry module of one bridge session (C15 to C19, INDUSTRY.md, docs/industry-boundary.md): the
  * district index and detection (I2), the boundary stock sampler (I3), ports, the reconciler (I8) and the
- * read-only ledger (I18). Mod-agnostic (D4): plugins add Create and the rest through
+ * operator diagnostics (I18). Mod-agnostic (D4): plugins add Create and the rest through
  * {@link IndustryApi}. Server thread only; nothing here waits for the engine.
  *
  * <p>Per tick ({@link #endOfTick}, called by the session after it applied commands and before it hands
@@ -61,6 +61,8 @@ public final class Industry {
     private final Map<String, Integer> goodIds = new HashMap<>();
     private long ticks;
     private boolean started;
+    /** True once the module has been on and then switched off: switching on again announces everything (U10). */
+    private boolean wasOff;
 
     // counters for /rtsim district perf and the GameTests
     long commandsApplied;
@@ -106,18 +108,38 @@ public final class Industry {
 
     public void endOfTick(long now) {
         // Only the server's own session observes the world: GameTests run private sessions next to it.
-        if (!enabled() || RtsimSession.current() != session)
+        if (RtsimSession.current() != session)
             return;
+        if (!enabled()) {
+            // U10: a switched-off industry sends nothing. What it announced is not known to the engine
+            // any more once it runs again, so the next start announces everything as at a session start.
+            if (started) {
+                started = false;
+                wasOff = true;
+            }
+            return;
+        }
         if (!started) {
             started = true;
+            boolean again = wasOff;
+            wasOff = false;
+            if (again)
+                forgetAnnounced();
             districts.sessionStart(now);
+            if (again)
+                for (IndustryPlugin p : IndustryApi.PLUGINS) {
+                    try {
+                        p.announce(this);
+                    } catch (RuntimeException e) {
+                        fail("plugin announce " + p.getClass().getSimpleName(), e);
+                    }
+                }
         }
         IndustryEvents.drain(this, now);
         ports.tick(now);
         districts.tick(now, ticks);
         reconciler.tick(now);
         sampler.tick(now);
-        diagnostics.tick(now);
         conditions.tick(now);
         threats.tick(now, ticks);
         for (IndustryPlugin p : IndustryApi.PLUGINS) {
@@ -130,23 +152,28 @@ public final class Industry {
         ticks++;
     }
 
+    /**
+     * What the engine is told again when the module comes back on (U10): every district with its chunks,
+     * inventories and stations, the load states, the calendar, the surveys, the pending results chunks carry.
+     * Plugins add theirs through {@link IndustryPlugin#announce}.
+     */
+    private void forgetAnnounced() {
+        districts.forgetAnnounced();
+        conditions.resend();
+        threats.forgetAnnounced();
+        reconciler.forgetAnnounced();
+    }
+
     /** An industry command from the engine. Returns false to leave it for a later tick. */
     public boolean accept(ByteBuffer b, int at, int kind, int size, int aux, BiFunction<Integer, Integer, String> engineDict) {
         this.engineDict = engineDict;
         long cmdSeq = b.getLong(at + com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd.CMD_SEQ);
-        if (!enabled()) {
-            // The module is off: answer what carries an op id, so the engine never waits on it.
-            if (kind != IndRecords.IND_LEDGER && size >= 24)
-                commandResult(cmdSeq, b.getLong(at + 16), Obs.CommandResult.FAILED);
-            return true;
-        }
+        if (!enabled())
+            return true; // U10: a switched-off industry answers nothing; the engine sends a kept command again once it is on
+
         switch (kind) {
             case IndRecords.IND_CHUNK_RECONCILE -> {
                 return reconciler.accept(b, at, size, aux, cmdSeq, gameTime());
-            }
-            case IndRecords.IND_LEDGER -> {
-                diagnostics.accept(b, at, size, aux);
-                return true;
             }
             case IndRecords.IND_DEPOSIT_DELTA -> {
                 depositDelta(b, at, size, aux, cmdSeq);

@@ -80,6 +80,11 @@ public final class Reconciler {
         return n;
     }
 
+    /** U10, the module switched on again: a result a chunk still carries is journaled again, as at a session start. */
+    void forgetAnnounced() {
+        recommitted.clear();
+    }
+
     // ---- loads ----------------------------------------------------------------------------------
 
     /** A district chunk loaded: re-journal an unacknowledged result it carries, report its epoch. */

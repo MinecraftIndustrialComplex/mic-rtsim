@@ -449,13 +449,14 @@ Antique Atlas markers, a chat ledger) was rejected and is gone from the code.
 - **Players build their own readouts from real state.** A vault's count on a Display Link, a threshold
   switch, a CC: Tweaked computer or a redstone comparator measures what is really in the world. A
   player-built readout cannot show anything the sim only believes: a rate, a state, a forecast.
-- **Operator debug command.** `/rtsim district debug [name]` (permission level 2, like the whole
-  `/rtsim district` node) asks the engine for the district's ledger line (IND_LEDGER_REQUEST, answered by
-  IND_LEDGER) and prints it when it arrives: the model's state, goods per hour, the next breakpoint, what
-  froze it, the last reconcile (deltas and any trim) and plugin warnings.
-  `/rtsim district info [name]` prints what is already known without asking. These are diagnostics for
-  operators and developers debugging the sim, not a feature. The wire records and the engine side are
-  unchanged by I18.
+- **Operator debug command.** `/rtsim district info [name]` and `/rtsim district debug [name]` (permission
+  level 2, like the whole `/rtsim district` node) print what Java itself knows of the district: its chunks
+  and how many are loaded, the load state last reported to the engine, its inventories and stations, its
+  revision and any not-learnable reason Java detected, the last sweep and defence survey, the last reconcile
+  applied (deltas, shortfalls, blocks broken) and the plugin warnings. `debug` adds the member chunks, the
+  inventories and the stations one by one. The engine is not asked: its ledger line (IND_LEDGER_REQUEST,
+  IND_LEDGER) is gone from the wire, and the engine's own view of a district is read with its `sim` tools.
+  These are diagnostics for operators and developers debugging the sim, not a feature.
 - **Plugin warnings.** `DistrictDiagnostics.warn(district, key, text)` is how plugins flag a district
   (I16: a Create logistics network spanning districts; an Ender Transmission channel reaching another
   dimension). A warning goes to the server log once when it is set or its text changes and once when it

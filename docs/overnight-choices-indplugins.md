@@ -241,7 +241,9 @@ sessions; never an industry or threat test. The wire contract test passes (53 te
    its callers (`GaugeNetworks`, `ChannelLinks`). A warning goes to two places: the server log (a WARN line
    when it is set or its text changes, an INFO line when it clears, so the plugins' per-sweep calls make no
    per-tick spam) and the operator output of `/rtsim district info` and `/rtsim district debug`
-   (permission level 2). No player sees one. Q25 below is superseded accordingly.
+   (permission level 2). No player sees one. Q25 below is superseded accordingly. The operator output no
+   longer asks the engine for anything either: the ledger records (IND_LEDGER_REQUEST, IND_LEDGER) are
+   gone from the wire, and `info` and `debug` print what Java holds.
 
 ## Proposal: IND_CLIMATE (not built)
 

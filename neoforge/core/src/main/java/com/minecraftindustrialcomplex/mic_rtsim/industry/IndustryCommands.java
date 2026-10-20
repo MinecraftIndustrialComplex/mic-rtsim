@@ -20,9 +20,10 @@ import java.util.UUID;
  * {@code /rtsim} root (Brigadier merges the two literal trees); the district node requires permission
  * level 2 itself, so every subcommand that shows district output or edits districts needs it:
  * <ul>
- *   <li>{@code list}, {@code info [name]}, {@code debug [name]}: what the detector and the engine know,
- *       including plugin warnings and the last reconcile; {@code debug} also asks the engine for a fresh
- *       ledger line and prints it when it arrives;</li>
+ *   <li>{@code list}, {@code info [name]}, {@code debug [name]}: what Java knows of a district (chunks and
+ *       which are loaded, the load state sent to the engine, the last sweep and defence survey, the last
+ *       reconcile, plugin warnings); {@code debug} adds the chunk, inventory and station lists. Neither asks
+ *       the engine: there is no ledger on the wire;</li>
  *   <li>{@code rename <name> <new name>}: the district's name, over its station's;</li>
  *   <li>{@code merge <a> <b>}: one district from two (a merge link between their anchor chunks);</li>
  *   <li>{@code split [radius]}: the member chunks within the radius of your chunk become a district of
@@ -126,8 +127,8 @@ public final class IndustryCommands {
             return 0;
         for (MutableComponent c : ind.diagnostics.debugLines(d))
             ctx.getSource().sendSuccess(() -> c, false);
-        ind.diagnostics.requestFor(ctx.getSource(), d);
-        say(ctx, "mic_rtsim: asked the engine for " + d.displayName() + "'s ledger line; it follows when it comes");
+        for (MutableComponent c : ind.diagnostics.detailLines(d))
+            ctx.getSource().sendSuccess(() -> c, false);
         return 1;
     }
 
@@ -263,7 +264,7 @@ public final class IndustryCommands {
                         + " short deltas, " + r.blocksBroken + " blocks broken, " + r.blocksSkipped + " skipped",
                 "ports: sessions " + p.sessionPorts + ", tosses " + p.tossPorts + ", pickups " + p.pickupPorts + ", broken stock " + p.brokenPorts
                         + ", unattributed sessions " + p.unattributed,
-                "engine ledger lines received: " + ind.diagnostics.received + "; commands applied " + ind.commandsApplied + ", failed " + ind.commandsFailed));
+                "commands applied " + ind.commandsApplied + ", failed " + ind.commandsFailed));
         return 1;
     }
 }
