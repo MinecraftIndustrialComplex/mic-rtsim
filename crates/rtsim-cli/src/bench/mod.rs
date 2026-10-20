@@ -3,6 +3,7 @@
 //! industry engine's (INDUSTRY.md §15).
 
 pub mod dragons;
+pub mod herds;
 pub mod industry;
 pub mod market;
 pub mod restore;

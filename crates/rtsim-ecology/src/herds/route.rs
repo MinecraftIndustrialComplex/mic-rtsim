@@ -23,6 +23,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
+
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
 use super::climate::{Climate, Subs};
@@ -142,65 +143,98 @@ pub fn plan(q: &Ask<'_>) -> Choice {
     let walk = q.sp.speed_blocks_per_day * days * q.w.travel_share;
     let horizon = walk * q.w.horizon.max(1.0);
     let reach = ((horizon / f64::from(CELL_BLOCKS)).ceil() as i32).clamp(1, q.w.max_reach_cells);
-    let terrain = |c: (i32, i32)| q.climate.terrain(q.frame, c.0, c.1);
     // Dijkstra over cells within `reach` (Chebyshev) and `horizon` blocks of walking, costs
-    // scaled to integers so the order is exact and ties break by cell.
-    let mut best: BTreeMap<(i32, i32), (u64, f64, (i32, i32))> = BTreeMap::new();
+    // scaled to integers so the order is exact and ties break by cell. A dense local grid holds
+    // the terrain (read once per cell), the obstacle extras, and the tree.
+    let side = (2 * reach + 1) as usize;
+    let idx = |c: (i32, i32)| -> Option<usize> {
+        let (dx, dz) = (c.0 - start.0 + reach, c.1 - start.1 + reach);
+        (dx >= 0 && dz >= 0 && (dx as usize) < side && (dz as usize) < side)
+            .then(|| dx as usize * side + dz as usize)
+    };
+    let cell = |i: usize| {
+        (
+            (i / side) as i32 - reach + start.0,
+            (i % side) as i32 - reach + start.1,
+        )
+    };
+    let mut ground = vec![f32::NAN; side * side];
+    let mut ground_at = |i: usize| {
+        if ground[i].is_nan() {
+            let c = cell(i);
+            let t = q.climate.terrain(q.frame, c.0, c.1);
+            ground[i] = if passable(t) { t } else { -1.0 };
+        }
+        ground[i]
+    };
+    let has_obstacles = !q.obstacles.cells.is_empty();
+    let extra_at = |i: usize| {
+        if !has_obstacles {
+            return 0.0;
+        }
+        let c = cell(i);
+        q.obstacles
+            .extra((q.frame, c.0, c.1), q.at, q.w.obstacle_half_life)
+    };
+    const UNSEEN: u64 = u64::MAX;
+    let mut cost_of = vec![UNSEEN; side * side];
+    let mut len_of = vec![0.0f64; side * side];
+    let mut parent = vec![u32::MAX; side * side];
+    let mut done = vec![false; side * side];
+    let s0 = idx(start).expect("start is in the grid");
+    cost_of[s0] = 0;
+    parent[s0] = s0 as u32;
     let mut heap = BinaryHeap::new();
-    best.insert(start, (0, 0.0, start));
     heap.push(Reverse((0u64, start)));
     let mut settled: Vec<((i32, i32), u64, f64)> = Vec::new();
-    let mut done = std::collections::BTreeSet::new();
+    let straight = f64::from(CELL_BLOCKS);
+    let diagonal = straight * std::f64::consts::SQRT_2;
     while let Some(Reverse((cost, c))) = heap.pop() {
-        if !done.insert(c) {
+        let ci = idx(c).expect("in the grid");
+        if done[ci] {
             continue;
         }
-        let len = best[&c].1;
+        done[ci] = true;
+        let len = len_of[ci];
         settled.push((c, cost, len));
-        let tc = f64::from(terrain(c)).max(1.0);
+        let tc = f64::from(ground_at(ci)).max(1.0);
         for dx in -1..=1 {
             for dz in -1..=1 {
                 if dx == 0 && dz == 0 {
                     continue;
                 }
-                let n = (c.0 + dx, c.1 + dz);
-                if (n.0 - start.0).abs() > reach || (n.1 - start.1).abs() > reach {
+                let Some(ni) = idx((c.0 + dx, c.1 + dz)) else {
                     continue;
-                }
-                let tn = terrain(n);
-                if !passable(tn) || done.contains(&n) {
+                };
+                let tn = ground_at(ni);
+                if tn < 0.0 || done[ni] {
                     continue;
                 }
                 let diag = dx != 0 && dz != 0;
                 // No corner cutting past a closed or obstructed cell: a fence or a cliff
                 // across one of the two cells a diagonal step brushes blocks it.
                 if diag {
-                    let open = |k: (i32, i32)| {
-                        passable(terrain(k))
-                            && q.obstacles.extra((q.frame, k.0, k.1), q.at, q.w.obstacle_half_life)
-                                < 1.0
-                    };
-                    if !open((c.0 + dx, c.1)) || !open((c.0, c.1 + dz)) {
+                    let side_a = idx((c.0 + dx, c.1)).expect("inside");
+                    let side_b = idx((c.0, c.1 + dz)).expect("inside");
+                    if ground_at(side_a) < 0.0
+                        || ground_at(side_b) < 0.0
+                        || extra_at(side_a) >= 1.0
+                        || extra_at(side_b) >= 1.0
+                    {
                         continue;
                     }
                 }
-                let extra = q
-                    .obstacles
-                    .extra((q.frame, n.0, n.1), q.at, q.w.obstacle_half_life);
-                let step = step_cost(tc, f64::from(tn).max(1.0), diag) * (1.0 + extra);
+                let step = step_cost(tc, f64::from(tn).max(1.0), diag) * (1.0 + extra_at(ni));
                 let nc = cost + (step * 1000.0).round() as u64;
-                let nl = len
-                    + if diag {
-                        f64::from(CELL_BLOCKS) * std::f64::consts::SQRT_2
-                    } else {
-                        f64::from(CELL_BLOCKS)
-                    };
-                if nl > horizon + f64::from(CELL_BLOCKS) {
+                let nl = len + if diag { diagonal } else { straight };
+                if nl > horizon + straight {
                     continue;
                 }
-                if best.get(&n).is_none_or(|b| nc < b.0) {
-                    best.insert(n, (nc, nl, c));
-                    heap.push(Reverse((nc, n)));
+                if nc < cost_of[ni] {
+                    cost_of[ni] = nc;
+                    len_of[ni] = nl;
+                    parent[ni] = ci as u32;
+                    heap.push(Reverse((nc, (c.0 + dx, c.1 + dz))));
                 }
             }
         }
@@ -269,7 +303,7 @@ pub fn plan(q: &Ask<'_>) -> Choice {
     let mut cells_back = vec![target];
     let mut c = target;
     while c != start {
-        c = best[&c].2;
+        c = cell(parent[idx(c).expect("in the grid")] as usize);
         cells_back.push(c);
     }
     cells_back.reverse();
