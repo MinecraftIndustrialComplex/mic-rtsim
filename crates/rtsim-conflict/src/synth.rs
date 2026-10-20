@@ -60,7 +60,12 @@ pub fn world(seed: u64) -> (World, SynthGoods) {
 /// A conflict engine on the built-in cultures, with the plugin's dictionary as the fake plugin
 /// names things (items by the world's catalogue, bodies by the culture data).
 pub fn conflict(seed: u64, w: &World) -> Conflict {
-    let mut c = Conflict::new(seed, ConflictTunables::default(), Cultures::builtin(), Tick::ZERO);
+    let mut c = Conflict::new(
+        seed,
+        ConflictTunables::default(),
+        Cultures::builtin(),
+        Tick::ZERO,
+    );
     define_names(&mut c, w);
     c
 }
@@ -156,13 +161,27 @@ pub fn refinery(seed: u64, visits: Vec<Visit>) -> FakeWorld {
     };
     let edge = BlockFlags::PERIMETER | BlockFlags::ROOFLESS;
     d.exposed = vec![
-        exposed(distiller, 31, BlockFlags::MACHINE | BlockFlags::ROOFLESS, None),
-        exposed(smelter, 32, BlockFlags::MACHINE | BlockFlags::ROOFLESS, None),
+        exposed(
+            distiller,
+            31,
+            BlockFlags::MACHINE | BlockFlags::ROOFLESS,
+            None,
+        ),
+        exposed(
+            smelter,
+            32,
+            BlockFlags::MACHINE | BlockFlags::ROOFLESS,
+            None,
+        ),
         exposed(vault, 33, BlockFlags::INVENTORY, Some(0)),
     ];
     for i in 0..8 {
-        d.exposed
-            .push(exposed(BlockPos::new(bx - 4 + i, 64, bz - 5), 40 + i as u32, edge, None));
+        d.exposed.push(exposed(
+            BlockPos::new(bx - 4 + i, 64, bz - 5),
+            40 + i as u32,
+            edge,
+            None,
+        ));
     }
     w.districts.push(d);
     w.visits = visits;
@@ -398,10 +417,9 @@ impl FakeConflict {
                         spawned: m.members.iter().map(|s| s.count).sum(),
                     }),
                 );
-                if let Some(f) = self
-                    .fight
-                    .filter(|f| m.flags & boundary::BAND_HOSTILE != 0 && (!f.only_at_base || m.arc_radius > 0))
-                {
+                if let Some(f) = self.fight.filter(|f| {
+                    m.flags & boundary::BAND_HOSTILE != 0 && (!f.only_at_base || m.arc_radius > 0)
+                }) {
                     for s in &m.members {
                         let k = (f64::from(s.count) * f.kill_share).floor() as u32;
                         if k > 0 {

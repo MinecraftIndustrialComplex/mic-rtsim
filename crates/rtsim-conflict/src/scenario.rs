@@ -142,10 +142,7 @@ pub fn run(o: &Options) -> Outcome {
         } else {
             day(BACK_DAY)
         };
-        let restart = o
-            .restart_day
-            .filter(|_| !restarted)
-            .map(day);
+        let restart = o.restart_day.filter(|_| !restarted).map(day);
         let mut next = [
             Some(end),
             c.next_due(),

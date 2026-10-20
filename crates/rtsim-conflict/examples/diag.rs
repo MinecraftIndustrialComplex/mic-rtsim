@@ -3,7 +3,10 @@ use rtsim_conflict::synth;
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::Tick;
 fn main() {
-    let n: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(1024);
+    let n: usize = std::env::args()
+        .nth(1)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(1024);
     let (mut w, mut c) = synth::many(n, n, 1);
     c.run_until(&mut w, &mut NoInfrastructure, Tick::from_days(2));
     let t0 = std::time::Instant::now();

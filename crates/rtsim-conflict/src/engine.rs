@@ -37,7 +37,7 @@ use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, Temperament
 use rtsim_settle::{NodeKind, Pos};
 use rtsim_trade::{Amount, GoodId, MILLI, PRICE_ONE};
 use rtsim_travel::legs::{LegIndex, Meeting, Owner, Path, Stamp};
-use rtsim_world::interest::{PLAYER_OWNER, Viewer, uuid_hash};
+use rtsim_world::interest::{PLAYER_OWNER, Viewer};
 use rtsim_world::{NodeData, World};
 use serde::Serialize;
 
@@ -398,7 +398,12 @@ impl NodeIndex {
                     if (x - cx).abs() != r && (z - cz).abs() != r {
                         continue;
                     }
-                    for &i in self.cells.get(&(pos.frame, x, z)).map(Vec::as_slice).unwrap_or(&[]) {
+                    for &i in self
+                        .cells
+                        .get(&(pos.frame, x, z))
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                    {
                         let d = dist(pxz(w.nodes[i].pos), pxz(pos));
                         if d > reach || !ok(i) {
                             continue;
@@ -859,9 +864,7 @@ impl Conflict {
             (heir, heir_seed)
         } else {
             let s = seed_of(n + 1);
-            let c = w
-                .knowledge
-                .create_notable(s, home, new_heir, at, lifespan);
+            let c = w.knowledge.create_notable(s, home, new_heir, at, lifespan);
             (c, s)
         };
         {
@@ -889,10 +892,17 @@ impl Conflict {
             feud.g.add(SignalKind::Killing, g, at, lambda);
         }
         let what = match killer {
-            Some(_) => "its war chief is killed; the heir takes over, holding the grudge".to_string(),
+            Some(_) => {
+                "its war chief is killed; the heir takes over, holding the grudge".to_string()
+            }
             None => "its chief dies of age; the heir takes over".to_string(),
         };
-        self.note(at, Some(f), "heir", format!("{what} ({} grudges)", grudges.len()));
+        self.note(
+            at,
+            Some(f),
+            "heir",
+            format!("{what} ({} grudges)", grudges.len()),
+        );
         // Thresholds follow the new chief's temperament: every feud of the faction replans.
         let actors: Vec<ActorId> = self
             .feuds
@@ -948,7 +958,9 @@ impl Conflict {
             {
                 d.after += s.amount;
             }
-            let better = feud.focus.is_none_or(|fo| fo.district.is_none() || s.district.is_some());
+            let better = feud
+                .focus
+                .is_none_or(|fo| fo.district.is_none() || s.district.is_some());
             if better {
                 feud.focus = Some(Focus {
                     pos: s.pos,
@@ -1017,7 +1029,10 @@ impl Conflict {
         }
         if rate > 0.0 {
             for (f, _) in &affects {
-                self.source_index.entry((*f, key.1)).or_default().insert(key.0);
+                self.source_index
+                    .entry((*f, key.1))
+                    .or_default()
+                    .insert(key.0);
             }
             self.sources.insert(
                 key,
@@ -1115,10 +1130,7 @@ impl Conflict {
                 );
             }
             if feud.step > Step::None {
-                take(
-                    feud.g
-                        .crossing_down(self.down_theta(f, feud.step), lambda),
-                );
+                take(feud.g.crossing_down(self.down_theta(f, feud.step), lambda));
             } else if feud.raw.iter().all(|r| *r <= 0.0) {
                 take(feud.g.crossing_down(self.tun.forget_below, lambda));
             }
@@ -1148,8 +1160,13 @@ impl Conflict {
         };
         feud.g.commit(at, lambda);
         let g = feud.g.level_sum();
-        let (step, since, party, demand, wait) =
-            (feud.step, feud.since, feud.party, feud.demand, feud.wait_until);
+        let (step, since, party, demand, wait) = (
+            feud.step,
+            feud.since,
+            feud.party,
+            feud.demand,
+            feud.wait_until,
+        );
         if let Some(d) = demand {
             if at >= d.deadline {
                 self.demand_due(w, f, a, at);
@@ -1667,7 +1684,7 @@ impl Conflict {
                 (i64::from(s[0].0), i64::from(s[0].1)),
                 (i64::from(s[1].0), i64::from(s[1].1)),
             );
-            t = t + ((d / speed).ceil() as u64).max(1);
+            t += ((d / speed).ceil() as u64).max(1);
             out.push(t);
         }
         out
@@ -1851,7 +1868,13 @@ impl Conflict {
         }
     }
 
-    fn party_event(&mut self, w: &mut World, infra: &mut dyn Infrastructure, p: Handle<Party>, at: Tick) {
+    fn party_event(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        at: Tick,
+    ) {
         match self.parties[p].phase {
             Phase::Mustering => {
                 self.parties[p].phase = Phase::Out;
@@ -1899,7 +1922,10 @@ impl Conflict {
         let plan = self.bump(p);
         self.schedule(t1, Ev::Party { party: p, plan });
         if embodied {
-            let speed = self.culture(self.parties[p].faction).def.march_blocks_per_tick as f32;
+            let speed = self
+                .culture(self.parties[p].faction)
+                .def
+                .march_blocks_per_tick as f32;
             let last = s + 2 == self.parties[p].route.len();
             self.outbox.push(Cmd::Steer(boundary::BandSteer {
                 agent: Party::agent(p),
@@ -1916,7 +1942,12 @@ impl Conflict {
             self.book_unseen(w, p, at);
         }
         // Supply lines (C16, I24): a war band on its way out may fall on a train leg it crosses.
-        if phase == Phase::Out && matches!(kind, PartyKind::Raid | PartyKind::Invasion | PartyKind::Siege) {
+        if phase == Phase::Out
+            && matches!(
+                kind,
+                PartyKind::Raid | PartyKind::Invasion | PartyKind::Siege
+            )
+        {
             let mut regions: Vec<(i32, i32)> = Vec::new();
             let steps = 8;
             for k in 0..=steps {
@@ -1928,7 +1959,11 @@ impl Conflict {
                     regions.push(r);
                 }
             }
-            if let Some(tr) = infra.trains_crossed(frame, &regions, t0.max(at), t1).first().copied() {
+            if let Some(tr) = infra
+                .trains_crossed(frame, &regions, t0.max(at), t1)
+                .first()
+                .copied()
+            {
                 let roll = StreamKey::new(self.seed, SYS_AMBUSH, p.to_bits())
                     .slot(u64::from(self.parties[p].seg) << 32 | u64::from(plan))
                     .below(1000);
@@ -2000,7 +2035,10 @@ impl Conflict {
         }
     }
 
-    fn strength_by_class(&self, p: Handle<Party>) -> BTreeMap<rtsim_industry::threat::ThreatClass, (u32, f64)> {
+    fn strength_by_class(
+        &self,
+        p: Handle<Party>,
+    ) -> BTreeMap<rtsim_industry::threat::ThreatClass, (u32, f64)> {
         let x = &self.parties[p];
         let c = self.culture(x.faction);
         let mut m = BTreeMap::new();
@@ -2025,8 +2063,22 @@ impl Conflict {
             .sum()
     }
 
-    fn ambush(&mut self, infra: &mut dyn Infrastructure, p: Handle<Party>, train: u64, at: Tick, w: &mut World) {
-        let id = fnv1a64(&[Party::agent(p).to_le_bytes(), at.0.to_le_bytes(), train.to_le_bytes()].concat());
+    fn ambush(
+        &mut self,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        train: u64,
+        at: Tick,
+        w: &mut World,
+    ) {
+        let id = fnv1a64(
+            &[
+                Party::agent(p).to_le_bytes(),
+                at.0.to_le_bytes(),
+                train.to_le_bytes(),
+            ]
+            .concat(),
+        );
         let s = self.strength(p);
         let n = self.parties[p].alive();
         let t = Threat {
@@ -2044,7 +2096,12 @@ impl Conflict {
         self.stats.ambushes += 1;
         let got = self.take_industry_loot(w, infra, p, &loot);
         let f = self.parties[p].faction;
-        self.note(at, Some(f), "ambush", format!("falls on train {train} on the way: {got} items"));
+        self.note(
+            at,
+            Some(f),
+            "ambush",
+            format!("falls on train {train} on the way: {got} items"),
+        );
     }
 
     /// Maps industry goods to the world's by name into the party's players' goods. Returns items.
@@ -2057,7 +2114,9 @@ impl Conflict {
     ) -> i64 {
         let mut got = 0;
         for (g, n) in loot.iter() {
-            let name = infra.good_name(g).unwrap_or_else(|| format!("good {}", g.0));
+            let name = infra
+                .good_name(g)
+                .unwrap_or_else(|| format!("good {}", g.0));
             let short = name.rsplit(':').next().unwrap_or(&name).to_string();
             match w.goods.find(&name).or_else(|| w.goods.find(&short)) {
                 Some(wg) => {
@@ -2074,12 +2133,19 @@ impl Conflict {
     }
 
     /// A party reaches its target.
-    fn arrive(&mut self, w: &mut World, infra: &mut dyn Infrastructure, p: Handle<Party>, at: Tick) {
+    fn arrive(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        at: Tick,
+    ) {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let kind = self.parties[p].kind;
         let bend = self.temper(f).bend(Trait::Bold, 1000, 50);
-        let patience = (days_to_ticks(c.def.patience_days) as f64 * f64::from(bend) / 1000.0) as u64;
+        let patience =
+            (days_to_ticks(c.def.patience_days) as f64 * f64::from(bend) / 1000.0) as u64;
         self.parties[p].bored_at = at + patience.max(1);
         let target = self.parties[p].target;
         let tpos = self.target_pos(w, target);
@@ -2091,11 +2157,21 @@ impl Conflict {
                     .and_then(|x| x.demand)
                     .map_or(at, |d| d.deadline);
                 self.wait(w, p, deadline.max(at + 1), at);
-                self.note(at, Some(f), "envoy", format!("the envoy waits at ({}, {})", tpos.x, tpos.z));
+                self.note(
+                    at,
+                    Some(f),
+                    "envoy",
+                    format!("the envoy waits at ({}, {})", tpos.x, tpos.z),
+                );
             }
             PartyKind::Scouts => {
                 self.wait(w, p, at + days_to_ticks(c.def.linger_days), at);
-                self.note(at, Some(f), "scouts", format!("scouts watch ({}, {}) from the edge", tpos.x, tpos.z));
+                self.note(
+                    at,
+                    Some(f),
+                    "scouts",
+                    format!("scouts watch ({}, {}) from the edge", tpos.x, tpos.z),
+                );
             }
             _ => {
                 if let Some(player) = self.watcher(w, tpos, at) {
@@ -2129,7 +2205,13 @@ impl Conflict {
         self.schedule(until, Ev::Party { party: p, plan });
     }
 
-    fn wait_over(&mut self, w: &mut World, infra: &mut dyn Infrastructure, p: Handle<Party>, at: Tick) {
+    fn wait_over(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        at: Tick,
+    ) {
         let x = &self.parties[p];
         let (kind, f) = (x.kind, x.faction);
         if kind == PartyKind::Siege && at < x.bored_at && x.alive() > 0 {
@@ -2148,7 +2230,12 @@ impl Conflict {
         let reason = if at >= self.parties[p].bored_at {
             self.stats.bored += 1;
             if kind.is_war() {
-                self.note(at, Some(f), "bored", "the band gets bored and goes home".into());
+                self.note(
+                    at,
+                    Some(f),
+                    "bored",
+                    "the band gets bored and goes home".into(),
+                );
             }
             boundary::RECALL_BORED
         } else {
@@ -2175,7 +2262,13 @@ impl Conflict {
 
     /// An unwatched raid, resolved abstractly: through the industry threat interface for a
     /// district (C16 to C18), through the world's markets for a village or a haven.
-    fn resolve(&mut self, w: &mut World, infra: &mut dyn Infrastructure, p: Handle<Party>, at: Tick) {
+    fn resolve(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        at: Tick,
+    ) {
         let f = self.parties[p].faction;
         let target = self.parties[p].target;
         let (stolen, blocks) = match target {
@@ -2200,7 +2293,8 @@ impl Conflict {
         if let Some(a) = self.parties[p].feud {
             let c = self.culture(f);
             let lambda = c.lambda;
-            let v = c.def.vengeance_per_item * (stolen as f64 + blocks as f64 * self.tun.block_value_items);
+            let v = c.def.vengeance_per_item
+                * (stolen as f64 + blocks as f64 * self.tun.block_value_items);
             let cap = self.tun.vengeance_cap_share;
             if let Some(feud) = self.feuds.get_mut(&(f, a)) {
                 let g = feud.g.total_at(at, lambda);
@@ -2261,18 +2355,37 @@ impl Conflict {
             words.push(format!(
                 "{class:?} x{count}: {lost} fall (survived {:.2}{}{}), {got} items, {} blocks{}",
                 o.survived,
-                o.floor.map_or(String::new(), |fl| format!(", floor {fl:.2}")),
-                if o.untested { ", untested defences" } else { "" },
+                o.floor
+                    .map_or(String::new(), |fl| format!(", floor {fl:.2}")),
+                if o.untested {
+                    ", untested defences"
+                } else {
+                    ""
+                },
                 o.destroyed_blocks,
-                if o.machine_lost { ", a machine lost" } else { "" }
+                if o.machine_lost {
+                    ", a machine lost"
+                } else {
+                    ""
+                }
             ));
         }
-        self.note(at, Some(f), "raid", format!("raids district {} unwatched: {}", d.0, words.join("; ")));
+        self.note(
+            at,
+            Some(f),
+            "raid",
+            format!("raids district {} unwatched: {}", d.0, words.join("; ")),
+        );
         (stolen_items, blocks)
     }
 
     /// Takes `n` units away from the stacks whose class matches, in stack order.
-    fn lose_units(&mut self, p: Handle<Party>, class: impl Fn(crate::culture::UnitClass) -> bool, mut n: u32) {
+    fn lose_units(
+        &mut self,
+        p: Handle<Party>,
+        class: impl Fn(crate::culture::UnitClass) -> bool,
+        mut n: u32,
+    ) {
         let f = self.parties[p].faction;
         let classes: Vec<bool> = self.parties[p]
             .units
@@ -2491,7 +2604,10 @@ impl Conflict {
             at,
             Some(f),
             "home",
-            format!("{} home with {alive} left and {items} items for the haven", kind.name()),
+            format!(
+                "{} home with {alive} left and {items} items for the haven",
+                kind.name()
+            ),
         );
         if kind == PartyKind::Plunder {
             self.schedule_plunder(f, at);
@@ -2544,7 +2660,10 @@ impl Conflict {
             self.schedule_plunder(f, at);
             return;
         };
-        if self.send_party(w, f, None, PartyKind::Plunder, Target::Node(i), at).is_none() {
+        if self
+            .send_party(w, f, None, PartyKind::Plunder, Target::Node(i), at)
+            .is_none()
+        {
             self.schedule_plunder(f, at);
         }
     }
@@ -2564,7 +2683,9 @@ impl Conflict {
             x.route[0]
         };
         let centre = ppos.map_or(*x.route.last().expect("route"), |pp| (pp.x, pp.z));
-        let bearing = (f64::from(from.1 - centre.1)).atan2(f64::from(from.0 - centre.0)).to_degrees() as f32;
+        let bearing = (f64::from(from.1 - centre.1))
+            .atan2(f64::from(from.0 - centre.0))
+            .to_degrees() as f32;
         let ends = (at + self.tun.watched_fight_ticks).min(x.bored_at.max(at + 1));
         let strength = self.strength(p);
         {
@@ -2583,7 +2704,10 @@ impl Conflict {
         let plan = self.bump(p);
         self.schedule(ends, Ev::Party { party: p, plan });
         self.spawn_wave(w, p, player, Some((centre, bearing)), at);
-        self.schedule(at + self.tun.wave_interval_ticks, Ev::Wave { party: p, plan });
+        self.schedule(
+            at + self.tun.wave_interval_ticks,
+            Ev::Wave { party: p, plan },
+        );
         self.note(
             at,
             Some(f),
@@ -2635,7 +2759,12 @@ impl Conflict {
         }
         let here = self.party_pos(p, at);
         let (centre, bearing, radius, half) = match arc {
-            Some((c0, b)) => (c0, b, self.tun.spawn_edge_blocks, self.tun.arc_half_width_deg),
+            Some((c0, b)) => (
+                c0,
+                b,
+                self.tun.spawn_edge_blocks,
+                self.tun.arc_half_width_deg,
+            ),
             None => (here, 0.0, 0, 0.0),
         };
         let x = &self.parties[p];
@@ -2646,8 +2775,11 @@ impl Conflict {
             dimension: u32::from(x.frame),
             faction: self.factions[f as usize].key,
             purpose: x.kind as u8,
-            flags: (if x.kind.is_war() { boundary::BAND_HOSTILE } else { 0 })
-                | boundary::BAND_SURFACE
+            flags: (if x.kind.is_war() {
+                boundary::BAND_HOSTILE
+            } else {
+                0
+            }) | boundary::BAND_SURFACE
                 | if x.chief { boundary::BAND_CHIEF } else { 0 },
             wave: x.wave,
             arc_centre: (f64::from(centre.0), f64::from(centre.1)),
@@ -2683,15 +2815,23 @@ impl Conflict {
         let alive = x.alive();
         let in_mc: u32 = x.spawned.iter().map(|e| e.1).sum();
         if alive > in_mc {
-            let ppos = w.players.get(&player).and_then(|s| s.pos).map(|e| (e.0.x, e.0.z));
+            let ppos = w
+                .players
+                .get(&player)
+                .and_then(|s| s.pos)
+                .map(|e| (e.0.x, e.0.z));
             let from = x.route[x.route.len().saturating_sub(2)];
             let centre = ppos.unwrap_or(*x.route.last().expect("route"));
-            let bearing =
-                (f64::from(from.1 - centre.1)).atan2(f64::from(from.0 - centre.0)).to_degrees() as f32;
+            let bearing = (f64::from(from.1 - centre.1))
+                .atan2(f64::from(from.0 - centre.0))
+                .to_degrees() as f32;
             self.spawn_wave(w, p, player, Some((centre, bearing)), at);
         }
         let plan = self.parties[p].plan;
-        self.schedule(at + self.tun.wave_interval_ticks, Ev::Wave { party: p, plan });
+        self.schedule(
+            at + self.tun.wave_interval_ticks,
+            Ev::Wave { party: p, plan },
+        );
     }
 
     /// A watched fight ends: survivors withdraw (the plugin despawns them and reports who is left),
@@ -2762,7 +2902,15 @@ impl Conflict {
                 heard += 1;
             }
         }
-        self.note(at, Some(f), "rescue", format!("{heard} village(s) that hate the {} hear the band was broken", c.name()));
+        self.note(
+            at,
+            Some(f),
+            "rescue",
+            format!(
+                "{heard} village(s) that hate the {} hear the band was broken",
+                c.name()
+            ),
+        );
     }
 
     // ---- seen on the march -----------------------------------------------------------------
@@ -2810,7 +2958,12 @@ impl Conflict {
         // Passing through: it leaves view where its walk leaves the area, unless it stops here.
         self.book_unseen(w, p, at);
         let kind = self.parties[p].kind;
-        self.note(at, Some(f), "seen", format!("{} seen by a player", kind.name()));
+        self.note(
+            at,
+            Some(f),
+            "seen",
+            format!("{} seen by a player", kind.name()),
+        );
     }
 
     fn materialize_envoy(&mut self, w: &World, p: Handle<Party>, player: ActorId, at: Tick) {
@@ -2818,7 +2971,10 @@ impl Conflict {
         let f = x.faction;
         let c = self.culture(f).clone();
         let here = self.party_pos(p, at);
-        let demand = x.feud.and_then(|a| self.feuds.get(&(f, a))).and_then(|fd| fd.demand);
+        let demand = x
+            .feud
+            .and_then(|a| self.feuds.get(&(f, a)))
+            .and_then(|fd| fd.demand);
         let whom = x.feud.map_or((0, 0), |a| self.uuid_of(w, a));
         let members: Vec<(u32, u32)> = x
             .units
@@ -2889,7 +3045,11 @@ impl Conflict {
                 actor,
                 stamp,
             } => {
-                if self.feuds.get(&(faction, actor)).is_none_or(|f| f.stamp != stamp) {
+                if self
+                    .feuds
+                    .get(&(faction, actor))
+                    .is_none_or(|f| f.stamp != stamp)
+                {
                     self.stats.stale += 1;
                     return;
                 }
@@ -3025,7 +3185,10 @@ impl Conflict {
                 self.signal(w, sig, at);
             }
             Obs::Pollution(pl) => {
-                let Some(name) = self.java_dict.get(&(boundary::DICT_POLLUTION, pl.ptype)).cloned()
+                let Some(name) = self
+                    .java_dict
+                    .get(&(boundary::DICT_POLLUTION, pl.ptype))
+                    .cloned()
                 else {
                     return;
                 };
@@ -3035,7 +3198,8 @@ impl Conflict {
                 let per_day = if pl.window_ticks == 0 {
                     0.0
                 } else {
-                    pl.amount.max(0) as f64 * scale * TICKS_PER_DAY as f64 / f64::from(pl.window_ticks)
+                    pl.amount.max(0) as f64 * scale * TICKS_PER_DAY as f64
+                        / f64::from(pl.window_ticks)
                 };
                 let pos = Pos::new(pl.dimension as u16, pl.x, pl.z);
                 let district = (pl.district != 0).then_some(DistrictId(pl.district));
@@ -3068,15 +3232,16 @@ impl Conflict {
                 };
                 let f = self.parties[p].faction;
                 let c = self.culture(f).clone();
-                let back_of = |u: u8, dict: &BTreeMap<(u8, u32), String>, cultures: &Cultures| -> u32 {
-                    let body = &c.unit(u).body;
-                    let id = body_id(cultures, body);
-                    d.survivors
-                        .iter()
-                        .filter(|s| dict.get(&(3, s.0)).is_some_and(|n| n == body) || s.0 == id)
-                        .map(|s| s.1)
-                        .sum()
-                };
+                let back_of =
+                    |u: u8, dict: &BTreeMap<(u8, u32), String>, cultures: &Cultures| -> u32 {
+                        let body = &c.unit(u).body;
+                        let id = body_id(cultures, body);
+                        d.survivors
+                            .iter()
+                            .filter(|s| dict.get(&(3, s.0)).is_some_and(|n| n == body) || s.0 == id)
+                            .map(|s| s.1)
+                            .sum()
+                    };
                 let units: Vec<u8> = self.parties[p].units.iter().map(|e| e.0).collect();
                 let backs: Vec<u32> = units
                     .iter()
@@ -3104,7 +3269,8 @@ impl Conflict {
             }
             Obs::Casualties(cs) => self.casualties(w, cs, at),
             Obs::ChiefKilled(ck) => {
-                let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p)) else {
+                let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p))
+                else {
                     return;
                 };
                 let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
@@ -3184,7 +3350,8 @@ impl Conflict {
         let c = self.culture(f).clone();
         let name = self.java_dict.get(&(3, cs.body)).cloned();
         let unit = self.parties[p].units.iter().position(|&(u, _)| {
-            name.as_deref() == Some(c.unit(u).body.as_str()) || body_id(&self.cultures, &c.unit(u).body) == cs.body
+            name.as_deref() == Some(c.unit(u).body.as_str())
+                || body_id(&self.cultures, &c.unit(u).body) == cs.body
         });
         let Some(k) = unit else {
             return;
@@ -3230,7 +3397,10 @@ impl Conflict {
                 x.bored_at = x.bored_at.min(until);
                 let plan = self.bump(p);
                 self.schedule(until, Ev::Party { party: p, plan });
-                self.schedule(at + self.tun.wave_interval_ticks, Ev::Wave { party: p, plan });
+                self.schedule(
+                    at + self.tun.wave_interval_ticks,
+                    Ev::Wave { party: p, plan },
+                );
             }
         } else if x.alive() == 0 && x.phase != Phase::Home {
             self.go_home(w, p, boundary::RECALL_ROUTED, at);
@@ -3240,7 +3410,13 @@ impl Conflict {
     /// The war chief falls (C24, C25): the band routs, the heir takes over holding the grudge,
     /// the faction is cowed for a while (a bold heir recovers sooner), and the killer's feud drops
     /// rungs.
-    pub fn chief_killed(&mut self, w: &mut World, p: Handle<Party>, killer: Option<ActorId>, at: Tick) {
+    pub fn chief_killed(
+        &mut self,
+        w: &mut World,
+        p: Handle<Party>,
+        killer: Option<ActorId>,
+        at: Tick,
+    ) {
         let f = self.parties[p].faction;
         if !self.parties[p].chief {
             return;
@@ -3266,7 +3442,8 @@ impl Conflict {
         w.knowledge.die(chief, at);
         self.succeed(w, f, at, killer);
         let bend = self.temper(f).bend(Trait::Bold, 1000, 50).max(1);
-        let cowed = (days_to_ticks(self.culture(f).def.cowed_days) as f64 * 1000.0 / f64::from(bend)) as u64;
+        let cowed = (days_to_ticks(self.culture(f).def.cowed_days) as f64 * 1000.0
+            / f64::from(bend)) as u64;
         self.factions[f as usize].cowed_until = at + cowed;
         if let Some(a) = self.parties[p].feud.or(killer) {
             let steps = self.tun.chief_rout_steps;
@@ -3287,7 +3464,15 @@ impl Conflict {
             self.stats.routs += 1;
             self.go_home(w, p, boundary::RECALL_ROUTED, at);
         }
-        self.note(at, Some(f), "chief", format!("the war chief falls: the band routs; cowed for {:.1} days", cowed as f64 / TICKS_PER_DAY as f64));
+        self.note(
+            at,
+            Some(f),
+            "chief",
+            format!(
+                "the war chief falls: the band routs; cowed for {:.1} days",
+                cowed as f64 / TICKS_PER_DAY as f64
+            ),
+        );
         let actors: Vec<ActorId> = self
             .feuds
             .range((f, Handle::NULL)..)
@@ -3341,10 +3526,16 @@ impl Conflict {
             let landed = self.ledger.landed.get(g).copied().unwrap_or(0);
             let h = held.get(g).copied().unwrap_or(0);
             if *taken != landed + h {
-                return Err(format!("good {}: taken {taken}, landed {landed}, held {h}", g.0));
+                return Err(format!(
+                    "good {}: taken {taken}, landed {landed}, held {h}",
+                    g.0
+                ));
             }
             if h > w.outside.held.get(g).copied().unwrap_or(0) {
-                return Err(format!("good {}: parties hold more than the world's held", g.0));
+                return Err(format!(
+                    "good {}: parties hold more than the world's held",
+                    g.0
+                ));
             }
         }
         let mut carried: BTreeMap<GoodId, i128> = BTreeMap::new();
@@ -3357,7 +3548,10 @@ impl Conflict {
             let landed = self.ledger.landed_from_players.get(g).copied().unwrap_or(0);
             let c = carried.get(g).copied().unwrap_or(0);
             if *taken != landed + c {
-                return Err(format!("good {}: from players {taken}, landed {landed}, carried {c}", g.0));
+                return Err(format!(
+                    "good {}: from players {taken}, landed {landed}, carried {c}",
+                    g.0
+                ));
             }
         }
         w.check_conserved(w.now()).map_err(|e| e.to_string())
@@ -3366,7 +3560,11 @@ impl Conflict {
     pub fn heap_bytes(&self) -> usize {
         self.factions.len() * (std::mem::size_of::<Faction>() + 16 * 16)
             + self.feuds.len() * (std::mem::size_of::<Feud>() + 48)
-            + self.sources.values().map(|s| 64 + s.affects.len() * 16).sum::<usize>()
+            + self
+                .sources
+                .values()
+                .map(|s| 64 + s.affects.len() * 16)
+                .sum::<usize>()
             + self
                 .parties
                 .iter()
@@ -3399,7 +3597,9 @@ pub fn village_outcome(
         .map(|o| o.1)
         .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.min(x))));
     (
-        floor.map_or(lanchester, |fl| lanchester.max(fl)).clamp(0.0, 1.0),
+        floor
+            .map_or(lanchester, |fl| lanchester.max(fl))
+            .clamp(0.0, 1.0),
         floor,
     )
 }
@@ -3489,7 +3689,5 @@ impl Viewer for Conflict {
                 x.phase = Phase::Waiting;
             }
         }
-        // Keep the UUID: a player who comes back is the same actor.
-        let _ = uuid_hash;
     }
 }

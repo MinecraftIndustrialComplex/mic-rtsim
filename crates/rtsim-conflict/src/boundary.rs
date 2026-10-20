@@ -1008,13 +1008,7 @@ mod tests {
     use super::*;
 
     fn obs() -> Vec<Obs> {
-        let items = vec![
-            Item { item: 3, count: 12 },
-            Item {
-                item: 9,
-                count: -1,
-            },
-        ];
+        let items = vec![Item { item: 3, count: 12 }, Item { item: 9, count: -1 }];
         vec![
             Obs::State(BandState {
                 agent: AGENT_NAMESPACE << 56 | 5,

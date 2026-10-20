@@ -256,7 +256,12 @@ fn run_out(o: Outcome, v: Variant, wall_ms: f64) -> RunOut {
         .goods
         .ids()
         .filter(|g| haven.stock(*g) > 0)
-        .map(|g| (w.goods.get(g).name.clone(), haven.stock(g) as f64 / MILLI as f64))
+        .map(|g| {
+            (
+                w.goods.get(g).name.clone(),
+                haven.stock(g) as f64 / MILLI as f64,
+            )
+        })
         .collect();
     let feuds = c
         .feuds
@@ -285,7 +290,10 @@ fn run_out(o: Outcome, v: Variant, wall_ms: f64) -> RunOut {
             .map(|(t, s)| (*t as f64 / TICKS_PER_DAY as f64, s.clone()))
             .collect(),
         wire_bytes: o.plugin.wire_bytes,
-        state_hashes: (format!("{:016x}", o.hashes.0), format!("{:016x}", o.hashes.1)),
+        state_hashes: (
+            format!("{:016x}", o.hashes.0),
+            format!("{:016x}", o.hashes.1),
+        ),
     }
 }
 

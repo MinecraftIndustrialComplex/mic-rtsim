@@ -213,7 +213,12 @@ mod tests {
         let t = Tick::from_days(6);
         assert!((g.total_at(t, LAMBDA) - 50.0).abs() < 1e-9);
         let mut h = Grievance::new(Tick(0));
-        h.set_rate(SignalKind::Smog, 25.0 / TICKS_PER_DAY as f64, Tick(0), LAMBDA);
+        h.set_rate(
+            SignalKind::Smog,
+            25.0 / TICKS_PER_DAY as f64,
+            Tick(0),
+            LAMBDA,
+        );
         let far = h.total_at(Tick::from_days(10_000), LAMBDA);
         assert!((far - h.equilibrium(LAMBDA)).abs() < 1e-6);
     }
@@ -221,7 +226,12 @@ mod tests {
     #[test]
     fn crossings_land_on_the_threshold() {
         let mut g = Grievance::new(Tick(1000));
-        g.set_rate(SignalKind::Smog, 25.0 / TICKS_PER_DAY as f64, Tick(1000), LAMBDA);
+        g.set_rate(
+            SignalKind::Smog,
+            25.0 / TICKS_PER_DAY as f64,
+            Tick(1000),
+            LAMBDA,
+        );
         let up = g.crossing_up(70.0, LAMBDA).unwrap();
         assert!(g.total_at(up, LAMBDA) >= 70.0);
         assert!(g.total_at(Tick(up.0 - 3), LAMBDA) < 70.0);

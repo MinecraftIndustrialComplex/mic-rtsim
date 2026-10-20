@@ -51,7 +51,10 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
         Tick(10),
     );
     let sf = &c.feuds[&(f, s)];
-    assert!(sf.g.rate[SignalKind::Smog.index()] > 0.0, "pollution is the settlers'");
+    assert!(
+        sf.g.rate[SignalKind::Smog.index()] > 0.0,
+        "pollution is the settlers'"
+    );
     assert!(!c.feuds.contains_key(&(f, p)));
     let log = |actor, kind, pos| Signal {
         faction: None,
@@ -61,10 +64,18 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
         pos,
         district: None,
     };
-    c.signal(&mut w, log(p, SignalKind::Logging, synth::FOREST_POS), Tick(20));
+    c.signal(
+        &mut w,
+        log(p, SignalKind::Logging, synth::FOREST_POS),
+        Tick(20),
+    );
     assert!(c.feuds[&(f, p)].g.level[SignalKind::Logging.index()] > 0.0);
     assert_eq!(c.feuds[&(f, s)].g.level[SignalKind::Logging.index()], 0.0);
-    c.signal(&mut w, log(q, SignalKind::Building, synth::FOREST_POS), Tick(25));
+    c.signal(
+        &mut w,
+        log(q, SignalKind::Building, synth::FOREST_POS),
+        Tick(25),
+    );
     assert!(c.feuds[&(f, q)].g.level[SignalKind::Building.index()] > 0.0);
     assert_eq!(c.feuds[&(f, p)].g.level[SignalKind::Building.index()], 0.0);
     // An unowned act reported by the plugin, (0, 0): the settlers'.
@@ -80,7 +91,11 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
     assert!(c.feuds[&(f, s)].g.level[SignalKind::Mining.index()] > 0.0);
     assert_eq!(c.feuds[&(f, p)].g.level[SignalKind::Mining.index()], 0.0);
     // Far from any territory nothing is held against anyone.
-    c.signal(&mut w, log(p, SignalKind::Mining, Pos::new(0, 9_000, 9_000)), Tick(40));
+    c.signal(
+        &mut w,
+        log(p, SignalKind::Mining, Pos::new(0, 9_000, 9_000)),
+        Tick(40),
+    );
     assert_eq!(c.feuds[&(f, p)].g.level[SignalKind::Mining.index()], 0.0);
 }
 
@@ -171,7 +186,10 @@ fn reads_never_change_the_trajectory() {
     let (mut wb, mut b, _) = setup(4);
     script(&mut a, &mut wa, false);
     script(&mut b, &mut wb, true);
-    assert!(a.stats.escalations.iter().sum::<u64>() > 0, "the script climbs the ladder");
+    assert!(
+        a.stats.escalations.iter().sum::<u64>() > 0,
+        "the script climbs the ladder"
+    );
     assert_eq!(a.state_hash(), b.state_hash());
     assert_eq!(wa.state_hash(), wb.state_hash());
 }
@@ -267,7 +285,11 @@ fn district_raids_are_never_better_than_observed_and_capped() {
     assert!(o.survived >= 0.8, "never better than observed: {o:?}");
     // Caps (I23): at most a tenth of each good, the survivors' carry, eight blocks.
     let tun = rtsim_industry::tunables::Tunables::default().threat;
-    let start = [(synth::IRON, 512), (synth::BREAD, 256), (synth::GASOLINE, 32)];
+    let start = [
+        (synth::IRON, 512),
+        (synth::BREAD, 256),
+        (synth::GASOLINE, 32),
+    ];
     for a in attacks {
         assert!(a.destroyed <= tun.destroy_cap_blocks);
         for (g, n) in start {
@@ -300,7 +322,11 @@ fn village_raids_move_stock_to_the_haven_exactly_and_capped() {
         .expect("plunderers");
     let units = c.parties[p].alive();
     let carry: i64 = 8 * MILLI * i64::from(units);
-    let share = c.cultures.get(c.factions[f as usize].culture).def.loot_share_milli;
+    let share = c
+        .cultures
+        .get(c.factions[f as usize].culture)
+        .def
+        .loot_share_milli;
     let mut t = Tick(10);
     let mut checked_held = false;
     while !c.parties.is_empty() {
@@ -387,7 +413,10 @@ fn killing_the_war_chief_routs_the_band_and_the_heir_takes_over() {
     assert_ne!(c.factions[f as usize].chief, old);
     assert_eq!(c.factions[f as usize].chief, heir, "the heir takes over");
     assert!(w.knowledge.notable(old).is_none(), "the old chief is dead");
-    assert!(w.knowledge.sentiment(heir, p, w.now()) < 0, "and the heir holds the grudge");
+    assert!(
+        w.knowledge.sentiment(heir, p, w.now()) < 0,
+        "and the heir holds the grudge"
+    );
     assert!(c.factions[f as usize].cowed_until > Tick::from_days(2));
     assert!(c.feuds[&(f, p)].step <= Step::Envoy, "two rungs down");
     assert_eq!(c.parties[band].phase, rtsim_conflict::engine::Phase::Home);

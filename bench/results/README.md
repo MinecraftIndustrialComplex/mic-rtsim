@@ -208,12 +208,12 @@ with `--check` passed. Laptop, other agents' builds running alongside.
 
 **Numbers:**
 - Factions 16 to 1,024: 1.04 events per faction-day at every point (slope 0.006, max/min 1.04,
-  contract flat), at 5.6 to 9.4 us of CPU per faction-day (slope 0.125 here, 0.089 in the `--check`
+  contract flat), at 5.4 to 9.1 us of CPU per faction-day (slope 0.125 here, 0.089 in the `--check`
   rerun; declared 0.2): the cost per event rises as the world grows 64 times (80 MiB of heap at
   1,024 camps and villages), the cache effect the dragon sweep's note describes, not a scan.
 - Live heap 1.3 to 80 MiB (slope 0.994): the world's markets (one village and one haven per
-  faction) dominate; the conflict engine's own rows, wheel and indexes are a small part
-  (`engine_heap_bytes`).
+  faction) dominate; the conflict engine's own rows, wheel and indexes are 43 KB at 16 factions
+  and 2.8 MB at 1,024 (`engine_heap_bytes`, about 2.7 KB a faction with its feuds and parties).
 - Two quadratic terms were found and removed on the way: a new faction re-applied every source in
   the world (each replanning every faction it reached: about a million stale wakes at 1,024
   factions; now only the sources within the newcomer's reach, through a (faction, kind) source

@@ -548,13 +548,7 @@ fn get_ledger(r: &mut Reader<'_>) -> codec::Result<ConflictLedger> {
 }
 
 fn stats_fields(s: &ConflictStats) -> Vec<u64> {
-    let mut v = vec![
-        s.events,
-        s.feud_wakes,
-        s.stale,
-        s.signals,
-        s.emissions,
-    ];
+    let mut v = vec![s.events, s.feud_wakes, s.stale, s.signals, s.emissions];
     v.extend(s.escalations);
     v.extend([s.calmed, s.demands, s.tributes, s.cuts, s.expired, s.gifts]);
     v.extend(s.parties);
@@ -687,7 +681,11 @@ impl Conflict {
     }
 
     /// Reads an engine [`Conflict::save`] wrote, with the tunables and cultures it ran with.
-    pub fn load(tun: ConflictTunables, cultures: Cultures, bytes: &[u8]) -> codec::Result<Conflict> {
+    pub fn load(
+        tun: ConflictTunables,
+        cultures: Cultures,
+        bytes: &[u8],
+    ) -> codec::Result<Conflict> {
         let r = &mut Reader::new(bytes);
         if r.u32()? != MAGIC {
             return bad("not a conflict save".into());
@@ -773,7 +771,9 @@ impl Conflict {
         }
         c.ledger = get_ledger(r)?;
         let n = r.len_prefix(1)?;
-        let st = (0..n).map(|_| r.var_u64()).collect::<codec::Result<Vec<_>>>()?;
+        let st = (0..n)
+            .map(|_| r.var_u64())
+            .collect::<codec::Result<Vec<_>>>()?;
         c.stats = stats_from(&st);
         let n = r.len_prefix(1)?;
         for _ in 0..n {
