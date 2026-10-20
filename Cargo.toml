@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "AGPL-3.0-or-later"
+publish = false
+repository = "https://github.com/MinecraftIndustrialComplex/mic-rtsim"
+
+[workspace.dependencies]
+rtsim-kernel = { path = "crates/rtsim-kernel" }
+# The page codec, matching Deep Time's tile packs (crates/deeptime-format). MIT.
+lz4_flex = "0.14.0"
+# MIT OR Apache-2.0.
+crc32fast = "1.5.2"
+# Manifests and bench results. MIT OR Apache-2.0.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# Property tests (SCALE.md §2 invariants, §4 composition rule). MIT OR Apache-2.0.
+proptest = "1"
+
+[profile.release]
+# Keep unwinding: the JNI crate (later) catches panics at every export (PLAN.md §2).
+panic = "unwind"
+lto = "thin"
+debug = "line-tables-only"
+
+[profile.dev]
+# As Deep Time: the kernel's own crates at -O1 so property tests finish, with debug assertions and
+# overflow checks still on.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,16 @@
+[package]
+name = "rtsim-kernel"
+description = "mic-rtsim's engine kernel: handles, counter RNG, clock, timing wheel, the detail ladder, lazy regions, conservation, pages and the journal (PLAN.md §5.1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+lz4_flex.workspace = true
+crc32fast.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
