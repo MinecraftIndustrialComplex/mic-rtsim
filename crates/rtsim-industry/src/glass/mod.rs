@@ -10,10 +10,13 @@
 
 pub mod codec;
 pub mod records;
+pub mod report;
 
 use rtsim_kernel::clock::Tick;
 
+use crate::ids::DistrictId;
 use records::GlassObs;
+use report::Report;
 
 /// The glass box's state across districts.
 #[derive(Debug, Default)]
@@ -26,5 +29,11 @@ impl Glass {
     /// One glass record.
     pub fn ingest(&mut self, _at: Tick, _g: &GlassObs) {
         self.records += 1;
+    }
+
+    /// The district's glass report (`report.rs`), or None if it has no complete compile.
+    /// Placeholder until the solver lands (step 2).
+    pub fn report(&self, _district: DistrictId) -> Option<Report> {
+        None
     }
 }

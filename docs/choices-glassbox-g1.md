@@ -17,6 +17,29 @@ marked PLACEHOLDER is not measured; UNVERIFIED marks what no test has confirmed.
 | GB4 | **The engine does not page the graph in G1**; Java resends a district's last compile every `glass.resendTicks` (PLACEHOLDER 1,200) with the RESEND flag, and the engine ignores a resend of a compile it already holds. | A dropped latest-wins record must be redone (§1.4), and a resend needs no new request kind. G1 is read only, so nothing is lost when a restart drops the graph until the next resend. G2, which replays from the graph, pages it with its district (A16). |
 | GB5 | **IND_CHUNK_TICKING is journaled at 0x040B; IND_PROBE_SET is a command at 0x8406 without an op id.** | Ticking changes are events (I7 needs every one). Applying a probe set twice is harmless, so it needs no COMMAND_RESULT. |
 | GB6 | **One frame per compile**, in IND_GRAPH_END: 0 for the level, else the Sable sub-level's id (the low 64 bits of its UUID's hash). Positions are the blocks' own coordinates. | Sable keeps a ship's blocks as ordinary block entities at fixed plot-grid positions in the same `ServerLevel` (`ServerLevelPlot`, 2,048 × 2,048 blocks per plot from x, z = 20,480,000); moving the ship changes only `SubLevel.logicalPose()`. So the plot coordinates are the ship's own frame and the extraction needs no transform (C32). A district never spans a ship and the world: they cannot touch. |
+| GB7 | **IND_GRAPH_END carries the checksum window** (28 u32 `window`, 0 the engine's `glass.checksumWindowMin`), from Java's `glass.checksumWindowTicks`. | The engine's tunables are fixed per build; GameTests need short windows, and an operator can lengthen one district's without a rebuild. |
+| GB8 | **A node flag PASS_THROUGH (64)** marks an in-place machine on a line: goods none of its recipes takes pass unchanged. | A press over a belt or a fan zone sees every item on the belt; without the flag each unmatched good would need a transfer recipe. |
+| GB9 | **The graph's meaning is written down once**, docs/industry-boundary.md §9.3, before either half is built. | The extractor and the solver are built in parallel; one text keeps them agreeing on units, rate entries, heat, boilers, controllers and what is measured. |
+
+## Solver and checksum (Rust), GB10 to GB29
+
+| # | Choice | Why |
+|---|---|---|
+
+## Extraction and cycle evaluators (Java), GB30 to GB59
+
+| # | Choice | Why |
+|---|---|---|
+
+## Corpus (GameTests), GB60 to GB79
+
+| # | Choice | Why |
+|---|---|---|
+
+## Integration and exit test, GB80 onward
+
+| # | Choice | Why |
+|---|---|---|
 
 ## For Ben
 
