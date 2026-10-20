@@ -31,8 +31,9 @@ pub struct WorldConfig {
     pub genesis: Genesis,
     /// A trader's lifespan once it becomes a notable, in days. PLACEHOLDER (P18).
     pub trader_lifespan_days: u64,
-    /// Checks conservation after every event and panics on a break. For tests and debugging: it
-    /// costs a pass over the whole world per event.
+    /// Checks conservation after every event and panics on a break (PLAN.md §8.4: "asserted per
+    /// event in debug"). On by default in debug builds, off in release: it costs a pass over the
+    /// whole world per event.
     pub check_every_event: bool,
     /// Keeps whole pipeline histories (no trimming) so [`crate::World::audit`] can sum them. For
     /// debugging only: memory grows with time.
@@ -53,7 +54,7 @@ impl WorldConfig {
             markup_worst: Ratio::new(1, 2),
             genesis: Genesis::AtTarget,
             trader_lifespan_days: 120,
-            check_every_event: false,
+            check_every_event: cfg!(debug_assertions),
             keep_history: false,
         }
     }
