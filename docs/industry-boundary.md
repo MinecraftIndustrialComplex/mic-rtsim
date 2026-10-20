@@ -303,9 +303,12 @@ with it is not decided.
 Sent every 20 ticks for each unloaded district within `approachRadiusBlocks` (256, PLACEHOLDER) of a
 player; `approachSignal = false` stops it.
 
+Since W16 `wire.rs` reads it (`Obs::Approach`) and the engine keeps the latest on the district
+(`District::approach`), data only: nothing acts on it.
+
 ## 7. The engine side: rtsim-jni
 
-Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W15 in
+Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W18 in
 `docs/overnight-choices-industryjni.md`). What the native engine does with these records:
 
 - **Reading.** Every industry record decodes through `rtsim_industry::wire`. Journaled ones pass the
@@ -333,3 +336,6 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   bridge does not pass yet (W2).
 - **Threats** from other systems arrive as an order (`IndustryThreat`, W12) until those systems run
   in the engine.
+- **Tests** can order an industry command (`INDUSTRY_COMMAND`, W17): a record with Java's own ids,
+  written as the industry engine's own, so the industry GameTests run on either engine.
+- **IND_APPROACH** is kept on the district as data (W16).
