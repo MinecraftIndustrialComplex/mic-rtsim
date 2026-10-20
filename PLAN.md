@@ -142,7 +142,7 @@ including the optimization effort's rewrites (A6). Its licence is MPL-2.0 (A7).
 | Loader | Finds, checks and loads every native library with one `natives.json` scheme (Deep Time's schema 2). `cpuprobe` picks the CPU variant once for all of them. |
 | Foreground pool | Normal OS priority, for anything a player waits on: a game thread calling a native rewrite, a loading screen. Deep Time's world-creation and first-start bakes run here (X1), and so does the rtsim's history generation. Sizing is a PLACEHOLDER (P24). |
 | Background pool | The lowest *normal* OS priority: nice 19 on Linux, `THREAD_PRIORITY_LOWEST` on Windows, utility QoS on macOS. For work nobody waits on: the rtsim during play, prefetch, previews. Not idle-class (`SCHED_IDLE`): there a browser or Discord would win too, and an idle thread holding a lock could stall a game thread while no core is free. Sizing is a PLACEHOLDER (P24). |
-| IO lane | Page writes, page reads, prefetch and the rtsim's saves. It never runs compute, so a slow disk never holds a compute thread. |
+| IO lane | Page compression and writes, page reads, prefetch and the rtsim's saves, kept apart from the compute pools so a slow disk never holds a compute thread. |
 | Governor | CPU and memory accounting per plugin. It tells background plugins when they are over budget, so they stretch (§4.6). It replaces or feeds a plugin's own memory cap, such as Deep Time's (X3), and never runs alongside it. |
 | Profiler | Named zones from every plugin. Tracy in dev builds, plus a ring buffer that `/micperf` reads in game. |
 | Service registry | Native plugins publish versioned C-ABI services by name and call each other without Java. |
@@ -184,10 +184,9 @@ including the optimization effort's rewrites (A6). Its licence is MPL-2.0 (A7).
   gets what is left.
 - **With uncapped FPS, the render thread may never sleep.** The pack ships `enableVsync:true` and
   `maxFps:120` in `options.txt`, but players change these.
-- **Linux** still gives a nice-19 thread a small share of a contended core: weight 15 against 1,024 for
-  a normal thread, in the kernel's weight table.
-- **Windows** runs a `THREAD_PRIORITY_LOWEST` thread only when nothing higher is ready. Its
-  anti-starvation boosts do exist, and briefly raise a starved thread.
+- **Linux** gives a nice-19 thread a small share of a contended core (weight 15 against 1,024 in the
+  kernel's table). **Windows** runs a `THREAD_PRIORITY_LOWEST` thread only when nothing higher is ready,
+  apart from its anti-starvation boosts, which do exist.
 - **So on a busy 2-core machine the sim can get very little CPU.** It then falls behind (§4.6), and
   `/micperf` shows the lag. The pack's minimum spec must leave some slack (risk R10).
 
@@ -363,13 +362,13 @@ it, every individual sits in one relevance band, which decides scheduling order:
 
 ### 4.6 Falling behind
 
-- **The governor's budget** is per wall-clock second. When the sim is over it, or when Deep Time or
-  another background plugin needs the pool, the engine stretches abstract work, lowest relevance first.
+- **The governor's budget** is per wall-clock second. Over it, or when another background plugin needs
+  the pool, the engine stretches abstract work, lowest relevance first.
 - **Each step runs E and N work first,** so they are the last to fall behind. Under starvation they are
   late too. Puppets then hold their last intent (keep walking to the same waypoint) until new commands
   arrive.
-- **Stretched work stays exact where it is closed-form.** It just happens later. Decisions that depend
-  on when they ran can differ (§4.7).
+- **Stretched closed-form work stays exact,** just later. Decisions that depend on timing can differ
+  (§4.7).
 
 ### 4.7 Determinism
 
@@ -738,22 +737,20 @@ player in − player out; per currency likewise with mined and burned. Asserted 
   the seller gets the floor. No loop of trades makes money.
 - **Uses.** An offer where the village sells goods has uses up to its stock. An offer where the village
   pays emeralds has uses up to its treasury. When uses run out, vanilla shows the trade crossed out.
-- **Restock.** Vanilla restocks at the workstation. For adopted villages a mixin on `Villager.restock`
-  hands uses to the treasury rule instead (PATCHES.md).
-- **Report.** Each trade (`notifyTrade`) becomes an observation with an operation id. The bridge updates
-  its cached stock and treasury at once, and the engine applies the trade at the next step.
+- **Restock.** For adopted villages a mixin on `Villager.restock` hands uses to the treasury rule
+  instead of the workstation restock (PATCHES.md).
+- **Report.** Each trade (`notifyTrade`) is an observation with an operation id. The bridge updates its
+  cached stock and treasury at once; the engine applies the trade next step.
 - **Reputation.** Vanilla's own price change from reputation (`updateSpecialPrices`) still applies on
   top. Whether the sim writes into vanilla gossip is **Proposal P19 (Ben)**.
 
 **Ribbit merchants in ribbit villages:** whether their trades go through the ribbit treasury in the same
 way (`overrideOffers`, `restock`) is **Proposal P23 (Ben)**.
 
-**Sim caravans:**
-- A trader's offers come from its cargo when it materializes: it sells cargo goods and buys what its
-  home market lacks, up to the cash it carries.
-- Its prices are its destination market's prices, as of the freshest news the caravan carries.
-- Whether traders at border markets also exchange emeralds and amethyst for players is **Proposal P21
-  (Ben)**.
+**Sim caravans:** a trader's offers come from its cargo when it materializes. It sells cargo and buys
+what its home market lacks, up to the cash it carries, at its destination's prices as of the freshest
+news it carries. Whether traders at border markets also exchange emeralds and amethyst for players is
+**Proposal P21 (Ben)**.
 
 ### 8.6 Caravans
 
@@ -762,11 +759,9 @@ way (`overrideOffers`, `restock`) is **Proposal P23 (Ben)**.
   identity, cargo from the flow's goods mix, position from departure time and speed. They appear at the
   edge of the entity-ticking area, out of sight (§6.1), and walk the leg with vanilla pathfinding toward
   engine waypoints.
-- **At a market,** a caravan stays for a stay window (TUNABLE, P18) near the village's meeting point,
-  trades, and leaves.
-- **A caravan becomes an individual row** when something must persist: it is robbed, attacked, has a
-  llama stolen, or trades with a player. Its departure slot is removed from the flow, so totals stay
-  exact.
+- **At a market,** a caravan stays for a stay window (TUNABLE, P18) near the meeting point, then leaves.
+- **A caravan becomes an individual row** when something must persist (robbed, attacked, a llama
+  stolen, a player trade). Its departure slot leaves the flow, so totals stay exact.
 - **Whether cargo rides physically in the llamas' chests** is **Proposal P20 (Ben)**.
 
 ### 8.7 Slights and memory
@@ -947,16 +942,15 @@ Each module below is sketched with its hooks and a short walkthrough. Bodies and
   ships agree without physics. Each ship's clock offset and route assignment are saved, unlike Veloren,
   which resets them on every boot. While unloaded, cruise altitude is forced (Veloren `!5091`: ships that
   were flying low got stuck on load).
-- **Sky pirates** hunt sky lanes; **sea ships** run between port villages. Pirates are hazard rates on
-  lanes until observed (SCALE.md §3).
-- **Body candidates** (P8): Small Ships, Create Aeronautics Structures, the Seven Seas add-on (not yet
-  surveyed). **How ports are provided** is also P8.
+- **Sky pirates** hunt sky lanes as hazard rates until observed; **sea ships** run between port
+  villages. Body candidates and how ports are provided are P8 (Small Ships, Create Aeronautics
+  Structures, the Seven Seas add-on, not yet surveyed).
 - **Hooks:** Sable's five-call spawn recipe; `SubLevelHoldingChunkMap` freezes unloaded ships, so the
   engine owns every NPC voyage. Saving a sub-level plot back to a template is UNVERIFIED; without it, hull
   damage persists as a number instead of holes.
 - **Walkthrough:** a sky ship from Brindle's dock to a mountain village passes over your base at the hour
   its timetable says. You board it at the dock and ride. A pirate ship appears on a lane you are
-  crossing; you fight it with real Create cannons, or flee. The lane's hazard rises in the news, and
+  crossing; you fight it with Create Big Cannons, or flee. The lane's hazard rises in the news, and
   fewer caravans take it.
 
 ### 10.2 Ecology and herds
@@ -973,8 +967,8 @@ Each module below is sketched with its hooks and a short walkthrough. Bodies and
 ### 10.3 Conflict, goblins and raiders
 
 - Grievance per player per signal; escalation from notice to raid; war bands as rows on the road graph;
-  a raid director that spawns waves at the edge of the entity-ticking area. Raids on player bases resolve
-  only while a player of that base is online (TUNABLE behaviour).
+  a raid director that spawns waves at the edge of the entity-ticking area. The baseline idea that raids
+  on a base resolve only while one of its players is online goes to Ben with this phase.
 - Body candidates (P8): Goblin's Tyranny, Illager Invasion. The fallback raider is `minecraft:pillager`.
   Pollution signals come from `mic_rtsim_destroy`; attribution is **P14 (Ben)**.
 - **Walkthrough:** your Destroy refinery smogs the forest a goblin camp claims. Scouts appear at the
@@ -1198,7 +1192,7 @@ are new. Each has a recommended option first.
 | P21 | Currency exchange for players | traders and ribbit merchants at border markets offer emerald and amethyst trades at that market's rate | no player exchange in phase 1; exchange through Numismatics later | phase 1 |
 | P22 | When a village joins the sim | when its structure start is generated; caravans run between generated villages | precompute every village inside the world border at world creation, as `/locate` does, so caravans come from unexplored places; only villages a player has visited | phase 1 |
 | P23 | Ribbit merchant trades | through the ribbit treasury, like C14 | leave Ribbits' own trades and restock alone | phase 1 |
-| P24 | Performance and scale targets | keep §4.1's placeholders (bridge ≤ 1 ms p99; no heap objects beyond the buffers); pool sizes cores − 2, minimum 1; scale bench ranges by orders of magnitude (SCALE.md §10); Ben sets final numbers from phase 0 data | Ben sets them now; relative targets only (no measurable MSPT change against the no-sim baseline) | phase 0 |
+| P24 | Performance and scale targets | keep §4.1's placeholders (bridge ≤ 1 ms p99; no heap objects beyond the buffers); background pool cores − 2 (minimum 1), foreground capped at cores − 2 during play and all cores on a loading screen; scale bench ranges by orders of magnitude (SCALE.md §10); Ben sets final numbers from phase 0 data | Ben sets them now; relative targets only (no measurable MSPT change against the no-sim baseline) | phase 0 |
 | P25 | Regions per province | chosen from the phase 0 bench among 4 × 4, 8 × 8 and 16 × 16 regions | Ben picks now | phase 0 |
 | P26 | A player's home, for targeting | the region where the player spent the most time recently (a decaying counter from position observations) | the respawn point; a claims mod | phase 2 |
 | P27 | Kaiju trigger | the first nuclear detonation observed in the world | the first device crafted; the first reactor reaching criticality (hooks UNVERIFIED) | kaiju |
@@ -1310,4 +1304,4 @@ source trees. Facts from the 2026-10-19 review or another session say so.
   Vector API is incubating through JDK 25 and needs a launch flag. Valhalla value classes target a JDK 28
   preview.
 - **Economy inputs** (economy research): emerald ore spawns only in mountain biomes in vanilla; budding
-  amethyst regrows clusters; trader llama movement attribute 0.175.
+  amethyst regrows clusters; a movement attribute of 0.175 for the caravan (llama, per minecraft.wiki; not checked in source).
