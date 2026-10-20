@@ -43,6 +43,9 @@ pub struct IronLine {
     /// Every district chunk-loaded all the time.
     pub control: bool,
     pub mode: Mode,
+    /// Machines tick once on stale stock before a reconcile lands (INDUSTRY.md §19 risk 3), and
+    /// reconciles land a tick late, as the real protocol does. Off: an ideal, race-free Java side.
+    pub tick_first: bool,
 }
 
 /// A Create item vault of `blocks` blocks: 20 slots each (`vaultCapacity`, verified).
@@ -83,12 +86,15 @@ fn district(id: u64, name: &str, x: i32) -> FDistrict {
         last_ran: Vec::new(),
         broken: Default::default(),
         revision: 0,
+        ever_loaded: false,
     }
 }
 
 pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     let mut w = FakeWorld::new(cfg.seed, tun, cfg.mode);
     w.control = cfg.control;
+    w.machines_tick_first = cfg.tick_first;
+    w.apply_on_load = !cfg.tick_first;
     w.good(ORE.0, GoodInfo::item("create:crushed_raw_iron", 64));
     w.good(INGOT.0, GoodInfo::item("minecraft:iron_ingot", 64));
     w.good(COAL.0, GoodInfo::item("minecraft:coal", 64));
@@ -145,9 +151,9 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     ];
     w.districts.push(b);
 
-    // Home: receives ingots.
+    // Home: receives ingots into a 16-block vault (320 slots).
     let mut c = district(3, "Home", 0);
-    c.inventories.push(vault(0, BlockPos::new(0, 64, 0), 4, GoodVec::new()));
+    c.inventories.push(vault(0, BlockPos::new(0, 64, 0), 16, GoodVec::new()));
     w.districts.push(c);
 
     // Power Plant: a coal boiler, 1 coal per 400 ticks.
@@ -181,9 +187,10 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     // Station 4 is the ingot platform; the ore platform (2) only unloads ore for train 1.
     w.stations[1].load.clear();
 
+    // The player builds and runs everything at first (all loaded, so the control run and the
+    // simulated run share their history while districts learn), then goes home.
     w.visits = vec![
-        Visit { from: Tick(0), at: vec![ORE_COAST] },
-        Visit { from: day(0.75), at: vec![SMELTER, POWER] },
+        Visit { from: Tick(0), at: vec![ORE_COAST, SMELTER, HOME, POWER] },
         Visit { from: day(1.5), at: vec![HOME] },
         Visit { from: day(8.0), at: vec![SMELTER, POWER] },
         Visit { from: day(8.5), at: vec![ORE_COAST] },

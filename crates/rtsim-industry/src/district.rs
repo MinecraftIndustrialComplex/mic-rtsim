@@ -392,6 +392,7 @@ impl District {
             body: ProcSpecBody::Box(model.rates.iter().map(|&(g, f)| (PoolKey::Stock(d, g), f)).collect()),
             targets,
             requires: self.power_source.map(|s| (s, 0)),
+            latency: model.learned.latency_ticks,
         }];
         let mut next_id = 1u16;
         for &(k, flow) in &model.links {
@@ -412,6 +413,7 @@ impl District {
                         body: ProcSpecBody::Link { from, to, flow: unit, batch: None },
                         targets: vec![],
                         requires: None,
+                        latency: 0,
                     });
                     next_id += 1;
                 }
@@ -434,6 +436,7 @@ impl District {
                         },
                         targets: vec![],
                         requires: None,
+                        latency: 0,
                     });
                     next_id += 1;
                 }

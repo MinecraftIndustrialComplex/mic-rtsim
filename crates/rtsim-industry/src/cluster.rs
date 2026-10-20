@@ -167,6 +167,14 @@ pub struct Proc {
     pub requires: Option<(DistrictId, u16)>,
     pub enabled: bool,
     pub run: Run,
+    /// A batch machine starts only at its next cycle after its input arrives: a restart after a
+    /// stop waits this long (learned, F23). 0 restarts at once.
+    pub latency: u64,
+    /// When a restart that passed its check may happen (the latency running).
+    #[serde(serialize_with = "crate::ser::opt_tick")]
+    pub armed: Option<Tick>,
+    /// Has run at least once in this cluster.
+    pub ran: bool,
 }
 
 /// A district's shared item space: `fixed + Σ weight × level ≤ cap`, in slot units.
@@ -227,6 +235,8 @@ pub struct ProcSpec {
     /// (pool, stop at, restart at).
     pub targets: Vec<(PoolKey, i64, i64)>,
     pub requires: Option<(DistrictId, u16)>,
+    /// Restart latency in ticks ([`Proc::latency`]).
+    pub latency: u64,
 }
 
 /// Everything a district brings into a cluster.
@@ -639,6 +649,9 @@ impl Cluster {
                 requires: ps.requires,
                 enabled: true,
                 run: Run::Stopped(Stop::Waiting),
+                latency: ps.latency,
+                armed: None,
+                ran: false,
             };
             let pos = self
                 .procs
@@ -975,6 +988,10 @@ impl Cluster {
             return;
         }
         p.run = run;
+        p.armed = None;
+        if run == Run::Running {
+            p.ran = true;
+        }
         self.events.push(match run {
             Run::Running => ClusterEvent::Started {
                 at,
@@ -1026,24 +1043,67 @@ impl Cluster {
         // Restarts, one at a time in priority order.
         loop {
             let mut started = false;
+            // A process that never ran says what holds it back (it keeps its first-start right).
+            for i in 0..self.procs.len() {
+                if self.procs[i].run == Run::Stopped(Stop::Waiting)
+                    && !self.procs[i].ran
+                    && let Some(why) = self.blocking(i, &cons)
+                {
+                    self.procs[i].run = Run::Stopped(why);
+                }
+            }
             for i in 0..self.procs.len() {
                 let p = &self.procs[i];
                 if !p.enabled || p.run == Run::Running {
                     continue;
                 }
                 if !self.requirement_met(i, &|j| self.is_running(j)) {
+                    self.procs[i].armed = None;
                     continue;
                 }
-                if self.can_restart(i, &cons) {
+                if !self.can_restart(i, &cons) {
+                    self.procs[i].armed = None;
+                    continue;
+                }
+                // A first start (the district was running when it unloaded) is immediate; a
+                // restart after a stop waits for the machine's next cycle.
+                let first = !p.ran || p.latency == 0;
+                let go = first || self.procs[i].armed.is_some_and(|t| at >= t);
+                if go {
                     self.set_run(i, Run::Running, at);
                     started = true;
                     break;
+                }
+                if self.procs[i].armed.is_none() {
+                    self.procs[i].armed = Some(at + self.procs[i].latency);
                 }
             }
             if !started {
                 break;
             }
         }
+    }
+
+    /// The first constraint that keeps stopped process `i` from starting, as a reason.
+    fn blocking(&self, i: usize, cons: &[Con]) -> Option<Stop> {
+        let h = self.restart_min_run.max(1);
+        if !self.requirement_met(i, &|j| self.is_running(j)) {
+            return self.procs[i].requires.map(|r| Stop::SourceStopped(r.0));
+        }
+        let mut ts = Vec::new();
+        let with = |j: usize| j == i || self.is_running(j);
+        for &c in cons {
+            if !self.blamed(c, i) {
+                continue;
+            }
+            let (v0, bound) = self.con_terms(c, &with, &mut ts);
+            if let Some(n) = safe_run(v0, bound, &ts)
+                && n < h
+            {
+                return Some(self.stop_reason(c));
+            }
+        }
+        None
     }
 
     /// Could process `i` start now and run at least `restart_min_run_ticks`?
@@ -1144,9 +1204,14 @@ impl Cluster {
             }
         }
         for (i, p) in self.procs.iter().enumerate() {
-            if p.enabled && p.run != Run::Running && self.requirement_met(i, &running) {
+            if let Some(t) = p.armed
+                && p.run != Run::Running
+            {
+                keep(t.since(anchor).max(1));
+            }
+            if p.enabled && p.run != Run::Running && p.armed.is_none() && self.requirement_met(i, &running) {
                 if let Some(n) = self.restart_time(i, &cons) {
-                    keep(n);
+                    keep(n.saturating_add(p.latency));
                 }
             }
             if p.run == Run::Running && matches!(p.body, Body::Link { batch: Some(_), .. }) {
@@ -1410,6 +1475,7 @@ mod tests {
                 body: ProcSpecBody::Box(vec![(o, Diffuser::per(-3, 100)), (i, Diffuser::per(3, 100))]),
                 targets: vec![],
                 requires: None,
+                latency: 0,
             }],
             space: None,
         }
@@ -1467,6 +1533,7 @@ mod tests {
                     body: ProcSpecBody::Box(vec![(a, Diffuser::per(-1, 10)), (b, Diffuser::per(1, 10))]),
                     targets: vec![],
                     requires: Some((d(1), 0)),
+                    latency: 0,
                 }],
                 space: None,
             },

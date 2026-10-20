@@ -62,6 +62,9 @@ pub struct Learned {
     pub confidence: f64,
     pub points: usize,
     pub longest_gap: u64,
+    /// The longest gap between increases of any produced good while it ran: a batch machine's
+    /// cycle, at the sampler's resolution. Restarts after a stop wait this long (F23).
+    pub latency_ticks: u64,
 }
 
 impl Learned {
@@ -111,6 +114,8 @@ struct Window {
     /// Per good: when its stock last changed, and whether it has changed in this window.
     last_change: Vec<(Good, u64, bool)>,
     longest_gap: u64,
+    /// Whole multiples of the longest window this one has run without a steady result.
+    failed_marks: u64,
 }
 
 /// The stop tracker for targets.
@@ -296,10 +301,31 @@ impl Window {
         (x, y)
     }
 
-    fn evaluate(&self, tun: &LearnTunables) -> Option<(Vec<(Good, f64)>, Vec<(LinkKey, f64)>, f64)> {
+    /// The steady test on the trailing window `[from, end]`: an early transient (a line waiting for
+    /// its first train) leaves the window instead of failing every test after it.
+    /// The longest gap between increases of N for good column `col` within `[from, end]`.
+    fn rise_gap(&self, col: usize, from: u64) -> u64 {
+        let mut last: Option<(u64, i64)> = None;
+        let mut gap = 0;
+        for p in self.points.iter().filter(|p| p.t >= from) {
+            let n = p.n.get(col).copied().unwrap_or(0);
+            match last {
+                Some((t0, n0)) if n > n0 => {
+                    gap = gap.max(p.t - t0);
+                    last = Some((p.t, n));
+                }
+                None => last = Some((p.t, n)),
+                _ => {}
+            }
+        }
+        gap
+    }
+
+    fn evaluate(&self, from: u64, tun: &LearnTunables) -> Option<(Vec<(Good, f64)>, Vec<(LinkKey, f64)>, f64)> {
         let end = self.points.last()?.t;
-        let mid = self.start + (end - self.start) / 2;
-        let first = self.points.iter().filter(|p| p.t < mid).count();
+        let from = from.max(self.start);
+        let mid = from + (end - from) / 2;
+        let first = self.points.iter().filter(|p| p.t >= from && p.t < mid).count();
         let second = self.points.iter().filter(|p| p.t >= mid).count();
         if first < tun.min_points_per_half || second < tun.min_points_per_half {
             return None;
@@ -307,12 +333,12 @@ impl Window {
         let floor = tun.rate_floor_per_day / TICKS_PER_DAY as f64;
         let mut worst = 0.0f64;
         let mut check = |col: usize, link: bool| -> Option<f64> {
-            let (x, y) = self.series(col, link, self.start, end);
+            let (x, y) = self.series(col, link, from, end);
             let r = slope(&x, &y);
             if r.abs() < floor {
                 return Some(0.0);
             }
-            let (x1, y1) = self.series(col, link, self.start, mid.saturating_sub(1));
+            let (x1, y1) = self.series(col, link, from, mid.saturating_sub(1));
             let (x2, y2) = self.series(col, link, mid, end);
             let (r1, r2) = (slope(&x1, &y1), slope(&x2, &y2));
             let big = r1.abs().max(r2.abs());
@@ -408,30 +434,48 @@ impl Learner {
         if span < need {
             return None;
         }
-        let result = w.evaluate(tun);
+        let result = w.evaluate(t - need, tun);
+        let latency = result.as_ref().map_or(0, |(rates, _, _)| {
+            rates
+                .iter()
+                .filter(|r| r.1 > 0.0)
+                .filter_map(|r| w.goods.binary_search(&r.0).ok())
+                .map(|col| w.rise_gap(col, t - need))
+                .max()
+                .unwrap_or(0)
+        });
+        // Points older than the longest window are never used again.
+        let horizon = t.saturating_sub(tun.window_max_ticks);
+        if w.points.first().is_some_and(|p| p.t < horizon) {
+            w.points.retain(|p| p.t >= horizon);
+        }
         match result {
             Some((rates, links, confidence)) if confidence >= tun.min_confidence => {
                 let learned = Learned {
                     at: s.at,
-                    window_ticks: span,
+                    window_ticks: need,
                     rates,
                     links,
                     confidence,
                     points: w.points.len(),
                     longest_gap: w.effective_gap(t),
+                    latency_ticks: latency,
                 };
                 self.windows_steady += 1;
                 self.last_end = Some(WindowEnd::Steady);
                 self.window = Some(Window::open(t, s.stock, s.ports, s.links));
                 Some(learned)
             }
-            _ if span >= tun.window_max_ticks => {
-                self.windows_failed += 1;
-                self.last_end = Some(WindowEnd::NotSteady);
-                self.window = Some(Window::open(t, s.stock, s.ports, s.links));
+            // Not steady yet: the trailing window slides on. Count a failure once per window length.
+            _ => {
+                let marks = span / tun.window_max_ticks.max(1);
+                if marks > w.failed_marks {
+                    w.failed_marks = marks;
+                    self.windows_failed += 1;
+                    self.last_end = Some(WindowEnd::NotSteady);
+                }
                 None
             }
-            _ => None,
         }
     }
 
@@ -644,6 +688,7 @@ mod tests {
             confidence: 1.0,
             points: 0,
             longest_gap: 0,
+            latency_ticks: 0,
         };
         let mut l = Learner::new();
         let ports = GoodVec::new();

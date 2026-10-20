@@ -100,6 +100,9 @@ pub struct FDistrict {
     pub broken: BTreeSet<BlockPos>,
     #[serde(skip)]
     pub revision: u32,
+    /// Loaded at least once: only a reload can tick on stale stock.
+    #[serde(skip)]
+    pub ever_loaded: bool,
 }
 
 impl FDistrict {
@@ -188,6 +191,10 @@ pub struct FakeWorld {
     pub sweep_period: u64,
     /// When a district loads, its machines tick once before the reconcile lands.
     pub machines_tick_first: bool,
+    /// An ideal Java side: reconciles land on the load tick itself, before any machine runs. The
+    /// real protocol is at least one tick late (docs/boundary.md §1.2); this removes the race to
+    /// measure the replay alone.
+    pub apply_on_load: bool,
     pub threats: Option<Box<dyn ThreatFeed>>,
     pub books: WorldBooks,
     pub log: Vec<Event>,
@@ -220,6 +227,7 @@ impl FakeWorld {
             control: false,
             sweep_period: 100,
             machines_tick_first: true,
+            apply_on_load: false,
             threats: None,
             books: WorldBooks::default(),
             log: Vec::new(),
@@ -377,10 +385,18 @@ impl FakeWorld {
             self.apply(c);
         }
         // Loads and unloads.
+        let mut loaded_now = false;
         for di in 0..self.districts.len() {
             let want = self.should_load(di);
             if want != self.districts[di].loaded {
                 self.set_loaded(di, want);
+                loaded_now |= want;
+            }
+        }
+        if loaded_now && self.apply_on_load {
+            let cmds = self.engine.drain_commands();
+            for c in cmds {
+                self.apply(c);
             }
         }
         // Held reconciles for chunks that are loaded now.
@@ -497,8 +513,10 @@ impl FakeWorld {
                     applied_epoch: e,
                 });
             }
-            // A machine that ticks before the reconcile lands takes its inputs first.
-            if self.machines_tick_first {
+            // A machine that ticks before the reconcile lands takes its inputs first. Only a
+            // reload has a reconcile to race.
+            let reload = std::mem::replace(&mut self.districts[di].ever_loaded, true);
+            if self.machines_tick_first && reload {
                 for ri in 0..self.districts[di].recipes.len() {
                     self.batch(di, ri, true);
                 }

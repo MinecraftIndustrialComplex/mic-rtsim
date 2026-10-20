@@ -528,6 +528,17 @@ impl Engine {
         self.districts.entry(d).or_insert_with(|| District::new(d))
     }
 
+    /// Adopts a model as if a steady window had produced it (tests and the bench; the real path is
+    /// [`Engine::ingest`] with live sweeps). Scaffolding.
+    pub fn adopt_model(&mut self, d: DistrictId, learned: crate::learn::Learned, targets: Vec<crate::learn::LearnedTarget>) {
+        let season = self.season_at(self.now);
+        let dist = self.district_mut(d);
+        let batches = dist.batches.clone();
+        dist.models.insert(season, Model::from_learned(learned, targets, season, batches));
+        dist.phase = Phase::Learned;
+        self.stats.models_adopted += 1;
+    }
+
     // ---- seasons --------------------------------------------------------------------------
 
     /// The season at `t` (I12), 0 without a season mod.
@@ -1360,9 +1371,6 @@ impl Engine {
             self.arrivals.insert((c.train, c.station), c.carriages.clone());
             return;
         }
-        if self.mode != Mode::Apply {
-            return;
-        }
         let Some(dist) = self.districts.get(&c.district) else {
             return;
         };
@@ -1430,6 +1438,10 @@ impl Engine {
             return;
         }
         self.stats.exchanges += 1;
+        if self.mode == Mode::ReadOnly {
+            // I-A: the exchange is the ledger's estimate only; the train keeps its cargo.
+            return;
+        }
         let mut moved = GoodVec::new();
         for &(_, g, n) in &entries {
             moved.add(g, -n);

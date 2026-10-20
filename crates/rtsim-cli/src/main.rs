@@ -3,6 +3,7 @@
 //! `replay` and `inspect` come with the modules they drive.
 
 mod bench;
+mod sim;
 mod sys;
 
 use std::path::PathBuf;
@@ -19,7 +20,13 @@ usage:
       --repeats runs each point N times and keeps the median (default 3, quick 1).
       --only picks sweeps by name: latent, regions, events, elapsed, age.
   rtsim-cli bench scale-one --spec JSON
-      Runs one configuration and prints its measurements as JSON (used by bench scale).";
+      Runs one configuration and prints its measurements as JSON (used by bench scale).
+  rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]
+      The industry engine's cost sweeps: district count, breakpoints, elapsed time.
+  rtsim-cli sim industry [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      The iron line (rtsim-industry's synthetic scenario) for N days (at least 10): learning,
+      replay, reconciles, threats, and simulated against control. Writes JSON to FILE
+      (default bench/results/sim-industry.json). Exits 1 if a check fails.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -67,6 +74,35 @@ fn main() -> ExitCode {
             let m = bench::scale::run_one(&spec);
             println!("{}", serde_json::to_string(&m).expect("serialize"));
             ExitCode::SUCCESS
+        }
+        ["sim", "industry", rest @ ..] => {
+            let mut opts = sim::industry::Options {
+                days: 10,
+                seed: 7,
+                out: Some(PathBuf::from("bench/results/sim-industry.json")),
+                quiet: false,
+            };
+            let mut it = rest.iter();
+            while let Some(&a) = it.next() {
+                match a {
+                    "--days" => match it.next().and_then(|n| n.parse().ok()) {
+                        Some(n) => opts.days = n,
+                        None => return usage("--days needs a number"),
+                    },
+                    "--seed" => match it.next().and_then(|n| n.parse().ok()) {
+                        Some(n) => opts.seed = n,
+                        None => return usage("--seed needs a number"),
+                    },
+                    "--out" => match it.next() {
+                        Some(f) => opts.out = Some(PathBuf::from(f)),
+                        None => return usage("--out needs a file"),
+                    },
+                    "--no-write" => opts.out = None,
+                    "--quiet" => opts.quiet = true,
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            ExitCode::from(sim::industry::main(opts) as u8)
         }
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
