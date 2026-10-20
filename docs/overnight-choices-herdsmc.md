@@ -75,8 +75,24 @@ hold; these are the ones the adapter adds.
 
 ## Results
 
-See the reply that merged this branch for the final counts; the GameTests' `[gametest]` lines are in
-`neoforge/core/build/gametest.log`.
+- **Rust**: `cargo test --workspace` 401 passed, 0 failed (3 ignored); `cargo clippy --workspace
+  --all-targets -- -D warnings` and `cargo fmt --all --check` clean. rtsim-jni 21 + 14 + 19, the
+  protocol test's two new ones: `herds_materialize_are_hunted_shorn_led_blocked_and_replay_across_a_crash`
+  (200 sheep founded; a group of 32 in view, the group cap; a kill, a shearing and a lead each booked
+  once, the herd's count down by two; an obstacle and its replan; the player gone, the group captured;
+  back after a save: 30 of the same sheep first, the sheared one still sheared, no dead or taken one;
+  a kill after the save and a crash: the pages read back to their state hash, the replay books the
+  kill once) and `switched_off_herds_ignore_their_records_and_keep_their_page`.
+- **GameTests, native engine** (fresh worlds, `run-gametest` moved aside first): core 44 of 44 (with
+  `:core:test`; the seven herd tests among them), carryon 2 of 2 (one new: a Carry On pickup of a herd
+  sheep), iceandfire 7 of 7. The native herd test: 12 sheep founded 3,000 km out, the engine's group of
+  12 with its colours, a kill booked (the engine's count 12 to 11), the player gone and back: the same
+  11 sheep in epoch 2.
+- **GameTests, stub engine** (fresh worlds): core 44 of 44 (the native herd test skipped by design),
+  carryon 2 of 2, iceandfire 7 of 7.
+- **Found by the GameTests**: the framework roofs a test without sky access with barriers, which the
+  surface rule (motion-blocking, non-leaf) stands animals on; the scripted herd tests have sky access.
+  The same rule stands a member on a player's roof in a real world (the core's caravans share it).
 
 ## Not done
 

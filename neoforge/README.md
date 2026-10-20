@@ -153,6 +153,7 @@ The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
 | `atouringbandplaysarounditsownmaster` | walkthrough G: four musicians play around their own master next to a village band that is already playing |
 | `ribbitmerchantstradeandrestockthroughthetreasury` | C23: a ribbit merchant repriced from its village market; a disliked player brings twice the slime for a shard; a restock keeps the treasury's uses |
 | `acarryonpickuptakesthecreatureoutofthesim` | Carry On's `EntityPickupEvent`: TAKEN(PICKUP) with the cargo; `Entity.save` works on the llama afterwards |
+| `acarryonpickuptakesaherdanimaloutofthesim` | the same event on a herd sheep: HERD_TAKEN(PICKUP) with the player and a Java op id, through the same hook (choice Y8); the rest of the group stays |
 
 The Ice and Fire GameTests (`mic_rtsim_iceandfire` namespace; Ice and Fire CE 2.1-beta.1's own jar and the
 pack's `iaf-common.json`; either engine: the tests script the dragons' commands, on the native engine as
