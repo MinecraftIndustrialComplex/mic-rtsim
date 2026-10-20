@@ -14,7 +14,7 @@ use crate::legs::REGION_BLOCKS;
 #[derive(Clone, Debug, Default)]
 pub struct RoadIndex {
     /// (frame, region x, region z) to the edges crossing it, sorted.
-    cells: BTreeMap<(u16, i64, i64), Vec<u32>>,
+    pub(crate) cells: BTreeMap<(u16, i64, i64), Vec<u32>>,
 }
 
 impl RoadIndex {

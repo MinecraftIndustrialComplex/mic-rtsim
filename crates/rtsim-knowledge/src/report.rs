@@ -215,7 +215,7 @@ pub struct ReportEntry {
     /// Holders that know this report, sorted. The authority for "already heard" (so a noticeboard
     /// that evicted an entry never relearns it as new), and how expiry finds whose counters to
     /// bump and whose boards to clean.
-    knowers: Vec<ActorId>,
+    pub(crate) knowers: Vec<ActorId>,
 }
 
 impl ReportEntry {
@@ -228,7 +228,7 @@ pub type ReportId = Handle<ReportEntry>;
 
 /// Importance order, least important first: not player-involved before player-involved, then
 /// older before newer, then milder before more severe, then by handle for a total order.
-type Importance = (bool, u64, u8, u64);
+pub(crate) type Importance = (bool, u64, u8, u64);
 
 fn importance(id: ReportId, row: &ReportRow) -> Importance {
     (
@@ -241,10 +241,10 @@ fn importance(id: ReportId, row: &ReportRow) -> Importance {
 
 /// The global report table.
 pub struct ReportTable {
-    arena: Arena<ReportEntry>,
-    order: BTreeSet<Importance>,
-    expiry: TimingWheel<ReportId>,
-    cap: u32,
+    pub(crate) arena: Arena<ReportEntry>,
+    pub(crate) order: BTreeSet<Importance>,
+    pub(crate) expiry: TimingWheel<ReportId>,
+    pub(crate) cap: u32,
 }
 
 /// What [`ReportTable::insert`] did.

@@ -21,6 +21,7 @@
 use std::collections::VecDeque;
 
 use crate::clock::Tick;
+use crate::codec::{self, CodecError, Reader, Writer};
 
 const LEVEL_BITS: u32 = 6;
 const SLOTS: usize = 1 << LEVEL_BITS;
@@ -200,6 +201,15 @@ impl<T> TimingWheel<T> {
         }
     }
 
+    /// Every pending entry with the time it is due, in no particular order. For saving: a caller
+    /// that needs a canonical order sorts what this returns.
+    pub fn iter(&self) -> impl Iterator<Item = (Tick, &T)> {
+        self.ready
+            .iter()
+            .chain(self.slots.iter().flatten())
+            .map(|e| (Tick(e.at), &e.item))
+    }
+
     /// Bytes held on the heap, for the memory budget.
     pub fn heap_bytes(&self) -> usize {
         let entry = std::mem::size_of::<Entry<T>>();
@@ -214,6 +224,49 @@ impl<T> TimingWheel<T> {
                 .sum::<usize>()
             + self.slots.capacity() * std::mem::size_of::<Vec<Entry<T>>>()
             + self.ready.capacity() * entry
+    }
+
+    /// Every pending entry in the order it will pop: by time, then schedule order. Entries due at
+    /// one tick all sit in one container (`ready` or one slot) in schedule order, so a stable
+    /// sort of [`TimingWheel::iter`] by time is the pop order.
+    pub fn in_pop_order(&self) -> Vec<(Tick, &T)> {
+        let mut v: Vec<(Tick, &T)> = self.iter().collect();
+        v.sort_by_key(|e| e.0);
+        v
+    }
+
+    /// Writes `now` and the pending entries in pop order; [`TimingWheel::decode_with`] schedules
+    /// them again in that order, so a restored wheel pops exactly as this one would.
+    pub fn encode_with(&self, w: &mut Writer, mut f: impl FnMut(&T, &mut Writer)) {
+        w.u64(self.now);
+        let v = self.in_pop_order();
+        w.var_u64(v.len() as u64);
+        for (at, item) in v {
+            w.var_u64(at.0 - self.now);
+            f(item, w);
+        }
+    }
+
+    pub fn decode_with(
+        r: &mut Reader<'_>,
+        mut f: impl FnMut(&mut Reader<'_>) -> codec::Result<T>,
+    ) -> codec::Result<Self> {
+        let now = r.u64()?;
+        let mut wheel = TimingWheel::new(Tick(now));
+        let n = r.len_prefix(1)?;
+        let mut last = now;
+        for _ in 0..n {
+            let at = now
+                .checked_add(r.var_u64()?)
+                .ok_or_else(|| CodecError::Invalid("wheel entry past the end of time".into()))?;
+            if at < last {
+                return Err(CodecError::Invalid("wheel entries out of order".into()));
+            }
+            last = at;
+            let item = f(r)?;
+            wheel.schedule(Tick(at), item);
+        }
+        Ok(wheel)
     }
 }
 
@@ -349,6 +402,49 @@ mod tests {
                 }
                 prop_assert_eq!(w.len(), model.len());
                 prop_assert_eq!(w.next_due(), model.first_key_value().map(|(&(t, _), _)| Tick(t)));
+            }
+        }
+
+        /// A wheel saved at any point and read back pops exactly what the original pops, equal
+        /// times in schedule order included.
+        #[test]
+        fn a_saved_wheel_pops_as_the_original(ops in prop::collection::vec(op(), 1..200), cut in 0usize..200, start in 0u64..1_000_000) {
+            let mut a = TimingWheel::new(Tick(start));
+            let mut now = start;
+            let mut seq = 0u64;
+            let mut b: Option<TimingWheel<u64>> = None;
+            for (i, op) in ops.iter().enumerate() {
+                if i == cut {
+                    let mut w = Writer::new();
+                    a.encode_with(&mut w, |v, w| w.u64(*v));
+                    let bytes = w.into_bytes();
+                    let mut r = Reader::new(&bytes);
+                    b = Some(TimingWheel::decode_with(&mut r, |r| r.u64()).unwrap());
+                    r.finish().unwrap();
+                }
+                for w in std::iter::once(&mut a).chain(b.as_mut()) {
+                    match op {
+                        Op::Schedule(d) => w.schedule(Tick(now + d), seq),
+                        Op::Drain(_) => {}
+                    }
+                }
+                match op {
+                    Op::Schedule(_) => seq += 1,
+                    Op::Drain(d) => {
+                        let limit = now + d;
+                        let pa: Vec<_> = std::iter::from_fn(|| a.pop_until(Tick(limit))).collect();
+                        if let Some(b) = b.as_mut() {
+                            let pb: Vec<_> = std::iter::from_fn(|| b.pop_until(Tick(limit))).collect();
+                            prop_assert_eq!(pa, pb);
+                        }
+                        now = limit;
+                    }
+                }
+            }
+            if let Some(mut b) = b {
+                let pa: Vec<_> = std::iter::from_fn(|| a.pop_until(Tick(u64::MAX))).collect();
+                let pb: Vec<_> = std::iter::from_fn(|| b.pop_until(Tick(u64::MAX))).collect();
+                prop_assert_eq!(pa, pb);
             }
         }
     }

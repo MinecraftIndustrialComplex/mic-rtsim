@@ -36,6 +36,7 @@ pub mod board;
 pub mod gossip;
 pub mod knowledge;
 pub mod notable;
+mod persist;
 pub mod report;
 pub mod sentiment;
 pub mod temperament;

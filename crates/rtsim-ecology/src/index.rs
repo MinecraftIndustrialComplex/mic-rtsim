@@ -13,10 +13,10 @@ pub const CELL: i64 = 1_024;
 
 #[derive(Clone, Debug, Default)]
 pub struct PreyIndex {
-    villages: BTreeMap<(u16, i64, i64), Vec<u32>>,
-    roads: BTreeMap<(u16, i64, i64), Vec<u32>>,
-    nodes: usize,
-    edges: usize,
+    pub(crate) villages: BTreeMap<(u16, i64, i64), Vec<u32>>,
+    pub(crate) roads: BTreeMap<(u16, i64, i64), Vec<u32>>,
+    pub(crate) nodes: usize,
+    pub(crate) edges: usize,
 }
 
 fn cell(x: i64) -> i64 {

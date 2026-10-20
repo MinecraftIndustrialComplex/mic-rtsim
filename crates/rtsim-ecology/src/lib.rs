@@ -30,6 +30,7 @@ pub mod flight;
 pub mod homes;
 pub mod index;
 pub mod infra;
+mod persist;
 pub mod prey;
 pub mod species;
 pub mod synth;

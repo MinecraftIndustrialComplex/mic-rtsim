@@ -27,6 +27,7 @@ pub mod flows;
 pub mod interest;
 pub mod memory;
 pub mod observe;
+pub mod persist;
 pub mod prey;
 pub mod ribbits;
 pub mod synth;

@@ -50,8 +50,8 @@ pub type ActorId = Handle<Actor>;
 /// ids (a player's UUID, a settlement's key) map to the same handle every time.
 #[derive(Default)]
 pub struct Actors {
-    arena: Arena<Actor>,
-    index: BTreeMap<(ActorKind, u64), ActorId>,
+    pub(crate) arena: Arena<Actor>,
+    pub(crate) index: BTreeMap<(ActorKind, u64), ActorId>,
 }
 
 impl Actors {

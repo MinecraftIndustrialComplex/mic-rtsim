@@ -19,8 +19,12 @@
 //! - **Commands** ([`write_resends`], [`write_queue`]): MARKET, MERCHANT_OFFERS, WRITE_GOSSIP,
 //!   SENTIMENT, PLACE_HOUSE, SPAWN_RESIDENT and the puppet commands. Those the bridge answers by op
 //!   id are kept until it does and resent after a restart, in sequence order with the core's.
-//! - **Pages** ([`Link::load`], [`snapshot`]): table 0x5000 (choice V7): a meta page, then the input log
-//!   in chunks of 1,024 inputs; a save writes the meta page and the chunks that changed.
+//! - **Pages** ([`Link::load`], [`snapshot`]; choices S1 to S6 in
+//!   docs/overnight-choices-persist.md): a snapshot of the world (table 0x5001, in pieces) and the
+//!   inputs since it (table 0x5000, in chunks of 1,024 after the meta page). A start reads the
+//!   snapshot and replays only that short tail; a save writes the meta page and the tail's
+//!   chunks that changed, and a new snapshot when the tail is long or old ([`wants_snapshot`]).
+//!   Pages this build cannot read follow [`when_pages_unreadable`].
 //!
 //! A test's scripted village ([`directive`], `ScriptVillage`) is left alone entirely: its
 //! observations are not applied and no command of the engine's own names it.
@@ -31,7 +35,7 @@ mod log;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Reader, Writer};
@@ -55,16 +59,43 @@ pub(super) use cmds::P1Cmd;
 use log::{Input, Logged, Uuid};
 
 /// The phase 1 pages: table 0x5000 ('P'; table 1 is the core's and the industry link's key, the
-/// industry engine's are 0x4900 to 0x4902).
+/// industry engine's are 0x4900 to 0x4902) holds the meta page and the tail's chunks; table
+/// 0x5001 the world's snapshot, in pieces.
 pub const TABLE: u16 = 0x5000;
+pub const SNAPSHOT_TABLE: u16 = 0x5001;
 pub const KEY_META: PageKey = PageKey::new(TABLE, 0);
 /// Inputs per log page.
 pub const CHUNK: usize = 1024;
+/// Snapshot bytes per page. PLACEHOLDER (S2): a large world's snapshot is several MiB.
+pub const PIECE: usize = 1 << 20;
+/// A save takes a new snapshot once the tail holds this many inputs (S3, PLACEHOLDER: one chunk).
+pub const TAIL_MAX_INPUTS: usize = CHUNK;
+/// ... or once the snapshot is this many world ticks old (S3, PLACEHOLDER: one world day): a
+/// start replays the world's time since its snapshot, inputs or not.
+pub const TAIL_MAX_TICKS: u64 = 24_000;
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
-const META_VERSION: u16 = 1;
+/// Version 2: a snapshot and a tail (S1). Before release a version this build does not read is
+/// dropped (S5, [`when_pages_unreadable`]); there is no migration.
+const META_VERSION: u16 = 2;
+const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
 
 fn chunk_key(k: usize) -> PageKey {
     PageKey::new(TABLE, 1 + k as u64)
+}
+
+fn piece_key(k: usize) -> PageKey {
+    PageKey::new(SNAPSHOT_TABLE, k as u64)
+}
+
+/// The phase 1 world's configuration, goods and recipes: what [`fresh_world`] builds with and a
+/// snapshot is read back with.
+fn world_parts() -> (
+    WorldConfig,
+    rtsim_trade::Goods,
+    rtsim_trade::labour::RecipeBook,
+) {
+    let c = catalog::Catalog::new();
+    (WorldConfig::new(WORLD_SEED), c.goods, c.book)
 }
 
 /// Java's module bits (`config/Module.java` ordinals) phase 1 runs under: knowledge,
@@ -186,10 +217,23 @@ pub(super) struct Link {
     cells: BTreeMap<(u16, i64, i64), Vec<u64>>,
     /// Villages a test scripts (saved: their adoption may replay in a later session).
     scripted: BTreeSet<u64>,
+    /// The inputs since the snapshot (the tail; S1).
     log: Vec<Logged>,
-    /// Log chunks below this are in pages on disk and never change. Only a commit that succeeded
-    /// moves it ([`Saved::done`]): a save whose pages never reached the disk must not count.
-    clean_chunks: Arc<AtomicUsize>,
+    /// What is on disk: the snapshot generation and how many full tail chunks of it, packed as
+    /// `gen << 32 | chunks`. Only a commit that succeeded moves it ([`Saved::done`]): a save whose
+    /// pages never reached the disk must not count.
+    durable: Arc<AtomicU64>,
+    /// The generation of the snapshot `log` follows: 0 is the fresh world, which needs no pages.
+    snap_gen: u32,
+    /// The snapshot's pieces and bytes (0 for the fresh world), and its world tick.
+    snap_pieces: usize,
+    snap_len: usize,
+    snap_at: u64,
+    /// Inputs before the snapshot, for the INPUTS counter.
+    base_inputs: u64,
+    /// The world changed outside the input log since the snapshot (the dragons, which share it):
+    /// the tail alone no longer rebuilds it, so the next save takes a snapshot (S4).
+    tainted: bool,
     /// World ticks ahead of game time (a test's P1_ADVANCE).
     offset: u64,
     /// Commands the bridge answers by op id, kept until it does: (sequence, op, command).
@@ -218,13 +262,35 @@ pub(super) struct Link {
     /// The last load replayed the log to a state other than the one saved (`state_hash`): the
     /// world is still the replayed one, but the build changed what the inputs mean.
     pub(super) replay_diverged: Option<(u64, u64)>,
+    /// The last load dropped pages it could not read ([`when_pages_unreadable`]).
+    pub(super) dropped_pages: bool,
+    /// The world came back from pages (rather than starting fresh).
+    restored: bool,
 }
 
 fn fresh_world() -> (World, catalog::Catalog) {
     let cat = catalog::Catalog::new();
-    let c2 = catalog::Catalog::new();
-    let world = World::build(WorldConfig::new(WORLD_SEED), c2.goods, c2.book, Vec::new());
+    let (cfg, goods, book) = world_parts();
+    let world = World::build(cfg, goods, book, Vec::new());
     (world, cat)
+}
+
+/// **The policy for phase 1 pages this build cannot read** (S5; open on Ben's sheet, its
+/// recommendation taken): drop them and start a fresh phase 1 world, with a loud log, as the
+/// industry link does with its own (W23). The core's pages and the rest of the engine start as
+/// usual; the next save replaces the dropped pages. Before release there is no migration (Ben's
+/// rule), so a page another build wrote is simply not this build's.
+///
+/// To make an unreadable page stop the whole engine instead (the behaviour before), return
+/// `Err(why)` here: `start` then fails with it.
+fn when_pages_unreadable(why: &str) -> Result<Link, String> {
+    super::log_error(&format!(
+        "PHASE 1 PAGES DROPPED: {why}. This build cannot read them (another build's format, or a damaged page); \
+         the phase 1 world starts afresh (villages join again as their chunks load) and the next save replaces them"
+    ));
+    let mut l = Link::empty();
+    l.dropped_pages = true;
+    Ok(l)
 }
 
 impl Link {
@@ -237,7 +303,13 @@ impl Link {
             cells: BTreeMap::new(),
             scripted: BTreeSet::new(),
             log: Vec::new(),
-            clean_chunks: Arc::new(AtomicUsize::new(0)),
+            durable: Arc::new(AtomicU64::new(0)),
+            snap_gen: 0,
+            snap_pieces: 0,
+            snap_len: 0,
+            snap_at: 0,
+            base_inputs: 0,
+            tainted: false,
             offset: 0,
             outbox: Vec::new(),
             resend: VecDeque::new(),
@@ -257,19 +329,67 @@ impl Link {
             stats: [0; STATS],
             capture_mismatches: 0,
             replay_diverged: None,
+            dropped_pages: false,
+            restored: false,
         }
     }
 
-    /// Loads the phase 1 pages and rebuilds the world by replaying its input log.
+    /// Loads the phase 1 pages: the world from its snapshot, then the tail of inputs since it
+    /// replayed. Pages this build cannot read go to [`when_pages_unreadable`].
     pub(super) fn load(store: &mut PageStore) -> Result<Link, String> {
+        match Link::read_pages(store) {
+            Ok(l) => Ok(l),
+            Err(why) => when_pages_unreadable(&why),
+        }
+    }
+
+    fn read_pages(store: &mut PageStore) -> Result<Link, String> {
         let mut link = Link::empty();
         let Some(meta) = store
             .get(KEY_META)
             .map_err(|e| format!("cannot read the phase 1 meta page: {e}"))?
         else {
+            if store
+                .keys()
+                .any(|k| k.table() == TABLE || k.table() == SNAPSHOT_TABLE)
+            {
+                return Err("phase 1 pages without their meta page".into());
+            }
             return Ok(link);
         };
         let m = decode_meta(&meta).map_err(|e| format!("the phase 1 meta page: {e}"))?;
+        link.restored = true;
+        let t0 = std::time::Instant::now();
+        if m.snap_pieces > 0 {
+            let mut blob = Vec::with_capacity(m.snap_len);
+            for k in 0..m.snap_pieces {
+                let b = store
+                    .get(piece_key(k))
+                    .map_err(|e| format!("cannot read phase 1 snapshot page {k}: {e}"))?
+                    .ok_or_else(|| format!("phase 1 snapshot page {k} is missing"))?;
+                blob.extend_from_slice(&b);
+            }
+            if blob.len() != m.snap_len {
+                return Err(format!(
+                    "the phase 1 snapshot holds {} bytes, its meta page says {}",
+                    blob.len(),
+                    m.snap_len
+                ));
+            }
+            let (world, nodes, censused) =
+                decode_snapshot(&blob).map_err(|e| format!("the phase 1 snapshot: {e}"))?;
+            if world.now().0 != m.snap_at {
+                return Err(format!(
+                    "the phase 1 snapshot is at world tick {}, its meta page says {}",
+                    world.now().0,
+                    m.snap_at
+                ));
+            }
+            link.world = world;
+            link.nodes = nodes;
+            link.censused = censused;
+        }
+        let t_snap = t0.elapsed();
         let chunks = m.log_len.div_ceil(CHUNK);
         let mut log = Vec::with_capacity(m.log_len);
         for k in 0..chunks {
@@ -289,7 +409,6 @@ impl Link {
                 m.log_len
             ));
         }
-        let t0 = std::time::Instant::now();
         for l in &log {
             log::apply(&mut link.world, &mut link.nodes, &l.input, l.at);
         }
@@ -306,24 +425,31 @@ impl Link {
             ));
         }
         log_info(&format!(
-            "phase 1 world rebuilt from {} inputs to world tick {} in {} ms: {} nodes, {} caravans, state {:016x}",
-            log.len(),
+            "phase 1 world restored to world tick {}: snapshot of {} bytes at tick {} read in {} ms, then {} inputs replayed, {} ms in all: {} nodes, {} caravans, state {:016x}",
             m.now,
+            m.snap_len,
+            m.snap_at,
+            t_snap.as_millis(),
+            log.len(),
             t0.elapsed().as_millis(),
             link.world.nodes.len(),
             link.world.caravans.len(),
             link.world.state_hash()
         ));
-        link.clean_chunks
-            .store(log.len() / CHUNK, Ordering::Release);
-        // Villages whose first census is in the log (choice V9: later ones only raise).
-        link.censused = log
-            .iter()
-            .filter_map(|l| match l.input {
+        link.snap_gen = 1;
+        link.snap_pieces = m.snap_pieces;
+        link.snap_len = m.snap_len;
+        link.snap_at = m.snap_at;
+        link.base_inputs = m.base_inputs;
+        link.durable
+            .store(pack(link.snap_gen, log.len() / CHUNK), Ordering::Release);
+        // Villages whose first census is in the tail (the snapshot carried the earlier ones;
+        // choice V9: later ones only raise).
+        link.censused
+            .extend(log.iter().filter_map(|l| match l.input {
                 Input::Population { key, .. } => Some(key),
                 _ => None,
-            })
-            .collect();
+            }));
         link.log = log;
         let keys: Vec<u64> = link.nodes.keys().copied().collect();
         for key in keys {
@@ -340,8 +466,21 @@ impl Link {
         // them again and threw them away, so they go out from here (their op ids are their
         // identity: one Java already applied is answered DUPLICATE).
         link.queue = m.queued.into();
-        link.stats[stat::INPUTS] = link.log.len() as u64;
+        link.stats[stat::INPUTS] = link.base_inputs + link.log.len() as u64;
+        link.stats[stat::VILLAGES] = link.nodes.len() as u64;
         Ok(link)
+    }
+
+    /// Whether the world came back from its pages: the dragons' page is only good with the world
+    /// it was saved with.
+    pub(super) fn world_restored(&self) -> bool {
+        self.restored && !self.dropped_pages
+    }
+
+    /// The world changed outside the input log (the dragons, which share it): the next save takes
+    /// a snapshot (S4).
+    pub(super) fn taint(&mut self) {
+        self.tainted = true;
     }
 
     /// After `start`: kept commands Java already applied (at or below its `lastAppliedCmdSeq`)
@@ -366,7 +505,7 @@ impl Link {
             self.index_node(*key);
         }
         self.log.push(Logged { at, input });
-        self.stats[stat::INPUTS] = self.log.len() as u64;
+        self.stats[stat::INPUTS] = self.base_inputs + self.log.len() as u64;
         out
     }
 
@@ -401,7 +540,7 @@ impl Link {
     }
 }
 
-// ---- the meta page -------------------------------------------------------------------------------
+// ---- the meta page and the snapshot ---------------------------------------------------------------
 
 struct Meta {
     now: u64,
@@ -409,12 +548,20 @@ struct Meta {
     offset: u64,
     next_epoch: u32,
     log_len: usize,
+    snap_pieces: usize,
+    snap_len: usize,
+    snap_at: u64,
+    base_inputs: u64,
     scripted: BTreeSet<u64>,
     outbox: Vec<(u64, u64, P1Cmd)>,
     agents: BTreeMap<u64, u64>,
     queued: Vec<P1Cmd>,
 }
 
+/// The meta page, written at every save: where the world is (tick and hash, for the replay
+/// check), where its snapshot and tail are, and the link's own state: scripted villages, the
+/// kept outbox, the caravan identity map (review 3, P2) and the kept commands still queued
+/// (review 3, P1).
 fn encode_meta(l: &Link) -> Vec<u8> {
     let mut w = Writer::with_capacity(256);
     w.u32(META_MAGIC);
@@ -424,6 +571,10 @@ fn encode_meta(l: &Link) -> Vec<u8> {
     w.u64(l.offset);
     w.u32(l.next_epoch);
     w.var_u64(l.log.len() as u64);
+    w.var_u64(l.snap_pieces as u64);
+    w.var_u64(l.snap_len as u64);
+    w.u64(l.snap_at);
+    w.u64(l.base_inputs);
     w.var_u64(l.scripted.len() as u64);
     l.scripted.iter().for_each(|v| w.u64(*v));
     w.var_u64(l.outbox.len() as u64);
@@ -432,7 +583,6 @@ fn encode_meta(l: &Link) -> Vec<u8> {
         w.u64(*op);
         cmds::encode_kept(&mut w, c);
     }
-    // Added by review 3 at the end, so a meta page written before reads as having none.
     w.var_u64(l.agents.len() as u64);
     for (a, bits) in &l.agents {
         w.u64(*a);
@@ -462,26 +612,33 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     let offset = r.u64()?;
     let next_epoch = r.u32()?;
     let log_len = r.var_u64()? as usize;
+    let snap_pieces = r.var_u64()? as usize;
+    let snap_len = r.var_u64()? as usize;
+    let snap_at = r.u64()?;
+    let base_inputs = r.u64()?;
+    if snap_len.div_ceil(PIECE) != snap_pieces {
+        return Err(CodecError::Invalid(format!(
+            "a snapshot of {snap_len} bytes in {snap_pieces} pages"
+        )));
+    }
     let mut scripted = BTreeSet::new();
-    for _ in 0..r.var_u64()? {
+    for _ in 0..r.len_prefix(8)? {
         scripted.insert(r.u64()?);
     }
     let mut outbox = Vec::new();
-    for _ in 0..r.var_u64()? {
+    for _ in 0..r.len_prefix(17)? {
         let seq = r.u64()?;
         let op = r.u64()?;
         outbox.push((seq, op, cmds::decode_kept(&mut r)?));
     }
     let mut agents = BTreeMap::new();
+    for _ in 0..r.len_prefix(16)? {
+        let a = r.u64()?;
+        agents.insert(a, r.u64()?);
+    }
     let mut queued = Vec::new();
-    if !r.is_empty() {
-        for _ in 0..r.var_u64()? {
-            let a = r.u64()?;
-            agents.insert(a, r.u64()?);
-        }
-        for _ in 0..r.var_u64()? {
-            queued.push(cmds::decode_kept(&mut r)?);
-        }
+    for _ in 0..r.len_prefix(1)? {
+        queued.push(cmds::decode_kept(&mut r)?);
     }
     r.finish()?;
     Ok(Meta {
@@ -490,6 +647,10 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
         offset,
         next_epoch,
         log_len,
+        snap_pieces,
+        snap_len,
+        snap_at,
+        base_inputs,
         scripted,
         outbox,
         agents,
@@ -497,40 +658,158 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     })
 }
 
-/// What a commit that wrote a phase 1 snapshot reports when it succeeded.
+/// The snapshot: the link's village index and censused villages as of the snapshot, then the
+/// world (`World::save`). Everything else of the link is in the meta page, written every save.
+fn encode_snapshot(l: &Link) -> Vec<u8> {
+    let world = l.world.save();
+    let mut w = Writer::with_capacity(world.len() + 64 + l.nodes.len() * 24);
+    w.u32(SNAP_MAGIC);
+    w.var_u64(l.nodes.len() as u64);
+    for (k, i) in &l.nodes {
+        w.u64(*k);
+        w.var_u64(*i as u64);
+    }
+    w.var_u64(l.censused.len() as u64);
+    l.censused.iter().for_each(|k| w.u64(*k));
+    w.raw(&world);
+    w.into_bytes()
+}
+
+type Restored = (World, BTreeMap<u64, usize>, BTreeSet<u64>);
+
+fn decode_snapshot(b: &[u8]) -> codec::Result<Restored> {
+    let mut r = Reader::new(b);
+    if r.u32()? != SNAP_MAGIC {
+        return Err(CodecError::Invalid("not a phase 1 snapshot".into()));
+    }
+    let mut nodes = BTreeMap::new();
+    for _ in 0..r.len_prefix(9)? {
+        let k = r.u64()?;
+        nodes.insert(k, r.var_u64()? as usize);
+    }
+    let mut censused = BTreeSet::new();
+    for _ in 0..r.len_prefix(8)? {
+        censused.insert(r.u64()?);
+    }
+    let rest = r.take(r.remaining())?;
+    let (cfg, goods, book) = world_parts();
+    let world = World::load(cfg, goods, book, rest)?;
+    if let Some((k, i)) = nodes
+        .iter()
+        .find(|(k, i)| world.nodes.get(**i).is_none_or(|n| n.key != **k))
+    {
+        return Err(CodecError::Invalid(format!(
+            "the snapshot's village {k:#x} is node {i}, which the world does not have"
+        )));
+    }
+    Ok((world, nodes, censused))
+}
+
+fn pack(generation: u32, chunks: usize) -> u64 {
+    u64::from(generation) << 32 | chunks.min(u32::MAX as usize) as u64
+}
+
+fn unpack(v: u64) -> (u32, usize) {
+    ((v >> 32) as u32, (v & 0xffff_ffff) as usize)
+}
+
+/// What a commit that wrote a phase 1 save reports when it succeeded, and which phase 1 pages
+/// that save leaves live (the rest are deleted with it).
 pub(super) struct Saved {
-    clean: Arc<AtomicUsize>,
+    durable: Arc<AtomicU64>,
+    generation: u32,
     chunks: usize,
+    live: Vec<PageKey>,
 }
 
 impl Saved {
-    /// The snapshot's pages are on disk: its full log chunks never need writing again.
+    /// The save's pages are on disk: its snapshot and its full tail chunks never need writing
+    /// again.
     pub(super) fn done(&self) {
-        self.clean.fetch_max(self.chunks, Ordering::AcqRel);
+        self.durable
+            .fetch_max(pack(self.generation, self.chunks), Ordering::AcqRel);
     }
 }
 
-/// The pages a save writes: the meta page, and every log chunk not yet on disk in full. The
-/// commit calls [`Saved::done`] once they are.
+/// The phase 1 pages in the store that a save leaves behind: an older snapshot's pieces and tail
+/// chunks, and pages a build could not read ([`when_pages_unreadable`]).
+pub(super) fn deletions(store: &PageStore, saved: &Saved) -> Vec<PageKey> {
+    let live: BTreeSet<PageKey> = saved.live.iter().copied().collect();
+    store
+        .keys()
+        .filter(|k| (k.table() == TABLE || k.table() == SNAPSHOT_TABLE) && !live.contains(k))
+        .collect()
+}
+
+/// Whether this save takes a new snapshot (S3, S4): the one the tail follows never reached the
+/// disk (a failed or unfinished commit), the world changed outside the log, or the tail is long
+/// or old.
+fn wants_snapshot(l: &Link) -> bool {
+    let (generation, _) = unpack(l.durable.load(Ordering::Acquire));
+    generation != l.snap_gen
+        || l.tainted
+        || l.log.len() >= TAIL_MAX_INPUTS
+        || l.world.now().0.saturating_sub(l.snap_at) >= TAIL_MAX_TICKS
+}
+
+/// The pages a save writes: the meta page, and either a new snapshot (the tail starts over) or
+/// every tail chunk not yet on disk in full. The commit calls [`Saved::done`] once they are.
 pub(super) fn snapshot(st: &mut State) -> (Vec<(PageKey, Vec<u8>)>, Saved) {
+    // Commands the world decided and the link has not taken yet (a save between an input and
+    // the next take, e.g. after a census) go to the queue now, so the kept ones are in the meta
+    // page and the snapshot's own outbox is empty: a start discards what its replay re-decides.
+    take_world_commands(st);
     let l = &mut st.phase1;
     let caravans = &l.world.caravans;
     l.agents
         .retain(|_, bits| caravans.get(Handle::from_bits(*bits)).is_some());
-    let mut out = vec![(KEY_META, encode_meta(l))];
-    let chunks = l.log.len().div_ceil(CHUNK);
-    for k in l.clean_chunks.load(Ordering::Acquire)..chunks {
-        let mut w = Writer::with_capacity(CHUNK * 24);
-        for e in &l.log[k * CHUNK..((k + 1) * CHUNK).min(l.log.len())] {
-            e.encode(&mut w);
+    let mut out = Vec::new();
+    if wants_snapshot(l) {
+        let blob = encode_snapshot(l);
+        l.snap_gen = l.snap_gen.wrapping_add(1).max(1);
+        l.snap_len = blob.len();
+        l.snap_pieces = blob.len().div_ceil(PIECE);
+        l.snap_at = l.world.now().0;
+        l.base_inputs += l.log.len() as u64;
+        l.log.clear();
+        l.tainted = false;
+        for (k, piece) in blob.chunks(PIECE).enumerate() {
+            out.push((piece_key(k), piece.to_vec()));
         }
-        out.push((chunk_key(k), w.into_bytes()));
+    } else {
+        let (_, clean) = unpack(l.durable.load(Ordering::Acquire));
+        let chunks = l.log.len().div_ceil(CHUNK);
+        for k in clean..chunks {
+            let mut w = Writer::with_capacity(CHUNK * 24);
+            for e in &l.log[k * CHUNK..((k + 1) * CHUNK).min(l.log.len())] {
+                e.encode(&mut w);
+            }
+            out.push((chunk_key(k), w.into_bytes()));
+        }
     }
+    out.push((KEY_META, encode_meta(l)));
+    let live = std::iter::once(KEY_META)
+        .chain((0..l.log.len().div_ceil(CHUNK)).map(chunk_key))
+        .chain((0..l.snap_pieces).map(piece_key))
+        .collect();
     let saved = Saved {
-        clean: Arc::clone(&l.clean_chunks),
+        durable: Arc::clone(&l.durable),
+        generation: l.snap_gen,
         chunks: l.log.len() / CHUNK,
+        live,
     };
     (out, saved)
+}
+
+/// The phase 1 world's tick for a game time (the test offset added): the clock the dragons,
+/// who share the world, run on too.
+pub(super) fn world_tick(st: &State, game_time: i64) -> u64 {
+    st.phase1.wt(game_time)
+}
+
+/// The phase 1 world's good for a Minecraft item id, if the catalogue trades it.
+pub(super) fn catalog_good(st: &State, item: &str) -> Option<GoodId> {
+    st.phase1.cat.good(item)
 }
 
 // ---- hooks: session and latest-wins records -------------------------------------------------------
@@ -2136,8 +2415,12 @@ mod tests {
         State::new(rx, None)
     }
 
+    /// Commits a save as the engine's `commit` does (stale phase 1 pages deleted with it).
     fn commit(store: &mut PageStore, (pages, saved): (Vec<(PageKey, Vec<u8>)>, Saved)) {
         let mut b = SaveBatch::new();
+        for k in deletions(store, &saved) {
+            b.delete(k);
+        }
         for (k, v) in &pages {
             b.put(*k, v);
         }
@@ -2198,14 +2481,27 @@ mod tests {
         };
         let dir = tmpdir("gap");
         let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
-        push(&mut st, 1_500);
+        // Short tails (below a snapshot's threshold): the chunks themselves are what a failed
+        // save must not count as written.
+        push(&mut st, 600);
         commit(&mut store, snapshot(&mut st));
-        push(&mut st, 700);
+        push(&mut st, 300);
         let _lost = snapshot(&mut st); // the IO lane failed to write these
-        push(&mut st, 100);
+        push(&mut st, 50);
         commit(&mut store, snapshot(&mut st));
         let back = Link::load(&mut store).expect("the pages load");
-        assert_eq!(back.log.len(), 2_300);
+        assert!(!back.dropped_pages);
+        assert_eq!(back.log.len(), 950);
+        // A long tail: the save takes a snapshot, and one that never reached the disk is taken
+        // again by the next save rather than followed by a tail the disk cannot rebuild.
+        push(&mut st, 1_200);
+        let _lost = snapshot(&mut st); // a snapshot the IO lane failed to write
+        push(&mut st, 10);
+        commit(&mut store, snapshot(&mut st));
+        let back = Link::load(&mut store).expect("the pages load");
+        assert!(!back.dropped_pages);
+        assert_eq!(back.stats[stat::INPUTS], 2_160);
+        assert_eq!(back.world.state_hash(), st.phase1.world.state_hash());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2264,8 +2560,10 @@ mod tests {
             (
                 vec![(KEY_META, saved)],
                 Saved {
-                    clean: Arc::new(AtomicUsize::new(0)),
+                    durable: Arc::new(AtomicU64::new(0)),
+                    generation: 0,
                     chunks: 0,
+                    live: vec![KEY_META],
                 },
             ),
         );
@@ -2319,5 +2617,420 @@ mod tests {
         l.agents.insert(0xCA4A, 0x0000_0003_0000_0007);
         let back = reload(&l, "agents");
         assert_eq!(caravan_of(&back, 0xCA4A), Some(0x0000_0003_0000_0007));
+    }
+
+    /// S5: phase 1 pages this build cannot read (another build's format, a damaged page, a
+    /// missing piece) are dropped with a loud log and the world starts afresh; the engine starts,
+    /// and the next save deletes them.
+    #[test]
+    fn unreadable_phase1_pages_are_dropped_and_replaced() {
+        let dir = tmpdir("unreadable");
+        let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        let mut b = SaveBatch::new();
+        let mut meta = encode_meta(&Link::empty());
+        meta[4] = 9; // a version this build does not read
+        b.put(KEY_META, &meta);
+        b.put(chunk_key(0), b"stale");
+        b.put(piece_key(3), b"stale");
+        store.commit(b, 1).unwrap();
+        let l = Link::load(&mut store).expect("the policy drops them, the start goes on");
+        assert!(l.dropped_pages);
+        assert!(l.nodes.is_empty());
+        let mut st = state();
+        st.phase1 = l;
+        commit(&mut store, snapshot(&mut st));
+        assert_eq!(
+            store
+                .keys()
+                .filter(|k| k.table() == TABLE || k.table() == SNAPSHOT_TABLE)
+                .collect::<Vec<_>>(),
+            vec![KEY_META],
+            "the next save replaced them"
+        );
+        assert!(!Link::load(&mut store).unwrap().dropped_pages);
+        // A snapshot piece missing or cut short is the same case.
+        let mut st = state();
+        st.phase1.input(
+            Input::Join {
+                key: 5,
+                culture: 0,
+                frame: 0,
+                x: 0,
+                z: 0,
+                pop: 12,
+                resources: vec![(0, 60_000)],
+            },
+            0,
+        );
+        st.phase1.world.run_until(Tick(TAIL_MAX_TICKS));
+        commit(&mut store, snapshot(&mut st));
+        assert!(store.contains(piece_key(0)), "a snapshot was taken");
+        let mut b = SaveBatch::new();
+        b.put(piece_key(0), b"short");
+        store.commit(b, store.obs_seq()).unwrap();
+        assert!(Link::load(&mut store).unwrap().dropped_pages);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One op of a phase 1 input script, applied to a link the way the step applies the
+    /// bridge's records (`Link::input`) and runs the world (`simulate`).
+    #[derive(Clone, Debug)]
+    enum P1Op {
+        Join {
+            x: i32,
+            z: i32,
+            ribbit: bool,
+            plains: bool,
+        },
+        Census {
+            village: usize,
+            pop: u32,
+        },
+        Trade {
+            village: usize,
+            good: u16,
+            items: i64,
+            buy: bool,
+            player: u8,
+        },
+        Promote {
+            village: usize,
+        },
+        CaravanTrade {
+            good: u16,
+            items: i64,
+            buy: bool,
+            player: u8,
+        },
+        Rob {
+            good: u16,
+            amount: i64,
+            player: u8,
+        },
+        Member {
+            member: u32,
+            killed: bool,
+            player: u8,
+        },
+        CaravanReport {
+            rescue: bool,
+            player: u8,
+        },
+        Report {
+            village: usize,
+            kind: u8,
+            player: u8,
+        },
+        Base {
+            x: i32,
+            z: i32,
+            player: u8,
+            mark: bool,
+        },
+        Advance {
+            ticks: u64,
+        },
+        Save,
+        /// A save whose commit fails on the IO lane.
+        SaveLost,
+    }
+
+    fn p1_op() -> impl proptest::strategy::Strategy<Value = P1Op> {
+        use proptest::prelude::*;
+        prop_oneof![
+            3 => (-3000i32..3000, -3000i32..3000, any::<bool>(), any::<bool>())
+                .prop_map(|(x, z, ribbit, plains)| P1Op::Join { x, z, ribbit, plains }),
+            1 => (0usize..20, 1u32..40).prop_map(|(village, pop)| P1Op::Census { village, pop }),
+            3 => (0usize..20, 0u16..9, 1i64..40, any::<bool>(), 1u8..4)
+                .prop_map(|(village, good, items, buy, player)| P1Op::Trade { village, good, items, buy, player }),
+            3 => (0usize..20).prop_map(|village| P1Op::Promote { village }),
+            1 => (0u16..9, 1i64..20, any::<bool>(), 1u8..4)
+                .prop_map(|(good, items, buy, player)| P1Op::CaravanTrade { good, items, buy, player }),
+            1 => (0u16..9, -8000i64..-1, 0u8..4).prop_map(|(good, amount, player)| P1Op::Rob { good, amount, player }),
+            1 => (0u32..4, any::<bool>(), 0u8..4).prop_map(|(member, killed, player)| P1Op::Member { member, killed, player }),
+            1 => (any::<bool>(), 1u8..4).prop_map(|(rescue, player)| P1Op::CaravanReport { rescue, player }),
+            1 => (0usize..20, 1u8..9, 1u8..4).prop_map(|(village, kind, player)| P1Op::Report { village, kind, player }),
+            1 => (-3000i32..3000, -3000i32..3000, 1u8..4, any::<bool>())
+                .prop_map(|(x, z, player, mark)| P1Op::Base { x, z, player, mark }),
+            3 => (1u64..60_000).prop_map(|ticks| P1Op::Advance { ticks }),
+            2 => Just(P1Op::Save),
+            1 => Just(P1Op::SaveLost),
+        ]
+    }
+
+    fn player_of(p: u8) -> Uuid {
+        if p == 0 {
+            (0, 0)
+        } else {
+            (u64::from(p) << 8, u64::from(p) * 7919)
+        }
+    }
+
+    /// The first caravan row, by handle: the same in two worlds in the same state.
+    fn first_caravan(l: &Link) -> Option<u64> {
+        l.world.caravans.iter().next().map(|(h, _)| h.to_bits())
+    }
+
+    /// Applies one op at world tick `*t` (advanced by the op), as the step would.
+    fn apply_op(st: &mut State, store: &mut PageStore, o: &P1Op, t: &mut u64) {
+        *t += 200;
+        let at = *t;
+        let l = &mut st.phase1;
+        let village = |l: &Link, i: usize| l.nodes.keys().nth(i % l.nodes.len().max(1)).copied();
+        match *o {
+            P1Op::Join {
+                x,
+                z,
+                ribbit,
+                plains,
+            } => {
+                let key = 0x1000 + l.nodes.len() as u64;
+                let c = if ribbit {
+                    Culture::Ribbit
+                } else {
+                    Culture::Human
+                };
+                let structure = if plains {
+                    "minecraft:village_plains"
+                } else {
+                    "minecraft:village_taiga"
+                };
+                let resources = catalog::resources(structure, c)
+                    .into_iter()
+                    .map(|(r, a)| (r.0, a))
+                    .collect();
+                l.input(
+                    Input::Join {
+                        key,
+                        culture: u8::from(ribbit),
+                        frame: 0,
+                        x,
+                        z,
+                        pop: 12,
+                        resources,
+                    },
+                    at,
+                );
+            }
+            P1Op::Census { village: v, pop } => {
+                if let Some(key) = village(l, v) {
+                    let _ = l;
+                    census(st, key, pop);
+                }
+            }
+            P1Op::Trade {
+                village: v,
+                good,
+                items,
+                buy,
+                player,
+            } => {
+                if let Some(key) = village(l, v) {
+                    let coins = (items / 4).max(1);
+                    l.input(
+                        Input::Trade {
+                            key,
+                            player: player_of(player),
+                            good,
+                            items,
+                            coins,
+                            buy,
+                        },
+                        at,
+                    );
+                }
+            }
+            P1Op::Promote { village: v } => {
+                l.world.run_until(Tick(at));
+                if let Some(key) = village(l, v) {
+                    let i = l.nodes[&key];
+                    let k = l.world.nodes[i].out.iter().find_map(|d| {
+                        l.world
+                            .travellers(d.edge, d.dir)
+                            .into_iter()
+                            .find(|x| !x.cargo.is_empty())
+                            .map(|x| x.key)
+                    });
+                    if let Some(k) = k {
+                        l.input(
+                            Input::Promote {
+                                edge: k.edge,
+                                dir: k.dir,
+                                departure: k.departure,
+                            },
+                            at,
+                        );
+                    }
+                }
+            }
+            P1Op::CaravanTrade {
+                good,
+                items,
+                buy,
+                player,
+            } => {
+                if let Some(caravan) = first_caravan(l) {
+                    let coins = (items / 4).max(1);
+                    l.input(
+                        Input::CaravanTrade {
+                            caravan,
+                            at_node: 0,
+                            player: player_of(player),
+                            good,
+                            currency: 7,
+                            buy,
+                            items,
+                            coins,
+                        },
+                        at,
+                    );
+                }
+            }
+            P1Op::Rob {
+                good,
+                amount,
+                player,
+            } => {
+                if let Some(caravan) = first_caravan(l) {
+                    l.input(
+                        Input::Rob {
+                            caravan,
+                            player: player_of(player),
+                            goods: vec![(good, amount)],
+                        },
+                        at,
+                    );
+                }
+            }
+            P1Op::Member {
+                member,
+                killed,
+                player,
+            } => {
+                if let Some(caravan) = first_caravan(l) {
+                    l.input(
+                        Input::Member {
+                            caravan,
+                            member,
+                            player: player_of(player),
+                            killed,
+                        },
+                        at,
+                    );
+                }
+            }
+            P1Op::CaravanReport { rescue, player } => {
+                if let Some(caravan) = first_caravan(l) {
+                    l.input(
+                        Input::CaravanReport {
+                            caravan,
+                            player: player_of(player),
+                            rescue,
+                        },
+                        at,
+                    );
+                }
+            }
+            P1Op::Report {
+                village: v,
+                kind,
+                player,
+            } => {
+                if let Some(key) = village(l, v) {
+                    l.input(
+                        Input::VillageReport {
+                            key,
+                            player: player_of(player),
+                            kind,
+                        },
+                        at,
+                    );
+                }
+            }
+            P1Op::Base { x, z, player, mark } => {
+                let key = 1 << 62 | (x.rem_euclid(64) as u64) << 24 | z.rem_euclid(64) as u64;
+                let input = if mark {
+                    Input::MarkBase {
+                        key,
+                        frame: 0,
+                        x,
+                        z,
+                        player: player_of(player),
+                    }
+                } else {
+                    Input::UnmarkBase {
+                        key,
+                        player: player_of(player),
+                    }
+                };
+                l.input(input, at);
+            }
+            P1Op::Advance { ticks } => {
+                *t += ticks;
+                l.world.run_until(Tick(*t));
+                let _ = l.world.take_commands();
+            }
+            P1Op::Save => commit(store, snapshot(st)),
+            P1Op::SaveLost => {
+                let _lost = snapshot(st);
+            }
+        }
+        // The step takes the world's commands after inputs and every simulate (here: every
+        // other op, so some saves find commands not yet taken).
+        if t.is_multiple_of(400) {
+            take_world_commands(st);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        /// The phase 1 world restored from its pages (a snapshot and the tail since it) at any
+        /// point of any input script, saves that failed included, has the state hash of an
+        /// engine that never stopped, and both go on identically.
+        #[test]
+        fn a_restored_phase1_world_matches_one_that_never_stopped(
+            ops in proptest::collection::vec(p1_op(), 1..60),
+            restart in 0usize..60,
+        ) {
+            let (da, db) = (tmpdir("prop-a"), tmpdir("prop-b"));
+            let mut sa = PageStore::open(&da, Durability::NoSync).unwrap();
+            let mut sb = PageStore::open(&db, Durability::NoSync).unwrap();
+            let (mut a, mut b) = (state(), state());
+            let (mut ta, mut tb) = (0u64, 0u64);
+            for (i, o) in ops.iter().enumerate() {
+                if i == restart {
+                    // B saves (or not: then it restarts from its last save, so it saves first)
+                    // and starts again from its pages, as after a crash right after that save.
+                    commit(&mut sb, snapshot(&mut b));
+                    let mut fresh = state();
+                    fresh.phase1 = Link::load(&mut sb).expect("B's pages load");
+                    proptest::prop_assert!(!fresh.phase1.dropped_pages);
+                    proptest::prop_assert!(fresh.phase1.replay_diverged.is_none());
+                    proptest::prop_assert_eq!(fresh.phase1.world.state_hash(), b.phase1.world.state_hash());
+                    proptest::prop_assert_eq!(&fresh.phase1.nodes, &b.phase1.nodes);
+                    proptest::prop_assert_eq!(&fresh.phase1.censused, &b.phase1.censused);
+                    b = fresh;
+                    // A takes the same save, so both take snapshots at the same points after.
+                    commit(&mut sa, snapshot(&mut a));
+                }
+                apply_op(&mut a, &mut sa, o, &mut ta);
+                apply_op(&mut b, &mut sb, o, &mut tb);
+                proptest::prop_assert_eq!(a.phase1.world.state_hash(), b.phase1.world.state_hash(), "after op {} ({:?})", i, o);
+            }
+            let end = ta + 3 * 24_000;
+            a.phase1.world.run_until(Tick(end));
+            b.phase1.world.run_until(Tick(end));
+            proptest::prop_assert_eq!(a.phase1.world.save(), b.phase1.world.save());
+            // And a last restart of each from its own pages reads the same world back.
+            commit(&mut sa, snapshot(&mut a));
+            commit(&mut sb, snapshot(&mut b));
+            let (ra, rb) = (Link::load(&mut sa).unwrap(), Link::load(&mut sb).unwrap());
+            proptest::prop_assert_eq!(ra.world.state_hash(), a.phase1.world.state_hash());
+            proptest::prop_assert_eq!(rb.world.state_hash(), b.phase1.world.state_hash());
+            proptest::prop_assert_eq!(ra.stats[stat::INPUTS], a.phase1.stats[stat::INPUTS]);
+            let _ = std::fs::remove_dir_all(&da);
+            let _ = std::fs::remove_dir_all(&db);
+        }
     }
 }

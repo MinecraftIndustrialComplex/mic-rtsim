@@ -25,6 +25,10 @@ usage:
   rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]
       The industry engine's cost sweeps (quiet and busy district counts, elapsed time) against
       their declared slopes; JSON to DIR (default bench/results). --check exits 1 on a breach.
+  rtsim-cli bench restore [--markets N] [--days D] [--repeats R] [--out DIR | --no-write]
+      The phase 1 world's snapshot against its whole input log: a grid of N villages (default
+      1,024) joined one by one and run D days (default 100), then save, restore (in memory and
+      through a page store) and one more day; JSON to DIR (default bench/results).
   rtsim-cli sim industry [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
       The iron line (rtsim-industry's synthetic scenario) for N days (at least 10): learning,
       replay, reconciles, threats, and simulated against control. Writes JSON to FILE
@@ -197,6 +201,7 @@ fn main() -> ExitCode {
             ExitCode::from(sim::phase1::run(o) as u8)
         }
         ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
+        ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
             let mut o = sim::quiet::Options {
                 markets: 0,

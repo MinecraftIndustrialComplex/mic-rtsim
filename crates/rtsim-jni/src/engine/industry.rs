@@ -170,6 +170,11 @@ fn kept(c: &Cmd) -> bool {
 
 impl Link {
     /// A link with an empty engine (the core's `State::new`; [`Link::load`] replaces it at start).
+    /// Whether the industry module runs (MODULES): the dragons raid districts only then.
+    pub(super) fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub(super) fn empty() -> Link {
         Link {
             engine: Industry::new(0, Tunables::default(), Mode::Apply, Tick::ZERO),

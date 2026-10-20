@@ -13,6 +13,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
+use crate::codec::{self, CodecError, Reader, Writer};
+
 /// A typed handle: index plus generation, 6 bytes, alignment 2.
 ///
 /// `T` only tags which arena the handle belongs to; it is never stored.
@@ -245,6 +247,72 @@ impl<T> Arena<T> {
         self.slots.capacity() * std::mem::size_of::<Slot<T>>()
             + self.free.capacity() * std::mem::size_of::<u32>()
     }
+
+    /// Writes the whole arena, free slots and the free list included, so [`Arena::decode_with`]
+    /// gives back one that hands out the same handles from then on (saves: handles are ids that
+    /// other rows and the bridge keep).
+    pub fn encode_with(&self, w: &mut Writer, mut f: impl FnMut(&T, &mut Writer)) {
+        w.var_u64(self.slots.len() as u64);
+        for s in &self.slots {
+            w.u16(s.generation);
+            match &s.value {
+                Some(v) => {
+                    w.u8(1);
+                    f(v, w);
+                }
+                None => w.u8(0),
+            }
+        }
+        w.var_u64(self.free.len() as u64);
+        for i in &self.free {
+            w.u32(*i);
+        }
+    }
+
+    /// Reads what [`Arena::encode_with`] wrote; checks that the free list names empty, live
+    /// generations once each.
+    pub fn decode_with(
+        r: &mut Reader<'_>,
+        mut f: impl FnMut(&mut Reader<'_>) -> codec::Result<T>,
+    ) -> codec::Result<Self> {
+        let n = r.len_prefix(3)?;
+        let mut slots = Vec::with_capacity(n);
+        let mut len = 0;
+        for _ in 0..n {
+            let generation = r.u16()?;
+            let value = match r.u8()? {
+                0 => None,
+                1 => {
+                    len += 1;
+                    Some(f(r)?)
+                }
+                t => return Err(CodecError::Invalid(format!("arena slot tag {t}"))),
+            };
+            if value.is_some() && generation == 0 {
+                return Err(CodecError::Invalid(
+                    "a live arena slot of generation 0".into(),
+                ));
+            }
+            slots.push(Slot { generation, value });
+        }
+        let nf = r.len_prefix(4)?;
+        let mut free = Vec::with_capacity(nf);
+        let mut seen = vec![false; slots.len()];
+        for _ in 0..nf {
+            let i = r.u32()?;
+            let ok = slots
+                .get(i as usize)
+                .is_some_and(|s: &Slot<T>| s.value.is_none() && s.generation != 0)
+                && !std::mem::replace(&mut seen[i as usize], true);
+            if !ok {
+                return Err(CodecError::Invalid(format!(
+                    "arena free list names slot {i}"
+                )));
+            }
+            free.push(i);
+        }
+        Ok(Arena { slots, free, len })
+    }
 }
 
 /// `arena[h]` for a handle the caller knows is live; panics on a stale or foreign one, as slice
@@ -266,6 +334,7 @@ impl<T> std::ops::IndexMut<Handle<T>> for Arena<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::{Reader, Writer};
     use proptest::prelude::*;
 
     #[test]
@@ -306,6 +375,44 @@ mod tests {
             }
         }
         panic!("slot never retired");
+    }
+
+    proptest! {
+        /// An arena saved after any history of inserts and removes hands out the same handles as
+        /// the original from then on.
+        #[test]
+        fn a_saved_arena_continues_as_the_original(ops in prop::collection::vec((0u8..2, any::<u16>()), 1..300), more in prop::collection::vec((0u8..2, any::<u16>()), 1..100)) {
+            let mut a: Arena<u32> = Arena::new();
+            let mut live: Vec<Handle<u32>> = Vec::new();
+            for (op, x) in ops {
+                if op == 0 || live.is_empty() {
+                    live.push(a.insert(u32::from(x)));
+                } else {
+                    let h = live.swap_remove(x as usize % live.len());
+                    a.remove(h);
+                }
+            }
+            let mut w = Writer::new();
+            a.encode_with(&mut w, |v, w| w.u32(*v));
+            let bytes = w.into_bytes();
+            let mut r = Reader::new(&bytes);
+            let mut b = Arena::decode_with(&mut r, |r| r.u32()).unwrap();
+            r.finish().unwrap();
+            prop_assert_eq!(a.len(), b.len());
+            for (op, x) in more {
+                if op == 0 || live.is_empty() {
+                    let (ha, hb) = (a.insert(u32::from(x)), b.insert(u32::from(x)));
+                    prop_assert_eq!(ha, hb);
+                    live.push(ha);
+                } else {
+                    let h = live.swap_remove(x as usize % live.len());
+                    prop_assert_eq!(a.remove(h), b.remove(h));
+                }
+            }
+            let ea: Vec<_> = a.iter().map(|(h, v)| (h, *v)).collect();
+            let eb: Vec<_> = b.iter().map(|(h, v)| (h, *v)).collect();
+            prop_assert_eq!(ea, eb);
+        }
     }
 
     proptest! {

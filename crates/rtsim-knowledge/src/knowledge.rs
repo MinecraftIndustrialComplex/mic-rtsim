@@ -50,10 +50,10 @@ impl HolderKind {
     }
 }
 
-struct Holder {
-    kind: HolderKind,
-    board: Noticeboard,
-    sentiment: Sentiments,
+pub(crate) struct Holder {
+    pub(crate) kind: HolderKind,
+    pub(crate) board: Noticeboard,
+    pub(crate) sentiment: Sentiments,
 }
 
 /// Holders that saw an event: those in the same frame within `radius_blocks` of `place`
@@ -72,15 +72,15 @@ pub fn witnesses(
         .collect()
 }
 
-type CounterKey = (ActorId, ActorId, ReportKind);
+pub(crate) type CounterKey = (ActorId, ActorId, ReportKind);
 
 /// What expired reports leave behind: how many of each kind about each actor a holder knew
 /// (SCALE.md §6). Capped; the smallest counts go first.
 #[derive(Default)]
-struct Counters {
-    map: BTreeMap<CounterKey, u32>,
-    by_count: BTreeSet<(u32, CounterKey)>,
-    cap: u32,
+pub(crate) struct Counters {
+    pub(crate) map: BTreeMap<CounterKey, u32>,
+    pub(crate) by_count: BTreeSet<(u32, CounterKey)>,
+    pub(crate) cap: u32,
 }
 
 impl Counters {
@@ -110,15 +110,15 @@ impl Counters {
 
 /// Reports, holders, notables: everything the knowledge module keeps.
 pub struct Knowledge {
-    world_seed: u64,
-    tunables: Tunables,
-    actors: Actors,
-    reports: ReportTable,
-    holders: BTreeMap<ActorId, Holder>,
-    notables: BTreeMap<ActorId, Notable>,
-    deaths: TimingWheel<ActorId>,
-    counters: Counters,
-    vanilla: Vec<VanillaGossip>,
+    pub(crate) world_seed: u64,
+    pub(crate) tunables: Tunables,
+    pub(crate) actors: Actors,
+    pub(crate) reports: ReportTable,
+    pub(crate) holders: BTreeMap<ActorId, Holder>,
+    pub(crate) notables: BTreeMap<ActorId, Notable>,
+    pub(crate) deaths: TimingWheel<ActorId>,
+    pub(crate) counters: Counters,
+    pub(crate) vanilla: Vec<VanillaGossip>,
 }
 
 impl Knowledge {

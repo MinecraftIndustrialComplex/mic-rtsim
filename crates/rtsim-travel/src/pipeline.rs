@@ -39,9 +39,9 @@ pub struct Hole {
 pub struct Pipeline {
     /// Quanta from departure to arrival, at least 1.
     pub delay: u64,
-    segs: VecDeque<Seg>,
+    pub(crate) segs: VecDeque<Seg>,
     /// Sorted, disjoint.
-    holes: Vec<Hole>,
+    pub(crate) holes: Vec<Hole>,
 }
 
 impl Pipeline {
