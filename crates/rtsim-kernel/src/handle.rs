@@ -247,6 +247,22 @@ impl<T> Arena<T> {
     }
 }
 
+/// `arena[h]` for a handle the caller knows is live; panics on a stale or foreign one, as slice
+/// indexing panics out of bounds. Use [`Arena::get`] when the handle may be stale.
+impl<T> std::ops::Index<Handle<T>> for Arena<T> {
+    type Output = T;
+
+    fn index(&self, h: Handle<T>) -> &T {
+        self.get(h).expect("stale or foreign handle")
+    }
+}
+
+impl<T> std::ops::IndexMut<Handle<T>> for Arena<T> {
+    fn index_mut(&mut self, h: Handle<T>) -> &mut T {
+        self.get_mut(h).expect("stale or foreign handle")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
