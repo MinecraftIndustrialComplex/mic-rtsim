@@ -132,13 +132,14 @@ Verified in the jar and the pack's files:
 
 ### 3.3 A conflict that is live now
 
-R18 (docs/overnight-choices-dragons.md) discards natural and spawner dragons when the Ice and Fire
-plugin runs (`SpawnKind::Natural | SpawnKind::Spawner`, `rtsim-ecology/src/engine.rs`). Ice and Fire
+R18 (docs/overnight-choices-dragons.md) discarded natural and spawner dragons when the Ice and Fire
+plugin ran (`SpawnKind::Natural | SpawnKind::Spawner`, `rtsim-ecology/src/engine.rs`). Ice and Fire
 has no natural dragon spawns of its own (its dragons come with lairs), so in this pack every natural
 fire dragon is In Control's. **With mic_rtsim_iceandfire installed, the desert gate is gone**, against
 P13's "In Control stays untouched until measured". OG-1: until the gate passes, the plugin leaves
 natural fire dragons alone (not adopted, not discarded, not given the oil rules), and the ledger counts
-them as "In Control's".
+them as "In Control's". Landed 2026-10-20: the engine tunable `adopt_natural_dragons` (default false)
+leaves them alone; true restores R18's discard (R18a).
 
 ## 4. The design
 
