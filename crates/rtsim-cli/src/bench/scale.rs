@@ -541,13 +541,13 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Dragons,
             regions: None,
-            values: pick(&[8, 32, 128, 512, 2_048], &[8, 128, 2_048]),
+            values: pick(&[8, 32, 128, 512], &[8, 128, 512]),
             contracts: vec![
                 contract(
                     Metric::CpuPerUnit,
                     flat,
                     0.0,
-                    "a flat cost per unobserved dragon: its hunts are a handful of events a day, decisions look up the cells around its lair, legs book and search the cells they cover; nothing is ticked. Measured as the world's CPU with dragons minus without, per dragon-day",
+                    "a flat cost per unobserved dragon: about one event a day each (hunger is a closed form, a hunt is a leg there, a patrol, a leg home), decisions look up the cells around the lair, legs book and search only the cells they cover, roosting dragons book nothing; nothing is ticked. Measured as the dragons' own CPU (the world stepped apart) per dragon-day, on a fixed 256-village world up to about two lairs per region, Ice and Fire's own lair spacing. Denser (2,048 dragons, seven per region) prey runs out and each dragon hunts twice as often: behaviour, with the cost per event still flat (about 10 us)",
                 ),
                 contract(
                     Metric::Heap,

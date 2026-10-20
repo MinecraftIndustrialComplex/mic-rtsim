@@ -1,0 +1,243 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-20T12:24:14Z",
+  "mode": "full",
+  "git_commit": "b7a214319632",
+  "git_dirty": true,
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "build_profile": "release",
+  "machine": {
+    "cpu": "AMD RYZEN AI MAX PRO 390 w/ Radeon 8050S",
+    "logical_cpus": 24,
+    "mem_total_bytes": 50268049408,
+    "os": "linux",
+    "kernel": "7.2.10",
+    "hostname": "nixUltra",
+    "loadavg": "6.09 6.84 6.35 8/4275 2188450"
+  },
+  "nice": 10,
+  "loadavg_before": "6.09 6.84 6.35 3/4295 2188369",
+  "loadavg_after": "6.09 6.84 6.35 9/4275 2188450",
+  "baseline": {
+    "regions": 10000,
+    "latent": 10000000,
+    "events_per_day": 1000,
+    "observers": 1,
+    "regions_per_page": 64,
+    "warmup_days": 1,
+    "days": 10,
+    "catch_up_regions_closed": 65536,
+    "catch_up_regions_herd": 256,
+    "catch_up_latent_per_region": 1000,
+    "catch_up_elapsed_days": 100,
+    "seed": 1554112512
+  },
+  "runs": [
+    {
+      "sweep": "dragons",
+      "model": "closed",
+      "vary": "dragons",
+      "value": 8,
+      "spec": {
+        "kind": "dragons",
+        "dragons": 8,
+        "villages": 256,
+        "warmup_days": 2,
+        "days": 10,
+        "seed": 1554112512
+      },
+      "measured": {
+        "cpu_ns_per_day": 9602151.2,
+        "wall_ns_per_day": 9764533.0,
+        "catch_up_cpu_ns_per_read": null,
+        "catch_up_wall_ns_per_read": null,
+        "commits_per_read": null,
+        "heap_live_bytes": 4324434,
+        "heap_peak_bytes": 4360552,
+        "engine_heap_bytes": 43936,
+        "rss_bytes": 9953280,
+        "rss_peak_bytes": 9953280,
+        "save_full_bytes": null,
+        "save_full_ms": null,
+        "save_incremental_bytes": null,
+        "save_incremental_pages": null,
+        "save_incremental_ms": null,
+        "reads": 21,
+        "events": 77,
+        "slot_commits": 0,
+        "caravans": 0,
+        "conservation": "ok",
+        "failures": [],
+        "state_hash": 1943556625,
+        "edges": null,
+        "cpu_ns_per_unit_day": 9932.0375
+      },
+      "repeats": [
+        11264.0125,
+        9467.3,
+        9932.0375
+      ]
+    },
+    {
+      "sweep": "dragons",
+      "model": "closed",
+      "vary": "dragons",
+      "value": 32,
+      "spec": {
+        "kind": "dragons",
+        "dragons": 32,
+        "villages": 256,
+        "warmup_days": 2,
+        "days": 10,
+        "seed": 1554112512
+      },
+      "measured": {
+        "cpu_ns_per_day": 11015772.1,
+        "wall_ns_per_day": 11108388.3,
+        "catch_up_cpu_ns_per_read": null,
+        "catch_up_wall_ns_per_read": null,
+        "commits_per_read": null,
+        "heap_live_bytes": 4767035,
+        "heap_peak_bytes": 4800009,
+        "engine_heap_bytes": 72288,
+        "rss_bytes": 10153984,
+        "rss_peak_bytes": 10153984,
+        "save_full_bytes": null,
+        "save_full_ms": null,
+        "save_incremental_bytes": null,
+        "save_incremental_pages": null,
+        "save_incremental_ms": null,
+        "reads": 81,
+        "events": 329,
+        "slot_commits": 0,
+        "caravans": 0,
+        "conservation": "ok",
+        "failures": [],
+        "state_hash": 4033095313,
+        "edges": null,
+        "cpu_ns_per_unit_day": 9760.45
+      },
+      "repeats": [
+        9692.25625,
+        10041.284375,
+        9760.45
+      ]
+    },
+    {
+      "sweep": "dragons",
+      "model": "closed",
+      "vary": "dragons",
+      "value": 128,
+      "spec": {
+        "kind": "dragons",
+        "dragons": 128,
+        "villages": 256,
+        "warmup_days": 2,
+        "days": 10,
+        "seed": 1554112512
+      },
+      "measured": {
+        "cpu_ns_per_day": 15012959.6,
+        "wall_ns_per_day": 15062191.0,
+        "catch_up_cpu_ns_per_read": null,
+        "catch_up_wall_ns_per_read": null,
+        "commits_per_read": null,
+        "heap_live_bytes": 5998172,
+        "heap_peak_bytes": 6070206,
+        "engine_heap_bytes": 205856,
+        "rss_bytes": 11399168,
+        "rss_peak_bytes": 11399168,
+        "save_full_bytes": null,
+        "save_full_ms": null,
+        "save_incremental_bytes": null,
+        "save_incremental_pages": null,
+        "save_incremental_ms": null,
+        "reads": 340,
+        "events": 1336,
+        "slot_commits": 0,
+        "caravans": 0,
+        "conservation": "ok",
+        "failures": [],
+        "state_hash": 318540703,
+        "edges": null,
+        "cpu_ns_per_unit_day": 9955.54765625
+      },
+      "repeats": [
+        9852.48046875,
+        9955.54765625,
+        10876.4921875
+      ]
+    },
+    {
+      "sweep": "dragons",
+      "model": "closed",
+      "vary": "dragons",
+      "value": 512,
+      "spec": {
+        "kind": "dragons",
+        "dragons": 512,
+        "villages": 256,
+        "warmup_days": 2,
+        "days": 10,
+        "seed": 1554112512
+      },
+      "measured": {
+        "cpu_ns_per_day": 25419851.6,
+        "wall_ns_per_day": 25495863.6,
+        "catch_up_cpu_ns_per_read": null,
+        "catch_up_wall_ns_per_read": null,
+        "commits_per_read": null,
+        "heap_live_bytes": 11306484,
+        "heap_peak_bytes": 11343578,
+        "engine_heap_bytes": 833792,
+        "rss_bytes": 17149952,
+        "rss_peak_bytes": 17149952,
+        "save_full_bytes": null,
+        "save_full_ms": null,
+        "save_incremental_bytes": null,
+        "save_incremental_pages": null,
+        "save_incremental_ms": null,
+        "reads": 1417,
+        "events": 5867,
+        "slot_commits": 0,
+        "caravans": 0,
+        "conservation": "ok",
+        "failures": [],
+        "state_hash": 443551956,
+        "edges": null,
+        "cpu_ns_per_unit_day": 10277.5767578125
+      },
+      "repeats": [
+        10701.3564453125,
+        10224.266015625,
+        10277.5767578125
+      ]
+    }
+  ],
+  "slopes": [
+    {
+      "sweep": "dragons",
+      "model": "closed",
+      "metric": "cpu_per_unit",
+      "measured": 0.00882843078893394,
+      "declared": 0.1,
+      "scale_md": 0.0,
+      "ratio": 1.0529818561452085,
+      "max_ratio": 4.0,
+      "pass": true,
+      "note": "a flat cost per unobserved dragon: about one event a day each (hunger is a closed form, a hunt is a leg there, a patrol, a leg home), decisions look up the cells around the lair, legs book and search only the cells they cover, roosting dragons book nothing; nothing is ticked. Measured as the dragons' own CPU (the world stepped apart) per dragon-day, on a fixed 256-village world up to about two lairs per region, Ice and Fire's own lair spacing. Denser (2,048 dragons, seven per region) prey runs out and each dragon hunts twice as often: behaviour, with the cost per event still flat (about 10 us)"
+    },
+    {
+      "sweep": "dragons",
+      "model": "closed",
+      "metric": "heap",
+      "measured": 0.22455660429700072,
+      "declared": 1.1,
+      "scale_md": 1.0,
+      "ratio": 2.6145581132698523,
+      "max_ratio": null,
+      "pass": true,
+      "note": "dragons are resident rows (paging, A16, is not built yet)"
+    }
+  ]
+}
