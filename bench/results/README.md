@@ -4,6 +4,9 @@ Each `scale-<UTC date>-<time>-<mode>.json` is one `rtsim-cli bench scale` run: e
 measurements, the fitted slopes and contracts, the machine, the git commit and the conditions. The
 `.txt` beside it is the table the run printed.
 
+The hand-over bench (Java submit to engine publish, through JNI and mic_native's background pool)
+has its own page: [handover.md](handover.md), with its `handover-<date>-<time>-gametest.json` runs.
+
 ## How to read them
 
 - **Sweeps** vary one count across orders of magnitude and hold the rest at the baseline in the JSON

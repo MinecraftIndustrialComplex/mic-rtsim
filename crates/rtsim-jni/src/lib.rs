@@ -24,10 +24,33 @@ pub mod world;
 
 use mic_native_rt as rt;
 
+/// The CPU level this library was compiled for: the x86-64-v3 level for the build made with
+/// `-C target-cpu=x86-64-v3`, `baseline` otherwise. `tools/natives/build-natives.sh` checks that
+/// each build carries the literal of its folder, as mic_native's host does.
+pub const CPU_LEVEL: &str = if cfg!(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    target_feature = "bmi1",
+    target_feature = "bmi2",
+    target_feature = "f16c",
+    target_feature = "fma",
+    target_feature = "lzcnt",
+    target_feature = "movbe",
+)) {
+    "x86-64-v3"
+} else {
+    "baseline"
+};
+
+/// Keeps the CPU level literal in the library for the natives check.
+#[used]
+static CPU_LEVEL_TAG: &str = CPU_LEVEL;
+
 fn init(host: &'static rt::Host) -> rt::Result<()> {
     rt::info(&format!(
-        "[mic_rtsim] rtsim-jni {} loaded as plugin {} (id {})",
+        "[mic_rtsim] rtsim-jni {} ({}) loaded as plugin {} (id {})",
         env!("CARGO_PKG_VERSION"),
+        CPU_LEVEL,
         host.plugin_name(),
         host.plugin_id()
     ));

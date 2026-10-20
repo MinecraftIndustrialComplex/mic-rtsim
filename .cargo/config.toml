@@ -3,3 +3,16 @@
 # SSH agent the way the git command does, so fetch through the git CLI (choice J1).
 [net]
 git-fetch-with-cli = true
+
+# Per-target flags for the natives build (tools/natives/build-natives.sh), as mic_native's
+# .cargo/config.toml (copied from Deep Time, MPL-2.0).
+# rustc drops `cdylib` for musl unless the C runtime is dynamic (rust-lang/cargo#10143).
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+# A precaution against a rustc hang on Intel macOS that Deep Time and mic_native carry.
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "codegen-units=2"]

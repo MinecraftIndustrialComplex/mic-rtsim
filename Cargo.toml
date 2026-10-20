@@ -34,6 +34,14 @@ panic = "unwind"
 lto = "thin"
 debug = "line-tables-only"
 
+[profile.ship]
+# What ships: release plus fat LTO in one codegen unit, as mic_native's and Deep Time's natives
+# (tools/natives/build-natives.sh). Everyday builds stay on `release`.
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = false
+
 [profile.dev]
 # As Deep Time: the kernel's own crates at -O1 so property tests finish, with debug assertions and
 # overflow checks still on.
