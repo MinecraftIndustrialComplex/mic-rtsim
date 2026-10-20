@@ -62,7 +62,10 @@ otherwise).
 - **Q5.** Diesel: chunk oil in millibuckets, read in chunks with a pumpjack hole (which pumps its own
   chunk). A chunk nothing has written is recomputed by Diesel on every read (a 12,800-sample biome scan),
   so the plugin reads Diesel's map through an accessor and computes an unwritten chunk once per session.
-  `Integer.MAX_VALUE` is Diesel's infinite chunk: never stock. Writes clamp at 0.
+  `Integer.MAX_VALUE` is Diesel's infinite chunk: never stock. Writes clamp at 0. I11 (decided
+  2026-10-20) says deposits are written back on load; Diesel's oil is level SavedData with no chunk to
+  load, so its deposit delta is the engine's plugin code 2 (applied at once by IND_DEPOSIT_DELTA), while
+  Ore Excavation and Destroy crude oil ride the chunk's reconcile.
 
 **Mail and packages**
 - **Q6.** IND_PACKAGE now goes out for loaded districts too (reversing H30's cost): the engine learns a
