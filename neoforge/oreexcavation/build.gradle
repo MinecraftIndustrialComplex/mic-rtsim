@@ -1,0 +1,15 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_oreexcavation (A1, A19): Create Ore Excavation for mic-rtsim industry: veins as finite deposits, read while loaded and depleted on load (I11). Its own jar and mod id, built around the pack's own jars (never bundled);
+// the shared build logic is ../plugin.gradle.
+ext.packJars = [
+    'create-1.21.1-6.0.10.jar',
+    'createoreexcavation-1.21-1.6.8.jar'
+]
+ext.runtimeJars = []
+ext.createLibs = true
+
+apply from: rootProject.file('plugin.gradle')

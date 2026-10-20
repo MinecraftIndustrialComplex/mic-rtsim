@@ -81,6 +81,10 @@ public final class IndRecords {
     public static final int IND_PACKAGE = 0x0414;
     public static final int IND_RECONCILE_RESULT = 0x0420;
     public static final int IND_CARRIAGE_RESULT = 0x0421;
+    public static final int IND_SPAWN_SAMPLE = 0x0430;
+    public static final int IND_FIGHT = 0x0431;
+    public static final int IND_SURVEY = 0x0432;
+    public static final int IND_SURVEY_BLOCKS = 0x0433;
 
     // ---- commands ---------------------------------------------------------------------------------
     public static final int IND_CHUNK_RECONCILE = 0x8400;
@@ -479,6 +483,138 @@ public final class IndRecords {
         public static final int NEXT_DEPOSIT_EXHAUSTED = 4;
         public static final int NEXT_SOURCE_STOPPED = 5;
         public static final int NEXT_RESTART = 6;
+    }
+
+    // ---- plugin and threat layouts (overnight agent 14, docs/overnight-choices-indplugins.md) ------
+
+    /** IND_DEPOSIT_SAMPLE (latest-wins), aux = plugin ({@link DepositPlugin}). */
+    public static final class DepositSample {
+        public static final int GAME_TIME = 8;  // i64
+        public static final int DISTRICT = 16;  // u64
+        public static final int GOOD = 24;      // u32 (GOOD, class d)
+        public static final int SWEEP = 28;     // u32
+        public static final int REMAINING = 32; // i64
+        public static final int DIM = 40;       // u32
+        public static final int CHUNK_X = 44;   // i32
+        public static final int CHUNK_Z = 48;   // i32
+        public static final int FLAGS = 52;     // u32 (1 infinite)
+        public static final int SIZE = 56;
+
+        public static final int FLAG_INFINITE = 1;
+    }
+
+    /** The deposit plugin codes (IND_DEPOSIT_SAMPLE and IND_DEPOSIT_DELTA aux; wire.rs {@code plugin_code}). */
+    public static final class DepositPlugin {
+        public static final int ORE_EXCAVATION = 1;
+        public static final int DIESEL_OIL = 2;
+        public static final int DESTROY_CRUDE = 3;
+    }
+
+    /** IND_CHANNEL_SAMPLE (latest-wins), aux = n entries. */
+    public static final class ChannelSample {
+        public static final int GAME_TIME = 8; // i64
+        public static final int CHANNEL = 16;  // u64
+        public static final int CAPACITY = 24; // i64
+        public static final int ENTRIES = 32;  // n x Entry16
+        public static final int MAX_ENTRIES = (0xFFF8 - ENTRIES) / ENTRY16;
+
+        public static int size(int n) {
+            return ENTRIES + n * ENTRY16;
+        }
+    }
+
+    /** IND_CONDITIONS (journaled). */
+    public static final class Conditions {
+        public static final int SEASON = 24;        // u32
+        public static final int SEASON_COUNT = 28;  // u32
+        public static final int SEASON_LENGTH = 32; // i64, ticks
+        public static final int SEASON_ORIGIN = 40; // i64, the game time season 0 began
+        public static final int SIZE = 48;
+    }
+
+    /** IND_POWER_LINK (journaled): {@code sink}'s loads fed from {@code source}'s generators; source 0 ends it. */
+    public static final class PowerLink {
+        public static final int SINK = 24;   // u64
+        public static final int SOURCE = 32; // u64, 0 none
+        public static final int SIZE = 40;
+    }
+
+    /** IND_SPAWN_SAMPLE (journaled). */
+    public static final class SpawnSample {
+        public static final int DISTRICT = 24;       // u64
+        public static final int OBSERVED_TICKS = 32; // i64
+        public static final int DARK_BLOCKS = 40;    // i64
+        public static final int SPAWNS = 48;         // 4 x u32, by threat class
+        public static final int SIZE = 64;
+    }
+
+    /** IND_FIGHT (journaled), aux = threat class. */
+    public static final class Fight {
+        public static final int DISTRICT = 24;           // u64
+        public static final int ATTACKERS = 32;          // u32
+        public static final int ATTACKER_STRENGTH = 36;  // f32
+        public static final int ATTACKERS_KILLED = 40;   // u32
+        public static final int BLOCKS_DESTROYED = 44;   // u32
+        public static final int MACHINES_DESTROYED = 48; // u32
+        public static final int GUARDS_LOST = 52;        // u32
+        public static final int ITEMS_STOLEN = 56;       // i64
+        public static final int DURATION_TICKS = 64;     // i64
+        public static final int SIZE = 72;
+    }
+
+    /** IND_SURVEY (journaled), aux = flags (1 mobGriefing). */
+    public static final class Survey {
+        public static final int DISTRICT = 24;            // u64
+        public static final int REVISION = 32;            // u32
+        public static final int PERIMETER_COLUMNS = 36;   // u32
+        public static final int PERIMETER_GAPS = 40;      // u32
+        public static final int DARK_SPAWNABLE = 44;      // u32
+        public static final int MACHINE_BLOCKS = 48;      // u32
+        public static final int ROOFED_MACHINES = 52;     // u32
+        public static final int KILL_MACHINES_AT_GAPS = 56; // u32
+        public static final int AMMO_GOOD = 60;           // u32 (GOOD, 0 none)
+        public static final int TURRET_STRENGTH = 64;     // 4 x f32, by threat class
+        public static final int GUARDS = 80;              // 4 x u32, by threat class
+        public static final int AMMO_PER_ENGAGEMENT = 96; // u32
+        // 100: u32 reserved
+        public static final int SIZE = 104;
+
+        public static final int FLAG_MOB_GRIEFING = 1;
+    }
+
+    /** IND_SURVEY_BLOCKS (journaled), aux = n Block24. */
+    public static final class SurveyBlocks {
+        public static final int DISTRICT = 24; // u64
+        public static final int REVISION = 32; // u32
+        public static final int PART = 36;     // u32
+        public static final int BLOCKS = 40;   // n x Block24
+        /** Block24: i32 x, i32 y, i32 z, u32 state (BLOCK_STATE), u32 flags, u32 inventory (0xFFFFFFFF none). */
+        public static final int B_X = 0;
+        public static final int B_Y = 4;
+        public static final int B_Z = 8;
+        public static final int B_STATE = 12;
+        public static final int B_FLAGS = 16;
+        public static final int B_INVENTORY = 20;
+        public static final int BLOCK = 24;
+        public static final int MAX_BLOCKS = (0xFFF8 - BLOCKS) / BLOCK;
+
+        public static int size(int n) {
+            return BLOCKS + n * BLOCK;
+        }
+
+        public static final int FLAG_PERIMETER = 1;
+        public static final int FLAG_ROOFLESS = 2;
+        public static final int FLAG_MACHINE = 4;
+        public static final int FLAG_INVENTORY = 8;
+    }
+
+    /** Threat classes (IND_FIGHT aux, the SPAWNS, TURRET_STRENGTH and GUARDS arrays; wire.rs {@code class_code}). */
+    public static final class ThreatClass {
+        public static final int GROUND_MELEE = 0;
+        public static final int GROUND_RANGED = 1;
+        public static final int FLYING = 2;
+        public static final int SIEGE = 3;
+        public static final int COUNT = 4;
     }
 
     // ---- codes ------------------------------------------------------------------------------------

@@ -250,8 +250,10 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
 - **IND_CARRIAGE_DELTA:** applied to `Carriage.storage` through `TrainCargoManager`'s handlers (whose
   `changeDetected` resets the idle-cargo counter), wherever the train now is. Java journals
   IND_CARRIAGE_RESULT with what it applied.
-- **IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE:** these stores are level SavedData, so
-  Java applies them at once, loaded or not. Each is answered with the bridge's COMMAND_RESULT.
+- **IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE:** these stores are level SavedData, so Java applies them at
+  once, loaded or not. Each is answered with the bridge's COMMAND_RESULT.
+- **IND_CHANNEL_DELTA:** answered FAILED since I13's correction (2026-10-20): an Ender Transmission
+  channel joins its endpoints into one district and is no shared stock, so nothing applies it.
 - **IND_LEDGER:** a reply to IND_LEDGER_REQUEST, for the "District ledger" Display Source (I18).
   - **States:** 0 live, 1 learning, 2 learned (running abstractly), 3 stale, 4 not learnable,
     5 suspended, 6 damaged, 7 frozen out of season.
@@ -271,23 +273,32 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
 ## 6. The Java side (2026-10-20)
 
 Written overnight in the core's `industry` package and the Create plugin `mic_rtsim_create`
-(`neoforge/`); choices H1 to H29 in `docs/overnight-choices-industrymc.md`. The Java constants are
-`IndRecords.java`, which mirrors wire.rs field for field.
+(`neoforge/`); choices H1 to H32 in `docs/overnight-choices-industrymc.md`. The industry plugins (Ore
+Excavation, Diesel Generators, Ender Transmission, PowerGrid, Destroy, climate, radar) and the threat
+sampler followed the same day; choices Q1 to Q26 in `docs/overnight-choices-indplugins.md`. The Java
+constants are `IndRecords.java`, which mirrors wire.rs field for field (the contract test pins every
+record below against wire.rs fixtures).
 
-- **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_LEDGER_REQUEST, IND_WATCHED; IND_DISTRICT,
-  IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED, IND_EDIT (aux 1, 2, 4),
-  IND_DISCARD (aux 1), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_PORT (kinds 1, 3, 4, 5, 6),
-  IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (unloaded districts only, H30), IND_RECONCILE_RESULT,
-  IND_CARRIAGE_RESULT.
-- **Applied:** IND_CHUNK_RECONCILE (§4.1, every step), IND_CARRIAGE_DELTA, IND_LEDGER. IND_CHANNEL_DELTA,
-  IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are answered COMMAND_RESULT(failed): no plugin applies them yet.
-- **Not sent yet:** IND_DEPOSIT_SAMPLE, IND_CHANNEL_SAMPLE, IND_CONDITIONS, IND_POWER_LINK,
+- **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_LEDGER_REQUEST, IND_WATCHED, IND_DEPOSIT_SAMPLE (Ore
+  Excavation, Diesel, Destroy crude oil and pollution);
+  IND_DISTRICT, IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED, IND_EDIT (aux 1, 2,
+  4), IND_DISCARD (aux 1, 5), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_CONDITIONS, IND_POWER_LINK, IND_PORT
+  (kinds 1, 3, 4, 5, 6), IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (loaded and unloaded
+  districts; the mail is out of the train's cargo port, Q6), IND_RECONCILE_RESULT, IND_CARRIAGE_RESULT,
   IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY, IND_SURVEY_BLOCKS.
-- **Forms Java decides:** a GOOD component hash is 16 hex digits (H2); a BLOCK_STATE name is
-  `BlockStateParser.serialize(state)`, which a destroy entry is compared with; station and train ids are
-  SplitMix64 of Create's UUIDs (H19); the counterpart of a player port is the player's UUID halves XORed.
-- **A deposit delta** in a reconcile (inventory 0xFFFFFFFF) is reported with applied 0 until a deposit
-  plugin exists.
+- **Applied:** IND_CHUNK_RECONCILE (§4.1, every step; a deposit delta through its plugin, in the chunk's
+  tick), IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA (by
+  the plugin that owns the good: Diesel's chunk oil, at once), IND_WRITE_PACKAGE (a loaded postbox or the
+  station port's offline buffer), IND_LEDGER.
+- **Forms Java decides:** a GOOD component hash is 16 hex digits (H2); a deposit good is
+  `d/0/<kind id>/<16 hex digits of FNV-1a over dimension|chunkX|chunkZ>`, or over `pollution|<district>` for
+  attributed pollution (Q3, Q9); a BLOCK_STATE name is `BlockStateParser.serialize(state)`, which a destroy
+  entry is compared with; station and train ids are SplitMix64 of Create's UUIDs (H19); the counterpart
+  of a player port is the player's UUID halves XORed.
+- **Not sent:** temperature (IND_CONDITIONS has no field for it; proposal IND_CLIMATE, Q20);
+  IND_CHANNEL_SAMPLE and channel ports (IND_PORT kind 7): I13 as corrected makes an Ender Transmission
+  channel's endpoints one district (plugin links), its buffer machinery inside it (Q7). The records stay
+  in wire.rs for the engine's owner to retire.
 
 ### 6.1 Proposal: IND_APPROACH (H23)
 

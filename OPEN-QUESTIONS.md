@@ -40,6 +40,9 @@ or deferred. The answers are in DECISIONS.md under "Answers to the open question
 2. **Do random ticks happen under chunk loaders?** `pack/modDocs/create-power-loader.md` says crops need
    a nearby player; INDUSTRY.md reads NeoForge as random-ticking under a ticking ticket. Crops in a
    loader-held chunk with nobody within 128 blocks settle it.
+3. **Industry plugin paths no GameTest has run yet:** spawn observation with a real player (the test
+   starts it by hand), an assembled Create Radars turret, a real scheduled train, and Ender Transmission
+   on a Sable vehicle.
 
 ## Overnight choices
 

@@ -222,7 +222,11 @@ public final class Reconciler {
             BlockPos pos = new BlockPos(r.getInt(e + IndRecords.ChunkReconcile.D_X), r.getInt(e + IndRecords.ChunkReconcile.D_Y), r.getInt(e + IndRecords.ChunkReconcile.D_Z));
             long delta = r.getLong(e + IndRecords.ChunkReconcile.D_DELTA);
             long applied = 0;
-            if (inventory != IndRecords.DEPOSIT_INVENTORY && (pos.getX() >> 4) == cp.x && (pos.getZ() >> 4) == cp.z) {
+            if (inventory == IndRecords.DEPOSIT_INVENTORY) {
+                // A finite deposit of this chunk (class d): its plugin writes it (Ore Excavation's vein,
+                // Destroy's crude oil), in this tick, with the epoch below (I11, F15).
+                applied = ind.applyDeposit(level, cp.x, cp.z, ind.engineName(IndRecords.DICT_GOOD, goodId), delta);
+            } else if ((pos.getX() >> 4) == cp.x && (pos.getZ() >> 4) == cp.z) {
                 Goods.Name good = Goods.parse(ind.engineName(IndRecords.DICT_GOOD, goodId));
                 if (good != null) {
                     District.Inventory inv = d == null ? null : d.inventoryAt(pos);
@@ -235,8 +239,7 @@ public final class Reconciler {
                     }
                 }
             }
-            // Deposits (class d) need their plugin (Ore Excavation, Destroy crude); none is written yet,
-            // so they are reported unapplied and the engine keeps them owed.
+            // A deposit no plugin owns is reported unapplied, and the engine keeps it owed.
             if (applied != delta)
                 shortfalls++;
             results[j] = new long[] {inventory & 0xFFFF_FFFFL, goodId & 0xFFFF_FFFFL, delta, applied};

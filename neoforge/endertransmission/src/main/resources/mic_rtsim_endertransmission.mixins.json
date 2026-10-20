@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.minecraftindustrialcomplex.mic_rtsim_endertransmission.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "AbstractMatterTransmitterBlockEntityMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
