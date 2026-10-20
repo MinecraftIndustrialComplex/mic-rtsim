@@ -6,7 +6,10 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -173,6 +176,252 @@ class NativeCodecTest {
         }
         assertEquals(200, n);
         assertEquals(bytes.length, at);
+    }
+
+    @Test
+    void phase1OpcodesAreTheAgreedNumbers() {
+        assertEquals(16, NativeCodec.MARKET);
+        assertEquals(17, NativeCodec.MERCHANT_OFFERS);
+        assertEquals(18, NativeCodec.WRITE_GOSSIP);
+        assertEquals(19, NativeCodec.SENTIMENT);
+        assertEquals(20, NativeCodec.PLACE_HOUSE);
+        assertEquals(21, NativeCodec.SPAWN_RESIDENT);
+        assertEquals(22, NativeCodec.SCRIPT_VILLAGE);
+        assertEquals(23, NativeCodec.P1_SPAWN_NEAR);
+        assertEquals(24, NativeCodec.P1_ADVANCE);
+    }
+
+    @Test
+    void marketEncodesEveryFieldInOrder() {
+        byte[] bytes = new NativeCodec.Orders().market(0x0102030405060708L, 9_000_000_000L, "minecraft:emerald",
+                -5_000_000_000L, 77, -3, 4, List.of(
+                        new ScriptedEngine.GoodSpec("minecraft:wheat", 123_456_789_012L, -2, 1_500_000L, 7, 11),
+                        new ScriptedEngine.GoodSpec("modid:größe", 0, 0, 0, -1, -2))).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.MARKET);
+        assertEquals(bytes.length, end);
+        assertEquals(0x0102030405060708L, r.u64(), "village");
+        assertEquals(9_000_000_000L, r.u64(), "asOfObsSeq");
+        assertEquals("minecraft:emerald", r.str(), "currency");
+        assertEquals(-5_000_000_000L, r.u64(), "treasury is a signed 64-bit");
+        assertEquals(77, r.u64(), "treasuryTarget");
+        assertEquals(-3, r.u32(), "worstNum");
+        assertEquals(4, r.u32(), "worstDen");
+        assertEquals(2, r.u32(), "good count");
+        assertEquals("minecraft:wheat", r.str());
+        assertEquals(123_456_789_012L, r.u64(), "stock");
+        assertEquals(-2, r.u64(), "target");
+        assertEquals(1_500_000L, r.u64(), "anchor");
+        assertEquals(7, r.u32(), "rNum");
+        assertEquals(11, r.u32(), "rDen");
+        assertEquals("modid:größe", r.str());
+        assertEquals(0, r.u64());
+        assertEquals(0, r.u64());
+        assertEquals(0, r.u64());
+        assertEquals(-1, r.u32());
+        assertEquals(-2, r.u32());
+        assertEquals(bytes.length, r.b.position(), "no padding");
+    }
+
+    @Test
+    void marketWithNoGoodsIsJustItsHeaderAndCount() {
+        byte[] bytes = new NativeCodec.Orders().market(1, 2, "", 3, 4, 5, 6, List.of()).toBytes();
+        Reader r = new Reader(bytes);
+        r.header(NativeCodec.MARKET);
+        assertEquals(1, r.u64());
+        assertEquals(2, r.u64());
+        assertEquals("", r.str());
+        assertEquals(3, r.u64());
+        assertEquals(4, r.u64());
+        assertEquals(5, r.u32());
+        assertEquals(6, r.u32());
+        assertEquals(0, r.u32());
+        assertEquals(bytes.length, r.b.position());
+        assertEquals(8 + 8 + 8 + 4 + 8 + 8 + 4 + 4 + 4, bytes.length);
+    }
+
+    @Test
+    void merchantOffersEncodeANullSecondCostAsTheEmptyString() {
+        byte[] bytes = new NativeCodec.Orders().merchantOffers(0x1122334455667788L, 7, 2, List.of(
+                new ScriptedEngine.OfferSpec("minecraft:emerald", 5, null, 0, "minecraft:bread", 3, 12, 1),
+                new ScriptedEngine.OfferSpec("minecraft:wheat", 20, "minecraft:paper", 2, "minecraft:emerald", 1, -1, 2))).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.MERCHANT_OFFERS);
+        assertEquals(bytes.length, end);
+        assertEquals(0x1122334455667788L, r.u64(), "agent");
+        assertEquals(7, r.u32(), "epoch");
+        assertEquals(2, r.u32(), "member");
+        assertEquals(2, r.u32(), "offer count");
+        assertEquals("minecraft:emerald", r.str(), "costA");
+        assertEquals(5, r.u32(), "costACount");
+        assertEquals("", r.str(), "a null costB is the empty string");
+        assertEquals(0, r.u32(), "costBCount");
+        assertEquals("minecraft:bread", r.str(), "result");
+        assertEquals(3, r.u32(), "resultCount");
+        assertEquals(12, r.u32(), "maxUses");
+        assertEquals(1, r.u32(), "flags");
+        assertEquals("minecraft:wheat", r.str());
+        assertEquals(20, r.u32());
+        assertEquals("minecraft:paper", r.str());
+        assertEquals(2, r.u32());
+        assertEquals("minecraft:emerald", r.str());
+        assertEquals(1, r.u32());
+        assertEquals(-1, r.u32());
+        assertEquals(2, r.u32());
+        assertEquals(bytes.length, r.b.position(), "no padding");
+    }
+
+    @Test
+    void writeGossipEncodesEveryFieldInOrder() {
+        UUID player = new UUID(0x0123456789ABCDEFL, 0xFEDCBA9876543210L);
+        byte[] bytes = new NativeCodec.Orders().writeGossip(0xAABBCCDDEEFF0011L, 12345, player, 4, -17, 6, 1).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.WRITE_GOSSIP);
+        assertEquals(bytes.length, end);
+        assertEquals(0xAABBCCDDEEFF0011L, r.u64(), "opId");
+        assertEquals(12345, r.u64(), "village");
+        assertEquals(0x0123456789ABCDEFL, r.u64(), "player most significant bits");
+        assertEquals(0xFEDCBA9876543210L, r.u64(), "player least significant bits");
+        assertEquals(4, r.u32(), "gossipType");
+        assertEquals(-17, r.u32(), "amount");
+        assertEquals(6, r.u32(), "report");
+        assertEquals(1, r.u32(), "flags");
+        assertEquals(bytes.length, r.b.position());
+        assertEquals(8 + 8 + 8 + 8 + 8 + 4 + 4 + 4 + 4, bytes.length);
+    }
+
+    @Test
+    void sentimentEncodesEntriesInTheMapsOrderAndTheReplaceFlag() {
+        UUID a = new UUID(1, 2);
+        UUID b = new UUID(-3, -4);
+        Map<UUID, Integer> entries = new LinkedHashMap<>();
+        entries.put(b, -128);
+        entries.put(a, 127);
+
+        byte[] bytes = new NativeCodec.Orders().sentiment(99, -60, 60, true, entries).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.SENTIMENT);
+        assertEquals(bytes.length, end);
+        assertEquals(99, r.u64(), "holder");
+        assertEquals(-60, r.u32(), "dislike");
+        assertEquals(60, r.u32(), "friend");
+        assertEquals(1, r.u32(), "flags: replace");
+        assertEquals(2, r.u32(), "entry count");
+        assertEquals(-3, r.u64());
+        assertEquals(-4, r.u64());
+        assertEquals(-128, r.u32());
+        assertEquals(1, r.u64());
+        assertEquals(2, r.u64());
+        assertEquals(127, r.u32());
+        assertEquals(bytes.length, r.b.position(), "no padding");
+        assertEquals(8 + 8 + 4 + 4 + 4 + 4 + 2 * 20, bytes.length);
+
+        byte[] update = new NativeCodec.Orders().sentiment(99, -60, 60, false, Map.of()).toBytes();
+        r = new Reader(update);
+        r.header(NativeCodec.SENTIMENT);
+        r.u64();
+        r.u32();
+        r.u32();
+        assertEquals(0, r.u32(), "flags: update");
+        assertEquals(0, r.u32(), "no entries");
+        assertEquals(update.length, r.b.position());
+    }
+
+    @Test
+    void placeHouseEncodesEveryFieldInOrderAndNullProcessorsAsTheEmptyString() {
+        byte[] bytes = new NativeCodec.Orders().placeHouse(0x1122334455667788L, 31, "minecraft:overworld",
+                "minecraft:village/plains/houses/plains_small_house_1", null, -100, 64, 2_000_000_000, 3, 2, 3, 24,
+                0x7EDCBA9876543210L, -2).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.PLACE_HOUSE);
+        assertEquals(bytes.length, end);
+        assertEquals(0x1122334455667788L, r.u64(), "opId");
+        assertEquals(31, r.u64(), "village");
+        assertEquals("minecraft:overworld", r.str(), "dimension");
+        assertEquals("minecraft:village/plains/houses/plains_small_house_1", r.str(), "template");
+        assertEquals("", r.str(), "null processors are the empty string");
+        assertEquals(-100, r.u32(), "x");
+        assertEquals(64, r.u32(), "y");
+        assertEquals(2_000_000_000, r.u32(), "z");
+        assertEquals(3, r.u32(), "rotation");
+        assertEquals(2, r.u32(), "mirror");
+        assertEquals(3, r.u32(), "flags");
+        assertEquals(24, r.u32(), "radius");
+        assertEquals(0x7EDCBA9876543210L, r.u64(), "seed");
+        assertEquals(-2, r.u32(), "yOffset");
+        assertEquals(bytes.length, r.b.position(), "no padding");
+
+        byte[] named = new NativeCodec.Orders().placeHouse(1, 2, "d", "t", "minecraft:village/plains/zombie", 0, 0, 0, 0, 0, 0, 0, 0, 0).toBytes();
+        r = new Reader(named);
+        r.header(NativeCodec.PLACE_HOUSE);
+        r.u64();
+        r.u64();
+        assertEquals("d", r.str());
+        assertEquals("t", r.str());
+        assertEquals("minecraft:village/plains/zombie", r.str());
+    }
+
+    @Test
+    void spawnResidentEncodesEveryFieldInOrderAndNullProfessionAsTheEmptyString() {
+        byte[] bytes = new NativeCodec.Orders().spawnResident(0x1122334455667788L, 31, "minecraft:overworld",
+                "ribbits:ribbit", null, 1, 10.5, -64.25, 1e9, 0x0FEDCBA987654321L).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.SPAWN_RESIDENT);
+        assertEquals(bytes.length, end);
+        assertEquals(0x1122334455667788L, r.u64(), "opId");
+        assertEquals(31, r.u64(), "village");
+        assertEquals("minecraft:overworld", r.str(), "dimension");
+        assertEquals("ribbits:ribbit", r.str(), "body");
+        assertEquals("", r.str(), "null profession is the empty string");
+        assertEquals(1, r.u32(), "flags");
+        assertEquals(10.5, r.f64(), "x");
+        assertEquals(-64.25, r.f64(), "y");
+        assertEquals(1e9, r.f64(), "z");
+        assertEquals(0x0FEDCBA987654321L, r.u64(), "house");
+        assertEquals(bytes.length, r.b.position(), "no padding");
+
+        byte[] named = new NativeCodec.Orders().spawnResident(1, 2, "d", "b", "minecraft:farmer", 0, 0, 0, 0, 0).toBytes();
+        r = new Reader(named);
+        r.header(NativeCodec.SPAWN_RESIDENT);
+        r.u64();
+        r.u64();
+        assertEquals("d", r.str());
+        assertEquals("b", r.str());
+        assertEquals("minecraft:farmer", r.str());
+    }
+
+    @Test
+    void scriptVillageAndTheTestModeOrdersEncodeTheirFields() {
+        byte[] bytes = new NativeCodec.Orders()
+                .scriptVillage(0x1122334455667788L)
+                .phase1SpawnNear(0x0102030405060708L, 5, "minecraft:overworld", 1.5, -64.25, 1e9, 48)
+                .phase1Advance(24_000L)
+                .toBytes();
+        Reader r = new Reader(bytes);
+
+        int start = r.b.position();
+        int end = r.header(NativeCodec.SCRIPT_VILLAGE);
+        assertEquals(0x1122334455667788L, r.u64(), "village");
+        assertEquals(end, r.b.position());
+        assertEquals(16, end - start);
+
+        start = r.b.position();
+        end = r.header(NativeCodec.P1_SPAWN_NEAR);
+        assertEquals(0x0102030405060708L, r.u64(), "agent");
+        assertEquals(5, r.u32(), "epoch");
+        assertEquals("minecraft:overworld", r.str(), "dimension");
+        assertEquals(1.5, r.f64(), "x");
+        assertEquals(-64.25, r.f64(), "y");
+        assertEquals(1e9, r.f64(), "z");
+        assertEquals(48, r.u32(), "radius");
+        assertEquals(end, r.b.position());
+        assertEquals(8 + 8 + 4 + 4 + 19 + 24 + 4, end - start);
+
+        start = r.b.position();
+        end = r.header(NativeCodec.P1_ADVANCE);
+        assertEquals(24_000L, r.u64(), "ticks");
+        assertEquals(16, end - start);
+        assertEquals(bytes.length, r.b.position());
     }
 
     /** One received-log entry as rtsim-jni writes it. */

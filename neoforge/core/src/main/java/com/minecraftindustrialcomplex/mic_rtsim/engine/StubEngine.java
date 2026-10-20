@@ -622,9 +622,11 @@ public final class StubEngine implements ScriptedEngine {
 
     // ---- phase 1 scripting ----------------------------------------------------------------------
 
-    /** One good of a scripted MARKET, in rtsim-trade units (thousandths; millionths of a coin per item). */
-    public record GoodSpec(String item, long stock, long target, long anchor, int rNum, int rDen) {}
+    /** A test scripts this village's phase 1 commands; the stub decides nothing, so there is nothing to switch off. */
+    @Override
+    public void scriptVillage(long village) {}
 
+    @Override
     public void market(long village, long asOfObsSeq, String currency, long treasury, long treasuryTarget, int worstNum, int worstDen,
                        List<GoodSpec> goods) {
         script(out -> {
@@ -656,10 +658,7 @@ public final class StubEngine implements ScriptedEngine {
         });
     }
 
-    /** One offer of a scripted MERCHANT_OFFERS; costB null for none. */
-    public record OfferSpec(String costA, int costACount, String costB, int costBCount, String result, int resultCount,
-                            int maxUses, int flags) {}
-
+    @Override
     public void merchantOffers(long agent, int epoch, int member, List<OfferSpec> offers) {
         script(out -> {
             int[][] ids = new int[offers.size()][3];
@@ -692,6 +691,7 @@ public final class StubEngine implements ScriptedEngine {
         });
     }
 
+    @Override
     public void writeGossip(long opId, long village, java.util.UUID player, int gossipType, int amount, int report, int flags) {
         script(out -> {
             int at = out.reserve(Cmd.WRITE_GOSSIP, Cmd.WriteGossip.SIZE, 0);
@@ -709,6 +709,7 @@ public final class StubEngine implements ScriptedEngine {
         });
     }
 
+    @Override
     public void sentiment(long holder, int dislike, int friend, boolean replace, Map<java.util.UUID, Integer> entries) {
         List<Map.Entry<java.util.UUID, Integer>> list = new ArrayList<>(entries.entrySet());
         script(out -> {
@@ -729,6 +730,7 @@ public final class StubEngine implements ScriptedEngine {
         });
     }
 
+    @Override
     public void placeHouse(long opId, long village, String dimension, String template, String processors, int x, int y, int z,
                            int rotation, int mirror, int flags, int radius, long seed, int yOffset) {
         script(out -> {
@@ -756,6 +758,7 @@ public final class StubEngine implements ScriptedEngine {
         });
     }
 
+    @Override
     public void spawnResident(long opId, long village, String dimension, String body, String profession, int flags,
                               double x, double y, double z, long house) {
         script(out -> {
