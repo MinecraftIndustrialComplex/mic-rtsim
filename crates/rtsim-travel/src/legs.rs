@@ -46,9 +46,8 @@ impl Path {
         }
         let f = i128::from(t.0 - t0);
         let span = i128::from(t1 - t0);
-        let lerp = |a: i32, b: i32| {
-            (i128::from(a) + (i128::from(b) - i128::from(a)) * f / span) as i64
-        };
+        let lerp =
+            |a: i32, b: i32| (i128::from(a) + (i128::from(b) - i128::from(a)) * f / span) as i64;
         (lerp(self.x0, self.x1), lerp(self.z0, self.z1))
     }
 }
@@ -126,7 +125,9 @@ impl LegIndex {
     }
 
     pub fn is_live(&self, s: Stamp) -> bool {
-        self.legs.get(s.leg).is_some_and(|r| r.generation == s.generation)
+        self.legs
+            .get(s.leg)
+            .is_some_and(|r| r.generation == s.generation)
     }
 
     pub fn is_meeting_live(&self, m: &Meeting) -> bool {
@@ -199,7 +200,10 @@ impl LegIndex {
         };
         let before = v.len();
         let legs = &self.legs;
-        v.retain(|s| legs.get(s.leg).is_some_and(|r| r.generation == s.generation));
+        v.retain(|s| {
+            legs.get(s.leg)
+                .is_some_and(|r| r.generation == s.generation)
+        });
         self.stats.stale_dropped += (before - v.len()) as u64;
         let mut out = v.clone();
         out.sort();

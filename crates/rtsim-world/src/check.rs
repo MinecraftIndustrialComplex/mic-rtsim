@@ -77,24 +77,31 @@ impl World {
                 let e = &self.edges[d.edge as usize];
                 let o = &e.dirs[d.dir as usize];
                 for (g, p) in o.goods.iter().chain(o.pay.iter()) {
-                    *dep.entry(*g).or_default() += (0..=b).map(|q| i128::from(p.rate_at(q))).sum::<i128>();
+                    *dep.entry(*g).or_default() +=
+                        (0..=b).map(|q| i128::from(p.rate_at(q))).sum::<i128>();
                 }
                 for (g, p) in &o.raid {
-                    *dep.entry(*g).or_default() += (0..=b).map(|q| i128::from(p.rate_at(q))).sum::<i128>();
+                    *dep.entry(*g).or_default() +=
+                        (0..=b).map(|q| i128::from(p.rate_at(q))).sum::<i128>();
                 }
                 let n = &e.dirs[1 - d.dir as usize];
                 for (g, p) in n.goods.iter().chain(n.pay.iter()) {
-                    *arr.entry(*g).or_default() += (0..=b).map(|q| i128::from(p.arrival_at(q))).sum::<i128>();
+                    *arr.entry(*g).or_default() +=
+                        (0..=b).map(|q| i128::from(p.arrival_at(q))).sum::<i128>();
                 }
             }
             for r in &self.nodes[i].raids_in {
                 for (g, p) in &self.edges[r.edge as usize].dirs[r.dir as usize].raid {
-                    *arr.entry(*g).or_default() += (0..=b).map(|q| i128::from(p.arrival_at(q))).sum::<i128>();
+                    *arr.entry(*g).or_default() +=
+                        (0..=b).map(|q| i128::from(p.arrival_at(q))).sum::<i128>();
                 }
             }
             for (gi, l) in m.lines.iter().enumerate() {
                 let g = GoodId(gi as u16);
-                let (pd, pa) = (dep.get(&g).copied().unwrap_or(0), arr.get(&g).copied().unwrap_or(0));
+                let (pd, pa) = (
+                    dep.get(&g).copied().unwrap_or(0),
+                    arr.get(&g).copied().unwrap_or(0),
+                );
                 if pd != l.book.departed || pa != l.book.arrived {
                     out.push((i, g, l.book.departed, pd, l.book.arrived, pa));
                 }

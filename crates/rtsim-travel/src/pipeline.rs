@@ -46,7 +46,10 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(delay: u64) -> Self {
-        assert!(delay >= 1, "a pipeline needs a delay of at least one quantum");
+        assert!(
+            delay >= 1,
+            "a pipeline needs a delay of at least one quantum"
+        );
         Pipeline {
             delay,
             segs: VecDeque::new(),

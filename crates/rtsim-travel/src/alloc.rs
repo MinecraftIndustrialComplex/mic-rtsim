@@ -73,7 +73,10 @@ mod tests {
 
     #[test]
     fn best_margin_first_up_to_want() {
-        let g = allocate(100, vec![c(1, 5, 80), c(2, 9, 50), c(3, -1, 500), c(4, 0, 500)]);
+        let g = allocate(
+            100,
+            vec![c(1, 5, 80), c(2, 9, 50), c(3, -1, 500), c(4, 0, 500)],
+        );
         let rate = |e: u32| g.iter().find(|x| x.dir.edge == e).unwrap().rate;
         assert_eq!(rate(2), 50);
         assert_eq!(rate(1), 50);

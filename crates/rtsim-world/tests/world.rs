@@ -31,16 +31,37 @@ fn busiest(w: &World, from: usize) -> Option<rtsim_travel::CaravanKey> {
 
 #[derive(Clone, Debug)]
 enum Op {
-    Trade { node: usize, good: usize, items: i64, buy: bool },
-    Rob { node: usize, share: i64 },
-    Rescue { node: usize },
-    TakeLlama { node: usize },
-    KillLeader { node: usize },
+    Trade {
+        node: usize,
+        good: usize,
+        items: i64,
+        buy: bool,
+    },
+    Rob {
+        node: usize,
+        share: i64,
+    },
+    Rescue {
+        node: usize,
+    },
+    TakeLlama {
+        node: usize,
+    },
+    KillLeader {
+        node: usize,
+    },
 }
 
 fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
-        (0usize..10, 0usize..7, 1i64..80, any::<bool>()).prop_map(|(node, good, items, buy)| Op::Trade { node, good, items, buy }),
+        (0usize..10, 0usize..7, 1i64..80, any::<bool>()).prop_map(|(node, good, items, buy)| {
+            Op::Trade {
+                node,
+                good,
+                items,
+                buy,
+            }
+        }),
         (0usize..10, 0i64..=1000).prop_map(|(node, share)| Op::Rob { node, share }),
         (0usize..10).prop_map(|node| Op::Rescue { node }),
         (0usize..10).prop_map(|node| Op::TakeLlama { node }),
@@ -61,7 +82,7 @@ proptest! {
         let goods = [ids.wheat, ids.bread, ids.leather, ids.iron, ids.wool, ids.slime, ids.clay];
         let mut t = Tick::from_days(2);
         for (gap_quanta, o) in ops {
-            t = t + gap_quanta * 1000;
+            t += gap_quanta * 1000;
             w.run_until(t);
             match o {
                 Op::Trade { node, good, items, buy } => {
@@ -138,22 +159,39 @@ fn a_robbery_travels_only_with_travellers() {
         w.run_until(Tick(t));
         for (i, n) in w.nodes.iter().enumerate() {
             if learned[i].is_none() && w.knowledge.knows(n.actor, report) {
-                assert!(w.stats.deliveries > deliveries_before || w.stats.caravan_arrivals > 0,
-                    "node {i} learned with no traveller arriving");
+                assert!(
+                    w.stats.deliveries > deliveries_before || w.stats.caravan_arrivals > 0,
+                    "node {i} learned with no traveller arriving"
+                );
                 // At least the shortest edge's travel time after the first village knew.
                 let shortest = w.edges.iter().map(|e| e.d).min().unwrap() * q;
-                assert!(t >= arrive.0 + shortest, "node {i} learned faster than any caravan walks");
+                assert!(
+                    t >= arrive.0 + shortest,
+                    "node {i} learned faster than any caravan walks"
+                );
                 learned[i] = Some(Tick(t));
             }
         }
     }
     let spread = learned.iter().filter(|x| x.is_some()).count();
-    assert!(spread >= 3, "the news should have spread along the roads: {learned:?}");
+    assert!(
+        spread >= 3,
+        "the news should have spread along the roads: {learned:?}"
+    );
     // Nodes that learned did so in the order of the roads: never before a neighbour that knew.
     for (i, l) in learned.iter().enumerate() {
-        if let Some(ti) = l && i != first {
-            let via = w.nodes[i].neighbours.iter().filter_map(|&j| learned[j]).min();
-            assert!(via.is_some_and(|tj| tj < *ti), "node {i} learned before any neighbour did");
+        if let Some(ti) = l
+            && i != first
+        {
+            let via = w.nodes[i]
+                .neighbours
+                .iter()
+                .filter_map(|&j| learned[j])
+                .min();
+            assert!(
+                via.is_some_and(|tj| tj < *ti),
+                "node {i} learned before any neighbour did"
+            );
         }
     }
 }
@@ -202,18 +240,30 @@ fn ribbit_grudges_raise_prices() {
     let stranger = w.player(2);
     w.run_until(Tick::from_days(3));
     let mirewater = 6;
-    let fair = w.quote(mirewater, stranger, ids.bread, 2, Side::Buy).expect("bread for sale");
+    let fair = w
+        .quote(mirewater, stranger, ids.bread, 2, Side::Buy)
+        .expect("bread for sale");
     let actor = w.nodes[mirewater].actor;
     w.knowledge.adjust(actor, villain, -120, w.now());
-    let dear = w.quote(mirewater, villain, ids.bread, 2, Side::Buy).expect("still for sale");
+    let dear = w
+        .quote(mirewater, villain, ids.bread, 2, Side::Buy)
+        .expect("still for sale");
     assert!(dear.coins > fair.coins, "{dear:?} vs {fair:?}");
     w.knowledge.adjust(actor, stranger, 120, w.now());
-    assert_eq!(w.quote(mirewater, stranger, ids.bread, 2, Side::Buy).unwrap(), fair);
+    assert_eq!(
+        w.quote(mirewater, stranger, ids.bread, 2, Side::Buy)
+            .unwrap(),
+        fair
+    );
     // A vanilla village leaves reputation to vanilla gossip (C20): its quote stays fair.
     let brindle = 0;
     let b_fair = w.quote(brindle, stranger, ids.bread, 2, Side::Buy).unwrap();
-    w.knowledge.adjust(w.nodes[brindle].actor, villain, -120, w.now());
-    assert_eq!(w.quote(brindle, villain, ids.bread, 2, Side::Buy).unwrap(), b_fair);
+    w.knowledge
+        .adjust(w.nodes[brindle].actor, villain, -120, w.now());
+    assert_eq!(
+        w.quote(brindle, villain, ids.bread, 2, Side::Buy).unwrap(),
+        b_fair
+    );
 }
 
 /// A trader killed on the road leaves its grudge with its home market (C24: heirs inherit
@@ -231,9 +281,15 @@ fn heirs_and_vanilla_gossip() {
     let attack = w.kill_member(c, 0, player).unwrap();
     assert_eq!(attack.outcome, CaravanOutcome::Dissolved);
     let after = w.knowledge.sentiment(home, player, w.now());
-    assert!(after < before, "home inherited no grudge: {before} -> {after}");
+    assert!(
+        after < before,
+        "home inherited no grudge: {before} -> {after}"
+    );
     w.run_until(Tick::from_days(9));
     let cmds = w.take_commands();
-    assert!(cmds.iter().any(|c| matches!(c, rtsim_world::Command::VanillaGossip(g) if g.player == player)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, rtsim_world::Command::VanillaGossip(g) if g.player == player))
+    );
     w.check_conserved(w.now()).unwrap();
 }

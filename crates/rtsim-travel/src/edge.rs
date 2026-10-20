@@ -14,7 +14,6 @@ use rtsim_kernel::clock::Tick;
 use rtsim_knowledge::BoardCursor;
 use rtsim_trade::{Amount, GoodId, Goods, MILLI};
 
-
 use crate::lattice::Lattice;
 use crate::pipeline::Pipeline;
 
@@ -96,7 +95,10 @@ impl Dir {
     }
 
     pub fn heap_bytes(&self) -> usize {
-        self.pipelines().map(|(_, p)| p.heap_bytes() + 48).sum::<usize>() + 128
+        self.pipelines()
+            .map(|(_, p)| p.heap_bytes() + 48)
+            .sum::<usize>()
+            + 128
     }
 }
 
@@ -167,7 +169,8 @@ pub fn caravan_period(volume_slot_milli: i64, slots: u32, d: u64, idle: u64) -> 
 pub fn split_for_raid(rate: Amount, predation: Option<Predation>) -> (Amount, Amount) {
     match predation {
         Some(p) if rate > 0 => {
-            let taken = (i128::from(rate) * i128::from(p.share_milli.clamp(0, 1000)) / 1000) as Amount;
+            let taken =
+                (i128::from(rate) * i128::from(p.share_milli.clamp(0, 1000)) / 1000) as Amount;
             (rate - taken, taken)
         }
         _ => (rate, 0),

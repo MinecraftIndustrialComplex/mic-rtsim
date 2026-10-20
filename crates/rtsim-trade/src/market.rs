@@ -247,8 +247,8 @@ impl Market {
             self.lines[i].rates.cap = cap.max(0);
             let prod = self.production_now(g);
             for inp in &self.goods[i].inputs {
-                let need = (i128::from(prod) * i128::from(inp.per)
-                    / i128::from(inp.yield_.max(1))) as Amount;
+                let need = (i128::from(prod) * i128::from(inp.per) / i128::from(inp.yield_.max(1)))
+                    as Amount;
                 uses[inp.good.index()] += need;
             }
         }
@@ -448,7 +448,12 @@ impl Market {
                     let (mut lo, mut hi) = (n / 2 + 1, n);
                     while lo < hi {
                         let mid = lo + (hi - lo) / 2;
-                        if curve.sell_value(s, mid * MILLI).scaled(markup).coins_floor() >= 1 {
+                        if curve
+                            .sell_value(s, mid * MILLI)
+                            .scaled(markup)
+                            .coins_floor()
+                            >= 1
+                        {
                             hi = mid
                         } else {
                             lo = mid + 1
@@ -642,10 +647,7 @@ mod tests {
         // 40 wheat from the target to twice it are worth 1.25 coins, and each one past that the
         // floor of 0.0125: 200 wheat are worth 3.25 coins, more than the 2 in the treasury.
         assert_eq!(m.quote_sell(GoodId(0), 100, FAIR).unwrap().coins, 2);
-        assert_eq!(
-            m.quote_sell(GoodId(0), 200, FAIR),
-            Err(Refusal::NoMoney)
-        );
+        assert_eq!(m.quote_sell(GoodId(0), 200, FAIR), Err(Refusal::NoMoney));
         let q = m.quote_sell(GoodId(0), 20, FAIR).unwrap();
         assert!(q.coins <= 2);
         let o = m.offer(GoodId(0), OfferSide::MarketBuys, FAIR).unwrap();
@@ -657,10 +659,7 @@ mod tests {
     fn cash_refused_above_twice_target() {
         let m = tiny(40 * MILLI, 41 * MILLI);
         assert!(m.cash_refused());
-        assert_eq!(
-            m.quote_buy(GoodId(0), 1, FAIR),
-            Err(Refusal::CashRefused)
-        );
+        assert_eq!(m.quote_buy(GoodId(0), 1, FAIR), Err(Refusal::CashRefused));
         assert!(m.quote_barter(GoodId(1), 1, GoodId(0)) > 0);
     }
 

@@ -166,9 +166,9 @@ impl Caravan {
 
     /// Whether anyone is left to carry on (a trader or a merchant alive and present).
     pub fn has_leader(&self) -> bool {
-        self.members.iter().any(|m| {
-            m.alive && m.present && matches!(m.body, Body::Trader | Body::RibbitMerchant)
-        })
+        self.members
+            .iter()
+            .any(|m| m.alive && m.present && matches!(m.body, Body::Trader | Body::RibbitMerchant))
     }
 
     /// Takes up to `amount` of `g` from the members, first carrier first; returns what was taken.
@@ -241,7 +241,11 @@ pub fn load(
         let per_slot = i64::from(goods.get(g).stack.max(1)) * MILLI;
         while left > 0 {
             let last = ci + 1 >= carriers.len();
-            let fit = if last { left } else { (room * per_slot).min(left) };
+            let fit = if last {
+                left
+            } else {
+                (room * per_slot).min(left)
+            };
             if fit > 0 {
                 *members[carriers[ci]].cargo.entry(g).or_default() += fit;
                 left -= fit;

@@ -73,7 +73,13 @@ pub fn transport_labour(goods: &Goods, tun: &Tunables, g: GoodId, d_quanta: u64)
 
 /// Transport cost per item of `g` over `d_quanta` in coins of a culture whose mint costs `l_mint`
 /// worker-days a coin, millionths: `τ_ij = upkeep × d_ij / capacity`, priced like an anchor.
-pub fn transport_price(goods: &Goods, tun: &Tunables, g: GoodId, d_quanta: u64, l_mint: f64) -> i64 {
+pub fn transport_price(
+    goods: &Goods,
+    tun: &Tunables,
+    g: GoodId,
+    d_quanta: u64,
+    l_mint: f64,
+) -> i64 {
     anchor_of(transport_labour(goods, tun, g, d_quanta), l_mint)
 }
 
@@ -204,10 +210,7 @@ pub fn build_markets(
         ));
     }
 
-    let needs: Vec<bool> = goods
-        .iter()
-        .map(|(_, d)| d.need_per_pop_day > 0)
-        .collect();
+    let needs: Vec<bool> = goods.iter().map(|(_, d)| d.need_per_pop_day > 0).collect();
     let locals: Vec<&Local> = nodes.iter().map(|n| &n.local).collect();
     let lints = lint_world(goods, book, &locals, &needs);
     Built {
@@ -279,12 +282,7 @@ pub fn make_market(
                 continue;
             };
             let rec = &book.recipes[r];
-            let own: Amount = rec
-                .inputs
-                .iter()
-                .filter(|x| x.0 == g)
-                .map(|x| x.1)
-                .sum();
+            let own: Amount = rec.inputs.iter().filter(|x| x.0 == g).map(|x| x.1).sum();
             let net_yield = (rec.yield_per_batch - own).max(1);
             net_cap[gi] = qn.per_day(
                 (i128::from(cost.capacity_per_day[gi]) * i128::from(net_yield)
@@ -307,7 +305,8 @@ pub fn make_market(
             for inp in &inputs[gi] {
                 used_here[inp.good.index()] = true;
                 input_use[inp.good.index()] += (i128::from(net_cap[gi]) * i128::from(inp.per)
-                    / i128::from(inp.yield_)) as Amount;
+                    / i128::from(inp.yield_))
+                    as Amount;
             }
         }
         let mbar = if l_mint.is_finite() && l_mint > 0.0 {
@@ -339,8 +338,9 @@ pub fn make_market(
                     } else {
                         0.0
                     };
-                    let anchor = (parity * PRICE_ONE as f64).round().clamp(0.0, MAX_ANCHOR as f64)
-                        as i64;
+                    let anchor = (parity * PRICE_ONE as f64)
+                        .round()
+                        .clamp(0.0, MAX_ANCHOR as f64) as i64;
                     match border_d {
                         Some(d) if anchor > 0 => {
                             let tau = transport_labour(goods, tun, g, d) / l_mint;

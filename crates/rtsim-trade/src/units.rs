@@ -44,6 +44,8 @@ impl Quantum {
         Quantum { ticks }
     }
 
+    /// Ticks per quantum.
+    #[allow(clippy::len_without_is_empty)]
     pub const fn len(self) -> u64 {
         self.ticks
     }

@@ -49,8 +49,15 @@ impl Lattice {
     /// Changes the period from boundary `from` on. Returns whether anything changed.
     pub fn set(&mut self, from: u64, period: u64) -> bool {
         let period = period.max(1);
-        let last = self.segs.back_mut().expect("a lattice always has a segment");
-        assert!(from >= last.start, "lattice set at {from} before {}", last.start);
+        let last = self
+            .segs
+            .back_mut()
+            .expect("a lattice always has a segment");
+        assert!(
+            from >= last.start,
+            "lattice set at {from} before {}",
+            last.start
+        );
         if last.period == period {
             return false;
         }
@@ -66,7 +73,9 @@ impl Lattice {
     }
 
     fn seg_of(&self, q: u64) -> Option<usize> {
-        (0..self.segs.len()).rev().find(|&k| self.segs[k].start <= q)
+        (0..self.segs.len())
+            .rev()
+            .find(|&k| self.segs[k].start <= q)
     }
 
     fn end_of(&self, k: usize) -> Option<u64> {

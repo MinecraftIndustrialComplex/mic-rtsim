@@ -98,7 +98,8 @@ impl World {
     pub fn caravan_place(&self, c: &Caravan, at: Tick) -> Place {
         let (a, b) = (self.nodes[c.leg.from].pos, self.nodes[c.leg.to].pos);
         let f = i64::from(c.progress_milli(at));
-        let lerp = |x: i32, y: i32| (i64::from(x) + (i64::from(y) - i64::from(x)) * f / 1000) as i32;
+        let lerp =
+            |x: i32, y: i32| (i64::from(x) + (i64::from(y) - i64::from(x)) * f / 1000) as i32;
         Place::new(a.frame, lerp(a.x, b.x), 64, lerp(a.z, b.z))
     }
 
@@ -192,14 +193,23 @@ impl World {
         let c = self.caravans.get_mut(id).expect("just inserted");
         c.leg.generation = stamp.generation;
         self.leg_ids.insert(id, stamp.leg);
-        self.schedule(leg.end, Ev::Arrive {
-            caravan: id,
-            generation: stamp.generation,
-        });
+        self.schedule(
+            leg.end,
+            Ev::Arrive {
+                caravan: id,
+                generation: stamp.generation,
+            },
+        );
         Some(id)
     }
 
-    fn report(&mut self, who: ActorId, c: CaravanId, kind: ReportKind, at: Tick) -> Option<rtsim_knowledge::ReportId> {
+    fn report(
+        &mut self,
+        who: ActorId,
+        c: CaravanId,
+        kind: ReportKind,
+        at: Tick,
+    ) -> Option<rtsim_knowledge::ReportId> {
         let car = self.caravans.get(c)?;
         let place = self.caravan_place(car, at);
         let whom = self.nodes[car.home].actor;
@@ -251,12 +261,7 @@ impl World {
     /// A player robs an individual caravan: takes `share_milli` thousandths of everything it
     /// carries (PLAN.md §8.9 D). The loot leaves the world to the player. The trader then goes on
     /// or turns back home, as its temperament decides (C25).
-    pub fn rob(
-        &mut self,
-        c: CaravanId,
-        player: ActorId,
-        share_milli: i64,
-    ) -> Option<Attack> {
+    pub fn rob(&mut self, c: CaravanId, player: ActorId, share_milli: i64) -> Option<Attack> {
         let at = self.now;
         let cargo = self.caravans.get(c)?.cargo();
         let mut taken = BTreeMap::new();
@@ -395,10 +400,13 @@ impl World {
         let car = self.caravans.get_mut(c).expect("live");
         car.leg = leg;
         car.stage = stage;
-        self.schedule(leg.end, Ev::Arrive {
-            caravan: c,
-            generation: stamp.generation,
-        });
+        self.schedule(
+            leg.end,
+            Ev::Arrive {
+                caravan: c,
+                generation: stamp.generation,
+            },
+        );
     }
 
     /// Removes a caravan row. `home` when it reached home (its cargo was deposited); otherwise

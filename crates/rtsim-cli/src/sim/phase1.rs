@@ -109,6 +109,7 @@ fn day_of(t: Tick) -> f64 {
     t.0 as f64 / TICKS_PER_DAY as f64
 }
 
+#[allow(clippy::needless_range_loop)]
 fn snapshot(w: &World, day: u64) -> DayRow {
     let mut markets = Vec::new();
     for i in 0..w.nodes.len() {
@@ -318,10 +319,9 @@ pub fn run(o: Options) -> i32 {
                     let mut refusal = None;
                     let mut bundles = Vec::new();
                     for _ in 0..200 {
-                        let offer = w
-                            .offers(brindle, player)
-                            .into_iter()
-                            .find(|o| o.0 == ids.wheat && o.1 == rtsim_trade::OfferSide::MarketBuys);
+                        let offer = w.offers(brindle, player).into_iter().find(|o| {
+                            o.0 == ids.wheat && o.1 == rtsim_trade::OfferSide::MarketBuys
+                        });
                         let Some((_, _, o)) = offer else {
                             refusal = Some("offer crossed out".to_string());
                             break;
@@ -346,7 +346,10 @@ pub fn run(o: Options) -> i32 {
                     d.insert("wheat sold".into(), sold.to_string());
                     d.insert("emeralds paid".into(), got.to_string());
                     d.insert("treasury before".into(), format!("{:.3}", coins(t0)));
-                    d.insert("treasury after".into(), format!("{:.3}", coins(after.treasury())));
+                    d.insert(
+                        "treasury after".into(),
+                        format!("{:.3}", coins(after.treasury())),
+                    );
                     d.insert("wheat price before".into(), format!("{:.4}", price(p0)));
                     d.insert(
                         "wheat price after".into(),
@@ -396,7 +399,8 @@ pub fn run(o: Options) -> i32 {
                 }
                 25 => {
                     // Walkthrough I: rescue a caravan leaving Fernwick.
-                    if let Some(key) = pick_caravan(&w, fernwick).or_else(|| pick_caravan(&w, brindle))
+                    if let Some(key) =
+                        pick_caravan(&w, fernwick).or_else(|| pick_caravan(&w, brindle))
                         && let Some(c) = w.promote(key)
                     {
                         let car = w.caravans.get(c).expect("promoted");
@@ -506,7 +510,13 @@ pub fn run(o: Options) -> i32 {
         edges: w
             .edges
             .iter()
-            .map(|e| (NAMES[e.a].to_string(), NAMES[e.b].to_string(), e.length_blocks))
+            .map(|e| {
+                (
+                    NAMES[e.a].to_string(),
+                    NAMES[e.b].to_string(),
+                    e.length_blocks,
+                )
+            })
             .collect(),
         lints: w.lints.iter().map(|l| format!("{l:?}")).collect(),
         series,

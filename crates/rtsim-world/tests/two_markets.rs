@@ -62,7 +62,10 @@ fn world(seed: u64) -> (World, rtsim_trade::GoodId) {
         kind: NodeKind::Village(Culture::Human),
         pos: Pos::new(0, x, 0),
         pop,
-        resources: res.iter().map(|&(r, a)| (r, a * MILLI)).collect::<BTreeMap<_, _>>(),
+        resources: res
+            .iter()
+            .map(|&(r, a)| (r, a * MILLI))
+            .collect::<BTreeMap<_, _>>(),
     };
     let w = World::build(
         cfg,
@@ -104,19 +107,32 @@ fn overshoot_decays_and_the_world_goes_quiet() {
     if cur > 0 {
         peaks.push(cur);
     }
-    eprintln!("target {target}, overshoot peaks {peaks:?}, stats {:?}", w.stats);
+    eprintln!(
+        "target {target}, overshoot peaks {peaks:?}, stats {:?}",
+        w.stats
+    );
     assert!(!peaks.is_empty(), "the first fill overshoots (news lag)");
     for p in peaks.windows(2) {
         assert!(p[1] <= p[0], "overshoot grew: {peaks:?}");
     }
     // The overshoot stays inside the band the stability rule reserves for it.
-    assert!(peaks[0] <= target, "first overshoot {} beyond the band", peaks[0]);
+    assert!(
+        peaks[0] <= target,
+        "first overshoot {} beyond the band",
+        peaks[0]
+    );
     // It settles inside the news dead band around the target.
     let end = w.market(1).stock(wheat);
-    assert!((end - target).abs() <= target / 8, "settled at {end}, target {target}");
+    assert!(
+        (end - target).abs() <= target / 8,
+        "settled at {end}, target {target}"
+    );
     // Quiet: no market event at all over the last 20 days.
     let before = w.stats.market_events;
     w.run_until(Tick(80 * TICKS_PER_DAY));
-    assert_eq!(w.stats.market_events, before, "a closed world kept generating events");
+    assert_eq!(
+        w.stats.market_events, before,
+        "a closed world kept generating events"
+    );
     w.check_conserved(w.now()).unwrap();
 }

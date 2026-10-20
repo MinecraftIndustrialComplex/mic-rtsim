@@ -237,6 +237,7 @@ impl RecipeBook {
     /// Hawkins-Simon: every leading principal minor of `I - A` is positive, for the recipes a
     /// market chose. Elimination without pivoting gives the minors as running products of the
     /// pivots, so a non-positive pivot names where it fails.
+    #[allow(clippy::needless_range_loop)]
     pub fn hawkins_simon(&self, n: usize, chosen: &[Option<usize>]) -> Result<(), Lint> {
         let idx: Vec<usize> = (0..n).filter(|&g| chosen[g].is_some()).collect();
         let a = self.matrix(n, chosen);
@@ -300,6 +301,7 @@ impl RecipeBook {
 }
 
 /// Gaussian elimination with partial pivoting on an augmented matrix.
+#[allow(clippy::needless_range_loop)]
 fn gauss(mut m: Vec<Vec<f64>>) -> Option<Vec<f64>> {
     let n = m.len();
     for k in 0..n {
@@ -324,7 +326,12 @@ fn gauss(mut m: Vec<Vec<f64>>) -> Option<Vec<f64>> {
 
 /// The world-level lints of the economy research's failure table: who needs what, who can make
 /// it, and whether any market can make each needed good on its own.
-pub fn lint_world(goods: &Goods, book: &RecipeBook, locals: &[&Local], needs: &[bool]) -> Vec<Lint> {
+pub fn lint_world(
+    goods: &Goods,
+    book: &RecipeBook,
+    locals: &[&Local],
+    needs: &[bool],
+) -> Vec<Lint> {
     let mut out = Vec::new();
     let n = goods.len();
     let mut used_as_input = vec![false; n];

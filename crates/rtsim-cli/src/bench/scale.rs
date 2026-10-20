@@ -193,7 +193,11 @@ impl Baseline {
     fn spec(&self, sweep: &Sweep, value: u64) -> Spec {
         if matches!(sweep.vary, Vary::Markets | Vary::Edges) {
             return Spec::Market(super::market::MarketConfig {
-                markets: if sweep.vary == Vary::Markets { value } else { MARKET_BASE },
+                markets: if sweep.vary == Vary::Markets {
+                    value
+                } else {
+                    MARKET_BASE
+                },
                 nearest: if sweep.vary == Vary::Edges { value } else { 4 },
                 warmup_days: 10,
                 days: self.days,
@@ -490,7 +494,12 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     1.0,
                     "an active world: events per market per day are flat (15 to 20), so the algorithm is linear in markets; cost per event still rises (7 to 15 us from 64 to 4,096 markets) as the working set (about 25 KB per market against the research's 1 KB estimate) leaves the caches. Layout work, not an algorithmic slope. A world at rest costs nothing (two_markets test)",
                 ),
-                contract(Metric::Heap, 1.1, 1.0, "markets and edges are resident: paging (A16) is not built yet"),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "markets and edges are resident: paging (A16) is not built yet",
+                ),
             ],
         },
         Sweep {

@@ -80,7 +80,14 @@ pub fn recipes(s: &SynthGoods) -> RecipeBook {
     };
     RecipeBook {
         recipes: vec![
-            r("farm wheat", s.wheat, 10, vec![(s.wheat, 1)], 1.0, Some(FARMLAND)),
+            r(
+                "farm wheat",
+                s.wheat,
+                10,
+                vec![(s.wheat, 1)],
+                1.0,
+                Some(FARMLAND),
+            ),
             r("bake bread", s.bread, 1, vec![(s.wheat, 3)], 0.1, None),
             r("tan leather", s.leather, 2, vec![], 1.0, Some(CATTLE)),
             r("smelt iron", s.iron, 1, vec![], 2.0, Some(IRON_ORE)),
@@ -95,13 +102,24 @@ pub fn recipes(s: &SynthGoods) -> RecipeBook {
 }
 
 fn res(list: &[(ResourceId, i64)]) -> BTreeMap<ResourceId, Amount> {
-    list.iter().map(|&(r, per_day)| (r, per_day * MILLI)).collect()
+    list.iter()
+        .map(|&(r, per_day)| (r, per_day * MILLI))
+        .collect()
 }
 
 /// Keys of the synthetic world's nodes, in the order [`build`] adds them.
 pub const NAMES: [&str; 11] = [
-    "Brindle", "Oakford", "Highmoor", "Ashby", "Fernwick", "Coldwell", "Mirewater", "Bogsend",
-    "Reedholm", "Pillager camp", "Player farm",
+    "Brindle",
+    "Oakford",
+    "Highmoor",
+    "Ashby",
+    "Fernwick",
+    "Coldwell",
+    "Mirewater",
+    "Bogsend",
+    "Reedholm",
+    "Pillager camp",
+    "Player farm",
 ];
 
 pub fn nodes() -> Vec<NodeData> {
@@ -187,7 +205,11 @@ pub fn grid(n: usize, seed: u64) -> Vec<NodeData> {
             }
             NodeData {
                 key: 1000 + i as u64,
-                kind: NodeKind::Village(if ribbit { Culture::Ribbit } else { Culture::Human }),
+                kind: NodeKind::Village(if ribbit {
+                    Culture::Ribbit
+                } else {
+                    Culture::Human
+                }),
                 pos: Pos::new(0, gx * 544 + jx, gz * 544 + jz),
                 pop: 8 + r.below(16) as u32,
                 resources,

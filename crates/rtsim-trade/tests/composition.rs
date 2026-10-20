@@ -17,7 +17,11 @@ use rtsim_trade::{GoodId, MILLI, Market, PRICE_ONE, PriceCurve, Quantum};
 /// Three goods: grain (input), bread (made from grain), and the currency.
 fn market(stocks: [i64; 3], caps: [i64; 2], cons: [i64; 2], flows: [(i64, i64); 3]) -> Market {
     let r = Ratio::new(3, 4);
-    let targets = [48 * caps[0].max(cons[0]).max(1), 48 * caps[1].max(cons[1]).max(1), 20_000];
+    let targets = [
+        48 * caps[0].max(cons[0]).max(1),
+        48 * caps[1].max(cons[1]).max(1),
+        20_000,
+    ];
     let mut lines: Vec<Line> = (0..3).map(|i| Line::new(stocks[i], targets[i])).collect();
     for i in 0..3 {
         lines[i].rates = Rates {
@@ -142,7 +146,12 @@ proptest! {
 
 #[test]
 fn a_view_is_the_model_settled() {
-    let m = market([1_000, 0, 5_000], [500, 100], [200, 50], [(0, 0), (0, 0), (0, 0)]);
+    let m = market(
+        [1_000, 0, 5_000],
+        [500, 100],
+        [200, 50],
+        [(0, 0), (0, 0), (0, 0)],
+    );
     let v = m.view(Tick(0), Tick(10_000));
     let mut s = m.clone();
     s.settle(Tick(0), Tick(10_000));

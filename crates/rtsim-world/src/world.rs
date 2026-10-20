@@ -202,7 +202,13 @@ impl World {
             w.add_node(ids[i], &data[i], m, c, nodes_spec[i].local.clone());
         }
         for (k, l) in links.iter().enumerate() {
-            w.add_edge(l.a, l.b, specs[k].length_blocks, l.d_quanta, specs[k].border);
+            w.add_edge(
+                l.a,
+                l.b,
+                specs[k].length_blocks,
+                l.d_quanta,
+                specs[k].border,
+            );
         }
         for i in 0..w.nodes.len() {
             w.emit(i, Tick::ZERO, true);
@@ -245,7 +251,10 @@ impl World {
     }
 
     fn add_node(&mut self, sid: SettlementId, d: &NodeData, m: Market, costs: Costs, local: Local) {
-        let actor = self.knowledge.actors_mut().register(ActorKind::Settlement, d.key);
+        let actor = self
+            .knowledge
+            .actors_mut()
+            .register(ActorKind::Settlement, d.key);
         let hk = match d.kind {
             NodeKind::Village(rtsim_settle::Culture::Human) => HolderKind::VanillaVillage,
             NodeKind::Village(rtsim_settle::Culture::Ribbit) => HolderKind::RibbitVillage,
@@ -282,7 +291,8 @@ impl World {
             self.nodes[a].key.max(self.nodes[b].key),
         )[0];
         let idle = self.cfg.trade.quantum.days(self.cfg.scout_days);
-        self.edges.push(Edge::new(a, b, length, d, seed, border, idle));
+        self.edges
+            .push(Edge::new(a, b, length, d, seed, border, idle));
         self.nodes[a].out.push(DirRef { edge: e, dir: 0 });
         self.nodes[b].out.push(DirRef { edge: e, dir: 1 });
         self.nodes[a].neighbours.push(b);
@@ -322,7 +332,13 @@ impl World {
             .iter()
             .map(|&(j, _, dq, _)| (&self.nodes[j].costs, dq))
             .collect();
-        let costs = costs_for_newcomer(&self.goods, &self.book, &self.cfg.trade, &local, &neighbour_costs);
+        let costs = costs_for_newcomer(
+            &self.goods,
+            &self.book,
+            &self.cfg.trade,
+            &local,
+            &neighbour_costs,
+        );
         let spec = NodeSpec {
             key: d.key,
             kind: if d.kind.is_storehouse() {
@@ -370,7 +386,13 @@ impl World {
     /// from `from` to `to` (C24: predator havens). Their haul walks to the haven at caravan speed
     /// and is stocked there, so it stays in the world's totals. Takes effect at the next
     /// allocation on that road. Returns false when the two are not linked.
-    pub fn set_predation(&mut self, from: usize, to: usize, haven: usize, share_milli: i64) -> bool {
+    pub fn set_predation(
+        &mut self,
+        from: usize,
+        to: usize,
+        haven: usize,
+        share_milli: i64,
+    ) -> bool {
         let Some(d) = self.nodes[from]
             .out
             .iter()
@@ -379,7 +401,10 @@ impl World {
         else {
             return false;
         };
-        let dist = self.nodes[from].pos.dist(self.nodes[haven].pos).unwrap_or(0);
+        let dist = self.nodes[from]
+            .pos
+            .dist(self.nodes[haven].pos)
+            .unwrap_or(0);
         let delay = self
             .cfg
             .trade

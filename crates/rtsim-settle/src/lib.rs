@@ -228,7 +228,9 @@ impl Settlements {
 
     /// A row the table itself just found: a stale handle here is a bug in this file.
     fn row(&self, id: SettlementId) -> &Settlement {
-        self.rows.get(id).expect("settlement handle from the table's own index")
+        self.rows
+            .get(id)
+            .expect("settlement handle from the table's own index")
     }
 
     pub fn get(&self, id: SettlementId) -> Option<&Settlement> {
@@ -292,7 +294,10 @@ impl Settlements {
             found.sort_unstable_by_key(|&(d2, key, _)| (d2, key));
         }
         found.truncate(n);
-        found.into_iter().map(|(d2, _, id)| (isqrt(d2), id)).collect()
+        found
+            .into_iter()
+            .map(|(d2, _, id)| (isqrt(d2), id))
+            .collect()
     }
 
     fn spec(&self, x: SettlementId, y: SettlementId, rule: &EdgeRule) -> Option<EdgeSpec> {
