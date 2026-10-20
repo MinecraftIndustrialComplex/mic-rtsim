@@ -25,7 +25,11 @@ usage:
       The parallel step at several worker counts, resident and paged, and the determinism
       gate: every run of a world must end in the same state hash. --check exits 1 when not.
   rtsim-cli bench bsp-one --spec JSON
-      Runs one parallel-step configuration (used by bench bsp).";
+      Runs one parallel-step configuration (used by bench bsp).
+  rtsim-cli bench o5 [--quick] [--repeats N] [--out DIR | --no-write]
+      Slot commits against dyadic counts at read cadences from 1 to 1,024 days (DECISIONS O5).
+  rtsim-cli bench o5-one --spec JSON
+      Runs one cadence point (used by bench o5).";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -123,6 +127,42 @@ fn main() -> ExitCode {
                 Err(e) => return usage(&format!("bad --spec: {e}")),
             };
             let m = bench::bsp::run_one(&spec);
+            println!("{}", serde_json::to_string(&m).expect("serialize"));
+            ExitCode::SUCCESS
+        }
+        ["bench", "o5", rest @ ..] => {
+            let mut opts = bench::o5::Options {
+                quick: false,
+                repeats: 0,
+                out: Some(PathBuf::from("bench/results")),
+            };
+            let mut it = rest.iter();
+            while let Some(&a) = it.next() {
+                match a {
+                    "--quick" => opts.quick = true,
+                    "--no-write" => opts.out = None,
+                    "--repeats" => match it.next().and_then(|n| n.parse().ok()) {
+                        Some(n) => opts.repeats = n,
+                        None => return usage("--repeats needs a number"),
+                    },
+                    "--out" => match it.next() {
+                        Some(d) => opts.out = Some(PathBuf::from(d)),
+                        None => return usage("--out needs a folder"),
+                    },
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            if opts.repeats == 0 {
+                opts.repeats = if opts.quick { 1 } else { 3 };
+            }
+            ExitCode::from(bench::o5::run(opts) as u8)
+        }
+        ["bench", "o5-one", "--spec", json] => {
+            let spec: bench::o5::O5Spec = match serde_json::from_str(json) {
+                Ok(s) => s,
+                Err(e) => return usage(&format!("bad --spec: {e}")),
+            };
+            let m = bench::o5::run_one(&spec);
             println!("{}", serde_json::to_string(&m).expect("serialize"));
             ExitCode::SUCCESS
         }

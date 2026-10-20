@@ -3,6 +3,7 @@
 //! parallel step and its determinism gate (SCALE.md §5, PLAN.md §4.7).
 
 pub mod bsp;
+pub mod o5;
 pub mod paged;
 pub mod scale;
 pub mod world;

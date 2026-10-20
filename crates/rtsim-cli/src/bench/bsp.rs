@@ -45,11 +45,12 @@ pub struct BspSpec {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BspMeasured {
-    /// Wall time per sim day over the measured days: what parallelism buys.
+    /// Wall time per sim day over the measured days, saves (with fsync) included.
     pub wall_ns_per_day: f64,
     /// CPU time of the whole process per sim day (every worker).
     pub process_cpu_ns_per_day: Option<f64>,
-    /// Wall time inside `Bsp::step` only, per sim day (no saves).
+    /// Wall time inside `Bsp::step` only, per sim day (no saves): what parallelism buys, and
+    /// what the speedup column compares.
     pub step_wall_ns_per_day: f64,
     pub wakes_per_day: f64,
     pub messages_per_day: f64,
@@ -213,7 +214,7 @@ pub struct Options {
 pub struct Point {
     pub spec: BspSpec,
     pub measured: BspMeasured,
-    /// Wall ns per day in every repeat.
+    /// Step wall ns per day in every repeat; the median is kept.
     pub repeats: Vec<f64>,
 }
 
@@ -337,8 +338,8 @@ pub fn run(opts: Options) -> i32 {
             }
         }
         eprintln!("{:.1} s", t.elapsed().as_secs_f64());
-        let repeats: Vec<f64> = got.iter().map(|m| m.wall_ns_per_day).collect();
-        got.sort_by(|a, b| a.wall_ns_per_day.total_cmp(&b.wall_ns_per_day));
+        let repeats: Vec<f64> = got.iter().map(|m| m.step_wall_ns_per_day).collect();
+        got.sort_by(|a, b| a.step_wall_ns_per_day.total_cmp(&b.step_wall_ns_per_day));
         let measured = got.swap_remove(got.len() / 2);
         points.push(Point {
             spec,
@@ -443,7 +444,7 @@ fn print_tables(points: &[Point], gates: &[Gate]) {
         "workers",
         "pages",
         "wall ms/day",
-        "speedup",
+        "step x",
         "step ms/day",
         "cpu ms/day",
         "wakes/day",
@@ -463,7 +464,7 @@ fn print_tables(points: &[Point], gates: &[Gate]) {
                     && q.spec.budget_bytes == p.spec.budget_bytes
                     && q.spec.workers == 1
             })
-            .map(|q| q.measured.wall_ns_per_day);
+            .map(|q| q.measured.step_wall_ns_per_day);
         let m = &p.measured;
         println!(
             "{:>5} {:>7} {:>10} | {:>11.1} {:>8} {:>11.1} {:>11} | {:>9.0} {:>9.0} {:>8.1} {:>8.1} | {:>7} {:>7} | {:08x} {:08x} {}",
@@ -473,7 +474,10 @@ fn print_tables(points: &[Point], gates: &[Gate]) {
                 .budget_bytes
                 .map_or("resident".into(), |b| format!("{}KiB", b / 1024)),
             m.wall_ns_per_day / 1e6,
-            base.map_or("-".into(), |b| format!("{:.2}x", b / m.wall_ns_per_day)),
+            base.map_or("-".into(), |b| format!(
+                "{:.2}x",
+                b / m.step_wall_ns_per_day
+            )),
             m.step_wall_ns_per_day / 1e6,
             m.process_cpu_ns_per_day
                 .map_or("-".into(), |c| format!("{:.1}", c / 1e6)),
