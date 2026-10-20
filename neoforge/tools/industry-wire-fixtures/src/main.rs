@@ -562,6 +562,24 @@ fn main() {
         obs(&mut out, name, wire::IND_WATCHED, 0, Timed { at, obs: o }, &f);
     }
 
+    {
+        let name = "IND_APPROACH";
+        let (mut g, mut f) = begin(name);
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let distance = f.u32("distance", g.u32());
+        // Clear of 0xFFFFFFFF, which reads as "unknown".
+        let eta = f.u32("eta_ticks", g.u32() & 0x7FFF_FFFF);
+        f.sym("closing", true);
+        let o = Obs::Approach {
+            district,
+            distance,
+            eta_ticks: Some(eta),
+            closing: true,
+        };
+        obs(&mut out, name, wire::IND_APPROACH, 0, Timed { at, obs: o }, &f);
+    }
+
     // ---- journaled observations ----
 
     {

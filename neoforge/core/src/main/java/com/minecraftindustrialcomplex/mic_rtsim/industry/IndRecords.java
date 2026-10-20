@@ -57,8 +57,9 @@ public final class IndRecords {
     public static final int IND_LEDGER_REQUEST = 0x0044;
     public static final int IND_WATCHED = 0x0045;
     /**
-     * Java-side proposal (choice H23), not yet in wire.rs: a player approaches an unloaded district.
-     * The engine skips it as an unknown kind until it reads it (the stale-tick race, option d).
+     * Java-side proposal (choice H23): a player approaches an unloaded district. wire.rs reads it, and
+     * the engine keeps it on the district as data only (choice W16); what to do with it (the stale-tick
+     * race, option d) is not decided.
      */
     public static final int IND_APPROACH = 0x0046;
 
