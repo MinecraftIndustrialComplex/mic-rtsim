@@ -21,6 +21,9 @@ Every decision about mic-rtsim, newest at the bottom.
 | D6 | 2026-10-19 | Planning for late-game load in huge worlds with millions of entities or more starts first. Algorithms and data abstraction get special attention. | Ben | "we need plans extremely early on for how to actualyl handle late late game load for absolutely fucking massive worlds with millions or more entities." and "What is the current plan to deal with this in terms of algorithms, you also need to be paying special attention to data abstractino, etc." |
 | D7 | 2026-10-19 | NPC bodies should look and feel like Minecraft mobs, not players. Player-skinned humanoid NPC mods are not the default body source; each phase picks mob-like bodies. | Ben | "In general, really not a big fan of NPC's that look / feel like actual minecraft players instead of minecraft mobs." |
 | D8 | 2026-10-20 | Design depth is not a risk to guard against. mcrtsim failed because of the weak models of its time, not because of its ambition; Deep Time shows a design this big can be built. Phase 0 is not to be rushed as a hedge against over-design; when it starts is still open. | Ben | "mcrtsim got killed by being done by shitty models, not this. If you need proof that this works now, look at Deeptime. (Ludicroius ambition, and a shit ton of code.)" |
+| D9 | 2026-10-20 | Overnight: build as much as possible with no limit; build general scaffolding once the planned work is done; things that later get deleted are fine. | Ben | "As much as you can, don't set a limitation, if you build everything you want to start planning and building generalized scaffolding, don't be afraid to build things that will get deleted. I will re-visit in the morning." |
+| D10 | 2026-10-20 | While Ben is away, reversible choices take Claude's recommendation and are logged for his review. Irreversible or outward-facing choices wait. | Ben | chose "Take my rec, log it" |
+| D11 | 2026-10-20 | Agents may use the machine's resources freely. The only other session that should be busy is Deep Time, which may run GPU tests, and it messages before it does. | Ben | "feel free to use any of my system resources you want to. The only other agent that should be doing anything on them might be deeptime (It wants to run some GPU tests at some point.)" |
 
 ## Architecture
 
@@ -43,6 +46,8 @@ Every decision about mic-rtsim, newest at the bottom.
 | A15 | 2026-10-19 | Regions nobody reads are lazy. They are not stepped, and they catch up in closed form when read or at breakpoints. Travellers still move on scheduled legs: a leg is booked into a region and time-window index at its start, and a player entering a region looks up the legs booked there, so crossings become scheduled events with no scans. | Ben | chose "Lazy, catch up on read" after asking how a world-spanning dragon migration would still cross his house |
 | A16 | 2026-10-19 | Resident memory is a configured budget, with the default set from phase 0 measurements. Everything else lives in region pages on disk, loaded on read with prefetch. | Ben | chose "Budget + paging" |
 | A17 | 2026-10-19 | New planets are baked in the background only when free RAM allows (3.2 to 4.2 GB peak). Otherwise the planet stays "still forming" and cannot be landed on until it is baked. | Ben | chose "RAM check" |
+| A18 | 2026-10-20 | The native host lives in a new private repo, MinecraftIndustrialComplex/mic-native (MPL-2.0), started from a copy of Deep Time's native-loading code. NOTICE.md records the copy and the relicensing by the copyright holder. | Ben | chose "New private repo" |
+| A19 | 2026-10-20 | Names (P1): repo mic-rtsim; core mod id mic_rtsim; plugins mic_rtsim_<mod>; native host mod id mic_native. | Ben | chose "Use these names" |
 
 ## Content
 
@@ -89,7 +94,7 @@ These are in PLAN.md but not decided. Each one goes to Ben before work depends o
 
 | # | Proposal | Needed by |
 |---|---|---|
-| P1 | The working name `mic-rtsim`. Mod ids are `mic_rtsim` for the core and `mic_rtsim_<plugin>` for plugins. | phase 0 |
+| P1 | Decided as A19 (names). Still open: whether plugins carry only Java and data, with all rules in generic modules (PLAN §1.1). | phase 0 |
 | P2 | The sim calendar is Serene Seasons' calendar, or mic-climate's `YearClock` in Deep Time worlds. Phase 1 does not need it. | herds, growth |
 | P3 | The engine owns the truth. Minecraft entities are puppets that are never saved by vanilla. | phase 0 |
 | P4 | Agent storage: `bevy_ecs` behind a facade, or our own columns. To be settled by the phase 0 benchmark, with the numbers brought to Ben. | phase 0 |

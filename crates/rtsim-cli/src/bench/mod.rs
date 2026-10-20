@@ -3,5 +3,6 @@
 //! industry engine's (INDUSTRY.md §15).
 
 pub mod industry;
+pub mod market;
 pub mod scale;
 pub mod world;

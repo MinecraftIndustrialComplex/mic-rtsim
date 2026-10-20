@@ -13,10 +13,19 @@ hold the industry design and the research behind them.
 | Path | What |
 |---|---|
 | `crates/rtsim-kernel` | The engine kernel: no Minecraft, no JNI, no threads of its own (PLAN.md §5.1). |
+| `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10 (now with market and edge sweeps); `rtsim-cli sim phase1`, the phase 1 scenario; `bench industry` and `sim industry`. |
 | `crates/rtsim-industry` | The industry engine (INDUSTRY.md, C15 to C19), headless: learning, replay, reconciliation, links, deposits, threats, the ledger. Wire records in `docs/industry-boundary.md`; choices in `docs/overnight-choices-industry.md`. |
-| `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10; `bench industry` and `sim industry`. |
+| `crates/rtsim-settle` | Settlements as rows: two cultures, villages, player bases and havens as market nodes, edges by P18's recommended rule (PLAN.md §8.2). |
+| `crates/rtsim-trade` | Storehouse markets (C13): labour costs with Hawkins-Simon, anchors, price as a function of stock, the exact player trade integral, the line law in closed form, money, exchange lines, offers through the treasury (C14, C23). |
+| `crates/rtsim-travel` | Flows on edges as pipelines with holes, the caravan lattice, news snapshots, allocation by margin, caravans and groups, the leg index, raids to havens (SCALE.md §3, PLAN.md §8.6). |
+| `crates/rtsim-knowledge` | Reports as 32-byte rows, witnesses, sentiment with lazy decay, noticeboards and gossip packets, vanilla gossip writes, notables and heirs, temperament (PLAN.md §5.6, §5.7, §8.7). |
+| `crates/rtsim-world` | The phase 1 composition: build and join, the step loop, flows and payments, news at the speed of trade, caravans near players, player trades, conservation and state hash. Scaffolding until the module registry exists. |
+| `scenario/results/` | Output of `rtsim-cli sim phase1`. |
+| `docs/overnight-choices-phase1.md` | The phase 1 engine's reversible choices (E1 to E42), for Ben's review. |
 | `tools/ci/scale-check.sh` | The CI-style scale check: fails when a growth slope exceeds its contract. |
 | `bench/results/` | Committed bench results, with the machine and conditions. |
+| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies) with a pure-Java stub engine; GameTests. See `neoforge/README.md`. |
+| `docs/boundary.md` | The binary contract between the bridge and the engine: four buffers, the hand-over, every record. |
 
 The kernel's modules:
 
@@ -54,8 +63,9 @@ The industry engine's modules (`crates/rtsim-industry`):
 ./target/release/rtsim-cli bench industry    # quiet and busy district sweeps, elapsed time; --quick, --check
 ```
 
-Not built yet: the native host `mic_native`, the NeoForge bridge and JNI crate, the generic modules
-(markets, flows, caravans, knowledge), paging with a residency budget (A16), and the parallel step.
+Not built yet: the native host `mic_native`, the JNI crate (rtsim-jni), the module registry the
+phase 1 crates will register with (PLAN.md §5.4), paging with a residency budget (A16), and the
+parallel step.
 
 ## Build and test
 
@@ -68,6 +78,19 @@ nix develop -c flock /tmp/mic-rtsim-heavy.lock nice -n 10 env CARGO_BUILD_JOBS=6
 nix develop -c flock /tmp/mic-rtsim-heavy.lock nice -n 10 env CARGO_BUILD_JOBS=6 cargo clippy --workspace --all-targets -- -D warnings
 nix develop -c cargo fmt --all --check
 ```
+
+## The phase 1 scenario
+
+```sh
+nix develop -c flock /tmp/mic-rtsim-heavy.lock nice -n 10 env CARGO_BUILD_JOBS=6 cargo build --release -p rtsim-cli
+./target/release/rtsim-cli sim phase1                     # 120 days, scripted player, JSON to scenario/results/
+./target/release/rtsim-cli sim phase1 --days 60 --check   # conservation checked after every event
+```
+
+Six human villages, three ribbit villages beside a geode, a pillager haven raiding one road and a
+player base trade for months; the run prints prices, stocks, treasuries, exchange rates, the
+busiest flows, and how far a robbery and a rescue have spread. Every number in the world is a
+PLACEHOLDER (P9, P18).
 
 ## The scale bench
 
