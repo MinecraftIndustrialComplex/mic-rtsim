@@ -188,3 +188,62 @@ impl Topology {
         best
     }
 }
+
+/// Where two straight segments cross, as fractions along each, if they do.
+fn cross_f(p0: (f64, f64), p1: (f64, f64), q0: (f64, f64), q1: (f64, f64)) -> Option<(f64, f64)> {
+    let r = (p1.0 - p0.0, p1.1 - p0.1);
+    let s = (q1.0 - q0.0, q1.1 - q0.1);
+    let den = r.0 * s.1 - r.1 * s.0;
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    let qp = (q0.0 - p0.0, q0.1 - p0.1);
+    let t = (qp.0 * s.1 - qp.1 * s.0) / den;
+    let u = (qp.0 * r.1 - qp.1 * r.0) / den;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some((t, u))
+}
+
+impl Topology {
+    /// Where two chart segments cross on the world, through any seam: `a0 → a1` and `b0 → b1`
+    /// (each from a canonical cell to a chart cell), as fractions along each; the first along
+    /// `a` when they cross more than once.
+    pub fn crossing(
+        &self,
+        a0: (i64, i64),
+        a1: (i64, i64),
+        b0: (i64, i64),
+        b1: (i64, i64),
+    ) -> Option<(f64, f64)> {
+        let half = |p: (i64, i64)| ((2 * p.0 + 1) as f64, (2 * p.1 + 1) as f64);
+        let (pa, pb) = (
+            self.pieces_half(half(a0), half(a1)),
+            self.pieces_half(half(b0), half(b1)),
+        );
+        let point = |p0: (i64, i64), p1: (i64, i64), f: f64| {
+            (
+                p0.0 as f64 + 0.5 + (p1.0 - p0.0) as f64 * f,
+                p0.1 as f64 + 0.5 + (p1.1 - p0.1) as f64 * f,
+            )
+        };
+        let mut best: Option<(f64, f64)> = None;
+        for x in &pa {
+            let (x0, x1) = (point(a0, a1, x.f0), point(a0, a1, x.f1));
+            let (x0, x1) = (x.iso.point_f(x0.0, x0.1), x.iso.point_f(x1.0, x1.1));
+            for y in &pb {
+                let (y0, y1) = (point(b0, b1, y.f0), point(b0, b1, y.f1));
+                let (y0, y1) = (y.iso.point_f(y0.0, y0.1), y.iso.point_f(y1.0, y1.1));
+                for h in self.adjacent() {
+                    let (z0, z1) = (h.point_f(y0.0, y0.1), h.point_f(y1.0, y1.1));
+                    if let Some((t, u)) = cross_f(x0, x1, z0, z1) {
+                        let fa = x.f0 + (x.f1 - x.f0) * t;
+                        let fb = y.f0 + (y.f1 - y.f0) * u;
+                        if best.is_none_or(|b| fa < b.0) {
+                            best = Some((fa, fb));
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+}

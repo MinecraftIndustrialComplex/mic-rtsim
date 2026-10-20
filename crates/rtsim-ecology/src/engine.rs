@@ -48,6 +48,7 @@ use rtsim_knowledge::{
     ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT, Trait,
 };
 use rtsim_settle::Pos;
+use rtsim_space::topology::{Rect, SharedTopologies, Topology};
 use rtsim_trade::{GoodId, GoodKind};
 use rtsim_travel::legs::{Meeting, Path, Stamp};
 use rtsim_world::World;
@@ -189,6 +190,9 @@ pub struct DragonStats {
     pub hoards_robbed: u64,
     /// Hunts that took animals from a wild herd.
     pub herd_hunts: u64,
+    /// Meetings not materialized because the dragon is across an edge_stop seam from the player
+    /// (TP12): no body crosses one.
+    pub seen_across_stop: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -262,6 +266,8 @@ pub struct Dragons {
     pub(crate) outbox: Vec<Cmd>,
     pub(crate) players: BTreeMap<ActorId, PlayerView>,
     pub(crate) index: PreyIndex,
+    /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
+    pub topo: SharedTopologies,
     pub(crate) by_entity: BTreeMap<Uuid, DragonId>,
     /// Every entity the engine adopted, for good (saved; `by_entity` is this session's bodies):
     /// an untagged dragon reported again (after a crash its DRAGON_ADOPT never reached a world
@@ -301,6 +307,44 @@ pub fn uuid_hash(most: u64, least: u64) -> u64 {
 }
 
 impl Dragons {
+    /// Hands the engine every frame's topology (TP6): flights, hunts, lairs and the prey index
+    /// measure through seams from then on. The prey index is rebuilt.
+    pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if *t != *self.topo {
+            self.topo = t;
+            self.index = PreyIndex::default();
+        }
+    }
+
+    /// The topology of `frame`.
+    pub fn topo(&self, frame: u16) -> &Topology {
+        self.topo.of(frame)
+    }
+
+    /// The canonical position of a block the plugin reported (TP4: every position the engine
+    /// keeps is canonical, so a body that crossed a seam is where it is, not a jump).
+    pub fn canon(&self, dimension: u32, x: f64, z: f64) -> Pos {
+        let frame = dimension as u16;
+        let (x, z) = self.topo(frame).canonical_i32(x as i32, z as i32);
+        Pos::new(frame, x, z)
+    }
+
+    /// The regions a canonical rectangle widened by `r` covers on `frame`, across seams.
+    fn regions_near(&self, frame: u16, r: Rect) -> Vec<(i64, i64)> {
+        let mut out = Vec::new();
+        for part in self.topo(frame).fold_rect(r) {
+            let (x0, z0, x1, z1) = part.grid_cells(rtsim_travel::legs::REGION_BLOCKS);
+            for rx in x0..=x1 {
+                for rz in z0..=z1 {
+                    out.push((rx, rz));
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     pub fn new(seed: u64, tun: DragonTunables, now: Tick) -> Self {
         let homes = Homes::new(tun.home_half_life_ticks, tun.home_regions);
         Dragons {
@@ -322,6 +366,7 @@ impl Dragons {
             outbox: Vec::new(),
             players: BTreeMap::new(),
             index: PreyIndex::default(),
+            topo: rtsim_space::topology::all_flat(),
             by_entity: BTreeMap::new(),
             adopted: BTreeMap::new(),
             dying_by_body: false,
@@ -596,8 +641,10 @@ impl Dragons {
         let window = w.legs.window_ticks();
         let keep = self.players.get(&p).and_then(|v| v.interest).and_then(|s| {
             let row = w.legs.get(s.leg).filter(|r| r.generation == s.generation)?;
-            let (dx, dz) = (row.path.x0 - pos.x, row.path.z0 - pos.z);
-            let moved = i64::from(dx).pow(2) + i64::from(dz).pow(2);
+            let moved = self.topo(pos.frame).dist_sq(
+                (i64::from(row.path.x0), i64::from(row.path.z0)),
+                (i64::from(pos.x), i64::from(pos.z)),
+            ) as i64;
             let quarter = i64::from(self.tun.view_radius / 4).pow(2);
             (row.path.frame == pos.frame && moved <= quarter && row.path.t1.0 >= at.0 + window)
                 .then_some(s)
@@ -681,34 +728,31 @@ impl Dragons {
     /// Dragons at rest in a lair the area covers at its start: they book no leg.
     fn seen_at_lairs(&mut self, p: ActorId, stamp: Stamp, path: Path) {
         let r = i64::from(path.radius);
-        let (x0, z0) = (
-            i64::from(path.x0.min(path.x1)) - r,
-            i64::from(path.z0.min(path.z1)) - r,
-        );
-        let (x1, z1) = (
-            i64::from(path.x0.max(path.x1)) + r,
-            i64::from(path.z0.max(path.z1)) + r,
-        );
-        let (ra, rb) = (
-            rtsim_travel::legs::LegIndex::region_of(x0, z0),
-            rtsim_travel::legs::LegIndex::region_of(x1, z1),
+        let bbox = Rect::spanning(
+            (i64::from(path.x0), i64::from(path.z0)),
+            (i64::from(path.x1), i64::from(path.z1)),
+            r,
         );
         let mut found = Vec::new();
-        for rx in ra.0..=rb.0 {
-            for rz in ra.1..=rb.1 {
-                found.extend(
-                    self.lair_cells
-                        .get(&(path.frame, rx, rz))
-                        .into_iter()
-                        .flatten()
-                        .copied(),
-                );
-            }
+        for (rx, rz) in self.regions_near(path.frame, bbox) {
+            found.extend(
+                self.lair_cells
+                    .get(&(path.frame, rx, rz))
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
         }
+        found.sort_unstable();
+        found.dedup();
+        let topo = self.topo.clone();
+        let t = topo.of(path.frame);
         for l in found {
             let lp = self.lairs[l as usize].pos;
             let (px, pz) = path.at(path.t0);
-            if flight::dist((px, pz), (i64::from(lp.x), i64::from(lp.z))) > f64::from(path.radius) {
+            if flight::dist(t, (px, pz), (i64::from(lp.x), i64::from(lp.z)))
+                > f64::from(path.radius)
+            {
                 continue;
             }
             for d in self.lairs[l as usize].occupants.clone() {
@@ -753,8 +797,11 @@ impl Dragons {
                 continue;
             }
             let (px, pz) = row.path.at(at);
-            if flight::dist((px, pz), (i64::from(lp.x), i64::from(lp.z)))
-                <= f64::from(row.path.radius)
+            if flight::dist(
+                self.topo(lp.frame),
+                (px, pz),
+                (i64::from(lp.x), i64::from(lp.z)),
+            ) <= f64::from(row.path.radius)
             {
                 self.schedule(
                     at,
@@ -774,7 +821,7 @@ impl Dragons {
     /// Runs every dragon event up to and including `to`, in time order, with the world caught up
     /// to each event's time first. Nothing is ticked.
     pub fn run_until(&mut self, w: &mut World, infra: &mut dyn Infrastructure, to: Tick) {
-        self.index.refresh(w);
+        self.index.refresh(w, &self.topo);
         while let Some((at, ev)) = self.wheel.pop_until(to) {
             w.run_until(at);
             self.now = self.now.max(at);
@@ -797,7 +844,7 @@ impl Dragons {
         to: Tick,
     ) {
         self.wild = Some(std::mem::replace(herds, Herds::empty()));
-        self.index.refresh(w);
+        self.index.refresh(w, &self.topo);
         loop {
             let next = self.wheel.next_due().filter(|t| *t <= to).unwrap_or(to);
             if let Some(h) = self.wild.as_mut() {
@@ -994,7 +1041,7 @@ impl Dragons {
             Purpose::Hunt(t) => (self.target_pos(w, t), cruise),
             Purpose::Home => match x.lair {
                 Some(l) => (self.lairs[l as usize].pos, self.lairs[l as usize].y),
-                None => x.position(&self.lairs, self.now),
+                None => x.position(&self.topo, &self.lairs, self.now),
             },
             Purpose::Claim(l) => (self.lairs[l as usize].pos, self.lairs[l as usize].y),
         }
@@ -1004,9 +1051,9 @@ impl Dragons {
     /// crossing event for each road a hungry dragon passes over.
     fn fly(&mut self, w: &mut World, d: DragonId, purpose: Purpose, at: Tick) {
         let (to, _) = self.purpose_pos(w, d, purpose);
-        let (from, _) = self.dragons[d].position(&self.lairs, at);
+        let (from, _) = self.dragons[d].position(&self.topo, &self.lairs, at);
         let sp = self.tun.species(self.dragons[d].species).clone();
-        let path = flight::leg(from, to, at, sp.speed, BODY_RADIUS);
+        let path = flight::leg(self.topo(from.frame), from, to, at, sp.speed, BODY_RADIUS);
         let plan = self.bump(d);
         {
             let x = self.dragons.get_mut(d).expect("live");
@@ -1032,10 +1079,11 @@ impl Dragons {
             (i64::from(p.x0), i64::from(p.z0)),
             (i64::from(p.x1), i64::from(p.z1)),
         );
-        let steps = (flight::dist(a, b) / 256.0).ceil().max(1.0) as u32;
+        let t = self.topo(p.frame);
+        let steps = (flight::dist(t, a, b) / 256.0).ceil().max(1.0) as u32;
         let mut regions: Vec<(i32, i32)> = (0..=steps)
             .map(|k| {
-                let (x, z) = flight::lerp(a, b, k * 1000 / steps);
+                let (x, z) = flight::lerp(t, a, b, k * 1000 / steps);
                 let r = rtsim_travel::legs::LegIndex::region_of(x, z);
                 (r.0 as i32, r.1 as i32)
             })
@@ -1145,10 +1193,11 @@ impl Dragons {
             (i64::from(path.x0), i64::from(path.z0)),
             (i64::from(path.x1), i64::from(path.z1)),
         );
+        let t = self.topo(path.frame);
         let (cx, cz) = ((p0.0 + p1.0) / 2, (p0.1 + p1.1) / 2);
-        let r = (flight::dist(p0, p1) / 2.0).ceil() as i64 + 1;
+        let r = (flight::dist(t, p0, p1) / 2.0).ceil() as i64 + 1;
         let mut found = Vec::new();
-        for e in self.index.roads_near(path.frame, cx, cz, r) {
+        for e in self.index.roads_near(t, path.frame, cx, cz, r) {
             if Some(e) == skip {
                 continue;
             }
@@ -1158,7 +1207,7 @@ impl Dragons {
                 (i64::from(a.x), i64::from(a.z)),
                 (i64::from(b.x), i64::from(b.z)),
             );
-            if let Some((fd, fr)) = flight::crossing(p0, p1, q0, q1)
+            if let Some((fd, fr)) = flight::crossing(t, p0, p1, q0, q1)
                 && (ROAD_MARGIN..=1000 - ROAD_MARGIN).contains(&fr)
             {
                 let tc = path.t0 + (path.t1.0 - path.t0.0) * u64::from(fd) / 1000;
@@ -1188,7 +1237,7 @@ impl Dragons {
         let plan = self.bump(d);
         let hunt_below = self.tun.hunt_below;
         let rest = self.tun.rest_ticks.max(1);
-        let here = self.dragons[d].position(&self.lairs, at);
+        let here = self.dragons[d].position(&self.topo, &self.lairs, at);
         let x = self.dragons.get_mut(d).expect("live");
         x.state = State::Roosting;
         // A dragon with a lair rests at it; one without rests where it landed (with no resting
@@ -1319,7 +1368,7 @@ impl Dragons {
     pub fn weigh(&self, w: &World, d: DragonId, at: Tick) -> Vec<(Target, PreyKind, f64)> {
         let x = &self.dragons[d];
         let sp = self.tun.species(x.species);
-        let (pos, _) = x.position(&self.lairs, at);
+        let (pos, _) = x.position(&self.topo, &self.lairs, at);
         let origin = match x.lair {
             Some(l) => self.lairs[l as usize].pos,
             None => pos,
@@ -1330,8 +1379,9 @@ impl Dragons {
         let season = self.tun.calendar.season_at(at);
         let temper = x.temperament();
         let need = f64::from((self.tun.full - x.fullness_at(&self.tun, at)).min(sp.appetite));
+        let t = self.topo(origin.frame);
         let cost = |p: Pos| {
-            flight::dist((ox, oz), (i64::from(p.x), i64::from(p.z))) / 1000.0
+            flight::dist(t, (ox, oz), (i64::from(p.x), i64::from(p.z))) / 1000.0
                 * f64::from(self.tun.distance_cost_per_kblock)
         };
         let mut all: Vec<(Target, PreyKind, f64)> = Vec::new();
@@ -1358,7 +1408,7 @@ impl Dragons {
             if home.pos.frame != origin.frame {
                 continue;
             }
-            let dist = flight::dist((ox, oz), (i64::from(home.pos.x), i64::from(home.pos.z)));
+            let dist = flight::dist(t, (ox, oz), (i64::from(home.pos.x), i64::from(home.pos.z)));
             if dist > f64::from(sp.grudge_range) {
                 continue;
             }
@@ -1384,9 +1434,9 @@ impl Dragons {
         // none at 255.
         let fear =
             f64::from(self.tun.village_risk) * (2.0 - f64::from(temper.bold) / 128.0).max(0.0);
-        for node in self.index.villages_near(origin.frame, ox, oz, range) {
+        for node in self.index.villages_near(t, origin.frame, ox, oz, range) {
             let n = &w.nodes[node as usize];
-            let dist = flight::dist((ox, oz), (i64::from(n.pos.x), i64::from(n.pos.z)));
+            let dist = flight::dist(t, (ox, oz), (i64::from(n.pos.x), i64::from(n.pos.z)));
             if dist > range as f64 {
                 continue;
             }
@@ -1404,17 +1454,17 @@ impl Dragons {
         }
         // Roads.
         let w_road = f64::from(self.tun.season_weight(season, PreyKind::Road)) / 100.0;
-        for e in self.index.roads_near(origin.frame, ox, oz, range) {
+        for e in self.index.roads_near(t, origin.frame, ox, oz, range) {
             let edge = &w.edges[e as usize];
             let (a, b) = (w.nodes[edge.a].pos, w.nodes[edge.b].pos);
             let (qa, qb) = (
                 (i64::from(a.x), i64::from(a.z)),
                 (i64::from(b.x), i64::from(b.z)),
             );
-            let f = flight::closest_on(qa, qb, (ox, oz), ROAD_MARGIN, 1000 - ROAD_MARGIN);
-            let p = flight::lerp(qa, qb, f);
+            let f = flight::closest_on(t, qa, qb, (ox, oz), ROAD_MARGIN, 1000 - ROAD_MARGIN);
+            let p = flight::lerp(t, qa, qb, f);
             let pt = Pos::new(a.frame, p.0 as i32, p.1 as i32);
-            if flight::dist((ox, oz), p) > range as f64 {
+            if flight::dist(t, (ox, oz), p) > range as f64 {
                 continue;
             }
             let food = self
@@ -1440,7 +1490,7 @@ impl Dragons {
             let w_herd = f64::from(self.tun.season_weight(season, PreyKind::Herd)) / 100.0;
             let (px, pz) = (i64::from(pos.x), i64::from(pos.z));
             for o in hd.prey_near(origin.frame, ox, oz, range, at, d.to_bits()) {
-                let fly = flight::dist((px, pz), (i64::from(o.pos.0), i64::from(o.pos.1)));
+                let fly = flight::dist(t, (px, pz), (i64::from(o.pos.0), i64::from(o.pos.1)));
                 let arrive = at + flight::flight_ticks(fly, sp.speed);
                 let (hx, hz) = hd.position(o.herd, arrive);
                 let food = (o.available as f64 * f64::from(o.food_each)).min(need);
@@ -1566,20 +1616,14 @@ impl Dragons {
     /// lair cells within range (one range query per row of regions), never every lair.
     fn vacant_lair(&self, d: DragonId, at: Tick) -> Option<LairId> {
         let x = &self.dragons[d];
-        let (p, _) = x.position(&self.lairs, at);
+        let (p, _) = x.position(&self.topo, &self.lairs, at);
         let range = self.tun.species(x.species).grudge_range;
         let r = i64::from(range);
         let (px, pz) = (i64::from(p.x), i64::from(p.z));
-        let (ra, rb) = (
-            rtsim_travel::legs::LegIndex::region_of(px - r, pz - r),
-            rtsim_travel::legs::LegIndex::region_of(px + r, pz + r),
-        );
+        let t = self.topo(p.frame);
         let mut best: Option<(f64, LairId)> = None;
-        for rx in ra.0..=rb.0 {
-            for (_, ls) in self
-                .lair_cells
-                .range((p.frame, rx, ra.1)..=(p.frame, rx, rb.1))
-            {
+        for (rx, rz) in self.regions_near(p.frame, Rect::around(px, pz, r)) {
+            if let Some(ls) = self.lair_cells.get(&(p.frame, rx, rz)) {
                 for &i in ls {
                     let l = &self.lairs[i as usize];
                     if l.species != x.species
@@ -1589,7 +1633,7 @@ impl Dragons {
                     {
                         continue;
                     }
-                    let dd = flight::dist((px, pz), (i64::from(l.pos.x), i64::from(l.pos.z)));
+                    let dd = flight::dist(t, (px, pz), (i64::from(l.pos.x), i64::from(l.pos.z)));
                     if dd > f64::from(range) {
                         continue;
                     }
@@ -2066,6 +2110,7 @@ impl Dragons {
             let tp = self.target_pos(w, t);
             self.homes.last_seen(player).is_some_and(|(p, _)| {
                 flight::dist(
+                    self.topo(p.frame),
                     (i64::from(p.x), i64::from(p.z)),
                     (i64::from(tp.x), i64::from(tp.z)),
                 ) <= f64::from(2 * self.tun.view_radius)
@@ -2093,7 +2138,34 @@ impl Dragons {
         at_pos: Option<(Pos, i32)>,
         at: Tick,
     ) {
-        let (pos, y) = at_pos.unwrap_or_else(|| self.dragons[d].position(&self.lairs, at));
+        let (pos, y) =
+            at_pos.unwrap_or_else(|| self.dragons[d].position(&self.topo, &self.lairs, at));
+        // Near a seam the body appears at the image on the player's side (TP11); across an
+        // edge_stop seam it does not appear at all (TP12).
+        let t = self.topo(pos.frame);
+        let here = (i64::from(pos.x), i64::from(pos.z));
+        let viewer = self
+            .homes
+            .last_seen(player)
+            .filter(|(p, _)| p.frame == pos.frame)
+            .map(|(p, _)| (i64::from(p.x), i64::from(p.z)));
+        let spawn = match viewer {
+            Some(v) => t.embodied_toward(v, here),
+            None => t.embodied_toward(here, here),
+        };
+        let Some(spawn) = spawn else {
+            self.stats.seen_across_stop += 1;
+            self.note(
+                at,
+                "materialize",
+                Some(d),
+                format!(
+                    "stays abstract for player {}: across an edge_stop seam",
+                    player.to_bits()
+                ),
+            );
+            return;
+        };
         let x = &self.dragons[d];
         let sp = self.tun.species(x.species).clone();
         let purpose = match x.state {
@@ -2122,6 +2194,9 @@ impl Dragons {
         };
         let epoch = x.epoch + 1;
         let lair = x.lair.map(|l| &self.lairs[l as usize]);
+        // The body's own frame: where it heads and where its home is, the short way from where
+        // it appears and never through a stopped seam.
+        let local = |p: Pos| t.embodied_route(spawn, (i64::from(p.x), i64::from(p.z)));
         let (target, _) = if harass {
             match self.homes.last_seen(player) {
                 Some((p, _)) => (p, y),
@@ -2147,17 +2222,19 @@ impl Dragons {
             species: x.species,
             dimension: u32::from(pos.frame),
             age_ticks: x.age(at).min(i32::MAX as u64) as i32,
-            pos: (f64::from(pos.x), f64::from(y), f64::from(pos.z)),
+            pos: (spawn.0 as f64, f64::from(y), spawn.1 as f64),
             hunger: x.fullness_at(&self.tun, at),
             gender: x.gender,
             variant: u32::from(x.variant),
             health: x.health_at(&sp, at),
-            home: lair.map_or((0, 0, 0), |l| (l.pos.x, l.y, l.pos.z)),
-            target: (
-                f64::from(target.x),
-                f64::from(sp.cruise_y),
-                f64::from(target.z),
-            ),
+            home: lair.map_or((0, 0, 0), |l| {
+                let h = local(l.pos);
+                (h.0 as i32, l.y, h.1 as i32)
+            }),
+            target: {
+                let g = local(target);
+                (g.0 as f64, f64::from(sp.cruise_y), g.1 as f64)
+            },
             target_player: if grudge { self.uuid_of(player) } else { (0, 0) },
         };
         self.outbox.push(Cmd::Materialize(cmd));
@@ -2221,15 +2298,21 @@ impl Dragons {
         };
         let (to, _) = match x.lair {
             Some(l) => (self.lairs[l as usize].pos, self.lairs[l as usize].y),
-            None => x.position(&self.lairs, at),
+            None => x.position(&self.topo, &self.lairs, at),
         };
+        // Toward home the short way from where the body is, round any stopped seam (TP12).
+        let (here, _) = x.position(&self.topo, &self.lairs, at);
+        let to = self.topo(to.frame).embodied_route(
+            (i64::from(here.x), i64::from(here.z)),
+            (i64::from(to.x), i64::from(to.z)),
+        );
         let cruise = self.tun.species(x.species).cruise_y;
         self.outbox.push(Cmd::Depart(boundary::Depart {
             agent: agent_of(d),
             epoch,
             reason,
             timeout_ticks: DEPART_TIMEOUT,
-            target: (f64::from(to.x), f64::from(cruise), f64::from(to.z)),
+            target: (to.0 as f64, f64::from(cruise), to.1 as f64),
         }));
         self.stats.departures += 1;
         if reason == 1 {
@@ -2291,7 +2374,7 @@ impl Dragons {
         self.run_until(w, infra, at);
         match o {
             Obs::LairFound(l) => {
-                let pos = Pos::new(l.dimension as u16, l.home.0, l.home.2);
+                let pos = self.canon(l.dimension, f64::from(l.home.0), f64::from(l.home.2));
                 let name = format!(
                     "{} {}",
                     boundary::SpeciesDict::structure_name(l.species, l.kind),
@@ -2315,14 +2398,12 @@ impl Dragons {
                     return;
                 };
                 let (starving, full) = (self.tun.starving, self.tun.full);
+                let here = self.canon(s.dimension, s.pos.0, s.pos.2);
                 let x = self.dragons.get_mut(d).expect("live");
                 x.set_health(s.health, at);
                 // Ice and Fire's Hunger is 0 to 100; anything else from the plugin is clamped.
                 x.set_fullness(s.hunger.clamp(0, full), at);
-                x.rest = Some((
-                    Pos::new(s.dimension as u16, s.pos.0 as i32, s.pos.2 as i32),
-                    s.pos.1 as i32,
-                ));
+                x.rest = Some((here, s.pos.1 as i32));
                 if s.hunger <= starving && matches!(x.state, State::Embodied { .. }) {
                     self.depart(d, 2, at);
                 }
@@ -2333,7 +2414,7 @@ impl Dragons {
                     let killer =
                         (dd.killer_kind == AttackerKind::Player).then(|| self.player(w, dd.killer));
                     let pos = (
-                        Pos::new(dd.dimension as u16, dd.pos.0 as i32, dd.pos.2 as i32),
+                        self.canon(dd.dimension, dd.pos.0, dd.pos.2),
                         dd.pos.1 as i32,
                     );
                     self.kill(w, d, killer, pos, at);
@@ -2345,13 +2426,11 @@ impl Dragons {
                 };
                 {
                     let full = self.tun.full;
+                    let here = self.canon(m.dimension, m.pos.0, m.pos.2);
                     let x = self.dragons.get_mut(d).expect("live");
                     x.set_health(m.health, at);
                     x.set_fullness(m.hunger.clamp(0, full), at);
-                    x.rest = Some((
-                        Pos::new(m.dimension as u16, m.pos.0 as i32, m.pos.2 as i32),
-                        m.pos.1 as i32,
-                    ));
+                    x.rest = Some((here, m.pos.1 as i32));
                 }
                 self.by_entity.retain(|_, v| *v != d);
                 self.adopted.retain(|_, v| *v != d);
@@ -2406,9 +2485,10 @@ impl Dragons {
         self.dragons.get_mut(d).expect("live").state = State::Flying(purpose);
         let at_home = match (purpose, self.dragons[d].lair) {
             (Purpose::Home, Some(l)) => {
-                let (p, _) = self.dragons[d].position(&self.lairs, at);
+                let (p, _) = self.dragons[d].position(&self.topo, &self.lairs, at);
                 let lp = self.lairs[l as usize].pos;
                 flight::dist(
+                    self.topo(p.frame),
                     (i64::from(p.x), i64::from(p.z)),
                     (i64::from(lp.x), i64::from(lp.z)),
                 ) < 32.0
@@ -2442,7 +2522,7 @@ impl Dragons {
             let unit = self.tun.wound_unit_milli as f64 / 1000.0;
             let severity =
                 (f64::from(SEVERITY_UNIT) * (1.0 + share / unit)).clamp(1.0, 255.0) as u8;
-            let (pos, y) = self.dragons[d].position(&self.lairs, at);
+            let (pos, y) = self.dragons[d].position(&self.topo, &self.lairs, at);
             let id = w.knowledge.record(Report {
                 who: p,
                 whom: self.dragons[d].actor,
@@ -2603,7 +2683,7 @@ impl Dragons {
             self.dragons.get(d).map(|x| x.state)
             && !self.dying_by_body
         {
-            let (to, y) = self.dragons[d].position(&self.lairs, at);
+            let (to, y) = self.dragons[d].position(&self.topo, &self.lairs, at);
             self.outbox.push(Cmd::Depart(boundary::Depart {
                 agent: agent_of(d),
                 epoch,
@@ -2651,7 +2731,7 @@ impl Dragons {
             return;
         };
         // Where it is stays where it is: a dragon at its lair is at the lair.
-        let here = self.dragons[d].position(&self.lairs, at);
+        let here = self.dragons[d].position(&self.topo, &self.lairs, at);
         let lair = &mut self.lairs[l as usize];
         lair.occupants.retain(|o| *o != d);
         if let Some(x) = self.dragons.get_mut(d) {
@@ -2829,11 +2909,11 @@ impl Dragons {
         let mut rng = StreamKey::new(self.seed, SYS_BREED, lair.key).slot(at.0);
         let angle = rng.next_f64() * std::f64::consts::TAU;
         let r = f64::from(self.tun.respawn_from_blocks);
-        let from = Pos::new(
-            lair.pos.frame,
+        let (fx, fz) = self.topo(lair.pos.frame).canonical_i32(
             lair.pos.x + (r * angle.cos()) as i32,
             lair.pos.z + (r * angle.sin()) as i32,
         );
+        let from = Pos::new(lair.pos.frame, fx, fz);
         let gender = if rng.below(2) == 0 {
             Gender::Female
         } else {
@@ -2906,7 +2986,7 @@ impl Dragons {
             self.stats.discarded += 1;
             return;
         }
-        let pos = Pos::new(u.dimension as u16, u.pos.0 as i32, u.pos.2 as i32);
+        let pos = self.canon(u.dimension, u.pos.0, u.pos.2);
         let d = self.add_dragon(
             w,
             NewDragon {
@@ -2963,13 +3043,11 @@ impl Dragons {
         self.stats.adopted += 1;
         self.bump(d);
         self.cancel_leg(w, d);
+        let here = self.canon(u.dimension, u.pos.0, u.pos.2);
         let x = self.dragons.get_mut(d).expect("live");
         let epoch = x.epoch + 1;
         x.epoch = epoch;
-        x.rest = Some((
-            Pos::new(u.dimension as u16, u.pos.0 as i32, u.pos.2 as i32),
-            u.pos.1 as i32,
-        ));
+        x.rest = Some((here, u.pos.1 as i32));
         x.state = State::Embodied {
             epoch,
             since: at,
