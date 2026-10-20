@@ -126,14 +126,22 @@ fn the_same_animals_come_back_after_kills_and_a_season_of_deaths() {
     let p = r.near(f, t1);
     r.run(t1 + 1_500, 100, Some(p));
     let agent = agent_of(f);
-    let first = r.fake.group_of(agent).cloned().expect("a group materialized");
+    let first = r
+        .fake
+        .group_of(agent)
+        .cloned()
+        .expect("a group materialized");
     assert_eq!(r.materializes(f), 1);
     let before = r.h.count(f, r.h.now());
     let killed = r.fake.kill(agent, 5, PLAYER);
     let led = r.fake.lead(agent, PLAYER).expect("a body");
     let now = r.h.now();
     r.pump(now);
-    assert_eq!(r.h.count(f, now), before - 6, "the count drops by exactly six");
+    assert_eq!(
+        r.h.count(f, now),
+        before - 6,
+        "the count drops by exactly six"
+    );
     // Walk away: captured. A season of deaths passes unseen.
     r.h.player_left(&mut r.legs, PLAYER, now);
     r.pump(now);
@@ -145,7 +153,10 @@ fn the_same_animals_come_back_after_kills_and_a_season_of_deaths() {
     let second = r.fake.group_of(agent).cloned().expect("a group again");
     let shown: Vec<u64> = second.bodies.iter().map(|b| b.spawn.member).collect();
     for k in killed.iter().chain([&led]) {
-        assert!(!shown.contains(k), "member {k} was killed or led away and came back");
+        assert!(
+            !shown.contains(k),
+            "member {k} was killed or led away and came back"
+        );
     }
     // Every survivor of the first group is back, looking the same.
     for b in &first.bodies {
@@ -283,7 +294,7 @@ fn apply(r: &mut Rig, o: &Op, last: &mut Vec<(u64, u64, u64)>) {
             r.run(now + 2_000, 100, Some(p));
         }
         Op::Kill(n) => {
-            for (&agent, _) in r.fake.groups.clone().iter() {
+            for &agent in r.fake.groups.clone().keys() {
                 for k in r.fake.kill(agent, n, PLAYER) {
                     last.push((agent, 0, k));
                 }
@@ -291,13 +302,13 @@ fn apply(r: &mut Rig, o: &Op, last: &mut Vec<(u64, u64, u64)>) {
             r.pump(now);
         }
         Op::Shear => {
-            for (&agent, _) in r.fake.groups.clone().iter() {
+            for &agent in r.fake.groups.clone().keys() {
                 r.fake.shear(agent, 2, PLAYER);
             }
             r.pump(now);
         }
         Op::Lead => {
-            for (&agent, _) in r.fake.groups.clone().iter() {
+            for &agent in r.fake.groups.clone().keys() {
                 r.fake.lead(agent, PLAYER);
             }
             r.pump(now);
@@ -324,10 +335,18 @@ fn apply(r: &mut Rig, o: &Op, last: &mut Vec<(u64, u64, u64)>) {
                     killer: PLAYER,
                     op: 1 << 63 | 1,
                 });
-                let n = r.h.herd(rtsim_ecology::herds::herd::herd_of(agent).unwrap()).unwrap().ledger.killed;
+                let n =
+                    r.h.herd(rtsim_ecology::herds::herd::herd_of(agent).unwrap())
+                        .unwrap()
+                        .ledger
+                        .killed;
                 r.h.ingest(&mut r.legs, &o, now);
                 r.h.ingest(&mut r.legs, &o, now);
-                let m = r.h.herd(rtsim_ecology::herds::herd::herd_of(agent).unwrap()).unwrap().ledger.killed;
+                let m =
+                    r.h.herd(rtsim_ecology::herds::herd::herd_of(agent).unwrap())
+                        .unwrap()
+                        .ledger
+                        .killed;
                 assert!(m <= n + 1);
             }
         }
@@ -389,7 +408,14 @@ fn a_truncated_or_foreign_page_is_an_error() {
     let r = Rig::valley(2);
     let b = r.h.save();
     for n in [0, 4, b.len() / 2, b.len() - 1] {
-        assert!(Herds::load(HerdTunables::default(), Box::new(Valley::default()), &b[..n]).is_err());
+        assert!(
+            Herds::load(
+                HerdTunables::default(),
+                Box::new(Valley::default()),
+                &b[..n]
+            )
+            .is_err()
+        );
     }
     let mut bad = b.clone();
     bad[0] ^= 0xFF;
@@ -406,7 +432,7 @@ fn an_obstacle_raises_the_cost_and_the_herd_replans_around_it() {
     let mut t = Tick::from_days(4);
     r.run(t, 2_000, None);
     while r.h.herd(f).unwrap().route.segment_at(t + 2_500).is_none() {
-        t = t + 6_000;
+        t += 6_000;
         r.run(t, 6_000, None);
     }
     let p = r.near(f, t);
@@ -439,10 +465,11 @@ fn an_obstacle_raises_the_cost_and_the_herd_replans_around_it() {
     r.h.ingest(&mut r.legs, &o, now);
     assert_eq!(r.h.stats.obstacles, 1);
     assert_eq!(r.h.stats.replans, 1);
-    let cost = r
-        .h
-        .obstacles
-        .extra((0, blocked.0, blocked.1), now, r.h.tun.obstacle_half_life_ticks);
+    let cost = r.h.obstacles.extra(
+        (0, blocked.0, blocked.1),
+        now,
+        r.h.tun.obstacle_half_life_ticks,
+    );
     assert!(cost >= 50.0, "cost {cost}");
     let after = r.h.herd(f).unwrap().route.clone();
     assert_eq!(after.start(), (pos.0 as i32, pos.1 as i32));
@@ -475,11 +502,8 @@ fn an_obstacle_raises_the_cost_and_the_herd_replans_around_it() {
 fn dragons_eat_from_herds_and_follow_them() {
     let seed = 21;
     let (mut w, _) = rtsim_ecology::synth::world(seed);
-    let mut d = rtsim_ecology::Dragons::new(
-        seed,
-        rtsim_ecology::DragonTunables::default(),
-        Tick::ZERO,
-    );
+    let mut d =
+        rtsim_ecology::Dragons::new(seed, rtsim_ecology::DragonTunables::default(), Tick::ZERO);
     let l = d.add_lair(
         &mut w,
         301,
@@ -507,7 +531,12 @@ fn dragons_eat_from_herds_and_follow_them() {
         Tick::ZERO,
     );
     d.log_enabled = true;
-    let mut h = Herds::new(seed, HerdTunables::default(), Box::new(Valley::default()), Tick::ZERO);
+    let mut h = Herds::new(
+        seed,
+        HerdTunables::default(),
+        Box::new(Valley::default()),
+        Tick::ZERO,
+    );
     let herd = h.add_herd(
         NewHerd {
             name: "Bait flock".into(),
@@ -525,7 +554,11 @@ fn dragons_eat_from_herds_and_follow_them() {
         .iter()
         .filter(|x| x.kind == PreyKind::Herd && x.food > 0)
         .collect();
-    assert!(!hunts.is_empty(), "no herd hunts: {:?}", d.hunts.iter().map(|x| x.kind).collect::<Vec<_>>());
+    assert!(
+        !hunts.is_empty(),
+        "no herd hunts: {:?}",
+        d.hunts.iter().map(|x| x.kind).collect::<Vec<_>>()
+    );
     let taken: i64 = hunts.iter().flat_map(|x| x.taken.iter().map(|t| t.1)).sum();
     let x = h.herd(herd).unwrap();
     assert_eq!(x.ledger.eaten as i64, taken);

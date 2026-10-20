@@ -104,7 +104,8 @@ impl Route {
 
     /// Closest approach of the route over `[t0, t1]` to a point: (distance, when).
     pub fn closest(&self, p: (i64, i64), t0: Tick, t1: Tick) -> (f64, Tick) {
-        let d = |q: (i64, i64)| (((q.0 - p.0) as f64).powi(2) + ((q.1 - p.1) as f64).powi(2)).sqrt();
+        let d =
+            |q: (i64, i64)| (((q.0 - p.0) as f64).powi(2) + ((q.1 - p.1) as f64).powi(2)).sqrt();
         let mut best = (d(self.pos(t0)), t0);
         let mut consider = |t: Tick| {
             if t >= t0 && t <= t1 {

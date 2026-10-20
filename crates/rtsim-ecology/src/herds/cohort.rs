@@ -92,10 +92,8 @@ impl Class {
     }
 
     fn tree(&self, herd_seed: u64, cohort: Cohort, len: i64) -> DyadicCounts {
-        let entity = StreamKey::new(herd_seed, SYS_DEATH, self.first).block(
-            (u64::from(self.generation) << 8) | cohort.index() as u64,
-            0,
-        )[0];
+        let entity = StreamKey::new(herd_seed, SYS_DEATH, self.first)
+            .block((u64::from(self.generation) << 8) | cohort.index() as u64, 0)[0];
         DyadicCounts::new(
             StreamKey::new(herd_seed, SYS_DEATH, entity),
             levels_for(len),

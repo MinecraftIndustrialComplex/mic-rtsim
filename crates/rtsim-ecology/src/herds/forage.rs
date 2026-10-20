@@ -74,7 +74,10 @@ impl Affine {
         };
         let g = r.growth_per_day - r.decay_per_day;
         if g.abs() < 1e-12 {
-            return Affine { a: 1.0, b: h * days };
+            return Affine {
+                a: 1.0,
+                b: h * days,
+            };
         }
         let a = (-g * days).exp();
         Affine {
@@ -176,7 +179,7 @@ impl Forage {
                 y = y.then(Affine::piece(rates(n + s), subs.len as f64 / day));
             }
             m = m.then(y.pow(years));
-            t = t + years * subs.year_ticks();
+            t += years * subs.year_ticks();
             n += years as i64 * i64::from(SUB_SEASONS);
         }
         while t < t1 {

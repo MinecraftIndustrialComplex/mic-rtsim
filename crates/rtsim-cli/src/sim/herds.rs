@@ -277,7 +277,10 @@ impl Sim {
                 .run_until_with_herds(&mut self.w, &mut NoInfrastructure, &mut self.h, next);
             self.pump(next);
             if let Err(e) = self.h.check(next) {
-                checks.push(format!("day {:.2}: {e}", next.0 as f64 / TICKS_PER_DAY as f64));
+                checks.push(format!(
+                    "day {:.2}: {e}",
+                    next.0 as f64 / TICKS_PER_DAY as f64
+                ));
             }
             t = next;
         }
@@ -364,11 +367,15 @@ pub fn main(o: Options) -> i32 {
     let subs = sim.h.subs();
     let snap_every = subs.len;
     let mut next_snap = Tick::ZERO;
-    let mut advance = |sim: &mut Sim, to: Tick, p: Option<Pos>, errors: &mut Vec<String>, snaps: &mut Vec<Snapshot>| {
+    let mut advance = |sim: &mut Sim,
+                       to: Tick,
+                       p: Option<Pos>,
+                       errors: &mut Vec<String>,
+                       snaps: &mut Vec<Snapshot>| {
         while next_snap <= to {
             sim.run(next_snap, p, errors);
             snaps.push(snapshot(&sim.h, next_snap));
-            next_snap = next_snap + snap_every;
+            next_snap += snap_every;
         }
         sim.run(to, p, errors);
     };
@@ -393,7 +400,11 @@ pub fn main(o: Options) -> i32 {
         approaches.push(Approach {
             day: day(g.since),
             epoch: g.epoch,
-            members: g.bodies.iter().map(|b| (b.spawn.member, b.spawn.variant)).collect(),
+            members: g
+                .bodies
+                .iter()
+                .map(|b| (b.spawn.member, b.spawn.variant))
+                .collect(),
         });
         killed = sim.fake.kill(agent, 6, PLAYER);
         sheared = sim.fake.shear(agent, 3, PLAYER);
@@ -420,7 +431,13 @@ pub fn main(o: Options) -> i32 {
     // 2. Walk away for two hours, then come back.
     let t2 = sim.h.now() + 1_000;
     let away = Pos::new(0, p1.x + 2_000, p1.z);
-    advance(&mut sim, t2 + 2_000, Some(away), &mut errors, &mut snapshots);
+    advance(
+        &mut sim,
+        t2 + 2_000,
+        Some(away),
+        &mut errors,
+        &mut snapshots,
+    );
     let gone = sim.fake.group_of(agent).is_none();
     let t3 = sim.h.now();
     let p3 = at_flock(&sim, t3);
@@ -434,7 +451,11 @@ pub fn main(o: Options) -> i32 {
         approaches.push(Approach {
             day: day(b.since),
             epoch: b.epoch,
-            members: b.bodies.iter().map(|x| (x.spawn.member, x.spawn.variant)).collect(),
+            members: b
+                .bodies
+                .iter()
+                .map(|x| (x.spawn.member, x.spawn.variant))
+                .collect(),
         });
         let before: BTreeMap<u64, u32> = a
             .bodies
@@ -481,15 +502,23 @@ pub fn main(o: Options) -> i32 {
     let pass_pos = Pos::new(0, valley.pass * 128 + 64, valley.ridge.1 * 128 + 200);
     let winter = subs.start(9) + TICKS_PER_DAY * 4;
     // The player stays at the pass through autumn (the scripted vigil), its interest booked.
-    advance(&mut sim, winter, Some(pass_pos), &mut errors, &mut snapshots);
+    advance(
+        &mut sim,
+        winter,
+        Some(pass_pos),
+        &mut errors,
+        &mut snapshots,
+    );
     sim.leave(sim.h.now());
     let obstacles = sim.h.stats.obstacles;
     let pass_cost: f64 = pass_cells
         .iter()
         .map(|c| {
-            sim.h
-                .obstacles
-                .extra((0, c.0, c.1), sim.h.now(), sim.h.tun.obstacle_half_life_ticks)
+            sim.h.obstacles.extra(
+                (0, c.0, c.1),
+                sim.h.now(),
+                sim.h.tun.obstacle_half_life_ticks,
+            )
         })
         .fold(0.0, f64::max);
 
@@ -534,7 +563,13 @@ pub fn main(o: Options) -> i32 {
     });
 
     // 5. On to the end.
-    advance(&mut sim, Tick::from_days(o.days), None, &mut errors, &mut snapshots);
+    advance(
+        &mut sim,
+        Tick::from_days(o.days),
+        None,
+        &mut errors,
+        &mut snapshots,
+    );
     let end = sim.h.now();
 
     // The fence: where the flock's routes crossed the ridge line, by year.
@@ -590,8 +625,13 @@ pub fn main(o: Options) -> i32 {
     });
     checks.push(Check {
         name: "the flock used the pass before the fence",
-        ok: through_pass.get(&0).is_some_and(|v| v.iter().any(|&d| d < fence_day)),
-        detail: format!("planned through the pass on days {:?}", through_pass.get(&0)),
+        ok: through_pass
+            .get(&0)
+            .is_some_and(|v| v.iter().any(|&d| d < fence_day)),
+        detail: format!(
+            "planned through the pass on days {:?}",
+            through_pass.get(&0)
+        ),
     });
     checks.push(Check {
         name: "after the fence the flock takes the long way round (year 1 crossings away from the pass)",
@@ -620,7 +660,11 @@ pub fn main(o: Options) -> i32 {
         .iter()
         .filter(|r| r.kind == PreyKind::Herd && r.food > 0)
         .map(|r| {
-            let lair = sim.lairs.get(&r.dragon).copied().unwrap_or(Pos::new(0, 0, 0));
+            let lair = sim
+                .lairs
+                .get(&r.dragon)
+                .copied()
+                .unwrap_or(Pos::new(0, 0, 0));
             let animals = r.taken.iter().map(|t| t.1).sum();
             // The hunt's place is in its log line; distance from the lair at the herd's position
             // then.
@@ -725,14 +769,25 @@ pub fn main(o: Options) -> i32 {
 }
 
 fn print(r: &Results) {
-    println!("herds over {} days (seed {}), {:.0} ms", r.days, r.seed, r.wall_ms);
+    println!(
+        "herds over {} days (seed {}), {:.0} ms",
+        r.days, r.seed, r.wall_ms
+    );
     println!("\nfounded: {:?}", r.founded);
     println!("\nby sub-season (total, then each herd's count and centre):");
     for s in &r.snapshots {
         let herds: Vec<String> = s
             .herds
             .iter()
-            .map(|h| format!("{} {} ({}, {})", h.name.split(' ').next().unwrap_or(""), h.count, h.x, h.z))
+            .map(|h| {
+                format!(
+                    "{} {} ({}, {})",
+                    h.name.split(' ').next().unwrap_or(""),
+                    h.count,
+                    h.x,
+                    h.z
+                )
+            })
             .collect();
         println!(
             "  day {:>6.1} y{} s{:>2}: {:>6} | {}",
@@ -764,29 +819,59 @@ fn print(r: &Results) {
         p.killed_seen_again
     );
     for a in &p.approaches {
-        let m: Vec<String> = a.members.iter().take(12).map(|(k, v)| format!("{k}:{v}")).collect();
-        println!("  day {:.2} epoch {}: {} members, first {}", a.day, a.epoch, a.members.len(), m.join(" "));
+        let m: Vec<String> = a
+            .members
+            .iter()
+            .take(12)
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect();
+        println!(
+            "  day {:.2} epoch {}: {} members, first {}",
+            a.day,
+            a.epoch,
+            a.members.len(),
+            m.join(" ")
+        );
     }
     let f = &r.fence;
     println!(
         "\nthe fence at {:?}: {} obstacle reports, pass cost +{:.1}x; routes through the pass by year {:?}; ridge crossings {:?}",
         f.fenced_cells, f.obstacles, f.pass_cost, f.through_pass, f.crossings
     );
-    println!("\ndragon hunts that found food, by season and kind: {:?}", r.dragons.by_season);
+    println!(
+        "\ndragon hunts that found food, by season and kind: {:?}",
+        r.dragons.by_season
+    );
     for h in r.dragons.herd_hunts.iter().take(40) {
-        println!("  day {:>6.2} {:<10} {:<16} {:>3} animals, {:>5.0} blocks from its lair", h.0, h.1, h.2, h.3, h.4);
+        println!(
+            "  day {:>6.2} {:<10} {:<16} {:>3} animals, {:>5.0} blocks from its lair",
+            h.0, h.1, h.2, h.3, h.4
+        );
     }
     println!("\nwhat happened (selected):");
     for e in &r.log {
-        if matches!(e.kind, "materialize" | "capture" | "obstacle" | "killed" | "taken" | "despawn" | "extinct")
-        {
-            println!("  day {:>6.2} {:<12} {:<16} {}", e.day, e.kind, e.herd.clone().unwrap_or_default(), e.what);
+        if matches!(
+            e.kind,
+            "materialize" | "capture" | "obstacle" | "killed" | "taken" | "despawn" | "extinct"
+        ) {
+            println!(
+                "  day {:>6.2} {:<12} {:<16} {}",
+                e.day,
+                e.kind,
+                e.herd.clone().unwrap_or_default(),
+                e.what
+            );
         }
     }
     println!("\nstats: {:?}", r.stats);
     println!("restart: {:#x} -> {:#x}", r.restart.0, r.restart.1);
     println!("\nchecks:");
     for c in &r.checks {
-        println!("  [{}] {}: {}", if c.ok { "ok" } else { "FAIL" }, c.name, c.detail);
+        println!(
+            "  [{}] {}: {}",
+            if c.ok { "ok" } else { "FAIL" },
+            c.name,
+            c.detail
+        );
     }
 }

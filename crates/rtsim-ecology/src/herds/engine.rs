@@ -49,9 +49,7 @@ use super::boundary::{
 use super::climate::{Climate, Subs, Uniform};
 use super::cohort::Class;
 use super::forage::{CELL_BLOCKS, CellKey, Forage, cell_of};
-use super::herd::{
-    Embodied, Herd, HerdId, HerdLedger, Route, agent_of, herd_of, route_regions,
-};
+use super::herd::{Embodied, Herd, HerdId, HerdLedger, Route, agent_of, herd_of, route_regions};
 use super::members::{self, member};
 use super::route::{self, Ask, Obstacles};
 use super::species::{Cohort, HerdSpecies, HerdSpeciesData};
@@ -79,8 +77,7 @@ fn player_owner(slot: u32) -> Owner {
 }
 
 pub fn owner_herd(o: Owner) -> Option<HerdId> {
-    (o.0 & OWNER_MASK == HERD_OWNER)
-        .then(|| HerdId::from_bits(o.0 & ((1 << 48) - 1)))
+    (o.0 & OWNER_MASK == HERD_OWNER).then(|| HerdId::from_bits(o.0 & ((1 << 48) - 1)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,8 +251,12 @@ pub fn lens_area(r1: f64, r2: f64, d: f64) -> f64 {
         let r = r1.min(r2);
         return std::f64::consts::PI * r * r;
     }
-    let a = ((d * d + r1 * r1 - r2 * r2) / (2.0 * d * r1)).clamp(-1.0, 1.0).acos();
-    let b = ((d * d + r2 * r2 - r1 * r1) / (2.0 * d * r2)).clamp(-1.0, 1.0).acos();
+    let a = ((d * d + r1 * r1 - r2 * r2) / (2.0 * d * r1))
+        .clamp(-1.0, 1.0)
+        .acos();
+    let b = ((d * d + r2 * r2 - r1 * r1) / (2.0 * d * r2))
+        .clamp(-1.0, 1.0)
+        .acos();
     let k = ((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2)).max(0.0);
     r1 * r1 * a + r2 * r2 * b - 0.5 * k.sqrt()
 }
@@ -414,7 +415,11 @@ impl Herds {
         let n = subs.index(at);
         let s = self.stagger(x);
         let this = subs.start(n) + s;
-        if this > at { this } else { subs.start(n + 1) + s }
+        if this > at {
+            this
+        } else {
+            subs.start(n + 1) + s
+        }
     }
 
     // ---- herds ---------------------------------------------------------------------------------
@@ -815,8 +820,13 @@ impl Herds {
             .binomial(adults * litters as u64, p);
         let births = births.min(u64::from(u32::MAX));
         if births > 0 {
-            x.classes
-                .push(Class::new(x.next_index, births as u32, day, day, births as u32));
+            x.classes.push(Class::new(
+                x.next_index,
+                births as u32,
+                day,
+                day,
+                births as u32,
+            ));
             x.next_index += births;
             x.ledger.born += births;
         }
@@ -826,7 +836,10 @@ impl Herds {
             at,
             "births",
             Some(h),
-            format!("{births} born to {adults} adults (condition {:.0}%)", cond * 100.0),
+            format!(
+                "{births} born to {adults} adults (condition {:.0}%)",
+                cond * 100.0
+            ),
         );
     }
 
@@ -887,8 +900,14 @@ impl Herds {
         let reach = i64::from(view) + 1_024;
         let (x, z) = (i64::from(pos.x), i64::from(pos.z));
         let (a, b) = (
-            ((x - reach).div_euclid(REGION_BLOCKS), (z - reach).div_euclid(REGION_BLOCKS)),
-            ((x + reach).div_euclid(REGION_BLOCKS), (z + reach).div_euclid(REGION_BLOCKS)),
+            (
+                (x - reach).div_euclid(REGION_BLOCKS),
+                (z - reach).div_euclid(REGION_BLOCKS),
+            ),
+            (
+                (x + reach).div_euclid(REGION_BLOCKS),
+                (z + reach).div_euclid(REGION_BLOCKS),
+            ),
         );
         let mut near = BTreeSet::new();
         for rx in a.0..=b.0 {
@@ -1147,7 +1166,11 @@ impl Herds {
         let Some(x) = self.herds.get(h) else {
             return;
         };
-        let Some(e) = x.embodied.as_ref().filter(|e| e.epoch == epoch && !e.leaving) else {
+        let Some(e) = x
+            .embodied
+            .as_ref()
+            .filter(|e| e.epoch == epoch && !e.leaving)
+        else {
             return;
         };
         let slot = e.player;
@@ -1470,8 +1493,14 @@ impl Herds {
     ) -> Vec<HerdOffer> {
         let mut cands = BTreeSet::new();
         let (a, b) = (
-            ((x - range).div_euclid(REGION_BLOCKS), (z - range).div_euclid(REGION_BLOCKS)),
-            ((x + range).div_euclid(REGION_BLOCKS), (z + range).div_euclid(REGION_BLOCKS)),
+            (
+                (x - range).div_euclid(REGION_BLOCKS),
+                (z - range).div_euclid(REGION_BLOCKS),
+            ),
+            (
+                (x + range).div_euclid(REGION_BLOCKS),
+                (z + range).div_euclid(REGION_BLOCKS),
+            ),
         );
         for rx in a.0..=b.0 {
             for rz in a.1..=b.1 {
@@ -1488,9 +1517,9 @@ impl Herds {
                     .copied()
                     .filter(|h| {
                         self.herds.get(*h).is_some_and(|x| {
-                            x.followers.iter().any(|&(p, t)| {
-                                p == predator && at.0 < t.0 + self.tun.follow_ticks
-                            })
+                            x.followers
+                                .iter()
+                                .any(|&(p, t)| p == predator && at.0 < t.0 + self.tun.follow_ticks)
                         })
                     })
                     .collect()
@@ -1724,11 +1753,23 @@ impl Herds {
             + self.forage.heap_bytes()
             + self.obstacles.cells.len() * 64
             + self.wheel.heap_bytes()
-            + self.regions.values().map(|s| 48 + s.len() * 16).sum::<usize>()
-            + self.herd_regions.values().map(|v| 32 + v.capacity() * 24).sum::<usize>()
+            + self
+                .regions
+                .values()
+                .map(|s| 48 + s.len() * 16)
+                .sum::<usize>()
+            + self
+                .herd_regions
+                .values()
+                .map(|v| 32 + v.capacity() * 24)
+                .sum::<usize>()
             + self.claims.len() * 40
             + self.ops.len() * 32
-            + self.follows.values().map(|s| 32 + s.len() * 16).sum::<usize>()
+            + self
+                .follows
+                .values()
+                .map(|s| 32 + s.len() * 16)
+                .sum::<usize>()
             + self.players.capacity() * std::mem::size_of::<PlayerView>()
     }
 }

@@ -203,30 +203,20 @@ pub struct Group {
     pub reported: Option<(i32, i32)>,
 }
 
+/// A materialized group as the plugin saw it: (agent, epoch, (member, variant) per body).
+pub type Shown = (u64, u32, Vec<(u64, u32)>);
+
 /// What a vanilla adapter would do, through the codec.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct FakeHerds {
     pub dict: HerdDict,
     pub groups: BTreeMap<u64, Group>,
     /// Fenced cells: a group walking into one is stopped there.
     pub fences: BTreeSet<(i32, i32)>,
     /// Every group ever materialized: (agent, epoch, members, colours) for the identity checks.
-    pub history: Vec<(u64, u32, Vec<(u64, u32)>)>,
+    pub history: Vec<Shown>,
     pub obs: Vec<Obs>,
     next_op: u64,
-}
-
-impl Default for FakeHerds {
-    fn default() -> Self {
-        FakeHerds {
-            dict: HerdDict::default(),
-            groups: BTreeMap::new(),
-            fences: BTreeSet::new(),
-            history: Vec::new(),
-            obs: Vec::new(),
-            next_op: 0,
-        }
-    }
 }
 
 impl FakeHerds {

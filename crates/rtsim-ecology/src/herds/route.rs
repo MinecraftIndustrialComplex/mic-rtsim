@@ -23,7 +23,6 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
-
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
 use super::climate::{Climate, Subs};
@@ -111,6 +110,12 @@ pub struct Ask<'a> {
     pub until: Tick,
     pub w: Weights,
 }
+
+/// A scored cell: (cell, route cost, path length, arrival, forage on arrival).
+type Scored = ((i32, i32), u64, f64, Tick, f64);
+
+/// The best cell so far: (score, route cost, cell, forage, temperature).
+type Pick = (f64, u64, (i32, i32), f64, f32);
 
 /// What a decision chose, for the CLI and tests.
 #[derive(Clone, Debug, PartialEq)]
@@ -248,7 +253,7 @@ pub fn plan(q: &Ask<'_>) -> Choice {
     let demand_cell = q.sp.intake_per_day * q.count as f64 * days.max(1.0) / cells;
     let (lo, hi) = q.sp.comfort;
     let near = (walk / f64::from(CELL_BLOCKS)).ceil() as i32;
-    let scored: Vec<((i32, i32), u64, f64, Tick, f64)> = settled
+    let scored: Vec<Scored> = settled
         .iter()
         .filter(|&&(c, _, _)| {
             ((c.0 - start.0).abs() <= near && (c.1 - start.1).abs() <= near)
@@ -262,7 +267,7 @@ pub fn plan(q: &Ask<'_>) -> Choice {
         })
         .collect();
     let best_f = scored.iter().map(|x| x.4).fold(1e-9, f64::max);
-    let mut pick: Option<(f64, u64, (i32, i32), f64, f32)> = None;
+    let mut pick: Option<Pick> = None;
     for &(c, cost, _, arrive, f) in &scored {
         let food = (f / demand_cell.max(1e-9)).min(q.w.food_cap) + q.w.richness * f / best_f;
         let sub = Subs::in_year(q.subs.index(arrive));
@@ -440,9 +445,16 @@ mod tests {
         let mut obstacles = Obstacles::default();
         let from = (64, -6 * 128 + 64);
         let c = plan(&ask(&forage, &obstacles, &claims, &sp, &subs, from));
-        assert!(c.target.1 > 0, "it crosses to the warm side: {:?}", c.target);
         assert!(
-            c.route.points.iter().any(|p| cell_of(i64::from(p.0), i64::from(p.1)) == (0, 0)),
+            c.target.1 > 0,
+            "it crosses to the warm side: {:?}",
+            c.target
+        );
+        assert!(
+            c.route
+                .points
+                .iter()
+                .any(|p| cell_of(i64::from(p.0), i64::from(p.1)) == (0, 0)),
             "through the gap: {:?}",
             c.route.points
         );

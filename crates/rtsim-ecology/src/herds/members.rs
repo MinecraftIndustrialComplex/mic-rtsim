@@ -46,7 +46,14 @@ pub struct Member {
 }
 
 /// The member at `index` on `day` (whether or not it is alive: the caller knows).
-pub fn member(h: &Herd, sp: &HerdSpeciesData, index: u64, day: i64, now: Tick, regrow: u64) -> Option<Member> {
+pub fn member(
+    h: &Herd,
+    sp: &HerdSpeciesData,
+    index: u64,
+    day: i64,
+    now: Tick,
+    regrow: u64,
+) -> Option<Member> {
     let ci = h.class_of(index)?;
     let c = &h.classes[ci];
     let cohort = c.cohort_on(sp, day)?;

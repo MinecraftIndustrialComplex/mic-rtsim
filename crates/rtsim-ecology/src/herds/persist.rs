@@ -199,8 +199,8 @@ fn get_herd(r: &mut Reader<'_>) -> codec::Result<Herd> {
     let name = String::from_utf8(r.bytes()?.to_vec())
         .map_err(|_| CodecError::Invalid("herd name".into()))?;
     let s = r.u8()?;
-    let species = HerdSpecies::from_index(u32::from(s))
-        .map_or_else(|| bad(format!("species {s}")), Ok)?;
+    let species =
+        HerdSpecies::from_index(u32::from(s)).map_or_else(|| bad(format!("species {s}")), Ok)?;
     let seed = r.u64()?;
     let frame = r.u16()?;
     let classes = (0..r.len_prefix(6)?)
