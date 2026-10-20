@@ -20,7 +20,7 @@ What was built while Ben slept, what it measured, and what needs him first.
 | Industry | `crates/rtsim-industry` (engine), `neoforge/core` industry module and the `create` plugin | Districts learned at the boundary, replay between breakpoints, exactly-once reconcile on load, threats, train ports, a ledger on a Create display |
 | Ships | `crates/rtsim-ships` (engine only; no plugin yet) | Sea and sky lanes, Veloren-style loop routes, timetabled ships that survive restarts, merchant flows in holds, pirates with havens, navy patrols lowering lane hazard, Lanchester raids never better than observed |
 | Herds | `crates/rtsim-ecology` herds module, `engine/herds.rs`, vanilla adapter in `neoforge/core` (`herd` package) | Migrating herds of tens of thousands with latent members, identity derived from seeds, dyadic deaths, forage, obstacle detours, dragons hunting and following herds |
-| Conflict | `crates/rtsim-conflict` (engine; native wiring in progress) | Factions with culture tolerances, grievance per actor (P14: direct acts per player, pollution to a shared settlers actor), the escalation ladder from notice to siege, envoys with demands, tribute, war bands with heirs and boredom, offline raids through the industry threat interface, village raids to the haven |
+| Conflict | `crates/rtsim-conflict`, `engine/conflict.rs` (no Java plugin: bodies are P8) | Factions with culture tolerances, grievance per actor (P14: direct acts per player, pollution to a shared settlers actor), the escalation ladder from notice to siege, envoys with demands, tribute, war bands with heirs and boredom, offline raids through the industry threat interface, village raids to the haven |
 | Persistence | phase 1, industry and dragons | Snapshot plus short log tail; restore gives the identical state hash |
 
 ## Numbers measured overnight
@@ -97,6 +97,7 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 - **Done since:** ships run through the native link; one interest area per player is shared by phase 1, dragons and ships; module switches exist for dragons and ships; traders price pirate hazard on lanes (368 Rust tests pass).
 - **Done since:** herds run on the native engine as vanilla animals (401 Rust tests; GameTests core 45/45, carryon 2/2, iceandfire 7/7 on both engines). No herd appears in a real world yet: only a test order founds one.
 - **Done since:** the conflict engine (423 Rust tests). In its scenario a goblin tribe escalates against a polluting refinery to an offline raid applied on load; paying tribute while the smog runs becomes a protection racket; a catalytic converter ends the feud.
-- **In progress:** conflict through the native link; a world-model sampler (HABITAT record) so herds are founded in real worlds and ships get a real water mask.
+- **Done since:** conflict runs in the native engine (450 Rust tests): a district's learned smog feeds goblin grievance, an unwatched war band raids it, and the damage lands once across a crash. K2-13 was applied as an optional per-threat load. Refusing a demand now counts as refused (it used to forgive the grudge).
+- **In progress:** a world-model sampler (HABITAT record) so herds are founded in real worlds and ships get a real water mask.
 - **Not started:** plugins for ships and conflict (body mods are open, P8), kaiju, space and history generation.
 - **API rate limits interrupted several agents once.** Every interrupted branch was saved as a WIP commit and pushed before resuming.
