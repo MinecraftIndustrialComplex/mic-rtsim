@@ -111,6 +111,8 @@ fn saver(dir: &Path) -> ! {
         if s.is_multiple_of(25) {
             store.checkpoint_now().expect("checkpoint");
         }
+        // Progress for the parent, outside the store's own names (opening ignores the file).
+        let _ = std::fs::write(dir.join("progress"), s.to_string());
     }
 }
 
@@ -210,8 +212,25 @@ fn kill_mid_save() {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let delay = 30 + mix(round * 2 + life) % 300;
-            std::thread::sleep(Duration::from_millis(delay));
+            // Wait until this life has made a few saves (a loaded machine fsyncs slowly), then a
+            // pseudo-random moment more, so the kill lands somewhere inside the save order.
+            let start = std::fs::read_to_string(dir.join("progress"))
+                .ok()
+                .and_then(|p| p.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            let want = start + 3 + mix(round * 7 + life) % 5;
+            let t0 = std::time::Instant::now();
+            while t0.elapsed() < Duration::from_secs(60) {
+                let done = std::fs::read_to_string(dir.join("progress"))
+                    .ok()
+                    .and_then(|p| p.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
+                if done >= want {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            std::thread::sleep(Duration::from_millis(mix(round * 2 + life) % 40));
             child.kill().unwrap();
             let status = child.wait().unwrap();
             assert!(!status.success(), "the saver never stops on its own");
@@ -220,7 +239,7 @@ fn kill_mid_save() {
     }
     // The kills must have landed after real work, or the test proves nothing.
     assert!(
-        saves.iter().filter(|&&s| s > 5).count() >= 8,
+        saves.iter().filter(|&&s| s >= 3).count() >= 24,
         "too few saves before the kills: {saves:?}"
     );
     eprintln!("saves completed before each kill: {saves:?}");

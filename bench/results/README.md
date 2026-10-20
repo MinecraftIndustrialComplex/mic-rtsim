@@ -4,6 +4,12 @@ Each `scale-<UTC date>-<time>-<mode>.json` is one `rtsim-cli bench scale` run: e
 measurements, the fitted slopes and contracts, the machine, the git commit and the conditions. The
 `.txt` beside it is the table the run printed.
 
+The hand-over bench (Java submit to engine publish, through JNI and mic_native's background pool)
+has its own page: [handover.md](handover.md), with its `handover-<date>-<time>-gametest.json` runs.
+
+The restore bench (the phase 1 world's snapshot against replaying its whole input log) has its own
+page: [restore.md](restore.md), with its `restore-<date>-<time>-<N>m-<D>d.json` runs.
+
 ## How to read them
 
 - **Sweeps** vary one count across orders of magnitude and hold the rest at the baseline in the JSON
@@ -95,6 +101,151 @@ the BTRS bound is computed differently (same distribution where it was already e
 - World age, 1 to 1,000 days, 100,000 regions: closed 0.78 to 0.48 ms per day; dyadic 1.01 to 0.95
   ms; herd 2.45 to 13.61 ms, with slot commits per day rising from 10,424 to 99,809.
 - Events, 10 to 100,000 a day (herd): 0.50 to 13.82 ms per day (slope 0.368).
+
+## 2026-10-20 10:13 UTC, the phase 1 market sweeps (`scale-2026-10-20-1013-markets-edges`)
+
+Only the two sweeps added with the phase 1 engine modules (`--only markets,edges`, three repeats,
+median kept), on branch `overnight/phase1`. Each point builds a grid of human and ribbit villages
+(`rtsim_world::synth::grid`, every number a PLACEHOLDER), trades for 10 days, then measures 10 days.
+Every run conserved every good and currency. Not a `--check` run of the whole bench: the kernel
+sweeps were not rerun here.
+
+**Numbers** (from the run's table):
+- Markets, 16 to 4,096 (edge rule: 4 nearest): 1.45 to 984 ms per sim day, slope 1.165 (declared
+  1.3); live heap 0.5 to 120.6 MiB, slope 0.978. Events per market per day are flat (15 to 20, from
+  `bench scale-one`), so the work is linear in markets; the cost per event rises from about 7 µs to
+  about 15 µs as the working set leaves the caches. Heap is about 30 KB per market against the
+  economy research's 1 KB ESTIMATE: market books are 16-byte integers per counter, snapshots are
+  dense over goods, and every pipeline is a B-tree entry. A hot/cold layout is the fix when it
+  matters.
+- Edges, nearest-k 1 to 16 at 512 markets: 13.0 to 719.7 ms per sim day, slope 1.431 against k
+  (declared 2.1: a market event costs O(degree × goods), and news reaches every neighbour, so
+  events also grow with degree).
+- A world at rest costs nothing: the two-market test in `rtsim-world` reaches zero events.
+
+## 2026-10-20 12:03 UTC, the phase 1 market sweeps after round 2 (`scale-2026-10-20-1203-markets-edges`)
+
+The same two sweeps (`--only markets,edges`, three repeats, median kept) on branch
+`overnight/phase1b`, after the quiescence rules (choices E43 to E52 and the review fixes in
+`docs/overnight-choices-phase1.md`), caravan batching (E53) and the memory work (E58). Same world
+generator and windows as the 10:13 run (trade 10 days, measure days 10 to 20, which is still the
+transient: a closed world settles over a few hundred days, see `rtsim-cli sim quiet`). Every run
+conserved every good and currency. Laptop, other agents' builds running alongside (load about 6).
+
+**Numbers** (10:13 run in brackets):
+- Markets, 16 to 4,096: 0.20 to 157 ms per sim day [1.45 to 984], slope 1.186 [1.165]; live heap 0.3
+  to 63.1 MiB [0.5 to 120.6], slope 0.965. At 4,096 markets that is 15.8 KB per market [30 KB].
+  The CPU drop is fewer events: the same grids make about a sixth of the events in the measured
+  window, and a tenth or less once settled (`sim quiet --markets 1024`: 1.31 events per market per
+  day in days 0 to 100, 0.12 from day 300 on).
+- Edges, nearest-k 1 to 16 at 512 markets: 0.98 to 275.6 ms per sim day [13.0 to 719.7], slope 1.992
+  [1.431]: the small-degree points fell the most, since a sparse grid settles fastest.
+- Where the memory goes (`rtsim-cli sim memory --markets 1024 --days 20`, counting allocator 15.8 KB
+  per market, estimate 15.0 KB): the market table's wheel 3.3 KB (retained slot capacity and about
+  14 stale wakes per market: a kernel matter), pipelines in their sorted vectors 2.0 KB, snapshots
+  1.9 KB, the world's own wheel 1.7 KB, market lines 1.4 KB, edge rows 1.0 KB, the rest under 1 KB
+  each.
+
+## 2026-10-20 12:24 UTC, the dragon sweep (`scale-2026-10-20-1224-dragons`)
+
+`--only dragons --check`, three repeats, median kept, on branch `overnight/dragons` (phase 2's
+`rtsim-ecology`, choices R1 onward in `docs/overnight-choices-dragons.md`). A fixed grid of 256
+villages (`rtsim_ecology::synth::grid`, livestock as market stock), one dragon per lair spread over
+it, nobody watching; 2 days of warm-up, then 10 measured. The figure the contract reads is the
+dragons' own CPU per dragon-day: the bench steps the world to each dragon event on its own and
+times only the dragons' handlers (their decisions, legs, raids, and the market events the raids
+cause). Every run conserved every good with predation (`Dragons::check`), and no dragon
+materialized. Laptop, other agents' builds running alongside (load about 6).
+
+**Numbers:**
+- Dragons, 8 to 512: 10 to 14 us per dragon-day (slope 0.009, max/min 1.05, contract flat): about
+  1.1 events per dragon a day at about 10 us each. The world's own trade (9.6 to 25 ms per sim day
+  in the table) is the rest.
+- Live heap 4.1 to 10.8 MiB (slope 0.225): the 256-village world dominates; the dragons' own rows,
+  wheel and indexes are 45 KB at 8 and 0.7 MB at 512 (`engine_heap_bytes`).
+- Beyond the sweep, by hand (`bench scale-one`): at 2,048 dragons on the same world (seven lairs a
+  region, far denser than Ice and Fire's own spacing) prey runs out, each dragon makes 2.4 events a
+  day instead of 1.1, and the cost per event stays about 10 us. Growing the map with the dragons
+  (two villages each, 8 to 1,024) holds events per dragon at 1.1 but the cost per event rises from 5
+  to 16 us as the world's working set leaves the caches, as the market sweep's note says; switching
+  rtsim-knowledge's next-death query to the wheel's lower bound changed nothing, so it is not an
+  algorithmic term.
+
+## 2026-10-20 17:04 UTC, the ship sweep (`scale-2026-10-20-1704-ships`)
+
+`--only ships --check`, three repeats, median kept, on branch `overnight/ships` (`rtsim-ships`,
+choices T1 onward in `docs/overnight-choices-ships.md`). A fixed ocean grid of 100 ports
+(`rtsim_ships::synth::ocean_grid`: sea docks, Delaunay lanes as world edges, loops sailed both ways)
+with one haven and one sea pirate, nobody watching; the swept value is the cap on merchant ships per
+service (headways as short as platform spacing allows). 2 days of warm-up, then 50 measured. The
+figure the contract reads is the ships engine's own CPU per sim day: the bench steps the world to
+each ship event on its own and times only the ships' handlers (the pirates' decisions, legs and
+hazard changes, and the market events those cause). Every run conserved every good with the ships'
+holds (`Ships::check`), no voyage was booked and no ship materialized, and only pirate events were
+pending. Laptop, other agents' builds running alongside (load about 6).
+
+**Numbers:**
+- Merchant ships 56 to 814 (1 to 16 a service): 16.9 to 19.0 us per sim day (slope 0.032, max/min
+  1.12, contract flat), the same 32 events in 50 days at every point: the pirate's. Per merchant ship
+  that is 302 ns a day at 56 ships and 23 ns at 814, falling as one over the count: an unobserved
+  merchant ship has no cost of its own.
+- Live heap 2.6 to 4.0 MiB (slope 0.152): the 100-port world dominates; the ships engine's own rows,
+  services, lanes and indexes are 129 KB at 56 ships and 381 KB at 814 (`engine_heap_bytes`), about
+  310 bytes a ship.
+
+## 2026-10-20 17:56 UTC, the herd sweeps (`scale-2026-10-20-1756-herds`)
+
+`--only herds,members --check`, three repeats, median kept, on branch `overnight/herds` (the
+`herds` module of `rtsim-ecology`, choices H2-1 onward in `docs/overnight-choices-herds.md`). Herds
+spread over the synthetic valley (`rtsim_ecology::herds::synth::bench_herds`, the five species in
+turn), nobody watching; 8 days of warm-up (one decision each), then 80 measured days (ten
+sub-seasons). The herds engine is timed alone: herds need only the leg index, no world. After the
+run every herd's cohorts are read 10,000 days later (pure dyadic reads) to time catch-up. Every run
+conserved every herd's animals as integers (`Herds::check`), and nothing materialized or booked a
+leg. Laptop, other agents' builds running alongside (load about 4). The file was written as
+`-full` by `bench scale` and renamed `-herds`, as the dragon and ship runs were.
+
+**Numbers:**
+- Herds, 4 to 256 at 5,000 members each: 250 to 175 µs per herd-day (slope -0.085, max/min 1.43,
+  contract flat), one event (a decision) per herd per sub-season: the flow field of a decision
+  costs about 1.5 to 2 ms, most of it forage reads of the cells in reach. Live heap 0.2 to 1.3 MiB
+  (slope 0.447): herd rows plus the forage rows of grazed cells; the engine's own structures are
+  178 KB at 4 herds and 1.27 MB at 256 (`engine_heap_bytes`).
+- Members per herd, 100 to 1,000,000 (16 herds): 4.20, 3.97, 3.44, 3.69, 3.82 ms per sim day (slope
+  -0.012, max/min 1.22, contract flat): a herd of a million costs what a herd of a hundred does.
+  Catch-up after 10,000 unread days: 0.02 to 0.04 µs per herd read (slope -0.003). Live heap 0.1 to
+  0.6 MiB (slope 0.204, declared 0.3): members cost zero bytes, but a bigger herd's footprint
+  grazes more forage cells, each a row until the yearly fold, up to the footprint's cap (1,536
+  blocks, reached near 50,000 sheep); from 100,000 members on the heap is flat (529 KB and 556 KB
+  of engine structures).
+## 2026-10-20 18:47 UTC, the faction sweep (`scale-2026-10-20-1847-factions`)
+
+`--only factions`, three repeats, median kept, on branch `overnight/conflict` (`rtsim-conflict`,
+choices K2-1 onward in `docs/overnight-choices-conflict.md`). `rtsim_conflict::synth::many`: one
+village per camp (the grid grows with the swept count, so density is fixed), goblins, bandits and
+raiders in turn, each with a settlers' smog source inside its territory and a player's logging in
+it, so every faction carries two feuds and plunders the villages and rival havens it hates; nobody
+watching. 2 days of warm-up, then 40 measured. The figures the contracts read are the conflict
+engine's own events and CPU per faction-day: the bench steps the world to each conflict event on its
+own and times only the conflict's handlers (its decisions, legs, raids, and the market transfers
+those cause). Every run conserved every good (`Conflict::check`) and nothing materialized. A rerun
+with `--check` passed. Laptop, other agents' builds running alongside.
+
+**Numbers:**
+- Factions 16 to 1,024: 1.04 events per faction-day at every point (slope 0.006, max/min 1.04,
+  contract flat), at 5.4 to 9.1 us of CPU per faction-day (slope 0.125 here, 0.089 in the `--check`
+  rerun; declared 0.2): the cost per event rises as the world grows 64 times (80 MiB of heap at
+  1,024 camps and villages), the cache effect the dragon sweep's note describes, not a scan.
+- Live heap 1.3 to 80 MiB (slope 0.994): the world's markets (one village and one haven per
+  faction) dominate; the conflict engine's own rows, wheel and indexes are 43 KB at 16 factions
+  and 2.8 MB at 1,024 (`engine_heap_bytes`, about 2.7 KB a faction with its feuds and parties).
+- Two quadratic terms were found and removed on the way: a new faction re-applied every source in
+  the world (each replanning every faction it reached: about a million stale wakes at 1,024
+  factions; now only the sources within the newcomer's reach, through a (faction, kind) source
+  index), and routes and plunder targets scanned every node (now rings of cells, and A* over the
+  roads). At a fixed 256-village world the same build makes 1.0, 1.5 and 2.1 events per faction-day
+  at 16, 256 and 1,024 camps: denser camps feel each other's smog and plunder each other more
+  (behaviour), at a flat cost per event.
 
 ## 2026-10-20 10:15 to 10:44 UTC, the second kernel run: paging, the parallel step, O5, the potato profile
 

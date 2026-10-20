@@ -1,0 +1,13 @@
+[package]
+name = "industry-wire-fixtures"
+description = "Prints the cross-language wire fixtures for neoforge/core's IndustryWireContractTest, encoded by rtsim-industry's reference codec (wire.rs)"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[dependencies]
+rtsim-industry = { path = "../../../crates/rtsim-industry" }
+rtsim-kernel = { path = "../../../crates/rtsim-kernel" }
+
+# Its own workspace: this tool is not a member of the repository's Cargo workspace.
+[workspace]

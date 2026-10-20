@@ -1,0 +1,8 @@
+{
+  "replace": false,
+  "values": [
+    "iceandfire:gold_pile",
+    "iceandfire:silver_pile",
+    "iceandfire:copper_pile"
+  ]
+}

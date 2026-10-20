@@ -166,6 +166,21 @@ impl Replay {
         }
         Reconcile::InSync
     }
+
+    /// Accepts that the observations before `next` are lost, so that [`Replay::admit`] takes
+    /// `next` as the next sequence instead of answering [`Verdict::Gap`] forever. For the gap
+    /// [`Replay::reconcile`] reports as [`Reconcile::JournalTrimmedPastPages`]: nothing can bring
+    /// those observations back, and the ones after them must still apply. Never moves backwards.
+    pub fn skip_to(&mut self, next: ObsSeq) {
+        if next.0 > self.applied_through.0 + 1 {
+            self.applied_through = ObsSeq(next.0 - 1);
+        }
+    }
+
+    /// True while the operation is remembered as applied.
+    pub fn knows_op(&self, op: OpId) -> bool {
+        self.op_index.contains_key(&op)
+    }
 }
 
 impl Encode for Replay {
@@ -258,6 +273,52 @@ impl<C> Outbox<C> {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+
+    /// The sequence the next command gets.
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// Moves the next sequence past `seq`, the last one the bridge applied: after a restart from
+    /// older pages, new commands must still get sequences the bridge has not seen (docs/boundary.md
+    /// §2.4). Never moves backwards.
+    pub fn resume_after(&mut self, seq: u64) {
+        self.next_seq = self.next_seq.max(seq.saturating_add(1));
+    }
+
+    /// A sequence for a command the outbox does not keep: one that means nothing after a restart
+    /// (puppet commands; puppets never outlive a session).
+    pub fn take_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
+    }
+
+    /// Queues a command under an operation id it already has: a transfer re-derived after a crash
+    /// must keep its id so the bridge recognises the duplicate (docs/boundary.md §2.2). Returns its
+    /// sequence.
+    pub fn push_with_op(&mut self, cmd: C, op: OpId) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.pending.push_back((seq, op, cmd));
+        seq
+    }
+
+    /// A fresh engine operation id, without queueing anything.
+    pub fn allocate_op(&mut self) -> OpId {
+        self.ids.allocate()
+    }
+
+    /// The bridge reported the command with this operation id done (applied, a duplicate, or
+    /// failed), in an observation the replay admitted: it leaves the outbox. Unlike
+    /// [`Outbox::ack_through`], this follows the observation sequence, so a snapshot taken at any
+    /// observation keeps exactly the commands the world save at that observation lacks. Returns
+    /// whether anything was removed. Linear in the outbox's length.
+    pub fn complete(&mut self, op: OpId) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|(_, o, _)| *o != op);
+        self.pending.len() != before
     }
 }
 
@@ -361,6 +422,38 @@ mod tests {
         o.ack_through(1);
         assert_eq!(o.after(2).map(|(_, _, c)| *c).collect::<Vec<_>>(), vec![30]);
         assert_eq!(o.len(), 2);
+    }
+
+    #[test]
+    fn outbox_sequences_resume_and_keep_op_ids() {
+        let mut o: Outbox<u32> = Outbox::new();
+        o.resume_after(41);
+        assert_eq!(o.next_seq(), 42);
+        o.resume_after(3); // never backwards
+        assert_eq!(o.take_seq(), 42, "a session-only command takes a sequence");
+        let s = o.push_with_op(7, OpId::engine(4242));
+        assert_eq!(s, 43);
+        assert_eq!(
+            o.after(42).map(|(_, op, _)| *op).collect::<Vec<_>>(),
+            vec![OpId::engine(4242)]
+        );
+        assert_eq!(o.len(), 1, "take_seq kept nothing");
+        let fresh = o.allocate_op();
+        assert!(fresh.is_engine());
+        assert!(o.complete(OpId::engine(4242)));
+        assert!(!o.complete(OpId::engine(4242)), "once");
+        assert!(o.is_empty());
+    }
+
+    #[test]
+    fn replay_skips_a_lost_stretch() {
+        let mut r = Replay::new(ObsSeq(10));
+        assert!(matches!(r.admit(ObsSeq(14), None), Verdict::Gap { .. }));
+        r.skip_to(ObsSeq(14));
+        assert_eq!(r.admit(ObsSeq(14), Some(OpId::bridge(3))), Verdict::Apply);
+        assert!(r.knows_op(OpId::bridge(3)));
+        r.skip_to(ObsSeq(2)); // never backwards
+        assert_eq!(r.applied_through(), ObsSeq(14));
     }
 
     impl Encode for u32 {

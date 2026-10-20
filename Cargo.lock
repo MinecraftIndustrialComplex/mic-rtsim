@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "arc-swap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -54,7 +63,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -87,6 +96,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "combine"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
+dependencies = [
+ "bytes",
+ "memchr",
+]
+
+[[package]]
 name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -109,6 +128,31 @@ checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "crossbeam-deque"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622f3fc73690be383c7214310406f28a90e6edeadc3cea882f9d71e495b9711a"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "equivalent"
@@ -173,16 +217,81 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "libc"
-version = "0.2.191"
+name = "jni"
+version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
+dependencies = [
+ "cfg-if",
+ "combine",
+ "jni-macros",
+ "jni-sys",
+ "log",
+ "simd_cesu8",
+ "thiserror",
+ "walkdir",
+ "windows-link",
+]
+
+[[package]]
+name = "jni-macros"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "simd_cesu8",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "jni-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6377a88cb3910bee9b0fa88d4f42e1d2da8e79915598f65fb0c7ee14c878af2"
+dependencies = [
+ "jni-sys-macros",
+]
+
+[[package]]
+name = "jni-sys-macros"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "libc"
+version = "0.2.190"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "log"
+version = "0.4.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lz4_flex"
@@ -198,6 +307,33 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "mic-native-abi"
+version = "0.1.0"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git?rev=63add99806268bdc77b53e72adc807cc5d0f9f67#63add99806268bdc77b53e72adc807cc5d0f9f67"
+
+[[package]]
+name = "mic-native-host"
+version = "0.1.0"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git?rev=63add99806268bdc77b53e72adc807cc5d0f9f67#63add99806268bdc77b53e72adc807cc5d0f9f67"
+dependencies = [
+ "crossbeam-deque",
+ "jni",
+ "libc",
+ "libloading",
+ "mic-native-abi",
+ "windows-sys",
+]
+
+[[package]]
+name = "mic-native-rt"
+version = "0.1.0"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git?rev=63add99806268bdc77b53e72adc807cc5d0f9f67#63add99806268bdc77b53e72adc807cc5d0f9f67"
+dependencies = [
+ "arc-swap",
+ "mic-native-abi",
+]
 
 [[package]]
 name = "num-traits"
@@ -310,9 +446,80 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "rtsim-conflict",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-ships",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rtsim-conflict"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rtsim-ecology"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rtsim-industry"
+version = "0.0.1"
+dependencies = [
+ "proptest",
  "rtsim-kernel",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rtsim-jni"
+version = "0.0.1"
+dependencies = [
+ "jni",
+ "mic-native-host",
+ "mic-native-rt",
+ "proptest",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-ships",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
 ]
 
 [[package]]
@@ -322,6 +529,80 @@ dependencies = [
  "crc32fast",
  "lz4_flex",
  "proptest",
+]
+
+[[package]]
+name = "rtsim-knowledge"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+]
+
+[[package]]
+name = "rtsim-settle"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+]
+
+[[package]]
+name = "rtsim-ships"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rtsim-trade"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+ "rtsim-settle",
+]
+
+[[package]]
+name = "rtsim-travel"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+]
+
+[[package]]
+name = "rtsim-world"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+ "rtsim-travel",
+]
+
+[[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver",
 ]
 
 [[package]]
@@ -338,6 +619,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
 name = "rusty-fork"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -348,6 +635,21 @@ dependencies = [
  "tempfile",
  "wait-timeout",
 ]
+
+[[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
@@ -376,7 +678,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -390,6 +692,33 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "simd_cesu8"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
+dependencies = [
+ "rustc_version",
+ "simdutf8",
+]
+
+[[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "syn"
+version = "2.0.119"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -414,6 +743,26 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -471,6 +820,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "walkdir"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+dependencies = [
+ "same-file",
+ "winapi-util",
+]
+
+[[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys",
 ]
 
 [[package]]

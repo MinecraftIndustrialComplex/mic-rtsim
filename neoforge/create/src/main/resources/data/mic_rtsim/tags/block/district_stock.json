@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "create:item_vault",
+    "create:fluid_tank",
+    {"id": "create_connected:item_silo", "required": false},
+    {"id": "create_connected:fluid_vessel", "required": false}
+  ]
+}

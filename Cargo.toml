@@ -12,6 +12,19 @@ repository = "https://github.com/MinecraftIndustrialComplex/mic-rtsim"
 
 [workspace.dependencies]
 rtsim-kernel = { path = "crates/rtsim-kernel" }
+rtsim-industry = { path = "crates/rtsim-industry" }
+# Phase 1 generic modules (PLAN.md §5.1, §8) and their composition.
+rtsim-settle = { path = "crates/rtsim-settle" }
+rtsim-trade = { path = "crates/rtsim-trade" }
+rtsim-travel = { path = "crates/rtsim-travel" }
+rtsim-knowledge = { path = "crates/rtsim-knowledge" }
+rtsim-world = { path = "crates/rtsim-world" }
+# Phase 2: hunger, prey and dragons (PLAN.md §1.2, §9).
+rtsim-ecology = { path = "crates/rtsim-ecology" }
+# Ships, pirates and navies (PLAN.md §10.1).
+rtsim-ships = { path = "crates/rtsim-ships" }
+# Conflict: factions, grievance, war bands and raids (PLAN.md §10.3).
+rtsim-conflict = { path = "crates/rtsim-conflict" }
 # The page codec, matching Deep Time's tile packs (crates/deeptime-format). MIT.
 lz4_flex = "0.14.0"
 # MIT OR Apache-2.0.
@@ -21,12 +34,26 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # Property tests (SCALE.md §2 invariants, §4 composition rule). MIT OR Apache-2.0.
 proptest = "1"
+# The native host's plugin runtime and, for rtsim-jni's tests, the host itself (in process), from
+# the private repository MinecraftIndustrialComplex/mic-native at a pinned commit (choice J1). MPL-2.0.
+mic-native-rt = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
+mic-native-host = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
+# The JNI binding, pinned as mic-native and Deep Time pin it. Only rtsim-jni uses it. MIT OR Apache-2.0.
+jni = "=0.22.4"
 
 [profile.release]
 # Keep unwinding: the JNI crate (later) catches panics at every export (PLAN.md §2).
 panic = "unwind"
 lto = "thin"
 debug = "line-tables-only"
+
+[profile.ship]
+# What ships: release plus fat LTO in one codegen unit, as mic_native's and Deep Time's natives
+# (tools/natives/build-natives.sh). Everyday builds stay on `release`.
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = false
 
 [profile.dev]
 # As Deep Time: the kernel's own crates at -O1 so property tests finish, with debug assertions and

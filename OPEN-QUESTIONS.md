@@ -61,6 +61,37 @@ code.
 
 ## Phase 1
 
+- **Quiescence and money sinks** (found overnight by the phase 1 scenario). An 11-village world never
+  went quiet: about 30 events per market per day, from barter loops and money piling up in surplus
+  villages, because nothing but players removes money. This makes P9 concrete. **Round 2 chose (E43 to
+  E68 in docs/overnight-choices-phase1.md):** a money sink (coin above twice the treasury target is spent
+  and leaves the world, booked as "sunk"), replacing "refuse cash and barter"; plus spoilage at target,
+  stock bands, hysteresis and rationing. A closed 11-village world now goes fully quiet (36.5 to 0.00
+  events per market per day); large grids keep 0.1 to 0.6. Review the sink; r, T and k stay yours.
+- **G31: vanilla's reputation discount on sim prices.** The plan says vanilla's discount still applies
+  on top of sim prices. The phase 1 Java agent trims it at the market's current price, so a buy and a
+  sale can't loop into money, but the trim leaves the price change across one bundle. Alternatives: no
+  vanilla discount in adopted villages; apply it inside the sim's quote. See
+  docs/overnight-choices-phase1mc.md.
+- **One source of truth for prices.** The Java side copies the market price math from rtsim-trade
+  (`PriceCurve`, `Market::offer`) so offers can be shown at once. Two copies can drift apart.
+  Recommended: the engine sends ready-made bundles and Java only shows them; keep the Java copy only as
+  a test oracle. Alternative: keep both, with a shared test vector file that both sides must pass.
+- **P3 (review 3): coins duplicated through a llama's chest.** When a caravan llama dies or is taken,
+  the sim books its planned cargo, not what its chest really held. A player who pays coins, kills the
+  llama holding them and picks them up leaves the sim's caravan still owning the coins. Recommended:
+  book exactly the items the bridge reports for that member. Alternative: keep V13 (log the difference,
+  don't correct). See docs/review3-2026-10-20.md.
+- **Phase 1 save pages a build can't read.** Today the whole engine refuses to start. Industry drops its
+  pages and starts fresh instead (W23). Recommended before release: the same as industry (drop and
+  start fresh, with a loud log), since nothing is released (your no-backcompat rule). Alternative:
+  refuse to start, as now.
+- **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 makes a
+  caravan wait at the dock until full (6 slots) or two days. Busy roads now send full caravans; small
+  flows still make caravans under one slot, and news now waits for caravans, so a robbery report with
+  P18's 1.5-day lifetime reaches 3 to 7 villages instead of 8. Review the wait and the report lifetimes
+  together.
+
 - **P9. Economy tunables.** Recommended: set `r`, `T` (at least 2 × the longest edge time) and `k` from
   a soak at the design gate; a Numismatics mint rule later. Alternative: you set each by hand now.
   Blocks: the phase 1 design gate.
@@ -105,7 +136,24 @@ code.
   giving C24's heirs; taking an IaF egg is a theft they remember (hooks UNVERIFIED). Alternatives: no
   breeding, the lair is the heir; breeding with no egg slight. Blocks: dragon heirs.
 
+- **Dragons built overnight on recommendations** (docs/overnight-choices-dragons.md, R1 to R31). The
+  engine took P12, P13, P26, P28 and **M1 (dragons breed in their lair)** at their recommendations.
+  Review M1 especially. Not yet independently reviewed: the review hit the rate limit.
+- **Pack change waiting for you (P13):** remove the fire-dragon entry from In Control's `spawner.json`
+  and take the fire dragon out of `spawn.json`'s two rules, so the sim owns every dragon
+  (docs/boundary.md §6.6). Nothing in the pack was changed overnight.
+- **Plan facts the jar contradicts** (found by the dragons agent): `stealItems` is a pixie setting, not a
+  dragon one (PLAN.md, INDUSTRY.md and the industry engine's zero carry for flyers cite it as a dragon
+  setting); In Control's fire dragon is desert-only in effect through `spawn.json`; dragons do carry
+  prey off from stage 2. The docs still need correcting.
+
 ## Industry
+
+- **The stale-tick race** (found overnight by the industry engine). Commands land at least one tick
+  after a chunk loads, so a machine can run once on stock the replay already counted: +40 ingots (0.4%)
+  in the test. No trim inside one district can see it. Four options are in
+  docs/overnight-choices-industry.md; the agent's cleanest is to send a district's reconcile ahead as a
+  player approaches, using player positions from the bridge. Your call.
 
 Phases are INDUSTRY.md §16 (I-A to I-H).
 
@@ -170,6 +218,18 @@ Phases are INDUSTRY.md §16 (I-A to I-H).
 - **I26. Industry phase order.** Recommended: read-only ledger, replay, fluids and energy, trains, Create
   precision, threats, rebuild. Alternatives: threats first; trains before replay. Blocks: the start of
   industry work.
+
+## Cross-module
+
+- **U10: what a switched-off module does.** Dragons and ships, switched off, ignore their records and
+  run nothing; switched on again they catch up. Industry, switched off, still applies its journaled
+  records (W8). Recommended: one rule for all, the industry one, so nothing a player did while a module
+  was off is lost. Alternative: ignore everything while off, as dragons and ships do now.
+
+- **Herds overnight (docs/overnight-choices-herdsmc.md):** three additions to keep or undo: dragons
+  hunt herds (Y7); herds share the dragons' `ECOLOGY` module switch (Y2); a new `SessionPlugin.take`
+  hook. Also Y4, founding herds in real worlds: being built overnight as a HABITAT boundary record
+  (biome and surface samples per cell), which is a boundary addition for your review.
 
 ## Later
 

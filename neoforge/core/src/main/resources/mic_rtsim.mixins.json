@@ -1,0 +1,21 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.minecraftindustrialcomplex.mic_rtsim.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "AbstractHorseInvoker",
+    "EntitySaveMixin",
+    "EntitySectionManagerAccessor",
+    "LlamaInvoker",
+    "MerchantOfferAccessor",
+    "MerchantResultSlotMixin",
+    "ServerLevelAccessor",
+    "StructureManagerMixin",
+    "VillagerReputationMixin",
+    "VillagerRestockMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
