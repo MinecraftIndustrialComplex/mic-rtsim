@@ -862,10 +862,11 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
 /// The switch changed (MODULES; U10, Ben: "Ignore everything"). **Off:** every phase 1 puppet is
 /// captured back, one last write, so no caravan trades or is robbed in game while the sim ignores
 /// it; what was queued for this session (MARKET, MERCHANT_OFFERS, SENTIMENT, spawns, steering)
-/// is dropped. Commands the bridge answers by op id (gossip, houses, residents) were decided
-/// before the switch and still go out with their sequences, and their answers are still taken:
-/// that is the protocol finishing, not the module running (choice PR13). **On:** the world runs
-/// to now at the next simulate (its missed events at once) and materializes again.
+/// is dropped. Commands the bridge answers by op id (gossip, houses, residents) decided before the
+/// switch wait unsequenced until it is on again ([`write_queue_off`]); resends of ones already
+/// written still go out with their sequences, and answers are still taken: that is the protocol
+/// finishing, not the module running (choice PR13). **On:** the world runs to now at the next
+/// simulate (its missed events at once) and materializes again.
 fn set_enabled(st: &mut State, on: bool) {
     let l = &mut st.phase1;
     let was = l.enabled;
@@ -1006,14 +1007,20 @@ fn item_name(st: &State, id: u32) -> Option<String> {
     st.world.java_dict.get(&(wire::DICT_ITEM, id)).cloned()
 }
 
-/// A phase 1 record `Replay` admitted. Switched off, phase 1 ignores it (U10).
+/// A phase 1 record `Replay` admitted. Switched off, phase 1 ignores it (U10), except HOUSE_PLACED:
+/// the answer to a house it booked while on, taken at its frozen clock (the world does not run) so
+/// the house's resident comes once it is on again (choice PR13).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
-    if !st.phase1.enabled {
+    if !st.phase1.enabled && rec.kind != obs::HOUSE_PLACED {
         st.phase1.ignored += 1;
         return;
     }
     let b = rec.bytes;
-    let at = st.phase1.wt(wire::i64_at(b, obs::GAME_TIME));
+    let at = if st.phase1.enabled {
+        st.phase1.wt(wire::i64_at(b, obs::GAME_TIME))
+    } else {
+        st.phase1.world.now().0
+    };
     match rec.kind {
         obs::VILLAGE_ADOPTED if rec.size() >= obs::village_adopted::SIZE => adopted(st, rec, at),
         obs::TRADE if rec.size() >= obs::trade::SIZE => trade(st, rec, at),
@@ -2388,15 +2395,11 @@ pub(super) fn write_resends(
 
 /// Writes the queue while it fits; kept commands join the outbox under the sequence they got.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    if !st.phase1.enabled {
+        return write_queue_off(st, w);
+    }
     let mut highest = 0;
     while let Some(c) = st.phase1.queue.front().cloned() {
-        if !st.phase1.enabled && c.kept_op().is_none() && !matches!(c, P1Cmd::Despawn { .. }) {
-            // Phase 1 is off: nothing new materializes and no snapshot goes out; kept commands
-            // and captures still do.
-            st.phase1.queue.pop_front();
-            forget_unsent_spawn(st, &c);
-            continue;
-        }
         match write_one(st, w, &c, None) {
             One::Written(seq) => {
                 highest = highest.max(seq);
@@ -2416,6 +2419,37 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
             }
         }
     }
+    (highest, false)
+}
+
+/// The queue with phase 1 switched off (U10, choice PR13): only the captures go out. Commands the
+/// bridge answers by op id wait, unsequenced, until it is on again (a sequence is taken only when
+/// written, so holding them never puts one below what Java already applied); the rest of this
+/// session's commands are dropped.
+fn write_queue_off(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    let mut highest = 0;
+    let mut kept = VecDeque::new();
+    while let Some(c) = st.phase1.queue.pop_front() {
+        if c.kept_op().is_some() {
+            kept.push_back(c);
+            continue;
+        }
+        if !matches!(c, P1Cmd::Despawn { .. }) {
+            forget_unsent_spawn(st, &c);
+            continue;
+        }
+        match write_one(st, w, &c, None) {
+            One::Written(seq) => highest = highest.max(seq),
+            One::Full => {
+                st.phase1.queue.push_front(c);
+                kept.extend(st.phase1.queue.drain(..));
+                st.phase1.queue = kept;
+                return (highest, true);
+            }
+            One::Never => {}
+        }
+    }
+    st.phase1.queue = kept;
     (highest, false)
 }
 
@@ -2863,6 +2897,26 @@ mod tests {
             "the puppet is captured back and nothing else of this session goes out"
         );
         assert_eq!(st.phase1.queue.len(), 1);
+        // A command the bridge answers by op id, decided before the switch, waits unsequenced;
+        // only the capture goes out.
+        let gossip = P1Cmd::Gossip(GossipCmd {
+            op: 0x77,
+            village: 1,
+            player: (2, 3),
+            gossip: 2,
+            amount: 2,
+            report: 3,
+            flags: 0,
+        });
+        st.phase1.push(gossip.clone());
+        let mut buf = vec![0u8; 4096];
+        {
+            let mut w = RecordWriter::new(&mut buf);
+            write_queue(&mut st, &mut w);
+            assert_eq!(w.count(), 1, "only the capture is written");
+        }
+        assert_eq!(st.phase1.queue.len(), 1);
+        assert!(st.phase1.outbox.is_empty());
         let second = adopt(2, 2_000);
         journaled(&mut st, &rec(&second));
         assert_eq!(st.phase1.nodes.len(), 1, "a record while off is ignored");
@@ -2875,6 +2929,12 @@ mod tests {
         assert!(st.phase1.enabled);
         simulate(&mut st);
         assert_eq!(st.phase1.world.now().0, 50_000);
+        let mut w = RecordWriter::new(&mut buf);
+        write_queue(&mut st, &mut w);
+        assert!(
+            st.phase1.outbox.iter().any(|(_, op, _)| *op == 0x77),
+            "the held command goes out once phase 1 is on"
+        );
     }
 
     /// Review P3 (Ben: "Book what was really there"): a caravan member killed books exactly the
