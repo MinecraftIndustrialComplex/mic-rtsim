@@ -16,6 +16,8 @@ hold the industry design and the research behind them.
 | `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10. |
 | `tools/ci/scale-check.sh` | The CI-style scale check: fails when a growth slope exceeds its contract. |
 | `bench/results/` | Committed bench results, with the machine and conditions. |
+| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies) with a pure-Java stub engine; GameTests. See `neoforge/README.md`. |
+| `docs/boundary.md` | The binary contract between the bridge and the engine: four buffers, the hand-over, every record. |
 
 The kernel's modules:
 
@@ -35,7 +37,7 @@ The kernel's modules:
 | `store` | Agent storage facade (`RowStore`) over plain columns; P4 stays open | P4 |
 | `synth` | Synthetic kinds for tests and the bench. Scaffolding, to be deleted | |
 
-Not built yet: the native host `mic_native`, the NeoForge bridge and JNI crate, the generic modules
+Not built yet: the native host `mic_native`, the JNI crate (rtsim-jni), the generic modules
 (markets, flows, caravans, knowledge), paging with a residency budget (A16), and the parallel step.
 
 ## Build and test
