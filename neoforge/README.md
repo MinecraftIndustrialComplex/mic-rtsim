@@ -90,6 +90,7 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `achunksavedaheadofthejournalstopsaresenttransfer` | a chest's chunk saved after an engine transfer, the journal not: the resent transfer is refused by the chunk's own record, which is dropped once the engine acknowledges |
 | `atakencreaturecarriesitstakenuntiltheenginehasit` | a tamed llama carries its TAKEN; a copy read from disk journals it again with the same op id; both drop it on the acknowledgement |
 | `adeadmembersdropscarryitsdied` | the items a dying llama drops carry its MEMBER_STATE and DIED |
+| `afailedenginestopsthebridgeforthesession` | an engine that fails (a panic in a native step) hands back empty buffers flagged FAILED, and the bridge stops for the session instead of waiting on it |
 | `handovercostpertick` | the hand-over bench: submit to publish on the native engine and the stub, burst and 50 ms cadence (only with `-PrtsimBench`; results in `bench/results/handover.md`) |
 | `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
