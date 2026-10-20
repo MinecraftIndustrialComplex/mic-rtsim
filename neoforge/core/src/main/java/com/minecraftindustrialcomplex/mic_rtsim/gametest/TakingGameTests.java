@@ -125,4 +125,51 @@ public final class TakingGameTests {
                 .thenExecute(() -> llama[0].discard())
                 .thenSucceed();
     }
+
+    /**
+     * Deaths are always kept (PLAN.md §4.5): DIED follows the member's state at death, cargo included
+     * (the chest's contents drop, a journaled transfer, C21). When the trader dies, its llamas stay one
+     * group, and the leash they still hold on the dead trader is not mistaken for a player's lead.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300)
+    public static void deathsAreJournaledAndTheRestStaysOneGroup(GameTestHelper helper) {
+        long agent = RtsimTests.newAgent();
+        CaravanGameTests.spawnCaravan(helper, agent, 1);
+        net.minecraft.world.entity.Entity[] bodies = new net.minecraft.world.entity.Entity[3];
+
+        helper.startSequence()
+                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenExecute(() -> {
+                    PuppetGroup g = RtsimTests.group(agent);
+                    for (int i = 0; i < 3; i++)
+                        bodies[i] = RtsimTests.member(g, i);
+                    bodies[0].kill();
+                    check("the trader's death left the group", g.members[0].gone);
+                    check("the llamas are still one group", RtsimTests.group(agent) == g && g.liveMembers() == 2);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> {
+                    check("no llama was taken by the dead trader's leash",
+                            RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty() && RtsimTests.group(agent).liveMembers() == 2);
+                    bodies[1].kill();
+                })
+                .thenWaitUntil(() -> check("the stub received both deaths", RtsimTests.recordsFor(RtsimTests.stub(), Obs.DIED, agent).size() == 2))
+                .thenExecute(() -> {
+                    List<StubEngine.Received> all = RtsimTests.allFor(RtsimTests.stub(), agent);
+                    List<StubEngine.Received> died = RtsimTests.recordsFor(RtsimTests.stub(), Obs.DIED, agent);
+                    check("the trader died first", died.get(0).aux() == 0 && died.get(1).aux() == 1);
+                    for (StubEngine.Received d : died) {
+                        int at = all.indexOf(d);
+                        check("a MEMBER_STATE comes right before each DIED", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE
+                                && all.get(at - 1).aux() == d.aux());
+                        check("each death's dropped cargo has a bridge op id", d.view().getLong(Obs.Died.OP_ID) == d.obsSeq());
+                    }
+                    int at = all.indexOf(died.get(1));
+                    check("llama 1's state at death lists the cargo that dropped", all.get(at - 1).view().getInt(Obs.MemberState.ITEM_COUNT) == 2);
+                    record("deaths", "DIED members", died.get(0).aux() + ", " + died.get(1).aux());
+                    RtsimTests.stub().despawnGroup(agent, 1);
+                })
+                .thenWaitUntil(() -> check("the last llama despawned", RtsimTests.group(agent) == null))
+                .thenSucceed();
+    }
 }

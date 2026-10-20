@@ -89,7 +89,7 @@ public final class TraderLlamaAdapter implements BodyAdapter {
         out.y = llama.getY();
         out.z = llama.getZ();
         Entity holder = llama.getLeashHolder();
-        Entity leader = group == null ? null : group.leader();
+        Entity leader = group == null ? null : group.members[0].entity;
         if (holder != null && holder == leader)
             out.flags |= Obs.MemberState.FLAG_LEASHED_TO_LEADER;
         else if (holder != null)
@@ -120,7 +120,9 @@ public final class TraderLlamaAdapter implements BodyAdapter {
     public int takenBy(Entity entity, PuppetGroup group) {
         TraderLlama llama = (TraderLlama) entity;
         Entity holder = llama.getLeashHolder();
-        if (holder != null && holder != group.leader())
+        // Still on the group's trader, even a trader that just died: the llama drops that leash on
+        // its own next tick (Leashable.tickLeash), which is not a player taking it.
+        if (holder != null && holder != group.members[0].entity && holder.isAlive())
             return Obs.Taken.LEAD;
         if (llama.isTamed())
             return Obs.Taken.TAME;
