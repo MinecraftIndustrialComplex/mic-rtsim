@@ -212,6 +212,23 @@ fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
         "replaying while unloaded"
     );
     assert_eq!(bars(&j, &ids), loaded_bars, "nothing runs in the world");
+    // IND_APPROACH (the Java side's H23) reaches the district as data; nothing acts on it (W16).
+    let t = j.mc().t;
+    j.industry_obs(&Timed {
+        at: t,
+        obs: Obs::Approach {
+            district: MILL,
+            distance: 120,
+            eta_ticks: Some(300),
+            closing: true,
+        },
+    });
+    j.mc_tick();
+    let approach = industry(&j.e, |ie| ie.district(MILL).and_then(|d| d.approach));
+    assert_eq!(
+        approach.map(|a| (a.distance, a.eta_ticks, a.closing)),
+        Some((120, Some(300), true))
+    );
     let line = ledger(&mut j, MILL);
     eprintln!("ledger while away: {line:?}");
     assert_eq!(line.district, MILL);

@@ -39,6 +39,8 @@ pub const IND_DEPOSIT_SAMPLE: u16 = 0x0042;
 pub const IND_CHANNEL_SAMPLE: u16 = 0x0043;
 pub const IND_LEDGER_REQUEST: u16 = 0x0044;
 pub const IND_WATCHED: u16 = 0x0045;
+/// The Java side's proposal H23 (docs/industry-boundary.md §6.1), read as data (W16).
+pub const IND_APPROACH: u16 = 0x0046;
 
 // Journaled observations, Java to engine.
 pub const IND_DISTRICT: u16 = 0x0400;
@@ -71,13 +73,14 @@ pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 pub const IND_LEDGER: u16 = 0x8405;
 
-const OBS_KINDS: [u16; 27] = [
+const OBS_KINDS: [u16; 28] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
     IND_CHANNEL_SAMPLE,
     IND_LEDGER_REQUEST,
     IND_WATCHED,
+    IND_APPROACH,
     IND_DISTRICT,
     IND_DISTRICT_CHUNKS,
     IND_INVENTORY,
@@ -555,6 +558,18 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u64(district.0);
             w.finish()
         }
+        Obs::Approach {
+            district,
+            distance,
+            eta_ticks,
+            closing,
+        } => {
+            let mut w = W::obs(out, IND_APPROACH, u32::from(*closing), seq, at);
+            w.put_u64(district.0);
+            w.put_u32(*distance);
+            w.put_u32(index_or_none(*eta_ticks));
+            w.finish()
+        }
         Obs::District(d) => {
             let reason = d.not_learnable.map_or(0, NotLearnable::code);
             let mut w = W::obs(out, IND_DISTRICT, reason, seq, at);
@@ -881,6 +896,26 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             Obs::Watched {
                 district: r.district(16),
                 watched,
+            }
+        }
+        IND_APPROACH => {
+            check(kind, size, 32)?;
+            let closing = match aux {
+                0 => false,
+                1 => true,
+                v => {
+                    return Err(WireError::BadCode {
+                        kind,
+                        field: "closing",
+                        value: u64::from(v),
+                    });
+                }
+            };
+            Obs::Approach {
+                district: r.district(16),
+                distance: r.get_u32(24),
+                eta_ticks: none_if_unset(r.get_u32(28)),
+                closing,
             }
         }
         IND_DISTRICT => {
@@ -1523,6 +1558,18 @@ mod tests {
                 district: d,
                 watched: false,
             },
+            Obs::Approach {
+                district: d,
+                distance: 180,
+                eta_ticks: Some(400),
+                closing: true,
+            },
+            Obs::Approach {
+                district: d,
+                distance: 250,
+                eta_ticks: None,
+                closing: false,
+            },
             Obs::District(DistrictDecl {
                 district: d,
                 revision: 5,
@@ -2006,6 +2053,7 @@ mod tests {
             Obs::ChannelSample { goods, .. } => 32 + 16 * goods.len(),
             Obs::LedgerRequest { .. } => 24,
             Obs::Watched { .. } => 24,
+            Obs::Approach { .. } => 32,
             Obs::District(_) => 48,
             Obs::DistrictChunks { chunks, .. } => 40 + 8 * chunks.len(),
             Obs::Inventory(_) => 72,
@@ -2038,6 +2086,7 @@ mod tests {
             Obs::ChannelSample { .. } => 0x0043,
             Obs::LedgerRequest { .. } => 0x0044,
             Obs::Watched { .. } => 0x0045,
+            Obs::Approach { .. } => 0x0046,
             Obs::District(_) => 0x0400,
             Obs::DistrictChunks { .. } => 0x0401,
             Obs::Inventory(_) => 0x0402,
@@ -2539,7 +2588,7 @@ mod tests {
     fn unknown_kinds_are_skipped_not_errors() {
         let mut rec = vec![0u8; 16];
         for kind in [
-            0x0001u16, 0x0046, 0x005F, 0x0060, 0x040A, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
+            0x0001u16, 0x0047, 0x005F, 0x0060, 0x040A, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
         ] {
             rec[0..2].copy_from_slice(&kind.to_le_bytes());
             rec[2..4].copy_from_slice(&16u16.to_le_bytes());

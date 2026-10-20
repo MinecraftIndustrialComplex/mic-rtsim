@@ -435,6 +435,22 @@ impl Engine {
                 let line = self.ledger_line(*district, at);
                 self.out.push(Cmd::Ledger(line));
             }
+            Obs::Approach {
+                district,
+                distance,
+                eta_ticks,
+                closing,
+            } => {
+                // Data only (W16): the stale-tick race's policy is not decided.
+                if let Some(dist) = self.districts.get_mut(district) {
+                    dist.approach = Some(crate::district::Approach {
+                        at,
+                        distance: *distance,
+                        eta_ticks: *eta_ticks,
+                        closing: *closing,
+                    });
+                }
+            }
             Obs::Watched { district, watched } => {
                 let dist = self.district_mut(*district);
                 let w = *watched && dist.presence != Presence::Unloaded;

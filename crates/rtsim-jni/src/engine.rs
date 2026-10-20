@@ -393,9 +393,11 @@ fn command_bytes(order: &Order) -> usize {
         Order::DespawnGroup { .. } => cmd::despawn_group::SIZE,
         Order::SteerGroup { .. } => cmd::steer_group::SIZE,
         Order::TransferToContainer { .. } => cmd::transfer_to_container::SIZE,
-        Order::SaveAtNextStep | Order::RewindCmdSeq(_) | Order::Fail | Order::IndustryThreat(_) => {
-            0
-        }
+        Order::SaveAtNextStep
+        | Order::RewindCmdSeq(_)
+        | Order::Fail
+        | Order::IndustryThreat(_)
+        | Order::IndustryCommand { .. } => 0,
     }
 }
 
@@ -953,6 +955,9 @@ impl Engine {
             match o {
                 Order::SaveAtNextStep => self.save_at_step_end.store(true, Ordering::Release),
                 Order::IndustryThreat(t) => industry::threat(st, &t),
+                Order::IndustryCommand { names, record } => {
+                    industry::order_command(st, &names, &record)
+                }
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
             }
@@ -1117,6 +1122,9 @@ impl Engine {
             Verdict::DuplicateOp => {
                 if rec.kind == obs::TRANSFER {
                     self.stats.op_duplicates.fetch_add(1, Ordering::AcqRel);
+                }
+                if industry::claims(rec) {
+                    industry::answered_again(st, rec);
                 }
                 st.world.refused_journaled(rec);
             }
@@ -1429,7 +1437,7 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             None
         }
         Order::Fail => panic!("a FAIL order (tests): the engine fails on purpose"),
-        Order::SaveAtNextStep | Order::IndustryThreat(_) => None,
+        Order::SaveAtNextStep | Order::IndustryThreat(_) | Order::IndustryCommand { .. } => None,
     }
 }
 

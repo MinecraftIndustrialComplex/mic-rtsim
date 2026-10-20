@@ -363,15 +363,7 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             }
             let name =
                 String::from_utf8_lossy(&b[obs::dict::NAME..obs::dict::NAME + len]).into_owned();
-            if kind == DICT_GOOD {
-                match GoodInfo::parse(&name) {
-                    Some(info) => l.engine.define_good(Good(id), info),
-                    None => log_warn(&format!(
-                        "GOOD {id} '{name}' is not a good name; the engine counts it as a 64-stack item"
-                    )),
-                }
-            }
-            l.java_names.insert((kind, id), name);
+            java_name(l, kind, id, name);
         }
         obs::MODULES if rec.size() >= obs::modules::SIZE => {
             l.enabled = wire::u32_at(b, obs::modules::MASK) & MODULE_INDUSTRY != 0;
@@ -386,6 +378,20 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
         }
         _ => {}
     }
+}
+
+/// One entry of Java's dictionary (a DICT observation, or an order's names). A GOOD defines the
+/// engine's good of the same id.
+fn java_name(l: &mut Link, kind: u32, id: u32, name: String) {
+    if kind == DICT_GOOD {
+        match GoodInfo::parse(&name) {
+            Some(info) => l.engine.define_good(Good(id), info),
+            None => log_warn(&format!(
+                "GOOD {id} '{name}' is not a good name; the engine counts it as a 64-stack item"
+            )),
+        }
+    }
+    l.java_names.insert((kind, id), name);
 }
 
 /// The journaled records that are the industry's: its kinds, and COMMAND_RESULTs for its op ids.
@@ -427,6 +433,37 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         l.complete(r.op);
     }
     l.ingest(&t);
+}
+
+/// A journaled record `Replay` refused by op id: an answer for an op it already heard. A kept
+/// command written under that op id again (a test's order, or the same decision resent) is
+/// answered all the same, so it leaves the outbox.
+pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
+    let raw = match rec.kind {
+        obs::COMMAND_RESULT => wire::u64_at(rec.bytes, obs::command_result::OP_ID),
+        iw::IND_CARRIAGE_RESULT => op_of(rec),
+        _ => return,
+    };
+    st.industry.complete(OpId(raw));
+}
+
+/// An industry command a test ordered (`Order::IndustryCommand`, W17): it joins the queue as if
+/// the industry engine had decided it, so it takes the same sequences, DICT records and outbox.
+/// The Java dictionary entries it names come with it, so it never waits for Java's DICT records.
+pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record: &[u8]) {
+    for (kind, id, name) in names {
+        java_name(&mut st.industry, *kind, *id, name.clone());
+    }
+    match iw::decode_cmd(record) {
+        Ok(Some((_, c))) => {
+            st.industry.queue.push_back(c);
+            st.industry.gauges();
+        }
+        Ok(None) => log_warn("an industry command order holds no industry command; dropped"),
+        Err(e) => log_warn(&format!(
+            "an industry command order does not decode ({e}); dropped"
+        )),
+    }
 }
 
 /// Java's answer to an industry command. A kept command leaves the outbox; a failed carriage

@@ -272,6 +272,18 @@ pub struct District {
     pub made_total: GoodVec,
     /// The last time the box's run state changed, and why it stopped (`None`: it started).
     pub last_run: Option<(Tick, Option<crate::cluster::Stop>)>,
+    /// The latest IND_APPROACH (W16): data only, nothing acts on it yet.
+    pub approach: Option<Approach>,
+}
+
+/// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Approach {
+    #[serde(serialize_with = "crate::ser::tick")]
+    pub at: Tick,
+    pub distance: u32,
+    pub eta_ticks: Option<u32>,
+    pub closing: bool,
 }
 
 impl District {
@@ -315,6 +327,7 @@ impl District {
             batches: BTreeMap::new(),
             made_total: GoodVec::new(),
             last_run: None,
+            approach: None,
         }
     }
 
@@ -589,6 +602,13 @@ mod persist_impls {
     use super::*;
     use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
+    persist_struct!(Approach {
+        at,
+        distance,
+        eta_ticks,
+        closing
+    });
+
     persist_struct!(Inventory {
         decl,
         chunk,
@@ -749,6 +769,7 @@ mod persist_impls {
             self.batches.put(w);
             self.made_total.put(w);
             self.last_run.put(w);
+            self.approach.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             Ok(District {
@@ -790,6 +811,7 @@ mod persist_impls {
                 batches: Persist::get(r)?,
                 made_total: Persist::get(r)?,
                 last_run: Persist::get(r)?,
+                approach: Persist::get(r)?,
             })
         }
     }
