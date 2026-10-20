@@ -1,0 +1,2009 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Glass Box Factories</title>
+<meta name="description" content="How mic-rtsim compiles a distant Create factory into a rate network, solves it the way Create behaves, and replays it between breakpoints while its chunks are unloaded.">
+<style>
+:root {
+  color-scheme: light;
+  --c-bg: #ffffff;
+  --c-ink: #1a1a1f;
+  --c-ink2: #3f4149;
+  --c-muted: #5d606a;
+  --c-rule: #e5e5ea;
+  --c-rule2: #c9cad1;
+  --c-card: #f7f7f8;
+  --c-brass: #8f620f;
+  --c-brassLine: #a87515;
+  --c-brassFill: #d6a23c;
+  --c-brassTint: #fbf4e4;
+  --c-andesite: #8a8f88;
+  --c-andesiteDark: #555a54;
+  --c-copper: #b5582c;
+  --c-netA: #2a78d6;
+  --c-netATint: #eaf2fc;
+  --c-netB: #158f63;
+  --c-netBTint: #e6f5ee;
+  --c-good: #146c2e;
+  --c-goodTint: #e5f3e9;
+  --c-warn: #9a5b00;
+  --c-warnTint: #fdf2df;
+  --c-bad: #b3261e;
+  --c-live: #e2f2e5;
+  --c-sim: #e9f0fb;
+  --c-grid: #eef0f3;
+  --c-iron: #9a9ca3;
+  --c-crushed: #6d7078;
+  --c-zinc: #a3bfc1;
+  --c-coal: #2c2c30;
+  --c-wheat: #d4b04a;
+  --c-flour: #f1ead6;
+  --c-sheet: #e8c25e;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--c-bg); color: var(--c-ink);
+  font: 400 18px/1.58 var(--sans); overflow-wrap: anywhere;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 28px 16px 72px; }
+h1, h2, h3, h4 { text-wrap: balance; margin: 0; line-height: 1.18; }
+h1 { font-size: clamp(31px, 6.2vw, 50px); font-weight: 760; letter-spacing: -0.015em; }
+h2 { font-size: clamp(24px, 3.6vw, 31px); font-weight: 720; letter-spacing: -0.01em; }
+h3 { font-size: 21px; font-weight: 680; }
+p { margin: 0; }
+.mono, code { font-family: var(--mono); font-size: 0.9em; font-variant-numeric: tabular-nums; }
+code { background: var(--c-card); border: 1px solid var(--c-rule); border-radius: 4px; padding: 0 4px; }
+.num { font-variant-numeric: tabular-nums; }
+a { color: #1d5fb0; text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--c-brassLine); outline-offset: 2px; border-radius: 4px; }
+
+/* masthead */
+.mast { display: grid; gap: 18px; padding-bottom: 8px; }
+.eyebrow { font: 600 13px/1.3 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--c-brass); }
+.lead { font-size: clamp(19px, 2.3vw, 22px); line-height: 1.5; max-width: 40em; color: var(--c-ink); }
+.status { font-size: 16px; color: var(--c-ink2); max-width: 46em; border: 1px solid var(--c-rule); background: var(--c-card); border-radius: 6px; padding: 12px 14px; }
+.status b { color: var(--c-ink); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.tile { border: 1px solid var(--c-rule); border-radius: 6px; padding: 14px 14px 12px; background: var(--c-bg); display: grid; gap: 4px; align-content: start; }
+.tile .big { font: 700 clamp(26px, 3.4vw, 32px)/1.1 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.tile .what { font-size: 15px; line-height: 1.4; color: var(--c-ink2); }
+.tile .src { font: 500 12px/1.3 var(--mono); color: var(--c-muted); }
+.cap { font-size: 15px; color: var(--c-muted); max-width: 52em; line-height: 1.45; }
+.changes { border: 1px solid var(--c-rule); border-radius: 6px; overflow: hidden; }
+.changes h3 { font-size: 17px; padding: 12px 14px 4px; }
+.changes p.sub { font-size: 15px; color: var(--c-muted); padding: 0 14px 10px; }
+.chg { display: grid; grid-template-columns: 7.5em 1fr 1fr; border-top: 1px solid var(--c-rule); font-size: 15px; line-height: 1.4; }
+.chg > div { padding: 9px 14px; }
+.chg .id { font: 600 13px/1.4 var(--mono); color: var(--c-brass); }
+.chg .id span { display: block; font: 500 13px/1.35 var(--sans); color: var(--c-ink2); text-transform: none; }
+.chg .was { color: var(--c-muted); text-decoration: line-through; text-decoration-color: #b9bbc2; }
+.chg .now { color: var(--c-ink); font-weight: 560; }
+.chg.head { font: 600 12px/1.2 var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--c-muted); background: var(--c-card); }
+@media (max-width: 620px) {
+  .chg { grid-template-columns: 1fr; }
+  .chg > div { padding: 3px 14px; }
+  .chg > div:first-child { padding-top: 10px; }
+  .chg > div:last-child { padding-bottom: 10px; }
+  .chg.head { display: none; }
+  .chg .was::before { content: "Design:\00a0"; text-decoration: none; display: inline-block; color: var(--c-muted); }
+  .chg .now::before { content: "Decided:\00a0"; font-weight: 400; color: var(--c-muted); }
+}
+
+/* contents */
+.toc { margin: 26px 0 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.toc a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; border: 1px solid var(--c-rule); border-radius: 6px; color: var(--c-ink2); text-decoration: none; font-size: 15px; background: var(--c-bg); }
+.toc a b { font: 600 12px var(--mono); color: var(--c-brass); margin-right: 7px; }
+.toc a:hover { border-color: var(--c-rule2); color: var(--c-ink); }
+
+/* sections */
+.sec { display: grid; gap: 14px; padding-top: 56px; scroll-margin-top: 8px; }
+.secno { font: 600 13px/1.3 var(--mono); color: var(--c-brass); letter-spacing: 0.04em; }
+.prose { max-width: 38em; color: var(--c-ink2); }
+.prose b, .prose strong { color: var(--c-ink); font-weight: 620; }
+.viz { margin: 4px 0 0; border: 1px solid var(--c-rule); border-radius: 6px; background: var(--c-bg); padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.viz + .viz { margin-top: 10px; }
+.viz h3 { font-size: 18px; }
+.cv { position: relative; min-width: 0; }
+.cv canvas { display: block; width: 100%; touch-action: pan-y; border-radius: 4px; }
+.cv canvas.grab { cursor: grab; }
+figcaption { font-size: 14.5px; color: var(--c-muted); line-height: 1.45; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.controls .lbl { font: 600 12px/1.2 var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--c-muted); margin-right: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--c-rule2); border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
+.seg button { border: 0; border-radius: 0; border-right: 1px solid var(--c-rule2); }
+.seg button:last-child { border-right: 0; }
+button {
+  font: 500 15px/1.2 var(--sans); color: var(--c-ink); background: var(--c-bg);
+  border: 1px solid var(--c-rule2); border-radius: 6px; min-height: 44px; padding: 0 14px; cursor: pointer;
+}
+button:hover { background: var(--c-card); }
+button[aria-pressed="true"] { background: var(--c-brassTint); border-color: var(--c-brassLine); color: #5e3f05; font-weight: 620; }
+.seg button[aria-pressed="true"] { border-color: var(--c-rule2); box-shadow: inset 0 -3px 0 var(--c-brassLine); }
+button.warnbtn[aria-pressed="true"] { background: #fff; color: var(--c-bad); border-color: var(--c-bad); box-shadow: inset 0 -3px 0 var(--c-bad); }
+select { font: 500 15px var(--sans); min-height: 44px; border: 1px solid var(--c-rule2); border-radius: 6px; padding: 0 10px; background: var(--c-bg); color: var(--c-ink); max-width: 100%; }
+.range { display: grid; gap: 4px; flex: 1 1 260px; min-width: 0; }
+.range label { font-size: 14px; color: var(--c-ink2); }
+.range label b { font-variant-numeric: tabular-nums; color: var(--c-ink); }
+input[type=range] { width: 100%; min-height: 44px; accent-color: var(--c-brassLine); margin: 0; }
+.chk { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 15px; color: var(--c-ink2); cursor: pointer; }
+.chk input { width: 20px; height: 20px; accent-color: var(--c-brassLine); }
+
+.readout { font-size: 15.5px; line-height: 1.5; color: var(--c-ink2); background: var(--c-card); border: 1px solid var(--c-rule); border-radius: 6px; padding: 12px 14px; min-height: 3.2em; }
+.readout h4 { font-size: 16px; margin-bottom: 4px; color: var(--c-ink); }
+.readout h4 .kind { font: 500 12px/1 var(--mono); color: var(--c-muted); margin-left: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+.readout p + p { margin-top: 6px; }
+.readout .now { font-family: var(--mono); font-size: 14px; color: var(--c-ink); }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.kv > div { border: 1px solid var(--c-rule); border-radius: 6px; padding: 8px 10px; display: grid; gap: 1px; }
+.kv .k { font-size: 13px; color: var(--c-muted); }
+.kv .v { font: 650 18px/1.25 var(--sans); font-variant-numeric: tabular-nums; color: var(--c-ink); }
+.kv .v.small { font-size: 15px; }
+
+.nets { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; }
+.net { border: 1px solid var(--c-rule); border-radius: 6px; padding: 9px 11px; display: grid; gap: 5px; font-size: 14.5px; }
+.net-h { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; color: var(--c-ink2); }
+.net-h b { color: var(--c-ink); }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.sw.a { background: var(--c-netA); } .sw.b { background: var(--c-netB); }
+.bar { height: 8px; border-radius: 4px; background: var(--c-grid); overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 4px; background: var(--c-netA); transition: width .35s ease; }
+.bar.b i { background: var(--c-netB); }
+.bar.over i { background: var(--c-bad); }
+.net-s { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.st-ok { color: var(--c-good); font-weight: 600; }
+.st-bad { color: var(--c-bad); font-weight: 650; }
+
+.bplist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; font-size: 15px; color: var(--c-ink2); }
+.bplist li { display: grid; grid-template-columns: 26px 5.2em 1fr; gap: 8px; align-items: baseline; }
+.bplist .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--c-ink2); font: 600 12px/1 var(--mono); color: var(--c-ink); }
+.bplist .t { font-family: var(--mono); font-size: 14px; color: var(--c-ink); }
+.bplist li.past .n { background: var(--c-ink); color: #fff; border-color: var(--c-ink); }
+
+.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.steps li { border: 1px solid var(--c-rule); border-radius: 6px; padding: 9px 11px; font-size: 14.5px; line-height: 1.4; color: var(--c-muted); transition: background .3s, border-color .3s; }
+.steps li b { display: block; color: var(--c-ink2); font-size: 15px; margin-bottom: 2px; }
+.steps li .ic { font-family: var(--mono); margin-right: 4px; }
+.steps li.on { border-color: var(--c-brassLine); background: var(--c-brassTint); color: var(--c-ink2); }
+.steps li.on b { color: var(--c-ink); }
+.steps li.done { border-color: var(--c-rule2); color: var(--c-ink2); }
+.note { font-size: 15px; color: var(--c-ink2); border: 1px dashed var(--c-rule2); border-radius: 6px; padding: 10px 12px; max-width: 46em; }
+.note b { color: var(--c-ink); }
+
+details.sources { margin-top: 56px; border: 1px solid var(--c-rule); border-radius: 6px; padding: 0 14px; }
+details.sources summary { cursor: pointer; min-height: 48px; display: flex; align-items: center; font-weight: 620; }
+details.sources ul { margin: 0 0 14px; padding-left: 20px; font-size: 15px; color: var(--c-ink2); display: grid; gap: 6px; }
+footer { margin-top: 28px; font-size: 14px; color: var(--c-muted); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 560px) {
+  body { font-size: 17px; }
+  .seg { border: 0; gap: 6px; overflow: visible; }
+  .seg button, .seg button:last-child { border: 1px solid var(--c-rule2); border-radius: 6px; padding: 0 11px; font-size: 14.5px; }
+  .seg button[aria-pressed="true"] { border-color: var(--c-brassLine); }
+  .viz { padding: 10px; }
+  .wrap { padding-top: 20px; }
+  .sec { padding-top: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="mast" data-ss-section="intro">
+  <p class="eyebrow" data-ss-id="eyebrow-intro">mic-rtsim / industry / glass box (C28)</p>
+  <h1 data-ss-id="heading-title">The glass box: distant Create factories, compiled</h1>
+  <p class="lead" data-ss-id="para-lead">When a factory's chunks unload, mic-rtsim keeps running a compiled copy of it. Java reads the real Create graph once per edit; the Rust engine solves it the way Create behaves, jumps from breakpoint to breakpoint, and writes the result back into the chunks exactly once when they load. Measurement checks the model, and the replay never runs ahead of what was measured.</p>
+  <p class="status" data-ss-id="para-status"><b>Status:</b> designed and approved on 2026-10-20 (C28, G-B1 to G-B19). Nothing is built yet: phase G1, a read-only compile checked against the black box, starts after the industry rework merges. The numbers below were measured on code that exists today and that the glass box keeps (C29).</p>
+  <div class="tiles" data-ss-id="stats-measured">
+    <div class="tile"><span class="big">11 to 20 µs</span><span class="what">server-thread hand-over per tick (p50), against a 1 ms budget</span><span class="src">phase 1, 64 villages, 4 players</span></div>
+    <div class="tile"><span class="big">430 ns</span><span class="what">catch-up read of a district, away 1 day or 1,000,000 days</span><span class="src">black-box industry</span></div>
+    <div class="tile"><span class="big">99.7%</span><span class="what">of a fully chunk-loaded control's output, never more</span><span class="src">black-box replay accuracy</span></div>
+    <div class="tile"><span class="big">13 to 14 µs</span><span class="what">CPU per sim day for quiet districts, flat up to 100,000 of them</span><span class="src">industry bench</span></div>
+  </div>
+  <p class="cap" data-ss-id="caption-measured">Measured overnight on the laptop (Ryzen AI MAX PRO 390, shared with other sessions), not a weak PC. The glass box's own costs in GLASSBOX §9 are estimates until G1 runs.</p>
+  <div class="changes" data-ss-id="table-changes">
+    <h3>Ben changed four proposals</h3>
+    <p class="sub">Every view on this page shows the decided version.</p>
+    <div class="chg head"><div>Decision</div><div>Design proposed</div><div>Decided</div></div>
+    <div class="chg"><div class="id">G-B6<span>partial loads</span></div><div class="was">zero flow across a loaded/unloaded cut</div><div class="now">flow across the edge is modelled</div></div>
+    <div class="chg"><div class="id">G-B7<span>simulated ships</span></div><div class="was">appear only at docks</div><div class="now">materialize anywhere a player can see them</div></div>
+    <div class="chg"><div class="id">G-B8<span>switches, gauges</span></div><div class="was">a bound at the restart level</div><div class="now">simulated as on/off cycles; strictly periodic ones in closed form</div></div>
+    <div class="chg"><div class="id">G-B17<span>mob farms</span></div><div class="was">a learned source per farm</div><div class="now">vanilla's spawning rules, modelled for their spawn spaces</div></div>
+  </div>
+</header>
+
+<nav class="toc" aria-label="Sections" data-ss-react="off">
+  <a href="#pipeline"><b>1</b>Pipeline</a><a href="#graph"><b>2</b>Compiled graph</a><a href="#solve"><b>3</b>The solve</a><a href="#replay"><b>4</b>Replay</a><a href="#cycles"><b>5</b>Cycles</a><a href="#checksum"><b>6</b>Checksum</a><a href="#partial"><b>7</b>Half loaded</a><a href="#airship"><b>8</b>Sheep airship</a><a href="#engine"><b>9</b>The engine</a>
+</nav>
+
+<section class="sec" id="pipeline" data-ss-section="pipeline">
+  <p class="secno">§1 / G-B3, G-B5, G-B19, I8</p>
+  <h2 data-ss-id="heading-pipeline">One compile per edit, then the engine runs alone</h2>
+  <p class="prose" data-ss-id="para-pipeline">Java reads the graph on the server thread, a slice per tick, when a district is found, a player edits it, or its settings hash changes. Records cross the boundary with a count, and one lost record throws the compile away. The engine compiles, solves, waits for one agreeing checksum window, then replays until a player comes near and the reconcile lands exactly once.</p>
+  <figure class="viz" data-ss-id="chart-pipeline">
+    <div class="controls" role="group" aria-label="Pipeline events">
+      <button type="button" id="pipe-edit">Player edits a filter</button>
+      <button type="button" id="pipe-drop">Drop a record</button>
+      <button type="button" id="pipe-approach">Player approaches</button>
+    </div>
+    <div class="cv"><canvas id="cv-pipe" data-ss-thing="pipeline" data-ss-label="Extraction to reconcile pipeline" role="img" aria-label="Pipeline: on the server thread, trigger, extract, cycle tables and records; in the engine, compile, solve, checksum, replay and reconcile; back on the server thread, apply on load."></canvas></div>
+    <p class="readout" id="pipe-status" aria-live="polite"></p>
+    <div class="readout" id="pipe-info"></div>
+    <figcaption data-ss-id="caption-pipeline">Click or tap a stage for what it reads and writes. Durations are not to scale; the record count of 12 is an example.</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="graph" data-ss-section="graph">
+  <p class="secno">§2 / C28, G-B5, G-B12</p>
+  <h2 data-ss-id="heading-graph">The compiled model: Create's own numbers on every node</h2>
+  <p class="prose" data-ss-id="para-graph">Each machine's cycle comes from Create's code at its network's speed, and each kinetic network is one stress budget. Stress does not depend on work, so an idle mixer loads its network exactly as a busy one does, and an overstressed network stops every member at once. Batch size matters too: the feeder sets it.</p>
+  <figure class="viz" data-ss-id="chart-graph" data-ss-thumb>
+    <div class="controls" role="group" aria-label="Factory controls">
+      <span class="lbl">Crusher feeder</span>
+      <span class="seg"><button type="button" id="g-brass" aria-pressed="true">Brass funnel</button><button type="button" id="g-andesite" aria-pressed="false">Andesite funnel</button></span>
+      <button type="button" class="warnbtn" id="g-water" aria-pressed="false">Cut boiler water</button>
+      <button type="button" class="warnbtn" id="g-over" aria-pressed="false">Add 3 crushing wheel pairs</button>
+      <label class="sr" for="g-pick">Inspect a node</label>
+      <select id="g-pick" aria-label="Inspect a node"></select>
+    </div>
+    <div class="nets" aria-live="polite">
+      <div class="net"><div class="net-h"><span class="sw a"></span><b>Network A</b> steam engine, two cog steps to 256 RPM</div><div class="bar" id="netA-bar"><i></i></div><div class="net-s"><span class="mono" id="netA-s"></span><span id="netA-st"></span></div></div>
+      <div class="net"><div class="net-h"><span class="sw b"></span><b>Network B</b> two water wheels at 8 RPM</div><div class="bar b" id="netB-bar"><i></i></div><div class="net-s"><span class="mono" id="netB-s"></span><span id="netB-st"></span></div></div>
+    </div>
+    <div class="cv"><canvas id="cv-graph" class="grab" data-ss-thing="factory-graph" data-ss-label="Compiled factory graph" role="img" aria-label="Example factory graph: an iron crushing line, a brass mixing line with a press and a tunnel, both on network A, and a millstone line on network B."></canvas></div>
+    <div class="kv" id="g-out" aria-live="polite"></div>
+    <div class="readout" id="g-info"></div>
+    <figcaption data-ss-id="caption-graph">Example factory made up for this page. Formulas and constants are Create 6.0.10's, as cited in GLASSBOX §2. Hover, tap or pick a node; dots show flow, not to scale.</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="solve" data-ss-section="solve">
+  <p class="secno">§3 / G-B1, G-B15</p>
+  <h2 data-ss-id="heading-solve">The solve: Create's back-pressure, with the LP only as a ceiling</h2>
+  <p class="prose" data-ss-id="para-solve">Create plans nothing. Every mover pushes as soon as the next thing has room, and every machine runs while it has inputs, power, heat and output space. The steady state is the <b>greatest fixed point</b> of that rule: start every edge at capacity and lower rates until nothing changes. An LP that maximizes output would route around a forced split and claim more than Create makes, so it serves only as the ceiling U.</p>
+  <figure class="viz" data-ss-id="chart-solve">
+    <div class="controls" role="group" aria-label="Brass tunnel rule">
+      <span class="lbl">Tunnel rule</span>
+      <span class="seg"><button type="button" data-rule="SPLIT" aria-pressed="true">SPLIT</button><button type="button" data-rule="PREFER" aria-pressed="false">PREFER_NEAREST</button><button type="button" data-rule="FORCED" aria-pressed="false">FORCED_SPLIT</button></span>
+      <button type="button" id="s-replay">Replay the solve</button>
+    </div>
+    <div class="cv"><canvas id="cv-solve" data-ss-thing="solve" data-ss-label="Back-pressure solve" role="img" aria-label="A mixer feeds a brass tunnel that splits brass between a fast press at 256 RPM and a slow press at 64 RPM. Bars show each node's rate as the solve's passes lower them to the fixed point, with the LP ceiling as a dashed line."></canvas></div>
+    <p class="readout" id="s-status" aria-live="polite"></p>
+    <figcaption data-ss-id="caption-solve">Example line. Top: a simplified tick model (not Create's code) running at 24 times game speed. Bottom: the solve's passes; the dots are the tick model's measured rates.</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="replay" data-ss-section="replay">
+  <p class="secno">§4 / G-B2, SCALE.md §0</p>
+  <h2 data-ss-id="heading-replay">Replay: straight lines between breakpoints</h2>
+  <p class="prose" data-ss-id="para-replay">Within a regime every rate is constant, so every store is a straight line. The engine solves once per regime and jumps to the next breakpoint: an input empties, an output fills, fuel runs out, a train arrives. Catch-up costs O(breakpoints + events), never anything per tick of time away.</p>
+  <figure class="viz" data-ss-id="chart-replay">
+    <div class="controls">
+      <div class="range"><label for="r-away">Time away: <b id="r-away-v"></b></label><input type="range" id="r-away" min="0" max="1000" step="1" value="213"></div>
+      <button type="button" id="r-play">Play 90 minutes</button>
+    </div>
+    <div class="cv"><canvas id="cv-replay" data-ss-thing="replay" data-ss-label="Replay timeline" role="img" aria-label="Four stores over 90 minutes as small multiples: raw iron, brass sheets, brass ingots and coal, each a straight line between five numbered breakpoints."></canvas></div>
+    <ol class="bplist" id="r-bps"></ol>
+    <div class="kv" id="r-kv" aria-live="polite"></div>
+    <div class="cv"><canvas id="cv-cost" data-ss-thing="catch-up-cost" data-ss-label="Catch-up cost against time away" role="img" aria-label="Log-log chart: a tick-by-tick stepper's work grows with time away; the glass box's regime solves stop growing after the last breakpoint."></canvas></div>
+    <figcaption data-ss-id="caption-replay">Example district built from §2's rates; store sizes, the train's cargo and the 1:1 crusher yield are examples. Measured on the black box built today: a catch-up read costs 430 ns, away 1 day or 1,000,000.</figcaption>
+  </figure>
+  <figure class="viz" data-ss-id="chart-clamp">
+    <h3>Which rate is replayed (G-B2)</h3>
+    <p class="prose">The measured rate, held between the model's pessimistic floor L and its physical ceiling U, and never above measured plus tolerance. A good with no flow in the confirming window replays at L.</p>
+    <div class="controls">
+      <div class="range"><label for="c-m">Measured rate: <b id="c-m-v"></b></label><input type="range" id="c-m" min="20" max="190" step="0.5" value="104"></div>
+      <label class="chk"><input type="checkbox" id="c-none"> No flow measured in the window</label>
+    </div>
+    <div class="cv"><canvas id="cv-clamp" class="grab" data-ss-thing="clamp" data-ss-label="Measured rate clamped between floor and ceiling" role="img" aria-label="A horizontal scale with the floor L, the ceiling U, the measured rate and the replayed rate."></canvas></div>
+    <p class="readout" id="c-out" aria-live="polite"></p>
+    <figcaption data-ss-id="caption-clamp">Example values: L 75, U 141.2 sheets per minute, tolerance 5. The real tolerance is z·σ + q with z = 3 (PLACEHOLDER). Drag the marker or use the slider.</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="cycles" data-ss-section="cycles">
+  <p class="secno">§5 / G-B8, G-B9</p>
+  <h2 data-ss-id="heading-cycles">Switches and timetables: counted, not stepped</h2>
+  <p class="prose" data-ss-id="para-cycles">A threshold switch makes Create cycle between its two levels. Decided (G-B8): the sim runs those on and off cycles, and when a cycle is strictly periodic it counts them in closed form, as it does a clocked requester or a ship: b × (floor((t − φ) / P) + 1). A million days cost one evaluation.</p>
+  <figure class="viz" data-ss-id="chart-cycles">
+    <div class="controls">
+      <div class="range"><label for="y-t">Elapsed: <b id="y-t-v"></b></label><input type="range" id="y-t" min="0" max="1000" step="1" value="40"></div>
+    </div>
+    <div class="cv"><canvas id="cv-cycles" data-ss-thing="cycles" data-ss-label="Threshold switch cycles and a clocked requester" role="img" aria-label="Top: a vault's stock rising and falling between a threshold switch's two levels. Bottom: a staircase of deliveries from a clocked requester. Both are evaluated in closed form at any elapsed time."></canvas></div>
+    <div class="kv" id="y-kv" aria-live="polite"></div>
+    <figcaption data-ss-id="caption-cycles">Examples: offWhenBelow 1,000, onWhenAbove 3,000, production 120 and use 40 items per minute (period 75 min); requester b = 1,728 items every 40 min, phase 10 min.</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="checksum" data-ss-section="checksum">
+  <p class="secno">§6 / G-B4, G-B14, I18</p>
+  <h2 data-ss-id="heading-checksum">The checksum: measurement keeps the model honest</h2>
+  <p class="prose" data-ss-id="para-checksum">While loaded, the sampler fits a slope per good each window and the model predicts the same window. A good fails when they differ by more than z·σ + q. A compiled district may replay only after one agreeing window (G-B4). On a disagreement the policy is <b>cut, search, demote, report</b> (G-B14).</p>
+  <figure class="viz" data-ss-id="chart-checksum">
+    <div class="controls" role="group" aria-label="Checksum scenario">
+      <span class="seg"><button type="button" data-ck="agree" aria-pressed="true">Model agrees</button><button type="button" data-ck="slow" aria-pressed="false">A press runs slow</button><button type="button" data-ck="extra" aria-pressed="false">Unmodelled production</button></span>
+    </div>
+    <div class="cv"><canvas id="cv-check" data-ss-thing="checksum" data-ss-label="Model against measurement by window" role="img" aria-label="Twelve checksum windows: the model's prediction with its tolerance band, and the measured rate with its standard error, each window marked pass or fail."></canvas></div>
+    <ol class="steps" id="ck-steps"></ol>
+    <figcaption data-ss-id="caption-checksum">Example rates; σ, q and U are examples, z = 3 and 3 strikes are the PLACEHOLDER defaults. Reports go to the server log and /rtsim district, never to an in-world readout (I18).</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="partial" data-ss-section="partial">
+  <p class="secno">§7 / I7, G-B6</p>
+  <h2 data-ss-id="heading-partial">Half loaded: Minecraft runs one side, the engine the other</h2>
+  <p class="prose" data-ss-id="para-partial">Nodes in ticking chunks are live: Create runs them and the sampler reads their stores. The rest keep being simulated (I7). Decided (G-B6): flow across the loaded/unloaded edge is modelled, not zero. When the cut closes, all loaded or all unloaded, the district solves as one again.</p>
+  <figure class="viz" data-ss-id="chart-partial">
+    <div class="controls">
+      <div class="range"><label for="p-x">Player position</label><input type="range" id="p-x" min="0" max="1000" step="1" value="300"></div>
+      <button type="button" id="p-walk">Walk past</button>
+    </div>
+    <div class="cv"><canvas id="cv-partial" class="grab" data-ss-thing="partial-load" data-ss-label="Partly loaded district" role="img" aria-label="A district laid over a grid of chunks. Chunks near the player tick and run in Minecraft; the rest are simulated. Belts that cross between the two carry modelled flow."></canvas></div>
+    <p class="readout" id="p-status" aria-live="polite"></p>
+    <p class="note" data-ss-id="note-partial"><b>Where the text stands:</b> GLASSBOX §6.1 was written before Ben's choice and still says zero flow at the cut. How goods crossing the edge are applied in the live half is not specified yet.</p>
+    <figcaption data-ss-id="caption-partial">Example layout; a ticking radius of 2 chunks is an example. Java reports each chunk's ticking change (proposed IND_CHUNK_TICKING). Drag or tap the map, or use the slider.</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="airship" data-ss-section="airship">
+  <p class="secno">§8 / C30, C32, G-B7, G-B9</p>
+  <h2 data-ss-id="heading-airship">Ben's server: a sheep farm that flies</h2>
+  <p class="prose" data-ss-id="para-airship">A player on Ben's server built a farm of about 2,000 sheep on a Create airship, served only by a second airship ferrying its cargo. C32 makes that a supported case. The farm is a factory compiled in the ship's own frame, following it as it moves and freezes. The ferry is a periodic edge with both ends moving, and either ship materializes wherever a player can see it (G-B7).</p>
+  <figure class="viz" data-ss-id="chart-airship">
+    <div class="controls" role="group" aria-label="Where the player is">
+      <span class="lbl">Player</span>
+      <span class="seg"><button type="button" data-pl="port" aria-pressed="true">At the port</button><button type="button" data-pl="farm" aria-pressed="false">Near the farm</button><button type="button" data-pl="away" aria-pressed="false">Far away</button></span>
+    </div>
+    <div class="cv"><canvas id="cv-air" class="grab" data-ss-thing="airship-map" data-ss-label="Sheep farm airship and its ferry" role="img" aria-label="Top-down map: a home port, a sheep farm airship drifting on a loop, and a ferry airship shuttling between them. Ships inside the player's view are drawn solid; the others are simulated outlines."></canvas></div>
+    <p class="readout" id="a-status" aria-live="polite"></p>
+    <div class="controls">
+      <div class="range"><label for="a-t">Elapsed: <b id="a-t-v"></b></label><input type="range" id="a-t" min="0" max="1000" step="1" value="60"></div>
+    </div>
+    <div class="cv"><canvas id="cv-wool" data-ss-thing="ferry-deliveries" data-ss-label="Wool delivered by the ferry" role="img" aria-label="Staircase of wool delivered at the port, one step per ferry call, evaluated in closed form."></canvas></div>
+    <figcaption data-ss-id="caption-airship">Example route, period (12 min) and cargo (3,000 wool per call). Each call moves min(learned exchange, available stock, room on the ship); a ship with no stable period stays frozen.</figcaption>
+  </figure>
+</section>
+
+<section class="sec" id="engine" data-ss-section="engine">
+  <p class="secno">§9 / where it sits</p>
+  <h2 data-ss-id="heading-engine">Where the glass box sits in mic-rtsim</h2>
+  <p class="prose" data-ss-id="para-engine">The glass box is one part of the industry module, beside caravans and markets, dragons, herds, ships, conflict and the world model, all on one kernel. The server thread only hands records over: 11 to 20 µs per tick at p50, measured with phase 1 running on 64 villages and four players.</p>
+  <figure class="viz" data-ss-id="chart-engine">
+    <div class="cv"><canvas id="cv-engine" data-ss-thing="engine-map" data-ss-label="mic-rtsim module map" role="img" aria-label="Module map: the Minecraft server thread and its plugins on top, the hand-over through mic_native, eight engine modules including industry, and the kernel at the bottom."></canvas></div>
+    <div class="readout" id="e-info" aria-live="polite"></div>
+    <figcaption data-ss-id="caption-engine">Tap a module for its links and its measured number (overnight report, 2026-10-20). Topology (C31) is decided but not built yet.</figcaption>
+  </figure>
+</section>
+
+<details class="sources" data-ss-id="sources">
+  <summary>Sources</summary>
+  <ul>
+    <li><code>GLASSBOX.md</code>: the design. Create formulas read from <code>mc1.21.1/dev</code> at <code>7ff2760</code> and found by <code>javap</code> in <code>create-1.21.1-6.0.10.jar</code>; config values are Create's defaults.</li>
+    <li><code>DECISIONS.md</code>: G-B1 to G-B19 (G-B6, G-B7, G-B8 and G-B17 changed from the design), GLASSBOX, C28, C29, C30, C32, I6 to I9, I13, I18, and the stale-tick decision (reconcile ahead of arrival, IND_APPROACH).</li>
+    <li><code>INDUSTRY.md</code> §0, §4, §5 (what unloading does to Create; the black-box replay; reconcile); <code>docs/industry-boundary.md</code> §4.1 and §6.1 (applying reconciles; IND_APPROACH).</li>
+    <li><code>SCALE.md</code> §0 and §7: cost grows only with observation, events and coarse cells, never with how many things exist.</li>
+    <li><code>docs/overnight-2026-10-20.md</code>: every measured number on this page, taken on the laptop, not a weak PC.</li>
+  </ul>
+</details>
+<footer data-ss-react="off">mic-rtsim, AGPL-3.0. Example values on this page are labelled as examples; everything else is from the files above.</footer>
+</div>
+<script>
+(() => {
+'use strict';
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+let reduced = mq.matches;
+const C = {};
+(function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  ['bg','ink','ink2','muted','rule','rule2','card','brass','brassLine','brassFill','brassTint','andesite','andesiteDark','copper','netA','netATint','netB','netBTint','good','goodTint','warn','warnTint','bad','live','sim','grid','iron','crushed','zinc','coal','wheat','flour','sheet']
+    .forEach((n) => { C[n] = cs.getPropertyValue('--c-' + n).trim(); });
+})();
+const SANS = 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+const MONO = 'ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace';
+const fnt = (size, weight, mono) => (weight || 400) + ' ' + size + 'px ' + (mono ? MONO : SANS);
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+const nf = (n, d) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 });
+const perMin = (perTick) => perTick * 1200;
+
+function tx(ctx, s, x, y, o) {
+  o = o || {};
+  ctx.font = fnt(o.size || 12, o.weight || 400, o.mono);
+  ctx.fillStyle = o.color || C.ink;
+  ctx.textAlign = o.align || 'left';
+  ctx.textBaseline = o.base || 'alphabetic';
+  ctx.fillText(s, x, y);
+}
+function tw(ctx, s, size, weight, mono) { ctx.font = fnt(size, weight, mono); return ctx.measureText(s).width; }
+function wrapLines(ctx, s, maxW, size, weight, mono) {
+  ctx.font = fnt(size, weight, mono);
+  const words = s.split(' '); const lines = []; let line = '';
+  for (const w of words) {
+    const t = line ? line + ' ' + w : w;
+    if (ctx.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+function rr(ctx, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function cog(ctx, x, y, r, teeth, ang, fill, hole) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ctx.beginPath();
+  const n = teeth * 4;
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * TAU;
+    const q = i % 4;
+    const rad = q === 0 || q === 1 ? r : r * 0.74;
+    if (i === 0) ctx.moveTo(Math.cos(a) * rad, Math.sin(a) * rad); else ctx.lineTo(Math.cos(a) * rad, Math.sin(a) * rad);
+  }
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.3, 0, TAU); ctx.fillStyle = hole || C.bg; ctx.fill();
+  ctx.restore();
+}
+function arrow(ctx, x, y, ang, s, color) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-s, -s * 0.55); ctx.lineTo(-s, s * 0.55); ctx.closePath();
+  ctx.fillStyle = color; ctx.fill(); ctx.restore();
+}
+function item(ctx, x, y, s, fill, stroke) {
+  ctx.fillStyle = fill; ctx.fillRect(x - s / 2, y - s / 2, s, s);
+  ctx.lineWidth = 1; ctx.strokeStyle = stroke || 'rgba(26,26,31,0.45)'; ctx.strokeRect(x - s / 2 + 0.5, y - s / 2 + 0.5, s - 1, s - 1);
+}
+function line(ctx, pts, color, width, dash) {
+  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.strokeStyle = color; ctx.lineWidth = width || 1; ctx.setLineDash(dash || []); ctx.stroke(); ctx.setLineDash([]);
+}
+// a point on the boundary of a box centred at (cx, cy) in the direction (dx, dy)
+function clipBox(cx, cy, hw, hh, dx, dy) {
+  const ax = Math.abs(dx) < 1e-9 ? Infinity : hw / Math.abs(dx);
+  const ay = Math.abs(dy) < 1e-9 ? Infinity : hh / Math.abs(dy);
+  const t = Math.min(ax, ay);
+  return [cx + dx * t, cy + dy * t];
+}
+// Deterministic pseudo-noise in [-1, 1]
+function noise(i) { const s = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return (s - Math.floor(s)) * 2 - 1; }
+function fmtMinutes(m) {
+  if (m < 60) return nf(m, m < 10 ? 1 : 0) + ' min';
+  if (m < 48 * 60) { const h = Math.floor(m / 60); const mm = Math.round(m - h * 60); return h + ' h' + (mm ? ' ' + mm + ' min' : ''); }
+  const d = m / 1440;
+  if (d < 1000) return nf(d, d < 10 ? 1 : 0) + ' days';
+  if (d < 1e6 - 0.5) return nf(Math.round(d)) + ' days';
+  return '1,000,000 days';
+}
+
+// ---------- the frame loop shared by every view ----------
+const vizzes = [];
+function makeViz(canvas, spec) {
+  const v = Object.assign({ canvas: canvas, ctx: canvas.getContext('2d'), w: 0, h: 0, dpr: 1, visible: false, dirty: true, animated: true }, spec);
+  v.resize = function () {
+    const w = Math.max(260, Math.round(canvas.parentElement.clientWidth));
+    const h = Math.round(v.height(w));
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (w !== v.w || h !== v.h || dpr !== v.dpr) {
+      v.w = w; v.h = h; v.dpr = dpr;
+      canvas.style.height = h + 'px';
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+      v.dirty = true;
+      if (v.layout) v.layout(w, h);
+    }
+  };
+  v.local = function (e) { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  if (v.pointer) {
+    ['pointerdown', 'pointermove', 'pointerup', 'pointerleave', 'pointercancel'].forEach((type) => {
+      canvas.addEventListener(type, (e) => { const p = v.local(e); v.pointer(type.slice(7), p[0], p[1], e); v.dirty = true; });
+    });
+  }
+  vizzes.push(v);
+  return v;
+}
+let lastNow = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, Math.max(0, (now - lastNow) / 1000)); lastNow = now;
+  for (const v of vizzes) {
+    if (!v.visible) continue;
+    v.resize();
+    if ((reduced || !v.animated) && !v.dirty) continue;
+    const ctx = v.ctx;
+    ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
+    ctx.clearRect(0, 0, v.w, v.h);
+    try { v.draw(ctx, v.w, v.h, reduced ? 0 : dt, now / 1000); } catch (err) { console.error(err); }
+    v.dirty = false;
+  }
+  requestAnimationFrame(frame);
+}
+function startLoop() {
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => { const v = vizzes.find((z) => z.canvas === e.target); if (v) { v.visible = e.isIntersecting; v.dirty = true; } });
+  }, { rootMargin: '120px' });
+  vizzes.forEach((v) => io.observe(v.canvas));
+  const ro = new ResizeObserver(() => vizzes.forEach((v) => { v.dirty = true; }));
+  vizzes.forEach((v) => ro.observe(v.canvas.parentElement));
+  mq.addEventListener('change', (e) => { reduced = e.matches; vizzes.forEach((v) => { v.dirty = true; if (v.onMotion) v.onMotion(); }); });
+  requestAnimationFrame(frame);
+}
+function pressGroup(buttons, active) { buttons.forEach((b) => b.setAttribute('aria-pressed', String(b === active))); }
+
+// ======================================================================
+// §1 Pipeline
+// ======================================================================
+(function pipeline() {
+  const cv = $('#cv-pipe'); const statusEl = $('#pipe-status'); const infoEl = $('#pipe-info');
+  const ST = {
+    apply: { lane: 'j', col: 0, t: 'Apply on load', s: 'removals first; epoch saved with the chunk',
+      d: 'Java holds the delta until the chunk loads and skips it if the chunk\'s <code>mic_rtsim:reconcile</code> attachment already holds this epoch. It applies every removal first, then the additions, and sets the epoch in the same tick, so contents and epoch reach disk together in the chunk NBT (I8). A shortfall, where a machine that ticked first took an input, trims the outputs it funded.' },
+    trigger: { lane: 'j', col: 1, t: 'Trigger', s: 'found, edited, or settings hash changed',
+      d: 'A compile runs when a district is first detected (I2), on every player edit (IND_EDIT), and when its fingerprint changes: a 64-bit hash over each block entity\'s position, type and configuration (filters, modes, scroll values, thresholds), updated round-robin with the district\'s sweep (G-B3, no mixins). It also catches contraptions, schematicannons and reconciles, which change blocks with no player. A source changing speed is not a recompile: the compile tabulates every speed level a network can take.' },
+    extract: { lane: 'j', col: 2, t: 'Extract', s: 'a slice per tick, 250 µs (placeholder)',
+      d: 'Java reads the graph on the server thread within <code>glass.compileSliceMicros</code> (250 µs per tick, PLACEHOLDER, inside the 1 ms bridge budget): <code>TorquePropagator.networks</code>, each <code>KineticNetwork</code>\'s sources and members, <code>BlockStressValues</code> impact and capacity, theoretical speeds, filters, belts, tunnels, funnels, arms, pumps, burners and boilers, and recipes from the server\'s <code>RecipeManager</code>, so KubeJS and datapack changes are seen. If the fingerprint changes meanwhile, the compile restarts.' },
+    tables: { lane: 'j', col: 3, t: 'Cycle tables', s: 'Create\'s countdowns, run on the JVM',
+      d: 'Create counts in Java <code>float</code> (the arm\'s <code>1024f</code>, the crusher\'s <code>Math.log</code>), so the compiler does not re-derive closed forms. For each (kind, recipe duration, batch size, speed level) it runs that kind\'s own countdown for one cycle, at most a few hundred steps, and caches the tick count (G-B5). Hand-offs between components come from a calibration GameTest suite at four speed levels.' },
+    records: { lane: 'j', col: 4, t: 'Records', s: '0x0048 to 0x004C, count-checked',
+      d: 'Latest-wins records with a revision and a record count, like a stock sweep (G-B19): <code>0x0048</code> IND_GRAPH_NODE, <code>0x0049</code> EDGE, <code>0x004A</code> RECIPE, <code>0x004B</code> DOMAIN, <code>0x004C</code> END. A dropped record throws the compile away and it is redone. The engine pages the graph with its district; it is never recompiled from memory.' },
+    compile: { lane: 'e', col: 4, t: 'Compile', s: 'reachable goods, cycles condensed',
+      d: 'From every store and source the engine propagates which goods can reach each node: filters remove goods from an edge, machines map each input good to its recipe outputs. The result is a multi-commodity graph. Tarjan\'s strongly connected components condense cycles; sequenced-assembly loops are unrolled from the recipe, so each machine in the loop carries loops × the item rate.' },
+    solve: { lane: 'e', col: 3, t: 'Solve', s: 'fixed point L, LP ceiling U',
+      d: 'A backward pass for acceptance, a forward pass for supply, coupling rounds for multi-input machines, and the kinetic gate: a machine in an overstressed network has capacity 0. The result is L, Create\'s own fixed point, and U, the LP ceiling (the <code>microlp</code> crate if its licence checks out, G-B15). Cost O(rounds × (nodes + edges)); about 0.2 ms for 500 nodes and 4 rounds is an ESTIMATE.' },
+    checksum: { lane: 'e', col: 2, t: 'Checksum', s: 'one agreeing window, then replay',
+      d: 'While the district is loaded the sampler fits a slope per good, and the model predicts the same window. A compiled district may replay only after one window in which they agree (G-B4; <code>glass.checksumWindowMin</code> is 6,000 ticks, PLACEHOLDER). Until then it freezes while unloaded (I5).' },
+    replay: { lane: 'e', col: 1, t: 'Replay', s: 'breakpoint to breakpoint',
+      d: 'One solve per regime. <code>cluster.rs</code> integrates the net rate per (store, good) with its integer pools and finds the next breakpoint exactly or early, never late. Per catch-up the cost is O(breakpoints + events), whatever the elapsed time; a district with no events and no breakpoints costs nothing per tick.' },
+    reconcile: { lane: 'e', col: 0, t: 'Reconcile', s: 'exactly once, through a chunk epoch',
+      d: 'When the chunk loads, or ahead of it when IND_APPROACH says a player is heading there (the stale-tick decision), the engine catches up and sends IND_CHUNK_RECONCILE: per-inventory deltas with an epoch. Pools are kept per store, so the engine knows exactly which vault gained what.' },
+  };
+  const LINKS = [['apply', 'trigger', 'dash'], ['trigger', 'extract'], ['extract', 'tables'], ['tables', 'records'], ['records', 'compile', 'wire'], ['compile', 'solve'], ['solve', 'checksum'], ['checksum', 'replay'], ['replay', 'reconcile'], ['reconcile', 'apply', 'wire']];
+  const RECORDS = 12;
+  const SCEN = {
+    first: [
+      { st: 'trigger', dur: 1.0, msg: 'A district is detected (I2): a compile starts.' },
+      { st: 'extract', dur: 2.2, kind: 'progress', msg: 'Extracting on the server thread, one slice per tick inside the bridge budget.' },
+      { st: 'tables', dur: 1.3, kind: 'progress', msg: 'Running each machine kind\'s own countdown on the JVM for exact tick counts (G-B5).' },
+      { st: 'records', dur: 2.4, kind: 'packets', msg: 'Sending the graph as count-checked records: all 12 arrived, matching END\'s count (G-B19).' },
+      { st: 'compile', dur: 1.0, kind: 'progress', msg: 'Compiling: reachable goods per edge, cycles condensed.' },
+      { st: 'solve', dur: 1.6, kind: 'rounds', msg: 'Solving: the coupling rounds stop changing, which is the fixed point L; U comes from the LP.' },
+      { st: 'checksum', dur: 2.2, kind: 'progress', msg: 'Checksum window while loaded: model and measurement agree, so the district may replay (G-B4).' },
+      { st: 'replay', dur: Infinity, kind: 'replay', msg: 'The player left and the chunks unloaded: the engine replays between breakpoints. Nothing runs per tick.' },
+    ],
+  };
+  SCEN.edit = [
+    { st: 'trigger', dur: 1.4, kind: 'hash', msg: 'A player changes a filter: the settings hash changes, so the district recompiles (G-B3).' },
+  ].concat(SCEN.first.slice(1));
+  SCEN.drop = SCEN.first.slice(0, 3).concat([
+    { st: 'records', dur: 2.6, kind: 'packets', drop: 7, err: true, msg: 'Record 7 was lost: END says 12, 11 arrived. The compile is thrown away and redone.' },
+    { st: 'extract', dur: 1.6, kind: 'progress', msg: 'Redoing the compile from the start.' },
+  ], SCEN.first.slice(2));
+  SCEN.approach = [
+    { st: 'replay', dur: 1.3, kind: 'replay', msg: 'A player heads this way: IND_APPROACH arrives while the district replays.' },
+    { st: 'reconcile', dur: 1.7, kind: 'progress', msg: 'The engine catches up to now and sends IND_CHUNK_RECONCILE ahead of arrival, before the chunks tick.' },
+    { st: 'apply', dur: 2.6, kind: 'apply', msg: 'The chunk loads: removals first, then additions, and the chunk\'s epoch advances in the same tick, so even a crash applies it exactly once (I8).' },
+    { st: 'checksum', dur: 2.0, kind: 'progress', msg: 'Loaded: Create runs the factory, and the sampler\'s sweeps keep checking the model.' },
+    { st: 'replay', dur: Infinity, kind: 'replay', msg: 'The player left again: the replay resumes from the sampled stock.' },
+  ];
+  let scen = SCEN.first, idx = 0, el = 0, trail = new Set(), errSt = null, selected = null, hover = null;
+  let replayTicks = 0, epoch = 41, shownInfo = '';
+  let boxes = {}, narrow = false;
+
+  function finish(s) { trail.add(s.st); if (s.err) errSt = s.st; else if (errSt === s.st) errSt = null; if (s.kind === 'apply') epoch++; }
+  function setStatus() { statusEl.textContent = scen[idx].msg; }
+  function showInfo() {
+    const id = hover || selected || scen[idx].st;
+    if (id === shownInfo) return;
+    shownInfo = id;
+    const s = ST[id];
+    infoEl.innerHTML = '<h4>' + s.t + '<span class="kind">' + (s.lane === 'j' ? 'server thread, Java' : 'engine, Rust') + '</span></h4><p>' + s.d + '</p>';
+  }
+  function run(name) {
+    scen = SCEN[name]; idx = 0; el = 0; trail = new Set(); errSt = null; replayTicks = 0;
+    if (reduced) {
+      // jump to the resting step, remembering the path
+      for (let i = 0; i < scen.length - 1; i++) finish(scen[i]);
+      idx = scen.length - 1;
+      const sum = scen.filter((s) => s.err || s.kind === 'hash' || s.kind === 'apply' || s.kind === 'packets').map((s) => s.msg);
+      statusEl.textContent = sum.concat([scen[idx].msg]).join(' ');
+    } else setStatus();
+    selected = null; showInfo(); v.dirty = true;
+  }
+  $('#pipe-edit').addEventListener('click', () => {
+    const cur = scen[idx].st;
+    if (!reduced && (cur === 'extract' || cur === 'tables')) {
+      scen = [{ st: 'extract', dur: 1.8, kind: 'progress', msg: 'The fingerprint changed during the compile, so it restarts from the beginning.' }].concat(SCEN.first.slice(2));
+      idx = 0; el = 0; errSt = null; setStatus(); showInfo(); v.dirty = true; return;
+    }
+    run('edit');
+  });
+  $('#pipe-drop').addEventListener('click', () => run('drop'));
+  $('#pipe-approach').addEventListener('click', () => run('approach'));
+
+  function layout(w) {
+    narrow = w < 660;
+    boxes = {};
+    if (!narrow) {
+      const pad = 10, cols = 5, cw = (w - pad * 2) / cols, bw = cw - 14, bh = 74;
+      const yJ = 30, yE = yJ + bh + 70;
+      for (const id in ST) {
+        const s = ST[id]; const x = pad + s.col * cw + 7; const y = s.lane === 'j' ? yJ : yE;
+        boxes[id] = { x: x, y: y, w: bw, h: bh, cx: x + bw / 2, cy: y + bh / 2 };
+      }
+      v.wireY = yJ + bh + 35;
+    } else {
+      const pad = 6, gap = 34, bw = (w - pad * 2 - gap) / 2, bh = 70, y0 = 30, rowH = bh + 14;
+      for (const id in ST) {
+        const s = ST[id]; const x = s.lane === 'j' ? pad : pad + bw + gap; const y = y0 + s.col * rowH;
+        boxes[id] = { x: x, y: y, w: bw, h: bh, cx: x + bw / 2, cy: y + bh / 2 };
+      }
+      v.wireX = pad + bw + gap / 2;
+    }
+  }
+  function linkPts(a, b) {
+    const A = boxes[a], B = boxes[b];
+    if (Math.abs(A.cy - B.cy) < 1) {
+      const dir = B.cx > A.cx ? 1 : -1;
+      return [[A.cx + dir * A.w / 2, A.cy], [B.cx - dir * B.w / 2, B.cy]];
+    }
+    const dir = B.cy > A.cy ? 1 : -1;
+    return [[A.cx, A.cy + dir * A.h / 2], [B.cx, B.cy - dir * B.h / 2]];
+  }
+  function hit(x, y) {
+    for (const id in boxes) { const b = boxes[id]; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return id; }
+    return null;
+  }
+  const v = makeViz(cv, {
+    height: (w) => (w < 660 ? 30 + 5 * 84 + 4 : 30 + 74 + 70 + 74 + 26),
+    layout: layout,
+    pointer: (type, x, y) => {
+      const id = hit(x, y);
+      if (type === 'move') { if (id !== hover) { hover = id; showInfo(); } cv.style.cursor = id ? 'pointer' : 'default'; }
+      else if (type === 'leave') { hover = null; showInfo(); }
+      else if (type === 'down' && id) { selected = id; hover = null; showInfo(); }
+    },
+    draw: (ctx, w, h, dt, t) => {
+      if (!boxes.apply) layout(w);
+      const step = scen[idx];
+      if (dt > 0) {
+        el += dt;
+        if (step.kind === 'replay') replayTicks += dt * 24000;
+        if (el >= step.dur && idx < scen.length - 1) {
+          finish(step);
+          idx++; el = 0; setStatus(); showInfo();
+        }
+      }
+      const cur = scen[idx]; const prog = cur.dur === Infinity ? 0 : clamp(el / cur.dur, 0, 1);
+      // lanes
+      if (!narrow) {
+        tx(ctx, 'SERVER THREAD (JAVA)', 10, 18, { size: 11, weight: 650, mono: true, color: C.muted });
+        tx(ctx, 'ENGINE (RUST, BACKGROUND POOL)', 10, h - 8, { size: 11, weight: 650, mono: true, color: C.muted });
+        ctx.fillStyle = C.card; ctx.fillRect(0, v.wireY - 13, w, 26);
+        line(ctx, [[0, v.wireY], [w, v.wireY]], C.rule2, 1, [5, 5]);
+        tx(ctx, 'boundary buffers, mic_native, rtsim-jni', w - 10, v.wireY + 4, { size: 11, mono: true, color: C.muted, align: 'right' });
+      } else {
+        tx(ctx, 'JAVA', boxes.apply.x, 18, { size: 11, weight: 650, mono: true, color: C.muted });
+        tx(ctx, 'ENGINE', boxes.reconcile.x, 18, { size: 11, weight: 650, mono: true, color: C.muted });
+        ctx.fillStyle = C.card; ctx.fillRect(v.wireX - 9, 26, 18, h - 28);
+        line(ctx, [[v.wireX, 26], [v.wireX, h - 2]], C.rule2, 1, [5, 5]);
+      }
+      // links
+      for (const L of LINKS) {
+        const p = linkPts(L[0], L[1]);
+        const active = (cur.st === L[1] && trail.has(L[0])) || (cur.st === L[0]);
+        const col = L[2] === 'dash' ? C.rule2 : (active ? C.ink2 : C.rule2);
+        line(ctx, p, col, L[2] === 'wire' ? 2 : 1.5, L[2] === 'dash' ? [4, 4] : null);
+        const ang = Math.atan2(p[1][1] - p[0][1], p[1][0] - p[0][0]);
+        arrow(ctx, p[1][0], p[1][1], ang, 7, col);
+      }
+      // boxes
+      for (const id in boxes) {
+        const b = boxes[id]; const s = ST[id];
+        const isCur = cur.st === id; const isErr = (errSt === id && !isCur) || (isCur && cur.err && prog > 0.55);
+        rr(ctx, b.x, b.y, b.w, b.h, 6);
+        ctx.fillStyle = isCur ? C.brassTint : (s.lane === 'j' ? '#fbfbfa' : '#f8fafd');
+        ctx.fill();
+        ctx.lineWidth = isCur ? 2 : 1;
+        ctx.strokeStyle = isErr ? C.bad : (isCur ? C.brassLine : (selected === id || hover === id ? C.ink2 : C.rule2));
+        ctx.stroke();
+        const ix = b.x + 9;
+        tx(ctx, s.t, ix, b.y + 19, { size: 13, weight: 680, color: C.ink });
+        const lines = wrapLines(ctx, s.s, b.w - 18, 11.5, 400);
+        lines.slice(0, 2).forEach((ln, i) => tx(ctx, ln, ix, b.y + 36 + i * 14, { size: 11.5, color: C.muted }));
+        if (trail.has(id) && !isCur) tx(ctx, isErr ? '✗' : '✓', b.x + b.w - 9, b.y + 18, { size: 13, weight: 700, color: isErr ? C.bad : C.good, align: 'right' });
+        // progress bar on the active box
+        if (isCur && (cur.kind === 'progress' || cur.kind === 'rounds' || cur.kind === 'hash' || cur.kind === 'packets')) {
+          ctx.fillStyle = C.grid; ctx.fillRect(ix, b.y + b.h - 10, b.w - 18, 3);
+          ctx.fillStyle = cur.err ? C.bad : C.brassLine; ctx.fillRect(ix, b.y + b.h - 10, (b.w - 18) * (reduced ? 1 : prog), 3);
+        }
+        if (id === 'extract' && isCur) {
+          const slices = 10; const done = Math.floor(prog * slices);
+          for (let i = 0; i < slices; i++) { ctx.fillStyle = i < done ? C.netA : C.rule; ctx.fillRect(b.x + b.w - 9 - (slices - i) * 5, b.y + 8, 3, 8); }
+        }
+        if (id === 'solve' && isCur) tx(ctx, 'round ' + Math.min(3, 1 + Math.floor(prog * 3)), b.x + b.w - 9, b.y + 18, { size: 11, mono: true, color: C.ink2, align: 'right' });
+        if (id === 'replay' && isCur) {
+          const r = 7, cx = b.x + b.w - 16, cy = b.y + 16;
+          ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.strokeStyle = C.rule2; ctx.lineWidth = 1.5; ctx.stroke();
+          const a = (replayTicks / 24000) % 1 * TAU - Math.PI / 2;
+          line(ctx, [[cx, cy], [cx + Math.cos(a) * r, cy + Math.sin(a) * r]], C.ink, 1.5);
+          if (b.w > 120 && replayTicks > 0) tx(ctx, '+' + nf(replayTicks) + ' t', b.x + b.w - 9, b.y + b.h - 8, { size: 10.5, mono: true, color: C.ink2, align: 'right' });
+        }
+        if (id === 'apply' && (isCur || trail.has('apply'))) tx(ctx, 'epoch ' + epoch + (isCur && cur.kind === 'apply' && (reduced || prog > 0.75) ? ' → ' + (epoch + 1) : ''), b.x + b.w - 9, b.y + b.h - 8, { size: 10.5, mono: true, color: C.ink2, align: 'right' });
+        if (id === 'trigger' && isCur && cur.kind === 'hash') {
+          const flick = reduced ? 1 : Math.floor(t * 12) % 2;
+          tx(ctx, flick ? 'hash ≠' : 'hash =', b.x + b.w - 9, b.y + 18, { size: 11, mono: true, color: flick ? C.bad : C.ink2, align: 'right' });
+        }
+      }
+      // packets across the wire
+      if (cur.kind === 'packets') {
+        const p = linkPts('records', 'compile');
+        const n = RECORDS; let arrived = 0;
+        for (let i = 0; i < n; i++) {
+          const u = reduced ? 1 : clamp((el - i * 0.12) / 0.9, 0, 1);
+          if (u >= 1 && cur.drop !== i) arrived++;
+          if (u <= 0 || u >= 1) continue;
+          const x = lerp(p[0][0], p[1][0], u), y = lerp(p[0][1], p[1][1], u);
+          if (cur.drop === i && u > 0.45) {
+            if (u < 0.8) tx(ctx, '✗', x, y + 4, { size: 14, weight: 700, color: C.bad, align: 'center' });
+            continue;
+          }
+          item(ctx, x, y, 7, i === n - 1 ? C.ink2 : C.brassFill);
+        }
+        const b = boxes.compile;
+        const expected = cur.drop != null ? n - 1 : n;
+        const label = arrived + ' / ' + n;
+        const lx = narrow ? b.x + b.w - 9 : b.x + b.w - 9, ly = b.y + 18;
+        tx(ctx, label, lx, ly, { size: 11, mono: true, weight: 600, color: cur.drop != null && arrived === expected ? C.bad : C.ink2, align: 'right' });
+      }
+      // deltas: they travel during the reconcile, then apply in the chunk, removals first
+      const DELTAS = [['−', C.bad], ['−', C.bad], ['+', C.good], ['+', C.good], ['+', C.good]];
+      if (cur.st === 'reconcile' && cur.kind === 'progress') {
+        const p = linkPts('reconcile', 'apply');
+        DELTAS.forEach((it, i) => {
+          const u = reduced ? 0.5 : clamp((el - i * 0.22) / 0.8, 0, 1);
+          if (u <= 0 || u >= 1) return;
+          const x = lerp(p[0][0], p[1][0], u), y = lerp(p[0][1], p[1][1], u);
+          ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU); ctx.fillStyle = C.bg; ctx.fill(); ctx.strokeStyle = it[1]; ctx.lineWidth = 1.5; ctx.stroke();
+          tx(ctx, it[0], x, y + 4, { size: 12, weight: 700, color: it[1], align: 'center' });
+        });
+      }
+      if (cur.kind === 'apply') {
+        const b = boxes.apply;
+        DELTAS.forEach((it, i) => {
+          const done = reduced || el > 0.35 + i * 0.35;
+          const x = b.x + 15 + i * 14, y = b.y + b.h - 11;
+          ctx.beginPath(); ctx.arc(x, y, 5.5, 0, TAU); ctx.fillStyle = done ? it[1] : C.bg; ctx.fill(); ctx.strokeStyle = it[1]; ctx.lineWidth = 1.3; ctx.stroke();
+          tx(ctx, it[0], x, y + 3.5, { size: 10, weight: 700, color: done ? '#fff' : it[1], align: 'center' });
+        });
+      }
+    },
+  });
+  run('first');
+})();
+
+// ======================================================================
+// §2 The compiled factory graph
+// ======================================================================
+(function factoryGraph() {
+  const cv = $('#cv-graph'); const infoEl = $('#g-info'); const outEl = $('#g-out'); const pick = $('#g-pick');
+  const state = { feeder: 'brass', water: true, over: false };
+  const NODES = [
+    { id: 'raw', k: 'store', name: 'Raw iron', wide: [90, 80], nar: [68, 44] },
+    { id: 'bfun', k: 'mover', name: 'Brass funnel', wide: [250, 80], nar: [200, 44] },
+    { id: 'crush', k: 'machine', name: 'Crushing wheels', net: 'A', wide: [410, 80], nar: [332, 44] },
+    { id: 'cvault', k: 'store', name: 'Crushed iron', wide: [570, 80], nar: [332, 118] },
+    { id: 'engine', k: 'source', name: 'Steam engine', net: 'A', wide: [900, 165], nar: [68, 118] },
+    { id: 'cu', k: 'store', name: 'Copper', wide: [90, 235], nar: [68, 206] },
+    { id: 'zn', k: 'store', name: 'Zinc', wide: [90, 305], nar: [200, 206] },
+    { id: 'coal', k: 'store', name: 'Coal', wide: [90, 375], nar: [332, 206] },
+    { id: 'arm', k: 'mover', name: 'Mechanical arm', net: 'A', wide: [250, 305], nar: [200, 280] },
+    { id: 'burner', k: 'heater', name: 'Blaze burner', wide: [410, 390], nar: [332, 354] },
+    { id: 'mixer', k: 'machine', name: 'Mixer, basin', net: 'A', wide: [410, 305], nar: [200, 354] },
+    { id: 'tunnel', k: 'junction', name: 'Brass tunnel', wide: [570, 305], nar: [200, 428] },
+    { id: 'press', k: 'machine', name: 'Press', net: 'A', wide: [730, 250], nar: [68, 502] },
+    { id: 'sheets', k: 'store', name: 'Brass sheets', wide: [900, 250], nar: [68, 576] },
+    { id: 'ingots', k: 'store', name: 'Brass ingots', wide: [900, 360], nar: [332, 502] },
+    { id: 'wheat', k: 'store', name: 'Wheat', wide: [90, 500], nar: [68, 660] },
+    { id: 'afun', k: 'mover', name: 'Andesite funnel', wide: [250, 500], nar: [200, 660] },
+    { id: 'mill', k: 'machine', name: 'Millstone', net: 'B', wide: [410, 500], nar: [332, 660] },
+    { id: 'hopper', k: 'mover', name: 'Hopper', wide: [570, 500], nar: [332, 734] },
+    { id: 'flour', k: 'store', name: 'Flour', wide: [730, 500], nar: [200, 734] },
+    { id: 'wheels', k: 'source', name: 'Water wheels', net: 'B', wide: [410, 585], nar: [68, 734] },
+  ];
+  const byId = {}; NODES.forEach((n) => { byId[n.id] = n; });
+  const EDGES = [
+    { a: 'raw', b: 'bfun', t: 'move', g: 'iron', r: 'r1' },
+    { a: 'bfun', b: 'crush', t: 'belt', g: 'iron', r: 'r1' },
+    { a: 'crush', b: 'cvault', t: 'belt', g: 'crushed', r: 'r1' },
+    { a: 'cu', b: 'arm', t: 'move', g: 'copper', r: 'rc' },
+    { a: 'zn', b: 'arm', t: 'move', g: 'zinc', r: 'rc' },
+    { a: 'coal', b: 'arm', t: 'move', g: 'coal', r: 'rcoal' },
+    { a: 'arm', b: 'mixer', t: 'move', g: 'cuzn', r: 'rc2' },
+    { a: 'arm', b: 'burner', t: 'move', g: 'coal', r: 'rcoal' },
+    { a: 'burner', b: 'mixer', t: 'heat' },
+    { a: 'mixer', b: 'tunnel', t: 'belt', g: 'brass', r: 'rb' },
+    { a: 'tunnel', b: 'press', t: 'belt', g: 'brass', r: 'rbh' },
+    { a: 'press', b: 'sheets', t: 'belt', g: 'sheet', r: 'rbh' },
+    { a: 'tunnel', b: 'ingots', t: 'belt', g: 'brass', r: 'rbh' },
+    { a: 'wheat', b: 'afun', t: 'move', g: 'wheat', r: 'rm' },
+    { a: 'afun', b: 'mill', t: 'move', g: 'wheat', r: 'rm' },
+    { a: 'mill', b: 'hopper', t: 'move', g: 'flour', r: 'rm' },
+    { a: 'hopper', b: 'flour', t: 'move', g: 'flour', r: 'rm' },
+  ];
+  EDGES.forEach((e) => { e.parts = []; e.acc = Math.random(); });
+  const SHAFTS_WIDE = {
+    A: [[[250, 165], [900, 165]], [[250, 165], [250, 284]], [[410, 101], [410, 284]], [[730, 165], [730, 229]]],
+    B: [[[410, 521], [410, 564]]],
+  };
+  const GOOD = () => ({ iron: C.iron, crushed: C.crushed, copper: C.copper, zinc: C.zinc, coal: C.coal, brass: C.brassFill, sheet: C.sheet, wheat: C.wheat, flour: C.flour });
+  let R = {}, A = {}, B = {}, geo = null, hover = null, selected = 'crush', shownKey = '', angA = 0, angB = 0, beltPhase = 0;
+
+  function compute() {
+    const impact = (state.over ? 78 : 30);
+    A = { cap: state.water ? 16384 : 0, stress: impact * 256 };
+    A.run = A.cap >= A.stress;
+    B = { cap: 512, stress: 32, run: true };
+    const r1 = A.run ? (state.feeder === 'brass' ? 64 / 113 : 1 / 21) : 0;
+    const rb = A.run ? 2 / 17 : 0;
+    R = { r1: r1, rb: rb, rbh: rb / 2, rc: rb / 2, rc2: rb, rcoal: A.run ? 1 / 1600 : 0, rm: 1 / 151 };
+    // network badges
+    const fill = (id, st, s) => {
+      const bar = $('#' + id + '-bar');
+      bar.classList.toggle('over', !st.run);
+      bar.firstElementChild.style.width = (st.cap > 0 ? Math.min(1, st.stress / st.cap) * 100 : 100) + '%';
+      $('#' + id + '-s').textContent = s;
+      const stEl = $('#' + id + '-st');
+      stEl.className = st.run ? 'st-ok' : 'st-bad';
+      stEl.textContent = st.run ? '✓ running' : '✗ overstressed: every member stops';
+    };
+    fill('netA', A, nf(A.stress) + ' of ' + nf(A.cap) + ' SU');
+    fill('netB', B, nf(B.stress) + ' of ' + nf(B.cap) + ' SU');
+    byId.bfun.name = state.feeder === 'brass' ? 'Brass funnel' : 'Andesite funnel';
+    const out = [
+      ['Crushed iron', perMin(R.r1)], ['Brass sheets', perMin(R.rbh)], ['Brass ingots', perMin(R.rbh)], ['Wheat milled', perMin(R.rm)],
+    ];
+    outEl.innerHTML = out.map((o) => '<div><span class="k">' + o[0] + ', per minute</span><span class="v">' + nf(o[1], 1) + '</span></div>').join('');
+    shownKey = ''; showInfo(); v.dirty = true;
+  }
+  function valueLine(n) {
+    const aStop = n.net === 'A' && !A.run;
+    if (aStop) return ['stopped', C.bad];
+    switch (n.id) {
+      case 'raw': return ['−' + nf(perMin(R.r1), 1) + '/min', C.ink2];
+      case 'bfun': return [state.feeder === 'brass' ? 'up to 64 / 9 t' : '1 item / 9 t', C.ink2];
+      case 'crush': return [state.feeder === 'brass' ? '113 t per 64' : '21 t per item', C.ink2];
+      case 'cvault': return ['+' + nf(perMin(R.r1), 1) + '/min', C.ink2];
+      case 'engine': return [state.water ? '64 RPM, 16,384 SU' : 'no water: 0 SU', state.water ? C.ink2 : C.bad];
+      case 'cu': case 'zn': return ['−' + nf(perMin(R.rc), 1) + '/min', C.ink2];
+      case 'coal': return ['−' + nf(perMin(R.rcoal), 2) + '/min', C.ink2];
+      case 'arm': return ['16 t per cycle', C.ink2];
+      case 'burner': return [A.run ? 'KINDLED, coal' : 'burning, no refuel', A.run ? C.ink2 : C.warn];
+      case 'mixer': return ['17 t per 2 brass', C.ink2];
+      case 'tunnel': return [A.run ? 'SPLIT' : 'stopped', A.run ? C.ink2 : C.bad];
+      case 'press': return ['10 t per item', C.ink2];
+      case 'sheets': case 'ingots': return ['+' + nf(perMin(R.rbh), 1) + '/min', C.ink2];
+      case 'wheat': return ['−' + nf(perMin(R.rm), 1) + '/min', C.ink2];
+      case 'afun': return ['1 item / 9 t', C.ink2];
+      case 'mill': return ['151 t per wheat', C.ink2];
+      case 'hopper': return ['1 item / 8 t', C.ink2];
+      case 'flour': return ['filling', C.ink2];
+      case 'wheels': return ['8 RPM, 512 SU', C.ink2];
+    }
+    return ['', C.ink2];
+  }
+  const KIND = { store: 'Store', mover: 'Mover', machine: 'Machine', junction: 'Junction', heater: 'Heater', source: 'Kinetic source' };
+  function info(id) {
+    const brass = state.feeder === 'brass';
+    const aNow = A.run ? 'running at 256 RPM' : 'stopped: network A is overstressed, so every member\'s getSpeed() is 0';
+    switch (id) {
+      case 'raw': return ['Boundary stock (I3): an integer level per good, kept per store, so a reconcile knows exactly which vault gained what. An item vault holds 20 stacks per block; 3 × 3 × 9 is 1,620 slots.', 'Now: ' + nf(perMin(R.r1), 1) + ' raw iron per minute leave.'];
+      case 'bfun': return brass
+        ? ['Brass funnel: the filter\'s count per extraction (default 64, "up to"), then 8 ticks of cooldown, so one extraction per 9 ticks: up to 7.1 items per tick. Onto a belt it waits until the segment is free. Each 64-stack becomes one belt entry, and one crusher batch.', 'Now: limited by the crusher, not the funnel.']
+        : ['Andesite funnel: one item per extraction, because only brass funnels filter; one extraction per 9 ticks, 0.111 items per tick. Every belt entry is a single item, so every crusher batch is n = 1.', 'Now: the crusher sees batches of one.'];
+      case 'crush': return ['Controller speed c = RPM/50 from the wheel beside it, v = 4c = 20.48 at 256 RPM. A whole inserted stack of n is one batch: D counts down by clamp(v / log2(n), 0.25, 20) until below 20, then the recipe is applied to all n, then by clamp(v, 0.25, 20) to 0. Raw iron, D 400: n = 64 takes 113 ticks per 64; n = 1 takes 21 ticks per item (log 1 = 0, the clamp gives 20). Stress impact 8 per wheel.', 'Now: ' + (A.run ? (brass ? '64 per 113 ticks, ' : '1 per 21 ticks, ') + nf(perMin(R.r1), 1) + ' per minute' : aNow) + '.'];
+      case 'cvault': return ['Store for the crushed output. Chance outputs enter at their expected count, chance × count per roll, as exact rationals (G-B11); the 1:1 yield shown is an example.', 'Now: +' + nf(perMin(R.r1), 1) + ' per minute.'];
+      case 'engine': return ['A full steam engine turns at 64 RPM with 256 SU per RPM: 16,384 SU. Its speed is 16 × m and its capacity per RPM is eff × 1024 / m, with eff from the boiler level, so heat, water and fuel are the network\'s breakpoints. Two large-to-small cog steps (−2 each) bring the members to 256 RPM; stress counts at the members\' speed, capacity at the source\'s. Boilers keep burning their burners when overstressed.', state.water ? 'Now: 16,384 SU of capacity.' : 'Now: no water, boiler level 0, capacity 0: the network is overstressed (a G1 corpus case).'];
+      case 'cu': case 'zn': return ['A mixer short of zinc consumes copper only at the zinc-limited rate, and the surplus copper backs up. The solve\'s coupling round sets that input\'s acceptance to the consumed rate and repeats; acceptances only fall, so the rounds are monotone.', 'Now: ' + nf(perMin(R.rc), 1) + ' per minute leave.'];
+      case 'coal': return ['Fuel store for the blaze burner. An empty fuel store is a breakpoint: the heat level drops and heated recipes stop.', 'Now: one coal per 1,600 ticks while the arm keeps the burner topped up.'];
+      case 'arm': return ['Mechanical arm: progress += min(256, RPM) / 1024 per tick; a cycle is four moves, 4 × ceil(1024 / min(256, RPM)) = 16 ticks at 256 RPM. Up to 64 from one slot, limited to what the outputs accept (simulated first): up to 4 items per tick. Round robin or prefer-first, range 5 blocks. Stress impact 2.', 'Now: ' + aNow + '.'];
+      case 'burner': return ['The remaining burn time falls by 1 every tick, working or not. Coal burns 1,600 ticks. Automation refuels only at 500 or fewer remaining, so an arm-fed burner on coal uses one coal per 1,600 ticks whatever the throughput. Regular fuel is KINDLED (FADING below 125 ticks left), which satisfies HEATED.', A.run ? 'Now: KINDLED.' : 'Now: still burning down, but the arm that refuels it has stopped. When the fuel runs out, that is a breakpoint.'];
+      case 'mixer': return ['First batch: 20 ticks of wind-up, then P = max(log2((int)(512/RPM)) × ceil(15 × t/100) + 1, 1). While the recipe still matches, the steady period is P + 1. Brass at 256 RPM: P 16, so 17 ticks per 2 brass; at 64 RPM, 47 ticks. It needs at least 30 RPM (SpeedLevel.MEDIUM), so it could not run on network B. Heated: the burner must not be NONE or SMOULDERING. A machine stops when any output is blocked. Stress impact 4.', 'Now: ' + (A.run ? '2 brass per 17 ticks, ' + nf(perMin(R.rb), 1) + ' per minute' : aNow) + '.'];
+      case 'tunnel': return ['Brass tunnel, SPLIT: each stack divided evenly among accepting sides. Modelled as equal shares with water-filling over the sides\' acceptances: exact in rate (the order of stacks is not kept). It holds one stack, distributes 2 ticks after a new item, and retries every 10 ticks when outputs refuse. Filtered sides are tried first.', 'Now: ' + nf(perMin(R.rbh), 1) + ' per minute to each side.'];
+      case 'press': return ['runningTicks += s, s = (int) lerp(clamp(RPM/512, 0, 1), 1, 60) = 30 at 256 RPM; the step that crosses 120 snaps to 120 and applies; done above 240. Cycle = ceil(120/s) + floor(120/s) + 2 = 10 ticks; at 64 RPM s is 8 and the cycle 32 ticks. On a belt, one item per cycle. Stress impact 8.', 'Now: ' + (A.run ? 'accepts up to ' + nf(perMin(0.1), 0) + ' per minute and gets ' + nf(perMin(R.rbh), 1) : aNow) + '.'];
+      case 'sheets': case 'ingots': return ['Output store. When it fills, that is a breakpoint: the solve reruns with the store full, so its inflow is at most its outflow.', 'Now: +' + nf(perMin(R.rbh), 1) + ' per minute.'];
+      case 'wheat': return ['Input store on network B\'s line.', 'Now: ' + nf(perMin(R.rm), 1) + ' wheat per minute leave.'];
+      case 'afun': return ['Andesite funnel: one item per 9 ticks, 0.111 per tick, far faster than this millstone needs.', 'Now: limited by the millstone.'];
+      case 'mill': return ['Timer = the recipe\'s processing time D, minus s = clamp(floor(RPM/16), 1, 512) per tick; one input item per cycle; cycle = ceil(D/s) + 1. Wheat to flour, D 150: at 8 RPM s is 1, so 151 ticks per wheat; at 256 RPM s is 16 and the cycle 11 ticks. Stops while any output slot is full. Stress impact 4 × 8 RPM = 32 SU.', 'Now: 1 wheat per 151 ticks, ' + nf(perMin(R.rm), 1) + ' per minute.'];
+      case 'hopper': return ['Vanilla hopper: one item per 8 ticks, 0.125 per tick.', 'Now: limited by the millstone.'];
+      case 'flour': return ['Output store on network B. Network B keeps running whatever happens to network A: they are separate kinetic networks, so separate stress budgets.', 'Now: filling.'];
+      case 'wheels': return ['Water wheel: 32 SU per RPM at 8 RPM, so 256 SU each; two give 512 SU. Network capacity is the sum over sources of capacity × |generated speed|.', 'Now: 32 of 512 SU used.'];
+    }
+    return ['', ''];
+  }
+  function showInfo() {
+    const id = hover || selected;
+    const key = id + '|' + state.feeder + state.water + state.over;
+    if (key === shownKey) return;
+    shownKey = key;
+    const n = byId[id]; const d = info(id);
+    const net = n.net ? ', network ' + n.net : '';
+    infoEl.innerHTML = '<h4>' + n.name + '<span class="kind">' + KIND[n.k] + net + '</span></h4><p>' + d[0] + '</p><p class="now">' + d[1] + '</p>';
+    if (!hover && pick.value !== id) pick.value = id;
+  }
+  NODES.forEach((n) => { const o = document.createElement('option'); o.value = n.id; o.textContent = 'Inspect: ' + n.name + (n.id === 'bfun' ? ' / feeder' : ''); pick.appendChild(o); });
+  pick.addEventListener('change', () => { selected = pick.value; hover = null; showInfo(); v.dirty = true; });
+  const bBrass = $('#g-brass'), bAnd = $('#g-andesite');
+  bBrass.addEventListener('click', () => { state.feeder = 'brass'; pressGroup([bBrass, bAnd], bBrass); compute(); });
+  bAnd.addEventListener('click', () => { state.feeder = 'andesite'; pressGroup([bBrass, bAnd], bAnd); compute(); });
+  $('#g-water').addEventListener('click', (e) => { state.water = !state.water; e.currentTarget.setAttribute('aria-pressed', String(!state.water)); compute(); });
+  $('#g-over').addEventListener('click', (e) => { state.over = !state.over; e.currentTarget.setAttribute('aria-pressed', String(state.over)); compute(); });
+
+  function layout(w) {
+    const wide = w >= 760;
+    const sx = wide ? w / 1000 : w / 400;
+    const sy = wide ? Math.min(sx, 1.0) : Math.min(sx, 1.08);
+    const nw = wide ? clamp(136 * sx, 108, 140) : clamp(112 * sx, 96, 140);
+    const nh = wide ? 42 : 40;
+    const top = wide ? 6 : 4;
+    geo = { wide: wide, sx: sx, sy: sy, nw: nw, nh: nh, pos: {}, top: top };
+    NODES.forEach((n) => { const p = wide ? n.wide : n.nar; geo.pos[n.id] = [p[0] * sx, top + p[1] * sy]; });
+    EDGES.forEach((e) => {
+      const a = geo.pos[e.a], b = geo.pos[e.b];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const p0 = clipBox(a[0], a[1], nw / 2 + 2, nh / 2 + 2, dx, dy);
+      const p1 = clipBox(b[0], b[1], nw / 2 + 4, nh / 2 + 4, -dx, -dy);
+      e.p0 = p0; e.p1 = p1; e.len = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+    });
+  }
+  function hit(x, y) {
+    if (!geo) return null;
+    for (const n of NODES) { const p = geo.pos[n.id]; if (Math.abs(x - p[0]) <= geo.nw / 2 && Math.abs(y - p[1]) <= geo.nh / 2) return n.id; }
+    return null;
+  }
+  function edgeRunning(e) {
+    if (e.r === 'rm') return B.run;
+    return A.run;
+  }
+  function spawnRate(perTick) { return perTick > 0 ? clamp(0.35 + 1.1 * Math.log10(1 + perMin(perTick) / 8), 0.3, 3.2) : 0; }
+  function drawNode(ctx, n, t) {
+    const p = geo.pos[n.id]; const nw = geo.nw, nh = geo.nh; const x = p[0] - nw / 2, y = p[1] - nh / 2;
+    const netCol = n.net === 'A' ? C.netA : n.net === 'B' ? C.netB : null;
+    const stopped = n.net === 'A' && !A.run;
+    const sel = selected === n.id, hov = hover === n.id;
+    // ghost wheels for the overload
+    if (n.id === 'crush' && state.over) {
+      for (let i = 3; i >= 1; i--) { rr(ctx, x + i * 4, y - i * 4, nw, nh, 5); ctx.fillStyle = C.bg; ctx.fill(); ctx.strokeStyle = C.rule2; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]); }
+    }
+    const r = n.k === 'mover' ? nh / 2 : 5;
+    rr(ctx, x, y, nw, nh, r);
+    ctx.fillStyle = n.k === 'store' ? '#f4f2ec' : n.k === 'source' ? (n.net === 'A' ? C.netATint : C.netBTint) : C.bg;
+    ctx.fill();
+    ctx.lineWidth = sel ? 2.5 : (netCol ? 1.8 : 1.2);
+    ctx.strokeStyle = sel ? C.brassLine : (stopped ? C.bad : (netCol || (hov ? C.ink2 : C.andesite)));
+    ctx.stroke();
+    if (n.k === 'store') { line(ctx, [[x + 6, y + 5], [x + nw - 6, y + 5]], C.andesite, 1); }
+    if (n.k === 'junction') { ctx.beginPath(); ctx.moveTo(x + nw - 13, y + 7); ctx.lineTo(x + nw - 7, y + 12); ctx.lineTo(x + nw - 13, y + 17); ctx.moveTo(x + nw - 7, y + 12); ctx.lineTo(x + nw - 17, y + 12); ctx.strokeStyle = C.brassLine; ctx.lineWidth = 1.5; ctx.stroke(); }
+    if (n.k === 'heater') {
+      const fx = x + nw - 11, fy = y + 13; const flick = reduced ? 0 : Math.sin(t * 9) * 1.2;
+      ctx.beginPath(); ctx.moveTo(fx, fy - 7 - flick); ctx.quadraticCurveTo(fx + 6, fy, fx, fy + 5); ctx.quadraticCurveTo(fx - 6, fy, fx, fy - 7 - flick);
+      ctx.fillStyle = A.run ? '#e08a1e' : '#c99a55'; ctx.fill();
+    }
+    if (netCol) {
+      const ang = n.net === 'A' ? angA * (n.k === 'source' ? 0.25 : 1) : angB;
+      cog(ctx, x + nw - 2, y + 2, n.k === 'source' ? 11 : 8, n.k === 'source' ? 10 : 8, ang, stopped ? C.bad : netCol);
+    }
+    const name = n.name;
+    let size = 12; while (size > 10 && tw(ctx, name, size, 650) > nw - 16) size -= 0.5;
+    tx(ctx, name, x + 8, y + 17, { size: size, weight: 650, color: C.ink });
+    const vl = valueLine(n);
+    let vs = 11; while (vs > 9 && tw(ctx, vl[0], vs, 400, true) > nw - 12) vs -= 0.5;
+    tx(ctx, (stopped ? '■ ' : '') + vl[0], x + 8, y + nh - 9, { size: vs, mono: true, color: vl[1] });
+  }
+  const v = makeViz(cv, {
+    height: (w) => (w >= 760 ? 6 + 630 * Math.min(w / 1000, 1.0) : 4 + 770 * Math.min(w / 400, 1.08)),
+    layout: layout,
+    pointer: (type, x, y) => {
+      const id = hit(x, y);
+      if (type === 'move') { if (id !== hover) { hover = id; showInfo(); } cv.style.cursor = id ? 'pointer' : 'default'; }
+      else if (type === 'leave') { hover = null; showInfo(); }
+      else if (type === 'down' && id) { selected = id; hover = null; showInfo(); }
+    },
+    draw: (ctx, w, h, dt, t) => {
+      if (!geo) layout(w);
+      const gc = GOOD();
+      if (A.run) angA += dt * 2.4; if (B.run) angB += dt * 0.32;
+      if (A.run) beltPhase += dt * 26;
+      // blueprint grid
+      ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
+      for (let gx = 0; gx < w; gx += 24) { ctx.beginPath(); ctx.moveTo(gx + 0.5, 0); ctx.lineTo(gx + 0.5, h); ctx.stroke(); }
+      for (let gy = 0; gy < h; gy += 24) { ctx.beginPath(); ctx.moveTo(0, gy + 0.5); ctx.lineTo(w, gy + 0.5); ctx.stroke(); }
+      // shafts
+      const shaftCol = (net) => (net === 'A' ? (A.run ? C.netA : C.bad) : C.netB);
+      if (geo.wide) {
+        for (const net of ['A', 'B']) for (const seg of SHAFTS_WIDE[net]) {
+          const pts = seg.map((p) => [p[0] * geo.sx, geo.top + p[1] * geo.sy]);
+          line(ctx, pts, shaftCol(net), 3, net === 'A' && !A.run ? [6, 4] : null);
+        }
+      } else {
+        const src = { A: 'engine', B: 'wheels' };
+        NODES.forEach((n) => {
+          if (!n.net || n.k === 'source') return;
+          const a = geo.pos[src[n.net]], b = geo.pos[n.id];
+          ctx.globalAlpha = 0.55; line(ctx, [a, b], shaftCol(n.net), 2, [2, 4]); ctx.globalAlpha = 1;
+        });
+      }
+      // edges
+      for (const e of EDGES) {
+        const p0 = e.p0, p1 = e.p1;
+        const ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+        if (e.t === 'heat') { line(ctx, [p0, p1], '#e08a1e', 2, [3, 3]); arrow(ctx, p1[0], p1[1], ang, 7, '#e08a1e'); continue; }
+        if (e.t === 'belt') {
+          const nx = -Math.sin(ang) * 3, ny = Math.cos(ang) * 3;
+          line(ctx, [[p0[0] + nx, p0[1] + ny], [p1[0] + nx, p1[1] + ny]], C.andesiteDark, 1.2);
+          line(ctx, [[p0[0] - nx, p0[1] - ny], [p1[0] - nx, p1[1] - ny]], C.andesiteDark, 1.2);
+          ctx.save(); ctx.setLineDash([2, 6]); ctx.lineDashOffset = -beltPhase; ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]);
+          ctx.strokeStyle = C.andesite; ctx.lineWidth = 4; ctx.stroke(); ctx.restore();
+        } else {
+          line(ctx, [p0, p1], C.andesite, 1.4);
+        }
+        arrow(ctx, p1[0], p1[1], ang, 7, C.andesiteDark);
+        // particles
+        const rate = R[e.r] || 0; const running = edgeRunning(e) && rate > 0;
+        if (running && dt > 0) {
+          e.acc += dt * spawnRate(rate);
+          if (e.acc >= 1 && e.parts.length < 40) { e.acc -= 1; e.parts.push({ u: 0, k: e.parts.length }); }
+          const speed = (e.t === 'belt' ? 34 : 52) / Math.max(30, e.len);
+          e.parts.forEach((q) => { q.u += dt * speed; });
+          e.parts = e.parts.filter((q) => q.u < 1);
+        }
+        if (reduced && running && e.parts.length === 0) { for (let i = 1; i <= 3; i++) e.parts.push({ u: i / 4, k: i }); }
+        for (const q of e.parts) {
+          const x = lerp(p0[0], p1[0], q.u), y = lerp(p0[1], p1[1], q.u);
+          let col = gc[e.g]; if (e.g === 'cuzn') col = q.k % 2 ? gc.copper : gc.zinc;
+          item(ctx, x, y, e.t === 'belt' ? 6 : 5, col);
+        }
+      }
+      for (const n of NODES) drawNode(ctx, n, t);
+      if (!A.run) {
+        const p = geo.pos.engine; const msg = state.water ? 'stress ' + nf(A.stress) + ' > capacity ' + nf(A.cap) : 'boiler dry: capacity 0';
+        const tw0 = tw(ctx, msg, 11.5, 650, true) + 14; const bx = clamp(p[0] - tw0 / 2, 4, w - tw0 - 4), by = p[1] + geo.nh / 2 + 6;
+        rr(ctx, bx, by, tw0, 20, 4); ctx.fillStyle = C.bg; ctx.fill(); ctx.strokeStyle = C.bad; ctx.lineWidth = 1; ctx.stroke();
+        tx(ctx, msg, bx + 7, by + 14, { size: 11.5, weight: 650, mono: true, color: C.bad });
+      }
+    },
+  });
+  compute();
+})();
+
+// ======================================================================
+// §3 The back-pressure solve
+// ======================================================================
+(function solveView() {
+  const cv = $('#cv-solve'); const statusEl = $('#s-status');
+  const ruleBtns = $$('[data-rule]');
+  const CAP = { mixer: perMin(2 / 17), A: perMin(1 / 10), B: perMin(1 / 32) };
+  const RULE_NAME = { SPLIT: 'SPLIT', PREFER: 'PREFER_NEAREST', FORCED: 'FORCED_SPLIT' };
+  function fixedPoint(rule) {
+    const accept = rule === 'FORCED' ? 2 * Math.min(CAP.A, CAP.B) : CAP.A + CAP.B;
+    const mixer = Math.min(CAP.mixer, accept);
+    let a, b;
+    if (rule === 'FORCED') { a = mixer / 2; b = mixer / 2; }
+    else if (rule === 'PREFER') { a = Math.min(mixer, CAP.A); b = Math.min(CAP.B, mixer - a); }
+    else { const share = mixer / 2; b = Math.min(share, CAP.B); a = Math.min(CAP.A, mixer - b); }
+    return { accept: accept, mixer: mixer, A: a, B: b, out: a + b };
+  }
+  const U = Math.min(CAP.mixer, CAP.A + CAP.B);
+  let rule = 'SPLIT', step = 0, stepEl = 0, sim = null, shown = [0, 0, 0, 0];
+  const BASIN_CAP = 8, Q_CAP = 4, WIN = 2400, TICKS_PER_SEC = 480;
+  function newSim() { return { tick: 0, mixP: 0, basin: 0, tunnel: 0, qA: 0, qB: 0, pA: -1, pB: -1, out: 0, ev: { mixer: [], A: [], B: [] }, acc: 0 }; }
+  function simTick(s) {
+    if (s.basin + 2 <= BASIN_CAP) { s.mixP++; if (s.mixP >= 17) { s.mixP = 0; s.basin += 2; s.ev.mixer.push(s.tick, s.tick); } }
+    if (s.tunnel === 0 && s.basin > 0) { s.tunnel = s.basin; s.basin = 0; }
+    if (s.tunnel > 0) {
+      const roomA = Q_CAP - s.qA, roomB = Q_CAP - s.qB;
+      if (rule === 'SPLIT') {
+        const sides = []; if (roomA > 0) sides.push('A'); if (roomB > 0) sides.push('B');
+        if (sides.length) {
+          const share = Math.ceil(s.tunnel / sides.length);
+          for (const sd of sides) {
+            const give = Math.min(share, sd === 'A' ? roomA : roomB, s.tunnel);
+            if (sd === 'A') s.qA += give; else s.qB += give; s.tunnel -= give;
+          }
+        }
+      } else if (rule === 'PREFER') {
+        const g = Math.min(roomA, s.tunnel); s.qA += g; s.tunnel -= g;
+        const g2 = Math.min(roomB, s.tunnel); s.qB += g2; s.tunnel -= g2;
+      } else {
+        const share = Math.ceil(s.tunnel / 2);
+        if (roomA >= share && roomB >= share) {
+          const gA = Math.min(share, s.tunnel); s.qA += gA; s.tunnel -= gA;
+          const gB = Math.min(share, s.tunnel); s.qB += gB; s.tunnel -= gB;
+        }
+      }
+    }
+    if (s.pA < 0 && s.qA > 0) { s.qA--; s.pA = 0; }
+    if (s.pA >= 0) { s.pA++; if (s.pA >= 10) { s.pA = -1; s.out++; s.ev.A.push(s.tick); } }
+    if (s.pB < 0 && s.qB > 0) { s.qB--; s.pB = 0; }
+    if (s.pB >= 0) { s.pB++; if (s.pB >= 32) { s.pB = -1; s.out++; s.ev.B.push(s.tick); } }
+    s.tick++;
+    if (s.tick % 200 === 0) for (const k in s.ev) { const lim = s.tick - WIN; while (s.ev[k].length && s.ev[k][0] < lim) s.ev[k].shift(); }
+  }
+  function measured(s) {
+    if (s.tick < 300) return null;
+    const win = Math.min(WIN, s.tick - 150), lim = s.tick - win;
+    const cnt = (arr) => arr.filter((x) => x >= lim).length;
+    const m = { mixer: cnt(s.ev.mixer), A: cnt(s.ev.A), B: cnt(s.ev.B) };
+    return { mixer: perMin(m.mixer / win), A: perMin(m.A / win), B: perMin(m.B / win), out: perMin((m.A + m.B) / win) };
+  }
+  const STEPS = (r) => {
+    const fp = fixedPoint(r);
+    return [
+      { vals: [CAP.mixer, CAP.A, CAP.B, CAP.A + CAP.B], msg: 'Start: every edge at its capacity. Mixer 141.2 brass per minute (2 per 17 ticks), press A 120 (10 ticks), press B 37.5 (32 ticks).' },
+      { vals: [CAP.mixer, CAP.A, CAP.B, CAP.A + CAP.B], acc: fp.accept, msg: 'Backward pass: the presses accept 120 and 37.5 per minute, and the tunnel accepts by its rule: ' + nf(fp.accept, 1) + ' per minute under ' + RULE_NAME[r] + (r === 'FORCED' ? ', twice the slowest side, because it distributes only if every side takes its share.' : ', the sum over sides that accept.') },
+      { vals: [fp.mixer, fp.A, fp.B, fp.out], acc: fp.accept, msg: 'Forward pass: each node runs at min(supply, capacity, acceptance), and the tunnel allocates by its rule: press A ' + nf(fp.A, 1) + ', press B ' + nf(fp.B, 1) + ' per minute.' },
+      { vals: [fp.mixer, fp.A, fp.B, fp.out], acc: fp.accept, done: true, msg: 'Coupling round: copper and zinc are accepted only at what the mixer uses (' + nf(fp.mixer / 2, 1) + ' per minute each). Nothing changes, so this is the fixed point: L = ' + nf(fp.out, 1) + ' sheets per minute. The LP ceiling U = ' + nf(U, 1) + (fp.out < U - 0.01 ? ': it would route around the forced split, which Create cannot.' : ': here Create\'s rule is as good as the optimum.') },
+    ];
+  };
+  let steps = STEPS(rule);
+  function setRule(r) {
+    rule = r; steps = STEPS(r); step = 0; stepEl = 0; sim = newSim();
+    pressGroup(ruleBtns, ruleBtns.find((b) => b.dataset.rule === r));
+    if (reduced) { step = steps.length - 1; for (let i = 0; i < 6000; i++) simTick(sim); shown = steps[step].vals.slice(); }
+    statusEl.textContent = steps[step].msg; v.dirty = true;
+  }
+  ruleBtns.forEach((b) => b.addEventListener('click', () => setRule(b.dataset.rule)));
+  $('#s-replay').addEventListener('click', () => setRule(rule));
+
+  function drawDiagram(ctx, w, top, H, s) {
+    const narrow = w < 560;
+    const xMix = 8, mixW = narrow ? 64 : 92;
+    const xTun = narrow ? 92 : 150, tunW = narrow ? 40 : 54;
+    const xQ = narrow ? 140 : 236, qW = narrow ? 7 : 12;
+    const xP = narrow ? 205 : 330, pR = narrow ? 14 : 19;
+    const xOut = Math.max(xP + pR + 22, w - (narrow ? 64 : 120));
+    const yA = top + H * 0.3, yB = top + H * 0.76, yM = top + H * 0.53;
+    // mixer box with basin output slots
+    rr(ctx, xMix, yM - 34, mixW, 68, 5); ctx.fillStyle = C.bg; ctx.fill(); ctx.strokeStyle = C.netA; ctx.lineWidth = 1.8; ctx.stroke();
+    tx(ctx, 'Mixer', xMix + 7, yM - 18, { size: 12, weight: 650 });
+    const prog = s.basin + 2 <= BASIN_CAP ? s.mixP / 17 : 1;
+    ctx.fillStyle = C.grid; ctx.fillRect(xMix + 7, yM - 12, mixW - 14, 3);
+    ctx.fillStyle = s.basin + 2 <= BASIN_CAP ? C.netA : C.bad; ctx.fillRect(xMix + 7, yM - 12, (mixW - 14) * prog, 3);
+    const sq = narrow ? 9 : 12;
+    for (let i = 0; i < BASIN_CAP; i++) {
+      const cx = xMix + 7 + (i % 4) * (sq + 2), cy = yM - 2 + Math.floor(i / 4) * (sq + 2);
+      ctx.strokeStyle = C.rule2; ctx.lineWidth = 1; ctx.strokeRect(cx + 0.5, cy + 0.5, sq - 1, sq - 1);
+      if (i < s.basin) item(ctx, cx + sq / 2, cy + sq / 2, sq - 3, C.brassFill);
+    }
+    if (s.basin + 2 > BASIN_CAP) tx(ctx, 'blocked', xMix + mixW - 6, yM - 18, { size: 10.5, mono: true, weight: 650, color: C.bad, align: 'right' });
+    // tunnel
+    const tY = yM;
+    line(ctx, [[xMix + mixW, tY], [xTun, tY]], C.andesiteDark, 1.5); arrow(ctx, xTun, tY, 0, 6, C.andesiteDark);
+    rr(ctx, xTun, tY - 18, tunW, 36, 4); ctx.fillStyle = C.brassTint; ctx.fill(); ctx.strokeStyle = C.brassLine; ctx.lineWidth = 1.5; ctx.stroke();
+    tx(ctx, 'tunnel', xTun + tunW / 2, tY - 4, { size: 10.5, color: C.ink2, align: 'center' });
+    tx(ctx, String(s.tunnel), xTun + tunW / 2, tY + 11, { size: 12, weight: 650, mono: true, align: 'center' });
+    // branches with belt queues and presses
+    [['A', yA, s.qA, s.pA, 10, '256 RPM'], ['B', yB, s.qB, s.pB, 32, '64 RPM']].forEach((br) => {
+      const y = br[1];
+      line(ctx, [[xTun + tunW, tY], [xQ - 4, y]], C.andesiteDark, 1.5);
+      for (let i = 0; i < Q_CAP; i++) {
+        const cx = xQ + i * (qW + 3);
+        ctx.strokeStyle = C.rule2; ctx.lineWidth = 1; ctx.strokeRect(cx + 0.5, y - qW / 2 + 0.5, qW - 1, qW - 1);
+        if (i < br[2]) item(ctx, cx + qW / 2, y, qW - 3, C.brassFill);
+      }
+      const qEnd = xQ + Q_CAP * (qW + 3);
+      line(ctx, [[qEnd, y], [xP - pR - 2, y]], C.andesiteDark, 1.5); arrow(ctx, xP - pR - 2, y, 0, 6, C.andesiteDark);
+      ctx.beginPath(); ctx.arc(xP, y, pR, 0, TAU); ctx.fillStyle = C.bg; ctx.fill(); ctx.strokeStyle = C.netA; ctx.lineWidth = 1.8; ctx.stroke();
+      if (br[3] >= 0) { ctx.beginPath(); ctx.arc(xP, y, pR - 4, -Math.PI / 2, -Math.PI / 2 + TAU * (br[3] / br[4])); ctx.strokeStyle = C.brassLine; ctx.lineWidth = 3; ctx.stroke(); }
+      tx(ctx, br[0], xP, y + 4, { size: 12, weight: 700, align: 'center' });
+      tx(ctx, br[4] + ' t, ' + br[5], xP + pR + 6, y - (narrow ? 2 : 3), { size: 10.5, mono: true, color: C.muted });
+      line(ctx, [[xP + pR, y + 8], [xOut - 6, yM]], C.rule2, 1, [3, 3]);
+    });
+    tx(ctx, 'sheets', xOut, yM - 6, { size: 11, color: C.muted });
+    tx(ctx, nf(s.out), xOut, yM + 12, { size: 15, weight: 700, mono: true });
+    tx(ctx, 'tick ' + nf(s.tick), w - 6, top + 12, { size: 10.5, mono: true, color: C.muted, align: 'right' });
+  }
+  function drawBars(ctx, w, top, H, m) {
+    const narrow = w < 560;
+    const labels = ['Mixer, brass out', 'Press A, 256 RPM', 'Press B, 64 RPM', 'Sheets out'];
+    const caps = [CAP.mixer, CAP.A, CAP.B, null];
+    const x0 = narrow ? 8 : 150, x1 = w - (narrow ? 50 : 70), max = 160;
+    const sx = (val) => x0 + (x1 - x0) * clamp(val / max, 0, 1.05);
+    const rowH = (H - 22) / 4;
+    // grid
+    for (let g = 0; g <= max; g += 40) {
+      const x = sx(g); line(ctx, [[x, top], [x, top + H - 18]], C.grid, 1);
+      tx(ctx, String(g) + (g === max ? ' /min' : ''), x, top + H - 4, { size: 10.5, mono: true, color: C.muted, align: g === max ? 'right' : 'center' });
+    }
+    const st = steps[step];
+    for (let i = 0; i < 4; i++) {
+      const y = top + i * rowH; const barY = narrow ? y + 16 : y + rowH / 2 - 7; const bh = 14;
+      tx(ctx, labels[i], narrow ? x0 : x0 - 10, narrow ? y + 12 : barY + 11, { size: 12, weight: i === 3 ? 650 : 500, color: C.ink2, align: narrow ? 'left' : 'right' });
+      if (caps[i]) { rr(ctx, x0, barY, sx(caps[i]) - x0, bh, 3); ctx.strokeStyle = C.rule2; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]); }
+      const val = shown[i];
+      rr(ctx, x0, barY, Math.max(2, sx(val) - x0), bh, 3); ctx.fillStyle = i === 3 ? C.brassLine : C.brassFill; ctx.fill();
+      const mv0 = m ? [m.mixer, m.A, m.B, m.out][i] : 0;
+      tx(ctx, nf(val, 1), Math.max(sx(val), m ? sx(mv0) + 5 : 0) + 6, barY + 11, { size: 11.5, mono: true, weight: 600, color: C.ink });
+      if (st.acc != null && i === 0) {
+        const ax = sx(st.acc);
+        ctx.beginPath(); ctx.moveTo(ax, barY - 2); ctx.lineTo(ax - 5, barY - 9); ctx.lineTo(ax + 5, barY - 9); ctx.closePath(); ctx.fillStyle = C.ink2; ctx.fill();
+        tx(ctx, 'accepts ' + nf(st.acc, 1), ax + (ax > x1 - 90 ? -8 : 8), barY - 3, { size: 10.5, mono: true, color: C.ink2, align: ax > x1 - 90 ? 'right' : 'left' });
+      }
+      if (i === 3) {
+        const ux = sx(U); line(ctx, [[ux, barY - 6], [ux, barY + bh + 6]], C.ink, 1.5, [4, 3]);
+        tx(ctx, 'U ' + nf(U, 1), ux + 4, barY + bh + 13, { size: 10.5, mono: true, weight: 600, color: C.ink });
+        if (st.done) tx(ctx, 'L', x0 + 4, barY + bh + 13, { size: 10.5, mono: true, weight: 700, color: C.brass });
+      }
+      if (m) {
+        const mv = [m.mixer, m.A, m.B, m.out][i]; const mx = sx(mv), my = barY + bh / 2;
+        ctx.beginPath(); ctx.arc(mx, my, 4.5, 0, TAU); ctx.fillStyle = C.ink; ctx.fill(); ctx.strokeStyle = C.bg; ctx.lineWidth = 2; ctx.stroke();
+      }
+    }
+  }
+  const v = makeViz(cv, {
+    height: (w) => (w < 560 ? 150 + 4 * 46 + 26 : 160 + 4 * 40 + 26),
+    draw: (ctx, w, h, dt) => {
+      if (!sim) sim = newSim();
+      if (dt > 0) {
+        sim.acc += dt * TICKS_PER_SEC;
+        while (sim.acc >= 1) { simTick(sim); sim.acc -= 1; }
+        stepEl += dt;
+        if (stepEl > 2.2 && step < steps.length - 1) { step++; stepEl = 0; statusEl.textContent = steps[step].msg; }
+        const target = steps[step].vals;
+        for (let i = 0; i < 4; i++) shown[i] += (target[i] - shown[i]) * Math.min(1, dt * 5);
+      } else {
+        shown = steps[step].vals.slice();
+      }
+      const dH = w < 560 ? 150 : 160;
+      drawDiagram(ctx, w, 0, dH, sim);
+      line(ctx, [[0, dH - 4], [w, dH - 4]], C.rule, 1);
+      drawBars(ctx, w, dH + 8, h - dH - 8, measured(sim));
+    },
+  });
+  v.onMotion = () => setRule(rule);
+  setRule('SPLIT');
+})();
+
+// ======================================================================
+// §4 Replay timeline, catch-up cost and the clamp
+// ======================================================================
+(function replayView() {
+  const cv = $('#cv-replay'); const costCv = $('#cv-cost'); const slider = $('#r-away'); const awayEl = $('#r-away-v');
+  const bpList = $('#r-bps'); const kvEl = $('#r-kv'); const playBtn = $('#r-play');
+  const CR = perMin(64 / 113), BR = perMin(2 / 17);
+  const TRAIN = 20, T_SHEETS = 2400 / (BR / 2), T_IRON = TRAIN + (20000 - CR * TRAIN + 10000) / CR, T_CU = 4000 / (BR / 2), T_COAL = 60;
+  const BPS = [
+    { t: TRAIN, label: 'train arrives with 10,000 raw iron: a real, journaled arrival, then a re-solve' },
+    { t: T_SHEETS, label: 'sheet vault full: the press stops, and the re-solve sends every stack down the tunnel\'s ingot side' },
+    { t: T_IRON, label: 'raw iron vault empty: the crushing wheels stop' },
+    { t: T_CU, label: 'copper vault empty: the mixer stops, zinc left over' },
+    { t: T_COAL, label: 'coal gone: the burner burned the whole time, even idle after the mixer stopped' },
+  ];
+  const MAXM = 1440 * 1e6;
+  const sup = (e) => String(e).split('').map((d) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[+d]).join('');
+  const toMin = (s) => Math.pow(10, (s / 1000) * Math.log10(MAXM));
+  const toS = (m) => (Math.log10(Math.max(1, m)) / Math.log10(MAXM)) * 1000;
+  // store levels, piecewise linear
+  const raw = (t) => (t < TRAIN ? 20000 - CR * t : Math.max(0, 20000 - CR * TRAIN + 10000 - CR * (t - TRAIN)));
+  const sheets = (t) => Math.min(2400, (BR / 2) * t);
+  const ingots = (t) => { const tt = Math.min(t, T_CU); return tt < T_SHEETS ? (BR / 2) * tt : 2400 + BR * (tt - T_SHEETS); };
+  const coal = (t) => Math.max(0, 45 - 0.75 * t);
+  const STRIPS = [
+    { name: 'Raw iron vault', f: raw, max: 20000, col: () => C.andesiteDark, knots: [0, TRAIN - 1e-6, TRAIN, T_IRON, 90] },
+    { name: 'Brass sheets', f: sheets, max: 2400, col: () => C.brassLine, knots: [0, T_SHEETS, 90] },
+    { name: 'Brass ingots', f: ingots, max: 6000, col: () => C.netA, knots: [0, T_SHEETS, T_CU, 90] },
+    { name: 'Coal (burner fuel)', f: coal, max: 45, col: () => C.coal, knots: [0, T_COAL, 90] },
+  ];
+  bpList.innerHTML = BPS.map((b, i) => '<li data-i="' + i + '"><span class="n">' + (i + 1) + '</span><span class="t">' + nf(b.t, 1) + ' min</span><span>' + b.label + '</span></li>').join('') +
+    '<li><span></span><span class="t">after</span><span>no breakpoint until the next event: a train, a player edit, an attack.</span></li>';
+  let away = toMin(+slider.value), playing = false, playT = 0, lastK = -1;
+  function update() {
+    awayEl.textContent = fmtMinutes(away);
+    const k = BPS.filter((b) => b.t <= away).length;
+    if (k !== lastK) { $$('#r-bps li[data-i]').forEach((li) => li.classList.toggle('past', +li.dataset.i < k)); lastK = k; }
+    const ticks = away * 1200;
+    kvEl.innerHTML = '<div><span class="k">Breakpoints crossed</span><span class="v">' + k + ' of 5</span></div>' +
+      '<div><span class="k">Regime solves for this catch-up</span><span class="v">' + (k + 1) + '</span></div>' +
+      '<div><span class="k">Ticks a tick-by-tick stepper would run</span><span class="v small">' + nf(ticks) + '</span></div>';
+    v.dirty = true; cost.dirty = true;
+  }
+  slider.addEventListener('input', () => { playing = false; playBtn.setAttribute('aria-pressed', 'false'); away = toMin(+slider.value); update(); });
+  playBtn.addEventListener('click', () => {
+    if (reduced) { away = 90; slider.value = Math.round(toS(90)); update(); return; }
+    playing = true; playT = 0; playBtn.setAttribute('aria-pressed', 'true');
+  });
+  const v = makeViz(cv, {
+    height: (w) => 42 + 4 * (w < 560 ? 62 : 70) + 24,
+    draw: (ctx, w, h, dt) => {
+      if (playing && dt > 0) {
+        playT += dt; away = Math.max(1, 90 * clamp(playT / 7, 0, 1)); slider.value = Math.round(toS(away));
+        if (playT >= 7) { playing = false; playBtn.setAttribute('aria-pressed', 'false'); }
+        update();
+      }
+      const narrow = w < 560; const x0 = narrow ? 8 : 150, x1 = w - 12; const sh = narrow ? 62 : 70; const top = 42;
+      const sx = (t) => x0 + (x1 - x0) * (t / 90);
+      const cur = Math.min(away, 90);
+      // time grid
+      for (let m = 0; m <= 90; m += 15) {
+        const x = sx(m); line(ctx, [[x, top - 4], [x, top + 4 * sh]], C.grid, 1);
+        tx(ctx, m + (m === 90 ? ' min' : ''), x, h - 6, { size: 10.5, mono: true, color: C.muted, align: m === 90 ? 'right' : 'center' });
+      }
+      // breakpoints
+      BPS.forEach((b, i) => {
+        const x = sx(b.t); const past = b.t <= away;
+        line(ctx, [[x, top - 4], [x, top + 4 * sh]], past ? C.ink2 : C.rule2, 1, [3, 3]);
+        const cy = narrow ? 10 + (i % 2) * 17 : 14; const cx = x;
+        line(ctx, [[x, cy], [x, top - 4]], past ? C.ink2 : C.rule2, 1);
+        ctx.beginPath(); ctx.arc(cx, cy, 8, 0, TAU); ctx.fillStyle = past ? C.ink : C.bg; ctx.fill(); ctx.strokeStyle = C.ink2; ctx.lineWidth = 1.5; ctx.stroke();
+        tx(ctx, String(i + 1), cx, cy + 4, { size: 10.5, weight: 700, mono: true, color: past ? '#fff' : C.ink, align: 'center' });
+      });
+      // strips
+      STRIPS.forEach((s, i) => {
+        const y0 = top + i * sh, y1 = y0 + sh - 12;
+        const sy = (val) => y1 - (y1 - y0 - 14) * (val / s.max);
+        line(ctx, [[x0, y1 + 0.5], [x1, y1 + 0.5]], C.rule2, 1);
+        if (narrow) tx(ctx, s.name + ', 0 to ' + nf(s.max), x0, y0 + 9, { size: 11, color: C.ink2, weight: 600 });
+        else { tx(ctx, s.name, x0 - 10, y0 + (sh - 12) / 2 + 2, { size: 12, color: C.ink2, weight: 600, align: 'right' }); tx(ctx, '0 to ' + nf(s.max), x0 - 10, y0 + (sh - 12) / 2 + 16, { size: 10.5, mono: true, color: C.muted, align: 'right' }); }
+        const pts = s.knots.map((t) => [sx(t), sy(s.f(t))]);
+        line(ctx, pts, s.col(), 1.5, [3, 3]);
+        // solid up to the cursor
+        const solid = []; for (const t of s.knots) { if (t <= cur) solid.push([sx(t), sy(s.f(t))]); }
+        solid.push([sx(cur), sy(s.f(cur))]);
+        ctx.globalAlpha = 1; line(ctx, solid, s.col(), 2.5);
+        ctx.beginPath(); ctx.arc(sx(cur), sy(s.f(cur)), 4, 0, TAU); ctx.fillStyle = s.col(); ctx.fill();
+        const val = s.f(cur); const lab = nf(val, s.max < 100 ? 1 : 0);
+        const lx = sx(cur) + 7 > x1 - 50 ? sx(cur) - 7 : sx(cur) + 7;
+        tx(ctx, lab, lx, Math.max(y0 + 22, sy(val) - 6), { size: 11, mono: true, weight: 600, color: C.ink, align: lx < sx(cur) ? 'right' : 'left' });
+      });
+      // cursor
+      line(ctx, [[sx(cur), top - 4], [sx(cur), top + 4 * sh - 10]], C.brassLine, 2);
+      if (away > 90) tx(ctx, '→ ' + fmtMinutes(away), x1, top + 4 * sh - 1, { size: 11, mono: true, weight: 650, color: C.brass, align: 'right' });
+    },
+  });
+  const cost = makeViz(costCv, {
+    height: (w) => (w < 560 ? 190 : 200),
+    animated: false,
+    draw: (ctx, w, h) => {
+      const narrow = w < 560; const x0 = narrow ? 44 : 150, x1 = w - 14, y0 = 14, y1 = h - 34;
+      const lx = (m) => x0 + (x1 - x0) * (Math.log10(m) / Math.log10(MAXM));
+      const Y = 13; const ly = (u) => y1 - (y1 - y0) * (Math.log10(Math.max(1, u)) / Y);
+      for (let e = 0; e <= Y; e += 3) { const y = ly(Math.pow(10, e)); line(ctx, [[x0, y], [x1, y]], C.grid, 1); tx(ctx, e === 0 ? '1' : '10' + sup(e), x0 - 6, y + 4, { size: 10.5, mono: true, color: C.muted, align: 'right' }); }
+      [[1, '1 min'], [60, '1 h'], [1440, '1 day'], [1440 * 365, '1 year'], [MAXM, '10⁶ days']].forEach((p) => { const x = lx(p[0]); line(ctx, [[x, y1], [x, y1 + 4]], C.rule2, 1); tx(ctx, p[1], x, y1 + 16, { size: 10.5, mono: true, color: C.muted, align: p[0] === MAXM ? 'right' : p[0] === 1 ? 'left' : 'center' }); });
+      tx(ctx, 'time away', x1, h - 4, { size: 10.5, color: C.muted, align: 'right' });
+      if (!narrow) { tx(ctx, 'work units', x0 - 46, y0 + 4, { size: 10.5, color: C.muted, align: 'right' }); tx(ctx, '(log scale)', x0 - 46, y0 + 18, { size: 10.5, color: C.muted, align: 'right' }); }
+      // stepper: ticks
+      const N = 120; const pts = [], gpts = [];
+      for (let i = 0; i <= N; i++) { const m = Math.pow(10, (i / N) * Math.log10(MAXM)); pts.push([lx(m), ly(m * 1200)]); gpts.push([lx(m), ly(1 + BPS.filter((b) => b.t <= m).length)]); }
+      line(ctx, pts, C.andesiteDark, 2);
+      line(ctx, gpts, C.brassLine, 2.5);
+      const cm = away;
+      const ps = [lx(cm), ly(cm * 1200)], pg = [lx(cm), ly(1 + BPS.filter((b) => b.t <= cm).length)];
+      line(ctx, [[ps[0], y0], [ps[0], y1]], C.rule2, 1, [3, 3]);
+      [[ps, C.andesiteDark], [pg, C.brassLine]].forEach((q) => { ctx.beginPath(); ctx.arc(q[0][0], q[0][1], 4.5, 0, TAU); ctx.fillStyle = q[1]; ctx.fill(); ctx.strokeStyle = C.bg; ctx.lineWidth = 2; ctx.stroke(); });
+      const key = (x, y, col, label, right) => { const tw0 = tw(ctx, label, 11.5, 600); const sx0 = right ? x - tw0 - 22 : x; line(ctx, [[sx0, y - 4], [sx0 + 16, y - 4]], col, 2.5); tx(ctx, label, sx0 + 22, y, { size: 11.5, weight: 600, color: C.ink }); };
+      key(x0 + 8, y0 + 12, C.andesiteDark, 'tick-by-tick stepper: ticks run', false);
+      key(x1, ly(6) - 10, C.brassLine, 'glass box: regime solves', true);
+    },
+  });
+  update();
+})();
+
+(function clampView() {
+  const cv = $('#cv-clamp'); const slider = $('#c-m'); const none = $('#c-none'); const out = $('#c-out'); const mv = $('#c-m-v');
+  const L = 75, U = perMin(2 / 17), TOL = 5, MIN = 20, MAX = 190;
+  let m = +slider.value, drag = false, geo = null;
+  function result() {
+    if (none.checked) return { r: L, msg: 'No flow during the confirming window: the good replays at L, the pessimistic floor.' };
+    if (m < L - TOL) return { r: m, bad: true, msg: 'Measured is below L by more than the tolerance: the checksum fails, the model was too optimistic. The limiting node is derated at once (η = measured / predicted) and the replay follows the measurement (§6).' };
+    if (m < L) return { r: L, msg: 'Just below L, within tolerance: the replay is held at L, which is still no more than measured plus tolerance.' };
+    if (m <= U) return { r: m, msg: 'Inside [L, U]: the measurement picks the point and the physics bounds it. Replay = measured.' };
+    return { r: U, bad: true, msg: 'Above U, the physical ceiling: the replay is capped at U. The excess can only come from something unmodelled; after the usual steady test it may become a learned source on the residual node, and hand-feeding is a port, not production.' };
+  }
+  function update() { mv.textContent = none.checked ? 'none' : nf(m, 1) + ' per minute'; const r = result(); out.textContent = 'Replay ' + nf(r.r, 1) + ' per minute. ' + r.msg; v.dirty = true; }
+  slider.addEventListener('input', () => { m = +slider.value; update(); });
+  none.addEventListener('change', update);
+  const v = makeViz(cv, {
+    height: () => 118, animated: false,
+    pointer: (type, x, y, e) => {
+      if (!geo) return;
+      if (type === 'down') { drag = true; try { cv.setPointerCapture(e.pointerId); } catch (err) { /* not capturable */ } }
+      if ((type === 'down' || (type === 'move' && drag))) { m = clamp(MIN + (x - geo.x0) / (geo.x1 - geo.x0) * (MAX - MIN), MIN, MAX); m = Math.round(m * 2) / 2; slider.value = m; update(); }
+      if (type === 'up' || type === 'cancel' || type === 'leave') drag = false;
+    },
+    draw: (ctx, w, h) => {
+      const x0 = 18, x1 = w - 18; geo = { x0: x0, x1: x1 };
+      const sx = (val) => x0 + (x1 - x0) * ((val - MIN) / (MAX - MIN));
+      const y = 64;
+      ctx.fillStyle = C.grid; ctx.fillRect(x0, y - 5, x1 - x0, 10);
+      ctx.fillStyle = C.brassTint; ctx.fillRect(sx(L), y - 9, sx(U) - sx(L), 18);
+      ctx.strokeStyle = C.brassLine; ctx.lineWidth = 1; ctx.strokeRect(sx(L) + 0.5, y - 9 + 0.5, sx(U) - sx(L) - 1, 17);
+      for (let g = 25; g <= 175; g += 25) { tx(ctx, String(g), sx(g), y + 34, { size: 10.5, mono: true, color: C.muted, align: 'center' }); line(ctx, [[sx(g), y + 9], [sx(g), y + 14]], C.rule2, 1); }
+      [[L, 'L ' + nf(L)], [U, 'U ' + nf(U, 1)]].forEach((p) => { line(ctx, [[sx(p[0]), y - 16], [sx(p[0]), y + 16]], C.ink, 2); tx(ctx, p[1], sx(p[0]), y + 26 - 52, { size: 11.5, mono: true, weight: 650, align: 'center' }); });
+      const r = result();
+      if (!none.checked) {
+        const mx = sx(m);
+        ctx.beginPath(); ctx.moveTo(mx, y + 5); ctx.lineTo(mx - 8, y + 17); ctx.lineTo(mx + 8, y + 17); ctx.closePath(); ctx.fillStyle = C.ink2; ctx.fill();
+        tx(ctx, 'measured', clamp(mx, x0 + 26, x1 - 26), y + 48, { size: 11, color: C.ink2, align: 'center' });
+        ctx.fillStyle = 'rgba(26,26,31,0.08)'; ctx.fillRect(mx - (sx(m + TOL) - mx), y - 3, 2 * (sx(m + TOL) - mx), 6);
+      }
+      const rx = sx(r.r);
+      ctx.beginPath(); ctx.arc(rx, y, 7, 0, TAU); ctx.fillStyle = r.bad ? C.bad : C.good; ctx.fill(); ctx.strokeStyle = C.bg; ctx.lineWidth = 2; ctx.stroke();
+      tx(ctx, 'replay ' + nf(r.r, 1), clamp(rx, x0 + 40, x1 - 40), 16, { size: 11.5, mono: true, weight: 700, color: r.bad ? C.bad : C.good, align: 'center' });
+    },
+  });
+  update();
+})();
+
+// ======================================================================
+// §5 Switch cycles and periodic edges in closed form
+// ======================================================================
+(function cyclesView() {
+  const cv = $('#cv-cycles'); const slider = $('#y-t'); const tEl = $('#y-t-v'); const kv = $('#y-kv');
+  const Rlo = 1000, Shi = 3000, PROD = 120, USE = 40, RISE = (Shi - Rlo) / (PROD - USE), FALL = (Shi - Rlo) / USE, P = RISE + FALL;
+  const b = 1728, P2 = 40, PH2 = 10;
+  const MAXM = 1440 * 1e6, MINM = 60;
+  const toMin = (s) => Math.pow(10, Math.log10(MINM) + (s / 1000) * (Math.log10(MAXM) - Math.log10(MINM)));
+  const stock = (t) => { const u = ((t % P) + P) % P; return u < RISE ? Rlo + (PROD - USE) * u : Shi - USE * (u - RISE); };
+  const cycles = (t) => Math.floor(t / P);
+  const calls = (t) => (t < PH2 ? 0 : Math.floor((t - PH2) / P2) + 1);
+  let t = toMin(+slider.value), drift = 0;
+  function readout() {
+    tEl.textContent = fmtMinutes(t);
+    kv.innerHTML = '<div><span class="k">Switch cycles completed</span><span class="v">' + nf(cycles(t)) + '</span></div>' +
+      '<div><span class="k">Vault stock now</span><span class="v">' + nf(stock(t)) + '</span></div>' +
+      '<div><span class="k">Requester calls, items delivered</span><span class="v small">' + nf(calls(t)) + ', ' + nf(calls(t) * b) + '</span></div>' +
+      '<div><span class="k">Engine work for this read</span><span class="v small">one closed-form evaluation each</span></div>';
+  }
+  slider.addEventListener('input', () => { t = toMin(+slider.value); drift = 0; readout(); v.dirty = true; });
+  const v = makeViz(cv, {
+    height: (w) => (w < 560 ? 290 : 300),
+    draw: (ctx, w, h, dt) => {
+      if (dt > 0) { drift += dt * 6; if (drift >= 1) { t += Math.floor(drift); drift -= Math.floor(drift); if (Math.floor(t) % 3 === 0) readout(); } }
+      const narrow = w < 560; const x0 = narrow ? 8 : 150, x1 = w - 12;
+      const tStart = Math.max(0, t - 4 * P); const span = Math.max(1, t - tStart);
+      const sx = (tt) => x0 + (x1 - x0) * ((tt - tStart) / span);
+      // strip 1
+      const a0 = 30, a1 = 136;
+      const sy = (val) => a1 - (a1 - a0) * ((val - 0) / 3400);
+      if (narrow) tx(ctx, 'Vault behind a threshold switch', x0, 14, { size: 11.5, weight: 600, color: C.ink2 });
+      else { tx(ctx, 'Vault behind a', x0 - 10, 70, { size: 12, weight: 600, color: C.ink2, align: 'right' }); tx(ctx, 'threshold switch', x0 - 10, 86, { size: 12, weight: 600, color: C.ink2, align: 'right' }); }
+      [[Shi, 'onWhenAbove 3,000: production off', -4], [Rlo, 'offWhenBelow 1,000: back on', 13]].forEach((q) => { line(ctx, [[x0, sy(q[0])], [x1, sy(q[0])]], C.rule2, 1, [4, 3]); const lw = tw(ctx, q[1], 10.5, 400, true); ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(x1 - lw - 4, sy(q[0]) + q[2] - 10, lw + 4, 13); tx(ctx, q[1], x1, sy(q[0]) + q[2], { size: 10.5, mono: true, color: C.muted, align: 'right' }); });
+      line(ctx, [[x0, a1 + 0.5], [x1, a1 + 0.5]], C.rule2, 1);
+      const pts = [];
+      const firstK = Math.floor(tStart / P) - 1;
+      pts.push([sx(tStart), sy(stock(tStart))]);
+      for (let k = firstK; k <= firstK + 6; k++) {
+        const tk = k * P, tp = k * P + RISE;
+        if (tk > tStart && tk < t) pts.push([sx(tk), sy(Rlo)]);
+        if (tp > tStart && tp < t) pts.push([sx(tp), sy(Shi)]);
+      }
+      pts.push([sx(t), sy(stock(t))]);
+      pts.sort((p, q) => p[0] - q[0]);
+      line(ctx, pts, C.brassLine, 2.2);
+      ctx.beginPath(); ctx.arc(sx(t), sy(stock(t)), 4.5, 0, TAU); ctx.fillStyle = C.brassLine; ctx.fill();
+      // strip 2
+      const b0 = 170, b1 = 262;
+      if (narrow) tx(ctx, 'Clocked requester, b = 1,728 per call', x0, b0 - 10, { size: 11.5, weight: 600, color: C.ink2 });
+      else { tx(ctx, 'Clocked requester', x0 - 10, b0 + 40, { size: 12, weight: 600, color: C.ink2, align: 'right' }); tx(ctx, 'b = 1,728 per call', x0 - 10, b0 + 56, { size: 10.5, mono: true, color: C.muted, align: 'right' }); }
+      line(ctx, [[x0, b1 + 0.5], [x1, b1 + 0.5]], C.rule2, 1);
+      const n0 = calls(tStart), n1 = calls(t); const rangeN = Math.max(1, n1 - n0 + 1);
+      const by = (n) => b1 - (b1 - b0 - 8) * ((n - n0 + 0.5) / (rangeN + 0.5));
+      const st = [[sx(tStart), by(n0)]];
+      let n = n0;
+      for (let k = n0; k <= n1; k++) {
+        const tc = PH2 + k * P2;
+        if (tc > tStart && tc <= t) { st.push([sx(tc), by(n)]); n = calls(tc); st.push([sx(tc), by(n)]); }
+      }
+      st.push([sx(t), by(n1)]);
+      line(ctx, st, C.netA, 2.2);
+      tx(ctx, nf(n1 * b) + ' items', Math.min(sx(t) - 6, x1), by(n1) - 7, { size: 11, mono: true, weight: 650, align: 'right' });
+      tx(ctx, 'b × (floor((t − φ) / P) + 1)', x0 + 2, b0 + 6, { size: 11, mono: true, color: C.ink2 });
+      // time axis: absolute days at the window's ends
+      tx(ctx, 'day ' + nf(Math.floor(tStart / 1440)), x0, h - 6, { size: 10.5, mono: true, color: C.muted });
+      tx(ctx, 'now, day ' + nf(Math.floor(t / 1440)), x1, h - 6, { size: 10.5, mono: true, color: C.muted, align: 'right' });
+      tx(ctx, 'last ' + fmtMinutes(span), (x0 + x1) / 2, h - 6, { size: 10.5, color: C.muted, align: 'center' });
+    },
+  });
+  readout();
+})();
+
+// ======================================================================
+// §6 Checksum
+// ======================================================================
+(function checksumView() {
+  const cv = $('#cv-check'); const stepsEl = $('#ck-steps'); const btns = $$('[data-ck]');
+  const NW = 12, P0 = 120, SIG = 3, Z = 3, Q = 1, TOL = Z * SIG + Q, UCAP = 150;
+  const STEPDEF = {
+    agree: [
+      ['✓', 'Confirm', 'One agreeing window (6,000 ticks, PLACEHOLDER) lets the compiled district replay (G-B4).'],
+      ['✓', 'Keep checking', 'Every window while loaded is another check; starvation events are a second one.'],
+    ],
+    slow: [
+      ['1', 'Cut at once', 'Derate the limiting node by η = measured / predicted and rerun the solve, so inputs stay in ratio.'],
+      ['2', 'Search', 'IND_PROBE_SET adds internal buffers to the sweep; one that climbs sits upstream of the slow node.'],
+      ['3', 'Demote', 'After 3 failed windows (PLACEHOLDER) the press kind is measured, not modelled, in this district.'],
+      ['4', 'Report', 'The subgraph and both rates go to the server log and /rtsim district, never in-world (I18).'],
+    ],
+    extra: [
+      ['1', 'Calibrate', 'Measured above the model but at most U: the bounded rules move to the measurement, clamp(measured, L, U).'],
+      ['2', 'Residual source', 'Above U something unmodelled produces: the excess becomes a learned source on the residual node, after the steady test.'],
+    ],
+  };
+  let scen = 'agree', el = 0, shown = 0, lastStepState = '';
+  function windowData(s) {
+    const out = [];
+    let pred = P0, strikes = 0, demoted = false;
+    for (let i = 0; i < NW; i++) {
+      let truth = P0;
+      if (s === 'slow' && i >= 4) truth = 96;
+      if (s === 'extra' && i >= 4) truth = i >= 8 ? 168 : 134;
+      const meas = truth + noise(i + (s === 'agree' ? 0 : s === 'slow' ? 40 : 80)) * 4;
+      const fail = Math.abs(meas - pred) > TOL;
+      const w = { i: i, pred: pred, meas: meas, fail: fail, replay: null, tag: '' };
+      if (s === 'slow') {
+        if (fail && !demoted) { strikes++; w.replay = meas; w.tag = 'strike ' + strikes + ' of 3'; if (strikes >= 3) { demoted = true; w.tag = 'demoted'; } }
+        if (demoted && !fail) w.tag = 'measured';
+      }
+      out.push(w);
+      if (s === 'slow' && demoted) pred = meas;
+      if (s === 'extra' && fail) { pred = meas > UCAP ? meas : clamp(meas, 75, UCAP); }
+      if (s === 'extra' && fail) w.tag = meas > UCAP ? 'residual' : 'calibrated';
+    }
+    return out;
+  }
+  let data = windowData('agree');
+  function stepState(n) {
+    const d = data.slice(0, n);
+    if (scen === 'agree') return d.length ? ['done', d.length > 1 ? 'on' : ''] : ['', ''];
+    if (scen === 'slow') {
+      const firstFail = d.findIndex((w) => w.fail);
+      if (firstFail < 0) return ['', '', '', ''];
+      const strikes = d.filter((w) => w.tag.indexOf('strike') === 0 || w.tag === 'demoted').length;
+      const demoted = d.some((w) => w.tag === 'demoted');
+      return ['done', demoted ? 'done' : 'on', demoted ? 'done' : (strikes > 1 ? 'on' : ''), demoted ? 'on' : ''];
+    }
+    const cal = d.some((w) => w.tag === 'calibrated'), res = d.some((w) => w.tag === 'residual');
+    return [cal ? (res ? 'done' : 'on') : '', res ? 'on' : ''];
+  }
+  function renderSteps(n) {
+    const st = stepState(n); const key = scen + st.join(',');
+    if (key === lastStepState) return; lastStepState = key;
+    stepsEl.innerHTML = STEPDEF[scen].map((s, i) => '<li class="' + (st[i] || '') + '"><b><span class="ic">' + s[0] + '</span>' + s[1] + '</b>' + s[2] + '</li>').join('');
+  }
+  function setScen(s) {
+    scen = s; data = windowData(s); el = 0; shown = reduced ? NW : 0; lastStepState = '';
+    pressGroup(btns, btns.find((b) => b.dataset.ck === s));
+    renderSteps(shown); v.dirty = true;
+  }
+  btns.forEach((b) => b.addEventListener('click', () => setScen(b.dataset.ck)));
+  const v = makeViz(cv, {
+    height: (w) => (w < 560 ? 270 : 290),
+    draw: (ctx, w, h, dt) => {
+      if (dt > 0) {
+        el += dt;
+        const n = Math.min(NW, Math.floor(el / 0.95));
+        if (n !== shown) { shown = n; renderSteps(shown); }
+        if (el > NW * 0.95 + 3.5) { el = 0; shown = 0; renderSteps(0); }
+      }
+      const narrow = w < 560; const x0 = narrow ? 34 : 60, x1 = w - 10;
+      const probeH = scen === 'slow' ? 64 : 0;
+      const y0 = 26, y1 = h - 36 - probeH;
+      const lo = 70, hi = 185;
+      const sy = (val) => y1 - (y1 - y0) * ((val - lo) / (hi - lo));
+      const cw = (x1 - x0) / NW; const cx = (i) => x0 + cw * (i + 0.5);
+      for (let g = 80; g <= 180; g += 20) { line(ctx, [[x0, sy(g)], [x1, sy(g)]], C.grid, 1); tx(ctx, String(g), x0 - 6, sy(g) + 4, { size: 10.5, mono: true, color: C.muted, align: 'right' }); }
+      tx(ctx, 'per minute', x0, 12, { size: 10.5, color: C.muted });
+      if (scen === 'extra') { line(ctx, [[x0, sy(UCAP)], [x1, sy(UCAP)]], C.ink, 1.2, [5, 3]); tx(ctx, 'U ' + UCAP, x1, sy(UCAP) - 4, { size: 10.5, mono: true, weight: 650, align: 'right' }); }
+      for (let i = 0; i < NW; i++) {
+        const wd = data[i]; const x = cx(i); const vis = i < shown;
+        // tolerance band around the prediction
+        ctx.fillStyle = vis ? (wd.fail ? 'rgba(179,38,30,0.07)' : C.goodTint) : C.card;
+        ctx.fillRect(x - cw * 0.42, sy(wd.pred + TOL), cw * 0.84, sy(wd.pred - TOL) - sy(wd.pred + TOL));
+        line(ctx, [[x - cw * 0.42, sy(wd.pred)], [x + cw * 0.42, sy(wd.pred)]], vis ? C.ink2 : C.rule2, 1.5);
+        tx(ctx, 'W' + (i + 1), x, h - 22 - probeH, { size: 10, mono: true, color: C.muted, align: 'center' });
+        if (!vis) continue;
+        line(ctx, [[x, sy(wd.meas - SIG)], [x, sy(wd.meas + SIG)]], C.ink, 1.2);
+        ctx.beginPath(); ctx.arc(x, sy(wd.meas), 4.5, 0, TAU); ctx.fillStyle = wd.fail ? C.bad : C.ink; ctx.fill(); ctx.strokeStyle = C.bg; ctx.lineWidth = 1.5; ctx.stroke();
+        tx(ctx, wd.fail ? '✗' : '✓', x, y0 - 8, { size: 12, weight: 700, color: wd.fail ? C.bad : C.good, align: 'center' });
+        if (wd.replay != null) { const rx0 = x + cw * 0.5, rx1 = Math.min(x1, x + cw * 1.5); line(ctx, [[rx0, sy(wd.replay)], [rx1, sy(wd.replay)]], C.brassLine, 2, [4, 2]); }
+        if (wd.tag && !narrow) tx(ctx, wd.tag, x, h - 9 - probeH, { size: 9.5, color: wd.tag === 'measured' ? C.muted : C.ink2, align: 'center' });
+      }
+      if (narrow) {
+        const last = data.slice(0, shown).reverse().find((wd) => wd.tag);
+        if (last) tx(ctx, 'W' + (last.i + 1) + ': ' + last.tag, x1, h - 8 - probeH, { size: 11, mono: true, color: C.ink2, align: 'right' });
+      }
+      tx(ctx, 'band: prediction ± (z·σ + q)', x0, h - 8 - probeH, { size: 10.5, color: C.muted });
+      if (probeH) {
+        const py = h - probeH + 8; const n = shown;
+        const started = data.slice(0, n).some((wd) => wd.fail);
+        tx(ctx, 'IND_PROBE_SET buffers', x0 - (narrow ? 26 : 50), py + 4, { size: 10.5, mono: true, color: started ? C.ink2 : C.rule2 });
+        const names = ['basin output', 'belt before press', 'belt after press'];
+        const bw = (x1 - x0 + (narrow ? 26 : 50)) / 3 - 10;
+        names.forEach((nm, j) => {
+          const bx = x0 - (narrow ? 26 : 50) + j * (bw + 10), by = py + 12;
+          const fill = !started ? 0 : j === 1 ? clamp((n - 4) / 4, 0.15, 1) : j === 0 ? 0.25 : 0.1;
+          ctx.fillStyle = C.grid; ctx.fillRect(bx, by, bw, 10);
+          ctx.fillStyle = j === 1 && started ? C.bad : C.andesite; ctx.fillRect(bx, by, bw * fill, 10);
+          tx(ctx, nm + (j === 1 && started ? ', climbing' : ''), bx, by + 26, { size: 10.5, color: j === 1 && started ? C.ink : C.muted });
+        });
+      }
+    },
+  });
+  v.onMotion = () => setScen(scen);
+  setScen('agree');
+})();
+
+// ======================================================================
+// §7 A partly loaded district
+// ======================================================================
+(function partialView() {
+  const cv = $('#cv-partial'); const slider = $('#p-x'); const statusEl = $('#p-status'); const walk = $('#p-walk');
+  const COLS = 12, ROWS = 6, RAD = 2;
+  const NODES = [
+    { id: 'st', name: 'Station', p: [0.7, 1.5] }, { id: 'v1', name: 'Ore vault', p: [2.5, 1.5] }, { id: 'cr', name: 'Crusher', p: [4.6, 1.5] },
+    { id: 'fan', name: 'Washing fan', p: [7.2, 1.5] }, { id: 'v2', name: 'Iron vault', p: [10.2, 1.5] },
+    { id: 'cz', name: 'Copper, zinc', p: [2.0, 4.5] }, { id: 'mx', name: 'Mixer', p: [5.2, 4.5] }, { id: 'pr', name: 'Press', p: [8.0, 4.5] }, { id: 'v3', name: 'Sheet vault', p: [10.6, 4.5] },
+  ];
+  const byId = {}; NODES.forEach((n) => { byId[n.id] = n; });
+  const EDGES = [['st', 'v1', 'port'], ['v1', 'cr'], ['cr', 'fan'], ['fan', 'v2'], ['cz', 'mx'], ['mx', 'pr'], ['pr', 'v3'], ['cr', 'mx', 'shaft']];
+  const parts = EDGES.map(() => []); const accs = EDGES.map((e, i) => i * 0.37 % 1);
+  let pu = +slider.value / 1000, walking = false, walkT = 0, geo = null, drag = false, lastKey = '';
+  const playerPos = () => [lerp(-0.5, COLS - 0.5, pu), 3.0];
+  function chunkLive(cx, cz) { const p = playerPos(); return Math.abs(cx - Math.floor(p[0])) <= RAD && Math.abs(cz - Math.floor(p[1])) <= RAD; }
+  function nodeLive(n) { return chunkLive(Math.floor(n.p[0]), Math.floor(n.p[1])); }
+  function status() {
+    const live = NODES.filter(nodeLive).length, sim = NODES.length - live;
+    let cuts = 0; EDGES.forEach((e) => { if (e[2] !== 'shaft' && nodeLive(byId[e[0]]) !== nodeLive(byId[e[1]])) cuts++; });
+    const key = live + '|' + cuts;
+    if (key === lastKey) return; lastKey = key;
+    let msg;
+    if (live === 0) msg = 'Nothing ticks: the whole district is simulated, one solve, one regime at a time.';
+    else if (sim === 0) msg = 'Every chunk ticks: Create runs the whole district and the sampler measures it. The cut is closed.';
+    else msg = live + ' nodes live (Create runs them, their stores are sampled), ' + sim + ' simulated (pools and pending deltas, I8). ' + cuts + ' cut edge' + (cuts === 1 ? '' : 's') + ': flow across them is modelled (G-B6).';
+    statusEl.textContent = msg;
+  }
+  function setU(u) { pu = clamp(u, 0, 1); slider.value = Math.round(pu * 1000); status(); v.dirty = true; }
+  slider.addEventListener('input', () => { walking = false; setU(+slider.value / 1000); });
+  walk.addEventListener('click', () => {
+    if (reduced) { const stops = [0, 0.3, 0.55, 1]; const nxt = stops.find((s) => s > pu + 0.01); setU(nxt == null ? 0 : nxt); return; }
+    walking = !walking; walkT = pu; walk.setAttribute('aria-pressed', String(walking));
+  });
+  function toCanvas(p) { // chunk coords to canvas px; transposed when narrow
+    return geo.narrow ? [geo.ox + p[1] * geo.cell, geo.oy + p[0] * geo.cell] : [geo.ox + p[0] * geo.cell, geo.oy + p[1] * geo.cell];
+  }
+  function fromCanvas(x, y) { return geo.narrow ? [(y - geo.oy) / geo.cell, (x - geo.ox) / geo.cell] : [(x - geo.ox) / geo.cell, (y - geo.oy) / geo.cell]; }
+  const v = makeViz(cv, {
+    height: (w) => (w < 620 ? Math.floor(w / ROWS) * COLS + 8 : Math.floor(w / COLS) * ROWS + 8),
+    layout: (w) => {
+      const narrow = w < 620; const cell = narrow ? Math.floor(w / ROWS) : Math.floor(w / COLS);
+      const gw = (narrow ? ROWS : COLS) * cell;
+      geo = { narrow: narrow, cell: cell, ox: Math.floor((w - gw) / 2), oy: 4 };
+    },
+    pointer: (type, x, y, e) => {
+      if (!geo) return;
+      if (type === 'down') { drag = true; walking = false; walk.setAttribute('aria-pressed', 'false'); }
+      if (type === 'down' || (type === 'move' && drag)) { const c = fromCanvas(x, y); setU((c[0] + 0.5) / COLS); }
+      if (type === 'up' || type === 'cancel' || type === 'leave') drag = false;
+    },
+    draw: (ctx, w, h, dt, t) => {
+      if (!geo) v.layout(w);
+      if (walking && dt > 0) { walkT += dt * 0.07; if (walkT > 1.0) walkT = 0; setU(walkT); }
+      const cell = geo.cell;
+      // chunks
+      for (let cx = 0; cx < COLS; cx++) for (let cz = 0; cz < ROWS; cz++) {
+        const live = chunkLive(cx, cz); const p = toCanvas([cx, cz]);
+        ctx.fillStyle = live ? C.live : C.sim; ctx.fillRect(p[0], p[1], cell, cell);
+        ctx.strokeStyle = live ? '#c6e4cc' : '#d3dff2'; ctx.lineWidth = 1; ctx.strokeRect(p[0] + 0.5, p[1] + 0.5, cell - 1, cell - 1);
+        if (!live) { ctx.strokeStyle = 'rgba(42,120,214,0.08)'; ctx.beginPath(); for (let k = 1; k < 4; k++) { ctx.moveTo(p[0] + k * cell / 4, p[1]); ctx.lineTo(p[0] + k * cell / 4, p[1] + cell); ctx.moveTo(p[0], p[1] + k * cell / 4); ctx.lineTo(p[0] + cell, p[1] + k * cell / 4); } ctx.stroke(); }
+      }
+      // the live square's outline
+      const pp = playerPos(); const pcx = Math.floor(pp[0]), pcz = Math.floor(pp[1]);
+      const a = toCanvas([pcx - RAD, pcz - RAD]), b = toCanvas([pcx + RAD + 1, pcz + RAD + 1]);
+      ctx.strokeStyle = C.good; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+      ctx.strokeRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1])); ctx.setLineDash([]);
+      // edges and moving goods
+      EDGES.forEach((e, i) => {
+        const A = byId[e[0]], B = byId[e[1]]; const pa = toCanvas(A.p), pb = toCanvas(B.p);
+        if (e[2] === 'shaft') { line(ctx, [pa, pb], C.netA, 2, [2, 4]); return; }
+        const la = nodeLive(A), lb = nodeLive(B); const cut = la !== lb;
+        if (cut) line(ctx, [pa, pb], C.brassFill, 9);
+        line(ctx, [pa, pb], e[2] === 'port' ? C.andesite : C.andesiteDark, e[2] === 'port' ? 1.5 : 2.5, e[2] === 'port' ? [5, 4] : null);
+        if (dt > 0) {
+          accs[i] += dt * 0.9; if (accs[i] >= 1) { accs[i] -= 1; parts[i].push(0); }
+          for (let k = 0; k < parts[i].length; k++) parts[i][k] += dt * 0.22;
+          parts[i] = parts[i].filter((u) => u < 1);
+        } else if (!parts[i].length) parts[i] = [0.2, 0.5, 0.8];
+        parts[i].forEach((u) => {
+          const x = lerp(pa[0], pb[0], u), y = lerp(pa[1], pb[1], u);
+          const c = fromCanvas(x, y); const live = chunkLive(Math.floor(c[0]), Math.floor(c[1]));
+          if (live) item(ctx, x, y, 7, C.brassFill);
+          else { ctx.beginPath(); ctx.arc(x, y, 3.6, 0, TAU); ctx.strokeStyle = C.netA; ctx.lineWidth = 1.6; ctx.stroke(); }
+        });
+        if (cut) {
+          // where the edge crosses the boundary
+          let lo = 0, hi = 1; for (let it = 0; it < 18; it++) { const m = (lo + hi) / 2; const c = fromCanvas(lerp(pa[0], pb[0], m), lerp(pa[1], pb[1], m)); const lv = chunkLive(Math.floor(c[0]), Math.floor(c[1])); if (lv === la) lo = m; else hi = m; }
+          const x = lerp(pa[0], pb[0], lo), y = lerp(pa[1], pb[1], lo);
+          ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.fillStyle = C.bg; ctx.fill(); ctx.strokeStyle = C.brassLine; ctx.lineWidth = 2; ctx.stroke();
+          tx(ctx, '⇄', x, y + 4.5, { size: 12, weight: 700, color: C.brass, align: 'center' });
+        }
+      });
+      // nodes
+      NODES.forEach((n) => {
+        const p = toCanvas(n.p); const live = nodeLive(n);
+        const label = n.name; const fs = cell < 56 ? 10.5 : 11.5;
+        const wdt = tw(ctx, label, fs, 650) + 14, ht = 22;
+        rr(ctx, p[0] - wdt / 2, p[1] - ht / 2, wdt, ht, 4);
+        ctx.fillStyle = C.bg; ctx.fill(); ctx.lineWidth = 1.5;
+        ctx.strokeStyle = live ? C.good : C.netA; ctx.setLineDash(live ? [] : [4, 3]); ctx.stroke(); ctx.setLineDash([]);
+        tx(ctx, label, p[0], p[1] + 4, { size: fs, weight: 650, align: 'center', color: C.ink });
+      });
+      // player
+      const ppx = toCanvas(pp);
+      ctx.beginPath(); ctx.arc(ppx[0], ppx[1], 9, 0, TAU); ctx.fillStyle = C.ink; ctx.fill(); ctx.strokeStyle = C.bg; ctx.lineWidth = 2.5; ctx.stroke();
+      tx(ctx, 'player', ppx[0], ppx[1] - 14, { size: 11, weight: 650, align: 'center', color: C.ink });
+      // legend
+      const lgY = h - 4;
+      void lgY; void t;
+    },
+  });
+  status();
+})();
+
+// ======================================================================
+// §8 The sheep airship and its ferry
+// ======================================================================
+(function airshipView() {
+  const cv = $('#cv-air'); const woolCv = $('#cv-wool'); const statusEl = $('#a-status'); const btns = $$('[data-pl]');
+  const slider = $('#a-t'); const tEl = $('#a-t-v');
+  const PERIOD = 12, TRAVEL = 5, DWELL = 1, B_CALL = 3000, PHASE = TRAVEL * 2 + DWELL * 2 - DWELL / 2;
+  const PORT = [0.13, 0.62];
+  const VIEW = 0.17;
+  const PRESET = { port: [0.16, 0.7], farm: [0.74, 0.32], away: [0.42, 0.12] };
+  let simT = 0, player = PRESET.port.slice(), follow = false, drag = false, geo = null, lastKey = '';
+  function farmPos(tm) { const a = tm / 90 * TAU; return [0.71 + 0.13 * Math.cos(a), 0.48 + 0.2 * Math.sin(a) * Math.cos(a * 0.5)]; }
+  function farmHeading(tm) { const p0 = farmPos(tm), p1 = farmPos(tm + 0.5); return Math.atan2(p1[1] - p0[1], p1[0] - p0[0]); }
+  function ferryState(tm) {
+    const u = ((tm % PERIOD) + PERIOD) % PERIOD; const farm = farmPos(tm);
+    if (u < DWELL) return { p: PORT.slice(), at: 'port' };
+    if (u < DWELL + TRAVEL) { const k = ease((u - DWELL) / TRAVEL); return { p: [lerp(PORT[0], farm[0], k), lerp(PORT[1], farm[1] + 0.05, k)], at: 'out' }; }
+    if (u < DWELL * 2 + TRAVEL) return { p: [farm[0], farm[1] + 0.05], at: 'farm' };
+    const k = ease((u - DWELL * 2 - TRAVEL) / TRAVEL); return { p: [lerp(farm[0], PORT[0], k), lerp(farm[1] + 0.05, PORT[1], k)], at: 'back' };
+  }
+  const seen = (p) => Math.hypot(p[0] - player[0], (p[1] - player[1]) * (geo ? geo.h / geo.w : 1)) < VIEW;
+  function status(fs, farmSeen, ferrySeen) {
+    const key = fs.at + farmSeen + ferrySeen; if (key === lastKey) return; lastKey = key;
+    const where = { port: 'docked at the port', out: 'flying out to the farm', farm: 'alongside the farm, exchanging cargo', back: 'flying back to the port' }[fs.at];
+    statusEl.textContent = 'Ferry ' + where + ': ' + (ferrySeen ? 'in view, so it is materialized where the timetable puts it (G-B7). ' : 'not watched, so it exists only as a periodic edge: O(1) per catch-up. ') +
+      'Farm: ' + (farmSeen ? 'in view and loaded, so Create runs it and the voyage plugin samples it as a vehicle district.' : 'not watched: its graph runs compiled in the ship\'s own frame.');
+  }
+  btns.forEach((b) => b.addEventListener('click', () => { player = PRESET[b.dataset.pl].slice(); follow = b.dataset.pl === 'farm'; pressGroup(btns, b); lastKey = ''; v.dirty = true; }));
+  function drawShip(ctx, x, y, ang, len, solid, col, label, sub, sheep) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+    // envelope
+    ctx.beginPath(); ctx.ellipse(0, 0, len * 0.55, len * 0.2, 0, 0, TAU);
+    ctx.fillStyle = solid ? '#ffffff' : 'rgba(255,255,255,0.6)'; ctx.fill();
+    ctx.lineWidth = solid ? 2 : 1.5; ctx.strokeStyle = col; ctx.setLineDash(solid ? [] : [5, 4]); ctx.stroke(); ctx.setLineDash([]);
+    // deck
+    rr(ctx, -len * 0.32, -len * 0.09, len * 0.64, len * 0.18, 3); ctx.fillStyle = solid ? '#f4f2ec' : 'rgba(244,242,236,0.4)'; ctx.fill(); ctx.strokeStyle = solid ? C.andesiteDark : col; ctx.lineWidth = 1; ctx.stroke();
+    if (sheep) {
+      for (let i = 0; i < 26; i++) { const sx = -len * 0.28 + (i % 13) * len * 0.044, sy = -len * 0.045 + Math.floor(i / 13) * len * 0.07; ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, len * 0.014), 0, TAU); ctx.fillStyle = solid ? '#ffffff' : 'rgba(255,255,255,0.8)'; ctx.fill(); ctx.strokeStyle = solid ? C.andesiteDark : col; ctx.lineWidth = 0.8; ctx.stroke(); }
+      // the ship's own frame
+      line(ctx, [[len * 0.36, 0], [len * 0.6, 0]], C.netA, 1.5); arrow(ctx, len * 0.62, 0, 0, 6, C.netA);
+      line(ctx, [[len * 0.36, 0], [len * 0.36, len * 0.24]], C.netA, 1.5); arrow(ctx, len * 0.36, len * 0.26, Math.PI / 2, 6, C.netA);
+      tx(ctx, "x'", len * 0.62, -5, { size: 10.5, mono: true, color: C.netA, align: 'center' });
+      tx(ctx, "z'", len * 0.43, len * 0.28, { size: 10.5, mono: true, color: C.netA });
+    }
+    ctx.restore();
+    const W = geo ? geo.w : 400; const lw = Math.max(tw(ctx, label, 11.5, 650), sub ? tw(ctx, sub, 10.5, 400, true) : 0); const lx = clamp(x, lw / 2 + 4, W - lw / 2 - 4);
+    tx(ctx, label, lx, y - len * 0.3 - 6, { size: 11.5, weight: 650, align: 'center', color: C.ink });
+    if (sub) tx(ctx, sub, lx, y + len * 0.32 + 12, { size: 10.5, mono: true, align: 'center', color: solid ? C.good : C.netA });
+  }
+  const v = makeViz(cv, {
+    height: (w) => (w < 560 ? Math.round(w * 1.05) : Math.round(Math.min(420, w * 0.46))),
+    layout: (w, h) => { geo = { w: w, h: h }; },
+    pointer: (type, x, y) => {
+      if (!geo) return;
+      if (type === 'down') { drag = true; follow = false; pressGroup(btns, null); }
+      if (type === 'down' || (type === 'move' && drag)) { player = [clamp(x / geo.w, 0, 1), clamp(y / geo.h, 0, 1)]; lastKey = ''; }
+      if (type === 'up' || type === 'cancel' || type === 'leave') drag = false;
+    },
+    draw: (ctx, w, h, dt) => {
+      if (!geo) geo = { w: w, h: h };
+      simT += dt; // one real second is one game minute
+      const P = (p) => [p[0] * w, p[1] * h];
+      // sky grid
+      ctx.fillStyle = '#fbfcfe'; ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
+      for (let gx = 0; gx < w; gx += 32) { ctx.beginPath(); ctx.moveTo(gx + 0.5, 0); ctx.lineTo(gx + 0.5, h); ctx.stroke(); }
+      for (let gy = 0; gy < h; gy += 32) { ctx.beginPath(); ctx.moveTo(0, gy + 0.5); ctx.lineTo(w, gy + 0.5); ctx.stroke(); }
+      // ground under the port
+      const pp = P(PORT);
+      ctx.fillStyle = '#eef3e6'; ctx.beginPath(); ctx.ellipse(pp[0], pp[1] + 6, Math.min(70, w * 0.12), 34, 0, 0, TAU); ctx.fill();
+      // the farm's drift path
+      const pts = []; for (let i = 0; i <= 90; i++) pts.push(P(farmPos(i)));
+      line(ctx, pts, C.rule2, 1, [2, 5]);
+      const farm = farmPos(simT); const fs = ferryState(simT);
+      if (follow) player = [farm[0] - 0.05, farm[1] - 0.04];
+      // the ferry's route to where the farm is now
+      line(ctx, [pp, P([farm[0], farm[1] + 0.05])], C.brassFill, 1.5, [6, 5]);
+      // the player's view
+      const pl = P(player); const vr = VIEW * w;
+      ctx.beginPath(); ctx.arc(pl[0], pl[1], vr, 0, TAU); ctx.fillStyle = 'rgba(20,108,46,0.06)'; ctx.fill(); ctx.strokeStyle = C.good; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
+      // port
+      rr(ctx, pp[0] - 26, pp[1] - 10, 52, 20, 4); ctx.fillStyle = '#f4f2ec'; ctx.fill(); ctx.strokeStyle = C.andesiteDark; ctx.lineWidth = 1.5; ctx.stroke();
+      tx(ctx, 'Home port', pp[0], pp[1] + 28, { size: 11.5, weight: 650, align: 'center' });
+      tx(ctx, 'vaults', pp[0], pp[1] + 4, { size: 10, mono: true, align: 'center', color: C.ink2 });
+      const farmSeen = seen(farm), ferrySeen = seen(fs.p);
+      const fp = P(farm), len = Math.max(90, Math.min(150, w * 0.17));
+      drawShip(ctx, fp[0], fp[1], farmHeading(simT) * 0.25, len, farmSeen, C.netA, 'Sheep farm airship, ~2,000 sheep', farmSeen ? 'loaded: Create runs it' : 'compiled in its own frame', true);
+      const fe = P(fs.p);
+      drawShip(ctx, fe[0], fe[1], 0, Math.max(52, len * 0.5), ferrySeen, C.brassLine, 'Ferry', ferrySeen ? 'materialized' : 'simulated', false);
+      // player marker
+      ctx.beginPath(); ctx.arc(pl[0], pl[1], 7, 0, TAU); ctx.fillStyle = C.ink; ctx.fill(); ctx.strokeStyle = C.bg; ctx.lineWidth = 2; ctx.stroke();
+      tx(ctx, 'player view', pl[0], pl[1] - vr - 6 < 12 ? pl[1] + vr + 14 : pl[1] - vr - 6, { size: 11, weight: 650, align: 'center', color: C.good });
+      status(fs, farmSeen, ferrySeen);
+    },
+  });
+  // closed-form deliveries
+  const MAXM = 1440 * 1e6, MINM = 30;
+  const toMin = (s) => Math.pow(10, Math.log10(MINM) + (s / 1000) * (Math.log10(MAXM) - Math.log10(MINM)));
+  const calls = (tm) => (tm < PHASE ? 0 : Math.floor((tm - PHASE) / PERIOD) + 1);
+  let elapsed = toMin(+slider.value);
+  slider.addEventListener('input', () => { elapsed = toMin(+slider.value); tEl.textContent = fmtMinutes(elapsed); wool.dirty = true; });
+  tEl.textContent = fmtMinutes(elapsed);
+  const wool = makeViz(woolCv, {
+    height: (w) => (w < 560 ? 170 : 160), animated: false,
+    draw: (ctx, w, h) => {
+      const narrow = w < 560; const x0 = narrow ? 8 : 150, x1 = w - 12, y0 = 30, y1 = h - 24;
+      const span = 6 * PERIOD, tS = Math.max(0, elapsed - span), tE = tS + span;
+      const sx = (tm) => x0 + (x1 - x0) * ((tm - tS) / span);
+      const n0 = calls(tS), n1 = calls(elapsed);
+      const sy = (n) => y1 - (y1 - y0) * ((n - n0) / Math.max(1, calls(tE) - n0));
+      line(ctx, [[x0, y1 + 0.5], [x1, y1 + 0.5]], C.rule2, 1);
+      const st = [[sx(tS), sy(n0)]]; let n = n0;
+      for (let k = n0; ; k++) { const tc = PHASE + k * PERIOD; if (tc > elapsed) break; if (tc > tS) { st.push([sx(tc), sy(n)]); n = k + 1; st.push([sx(tc), sy(n)]); } }
+      st.push([sx(elapsed), sy(n1)]);
+      line(ctx, st, C.brassLine, 2.4);
+      ctx.beginPath(); ctx.arc(sx(elapsed), sy(n1), 4.5, 0, TAU); ctx.fillStyle = C.brassLine; ctx.fill();
+      if (narrow) tx(ctx, 'Wool delivered at the port', x0, 14, { size: 11.5, weight: 600, color: C.ink2 });
+      else { tx(ctx, 'Wool delivered', x0 - 10, h / 2 - 2, { size: 12, weight: 600, color: C.ink2, align: 'right' }); tx(ctx, 'at the port', x0 - 10, h / 2 + 13, { size: 12, weight: 600, color: C.ink2, align: 'right' }); }
+      tx(ctx, nf(n1 * B_CALL) + ' wool, ' + nf(n1) + ' calls', x1, narrow ? 14 : 18, { size: 12, mono: true, weight: 700, align: 'right' });
+      tx(ctx, 'b × (floor((t − φ) / P) + 1)', x0 + 4, y0 + 12, { size: 11, mono: true, color: C.ink2 });
+      tx(ctx, 'one evaluation, however many voyages', x0 + 4, y0 + 27, { size: 10.5, color: C.muted });
+      tx(ctx, fmtMinutes(tS), x0, h - 6, { size: 10.5, mono: true, color: C.muted });
+      tx(ctx, fmtMinutes(elapsed), x1, h - 6, { size: 10.5, mono: true, color: C.muted, align: 'right' });
+    },
+  });
+})();
+
+// ======================================================================
+// §9 The rest of the engine
+// ======================================================================
+(function engineView() {
+  const cv = $('#cv-engine'); const infoEl = $('#e-info');
+  const MODS = [
+    { id: 'phase1', t: 'Caravans and markets', c: 'rtsim-settle, -trade, -travel, -knowledge, -world', n: 'markets linear (slope 1.17), 15.8 KB each',
+      d: 'Phase 1: storehouse markets with two currencies, flows, caravans, news carried by travellers, sentiment, heirs, rescues, bands, ribbit growth and player bases. A closed 11-village world goes fully quiet, from 36.5 to 0.00 events per market per day.' },
+    { id: 'dragons', t: 'Dragons', c: 'rtsim-ecology + Ice and Fire plugin', n: '10 to 14 µs per dragon per sim day, flat 8 to 512',
+      d: 'Lairs, hunger, scheduled legs, grudges, heirs, boredom and predation; raids on districts and trains, save and restore.' },
+    { id: 'herds', t: 'Herds', c: 'rtsim-ecology herds', n: 'flat per sim day, 100 to 1,000,000 animals a herd',
+      d: 'Migrating herds of tens of thousands with latent members: identity from seeds, dyadic deaths, forage, obstacle detours. Six herds of 33,000 animals ran two sim years in 0.8 s; a read after 10,000 unread days costs 0.02 to 0.04 µs.' },
+    { id: 'ships', t: 'Ships', c: 'rtsim-ships', n: '17 to 19 µs per sim day, 56 to 814 ships',
+      d: 'Sea and sky lanes, loop routes, timetabled ships that survive restarts, merchant flows in holds, pirates and navy patrols. Unobserved merchant ships cost nothing. The voyage plugin for players\' own Sable ships (C30, C32) is planned with the ships work.' },
+    { id: 'conflict', t: 'Conflict', c: 'rtsim-conflict', n: 'notice to siege; offline raids',
+      d: 'Factions, grievance per actor, the escalation ladder from notice to siege, envoys, tribute, war bands. In its scenario a district\'s learned smog feeds goblin grievance and an unwatched war band raids it through the industry threat interface, landing once across a crash.' },
+    { id: 'industry', t: 'Industry', c: 'rtsim-industry', n: 'black box built; glass box designed', hl: true,
+      d: 'Districts, boundary stock, sweeps, reconcile with chunk epochs, ports, threats, the ledger and the journal are built and stay (C29). The glass box on this page replaces the learned box as the main model; the black-box learner becomes the fallback for unknown machines and the checksum. Quiet districts: 13 to 14 µs per sim day, flat to 100,000.' },
+    { id: 'world', t: 'World model', c: 'rtsim-space, HABITAT', n: '8.5 µs per 64-block cell sampled',
+      d: 'Terrain in 64-block cells sampled from chunk centres: water, ice, biome and tags, temperature and the biome\'s own spawns, sent once and again only on change. About 6 KB per fully sampled region; the chunk-load hook costs 1.3 µs a load.' },
+    { id: 'topology', t: 'Topology', c: 'decided (C31)', n: 'flat, x-wrap and glued providers',
+      d: 'Every module moves onto one topology layer for Deep Time\'s world wrapping: shortest paths through seams, legs crossing seams, direction transport across half-turns, canonical keys and queries that see across seams.' },
+  ];
+  const LINKS = [['dragons', 'phase1'], ['dragons', 'industry'], ['dragons', 'herds'], ['conflict', 'industry'], ['ships', 'industry'], ['ships', 'phase1'], ['world', 'herds'], ['world', 'ships']];
+  const TOP = { id: 'java', t: 'Minecraft server thread', c: 'neoforge/core bridge; plugins create, iceandfire, ribbits, carryon and the industry plugins', d: 'The Java side: puppets that vanilla never saves, the save journal with operation ids, module switches, and the industry sampler that measures boundary stock and, with the glass box, extracts the Create graph.' };
+  const HAND = { id: 'hand', t: 'Hand-over through mic_native', c: 'four boundary buffers, rtsim-jni', d: 'Per tick the server thread only swaps buffers with the engine, which steps on the host\'s background pool and writes pages on its IO lane. Measured: 11 to 20 µs per tick at p50 with phase 1 on 64 villages and four players, against a 1 ms budget.' };
+  const KER = { id: 'kernel', t: 'Kernel', c: 'rtsim-kernel: handles, Philox RNG, timing wheel, lazy regions, paging, journal, conservation', d: 'No Minecraft, no JNI, no threads of its own. Engine restore for 1,024 villages after 100 days went from 4.3 s (log replay) to 8.2 ms (snapshot); CPU stays flat as latent individuals grow from 10⁴ to 10¹² (slope 0.036).' };
+  let sel = 'industry', hov = null, boxes = {}, shown = '', pulse = 0;
+  function show() {
+    const id = hov || sel; if (id === shown) return; shown = id;
+    const m = MODS.find((x) => x.id === id) || [TOP, HAND, KER].find((x) => x.id === id);
+    infoEl.innerHTML = '<h4>' + m.t + '<span class="kind">' + m.c + '</span></h4><p>' + m.d + '</p>';
+  }
+  function layout(w) {
+    const narrow = w < 640; const cols = narrow ? 2 : 4; const pad = 6, gap = 10;
+    const bw = (w - pad * 2 - gap * (cols - 1)) / cols, bh = narrow ? 78 : 76;
+    boxes = {};
+    boxes.java = { x: pad, y: 4, w: w - pad * 2, h: 46 };
+    boxes.hand = { x: pad, y: 58, w: w - pad * 2, h: 52 };
+    const y0 = 128;
+    MODS.forEach((m, i) => { const c = i % cols, r = Math.floor(i / cols); boxes[m.id] = { x: pad + c * (bw + gap), y: y0 + r * (bh + gap), w: bw, h: bh }; });
+    const rows = Math.ceil(MODS.length / cols);
+    boxes.kernel = { x: pad, y: y0 + rows * (bh + gap) + 8, w: w - pad * 2, h: 46 };
+  }
+  const center = (b) => [b.x + b.w / 2, b.y + b.h / 2];
+  const v = makeViz(cv, {
+    height: (w) => { const narrow = w < 640; const rows = narrow ? 4 : 2; return 128 + rows * ((narrow ? 78 : 76) + 10) + 8 + 46 + 6; },
+    layout: layout,
+    pointer: (type, x, y) => {
+      let id = null; for (const k in boxes) { const b = boxes[k]; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) id = k; }
+      if (type === 'move') { if (id !== hov) { hov = id; show(); } cv.style.cursor = id ? 'pointer' : 'default'; }
+      else if (type === 'leave') { hov = null; show(); }
+      else if (type === 'down' && id) { sel = id; hov = null; show(); }
+    },
+    draw: (ctx, w, h, dt) => {
+      if (!boxes.java) layout(w);
+      pulse += dt;
+      const narrow = w < 640; const focus = hov || sel;
+      // top bands
+      const J = boxes.java;
+      rr(ctx, J.x, J.y, J.w, J.h, 6); ctx.fillStyle = '#fbfbfa'; ctx.fill(); ctx.strokeStyle = focus === 'java' ? C.ink2 : C.rule2; ctx.lineWidth = 1; ctx.stroke();
+      tx(ctx, TOP.t, J.x + 10, J.y + 19, { size: 13, weight: 680 });
+      const jl = wrapLines(ctx, TOP.c, J.w - 20, 11, 400); tx(ctx, jl[0] + (jl.length > 1 ? ' …' : ''), J.x + 10, J.y + 36, { size: 11, color: C.muted });
+      const H = boxes.hand;
+      rr(ctx, H.x, H.y, H.w, H.h, 6); ctx.fillStyle = C.card; ctx.fill(); ctx.strokeStyle = focus === 'hand' ? C.ink2 : C.rule2; ctx.stroke();
+      tx(ctx, HAND.t, H.x + 10, H.y + 18, { size: 13, weight: 680 });
+      // the 1 ms budget bar
+      const bx = H.x + 10, bw = H.w - 20, by = H.y + 30;
+      ctx.fillStyle = C.grid; ctx.fillRect(bx, by, bw, 10);
+      const f0 = 11 / 1000, f1 = 20 / 1000;
+      ctx.fillStyle = C.brassLine; ctx.fillRect(bx, by, Math.max(3, bw * f1), 10);
+      ctx.fillStyle = C.brassFill; ctx.fillRect(bx, by, Math.max(2, bw * f0), 10);
+      const tick = (pulse % 0.05) / 0.05; void tick;
+      tx(ctx, '11 to 20 µs', bx + Math.max(3, bw * f1) + 6, by + 9, { size: 11, mono: true, weight: 650 });
+      tx(ctx, '1 ms budget per tick', bx + bw, by + 9 + (narrow ? 0 : 0), { size: 10.5, mono: true, color: C.muted, align: 'right' });
+      // links: the focused ones are drawn again above the tiles
+      const drawLinks = (onlyOn) => LINKS.forEach((L) => {
+        const a = center(boxes[L[0]]), b = center(boxes[L[1]]); const on = focus === L[0] || focus === L[1];
+        if (onlyOn && !on) return; if (!onlyOn && on) return;
+        const mx = (a[0] + b[0]) / 2, my = Math.min(a[1], b[1]) - 26;
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.quadraticCurveTo(mx, my, b[0], b[1]);
+        ctx.strokeStyle = on ? C.brassLine : 'rgba(93,96,106,0.18)'; ctx.lineWidth = on ? 2.2 : 1; ctx.stroke();
+        if (on && !reduced) {
+          const u = (pulse * 0.45) % 1; const q = 1 - u;
+          const px = q * q * a[0] + 2 * q * u * mx + u * u * b[0], py = q * q * a[1] + 2 * q * u * my + u * u * b[1];
+          ctx.beginPath(); ctx.arc(px, py, 3.5, 0, TAU); ctx.fillStyle = C.brassLine; ctx.fill();
+        }
+      });
+      drawLinks(false);
+      // modules
+      MODS.forEach((m) => {
+        const b = boxes[m.id]; const on = focus === m.id; const linked = LINKS.some((L) => (L[0] === focus && L[1] === m.id) || (L[1] === focus && L[0] === m.id));
+        rr(ctx, b.x, b.y, b.w, b.h, 6);
+        ctx.fillStyle = m.hl ? C.brassTint : C.bg; ctx.fill();
+        ctx.lineWidth = on ? 2.4 : (m.hl ? 1.8 : 1.2); ctx.strokeStyle = on ? C.ink : (m.hl ? C.brassLine : (linked ? C.brassLine : C.rule2)); ctx.stroke();
+        let fs = 13; while (fs > 11 && tw(ctx, m.t, fs, 680) > b.w - 16) fs -= 0.5;
+        tx(ctx, m.t, b.x + 9, b.y + 19, { size: fs, weight: 680 });
+        const cl = wrapLines(ctx, m.c, b.w - 18, 10.5, 400, true); tx(ctx, cl[0] + (cl.length > 1 ? '…' : ''), b.x + 9, b.y + 35, { size: 10.5, mono: true, color: C.muted });
+        const nl = wrapLines(ctx, m.n, b.w - 18, 11.5, 500);
+        nl.slice(0, 2).forEach((ln, i) => tx(ctx, ln, b.x + 9, b.y + 53 + i * 14, { size: 11.5, weight: 500, color: C.ink2 }));
+        if (m.hl) { cog(ctx, b.x + b.w - 14, b.y + 14, 8, 8, reduced ? 0 : pulse * 1.2, C.brassLine, C.brassTint); }
+      });
+      drawLinks(true);
+      const K = boxes.kernel;
+      rr(ctx, K.x, K.y, K.w, K.h, 6); ctx.fillStyle = '#f8fafd'; ctx.fill(); ctx.strokeStyle = focus === 'kernel' ? C.ink2 : C.rule2; ctx.lineWidth = 1; ctx.stroke();
+      tx(ctx, KER.t, K.x + 10, K.y + 19, { size: 13, weight: 680 });
+      const kl = wrapLines(ctx, KER.c, K.w - 20, 11, 400); tx(ctx, kl[0] + (kl.length > 1 ? ' …' : ''), K.x + 10, K.y + 36, { size: 11, color: C.muted });
+    },
+  });
+  show();
+})();
+
+startLoop();
+})();
+</script>
+</body>
+</html>

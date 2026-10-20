@@ -171,6 +171,7 @@ impl World {
         self.flush_gossip();
         if let Some(b) = at_node.filter(|&b| !self.nodes[b].kind.is_storehouse())
             && items > 0
+            && !self.goods.is_currency(good)
         {
             let unit = coins * PRICE_ONE / items;
             let parity = match self.nodes[home].kind.culture() {
@@ -294,19 +295,23 @@ impl World {
         member: usize,
         alive: bool,
     ) -> Option<crate::caravans::CaravanOutcome> {
+        self.lose_member_holding(c, member, alive, None)
+    }
+
+    /// [`World::lose_member`] with what the member really held (Review P3).
+    pub fn lose_member_holding(
+        &mut self,
+        c: CaravanId,
+        member: usize,
+        alive: bool,
+        held: Option<&BTreeMap<GoodId, Amount>>,
+    ) -> Option<crate::caravans::CaravanOutcome> {
         let at = self.now;
-        let car = self.caravans.get_mut(c)?;
-        let m = car.members.get_mut(member)?;
+        let m = self.caravans.get(c)?.members.get(member)?;
         if !m.present {
             return None;
         }
-        m.present = false;
-        if !alive {
-            m.alive = false;
-        }
-        for (g, a) in std::mem::take(&mut m.cargo) {
-            *self.outside.player_out.entry(g).or_default() += i128::from(a);
-        }
+        self.member_leaves(c, member, held, alive);
         Some(self.decide_after_attack(c, at))
     }
 

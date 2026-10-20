@@ -74,6 +74,11 @@ pub struct Rules {
     /// Coin above twice the treasury target (and foreign coin above twice its holding target) is
     /// spent on upkeep and leaves the world, ledgered as sunk (overnight choice E43). Off: it
     /// piles up and the market refuses cash, as round 1 did.
+    ///
+    /// TODO(E-sink, Ben's morning review 2026-10-20: "Sink into something real"): surplus coin
+    /// above a treasury's target is to buy something real and visible (village upgrades,
+    /// buildings, tribute) instead of leaving the world, with conservation exact. That needs a
+    /// design Ben approves first (DECISIONS.md, "E-sink"); until then this sink stands.
     pub money_sink: bool,
     /// A market exports anywhere in its target's band, sending less below the target so it
     /// refills, instead of nothing until it reaches the target exactly (overnight choice E45).

@@ -519,9 +519,10 @@ the reasons.
 **Proposal I19 (Ben): the order the sources arrive.** Recommended.
 1. **Natural mobs:** core, no new bodies (§13.4).
 2. **Dragons,** with the Ice and Fire plugin (phase 2). Hunger and grudges add districts to the target
-   list. The pack sets dragon `griefing` false and `stealItems` false, so dragon damage is the sim's,
-   bounded, and dragons destroy rather than steal. The dragons module takes over the In Control spawner
-   that already spawns overworld fire dragons.
+   list. The pack sets dragon `griefing` false, so dragon damage is the sim's and bounded (P28). There is
+   no dragon `stealItems` (it is a pixie key), so what a dragon carries off is the attacking unit's own
+   carry (K2-13). In Control's fire dragon spawner is desert-only in effect and stays until the oil gate
+   (P13) proves at least as dangerous.
 3. **Bandits,** with the conflict module. Bodies come from P8 and must look like mobs (D7). Stolen stock
    flows to the band's camp market, where players can buy it back or raid it (mining note §2.1).
 4. **Bosses.** Structure bosses (L_Ender's Cataclysm, Bosses of Mass Destruction, Mowzie's Mobs) stay
@@ -742,7 +743,7 @@ boundary list, pending deltas and defence vector, all paged with its region (A16
 | Pollution | Destroy 0.4.1 | `PollutionHelper.pollute`, `changePollution` overloads | verified (javap) |
 | Deposits | Ore Excavation 1.6.8, Diesel Generators 1.3.15, Destroy | `OreData.extract/getResourcesRemaining`, `OilChunksSavedData.get/setChunkOilAmount`, `chunk_crude_oil` | inventory |
 | Channels | Ender Transmission 2.1.1 | `MatterWorldSavedData` | inventory |
-| Dragon rules | Ice and Fire CE 2.1-beta.1 | `iaf-common.json` dragon `griefing`, `stealItems` | verified |
+| Dragon rules | Ice and Fire CE 2.1-beta.1 | `iaf-common.json` dragon `griefing` (`stealItems` is a pixie key) | verified |
 | Loaders | create_power_loader 2.0.5, mic-grid-loader 1.0.0 | `ChunkLoadManager`, `forceChunk(..., true)` | verified |
 | Map | Surveyor 1.2.4 | `WorldLandmarks.of(level).put` | PLAN §1.3 |
 
@@ -901,8 +902,8 @@ capabilities or public fields.
 
 **Pack:**
 - create_power_loader `ChunkLoadManager` calls `forceChunk(..., add, true)` (source).
-- `iaf-common.json` has dragon `griefing` false and `stealItems` false, and cyclops and sea serpent
-  `griefing` true.
+- `iaf-common.json` has dragon `griefing` false, and cyclops and sea serpent `griefing` true. Its
+  `stealItems` is a pixie key, not a dragon one (jar check, 2026-10-20).
 - Create Radars `TargetingConfig` has `player`, `contraption`, `mob`, `animal`, `projectile`,
   `autoTarget`, `autoFire` and `lineOfSight` (javap).
 - Destroy 0.4.1 has `pollute` and four `changePollution` overloads (javap).

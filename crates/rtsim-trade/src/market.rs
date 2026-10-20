@@ -158,6 +158,119 @@ pub fn markup_for(sentiment: i8, worst: Ratio) -> (Ratio, Ratio) {
     )
 }
 
+/// One bundle of [`Market::offer`] on its own: the integer bundle closest to `curve`'s price at
+/// `stock`, one item for whole coins when an item is worth a coin or more, else whole items for
+/// one coin, the buyer paying the ceiling and the seller getting the floor (PLAN.md §8.5).
+/// `target` is the good's line target (above twice it the market takes no more), `refused`
+/// whether the treasury refuses cash now. `None` when refused or out of stock. Uses are the
+/// caller's.
+pub fn bundle_at(
+    curve: &PriceCurve,
+    stock: Amount,
+    target: Amount,
+    refused: bool,
+    side: OfferSide,
+    markup: Ratio,
+) -> Option<(i64, i64)> {
+    let s = stock;
+    match side {
+        OfferSide::MarketSells => {
+            if refused || s < MILLI {
+                return None;
+            }
+            let one = curve.buy_value(s, MILLI).scaled(markup).coins_ceil();
+            Some(if curve.price_at(s) >= PRICE_ONE || one > 1 {
+                (1, one.max(1))
+            } else {
+                // Most items one coin buys, by bisection on the monotone cost.
+                let (mut lo, mut hi) = (1i64, s / MILLI);
+                while lo < hi {
+                    let mid = lo + (hi - lo + 1) / 2;
+                    let c = curve.buy_value(s, mid * MILLI).scaled(markup).coins_ceil();
+                    if c <= 1 { lo = mid } else { hi = mid - 1 }
+                }
+                (lo, 1)
+            })
+        }
+        OfferSide::MarketBuys => {
+            if crate::line::level_of(s, target) == Level::Glut {
+                return None;
+            }
+            let one = curve.sell_value(s, MILLI).scaled(markup).coins_floor();
+            Some(if one >= 1 {
+                (1, one)
+            } else {
+                // Fewest items one coin is paid for.
+                let mut n = 1i64;
+                while curve.sell_value(s, n * MILLI).scaled(markup).coins_floor() < 1 {
+                    n *= 2;
+                    if n > 1 << 20 {
+                        return None;
+                    }
+                }
+                let (mut lo, mut hi) = (n / 2 + 1, n);
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    if curve
+                        .sell_value(s, mid * MILLI)
+                        .scaled(markup)
+                        .coins_floor()
+                        >= 1
+                    {
+                        hi = mid
+                    } else {
+                        lo = mid + 1
+                    }
+                }
+                (lo, 1)
+            })
+        }
+    }
+}
+
+/// The bundles of up to `depth` successive trades on one side, each priced at the market the
+/// trades before it left (Ben's morning review, "Prices": the engine sends these ready-made and
+/// the bridge only shows them; overnight choice PR2): a purchase lowers the stock and fills the
+/// treasury, a sale the other way. It ends early where [`bundle_at`] refuses, or where the
+/// treasury cannot pay the next bundle. `treasury_target` is the treasury line's target (above
+/// twice it cash is refused; 0 never).
+#[allow(clippy::too_many_arguments)]
+pub fn ladder(
+    curve: &PriceCurve,
+    stock: Amount,
+    target: Amount,
+    treasury: Amount,
+    treasury_target: Amount,
+    side: OfferSide,
+    markup: Ratio,
+    depth: usize,
+) -> Vec<(i64, i64)> {
+    let refused =
+        |t: Amount| treasury_target > 0 && crate::line::level_of(t, treasury_target) == Level::Glut;
+    let (mut s, mut t) = (stock, treasury);
+    let mut out = Vec::with_capacity(depth);
+    while out.len() < depth {
+        let Some((items, coins)) = bundle_at(curve, s, target, refused(t), side, markup) else {
+            break;
+        };
+        match side {
+            OfferSide::MarketSells => {
+                s -= items * MILLI;
+                t = t.saturating_add(coins * MILLI);
+            }
+            OfferSide::MarketBuys => {
+                if coins * MILLI > t {
+                    break;
+                }
+                s = s.saturating_add(items * MILLI);
+                t -= coins * MILLI;
+            }
+        }
+        out.push((items, coins));
+    }
+    out
+}
+
 impl Market {
     pub fn good(&self, g: GoodId) -> &GoodState {
         &self.goods[g.index()]
@@ -569,65 +682,47 @@ impl Market {
             return None;
         }
         let s = self.stock(g);
-        let curve = &self.goods[g.index()].curve;
-        match side {
-            OfferSide::MarketSells => {
-                if self.cash_refused() || s < MILLI {
-                    return None;
-                }
-                let one = curve.buy_value(s, MILLI).scaled(markup).coins_ceil();
-                let (items, coins) = if curve.price_at(s) >= PRICE_ONE || one > 1 {
-                    (1, one.max(1))
-                } else {
-                    // Most items one coin buys, by bisection on the monotone cost.
-                    let (mut lo, mut hi) = (1i64, s / MILLI);
-                    while lo < hi {
-                        let mid = lo + (hi - lo + 1) / 2;
-                        let c = curve.buy_value(s, mid * MILLI).scaled(markup).coins_ceil();
-                        if c <= 1 { lo = mid } else { hi = mid - 1 }
-                    }
-                    (lo, 1)
-                };
-                let uses = (s / (items * MILLI)).min(i64::from(u32::MAX)) as u32;
-                (uses > 0).then_some(Offer { items, coins, uses })
-            }
-            OfferSide::MarketBuys => {
-                if self.lines[g.index()].level() == Level::Glut {
-                    return None;
-                }
-                let m = self.treasury();
-                let one = curve.sell_value(s, MILLI).scaled(markup).coins_floor();
-                let (items, coins) = if one >= 1 {
-                    (1, one)
-                } else {
-                    // Fewest items one coin is paid for.
-                    let mut n = 1i64;
-                    while curve.sell_value(s, n * MILLI).scaled(markup).coins_floor() < 1 {
-                        n *= 2;
-                        if n > 1 << 20 {
-                            return None;
-                        }
-                    }
-                    let (mut lo, mut hi) = (n / 2 + 1, n);
-                    while lo < hi {
-                        let mid = lo + (hi - lo) / 2;
-                        if curve
-                            .sell_value(s, mid * MILLI)
-                            .scaled(markup)
-                            .coins_floor()
-                            >= 1
-                        {
-                            hi = mid
-                        } else {
-                            lo = mid + 1
-                        }
-                    }
-                    (lo, 1)
-                };
-                let uses = (m / (coins * MILLI)).min(i64::from(u32::MAX)) as u32;
-                (uses > 0).then_some(Offer { items, coins, uses })
-            }
+        let (items, coins) = bundle_at(
+            &self.goods[g.index()].curve,
+            s,
+            self.lines[g.index()].target,
+            self.cash_refused(),
+            side,
+            markup,
+        )?;
+        let uses = match side {
+            OfferSide::MarketSells => s / (items * MILLI),
+            OfferSide::MarketBuys => self.treasury() / (coins * MILLI),
+        };
+        let uses = uses.clamp(0, i64::from(u32::MAX)) as u32;
+        (uses > 0).then_some(Offer { items, coins, uses })
+    }
+
+    /// The bundles a run of trades on one side meets, one after another, each at the market as
+    /// the trades before it left it ([`ladder`]): what the engine sends the bridge ready-made
+    /// (Ben's morning review, "Prices": one source of truth). `None` for a good the market does
+    /// not offer.
+    pub fn ladder(
+        &self,
+        g: GoodId,
+        side: OfferSide,
+        markup: Ratio,
+        depth: usize,
+    ) -> Vec<(i64, i64)> {
+        if !self.is_storehouse() || Some(g) == self.currency {
+            return Vec::new();
         }
+        let tt = self.currency.map_or(0, |c| self.lines[c.index()].target);
+        ladder(
+            &self.goods[g.index()].curve,
+            self.stock(g),
+            self.lines[g.index()].target,
+            self.treasury(),
+            tt,
+            side,
+            markup,
+            depth,
+        )
     }
 
     /// Records a trade players made at a player base (C26): its price there becomes the base's
@@ -845,6 +940,56 @@ pub(crate) mod tests {
         let o = m.offer(GoodId(0), OfferSide::MarketBuys, FAIR).unwrap();
         assert_eq!(o.coins, 1);
         assert_eq!(o.uses, 2);
+    }
+
+    /// The ladder the engine sends (Prices, PR2) is exactly what `Market::offer` would quote
+    /// trade after trade, as the market moves with each, at any markup; and walking it never
+    /// makes coin (each sale is paid at most what the purchase before it cost).
+    #[test]
+    fn a_ladder_is_the_offers_of_successive_trades() {
+        for (stock, treasury) in [
+            (40 * MILLI, 9 * MILLI),
+            (5 * MILLI, 3 * MILLI),
+            (79 * MILLI, 39 * MILLI),
+            (400 * MILLI, 2 * MILLI),
+        ] {
+            for markup in [FAIR, markup_for(-64, Ratio::new(1, 2)).0] {
+                for side in [OfferSide::MarketSells, OfferSide::MarketBuys] {
+                    let mut m = tiny(stock, treasury);
+                    let mk = match side {
+                        OfferSide::MarketSells => markup,
+                        OfferSide::MarketBuys => markup_for(-64, Ratio::new(1, 2)).1,
+                    };
+                    let mk = if markup == FAIR { FAIR } else { mk };
+                    let ladder = m.ladder(GoodId(0), side, mk, 12);
+                    for &(items, coins) in &ladder {
+                        let o = m.offer(GoodId(0), side, mk).expect("the ladder had a step");
+                        assert_eq!((o.items, o.coins), (items, coins));
+                        let q = Quote { items, coins };
+                        match side {
+                            OfferSide::MarketSells => m.apply_buy(GoodId(0), q),
+                            OfferSide::MarketBuys => m.apply_sell(GoodId(0), q),
+                        }
+                    }
+                    if ladder.len() < 12 {
+                        assert!(
+                            m.offer(GoodId(0), side, mk).is_none(),
+                            "the ladder ended early"
+                        );
+                    }
+                }
+            }
+        }
+        // Buying a ladder's bundles and selling them back never pays.
+        let m = tiny(40 * MILLI, 9 * MILLI);
+        let up = m.ladder(GoodId(0), OfferSide::MarketSells, FAIR, 1);
+        let (items, coins) = up[0];
+        let mut after = m.clone();
+        after.apply_buy(GoodId(0), Quote { items, coins });
+        let back = after
+            .quote_sell(GoodId(0), items, FAIR)
+            .expect("it buys back");
+        assert!(back.coins <= coins);
     }
 
     #[test]
