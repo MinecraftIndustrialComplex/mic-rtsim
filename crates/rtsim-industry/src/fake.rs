@@ -173,6 +173,47 @@ pub struct Visit {
     pub at: Vec<usize>,
 }
 
+/// What a remote fake world hands its bridge ([`FakeWorld::remote`]): observations, and the
+/// bridge's own COMMAND_RESULT for every command with an op id it applied or skipped
+/// (docs/boundary.md §2.3), in the order the Java side would journal them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outgoing {
+    Obs(Timed),
+    /// `status`: [`RESULT_APPLIED`], [`RESULT_DUPLICATE`] or [`RESULT_FAILED`].
+    CommandResult {
+        op: OpId,
+        status: u32,
+    },
+}
+
+/// COMMAND_RESULT statuses (docs/boundary.md §2.3).
+pub const RESULT_APPLIED: u32 = 1;
+pub const RESULT_DUPLICATE: u32 = 2;
+pub const RESULT_FAILED: u32 = 3;
+
+/// What a world save keeps of a fake world, for a simulated crash ([`FakeWorld::saved`]).
+#[derive(Clone, Debug)]
+pub struct SavedWorld {
+    t: Tick,
+    districts: Vec<FDistrict>,
+    trains: Vec<FTrain>,
+    books: WorldBooks,
+    applied: BTreeSet<OpId>,
+}
+
+impl SavedWorld {
+    /// This save with the districts' chunks (contents, reconcile epochs, broken blocks) and the
+    /// world's books from a later one: chunks Minecraft saved on unload after the world save, which
+    /// a crash then leaves ahead of the journal (docs/boundary.md §3.1).
+    pub fn with_chunks_of(&self, ahead: &SavedWorld) -> SavedWorld {
+        SavedWorld {
+            districts: ahead.districts.clone(),
+            books: ahead.books.clone(),
+            ..self.clone()
+        }
+    }
+}
+
 /// One line of what happened, for the CLI.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Event {
@@ -201,10 +242,23 @@ pub struct FakeWorld {
     /// real protocol is at least one tick late (docs/boundary.md §1.2); this removes the race to
     /// measure the replay alone.
     pub apply_on_load: bool,
+    /// Every IND_CARRIAGE_DELTA is answered FAILED and changes nothing (a remote world's test of
+    /// the engine's correction).
+    pub fail_carriage_deltas: bool,
     pub threats: Option<Box<dyn ThreatFeed>>,
     pub books: WorldBooks,
     pub log: Vec<Event>,
     pub wire_bytes: u64,
+    /// The engine is elsewhere (a native engine behind the bridge's buffers): observations go to
+    /// [`FakeWorld::outgoing`], commands come in through [`FakeWorld::deliver`], threats go to
+    /// [`FakeWorld::threats_out`], and `engine` is unused.
+    pub remote: bool,
+    pub outgoing: Vec<Outgoing>,
+    pub threats_out: Vec<Threat>,
+    /// Every ledger line the engine sent (IND_LEDGER), oldest first.
+    pub ledgers: Vec<crate::cmd::LedgerLine>,
+    /// Every chunk reconcile applied: (op, district, epoch, chunk), oldest first.
+    pub reconciled: Vec<(OpId, DistrictId, u32, ChunkPos)>,
     obs_seq: u64,
     cmd_seq: u64,
     queue: Vec<Cmd>,
@@ -240,6 +294,12 @@ impl FakeWorld {
             books: WorldBooks::default(),
             log: Vec::new(),
             wire_bytes: 0,
+            remote: false,
+            fail_carriage_deltas: false,
+            outgoing: Vec::new(),
+            threats_out: Vec::new(),
+            ledgers: Vec::new(),
+            reconciled: Vec::new(),
             obs_seq: 0,
             cmd_seq: 0,
             queue: Vec::new(),
@@ -263,9 +323,83 @@ impl FakeWorld {
         });
     }
 
+    /// The same world with its engine elsewhere ([`FakeWorld::remote`]). Reconciles are at least
+    /// one tick late there, so the ideal Java side (`apply_on_load`) is off.
+    pub fn into_remote(mut self) -> Self {
+        self.remote = true;
+        self.apply_on_load = false;
+        self
+    }
+
+    /// Moves every district to dimension `dim` (Java's dictionary id) before [`FakeWorld::declare`]:
+    /// a bridge's dictionary ids start at 1, the scenarios use 0.
+    pub fn move_to_dim(&mut self, dim: u32) {
+        for d in &mut self.districts {
+            d.dim = dim;
+            d.deposit_chunk.dim = dim;
+        }
+    }
+
+    /// A command from the remote engine, decoded from its buffer: applied at the next tick.
+    pub fn deliver(&mut self, c: Cmd) {
+        self.queue.push(c);
+    }
+
+    /// Commands delivered and not applied yet (they apply at the next tick), and reconciles held
+    /// for chunks that are not loaded.
+    pub fn commands_in_flight(&self) -> usize {
+        self.queue.len() + self.districts.iter().map(|d| d.held.len()).sum::<usize>()
+    }
+
+    /// The engine op ids this world applied (its journal's applied set).
+    pub fn applied_ops(&self) -> &BTreeSet<OpId> {
+        &self.applied
+    }
+
+    /// What a world save holds (a remote world's crash test rolls back to it).
+    pub fn saved(&self) -> SavedWorld {
+        SavedWorld {
+            t: self.t,
+            districts: self.districts.clone(),
+            trains: self.trains.clone(),
+            books: self.books.clone(),
+            applied: self.applied.clone(),
+        }
+    }
+
+    /// Rolls the world back to a save: what Minecraft does after a crash. Commands in flight and
+    /// observations not yet handed over are lost with the session; districts are unloaded until
+    /// the next tick loads them again.
+    pub fn restore(&mut self, s: &SavedWorld) {
+        self.t = s.t;
+        self.districts = s.districts.clone();
+        self.trains = s.trains.clone();
+        self.books = s.books.clone();
+        self.applied = s.applied.clone();
+        self.queue.clear();
+        self.outgoing.clear();
+        for d in &mut self.districts {
+            d.loaded = false;
+            d.held.clear();
+        }
+    }
+
+    fn answer(&mut self, op: OpId, status: u32) {
+        if self.remote {
+            self.outgoing.push(Outgoing::CommandResult { op, status });
+        }
+    }
+
     /// Sends one observation through the wire codec to the engine.
     fn send(&mut self, obs: Obs) {
         let timed = Timed { at: self.t, obs };
+        if self.remote {
+            let mut buf = Vec::new();
+            wire::encode_obs(1, &timed, &mut buf).expect("encodable observation");
+            self.wire_bytes += buf.len() as u64;
+            self.outgoing.push(Outgoing::Obs(timed));
+            return;
+        }
         let seq = if timed.obs.is_journaled() {
             self.obs_seq += 1;
             self.obs_seq
@@ -401,7 +535,7 @@ impl FakeWorld {
                 loaded_now |= want;
             }
         }
-        if loaded_now && self.apply_on_load {
+        if loaded_now && self.apply_on_load && !self.remote {
             let cmds = self.engine.drain_commands();
             for c in cmds {
                 self.apply(c);
@@ -460,6 +594,9 @@ impl FakeWorld {
                 self.threat(th);
             }
         }
+        if self.remote {
+            return;
+        }
         self.engine.advance_to(self.t);
         // The step's commands.
         for c in self.engine.drain_commands() {
@@ -506,7 +643,11 @@ impl FakeWorld {
             ));
             return;
         }
-        self.engine.threat(&th);
+        if self.remote {
+            self.threats_out.push(th);
+        } else {
+            self.engine.threat(&th);
+        }
         self.note(format!(
             "{:?} attack ({:?}, {}) on {:?}",
             th.source, th.class, th.count, th.target
@@ -833,6 +974,7 @@ impl FakeWorld {
                     .copied()
                     .unwrap_or(0);
                 if rc.epoch <= applied_epoch || self.applied.contains(&rc.op) {
+                    self.answer(rc.op, RESULT_DUPLICATE);
                     return;
                 }
                 let mut entries = Vec::new();
@@ -904,6 +1046,8 @@ impl FakeWorld {
                 }
                 self.districts[di].epochs.insert(rc.chunk, rc.epoch);
                 self.applied.insert(rc.op);
+                self.reconciled
+                    .push((rc.op, rc.district, rc.epoch, rc.chunk));
                 let id = self.districts[di].id;
                 self.send(Obs::ReconcileResult(ReconcileResult {
                     op: rc.op,
@@ -914,6 +1058,7 @@ impl FakeWorld {
                     destroyed: destroyed.clone(),
                     blocks_skipped: skipped,
                 }));
+                self.answer(rc.op, RESULT_APPLIED);
                 if !destroyed.is_empty() {
                     let name = self.districts[di].name.clone();
                     self.note(format!(
@@ -923,10 +1068,16 @@ impl FakeWorld {
                 }
             }
             Cmd::CarriageDelta(cd) => {
+                if self.fail_carriage_deltas {
+                    self.answer(cd.op, RESULT_FAILED);
+                    return;
+                }
                 if !self.applied.insert(cd.op) {
+                    self.answer(cd.op, RESULT_DUPLICATE);
                     return;
                 }
                 let Some(ti) = self.trains.iter().position(|t| t.id == cd.train) else {
+                    self.answer(cd.op, RESULT_FAILED);
                     return;
                 };
                 let mut entries = Vec::new();
@@ -965,9 +1116,35 @@ impl FakeWorld {
                     train: cd.train,
                     entries,
                 }));
+                self.answer(cd.op, RESULT_APPLIED);
             }
-            Cmd::ChannelDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_) | Cmd::Ledger(_) => {
+            // Level SavedData, applied at once (docs/industry-boundary.md §4.3). The fake world
+            // has no channels, Diesel deposits or postbox buffers: they are taken as applied.
+            Cmd::ChannelDelta(c) => {
+                let status = if self.applied.insert(c.op) {
+                    RESULT_APPLIED
+                } else {
+                    RESULT_DUPLICATE
+                };
+                self.answer(c.op, status);
             }
+            Cmd::DepositDelta(c) => {
+                let status = if self.applied.insert(c.op) {
+                    RESULT_APPLIED
+                } else {
+                    RESULT_DUPLICATE
+                };
+                self.answer(c.op, status);
+            }
+            Cmd::WritePackage(c) => {
+                let status = if self.applied.insert(c.op) {
+                    RESULT_APPLIED
+                } else {
+                    RESULT_DUPLICATE
+                };
+                self.answer(c.op, status);
+            }
+            Cmd::Ledger(l) => self.ledgers.push(l),
         }
     }
 
@@ -999,8 +1176,13 @@ impl FakeWorld {
     /// what its own machines did, and what the engine booked. Call it with every district loaded and
     /// every command applied.
     pub fn conservation(&self) -> Result<(), String> {
+        self.conservation_with(&self.engine)
+    }
+
+    /// [`FakeWorld::conservation`] against an engine elsewhere (a remote world's).
+    pub fn conservation_with(&self, engine: &Engine) -> Result<(), String> {
         let now = self.totals();
-        let b = &self.engine.books;
+        let b = &engine.books;
         let mut want = self.initial.clone();
         want.merge(&self.books.minted);
         want.subtract(&self.books.burned);
@@ -1010,7 +1192,7 @@ impl FakeWorld {
         want.merge(&b.shortfall);
         want.subtract(&b.trimmed);
         let mut owed = GoodVec::new();
-        for d in self.engine.districts() {
+        for d in engine.districts() {
             owed.merge(&d.owed);
             for inv in d.inventories.values() {
                 owed.merge(&inv.pending);

@@ -33,6 +33,10 @@ use crate::orders::Order;
 use crate::wire::{self, Rec, RecordWriter, Records, cmd, obs};
 use crate::world::{Item, Member, World};
 
+/// The industry engine behind the boundary: everything industry lives there, and the step calls
+/// it at its observe, simulate, write and save points (docs/industry-boundary.md).
+mod industry;
+pub use industry::{IndustryStats, KEY_LINK as KEY_INDUSTRY_LINK, MODULE_INDUSTRY};
 /// Phase 1 behind the boundary: the phase 1 world (settle, trade, travel, knowledge), its
 /// observations, commands and pages (docs/boundary.md §4, §5).
 mod phase1;
@@ -51,6 +55,8 @@ const META_VERSION: u16 = 1;
 /// `nOpen` flags.
 pub const FLAG_TEST: u32 = 1;
 pub const FLAG_NO_FSYNC: u32 = 2;
+/// The industry engine runs read-only (phase I-A, F25): ledger lines only, nothing applied.
+pub const FLAG_INDUSTRY_READ_ONLY: u32 = 4;
 
 /// Where steps and saves run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +76,10 @@ pub struct Config {
     pub test: bool,
     pub durability: Durability,
     pub exec: Exec,
+    /// The industry engine in read-only mode (F25).
+    pub industry_read_only: bool,
+    /// The world seed of a new industry engine (tests); None draws one (W5).
+    pub industry_seed: Option<u64>,
 }
 
 impl Config {
@@ -80,6 +90,8 @@ impl Config {
             test: false,
             durability: Durability::Fsync,
             exec: Exec::Host,
+            industry_read_only: false,
+            industry_seed: None,
         }
     }
 }
@@ -234,6 +246,8 @@ struct State {
     /// Where the op ids of ordered transfers come from (`random_op`).
     op_salt: std::collections::hash_map::RandomState,
     op_counter: u64,
+    /// The industry engine and its commands (`industry.rs`).
+    industry: industry::Link,
     /// The phase 1 world and its commands (`phase1.rs`).
     phase1: phase1::Link,
 }
@@ -258,6 +272,7 @@ impl State {
             game_time: 0,
             op_salt: std::collections::hash_map::RandomState::new(),
             op_counter: 0,
+            industry: industry::Link::empty(),
             phase1: phase1::Link::empty(),
         }
     }
@@ -391,7 +406,11 @@ fn command_bytes(order: &Order) -> usize {
         Order::DespawnGroup { .. } => cmd::despawn_group::SIZE,
         Order::SteerGroup { .. } => cmd::steer_group::SIZE,
         Order::TransferToContainer { .. } => cmd::transfer_to_container::SIZE,
-        Order::SaveAtNextStep | Order::RewindCmdSeq(_) | Order::Fail => 0,
+        Order::SaveAtNextStep
+        | Order::RewindCmdSeq(_)
+        | Order::Fail
+        | Order::IndustryThreat(_)
+        | Order::IndustryCommand { .. } => 0,
         other => phase1::scripted_bytes(other),
     }
 }
@@ -642,7 +661,25 @@ impl Engine {
             }
             None => World::default(),
         };
-        let link = phase1::Link::load(&mut store)?;
+        let mut link = industry::Link::load(&mut store, &self.cfg)?;
+        if link.fresh {
+            // A new industry engine's seed keys its op ids (W3): on disk before any command it
+            // decides, or a crash before the first save would derive them again under another (W20).
+            let mut batch = SaveBatch::new();
+            let pages = link.pages();
+            for k in industry::deletions(&store, &pages) {
+                batch.delete(k);
+            }
+            for (k, b) in &pages {
+                batch.put(*k, b);
+            }
+            let at = store.obs_seq();
+            store
+                .commit(batch, at)
+                .map_err(|e| format!("cannot write the new industry engine's pages: {e}"))?;
+            link.fresh = false;
+        }
+        let p1link = phase1::Link::load(&mut store)?;
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(
@@ -661,7 +698,9 @@ impl Engine {
         let resend: VecDeque<_> = st.outbox.after(last_applied_cmd).cloned().collect();
         st.resend = resend;
         st.last_applied_cmd = last_applied_cmd;
-        st.phase1 = link;
+        st.industry = link;
+        st.industry.resume(last_applied_cmd);
+        st.phase1 = p1link;
         st.phase1.resume(last_applied_cmd);
         st.pages_obs_seq = pages_obs;
         st.session_first = pages_obs + 1;
@@ -777,17 +816,18 @@ impl Engine {
         }
         let mut result = Ok(());
         if save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
-            let (meta, world, extra, obs_seq) = {
+            let (meta, world, industry, extra, obs_seq) = {
                 let mut st = lock(&self.state);
                 (
                     encode_meta(&st.replay, &st.outbox),
                     st.world.to_bytes(),
+                    industry::snapshot(&st),
                     phase1::snapshot(&mut st),
                     st.replay.applied_through().0,
                 )
             };
             let this = Arc::clone(self);
-            result = self.run_io_waiting(move || this.commit(meta, world, extra, obs_seq));
+            result = self.run_io_waiting(move || this.commit(meta, world, industry, extra, obs_seq));
         } else {
             self.dead.store(true, Ordering::Release);
             let _ = self.run_io_waiting(|| {});
@@ -906,8 +946,9 @@ impl Engine {
         self.read_observations(&mut st, h, o);
         o.consumed().store(h, Ordering::Release);
 
-        // 2. Simulate: the phase 1 world runs to the hand-over's game time and decides; orders
-        // stand in for the other decisions. 3. A save due at this boundary.
+        // 2. Simulate: the industry engine and the phase 1 world run to the hand-over's game time
+        // and decide; orders stand in for the other decisions. 3. A save due at this boundary.
+        industry::simulate(&mut st);
         phase1::simulate(&mut st);
         let req = self.save_through.load(Ordering::Acquire);
         if self.save_at_step_end.swap(false, Ordering::AcqRel) {
@@ -988,6 +1029,10 @@ impl Engine {
         for o in unit {
             match o {
                 Order::SaveAtNextStep => self.save_at_step_end.store(true, Ordering::Release),
+                Order::IndustryThreat(t) => industry::threat(st, &t),
+                Order::IndustryCommand { names, record } => {
+                    industry::order_command(st, &names, &record)
+                }
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
@@ -1050,6 +1095,8 @@ impl Engine {
                 st.world.session_start();
                 st.world.module_mask = wire::u32_at(b, obs::session_start::MODULE_MASK);
                 st.world.game_time = wire::i64_at(b, obs::session_start::GAME_TIME);
+                let (game_time, mask) = (st.world.game_time, st.world.module_mask);
+                industry::session_start(st, game_time, mask);
                 let mask = st.world.module_mask;
                 phase1::session_start(st, mask);
                 if last_applied > st.last_applied_cmd {
@@ -1091,6 +1138,7 @@ impl Engine {
             }
             _ => {
                 st.world.observe_state(rec);
+                industry::observe_state(st, rec);
                 phase1::observe_state(st, rec);
                 Self::log_received(st, h, rec, 0, false);
             }
@@ -1133,6 +1181,7 @@ impl Engine {
         let skipped = verdict == Verdict::AlreadyApplied;
         Self::log_received(st, h, rec, seq, skipped);
         match verdict {
+            Verdict::Apply if industry::claims(rec) => industry::journaled(st, rec),
             Verdict::Apply if phase1::claims(rec) => phase1::journaled(st, rec),
             Verdict::Apply => {
                 let replayed = seq < st.session_first;
@@ -1155,6 +1204,9 @@ impl Engine {
                 if rec.kind == obs::TRANSFER {
                     self.stats.op_duplicates.fetch_add(1, Ordering::AcqRel);
                 }
+                if industry::claims(rec) {
+                    industry::answered_again(st, rec);
+                }
                 st.world.refused_journaled(rec);
             }
             Verdict::Gap { .. } => {
@@ -1171,12 +1223,20 @@ impl Engine {
         let obs_seq = st.replay.applied_through().0;
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
+        let industry = industry::snapshot(st);
         let extra = phase1::snapshot(st);
         let this = Arc::clone(self);
-        self.spawn_io(move || this.commit(meta, world, extra, obs_seq));
+        self.spawn_io(move || this.commit(meta, world, industry, extra, obs_seq));
     }
 
-    fn commit(&self, meta: Vec<u8>, world: Vec<u8>, extra: Vec<(PageKey, Vec<u8>)>, obs_seq: u64) {
+    fn commit(
+        &self,
+        meta: Vec<u8>,
+        world: Vec<u8>,
+        industry: Vec<(PageKey, Vec<u8>)>,
+        extra: Vec<(PageKey, Vec<u8>)>,
+        obs_seq: u64,
+    ) {
         let _z = rt::zone!("rtsim.save");
         if self.dead.load(Ordering::Acquire) {
             return;
@@ -1186,7 +1246,13 @@ impl Engine {
         let mut batch = SaveBatch::new();
         batch.put(KEY_META, &meta);
         batch.put(KEY_WORLD, &world);
+        for k in industry::deletions(store, &industry) {
+            batch.delete(k);
+        }
         for (k, b) in &extra {
+            batch.put(*k, b);
+        }
+        for (k, b) in &industry {
             batch.put(*k, b);
         }
         match store.commit(batch, obs_seq) {
@@ -1208,15 +1274,27 @@ impl Engine {
     fn write_commands(&self, st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
         let mut highest = 0;
         loop {
-            // Phase 1's kept commands go out merged with the core's in sequence order: Java skips
-            // a command at or below the last it applied.
-            let (h, full) = phase1::write_resends(st, w, st.resend.front().map(|r| r.0));
+            // The industry link's and phase 1's kept commands go out merged with the core's in
+            // sequence order: Java skips a command at or below the last it applied.
+            let core = st.resend.front().map(|r| r.0);
+            if core.is_none()
+                && phase1::next_resend(st).is_none()
+                && industry::next_resend(st).is_none()
+            {
+                break;
+            }
+            let (h, full) = industry::write_resends(st, w, lowest(core, phase1::next_resend(st)));
+            highest = highest.max(h);
+            if full {
+                return (highest, true);
+            }
+            let (h, full) = phase1::write_resends(st, w, lowest(core, industry::next_resend(st)));
             highest = highest.max(h);
             if full {
                 return (highest, true);
             }
             let Some((seq, op, t)) = st.resend.front().cloned() else {
-                break;
+                continue; // the others wrote theirs; the loop ends when all three are empty
             };
             let need = st.dict_bytes(&[
                 (wire::DICT_DIMENSION, &t.dimension),
@@ -1271,8 +1349,22 @@ impl Engine {
             }
             self.stats.orders_pending.fetch_sub(1, Ordering::AcqRel);
         }
+        let (h, more) = industry::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
         let (h, more) = phase1::write_queue(st, w);
         (highest.max(h), more)
+    }
+}
+
+/// The lower of two next sequences, `None` standing for none at all.
+fn lowest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) => x,
+        (None, y) => y,
     }
 }
 
@@ -1289,7 +1381,10 @@ fn op_of(rec: &Rec<'_>) -> Option<OpId> {
         {
             wire::u64_at(b, obs::command_result::OP_ID)
         }
-        _ => phase1::op_of(rec),
+        _ => match industry::op_of(rec) {
+            0 => phase1::op_of(rec),
+            op => op,
+        },
     };
     (raw != 0).then_some(OpId(raw))
 }
@@ -1457,7 +1552,7 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             None
         }
         Order::Fail => panic!("a FAIL order (tests): the engine fails on purpose"),
-        Order::SaveAtNextStep => None,
+        Order::SaveAtNextStep | Order::IndustryThreat(_) | Order::IndustryCommand { .. } => None,
         other => phase1::write_scripted(st, w, &other),
     }
 }

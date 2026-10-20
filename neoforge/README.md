@@ -9,6 +9,7 @@ per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.2
 | `core` | `mic_rtsim` | NeoForge and mic_native, MIC's native host (no pack mod, D4) | the bridge, and phase 1's vanilla side: villages, markets, caravans, gossip, damage, rescues, robbery, player bases, growth |
 | `ribbits` | `mic_rtsim_ribbits` | Ribbits 4.1.6 (with YUNG's API 5.1.9, GeckoLib 4.9.3) | ribbit villages and residents, merchant caravans, touring bands, sorcerers who remember, growth from YUNG's houses (C7, C23) |
 | `carryon` | `mic_rtsim_carryon` | Carry On 2.2.6.13 | a creature picked up leaves the sim (A10) |
+| `create` | `mic_rtsim_create` | Create 6.0.10 (its jar-in-jar Ponder, Flywheel and Registrate for compiling) | the industry plugin (INDUSTRY.md §12 layer 2): kinetic, belt, pipe and chain merging, vault and tank controllers, packager targets, postboxes counted by package contents, station names, train arrivals and departures, carriage deltas through `TrainCargoManager`, the "District ledger" display source; and every industry GameTest |
 
 The plugins compile against the pack's own jars, read from `packMods` in `gradle.properties` (the MIC
 smoke server's mods folder next to this repository; `-PpackMods=...` to point elsewhere), and their
@@ -88,6 +89,7 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `base` | phase 1: player bases as market nodes (C26, P30's recommendation; `data/mic_rtsim_bases.dat`). |
 | `growth` | phase 1: player-placed block marks, house placement from templates, resident spawns (C7). |
 | `bridge/Phase1` | wires phase 1 to the tick, the events and the commands. |
+| `industry` | the industry module (C15 to C19, INDUSTRY.md, docs/industry-boundary.md): district detection and the index (`Districts`, `data/mic_rtsim_industry.dat`), the boundary stock sampler (`Sampler`), player ports (`PlayerPorts`), reconciles and damage (`Reconciler`, the `mic_rtsim:reconcile` chunk attachment), the read-only ledger (`Ledgers`), GOOD names (`Goods`), `/rtsim district` (`IndustryCommands`), its own server config (`mic_rtsim-industry-server.toml`) and the plugin API (`IndustryPlugin`, `IndustryApi`). Mod-agnostic: capabilities and NeoForge events only. Choices H1 to H29 in `docs/overnight-choices-industrymc.md`. |
 | `gametest` | the GameTests, in the `mic_rtsim` namespace, and helpers the plugins' tests share (`RtsimTests`, `FakePlayers`). |
 
 ## The GameTests
@@ -142,6 +144,26 @@ The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
 | `ribbitmerchantstradeandrestockthroughthetreasury` | C23: a ribbit merchant repriced from its village market; a disliked player brings twice the slime for a shard; a restock keeps the treasury's uses |
 | `acarryonpickuptakesthecreatureoutofthesim` | Carry On's `EntityPickupEvent`: TAKEN(PICKUP) with the cargo; `Entity.save` works on the llama afterwards |
 
+The industry GameTests (`mic_rtsim_create` namespace; Create 6.0.10's own jar; always the stub engine,
+which scripts the engine's industry commands; each in its own batch):
+
+| Test | What it shows |
+|---|---|
+| `adistrictisdetectedacrossshaftsandnamed` | I2: a player's chest and Create shafts across two chunk borders make one three-chunk district; it is named by its coordinates; a repeated detection keeps its id and revision (and is timed); `/rtsim district rename` and `split` (IND_EDIT 4); a shaft across the split makes both not learnable (rotation) |
+| `adistrictisnamedafteritsstation` | a real `create:track_station` on a real track graph names its district; IND_STATION carries id, district and name |
+| `asweepreportsboundarystockandtheliveflag` | I3, F5: a chest, a vault and a postbox in two chunks; a live sweep reports them all, the package by its contents, and IND_SWEEP_END's record count matches; with an unloaded member chunk the sweep is partial and IND_LOAD_STATE says so; IND_WATCHED is sent (no player: not watched) |
+| `atrainarrivalisobserved` | the `Train.arriveAt` mixin: IND_TRAIN_ARRIVED with the carriage's 32 ingots, not simulated; ten unloaded at the stop are an IND_PORT (+10) at `leaveStation`; IND_TRAIN_DEPARTED follows |
+| `asimulatedstationexchangesthroughthecargomanager` | I15: at an unloaded district's station the arrival is simulated; IND_CARRIAGE_DELTA applies through `TrainCargoManager` (removals first), IND_CARRIAGE_RESULT; the same op id again is DUPLICATE |
+| `areconcileappliesonceacrossasimulatedcrash` | I8: +20 iron and epoch 1 in the chunk; the op resent and a new op for epoch 1 are both DUPLICATE; a chunk restored to before the reconcile takes it once; epoch 2 on top; a player's block is one IND_EDIT, a block set otherwise none |
+| `removalsgofirstandashortfallisreported` | a full chest: +64 iron fits only because the removals go first; -50 diamonds of 10 is reported as -10 applied |
+| `abrokenblockdropsitscontents` | C18, I23: a destroy entry with the expected state breaks the chest with drops (12 emeralds on the ground), one with a changed state is skipped, no fire; the result names the block |
+| `aheldreconcileapplieswhenitschunkloads` | §4.1: a far chunk's reconcile is held while it is unloaded, applied at its load after IND_CHUNK_LOADED; after a real unload and reload the epoch comes back from the chunk's NBT |
+| `theledgershowsonadisplay` | I18: a Display Link on a Stock Link shows the district's ledger (name, state, +120/h, "would have made 500") on a sign; IND_LEDGER_REQUEST |
+| `mailatanunloadeddistrictisapackagerecord` | F26, H30: a package dropped into an unloaded district's postbox buffer is IND_PACKAGE in (address, 40 iron and 3 coal), one fetched is IND_PACKAGE out |
+| `playerportsarecounted` | §3.3, H14: a fake player's container session on a district chest (+5 iron, with the chest's index), a toss (+3) and a pickup (-2) through NeoForge's own events; none is an edit |
+| `adoublechestisoneinventory` | H8: two chest halves are one 54-slot inventory at the lower half; the canonical lookup never loads a chunk |
+| `sweepcostonlargevaults` | INDUSTRY.md §19 risk 2: a 3 x 3 x 9 vault is one inventory; read cost per inventory and per slot, logged (H10) |
+
 ## Not done yet
 
 - **A simulating engine.** The native engine's world (rtsim-jni `world.rs`) keeps the books of the
@@ -167,3 +189,10 @@ The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
 - **Body kinds as data** (P15): group layouts are code.
 - **A GameTest for a server at simulation distance 10** (risk R1): it needs real players.
 - **The real engine**: every phase 1 test scripts the engine side through the stub.
+- **Industry** (docs/overnight-choices-industrymc.md): IND_PACKAGE for loaded districts (H30), IND_WRITE_PACKAGE,
+  IND_CHANNEL_DELTA and IND_DEPOSIT_DELTA (answered FAILED: no plugin applies them yet), deposits in
+  reconciles, IND_CONDITIONS (seasons), the threat records (IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY),
+  the I16 gauge mixins, the PowerGrid, Destroy, Ore Excavation and Ender Transmission plugins; IND_WATCHED
+  with a real player near and the simulation-distance rule are not covered by a GameTest (no real
+  player); a real assembled train on a schedule is not tested (the station hooks run on synthetic
+  trains).

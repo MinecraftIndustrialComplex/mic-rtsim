@@ -34,6 +34,13 @@ import java.util.UUID;
  *   <li>6 REWIND_CMD_SEQ: u64 next.</li>
  *   <li>7 FAIL: no body. The step that writes it panics on purpose (an engine opened with
  *       {@code FLAG_TEST} only).</li>
+ *   <li>8 INDUSTRY_THREAT: u64 id, u32 source, u32 class, u32 count, u32 target kind, f64 strength,
+ *       u64 target, u64 gameTime (rtsim-jni's orders.rs; no Java caller yet).</li>
+ *   <li>9 INDUSTRY_COMMAND: u32 names, then per name: u32 dictionary kind, u32 Java's id, str name
+ *       (the Java dictionary entries the record uses); then an industry command record exactly as
+ *       docs/industry-boundary.md §4 lays it out (its cmdSeq ignored), with Java's own dictionary ids
+ *       (GOOD, NAME, BLOCK_STATE and dimension). The engine writes it as if its industry engine had
+ *       decided it (choice W17).</li>
  *   <li>16 MARKET: u64 village, u64 asOfObsSeq, str currency, i64 treasury, i64 treasuryTarget,
  *       i32 worstNum, i32 worstDen, u32 goodCount, then per good: str item, i64 stock, i64 target,
  *       i64 anchor, i32 rNum, i32 rDen.</li>
@@ -51,9 +58,10 @@ import java.util.UUID;
  *       none), u32 flags, f64 x, f64 y, f64 z, u64 house.</li>
  *   <li>22 SCRIPT_VILLAGE: u64 village. The engine applies none of that village's observations to its
  *       own world and sends no phase 1 command of its own for it.</li>
- *   <li>23 P1_SPAWN_NEAR: u64 agent, u32 epoch, str dimension, f64 x, f64 y, f64 z, u32 radius.
- *       Materialize the phase 1 traveller nearest (x, z) within radius blocks, as group agent/epoch,
- *       at (x, y, z) (an engine opened with {@code FLAG_TEST} only).</li>
+ *   <li>23 P1_SPAWN_NEAR: u64 agent, u32 epoch, str dimension, f64 x, f64 y, f64 z, u32 radius,
+ *       f64 searchX, f64 searchZ. Materialize the phase 1 caravan with wares nearest (searchX, searchZ)
+ *       within radius blocks, as group agent/epoch, at (x, y, z) (an engine opened with
+ *       {@code FLAG_TEST} only).</li>
  *   <li>24 P1_ADVANCE: u64 ticks. The phase 1 world runs this many more ticks ahead of game time from
  *       now on (an engine opened with {@code FLAG_TEST} only).</li>
  * </ul>
@@ -74,7 +82,8 @@ final class NativeCodec {
     static final int SAVE_AT_NEXT_STEP = 5;
     static final int REWIND_CMD_SEQ = 6;
     static final int FAIL = 7;
-    // 8 to 15: reserved.
+    static final int INDUSTRY_COMMAND = 9;
+    // 10 to 15: reserved.
     static final int MARKET = 16;
     static final int MERCHANT_OFFERS = 17;
     static final int WRITE_GOSSIP = 18;
@@ -283,7 +292,8 @@ final class NativeCodec {
             return end();
         }
 
-        Orders phase1SpawnNear(long agent, int epoch, String dimension, double x, double y, double z, int radius) {
+        Orders phase1SpawnNear(long agent, int epoch, String dimension, double x, double y, double z, int radius,
+                               double searchX, double searchZ) {
             begin(P1_SPAWN_NEAR);
             u64(agent);
             u32(epoch);
@@ -292,12 +302,27 @@ final class NativeCodec {
             f64(y);
             f64(z);
             u32(radius);
+            f64(searchX);
+            f64(searchZ);
             return end();
         }
 
         Orders phase1Advance(long ticks) {
             begin(P1_ADVANCE);
             u64(ticks);
+            return end();
+        }
+
+        Orders industryCommand(List<NativeEngine.DictEntry> names, byte[] record) {
+            begin(INDUSTRY_COMMAND);
+            u32(names.size());
+            for (NativeEngine.DictEntry n : names) {
+                u32(n.kind());
+                u32(n.id());
+                str(n.name());
+            }
+            room(record.length);
+            b.put(record);
             return end();
         }
 

@@ -160,6 +160,31 @@ class NativeCodecTest {
     }
 
     @Test
+    void anIndustryCommandCarriesItsNamesThenTheRecord() {
+        byte[] record = new byte[48];
+        ByteBuffer rb = ByteBuffer.wrap(record).order(ByteOrder.LITTLE_ENDIAN);
+        rb.putShort(0, (short) 0x8403);
+        rb.putShort(2, (short) 48);
+        rb.putLong(16, (0x49L << 56) | 7);
+        byte[] bytes = new NativeCodec.Orders().industryCommand(List.of(
+                new NativeEngine.DictEntry(0x10, 3, "d/0/oreexcavation:vein"),
+                new NativeEngine.DictEntry(1, 1, "minecraft:overworld")), record).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.INDUSTRY_COMMAND);
+        assertEquals(bytes.length, end);
+        assertEquals(2, r.u32());
+        assertEquals(0x10, r.u32());
+        assertEquals(3, r.u32());
+        assertEquals("d/0/oreexcavation:vein", r.str());
+        assertEquals(1, r.u32());
+        assertEquals(1, r.u32());
+        assertEquals("minecraft:overworld", r.str());
+        byte[] tail = new byte[end - r.b.position()];
+        r.b.get(tail);
+        assertArrayEquals(record, tail, "the record follows the names unchanged");
+    }
+
+    @Test
     void manyOrdersGrowTheBufferAndChainTheirSizes() {
         NativeCodec.Orders orders = new NativeCodec.Orders();
         for (int i = 0; i < 200; i++)
@@ -394,7 +419,7 @@ class NativeCodecTest {
     void scriptVillageAndTheTestModeOrdersEncodeTheirFields() {
         byte[] bytes = new NativeCodec.Orders()
                 .scriptVillage(0x1122334455667788L)
-                .phase1SpawnNear(0x0102030405060708L, 5, "minecraft:overworld", 1.5, -64.25, 1e9, 48)
+                .phase1SpawnNear(0x0102030405060708L, 5, "minecraft:overworld", 1.5, -64.25, 1e9, 48, 1_000_000.5, -7.0)
                 .phase1Advance(24_000L)
                 .toBytes();
         Reader r = new Reader(bytes);
@@ -414,8 +439,10 @@ class NativeCodecTest {
         assertEquals(-64.25, r.f64(), "y");
         assertEquals(1e9, r.f64(), "z");
         assertEquals(48, r.u32(), "radius");
+        assertEquals(1_000_000.5, r.f64(), "searchX");
+        assertEquals(-7.0, r.f64(), "searchZ");
         assertEquals(end, r.b.position());
-        assertEquals(8 + 8 + 4 + 4 + 19 + 24 + 4, end - start);
+        assertEquals(8 + 8 + 4 + 4 + 19 + 24 + 4 + 16, end - start);
 
         start = r.b.position();
         end = r.header(NativeCodec.P1_ADVANCE);

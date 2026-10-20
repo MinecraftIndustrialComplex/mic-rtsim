@@ -413,11 +413,15 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     /**
-     * Test only (an engine opened with {@link #FLAG_TEST}): materializes the phase 1 traveller nearest
-     * (x, z) within {@code radius} blocks as group {@code agent}/{@code epoch}, at (x, y, z).
+     * Test only (an engine opened with {@link #FLAG_TEST}): materializes the phase 1 caravan with wares
+     * nearest (searchX, searchZ) within {@code radius} blocks, as group {@code agent}/{@code epoch}, at
+     * (x, y, z). Nothing spawns if no caravan carrying at least one whole item is that close (the
+     * engine logs it): advance the world and ask again.
      */
-    public void phase1SpawnNear(long agent, int epoch, String dimension, double x, double y, double z, int radius) {
-        order(new NativeCodec.Orders().phase1SpawnNear(agent, epoch, dimension, x, y, z, radius), "P1_SPAWN_NEAR");
+    public void phase1SpawnNear(long agent, int epoch, String dimension, double x, double y, double z, int radius,
+                                double searchX, double searchZ) {
+        order(new NativeCodec.Orders().phase1SpawnNear(agent, epoch, dimension, x, y, z, radius, searchX, searchZ),
+                "P1_SPAWN_NEAR");
     }
 
     /**
@@ -454,6 +458,21 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public void requestSaveAtNextStep() {
         order(new NativeCodec.Orders().saveAtNextStep(), "SAVE_AT_NEXT_STEP");
+    }
+
+    /** One entry of Java's dictionary that an ordered industry command uses. */
+    public record DictEntry(int kind, int id, String name) {}
+
+    /**
+     * Orders an industry command (docs/industry-boundary.md §4): {@code record} is the whole record,
+     * its cmdSeq ignored, with Java's own dictionary ids (GOOD, NAME, BLOCK_STATE, dimension), and
+     * {@code names} the entries it uses. The engine writes it as its industry engine's own: its
+     * sequence, the DICT records it needs, and, for a carriage, channel, deposit or package command,
+     * its outbox until Java answers. Tests drive the industry module with it; the engine decides its
+     * own commands.
+     */
+    public void industryCommand(List<DictEntry> names, byte[] record) {
+        order(new NativeCodec.Orders().industryCommand(names, record), "INDUSTRY_COMMAND");
     }
 
     // ---- ScriptedEngine: inspection -------------------------------------------------------------

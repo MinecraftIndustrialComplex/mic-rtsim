@@ -19,7 +19,7 @@
 //! - **Commands** ([`write_resends`], [`write_queue`]): MARKET, MERCHANT_OFFERS, WRITE_GOSSIP,
 //!   SENTIMENT, PLACE_HOUSE, SPAWN_RESIDENT and the puppet commands. Those the bridge answers by op
 //!   id are kept until it does and resent after a restart, in sequence order with the core's.
-//! - **Pages** ([`Link::load`], [`snapshot`]): table 2 (choice V7): a meta page, then the input log
+//! - **Pages** ([`Link::load`], [`snapshot`]): table 0x5000 (choice V7): a meta page, then the input log
 //!   in chunks of 1,024 inputs; a save writes the meta page and the chunks that changed.
 //!
 //! A test's scripted village ([`directive`], `ScriptVillage`) is left alone entirely: its
@@ -52,8 +52,9 @@ use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 pub(super) use cmds::P1Cmd;
 use log::{Input, Logged, Uuid};
 
-/// The phase 1 pages: table 2 (table 1 is the core's and the industry link's).
-pub const TABLE: u16 = 2;
+/// The phase 1 pages: table 0x5000 ('P'; table 1 is the core's and the industry link's key, the
+/// industry engine's are 0x4900 to 0x4902).
+pub const TABLE: u16 = 0x5000;
 pub const KEY_META: PageKey = PageKey::new(TABLE, 0);
 /// Inputs per log page.
 pub const CHUNK: usize = 1024;
@@ -1745,6 +1746,11 @@ fn write_one(st: &mut State, w: &mut RecordWriter<'_>, c: &P1Cmd, seq: Option<u6
         P1Cmd::Steer { .. } => {}
     }
     One::Written(seq)
+}
+
+/// The sequence of the next kept command to resend, if any.
+pub(super) fn next_resend(st: &State) -> Option<u64> {
+    st.phase1.resend.front().map(|r| r.0)
 }
 
 /// Resends kept commands with sequences at or below `through` (all with `None`). Returns the

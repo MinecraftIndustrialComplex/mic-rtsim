@@ -30,7 +30,8 @@ use mic_native_rt::abi;
 use rtsim_kernel::page::Durability;
 
 use crate::engine::{
-    Config, Engine, Exec, FLAG_NO_FSYNC, FLAG_TEST, PHASE1_STATS, STATS_LEN, last_error,
+    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, PHASE1_STATS,
+    STATS_LEN, last_error,
     set_last_error,
 };
 use crate::orders;
@@ -77,6 +78,7 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         if flags & FLAG_NO_FSYNC != 0 {
             cfg.durability = Durability::NoSync;
         }
+        cfg.industry_read_only = flags & FLAG_INDUSTRY_READ_ONLY != 0;
         if mic_native_rt::try_host().is_none() {
             // No fallback without the host (A8): the library was System.load-ed before loadPlugin.
             set_last_error(

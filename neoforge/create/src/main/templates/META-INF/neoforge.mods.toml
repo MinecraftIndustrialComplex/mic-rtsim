@@ -1,0 +1,44 @@
+modLoader     = "javafml"
+loaderVersion = "${loader_version_range}"
+license       = "${mod_license}"
+
+# Create mixins: Train.arriveAt and Train.leaveStation (the station hooks, INDUSTRY.md §3.3, §8.1).
+# defaultRequire 1: a mixin that no longer matches its target fails the launch (P7, PATCHES.md).
+[[mixins]]
+config = "mic_rtsim_create.mixins.json"
+
+[[mods]]
+modId       = "${mod_id}"
+version     = "${mod_version}"
+displayName = "${mod_name}"
+authors     = "${mod_authors}"
+description = '''${mod_description}'''
+
+[[dependencies.${mod_id}]]
+    modId        = "minecraft"
+    type         = "required"
+    versionRange = "${minecraft_version_range}"
+    ordering     = "NONE"
+    side         = "BOTH"
+
+[[dependencies.${mod_id}]]
+    modId        = "neoforge"
+    type         = "required"
+    versionRange = "${neo_version_range}"
+    ordering     = "NONE"
+    side         = "BOTH"
+
+[[dependencies.${mod_id}]]
+    modId        = "mic_rtsim"
+    type         = "required"
+    versionRange = "[0.1.0,)"
+    ordering     = "AFTER"
+    side         = "BOTH"
+
+# The plugin is built around one mod (D4); verified against Create 6.0.10 (javap, INDUSTRY.md Appendix A).
+[[dependencies.${mod_id}]]
+    modId        = "create"
+    type         = "required"
+    versionRange = "[6.0.10,6.1)"
+    ordering     = "AFTER"
+    side         = "BOTH"
