@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
@@ -66,12 +67,12 @@ public final class WorldGameTests {
         return java.util.concurrent.ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE; // an engine op: top bit clear
     }
 
-    private static StubEngine.Received result(StubEngine stub, long op) {
+    private static StubEngine.Received result(ScriptedEngine stub, long op) {
         List<StubEngine.Received> rs = RtsimTests.recordsWith(stub, Obs.COMMAND_RESULT, Obs.CommandResult.OP_ID, op);
         return rs.isEmpty() ? null : rs.get(rs.size() - 1);
     }
 
-    private static List<StubEngine.Received> results(StubEngine stub, long op) {
+    private static List<StubEngine.Received> results(ScriptedEngine stub, long op) {
         return RtsimTests.recordsWith(stub, Obs.COMMAND_RESULT, Obs.CommandResult.OP_ID, op);
     }
 
@@ -97,7 +98,7 @@ public final class WorldGameTests {
         ChunkAccess chunk = level.getChunk(cp.x, cp.z);
         level.structureManager().setStartForStructure(SectionPos.bottomOf(chunk), plains, start, chunk);
         long id = Obs.villageId(RtsimTests.session().dimId(level.dimension()), cp.x, cp.z);
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         helper.startSequence()
                 .thenWaitUntil(() -> check("VILLAGE_ADOPTED reached the engine",
                         !RtsimTests.recordsWith(stub, Obs.VILLAGE_ADOPTED, Obs.VillageAdopted.VILLAGE, id).isEmpty()))
@@ -127,7 +128,9 @@ public final class WorldGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_gossip")
     public static void gossipIsWrittenOnce(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, Cultures.HUMAN);
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         Villager first = helper.spawn(EntityType.VILLAGER, new Vec3(3.5, 2, 3.5));
         first.setNoAi(true);
         UUID robber = UUID.randomUUID();
@@ -210,7 +213,9 @@ public final class WorldGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_gossip_many")
     public static void moreGossipThanTheOpRingIsStillWrittenOnce(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, Cultures.HUMAN);
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         Villager first = helper.spawn(EntityType.VILLAGER, new Vec3(3.5, 2, 3.5));
         first.setNoAi(true);
         UUID player = UUID.randomUUID();
@@ -274,7 +279,9 @@ public final class WorldGameTests {
             testCulture = true;
         }
         Village v = RtsimTests.adoptArena(helper, "mic_rtsim_test");
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         ServerLevel level = helper.getLevel();
         String dim = RtsimTests.dimension(helper);
         // Plot A: a block a player placed. A snow layer: replaceable, so only the player's mark stops the house.
@@ -334,7 +341,7 @@ public final class WorldGameTests {
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1);
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         Entity[] trader = new Entity[1];
         helper.startSequence()
                 .thenWaitUntil(() -> RtsimTests.embodied(agent))
@@ -367,7 +374,7 @@ public final class WorldGameTests {
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1);
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         TraderLlama[] llama = new TraderLlama[1];
         helper.startSequence()
                 .thenWaitUntil(() -> RtsimTests.embodied(agent))
@@ -409,7 +416,7 @@ public final class WorldGameTests {
     public static void cargoTakenFromAChestIsReported(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1);
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         helper.startSequence()
                 .thenWaitUntil(() -> RtsimTests.embodied(agent))
                 .thenExecute(() -> {
@@ -443,7 +450,7 @@ public final class WorldGameTests {
         RtsimSession s = RtsimTests.session();
         // A long stay, as one weighted sample.
         s.phase1.bases.sample(s, player, helper.getLevel().dimension(), at.x, at.y, at.z, BaseTracker.MARK + 1, s.gameTime());
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         helper.startSequence()
                 .thenWaitUntil(() -> check("BASE reached the engine",
                         !RtsimTests.recordsWith(stub, Obs.BASE, Obs.Base.PLAYER_MOST, player.getMostSignificantBits()).isEmpty()))
@@ -473,7 +480,7 @@ public final class WorldGameTests {
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1); // llama 1 carries 12 emeralds and 30 wheat
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         ServerLevel level = helper.getLevel();
         long[] op = new long[1];
         List<ItemEntity> drops = new ArrayList<>();

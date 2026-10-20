@@ -1,7 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.gametest.framework.GameTest;
@@ -48,8 +48,8 @@ public final class PuppetJoinGameTests {
     public static void staleEpochCopyIsDiscardedOnJoin(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
-        RtsimTests.stub().spawnGroup(agent, 2, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
-                List.of(StubEngine.MemberSpec.plain(0)));
+        RtsimTests.engine().spawnGroup(agent, 2, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
+                List.of(ScriptedEngine.MemberSpec.plain(0)));
         long[] staleBefore = new long[1];
 
         helper.startSequence()
@@ -79,7 +79,7 @@ public final class PuppetJoinGameTests {
                     check("four stale copies were counted, saw " + discarded, discarded == 4);
                     check("the live puppet is untouched", !puppet.isRemoved() && level.getEntity(puppet.getUUID()) == puppet);
                     check("and is still the live member", RtsimTests.group(agent) != null && RtsimTests.group(agent).epoch == 2);
-                    RtsimTests.stub().despawnGroup(agent, 2);
+                    RtsimTests.engine().despawnGroup(agent, 2);
                 })
                 .thenWaitUntil(() -> check("the puppet was despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();

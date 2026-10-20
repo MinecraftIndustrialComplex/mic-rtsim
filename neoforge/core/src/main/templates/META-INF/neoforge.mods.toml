@@ -27,3 +27,12 @@ description = '''${mod_description}'''
     versionRange = "${neo_version_range}"
     ordering     = "NONE"
     side         = "BOTH"
+
+# The Rust engine (rtsim-jni) is a native plugin of mic_native; the bridge does not run without it
+# (A8: no fallback to the Java stub in play).
+[[dependencies.${mod_id}]]
+    modId        = "mic_native"
+    type         = "required"
+    versionRange = "[0.1.0,)"
+    ordering     = "AFTER"
+    side         = "BOTH"

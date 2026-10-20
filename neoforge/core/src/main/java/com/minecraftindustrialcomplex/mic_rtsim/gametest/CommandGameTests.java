@@ -34,7 +34,7 @@ public final class CommandGameTests {
                             agent[0] = g.agent;
                     check("the stub caravan the command asked for is embodied", agent[0] >= 0);
                 })
-                .thenExecute(() -> RtsimTests.stub().despawnGroup(agent[0], 1))
+                .thenExecute(() -> RtsimTests.engine().despawnGroup(agent[0], 1))
                 .thenWaitUntil(() -> check("and despawned again", RtsimTests.group(agent[0]) == null))
                 .thenSucceed();
     }
