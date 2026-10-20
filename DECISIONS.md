@@ -20,6 +20,7 @@ Every decision about mic-rtsim, newest at the bottom.
 | D5 | 2026-10-19 | Ribbits gets extra high priority. | Ben | "Also, give the ribbits mod extra high priority for this (It's one of my favourite mods.)" |
 | D6 | 2026-10-19 | Planning for late-game load in huge worlds with millions of entities or more starts first. Algorithms and data abstraction get special attention. | Ben | "we need plans extremely early on for how to actualyl handle late late game load for absolutely fucking massive worlds with millions or more entities." and "What is the current plan to deal with this in terms of algorithms, you also need to be paying special attention to data abstractino, etc." |
 | D7 | 2026-10-19 | NPC bodies should look and feel like Minecraft mobs, not players. Player-skinned humanoid NPC mods are not the default body source; each phase picks mob-like bodies. | Ben | "In general, really not a big fan of NPC's that look / feel like actual minecraft players instead of minecraft mobs." |
+| D8 | 2026-10-20 | Design depth is not a risk to guard against. mcrtsim failed because of the weak models of its time, not because of its ambition; Deep Time shows a design this big can be built. Phase 0 is not to be rushed as a hedge against over-design; when it starts is still open. | Ben | "mcrtsim got killed by being done by shitty models, not this. If you need proof that this works now, look at Deeptime. (Ludicroius ambition, and a shit ton of code.)" |
 
 ## Architecture
 
@@ -70,6 +71,9 @@ Every decision about mic-rtsim, newest at the bottom.
 | C21 | 2026-10-20 | Caravan cargo rides physically in the trader llamas' chests. Killing a llama drops it, and the loot is a journaled transfer (P20). | Ben | chose "In the chests" |
 | C22 | 2026-10-20 | For now a village joins the sim when its structure start generates. Later, the existence of villages and much of structure generation will probably move into the sim (P22). | Ben | "For now when generated, eventually we will probably move the existence of villages, and much of structure generation into our system." |
 | C23 | 2026-10-20 | Ribbit merchants' trades and restocks go through the ribbit village's treasury and stock, as villagers' do under C14 (P23). | Ben | chose "Through the treasury" |
+| C24 | 2026-10-20 | Adopted from mcrtsim (research/mcrtsim-mining-2026-10-19.md): predator havens (stolen goods flow to the raider's home market and are sold there, so totals stay conserved); heirs inherit grudges (notables age and die on one scheduled event, and an heir or home inherits their strongest memories); threats get bored (a scheduled departure, brought forward by damage or hunger); rescues count (saving a caravan gives a positive report). | Ben | chose all four |
+| C25 | 2026-10-20 | Also adopted from mcrtsim: temperament derived from each notable's seed weights its choices; a server config switch per module (turning off trade or travel restores vanilla trader spawning); groups (trader and llamas, rider and mount, ship and crew, band and master) materialize, capture and despawn as one unit. | Ben | chose all three |
+| C26 | 2026-10-20 | Every player base is a market node that caravans visit, buy and sell at, and carry prices from as news. | Ben | chose "Every base" |
 
 ## Agreed with the Deep Time session
 
