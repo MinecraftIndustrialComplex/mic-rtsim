@@ -63,6 +63,19 @@ marked PLACEHOLDER are not measured. Branch `overnight/persist`.
   adopts the egg dragon once, and leaves every dragon's health and grudge as before the crash; the
   same robbery's op id again is applied once.
 
+## Results
+
+- **Rust:** `cargo test --workspace` 331 passed, 0 failed (313 before this branch);
+  `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all --check` clean.
+  The phase 1 restore property test also passed at 1,000 cases, the world-level one at 1,000.
+- **GameTests, native engine** (nothing on the Java side changed; run because the native engine's
+  saves did): core 37 of 37 on a fresh GameTest world, then 37 of 37 again on the same world, whose
+  start read the first run's snapshot and replayed a tail of 1 input ("phase 1 world restored to
+  world tick 102984: snapshot of 6075 bytes at tick 102528 ..., then 1 inputs replayed"); ribbits 5
+  of 5, carryon 1 of 1. The stub engine has no Rust in it and was not rerun.
+- **Restore time:** `bench/results/restore.md` (8.2 ms at 1,024 villages after 100 days against
+  4,251 ms replaying the log; 35.3 ms against 23,160 ms at 4,096).
+
 ## Incomplete
 
 - **The kernel follow-up** (`overnight/kernel2`: paging under a memory budget, two save
@@ -77,7 +90,6 @@ marked PLACEHOLDER are not measured. Branch `overnight/persist`.
   dragons' records yet. Its executable reference is the fake plugin in
   `crates/rtsim-jni/tests/common` (`dragon_obs`, `dragon_command`); docs/boundary.md §6.5 and §6.6
   say what it does in game.
-- **No GameTests** were run: nothing on the Java side changed.
 - **Not measured:** a save's snapshot cost with dragons present at every save (S4: about 4.5 ms
   of encoding and 3.7 ms of LZ4 at 1,024 villages, from the restore bench, plus the dragons'
   page).
