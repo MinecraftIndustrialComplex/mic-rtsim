@@ -2966,7 +2966,9 @@ impl Dragons {
     /// An untagged dragon appeared in the world (P13's recommendation: the sim owns every
     /// dragon). Tamed ones are the player's (A10) and are left alone; a lair's own dragon from
     /// world generation is adopted as its occupant; spawn eggs and commands are adopted as
-    /// wanderers; natural and spawner dragons (a rule P13 removes) are discarded.
+    /// wanderers. Natural and spawner dragons (In Control's desert dragons) are left alone, not
+    /// adopted, discarded or tracked, unless `tun.adopt_natural_dragons` is set, which restores
+    /// R18's old rule: they are discarded (R18 as amended by OG-1 and P13, 2026-10-20).
     fn untagged(&mut self, w: &mut World, u: &boundary::Untagged, at: Tick) {
         if u.flags & boundary::UNTAGGED_TAMED != 0 || u.spawn == SpawnKind::Hatched {
             return;
@@ -2978,6 +2980,12 @@ impl Dragons {
             && self.dragons.contains(d)
         {
             self.adopt_again(w, d, u, at);
+            return;
+        }
+        // Left alone (a dragon this engine adopted before is still taken back above).
+        if matches!(u.spawn, SpawnKind::Natural | SpawnKind::Spawner)
+            && !self.tun.adopt_natural_dragons
+        {
             return;
         }
         let lair = (u.lair != 0).then(|| self.lair_of_key(u.lair)).flatten();

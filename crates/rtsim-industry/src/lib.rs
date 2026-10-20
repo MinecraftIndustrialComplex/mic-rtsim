@@ -9,6 +9,7 @@ pub mod engine;
 pub mod fake;
 pub mod ids;
 pub mod learn;
+pub mod model;
 pub mod obs;
 pub mod persist;
 pub mod reconcile;

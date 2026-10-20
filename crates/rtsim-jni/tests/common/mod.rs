@@ -784,10 +784,6 @@ impl Java {
                 .entries
                 .iter()
                 .for_each(|e| self.check_mirrored(DICT_GOOD, e.1.0)),
-            Cmd::ChannelDelta(d) => d
-                .goods
-                .goods()
-                .for_each(|g| self.check_mirrored(DICT_GOOD, g.0)),
             Cmd::WritePackage(p) => p
                 .goods
                 .goods()

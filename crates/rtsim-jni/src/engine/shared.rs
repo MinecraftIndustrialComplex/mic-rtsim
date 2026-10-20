@@ -220,6 +220,12 @@ pub(super) fn simulate(st: &mut State) {
             let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
             d.observe_home(w, uuid, pos, at.max(d.now()));
         }
+        if conflict::running(st) {
+            // The conflict's time-spent counter per chunk (P14, changed): an unowned source
+            // counts against the player who spent the most time in its chunks.
+            let (w, c) = (&mut st.phase1.world, &mut st.conflict.engine);
+            c.observe_presence(w, uuid, pos, at.max(c.now()));
+        }
         let (p, area) = st.phase1.world.observe_area(uuid, pos, at, r);
         st.shared.present.insert(uuid, (p, gt));
         st.phase1.taint();

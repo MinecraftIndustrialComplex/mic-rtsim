@@ -42,6 +42,29 @@ pub struct LearnTunables {
     /// Two stops within this many units of each other confirm a learned target. TUNABLE,
     /// PLACEHOLDER 64 (one stack of a 64-stack item).
     pub target_tolerance: i64,
+    /// Learned coupling (I6): an input needs this many valid starvation episodes before the
+    /// replay splits anything from it; until then it feeds everything (all-or-nothing). TUNABLE,
+    /// PLACEHOLDER 2.
+    pub coupling_min_episodes: u32,
+    /// Time after an input empties before its episode is measured, for work in progress on belts
+    /// and in machines to drain. TUNABLE, PLACEHOLDER 1,200 ticks (a minute).
+    pub coupling_settle_ticks: u64,
+    /// The shortest measured span of an episode. TUNABLE, PLACEHOLDER 2,400 ticks.
+    pub coupling_min_span_ticks: u64,
+    /// A good moved during an episode only if it made at least this many of its own largest
+    /// sweep-to-sweep steps (its batches) in the measured span, so one batch finishing inside a
+    /// machine never passes for a line that goes on. TUNABLE, PLACEHOLDER 3.
+    pub coupling_min_batches: f64,
+    /// A good moved during an episode if it made at least this share of its learned rate.
+    /// TUNABLE, PLACEHOLDER 0.8.
+    pub coupling_moved_share: f64,
+    /// The input itself stopped if it was used at most this share of its learned rate (else it
+    /// was fed and used as fast as it came, and the episode says nothing). TUNABLE, PLACEHOLDER
+    /// 0.2.
+    pub coupling_stopped_share: f64,
+    /// Goods expected to move fewer units than this over an episode cannot be judged and stay
+    /// coupled. TUNABLE, PLACEHOLDER 4.
+    pub coupling_min_units: f64,
 }
 
 impl Default for LearnTunables {
@@ -57,6 +80,13 @@ impl Default for LearnTunables {
             min_confidence: 0.0,
             stop_quiet_ticks: 2_400,
             target_tolerance: 64,
+            coupling_min_episodes: 2,
+            coupling_settle_ticks: 1_200,
+            coupling_min_span_ticks: 2_400,
+            coupling_min_batches: 3.0,
+            coupling_moved_share: 0.8,
+            coupling_stopped_share: 0.2,
+            coupling_min_units: 4.0,
         }
     }
 }
@@ -71,6 +101,19 @@ pub struct ReplayTunables {
     /// Item slots held back per produced item good and receiving inventory, for partial stacks
     /// (fragmentation). TUNABLE, PLACEHOLDER 1.
     pub fragment_margin_slots: i64,
+    /// A closing IND_APPROACH at most this far (blocks to the district's chunk box) sends the
+    /// district's reconcile ahead of arrival. TUNABLE, PLACEHOLDER 256: the Java side's own
+    /// approach radius (H23), so every closing record counts.
+    pub approach_distance_blocks: u32,
+    /// The replay stays stopped this long after the last closing record; then the player is
+    /// taken to have turned away and it goes on. TUNABLE, PLACEHOLDER 100 ticks: five of the Java
+    /// side's 20-tick reports.
+    pub approach_hold_ticks: u64,
+    /// Level-wide pollution (I14: greenhouse, ozone depletion, acid rain) a replayed district makes
+    /// is pushed to the level this often. TUNABLE, PLACEHOLDER 1,200 ticks (a minute): one command
+    /// per polluting unloaded district per period, the only replay cost that grows with time away,
+    /// because "live" asks for it.
+    pub live_pollution_ticks: u64,
 }
 
 impl Default for ReplayTunables {
@@ -78,6 +121,9 @@ impl Default for ReplayTunables {
         Self {
             restart_min_run_ticks: 200,
             fragment_margin_slots: 1,
+            approach_distance_blocks: 256,
+            approach_hold_ticks: 100,
+            live_pollution_ticks: 1_200,
         }
     }
 }
@@ -97,9 +143,12 @@ pub struct ThreatTunables {
     /// Observed fights count as "comparable" when the attacker strength is within this factor
     /// (I22). TUNABLE, PLACEHOLDER 2.0.
     pub comparable_strength_factor: f64,
-    /// Items one surviving attacker carries away (I23). TUNABLE, PLACEHOLDER: 0 for classes that
-    /// do not steal. Natural mobs do not take from containers (vanilla) and the pack sets dragon
-    /// `stealItems` false (verified, iaf-common.json), so only siege (bandit) carries anything.
+    /// Items one surviving attacker carries away (I23), when the threat brings no loads of its own.
+    /// TUNABLE, PLACEHOLDER: 0 for every class but siege. This is only the class fallback: an
+    /// attacking unit's own carry comes with its threat (K2-13's per-threat loads, `Threat::loads`),
+    /// so a flying attacker that carries (a dragon raid, say) says so itself. Natural mobs do not
+    /// take from containers (vanilla). (Ice and Fire's `stealItems` is a pixie setting; its dragons
+    /// have none.)
     pub carry_per_attacker: PerClass<i64>,
     /// The most one attack may steal, as parts per million of each good's boundary stock (I23).
     /// TUNABLE, PLACEHOLDER 100,000 (10%).

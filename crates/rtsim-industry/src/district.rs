@@ -19,14 +19,17 @@ use serde::Serialize;
 
 use crate::cluster::{MemberSpec, PoolKey, ProcSpec, ProcSpecBody};
 use crate::cmd::{BlockDestroy, ChunkReconcile};
-use crate::ids::{
-    ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap,
-};
+use crate::ids::{ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap};
 use crate::learn::{Learned, LearnedTarget, Learner, LinkKey};
+use crate::model::{BlackBox, DistrictModel, ModelProcess};
 use crate::obs::{DepositSample, InvKind, InventoryDecl, NotLearnable};
 use crate::reconcile::{GoodLookup, InvState};
 use crate::threat::{Defence, Outcome, ThreatClass, ThreatSource};
 use crate::tunables::Tunables;
+
+/// Replay process ids: a district's box processes (its learned coupling groups, I6) take 0, 1, 2
+/// ...; its link processes (packagers) start here.
+pub const LINK_PROC_BASE: u16 = 0x100;
 
 /// The inventory index used for deposit deltas inside a chunk reconcile.
 pub const DEPOSIT_INVENTORY: u32 = u32::MAX;
@@ -41,6 +44,9 @@ pub struct Inventory {
     pub known: GoodVec,
     pub known_at: Tick,
     pub pending: GoodVec,
+    /// Deltas a partial reconcile planned for this inventory while it stayed in the replay (I7):
+    /// not sent yet, counted in its contents, sent when its chunk leaves the replay.
+    pub held: GoodVec,
     pub received: BTreeSet<Good>,
     /// An attack will break this block at the next load (I23): it still takes its reconcile
     /// deltas, then everything in it drops. The replay no longer counts its room.
@@ -53,6 +59,7 @@ impl Inventory {
     pub fn effective(&self) -> GoodVec {
         let mut v = self.known.clone();
         v.merge(&self.pending);
+        v.merge(&self.held);
         v
     }
 
@@ -162,6 +169,8 @@ pub struct SimSpan {
     /// Stock pools' levels at the start, adjusted for physical changes since.
     pub base: GoodVec,
     pub season: u32,
+    /// The inventories the replay covers (I7): those whose chunks were unloaded at its start.
+    pub invs: BTreeSet<u32>,
 }
 
 /// A chunk's reconcile waiting for the chunk and then for Java's result.
@@ -192,7 +201,6 @@ pub struct ReconcileReport {
     pub trims: GoodVec,
     pub untracked: GoodVec,
     pub destroyed: u32,
-    pub read_only: bool,
 }
 
 /// One attack's record for the ledger (INDUSTRY.md §10).
@@ -272,8 +280,13 @@ pub struct District {
     pub made_total: GoodVec,
     /// The last time the box's run state changed, and why it stopped (`None`: it started).
     pub last_run: Option<(Tick, Option<crate::cluster::Stop>)>,
-    /// The latest IND_APPROACH (W16): data only, nothing acts on it yet.
+    /// The latest IND_APPROACH (W16).
     pub approach: Option<Approach>,
+    /// A player is on the way (IND_APPROACH, closing): the replay stopped and was reconciled
+    /// ahead of arrival, and does not start again before this tick (the stale-tick answer).
+    pub hold_until: Option<Tick>,
+    /// Makes an older hold's wake stale.
+    pub hold_stamp: u32,
 }
 
 /// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
@@ -328,6 +341,8 @@ impl District {
             made_total: GoodVec::new(),
             last_run: None,
             approach: None,
+            hold_until: None,
+            hold_stamp: 0,
         }
     }
 
@@ -381,23 +396,102 @@ impl District {
         }
     }
 
-    /// The replay member for this district under `model`, starting from `base` (I6, I13).
-    /// `channels` gives each channel's known level and capacity.
+    /// The inventories the replay covers now (I7): every live one whose chunk is not loaded.
+    pub fn unloaded_inventories(&self) -> BTreeSet<u32> {
+        self.inventories
+            .values()
+            .filter(|i| !i.destroyed && !self.loaded_chunks.contains(&i.chunk))
+            .map(|i| i.decl.index)
+            .collect()
+    }
+
+    /// Whether `part` is the whole district: every live inventory and every deposit unloaded.
+    pub fn is_whole(&self, part: &BTreeSet<u32>) -> bool {
+        self.inventories
+            .values()
+            .filter(|i| !i.destroyed)
+            .all(|i| part.contains(&i.decl.index))
+            && self
+                .deposits
+                .values()
+                .all(|s| !self.loaded_chunks.contains(&s.chunk))
+    }
+
+    /// Stock the replay of `part` starts from: those inventories' effective contents, the
+    /// unloaded finite deposits, and the virtual stock the district owes (I7: the change a partial
+    /// reconcile left to the part still simulated rides there).
+    pub fn stock_of(&self, part: &BTreeSet<u32>) -> GoodVec {
+        let mut s = GoodVec::new();
+        for i in part {
+            if let Some(inv) = self.inventories.get(i).filter(|x| !x.destroyed) {
+                s.merge(&inv.effective());
+            }
+        }
+        for dep in self
+            .deposits
+            .values()
+            .filter(|x| !x.infinite && !self.loaded_chunks.contains(&x.chunk))
+        {
+            s.add(dep.good, dep.remaining);
+        }
+        s.merge(&self.owed);
+        s.merge(&self.deposit_owed);
+        s
+    }
+
+    /// Whether good `g` lives only in `part` (I7): its deposit is unloaded, or every live
+    /// inventory that received or holds it is in the part. A good that lives nowhere known does
+    /// not (the safe side: its process waits for the whole district).
+    pub fn lives_in(&self, g: Good, part: &BTreeSet<u32>) -> bool {
+        if let Some(dep) = self.deposits.get(&g) {
+            return !self.loaded_chunks.contains(&dep.chunk);
+        }
+        let mut homes = self
+            .inventories
+            .values()
+            .filter(|i| !i.destroyed && (i.received.contains(&g) || i.effective().get(g) > 0))
+            .peekable();
+        homes.peek().is_some() && homes.all(|i| part.contains(&i.decl.index))
+    }
+
+    /// The replay member for this district under `model`, over the inventories of `part`,
+    /// starting from `base` (I6, I7, I13). `None` when no process may run there.
+    ///
+    /// - **Processes** are the model's ([`DistrictModel`]): the black box's coupling groups.
+    /// - **Placement (I7):** when only part of the district is unloaded, a process runs in the
+    ///   replay only if every good it touches lives in that part. One that reaches a loaded
+    ///   chunk is the boundary's: it may run for real there, and never in both places, so it does
+    ///   not run in the replay (never better than reality). Its goods' pools keep their stock.
+    /// - **Pools, caps and space** count only the part's inventories.
     pub fn member_spec(
         &self,
         model: &Model,
         base: &GoodVec,
-        channels: &BTreeMap<ChannelId, (GoodVec, i64)>,
+        part: &BTreeSet<u32>,
         goods: &impl GoodLookup,
         tun: &Tunables,
-    ) -> MemberSpec {
+    ) -> Option<MemberSpec> {
         let d = self.id;
+        let whole = self.is_whole(part);
         let invs: Vec<&Inventory> = self
             .inventories
             .values()
-            .filter(|i| !i.destroyed && !i.doomed)
+            .filter(|i| !i.destroyed && !i.doomed && part.contains(&i.decl.index))
             .collect();
-        let produced: BTreeSet<Good> = model.produced().collect();
+        let black = BlackBox {
+            model,
+            coupling: &self.learner.coupling,
+            min_episodes: tun.learn.coupling_min_episodes,
+        };
+        let processes: Vec<ModelProcess> = black
+            .processes()
+            .into_iter()
+            .filter(|p| whole || p.goods().all(|g| self.lives_in(g, part)))
+            .collect();
+        let produced: BTreeSet<Good> = processes
+            .iter()
+            .flat_map(|p| p.terms.iter().filter(|t| t.1.rate_fixed() > 0).map(|t| t.0))
+            .collect();
         let mut pools: Vec<(PoolKey, i64, Option<i64>)> = Vec::new();
         let mut goods_here: BTreeSet<Good> = base.goods().collect();
         goods_here.extend(model.rates.iter().map(|r| r.0));
@@ -426,60 +520,49 @@ impl District {
             };
             pools.push((PoolKey::Stock(d, g), base.get(g).max(0), cap));
         }
-        let mut targets = Vec::new();
-        for t in &model.targets {
-            if produced.contains(&t.good) {
-                targets.push((PoolKey::Stock(d, t.good), t.stop_at, t.restart_at));
-            }
-        }
-        let mut procs = vec![ProcSpec {
-            id: 0,
-            body: ProcSpecBody::Box(
-                model
-                    .rates
+        // An output whose every receiver was destroyed has nowhere to go: its process jams (F20).
+        let jammed = |g: &Good| {
+            let mut rec = self
+                .inventories
+                .values()
+                .filter(|i| i.received.contains(g))
+                .peekable();
+            rec.peek().is_some() && rec.all(|i| i.destroyed || i.doomed)
+        };
+        let mut procs: Vec<ProcSpec> = Vec::new();
+        for (id, p) in processes.iter().enumerate() {
+            let dead = p.terms.iter().any(|t| {
+                t.1.rate_fixed() > 0 && goods.class(t.0) == GoodClass::Item && jammed(&t.0)
+            });
+            procs.push(ProcSpec {
+                id: id as u16,
+                body: ProcSpecBody::Box(
+                    p.terms
+                        .iter()
+                        .map(|&(g, f)| (PoolKey::Stock(d, g), f))
+                        .collect(),
+                ),
+                targets: p
+                    .targets
                     .iter()
-                    .map(|&(g, f)| (PoolKey::Stock(d, g), f))
+                    .map(|&(g, stop, restart)| (PoolKey::Stock(d, g), stop, restart))
                     .collect(),
-            ),
-            targets,
-            requires: self.power_source.map(|s| (s, 0)),
-            latency: model.learned.latency_ticks,
-            enabled: true,
-        }];
-        let mut next_id = 1u16;
+                requires: self.power_source,
+                latency: p.latency,
+                // A jammed line does not run at all, whatever its net use of space (F20).
+                enabled: !dead,
+            });
+        }
+        let mut next_id = LINK_PROC_BASE;
         for &(k, flow) in &model.links {
             let rate = flow.rate_fixed();
             let unit = Diffuser::from_fixed(rate.abs());
             match k {
-                LinkKey::Channel(ch, g) => {
-                    let (known, cap) = channels.get(&ch).cloned().unwrap_or_default();
-                    let ck = PoolKey::Channel(ch, g);
-                    pools.push((ck, known.get(g).max(0), (cap > 0).then_some(cap)));
-                    let sk = PoolKey::Stock(d, g);
-                    if !pools.iter().any(|p| p.0 == sk) {
-                        pools.push((sk, 0, None));
-                    }
-                    let (from, to) = if rate > 0 { (ck, sk) } else { (sk, ck) };
-                    procs.push(ProcSpec {
-                        id: next_id,
-                        body: ProcSpecBody::Link {
-                            from,
-                            to,
-                            flow: unit,
-                            batch: None,
-                        },
-                        targets: vec![],
-                        requires: None,
-                        latency: 0,
-                        enabled: true,
-                    });
-                    next_id += 1;
-                }
                 LinkKey::Mail {
                     inventory,
                     address,
                     good,
-                } if rate < 0 => {
+                } if rate < 0 && part.contains(&inventory) => {
                     let batch = model
                         .batches
                         .get(&(inventory, address))
@@ -514,23 +597,17 @@ impl District {
                 LinkKey::Mail { .. } => {}
             }
         }
-        // The shared item space of the inventories that received outputs (I6). Every item good
-        // held there counts, so imports fill it and consumption frees it; a good also held
+        if procs.is_empty() {
+            return None;
+        }
+        // The shared item space of the part's inventories that received outputs (I6). Every item
+        // good held there counts, so imports fill it and consumption frees it; a good also held
         // elsewhere is over-counted, which only stops the replay early (F12).
         let produced_items: Vec<Good> = produced
             .iter()
             .copied()
             .filter(|&g| goods.class(g) == GoodClass::Item)
             .collect();
-        // An output whose every receiver was destroyed has nowhere to go: the line jams (F20).
-        let jammed = produced_items.iter().any(|g| {
-            let mut rec = self
-                .inventories
-                .values()
-                .filter(|i| i.received.contains(g))
-                .peekable();
-            rec.peek().is_some() && rec.all(|i| i.destroyed || i.doomed)
-        });
         let space = if produced_items.is_empty() {
             None
         } else {
@@ -576,16 +653,12 @@ impl District {
                     .sum::<i64>();
             Some((weights, fixed, cap))
         };
-        // A jammed line does not run at all, whatever its net use of space (F20).
-        if jammed {
-            procs[0].enabled = false;
-        }
-        MemberSpec {
+        Some(MemberSpec {
             district: d,
             pools,
             procs,
             space,
-        }
+        })
     }
 }
 
@@ -615,6 +688,7 @@ mod persist_impls {
         known,
         known_at,
         pending,
+        held,
         received,
         doomed,
         destroyed
@@ -660,7 +734,8 @@ mod persist_impls {
     persist_struct!(SimSpan {
         started,
         base,
-        season
+        season,
+        invs
     });
     persist_struct!(PendingChunk { cmd, trim, sent });
     persist_struct!(ReconcileReport {
@@ -675,7 +750,6 @@ mod persist_impls {
         trims,
         untracked,
         destroyed,
-        read_only,
     });
     persist_struct!(ExchangeRule {
         unload,
@@ -691,7 +765,7 @@ mod persist_impls {
     });
 
     /// `skipped` is one of a few fixed words.
-    const SKIPS: [&str; 3] = ["watched", "cooldown", "read-only phase"];
+    const SKIPS: [&str; 2] = ["watched", "cooldown"];
 
     impl Persist for AttackReport {
         fn put(&self, w: &mut Writer) {
@@ -770,6 +844,8 @@ mod persist_impls {
             self.made_total.put(w);
             self.last_run.put(w);
             self.approach.put(w);
+            self.hold_until.put(w);
+            self.hold_stamp.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             Ok(District {
@@ -812,6 +888,8 @@ mod persist_impls {
                 made_total: Persist::get(r)?,
                 last_run: Persist::get(r)?,
                 approach: Persist::get(r)?,
+                hold_until: Persist::get(r)?,
+                hold_stamp: Persist::get(r)?,
             })
         }
     }

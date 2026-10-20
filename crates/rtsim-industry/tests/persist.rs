@@ -2,8 +2,8 @@
 //! Saving and restoring the industry engine (src/persist.rs): a run saved and restored at any
 //! moment ends in exactly the state of a run that never stopped.
 
-use rtsim_industry::engine::{Engine, Mode};
-use rtsim_industry::scenario::{IronLine, iron_line, run_iron_line};
+use rtsim_industry::engine::Engine;
+use rtsim_industry::scenario::{IronLine, iron_line, run_iron_line, run_iron_line_until};
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
@@ -13,7 +13,7 @@ fn cfg() -> IronLine {
         days: 10,
         threats: true,
         control: false,
-        mode: Mode::Apply,
+        approach: true,
         tick_first: true,
     }
 }
@@ -34,7 +34,7 @@ fn a_restored_engine_continues_exactly() {
         let mut w = iron_line(c, Tunables::default());
         // 8.0 days plus two ticks: reconciles are in flight.
         let cut = Tick((cut_days * TICKS_PER_DAY as f64) as u64 + 2);
-        w.run_until(cut);
+        run_iron_line_until(&mut w, &c, cut);
         let pages = w.engine.snapshot();
         let restored = Engine::restore(pages, Tunables::default()).expect("restore");
         assert_eq!(

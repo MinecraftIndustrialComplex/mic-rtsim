@@ -86,7 +86,7 @@ public final class EnderTransmissionGameTests {
                 .thenIdle(40)
                 .thenExecute(() -> {
                     long channelPorts = received(IndRecords.IND_PORT, p -> p.getLong(IndRecords.Port.DISTRICT) == ids[0]
-                            && p.getInt(IndRecords.Port.PORT_KIND) == IndRecords.Port.CHANNEL).size();
+                            && p.getInt(IndRecords.Port.PORT_KIND) == IndRecords.Port.RETIRED_CHANNEL).size();
                     check("no channel port: " + channelPorts, channelPorts == 0);
                     nether.getChunk(far);
                     place(nether, far, "item_transmitter", 3, "items-" + tag);

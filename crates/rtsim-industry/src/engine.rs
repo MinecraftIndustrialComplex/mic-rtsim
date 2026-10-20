@@ -29,8 +29,8 @@ use serde::Serialize;
 
 use crate::cluster::{Cluster, ClusterEvent, ClusterView, PoolKey, Run, Stop};
 use crate::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChannelDelta, ChunkReconcile, Cmd, DepositDelta,
-    IndustryOps, InvDelta, LedgerLine, WritePackage,
+    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, IndustryOps,
+    InvDelta, WritePackage,
 };
 use crate::deposit::{self, Writeback};
 use crate::district::{
@@ -38,12 +38,11 @@ use crate::district::{
     ReconcileReport, SimSpan, SweepBuf,
 };
 use crate::ids::{
-    BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId,
-    TrainId,
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, TrainId,
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
-    Carriage, CarriageResult, Conditions, Direction, LoadState, Obs, PackageEvent, PortKind,
+    Carriage, CarriageResult, Conditions, Direction, LoadState, NotLearnable, Obs, PackageEvent,
     ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
 };
 use crate::reconcile::{self, GoodLookup};
@@ -65,16 +64,10 @@ pub const NATURAL_STRENGTH: f64 = 1.0;
 /// Real-time hour in ticks at 20 per second: the ledger's "per hour".
 pub const TICKS_PER_HOUR: u64 = 72_000;
 
-/// Phase I-A shows what districts would have made and changes nothing (I26); I-B on applies.
+/// Where a district stands, for tests and the CLI ([`Engine::inspect`]). The codes are the retired
+/// IND_LEDGER's (docs/industry-boundary.md §4.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum Mode {
-    ReadOnly,
-    Apply,
-}
-
-/// The ledger's states (docs/industry-boundary.md §4.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum LedgerState {
+pub enum DistrictState {
     Live = 0,
     Learning = 1,
     Running = 2,
@@ -85,11 +78,14 @@ pub enum LedgerState {
     OutOfSeason = 7,
 }
 
-/// What a district would have made while unloaded, and why it stands as it does (I-A).
+/// A district as the engine holds it, for tests, the CLI and an operator's log ([`Engine::inspect`]).
+/// **Never sent to a player** (I18, Ben's correction: players see only what their own built
+/// readouts measure). It replaces the "District ledger" query (IND_LEDGER_REQUEST and
+/// IND_LEDGER), which the engine no longer answers.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct LedgerReport {
+pub struct Inspection {
     pub district: DistrictId,
-    pub state: LedgerState,
+    pub state: DistrictState,
     pub reason: Option<String>,
     /// Learned rates, units per real hour.
     pub rates_per_hour: Vec<(Good, f64)>,
@@ -99,10 +95,6 @@ pub struct LedgerReport {
     pub made_since: GoodVec,
     pub running: Option<bool>,
     pub stop: Option<String>,
-    #[serde(serialize_with = "crate::ser::opt_tick")]
-    pub next_breakpoint: Option<Tick>,
-    /// What happens then.
-    pub next: Option<crate::cluster::Forecast>,
     pub learning_ticks_to_go: Option<u64>,
     pub last_reconcile: Option<ReconcileReport>,
     pub attacks: Vec<AttackReport>,
@@ -118,6 +110,27 @@ pub struct LineEdge {
     pub first: Tick,
     #[serde(serialize_with = "crate::ser::tick")]
     pub last: Tick,
+}
+
+/// A timed wake of the engine's own ([`Engine::advance_to`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wake {
+    /// An approach hold ends, unless the district's stamp moved on.
+    Hold(DistrictId, u32),
+    /// Level-wide pollution a replay makes is pushed to the level (I14), unless the replay that
+    /// booked it (by its start) has ended.
+    Pollution(DistrictId, Tick),
+}
+
+/// What a reconcile round covers ([`Engine::reconcile_round`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Round {
+    /// Every inventory; commands to loaded chunks now, the rest at their loads.
+    Full,
+    /// Every inventory; every chunk's command now (a player is on the way).
+    Ahead,
+    /// Only these (loaded) chunks leave the replay; the rest of its change stays virtual.
+    Part(BTreeSet<ChunkPos>),
 }
 
 /// Counters for the CLI, tests and the bench.
@@ -136,6 +149,12 @@ pub struct Stats {
     pub packages_written: u64,
     pub breakpoints: u64,
     pub cluster_settles: u64,
+    /// Reconciles sent ahead of arrival (IND_APPROACH, the stale-tick answer).
+    pub reconciles_ahead: u64,
+    /// Level-wide pollution pushed to the level while its district was unloaded (I14).
+    pub pollution_pushes: u64,
+    /// Records the engine reads and ignores: IND_LEDGER_REQUEST (I18).
+    pub retired_records: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -170,12 +189,6 @@ struct Station {
     decl: StationDecl,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-struct ChannelState {
-    known: GoodVec,
-    capacity: i64,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 struct PendingExchange {
     district: DistrictId,
@@ -188,7 +201,6 @@ struct PendingExchange {
 
 pub struct Engine {
     pub tun: Tunables,
-    pub mode: Mode,
     world_seed: u64,
     goods: BTreeMap<Good, GoodInfo>,
     districts: BTreeMap<DistrictId, District>,
@@ -201,14 +213,21 @@ pub struct Engine {
     arrivals: BTreeMap<(TrainId, StationId), Vec<Carriage>>,
     legs: LegIndex,
     legs_swept: u64,
-    channels: BTreeMap<ChannelId, ChannelState>,
-    /// Simulated districts linked to each channel, so coupling never scans every district.
-    channel_sims: BTreeMap<ChannelId, BTreeSet<DistrictId>>,
     /// Power sinks of each source (IND_POWER_LINK).
     sinks_of: BTreeMap<DistrictId, BTreeSet<DistrictId>>,
     conditions: Option<Conditions>,
     pressure: BTreeMap<(Tick, u64), (DistrictId, ThreatClass, u32, u32)>,
     pressure_seq: u64,
+    /// Approach holds ending and live pollution pushes, by time (lazily cancelled: a hold by the
+    /// district's stamp, a push by its replay span, as O6).
+    wakes: BTreeMap<(Tick, u64), Wake>,
+    wake_seq: u64,
+    /// Districts whose replay coverage changed this tick (I7), brought up to date once the
+    /// tick's records are in.
+    dirty: BTreeSet<DistrictId>,
+    /// The Java side reports chunk unloads one by one (IND_CHUNK_UNLOADED); until it does, a
+    /// district with no chunk ticking counts as wholly unloaded.
+    per_chunk_unloads: bool,
     exchanges: BTreeMap<rtsim_kernel::journal::OpId, PendingExchange>,
     /// Per train and threat class: no attack lands before this tick (I25).
     train_cooldown: BTreeMap<TrainId, [Tick; ThreatClass::COUNT]>,
@@ -232,10 +251,9 @@ impl Engine {
         self.topo = t;
     }
 
-    pub fn new(world_seed: u64, tun: Tunables, mode: Mode, now: Tick) -> Self {
+    pub fn new(world_seed: u64, tun: Tunables, now: Tick) -> Self {
         Self {
             tun,
-            mode,
             world_seed,
             goods: BTreeMap::new(),
             districts: BTreeMap::new(),
@@ -248,12 +266,14 @@ impl Engine {
             arrivals: BTreeMap::new(),
             legs: LegIndex::default(),
             legs_swept: 0,
-            channels: BTreeMap::new(),
-            channel_sims: BTreeMap::new(),
             sinks_of: BTreeMap::new(),
             conditions: None,
             pressure: BTreeMap::new(),
             pressure_seq: 0,
+            wakes: BTreeMap::new(),
+            wake_seq: 0,
+            dirty: BTreeSet::new(),
+            per_chunk_unloads: false,
             exchanges: BTreeMap::new(),
             train_cooldown: BTreeMap::new(),
             ops: IndustryOps::default(),
@@ -365,28 +385,45 @@ impl Engine {
 
     // ---- time -----------------------------------------------------------------------------
 
-    /// Fires every breakpoint and pressure wake due by `to`, in time order.
+    /// Fires every breakpoint, pressure wake and approach hold due by `to`, in time order, after
+    /// the replay coverage of every district whose chunks changed is brought up to date (I7).
+    /// The step calls this once the hand-over's records are in.
     pub fn advance_to(&mut self, to: Tick) {
+        let now = self.now;
+        self.flush_dirty(now);
+        self.fire_until(to);
+    }
+
+    fn fire_until(&mut self, to: Tick) {
         if to < self.now {
             return;
         }
         loop {
-            let next_p = self
-                .pressure
-                .keys()
-                .next()
-                .map(|k| k.0)
-                .filter(|&t| t <= to);
-            let limit = next_p.unwrap_or(to);
+            let next_p = self.pressure.keys().next().map(|k| k.0);
+            let next_h = self.wakes.keys().next().map(|k| k.0);
+            let next = next_p.into_iter().chain(next_h).min().filter(|&t| t <= to);
+            let limit = next.unwrap_or(to);
             while let Some((at, h)) = self.clusters.next_due(limit) {
                 self.stats.breakpoints += 1;
                 self.after_cluster(h, at);
             }
-            match next_p {
+            match next {
                 Some(t) => {
                     self.now = self.now.max(t);
-                    let (key, wake) = self.pressure.pop_first().expect("peeked");
-                    self.pressure_wake(key.0, wake);
+                    // On a tie a hold ends (or pollution is pushed) before an attack lands.
+                    if next_h == Some(t) {
+                        let (key, wake) = self.wakes.pop_first().expect("peeked");
+                        match wake {
+                            Wake::Hold(d, stamp) => self.hold_wake(key.0, (d, stamp)),
+                            Wake::Pollution(d, started) => self.pollution_wake(key.0, d, started),
+                        }
+                    } else {
+                        let (key, wake) = self.pressure.pop_first().expect("peeked");
+                        self.pressure_wake(key.0, wake);
+                    }
+                    // A wake can change coverage; it settles at its own tick.
+                    let now = self.now;
+                    self.flush_dirty(now);
                 }
                 None => break,
             }
@@ -397,7 +434,12 @@ impl Engine {
     /// Handles one observation.
     pub fn ingest(&mut self, t: &Timed) {
         let at = t.at.max(self.now);
-        self.advance_to(at);
+        // Coverage changed by this tick's records settles before the next tick's (I7).
+        if at > self.now {
+            let now = self.now;
+            self.flush_dirty(now);
+        }
+        self.fire_until(at);
         self.stats.observations += 1;
         match &t.obs {
             Obs::StockSample {
@@ -431,18 +473,10 @@ impl Engine {
                 buf.deposits.push(s.clone());
             }
             Obs::SweepEnd(e) => self.sweep_end(at, e),
-            Obs::ChannelSample {
-                channel,
-                capacity,
-                goods,
-            } => {
-                let c = self.channels.entry(*channel).or_default();
-                c.known = goods.clone();
-                c.capacity = *capacity;
-            }
-            Obs::LedgerRequest { district } => {
-                let line = self.ledger_line(*district, at);
-                self.out.push(Cmd::Ledger(line));
+            // Retired: no player sees simulated state (I18). Read so the Java side's display
+            // source, until it is removed, costs nothing.
+            Obs::LedgerRequest { .. } => {
+                self.stats.retired_records += 1;
             }
             Obs::Approach {
                 district,
@@ -450,7 +484,6 @@ impl Engine {
                 eta_ticks,
                 closing,
             } => {
-                // Data only (W16): the stale-tick race's policy is not decided.
                 if let Some(dist) = self.districts.get_mut(district) {
                     dist.approach = Some(crate::district::Approach {
                         at,
@@ -458,6 +491,10 @@ impl Engine {
                         eta_ticks: *eta_ticks,
                         closing: *closing,
                     });
+                    // Ben's answer to the stale-tick race: reconcile ahead of arrival.
+                    if *closing && *distance <= self.tun.replay.approach_distance_blocks {
+                        self.approach(*district, at);
+                    }
                 }
             }
             Obs::Watched { district, watched } => {
@@ -478,11 +515,18 @@ impl Engine {
                     dist.chunks.clear();
                     dist.inventories.clear();
                     dist.learner.discard();
+                    dist.learner.coupling.reset();
                 }
                 dist.dim = decl.dim;
                 dist.name = decl.name;
-                dist.not_learnable = decl.not_learnable;
-                if let Some(n) = decl.not_learnable {
+                // I9 (Ben: "Everything"): an unloaded district replays everything, spawn-fed mob
+                // farms included, so code 6 no longer freezes a district. An older Java side may
+                // still send it; it is read as learnable.
+                let not_learnable = decl
+                    .not_learnable
+                    .filter(|n| *n != NotLearnable::SpawnFedFarm);
+                dist.not_learnable = not_learnable;
+                if let Some(n) = not_learnable {
                     dist.phase = Phase::NotLearnable(n.code());
                 } else if matches!(dist.phase, Phase::NotLearnable(_)) {
                     dist.phase = Phase::Learning;
@@ -501,7 +545,13 @@ impl Engine {
             }
             Obs::Inventory(decl) => {
                 let dist = self.district_mut(decl.district);
-                if dist.revision == decl.revision {
+                // The same declaration again (a session start, the module switched on, U10) keeps
+                // what the engine knows of the inventory, its pending and held deltas included.
+                let same = dist
+                    .inventories
+                    .get(&decl.index)
+                    .is_some_and(|i| i.decl == *decl);
+                if dist.revision == decl.revision && !same {
                     let dim = dist.dim;
                     dist.inventories.insert(
                         decl.index,
@@ -511,6 +561,7 @@ impl Engine {
                             known: GoodVec::new(),
                             known_at: Tick::ZERO,
                             pending: GoodVec::new(),
+                            held: GoodVec::new(),
                             received: BTreeSet::new(),
                             doomed: false,
                             destroyed: false,
@@ -525,12 +576,16 @@ impl Engine {
                 }
             }
             Obs::Edit { district, .. } => {
-                // Every IND_EDIT is a player's (§3.3): a learned district goes stale (I5).
+                // Every IND_EDIT is a player's (§3.3): a learned district goes stale (I5), and
+                // what its starvation episodes showed may no longer hold (I6). A replay of its
+                // unloaded part stops (I7: stale freezes).
                 let dist = self.district_mut(*district);
                 dist.learner.discard();
+                dist.learner.coupling.reset();
                 if dist.phase == Phase::Learned {
                     dist.phase = Phase::Stale;
                 }
+                self.mark(*district);
             }
             Obs::Discard { district, .. } => self.district_mut(*district).learner.discard(),
             Obs::LoadState {
@@ -544,12 +599,19 @@ impl Engine {
                 self.district_mut(*district);
                 self.set_presence(*district, p, at);
             }
+            Obs::ChunkUnloaded { district, chunk } => {
+                self.per_chunk_unloads = true;
+                self.district_mut(*district).loaded_chunks.remove(chunk);
+                self.mark(*district);
+            }
             Obs::ChunkLoaded {
                 district,
                 chunk,
                 applied_epoch,
             } => {
                 self.district_mut(*district).loaded_chunks.insert(*chunk);
+                // It leaves the replay once the tick's records are in (I7).
+                self.mark(*district);
                 // The chunk's attachment says an epoch is applied whose result never came (a
                 // crash between the chunk's save and the journal's): it was applied as asked
                 // (review finding 13). A late real result is then a duplicate.
@@ -813,58 +875,133 @@ impl Engine {
         }
     }
 
-    // ---- presence -------------------------------------------------------------------------
+    // ---- presence and coverage (I7) --------------------------------------------------------
 
+    /// IND_LOAD_STATE: the district's ticking chunks crossed none or all of them.
+    ///
+    /// - **Live** (every chunk ticks): the replay stops and everything it did is reconciled (a
+    ///   full round), as before.
+    /// - **Partial** or **Unloaded**: the replay covers the chunks that are not loaded (I7, Ben's
+    ///   "simulate the rest"). Which chunks those are comes from IND_CHUNK_LOADED and
+    ///   IND_CHUNK_UNLOADED; the coverage is brought up to date once the tick's records are in
+    ///   ([`Engine::mark`]). A Java side that never sends IND_CHUNK_UNLOADED is read the old way:
+    ///   with no chunk ticking, every chunk counts as unloaded.
     fn set_presence(&mut self, d: DistrictId, p: Presence, at: Tick) {
         let old = self.districts[&d].presence;
         if old == p {
             return;
         }
-        self.districts.get_mut(&d).expect("exists").presence = p;
-        match (old, p) {
-            (Presence::Unloaded, _) => {
-                // The first chunk ticks: catch up, stop, reconcile (I7).
-                let dist = self.districts.get_mut(&d).expect("exists");
-                dist.pressure_stamp += 1;
-                self.reconcile_on_load(d, at);
-                // Live now: its power sinks may run (F21), whether or not it was replaying.
-                self.refresh_power(d, at);
+        let per_chunk = self.per_chunk_unloads;
+        let dist = self.districts.get_mut(&d).expect("exists");
+        dist.presence = p;
+        // A window must not span a stretch the district did not run whole.
+        if old == Presence::Live {
+            dist.learner.discard();
+        }
+        if old == Presence::Unloaded {
+            dist.pressure_stamp += 1;
+        }
+        match p {
+            Presence::Live => {
+                self.reconcile_round(d, at, Round::Full);
             }
-            (_, Presence::Unloaded) => {
-                let dist = self.districts.get_mut(&d).expect("exists");
+            Presence::Partial => self.mark(d),
+            Presence::Unloaded => {
                 dist.watched = false;
-                // An unloaded gap must not sit inside a learning window.
                 dist.learner.discard();
-                dist.loaded_chunks.clear();
-                self.start_sim(d, at);
+                if !per_chunk {
+                    dist.loaded_chunks.clear();
+                }
+                self.mark(d);
                 self.schedule_pressure(d, at);
             }
-            _ => {}
+        }
+        // Live or not, its power sinks follow it (F21).
+        self.refresh_power(d, at);
+    }
+
+    /// The district's coverage changed this tick: brought up to date once the tick's records are
+    /// in (a district whose chunks all load in one tick reconciles in one round, not one per
+    /// chunk).
+    fn mark(&mut self, d: DistrictId) {
+        self.dirty.insert(d);
+    }
+
+    /// Brings every marked district's replay to the chunks that are unloaded now.
+    fn flush_dirty(&mut self, at: Tick) {
+        while let Some(d) = self.dirty.pop_first() {
+            self.sync_coverage(d, at);
         }
     }
 
-    /// A learned, fresh district starts its replay from its effective stock (I5, I6).
+    /// Makes district `d`'s replay cover exactly its unloaded inventories (I7), or nothing when it
+    /// is live, frozen (I5), or held for a player on the way (the stale-tick answer).
+    ///
+    /// - Inventories whose chunks loaded leave the replay in a **partial round**: the replay stops,
+    ///   its change is planned over the inventories it covered, and only the loaded chunks' deltas
+    ///   go to Java now, each chunk on its own epoch. The rest of the change stays virtual (owed)
+    ///   and rides into the replay that goes on for the chunks still unloaded.
+    /// - Inventories whose chunks unloaded join it: the replay stops, its change is carried as
+    ///   virtual stock, and it starts again over the larger part from what the engine knows they
+    ///   hold.
+    fn sync_coverage(&mut self, d: DistrictId, at: Tick) {
+        let season = self.season_at(at);
+        let Some(dist) = self.districts.get(&d) else {
+            return;
+        };
+        if dist.presence == Presence::Live {
+            return;
+        }
+        let held = dist.hold_until.is_some_and(|h| h > at);
+        let want = if held || dist.freeze_reason(season).is_some() {
+            BTreeSet::new()
+        } else {
+            dist.unloaded_inventories()
+        };
+        if let Some(span) = &dist.sim {
+            if span.invs == want {
+                return;
+            }
+            let leaving: BTreeSet<ChunkPos> = span
+                .invs
+                .difference(&want)
+                .filter_map(|i| dist.inventories.get(i))
+                .map(|i| i.chunk)
+                .filter(|c| dist.loaded_chunks.contains(c))
+                .collect();
+            if leaving.is_empty() {
+                self.carry_sim(d, at);
+            } else {
+                self.reconcile_round(d, at, Round::Part(leaving));
+            }
+        }
+        if !want.is_empty() {
+            self.start_sim(d, at);
+        }
+    }
+
+    /// A learned, fresh district starts its replay over its unloaded inventories, from what the
+    /// engine knows they hold (I5, I6, I7). Nothing starts while it is live, frozen, held for a
+    /// player on the way, or when no process could run in the part that is unloaded.
     fn start_sim(&mut self, d: DistrictId, at: Tick) {
         let season = self.season_at(at);
         let dist = &self.districts[&d];
-        if dist.freeze_reason(season).is_some() || dist.sim.is_some() {
+        if dist.freeze_reason(season).is_some()
+            || dist.sim.is_some()
+            || dist.presence == Presence::Live
+            || dist.hold_until.is_some_and(|h| h > at)
+        {
+            return;
+        }
+        let part = dist.unloaded_inventories();
+        if part.is_empty() {
             return;
         }
         let model = dist.models[&season].clone();
-        let base = dist.effective_stock();
-        // Only the channels this model links (review finding 16).
-        let channels: BTreeMap<ChannelId, (GoodVec, i64)> = model
-            .links
-            .iter()
-            .filter_map(|(k, _)| match k {
-                LinkKey::Channel(c, _) => self
-                    .channels
-                    .get(c)
-                    .map(|s| (*c, (s.known.clone(), s.capacity))),
-                LinkKey::Mail { .. } => None,
-            })
-            .collect();
-        let mut spec = dist.member_spec(&model, &base, &channels, &self.goods, &self.tun);
+        let base = dist.stock_of(&part);
+        let Some(mut spec) = dist.member_spec(&model, &base, &part, &self.goods, &self.tun) else {
+            return;
+        };
         // A power source that is live is assumed running (F21); one that is unloaded and not
         // simulated keeps the requirement, which nothing in the cluster meets, so the sink waits.
         if let Some(src) = dist.power_source
@@ -877,21 +1014,9 @@ impl Engine {
                 p.requires = None;
             }
         }
-        // Districts sharing a channel or a power line join one cluster (I13).
+        // Districts joined by a PowerGrid line join one cluster (I13). An Ender Transmission
+        // channel never joins two districts: its endpoints are one district's (Ben's correction).
         let mut linked: BTreeSet<DistrictId> = BTreeSet::new();
-        let my_channels: BTreeSet<ChannelId> = model
-            .links
-            .iter()
-            .filter_map(|(k, _)| match k {
-                LinkKey::Channel(c, _) => Some(*c),
-                LinkKey::Mail { .. } => None,
-            })
-            .collect();
-        for c in &my_channels {
-            if let Some(set) = self.channel_sims.get(c) {
-                linked.extend(set.iter().copied().filter(|&o| o != d));
-            }
-        }
         if let Some(src) = dist.power_source
             && self.cluster_of.contains_key(&src)
         {
@@ -911,6 +1036,11 @@ impl Engine {
             .collect();
         handles.sort_by_key(|h| self.clusters.get(*h).map(|r| r.key()));
         handles.dedup();
+        let groups = spec
+            .procs
+            .iter()
+            .filter(|p| p.id < crate::district::LINK_PROC_BASE)
+            .count();
         let h = match handles.first().copied() {
             None => {
                 let mut c = Cluster::new(self.tun.replay.restart_min_run_ticks);
@@ -939,19 +1069,36 @@ impl Engine {
         self.clusters
             .apply(h, at, |c, _| c.set_season_boundary(boundary));
         self.cluster_of.insert(d, h);
-        for c in &my_channels {
-            self.channel_sims.entry(*c).or_default().insert(d);
-        }
         // Sinks already replaying on this district's power now follow it (I13).
         self.refresh_power(d, at);
+        // Level-wide pollution it makes reaches the level while it is away (I14).
+        let pollutes = model.rates.iter().any(|&(g, r)| {
+            r.rate_fixed() > 0 && self.is_live(g) && self.districts[&d].deposits.contains_key(&g)
+        });
         let dist = self.districts.get_mut(&d).expect("exists");
+        let whole = dist.is_whole(&part);
+        let covered = part.len();
         dist.sim = Some(SimSpan {
             started: at,
             base,
             season,
+            invs: part,
         });
         self.stats.sims_started += 1;
-        self.note(d, at, "replay starts".to_string());
+        if pollutes {
+            self.wake_seq += 1;
+            let at_next = at + self.tun.replay.live_pollution_ticks.max(1);
+            self.wakes
+                .insert((at_next, self.wake_seq), Wake::Pollution(d, at));
+        }
+        let what = if whole {
+            format!("replay starts ({groups} process(es))")
+        } else {
+            format!(
+                "replay starts over the unloaded part ({covered} inventories, {groups} process(es))"
+            )
+        };
+        self.note(d, at, what);
         self.after_cluster(h, at);
     }
 
@@ -962,49 +1109,17 @@ impl Engine {
         at: Tick,
     ) -> Option<(SimSpan, Vec<crate::cluster::Pool>)> {
         let h = *self.cluster_of.get(&d)?;
-        if let Some(season) = self
-            .districts
-            .get(&d)
-            .and_then(|x| x.sim.as_ref())
-            .map(|s| s.season)
-        {
-            let channels: Vec<ChannelId> = self.districts[&d]
-                .models
-                .get(&season)
-                .map(|m| {
-                    m.links
-                        .iter()
-                        .filter_map(|(k, _)| match k {
-                            LinkKey::Channel(c, _) => Some(*c),
-                            LinkKey::Mail { .. } => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            for c in channels {
-                if let Some(set) = self.channel_sims.get_mut(&c) {
-                    set.remove(&d);
-                }
-            }
-        }
         self.cluster_of.remove(&d);
         let out = self.clusters.apply(h, at, |c, at| c.remove_member(d, at))?;
-        // Book what the replay made and used (the apply phases; read-only changes nothing).
+        // Book what the replay made and used.
         let mut minted = GoodVec::new();
         let mut burned = GoodVec::new();
         for p in &out.pools {
             minted.add(p.key.good(), p.books.minted);
             burned.add(p.key.good(), p.books.burned);
-            // A channel pool leaving with its last user takes unpushed changes with it: push them
-            // now, or the world's buffer never sees them (review finding 1).
-            if let PoolKey::Channel(ch, g) = p.key {
-                self.push_channel(ch, g, p.level - p.pushed, at);
-            }
         }
-        if self.mode == Mode::Apply {
-            self.books.minted.merge(&minted);
-            self.books.burned.merge(&burned);
-        }
+        self.books.minted.merge(&minted);
+        self.books.burned.merge(&burned);
         self.after_cluster(h, at);
         if self
             .clusters
@@ -1024,42 +1139,44 @@ impl Engine {
 
     /// Events and pushes after anything touched cluster `h` at `at`.
     fn after_cluster(&mut self, h: RegionId<Cluster>, at: Tick) {
-        let Some((events, pushes, settles)) = self.clusters.apply(h, at, |c, _| {
+        let Some((events, settles)) = self.clusters.apply(h, at, |c, _| {
             let s = c.settles;
             c.settles = 0;
-            (c.take_events(), c.take_unpushed(), s)
+            (c.take_events(), s)
         }) else {
             return;
         };
         self.stats.cluster_settles += settles;
-        for (key, delta) in pushes {
-            if let PoolKey::Channel(ch, g) = key {
-                self.push_channel(ch, g, delta, at);
-            }
-        }
         let mut season_change = false;
         for e in events {
             match e {
-                ClusterEvent::Stopped {
-                    at,
-                    owner,
-                    id: 0,
-                    why,
-                } => {
+                ClusterEvent::Stopped { at, owner, id, why }
+                    if id < crate::district::LINK_PROC_BASE =>
+                {
                     if let Some(dist) = self.districts.get_mut(&owner) {
                         dist.last_run = Some((at, Some(why)));
                     }
                     if self.log_enabled && why != Stop::Disabled {
                         let words = stop_words(why, &self.goods);
-                        self.note(owner, at, format!("breakpoint: {words}"));
+                        let which = if id > 0 {
+                            format!(" (process {id})")
+                        } else {
+                            String::new()
+                        };
+                        self.note(owner, at, format!("breakpoint{which}: {words}"));
                     }
                 }
-                ClusterEvent::Started { at, owner, id: 0 } => {
+                ClusterEvent::Started { at, owner, id } if id < crate::district::LINK_PROC_BASE => {
                     if let Some(dist) = self.districts.get_mut(&owner) {
                         dist.last_run = Some((at, None));
                     }
                     if self.log_enabled {
-                        self.note(owner, at, "running".to_string());
+                        let which = if id > 0 {
+                            format!(" (process {id})")
+                        } else {
+                            String::new()
+                        };
+                        self.note(owner, at, format!("running{which}"));
                     }
                 }
                 ClusterEvent::PackagesReady {
@@ -1098,32 +1215,14 @@ impl Engine {
                 continue;
             };
             let req = if src_h == Some(h) || !live {
-                Some((src, 0))
+                Some(src)
             } else {
                 None
             };
             self.clusters
-                .apply(h, at, |c, at| c.set_requires(s, 0, req, at));
+                .apply(h, at, |c, at| c.set_requires(s, req, at));
             self.after_cluster(h, at);
         }
-    }
-
-    /// A channel buffer change the replay made, sent to the world (I13). Read-only mode sends
-    /// nothing, so the buffer the engine knows stays what the world has.
-    fn push_channel(&mut self, ch: ChannelId, g: Good, delta: i64, at: Tick) {
-        if delta == 0 || self.mode != Mode::Apply {
-            return;
-        }
-        let mut c = Cmd::ChannelDelta(ChannelDelta {
-            op: OpId(0),
-            channel: ch,
-            goods: GoodVec::from_pairs([(g, delta)]),
-        });
-        // The event's own tick, not the engine's: a breakpoint fires inside `advance_to` before
-        // `now` moves, so `now` would tie the id to where hand-overs fell.
-        c.set_op(self.ops.derive(self.world_seed, at, &c));
-        self.out.push(c);
-        self.channels.entry(ch).or_default().known.add(g, delta);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1152,19 +1251,17 @@ impl Engine {
             i.known_at = i.known_at.max(at);
         }
         self.stats.packages_written += count as u64;
-        if self.mode == Mode::Apply {
-            let mut c = Cmd::WritePackage(WritePackage {
-                op: OpId(0),
-                district: d,
-                inventory: inv,
-                pos,
-                address,
-                count: count as u32,
-                goods: GoodVec::from_pairs([(g, batch)]),
-            });
-            c.set_op(self.ops.derive(self.world_seed, at, &c));
-            self.out.push(c);
-        }
+        let mut c = Cmd::WritePackage(WritePackage {
+            op: OpId(0),
+            district: d,
+            inventory: inv,
+            pos,
+            address,
+            count: count as u32,
+            goods: GoodVec::from_pairs([(g, batch)]),
+        });
+        c.set_op(self.ops.derive(self.world_seed, at, &c));
+        self.out.push(c);
     }
 
     /// At a season boundary, members whose season model is missing freeze; the others swap models
@@ -1183,21 +1280,25 @@ impl Engine {
         }
     }
 
-    /// Stops a replay and starts it again from where it stood, with a member rebuilt from the
-    /// district as it is now (a new season's model, a destroyed inventory's capacity gone). The
-    /// change so far is carried as virtual stock (owed), so the reconcile at the next load still
-    /// sees the whole change since the first unload.
-    fn restart_sim(&mut self, d: DistrictId, at: Tick) {
+    /// Stops a replay and carries the change so far as virtual stock (owed), so the reconcile at
+    /// the next load still sees the whole change since the first unload.
+    fn carry_sim(&mut self, d: DistrictId, at: Tick) {
         let Some((span, pools)) = self.stop_sim(d, at) else {
             return;
         };
+        let live: Vec<Good> = pools
+            .iter()
+            .map(|p| p.key.good())
+            .filter(|g| self.is_live(*g))
+            .collect();
         let dist = self.districts.get_mut(&d).expect("member");
         for p in &pools {
             dist.minted_carried.add(p.key.good(), p.books.minted);
             match p.key {
+                // Level pollution pushed live (I14) is in the world (and in `remaining`) already.
+                PoolKey::Stock(_, g) if live.contains(&g) => dist.owed.add(g, p.level - p.pushed),
                 PoolKey::Stock(_, g) => dist.owed.add(g, p.level - span.base.get(g)),
                 PoolKey::Mail(_, _, _, g) => dist.owed.add(g, p.level - p.pushed),
-                PoolKey::Channel(..) => {}
             }
         }
         // Deposits are read back from their pools, not carried as owed.
@@ -1209,24 +1310,65 @@ impl Engine {
                 dist.deposit_owed.add(g, o);
             }
         }
+    }
+
+    /// Stops a replay and starts it again from where it stood, with a member rebuilt from the
+    /// district as it is now (a new season's model, a destroyed inventory's capacity gone, new
+    /// coupling evidence).
+    fn restart_sim(&mut self, d: DistrictId, at: Tick) {
+        if !self.cluster_of.contains_key(&d) {
+            return;
+        }
+        self.carry_sim(d, at);
         self.start_sim(d, at);
     }
 
     // ---- reconcile (I7, I8) ---------------------------------------------------------------
 
-    fn reconcile_on_load(&mut self, d: DistrictId, at: Tick) {
+    /// One reconcile round (I7, I8): the replay stops and what it did, with what the district
+    /// owes, becomes per-inventory deltas.
+    ///
+    /// - [`Round::Full`]: over every live inventory; commands for every chunk, sent now to the
+    ///   chunks that are loaded and at each other chunk's IND_CHUNK_LOADED (F27).
+    /// - [`Round::Ahead`]: the same, but every chunk's command is sent now: a player is on the
+    ///   way (IND_APPROACH), and Java holds each until its chunk loads and applies it at the
+    ///   chunk's load, before any machine there ticks (the stale-tick answer).
+    /// - [`Round::Part`]: planned over the inventories the replay covered; only the given chunks'
+    ///   deltas (and deposits and destroyed blocks there) go to Java, each chunk on its own epoch;
+    ///   the rest stays virtual in `owed` for the replay that goes on (I7).
+    fn reconcile_round(&mut self, d: DistrictId, at: Tick, round: Round) {
         let stopped = self.stop_sim(d, at);
+        let live: BTreeSet<Good> = stopped
+            .iter()
+            .flat_map(|(_, pools)| pools.iter().map(|p| p.key.good()))
+            .filter(|g| self.is_live(*g))
+            .collect();
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut net = GoodVec::new();
         let mut deposits = GoodVec::new();
         let mut span_minted = std::mem::take(&mut dist.minted_carried);
         let since = stopped.as_ref().map_or(at, |s| s.0.started);
+        let all: BTreeSet<u32> = dist
+            .inventories
+            .values()
+            .filter(|i| !i.destroyed)
+            .map(|i| i.decl.index)
+            .collect();
+        // The replay's change happened in the inventories it covered: it is planned there.
+        let covered: BTreeSet<u32> = stopped
+            .as_ref()
+            .map_or_else(|| all.clone(), |(span, _)| span.invs.clone());
         if let Some((span, pools)) = stopped {
             for p in &pools {
                 span_minted.add(p.key.good(), p.books.minted);
                 match p.key {
                     PoolKey::Stock(_, g) => {
-                        let change = p.level - span.base.get(g);
+                        // Level pollution pushed live (I14) is in the world already.
+                        let change = if live.contains(&g) {
+                            p.level - p.pushed
+                        } else {
+                            p.level - span.base.get(g)
+                        };
                         if self.goods.get(&g).map(|i| i.class) == Some(GoodClass::Deposit) {
                             deposits.add(g, change);
                         } else {
@@ -1235,92 +1377,141 @@ impl Engine {
                     }
                     // Goods packed but not yet a whole package go back to stock.
                     PoolKey::Mail(_, _, _, g) => net.add(g, p.level - p.pushed),
-                    PoolKey::Channel(..) => {}
                 }
             }
         }
-        net.merge(&dist.owed);
         deposits.merge(&std::mem::take(&mut dist.deposit_owed));
-        let had_owed = !dist.owed.is_empty();
-        if net.is_empty() && deposits.is_empty() && dist.destroy_pending.is_empty() && !had_owed {
-            return;
-        }
-        self.stats.reconciles += 1;
-        let read_only = self.mode == Mode::ReadOnly;
-        let invs: Vec<reconcile::InvState> = dist
-            .inventories
-            .values()
-            .filter(|i| !i.destroyed)
-            .map(|i| i.state())
-            .collect();
-        let plan = reconcile::plan(&invs, &net, &self.goods);
-        let mut report = ReconcileReport {
-            epoch: dist.epoch + 1,
-            at,
-            since,
-            net: net.clone(),
-            unplaced: plan.unplaced.clone(),
-            read_only,
-            ..ReconcileReport::default()
+        let leaving = match &round {
+            Round::Part(chunks) => Some(chunks),
+            Round::Full | Round::Ahead => None,
         };
-        if read_only {
-            // I-A: the vaults stay untouched; the sim's stock is dropped with the span.
-            report.epoch = dist.epoch;
-            dist.owed = GoodVec::new();
-            let what = format!("would have made: {}", self.goods_words(&report.net));
-            let dist = self.districts.get_mut(&d).expect("exists");
-            dist.push_report(report);
-            self.note(d, at, what);
-            return;
+        let goes = |c: &ChunkPos| leaving.is_none_or(|l| l.contains(c));
+        let states = |dist: &District, set: &BTreeSet<u32>| -> Vec<reconcile::InvState> {
+            dist.inventories
+                .values()
+                .filter(|i| !i.destroyed && set.contains(&i.decl.index))
+                .map(|i| i.state())
+                .collect()
+        };
+        // 1. The replay's change, over what it covered. 2. What the district owes (unplaced
+        // changes, theft while frozen), with what step 1 could not place: over everything in a
+        // full round, over the covered part in a partial one (it stays virtual there).
+        let owed = std::mem::take(&mut dist.owed);
+        let mut deltas: BTreeMap<(u32, Good), i64> = BTreeMap::new();
+        let plan1 = reconcile::plan(&states(dist, &covered), &net, &self.goods);
+        for p in &plan1.deltas {
+            *deltas.entry((p.inventory, p.good)).or_default() += p.delta;
         }
-        dist.epoch += 1;
-        let epoch = dist.epoch;
-        dist.owed = plan.unplaced.clone();
-        let mut by_chunk: BTreeMap<ChunkPos, Vec<InvDelta>> = BTreeMap::new();
-        let mut added = GoodVec::new();
-        for p in &plan.deltas {
-            let inv = dist
-                .inventories
-                .get_mut(&p.inventory)
-                .expect("planned inventory");
-            inv.pending.add(p.good, p.delta);
-            if p.delta > 0 {
-                added.add(p.good, p.delta);
+        let mut rest = plan1.unplaced.clone();
+        rest.merge(&owed);
+        if !rest.is_empty() {
+            // Step 2 sees the inventories as step 1 left them.
+            for (&(i, g), &n) in &deltas {
+                if let Some(inv) = dist.inventories.get_mut(&i) {
+                    inv.held.add(g, n);
+                }
             }
-            by_chunk.entry(inv.chunk).or_default().push(InvDelta {
-                inventory: p.inventory,
-                pos: inv.decl.pos,
-                good: p.good,
-                delta: p.delta,
-            });
+            let scope2 = if leaving.is_some() { &covered } else { &all };
+            let plan2 = reconcile::plan(&states(dist, scope2), &rest, &self.goods);
+            for (&(i, g), &n) in &deltas {
+                if let Some(inv) = dist.inventories.get_mut(&i) {
+                    inv.held.add(g, -n);
+                }
+            }
+            for p in &plan2.deltas {
+                *deltas.entry((p.inventory, p.good)).or_default() += p.delta;
+            }
+            rest = plan2.unplaced;
         }
-        // Deposits (I11): with the chunk, or at once.
+        // What does not go to Java now stays virtual: unplaced changes as owed, and (in a partial
+        // round) each staying inventory's deltas as its `held`, counted in its contents, so the
+        // replay that goes on starts from them and the next round sends them.
+        dist.owed = rest.clone();
+        for ((i, g), n) in deltas {
+            dist.inventories
+                .get_mut(&i)
+                .expect("planned inventory")
+                .held
+                .add(g, n);
+        }
+        let mut by_chunk: BTreeMap<ChunkPos, Vec<InvDelta>> = BTreeMap::new();
+        let mut sent_net = GoodVec::new();
+        for inv in dist.inventories.values_mut() {
+            if inv.held.is_empty() || !goes(&inv.chunk) {
+                continue;
+            }
+            let held = std::mem::take(&mut inv.held);
+            for (g, n) in held.iter() {
+                inv.pending.add(g, n);
+                sent_net.add(g, n);
+                by_chunk.entry(inv.chunk).or_default().push(InvDelta {
+                    inventory: inv.decl.index,
+                    pos: inv.decl.pos,
+                    good: g,
+                    delta: n,
+                });
+            }
+        }
+        // Deposits (I11): with the chunk, or at once; a partial round writes back only the
+        // deposits in the chunks leaving.
+        let mut immediate: Vec<Cmd> = Vec::new();
         for (g, delta) in deposits.iter() {
             let Some(s) = dist.deposits.get_mut(&g) else {
                 continue;
             };
+            if !goes(&s.chunk) {
+                dist.deposit_owed.add(g, delta);
+                continue;
+            }
             s.remaining += delta;
-            match deposit::plugin(s.plugin).writeback() {
+            sent_net.add(g, delta);
+            match deposit::writeback(s.plugin, self.goods.get(&g)) {
                 Writeback::WithChunk => by_chunk.entry(s.chunk).or_default().push(InvDelta {
                     inventory: DEPOSIT_INVENTORY,
                     pos: BlockPos::new(s.chunk.x * 16, 0, s.chunk.z * 16),
                     good: g,
                     delta,
                 }),
-                Writeback::Immediate => {
-                    let mut c = Cmd::DepositDelta(DepositDelta {
+                Writeback::Immediate | Writeback::Live => {
+                    immediate.push(Cmd::DepositDelta(DepositDelta {
                         op: OpId(0),
                         plugin: s.plugin,
                         chunk: s.chunk,
                         good: g,
                         delta,
-                    });
-                    c.set_op(self.ops.derive(self.world_seed, self.now, &c));
-                    self.out.push(c);
+                    }))
                 }
             }
         }
-        let mut destroys = std::mem::take(&mut dist.destroy_pending);
+        let mut destroys: BTreeMap<ChunkPos, Vec<BlockDestroy>> = BTreeMap::new();
+        let pending_chunks: Vec<ChunkPos> = dist.destroy_pending.keys().copied().collect();
+        for c in pending_chunks {
+            if goes(&c)
+                && let Some(v) = dist.destroy_pending.remove(&c)
+            {
+                destroys.insert(c, v);
+            }
+        }
+        if by_chunk.is_empty() && destroys.is_empty() && immediate.is_empty() {
+            // Nothing for Java this round; what the replay made rides on as virtual stock.
+            dist.minted_carried = span_minted;
+            return;
+        }
+        self.stats.reconciles += 1;
+        dist.epoch += 1;
+        let epoch = dist.epoch;
+        let mut report = ReconcileReport {
+            epoch,
+            at,
+            since,
+            net: sent_net,
+            unplaced: rest,
+            ..ReconcileReport::default()
+        };
+        for mut c in immediate {
+            c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+            self.out.push(c);
+        }
         let chunks: BTreeSet<ChunkPos> = by_chunk.keys().chain(destroys.keys()).copied().collect();
         for chunk in chunks {
             let mut deltas = by_chunk.remove(&chunk).unwrap_or_default();
@@ -1350,14 +1541,22 @@ impl Engine {
         }
         // Trims are capped by what the replay made in the span, not by this round's additions:
         // outputs already shipped are taken back from whatever holds them, or booked untracked.
-        let _ = added;
+        // A partial round leaves part of that span virtual, so the cap rides on with it too.
+        if leaving.is_some() {
+            dist.minted_carried = span_minted.clone();
+        }
         dist.round_added.insert(epoch, span_minted);
         // Keep the books of the last few rounds only (trims refer to recent ones).
         while dist.round_added.len() > 8 {
             dist.round_added.pop_first();
         }
         let what = format!(
-            "reconcile epoch {epoch}: {} in {} chunk(s), {} deltas{}{}",
+            "reconcile epoch {epoch}{}: {} in {} chunk(s), {} deltas{}{}",
+            match round {
+                Round::Full => "",
+                Round::Ahead => " (ahead of arrival)",
+                Round::Part(_) => " (part loaded)",
+            },
             self.goods_words(&report.net),
             report.chunks,
             report.deltas,
@@ -1374,10 +1573,14 @@ impl Engine {
         );
         let dist = self.districts.get_mut(&d).expect("exists");
         dist.push_report(report);
-        let loaded: Vec<ChunkPos> = dist.loaded_chunks.iter().copied().collect();
+        let send: Vec<ChunkPos> = if round == Round::Ahead {
+            dist.pending.keys().copied().collect()
+        } else {
+            dist.loaded_chunks.iter().copied().collect()
+        };
         self.note(d, at, what);
-        for c in loaded {
-            self.send_pending(d, c, 0);
+        for c in send {
+            self.send_pending_from(d, c, epoch);
         }
     }
 
@@ -1630,43 +1833,11 @@ impl Engine {
 
     // ---- ports, trains, packages ----------------------------------------------------------
 
-    fn port(&mut self, at: Tick, p: &crate::obs::PortTransfer) {
+    /// Goods that crossed the boundary while loaded (§3.3). Ender Transmission channels cross no
+    /// boundary: their endpoints are one district's (I13 as corrected), so they have no port kind.
+    fn port(&mut self, _at: Tick, p: &crate::obs::PortTransfer) {
         let dist = self.district_mut(p.district);
         dist.ports.merge(&p.goods);
-        if p.kind == PortKind::Channel {
-            let ch = ChannelId(p.counterpart);
-            for (g, n) in p.goods.iter() {
-                *dist.links.entry(LinkKey::Channel(ch, g)).or_default() += n;
-            }
-            // A live member's real transfer changes the shared buffer the replay holds.
-            let holders: Vec<RegionId<Cluster>> = self
-                .channel_sims
-                .get(&ch)
-                .into_iter()
-                .flatten()
-                .filter_map(|o| self.cluster_of.get(o).copied())
-                .collect();
-            for h in holders {
-                let has = self.clusters.get(h).is_some_and(|r| {
-                    p.goods
-                        .goods()
-                        .any(|g| r.cell().model().pool(PoolKey::Channel(ch, g)).is_some())
-                });
-                if has {
-                    let goods = p.goods.clone();
-                    self.clusters.apply(h, at, |c, at| {
-                        for (g, n) in goods.iter() {
-                            c.add_to_pool(PoolKey::Channel(ch, g), -n, true, at);
-                        }
-                    });
-                    self.after_cluster(h, at);
-                    break;
-                }
-            }
-            for (g, n) in p.goods.iter() {
-                self.channels.entry(ch).or_default().known.add(g, -n);
-            }
-        }
     }
 
     fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
@@ -1757,10 +1928,6 @@ impl Engine {
             return;
         }
         self.stats.exchanges += 1;
-        if self.mode == Mode::ReadOnly {
-            // I-A: the exchange is the ledger's estimate only; the train keeps its cargo.
-            return;
-        }
         if self.log_enabled {
             let mut moved = GoodVec::new();
             for &(_, g, n) in &entries {
@@ -1795,7 +1962,7 @@ impl Engine {
 
     /// Java answered an industry command failed (COMMAND_RESULT failed, docs/industry-boundary.md
     /// §4.3): a station exchange or a train's loot moved nothing, so it is taken back as a result
-    /// with nothing applied. Returns whether the engine was waiting on the op. Channel, deposit and
+    /// with nothing applied. Returns whether the engine was waiting on the op. Deposit and
     /// package commands have no correction yet.
     pub fn command_failed(&mut self, at: Tick, op: rtsim_kernel::journal::OpId) -> bool {
         let Some(ex) = self.exchanges.get(&op) else {
@@ -2048,6 +2215,148 @@ impl Engine {
         }
     }
 
+    // ---- reconcile ahead of arrival (the stale-tick race) ----------------------------------
+
+    /// A player is closing in on district `d` (IND_APPROACH). Ben's answer to the stale-tick race
+    /// (INDUSTRY.md §19 risk 3): its reconcile goes out before its chunks tick. The replay stops
+    /// now and every chunk's command is sent at once; Java holds each until its chunk loads and
+    /// applies it at the chunk's load, before any machine there ticks, so no machine runs on
+    /// stock the replay already counted. The replay does not start again while the player keeps
+    /// coming (each closing record extends the hold), and goes on from the reconciled state if
+    /// the player turns away. Never better than reality: the district makes nothing in between.
+    fn approach(&mut self, d: DistrictId, at: Tick) {
+        let until = at + self.tun.replay.approach_hold_ticks.max(1);
+        let Some(dist) = self.districts.get_mut(&d) else {
+            return;
+        };
+        let was_held = dist.hold_until.is_some_and(|h| h > at);
+        dist.hold_until = Some(until);
+        dist.hold_stamp = dist.hold_stamp.wrapping_add(1);
+        let stamp = dist.hold_stamp;
+        let live = dist.presence == Presence::Live;
+        self.wake_seq += 1;
+        self.wakes
+            .insert((until, self.wake_seq), Wake::Hold(d, stamp));
+        if was_held || live {
+            return;
+        }
+        self.stats.reconciles_ahead += 1;
+        self.note(
+            d,
+            at,
+            "a player is on the way: reconcile ahead of arrival".to_string(),
+        );
+        self.reconcile_round(d, at, Round::Ahead);
+        // Commands of earlier rounds still waiting for their chunks go now too.
+        let chunks: Vec<ChunkPos> = self
+            .districts
+            .get(&d)
+            .map(|x| x.pending.keys().copied().collect())
+            .unwrap_or_default();
+        for c in chunks {
+            self.send_unsent(d, c);
+        }
+    }
+
+    /// Whether good `g` is level-wide pollution, applied live while its district is unloaded (I14).
+    fn is_live(&self, g: Good) -> bool {
+        self.goods.get(&g).is_some_and(|i| {
+            deposit::writeback(crate::obs::DepositPluginId::DestroyCrude, Some(i))
+                == Writeback::Live
+        })
+    }
+
+    /// Pushes the level-wide pollution district `d`'s replay made since the last push to the level
+    /// (I14: "level-wide types apply live while unloaded"), as IND_DEPOSIT_DELTA, which Java
+    /// applies to the level at once, its chunk loaded or not. A stale wake (the replay that booked
+    /// it has ended) does nothing.
+    fn pollution_wake(&mut self, at: Tick, d: DistrictId, started: Tick) {
+        let Some(dist) = self.districts.get(&d) else {
+            return;
+        };
+        if dist.sim.as_ref().is_none_or(|s| s.started != started) {
+            return;
+        }
+        let Some(&h) = self.cluster_of.get(&d) else {
+            return;
+        };
+        let live: Vec<(Good, crate::obs::DepositPluginId, ChunkPos)> = dist
+            .deposits
+            .values()
+            .filter(|s| self.is_live(s.good))
+            .map(|s| (s.good, s.plugin, s.chunk))
+            .collect();
+        let pushed = self
+            .clusters
+            .apply(h, at, |c, _| {
+                live.iter()
+                    .map(|&(g, _, _)| c.take_unpushed(PoolKey::Stock(d, g)))
+                    .collect::<Vec<i64>>()
+            })
+            .unwrap_or_default();
+        self.after_cluster(h, at);
+        for (&(g, plugin, chunk), &delta) in live.iter().zip(&pushed) {
+            if delta == 0 {
+                continue;
+            }
+            if let Some(s) = self
+                .districts
+                .get_mut(&d)
+                .and_then(|x| x.deposits.get_mut(&g))
+            {
+                s.remaining += delta;
+            }
+            let mut c = Cmd::DepositDelta(DepositDelta {
+                op: OpId(0),
+                plugin,
+                chunk,
+                good: g,
+                delta,
+            });
+            c.set_op(self.ops.derive(self.world_seed, at, &c));
+            self.out.push(c);
+            self.stats.pollution_pushes += 1;
+        }
+        self.wake_seq += 1;
+        let next = at + self.tun.replay.live_pollution_ticks.max(1);
+        self.wakes
+            .insert((next, self.wake_seq), Wake::Pollution(d, started));
+    }
+
+    /// An approach hold ended with no newer closing record: the player did not come, and the
+    /// replay goes on over whatever is still unloaded, from the reconciled state.
+    fn hold_wake(&mut self, at: Tick, (d, stamp): (DistrictId, u32)) {
+        let Some(dist) = self.districts.get_mut(&d) else {
+            return;
+        };
+        if dist.hold_stamp != stamp {
+            return;
+        }
+        dist.hold_until = None;
+        if dist.presence != Presence::Live {
+            self.note(
+                d,
+                at,
+                "the player did not come: the replay goes on".to_string(),
+            );
+        }
+        self.sync_coverage(d, at);
+    }
+
+    /// Every command for `chunk` not sent yet.
+    fn send_unsent(&mut self, d: DistrictId, chunk: ChunkPos) {
+        let Some(dist) = self.districts.get_mut(&d) else {
+            return;
+        };
+        if let Some(list) = dist.pending.get_mut(&chunk) {
+            for p in list.iter_mut().filter(|p| !p.sent) {
+                p.sent = true;
+                self.stats.chunk_commands += 1;
+                self.out.push(Cmd::ChunkReconcile(p.cmd.clone()));
+            }
+        }
+    }
+
     fn pressure_wake(
         &mut self,
         at: Tick,
@@ -2137,19 +2446,10 @@ impl Engine {
         } else if at < dist.defence.cooldown_until[t.class.index()] {
             report.skipped = Some("cooldown");
         }
-        if report.skipped.is_some() || self.mode == Mode::ReadOnly {
+        if let Some(why) = report.skipped {
             self.stats.attacks_skipped += 1;
-            let what = format!(
-                "{:?} {:?} x{} skipped: {}",
-                t.source,
-                t.class,
-                t.count,
-                report.skipped.unwrap_or("read-only phase")
-            );
+            let what = format!("{:?} {:?} x{} skipped: {why}", t.source, t.class, t.count);
             self.note(d, at, what);
-            if self.mode == Mode::ReadOnly && report.skipped.is_none() {
-                report.skipped = Some("read-only phase");
-            }
             self.district_mut(d).push_attack(report);
             return;
         }
@@ -2240,11 +2540,30 @@ impl Engine {
                 for (g, n) in take.iter() {
                     dist.owed.add(g, -n);
                 }
-                // Chunk-loaded with nobody near: applied at once, as a reconcile round now
-                // (§13.1); unloaded: at the next load.
-                if dist.presence != Presence::Unloaded {
-                    self.reconcile_on_load(d, at);
-                }
+            }
+        }
+        // Chunk-loaded with nobody near: what lands in loaded chunks is applied at once, as a
+        // reconcile round now (§13.1); what lands in unloaded ones waits for their loads. While
+        // part of the district is replayed (I7), the round takes only the loaded chunks and the
+        // replay goes on for the rest.
+        let dist = self.districts.get_mut(&d).expect("exists");
+        if dist.presence == Presence::Live {
+            if !dist.destroy_pending.is_empty() || !dist.owed.is_empty() {
+                self.reconcile_round(d, at, Round::Full);
+            }
+        } else if !dist.loaded_chunks.is_empty() {
+            let mut hit: BTreeSet<ChunkPos> = dist
+                .destroy_pending
+                .keys()
+                .filter(|c| dist.loaded_chunks.contains(c))
+                .copied()
+                .collect();
+            if h.is_none() && !take.is_empty() {
+                hit.extend(dist.loaded_chunks.iter().copied());
+            }
+            if !hit.is_empty() {
+                self.reconcile_round(d, at, Round::Part(hit));
+                self.start_sim(d, at);
             }
         }
         let what = format!(
@@ -2297,7 +2616,7 @@ impl Engine {
             cargo.merge(&c.1);
         }
         let loot = threat::loot(t, &cargo, &self.tun.threat);
-        if loot.is_empty() || self.mode == Mode::ReadOnly {
+        if loot.is_empty() {
             return;
         }
         self.stats.attacks += 1;
@@ -2347,12 +2666,13 @@ impl Engine {
         self.out.push(cmd);
     }
 
-    // ---- the ledger (I-A, I18) ------------------------------------------------------------
+    // ---- inspection (tests, the CLI; never a player, I18) -------------------------------------
 
-    /// What a district would have made while unloaded, and where it stands. Read-only: it
-    /// projects the replay without committing anything (the kernel's read rule).
-    pub fn ledger(&mut self, d: DistrictId, at: Tick) -> Option<LedgerReport> {
-        // A read reports as of the engine's time: it never fires what is due (review finding 12).
+    /// Where a district stands and what its replay has done so far. A read: it projects the replay
+    /// without committing anything (the kernel's read rule) and never fires what is due. For tests,
+    /// the CLI and an operator's log only: under I18 no player sees simulated state, so nothing
+    /// here reaches the Java side.
+    pub fn inspect(&mut self, d: DistrictId, at: Tick) -> Option<Inspection> {
         let at = at.min(self.now);
         let season = self.season_at(at);
         let dist = self.districts.get(&d)?;
@@ -2374,16 +2694,18 @@ impl Engine {
             })
             .unwrap_or_default();
         let (state, reason) = match (dist.presence, dist.phase) {
-            (Presence::Live, _) => (LedgerState::Live, None),
-            (Presence::Partial, _) => (LedgerState::Suspended, None),
-            (_, Phase::Damaged) => (LedgerState::Damaged, dist.freeze_reason(season)),
-            (_, Phase::Learning) => (LedgerState::Learning, Some("learning")),
-            (_, Phase::Stale) => (LedgerState::Stale, dist.freeze_reason(season)),
-            (_, Phase::NotLearnable(_)) => (LedgerState::NotLearnable, dist.freeze_reason(season)),
-            (_, Phase::Learned) if view.is_none() => {
-                (LedgerState::OutOfSeason, dist.freeze_reason(season))
+            (Presence::Live, _) => (DistrictState::Live, None),
+            (Presence::Partial, _) => (DistrictState::Suspended, None),
+            (_, Phase::Damaged) => (DistrictState::Damaged, dist.freeze_reason(season)),
+            (_, Phase::Learning) => (DistrictState::Learning, Some("learning")),
+            (_, Phase::Stale) => (DistrictState::Stale, dist.freeze_reason(season)),
+            (_, Phase::NotLearnable(_)) => {
+                (DistrictState::NotLearnable, dist.freeze_reason(season))
             }
-            (_, Phase::Learned) => (LedgerState::Running, None),
+            (_, Phase::Learned) if view.is_none() => {
+                (DistrictState::OutOfSeason, dist.freeze_reason(season))
+            }
+            (_, Phase::Learned) => (DistrictState::Running, None),
         };
         let mut made_since = GoodVec::new();
         let mut running = None;
@@ -2391,19 +2713,18 @@ impl Engine {
         if let (Some(v), Some(span)) = (&view, &dist.sim) {
             let now = stock_of(v, d);
             made_since = now.minus(&span.base);
-            let run = v.run_of(d, 0);
-            running = run.map(|r| r == Run::Running);
-            if let Some(Run::Stopped(why)) = run {
-                stop = Some(stop_words(why, &self.goods));
+            let runs: Vec<Run> = v
+                .runs
+                .iter()
+                .filter(|r| r.0 == d && r.1 < crate::district::LINK_PROC_BASE)
+                .map(|r| r.2)
+                .collect();
+            running = (!runs.is_empty()).then(|| runs.contains(&Run::Running));
+            if let Some(Run::Stopped(why)) = runs.iter().find(|r| **r != Run::Running) {
+                stop = Some(stop_words(*why, &self.goods));
             }
         }
-        let forecast = self
-            .cluster_of
-            .get(&d)
-            .and_then(|&h| self.clusters.get(h))
-            .and_then(|r| r.cell().model().forecast(r.cell().anchor(), d));
-        let next_breakpoint = forecast.map(|f| f.0);
-        Some(LedgerReport {
+        Some(Inspection {
             district: d,
             state,
             reason: reason.map(str::to_string),
@@ -2412,8 +2733,6 @@ impl Engine {
             made_since,
             running,
             stop,
-            next_breakpoint,
-            next: forecast.map(|f| f.1),
             learning_ticks_to_go: if dist.phase == Phase::Learning {
                 dist.learner.ticks_to_go(at, &self.tun.learn)
             } else {
@@ -2422,51 +2741,6 @@ impl Engine {
             last_reconcile: dist.reports.back().cloned(),
             attacks: dist.attacks.iter().cloned().collect(),
         })
-    }
-
-    fn ledger_line(&mut self, d: DistrictId, at: Tick) -> LedgerLine {
-        let Some(r) = self.ledger(d, at) else {
-            return LedgerLine {
-                district: d,
-                state: LedgerState::Learning as u32,
-                freeze: 0,
-                next_breakpoint: None,
-                next_kind: 0,
-                next_good: None,
-                since: at,
-                goods: Vec::new(),
-            };
-        };
-        let freeze = self
-            .districts
-            .get(&d)
-            .and_then(|x| x.not_learnable)
-            .map_or(0, |n| n.code());
-        let goods = r
-            .rates_per_hour
-            .iter()
-            .map(|&(g, ph)| (g, ph.round() as i64, r.made_since.get(g)))
-            .collect();
-        let (mut next_kind, next_good) = r.next.map_or((0, None), |f| f.code());
-        if next_kind == 1
-            && next_good.is_some_and(|g| {
-                self.goods
-                    .get(&g)
-                    .is_some_and(|i| i.class == GoodClass::Deposit)
-            })
-        {
-            next_kind = 4;
-        }
-        LedgerLine {
-            district: d,
-            state: r.state as u32,
-            freeze,
-            next_breakpoint: r.next_breakpoint,
-            next_kind,
-            next_good,
-            since: r.since.unwrap_or(at),
-            goods,
-        }
     }
 
     /// Every live cluster's books close (tests and the CLI).
@@ -2485,28 +2759,35 @@ impl Engine {
         Some(stock_of(&v, d))
     }
 
-    /// A channel buffer's level of a good: the replay's (a read, committing nothing) while a
-    /// simulated district links it, else the last sample plus pushed changes.
-    pub fn channel_level(&mut self, ch: ChannelId, g: Good) -> i64 {
-        let now = self.now;
-        let holder = self
-            .channel_sims
-            .get(&ch)
-            .into_iter()
-            .flatten()
-            .find_map(|d| self.cluster_of.get(d).copied());
-        if let Some(h) = holder
-            && let Some(v) = self.clusters.read(h, now)
-        {
-            return v.level(PoolKey::Channel(ch, g));
-        }
-        self.channels.get(&ch).map_or(0, |c| c.known.get(g))
-    }
-
-    /// The district's replay run state, if simulated.
+    /// The district's replay run state, if simulated: running if any of its processes runs.
     pub fn sim_run(&self, d: DistrictId) -> Option<Run> {
         let h = *self.cluster_of.get(&d)?;
-        self.clusters.get(h)?.cell().model().run_of(d, 0)
+        self.clusters.get(h)?.cell().model().box_run(d)
+    }
+
+    /// Each of the district's replay processes (I6) with its goods and run state, if simulated.
+    pub fn sim_processes(&self, d: DistrictId) -> Vec<(u16, Vec<Good>, Run)> {
+        let Some(h) = self.cluster_of.get(&d) else {
+            return Vec::new();
+        };
+        let Some(r) = self.clusters.get(*h) else {
+            return Vec::new();
+        };
+        let c = r.cell().model();
+        c.procs()
+            .iter()
+            .filter(|p| p.owner == d && p.id < crate::district::LINK_PROC_BASE)
+            .map(|p| {
+                let goods = match &p.body {
+                    crate::cluster::Body::Box { terms } => terms
+                        .iter()
+                        .map(|t| c.pools()[t.pool as usize].key.good())
+                        .collect(),
+                    crate::cluster::Body::Link { .. } => Vec::new(),
+                };
+                (p.id, goods, p.run)
+            })
+            .collect()
     }
 }
 
@@ -2590,11 +2871,9 @@ mod persist_impls {
 
     use super::*;
     use crate::persist::{
-        CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE, Persist, from_bytes, persist_struct,
-        persist_unit_enum, to_bytes,
+        CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE, Persist, from_bytes, persist_struct, to_bytes,
     };
 
-    persist_unit_enum!(Mode, [Mode::ReadOnly, Mode::Apply]);
     persist_struct!(LineEdge {
         trips,
         cargo,
@@ -2616,6 +2895,9 @@ mod persist_impls {
         packages_written,
         breakpoints,
         cluster_settles,
+        reconciles_ahead,
+        pollution_pushes,
+        retired_records,
     });
     persist_struct!(Books {
         minted,
@@ -2627,7 +2909,29 @@ mod persist_impls {
         trimmed
     });
     persist_struct!(Station { decl });
-    persist_struct!(ChannelState { known, capacity });
+    impl Persist for Wake {
+        fn put(&self, w: &mut Writer) {
+            match *self {
+                Wake::Hold(d, stamp) => {
+                    w.u8(0);
+                    d.put(w);
+                    stamp.put(w);
+                }
+                Wake::Pollution(d, started) => {
+                    w.u8(1);
+                    d.put(w);
+                    started.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Wake::Hold(Persist::get(r)?, Persist::get(r)?),
+                1 => Wake::Pollution(Persist::get(r)?, Persist::get(r)?),
+                _ => return Err(CodecError::Invalid("industry wake".into())),
+            })
+        }
+    }
     persist_struct!(PendingExchange {
         district,
         train,
@@ -2636,7 +2940,6 @@ mod persist_impls {
     });
 
     fn globals(e: &Engine, w: &mut Writer) {
-        e.mode.put(w);
         e.world_seed.put(w);
         e.goods.put(w);
         e.next_cluster.put(w);
@@ -2646,12 +2949,14 @@ mod persist_impls {
         e.arrivals.put(w);
         e.legs.put(w);
         e.legs_swept.put(w);
-        e.channels.put(w);
-        e.channel_sims.put(w);
         e.sinks_of.put(w);
         e.conditions.put(w);
         e.pressure.put(w);
         e.pressure_seq.put(w);
+        e.wakes.put(w);
+        e.wake_seq.put(w);
+        e.dirty.put(w);
+        e.per_chunk_unloads.put(w);
         e.exchanges.put(w);
         e.train_cooldown.put(w);
         e.ops.put(w);
@@ -2726,9 +3031,8 @@ mod persist_impls {
             }
             let g = global.ok_or_else(|| CodecError::Invalid("no globals page".into()))?;
             let mut r = Reader::new(&g);
-            let mode = Mode::get(&mut r)?;
             let world_seed = u64::get(&mut r)?;
-            let mut e = Engine::new(world_seed, tun, mode, Tick::ZERO);
+            let mut e = Engine::new(world_seed, tun, Tick::ZERO);
             e.goods = Persist::get(&mut r)?;
             e.next_cluster = Persist::get(&mut r)?;
             e.stations = Persist::get(&mut r)?;
@@ -2737,12 +3041,14 @@ mod persist_impls {
             e.arrivals = Persist::get(&mut r)?;
             e.legs = Persist::get(&mut r)?;
             e.legs_swept = Persist::get(&mut r)?;
-            e.channels = Persist::get(&mut r)?;
-            e.channel_sims = Persist::get(&mut r)?;
             e.sinks_of = Persist::get(&mut r)?;
             e.conditions = Persist::get(&mut r)?;
             e.pressure = Persist::get(&mut r)?;
             e.pressure_seq = Persist::get(&mut r)?;
+            e.wakes = Persist::get(&mut r)?;
+            e.wake_seq = Persist::get(&mut r)?;
+            e.dirty = Persist::get(&mut r)?;
+            e.per_chunk_unloads = Persist::get(&mut r)?;
             e.exchanges = Persist::get(&mut r)?;
             e.train_cooldown = Persist::get(&mut r)?;
             e.ops = Persist::get(&mut r)?;

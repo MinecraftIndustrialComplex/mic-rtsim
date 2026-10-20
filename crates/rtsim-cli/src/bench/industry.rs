@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use rtsim_industry::engine::{Engine, Mode};
+use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::learn::Learned;
 use rtsim_industry::obs::{DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, SweepEnd, Timed};
@@ -157,7 +157,7 @@ fn add_district(e: &mut Engine, id: u64, ore: i64, slots: u32) {
 }
 
 fn engine() -> Engine {
-    let mut e = Engine::new(1, Tunables::default(), Mode::Apply, Tick(0));
+    let mut e = Engine::new(1, Tunables::default(), Tick(0));
     e.define_good(ORE, GoodInfo::item("ore", 64));
     e.define_good(BAR, GoodInfo::item("bar", 64));
     e
@@ -229,7 +229,7 @@ fn busy(n: u64, days: u64) -> Point {
     }
 }
 
-/// One district left alone for `days`, then read once (the ledger).
+/// One district left alone for `days`, then read once (an inspection).
 fn elapsed(days: u64) -> Point {
     let mut e = engine();
     add_district(&mut e, 1, 1_000_000_000_000, 4_000_000);
@@ -237,7 +237,7 @@ fn elapsed(days: u64) -> Point {
     let c0 = cpu();
     let at = Tick(days * TICKS_PER_DAY);
     e.advance_to(at);
-    let l = e.ledger(DistrictId(1), at).expect("district");
+    let l = e.inspect(DistrictId(1), at).expect("district");
     let c1 = cpu();
     assert!(l.made_since.get(BAR) > 0);
     Point {
