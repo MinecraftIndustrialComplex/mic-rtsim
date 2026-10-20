@@ -21,7 +21,7 @@ usage:
       --only picks sweeps by name: latent, regions, events, elapsed, age.
   rtsim-cli bench scale-one --spec JSON
       Runs one configuration and prints its measurements as JSON (used by bench scale).
-  rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]
+  rtsim-cli bench industry [--quick] [--check] [--no-write]
       The industry engine's cost sweeps: district count, breakpoints, elapsed time.
   rtsim-cli sim industry [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
       The iron line (rtsim-industry's synthetic scenario) for N days (at least 10): learning,
@@ -74,6 +74,22 @@ fn main() -> ExitCode {
             let m = bench::scale::run_one(&spec);
             println!("{}", serde_json::to_string(&m).expect("serialize"));
             ExitCode::SUCCESS
+        }
+        ["bench", "industry", rest @ ..] => {
+            let mut opts = bench::industry::Options {
+                quick: false,
+                check: false,
+                out: Some(PathBuf::from("bench/results")),
+            };
+            for &a in rest {
+                match a {
+                    "--quick" => opts.quick = true,
+                    "--check" => opts.check = true,
+                    "--no-write" => opts.out = None,
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            ExitCode::from(bench::industry::run(opts) as u8)
         }
         ["sim", "industry", rest @ ..] => {
             let mut opts = sim::industry::Options {

@@ -195,7 +195,12 @@ pub struct Engine {
     last_departure: BTreeMap<TrainId, (StationId, Tick, GoodVec)>,
     arrivals: BTreeMap<(TrainId, StationId), Vec<Carriage>>,
     legs: LegIndex,
+    legs_swept: u64,
     channels: BTreeMap<ChannelId, ChannelState>,
+    /// Simulated districts linked to each channel, so coupling never scans every district.
+    channel_sims: BTreeMap<ChannelId, BTreeSet<DistrictId>>,
+    /// Power sinks of each source (IND_POWER_LINK).
+    sinks_of: BTreeMap<DistrictId, BTreeSet<DistrictId>>,
     conditions: Option<Conditions>,
     pressure: BTreeMap<(Tick, u64), (DistrictId, ThreatClass, u32, u32)>,
     pressure_seq: u64,
@@ -224,7 +229,10 @@ impl Engine {
             last_departure: BTreeMap::new(),
             arrivals: BTreeMap::new(),
             legs: LegIndex::default(),
+            legs_swept: 0,
             channels: BTreeMap::new(),
+            channel_sims: BTreeMap::new(),
+            sinks_of: BTreeMap::new(),
             conditions: None,
             pressure: BTreeMap::new(),
             pressure_seq: 0,
@@ -482,7 +490,17 @@ impl Engine {
                 self.send_pending(*district, *chunk, *applied_epoch);
             }
             Obs::Conditions(c) => self.conditions = Some(*c),
-            Obs::PowerLink { sink, source } => self.district_mut(*sink).power_source = *source,
+            Obs::PowerLink { sink, source } => {
+                let old = std::mem::replace(&mut self.district_mut(*sink).power_source, *source);
+                if let Some(o) = old
+                    && let Some(set) = self.sinks_of.get_mut(&o)
+                {
+                    set.remove(sink);
+                }
+                if let Some(s) = source {
+                    self.sinks_of.entry(*s).or_default().insert(*sink);
+                }
+            }
             Obs::Port(p) => self.port(at, p),
             Obs::TrainArrived(c) => self.train_arrived(at, c),
             Obs::TrainDeparted(d) => self.train_departed(at, d),
@@ -537,6 +555,17 @@ impl Engine {
         dist.models.insert(season, Model::from_learned(learned, targets, season, batches));
         dist.phase = Phase::Learned;
         self.stats.models_adopted += 1;
+    }
+
+    /// An import into a simulated district's stock at the engine's time, as an emulated station
+    /// unload would make (the bench drives restarts with it). Scaffolding. Returns what was added,
+    /// or `None` if the district is not replaying.
+    pub fn inject(&mut self, d: DistrictId, g: Good, n: i64) -> Option<i64> {
+        let h = *self.cluster_of.get(&d)?;
+        let at = self.now;
+        let got = self.clusters.apply(h, at, |c, at| c.add_to_pool(PoolKey::Stock(d, g), n, false, at));
+        self.after_cluster(h, at);
+        got
     }
 
     // ---- seasons --------------------------------------------------------------------------
@@ -716,21 +745,18 @@ impl Engine {
                 LinkKey::Mail { .. } => None,
             })
             .collect();
-        for (&o, od) in &self.districts {
-            if o == d || od.sim.is_none() {
-                continue;
+        for c in &my_channels {
+            if let Some(set) = self.channel_sims.get(c) {
+                linked.extend(set.iter().copied().filter(|&o| o != d));
             }
-            let shares_channel = od
-                .models
-                .get(&od.sim.as_ref().expect("checked").season)
-                .is_some_and(|m| {
-                    m.links
-                        .iter()
-                        .any(|(k, _)| matches!(k, LinkKey::Channel(c, _) if my_channels.contains(c)))
-                });
-            if shares_channel || dist.power_source == Some(o) || od.power_source == Some(d) {
-                linked.insert(o);
-            }
+        }
+        if let Some(src) = dist.power_source
+            && self.cluster_of.contains_key(&src)
+        {
+            linked.insert(src);
+        }
+        if let Some(sinks) = self.sinks_of.get(&d) {
+            linked.extend(sinks.iter().copied().filter(|o| self.cluster_of.contains_key(o)));
         }
         let mut handles: Vec<RegionId<Cluster>> = linked
             .iter()
@@ -764,12 +790,17 @@ impl Engine {
         let boundary = self.next_season_boundary(at);
         self.clusters.apply(h, at, |c, _| c.set_season_boundary(boundary));
         self.cluster_of.insert(d, h);
+        for c in &my_channels {
+            self.channel_sims.entry(*c).or_default().insert(d);
+        }
         // Sinks already replaying on this district's power now follow it (I13).
         let sinks: Vec<DistrictId> = self
-            .districts
-            .values()
-            .filter(|s| s.power_source == Some(d) && self.cluster_of.get(&s.id) == Some(&h))
-            .map(|s| s.id)
+            .sinks_of
+            .get(&d)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|s| self.cluster_of.get(s) == Some(&h))
             .collect();
         for s in sinks {
             self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, Some((d, 0)), at));
@@ -790,11 +821,16 @@ impl Engine {
         let h = *self.cluster_of.get(&d)?;
         // Sinks on this district's power: a live source is assumed running (F21).
         let sinks: Vec<DistrictId> = self
-            .districts
-            .values()
-            .filter(|s| s.power_source == Some(d) && self.cluster_of.get(&s.id) == Some(&h))
-            .map(|s| s.id)
+            .sinks_of
+            .get(&d)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|s| self.cluster_of.get(s) == Some(&h))
             .collect();
+        for set in self.channel_sims.values_mut() {
+            set.remove(&d);
+        }
         for s in sinks {
             self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, None, at));
         }
@@ -920,11 +956,10 @@ impl Engine {
     /// (I12). Implemented as a reconcile-free restart: stop, then start from the replay's levels.
     fn season_boundary(&mut self, h: RegionId<Cluster>, at: Tick) {
         let members: Vec<DistrictId> = self
-            .cluster_of
-            .iter()
-            .filter(|(_, hh)| **hh == h)
-            .map(|(&d, _)| d)
-            .collect();
+            .clusters
+            .get(h)
+            .map(|r| r.cell().model().members().into_iter().collect())
+            .unwrap_or_default();
         for d in members {
             self.restart_sim(d, at);
             if !self.cluster_of.contains_key(&d) {
@@ -1332,7 +1367,13 @@ impl Engine {
                 *dist.links.entry(LinkKey::Channel(ch, g)).or_default() += n;
             }
             // A live member's real transfer changes the shared buffer the replay holds.
-            let holders: Vec<RegionId<Cluster>> = self.cluster_of.values().copied().collect();
+            let holders: Vec<RegionId<Cluster>> = self
+                .channel_sims
+                .get(&ch)
+                .into_iter()
+                .flatten()
+                .filter_map(|o| self.cluster_of.get(o).copied())
+                .collect();
             for h in holders {
                 let has = self
                     .clusters
@@ -1547,8 +1588,11 @@ impl Engine {
                 (to_pos.x, to_pos.z),
             );
         }
-        // Legs are kept for a day after they end (TUNABLE, PLACEHOLDER).
-        self.legs.expire(Tick(at.0.saturating_sub(TICKS_PER_DAY)));
+        // Legs are kept for a day after they end (TUNABLE, PLACEHOLDER), swept once a day.
+        if at.day() > self.legs_swept {
+            self.legs_swept = at.day();
+            self.legs.expire(Tick(at.0.saturating_sub(TICKS_PER_DAY)));
+        }
     }
 
     fn package(&mut self, at: Tick, p: &PackageEvent) {
