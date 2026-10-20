@@ -38,7 +38,10 @@ Every decision about mic-rtsim, newest at the bottom.
 | A11 | 2026-10-19 | The potato reference is the laptop pinned to 2 physical cores, plus runs on a Windows PC. | Ben | chose "Laptop + a Windows run" |
 | A12 | 2026-10-19 | The code lives in a private GitHub repo, `MinecraftIndustrialComplex/mic-rtsim`. | Ben | chose "Private GitHub repo" |
 | A13 | 2026-10-19 | Unobserved traffic (caravans, ships, migrations) is simulated as flows on edges. Individual travellers are sampled only where a player can see, and become rows only when something happens to them. | Ben | chose "Flows" |
-| A14 | 2026-10-19 | At galactic scale, an unvisited planet runs a cheap coarse Deep Time history that is authoritative. A visit runs only the refinement on the stored state (option B in SCALE.md §12). This waits on two Deep Time measurements. | Ben | chose "B: coarse history" |
+| A14 | 2026-10-19 | At galactic scale, an unvisited planet runs a cheap coarse Deep Time history that is authoritative. A visit runs only the refinement on the stored state (option B in SCALE.md §12). Deep Time does not plan for it yet, but no architecture may sabotage it: history and refinement stay separable, the history grid resolution stays a preset parameter, and a computed planet is stored data, never regenerated from its seed. | Ben | chose "B: coarse history"; to the Deep Time session: "Option B, Deep time will need a lot of work for this, don't plan around it for now. (It's months out.), though don't make architectural decisions that will sabotage it." (Deep Time decisions log, master 2885b5d9) |
+| A15 | 2026-10-19 | Regions nobody reads are lazy. They are not stepped, and they catch up in closed form when read or at breakpoints. Travellers still move on scheduled legs: a leg is booked into a region and time-window index at its start, and a player entering a region looks up the legs booked there, so crossings become scheduled events with no scans. | Ben | chose "Lazy, catch up on read" after asking how a world-spanning dragon migration would still cross his house |
+| A16 | 2026-10-19 | Resident memory is a configured budget, with the default set from phase 0 measurements. Everything else lives in region pages on disk, loaded on read with prefetch. | Ben | chose "Budget + paging" |
+| A17 | 2026-10-19 | New planets are baked in the background only when free RAM allows (3.2 to 4.2 GB peak). Otherwise the planet stays "still forming" and cannot be landed on until it is baked. | Ben | chose "RAM check" |
 
 ## Content
 
@@ -56,6 +59,7 @@ Every decision about mic-rtsim, newest at the bottom.
 | C11 | 2026-10-19 | Phase 1 caravans use vanilla and Ribbits bodies only: wandering traders, trader llamas and ribbit merchants. No mods are added to the pack for phase 1. Better Caravans, Goblin Traders and Easy NPC were offered and declined for now. | Ben | chose "None for now" |
 | C12 | 2026-10-19 | Phase 1 caravans have no guards. | Ben | chose "No guards yet" |
 | C13 | 2026-10-19 | The phase 1 economy is cost-anchored storehouse markets joined by news-driven flows (research/economy-2026-10-19.md). Price is a pure function of stock, anchored to labour cost from recipes and local resources. Transfers are integer and two-sided, markets are piecewise-linear between breakpoints, and prices travel only as news. | Ben | chose "Storehouse markets" |
+| C14 | 2026-10-19 | Where the sim runs a market, vanilla villager trades draw from and pay into the village treasury and stock. A poor village cannot pay much, and prices follow its market. | Ben | chose "Through the treasury" |
 | C10 | 2026-10-19 | Later: kaiju that start spawning after players gain access to nukes, as late-game bosses. | Ben | "eventually I want to start adding in Kaiju to the pack. (Monsters that start spawning in after players have gotten access to nukes, that serve as late game bosses." |
 
 ## Agreed with the Deep Time session
@@ -80,5 +84,5 @@ These are in PLAN.md but not decided. Each one goes to Ben before work depends o
 | P6 | History is generated at world creation, after Deep Time's bake when one is present. | history |
 | P7 | A patch ledger plus contract tests for every reach into another mod. | phase 0 |
 | P8 | Which mods supply bodies, structures and ports for later phases. Survey candidates (2026-10-19): Small Ships and Create Aeronautics Structures (ships), the Alex's Caves port (kaiju), Goblin's Tyranny (goblins), Illager Invasion (raiders), Naturalist (herds). D7 rules out player-like NPCs. | each later phase |
-| P9 | Economy details left open by C13: whether vanilla villager trades must draw emeralds from the village treasury or are logged as a player money source; the tunables r, T and k; a Numismatics mint rule (later). | phase 1 design gate |
+| P9 | Economy details left open by C13: the tunables r, T and k; a Numismatics mint rule (later). | phase 1 design gate |
 | P10 | The fixes from the 2026-10-19 adversarial review that change the design, listed in PLAN.md. | phase 0 |
