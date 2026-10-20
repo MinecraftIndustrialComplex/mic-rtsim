@@ -55,6 +55,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
  * the native engine's own herd, founded by the test order HERD_FOUND, seen by a player and remembered
  * across a capture (skipped on the stub, which decides nothing). Each test has its own batch, so groups
  * of two tests never meet. Every test logs what it compared on a {@code [gametest]} line.
+ *
+ * <p>The scripted tests have sky access: without it the framework roofs the test with barriers
+ * ({@code StructureUtils.encaseStructure}), which are motion-blocking, so the surface rule would stand
+ * the animals on the roof.
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -108,7 +112,7 @@ public final class HerdGameTests {
      * seeds, and a screaming goat; all tagged, persistence-required, never saved by vanilla, standing on
      * the floor. HERD_MATERIALIZED names each group, HERD_GROUP_STATE follows; HERD_DESPAWN captures them.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_materialize")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_materialize", skyAccess = true)
     public static void aHerdGroupMaterializesWithTheEnginesLookAgeAndSeeds(GameTestHelper helper) {
         String test = "aHerdGroupMaterializesWithTheEnginesLookAgeAndSeeds";
         String dim = RtsimTests.dimension(helper);
@@ -212,7 +216,7 @@ public final class HerdGameTests {
      * with a Java op id, and the cow's drops carry it (docs/boundary.md §3.1); a death with no killer is
      * HERD_KILLED by none. The group shrinks and stays one unit: HERD_GROUP_STATE counts one present.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_kill")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_kill", skyAccess = true)
     public static void killingAHerdAnimalReportsItAndTheGroupShrinks(GameTestHelper helper) {
         String test = "killingAHerdAnimalReportsItAndTheGroupShrinks";
         long agent = HerdKit.newAgent();
@@ -276,7 +280,7 @@ public final class HerdGameTests {
      * is ordinary (no tag, saved by vanilla) and carries its HERD_TAKEN; the rest stays one group. Shears
      * mark a sheep (HERD_SHEARED with the player) without taking it.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_take")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_take", skyAccess = true)
     public static void aLeadTamingAndAPickupTakeAnimalsOutAndShearsMarkOne(GameTestHelper helper) {
         String test = "aLeadTamingAndAPickupTakeAnimalsOutAndShearsMarkOne";
         String dim = RtsimTests.dimension(helper);
@@ -358,7 +362,7 @@ public final class HerdGameTests {
      * member materialized again from its identity seed is the same animal: a wounded horse captured with
      * its wound comes back with the same max health, speed and jump.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_capture")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_capture", skyAccess = true)
     public static void aCaptureKeepsEachMembersStateAndTheSeedBringsBackTheSameHorse(GameTestHelper helper) {
         String test = "aCaptureKeepsEachMembersStateAndTheSeedBringsBackTheSameHorse";
         String dim = RtsimTests.dimension(helper);
@@ -421,7 +425,7 @@ public final class HerdGameTests {
      * and keeps a taken (now ordinary) animal; copies of a puppet built from its NBT, under a new UUID or
      * an older epoch, never join; the group still has its one body per member.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_save")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_save", skyAccess = true)
     public static void aSaveAndReloadDuplicatesNothing(GameTestHelper helper) {
         String test = "aSaveAndReloadDuplicatesNothing";
         long agent = HerdKit.newAgent();
@@ -497,7 +501,7 @@ public final class HerdGameTests {
                     }
                     check("two puppets of the herd in the world, not more (" + ours + ")", ours == 2);
                     check("and the taken sheep once (" + takenCopies + ")", takenCopies == 1);
-                    record(test, "saved", "0 puppets on disk, the taken sheep saved; 2 stale copies discarded; 3 sheep in the world");
+                    record(test, "saved", "0 puppets on disk, the taken sheep saved; 2 stale copies discarded; the 2 puppets and the taken sheep once each");
                     FakePlayers.remove(player[0]);
                     taken[0].discard();
                     HerdKit.despawn(agent, 2, HerdKit.SHEEP);
@@ -512,7 +516,7 @@ public final class HerdGameTests {
      * reports HERD_OBSTACLE once, with the members that failed, where they are stuck and the waypoint.
      * (The stall time is cut to 60 ticks for the test; the rule is otherwise the adapter's.)
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1200, batch = "herd_fence")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1200, batch = "herd_fence", skyAccess = true)
     public static void aFenceProducesAnObstacleReport(GameTestHelper helper) {
         String test = "aFenceProducesAnObstacleReport";
         long agent = HerdKit.newAgent();
