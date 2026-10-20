@@ -779,7 +779,7 @@ impl Encode for Market {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::line::Rates;
     use crate::tunables::Tunables;

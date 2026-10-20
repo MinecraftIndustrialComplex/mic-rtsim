@@ -24,6 +24,7 @@ pub mod edge;
 pub mod lattice;
 pub mod legs;
 pub mod news;
+pub mod persist;
 pub mod pipeline;
 pub mod roads;
 pub mod vecmap;

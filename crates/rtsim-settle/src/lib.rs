@@ -16,6 +16,8 @@ use std::collections::BTreeMap;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::{Arena, Handle};
 
+mod persist;
+
 /// The two phase 1 cultures (C6, C9). Each has its own currency in `rtsim-trade`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]

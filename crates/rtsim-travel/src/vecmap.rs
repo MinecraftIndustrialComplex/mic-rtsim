@@ -9,7 +9,7 @@
 /// A map from `K` to `V`, sorted by key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VecMap<K, V> {
-    items: Vec<(K, V)>,
+    pub(crate) items: Vec<(K, V)>,
 }
 
 impl<K, V> Default for VecMap<K, V> {

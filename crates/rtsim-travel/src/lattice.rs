@@ -28,7 +28,7 @@ pub struct Period {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Lattice {
-    segs: VecDeque<Period>,
+    pub(crate) segs: VecDeque<Period>,
 }
 
 impl Lattice {
