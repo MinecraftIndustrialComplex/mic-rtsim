@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5d9a2b66f846796d10afc307061ad508e15921ff1e5a0eff8629581399a39d54 # shrinks to seed = 258, ops = [(17, Trade { node: 6, good: 0, items: 1, buy: false }), (36, Trade { node: 1, good: 0, items: 1, buy: false }), (34, Trade { node: 3, good: 1, items: 3, buy: true }), (51, Trade { node: 9, good: 0, items: 28, buy: true }), (19, Rob { node: 8, share: 881 }), (18, Commands), (8, TakeLlama { node: 3 })], cut = 6

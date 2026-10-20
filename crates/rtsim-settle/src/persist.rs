@@ -127,7 +127,9 @@ impl Decode for Settlements {
             for _ in 0..n {
                 let id = Handle::from_bits(r.u64()?);
                 if rows.get(id).is_none() {
-                    return Err(CodecError::Invalid("a grid cell names no settlement".into()));
+                    return Err(CodecError::Invalid(
+                        "a grid cell names no settlement".into(),
+                    ));
                 }
                 ids.push(id);
             }

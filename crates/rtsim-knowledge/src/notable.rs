@@ -55,8 +55,8 @@ pub struct Notable {
     pub heir: ActorId,
     pub born: Tick,
     pub dies: Tick,
-    memories: Vec<MemorySlot>,
-    slots: u8,
+    pub(crate) memories: Vec<MemorySlot>,
+    pub(crate) slots: u8,
 }
 
 impl Notable {

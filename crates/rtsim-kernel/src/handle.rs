@@ -289,7 +289,9 @@ impl<T> Arena<T> {
                 t => return Err(CodecError::Invalid(format!("arena slot tag {t}"))),
             };
             if value.is_some() && generation == 0 {
-                return Err(CodecError::Invalid("a live arena slot of generation 0".into()));
+                return Err(CodecError::Invalid(
+                    "a live arena slot of generation 0".into(),
+                ));
             }
             slots.push(Slot { generation, value });
         }
@@ -303,14 +305,15 @@ impl<T> Arena<T> {
                 .is_some_and(|s: &Slot<T>| s.value.is_none() && s.generation != 0)
                 && !std::mem::replace(&mut seen[i as usize], true);
             if !ok {
-                return Err(CodecError::Invalid(format!("arena free list names slot {i}")));
+                return Err(CodecError::Invalid(format!(
+                    "arena free list names slot {i}"
+                )));
             }
             free.push(i);
         }
         Ok(Arena { slots, free, len })
     }
 }
-
 
 /// `arena[h]` for a handle the caller knows is live; panics on a stale or foreign one, as slice
 /// indexing panics out of bounds. Use [`Arena::get`] when the handle may be stale.

@@ -48,10 +48,10 @@ impl Packet {
 /// A holder's board: reports by the sequence number they arrived with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Noticeboard {
-    by_seq: BTreeMap<u64, ReportId>,
-    seq_of: BTreeMap<ReportId, u64>,
-    next_seq: u64,
-    cap: u32,
+    pub(crate) by_seq: BTreeMap<u64, ReportId>,
+    pub(crate) seq_of: BTreeMap<ReportId, u64>,
+    pub(crate) next_seq: u64,
+    pub(crate) cap: u32,
 }
 
 impl Noticeboard {

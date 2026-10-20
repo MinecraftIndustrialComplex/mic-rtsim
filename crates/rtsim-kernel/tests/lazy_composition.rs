@@ -320,7 +320,11 @@ fn events_before_draining_breakpoints_are_refused() {
 
 /// Runs a table as [`run`] does, but at event `cut` saves it with `encode_with` and goes on with
 /// the table read back: the same breakpoints at the same times and the same final states.
-fn run_saved_at(regions: &[SynthRegion], evs: &[Ev], cut: usize) -> (Vec<(Tick, SynthRegion)>, BreakpointLog) {
+fn run_saved_at(
+    regions: &[SynthRegion],
+    evs: &[Ev],
+    cut: usize,
+) -> (Vec<(Tick, SynthRegion)>, BreakpointLog) {
     use rtsim_kernel::codec::{Decode, Encode, Reader, Writer};
     let mut t: LazyTable<SynthRegion> = LazyTable::new(99, SystemId::named("test.table"), Tick(0));
     let ids: Vec<_> = regions
