@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
 #
-# mic_rtsim's headless GameTest suite (and the pure-Java unit tests first).
+# mic_rtsim's headless GameTest suites (and the pure-Java unit tests first).
 #
-#   ./gametest.sh                 run both
-#   ./gametest.sh -PgametestDebugLog   with DEBUG logging (shows "Mixing ... into ..." lines)
+#   ./gametest.sh                        core, then the plugins (ribbits, carryon)
+#   ./gametest.sh core                   one or more projects by name
+#   ./gametest.sh core -PgametestDebugLog   with DEBUG logging (shows "Mixing ... into ..." lines)
 #
-# Boots a dedicated NeoForge server with nothing but mic_rtsim on it (the core depends on NeoForge
-# only, D4), runs every @GameTest in the mic_rtsim namespace, and exits non-zero if anything failed.
-# The full log is left in core/build/gametest.log.
+# Each project boots its own dedicated NeoForge server: the core alone (it depends on NeoForge only,
+# D4), and each plugin with the core and the mod it is built around (Ribbits with YUNG's API and
+# GeckoLib; Carry On), loaded from the pack's own jars (gradle.properties: packMods). Every @GameTest
+# in the project's namespace runs; the script exits non-zero if any suite failed. Each full log is left
+# in <project>/build/gametest.log.
 #
 # Two things can fail, and they fail differently:
-#   * a mixin that no longer matches its target: mic_rtsim.mixins.json is defaultRequire 1, so the
-#     launch dies before a test runs. Look for "InjectionError" or "MixinTransformerError";
+#   * a mixin that no longer matches its target: every mixin config is defaultRequire 1, so the launch
+#     dies before a test runs. Look for "InjectionError" or "MixinTransformerError";
 #   * an assertion: every test logs what it compared on a "[gametest]" line.
 #
-# Heavy-job etiquette on the shared laptop: one heavy job at a time (the flock), niced, 4 workers.
+# Heavy-job etiquette on the shared laptop: one heavy job at a time (the flock), niced.
 
 set -uo pipefail
 cd "$(dirname "$0")"
 
-LOG=core/build/gametest.log
-mkdir -p core/build
+projects=()
+extra=()
+for a in "$@"; do
+    case "$a" in
+        core|ribbits|carryon) projects+=("$a") ;;
+        *) extra+=("$a") ;;
+    esac
+done
+[ ${#projects[@]} -eq 0 ] && projects=(core ribbits carryon)
 
 # A JDK 21: the repository flake's dev shell when there is one, else nixpkgs' jdk21.
 run() {
@@ -34,21 +44,37 @@ run() {
 }
 
 LOCK=${MIC_RTSIM_LOCK:-/tmp/mic-rtsim-bridge-heavy.lock}
+WORKERS=${MIC_RTSIM_WORKERS:-4}
+overall=0
+summary=()
 
-start=$(date +%s)
-flock "$LOCK" nice -n 10 bash -c "$(declare -f run); run ./gradlew --max-workers=4 --console=plain :core:test :core:runGameTestServer $*" 2>&1 | tee "$LOG"
-status=${PIPESTATUS[0]}
-elapsed=$(( $(date +%s) - start ))
+for p in "${projects[@]}"; do
+    LOG=$p/build/gametest.log
+    mkdir -p "$p/build"
+    tasks=":$p:runGameTestServer"
+    [ "$p" = core ] && tasks=":core:test :core:runGameTestServer"
+    start=$(date +%s)
+    flock "$LOCK" nice -n 10 bash -c "$(declare -f run); run ./gradlew --max-workers=$WORKERS --console=plain $tasks ${extra[*]:-}" 2>&1 | tee "$LOG"
+    status=${PIPESTATUS[0]}
+    elapsed=$(( $(date +%s) - start ))
+
+    echo
+    echo "-------------------------------------------------------------------- $p"
+    if ! grep -q "GAME TESTS COMPLETE\|All [0-9]* required tests passed" "$LOG"; then
+        echo "FAILED: the $p server never got as far as finishing the tests."
+        grep -nE "FAILED|Failed to start|MixinTransformerError|InjectionError|InvalidInjectionException|Mod loading has failed" "$LOG" | head -20
+        echo "Full log: $LOG"
+        overall=1
+        summary+=("$p: did not finish")
+        continue
+    fi
+    grep -E "BoundaryProtocolTest > |MarketBookTest > |GAME TESTS COMPLETE|required tests (failed|passed)|tests are now running|::.*(failed|passed)|failed at|\[gametest\]" "$LOG" | tail -80
+    echo
+    echo "Wall time: ${elapsed}s   Full log: $LOG"
+    [ "$status" -ne 0 ] && overall=1
+    summary+=("$p: $(grep -oE "All [0-9]+ required tests passed|[0-9]+ required tests failed" "$LOG" | tail -1)")
+done
 
 echo
-echo "--------------------------------------------------------------------"
-if ! grep -q "GAME TESTS COMPLETE\|All [0-9]* required tests passed" "$LOG"; then
-    echo "FAILED: the server never got as far as finishing the tests."
-    grep -nE "FAILED|Failed to start|MixinTransformerError|InjectionError|InvalidInjectionException|Mod loading has failed" "$LOG" | head -20
-    echo "Full log: $LOG"
-    exit 1
-fi
-grep -E "BoundaryProtocolTest > |GAME TESTS COMPLETE|required tests (failed|passed)|tests are now running|::.*(failed|passed)|\[gametest\]" "$LOG" | tail -60
-echo
-echo "Wall time: ${elapsed}s   Full log: $LOG"
-exit "$status"
+for s in "${summary[@]}"; do echo "  $s"; done
+exit "$overall"

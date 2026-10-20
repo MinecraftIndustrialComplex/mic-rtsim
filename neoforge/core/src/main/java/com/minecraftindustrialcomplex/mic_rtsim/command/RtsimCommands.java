@@ -30,8 +30,11 @@ public final class RtsimCommands {
         dispatcher.register(Commands.literal("rtsim")
                 .requires(src -> src.hasPermission(2))
                 .then(Commands.literal("perf").executes(RtsimCommands::perf))
+                .then(Commands.literal("village").executes(RtsimCommands::village))
                 .then(Commands.literal("stub")
-                        .then(Commands.literal("caravan").executes(RtsimCommands::stubCaravan))));
+                        .then(Commands.literal("caravan").executes(RtsimCommands::stubCaravan))
+                        .then(Commands.literal("market").executes(RtsimCommands::stubMarket))
+                        .then(Commands.literal("gossip").executes(RtsimCommands::stubGossip))));
     }
 
     private static int perf(CommandContext<CommandSourceStack> ctx) {
@@ -49,7 +52,8 @@ public final class RtsimCommands {
                         + ", captured " + s.capturedGroups() + ", taken " + s.takes() + ", died " + s.deaths()
                         + ", removed by others " + s.removedByOther() + ", stale copies discarded " + s.staleDiscarded(),
                 "puppet pass: " + s.passNanos() / 1000 + " us last tick; dropped latest-wins records " + b.droppedRecords(),
-                "modules: " + Integer.toBinaryString(RtsimConfig.effectiveMask()));
+                "modules: " + Integer.toBinaryString(RtsimConfig.effectiveMask()),
+                "phase 1: " + s.phase1.describe());
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
         return 1;
     }
@@ -68,6 +72,89 @@ public final class RtsimCommands {
                         new StubEngine.MemberSpec(1, 0f, -1, -1, List.of(new StubEngine.ItemSpec(0, "minecraft:emerald", 12))),
                         StubEngine.MemberSpec.plain(2)));
         ctx.getSource().sendSuccess(() -> Component.literal("mic_rtsim: the stub will spawn caravan agent " + agent), false);
+        return 1;
+    }
+
+    // ---- phase 1 --------------------------------------------------------------------------------
+
+    private static com.minecraftindustrialcomplex.mic_rtsim.village.Village villageHere(CommandContext<CommandSourceStack> ctx, RtsimSession s) {
+        return s.phase1.villages.at(ctx.getSource().getLevel().dimension(), net.minecraft.core.BlockPos.containing(ctx.getSource().getPosition()));
+    }
+
+    /** {@code /rtsim village}: the adopted village you stand in, its market and what it feels about you. */
+    private static int village(CommandContext<CommandSourceStack> ctx) {
+        RtsimSession s = RtsimSession.current();
+        if (s == null) {
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: no session"));
+            return 0;
+        }
+        var v = villageHere(ctx, s);
+        if (v == null) {
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: no adopted village here (" + s.phase1.villages.size() + " adopted)"));
+            return 0;
+        }
+        StringBuilder text = new StringBuilder();
+        text.append("village ").append(Long.toHexString(v.id)).append(" (").append(v.culture).append(", ").append(v.structure).append(")\n")
+                .append("box ").append(v.box).append(", meeting point ").append(v.meeting.toShortString())
+                .append(v.meetingFromPoi ? " (a meeting POI)" : " (the start piece)").append("\n")
+                .append(v.pieces.size()).append(" pieces, ").append(v.houses.size()).append(" houses the sim built, ")
+                .append(v.gossip.size()).append(" gossip entries waiting for residents\n");
+        var book = s.phase1.markets.known(v.id);
+        if (book == null)
+            text.append("no market snapshot yet");
+        else
+            text.append("market: currency ").append(book.currency()).append(", treasury ").append(book.treasury() / 1000.0)
+                    .append(book.cashRefused() ? " (refuses cash)" : "").append(", ").append(book.pendingLocals())
+                    .append(" local trades not in the snapshot yet");
+        var sentiment = s.phase1.sentiments.get(v.id);
+        var player = ctx.getSource().getPlayer();
+        if (sentiment != null && player != null)
+            text.append("\nsentiment toward you: ").append(sentiment.of(player.getUUID()))
+                    .append(sentiment.dislikes(player.getUUID()) ? " (disliked)" : sentiment.friend(player.getUUID()) ? " (a friend)" : "");
+        ctx.getSource().sendSuccess(() -> Component.literal(text.toString()), false);
+        return 1;
+    }
+
+    /** {@code /rtsim stub market}: the stub sends a demonstration market for the village you stand in. */
+    private static int stubMarket(CommandContext<CommandSourceStack> ctx) {
+        RtsimSession s = RtsimSession.current();
+        if (s == null || !(s.engine() instanceof StubEngine stub)) {
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: the engine is not the stub"));
+            return 0;
+        }
+        var v = villageHere(ctx, s);
+        if (v == null) {
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: no adopted village here"));
+            return 0;
+        }
+        boolean ribbit = "ribbit".equals(v.culture);
+        // Demonstration numbers only (thousandths; millionths of a coin per item), not a balance.
+        stub.market(v.id, s.boundary().sentObsSeq(), ribbit ? "minecraft:amethyst_shard" : "minecraft:emerald", 8_000, 40_000, 1, 2, List.of(
+                new StubEngine.GoodSpec("minecraft:wheat", 300_000, 400_000, 50_000, 3, 4),
+                new StubEngine.GoodSpec("minecraft:bread", 60_000, 40_000, 180_000, 3, 4),
+                new StubEngine.GoodSpec("minecraft:potato", 200_000, 300_000, 40_000, 3, 4),
+                new StubEngine.GoodSpec("minecraft:carrot", 200_000, 300_000, 45_000, 3, 4),
+                new StubEngine.GoodSpec("minecraft:slime_ball", 40_000, 40_000, 120_000, 3, 4)));
+        ctx.getSource().sendSuccess(() -> Component.literal("mic_rtsim: the stub will send a demonstration market for village " + Long.toHexString(v.id)), false);
+        return 1;
+    }
+
+    /** {@code /rtsim stub gossip}: the stub writes a robbery heard as news (minor_negative 25) about you into the village. */
+    private static int stubGossip(CommandContext<CommandSourceStack> ctx) {
+        RtsimSession s = RtsimSession.current();
+        var player = ctx.getSource().getPlayer();
+        if (s == null || !(s.engine() instanceof StubEngine stub) || player == null) {
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: needs the stub and a player"));
+            return 0;
+        }
+        var v = villageHere(ctx, s);
+        if (v == null) {
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: no adopted village here"));
+            return 0;
+        }
+        long op = java.util.concurrent.ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE;
+        stub.writeGossip(op, v.id, player.getUUID(), 2, 25, 3, 0);
+        ctx.getSource().sendSuccess(() -> Component.literal("mic_rtsim: the stub will write minor_negative 25 about you into village " + Long.toHexString(v.id)), false);
         return 1;
     }
 }

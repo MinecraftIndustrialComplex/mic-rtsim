@@ -1,8 +1,18 @@
 # mic-rtsim: the NeoForge side
 
-The Java half of mic-rtsim (PLAN.md §1, §6): the core bridge mod **`mic_rtsim`**, and later one
-project per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.249,
-ModDevGradle 2.0.74, Parchment 2024.11.17, Java 21: the same pins as `mods/mic-climate`.
+The Java half of mic-rtsim (PLAN.md §1, §6, §8): the core bridge mod **`mic_rtsim`** and one project
+per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.249, ModDevGradle
+2.0.74, Parchment 2024.11.17, Java 21: the same pins as `mods/mic-climate`.
+
+| Project | Mod id | Built around | What |
+|---|---|---|---|
+| `core` | `mic_rtsim` | NeoForge only (D4) | the bridge, and phase 1's vanilla side: villages, markets, caravans, gossip, damage, rescues, robbery, player bases, growth |
+| `ribbits` | `mic_rtsim_ribbits` | Ribbits 4.1.6 (with YUNG's API 5.1.9, GeckoLib 4.9.3) | ribbit villages and residents, merchant caravans, touring bands, sorcerers who remember, growth from YUNG's houses (C7, C23) |
+| `carryon` | `mic_rtsim_carryon` | Carry On 2.2.6.13 | a creature picked up leaves the sim (A10) |
+
+The plugins compile against the pack's own jars, read from `packMods` in `gradle.properties` (the MIC
+smoke server's mods folder next to this repository; `-PpackMods=...` to point elsewhere), and their
+GameTest servers load those jars. Every reach into another mod is in `../PATCHES.md`.
 
 The core depends on NeoForge only (D4). Until rtsim-jni exists, its engine is `StubEngine`, a
 pure-Java stand-in that speaks the boundary protocol exactly and simulates nothing.
@@ -23,10 +33,12 @@ flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix shell nixpkgs#jdk21 -c ./g
 ./gametest.sh
 ```
 
-`gametest.sh` runs `:core:test` and `:core:runGameTestServer` under the same lock, using the
-repository flake's dev shell when there is one (`../flake.nix`) and `nixpkgs#jdk21` otherwise. It
-leaves the full log in `core/build/gametest.log` and prints every `[gametest]` line, where each test
-logs what it compared. About 40 seconds on the laptop, nearly all of it server start.
+`gametest.sh` runs `:core:test` and `:core:runGameTestServer`, then each plugin's
+`runGameTestServer`, under the same lock, using the repository flake's dev shell when there is one
+(`../flake.nix`) and `nixpkgs#jdk21` otherwise (`./gametest.sh ribbits` runs one project;
+`MIC_RTSIM_LOCK` and `MIC_RTSIM_WORKERS` override the lock and worker count). It leaves each full log
+in `<project>/build/gametest.log` and prints every `[gametest]` line, where each test logs what it
+compared. About two minutes for all three on the laptop, most of it server starts and stops.
 
 - A mixin that no longer matches its target fails the launch (`mic_rtsim.mixins.json` is
   `defaultRequire 1`): look for `InjectionError` or `MixinTransformerError` in the log.
@@ -45,10 +57,16 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `puppet` | the `mic_rtsim:agent` attachment (engine id, epoch), groups and the live registry. |
 | `body` | the adapter interface (spawn, capture, steer), group kinds, and the vanilla adapters for `minecraft:wandering_trader` and `minecraft:trader_llama`, plus the human caravan group. |
 | `config` | the server config: one switch per module, PLACEHOLDER budgets. |
-| `mixin` | `EntitySaveMixin` (`shouldBeSaved`, `saveAsPassenger`), `LlamaInvoker` (`setStrength`), two accessors for the save GameTests. |
-| `api` | `RtsimApi` for plugins: register bodies and groups, `takeFromSim` (the hook point for Carry On's `EntityPickupEvent`). |
+| `mixin` | `EntitySaveMixin` (`shouldBeSaved`, `saveAsPassenger`), `LlamaInvoker` (`setStrength`), two accessors for the save GameTests; phase 1: `StructureManagerMixin` (adoption), `MerchantResultSlotMixin` (trades), `VillagerRestockMixin` (restock and demand), `VillagerReputationMixin` (reputation trim), `MerchantOfferAccessor`. All in `../PATCHES.md`. |
+| `api` | `RtsimApi` for plugins: register bodies and groups, `takeFromSim` (Carry On's hook); phase 1: cultures, residents, resident factories, a village and its sentiment, the restock and demand hooks. |
 | `command` | `/rtsim perf`, `/rtsim stub caravan`. |
-| `gametest` | the GameTests, in the `mic_rtsim` namespace. |
+| `village` | phase 1: the village registry (`data/mic_rtsim_villages.dat`), adoption (C22), cultures, residents, the census, gossip writes (C20). |
+| `market` | phase 1: the price curve and market book (a mirror of rtsim-trade), resident repricing through the treasury (C14), puppet merchant offers and cargo (C21), robbery detection. |
+| `knowledge` | phase 1: sentiment snapshots, HURT coalescing, rescues (C24). |
+| `base` | phase 1: player bases as market nodes (C26, P30's recommendation; `data/mic_rtsim_bases.dat`). |
+| `growth` | phase 1: player-placed block marks, house placement from templates, resident spawns (C7). |
+| `bridge/Phase1` | wires phase 1 to the tick, the events and the commands. |
+| `gametest` | the GameTests, in the `mic_rtsim` namespace, and helpers the plugins' tests share (`RtsimTests`, `FakePlayers`). |
 
 ## The GameTests
 
@@ -75,20 +93,47 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `adeadmembersdropscarryitsdied` | the items a dying llama drops carry its MEMBER_STATE and DIED |
 | `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
+| `acaravansofferscomefromitschestcargo` | phase 1: the engine's offers replace the trader's; uses are what the llamas carry; a sale takes the goods out of a chest and the emerald in; sold out, the offer shows crossed out; TRADE per sale with an op id |
+| `sellingdrainsthetreasuryandtheoffercrossesout` | walkthrough B: a farmer's wheat offer repriced from the market (21, 22, 23 wheat per emerald as the stock grows), the treasury drained by three sales, crossed out; vanilla's `restock()` leaves it crossed out with demand 0; a stale snapshot does not refund; a refill reopens it |
+| `arobberythenatradearereportedapart` | 5 wheat taken from a chest and a sale of 10 in the same tick: one CARGO_CHANGED of -5 and one TRADE of 10 |
+| `twoscreensshareonetreasury` | two players at two farmers of one village: two sales at one re-cap the other's open offer to the one emerald left |
+| `killingallamadropsitscargoexactlyonceacrossacrash` | DIED with an op id; the dropped cargo's chunk saved and read back through vanilla's entity storage after a "crash"; the DIED arrives again under the same op id and the cargo is in the world once |
+| `gossipiswrittenonce` | WRITE_GOSSIP adds 25 once; a resend is DUPLICATE; after a crash that rolled back the journal and the village, the villager's own record refuses it; VANILLA_KNOWS; a villager that was away gets the news at the census |
+| `moregossipthantheopringisstillwrittenonce` | seventy entries (more than the 64-op ring): two censuses write none of them again; a villager that arrives later takes each once |
+| `ahouseisplacedonlyonafreeplot` | not over a player's block, a block entity or next to another house; placed from a template with its jigsaw replaced; HOUSE_PLACED names the slot; a resend is DUPLICATE |
+| `arescueisreported` | a player kills a zombie targeting the trader: RESCUE |
+| `damagetoacaravanisreportedonceperwindow` | three hits by one player are one HURT |
+| `cargotakenfromachestisreported` | emeralds that leave a chest outside a trade: CARGO_CHANGED -12 |
+| `aplayerbaseismarked` | a long stay marks a base: BASE MARKED; trades there name it |
+| `avillagejoinswhenitsstructurestartgenerates` | a real `village_plains` start through `setStartForStructure`: VILLAGE_ADOPTED, culture human, its pieces |
+
+The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
+
+| Test | What it shows |
+|---|---|
+| `asorcererskipsadislikedplayer` | walkthrough F: a friend is buffed, a disliked player left out; alone with the disliked player the sorcerer does not cast; forgiven, it does |
+| `aribbithousegoesonafreeplotandaresidentmovesin` | walkthrough H: `ribbits:houses/small_house_red_1` with `ribbits:main` on the first free plot of a search, not over a player's block; a nitwit spawns at its `ribbits:ribbits` slot, homed there |
+| `aribbitmerchantsellsoutofitspackanddropsitwhenkilled` | a ribbit merchant caravan sells out of its pack; killed, the pack drops once with the DIED |
+| `atouringbandplaysarounditsownmaster` | walkthrough G: four musicians play around their own master next to a village band that is already playing |
+| `ribbitmerchantstradeandrestockthroughthetreasury` | C23: a ribbit merchant repriced from its village market; a disliked player brings twice the slime for a shard; a restock keeps the treasury's uses |
+| `acarryonpickuptakesthecreatureoutofthesim` | Carry On's `EntityPickupEvent`: TAKEN(PICKUP) with the cargo; `Entity.save` works on the llama afterwards |
 
 ## Not done yet
 
 - **The engine.** rtsim-jni and the Rust step do not exist; `StubEngine` stands in.
-- **Observations** beyond players, puppets, taking, deaths and transfers: chunk loads and tickets,
-  damage, rescues, trades, villages, census, recipes (PLAN.md §6.3).
-- **Commands** beyond spawn, despawn, steer and container transfers: trade offers, gossip, structure
-  placement (PLAN.md §6.4).
+- **Observations** not yet sent: chunk loads and tickets, recipes (PLAN.md §6.3). Phase 1's are in
+  docs/boundary.md §4.
+- **Phase 1 open ends** (docs/overnight-choices-phase1mc.md, docs/boundary.md §4.3): a crash between a
+  new house's chunk save and the next world save can let a resent PLACE_HOUSE build twice, and
+  HOUSE_PLACED is not carried by the chunk; a house stopped part way leaves its placed layers; a crash
+  that rolls back a village's gossip sequence but not a villager makes that villager skip news up to its
+  old mark; the reputation trim (G31) leaves one bundle's spread; robbery is attributed by proximity; puppet offers cannot yet be repriced from a ribbit village's
+  sentiment (only residents are); border-market currency exchange (P21) is not offered.
 - **Item components** in captured cargo (B23).
 - **Picked-up drops**: an item picked up before the engine acknowledges its DIED takes the record
   into a player's inventory, where nothing carries it (docs/boundary.md §3.1).
 - **A failed journal write** is still reported as saved (WORLD_SAVED), because NeoForge's SavedData
   write logs the IOException and the chain goes on.
 - **Body kinds as data** (P15): group layouts are code.
-- **Carry On**: the plugin is not written; `RtsimApi.takeFromSim` is its hook point.
 - **A GameTest for a server at simulation distance 10** (risk R1): it needs real players.
-- **PATCHES.md** (P7) does not exist yet; every hook is listed in `BridgeEvents` and the mixins.
+- **The real engine**: every phase 1 test scripts the engine side through the stub.

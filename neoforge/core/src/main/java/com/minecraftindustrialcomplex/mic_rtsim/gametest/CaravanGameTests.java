@@ -38,11 +38,11 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
 public final class CaravanGameTests {
     private CaravanGameTests() {}
 
-    static void spawnCaravan(GameTestHelper helper, long agent, int epoch) {
+    public static void spawnCaravan(GameTestHelper helper, long agent, int epoch) {
         RtsimTests.stub().script(caravanCommand(helper, agent, epoch));
     }
 
-    static java.util.function.Consumer<StubEngine.CommandOut> caravanCommand(GameTestHelper helper, long agent, int epoch) {
+    public static java.util.function.Consumer<StubEngine.CommandOut> caravanCommand(GameTestHelper helper, long agent, int epoch) {
         Vec3 at = RtsimTests.centre(helper);
         return RtsimTests.stub().spawnGroupCommand(agent, epoch, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
                 StubEngine.MemberSpec.plain(0),
@@ -95,6 +95,10 @@ public final class CaravanGameTests {
                     ((WanderingTrader) bodies[0]).setDespawnDelay(0);
                     trapTick[0] = level.getGameTime();
                     level.setChunkForced(forced.x, forced.z, true);
+                    // Load it now: the GameTest server ticks faster than real time, so 600 ticks can pass
+                    // before an asynchronous load finishes on a busy machine (the test was flaky).
+                    level.getChunk(forced.x, forced.z);
+                    level.getChunk(forced.x + 1, forced.z);
                 })
                 .thenIdle(40)
                 .thenExecute(() -> {
