@@ -2,7 +2,7 @@
 
 **Status:** design for Ben's review, 2026-10-19. This document answers decision D6: plan first for
 late-game load in huge worlds, with special attention to algorithms and data abstraction. Every other
-design must fit inside it. Choices still open are marked **(Ben)** and gathered in §13.
+design must fit inside it. Decisions and open questions are gathered in §13.
 
 ## 0. The one rule
 
@@ -149,7 +149,7 @@ It does not depend on how many regions exist.
   region files) → cell.
   - Queries are answered at the coarsest level that can answer them.
   - Each province keeps its aggregates up to date incrementally whenever one of its regions changes.
-  - How many regions make a province is open **(Ben)**, decided from the phase 0 bench.
+  - How many regions make a province is Proposal P25 (Ben), decided from the phase 0 bench.
 - **The parallel step:**
   - The regions due in a step are processed in parallel.
   - Effects that cross regions are messages, applied at the next step in a fixed order: by region id,
@@ -196,7 +196,7 @@ changes.
   - **Read-ahead** follows player movement.
   - **The timing wheel** says which regions wake next, so their pages are prefetched on the host's IO
     lane before they are needed.
-- **Resident memory is a budget, not a function of world size (Ben).** On a potato the working set is:
+- **Resident memory is a budget, not a function of world size** (A16). On a potato the working set is:
   - each player's neighbourhood;
   - the regions with imminent events;
   - the strategic tables.
@@ -219,6 +219,7 @@ changes.
     - frame 2, x and z as 24-bit values (3 each), y 2.
   - **A sentiment entry** is 8 bytes: a 6-byte handle, an i8 value, and 1 byte spare.
   - **A memory slot** is 8 bytes: a 6-byte handle, a u8 salience, and 1 byte spare.
+  - **A notable person** is 352 bytes: a 96-byte core, 16 memory slots and 16 sentiment entries.
 - **Columns per kind** (structure of arrays): a system that touches one field streams only that field.
 - **Distributions** are either fixed buckets (histograms) or moments (mean and variance), chosen per
   kind.
@@ -247,8 +248,8 @@ changes.
   It measures CPU per sim day, resident memory, save bytes and catch-up latency.
 - **CI fails when a measured growth slope exceeds the declared one.** Example: if doubling the number of
   latent sheep raises CPU at all, the system fails.
-- **This bench is a phase 0 deliverable,** written before any content. Its targets are open **(Ben)**,
-  in §12.
+- **This bench is a phase 0 deliverable,** written before any content. Its targets are Proposal P24
+  (Ben).
 
 ## 11. What is still hard
 
@@ -282,7 +283,7 @@ Every figure in this section comes from the Deep Time session's measurements of 
   CPU) or the build changes the continents.
 - The same seed, preset, build and compute path always gives an identical world. So the rule is: store
   what was computed, and never regenerate it from the seed.
-- **Three ways to get consistency (Ben):**
+- **Three ways to get consistency.** Ben chose B (A14):
   - **A. Run the real history for every planet,** and keep only a summary until someone visits.
     Consistent, but the history is most of a bake's cost, so thousands of planets are out of reach.
   - **B. Make a coarse history authoritative.**
@@ -309,20 +310,28 @@ Every figure in this section comes from the Deep Time session's measurements of 
   two to three times longer: 30 to 45 minutes. Either the trip lasts that long, or the planet shows a
   "still forming" state on arrival. The bake checkpoints, so it can pause and resume.
 - **Peak memory is 3.2 GB** (quick 16k, 4 threads) **to 4.2 GB** (full 16k, 8 threads), on top of the
-  game. On a potato this is the binding limit. In-game bakes may have to be dedicated-server only, or
-  wait until the player is not playing **(Ben)**.
+  game. On a potato this is the binding limit. Ben chose a RAM check (A17): a planet is baked in the
+  background only when free RAM allows, and otherwise stays "still forming" until it is baked.
 - **The compute path is fixed per planet and stored with it.** CPU is the default for in-game bakes,
   because the game already loads the GPU and GPU and CPU runs give different worlds.
 - **Several players heading to different planets** means a bake queue.
 
-## 13. Questions for Ben
+## 13. Decisions and open questions
 
-Asked in chat on 2026-10-19; answers go into DECISIONS.md.
+Asked in chat on 2026-10-19.
 
-1. **Scale targets** for the bench and the design.
-2. **Memory policy** for the sim's resident memory.
-3. **Lazy regions:** catch-up on read, or eager coarse stepping.
-4. **Flows:** unobserved traffic as flows, or every traveller always an individual.
-5. **Planet consistency at galactic scale:** option A, B or C in §12.
-6. **In-game planet bakes on weak PCs:** dedicated-server only, run while the player is not playing, or
-   allowed with a warning.
+| Question | Status |
+|---|---|
+| Lazy regions | decided: catch up on read (A15) |
+| Flows for unobserved traffic | decided: flows (A13) |
+| Memory policy | decided: budget with paging (A16) |
+| Planet consistency | decided: B, coarse authoritative history (A14); Deep Time work is months out |
+| In-game planet bakes on weak PCs | decided: RAM check (A17) |
+| Scale targets for the bench | open: Proposal P24 |
+| Regions per province | open: Proposal P25 |
+
+Consequences from the scale sheet (`docs/scale-ladder.html`), which follow from A15 and A16:
+- Coarse worlds' provinces are paged per planet, not kept resident. At the example Elite-size
+  galaxy they would otherwise be most of resident memory.
+- Province updates fire at breakpoints, not on a fixed cadence. At the same example they would
+  otherwise be most of all events.
