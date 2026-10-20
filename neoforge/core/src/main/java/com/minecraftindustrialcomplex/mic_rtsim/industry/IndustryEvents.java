@@ -60,7 +60,9 @@ final class IndustryEvents {
     }
 
     private static void onChunkLoad(ChunkEvent.Load event) {
-        if (!event.getLevel().isClientSide() && event.getChunk() instanceof LevelChunk chunk)
+        // Only while a module will drain the queue: chunks loaded before the session (spawn chunks) are
+        // found at the session start instead, and nothing is retained when the module is off.
+        if (!event.getLevel().isClientSide() && event.getChunk() instanceof LevelChunk chunk && IndustryApi.current() != null)
             LOADED.add(chunk);
     }
 
@@ -73,7 +75,7 @@ final class IndustryEvents {
     }
 
     private static void onPlace(BlockEvent.EntityPlaceEvent event) {
-        if (!(event.getEntity() instanceof Player player) || !(event.getLevel() instanceof ServerLevel level))
+        if (!(event.getEntity() instanceof Player player) || !(event.getLevel() instanceof ServerLevel level) || IndustryApi.current() == null)
             return;
         if (event instanceof BlockEvent.EntityMultiPlaceEvent multi) {
             for (BlockSnapshot snap : multi.getReplacedBlockSnapshots())

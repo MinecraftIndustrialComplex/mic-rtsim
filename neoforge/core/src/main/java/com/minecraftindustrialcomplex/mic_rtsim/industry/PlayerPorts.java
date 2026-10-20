@@ -34,9 +34,9 @@ import java.util.UUID;
  */
 public final class PlayerPorts {
 
-    private record Click(ServerLevel level, BlockPos pos, long at) {}
+    private record Click(ServerLevel level, BlockPos pos, long at, District district, int inventory, List<ItemStack> before) {}
 
-    private record Session(District district, int inventory, Industry.GoodsCounter before) {}
+    private record Session(District district, int inventory, List<ItemStack> before) {}
 
     private record Broken(ServerLevel level, BlockPos pos, long at) {}
 
@@ -46,6 +46,7 @@ public final class PlayerPorts {
     private final List<Broken> brokenStock = new ArrayList<>();
 
     long sessionPorts;
+    long clickPorts;
     long tossPorts;
     long pickupPorts;
     long brokenPorts;
@@ -58,10 +59,53 @@ public final class PlayerPorts {
     void tick(long now) {
         if (!brokenStock.isEmpty())
             brokenStock.removeIf(b -> now - b.at > 1);
+        if (lastClick.isEmpty())
+            return;
+        // A click on boundary stock that opened no menu (a bucket into a tank, a hand into a vault): the
+        // player's change over the tick is the port.
+        for (var it = lastClick.entrySet().iterator(); it.hasNext(); ) {
+            var e = it.next();
+            Click c = e.getValue();
+            if (now - c.at > 2) {
+                it.remove();
+                continue;
+            }
+            if (c.before == null || c.at != now)
+                continue;
+            ServerPlayer player = ind.server.getPlayerList().getPlayer(e.getKey());
+            if (player == null || ind.district(c.district.id) != c.district)
+                continue;
+            Industry.GoodsCounter port = diff(c.before, snapshot(player));
+            if (!port.isEmpty()) {
+                ind.port(c.district, IndRecords.Port.PLAYER_SESSION, c.inventory, playerKey(player), 0, port);
+                clickPorts++;
+            }
+            e.setValue(new Click(c.level, c.pos, c.at, c.district, c.inventory, null));
+        }
     }
 
     void rightClicked(Player player, ServerLevel level, BlockPos pos) {
-        lastClick.put(player.getUUID(), new Click(level, pos.immutable(), ind.gameTime()));
+        District d = ind.districtAt(level, pos);
+        int inventory = IndRecords.NO_INVENTORY;
+        List<ItemStack> before = null;
+        if (d != null && player instanceof ServerPlayer sp) {
+            District.Inventory inv = stockAt(d, level, pos);
+            if (inv != null) {
+                inventory = inv.index();
+                before = snapshot(sp);
+            }
+        }
+        lastClick.put(player.getUUID(), new Click(level, pos.immutable(), ind.gameTime(), d, inventory, before));
+    }
+
+    private static District.Inventory stockAt(District d, ServerLevel level, BlockPos pos) {
+        District.Inventory inv = d.inventoryAt(pos);
+        if (inv == null) {
+            // A double chest or a multiblock: the inventory whose block the click was part of.
+            BlockPos canon = Districts.canonicalInventory(level, pos);
+            inv = canon == null ? null : d.inventoryAt(canon);
+        }
+        return inv;
     }
 
     void opened(ServerPlayer player, AbstractContainerMenu menu) {
@@ -69,42 +113,26 @@ public final class PlayerPorts {
             return;
         Click c = lastClick.remove(player.getUUID());
         long now = ind.gameTime();
-        District d = null;
-        int inventory = IndRecords.NO_INVENTORY;
-        if (c != null && now - c.at <= 2 && c.level == player.level()) {
-            d = ind.districtAt(c.level, c.pos);
-            if (d != null) {
-                District.Inventory inv = d.inventoryAt(c.pos);
-                if (inv == null) {
-                    // A double chest or a multiblock: any inventory whose block the click was part of.
-                    BlockPos canon = canonicalOf(c.level, c.pos);
-                    inv = canon == null ? null : d.inventoryAt(canon);
-                }
-                if (inv != null)
-                    inventory = inv.index();
-            }
-        }
-        if (d == null) {
-            District here = ind.districtAt(player.level(), player.blockPosition());
-            if (here != null) {
-                // A menu not on a district block (a portable one, another mod's): its effect on stock
-                // cannot be told apart from production, so the window is discarded (§3.4).
-                ind.districts.discard(here, IndRecords.Discard.UNATTRIBUTED_SESSION);
-                unattributed++;
-            }
+        if (c != null && now - c.at <= 2 && c.level == player.level() && c.district != null && c.inventory != IndRecords.NO_INVENTORY) {
+            // A session on boundary stock (§3.3): the player's change between Open and Close is the port.
+            sessions.put(player.getUUID(), new Session(c.district, c.inventory, c.before != null ? c.before : snapshot(player)));
             return;
         }
-        sessions.put(player.getUUID(), new Session(d, inventory, snapshot(player)));
+        // A menu on a district block that is not boundary stock (a crafting table, a furnace) or on
+        // nothing we can tell: its effect cannot be told apart from production, so the window is
+        // discarded (§3.4, IND_DISCARD 1).
+        District here = c != null && c.district != null ? c.district : ind.districtAt(player.level(), player.blockPosition());
+        if (here != null) {
+            ind.districts.discard(here, IndRecords.Discard.UNATTRIBUTED_SESSION);
+            unattributed++;
+        }
     }
 
     void closed(ServerPlayer player) {
         Session s = sessions.remove(player.getUUID());
         if (s == null || ind.district(s.district.id) != s.district)
             return;
-        Industry.GoodsCounter after = snapshot(player);
-        Industry.GoodsCounter port = ind.counter();
-        port.addAll(s.before, 1);   // what the player had
-        port.addAll(after, -1);     // minus what the player has: + into the district
+        Industry.GoodsCounter port = diff(s.before, snapshot(player));
         if (!port.isEmpty()) {
             ind.port(s.district, IndRecords.Port.PLAYER_SESSION, s.inventory, playerKey(player), 0, port);
             sessionPorts++;
@@ -112,8 +140,8 @@ public final class PlayerPorts {
     }
 
     void tossed(Player player, ItemEntity item) {
-        if (!(player.level() instanceof ServerLevel level))
-            return;
+        if (!(player.level() instanceof ServerLevel level) || sessions.containsKey(player.getUUID()))
+            return; // thrown out of an open menu: the session's diff has it
         District d = ind.districtAt(level, player.blockPosition());
         if (d == null)
             return;
@@ -124,8 +152,8 @@ public final class PlayerPorts {
     }
 
     void pickedUp(Player player, ItemEntity item, ItemStack original, ItemStack now) {
-        if (!(player.level() instanceof ServerLevel level))
-            return;
+        if (!(player.level() instanceof ServerLevel level) || sessions.containsKey(player.getUUID()))
+            return; // picked up with a menu open: the session's diff has it
         int taken = original.getCount() - now.getCount();
         if (taken <= 0)
             return;
@@ -140,30 +168,42 @@ public final class PlayerPorts {
         pickupPorts++;
     }
 
-    /** A player is breaking a block: if it is a district's stock inventory, its contents leave as a port. */
+    /**
+     * A player is breaking a block: if it holds a district's boundary stock, what it drops leaves as a
+     * port. One block of a multiblock (a vault) drops nothing of the shared inventory, so it is no port; a
+     * double chest's half drops its own 27 slots, which is the port.
+     */
     void breaking(Player player, ServerLevel level, BlockPos pos) {
         District d = ind.districtAt(level, pos);
         if (d == null)
             return;
-        District.Inventory inv = d.inventoryAt(pos);
-        if (inv == null) {
-            BlockPos canon = canonicalOf(level, pos);
-            inv = canon == null ? null : d.inventoryAt(canon);
-            // A multiblock (a vault) keeps its contents in its remaining blocks: only a whole one leaves.
-            if (inv != null && !canon.equals(pos))
-                return;
-        }
+        District.Inventory inv = stockAt(d, level, pos);
         if (inv == null)
             return;
-        Industry.GoodsCounter goods = ind.sampler.peek(level, inv);
         Industry.GoodsCounter port = ind.counter();
-        port.addAll(goods, -1);
+        if (level.getBlockEntity(pos) instanceof net.minecraft.world.Container own) {
+            // Vanilla containers (a chest half included) drop their own slots.
+            for (int i = 0; i < own.getContainerSize(); i++) {
+                ItemStack st = own.getItem(i);
+                if (!st.isEmpty())
+                    ind.countStack(st, -st.getCount(), port);
+            }
+        } else if (inv.pos().equals(pos)) {
+            port.addAll(ind.sampler.peek(level, inv), -1);
+        } else {
+            return; // a non-controller block of a multiblock
+        }
         ind.port(d, IndRecords.Port.STOCK_BROKEN, inv.index(), playerKey(player), 0, port);
-        brokenStock.add(new Broken(level, pos.immutable(), ind.gameTime()));
+        markDropsPorted(level, pos);
         brokenPorts++;
     }
 
-    /** An item entity joined the level: the drop of a stock block broken this tick is marked as ported. */
+    /** The item entities that join at {@code pos} this tick were counted already (a break's or a reconcile's port). */
+    void markDropsPorted(ServerLevel level, BlockPos pos) {
+        brokenStock.add(new Broken(level, pos.immutable(), ind.gameTime()));
+    }
+
+    /** An item entity joined the level: the drop of a block counted this tick is marked as ported. */
     void itemJoined(ItemEntity item) {
         if (brokenStock.isEmpty() || !(item.level() instanceof ServerLevel level))
             return;
@@ -174,35 +214,48 @@ public final class PlayerPorts {
             }
     }
 
-    private BlockPos canonicalOf(ServerLevel level, BlockPos pos) {
-        net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
-        if (be == null)
-            return null;
-        for (IndustryPlugin p : IndustryApi.PLUGINS) {
-            BlockPos c = p.canonicalInventory(be);
-            if (c != null)
-                return c;
-        }
-        net.minecraft.world.level.block.state.BlockState s = be.getBlockState();
-        if (s.getBlock() instanceof net.minecraft.world.level.block.ChestBlock && s.hasProperty(net.minecraft.world.level.block.ChestBlock.TYPE)
-                && s.getValue(net.minecraft.world.level.block.ChestBlock.TYPE) != net.minecraft.world.level.block.state.properties.ChestType.SINGLE) {
-            BlockPos other = pos.relative(net.minecraft.world.level.block.ChestBlock.getConnectedDirection(s));
-            return other.asLong() < pos.asLong() ? other : pos;
-        }
-        return pos;
-    }
-
-    /** The player's own inventory and carried stack, by good, packages expanded. */
-    private Industry.GoodsCounter snapshot(ServerPlayer player) {
-        Industry.GoodsCounter out = ind.counter();
+    /** The player's own inventory and carried stack, as copies (named as goods only if they change). */
+    private static List<ItemStack> snapshot(ServerPlayer player) {
+        List<ItemStack> out = new ArrayList<>(42);
         Inventory inv = player.getInventory();
         for (List<ItemStack> list : List.of(inv.items, inv.armor, inv.offhand))
             for (ItemStack st : list)
                 if (!st.isEmpty())
-                    ind.countStack(st, st.getCount(), out);
+                    out.add(st.copy());
         ItemStack carried = player.containerMenu.getCarried();
         if (!carried.isEmpty())
-            ind.countStack(carried, carried.getCount(), out);
+            out.add(carried.copy());
+        return out;
+    }
+
+    /**
+     * What left the player (before minus after) by good, + into the district. Stacks are compared
+     * item and components; only goods whose amount changed are named, so a tool's durability or a named
+     * item in the player's pockets never becomes a dictionary entry.
+     */
+    private Industry.GoodsCounter diff(List<ItemStack> before, List<ItemStack> after) {
+        List<ItemStack> kinds = new ArrayList<>();
+        List<long[]> net = new ArrayList<>();
+        for (int pass = 0; pass < 2; pass++) {
+            for (ItemStack st : pass == 0 ? before : after) {
+                int k = -1;
+                for (int i = 0; i < kinds.size(); i++)
+                    if (ItemStack.isSameItemSameComponents(kinds.get(i), st)) {
+                        k = i;
+                        break;
+                    }
+                if (k < 0) {
+                    kinds.add(st);
+                    net.add(new long[] {0});
+                    k = kinds.size() - 1;
+                }
+                net.get(k)[0] += pass == 0 ? st.getCount() : -st.getCount();
+            }
+        }
+        Industry.GoodsCounter out = ind.counter();
+        for (int i = 0; i < kinds.size(); i++)
+            if (net.get(i)[0] != 0)
+                ind.countStack(kinds.get(i), net.get(i)[0], out);
         return out;
     }
 

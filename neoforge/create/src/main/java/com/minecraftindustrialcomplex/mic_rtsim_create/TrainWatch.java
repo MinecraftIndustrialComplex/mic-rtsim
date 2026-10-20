@@ -63,11 +63,30 @@ public final class TrainWatch {
         }
     };
     private static final Map<UUID, Stop> AT_STATION = new HashMap<>();
+    /** Cargo at the head of arriveAt, before Create's own mail transfer moves packages (review finding 1). */
+    private static final Map<UUID, List<Cargo>> ARRIVING = new HashMap<>();
     private static final List<Leaving> LEAVING = new ArrayList<>();
 
     static long arrivals;
     static long departures;
     static long cargoPorts;
+
+    /**
+     * Mixin: Train.arriveAt(GlobalStation), at its start. {@code arriveAt} runs the station's mail
+     * transfer before it returns, so the cargo the train brought is taken here.
+     */
+    public static void arriving(Train train, GlobalStation station) {
+        try {
+            Industry ind = IndustryApi.current();
+            if (ind == null || station == null || station.getBlockEntityPos() == null || station.getBlockEntityDimension() == null)
+                return;
+            BlockPos pos = station.getBlockEntityPos();
+            if (ind.districtAt(station.getBlockEntityDimension(), ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4)) != null)
+                ARRIVING.put(train.id, cargo(ind, train));
+        } catch (RuntimeException e) {
+            MicRtsim.LOGGER.error("[mic_rtsim_create] observing a train's arrival failed", e);
+        }
+    }
 
     /** Mixin: Train.arriveAt(GlobalStation), at its end. */
     public static void arrived(Train train, GlobalStation station) {
@@ -83,7 +102,9 @@ public final class TrainWatch {
             long trainId = CreateIds.of(train.id);
             SEEN.put(trainId, new WeakReference<>(train));
             boolean simulated = d.loadState() == IndRecords.LoadState.UNLOADED && !hasEntityIn(train, dim);
-            List<Cargo> cargo = cargo(ind, train);
+            List<Cargo> cargo = ARRIVING.remove(train.id);
+            if (cargo == null)
+                cargo = cargo(ind, train);
             int size = IndRecords.Train.ARRIVED_CARRIAGES;
             for (Cargo c : cargo)
                 size += IndRecords.Train.carriageSize(c.goods.nonZeroIds().length);
@@ -106,9 +127,25 @@ public final class TrainWatch {
         try {
             Industry ind = IndustryApi.current();
             Stop stop = AT_STATION.remove(train.id);
-            if (ind == null || stop == null)
+            if (ind == null)
                 return;
+            if (stop == null) {
+                // The arrival was before this session (a restart while it stood here): its cargo diff is
+                // unknown, so a loaded district's learning window is discarded rather than fed a hole.
+                GlobalStation st = train.getCurrentStation();
+                BlockPos pos = st == null ? null : st.getBlockEntityPos();
+                District d = pos == null || st.getBlockEntityDimension() == null ? null
+                        : ind.districtAt(st.getBlockEntityDimension(), ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4));
+                if (d != null && d.loadState() != IndRecords.LoadState.UNLOADED)
+                    ind.districts().discard(d, IndRecords.Discard.OTHER);
+                return;
+            }
             District d = ind.district(stop.district);
+            if (d != null && stop.simulated && d.loadState() != IndRecords.LoadState.UNLOADED) {
+                // Simulated at arrival, loaded since: what its interfaces moved after the load is not a
+                // port anyone measured. Discard the window.
+                ind.districts().discard(d, IndRecords.Discard.OTHER);
+            }
             if (d != null && !stop.simulated) {
                 // Loaded: the carriages' change while they stood here crossed the boundary (§3.3).
                 List<Cargo> now = cargo(ind, train);
@@ -181,12 +218,12 @@ public final class TrainWatch {
             Industry.GoodsCounter goods = ind.counter();
             int slots = 0;
             long fluidCap = 0;
-            IItemHandler items = storage == null ? null : storage.getAllItems();
+            IItemHandler items = items(storage);
             if (items != null) {
                 slots = items.getSlots();
                 StockAccess.readItems(ind, items, goods);
             }
-            IFluidHandler fluids = storage == null ? null : storage.getFluids();
+            IFluidHandler fluids = fluids(storage);
             if (fluids != null) {
                 for (int t = 0; t < fluids.getTanks(); t++) {
                     fluidCap += fluids.getTankCapacity(t);
@@ -198,6 +235,23 @@ public final class TrainWatch {
             out.add(new Cargo(i, slots, fluidCap, goods));
         }
         return out;
+    }
+
+    /** A carriage's item handler; null when it has none or is not initialized (Create throws then). */
+    static IItemHandler items(TrainCargoManager storage) {
+        try {
+            return storage == null ? null : storage.getAllItems();
+        } catch (IllegalStateException e) {
+            return null;
+        }
+    }
+
+    static IFluidHandler fluids(TrainCargoManager storage) {
+        try {
+            return storage == null ? null : storage.getFluids();
+        } catch (IllegalStateException e) {
+            return null;
+        }
     }
 
     private static void writeCarriages(ByteBuffer r, int at, List<Cargo> cargo) {
@@ -229,7 +283,7 @@ public final class TrainWatch {
     static boolean carriageDelta(Industry ind, ByteBuffer b, int at, int size, int n, long cmdSeq) {
         long opId = b.getLong(at + IndRecords.CarriageDelta.OP_ID);
         long trainId = b.getLong(at + IndRecords.CarriageDelta.TRAIN);
-        if (n < 0 || IndRecords.CarriageDelta.size(n) > size) {
+        if (n < 0 || IndRecords.CarriageDelta.size(n) > size || IndRecords.CarriageResult.size(n) > 0xFFF8) {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
@@ -240,11 +294,18 @@ public final class TrainWatch {
             return true;
         }
         Train train = train(trainId);
+        long[][] results = new long[n][4];
         if (train == null) {
+            // Nothing applied: IND_CARRIAGE_RESULT says so (the engine corrects stock from it, §4.3).
+            for (int i = 0; i < n; i++) {
+                int e = at + IndRecords.CarriageDelta.ENTRIES + i * IndRecords.CarriageDelta.ENTRY;
+                results[i] = new long[] {b.getInt(e + IndRecords.CarriageDelta.E_CARRIAGE) & 0xFFFF_FFFFL,
+                        b.getInt(e + IndRecords.CarriageDelta.E_GOOD) & 0xFFFF_FFFFL, b.getLong(e + IndRecords.CarriageDelta.E_DELTA), 0};
+            }
+            writeCarriageResult(ind, opId, trainId, results);
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
-        long[][] results = new long[n][4];
         // Removals first, as in a reconcile: what leaves frees the room what arrives needs.
         int[] order = new int[n];
         int k = 0;
@@ -263,13 +324,26 @@ public final class TrainWatch {
             Goods.Name good = Goods.parse(ind.engineName(IndRecords.DICT_GOOD, goodId));
             if (good != null && carriage >= 0 && carriage < train.carriages.size()) {
                 TrainCargoManager storage = train.carriages.get(carriage).storage;
-                if (good.cls() == 'i' && storage != null && storage.getAllItems() != null)
-                    applied = StockAccess.applyItems(ind, storage.getAllItems(), ind.goods().itemPrototype(good), delta);
-                else if (good.cls() == 'f' && storage != null && storage.getFluids() != null)
-                    applied = StockAccess.applyFluid(storage.getFluids(), ind.goods().fluidPrototype(good), delta);
+                IItemHandler items = items(storage);
+                IFluidHandler fluids = fluids(storage);
+                try {
+                    if (good.cls() == 'i' && items != null)
+                        applied = StockAccess.applyItems(ind, items, ind.goods().itemPrototype(good), delta);
+                    else if (good.cls() == 'f' && fluids != null)
+                        applied = StockAccess.applyFluid(fluids, ind.goods().fluidPrototype(good), delta);
+                } catch (RuntimeException ex) {
+                    MicRtsim.LOGGER.error("[mic_rtsim_create] applying {} of {} to a carriage failed", delta, good, ex);
+                }
             }
             results[j] = new long[] {carriage & 0xFFFF_FFFFL, goodId & 0xFFFF_FFFFL, delta, applied};
         }
+        writeCarriageResult(ind, opId, trainId, results);
+        ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        return true;
+    }
+
+    private static void writeCarriageResult(Industry ind, long opId, long trainId, long[][] results) {
+        int n = results.length;
         ByteBuffer r = ind.journal(IndRecords.IND_CARRIAGE_RESULT, IndRecords.CarriageResult.size(n), n);
         r.putLong(IndRecords.CarriageResult.OP_ID, opId);
         r.putLong(IndRecords.CarriageResult.TRAIN, trainId);
@@ -281,13 +355,12 @@ public final class TrainWatch {
             r.putLong(e + 16, results[j][3]);
         }
         ind.commit(r);
-        ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
-        return true;
     }
 
     /** Test helper: forget the hooks' state for a train. */
     public static void forget(Train train) {
         AT_STATION.remove(train.id);
+        ARRIVING.remove(train.id);
         SEEN.remove(CreateIds.of(train.id));
     }
 

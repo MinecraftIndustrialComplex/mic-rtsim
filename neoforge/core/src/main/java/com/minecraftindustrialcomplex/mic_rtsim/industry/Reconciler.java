@@ -127,7 +127,8 @@ public final class Reconciler {
         refreshQuota(now);
         long opId = b.getLong(at + IndRecords.ChunkReconcile.OP_ID);
         int destroys = b.getInt(at + IndRecords.ChunkReconcile.DESTROY_COUNT);
-        if (deltas < 0 || destroys < 0 || IndRecords.ChunkReconcile.size(deltas, destroys) > size) {
+        if (deltas < 0 || destroys < 0 || IndRecords.ChunkReconcile.size(deltas, destroys) > size
+                || IndRecords.ReconcileResult.size(deltas, destroys) > 0xFFF8) {
             MicRtsim.LOGGER.warn("[mic_rtsim] industry: IND_CHUNK_RECONCILE of {} bytes does not hold {} deltas and {} destroys", size, deltas, destroys);
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
@@ -253,11 +254,20 @@ public final class Reconciler {
                 skipped++;
                 continue;
             }
-            // Broken with drops (C18, I23): containers spill their contents as recoverable items.
-            if (level.destroyBlock(pos, true))
-                broken.add(pos);
-            else
+            // Broken with drops (C18, I23): containers spill their contents as recoverable items. The
+            // engine books the spill as a port (engine.rs reconcile_result), so the drops are marked:
+            // a player picking them up is not a second outflow. Another mod's onRemove may throw; the
+            // epoch and the result are written whatever happens here.
+            ind.ports.markDropsPorted(level, pos);
+            try {
+                if (level.destroyBlock(pos, true))
+                    broken.add(pos);
+                else
+                    skipped++;
+            } catch (RuntimeException ex) {
+                ind.fail("breaking " + pos + " for a reconcile", ex);
                 skipped++;
+            }
         }
         blocksBroken += broken.size();
         blocksSkipped += skipped;

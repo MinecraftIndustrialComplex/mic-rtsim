@@ -10,11 +10,17 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * The station hooks of INDUSTRY.md §3.3 and §8.1 (PATCHES.md, Create rows): a train arriving at and
- * leaving a station. Create 6.0.10 has no event for either. {@code arriveAt} is hooked at its end, after
- * Create's own mail transfer; {@code leaveStation} at its start, while the station is still current.
+ * leaving a station. Create 6.0.10 has no event for either. {@code arriveAt} is hooked at its start (the
+ * cargo the train brought, before Create's own mail transfer moves packages) and at its end (the
+ * record); {@code leaveStation} at its start, while the station is still current.
  */
 @Mixin(value = Train.class, remap = false)
 public abstract class TrainMixin {
+    @Inject(method = "arriveAt", at = @At("HEAD"))
+    private void mic_rtsim$arriving(GlobalStation station, CallbackInfo ci) {
+        TrainWatch.arriving((Train) (Object) this, station);
+    }
+
     @Inject(method = "arriveAt", at = @At("TAIL"))
     private void mic_rtsim$arrived(GlobalStation station, CallbackInfo ci) {
         TrainWatch.arrived((Train) (Object) this, station);

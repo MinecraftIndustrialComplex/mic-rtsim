@@ -18,7 +18,16 @@ import com.simibubi.create.content.logistics.packager.PackagerBlockEntity;
 import com.simibubi.create.content.trains.station.GlobalStation;
 import com.simibubi.create.content.trains.station.StationBlockEntity;
 import com.simibubi.create.foundation.blockEntity.IMultiBlockEntityContainer;
-import com.simibubi.create.foundation.blockEntity.SmartBlockEntity;
+import com.simibubi.create.content.logistics.crate.CrateBlockEntity;
+import com.simibubi.create.content.logistics.depot.DepotBlockEntity;
+import com.simibubi.create.content.logistics.factoryBoard.FactoryPanelBlockEntity;
+import com.simibubi.create.content.logistics.funnel.FunnelBlockEntity;
+import com.simibubi.create.content.logistics.packagerLink.PackagerLinkBlockEntity;
+import com.simibubi.create.content.logistics.stockTicker.StockTickerBlockEntity;
+import com.simibubi.create.content.logistics.tunnel.BeltTunnelBlockEntity;
+import com.simibubi.create.content.processing.basin.BasinBlockEntity;
+import com.simibubi.create.content.redstone.smartObserver.SmartObserverBlockEntity;
+import com.simibubi.create.content.redstone.thresholdSwitch.ThresholdSwitchBlockEntity;
 import net.createmod.catnip.math.BlockFace;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -31,8 +40,9 @@ import java.util.function.Consumer;
 /**
  * Create 6.0.10 for the district sampler (INDUSTRY.md §12, layer 2):
  * <ul>
- *   <li><b>Industrial</b>: every Create {@code SmartBlockEntity} and every kinetic one, so shafts, cogs,
- *       belts, pipes and chutes join the chunks they touch into one district (I2, §8.5);</li>
+ *   <li><b>Industrial</b>: kinetics, pipes, chutes, funnels, tunnels and the logistics blocks, so shafts,
+ *       cogs, belts, pipes and chutes join the chunks they touch into one district (I2, §8.5);
+ *       decoration (copycats, clipboards, signals, curved tracks) is not;</li>
  *   <li><b>links</b>: chain conveyor connections, which span gaps;</li>
  *   <li><b>canonical inventories</b>: a vault's or tank's controller ({@code IMultiBlockEntityContainer});</li>
  *   <li><b>boundary inventories</b>: the inventory behind each packager ({@code targetInventory}, I3), and
@@ -45,9 +55,22 @@ import java.util.function.Consumer;
  */
 public final class CreatePlugin implements IndustryPlugin {
 
+    /**
+     * Industrial without a capability of its own: kinetics (shafts, cogs, belts, arms, deployers, pumps),
+     * pipes, chutes, funnels, tunnels and the logistics blocks (packagers, stock links and tickers,
+     * factory gauges, threshold switches, smart observers, stations, postboxes and frogports), and
+     * multiblock storage. Not every SmartBlockEntity: copycats, clipboards, signals, curved tracks and
+     * display boards are decoration and must not make a district (I2 names "Create kinetics" and the
+     * like). Anything with an item, fluid or energy capability is industrial in the core anyway.
+     */
     @Override
     public boolean isIndustrial(BlockEntity be) {
-        return be instanceof SmartBlockEntity || be instanceof KineticBlockEntity;
+        return be instanceof KineticBlockEntity || be instanceof FluidPipeBlockEntity || be instanceof StraightPipeBlockEntity
+                || be instanceof ChuteBlockEntity || be instanceof FunnelBlockEntity || be instanceof BeltTunnelBlockEntity
+                || be instanceof PackagerBlockEntity || be instanceof PackagerLinkBlockEntity || be instanceof StockTickerBlockEntity
+                || be instanceof FactoryPanelBlockEntity || be instanceof ThresholdSwitchBlockEntity || be instanceof SmartObserverBlockEntity
+                || be instanceof StationBlockEntity || be instanceof PackagePortBlockEntity || be instanceof IMultiBlockEntityContainer
+                || be instanceof DepotBlockEntity || be instanceof BasinBlockEntity || be instanceof CrateBlockEntity;
     }
 
     @Override
@@ -70,18 +93,13 @@ public final class CreatePlugin implements IndustryPlugin {
     public void inventories(BlockEntity be, InventorySink out) {
         if (be instanceof PackagerBlockEntity packager && packager.targetInventory != null) {
             BlockFace target = packager.targetInventory.getTarget();
+            // The core canonicalizes the position (a vault's controller, a double chest's lower half) and
+            // never loads a chunk to do it.
             if (target != null)
-                out.add(canonicalAt(be, target.getConnectedPos()), IndRecords.Inventory.KIND_PACKAGER_TARGET);
+                out.add(target.getConnectedPos(), IndRecords.Inventory.KIND_PACKAGER_TARGET);
         }
         if (be instanceof PackagePortBlockEntity)
             out.add(be.getBlockPos(), IndRecords.Inventory.KIND_POSTBOX);
-    }
-
-    private static BlockPos canonicalAt(BlockEntity from, BlockPos pos) {
-        BlockEntity t = from.getLevel() == null ? null : from.getLevel().getBlockEntity(pos);
-        if (t instanceof IMultiBlockEntityContainer multi && multi.getController() != null)
-            return multi.getController();
-        return pos;
     }
 
     @Override

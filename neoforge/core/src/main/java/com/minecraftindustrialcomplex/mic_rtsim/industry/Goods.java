@@ -148,21 +148,40 @@ public final class Goods {
     public static Name parse(String name) {
         if (name == null)
             return null;
-        String[] parts = name.split("/", 4);
-        if (parts.length < 3 || parts[0].length() != 1)
-            return null;
         if (name.equals(ENERGY_FE))
             return new Name('e', 0, ResourceLocation.fromNamespaceAndPath("neoforge", "fe"), null);
+        String[] head = name.split("/", 3);
+        if (head.length < 3 || head[0].length() != 1)
+            return null;
         int max;
         try {
-            max = Integer.parseInt(parts[1]);
+            max = Integer.parseInt(head[1]);
         } catch (NumberFormatException e) {
             return null;
         }
-        ResourceLocation id = ResourceLocation.tryParse(parts[2]);
+        // A registry path may hold '/' itself: the last segment is the hash only when it is one.
+        String rest = head[2];
+        String hash = null;
+        int slash = rest.lastIndexOf('/');
+        if (slash > 0 && isHash(rest.substring(slash + 1))) {
+            hash = rest.substring(slash + 1);
+            rest = rest.substring(0, slash);
+        }
+        ResourceLocation id = ResourceLocation.tryParse(rest);
         if (id == null)
             return null;
-        return new Name(parts[0].charAt(0), max, id, parts.length > 3 ? parts[3] : null);
+        return new Name(head[0].charAt(0), max, id, hash);
+    }
+
+    private static boolean isHash(String s) {
+        if (s.length() != 16)
+            return false;
+        for (int i = 0; i < 16; i++) {
+            char c = s.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                return false;
+        }
+        return true;
     }
 
     /** A one-item prototype of an item good, or EMPTY when it names no item (or an unknown patch). */

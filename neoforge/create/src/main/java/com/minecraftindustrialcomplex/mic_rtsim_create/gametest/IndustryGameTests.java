@@ -564,7 +564,7 @@ public final class IndustryGameTests {
                     edits[0] = received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, d.id).size();
                 })
                 .thenExecute(() -> {
-                    fp.setPos(chestPos.getX() + 0.5, chestPos.getY() + 1, chestPos.getZ() + 1.5);
+                    fp.setPos(chestPos.getX() + 0.5, chestPos.getY() + 1, chestPos.getZ() + 0.5); // in the chest's chunk
                     fp.getInventory().clearContent();
                     fp.getInventory().setItem(0, new ItemStack(Items.IRON_INGOT, 5));
                     net.minecraft.world.inventory.ChestMenu menu = net.minecraft.world.inventory.ChestMenu.threeRows(1, fp.getInventory(), chest(helper, chestPos));
@@ -600,6 +600,40 @@ public final class IndustryGameTests {
                     check("the pickup: -2 redstone", byKind.getOrDefault(IndRecords.Port.PLAYER_PICKUP, Map.of()).getOrDefault("i/64/minecraft:redstone", 0L) == -2);
                     check("no edit from any of them", received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, id[0]).size() == edits[0]);
                     fp.getInventory().clearContent();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A double chest is one boundary inventory, at its lower half, whichever half is named: tagged
+     * storage, a packager's target and a player's click all go through one canonical function, which
+     * never loads a chunk (review findings 3 and 10).
+     */
+    @GameTest(template = YARD, batch = "industry_14", timeoutTicks = 400)
+    public static void aDoubleChestIsOneInventory(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos a = new BlockPos(bx + 2, y, z), b = a.east();
+        set(helper, a, Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH)
+                .setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
+        set(helper, b, Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH)
+                .setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        playerPlaced(helper, a);
+        playerPlaced(helper, b);
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, a);
+                    check("district", d != null);
+                    BlockPos lower = a.asLong() < b.asLong() ? a : b;
+                    check("one inventory for the two halves: " + d.inventories, d.inventories.size() == 1 && d.inventories.get(0).pos().equals(lower));
+                    check("54 slots", d.inventories.get(0).itemSlots() == 54);
+                    check("either half leads to the lower one", lower.equals(com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(helper.getLevel(), a))
+                            && lower.equals(com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(helper.getLevel(), b)));
+                    long far = ChunkPos.asLong((a.getX() >> 4) + 7000, (a.getZ() >> 4) + 7000);
+                    check("an unloaded position has none (and is not loaded)", com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(
+                            helper.getLevel(), new BlockPos(ChunkPos.getX(far) * 16, 64, ChunkPos.getZ(far) * 16)) == null
+                            && helper.getLevel().getChunkSource().getChunkNow(ChunkPos.getX(far), ChunkPos.getZ(far)) == null);
                 })
                 .thenSucceed();
     }
