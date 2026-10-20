@@ -91,7 +91,7 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 6. **Dragons: M1 (breeding) was taken at its recommendation.** The In Control spawner change is a pack edit that waits for Ben; the edits are ready, disabled, in `neoforge/iceandfire/pack-proposal/config/incontrol/`.
 7. **Ships T5:** where a road and a sea lane join the same two markets, the two now share the destination's demand (best margin first). This changes phase 1 behaviour only in such worlds.
 8. **K2-13 (conflict):** the industry threat interface's per-class defaults let ground raiders carry and break nothing; the conflict wiring is taking the recommendation (per-threat values from the attacking units).
-9. **Plan facts the jars contradict:** `stealItems` is a pixie setting; the fire dragon is desert-only in effect; dragons do carry prey.
+9. **Plan facts the jars contradict:** `stealItems` is a pixie setting; the fire dragon is desert-only in effect; dragons do carry prey. (Fixed in PLAN.md and INDUSTRY.md on the morning of 2026-10-20.)
 
 ## Not done, or still running at the time of writing
 

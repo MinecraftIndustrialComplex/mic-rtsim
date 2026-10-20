@@ -1087,7 +1087,8 @@ ribbit house from YUNG's templates stands at the edge of the village, with a new
   flow is counted as destroyed in the conservation sum (§8.4).
 - **Player infrastructure is prey too** (C16, C17). A dragon's hunt leg that crosses a district or a
   booked train leg schedules an encounter, resolved as INDUSTRY.md §13 says (I19 to I25). The pack sets
-  dragon `griefing` and `stealItems` false, so the damage is the sim's and is bounded.
+  dragon `griefing` false, so the damage is the sim's and is bounded (P28: watched fights place the same
+  bounded sim damage). There is no dragon `stealItems`; that key is a pixie setting (jar check, 2026-10-20).
 - **Memory.** A dragon remembers a player who hurt it, and its next hungry season targets that player's
   home. What "home" means is **Proposal P26 (Ben)**.
 - **Temperament** from its seed makes one dragon bolder or warier than another of its species (C25,
@@ -1107,12 +1108,15 @@ ribbit house from YUNG's templates stands at the edge of the village, with a new
 - The dragon materializes as an IaF entity whose NBT comes from engine state (`AgeTicks`, `Hunger`,
   `Variant`, `Gender`, `HomeAreaX/Y/Z`). It is persistence-required.
 - `IafDragonFlightManager.setFlightTarget(Vec3)` steers it. A goal picks targets using IaF's
-  `dragon_targets` tag. Whether IaF dragons carry prey off is UNVERIFIED.
-- The pack has dragon griefing off (`griefing: false`). What happens to buildings is **Proposal P28
-  (Ben)**.
+  `dragon_targets` tag. IaF dragons of stage 2 and up carry prey under half their width off
+  (`startRiding`); a dragon and its carried prey are one unit (C25, Z8).
+- The pack has dragon griefing off (`griefing: false`). Buildings take bounded sim damage, watched or
+  not (P28, decided).
 - **The pack's In Control spawner** spawns `iceandfire:fire_dragon` in the overworld (`persecond` 0.1,
-  `maxthis` 200), with no biome condition. The baseline called it a desert spawner; that was wrong.
-  Whether phase 2 removes it is **Proposal P13 (Ben)**.
+  `maxthis` 200). The spawner entry has no biome condition, but `spawn.json`'s `onjoin` rules deny its
+  joins outside `c:is_desert`, so in effect it is a desert spawner (jar check, 2026-10-20). Ben's P13: it
+  is a progression gate (oil behind guns, through hostile ground). The sim's oil gate follows deposits
+  from any source; In Control stays untouched until the gate proves at least as dangerous.
 
 **Walkthrough:**
 1. Winter. Cinderjaw, a fire dragon in a roost east of Brindle, is hungry. Its migration leg south
@@ -1539,7 +1543,7 @@ source trees. Facts from the 2026-10-19 review or another session say so.
   - `structurify.json` disables `terralith:fortified_village` and `terralith:fortified_desert_village`;
     vanilla villages remain.
   - `config/incontrol/spawner.json` spawns `iceandfire:fire_dragon` in the overworld (`persecond` 0.1,
-    `maxthis` 200) with no biome condition.
+    `maxthis` 200) with no biome condition; `spawn.json`'s `onjoin` rules keep it to `c:is_desert`.
   - `config/iceandfire/iaf-common.json`: dragon `griefing` false, `canDespawn` true,
     `targetSearchLength` 128, `wanderFromHomeDistance` 40, `hungerTickRate` 3000.
   - Mods: Carry On 2.2.6.13, Sinytra Connector 2.0.0-beta.17, Numismatics 1.1.0, Surveyor 1.2.4, Antique
