@@ -8,6 +8,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.DistrictDiagnostics;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
