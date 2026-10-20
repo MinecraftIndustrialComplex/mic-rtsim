@@ -58,6 +58,10 @@ impl Pipeline {
         self.segs.iter()
     }
 
+    pub fn holes(&self) -> &[Hole] {
+        &self.holes
+    }
+
     fn seg_at(&self, q: u64) -> Option<&Seg> {
         // Segments are few (those still in transit), so a reverse scan beats a search.
         self.segs.iter().rev().find(|s| s.start <= q)

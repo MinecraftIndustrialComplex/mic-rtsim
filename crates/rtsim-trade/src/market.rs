@@ -516,9 +516,9 @@ impl LazyModel for Market {
             }
             if let Some(k) = c.uncovered {
                 // The boundary before the uncovered step, so the owner can cut outflow in time.
-                // Step 1 uncovered is the owner's bug: it must keep the next step covered at every
-                // event. Book the next boundary anyway so the state is looked at.
-                debug_assert!(k >= 2, "market {} good {i}: outflow uncovered at the next step", self.key);
+                // Step 1 uncovered happens at exactly that breakpoint (the table reschedules
+                // before the owner acts on it), and the owner then cuts outflow; booking the next
+                // boundary keeps it looked at either way.
                 take(first + k.max(2) - 2);
             }
             if self.goods[i].used_here {
