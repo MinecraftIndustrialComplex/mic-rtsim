@@ -156,6 +156,13 @@ public interface IndustryPlugin {
     /** Auto-firing turrets this block entity is (Create Radars, Create Big Cannons). */
     default void turret(BlockEntity be, TurretSink out) {}
 
+    // ---- the glass box (GLASSBOX.md §7.1) -------------------------------------------------------
+
+    /** This plugin's graph extractor for the glass box's compile (G1), or null. */
+    default com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassExtractor glass() {
+        return null;
+    }
+
     // ---- conditions (I12) -----------------------------------------------------------------------
 
     /**
