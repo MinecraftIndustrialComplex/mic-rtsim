@@ -90,13 +90,19 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `achunksavedaheadofthejournalstopsaresenttransfer` | a chest's chunk saved after an engine transfer, the journal not: the resent transfer is refused by the chunk's own record, which is dropped once the engine acknowledges |
 | `atakencreaturecarriesitstakenuntiltheenginehasit` | a tamed llama carries its TAKEN; a copy read from disk journals it again with the same op id; both drop it on the acknowledgement |
 | `adeadmembersdropscarryitsdied` | the items a dying llama drops carry its MEMBER_STATE and DIED |
+| `handovercostpertick` | the hand-over bench: submit to publish on the native engine and the stub, burst and 50 ms cadence (only with `-PrtsimBench`; results in `bench/results/handover.md`) |
 | `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 
 ## Not done yet
 
-- **The engine's other platforms.** Dev builds pack the host's baseline build only; the x86-64-v3
-  build and the all-platform release set (`target/natives-dist-jni/`) need a natives build script.
+- **A simulating engine.** The native engine's world (rtsim-jni `world.rs`) keeps the books of the
+  records above and writes the commands tests and `/rtsim` order; it decides nothing yet. Phase 1's
+  modules replace it.
+- **Natives in dev builds** are this machine's baseline build only. The release set (eight platforms
+  plus x86-64-v3) comes from `tools/natives/build-natives.sh` in mic-native's dev shell
+  (`target/natives-dist-jni/`, packed by `-Prelease`); it built and passed every GameTest on
+  2026-10-20, but only linux-x86_64 has been run.
 - **Observations** beyond players, puppets, taking, deaths and transfers: chunk loads and tickets,
   damage, rescues, trades, villages, census, recipes (PLAN.md §6.3).
 - **Commands** beyond spawn, despawn, steer and container transfers: trade offers, gossip, structure
