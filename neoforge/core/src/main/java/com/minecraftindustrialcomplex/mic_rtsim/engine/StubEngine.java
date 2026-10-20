@@ -429,7 +429,13 @@ public final class StubEngine implements Engine {
 
     public void spawnGroup(long agent, int epoch, String groupKind, String dimension, double x, double y, double z,
                            List<MemberSpec> members) {
-        script(out -> {
+        script(spawnGroupCommand(agent, epoch, groupKind, dimension, x, y, z, members));
+    }
+
+    /** A SPAWN_GROUP command, for {@link #scriptTogether}. */
+    public Consumer<CommandOut> spawnGroupCommand(long agent, int epoch, String groupKind, String dimension, double x, double y, double z,
+                                                  List<MemberSpec> members) {
+        return out -> {
             int kind = out.dict(Obs.DICT_BODY, groupKind);
             int dim = out.dict(Obs.DICT_DIMENSION, dimension);
             int[][] itemIds = new int[members.size()][];
@@ -469,6 +475,15 @@ public final class StubEngine implements Engine {
                 }
                 m0 += Cmd.SpawnGroup.Member.size(spec.items().size());
             }
+        };
+    }
+
+    /** Scripts several commands as one unit: they land in the same step's buffer, or all wait. */
+    @SafeVarargs
+    public final void scriptTogether(Consumer<CommandOut>... commands) {
+        script(out -> {
+            for (Consumer<CommandOut> c : commands)
+                c.accept(out);
         });
     }
 
