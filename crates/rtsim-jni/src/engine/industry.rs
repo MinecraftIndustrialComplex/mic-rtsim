@@ -437,6 +437,15 @@ fn set_enabled(st: &mut State, on: bool) {
     l.enabled = on;
     if on && !was {
         l.session_start_at = Some(gt.max(l.engine.now()));
+        // An answer that came while off was ignored: every kept command goes again, under a new
+        // sequence (Java skips any at or below the last it applied), and Java answers it by op id
+        // (DUPLICATE if it had applied it), so none waits in the outbox for an answer already gone.
+        let kept: Vec<Cmd> = l.outbox.drain(..).map(|(_, c)| c).collect();
+        l.resend.clear();
+        for c in kept.into_iter().rev() {
+            l.queue.push_front(c);
+        }
+        l.gauges();
     }
 }
 
