@@ -169,7 +169,9 @@ otherwise).
 - **Q18.** A survey runs when a district's revision changes, after a player places or breaks a block in it,
   and every 24,000 ticks (PLACEHOLDER) while all its chunks are loaded, at most every 200 ticks
   (PLACEHOLDER); one at a time, 2 chunks a tick (PLACEHOLDER); a district chunk that unloads aborts it, and a
-  request for the same district restarts it. IND_SURVEY_BLOCKS lists wall faces first, then machines, then
+  request for the same district restarts it. The walk from outside and the two minimum cuts run on Minecraft's background
+  executor once the chunks are read (they use only the survey's own maps); the records go out on the
+  server thread, and a district that changed meanwhile drops the result. IND_SURVEY_BLOCKS lists wall faces first, then machines, then
   boundary stock, at most 2,048 (PLACEHOLDER).
 
 **Conditions (I12)**

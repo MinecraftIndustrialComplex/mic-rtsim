@@ -120,6 +120,10 @@ public final class Threats {
         s.surveyedAt = Long.MIN_VALUE / 2;
         if (job != null && job.district.id == d.id)
             job = null; // what it read may be older than the reason for asking: start again
+        if (reducing != null && reducing.district.id == d.id) {
+            reducing = null;
+            walking = null;
+        }
     }
 
     public long surveys() {
@@ -377,7 +381,27 @@ public final class Threats {
 
     // ---- the survey -----------------------------------------------------------------------------
 
+    /** A survey whose chunks are read, its walk and cuts computing off the server thread. */
+    private SurveyJob reducing;
+    private java.util.concurrent.CompletableFuture<SurveyJob.Walk> walking;
+
     private void survey(long now) {
+        if (reducing != null) {
+            if (!walking.isDone())
+                return;
+            SurveyJob j = reducing;
+            java.util.concurrent.CompletableFuture<SurveyJob.Walk> w = walking;
+            reducing = null;
+            walking = null;
+            if (ind.district(j.district.id) != j.district || j.district.revision != j.revision)
+                return; // the district changed while it computed
+            try {
+                finish(j, w.join(), now);
+            } catch (RuntimeException e) {
+                ind.fail("the survey of district " + j.district.id, e);
+            }
+            return;
+        }
         if (job != null) {
             if (ind.district(job.district.id) != job.district || job.district.revision != job.revision) {
                 job = null; // the district changed under the survey: start again
@@ -387,9 +411,12 @@ public final class Threats {
                     surveysAborted++;
                     job = null;
                 } else if (job.done()) {
-                    SurveyJob j = job;
+                    // The walk and the two minimum cuts read only the job's own maps: off the server thread
+                    // (a wide district's cut can take tens of milliseconds).
+                    reducing = job;
                     job = null;
-                    finish(j, now);
+                    SurveyJob j = reducing;
+                    walking = java.util.concurrent.CompletableFuture.supplyAsync(j::walk, net.minecraft.Util.backgroundExecutor());
                 }
                 return;
             }
@@ -412,11 +439,10 @@ public final class Threats {
         }
     }
 
-    private void finish(SurveyJob j, long now) {
+    private void finish(SurveyJob j, SurveyJob.Walk walk, long now) {
         long t0 = System.nanoTime();
         District d = j.district;
         State s = state(d);
-        SurveyJob.Walk walk = j.walk();
         // Guards: owned and player-made fighters in the district's chunks.
         int[] guards = new int[IndRecords.ThreatClass.COUNT];
         AABB box = new AABB(d.minCx * 16, j.level.getMinBuildHeight(), d.minCz * 16, d.maxCx * 16 + 16, j.level.getMaxBuildHeight(), d.maxCz * 16 + 16);
@@ -534,6 +560,8 @@ public final class Threats {
     public void forgetAll() {
         states.clear();
         job = null;
+        reducing = null;
+        walking = null;
     }
 
 }
