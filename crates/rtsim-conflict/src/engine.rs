@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_ecology::infra::Infrastructure;
 use rtsim_industry::ids::DistrictId;
-use rtsim_industry::threat::{Threat, ThreatSource, ThreatTarget};
+use rtsim_industry::threat::{Loads, Threat, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::{Arena, Handle};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
@@ -689,19 +689,8 @@ impl Conflict {
         self.by_key.insert(key, f);
         let cell = self.cell_of(pos);
         self.cells.entry(cell).or_default().push(f);
-        let mask = SignalKind::ALL
-            .into_iter()
-            .filter(|k| cu.signals[k.index()].weight > 0.0)
-            .fold(0, |m, k| m | k.bit());
-        self.outbox.push(Cmd::Territory(boundary::Territory {
-            faction: key,
-            flags: 0,
-            dimension: u32::from(pos.frame),
-            signals: mask,
-            x: pos.x,
-            z: pos.z,
-            radius: cu.def.territory_radius,
-        }));
+        let t = self.territory(f);
+        self.outbox.push(t);
         self.schedule_plunder(f, at);
         // Sources already emitting reach the newcomer (only the newcomer's feud changes).
         let reach = f64::from(cu.def.territory_radius) + f64::from(cu.def.reach_blocks);
@@ -752,6 +741,25 @@ impl Conflict {
             ),
         );
         Some(f)
+    }
+
+    /// A faction's TERRITORY command: its circle and the signals its culture minds.
+    fn territory(&self, f: u32) -> Cmd {
+        let x = &self.factions[f as usize];
+        let cu = self.culture(f);
+        let mask = SignalKind::ALL
+            .into_iter()
+            .filter(|k| cu.signals[k.index()].weight > 0.0)
+            .fold(0, |m, k| m | k.bit());
+        Cmd::Territory(boundary::Territory {
+            faction: x.key,
+            flags: 0,
+            dimension: u32::from(x.pos.frame),
+            signals: mask,
+            x: x.pos.x,
+            z: x.pos.z,
+            radius: x.radius,
+        })
     }
 
     fn cell_of(&self, p: Pos) -> (u16, i32, i32) {
@@ -2035,10 +2043,14 @@ impl Conflict {
         }
     }
 
+    /// The party's alive units by threat class: (count, strength, loads). The loads are its
+    /// units' own carry and block breaking (overnight choice C2-1, K2-13's recommendation), so a
+    /// raid never depends on the industry engine's per-class defaults, which carry and break
+    /// nothing for ground attackers.
     fn strength_by_class(
         &self,
         p: Handle<Party>,
-    ) -> BTreeMap<rtsim_industry::threat::ThreatClass, (u32, f64)> {
+    ) -> BTreeMap<rtsim_industry::threat::ThreatClass, (u32, f64, Loads)> {
         let x = &self.parties[p];
         let c = self.culture(x.faction);
         let mut m = BTreeMap::new();
@@ -2047,9 +2059,13 @@ impl Conflict {
                 continue;
             }
             let ud = c.unit(u);
-            let e = m.entry(ud.class.threat()).or_insert((0u32, 0.0f64));
+            let e = m
+                .entry(ud.class.threat())
+                .or_insert((0u32, 0.0f64, Loads::default()));
             e.0 += n;
             e.1 += f64::from(n) * ud.strength;
+            e.2.carry += i64::from(n) * i64::from(ud.carry);
+            e.2.blocks += n * ud.breaks;
         }
         m
     }
@@ -2081,6 +2097,14 @@ impl Conflict {
         );
         let s = self.strength(p);
         let n = self.parties[p].alive();
+        let carry: i64 = {
+            let x = &self.parties[p];
+            let c = self.culture(x.faction);
+            x.units
+                .iter()
+                .map(|&(u, k)| i64::from(k) * i64::from(c.unit(u).carry))
+                .sum()
+        };
         let t = Threat {
             id,
             source: ThreatSource::Bandit,
@@ -2089,6 +2113,7 @@ impl Conflict {
             strength: s,
             target: ThreatTarget::Train(rtsim_industry::ids::TrainId(train)),
             at,
+            loads: Some(Loads { carry, blocks: 0 }),
         };
         let Some(loot) = infra.raid_train(&t) else {
             return;
@@ -2316,7 +2341,7 @@ impl Conflict {
         let mut stolen_items = 0i64;
         let mut blocks = 0u32;
         let mut words = Vec::new();
-        for (class, (count, strength)) in classes {
+        for (class, (count, strength, loads)) in classes {
             let id = fnv1a64(
                 &[
                     Party::agent(p).to_le_bytes(),
@@ -2333,6 +2358,7 @@ impl Conflict {
                 strength,
                 target: ThreatTarget::District(d),
                 at,
+                loads: Some(loads),
             };
             let Some(o) = infra.raid(&t) else {
                 continue;
@@ -3107,7 +3133,9 @@ impl Conflict {
         w.leave_area(p, &mut [self]);
     }
 
-    /// A session ended: every puppet is gone (they never outlive a session, S11).
+    /// A session ended: every puppet is gone (they never outlive a session, S11), a watched
+    /// fight with nobody watching goes on abstractly at its next event (as when its player
+    /// leaves), and the plugin hears every faction's territory again (docs/boundary.md §9.4).
     pub fn session_start(&mut self) {
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
@@ -3115,8 +3143,17 @@ impl Conflict {
             x.embodied = false;
             x.seen_by = None;
             x.spawned.clear();
+            x.recalled.clear();
+            if x.phase == Phase::Fighting {
+                x.phase = Phase::Waiting;
+            }
         }
-        self.outbox.retain(|c| c.agent().is_none());
+        self.outbox
+            .retain(|c| c.agent().is_none() && !matches!(c, Cmd::Territory(_)));
+        for f in 0..self.factions.len() as u32 {
+            let t = self.territory(f);
+            self.outbox.push(t);
+        }
     }
 
     // ---- observations (docs/boundary.md §9) --------------------------------------------------

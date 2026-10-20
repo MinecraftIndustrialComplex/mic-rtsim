@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! What the modules that live in the phase 1 world share: the dragons (`dragons.rs`), the ships
-//! (`ships.rs`) and rtsim-ecology's herds (`herds.rs`). Two services, each in one place:
+//! (`ships.rs`), rtsim-ecology's herds (`herds.rs`) and the conflict (`conflict.rs`). Two
+//! services, each in one place:
 //!
 //! - **One interest area per player** (overnight choices U2 to U6). PLAYER records go in once per
 //!   hand-over ([`observe_state`], latest per player); at the simulate point each player's area
@@ -11,15 +12,18 @@
 //!   [`PLAYER_STALE`] game ticks leaves; a session start clears every area (puppets and players'
 //!   presence never outlive a session). Before this, the world, the dragons and the ships each
 //!   booked their own leg for every player (R31, T17).
-//! - **One clock** (U7). The dragons', the ships' and the herds' events run interleaved in time
-//!   order ([`run_to`]), so none ever meets a world that another already ran past its time. A
-//!   phase 1 input or a module's record runs them to its time first ([`catch_up`]).
+//! - **One clock** (U7). The dragons', the ships', the herds' and the conflict's events run
+//!   interleaved in time order ([`run_to`]), so none ever meets a world that another already ran
+//!   past its time. A phase 1 input or a module's record runs them to its time first
+//!   ([`catch_up`]).
 //!
 //! **Herds** joined (Y1) by `rtsim_ecology::herds::Herds` implementing
 //! `rtsim_world::interest::Viewer` (legs under owner bit 60), `herds::running` and
-//! `herds::run_engine`, and one line each in [`with_viewers`] and [`run_to`]. A module that
-//! starts running in the middle of a session hears of the areas already booked through
-//! [`introduce_herds`].
+//! `herds::run_engine`, and one line each in [`with_viewers`] and [`run_to`]. **The conflict**
+//! joined the same way (C2-5: `rtsim_conflict::Conflict` is a `Viewer` with legs under owner bit
+//! 59, so war bands and envoys that enter a player's view materialize). A module that starts
+//! running in the middle of a session hears of the areas already booked through
+//! [`introduce_herds`] and [`introduce_conflict`].
 
 use std::collections::BTreeMap;
 
@@ -28,7 +32,7 @@ use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
 use rtsim_world::interest::Viewer;
 
-use super::{State, dragons, herds, phase1, ships};
+use super::{State, conflict, dragons, herds, phase1, ships};
 use crate::wire::{self, Rec, obs};
 
 /// A player not reported for this many game ticks has left (phase 1's own rule, V8's
@@ -51,7 +55,7 @@ pub(super) struct Link {
 
 /// Whether any module that sees players runs (and so needs their areas).
 fn any_viewer(st: &State) -> bool {
-    dragons::running(st) || ships::running(st) || herds::running(st)
+    dragons::running(st) || ships::running(st) || herds::running(st) || conflict::running(st)
 }
 
 /// The radius of the shared area: the widest view of the modules (each is 160 blocks today).
@@ -63,17 +67,19 @@ fn radius(st: &State) -> u32 {
         .max(st.dragons.engine.tun.view_radius)
         .max(st.ships.engine.tun.view_radius)
         .max(st.herds.engine.tun.view_radius)
+        .max(st.conflict.engine.tun.view_radius)
 }
 
 /// Runs `f` with the phase 1 world and the modules an area is routed to: those that run, in a
-/// fixed order (the dragons, the ships, the herds).
+/// fixed order (the dragons, the ships, the herds, the conflict).
 fn with_viewers<R>(
     st: &mut State,
     f: impl FnOnce(&mut rtsim_world::World, &mut [&mut dyn Viewer]) -> R,
 ) -> R {
     let (d_on, s_on, h_on) = (dragons::running(st), ships::running(st), herds::running(st));
+    let c_on = conflict::running(st);
     let w = &mut st.phase1.world;
-    let mut v: Vec<&mut dyn Viewer> = Vec::with_capacity(3);
+    let mut v: Vec<&mut dyn Viewer> = Vec::with_capacity(4);
     if d_on {
         v.push(&mut st.dragons.engine);
     }
@@ -83,10 +89,17 @@ fn with_viewers<R>(
     if h_on {
         v.push(&mut st.herds.engine);
     }
+    if c_on {
+        v.push(&mut st.conflict.engine);
+    }
     let r = f(w, &mut v);
     if h_on {
         // A crossing or a player leaving can make the herds decide (a despawn).
         herds::take_commands(st);
+    }
+    if c_on {
+        // A player leaving recalls the bands it watched.
+        conflict::take_commands(st);
     }
     r
 }
@@ -111,6 +124,28 @@ pub(super) fn introduce_herds(st: &mut State) {
         st.phase1.taint();
     }
     herds::take_commands(st);
+}
+
+/// The conflict started running in the middle of a session (a first camp reported, the switch
+/// turned on): every area booked meanwhile is routed to it alone, as [`introduce_herds`] does, so
+/// a player standing still sees an envoy or a band that is near.
+pub(super) fn introduce_conflict(st: &mut State) {
+    if !conflict::running(st) {
+        return;
+    }
+    let areas: Vec<(ActorId, rtsim_travel::legs::Stamp)> = st
+        .shared
+        .present
+        .values()
+        .filter_map(|(p, _)| st.phase1.world.interest_area(*p).map(|a| (*p, a)))
+        .collect();
+    for (p, a) in areas {
+        let (w, c) = (&mut st.phase1.world, &mut st.conflict.engine);
+        let mut v: [&mut dyn Viewer; 1] = [c];
+        w.route_area(p, a, &mut v);
+        st.phase1.taint();
+    }
+    conflict::take_commands(st);
 }
 
 // ---- the interest areas ---------------------------------------------------------------------------
@@ -203,9 +238,9 @@ pub(super) fn simulate(st: &mut State) {
 
 // ---- the clock --------------------------------------------------------------------------------------
 
-/// Runs the dragons, the ships and the herds to world tick `at`, their events interleaved in
-/// time order: each round runs all three to the earliest next event any has (a lower bound from
-/// their wheels), so an event of one never meets a world another ran past it. Each round pops
+/// Runs the dragons, the ships, the herds and the conflict to world tick `at`, their events
+/// interleaved in time order: each round runs all four to the earliest next event any has (a
+/// lower bound from their wheels), so an event of one never meets a world another ran past it. Each round pops
 /// everything due up to its time and no module schedules another's events, so the rounds' times
 /// rise and the loop ends. (With the dragons running, the herds run inside the dragons' rounds,
 /// as their prey, Y7; the herds' own round then finds nothing left.)
@@ -227,9 +262,15 @@ pub(super) fn run_to(st: &mut State, at: Tick) {
         {
             t = t.min(n);
         }
+        if conflict::running(st)
+            && let Some(n) = st.conflict.engine.next_due()
+        {
+            t = t.min(n);
+        }
         dragons::run_engine(st, t);
         ships::run_engine(st, t);
         herds::run_engine(st, t);
+        conflict::run_engine(st, t);
         if t >= at {
             return;
         }

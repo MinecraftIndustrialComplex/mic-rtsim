@@ -26,6 +26,8 @@ rtsim-knowledge.workspace = true
 rtsim-ecology.workspace = true
 # Ships, pirates and navies (docs/boundary.md §7).
 rtsim-ships.workspace = true
+# Factions, grievance and war bands (docs/boundary.md §9).
+rtsim-conflict.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 

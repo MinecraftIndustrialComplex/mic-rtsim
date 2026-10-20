@@ -2056,6 +2056,7 @@ impl Engine {
             count,
             strength: f64::from(count) * NATURAL_STRENGTH,
             target: ThreatTarget::District(d),
+            loads: None,
             at,
         };
         self.attack_district(&t);

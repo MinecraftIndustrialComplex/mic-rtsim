@@ -425,6 +425,7 @@ fn a_raid_while_away_lands_at_the_next_load() {
         count: 3,
         strength: 3.0,
         target: ThreatTarget::District(MILL),
+        loads: None,
         at: t,
     })])
     .unwrap();

@@ -241,6 +241,10 @@ pub struct UnitDef {
     pub strength: f64,
     /// Items one unit carries off (INDUSTRY.md I23's carry).
     pub carry: u32,
+    /// Blocks one unit breaks in a raid on a district (I23), carried on the threat with the carry
+    /// (overnight choice C2-1, K2-13's recommendation). PLACEHOLDER; 0 when the data leaves it out.
+    #[serde(default)]
+    pub breaks: u32,
 }
 
 /// A culture as its JSON says.
