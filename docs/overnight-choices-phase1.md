@@ -195,6 +195,12 @@ can be rerun.
 - **Dock wait** (E53): flows are delayed by the wait plus the walk, `T`'s floor is `2 × (walk + wait)`,
   and news on quiet roads waits for the next caravan.
 - **Growth** (E56) ignores needed goods a village has no way to get.
+- **The Java side's copy of the price math** (merged as `overnight/phase1-mc`, its MarketBook and
+  the MARKET record): `level_of`'s `At` and `Empty` are bands now (E44), but `Glut` (more than twice
+  the target) and cash refusal, which are what MARKET's reader decides from, are unchanged, and
+  `PriceCurve` and `Market::offer` are untouched. Growth's commands (`PlaceHouse`, `SpawnResident`)
+  and the sorcerers' `SentimentSnapshot` carry the fields of its PLACE_HOUSE, SPAWN_RESIDENT and
+  SENTIMENT records; rtsim-jni maps them.
 
 ## Round 2: incomplete
 
