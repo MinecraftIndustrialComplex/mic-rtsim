@@ -68,3 +68,40 @@ item 10 sums it up.
 | V20 | Inspection: `nPhase1Stats` (16 counters, any mode), `nPhase1Sentiment` (TEST mode, from the published inspection), and `Engine::phase1_state` (the hash, the replay check, capture mismatches; Rust tests only, it takes the state lock). | No game thread ever waits on a lock a step holds. |
 | V21 | The live GameTest's villages sit at a random place two million blocks out, and the caravan is materialized at the arena; native engine only (the stub decides nothing). | The GameTest world and the engine's pages are reused (B37): earlier runs' villages near the arena would otherwise be the new ones' neighbours. |
 | V22 | The Rust fake Java side (`tests/common`, shared with industry) answers phase 1's kept commands (HOUSE_PLACED, COMMAND_RESULT), dematerializes on DESPAWN_GROUP and reports players every tick. | The protocol test runs phase 1 over the real buffers, host pool and IO lane. |
+
+## Results
+
+- **GameTests, native engine** (after merging origin/main with the dragons work): core 37 of 37
+  (the 7 core phase 1 tests that skipped before now run, and the new
+  `arealcaravantradesisrobbedandthenewstravels` passes: a caravan carrying iron and wool
+  materialized after 13 to 14 asks, one trade and one robbery booked, the robbery in two other
+  villages' gossip), ribbits 5 of 5 (the 4 that skipped run), carryon 1 of 1, create 14 of 14.
+- **GameTests, stub engine:** core 37 of 37 (the live test logs `skipped`), ribbits 5 of 5,
+  carryon 1 of 1, create 14 of 14.
+- **Rust:** rtsim-jni 12 unit tests, 11 protocol tests (the new phase 1 exchange included: a crash
+  rebuilds the same world from the input log, 6 inputs in about 1 ms), 14 industry tests;
+  rtsim-world's and rtsim-knowledge's suites.
+- **Hand-over cost with phase 1 running:** 11 to 20 µs a tick on the server thread (p50, cadence),
+  the same band as without it; `bench/results/handover.md`.
+
+## Incomplete
+
+- **A snapshot codec for the phase 1 world.** The pages hold its input log (V6), which only grows:
+  a long-lived world replays everything at every start. Measured only on small logs; a checkpoint
+  (a snapshot every so many inputs) needs decoders for markets, pipelines, knowledge and the wheels.
+- **The kernel follow-up's paging and two save generations** were not on origin/main: phase 1 uses
+  the current `PageStore` (table 0x5000). Moving to them is a matter of the meta page and chunk keys.
+- **Captures are compared, not reconciled** (V13): a difference between what a despawned caravan
+  carried and its sim row is logged and counted only.
+- **MERCHANT_OFFERS** are fair and sent once at spawn (V10); not refreshed when the caravan's news
+  changes, and no per-player markup.
+- **Not tested end to end:** touring bands and ribbit caravans materialized near players, and the
+  engine's own SENTIMENT, PLACE_HOUSE and SPAWN_RESIDENT. Their conversions are written and the
+  bridge's side of each is GameTested with scripted commands, but no test drives a ribbit world
+  through them. The natural materialization pass near real players ran in the bench (8 caravans
+  materialized) but no test asserts it; the live GameTest uses `P1_SPAWN_NEAR`.
+- **The catalogue is a placeholder** (V5): goods, recipes, resources by structure, populations by
+  pieces, a fixed seed.
+- **Prices:** the Java `PriceCurve` mirror is kept and the engine sends MARKET snapshots; whether it
+  should send ready-made bundles instead is still open on Ben's sheet (untouched).
+- **No adversarial review** of this work was run (the account was near its rate limit).
