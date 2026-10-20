@@ -169,7 +169,7 @@ impl Line {
             }; 8],
             n: 0,
         };
-        let mut push = |p: &mut Plan, len: u64, delta: Amount, prod: Amount, short: Amount| {
+        let push = |p: &mut Plan, len: u64, delta: Amount, prod: Amount, short: Amount| {
             assert!(p.n < p.segs.len(), "line plan too long: {self:?}");
             p.segs[p.n] = Seg {
                 len,
