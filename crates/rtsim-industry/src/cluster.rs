@@ -1552,3 +1552,164 @@ mod tests {
         assert_eq!(c.run_of(d(2), 0), Some(Run::Running), "the sink restarts with its source");
     }
 }
+
+// ---- persistence (src/persist.rs) -------------------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{Reader, Result, Writer};
+
+    use super::*;
+    use crate::persist::{Persist, invalid, persist_struct};
+
+    impl Persist for PoolKey {
+        fn put(&self, w: &mut Writer) {
+            match *self {
+                PoolKey::Stock(d, g) => {
+                    w.u8(0);
+                    d.put(w);
+                    g.put(w);
+                }
+                PoolKey::Channel(c, g) => {
+                    w.u8(1);
+                    c.put(w);
+                    g.put(w);
+                }
+                PoolKey::Mail(d, i, g) => {
+                    w.u8(2);
+                    d.put(w);
+                    i.put(w);
+                    g.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => PoolKey::Stock(Persist::get(r)?, Persist::get(r)?),
+                1 => PoolKey::Channel(Persist::get(r)?, Persist::get(r)?),
+                2 => PoolKey::Mail(Persist::get(r)?, Persist::get(r)?, Persist::get(r)?),
+                _ => return invalid("pool key"),
+            })
+        }
+    }
+
+    persist_struct!(Books { initial, events, minted, burned, moved_in, moved_out });
+    persist_struct!(Pool { key, level, cap, pushed, books });
+    persist_struct!(Term { pool, flow });
+    persist_struct!(Target { pool, stop_at, restart_at });
+    persist_struct!(Space { owner, weights, fixed, cap });
+
+    impl Persist for Body {
+        fn put(&self, w: &mut Writer) {
+            match self {
+                Body::Box { terms } => {
+                    w.u8(0);
+                    terms.put(w);
+                }
+                Body::Link { from, to, flow, batch } => {
+                    w.u8(1);
+                    from.put(w);
+                    to.put(w);
+                    flow.put(w);
+                    batch.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Body::Box { terms: Persist::get(r)? },
+                1 => Body::Link {
+                    from: Persist::get(r)?,
+                    to: Persist::get(r)?,
+                    flow: Persist::get(r)?,
+                    batch: Persist::get(r)?,
+                },
+                _ => return invalid("process body"),
+            })
+        }
+    }
+
+    impl Persist for Stop {
+        fn put(&self, w: &mut Writer) {
+            match *self {
+                Stop::Disabled => w.u8(0),
+                Stop::InputEmpty(k) => {
+                    w.u8(1);
+                    k.put(w);
+                }
+                Stop::OutputFull(k) => {
+                    w.u8(2);
+                    k.put(w);
+                }
+                Stop::SpaceFull(d) => {
+                    w.u8(3);
+                    d.put(w);
+                }
+                Stop::Target(k) => {
+                    w.u8(4);
+                    k.put(w);
+                }
+                Stop::SourceStopped(d) => {
+                    w.u8(5);
+                    d.put(w);
+                }
+                Stop::Waiting => w.u8(6),
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Stop::Disabled,
+                1 => Stop::InputEmpty(Persist::get(r)?),
+                2 => Stop::OutputFull(Persist::get(r)?),
+                3 => Stop::SpaceFull(Persist::get(r)?),
+                4 => Stop::Target(Persist::get(r)?),
+                5 => Stop::SourceStopped(Persist::get(r)?),
+                6 => Stop::Waiting,
+                _ => return invalid("stop reason"),
+            })
+        }
+    }
+
+    impl Persist for Run {
+        fn put(&self, w: &mut Writer) {
+            match self {
+                Run::Running => w.u8(0),
+                Run::Stopped(s) => {
+                    w.u8(1);
+                    s.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Run::Running,
+                1 => Run::Stopped(Persist::get(r)?),
+                _ => return invalid("run state"),
+            })
+        }
+    }
+
+    persist_struct!(Proc { owner, id, body, targets, requires, enabled, run, latency, armed, ran });
+
+    /// Events are drained after every touch, so a saved cluster has none.
+    impl Persist for Cluster {
+        fn put(&self, w: &mut Writer) {
+            debug_assert!(self.events.is_empty(), "saving a cluster with undrained events");
+            self.pools.put(w);
+            self.procs.put(w);
+            self.spaces.put(w);
+            self.season_boundary.put(w);
+            self.restart_min_run.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(Cluster {
+                pools: Persist::get(r)?,
+                procs: Persist::get(r)?,
+                spaces: Persist::get(r)?,
+                season_boundary: Persist::get(r)?,
+                restart_min_run: Persist::get(r)?,
+                events: Vec::new(),
+                settles: 0,
+            })
+        }
+    }
+}

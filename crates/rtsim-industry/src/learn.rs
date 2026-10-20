@@ -730,3 +730,63 @@ mod tests {
         assert_eq!(targets[0].restart_at, 400);
     }
 }
+
+// ---- persistence (src/persist.rs) -------------------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{Reader, Result, Writer};
+
+    use super::*;
+    use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
+
+    impl Persist for LinkKey {
+        fn put(&self, w: &mut Writer) {
+            match *self {
+                LinkKey::Channel(c, g) => {
+                    w.u8(0);
+                    c.put(w);
+                    g.put(w);
+                }
+                LinkKey::Mail { inventory, address, good } => {
+                    w.u8(1);
+                    inventory.put(w);
+                    address.put(w);
+                    good.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => LinkKey::Channel(Persist::get(r)?, Persist::get(r)?),
+                1 => LinkKey::Mail {
+                    inventory: Persist::get(r)?,
+                    address: Persist::get(r)?,
+                    good: Persist::get(r)?,
+                },
+                _ => return invalid("link key"),
+            })
+        }
+    }
+
+    persist_unit_enum!(WindowEnd, [WindowEnd::Steady, WindowEnd::NotSteady, WindowEnd::Discarded]);
+    persist_struct!(Learned { at, window_ticks, rates, links, confidence, points, longest_gap, latency_ticks });
+    persist_struct!(LearnedTarget { good, stop_at, restart_at });
+    persist_struct!(Stops { last_rise, last_s, stopped, stop_levels, restart_levels });
+    persist_struct!(Point { t, n, l });
+    persist_struct!(Window {
+        start,
+        s0,
+        p0,
+        l0,
+        goods,
+        links,
+        points,
+        last_s,
+        last_change,
+        longest_gap,
+        failed_marks,
+    });
+    // The open window is saved too, so a snapshot is exact; a session start still discards it
+    // (F6), which is the host's call after a real restart.
+    persist_struct!(Learner { window, stops, windows_steady, windows_failed, last_end });
+}

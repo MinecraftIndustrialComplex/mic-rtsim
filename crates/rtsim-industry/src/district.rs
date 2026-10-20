@@ -503,3 +503,174 @@ fn weight(goods: &impl GoodLookup, g: Good) -> i64 {
     let ms = goods.max_stack(g);
     (SLOT_UNITS + ms - 1) / ms
 }
+
+// ---- persistence (src/persist.rs) -------------------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{Reader, Result, Writer};
+
+    use super::*;
+    use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
+
+    persist_struct!(Inventory { decl, chunk, known, known_at, pending, received, doomed, destroyed });
+    persist_unit_enum!(Presence, [Presence::Unloaded, Presence::Partial, Presence::Live]);
+
+    impl Persist for Phase {
+        fn put(&self, w: &mut Writer) {
+            match *self {
+                Phase::Learning => w.u8(0),
+                Phase::Learned => w.u8(1),
+                Phase::Stale => w.u8(2),
+                Phase::NotLearnable(c) => {
+                    w.u8(3);
+                    c.put(w);
+                }
+                Phase::Damaged => w.u8(4),
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Phase::Learning,
+                1 => Phase::Learned,
+                2 => Phase::Stale,
+                3 => Phase::NotLearnable(Persist::get(r)?),
+                4 => Phase::Damaged,
+                _ => return invalid("phase"),
+            })
+        }
+    }
+
+    persist_struct!(Model { learned, targets, rates, links, batches, season });
+    persist_struct!(SimSpan { started, base, season });
+    persist_struct!(PendingChunk { cmd, trim });
+    persist_struct!(ReconcileReport {
+        epoch,
+        at,
+        since,
+        net,
+        chunks,
+        deltas,
+        unplaced,
+        shortfalls,
+        trims,
+        untracked,
+        destroyed,
+        read_only,
+    });
+    persist_struct!(ExchangeRule { unload, load, observed });
+    persist_struct!(SweepBuf { sweep, records, contents, deposits });
+
+    /// `skipped` is one of a few fixed words.
+    const SKIPS: [&str; 3] = ["watched", "cooldown", "read-only phase"];
+
+    impl Persist for AttackReport {
+        fn put(&self, w: &mut Writer) {
+            self.at.put(w);
+            self.source.put(w);
+            self.class.put(w);
+            self.count.put(w);
+            self.outcome.put(w);
+            self.survivors.put(w);
+            self.stolen.put(w);
+            self.destroyed.put(w);
+            self.machine_lost.put(w);
+            let code = self.skipped.map(|s| SKIPS.iter().position(|x| *x == s).map_or(u8::MAX, |i| i as u8));
+            code.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(AttackReport {
+                at: Persist::get(r)?,
+                source: Persist::get(r)?,
+                class: Persist::get(r)?,
+                count: Persist::get(r)?,
+                outcome: Persist::get(r)?,
+                survivors: Persist::get(r)?,
+                stolen: Persist::get(r)?,
+                destroyed: Persist::get(r)?,
+                machine_lost: Persist::get(r)?,
+                skipped: Option::<u8>::get(r)?.map(|c| SKIPS.get(c as usize).copied().unwrap_or("skipped")),
+            })
+        }
+    }
+
+    impl Persist for District {
+        fn put(&self, w: &mut Writer) {
+            self.id.put(w);
+            self.revision.put(w);
+            self.dim.put(w);
+            self.name.put(w);
+            self.not_learnable.put(w);
+            self.chunks.put(w);
+            self.inventories.put(w);
+            self.presence.put(w);
+            self.phase.put(w);
+            self.learner.put(w);
+            self.models.put(w);
+            self.ports.put(w);
+            self.links.put(w);
+            self.sweep.put(w);
+            self.deposits.put(w);
+            self.sim.put(w);
+            self.epoch.put(w);
+            self.pending.put(w);
+            self.pending_ops.put(w);
+            self.round_added.put(w);
+            self.owed.put(w);
+            self.deposit_owed.put(w);
+            self.minted_carried.put(w);
+            self.untracked.put(w);
+            self.loaded_chunks.put(w);
+            self.destroy_pending.put(w);
+            self.reports.put(w);
+            self.attacks.put(w);
+            self.defence.put(w);
+            self.pressure_stamp.put(w);
+            self.stations.put(w);
+            self.exchange.put(w);
+            self.power_source.put(w);
+            self.batches.put(w);
+            self.made_total.put(w);
+            self.last_run.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(District {
+                id: Persist::get(r)?,
+                revision: Persist::get(r)?,
+                dim: Persist::get(r)?,
+                name: Persist::get(r)?,
+                not_learnable: Persist::get(r)?,
+                chunks: Persist::get(r)?,
+                inventories: Persist::get(r)?,
+                presence: Persist::get(r)?,
+                phase: Persist::get(r)?,
+                learner: Persist::get(r)?,
+                models: Persist::get(r)?,
+                ports: Persist::get(r)?,
+                links: Persist::get(r)?,
+                sweep: Persist::get(r)?,
+                deposits: Persist::get(r)?,
+                sim: Persist::get(r)?,
+                epoch: Persist::get(r)?,
+                pending: Persist::get(r)?,
+                pending_ops: Persist::get(r)?,
+                round_added: Persist::get(r)?,
+                owed: Persist::get(r)?,
+                deposit_owed: Persist::get(r)?,
+                minted_carried: Persist::get(r)?,
+                untracked: Persist::get(r)?,
+                loaded_chunks: Persist::get(r)?,
+                destroy_pending: Persist::get(r)?,
+                reports: Persist::get(r)?,
+                attacks: Persist::get(r)?,
+                defence: Persist::get(r)?,
+                pressure_stamp: Persist::get(r)?,
+                stations: Persist::get(r)?,
+                exchange: Persist::get(r)?,
+                power_source: Persist::get(r)?,
+                batches: Persist::get(r)?,
+                made_total: Persist::get(r)?,
+                last_run: Persist::get(r)?,
+            })
+        }
+    }
+}

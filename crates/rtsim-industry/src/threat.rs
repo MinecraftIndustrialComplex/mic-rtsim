@@ -875,3 +875,40 @@ mod tests {
         }
     }
 }
+
+// ---- persistence (src/persist.rs) -------------------------------------------------------------
+
+mod persist_impls {
+    use super::*;
+    use crate::persist::{persist_struct, persist_unit_enum};
+
+    persist_unit_enum!(
+        ThreatClass,
+        [ThreatClass::GroundMelee, ThreatClass::GroundRanged, ThreatClass::Flying, ThreatClass::Siege]
+    );
+    persist_unit_enum!(
+        ThreatSource,
+        [ThreatSource::Natural, ThreatSource::Dragon, ThreatSource::Bandit, ThreatSource::Boss, ThreatSource::Synthetic]
+    );
+    persist_unit_enum!(Law, [Law::Square, Law::Linear]);
+    persist_struct!(Outcome { through, defender, law, survived, lanchester, floor, untested, ammo_used });
+    persist_struct!(Observed { strength, survived });
+    persist_struct!(Pressure { block_ticks, spawns });
+    persist_struct!(SurveyFacts {
+        mob_griefing,
+        perimeter_columns,
+        perimeter_gaps,
+        dark_spawnable,
+        machine_blocks,
+        roofed_machines,
+        kill_machines_at_gaps,
+        turret_strength,
+        guards,
+        ammo_good,
+        ammo_per_engagement,
+    });
+    persist_struct!(ExposedBlockRow { x, y, z, state, flags, inventory });
+    persist_struct!(Defence { survey, exposed, observed, cooldown_until, pressure });
+    persist_struct!(Leg { train, from, to, depart, eta, cargo });
+    persist_struct!(LegIndex { legs, by_cell, next });
+}

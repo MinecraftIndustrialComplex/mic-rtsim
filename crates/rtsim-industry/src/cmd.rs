@@ -165,3 +165,65 @@ impl IndustryOps {
         op.is_engine() && op.0 >> 56 == 0x49
     }
 }
+
+// ---- persistence (src/persist.rs) -------------------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{Reader, Result, Writer};
+
+    use super::*;
+    use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
+
+    persist_struct!(InvDelta { inventory, pos, good, delta });
+    persist_struct!(BlockDestroy { pos, expected_state });
+    persist_struct!(ChunkReconcile { op, district, epoch, chunk, deltas, destroy });
+    persist_unit_enum!(CarriageReason, [CarriageReason::Exchange, CarriageReason::Loot]);
+    persist_struct!(CarriageDelta { op, train, reason, entries });
+    persist_struct!(ChannelDelta { op, channel, goods });
+    persist_struct!(DepositDelta { op, plugin, chunk, good, delta });
+    persist_struct!(WritePackage { op, district, inventory, pos, address, count, goods });
+    persist_struct!(LedgerLine { district, state, freeze, next_breakpoint, next_kind, next_good, since, goods });
+    persist_struct!(IndustryOps { next });
+
+    impl Persist for Cmd {
+        fn put(&self, w: &mut Writer) {
+            match self {
+                Cmd::ChunkReconcile(c) => {
+                    w.u8(0);
+                    c.put(w);
+                }
+                Cmd::CarriageDelta(c) => {
+                    w.u8(1);
+                    c.put(w);
+                }
+                Cmd::ChannelDelta(c) => {
+                    w.u8(2);
+                    c.put(w);
+                }
+                Cmd::DepositDelta(c) => {
+                    w.u8(3);
+                    c.put(w);
+                }
+                Cmd::WritePackage(c) => {
+                    w.u8(4);
+                    c.put(w);
+                }
+                Cmd::Ledger(c) => {
+                    w.u8(5);
+                    c.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Cmd::ChunkReconcile(Persist::get(r)?),
+                1 => Cmd::CarriageDelta(Persist::get(r)?),
+                2 => Cmd::ChannelDelta(Persist::get(r)?),
+                3 => Cmd::DepositDelta(Persist::get(r)?),
+                4 => Cmd::WritePackage(Persist::get(r)?),
+                5 => Cmd::Ledger(Persist::get(r)?),
+                _ => return invalid("command tag"),
+            })
+        }
+    }
+}

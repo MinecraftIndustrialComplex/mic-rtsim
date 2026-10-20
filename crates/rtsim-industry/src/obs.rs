@@ -479,3 +479,44 @@ impl Obs {
         )
     }
 }
+
+// ---- persistence (src/persist.rs) -------------------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{Reader, Result, Writer};
+
+    use super::*;
+    use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
+
+    impl Persist for InvKind {
+        fn put(&self, w: &mut Writer) {
+            self.0.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(InvKind(Persist::get(r)?))
+        }
+    }
+
+    impl Persist for NotLearnable {
+        fn put(&self, w: &mut Writer) {
+            self.code().put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            let c: u32 = Persist::get(r)?;
+            match NotLearnable::from_code(c) {
+                Some(n) => Ok(n),
+                None => invalid("not-learnable code 0"),
+            }
+        }
+    }
+
+    persist_unit_enum!(
+        DepositPluginId,
+        [DepositPluginId::OreExcavation, DepositPluginId::DieselOil, DepositPluginId::DestroyCrude]
+    );
+    persist_struct!(InventoryDecl { district, revision, index, pos, kind, item_slots, fluid_capacity, energy_capacity });
+    persist_struct!(DepositSample { district, good, plugin, chunk, remaining, infinite, sweep });
+    persist_struct!(StationDecl { station, district, dim, pos, name });
+    persist_struct!(Carriage { index, item_slots, fluid_capacity, goods });
+    persist_struct!(Conditions { season, season_count, season_length, season_origin });
+}

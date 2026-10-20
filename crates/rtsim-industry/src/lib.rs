@@ -10,6 +10,7 @@ pub mod fake;
 pub mod ids;
 pub mod learn;
 pub mod obs;
+pub mod persist;
 pub mod reconcile;
 pub mod scenario;
 pub(crate) mod ser;

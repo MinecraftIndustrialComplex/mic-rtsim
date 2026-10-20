@@ -2101,3 +2101,156 @@ fn stop_words(why: Stop, goods: &BTreeMap<Good, GoodInfo>) -> String {
         Stop::Waiting => "waiting to restart".to_string(),
     }
 }
+
+// ---- persistence (src/persist.rs) -------------------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
+    use rtsim_kernel::lazy::Lazy;
+    use rtsim_kernel::page::PageKey;
+
+    use super::*;
+    use crate::persist::{
+        CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE, Persist, from_bytes, persist_struct,
+        persist_unit_enum, to_bytes,
+    };
+
+    persist_unit_enum!(Mode, [Mode::ReadOnly, Mode::Apply]);
+    persist_struct!(LineEdge { trips, cargo, travel_ticks, first, last });
+    persist_struct!(Stats {
+        observations,
+        models_adopted,
+        sims_started,
+        reconciles,
+        chunk_commands,
+        duplicate_results,
+        trims,
+        exchanges,
+        attacks,
+        attacks_skipped,
+        packages_written,
+        breakpoints,
+        cluster_settles,
+    });
+    persist_struct!(Books { minted, burned, stolen, dropped, untracked, shortfall, trimmed });
+    persist_struct!(Station { decl });
+    persist_struct!(ChannelState { known, capacity });
+    persist_struct!(PendingExchange { district, train, entries });
+
+    fn globals(e: &Engine, w: &mut Writer) {
+        e.mode.put(w);
+        e.world_seed.put(w);
+        e.goods.put(w);
+        e.next_cluster.put(w);
+        e.stations.put(w);
+        e.lines.put(w);
+        e.last_departure.put(w);
+        e.arrivals.put(w);
+        e.legs.put(w);
+        e.legs_swept.put(w);
+        e.channels.put(w);
+        e.channel_sims.put(w);
+        e.sinks_of.put(w);
+        e.conditions.put(w);
+        e.pressure.put(w);
+        e.pressure_seq.put(w);
+        e.exchanges.put(w);
+        e.ops.put(w);
+        e.out.put(w);
+        e.now.put(w);
+        e.stats.put(w);
+        e.books.put(w);
+        e.log_enabled.put(w);
+    }
+
+    fn key48(id: u64, what: &str) -> u64 {
+        assert!(id < 1 << 48, "{what} id {id} does not fit a page key (48 bits)");
+        id
+    }
+
+    impl Engine {
+        /// Every page of the engine's state (A16): globals, one per district, one per replay
+        /// cluster with its booked wake. Call between steps; the host puts them in its save batch.
+        /// District ids must fit 48 bits (F36).
+        pub fn snapshot(&self) -> Vec<(PageKey, Vec<u8>)> {
+            let mut out = Vec::with_capacity(1 + self.districts.len() + self.clusters.len());
+            let mut w = Writer::new();
+            globals(self, &mut w);
+            out.push((PageKey::new(GLOBAL_TABLE, 0), w.into_bytes()));
+            for (id, d) in &self.districts {
+                out.push((PageKey::new(DISTRICT_TABLE, key48(id.0, "district")), to_bytes(d)));
+            }
+            for (_, region) in self.clusters.iter() {
+                let mut w = Writer::new();
+                region.cell().model().put(&mut w);
+                region.cell().anchor().put(&mut w);
+                region.wake().put(&mut w);
+                out.push((PageKey::new(CLUSTER_TABLE, key48(region.key(), "cluster")), w.into_bytes()));
+            }
+            out
+        }
+
+        /// The engine a [`Engine::snapshot`] describes. Tunables are configuration, not state.
+        pub fn restore(pages: impl IntoIterator<Item = (PageKey, Vec<u8>)>, tun: Tunables) -> Result<Engine> {
+            let mut global = None;
+            let mut districts = BTreeMap::new();
+            let mut clusters = Vec::new();
+            for (k, bytes) in pages {
+                match k.table() {
+                    GLOBAL_TABLE => global = Some(bytes),
+                    DISTRICT_TABLE => {
+                        let d: District = from_bytes(&bytes)?;
+                        districts.insert(d.id, d);
+                    }
+                    CLUSTER_TABLE => {
+                        let mut r = Reader::new(&bytes);
+                        let model = Cluster::get(&mut r)?;
+                        let anchor = <Tick as Persist>::get(&mut r)?;
+                        let wake = Option::<Tick>::get(&mut r)?;
+                        r.finish()?;
+                        clusters.push((k.id(), model, anchor, wake));
+                    }
+                    _ => {}
+                }
+            }
+            let g = global.ok_or_else(|| CodecError::Invalid("no globals page".into()))?;
+            let mut r = Reader::new(&g);
+            let mode = Mode::get(&mut r)?;
+            let world_seed = u64::get(&mut r)?;
+            let mut e = Engine::new(world_seed, tun, mode, Tick::ZERO);
+            e.goods = Persist::get(&mut r)?;
+            e.next_cluster = Persist::get(&mut r)?;
+            e.stations = Persist::get(&mut r)?;
+            e.lines = Persist::get(&mut r)?;
+            e.last_departure = Persist::get(&mut r)?;
+            e.arrivals = Persist::get(&mut r)?;
+            e.legs = Persist::get(&mut r)?;
+            e.legs_swept = Persist::get(&mut r)?;
+            e.channels = Persist::get(&mut r)?;
+            e.channel_sims = Persist::get(&mut r)?;
+            e.sinks_of = Persist::get(&mut r)?;
+            e.conditions = Persist::get(&mut r)?;
+            e.pressure = Persist::get(&mut r)?;
+            e.pressure_seq = Persist::get(&mut r)?;
+            e.exchanges = Persist::get(&mut r)?;
+            e.ops = Persist::get(&mut r)?;
+            e.out = Persist::get(&mut r)?;
+            e.now = Persist::get(&mut r)?;
+            e.stats = Persist::get(&mut r)?;
+            e.books = Persist::get(&mut r)?;
+            e.log_enabled = Persist::get(&mut r)?;
+            r.finish()?;
+            e.districts = districts;
+            e.clusters = LazyTable::new(world_seed, REPLAY, e.now);
+            clusters.sort_by_key(|c| c.0);
+            for (key, model, anchor, wake) in clusters {
+                let members = model.members();
+                let h = e.clusters.restore(key, Lazy::new(model, anchor), wake);
+                for m in members {
+                    e.cluster_of.insert(m, h);
+                }
+            }
+            Ok(e)
+        }
+    }
+}
