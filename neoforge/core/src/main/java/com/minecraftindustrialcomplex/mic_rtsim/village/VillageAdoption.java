@@ -142,8 +142,14 @@ public final class VillageAdoption {
      */
     public static Village adoptDirect(RtsimSession session, VillageRegistry villages, ResourceKey<Level> dimension,
                                       ResourceLocation structure, String culture, BoundingBox box, BlockPos meeting, long now) {
+        return adoptDirect(session, villages, Obs.villageId(session.dimId(dimension), meeting.getX() >> 4, meeting.getZ() >> 4),
+                dimension, structure, culture, box, meeting, now);
+    }
+
+    /** As above, under a given id (GameTests use ids no structure start can have). */
+    public static Village adoptDirect(RtsimSession session, VillageRegistry villages, long villageId, ResourceKey<Level> dimension,
+                                      ResourceLocation structure, String culture, BoundingBox box, BlockPos meeting, long now) {
         int dim = session.dimId(dimension);
-        long villageId = Obs.villageId(dim, meeting.getX() >> 4, meeting.getZ() >> 4);
         Village existing = villages.get(villageId);
         if (existing != null)
             return existing;

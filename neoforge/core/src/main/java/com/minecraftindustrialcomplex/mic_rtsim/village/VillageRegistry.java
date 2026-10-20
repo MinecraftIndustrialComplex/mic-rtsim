@@ -162,6 +162,18 @@ public final class VillageRegistry extends SavedData {
         return true;
     }
 
+    /** Forgets a village (GameTests clean up after themselves; the engine is not told). */
+    public void remove(long id) {
+        Village v = byId.remove(id);
+        if (v == null)
+            return;
+        Map<Long, List<Village>> cells = index.get(v.dimension);
+        if (cells != null)
+            for (List<Village> list : cells.values())
+                list.remove(v);
+        setDirty();
+    }
+
     private static long cell(int x, int z) {
         return ((long) (x >> CELL_SHIFT) << 32) ^ ((z >> CELL_SHIFT) & 0xFFFF_FFFFL);
     }
@@ -184,7 +196,7 @@ public final class VillageRegistry extends SavedData {
         Village best = null;
         long bestArea = Long.MAX_VALUE;
         for (Village v : list) {
-            if (!v.contains(pos, MARGIN))
+            if (!v.contains(pos, v.margin))
                 continue;
             long area = (long) v.box.getXSpan() * v.box.getZSpan();
             if (area < bestArea) {

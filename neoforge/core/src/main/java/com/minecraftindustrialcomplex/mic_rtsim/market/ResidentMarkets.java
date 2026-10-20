@@ -125,6 +125,12 @@ public final class ResidentMarkets {
      */
     static MerchantOffer rebuilt(MerchantOffer o, Shape s, MarketBook.Offer q, Item currency) {
         int max = o.getMaxUses();
+        if (q == null) {
+            // Refused (no stock, no money, a glut): the counts stay as they were, and it shows crossed out.
+            MerchantOffer n = new MerchantOffer(o.getItemCostA(), o.getItemCostB(), o.getResult().copy(), max, max, o.getXp(), o.getPriceMultiplier(), 0);
+            n.setSpecialPriceDiff(o.getSpecialPriceDiff());
+            return n;
+        }
         long items = q == null ? 1 : q.items(), coins = q == null ? 1 : q.coins();
         long left = q == null ? 0 : q.uses();
         int goodStack = s.good().getDefaultMaxStackSize(), coinStack = currency.getDefaultMaxStackSize();

@@ -35,6 +35,8 @@ public final class Village {
     public final String culture;
     public final long adoptedAt;
     public BoundingBox box;
+    /** How far outside its box the village still counts; {@link VillageRegistry#MARGIN} unless set. */
+    public int margin = VillageRegistry.MARGIN;
     public BlockPos meeting;
     public boolean meetingFromPoi;
     /** The start piece's floor: the level a rigid village's houses stand on. */
@@ -91,6 +93,7 @@ public final class Village {
         t.putLong("meeting", meeting.asLong());
         t.putBoolean("meetingFromPoi", meetingFromPoi);
         t.putInt("baseY", baseY);
+        t.putInt("margin", margin);
         ListTag p = new ListTag();
         for (BoundingBox b : pieces)
             p.add(new net.minecraft.nbt.IntArrayTag(boxArray(b)));
@@ -131,6 +134,8 @@ public final class Village {
                 ResourceLocation.parse(t.getString("structure")), t.getString("culture"), t.getLong("adoptedAt"),
                 box(t.getIntArray("box")), BlockPos.of(t.getLong("meeting")), t.getInt("baseY"));
         v.meetingFromPoi = t.getBoolean("meetingFromPoi");
+        if (t.contains("margin"))
+            v.margin = t.getInt("margin");
         for (Tag p : t.getList("pieces", Tag.TAG_INT_ARRAY))
             v.pieces.add(box(((net.minecraft.nbt.IntArrayTag) p).getAsIntArray()));
         for (Tag h : t.getList("houses", Tag.TAG_COMPOUND)) {
