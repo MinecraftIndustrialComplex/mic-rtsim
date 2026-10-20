@@ -123,6 +123,10 @@ pub struct Java {
     pub ind_commands: Vec<(u64, u64, Cmd)>,
     /// Industry commands read while holding: (cmdSeq, command).
     pub held_ind: Vec<(u64, Cmd)>,
+    /// Answer the next IND_CARRIAGE_DELTA failed (its train gone), after asking for pages that
+    /// stop right before that answer; then `failed_carriage` is (cmdSeq, op id, through).
+    pub fail_next_carriage: bool,
+    pub failed_carriage: Option<(u64, u64, u64)>,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -205,6 +209,8 @@ impl Java {
             ind_cmd_seq: HashMap::new(),
             ind_commands: Vec::new(),
             held_ind: Vec::new(),
+            fail_next_carriage: false,
+            failed_carriage: None,
         }
     }
 
@@ -678,6 +684,17 @@ impl Java {
                 .goods
                 .iter()
                 .for_each(|g| self.check_mirrored(DICT_GOOD, g.0.0)),
+        }
+        if self.fail_next_carriage
+            && let Cmd::CarriageDelta(cd) = &c
+        {
+            self.fail_next_carriage = false;
+            let through = self.next_obs - 1;
+            self.e.request_save(through);
+            self.ind_commands.push((self.next_cmd, seq, c.clone()));
+            self.failed_carriage = Some((seq, cd.op.0, through));
+            self.industry_result(cd.op.0, obs::command_result::FAILED);
+            return;
         }
         self.ind_commands.push((self.next_cmd, seq, c.clone()));
         if let Some(mc) = &mut self.mc {
