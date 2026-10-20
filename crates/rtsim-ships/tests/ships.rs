@@ -735,7 +735,7 @@ fn a_ship_embodied_across_a_docking_gets_its_next_hold() {
         let mut sets = Vec::new();
         let mut t = Tick::ZERO;
         while t < Tick::from_days(3) {
-            if t.0 % 1_000 == 0 {
+            if t.0.is_multiple_of(1_000) {
                 c.ships
                     .observe_player(&mut c.world, PLAYER, Pos::new(0, x, z), t);
             }
