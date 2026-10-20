@@ -68,6 +68,10 @@ pub trait BenchModel: LazyModel + Encode + Clone {
     fn produced(&self) -> i64;
     /// (head count, born, died), or `None` without a herd.
     fn heads(&self) -> Option<(u64, u64, u64)>;
+    /// Model-specific invariants the conservation identity cannot see.
+    fn invariants(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn production(rng: &mut SlotRng) -> Diffuser {
@@ -143,10 +147,36 @@ impl BenchModel for DyadicRegion {
         self.stock.produced
     }
     fn heads(&self) -> Option<(u64, u64, u64)> {
-        // At the anchor's day: deaths are "died", immigrants are "born".
+        // At the anchor's day: deaths are "died", immigrants are "born". The identity
+        // heads + died = initial + born holds by construction here; `invariants` checks what
+        // could actually break.
         let (deaths, immigrants) = self.herd.changes(self.day);
         let total = self.herd.counts(self.day).iter().sum();
         Some((total, immigrants, deaths.iter().sum()))
+    }
+
+    /// Deaths never exceed a cohort or its root total, immigrants never exceed theirs, and both
+    /// only grow with time: checked at the anchor's day against day 0 and one day later.
+    fn invariants(&self) -> Result<(), String> {
+        let h = &self.herd;
+        let (d0, i0) = h.changes(h.born_day);
+        let (d, i) = h.changes(self.day);
+        let (d1, i1) = h.changes(self.day + 1);
+        for c in 0..3 {
+            if d[c] > h.cohorts[c] || d[c] > h.roots[c] || d0[c] > d[c] || d[c] > d1[c] {
+                return Err(format!(
+                    "cohort {c}: deaths {d0:?} -> {d:?} -> {d1:?} of {:?}",
+                    h.cohorts
+                ));
+            }
+        }
+        if i > h.roots[3] || i0 > i || i > i1 {
+            return Err(format!(
+                "immigrants {i0} -> {i} -> {i1} of root {}",
+                h.roots[3]
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -297,12 +327,14 @@ impl<M: BenchModel> World<M> {
         while self.now < end {
             self.now += 1;
             let now = self.now;
-            while let Some((at, ev)) = self.traffic.pop_until(now) {
-                self.handle(at, ev);
-            }
+            // Breakpoints first: reads and events at `now` must come after them (lazy.rs, "Order
+            // within a step").
             while let Some((at, h)) = self.table.next_due(now) {
                 // No synthetic model books breakpoints; a real module would act here.
                 self.table.apply(h, at, |_, _| ());
+            }
+            while let Some((at, ev)) = self.traffic.pop_until(now) {
+                self.handle(at, ev);
             }
             if now.0.is_multiple_of(OBSERVE_EVERY) {
                 self.observe(now);
@@ -317,6 +349,8 @@ impl<M: BenchModel> World<M> {
         let (mut heads, mut born, mut died) = (0u64, 0u64, 0u64);
         for (_, r) in self.table.iter() {
             let m = r.cell().model();
+            m.invariants()
+                .map_err(|e| format!("region {}: {e}", r.key()))?;
             grain += m.grain_now();
             produced += m.produced();
             if let Some((h, b, d)) = m.heads() {
@@ -347,6 +381,8 @@ impl<M: BenchModel> World<M> {
         for i in lo..hi {
             let r = self.table.get(self.ids[i as usize]).expect("live region");
             w.var_u64(r.cell().anchor().0);
+            // The booked wake is state (lazy.rs, "Wakes are state"): 0 for none, else tick + 1.
+            w.var_u64(r.wake().map_or(0, |t| t.0 + 1));
             r.cell().model().encode(&mut w);
         }
         w.into_bytes()

@@ -31,6 +31,20 @@
 //! Reads never reschedule a breakpoint. If they did, a read would move the next wake, and the
 //! trajectory would depend on who looked when. Breakpoints are recomputed only after an event, a
 //! breakpoint, or insertion, all of which happen at times that do not depend on reads.
+//!
+//! # Order within a step
+//!
+//! A [`LazyTable`] caller must drain [`LazyTable::next_due`] up to `t` before it reads a region or
+//! applies an event at `t`. Otherwise an event can supersede a breakpoint that was due first (its
+//! crossing is never delivered), or a read can commit slots past a breakpoint that then fires
+//! against the later state. Debug builds assert the order.
+//!
+//! # Wakes are state
+//!
+//! The time a region's next wake was booked for is saved with the region and restored as is
+//! ([`LazyTable::restore`]), never recomputed on load: a random model's breakpoint estimate depends
+//! on its anchor, and reads move anchors, so a recomputed wake would depend on who read before the
+//! save.
 
 use crate::clock::{SlotPeriod, Tick};
 use crate::handle::{Arena, Handle};
@@ -115,16 +129,22 @@ impl<M: LazyModel> Lazy<M> {
         }
     }
 
-    /// Catches up, then projects to `at`.
+    /// Catches up, then projects to `at`. Reading before the anchor is a caller bug (debug builds
+    /// assert); release builds project to the anchor instead of underflowing.
     pub fn read(&mut self, at: Tick, key: StreamKey) -> M::View {
+        debug_assert!(
+            at >= self.anchor,
+            "read at {at:?} before the anchor {:?}",
+            self.anchor
+        );
         self.catch_up(at, key);
-        self.model.view(self.anchor, at)
+        self.model.view(self.anchor, at.max(self.anchor))
     }
 
     /// The view at `at` from the stored state alone. Only valid while no slot boundary lies
     /// between the anchor and `at`; use it for "what does the page say" checks.
     pub fn view_without_catch_up(&self, at: Tick) -> M::View {
-        self.model.view(self.anchor, at)
+        self.model.view(self.anchor, at.max(self.anchor))
     }
 
     /// Delivers an event at `at`: catches up, settles to `at` (re-anchoring there), then lets `f`
@@ -136,6 +156,11 @@ impl<M: LazyModel> Lazy<M> {
     }
 
     fn settle_to(&mut self, at: Tick) {
+        debug_assert!(
+            at >= self.anchor,
+            "event at {at:?} before the anchor {:?}",
+            self.anchor
+        );
         if at > self.anchor {
             self.model.settle(self.anchor, at);
             self.anchor = at;
@@ -151,6 +176,8 @@ pub struct Region<M> {
     key: u64,
     /// Bumped whenever the breakpoint is rescheduled; a wake with an older stamp is stale.
     stamp: u32,
+    /// When the live wake was booked for: saved with the region (see the module docs).
+    wake: Option<Tick>,
     /// Last read or event, for eviction by recency (SCALE.md §8).
     touched: Tick,
 }
@@ -166,6 +193,11 @@ impl<M> Region<M> {
 
     pub fn cell(&self) -> &Lazy<M> {
         &self.cell
+    }
+
+    /// The booked wake, to save with the region.
+    pub fn wake(&self) -> Option<Tick> {
+        self.wake
     }
 }
 
@@ -236,19 +268,38 @@ impl<M: LazyModel> LazyTable<M> {
     }
 
     pub fn insert(&mut self, key: u64, model: M, at: Tick) -> RegionId<M> {
-        self.restore(key, Lazy::new(model, at))
+        let h = self.rows.insert(Region {
+            cell: Lazy::new(model, at),
+            key,
+            stamp: 0,
+            wake: None,
+            touched: at,
+        });
+        self.reschedule(h);
+        h
     }
 
-    /// Re-inserts a cell loaded from a page, keeping its anchor.
-    pub fn restore(&mut self, key: u64, cell: Lazy<M>) -> RegionId<M> {
+    /// Re-inserts a cell loaded from a page with the wake it had booked ([`Region::wake`]), as is.
+    /// A wake already past fires at once, late.
+    pub fn restore(&mut self, key: u64, cell: Lazy<M>, wake: Option<Tick>) -> RegionId<M> {
         let touched = cell.anchor();
         let h = self.rows.insert(Region {
             cell,
             key,
             stamp: 0,
+            wake,
             touched,
         });
-        self.reschedule(h);
+        if let Some(at) = wake {
+            let at = at.max(self.wheel.now());
+            self.wheel.schedule(
+                at,
+                Wake {
+                    region: h,
+                    stamp: 0,
+                },
+            );
+        }
         h
     }
 
@@ -270,7 +321,8 @@ impl<M: LazyModel> LazyTable<M> {
         };
         row.stamp = row.stamp.wrapping_add(1);
         let anchor = row.cell.anchor();
-        if let Some(at) = row.cell.model().next_breakpoint(anchor) {
+        row.wake = row.cell.model().next_breakpoint(anchor);
+        if let Some(at) = row.wake {
             debug_assert!(at > anchor, "breakpoint {at:?} not after anchor {anchor:?}");
             let stamp = row.stamp;
             self.wheel
@@ -278,14 +330,24 @@ impl<M: LazyModel> LazyTable<M> {
         }
     }
 
-    /// A read: catch up, then project. `None` if the handle is stale.
+    /// A read: catch up, then project. `None` if the handle is stale. Drain
+    /// [`LazyTable::next_due`] up to `at` first (module docs).
     pub fn read(&mut self, h: RegionId<M>, at: Tick) -> Option<M::View> {
+        debug_assert!(
+            at <= self.wheel.now(),
+            "read at {at:?} before next_due was drained to it (wheel at {:?})",
+            self.wheel.now()
+        );
         let key = self.stream(self.rows.get(h)?.key);
         let row = self.rows.get_mut(h)?;
         row.touched = row.touched.max(at);
         self.stats.reads += 1;
         self.stats.slot_commits += row.cell.catch_up(at, key);
-        Some(row.cell.model.view(row.cell.anchor, at))
+        Some(
+            row.cell
+                .model
+                .view(row.cell.anchor, at.max(row.cell.anchor)),
+        )
     }
 
     /// What systems call: a question answered from the region's view, whatever level holds the
@@ -297,13 +359,19 @@ impl<M: LazyModel> LazyTable<M> {
         self.read(h, at).map(|v| v.answer(q))
     }
 
-    /// An event at `at`: catch up, settle to `at`, apply `f`, and reschedule the breakpoint.
+    /// An event at `at`: catch up, settle to `at`, apply `f`, and reschedule the breakpoint. Drain
+    /// [`LazyTable::next_due`] up to `at` first (module docs).
     pub fn apply<R>(
         &mut self,
         h: RegionId<M>,
         at: Tick,
         f: impl FnOnce(&mut M, Tick) -> R,
     ) -> Option<R> {
+        debug_assert!(
+            at <= self.wheel.now(),
+            "event at {at:?} before next_due was drained to it (wheel at {:?})",
+            self.wheel.now()
+        );
         let key = self.stream(self.rows.get(h)?.key);
         let row = self.rows.get_mut(h)?;
         row.touched = row.touched.max(at);

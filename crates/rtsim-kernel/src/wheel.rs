@@ -166,8 +166,12 @@ impl<T> TimingWheel<T> {
     }
 
     /// Pops the next entry due at or before `limit`, in (time, schedule order). When nothing more
-    /// is due, `now` moves to `limit` (it never moves back) and this returns `None`.
+    /// is due, `now` moves to `limit` (it never moves back) and this returns `None`. A `limit`
+    /// before `now` pops nothing: everything left is due at `now` or later.
     pub fn pop_until(&mut self, limit: Tick) -> Option<(Tick, T)> {
+        if limit.0 < self.now {
+            return None;
+        }
         loop {
             if let Some(e) = self.ready.pop_front() {
                 self.len -= 1;
@@ -266,6 +270,15 @@ mod tests {
         assert_eq!(w.pop_until(Tick(10)), Some((Tick(10), 2)));
         assert_eq!(w.pop_until(Tick(10)), Some((Tick(10), 3)));
         assert_eq!(w.pop_until(Tick(10)), None);
+    }
+
+    #[test]
+    fn a_limit_in_the_past_pops_nothing() {
+        let mut w = TimingWheel::new(Tick(100));
+        w.schedule(Tick(100), 'a');
+        assert_eq!(w.pop_until(Tick(50)), None);
+        assert_eq!(w.now(), Tick(100));
+        assert_eq!(w.pop_until(Tick(100)), Some((Tick(100), 'a')));
     }
 
     #[test]

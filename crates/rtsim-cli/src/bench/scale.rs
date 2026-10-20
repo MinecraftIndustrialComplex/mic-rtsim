@@ -73,6 +73,9 @@ pub struct Measured {
     pub slot_commits: u64,
     pub caravans: u64,
     pub conservation: String,
+    /// Invariants this run broke: conservation, model invariants, the eager bound on slot
+    /// commits. Any entry fails `--check`.
+    pub failures: Vec<String>,
     pub state_hash: Option<u32>,
 }
 
@@ -118,8 +121,15 @@ pub struct Contract {
     pub declared: f64,
     /// What SCALE.md §10 asks for.
     pub scale_md: f64,
+    /// For flat contracts: the most the metric may vary across the sweep (max / min). A slope of
+    /// 0.1 alone would allow a 6.3x rise over eight decades.
+    pub max_ratio: Option<f64>,
     pub note: String,
 }
+
+/// The max / min bound on flat contracts. PLACEHOLDER: the latent sweep's CPU varies about 3x
+/// where the binomial sampler moves from inversion to BTRS (bench/results/README.md).
+const FLAT_RATIO: f64 = 4.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sweep {
@@ -206,11 +216,13 @@ impl Baseline {
     }
 }
 
+/// A contract; ones that declare flat growth (slope 0.15 or less) also get the ratio bound.
 fn contract(metric: Metric, declared: f64, scale_md: f64, note: &str) -> Contract {
     Contract {
         metric,
         declared,
         scale_md,
+        max_ratio: (declared <= 0.15).then_some(FLAT_RATIO),
         note: note.to_string(),
     }
 }
@@ -498,6 +510,19 @@ fn run_world<M: BenchModel>(c: &WorldConfig) -> Measured {
         Err(e) => e,
     };
 
+    let mut failures = Vec::new();
+    if conservation != "ok" {
+        failures.push(format!("conservation: {conservation}"));
+    }
+    // No region can commit more slots than have elapsed since tick 0: the eager bound.
+    let eager = c.regions * (c.warmup_days + c.days + 1);
+    if stats.slot_commits > eager {
+        failures.push(format!(
+            "{} slot commits exceed the eager bound {eager}",
+            stats.slot_commits
+        ));
+    }
+
     let (dir, mut store) = scratch_store("world");
     let t = Instant::now();
     let full = w.save_full(&mut store);
@@ -529,6 +554,7 @@ fn run_world<M: BenchModel>(c: &WorldConfig) -> Measured {
         slot_commits: stats.slot_commits,
         caravans: (w.departures - dep0) + (w.arrivals - arr0),
         conservation,
+        failures,
         state_hash: Some(w.state_hash()),
         ..Measured::default()
     }
@@ -554,6 +580,8 @@ fn run_catch_up<M: BenchModel>(c: &CatchUpConfig) -> Measured {
         .collect();
     // Read at a mid-day tick, so the read also projects past the last boundary.
     let at = Tick::from_days(c.elapsed_days) + TICKS_PER_DAY / 2;
+    // Drain breakpoints first, as a step would (none are booked here), outside the timed window.
+    while table.next_due(at).is_some() {}
     let (cpu0, wall0) = (sys::thread_cpu_ns(), Instant::now());
     for &h in &ids {
         std::hint::black_box(table.read(h, at));
@@ -601,6 +629,9 @@ pub struct Slope {
     pub measured: Option<f64>,
     pub declared: f64,
     pub scale_md: f64,
+    /// Max / min of the metric across the sweep.
+    pub ratio: Option<f64>,
+    pub max_ratio: Option<f64>,
     pub pass: bool,
     pub note: String,
 }
@@ -644,6 +675,17 @@ fn run_child(spec: &Spec) -> Result<Measured, String> {
 /// that cannot measure must not pass silently.
 pub fn within(measured: Option<f64>, declared: f64) -> bool {
     measured.is_some_and(|m| m <= declared)
+}
+
+/// Max / min of the positive metric values.
+pub fn spread(points: &[(f64, f64)]) -> Option<f64> {
+    let ys: Vec<f64> = points.iter().map(|p| p.1).filter(|y| *y > 0.0).collect();
+    if ys.len() < 2 {
+        return None;
+    }
+    let max = ys.iter().copied().fold(f64::MIN, f64::max);
+    let min = ys.iter().copied().fold(f64::MAX, f64::min);
+    Some(max / min)
 }
 
 /// Least-squares slope of log10(y) on log10(x).
@@ -799,6 +841,12 @@ pub fn run(opts: Options) -> i32 {
                 .filter_map(|r| c.metric.of(&r.measured).map(|y| (r.value as f64, y)))
                 .collect();
             let measured = log_slope(&points);
+            let ratio = spread(&points);
+            let ratio_ok = match (c.max_ratio, ratio) {
+                (Some(max), Some(r)) => r <= max,
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
             slopes.push(Slope {
                 sweep: s.name.clone(),
                 model: s.model,
@@ -806,7 +854,9 @@ pub fn run(opts: Options) -> i32 {
                 measured,
                 declared: c.declared,
                 scale_md: c.scale_md,
-                pass: within(measured, c.declared),
+                ratio,
+                max_ratio: c.max_ratio,
+                pass: within(measured, c.declared) && ratio_ok,
                 note: c.note.clone(),
             });
         }
@@ -847,19 +897,36 @@ pub fn run(opts: Options) -> i32 {
         }
     }
     let failed: Vec<&Slope> = report.slopes.iter().filter(|s| !s.pass).collect();
-    if opts.check && !failed.is_empty() {
+    let broken: Vec<&Run> = report
+        .runs
+        .iter()
+        .filter(|r| !r.measured.failures.is_empty())
+        .collect();
+    for r in &broken {
         eprintln!(
-            "scale check FAILED: {} slope(s) over their declared contract",
-            failed.len()
+            "invariant broken in {} {:?} = {}: {}",
+            r.sweep,
+            r.model,
+            r.value,
+            r.measured.failures.join("; ")
+        );
+    }
+    if opts.check && (!failed.is_empty() || !broken.is_empty()) {
+        eprintln!(
+            "scale check FAILED: {} contract(s) exceeded, {} run(s) broke an invariant",
+            failed.len(),
+            broken.len()
         );
         for f in failed {
             eprintln!(
-                "  {} {:?} {:?}: measured {} > declared {}",
+                "  {} {:?} {:?}: slope {} (declared {}), max/min {} (bound {})",
                 f.sweep,
                 f.model,
                 f.metric,
                 opt(f.measured, 1.0, 3),
-                f.declared
+                f.declared,
+                opt(f.ratio, 1.0, 2),
+                f.max_ratio.map_or("-".into(), |m| format!("{m}"))
             );
         }
         return 1;
@@ -924,19 +991,21 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
     }
     println!();
     println!(
-        "{:<8} {:<6} {:<8} {:>9} {:>9} {:>9}  verdict",
-        "sweep", "model", "metric", "slope", "declared", "SCALE.md"
+        "{:<8} {:<6} {:<8} {:>9} {:>9} {:>9} {:>8} {:>6}  verdict",
+        "sweep", "model", "metric", "slope", "declared", "SCALE.md", "max/min", "bound"
     );
     for s in slopes {
         let over_scale = s.declared > s.scale_md + 0.15;
         println!(
-            "{:<8} {:<6} {:<8} {:>9} {:>9.2} {:>9.2}  {}{}",
+            "{:<8} {:<6} {:<8} {:>9} {:>9.2} {:>9.2} {:>8} {:>6}  {}{}",
             s.sweep,
             format!("{:?}", s.model).to_lowercase(),
             format!("{:?}", s.metric).to_lowercase(),
             opt(s.measured, 1.0, 3),
             s.declared,
             s.scale_md,
+            opt(s.ratio, 1.0, 2),
+            s.max_ratio.map_or("-".into(), |m| format!("{m:.1}")),
             if s.pass { "ok" } else { "FAIL" },
             if over_scale {
                 "  (declared above SCALE.md; see note)"
@@ -971,6 +1040,12 @@ mod tests {
     }
 
     #[test]
+    fn spread_is_max_over_min() {
+        assert_eq!(spread(&[(1.0, 2.0), (10.0, 8.0), (100.0, 4.0)]), Some(4.0));
+        assert_eq!(spread(&[(1.0, 2.0)]), None);
+    }
+
+    #[test]
     fn civil_dates() {
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(20_381), (2025, 10, 20));
@@ -979,7 +1054,7 @@ mod tests {
 
     #[test]
     fn small_worlds_conserve() {
-        for model in [ModelKind::Herd, ModelKind::Closed] {
+        for model in [ModelKind::Herd, ModelKind::Closed, ModelKind::Dyadic] {
             let spec = Spec::World(WorldConfig {
                 model,
                 regions: 50,
@@ -993,6 +1068,7 @@ mod tests {
             });
             let a = run_one(&spec);
             assert_eq!(a.conservation, "ok");
+            assert!(a.failures.is_empty(), "{:?}", a.failures);
             assert!(a.caravans > 0 && a.reads > 0);
             assert!(a.save_full_bytes.unwrap() > 0 && a.save_incremental_pages.unwrap() > 0);
             // Same spec, same world.
