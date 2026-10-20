@@ -298,11 +298,10 @@ it, every individual sits in one relevance band, which decides scheduling order:
 | **F: Far** | notable individuals elsewhere: a robbed caravan, a dragon, a ship | scheduled legs on coarse graphs, closed-form position | individual or group |
 | **Abstract** | unobserved traffic and populations | flows on edges (A13), lazy regions (A15) | flow, field, aggregate, strategic |
 
-- **Promotion** happens when relevance rises: a player approaches, an event involves the thing, or it
-  becomes notable. **Demotion** waits a little, so edge-walking does not thrash.
-- **Quantities are conserved** across moves (`fold` and `sample`, SCALE.md §2).
-- **Entry and exit rates must match** (Sunshine-Hill and Badler 2010). Otherwise a road looks full on
-  arrival and then empties.
+- **Promotion** follows rising relevance (a player approaches, an event, notability); **demotion** waits
+  a little so edge-walking does not thrash. Quantities are conserved (`fold`, `sample`, SCALE.md §2).
+- **Entry and exit rates must match** (Sunshine-Hill and Badler 2010), or a road looks full on arrival
+  and then empties.
 
 ### 4.3 Time: events, closed forms and scheduled encounters
 
@@ -501,10 +500,9 @@ can listen to NeoForge events natively (UNVERIFIED for KubeJS 2101), so no KubeJ
 
 ### 5.5 Agent AI
 
-- **Decisions happen at decision points:** a leg ends, an interrupt fires, a schedule fires. Never per
-  tick.
-- **At a decision point** the agent scores a short list of plans with data-defined utility curves,
-  commits to the best, and the plan's first leg schedules the next event.
+- **Decisions happen at decision points** (a leg ends, an interrupt, a schedule), never per tick. The
+  agent scores a few plans with data-defined utility curves, commits, and the first leg schedules the
+  next event.
 - **Veloren's brain library is worth copying** (`ai/mod.rs`): actions that return Continue or Break; the
   combinators `then`, `repeat`, `stop_if`, `interrupt_with`, `when_cancelled`; and `choose` at three
   priorities (urgent 100, important 50, casual 0). Only a strictly higher priority replaces the running
@@ -518,14 +516,13 @@ can listen to NeoForge events natively (UNVERIFIED for KubeJS 2101), so no KubeJ
 - **A report is a fact:** who did what to whom, where, when, how severe. Never an opinion. It expires by
   kind. Veloren keeps only Death and Theft reports, with lifetimes of 15 in-game days (murder), 5 (other
   deaths) and 1.5 (theft) (`data/report.rs:32-47`).
-- **Witnesses** are bodies within a data-defined radius, plus a settlement's own awareness of events
-  inside it.
-- **Sentiment** is bounded, and decays faster for weak feelings than strong ones, as in Veloren
-  (`sentiment.rs:53-75`). Settlements and caravan owners keep sentiment per actor. Players are actors.
+- **Witnesses** are bodies within a data-defined radius, plus a settlement's awareness of events in it.
+  **Sentiment** is bounded and decays faster for weak feelings than strong ones, as in Veloren
+  (`sentiment.rs:53-75`). Settlements and caravan owners keep sentiment per actor; players are actors.
 - **Gossip moves physically.** Reports travel with caravans, bands and later ships. A village nobody
   trades with learns nothing. Veloren pushes reports into inboxes and syncs every tick; we gossip only
   what changed, and only when a carrier arrives.
-- **Caps** follow §4.8. Veloren has no cap on reports at all; we do.
+- **Caps** follow §4.8; Veloren caps no reports at all.
 
 ## 6. The Minecraft bridge
 
@@ -800,15 +797,13 @@ way (`overrideOffers`, `restock`) is **Proposal P23 (Ben)**.
 
 ### 8.8 Ribbits: four behaviours (C7)
 
-**1. Merchant caravans.**
-- Ribbit merchants travel between ribbit villages, and to human villages at border markets.
-- They price in amethyst. Their offers are set with `overrideOffers` from their cargo.
+**1. Merchant caravans.** Ribbit merchants travel between ribbit villages, and to human villages at
+border markets. They price in amethyst; `overrideOffers` sets their offers from their cargo.
 
 **2. Touring bands.**
-- A band is a small group of ribbits with instruments in their `RibbitData`, one of them the master.
-- It tours a circuit of ribbit villages as a flow. When it stops, it plays through
-  `RibbitPlayMusicGoal` around its `masterRibbit`. How the goal picks its master is UNVERIFIED, so the
-  plugin may need to steer it.
+- A band is a small group of ribbits with instruments in their `RibbitData`, one of them the master. It
+  tours ribbit villages as a flow and, when it stops, plays through `RibbitPlayMusicGoal` around its
+  `masterRibbit`. How the goal picks its master is UNVERIFIED, so the plugin may need to steer it.
 - What a band does in the sim is **Proposal P16 (Ben)**.
 
 **3. Sorcerers who remember.**

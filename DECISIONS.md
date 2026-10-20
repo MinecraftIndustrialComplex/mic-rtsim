@@ -90,5 +90,5 @@ These are in PLAN.md but not decided. Each one goes to Ben before work depends o
 | P7 | A patch ledger plus contract tests for every reach into another mod. | phase 0 |
 | P8 | Which mods supply bodies, structures and ports for later phases. Survey candidates (2026-10-19): Small Ships and Create Aeronautics Structures (ships), the Alex's Caves port (kaiju), Goblin's Tyranny (goblins), Illager Invasion (raiders), Naturalist (herds). D7 rules out player-like NPCs. | each later phase |
 | P9 | Economy details left open by C13: the tunables r, T and k; a Numismatics mint rule (later). | phase 1 design gate |
-| P11 | How Create schematics and the Schematicannon fit rebuilding: whether the sim records a schematic snapshot per district. Ben chose "Decide later". | industry threats |
+| I1 | How Create schematics and the Schematicannon fit rebuilding: whether the sim records a schematic snapshot per district. Ben chose "Decide later". | industry threats |
 | P10 | The fixes from the 2026-10-19 adversarial review that change the design, listed in PLAN.md. | phase 0 |
