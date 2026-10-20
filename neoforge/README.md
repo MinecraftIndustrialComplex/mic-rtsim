@@ -16,13 +16,13 @@ per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.2
 | `endertransmission` | `mic_rtsim_endertransmission` | Create Ender Transmission 2.1.1 | a channel's endpoints (items, fluids, rotation) are one district (I13 as corrected: a stop-gap for tightly linked machinery); a channel into another dimension is a ledger warning |
 | `powergrid` | `mic_rtsim_powergrid` | Create Power Grid 0.6.2 (with Architectury) | batteries as stock, transmission lines between districts as measured power links (I13, IND_POWER_LINK) |
 | `destroy` | `mic_rtsim_destroy` | Destroy 0.4.1 (with Petrolpark 1.5.11) | pollution attributed to districts by position and written back (I14), chunk crude oil as a finite deposit (I11) |
-| `climate` | `mic_rtsim_climate` | mic_climate 0.1.0, Serene Seasons 10.1.0.3, Thermoo 4.8.1 | IND_CONDITIONS from Serene Seasons' calendar, mic-climate's temperature (I12) |
+| `climate` | `mic_rtsim_climate` | mic_climate 0.1.0, Serene Seasons 10.1.0.3, Thermoo 4.8.1 | IND_CONDITIONS from Serene Seasons' calendar, mic-climate's temperature (I12); the habitat sampler's climate source (X2-7) |
 | `radar` | `mic_rtsim_radar` | Create Radars 0.4.9.4, Create Big Cannons 5.11.7 | radar-driven auto-turrets with rounds for the defence survey (I21) |
 
 The plugins compile against the pack's own jars, read from `packMods` in `gradle.properties` (the MIC
 smoke server's mods folder next to this repository; `-PpackMods=...` to point elsewhere), and their
 GameTest servers load those jars. Every reach into another mod is in `../PATCHES.md`. The industry plugins
-(`oreexcavation` to `radar`) share `plugin.gradle`; their choices are Q1 to Q25 in `docs/overnight-choices-indplugins.md`.
+(`oreexcavation` to `radar`) share `plugin.gradle`; their choices are Q1 to Q26 in `docs/overnight-choices-indplugins.md`.
 
 The core depends on no pack mod (D4): only NeoForge and `mic_native`, MIC's own native host, whose
 plugin the engine is. The engine is `NativeEngine`, the Rust engine (crates/rtsim-jni) through JNI,

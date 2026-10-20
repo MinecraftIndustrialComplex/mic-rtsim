@@ -66,6 +66,11 @@ public final class ClimateGameTests {
                     record("conditionsComeFromSereneSeasons", "after the move to mid-summer", "origin " + last.getLong(IndRecords.Conditions.SEASON_ORIGIN)
                             + ", temperature " + t + " C (mic-climate " + mc + ")");
                     check("the temperature is mic-climate's", t == mc);
+                    // The habitat sampler's climate is the same source (choice X2-7).
+                    long[] hs = com.minecraftindustrialcomplex.mic_rtsim.habitat.Climates.season(helper.getLevel().getServer());
+                    check("the habitat sampler's season: " + java.util.Arrays.toString(hs), hs != null && hs[0] == 1 && hs[1] == 4);
+                    float ht = com.minecraftindustrialcomplex.mic_rtsim.habitat.Climates.temperature(helper.getLevel(), p);
+                    check("the habitat sampler's temperature: " + ht, ht == mc);
                 })
                 .thenSucceed();
     }

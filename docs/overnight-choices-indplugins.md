@@ -193,6 +193,8 @@ otherwise).
 - **Q20.** Temperature: the plugin hook and `Conditions.celsius` give mic-climate's ambient temperature in
   degrees Celsius (`Climate.celsius`), but nothing sends it: IND_CONDITIONS has no temperature field, and
   temperature is per position. A per-district latest-wins record is the proposal (see the end).
+- **Q26.** The climate plugin is also the habitat sampler's `ClimateSource` (the world model's choice
+  X2-7 gave it the same two methods): one class answers IND_CONDITIONS and HABITAT's season and degrees.
 
 ## Findings for Ben
 

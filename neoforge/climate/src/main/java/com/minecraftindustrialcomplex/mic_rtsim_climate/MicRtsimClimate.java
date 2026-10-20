@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_climate;
 
+import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -14,6 +15,8 @@ public final class MicRtsimClimate {
     public static final String MODID = "mic_rtsim_climate";
 
     public MicRtsimClimate(IEventBus modBus, ModContainer container) {
-        IndustryApi.register(new ClimatePlugin());
+        ClimatePlugin climate = new ClimatePlugin();
+        IndustryApi.register(climate);
+        RtsimApi.registerClimate(climate); // the habitat sampler's climate too (choice X2-7)
     }
 }

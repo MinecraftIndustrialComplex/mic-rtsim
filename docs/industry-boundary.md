@@ -275,7 +275,7 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
 Written overnight in the core's `industry` package and the Create plugin `mic_rtsim_create`
 (`neoforge/`); choices H1 to H32 in `docs/overnight-choices-industrymc.md`. The industry plugins (Ore
 Excavation, Diesel Generators, Ender Transmission, PowerGrid, Destroy, climate, radar) and the threat
-sampler followed the same day; choices Q1 to Q25 in `docs/overnight-choices-indplugins.md`. The Java
+sampler followed the same day; choices Q1 to Q26 in `docs/overnight-choices-indplugins.md`. The Java
 constants are `IndRecords.java`, which mirrors wire.rs field for field (the contract test pins every
 record below against wire.rs fixtures).
 

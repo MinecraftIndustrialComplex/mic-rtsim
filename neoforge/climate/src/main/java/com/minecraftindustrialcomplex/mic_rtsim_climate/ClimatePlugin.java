@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_climate;
 
 import com.minecraftindustrialcomplex.mic_climate.Climate;
+import com.minecraftindustrialcomplex.mic_rtsim.api.ClimateSource;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
@@ -10,7 +11,8 @@ import sereneseasons.api.season.ISeasonState;
 import sereneseasons.api.season.SeasonHelper;
 
 /**
- * Seasons and temperature (I12, F28) from mic-climate's sources.
+ * Seasons and temperature (I12, F28) from mic-climate's sources, for the industry engine
+ * (IND_CONDITIONS) and the habitat sampler (a {@link ClimateSource}, docs/boundary.md §10).
  *
  * <ul>
  *   <li><b>Season:</b> Serene Seasons' cycle, the one mic-climate's {@code YearClock} reads (its cycle is
@@ -21,7 +23,12 @@ import sereneseasons.api.season.SeasonHelper;
  *       temperature in degrees Celsius (Deep Time, Project Atmosphere, Thermoo).</li>
  * </ul>
  */
-public final class ClimatePlugin implements IndustryPlugin {
+public final class ClimatePlugin implements IndustryPlugin, ClimateSource {
+
+    @Override
+    public String name() {
+        return "mic_climate and Serene Seasons";
+    }
 
     private static final boolean SEASONS = ModList.get().isLoaded("sereneseasons");
 
