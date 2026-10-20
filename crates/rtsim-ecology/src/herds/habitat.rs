@@ -21,7 +21,7 @@ use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_space::habitat::{CELL_BLOCKS as HABITAT_CELL, REGION_BLOCKS};
 use rtsim_space::{Area, RegionKey, WorldHandle, WorldModel};
 
-use super::climate::{Climate, ForageRates};
+use super::climate::{Climate, ForageRates, Uniform};
 use super::engine::NewHerd;
 use super::forage::{CELL_BLOCKS, centre_of};
 use super::species::HerdSpecies;
@@ -81,6 +81,9 @@ impl Default for HabitatTunables {
 pub struct HabitatClimate {
     pub world: WorldHandle,
     pub tun: HabitatTunables,
+    /// In a frame the world model knows nothing of, answer as the uniform grassland (Y3): herds
+    /// founded there by an order (tests, tools) behave as before the world model (X2-6).
+    pub uniform_unknown_frames: bool,
 }
 
 impl HabitatClimate {
@@ -88,14 +91,20 @@ impl HabitatClimate {
         HabitatClimate {
             world,
             tun: HabitatTunables::default(),
+            uniform_unknown_frames: true,
         }
     }
 
-    fn area(&self, frame: u16, cx: i32, cz: i32) -> (Area, f32) {
-        let w = self.world.read();
+    /// Whether `frame` answers as the uniform grassland.
+    fn uniform(&self, frame: u16) -> bool {
+        self.uniform_unknown_frames && !self.world.read().knows_frame(frame)
+    }
+
+    fn area(&self, frame: u16, cx: i32, cz: i32) -> Area {
         let (x0, z0) = (cx * CELL_BLOCKS, cz * CELL_BLOCKS);
-        let a = w.area(frame, x0, z0, x0 + CELL_BLOCKS, z0 + CELL_BLOCKS);
-        (a, 0.0)
+        self.world
+            .read()
+            .area(frame, x0, z0, x0 + CELL_BLOCKS, z0 + CELL_BLOCKS)
     }
 
     /// Growth's share of full at `t` °C.
@@ -132,7 +141,10 @@ impl HabitatClimate {
 
 impl Climate for HabitatClimate {
     fn forage(&self, frame: u16, cx: i32, cz: i32, sub: u32) -> ForageRates {
-        let (a, _) = self.area(frame, cx, cz);
+        if self.uniform(frame) {
+            return Uniform.forage(frame, cx, cz, sub);
+        }
+        let a = self.area(frame, cx, cz);
         if a.points == 0 || a.land == 0 {
             return ForageRates {
                 growth_per_day: 0.0,
@@ -159,7 +171,10 @@ impl Climate for HabitatClimate {
     }
 
     fn temperature(&self, frame: u16, cx: i32, cz: i32, sub: u32) -> f32 {
-        let (a, _) = self.area(frame, cx, cz);
+        if self.uniform(frame) {
+            return Uniform.temperature(frame, cx, cz, sub);
+        }
+        let a = self.area(frame, cx, cz);
         if a.base_celsius.is_nan() {
             return self.tun.unknown_celsius;
         }
@@ -167,7 +182,10 @@ impl Climate for HabitatClimate {
     }
 
     fn terrain(&self, frame: u16, cx: i32, cz: i32) -> f32 {
-        let (a, _) = self.area(frame, cx, cz);
+        if self.uniform(frame) {
+            return Uniform.terrain(frame, cx, cz);
+        }
+        let a = self.area(frame, cx, cz);
         self.terrain_of(&a)
     }
 }

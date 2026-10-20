@@ -26,6 +26,8 @@ rtsim-knowledge.workspace = true
 rtsim-ecology.workspace = true
 # Ships, pirates and navies (docs/boundary.md §7).
 rtsim-ships.workspace = true
+# The world model (docs/boundary.md §10).
+rtsim-space.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 

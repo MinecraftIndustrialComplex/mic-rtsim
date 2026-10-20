@@ -98,6 +98,11 @@ pub trait WorldModel: Send + Sync {
     /// Rises whenever something a query could answer changes; a module caches against it.
     fn revision(&self) -> u64;
 
+    /// Whether the provider knows anything of `frame` at all. A frame it has never heard of
+    /// (a dimension nobody sampled, a test world fed by orders) lets a module keep its old,
+    /// model-free behaviour there (X2-6).
+    fn knows_frame(&self, frame: u16) -> bool;
+
     /// The ground of the block rectangle `[x0, x1) × [z0, z1)` in `frame` (Java's dimension id).
     fn area(&self, frame: u16, x0: i32, z0: i32, x1: i32, z1: i32) -> Area;
 

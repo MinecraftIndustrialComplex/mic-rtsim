@@ -28,20 +28,22 @@
 //!   their records, run nothing, write nothing and keep the page they had; on again, the bodies
 //!   of before are gone (their session reset) and they run on from where they stopped.
 //!
-//! **Where herds come from.** Nothing in the game founds a herd yet: no provider tells the engine
-//! where grassland is (H2-8's climate trait has only the synthetic valley). The engine's climate
-//! is `Uniform` (grassland at 15 °C everywhere, Y3), and a herd is founded only by a test's
-//! HERD_FOUND order ([`order_found`], Y4).
+//! **Where herds come from** (X2-11): the world model (`engine/worldmodel.rs`) founds one herd
+//! per suitable region when the core's habitat sampler has reported enough of it ([`found`]), and
+//! the herds' climate is the world model's (`HabitatClimate`: real biomes, water and unknown
+//! ground closed). A frame the world model knows nothing of still answers as the uniform
+//! grassland of Y3 (X2-6), where a test's HERD_FOUND order ([`order_found`], Y4) founds herds.
 
 use std::collections::VecDeque;
 
 use rtsim_ecology::herds::boundary::{self, Cmd, HerdDict, Obs, SpawnRejected};
-use rtsim_ecology::herds::climate::Uniform;
+use rtsim_ecology::herds::habitat::HabitatClimate;
 use rtsim_ecology::herds::herd::herd_of;
 use rtsim_ecology::herds::{HerdSpecies, HerdStats, HerdTunables, Herds, NewHerd};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{CodecError, Reader, Writer};
 use rtsim_kernel::page::{PageKey, PageStore};
+use rtsim_space::WorldHandle;
 
 use super::{State, log_error, log_info, log_warn, phase1, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
@@ -89,30 +91,31 @@ pub(super) struct Link {
     pub(super) group_states: u64,
 }
 
-fn new_engine() -> Herds {
-    Herds::new(
-        HERD_SEED,
-        HerdTunables::default(),
-        Box::new(Uniform),
-        Tick::ZERO,
-    )
+/// The herds' climate: the world model's (X2-6: a frame it knows nothing of still answers as
+/// the uniform grassland of Y3).
+fn climate(world: &WorldHandle) -> Box<HabitatClimate> {
+    Box::new(HabitatClimate::new(world.clone()))
+}
+
+fn new_engine(world: &WorldHandle) -> Herds {
+    Herds::new(HERD_SEED, HerdTunables::default(), climate(world), Tick::ZERO)
 }
 
 /// **The policy for herd pages this build cannot read** (as the dragons' S12 and the ships' U1):
 /// dropped with a loud log, the herds start afresh, and the next save replaces them.
-fn when_pages_unreadable(why: &str) -> Result<Link, String> {
+fn when_pages_unreadable(why: &str, world: &WorldHandle) -> Result<Link, String> {
     log_error(&format!(
         "HERD PAGES DROPPED: {why}. The herds start afresh and the next save replaces them"
     ));
-    let mut l = Link::empty();
+    let mut l = Link::empty(world);
     l.dropped_pages = true;
     Ok(l)
 }
 
 impl Link {
-    pub(super) fn empty() -> Link {
+    pub(super) fn empty(world: &WorldHandle) -> Link {
         Link {
-            engine: new_engine(),
+            engine: new_engine(world),
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
@@ -129,17 +132,22 @@ impl Link {
     /// Loads the herds' page. `world_restored` says the phase 1 world came back from its pages:
     /// the herds' legs and the players' areas they hold are that world's, so without it their
     /// page is dropped too.
-    pub(super) fn load(store: &mut PageStore, world_restored: bool) -> Result<Link, String> {
+    pub(super) fn load(
+        store: &mut PageStore,
+        world_restored: bool,
+        world: &WorldHandle,
+    ) -> Result<Link, String> {
         let page = match store.get(KEY_HERDS) {
             Ok(p) => p,
-            Err(e) => return when_pages_unreadable(&format!("cannot read the herds' page: {e}")),
+            Err(e) => return when_pages_unreadable(&format!("cannot read the herds' page: {e}"), world),
         };
         let Some(b) = page else {
-            return Ok(Link::empty());
+            return Ok(Link::empty(world));
         };
         if !world_restored {
             return when_pages_unreadable(
                 "the phase 1 world they live in did not come back from its pages",
+                world,
             );
         }
         let mut r = Reader::new(&b);
@@ -156,13 +164,13 @@ impl Link {
             Ok(())
         })();
         if let Err(e) = head {
-            return when_pages_unreadable(&format!("the herds' page: {e}"));
+            return when_pages_unreadable(&format!("the herds' page: {e}"), world);
         }
         let Ok(saved_hash) = r.u64() else {
-            return when_pages_unreadable("the herds' page is cut short");
+            return when_pages_unreadable("the herds' page is cut short", world);
         };
         let rest = r.take(r.remaining()).unwrap_or_default();
-        match Herds::load(HerdTunables::default(), Box::new(Uniform), rest) {
+        match Herds::load(HerdTunables::default(), climate(world), rest) {
             Ok(engine) => {
                 let hash = engine.state_hash();
                 let diverged = (hash != saved_hash).then_some((saved_hash, hash));
@@ -177,13 +185,13 @@ impl Link {
                     engine.pending_events(),
                     hash
                 ));
-                let mut l = Link::empty();
+                let mut l = Link::empty(world);
                 l.engine = engine;
                 l.restore_diverged = diverged;
                 l.last_page = Some(b);
                 Ok(l)
             }
-            Err(e) => when_pages_unreadable(&format!("the herds' page: {e}")),
+            Err(e) => when_pages_unreadable(&format!("the herds' page: {e}"), world),
         }
     }
 
@@ -192,6 +200,42 @@ impl Link {
     fn active(&self) -> bool {
         !self.engine.herds.is_empty()
     }
+}
+
+/// Whether the herds' switch is on (founding needs no herd yet).
+pub(super) fn enabled(st: &State) -> bool {
+    st.herds.enabled
+}
+
+/// Whether a herd of this name exists (founding's guard against a second herd for a region).
+pub(super) fn has_herd_named(st: &State, name: &str) -> bool {
+    st.herds.engine.by_name(name).is_some()
+}
+
+/// A herd founded from the world model (`worldmodel::simulate`, X2-11): added at the herds'
+/// present, its first decision at once, and the areas already booked introduced to it, as a
+/// test's HERD_FOUND (Y4) is.
+pub(super) fn found(st: &mut State, n: NewHerd, at: Tick) {
+    let at = at.max(st.herds.engine.now()).max(st.phase1.world.now());
+    shared::run_to(st, at);
+    let (name, species, count, pos) = (n.name.clone(), n.species, n.count, n.pos);
+    let h = st.herds.engine.add_herd(n, at);
+    log_info(&format!(
+        "herd founded from the world model: {count} {} as {name:?} at ({}, {}): agent {:#x}",
+        species.name(),
+        pos.0,
+        pos.1,
+        rtsim_ecology::herds::herd::agent_of(h)
+    ));
+    st.phase1.taint();
+    if !st.herds.enabled {
+        return;
+    }
+    reset_if_due(st);
+    let (w, e) = (&mut st.phase1.world, &mut st.herds.engine);
+    e.run_until(&mut w.legs, at);
+    take_commands(st);
+    shared::introduce_herds(st);
 }
 
 /// Whether the herds run: switched on and in the world.

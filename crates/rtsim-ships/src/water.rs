@@ -38,11 +38,18 @@ impl WaterMask for AllWater {
 pub struct HabitatWater {
     pub world: rtsim_space::WorldHandle,
     pub cell: i32,
+    /// In a frame the world model knows nothing of, every cell is water, as before the world
+    /// model (U11): ports an order or a test reports there still get lanes (X2-6).
+    pub all_water_unknown_frames: bool,
 }
 
 impl HabitatWater {
     pub fn new(world: rtsim_space::WorldHandle) -> HabitatWater {
-        HabitatWater { world, cell: 32 }
+        HabitatWater {
+            world,
+            cell: 32,
+            all_water_unknown_frames: true,
+        }
     }
 }
 
@@ -53,10 +60,11 @@ impl WaterMask for HabitatWater {
     fn is_water(&self, frame: u16, cx: i32, cz: i32) -> bool {
         let c = self.cell();
         let (x0, z0) = (cx * c, cz * c);
-        self.world
-            .read()
-            .area(frame, x0, z0, x0 + c, z0 + c)
-            .all_water()
+        let w = self.world.read();
+        if self.all_water_unknown_frames && !w.knows_frame(frame) {
+            return true;
+        }
+        w.area(frame, x0, z0, x0 + c, z0 + c).all_water()
     }
 }
 

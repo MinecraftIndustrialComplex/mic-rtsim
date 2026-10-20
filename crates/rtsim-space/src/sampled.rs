@@ -484,6 +484,20 @@ impl WorldModel for SampledWorld {
         self.revision
     }
 
+    fn knows_frame(&self, frame: u16) -> bool {
+        let lo = RegionKey {
+            frame,
+            rx: i32::MIN,
+            rz: i32::MIN,
+        };
+        let hi = RegionKey {
+            frame,
+            rx: i32::MAX,
+            rz: i32::MAX,
+        };
+        self.regions.range(lo..=hi).next().is_some()
+    }
+
     fn area(&self, frame: u16, x0: i32, z0: i32, x1: i32, z1: i32) -> Area {
         let mut a = Area::default();
         if x1 <= x0 || z1 <= z0 {

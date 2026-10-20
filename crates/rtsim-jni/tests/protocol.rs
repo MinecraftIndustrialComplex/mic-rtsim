@@ -2264,3 +2264,147 @@ mod herds {
         );
     }
 }
+
+/// The world model (docs/boundary.md §10): the core's habitat sampler reports cells, the engine
+/// keeps them, founds a herd for a suitable region and lists what it holds at every session
+/// start (HABITAT_KNOWN), so the bridge resends only what changed or what a crash lost.
+mod worldmodel {
+    use super::*;
+    use rtsim_jni::engine::{HABITAT_INFO, MODULE_HERDS};
+    use rtsim_space::habitat::KNOWN_END;
+    use rtsim_space::synth::{Painter, land, sea};
+    use rtsim_space::HabitatRecord;
+
+    const MODULES: u32 = 0b1111 | MODULE_HERDS;
+
+    fn save(e: &Engine, j: &mut Java) {
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Region (0, 0): sea west of x = `shore`, plains east of it.
+    fn region(p: &mut Painter, shore: i32) -> Vec<HabitatRecord> {
+        let mut out = Vec::new();
+        for cz in 0..8 {
+            for cx in 0..8 {
+                out.push(p.record(
+                    0,
+                    cx,
+                    cz,
+                    &|x, _| {
+                        if x < shore {
+                            sea()
+                        } else {
+                            land("minecraft:plains")
+                        }
+                    },
+                    &[],
+                ));
+            }
+        }
+        out
+    }
+
+    fn send(j: &mut Java, p: &Painter, recs: &[HabitatRecord]) {
+        for r in recs {
+            while !j.habitat(
+                r,
+                &|i| p.biome_name(i).to_string(),
+                &|i| p.body_name(i).to_string(),
+            ) {
+                j.tick();
+            }
+        }
+        j.idle();
+    }
+
+    fn known_end(j: &mut Java) -> bool {
+        j.known.iter().any(|k| k.1.flags & KNOWN_END != 0)
+    }
+
+    fn info(e: &Engine, j: &mut Java, x: i32, z: i32) -> [i64; HABITAT_INFO] {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.habitat_info(dim, x, z)
+    }
+
+    #[test]
+    fn habitat_cells_found_a_herd_on_land_and_are_listed_again_after_a_restart() {
+        let dir = tmpdir("worldmodel");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        assert_eq!(j.known.len(), 1, "a fresh engine holds nothing: END alone");
+
+        // The sampler reports a region: sea in its west quarter, plains elsewhere.
+        let mut p = Painter::default();
+        let recs = region(&mut p, 128);
+        send(&mut j, &p, &recs);
+        j.run_until("a herd founded", |j| info(&e, j, 300, 300)[9] != 0);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let i = info(&e, &mut j, 300, 300);
+        assert_eq!((i[0], i[1], i[2]), (1, 0xFFFF, 0), "a known land cell");
+        assert_eq!((i[7], i[8]), (64, 1), "64 cells in one region");
+        let agent = i[9] as u64;
+        assert_eq!(agent >> 56, 0x48, "a herd's agent");
+        assert_eq!(i[10], 1, "the region is decided");
+        assert_eq!(info(&e, &mut j, 10, 10)[2], 0xFFFF, "the west is sea");
+        let (pos, species) = e.with_herds(|h, _| {
+            let id = rtsim_ecology::herds::herd::herd_of(agent).unwrap();
+            (h.position(id, h.now()), h.herd(id).unwrap().species)
+        });
+        assert!(pos.0 >= 128, "founded on land: {pos:?}");
+        assert!(
+            e.with_world_model(|w| w.area(0, pos.0 as i32, pos.1 as i32, pos.0 as i32 + 1, pos.1 as i32 + 1).water)
+                == 0
+        );
+        eprintln!("world model: a herd of {species:?} founded at {pos:?}");
+
+        // The same cells again: nothing changes, and no second herd.
+        send(&mut j, &p, &recs);
+        j.idle();
+        let unchanged = e.with_world_model(|w| w.sampled_ref().unwrap().stats.unchanged);
+        assert_eq!(unchanged, 64, "latest wins: the same cells change nothing");
+        assert_eq!(e.herd_agents().len(), 1, "one herd per region");
+        save(&e, &mut j);
+        let save1 = j.world_save();
+
+        // After the save: the sea floods a quarter more of the region. The server dies.
+        let flooded = region(&mut p, 256);
+        send(&mut j, &p, &flooded);
+        j.idle();
+        assert_eq!(info(&e, &mut j, 200, 10)[2], 0xFFFF, "flooded in memory");
+        let _ = j.crash();
+
+        // The restart: the pages read back to their state hash, and the engine lists what they
+        // hold: the cells as saved, so the bridge sees the flooded cells differ and resends them.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), save1);
+        j.module_mask = MODULES;
+        assert_eq!(e.world_model_restore_check(), (None, false));
+        j.run_until("the engine's list again", known_end);
+        let lists: Vec<_> = j.known.iter().filter(|k| k.1.flags & KNOWN_END == 0).collect();
+        assert_eq!(lists.len(), 1, "one region");
+        let (_, k, dim) = lists[0];
+        assert_eq!(dim.as_deref(), Some(OVERWORLD), "the dimension through the engine's dictionary");
+        assert_eq!((k.region, k.cells.len()), ((0, 0), 64));
+        for (idx, fp) in &k.cells {
+            let (cx, cz) = (i32::from(*idx) % 8, i32::from(*idx) / 8);
+            let sent = recs.iter().find(|r| r.cell == (cx, cz)).unwrap();
+            assert_eq!(*fp, sent.fingerprint, "the saved fingerprint of cell ({cx}, {cz})");
+            let flood = flooded.iter().find(|r| r.cell == (cx, cz)).unwrap();
+            assert_eq!(
+                *fp != flood.fingerprint,
+                (2..4).contains(&cx),
+                "exactly the flooded cells differ, so only they are sent again"
+            );
+        }
+        assert_eq!(e.herd_agents(), vec![agent], "the herd came back, not a second one");
+        let i = info(&e, &mut j, 300, 300);
+        assert_eq!((i[7], i[9], i[10]), (64, agent as i64, 1));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+}

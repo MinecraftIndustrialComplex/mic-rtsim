@@ -146,6 +146,9 @@ pub struct Java {
     /// The vanilla herd adapter this Java plays: rtsim-ecology's fake plugin
     /// (`herds::synth::FakeHerds`), which answers the commands and plays kills, shearing, leads.
     pub herd_plugin: rtsim_ecology::herds::synth::FakeHerds,
+    /// HABITAT_KNOWN commands applied (docs/boundary.md §10.5): (cmdSeq, record, its dimension
+    /// as Java's dictionary names it, or None for END).
+    pub known: Vec<(u64, rtsim_space::KnownRecord, Option<String>)>,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -237,6 +240,7 @@ impl Java {
             ships: Vec::new(),
             herds: Vec::new(),
             herd_plugin: rtsim_ecology::herds::synth::FakeHerds::default(),
+            known: Vec::new(),
         }
     }
 
@@ -593,6 +597,7 @@ impl Java {
                     k if (0x8500..=0x85FF).contains(&k) => self.dragon_command(seq, rec.bytes),
                     k if (0x8600..=0x86FF).contains(&k) => self.ship_command(seq, rec.bytes),
                     k if (0x8700..=0x87FF).contains(&k) => self.herd_command(seq, rec.bytes),
+                    k if (0x8900..=0x89FF).contains(&k) => self.habitat_command(seq, rec.bytes),
                     cmd::DESPAWN_GROUP => {
                         let b = rec.bytes;
                         let agent = wire::u64_at(b, cmd::despawn_group::AGENT);
@@ -1098,6 +1103,45 @@ impl Java {
             S::Timetable(_) | S::Steer(_) | S::Depart(_) => {}
         }
         self.ships.push((seq, c));
+    }
+
+    // ---- the habitat sampler (docs/boundary.md §10) ----------------------------------------------
+
+    /// Writes a HABITAT record (latest wins) into the open buffer, as the core's sampler does: the
+    /// record's biome and body ids are `names`' (a painter's fake dictionary), translated to
+    /// Java's own here (DICT records go out first, in the preamble).
+    pub fn habitat(
+        &mut self,
+        r: &rtsim_space::HabitatRecord,
+        biome: &dyn Fn(u32) -> String,
+        body: &dyn Fn(u32) -> String,
+    ) -> bool {
+        let mut r = r.clone();
+        let map = |j: &mut Java, kind: u32, n: String| if n.is_empty() { 0 } else { j.dict_id(kind, &n) };
+        r.biome = map(self, rtsim_space::habitat::DICT_BIOME, biome(r.biome));
+        r.land_biome = map(self, rtsim_space::habitat::DICT_BIOME, biome(r.land_biome));
+        for c in &mut r.creatures {
+            c.0 = map(self, wire::DICT_BODY, body(c.0));
+        }
+        r.dimension = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        if !self.preamble() {
+            return false;
+        }
+        let mut b = Vec::new();
+        r.encode(&mut b);
+        self.copy(&b)
+    }
+
+    /// HABITAT_KNOWN, as the core's sampler takes it: what the engine holds, by cell.
+    fn habitat_command(&mut self, seq: u64, bytes: &[u8]) {
+        let (_, k) = rtsim_space::KnownRecord::decode(bytes).expect("HABITAT_KNOWN decodes");
+        let dim = (k.flags & rtsim_space::habitat::KNOWN_END == 0).then(|| {
+            self.cmd_dict
+                .get(&(wire::DICT_DIMENSION, k.dimension))
+                .cloned()
+                .expect("a DICT names the dimension before HABITAT_KNOWN uses it")
+        });
+        self.known.push((seq, k, dim));
     }
 
     // ---- the vanilla herd adapter (docs/boundary.md §8) ------------------------------------------

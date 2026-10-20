@@ -40,7 +40,7 @@ use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_ships::boundary::{self, Cmd, Item, Obs};
 use rtsim_ships::engine::{body_names, good_of, item_of};
-use rtsim_ships::water::AllWater;
+use rtsim_ships::water::HabitatWater;
 use rtsim_ships::{ShipStats, ShipTunables, Ships};
 use rtsim_world::NodeData;
 
@@ -62,9 +62,12 @@ pub const SHIP_SEED: u64 = 0x6d69_635f_7368_6970;
 /// A haven's population when it joins the world as a node (PLACEHOLDER, the ship sweep's haven).
 const HAVEN_POP: u32 = 4;
 
-/// The water mask (T9 has no provider yet): every cell is water, so sea lanes are straight A*
-/// paths (U11).
-const MASK: AllWater = AllWater(32);
+/// The water mask: the world model's (X2-17, replacing U11's all-water mask): a 32-block cell is
+/// water when every sample point in it is known open water; a frame the world model knows
+/// nothing of is all water, as before (X2-6).
+fn mask(st: &State) -> HabitatWater {
+    HabitatWater::new(st.worldmodel.world.clone())
+}
 
 /// Op ids of the engine's SHIP_CARGO: allocator 0x53 in bits 56 to 62 (docs/boundary.md §2.2).
 const OP_ALLOCATOR: u64 = 0x53 << 56;
@@ -408,8 +411,9 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.ships.records += 1;
     let at = at.max(st.ships.engine.now()).max(st.phase1.world.now());
     run_engine_at(st, at);
+    let m = mask(st);
     let (w, s) = (&mut st.phase1.world, &mut st.ships.engine);
-    s.ingest(w, o, &MASK, at);
+    s.ingest(w, o, &m, at);
     st.phase1.taint();
     reset_if_due(st);
     take_commands(st);
@@ -474,8 +478,9 @@ pub(super) fn simulate(st: &mut State) {
         }
         if buildable {
             let at = at.max(st.phase1.world.now());
+            let m = mask(st);
             let (w, s) = (&mut st.phase1.world, &mut st.ships.engine);
-            s.build(w, &MASK, at);
+            s.build(w, &m, at);
             log_info(&format!(
                 "ships: the network is built from {} docks: {} lanes, {} services, {} ships",
                 s.docks.len(),

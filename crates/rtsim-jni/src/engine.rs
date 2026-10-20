@@ -53,6 +53,12 @@ pub use ships::{MODULE_SHIPS, TABLE as SHIPS_TABLE};
 /// adapter, in the phase 1 world (docs/boundary.md §8).
 mod herds;
 pub use herds::{HERD_INFO, MODULE_HERDS, TABLE as HERDS_TABLE};
+
+// The world model (docs/boundary.md §10; choices X2-# in docs/overnight-choices-worldmodel.md).
+mod worldmodel;
+pub use worldmodel::{
+    HABITAT_INFO, TABLE_META as WORLD_MODEL_TABLE, TABLE_REGIONS as WORLD_MODEL_REGIONS,
+};
 /// What the modules in the phase 1 world share: one interest area per player, one clock.
 mod shared;
 pub use shared::PLAYER_STALE;
@@ -271,12 +277,15 @@ struct State {
     ships: ships::Link,
     /// The herds and their commands (`herds.rs`).
     herds: herds::Link,
+    /// The world model (`worldmodel.rs`): the habitat cells every module reads.
+    worldmodel: worldmodel::Link,
     /// Players' interest areas and the modules' clock (`shared.rs`).
     shared: shared::Link,
 }
 
 impl State {
     fn new(orders_rx: Receiver<Vec<Order>>, received_tx: Option<Sender<Received>>) -> Self {
+        let wm = worldmodel::Link::empty();
         State {
             replay: Replay::new(ObsSeq(0)),
             outbox: Outbox::new(),
@@ -299,7 +308,8 @@ impl State {
             phase1: phase1::Link::empty(),
             dragons: dragons::Link::empty(),
             ships: ships::Link::empty(),
-            herds: herds::Link::empty(),
+            herds: herds::Link::empty(&wm.world),
+            worldmodel: wm,
             shared: shared::Link::default(),
         }
     }
@@ -713,7 +723,8 @@ impl Engine {
         let p1link = phase1::Link::load(&mut store)?;
         let dlink = dragons::Link::load(&mut store, p1link.world_restored())?;
         let slink = ships::Link::load(&mut store, p1link.world_restored())?;
-        let hlink = herds::Link::load(&mut store, p1link.world_restored())?;
+        let wlink = worldmodel::Link::load(&mut store);
+        let hlink = herds::Link::load(&mut store, p1link.world_restored(), &wlink.world)?;
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(
@@ -739,6 +750,7 @@ impl Engine {
         st.dragons = dlink;
         st.ships = slink;
         st.herds = hlink;
+        st.worldmodel = wlink;
         st.pages_obs_seq = pages_obs;
         st.session_first = pages_obs + 1;
         let next_cmd = st.outbox.next_seq();
@@ -863,10 +875,13 @@ impl Engine {
                 let dragons = dragons::snapshot(&mut st);
                 let ships = ships::snapshot(&mut st);
                 let herds = herds::snapshot(&mut st);
+                let failures = self.stats.save_failures.load(Ordering::Acquire);
+                let world_model = worldmodel::snapshot(&mut st, failures);
                 let mut industry = industry::snapshot(&st);
                 industry.extend(dragons);
                 industry.extend(ships);
                 industry.extend(herds);
+                industry.extend(world_model);
                 (
                     encode_meta(&st.replay, &st.outbox),
                     st.world.to_bytes(),
@@ -1001,6 +1016,7 @@ impl Engine {
         industry::simulate(&mut st);
         dragons::simulate(&mut st);
         ships::simulate(&mut st);
+        worldmodel::simulate(&mut st);
         herds::simulate(&mut st);
         shared::simulate(&mut st);
         phase1::simulate(&mut st);
@@ -1170,6 +1186,7 @@ impl Engine {
                 dragons::session_start(st, mask);
                 ships::session_start(st, mask);
                 herds::session_start(st, mask);
+                worldmodel::session_start(st);
                 shared::session_start(st);
                 if last_applied > st.last_applied_cmd {
                     st.last_applied_cmd = last_applied;
@@ -1215,6 +1232,7 @@ impl Engine {
                 dragons::observe_state(st, rec);
                 ships::observe_state(st, rec);
                 herds::observe_state(st, rec);
+                worldmodel::observe_state(st, rec);
                 shared::observe_state(st, rec);
                 Self::log_received(st, h, rec, 0, false);
             }
@@ -1312,6 +1330,8 @@ impl Engine {
         industry.extend(dragons::snapshot(st));
         industry.extend(ships::snapshot(st));
         industry.extend(herds::snapshot(st));
+        let failures = self.stats.save_failures.load(Ordering::Acquire);
+        industry.extend(worldmodel::snapshot(st, failures));
         let extra = phase1::snapshot(st);
         let this = Arc::clone(self);
         self.spawn_io(move || this.commit(meta, world, industry, extra, obs_seq));
@@ -1471,6 +1491,11 @@ impl Engine {
             return (highest, true);
         }
         let (h, more) = herds::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = worldmodel::write_queue(st, w);
         (highest.max(h), more)
     }
 }

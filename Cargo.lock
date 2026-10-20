@@ -518,6 +518,7 @@ dependencies = [
  "rtsim-knowledge",
  "rtsim-settle",
  "rtsim-ships",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",
