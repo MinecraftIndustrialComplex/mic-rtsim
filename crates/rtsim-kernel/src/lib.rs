@@ -9,6 +9,8 @@
 //! - [`ladder`]: the detail-ladder operations fold, sample, query (SCALE.md §2).
 //! - [`lazy`]: lazy regions with catch-up and breakpoints (SCALE.md §4).
 //! - [`conserve`]: integer conservation and error diffusion (SCALE.md §9).
+//! - [`dyadic`]: random counts over any interval in O(log horizon), consistent for every reader
+//!   (DECISIONS.md O17).
 //! - [`codec`] and [`page`]: page encoding and the incremental, crash-safe page store (SCALE.md §8,
 //!   PLAN.md §4.9).
 //! - [`journal`]: operation ids and idempotent replay (A9).
@@ -21,6 +23,7 @@
 pub mod clock;
 pub mod codec;
 pub mod conserve;
+pub mod dyadic;
 pub mod handle;
 pub mod journal;
 pub mod ladder;
