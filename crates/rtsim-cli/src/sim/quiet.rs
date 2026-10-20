@@ -21,6 +21,9 @@ pub struct Options {
     pub rules: Option<rtsim_trade::Rules>,
     /// Days at the end whose events are broken down by cause (0: none).
     pub trace_days: u64,
+    /// Grow the phase 1 world by joins instead of building it at once: the first two nodes, then
+    /// one more each day (C22).
+    pub grow: bool,
 }
 
 /// Builds the world and returns events per market per day for each window, the conservation
@@ -36,7 +39,16 @@ fn series_world(o: &Options) -> (Vec<f64>, Result<(), String>, World) {
     if let Some(r) = o.rules {
         cfg.trade.rules = r;
     }
-    let mut w: World = if o.markets == 0 {
+    let mut w: World = if o.markets == 0 && o.grow {
+        let (goods, ids) = synth::goods();
+        let book = synth::recipes(&ids);
+        let all = synth::nodes();
+        let mut w = World::build(cfg, goods, book, all[..2].to_vec());
+        for (i, d) in all.into_iter().enumerate().skip(2) {
+            w.join(d, Tick::from_days(i as u64 - 1));
+        }
+        w
+    } else if o.markets == 0 {
         synth::build(cfg, true).0
     } else {
         let (goods, ids) = synth::goods();

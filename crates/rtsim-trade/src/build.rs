@@ -333,31 +333,9 @@ pub fn make_market(
                 }
                 GoodKind::Currency(c) => {
                     // A foreign currency: an exchange line at border markets.
-                    let parity = if l_mint.is_finite() {
-                        mint_cost[c.index()] / l_mint
-                    } else {
-                        0.0
-                    };
-                    let anchor = (parity * PRICE_ONE as f64)
-                        .round()
-                        .clamp(0.0, MAX_ANCHOR as f64) as i64;
-                    match border_d {
-                        Some(d) if anchor > 0 => {
-                            let tau = transport_labour(goods, tun, g, d) / l_mint;
-                            let band = ((tau / parity) * 1024.0).round().clamp(0.0, 1023.0) as i64;
-                            let target = (i128::from(mbar) * i128::from(tun.fx_holding_share_milli)
-                                / 1000
-                                * i128::from(PRICE_ONE)
-                                / i128::from(anchor.max(1)))
-                                as Amount;
-                            (
-                                target,
-                                PriceCurve::new(anchor, Ratio::new(band, 1024), target),
-                                0,
-                            )
-                        }
-                        _ => (0, PriceCurve::new(anchor, Ratio::new(0, 1), 0), 0),
-                    }
+                    let (target, curve) =
+                        exchange_line(goods, tun, g, c, l_mint, mint_cost, mbar, border_d);
+                    (target, curve, 0)
                 }
             };
             let stock = match (genesis, def.kind) {
@@ -402,6 +380,45 @@ pub fn make_market(
         };
         m.recompute();
         m
+    }
+}
+
+/// The exchange line for foreign currency `g` (of culture `foreign`) at a market whose own mint
+/// costs `l_mint` worker-days a coin and whose treasury target is `mbar`: anchored at mint parity
+/// and floating within the cost of carrying a coin over its shortest border edge (`border_d`,
+/// the gold points); no line (target 0, flat) at a market with no border.
+#[allow(clippy::too_many_arguments)]
+pub fn exchange_line(
+    goods: &Goods,
+    tun: &Tunables,
+    g: GoodId,
+    foreign: Culture,
+    l_mint: f64,
+    mint_cost: [f64; 2],
+    mbar: Amount,
+    border_d: Option<u64>,
+) -> (Amount, PriceCurve) {
+    let parity = if l_mint.is_finite() {
+        mint_cost[foreign.index()] / l_mint
+    } else {
+        0.0
+    };
+    let anchor = (parity * PRICE_ONE as f64)
+        .round()
+        .clamp(0.0, MAX_ANCHOR as f64) as i64;
+    match border_d {
+        Some(d) if anchor > 0 => {
+            let tau = transport_labour(goods, tun, g, d) / l_mint;
+            let band = ((tau / parity) * 1024.0).round().clamp(0.0, 1023.0) as i64;
+            let target = (i128::from(mbar) * i128::from(tun.fx_holding_share_milli) / 1000
+                * i128::from(PRICE_ONE)
+                / i128::from(anchor.max(1))) as Amount;
+            (
+                target,
+                PriceCurve::new(anchor, Ratio::new(band, 1024), target),
+            )
+        }
+        _ => (0, PriceCurve::new(anchor, Ratio::new(0, 1), 0)),
     }
 }
 

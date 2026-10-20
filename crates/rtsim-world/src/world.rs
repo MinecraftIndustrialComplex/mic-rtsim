@@ -435,14 +435,55 @@ impl World {
         let i = self.nodes.len();
         // Genesis stock is ledgered in the line books, as at build.
         self.add_node(sid, &d, m, costs, local);
-        for (j, len, dq, border) in links {
+        for &(j, len, dq, border) in &links {
             self.add_edge(i, j, len, dq, border);
+            if border {
+                self.open_exchange(j, i, dq, at);
+            }
         }
         self.emit(i, at, true);
         for j in self.nodes[i].neighbours.clone() {
             self.emit(j, at, true);
         }
         i
+    }
+
+    /// Node `j` just gained a border edge to `newcomer` (C22): if it kept no exchange line for
+    /// the newcomer's currency, it opens one now, at mint parity within the gold points of this
+    /// edge, as a border market built at once would have (overnight choice E54). Without it the
+    /// foreign coin it is paid in would sink at once (its line's target is zero).
+    fn open_exchange(&mut self, j: usize, newcomer: usize, d: u64, at: Tick) {
+        let (Some(their), Some(mine)) = (
+            self.nodes[newcomer].kind.culture(),
+            self.nodes[j].kind.culture(),
+        ) else {
+            return;
+        };
+        let Some(g) = self.goods.currency(their) else {
+            return;
+        };
+        let region = self.nodes[j].region;
+        let l_mint = self.mint_cost[mine.index()];
+        let (goods, tun, mint_cost) = (&self.goods, &self.cfg.trade, self.mint_cost);
+        self.markets.apply(region, at, |m, _| {
+            if m.line(g).target > 0 || m.currency.is_none() {
+                return;
+            }
+            let mbar = m.line(m.currency.expect("checked")).target;
+            let (target, curve) = rtsim_trade::build::exchange_line(
+                goods,
+                tun,
+                g,
+                their,
+                l_mint,
+                mint_cost,
+                mbar,
+                Some(d),
+            );
+            m.line_mut(g).target = target;
+            m.goods[g.index()].curve = curve;
+            m.recompute();
+        });
     }
 
     /// Raiders from the haven at node `haven` take `share_milli` thousandths of everything moving
