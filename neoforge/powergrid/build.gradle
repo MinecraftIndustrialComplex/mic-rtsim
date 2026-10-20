@@ -1,0 +1,16 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_powergrid (A1, A19): Create Power Grid for mic-rtsim industry: batteries as stock, transmission lines between districts as power links (I13). Its own jar and mod id, built around the pack's own jars (never bundled);
+// the shared build logic is ../plugin.gradle.
+ext.packJars = [
+    'create-1.21.1-6.0.10.jar',
+    'powergrid-mc1.21.1-0.6.2.jar',
+    'architectury-13.0.11-neoforge.jar'
+]
+ext.runtimeJars = []
+ext.createLibs = true
+
+apply from: rootProject.file('plugin.gradle')

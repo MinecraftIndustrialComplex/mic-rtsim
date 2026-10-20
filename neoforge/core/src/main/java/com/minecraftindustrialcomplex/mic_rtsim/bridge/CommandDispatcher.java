@@ -331,29 +331,44 @@ final class CommandDispatcher implements Handover.CommandSink {
 
     private void market(ByteBuffer b, int at, int size, int goods) {
         Item currency = item(b.getInt(at + Cmd.Market.CURRENCY));
-        if (currency == null || goods < 0 || Cmd.Market.size(goods) > size) {
+        int levels = b.get(at + Cmd.Market.LEVELS) & 0xFF, depth = b.get(at + Cmd.Market.DEPTH) & 0xFF;
+        if (currency == null || goods < 0 || levels < 1 || levels > Cmd.Market.MAX_LEVELS || depth < 1
+                || depth > Cmd.Market.MAX_DEPTH || Cmd.Market.size(goods, levels, depth) > size) {
             malformed++;
             return;
         }
+        int[] thresholds = new int[levels];
+        for (int k = 0; k < levels; k++)
+            thresholds[k] = b.getInt(at + Cmd.Market.THRESHOLDS + 4 * k);
         java.util.Map<Item, com.minecraftindustrialcomplex.mic_rtsim.market.MarketBook.Good> lines = new java.util.HashMap<>();
         for (int i = 0; i < goods; i++) {
-            int g = at + Cmd.Market.GOODS + i * Cmd.Market.GOOD;
+            int g = at + Cmd.Market.GOODS + i * Cmd.Market.good(levels, depth);
             Item item = item(b.getInt(g + Cmd.Market.G_ITEM));
             if (item == null) {
                 malformed++;
                 continue;
             }
-            try {
-                lines.put(item, new com.minecraftindustrialcomplex.mic_rtsim.market.MarketBook.Good(b.getLong(g + Cmd.Market.G_STOCK),
-                        new com.minecraftindustrialcomplex.mic_rtsim.market.PriceCurve(b.getLong(g + Cmd.Market.G_ANCHOR),
-                                b.getInt(g + Cmd.Market.G_R_NUM), b.getInt(g + Cmd.Market.G_R_DEN), b.getLong(g + Cmd.Market.G_TARGET))));
-            } catch (IllegalArgumentException ex) {
-                malformed++;
+            long[][][] ladders = new long[2][levels][];
+            for (int side = 0; side < 2; side++) {
+                for (int k = 0; k < levels; k++) {
+                    long[] steps = new long[2 * depth];
+                    int n = 0;
+                    for (int j = 0; j < depth; j++) {
+                        int o = g + Cmd.Market.step(levels, depth, side, k, j);
+                        int items = b.getInt(o), coins = b.getInt(o + 4);
+                        if (items <= 0 || coins <= 0)
+                            break; // (0, 0) ends the ladder
+                        steps[2 * n] = items;
+                        steps[2 * n + 1] = coins;
+                        n++;
+                    }
+                    ladders[side][k] = java.util.Arrays.copyOf(steps, 2 * n);
+                }
             }
+            lines.put(item, new com.minecraftindustrialcomplex.mic_rtsim.market.MarketBook.Good(b.getLong(g + Cmd.Market.G_STOCK), ladders));
         }
         session.phase1.market(b.getLong(at + Cmd.Market.VILLAGE), b.getLong(at + Cmd.Market.AS_OF_OBS_SEQ), currency,
-                b.getLong(at + Cmd.Market.TREASURY), b.getLong(at + Cmd.Market.TREASURY_TARGET),
-                b.getInt(at + Cmd.Market.WORST_NUM), b.getInt(at + Cmd.Market.WORST_DEN), lines);
+                b.getLong(at + Cmd.Market.TREASURY), b.getLong(at + Cmd.Market.TREASURY_TARGET), thresholds, lines);
     }
 
     private void merchantOffers(ByteBuffer b, int at, int size, int count) {

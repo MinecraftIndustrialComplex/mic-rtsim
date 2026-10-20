@@ -123,7 +123,11 @@ impl P1Cmd {
     /// Bytes of the command record (DICT records not included).
     pub fn bytes(&self) -> usize {
         wire::align8(match self {
-            P1Cmd::Market(m) => cmd::market::size(m.goods.len()),
+            P1Cmd::Market(m) => cmd::market::size(
+                m.goods.len(),
+                super::PRICE_LEVELS.len() + 1,
+                super::LADDER_DEPTH,
+            ),
             P1Cmd::Offers(o) => cmd::merchant_offers::size(o.offers.len()),
             P1Cmd::Gossip(_) => cmd::write_gossip::SIZE,
             P1Cmd::Sentiment(s) => cmd::sentiment::size(s.entries.len()),
@@ -188,22 +192,32 @@ pub fn write(
                 .reserve(cmd::MARKET, size, m.goods.len() as u32)
                 .expect("checked to fit");
             use cmd::market as k;
+            let (levels, depth) = (super::PRICE_LEVELS.len() + 1, super::LADDER_DEPTH);
             wire::put_u64(r, cmd::CMD_SEQ, seq);
             wire::put_u64(r, k::VILLAGE, m.village);
             wire::put_u64(r, k::AS_OF_OBS_SEQ, m.as_of);
             wire::put_u32(r, k::CURRENCY, id_of(wire::DICT_ITEM, &m.currency));
             wire::put_i64(r, k::TREASURY, m.treasury);
             wire::put_i64(r, k::TREASURY_TARGET, m.treasury_target);
-            wire::put_i32(r, k::WORST_NUM, m.worst_num);
-            wire::put_i32(r, k::WORST_DEN, m.worst_den);
+            r[k::LEVELS] = levels as u8;
+            r[k::DEPTH] = depth as u8;
+            wire::put_i32(r, k::THRESHOLDS, i32::from(i8::MAX));
+            for (i, t) in super::PRICE_LEVELS.iter().enumerate() {
+                wire::put_i32(r, k::THRESHOLDS + 4 * (i + 1), *t);
+            }
             for (i, g) in m.goods.iter().enumerate() {
-                let o = k::GOODS + i * k::GOOD;
+                let o = k::GOODS + i * k::good(levels, depth);
                 wire::put_u32(r, o + k::G_ITEM, id_of(wire::DICT_ITEM, &g.item));
                 wire::put_i64(r, o + k::G_STOCK, g.stock);
-                wire::put_i64(r, o + k::G_TARGET, g.target);
-                wire::put_i64(r, o + k::G_ANCHOR, g.anchor);
-                wire::put_i32(r, o + k::G_R_NUM, g.r_num);
-                wire::put_i32(r, o + k::G_R_DEN, g.r_den);
+                for (side, steps) in market_ladders(m, g).into_iter().enumerate() {
+                    for (lv, ladder) in steps.into_iter().enumerate() {
+                        for (j, (items, coins)) in ladder.into_iter().enumerate() {
+                            let at = o + k::step(levels, depth, side, lv, j);
+                            wire::put_i32(r, at, items);
+                            wire::put_i32(r, at + 4, coins);
+                        }
+                    }
+                }
             }
         }
         P1Cmd::Offers(o) => {
@@ -482,6 +496,71 @@ pub fn decode_kept(r: &mut Reader<'_>) -> codec::Result<P1Cmd> {
     })
 }
 
+/// A MARKET good's two ladders (the market's sales, then its purchases), level by level: what a
+/// run of trades meets, bundle by bundle, at each price level's markup (rtsim-trade's
+/// [`rtsim_trade::market::ladder`], the one source of the price math; Ben's morning review,
+/// "Prices" and G31). Level 0 is fair; level k is `markup_for` at its threshold. A curve the
+/// engine cannot price (a scripted order out of range) gives empty ladders: the offer shows
+/// crossed out.
+pub fn market_ladders(
+    m: &crate::orders::MarketCmd,
+    g: &crate::orders::MarketGood,
+) -> [Vec<Vec<(i32, i32)>>; 2] {
+    use rtsim_trade::market::{FAIR, ladder, markup_for};
+    use rtsim_trade::tunables::Ratio;
+    use rtsim_trade::{OfferSide, PriceCurve};
+    let levels = super::PRICE_LEVELS.len() + 1;
+    let empty = || vec![Vec::new(); levels];
+    let r_ok = g.r_num >= 0
+        && g.r_den > 0
+        && g.r_num < g.r_den
+        && i64::from(g.r_den) <= rtsim_trade::price::MAX_R_TERM;
+    if !r_ok || !(0..=rtsim_trade::price::MAX_ANCHOR).contains(&g.anchor) {
+        return [empty(), empty()];
+    }
+    let curve = PriceCurve::new(
+        g.anchor,
+        Ratio::new(i64::from(g.r_num), i64::from(g.r_den)),
+        g.target,
+    );
+    let worst = Ratio::new(i64::from(m.worst_num.max(0)), i64::from(m.worst_den.max(1)));
+    let markups: Vec<(Ratio, Ratio)> = std::iter::once((FAIR, FAIR))
+        .chain(
+            super::PRICE_LEVELS
+                .iter()
+                .map(|&t| markup_for(t.clamp(-128, 0) as i8, worst)),
+        )
+        .collect();
+    let fit = |v: Vec<(i64, i64)>| -> Vec<(i32, i32)> {
+        v.into_iter()
+            .map_while(|(a, b)| Some((i32::try_from(a).ok()?, i32::try_from(b).ok()?)))
+            .collect()
+    };
+    let side = |s: OfferSide| -> Vec<Vec<(i32, i32)>> {
+        markups
+            .iter()
+            .map(|&(up, down)| {
+                let mk = if s == OfferSide::MarketSells {
+                    up
+                } else {
+                    down
+                };
+                fit(ladder(
+                    &curve,
+                    g.stock,
+                    g.target,
+                    m.treasury,
+                    m.treasury_target,
+                    s,
+                    mk,
+                    super::LADDER_DEPTH,
+                ))
+            })
+            .collect()
+    };
+    [side(OfferSide::MarketSells), side(OfferSide::MarketBuys)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +610,62 @@ mod tests {
             assert_eq!(&decode_kept(&mut r).unwrap(), c);
         }
         r.finish().unwrap();
+    }
+
+    /// Prices (PR2): MARKET's ladders are rtsim-trade's, level by level, and a curve the engine
+    /// cannot price gives empty ladders instead of a panic.
+    #[test]
+    fn market_ladders_are_rtsim_trades() {
+        use crate::orders::{MarketCmd, MarketGood};
+        let g = MarketGood {
+            item: "minecraft:wheat".into(),
+            stock: 400_000,
+            target: 400_000,
+            anchor: 50_000,
+            r_num: 3,
+            r_den: 4,
+        };
+        let m = MarketCmd {
+            village: 1,
+            as_of: 0,
+            currency: "minecraft:emerald".into(),
+            treasury: 3_000,
+            treasury_target: 20_000,
+            worst_num: 1,
+            worst_den: 2,
+            goods: vec![g.clone()],
+        };
+        let [sells, buys] = market_ladders(&m, &g);
+        assert_eq!(sells.len(), super::super::PRICE_LEVELS.len() + 1);
+        // Three emeralds in the treasury: three purchases at the fair level, one emerald each.
+        assert_eq!(buys[0].len(), 3);
+        assert!(buys[0].iter().all(|&(_, c)| c == 1));
+        let curve =
+            rtsim_trade::PriceCurve::new(50_000, rtsim_trade::tunables::Ratio::new(3, 4), 400_000);
+        let want = rtsim_trade::market::ladder(
+            &curve,
+            400_000,
+            400_000,
+            3_000,
+            20_000,
+            rtsim_trade::OfferSide::MarketBuys,
+            rtsim_trade::market::FAIR,
+            super::super::LADDER_DEPTH,
+        );
+        let want: Vec<(i32, i32)> = want
+            .into_iter()
+            .map(|(a, b)| (a as i32, b as i32))
+            .collect();
+        assert_eq!(buys[0], want);
+        // A disliked player brings more wheat for the same emerald.
+        let last = buys.last().unwrap();
+        assert!(last[0].0 > buys[0][0].0, "{:?} {:?}", buys[0], last);
+        let bad = MarketGood {
+            r_num: 5,
+            r_den: 4,
+            ..g
+        };
+        let [s, b] = market_ladders(&m, &bad);
+        assert!(s.iter().chain(b.iter()).all(|l| l.is_empty()));
     }
 }

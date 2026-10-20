@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -20,7 +21,9 @@ import java.util.UUID;
  *
  * <p>The test and debug surface ({@link ScriptedEngine}) goes through orders ({@link NativeCodec})
  * and the native inspection calls. With {@link #FLAG_TEST} the engine also keeps a log of the
- * observation records it received, which this class drains into a Java list of the last 10,000.
+ * observation records it received, which this class drains into a Java list of the last 10,000, and
+ * every DICT among them into a map of Java's dictionary that never drops an entry (Java sends each
+ * entry once a session, so a log that drops its oldest records loses names still in use).
  *
  * <p>Loading ({@link #ensureLoaded}) has mic_native load the plugin from this mod's jar, then binds
  * the natives below to this mod's class loader with {@code System.load}. There is no fallback: if the
@@ -215,6 +218,8 @@ public final class NativeEngine implements ScriptedEngine {
     private volatile long handle;
     private final ByteBuffer[] buffers = new ByteBuffer[4];
     private final ArrayDeque<Received> received = new ArrayDeque<>();
+    /** Java's dictionary as this engine received it (DICT records, by id), kept whole: not the capped log. */
+    private final Map<Integer, String> javaDict = new HashMap<>();
     private final long[] stats = new long[STATS];
     private long submits;
 
@@ -441,19 +446,7 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public synchronized String javaDictName(int id) {
         drain();
-        String name = null;
-        for (Received r : received) {
-            if (r.kind() != com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.DICT)
-                continue;
-            java.nio.ByteBuffer b = r.view();
-            if (b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.ID) != id)
-                continue;
-            int len = b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME_LEN);
-            byte[] bytes = new byte[len];
-            b.get(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME, bytes, 0, len);
-            name = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-        }
-        return name;
+        return javaDict.get(id);
     }
 
     @Override
@@ -556,10 +549,23 @@ public final class NativeEngine implements ScriptedEngine {
         List<Received> fresh = new ArrayList<>();
         NativeCodec.decodeReceived(log, fresh);
         for (Received r : fresh) {
+            if (r.kind() == com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.DICT)
+                learnDict(r.view());
             if (received.size() >= RECEIVED_CAP)
                 received.removeFirst();
             received.addLast(r);
         }
+    }
+
+    /** One DICT record into {@link #javaDict} (a later entry for an id replaces it, as the engine reads it). */
+    private void learnDict(ByteBuffer b) {
+        int len = b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME_LEN);
+        if (len < 0 || len > b.capacity() - com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME)
+            return;
+        byte[] bytes = new byte[len];
+        b.get(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME, bytes, 0, len);
+        javaDict.put(b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.ID),
+                new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
     }
 
     @Override

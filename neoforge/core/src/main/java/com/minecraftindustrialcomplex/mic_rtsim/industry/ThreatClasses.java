@@ -1,0 +1,83 @@
+package com.minecraftindustrialcomplex.mic_rtsim.industry;
+
+import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.FlyingMob;
+import net.minecraft.world.entity.OwnableEntity;
+import net.minecraft.world.entity.animal.FlyingAnimal;
+import net.minecraft.world.entity.animal.IronGolem;
+import net.minecraft.world.entity.monster.AbstractSkeleton;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.monster.RangedAttackMob;
+
+/**
+ * Threat classes of entities (docs/industry-boundary.md §3.2: zombies 0, skeletons 1, phantoms 2,
+ * creepers 3; "the full table is the bridge's"). Data first: the entity type tags
+ * {@code #mic_rtsim:threat/ground_melee}, {@code ground_ranged}, {@code flying} and {@code siege} win, so a
+ * pack can classify a modded mob; otherwise the vanilla class decides (choice Q11).
+ */
+public final class ThreatClasses {
+    private ThreatClasses() {}
+
+    public static final TagKey<EntityType<?>> MELEE = tag("threat/ground_melee");
+    public static final TagKey<EntityType<?>> RANGED = tag("threat/ground_ranged");
+    public static final TagKey<EntityType<?>> FLYING = tag("threat/flying");
+    public static final TagKey<EntityType<?>> SIEGE = tag("threat/siege");
+
+    private static TagKey<EntityType<?>> tag(String path) {
+        return TagKey.create(Registries.ENTITY_TYPE, ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, path));
+    }
+
+    /** True for an entity that attacks districts: a hostile mob ({@link Enemy}), or one tagged with a class. */
+    public static boolean hostile(Entity e) {
+        EntityType<?> t = e.getType();
+        return e instanceof Enemy || t.is(MELEE) || t.is(RANGED) || t.is(FLYING) || t.is(SIEGE);
+    }
+
+    /** The threat class of a hostile entity ({@code IndRecords.ThreatClass}). */
+    public static int classOf(Entity e) {
+        EntityType<?> t = e.getType();
+        if (t.is(SIEGE))
+            return IndRecords.ThreatClass.SIEGE;
+        if (t.is(FLYING))
+            return IndRecords.ThreatClass.FLYING;
+        if (t.is(RANGED))
+            return IndRecords.ThreatClass.GROUND_RANGED;
+        if (t.is(MELEE))
+            return IndRecords.ThreatClass.GROUND_MELEE;
+        if (e instanceof Creeper)
+            return IndRecords.ThreatClass.SIEGE;
+        if (e instanceof FlyingMob || e instanceof FlyingAnimal)
+            return IndRecords.ThreatClass.FLYING;
+        if (e instanceof AbstractSkeleton || e instanceof RangedAttackMob)
+            return IndRecords.ThreatClass.GROUND_RANGED;
+        return IndRecords.ThreatClass.GROUND_MELEE;
+    }
+
+    /**
+     * A guard (I21): an entity a player owns or made that fights for the district: a player-built iron
+     * golem, or a tamed animal (wolves, Ice and Fire's tamed dragons through {@link OwnableEntity}).
+     */
+    public static boolean guard(Entity e) {
+        if (e instanceof IronGolem g)
+            return g.isPlayerCreated();
+        return e instanceof OwnableEntity o && o.getOwnerUUID() != null;
+    }
+
+    /**
+     * Which classes a guard can fight: every guard fights walkers and sieges; only flying or ranged guards
+     * reach flyers. Bit per {@code IndRecords.ThreatClass}.
+     */
+    public static int guardClasses(Entity e) {
+        int bits = (1 << IndRecords.ThreatClass.GROUND_MELEE) | (1 << IndRecords.ThreatClass.GROUND_RANGED)
+                | (1 << IndRecords.ThreatClass.SIEGE);
+        if (e instanceof FlyingAnimal || e instanceof FlyingMob || e instanceof RangedAttackMob)
+            bits |= 1 << IndRecords.ThreatClass.FLYING;
+        return bits;
+    }
+}

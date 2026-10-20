@@ -2,6 +2,9 @@ package com.minecraftindustrialcomplex.mic_rtsim.engine;
 
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Buffers;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
+import com.minecraftindustrialcomplex.mic_rtsim.market.PriceCurve;
+import com.minecraftindustrialcomplex.mic_rtsim.market.PriceOracle;
+import com.minecraftindustrialcomplex.mic_rtsim.market.Ratio;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.RecordReader;
@@ -633,6 +636,11 @@ public final class StubEngine implements ScriptedEngine {
     @Override
     public void scriptVillage(long village) {}
 
+    /**
+     * A scripted MARKET. The stub simulates nothing, so it prices the test's curves with the bridge's
+     * test oracle ({@link PriceOracle}, rtsim-trade's math copied), into the bundles the native engine
+     * computes from the same curves with rtsim-trade itself (choice PR2).
+     */
     @Override
     public void market(long village, long asOfObsSeq, String currency, long treasury, long treasuryTarget, int worstNum, int worstDen,
                        List<GoodSpec> goods) {
@@ -641,7 +649,9 @@ public final class StubEngine implements ScriptedEngine {
             int[] ids = new int[goods.size()];
             for (int i = 0; i < ids.length; i++)
                 ids[i] = out.dict(Obs.DICT_ITEM, goods.get(i).item());
-            int at = out.reserve(Cmd.MARKET, Cmd.Market.size(goods.size()), goods.size());
+            int[] thresholds = PriceOracle.thresholds();
+            int levels = thresholds.length, depth = PriceOracle.LADDER_DEPTH;
+            int at = out.reserve(Cmd.MARKET, Cmd.Market.size(goods.size(), levels, depth), goods.size());
             if (at < 0)
                 return;
             ByteBuffer b = out.buffer();
@@ -650,17 +660,25 @@ public final class StubEngine implements ScriptedEngine {
             b.putInt(at + Cmd.Market.CURRENCY, cur);
             b.putLong(at + Cmd.Market.TREASURY, treasury);
             b.putLong(at + Cmd.Market.TREASURY_TARGET, treasuryTarget);
-            b.putInt(at + Cmd.Market.WORST_NUM, worstNum);
-            b.putInt(at + Cmd.Market.WORST_DEN, worstDen);
+            b.put(at + Cmd.Market.LEVELS, (byte) levels);
+            b.put(at + Cmd.Market.DEPTH, (byte) depth);
+            for (int k = 0; k < levels; k++)
+                b.putInt(at + Cmd.Market.THRESHOLDS + 4 * k, thresholds[k]);
+            Ratio worst = new Ratio(Math.max(worstNum, 0), Math.max(worstDen, 1));
             for (int i = 0; i < ids.length; i++) {
                 GoodSpec g = goods.get(i);
-                int o = at + Cmd.Market.GOODS + i * Cmd.Market.GOOD;
+                int o = at + Cmd.Market.GOODS + i * Cmd.Market.good(levels, depth);
                 b.putInt(o + Cmd.Market.G_ITEM, ids[i]);
                 b.putLong(o + Cmd.Market.G_STOCK, g.stock());
-                b.putLong(o + Cmd.Market.G_TARGET, g.target());
-                b.putLong(o + Cmd.Market.G_ANCHOR, g.anchor());
-                b.putInt(o + Cmd.Market.G_R_NUM, g.rNum());
-                b.putInt(o + Cmd.Market.G_R_DEN, g.rDen());
+                PriceCurve curve = new PriceCurve(g.anchor(), g.rNum(), g.rDen(), g.target());
+                List<PriceOracle.Bundle>[][] ladders = PriceOracle.ladders(curve, g.stock(), treasury, treasuryTarget, worst);
+                for (int side = 0; side < 2; side++)
+                    for (int k = 0; k < levels; k++)
+                        for (int j = 0; j < ladders[side][k].size(); j++) {
+                            int st = o + Cmd.Market.step(levels, depth, side, k, j);
+                            b.putInt(st, (int) ladders[side][k].get(j).items());
+                            b.putInt(st + 4, (int) ladders[side][k].get(j).coins());
+                        }
             }
         });
     }

@@ -414,16 +414,25 @@ All of 0x0120 to 0x0126 are journaled (the 24-byte prefix of §2.3).
 
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
-| 0x8010 | MARKET | goods n | 16 u64 village, 24 u64 asOfObsSeq, 32 u32 currency (item), 36 u32 reserved, 40 i64 treasury, 48 i64 treasuryTarget (Mbar; 0 never refuses), 56 i32 worstNum, 60 i32 worstDen (rtsim-trade `markup_for`'s worst), 64 n × good | 64 + 40n | |
+| 0x8010 | MARKET | goods n | 16 u64 village, 24 u64 asOfObsSeq, 32 u32 currency (item), 36 u32 reserved, 40 i64 treasury, 48 i64 treasuryTarget (Mbar; 0 never refuses), 56 u8 levels L (1 to 8), 57 u8 depth D (1 to 32), 58 reserved, 64 8 × i32 thresholds (level k applies at standing ≤ it; level 0's is 127; unused zero), 96 n × good | 96 + n × (16 + 16LD) | |
 | 0x8011 | MERCHANT_OFFERS | offers n | 16 u64 agent, 24 u32 epoch, 28 u32 member, 32 n × offer | 32 + 40n | |
 | 0x8012 | WRITE_GOSSIP | 0 | 16 u64 opId, 24 u64 village, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gossip type, 52 i32 amount, 56 u32 report kind, 60 u32 flags (1 FIRST_HAND) | 64 | COMMAND_RESULT |
 | 0x8013 | SENTIMENT | entries n | 16 u64 holder (village), 24 i32 dislikeAtOrBelow, 28 i32 friendAtOrAbove, 32 u32 flags (1 REPLACE), 36 reserved, 40 n × (u64 playerMost, u64 playerLeast, i32 sentiment, u32 reserved) | 40 + 24n | |
 | 0x8014 | PLACE_HOUSE | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 template, 40 u32 processors (0 none), 44 i32 x, 48 i32 y, 52 i32 z, 56 u8 rotation, 57 u8 mirror, 58 u16 flags (1 SEARCH, 2 Y_FROM_VILLAGE), 60 u32 radius, 64 u64 seed, 72 i32 yOffset, 76 reserved | 80 | HOUSE_PLACED, then COMMAND_RESULT |
 | 0x8015 | SPAWN_RESIDENT | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 body (entity type), 40 u32 profession (0 the body's default), 44 u32 flags (1 AT_HOUSE), 48 f64 x, 56 f64 y, 64 f64 z, 72 u64 house (the PLACE_HOUSE op id) | 80 | COMMAND_RESULT |
 
-**MARKET good** (40 bytes): 0 u32 item, 4 u32 reserved, 8 i64 stock, 16 i64 target (Sbar), 24 i64 anchor
-(p*), 32 i32 rNum, 36 i32 rDen. Glut (more than twice the target) and cash refusal (treasury above
-twice its target) follow from these numbers, as rtsim-trade's `level_of` decides them.
+**MARKET good** (16 + 16LD bytes): 0 u32 item, 4 u32 reserved, 8 i64 stock (where its ladders start),
+16 two ladders, the market's sales (the player buys) then its purchases, each L levels × D steps of
+(i32 items, i32 coins); step j of side s (0 sells, 1 buys) at level k is at 16 + ((s × L + k) × D + j) × 8.
+A (0, 0) step ends a ladder. A ladder is what a run of trades on that side meets, one bundle after
+another, each priced at the market the trades before it left (rtsim-trade `market::ladder`): it ends
+where the market refuses (sold out, a glut, cash refused) or the treasury cannot pay the next bundle.
+Level 0 is the fair price; level k is `markup_for(threshold k, worst)`, never better than fair. Since
+Ben's morning review ("Prices": one source of truth; G31: reputation inside the sim's quote) these
+bundles are the price: the bridge computes none (choices PR1, PR2 in
+docs/overnight-choices-p1rework.md). The engine's levels are -25, -50, -75 and -100 and its depth 8
+(PLACEHOLDERS, `phase1::PRICE_LEVELS`, `LADDER_DEPTH`); MARKET is about 4.7 KiB for the catalogue's
+seven goods.
 
 **MERCHANT_OFFERS offer** (40 bytes): 0 u32 costA item, 4 i32 costA count, 8 u32 costB item (0 none),
 12 i32 costB count, 16 u32 result item, 20 i32 result count, 24 i32 maxUses (0 = 64, PLACEHOLDER),
@@ -436,25 +445,36 @@ killing).
 
 ### 4.3 How Java applies them
 
-- **MARKET** (C13, C14, C23; latest wins). The bridge keeps the snapshot per village and prices residents
-  from it on the server thread (PLAN.md §8.5): before a player starts trading (the interaction event,
-  before vanilla's `updateSpecialPrices`, so reputation still applies on top), after every trade, and
+- **MARKET** (C13, C14, C23; latest wins). The bridge keeps the latest per village and shows its
+  bundles (PLAN.md §8.5): before a player starts trading (the interaction event), after every trade, and
   uses only at a restock. A **market-shaped** offer (one cost and one result, one of them the currency,
-  the other a plain good the market trades) is repriced to rtsim-trade's `Market::offer` bundle (the
-  Java `MarketBook` mirrors it and its unit tests use the Rust vectors), in place, one for one: the sim
-  never adds or removes a resident's offers. Uses = min(vanilla max uses, stock / items for what the
-  village sells, treasury / coins for what it pays). Vanilla's demand is held at 0 on these offers.
-  Ribbit villages (no gossip) apply `markup_for(sentiment, worst)` from the SENTIMENT snapshot; vanilla
-  villagers get none (their reputation pricing carries C20). A bundle that does not fit one stack is
-  clamped only where that is worse for the player, else the offer shows crossed out.
-  **asOfObsSeq**: every observation at or below it is in the snapshot. The bridge keeps each of its own
-  trades under its TRADE's sequence and replays those above it on top of a new snapshot, so a snapshot
-  the engine computed before a trade never gives the money back.
+  the other a plain good the market trades) is replaced in place, one for one, by the step of its
+  ladder where the bridge's own trades since `asOfObsSeq` left that good's stock (`MarketBook`): the
+  sim never adds or removes a resident's offers. The ladder is the player's **price level**: the
+  deepest level whose threshold the player's standing is at or below, the standing being vanilla's own
+  reputation with that villager (`Villager.getPlayerReputation`, its gossip, which the sim also writes,
+  C20) or, for ribbits, the village's SENTIMENT. Vanilla's `updateSpecialPrices` discount (reputation,
+  Hero of the Village) is taken off again on these offers (`VillagerReputationMixin`): the reputation is
+  inside the engine's quote, so one formula sets the price (G31). Uses: the rest of the ladder for what
+  the village sells (none while it refuses cash), the steps the treasury pays for what it buys. A stock
+  the ladder does not reach (a sale and a purchase of one good mixed since the MARKET) shows the offer
+  crossed out until the next MARKET, which the engine sends right after a trade. Vanilla's demand is
+  held at 0 on these offers. A bundle that does not fit one stack is clamped only where that is worse
+  for the player, else the offer shows crossed out.
+  **asOfObsSeq**: every observation at or below it is in the MARKET. The bridge keeps each of its own
+  trades under its TRADE's sequence and replays those above it on top of a new MARKET, so one the
+  engine computed before a trade never gives the money back.
+  The bridge's copy of the price math (`PriceCurve`, `PriceOracle`) is only a test oracle: unit tests
+  check it against rtsim-trade's vectors, and the stub engine prices a test's scripted curves with it.
 - **MERCHANT_OFFERS** (C21; latest wins). Replaces a puppet merchant's offers (vanilla's random wandering
   trader trades and Ribbits' rolled merchant trades are dropped at spawn). Every result comes out of the
   member's trade cargo (a wandering trader's: its group's llama chests; a ribbit merchant's: its pack)
   and every payment goes into it; uses = min(maxUses, cargo of the result / result count, room for each
-  payment / its count). Ignored for an agent or epoch that is not embodied.
+  payment / its count). Ignored for an agent or epoch that is not embodied. The engine's bundles are the
+  price (as MARKET's). A caravan standing at a border market its road touches (within 96 blocks,
+  PLACEHOLDER) also exchanges emeralds and amethyst at that market's rate (P21): an offer selling the
+  foreign coin for the market's own and one buying it back, each rounded against the player; the engine
+  sends the offers again as the caravan walks into or out of that reach.
 - **WRITE_GOSSIP** (C20). Written with `GossipContainer.add` into every loaded resident villager of the
   village, as the player's entry. **Each villager takes an op id once**: it carries the op ids it was
   written with (`mic_rtsim:gossip_ops`, the last 64, saved with it), so a resend after a crash adds
@@ -538,9 +558,14 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      saw itself); TAKEN and DIED of a phase 1 puppet take or kill its member; BASE marks and unmarks
      player-base nodes; HOUSE_PLACED lets a grown house's residents move in; the first
      VILLAGE_CENSUS sets a village's population and later ones only raise it; VILLAGE_GOSSIP is read
-     as latest state.
-   - **Commands.** MARKET (`asOfObsSeq` the highest observation the step applied) for villages near
-     a player or just traded at, when they changed; MERCHANT_OFFERS when a caravan materializes;
+     as latest state. A member TAKEN or DIED books exactly the items of the MEMBER_STATE right before
+     it (what its chest or pack really held, the items the sim trades), out of the member's own
+     cargo, then the caravan's purse, then the other members'; what it was planned to carry and did
+     not hold stays with the caravan (Review P3, Ben: "Book what was really there"; choice PR3).
+   - **Commands.** MARKET (`asOfObsSeq` the highest observation the step applied; its ladders from
+     rtsim-trade's `market::ladder`) for villages near a player or just traded at, when they changed;
+     MERCHANT_OFFERS when a caravan materializes, and again when it walks into or out of a border
+     market's reach (P21);
      SENTIMENT for ribbit villages whose feelings may have changed; WRITE_GOSSIP from
      rtsim-knowledge's vanilla gossip (amounts below 2 raised to 2); PLACE_HOUSE then SPAWN_RESIDENT
      for growth. The last three carry op ids derived from what they are (§2.2) and are kept and
@@ -553,7 +578,21 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      checks the state hash against the one saved. A save writes the meta page and the tail chunks
      not yet on disk, or a new snapshot when the tail reaches 1,024 inputs or a world day, or the
      world changed outside the log (the dragons). Pages this build cannot read are dropped with a
-     loud log and the phase 1 world starts afresh (`when_pages_unreadable`, S5).
+     loud log and the phase 1 world starts afresh (`when_pages_unreadable`, S5; Ben chose "Drop and
+     start fresh").
+   - **The switch** (C25; U10, Ben: "Ignore everything"; choice PR13). Phase 1 runs only with all
+     four of its modules on (knowledge, settlements, trade, travel). Switched off it captures every
+     puppet back (one last write), drops what was queued for the session, ignores its records
+     (journaled ones are admitted by `Replay` for their sequence and op id, then counted and
+     dropped; censuses too), runs nothing and materializes nothing. Commands the bridge answers by
+     op id decided before the switch and not yet written wait unsequenced until it is on again;
+     resends of ones already written still go out with their sequences; COMMAND_RESULT and
+     HOUSE_PLACED are still taken (the protocol finishing, not the module running). On again, the world runs to
+     now at once. The dragons, ships, herds and conflict live in its world and run its clock while
+     they run.
+   - **News** travels separately from cargo (Ben: "News travels separately"; choice PR6): every road
+     has messengers on their own schedule, so a news packet never waits for a caravan's dock; touring
+     bands carry gossip on their circuits (P16). Nothing of this crosses the boundary.
    - **Tests.** Orders 16 to 21 script the phase 1 commands (the stub's `market`, `merchantOffers`
      and so on); order 22 marks a village as a test's own, which the engine then leaves alone; orders
      23 (`P1_SPAWN_NEAR`) and 24 (`P1_ADVANCE`) materialize a caravan off the flows at a chosen place
