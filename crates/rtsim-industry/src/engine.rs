@@ -938,13 +938,12 @@ impl Engine {
             .find(|(i, _)| *i == inv)
             .map_or(0, |k| k.1);
         let pos = dist.inventories.get(&inv).map_or(BlockPos::default(), |i| i.decl.pos);
-        // The packages are physically in the offline buffer now.
+        // The packages are physically in the offline buffer now. They came out of the mail pool,
+        // not out of stock, so the replay's base does not move: the stock pool already fell by
+        // what was packed, and the reconcile takes that from the vaults.
         if let Some(i) = dist.inventories.get_mut(&inv) {
             i.known.add(g, count * batch);
             i.known_at = i.known_at.max(at);
-        }
-        if let Some(span) = dist.sim.as_mut() {
-            span.base.add(g, count * batch);
         }
         self.stats.packages_written += count as u64;
         if self.mode == Mode::Apply {

@@ -270,3 +270,46 @@ fn threat_legs_find_the_trains_they_cross() {
     assert!(met.contains(&rtsim_industry::ids::TrainId(1)), "met {met:?}");
     assert!(w.engine.encounters(0, &[(40, 40)], Tick(now.0 - 3_000), now).is_empty());
 }
+
+/// A district whose packager fills a postbox (I3, §8.2): while unloaded the replay writes whole
+/// packages into the offline buffer, a train takes some, and the reconcile takes exactly what was
+/// packed from the vault, never twice.
+#[test]
+fn packages_written_while_unloaded_are_taken_from_the_vault_once() {
+    use rtsim_industry::cmd::Cmd;
+    use rtsim_industry::engine::Engine;
+    use rtsim_industry::learn::{Learned, LinkKey};
+    use rtsim_industry::obs::{Direction, DistrictDecl, InventoryDecl, LoadState, PackageEvent, SweepEnd};
+    let mut e = Engine::new(1, Tunables::default(), Mode::Apply, Tick(0));
+    e.define_good(BAR, GoodInfo::item("bar", 64));
+    let d = MILL;
+    let send = |e: &mut Engine, at: u64, obs: Obs| e.ingest(&Timed { at: Tick(at), obs });
+    send(&mut e, 0, Obs::District(DistrictDecl { district: d, revision: 1, dim: 0, name: 0, not_learnable: None, inventory_count: 2 }));
+    for (index, kind, slots) in [(0u32, InvKind::ITEMS, 100u32), (1, InvKind::ITEMS | InvKind::POSTBOX, 18)] {
+        send(&mut e, 0, Obs::Inventory(InventoryDecl { district: d, revision: 1, index, pos: BlockPos::new(index as i32 * 20, 64, 0), kind: InvKind(kind), item_slots: slots, fluid_capacity: 0, energy_capacity: 0 }));
+    }
+    send(&mut e, 0, Obs::LoadState { district: d, state: LoadState::Live, ticking_chunks: 2, total_chunks: 2 });
+    send(&mut e, 10, Obs::StockSample { district: d, inventory: 0, sweep: 1, goods: GoodVec::from_pairs([(BAR, 5_000)]) });
+    send(&mut e, 10, Obs::StockSample { district: d, inventory: 1, sweep: 1, goods: GoodVec::new() });
+    send(&mut e, 10, Obs::SweepEnd(SweepEnd { district: d, sweep: 1, records: 2, inventories: 2, live: true, creative: false, overstressed: false }));
+    // A train took a package of 64 bars addressed "7" while it was loaded: one package's contents.
+    send(&mut e, 20, Obs::Package(PackageEvent { district: d, inventory: 1, direction: Direction::Out, address: 7, packages: 1, op: None, goods: GoodVec::from_pairs([(BAR, 64)]) }));
+    e.adopt_model(d, Learned { at: Tick(20), window_ticks: 12_000, rates: vec![], links: vec![(LinkKey::Mail { inventory: 1, address: 7, good: BAR }, -0.02)], confidence: 1.0, points: 0, longest_gap: 0, latency_ticks: 0 }, vec![]);
+    send(&mut e, 100, Obs::LoadState { district: d, state: LoadState::Unloaded, ticking_chunks: 0, total_chunks: 2 });
+    // A day of packing: 480 bars, 7 whole packages written.
+    e.advance_to(Tick(100 + 24_000));
+    let written: u32 = e.drain_commands().iter().map(|c| match c { Cmd::WritePackage(p) => { assert_eq!(p.goods.get(BAR), 64); p.count } _ => 0 }).sum();
+    assert_eq!(written, 7);
+    // A train fetches three of them from the offline buffer.
+    send(&mut e, 24_200, Obs::Package(PackageEvent { district: d, inventory: 1, direction: Direction::In, address: 7, packages: 0, op: None, goods: GoodVec::new() }));
+    send(&mut e, 24_300, Obs::Package(PackageEvent { district: d, inventory: 1, direction: Direction::Out, address: 7, packages: 3, op: None, goods: GoodVec::from_pairs([(BAR, 192)]) }));
+    for x in [0, 1] {
+        send(&mut e, 24_400, Obs::ChunkLoaded { district: d, chunk: ChunkPos { dim: 0, x, z: 0 }, applied_epoch: 0 });
+    }
+    send(&mut e, 24_400, Obs::LoadState { district: d, state: LoadState::Live, ticking_chunks: 2, total_chunks: 2 });
+    let r = e.district(d).unwrap().reports.back().unwrap().clone();
+    // Packed: 24,300 ticks at 0.02 is 486 bars; 7 packages (448) were written, the rest goes back.
+    assert_eq!(r.net.get(BAR), -448, "{r:?}");
+    let vault_delta: i64 = e.drain_commands().iter().filter_map(|c| match c { Cmd::ChunkReconcile(rc) => Some(rc.deltas.iter().filter(|x| x.inventory == 0).map(|x| x.delta).sum::<i64>()), _ => None }).sum();
+    assert_eq!(vault_delta, -448, "the vault gives exactly what was packed into written packages");
+}

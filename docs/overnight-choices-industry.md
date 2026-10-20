@@ -214,8 +214,10 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
    average over the window: a window without stalls learns no stalls.
 6. **The sweep record (IND_SWEEP_END) is not in INDUSTRY.md.** §3.2 has round-robin sampling only;
    the record count is what makes latest-wins samples safe (F5).
-7. **Package writing by unloaded districts (§8.2)** is built (F26) and unit-reachable, but no
-   scenario exercises it end to end: the fake world has no postbox mail.
+7. **Package writing by unloaded districts (§8.2)** is built (F26). An engine-level test checks it:
+   written packages, a train fetching some, and the vault giving exactly what was packed. Its
+   first version took the packed goods twice; the fix is in. The fake world still has no postbox
+   mail, so no scenario runs it with a real train.
 8. **Memory.** About 8.6 KB resident per replaying district, measured: 86 MB at 10,000.
    - The district record, its learner and its cluster are not paged (A16 is not wired for industry
      state).
