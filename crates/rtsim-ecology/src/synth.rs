@@ -15,16 +15,16 @@
 
 use std::collections::BTreeMap;
 
-use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_settle::{Culture, NodeKind, Pos};
-use rtsim_trade::labour::{Recipe, RecipeBook, ResourceId};
-use rtsim_trade::{Amount, GoodDef, GoodId, GoodKind, Goods, MILLI};
 use rtsim_industry::engine::Mode;
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{BlockFlags, InvKind};
 use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::tunables::Tunables;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_settle::{Culture, NodeKind, Pos};
+use rtsim_trade::labour::{Recipe, RecipeBook, ResourceId};
+use rtsim_trade::{Amount, GoodDef, GoodId, GoodKind, Goods, MILLI};
 use rtsim_world::{NodeData, World, WorldConfig};
 
 use crate::boundary::{self, Cmd, Obs, SpeciesDict, Uuid};
@@ -98,7 +98,14 @@ pub fn recipes(s: &DragonGoods) -> RecipeBook {
     };
     RecipeBook {
         recipes: vec![
-            r("farm wheat", s.wheat, 10, vec![(s.wheat, 1)], 1.0, Some(FARMLAND)),
+            r(
+                "farm wheat",
+                s.wheat,
+                10,
+                vec![(s.wheat, 1)],
+                1.0,
+                Some(FARMLAND),
+            ),
             r("bake bread", s.bread, 1, vec![(s.wheat, 3)], 0.1, None),
             r("raise cattle", s.cattle, 1, vec![], 1.0, Some(PASTURE)),
             r("raise sheep", s.sheep, 2, vec![], 1.0, Some(SHEEPWALK)),
@@ -117,7 +124,10 @@ fn village(key: u64, x: i32, z: i32, pop: u32, r: &[(ResourceId, i64)]) -> NodeD
         kind: NodeKind::Village(Culture::Human),
         pos: Pos::new(0, x, z),
         pop,
-        resources: r.iter().map(|&(id, per_day)| (id, per_day * MILLI)).collect(),
+        resources: r
+            .iter()
+            .map(|&(id, per_day)| (id, per_day * MILLI))
+            .collect(),
     }
 }
 
@@ -194,10 +204,7 @@ pub fn lairs() -> Vec<LairSpec> {
             x: 1000,
             z: 1100,
             y: 110,
-            dragons: vec![
-                ("Cinderjaw", Female, 110, 70),
-                ("Emberling", Male, 32, 80),
-            ],
+            dragons: vec![("Cinderjaw", Female, 110, 70), ("Emberling", Male, 32, 80)],
         },
         LairSpec {
             key: 102,
@@ -245,7 +252,12 @@ pub fn lairs() -> Vec<LairSpec> {
 /// The scenario's dragons placed in the world: lairs join, their dragons are adopted (as the
 /// plugin's DRAGON_UNTAGGED would bring them), and the first dragon of a lair is the parent of
 /// the second.
-pub fn populate(w: &mut World, d: &mut Dragons, specs: &[LairSpec], at: Tick) -> Vec<(LairId, Vec<DragonId>)> {
+pub fn populate(
+    w: &mut World,
+    d: &mut Dragons,
+    specs: &[LairSpec],
+    at: Tick,
+) -> Vec<(LairId, Vec<DragonId>)> {
     let mut out = Vec::new();
     for s in specs {
         let l = d.add_lair(
@@ -295,7 +307,11 @@ pub fn bench_lairs(w: &World, n: usize, per_lair: usize, seed: u64) -> Vec<LairS
         z0 = z0.min(node.pos.z);
         z1 = z1.max(node.pos.z);
     }
-    let key = rtsim_kernel::rng::StreamKey::new(seed, rtsim_kernel::rng::SystemId::named("synth.lairs"), 0);
+    let key = rtsim_kernel::rng::StreamKey::new(
+        seed,
+        rtsim_kernel::rng::SystemId::named("synth.lairs"),
+        0,
+    );
     (0..n)
         .map(|i| {
             let mut r = key.slot(i as u64);
@@ -314,7 +330,11 @@ pub fn bench_lairs(w: &World, n: usize, per_lair: usize, seed: u64) -> Vec<LairS
                     .map(|k| {
                         (
                             "bench dragon",
-                            if k % 2 == 0 { Gender::Female } else { Gender::Male },
+                            if k % 2 == 0 {
+                                Gender::Female
+                            } else {
+                                Gender::Male
+                            },
                             60 + r.below(60),
                             30 + r.below(60) as i32,
                         )
@@ -330,7 +350,11 @@ pub fn grid(n: usize, seed: u64) -> World {
     let (g, ids) = goods();
     let book = recipes(&ids);
     let side = (n as f64).sqrt().ceil() as usize;
-    let key = rtsim_kernel::rng::StreamKey::new(seed, rtsim_kernel::rng::SystemId::named("synth.dgrid"), 0);
+    let key = rtsim_kernel::rng::StreamKey::new(
+        seed,
+        rtsim_kernel::rng::SystemId::named("synth.dgrid"),
+        0,
+    );
     let all = [FARMLAND, PASTURE, IRON_ORE, SHEEPWALK, EMERALD_ORE, GOLD];
     let data = (0..n)
         .map(|i| {
@@ -450,7 +474,12 @@ pub fn farm(seed: u64, turrets: [f32; 4], visits: Vec<Visit>) -> FakeWorld {
         exposed(vault, 13, BlockFlags::INVENTORY, Some(0)),
     ];
     for i in 0..6 {
-        d.exposed.push(exposed(BlockPos::new(bx - 3 + i, 64, bz - 3), 20 + i as u32, roofless, None));
+        d.exposed.push(exposed(
+            BlockPos::new(bx - 3 + i, 64, bz - 3),
+            20 + i as u32,
+            roofless,
+            None,
+        ));
     }
     w.districts.push(d);
     w.visits = visits;
@@ -687,10 +716,10 @@ impl FakeIaf {
             {
                 b.health = h.health_after;
             }
-            if let Obs::Died(dd) = &o {
-                if self.bodies.remove(&dd.agent).is_none() {
-                    continue;
-                }
+            if let Obs::Died(dd) = &o
+                && self.bodies.remove(&dd.agent).is_none()
+            {
+                continue;
             }
             if let Obs::Hurt(h) = &o
                 && !self.bodies.contains_key(&h.agent)
@@ -709,7 +738,8 @@ impl FakeIaf {
             let mut buf = Vec::new();
             boundary::encode_obs(self.obs_seq, t.0 as i64, &o, &self.dict, &mut buf);
             self.wire_bytes += buf.len() as u64;
-            let (_, _, _, back) = boundary::decode_obs(&buf, &self.dict).expect("decodable observation");
+            let (_, _, _, back) =
+                boundary::decode_obs(&buf, &self.dict).expect("decodable observation");
             assert_eq!(back, o, "the codec changed an observation");
             out.push((t, back));
         }

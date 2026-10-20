@@ -261,7 +261,12 @@ fn day_of(t: Tick) -> f64 {
 }
 
 fn place(p: Pos, y: i32) -> Place {
-    Place::new(p.frame, p.x, y.clamp(i16::MIN as i32, i16::MAX as i32) as i16, p.z)
+    Place::new(
+        p.frame,
+        p.x,
+        y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        p.z,
+    )
 }
 
 /// The same 64-bit stand-in for a player's UUID the phase 1 world uses (its `uuid_hash`), so one
@@ -383,6 +388,7 @@ impl Dragons {
     /// A lair joins when its structure generates (LAIR_FOUND; C22's rule for villages applied to
     /// lairs). Idempotent by key. Its respawn clock starts: if no dragon is adopted into it within
     /// the delay, a young one comes.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_lair(
         &mut self,
         w: &mut World,
@@ -418,7 +424,10 @@ impl Dragons {
         });
         self.lair_by_key.insert(key, id);
         let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(pos.x), i64::from(pos.z));
-        self.lair_cells.entry((pos.frame, rx, rz)).or_default().push(id);
+        self.lair_cells
+            .entry((pos.frame, rx, rz))
+            .or_default()
+            .push(id);
         let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
         self.schedule(at + delay, Ev::Respawn { lair: id, plan: 1 });
         id
@@ -611,13 +620,26 @@ impl Dragons {
                 continue;
             };
             if let Some(m) = w.legs.meeting(other, stamp) {
-                self.schedule(m.at, Ev::Seen { d, player: p, meeting: m });
+                self.schedule(
+                    m.at,
+                    Ev::Seen {
+                        d,
+                        player: p,
+                        meeting: m,
+                    },
+                );
             }
         }
         // Dragons at rest in a lair the area covers.
         let r = i64::from(path.radius);
-        let (x0, z0) = (i64::from(path.x0.min(path.x1)) - r, i64::from(path.z0.min(path.z1)) - r);
-        let (x1, z1) = (i64::from(path.x0.max(path.x1)) + r, i64::from(path.z0.max(path.z1)) + r);
+        let (x0, z0) = (
+            i64::from(path.x0.min(path.x1)) - r,
+            i64::from(path.z0.min(path.z1)) - r,
+        );
+        let (x1, z1) = (
+            i64::from(path.x0.max(path.x1)) + r,
+            i64::from(path.z0.max(path.z1)) + r,
+        );
         let (ra, rb) = (
             rtsim_travel::legs::LegIndex::region_of(x0, z0),
             rtsim_travel::legs::LegIndex::region_of(x1, z1),
@@ -625,7 +647,13 @@ impl Dragons {
         let mut found = Vec::new();
         for rx in ra.0..=rb.0 {
             for rz in ra.1..=rb.1 {
-                found.extend(self.lair_cells.get(&(path.frame, rx, rz)).into_iter().flatten().copied());
+                found.extend(
+                    self.lair_cells
+                        .get(&(path.frame, rx, rz))
+                        .into_iter()
+                        .flatten()
+                        .copied(),
+                );
             }
         }
         for l in found {
@@ -636,7 +664,15 @@ impl Dragons {
             }
             for d in self.lairs[l as usize].occupants.clone() {
                 let at = path.t0.max(self.now);
-                self.schedule(at, Ev::SeenAtLair { d, player: p, interest: stamp, lair: l });
+                self.schedule(
+                    at,
+                    Ev::SeenAtLair {
+                        d,
+                        player: p,
+                        interest: stamp,
+                        lair: l,
+                    },
+                );
             }
         }
     }
@@ -659,8 +695,18 @@ impl Dragons {
                 continue;
             }
             let (px, pz) = row.path.at(at);
-            if flight::dist((px, pz), (i64::from(lp.x), i64::from(lp.z))) <= f64::from(row.path.radius) {
-                self.schedule(at, Ev::SeenAtLair { d, player: p, interest: s, lair: l });
+            if flight::dist((px, pz), (i64::from(lp.x), i64::from(lp.z)))
+                <= f64::from(row.path.radius)
+            {
+                self.schedule(
+                    at,
+                    Ev::SeenAtLair {
+                        d,
+                        player: p,
+                        interest: s,
+                        lair: l,
+                    },
+                );
             }
         }
     }
@@ -721,7 +767,14 @@ impl Dragons {
                 self.feed(d, at, food, &victims);
                 if food > 0 || !taken.is_empty() {
                     let name = self.road_name(w, edge);
-                    self.record_hunt(at, d, PreyKind::Road, format!("{name} (crossing)"), food, taken);
+                    self.record_hunt(
+                        at,
+                        d,
+                        PreyKind::Road,
+                        format!("{name} (crossing)"),
+                        food,
+                        taken,
+                    );
                 }
             }
             Ev::Seen { d, player, meeting } => self.seen(w, d, player, meeting, at),
@@ -762,7 +815,12 @@ impl Dragons {
                     w.knowledge.die(x.actor, at);
                 }
                 self.stats.deaths_age += 1;
-                self.note(at, "death", Some(d), "dies of age; its heir inherits".into());
+                self.note(
+                    at,
+                    "death",
+                    Some(d),
+                    "dies of age; its heir inherits".into(),
+                );
                 self.remove(w, d, at);
             }
         }
@@ -791,7 +849,14 @@ impl Dragons {
                 continue;
             };
             if let Some(m) = w.legs.meeting(stamp, other) {
-                self.schedule(m.at, Ev::Seen { d, player: p, meeting: m });
+                self.schedule(
+                    m.at,
+                    Ev::Seen {
+                        d,
+                        player: p,
+                        meeting: m,
+                    },
+                );
             }
         }
     }
@@ -850,7 +915,14 @@ impl Dragons {
         self.book_crossings(w, d, path, purpose, plan);
     }
 
-    fn book_crossings(&mut self, w: &mut World, d: DragonId, path: Path, purpose: Purpose, plan: u32) {
+    fn book_crossings(
+        &mut self,
+        w: &mut World,
+        d: DragonId,
+        path: Path,
+        purpose: Purpose,
+        plan: u32,
+    ) {
         let skip = match purpose {
             Purpose::Hunt(Target::Road { edge, .. }) => Some(edge),
             _ => None,
@@ -924,7 +996,10 @@ impl Dragons {
     /// test), from `at`, which the caller has run the engine to. Ignored for an embodied dragon,
     /// which the plugin is flying.
     pub fn relocate(&mut self, w: &mut World, d: DragonId, l: LairId, at: Tick) {
-        if !self.dragons.contains(d) || self.dragons[d].is_embodied() || l as usize >= self.lairs.len() {
+        if !self.dragons.contains(d)
+            || self.dragons[d].is_embodied()
+            || l as usize >= self.lairs.len()
+        {
             return;
         }
         self.leave_lair(w, d, at);
@@ -945,7 +1020,10 @@ impl Dragons {
         if !stage.hunts() {
             // A hatchling is fed by its parents (abstractly): it stays full.
             let full = self.tun.full;
-            self.dragons.get_mut(d).expect("live").set_fullness(full, at);
+            self.dragons
+                .get_mut(d)
+                .expect("live")
+                .set_fullness(full, at);
             self.roost(w, d, at);
             return;
         }
@@ -961,7 +1039,11 @@ impl Dragons {
                     at,
                     "hunt",
                     Some(d),
-                    format!("hungry ({}), hunts {} at {name} (utility {u:.1})", self.dragons[d].fullness_at(&self.tun, at), kind.name()),
+                    format!(
+                        "hungry ({}), hunts {} at {name} (utility {u:.1})",
+                        self.dragons[d].fullness_at(&self.tun, at),
+                        kind.name()
+                    ),
                 );
                 self.fly(w, d, Purpose::Hunt(t), at);
             }
@@ -1054,14 +1136,17 @@ impl Dragons {
         let w_village = f64::from(self.tun.season_weight(season, PreyKind::Village)) / 100.0;
         // Bold dragons fear a village's defenders less (C25): twice the risk at boldness 0,
         // none at 255.
-        let fear = f64::from(self.tun.village_risk) * (2.0 - f64::from(temper.bold) / 128.0).max(0.0);
+        let fear =
+            f64::from(self.tun.village_risk) * (2.0 - f64::from(temper.bold) / 128.0).max(0.0);
         for node in self.index.villages_near(origin.frame, ox, oz, range) {
             let n = &w.nodes[node as usize];
             let dist = flight::dist((ox, oz), (i64::from(n.pos.x), i64::from(n.pos.z)));
             if dist > range as f64 {
                 continue;
             }
-            let food = self.village_food(w, node as usize, sp.village_share_milli).min(need);
+            let food = self
+                .village_food(w, node as usize, sp.village_share_milli)
+                .min(need);
             if food <= 0.0 {
                 continue;
             }
@@ -1086,7 +1171,9 @@ impl Dragons {
             if flight::dist((ox, oz), p) > range as f64 {
                 continue;
             }
-            let food = self.road_food(w, e as usize, sp.catch_milli, sp.caravan_share_milli).min(need);
+            let food = self
+                .road_food(w, e as usize, sp.catch_milli, sp.caravan_share_milli)
+                .min(need);
             if food <= 0.0 {
                 continue;
             }
@@ -1185,7 +1272,12 @@ impl Dragons {
         };
         self.stats.migrations += 1;
         let name = self.lairs[l as usize].name.clone();
-        self.note(at, "migrate", Some(d), format!("finds nothing to eat; migrates to {name}"));
+        self.note(
+            at,
+            "migrate",
+            Some(d),
+            format!("finds nothing to eat; migrates to {name}"),
+        );
         self.leave_lair(w, d, at);
         self.lairs[l as usize].plan += 1; // its respawn event is void: it is claimed
         self.lairs[l as usize].vacant_since = None;
@@ -1361,7 +1453,13 @@ impl Dragons {
     }
 
     /// Takes goods into the ledger by class; returns fullness gained and the names taken.
-    fn take_world(&mut self, w: &World, g: GoodId, amount: i64, out: &mut Vec<(String, i64)>) -> i32 {
+    fn take_world(
+        &mut self,
+        w: &World,
+        g: GoodId,
+        amount: i64,
+        out: &mut Vec<(String, i64)>,
+    ) -> i32 {
         if amount <= 0 {
             return 0;
         }
@@ -1523,7 +1621,14 @@ impl Dragons {
 
     /// A grudge raid: the districts at the hated player's home, through the industry threat
     /// interface. Watched districts fight for real: the dragon materializes there instead (P28).
-    fn raid_home(&mut self, w: &mut World, infra: &mut dyn Infrastructure, d: DragonId, t: Target, at: Tick) {
+    fn raid_home(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        d: DragonId,
+        t: Target,
+        at: Tick,
+    ) {
         let Target::Home { player, x, z } = t else {
             return;
         };
@@ -1565,7 +1670,9 @@ impl Dragons {
             self.stats.district_raids += 1;
             let mut gained = 0;
             for (g, n) in o.stolen.iter() {
-                let name = infra.good_name(g).unwrap_or_else(|| format!("good {}", g.0));
+                let name = infra
+                    .good_name(g)
+                    .unwrap_or_else(|| format!("good {}", g.0));
                 let class = self.tun.prey.class(&name, false);
                 gained += self.ledger.take(Item::Industry(g), n, class);
                 if matches!(class, PreyClass::Valuable) {
@@ -1578,7 +1685,8 @@ impl Dragons {
             // death needs a real fight), so it keeps at least a tenth of its health.
             let max = self.dragons[d].max_health(&sp, at);
             let h = self.dragons[d].health_at(&sp, at);
-            let wound = max * (self.tun.raid_wound_milli as f32 / 1000.0) * (1.0 - o.survived as f32);
+            let wound =
+                max * (self.tun.raid_wound_milli as f32 / 1000.0) * (1.0 - o.survived as f32);
             self.dragons
                 .get_mut(d)
                 .expect("live")
@@ -1591,10 +1699,17 @@ impl Dragons {
                     "raids district {} (unwatched): survived {:.2}{}{}, {} blocks destroyed{}",
                     site.id.0,
                     o.survived,
-                    o.floor.map_or(String::new(), |f| format!(", floored by an observed fight at {f:.2}")),
-                    if o.untested { ", untested defences" } else { "" },
+                    o.floor.map_or(String::new(), |f| format!(
+                        ", floored by an observed fight at {f:.2}"
+                    )),
+                    if o.untested {
+                        ", untested defences"
+                    } else {
+                        ""
+                    },
                     o.destroyed_blocks,
-                    o.skipped.map_or(String::new(), |s| format!(", skipped: {s}"))
+                    o.skipped
+                        .map_or(String::new(), |s| format!(", skipped: {s}"))
                 ),
             );
         }
@@ -1618,7 +1733,8 @@ impl Dragons {
             return;
         }
         self.stats.seen += 1;
-        let grudge = w.knowledge.sentiment(self.dragons[d].actor, player, at) <= self.tun.grudge_below;
+        let grudge =
+            w.knowledge.sentiment(self.dragons[d].actor, player, at) <= self.tun.grudge_below;
         // It harasses when it hunts here: at its prey, or flying to prey near the player.
         let near = |t: Target| {
             let tp = self.target_pos(w, t);
@@ -1669,7 +1785,12 @@ impl Dragons {
             // Hunger brings the departure forward (C24): a starving dragon only looks in.
             at + (sp.visit_ticks / 10).max(1)
         } else if harass {
-            at + temper.weight(Trait::Aggressive, sp.visit_ticks.min(i32::MAX as u64) as i32).max(1) as u64
+            at + temper
+                .weight(
+                    Trait::Aggressive,
+                    sp.visit_ticks.min(i32::MAX as u64) as i32,
+                )
+                .max(1) as u64
         } else {
             at + flight::flight_ticks(f64::from(2 * self.tun.view_radius), sp.speed)
         };
@@ -1706,7 +1827,11 @@ impl Dragons {
             variant: u32::from(x.variant),
             health: x.health_at(&sp, at),
             home: lair.map_or((0, 0, 0), |l| (l.pos.x, l.y, l.pos.z)),
-            target: (f64::from(target.x), f64::from(sp.cruise_y), f64::from(target.z)),
+            target: (
+                f64::from(target.x),
+                f64::from(sp.cruise_y),
+                f64::from(target.z),
+            ),
             target_player: if grudge { self.uuid_of(player) } else { (0, 0) },
         };
         self.outbox.push(Cmd::Materialize(cmd));
@@ -1760,7 +1885,10 @@ impl Dragons {
     fn depart(&mut self, d: DragonId, reason: u32, at: Tick) {
         let x = &self.dragons[d];
         let State::Embodied {
-            epoch, purpose, since, ..
+            epoch,
+            purpose,
+            since,
+            ..
         } = x.state
         else {
             return;
@@ -1781,15 +1909,25 @@ impl Dragons {
         if reason == 1 {
             self.stats.bored += 1;
         }
-        let why = ["", "bored", "hungry", "wounded", "passing through", "recalled"]
-            .get(reason as usize)
-            .copied()
-            .unwrap_or("?");
+        let why = [
+            "",
+            "bored",
+            "hungry",
+            "wounded",
+            "passing through",
+            "recalled",
+        ]
+        .get(reason as usize)
+        .copied()
+        .unwrap_or("?");
         self.note(
             at,
             "depart",
             Some(d),
-            format!("leaves ({why}) after {:.2} days in view", day_of(Tick(at.0 - since.0))),
+            format!(
+                "leaves ({why}) after {:.2} days in view",
+                day_of(Tick(at.0 - since.0))
+            ),
         );
         self.bump(d);
         self.dragons.get_mut(d).expect("live").state = State::Leaving { epoch, purpose };
@@ -1799,7 +1937,9 @@ impl Dragons {
         let d = dragon_of(agent)?;
         let x = self.dragons.get(d)?;
         match x.state {
-            State::Embodied { epoch: e, .. } | State::Leaving { epoch: e, .. } if e == epoch => Some(d),
+            State::Embodied { epoch: e, .. } | State::Leaving { epoch: e, .. } if e == epoch => {
+                Some(d)
+            }
             _ => None,
         }
     }
@@ -1811,7 +1951,11 @@ impl Dragons {
         match o {
             Obs::LairFound(l) => {
                 let pos = Pos::new(l.dimension as u16, l.home.0, l.home.2);
-                let name = format!("{} {}", boundary::SpeciesDict::structure_name(l.species, l.kind), l.lair);
+                let name = format!(
+                    "{} {}",
+                    boundary::SpeciesDict::structure_name(l.species, l.kind),
+                    l.lair
+                );
                 self.add_lair(w, l.lair, &name, l.species, l.kind, pos, l.home.1, at);
             }
             Obs::Untagged(u) => self.untagged(w, u, at),
@@ -1833,7 +1977,10 @@ impl Dragons {
                 let x = self.dragons.get_mut(d).expect("live");
                 x.set_health(s.health, at);
                 x.set_fullness(s.hunger, at);
-                x.rest = Some((Pos::new(s.dimension as u16, s.pos.0 as i32, s.pos.2 as i32), s.pos.1 as i32));
+                x.rest = Some((
+                    Pos::new(s.dimension as u16, s.pos.0 as i32, s.pos.2 as i32),
+                    s.pos.1 as i32,
+                ));
                 if s.hunger <= starving && matches!(x.state, State::Embodied { .. }) {
                     self.depart(d, 2, at);
                 }
@@ -1841,8 +1988,12 @@ impl Dragons {
             Obs::Hurt(h) => self.hurt(w, h, at),
             Obs::Died(dd) => {
                 if let Some(d) = self.embodied(dd.agent, dd.epoch) {
-                    let killer = (dd.killer_kind == AttackerKind::Player).then(|| self.player(w, dd.killer));
-                    let pos = (Pos::new(dd.dimension as u16, dd.pos.0 as i32, dd.pos.2 as i32), dd.pos.1 as i32);
+                    let killer =
+                        (dd.killer_kind == AttackerKind::Player).then(|| self.player(w, dd.killer));
+                    let pos = (
+                        Pos::new(dd.dimension as u16, dd.pos.0 as i32, dd.pos.2 as i32),
+                        dd.pos.1 as i32,
+                    );
                     self.kill(w, d, killer, pos, at);
                 }
             }
@@ -1854,14 +2005,14 @@ impl Dragons {
                     let x = self.dragons.get_mut(d).expect("live");
                     x.set_health(m.health, at);
                     x.set_fullness(m.hunger, at);
-                    x.rest = Some((Pos::new(m.dimension as u16, m.pos.0 as i32, m.pos.2 as i32), m.pos.1 as i32));
+                    x.rest = Some((
+                        Pos::new(m.dimension as u16, m.pos.0 as i32, m.pos.2 as i32),
+                        m.pos.1 as i32,
+                    ));
                 }
                 self.by_entity.retain(|_, v| *v != d);
                 let leaving = matches!(self.dragons[d].state, State::Leaving { .. });
-                let what = format!(
-                    "captured (health {:.0}, hunger {})",
-                    m.health, m.hunger
-                );
+                let what = format!("captured (health {:.0}, hunger {})", m.health, m.hunger);
                 self.note(at, "capture", Some(d), what);
                 self.resume(w, d, at, leaving);
             }
@@ -1913,7 +2064,10 @@ impl Dragons {
             (Purpose::Home, Some(l)) => {
                 let (p, _) = self.dragons[d].position(&self.lairs, at);
                 let lp = self.lairs[l as usize].pos;
-                flight::dist((i64::from(p.x), i64::from(p.z)), (i64::from(lp.x), i64::from(lp.z))) < 32.0
+                flight::dist(
+                    (i64::from(p.x), i64::from(p.z)),
+                    (i64::from(lp.x), i64::from(lp.z)),
+                ) < 32.0
             }
             _ => false,
         };
@@ -1935,11 +2089,15 @@ impl Dragons {
         let sp = self.tun.species(self.dragons[d].species).clone();
         let max = self.dragons[d].max_health(&sp, at).max(1.0);
         let share = f64::from(h.amount) / f64::from(max);
-        self.dragons.get_mut(d).expect("live").set_health(h.health_after, at);
+        self.dragons
+            .get_mut(d)
+            .expect("live")
+            .set_health(h.health_after, at);
         if h.attacker_kind == AttackerKind::Player {
             let p = self.player(w, h.attacker);
             let unit = self.tun.wound_unit_milli as f64 / 1000.0;
-            let severity = (f64::from(SEVERITY_UNIT) * (1.0 + share / unit)).clamp(1.0, 255.0) as u8;
+            let severity =
+                (f64::from(SEVERITY_UNIT) * (1.0 + share / unit)).clamp(1.0, 255.0) as u8;
             let (pos, y) = self.dragons[d].position(&self.lairs, at);
             let id = w.knowledge.record(Report {
                 who: p,
@@ -1960,7 +2118,12 @@ impl Dragons {
                 at,
                 "hurt",
                 Some(d),
-                format!("wounded by player {} for {:.0} ({:.0}% of max): sentiment now {s}", p.to_bits(), h.amount, share * 100.0),
+                format!(
+                    "wounded by player {} for {:.0} ({:.0}% of max): sentiment now {s}",
+                    p.to_bits(),
+                    h.amount,
+                    share * 100.0
+                ),
             );
         }
         // Wounds bring the departure forward.
@@ -2001,7 +2164,14 @@ impl Dragons {
     /// A dragon died. Killed by a player: its kin and lair witness the killing (their grudge), and
     /// the settlements it preyed on think better of the slayer (a positive report the caravans
     /// carry, C24: rescues count). Its strongest memories go to its heir (C24).
-    fn kill(&mut self, w: &mut World, d: DragonId, killer: Option<ActorId>, at_pos: (Pos, i32), at: Tick) {
+    fn kill(
+        &mut self,
+        w: &mut World,
+        d: DragonId,
+        killer: Option<ActorId>,
+        at_pos: (Pos, i32),
+        at: Tick,
+    ) {
         self.stats.deaths_violent += 1;
         let x = self.dragons[d].clone();
         if let Some(p) = killer {
@@ -2015,7 +2185,12 @@ impl Dragons {
                 place: place(at_pos.0, at_pos.1),
             });
             let mut kin: Vec<ActorId> = Vec::new();
-            for k in x.children.iter().chain(x.mate.iter()).chain(x.parent.iter()) {
+            for k in x
+                .children
+                .iter()
+                .chain(x.mate.iter())
+                .chain(x.parent.iter())
+            {
                 if let Some(o) = self.dragons.get(*k) {
                     kin.push(o.actor);
                 }
@@ -2039,7 +2214,10 @@ impl Dragons {
                 });
                 w.knowledge.witness(*v, rid, at);
                 let ext = w.knowledge.actors().external(*v).unwrap_or(0);
-                thanks.push(format!("village {ext} {:+}", w.knowledge.sentiment(*v, p, at)));
+                thanks.push(format!(
+                    "village {ext} {:+}",
+                    w.knowledge.sentiment(*v, p, at)
+                ));
             }
             self.note(
                 at,
@@ -2168,7 +2346,12 @@ impl Dragons {
         self.note(at, "claim", Some(d), format!("claims {name}"));
         if let Some(o) = partner {
             self.pair(w, d, o, at);
-            self.note(at, "pair", Some(d), format!("pairs with {} at {name}", self.dragons[o].name));
+            self.note(
+                at,
+                "pair",
+                Some(d),
+                format!("pairs with {} at {name}", self.dragons[o].name),
+            );
         }
     }
 
@@ -2193,7 +2376,11 @@ impl Dragons {
             return;
         }
         let mut rng = StreamKey::new(self.seed, SYS_BREED, x.seed).slot(at.0);
-        let gender = if rng.below(2) == 0 { Gender::Female } else { Gender::Male };
+        let gender = if rng.below(2) == 0 {
+            Gender::Female
+        } else {
+            Gender::Male
+        };
         let variant = rng.below(4) as u8;
         let name = format!("{}'s young {}", x.name, self.stats.births + 1);
         let species = x.species;
@@ -2215,7 +2402,12 @@ impl Dragons {
         );
         self.stats.births += 1;
         self.set_parent(w, child, d, at);
-        self.note(at, "birth", Some(d), format!("hatches a young one, {}", self.dragons[child].name));
+        self.note(
+            at,
+            "birth",
+            Some(d),
+            format!("hatches a young one, {}", self.dragons[child].name),
+        );
         self.schedule(at + sp.breed_days * TICKS_PER_DAY, Ev::Breed { d });
     }
 
@@ -2232,7 +2424,12 @@ impl Dragons {
         match self.vacant_lair(d, at) {
             Some(l) => {
                 let name = self.lairs[l as usize].name.clone();
-                self.note(at, "disperse", Some(d), format!("leaves its parents for {name}"));
+                self.note(
+                    at,
+                    "disperse",
+                    Some(d),
+                    format!("leaves its parents for {name}"),
+                );
                 self.leave_lair(w, d, at);
                 self.lairs[l as usize].plan += 1;
                 self.lairs[l as usize].vacant_since = None;
@@ -2265,7 +2462,11 @@ impl Dragons {
             lair.pos.x + (r * angle.cos()) as i32,
             lair.pos.z + (r * angle.sin()) as i32,
         );
-        let gender = if rng.below(2) == 0 { Gender::Female } else { Gender::Male };
+        let gender = if rng.below(2) == 0 {
+            Gender::Female
+        } else {
+            Gender::Male
+        };
         let variant = rng.below(4) as u8;
         let cruise = self.tun.species(species).cruise_y;
         let name = format!("{} newcomer", lair.name);
@@ -2289,7 +2490,12 @@ impl Dragons {
         lair.plan += 1;
         lair.vacant_since = None;
         let name = lair.name.clone();
-        self.note(at, "respawn", Some(d), format!("{name} stood empty: a young dragon flies in to claim it"));
+        self.note(
+            at,
+            "respawn",
+            Some(d),
+            format!("{name} stood empty: a young dragon flies in to claim it"),
+        );
         self.fly(w, d, Purpose::Claim(l), at);
     }
 
@@ -2307,7 +2513,11 @@ impl Dragons {
         let lair = (u.lair != 0).then(|| self.lair_of_key(u.lair)).flatten();
         let discard = match u.spawn {
             SpawnKind::Natural | SpawnKind::Spawner => Some(1),
-            SpawnKind::Structure if lair.is_some_and(|l| !self.lairs[l as usize].occupants.is_empty()) => Some(2),
+            SpawnKind::Structure
+                if lair.is_some_and(|l| !self.lairs[l as usize].occupants.is_empty()) =>
+            {
+                Some(2)
+            }
             _ => None,
         };
         if let Some(reason) = discard {
@@ -2330,7 +2540,9 @@ impl Dragons {
                 lair,
                 fullness: u.hunger,
                 health: None,
-                seed: Some(fnv1a64(&[u.entity.0.to_le_bytes(), u.entity.1.to_le_bytes()].concat())),
+                seed: Some(fnv1a64(
+                    &[u.entity.0.to_le_bytes(), u.entity.1.to_le_bytes()].concat(),
+                )),
                 at: Some((pos, u.pos.1 as i32)),
             },
             at,
@@ -2510,7 +2722,12 @@ impl Dragons {
                 wr.raw(&v.to_le_bytes());
             }
         }
-        for m in [&self.ledger.taken, &self.ledger.eaten, &self.ledger.burnt, &self.ledger.hoarded] {
+        for m in [
+            &self.ledger.taken,
+            &self.ledger.eaten,
+            &self.ledger.burnt,
+            &self.ledger.hoarded,
+        ] {
             for (k, v) in m {
                 wr.raw(k.key().as_bytes());
                 wr.raw(&v.to_le_bytes());
@@ -2521,7 +2738,13 @@ impl Dragons {
 
     pub fn heap_bytes(&self) -> usize {
         self.dragons.heap_bytes()
-            + self.dragons.iter().map(|(_, x)| x.children.capacity() * 8 + x.victims.capacity() * 8 + x.name.capacity()).sum::<usize>()
+            + self
+                .dragons
+                .iter()
+                .map(|(_, x)| {
+                    x.children.capacity() * 8 + x.victims.capacity() * 8 + x.name.capacity()
+                })
+                .sum::<usize>()
             + self.lairs.capacity() * std::mem::size_of::<Lair>()
             + self.wheel.heap_bytes()
             + self.homes.heap_bytes()
@@ -2530,10 +2753,20 @@ impl Dragons {
     }
 
     /// The districts a player's home holds, for display.
-    pub fn home_districts(&self, infra: &mut dyn Infrastructure, p: ActorId, at: Tick) -> Vec<DistrictId> {
+    pub fn home_districts(
+        &self,
+        infra: &mut dyn Infrastructure,
+        p: ActorId,
+        at: Tick,
+    ) -> Vec<DistrictId> {
         match self.homes.home(p, at) {
             Some(h) => infra
-                .districts_near(h.pos.frame, i64::from(h.pos.x), i64::from(h.pos.z), HOME_RADIUS)
+                .districts_near(
+                    h.pos.frame,
+                    i64::from(h.pos.x),
+                    i64::from(h.pos.z),
+                    HOME_RADIUS,
+                )
                 .into_iter()
                 .map(|s| s.id)
                 .collect(),

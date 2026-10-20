@@ -67,7 +67,9 @@ pub struct PreyTable {
 
 impl Default for PreyTable {
     fn default() -> Self {
-        let food = |n: &str, per_item: i32, herd: bool| (n.to_string(), PreyClass::Food { per_item, herd });
+        let food = |n: &str, per_item: i32, herd: bool| {
+            (n.to_string(), PreyClass::Food { per_item, herd })
+        };
         let val = |n: &str| (n.to_string(), PreyClass::Valuable);
         PreyTable {
             entries: vec![
@@ -154,7 +156,10 @@ impl PreyLedger {
             let g = |m: &BTreeMap<Item, i128>| m.get(item).copied().unwrap_or(0);
             let parts = g(&self.eaten) + g(&self.burnt) + g(&self.hoarded);
             if parts != t {
-                return Err(format!("{}: taken {t} but eaten + burnt + hoarded {parts}", item.key()));
+                return Err(format!(
+                    "{}: taken {t} but eaten + burnt + hoarded {parts}",
+                    item.key()
+                ));
             }
         }
         Ok(())

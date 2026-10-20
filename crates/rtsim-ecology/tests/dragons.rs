@@ -32,7 +32,9 @@ fn world(seed: u64) -> (World, Dragons) {
 
 /// A seed whose temperament is aggressive (C25): a grudge pulls it hardest.
 fn aggressive_seed() -> u64 {
-    (0..).find(|&s| rtsim_knowledge::Temperament::from_seed(s).aggressive >= 200).unwrap()
+    (0..)
+        .find(|&s| rtsim_knowledge::Temperament::from_seed(s).aggressive >= 200)
+        .unwrap()
 }
 
 fn adult(name: &str, lair: u32, fullness: i32, gender: Gender) -> NewDragon {
@@ -69,8 +71,26 @@ fn materializations(cmds: &[Cmd]) -> Vec<boundary::Materialize> {
 fn a_leg_crossing_an_interest_area_schedules_exactly_one_event() {
     for (player_first, on_path) in [(true, true), (false, true), (true, false), (false, false)] {
         let (mut w, mut d) = world(3);
-        let a = d.add_lair(&mut w, 1, "A", Species::Fire, LairKind::Roost, Pos::new(0, -3000, 3000), 100, Tick(0));
-        let b = d.add_lair(&mut w, 2, "B", Species::Fire, LairKind::Roost, Pos::new(0, 3000, 3000), 100, Tick(0));
+        let a = d.add_lair(
+            &mut w,
+            1,
+            "A",
+            Species::Fire,
+            LairKind::Roost,
+            Pos::new(0, -3000, 3000),
+            100,
+            Tick(0),
+        );
+        let b = d.add_lair(
+            &mut w,
+            2,
+            "B",
+            Species::Fire,
+            LairKind::Roost,
+            Pos::new(0, 3000, 3000),
+            100,
+            Tick(0),
+        );
         let x = d.add_dragon(&mut w, adult("x", a, 100, Gender::Female), Tick(0));
         let t0 = Tick(1_000);
         d.run_until(&mut w, &mut NoInfrastructure, t0);
@@ -90,13 +110,25 @@ fn a_leg_crossing_an_interest_area_schedules_exactly_one_event() {
         d.run_until(&mut w, &mut NoInfrastructure, t0 + 20_000);
         let mats = materializations(&d.take_commands());
         let want = usize::from(on_path);
-        assert_eq!(mats.len(), want, "player first {player_first}, on path {on_path}");
-        assert_eq!(d.stats.seen + d.stats.seen_stale, want as u64, "one event booked");
+        assert_eq!(
+            mats.len(),
+            want,
+            "player first {player_first}, on path {on_path}"
+        );
+        assert_eq!(
+            d.stats.seen + d.stats.seen_stale,
+            want as u64,
+            "one event booked"
+        );
         if let Some(m) = mats.first() {
             assert_eq!(m.agent, agent_of(x));
-            let r = ((m.pos.0 - f64::from(spot.x)).powi(2) + (m.pos.2 - f64::from(spot.z)).powi(2)).sqrt();
+            let r = ((m.pos.0 - f64::from(spot.x)).powi(2) + (m.pos.2 - f64::from(spot.z)).powi(2))
+                .sqrt();
             let reach = f64::from(d.tun.view_radius + rtsim_ecology::engine::BODY_RADIUS);
-            assert!((r - reach).abs() <= 2.0, "materialized {r:.1} blocks away, the area's edge is {reach}");
+            assert!(
+                (r - reach).abs() <= 2.0,
+                "materialized {r:.1} blocks away, the area's edge is {reach}"
+            );
             // At the forced cruise altitude while it flew unloaded.
             assert_eq!(m.pos.1, f64::from(d.tun.species(Species::Fire).cruise_y));
             // Its NBT comes from engine state: fullness fell one point per 3,000 ticks since tick 0.
@@ -110,8 +142,26 @@ fn a_leg_crossing_an_interest_area_schedules_exactly_one_event() {
 #[test]
 fn replanned_interest_areas_cancel_their_meetings_in_cascade() {
     let (mut w, mut d) = world(3);
-    let a = d.add_lair(&mut w, 1, "A", Species::Fire, LairKind::Roost, Pos::new(0, -3000, 3000), 100, Tick(0));
-    let b = d.add_lair(&mut w, 2, "B", Species::Fire, LairKind::Roost, Pos::new(0, 3000, 3000), 100, Tick(0));
+    let a = d.add_lair(
+        &mut w,
+        1,
+        "A",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, -3000, 3000),
+        100,
+        Tick(0),
+    );
+    let b = d.add_lair(
+        &mut w,
+        2,
+        "B",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 3000, 3000),
+        100,
+        Tick(0),
+    );
     let x = d.add_dragon(&mut w, adult("x", a, 100, Gender::Female), Tick(0));
     let t0 = Tick(1_000);
     d.run_until(&mut w, &mut NoInfrastructure, t0);
@@ -122,13 +172,16 @@ fn replanned_interest_areas_cancel_their_meetings_in_cascade() {
     while t.0 < t0.0 + 14_000 {
         d.observe_player(&mut w, PLAYER, Pos::new(0, px, 3010), t);
         d.run_until(&mut w, &mut NoInfrastructure, t);
-        t = t + 20;
+        t += 20;
         px -= 1;
     }
     let mats = materializations(&d.take_commands());
     assert_eq!(mats.len(), 1);
     assert_eq!(d.stats.seen, 1);
-    assert!(d.stats.seen_stale > 0, "meetings booked against old areas went stale");
+    assert!(
+        d.stats.seen_stale > 0,
+        "meetings booked against old areas went stale"
+    );
 }
 
 // ---- cost -------------------------------------------------------------------------------------
@@ -152,7 +205,7 @@ fn an_unobserved_dragon_costs_no_per_tick_work() {
     let (mut w2, mut d2) = populated(11);
     let mut t = Tick::ZERO;
     while t < end {
-        t = t + 1;
+        t += 1;
         d2.run_until(&mut w2, &mut NoInfrastructure, t);
     }
     assert_eq!(d1.stats, d2.stats);
@@ -160,7 +213,10 @@ fn an_unobserved_dragon_costs_no_per_tick_work() {
     assert_eq!(w1.state_hash(), w2.state_hash());
     let n = d1.dragons.len() as f64;
     let per_dragon_day = d1.stats.events as f64 / (n * days as f64);
-    assert!(per_dragon_day < 15.0, "{per_dragon_day:.1} events per dragon per day");
+    assert!(
+        per_dragon_day < 15.0,
+        "{per_dragon_day:.1} events per dragon per day"
+    );
     assert!(d1.stats.hunts > 0);
 }
 
@@ -187,7 +243,12 @@ proptest! {
 
 // ---- grudges and heirs (C24) --------------------------------------------------------------------
 
-fn embodied_at_home(w: &mut World, d: &mut Dragons, lair_pos: Pos, at: Tick) -> Vec<boundary::Materialize> {
+fn embodied_at_home(
+    w: &mut World,
+    d: &mut Dragons,
+    lair_pos: Pos,
+    at: Tick,
+) -> Vec<boundary::Materialize> {
     d.player_stays(w, PLAYER, lair_pos, at, at + 50_000);
     d.run_until(w, &mut NoInfrastructure, at + 10);
     materializations(&d.take_commands())
@@ -200,7 +261,16 @@ fn embodied_at_home(w: &mut World, d: &mut Dragons, lair_pos: Pos, at: Tick) -> 
 fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
     let (mut w, mut d) = world(5);
     let lp = Pos::new(0, 4000, 4000);
-    let l = d.add_lair(&mut w, 9, "Lair", Species::Fire, LairKind::Roost, lp, 100, Tick(0));
+    let l = d.add_lair(
+        &mut w,
+        9,
+        "Lair",
+        Species::Fire,
+        LairKind::Roost,
+        lp,
+        100,
+        Tick(0),
+    );
     let parent = d.add_dragon(&mut w, adult("parent", l, 100, Gender::Female), Tick(0));
     let mut young = adult("young", l, 100, Gender::Male);
     young.age_ticks = 30 * TICKS_PER_DAY;
@@ -231,7 +301,10 @@ fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
     let pa = d.dragon(parent).unwrap().actor;
     let ca = d.dragon(child).unwrap().actor;
     let grudge = d.tun.grudge_below;
-    assert!(w.knowledge.sentiment(pa, player, at) <= grudge, "a wound is a grudge");
+    assert!(
+        w.knowledge.sentiment(pa, player, at) <= grudge,
+        "a wound is a grudge"
+    );
     d.ingest(
         &mut w,
         &mut NoInfrastructure,
@@ -248,7 +321,10 @@ fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
     assert!(d.dragon(parent).is_none());
     assert!(w.knowledge.notable(pa).is_none());
     let felt = w.knowledge.sentiment(ca, player, Tick(600));
-    assert!(felt <= grudge && felt <= -100, "the heir holds the grudge ({felt})");
+    assert!(
+        felt <= grudge && felt <= -100,
+        "the heir holds the grudge ({felt})"
+    );
     // The heir remembers what its parent remembered.
     assert!(!w.knowledge.notable(ca).unwrap().memories().is_empty());
     // The line ends: the lair keeps the grudge.
@@ -267,7 +343,10 @@ fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
         Tick(700),
     );
     let lair_actor = d.lairs[l as usize].actor;
-    assert!(w.knowledge.sentiment(lair_actor, player, Tick(700)) <= grudge, "the lair keeps it");
+    assert!(
+        w.knowledge.sentiment(lair_actor, player, Tick(700)) <= grudge,
+        "the lair keeps it"
+    );
     assert!(d.lairs[l as usize].occupants.is_empty());
     // Not before the respawn delay; then a young dragon claims the lair and takes the grudge over.
     d.player_left(&mut w, player);
@@ -276,10 +355,17 @@ fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
     assert_eq!(d.stats.respawns, 0);
     d.run_until(&mut w, &mut NoInfrastructure, Tick(700 + delay + 20_000));
     assert_eq!(d.stats.respawns, 1);
-    let newcomer = d.lairs[l as usize].occupants.first().copied().expect("claimed");
+    let newcomer = d.lairs[l as usize]
+        .occupants
+        .first()
+        .copied()
+        .expect("claimed");
     let na = d.dragon(newcomer).unwrap().actor;
     let felt = w.knowledge.sentiment(na, player, d.now());
-    assert!(felt <= grudge, "the newcomer takes the lair's grudge over ({felt})");
+    assert!(
+        felt <= grudge,
+        "the newcomer takes the lair's grudge over ({felt})"
+    );
 }
 
 // ---- threats get bored (C24) ----------------------------------------------------------------------
@@ -289,7 +375,16 @@ fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
 fn grudge_visit(wound: bool) -> (Tick, boundary::Depart, Tick) {
     let (mut w, mut d) = world(9);
     let home = Pos::new(0, 3000, 5000);
-    let l = d.add_lair(&mut w, 4, "L", Species::Fire, LairKind::Roost, Pos::new(0, 4200, 5000), 100, Tick(0));
+    let l = d.add_lair(
+        &mut w,
+        4,
+        "L",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 4200, 5000),
+        100,
+        Tick(0),
+    );
     let x = d.add_dragon(&mut w, adult("x", l, 61, Gender::Male), Tick(0));
     let player = d.player(&mut w, PLAYER);
     let xa = d.dragon(x).unwrap().actor;
@@ -299,18 +394,21 @@ fn grudge_visit(wound: bool) -> (Tick, boundary::Depart, Tick) {
     while t.0 < 20_000 {
         d.observe_player(&mut w, PLAYER, home, t);
         d.run_until(&mut w, &mut NoInfrastructure, t);
-        t = t + 1_200;
+        t += 1_200;
     }
     d.player_stays(&mut w, PLAYER, home, t, t + 100_000);
     let mut mat = None;
     let mut dep = None;
     while t.0 < 100_000 && dep.is_none() {
-        t = t + 20;
+        t += 20;
         d.run_until(&mut w, &mut NoInfrastructure, t);
         for c in d.take_commands() {
             match c {
                 Cmd::Materialize(m) => {
-                    assert!(m.flags & boundary::MAT_HOSTILE != 0, "a grudge visit is hostile");
+                    assert!(
+                        m.flags & boundary::MAT_HOSTILE != 0,
+                        "a grudge visit is hostile"
+                    );
                     assert_eq!(m.target_player, PLAYER);
                     mat = Some((t, m));
                     if wound {
@@ -345,7 +443,7 @@ fn threats_get_bored_and_wounds_bring_the_departure_forward() {
     let (m0, d0, t0) = grudge_visit(false);
     assert_eq!(d0.reason, 1, "bored");
     let stay = t0.0 - m0.0;
-    assert!(stay >= 2_000 && stay <= 10_000, "a visit of {stay} ticks");
+    assert!((2_000..=10_000).contains(&stay), "a visit of {stay} ticks");
     let (m1, d1, t1) = grudge_visit(true);
     assert_eq!(d1.reason, 3, "wounded");
     assert!(t1.0 - m1.0 < stay, "the wound shortened the visit");
@@ -353,7 +451,11 @@ fn threats_get_bored_and_wounds_bring_the_departure_forward() {
 
 // ---- infrastructure: never better than observed, and watched fights (C16 to C18, P28) -----------
 
-fn grudge_raid(watched: bool, turrets: f32, observed: Option<(u32, u32)>) -> (Dragons, rtsim_industry::fake::FakeWorld, World) {
+fn grudge_raid(
+    watched: bool,
+    turrets: f32,
+    observed: Option<(u32, u32)>,
+) -> (Dragons, rtsim_industry::fake::FakeWorld, World) {
     let (mut w, mut d) = world(13);
     // Watched: someone stays at the farm all along (the fake world loads it, and a loaded
     // district with a player near is watched).
@@ -386,7 +488,16 @@ fn grudge_raid(watched: bool, turrets: f32, observed: Option<(u32, u32)>) -> (Dr
         });
     }
     let farm = Pos::new(0, 302, 1301);
-    let l = d.add_lair(&mut w, 4, "L", Species::Fire, LairKind::Roost, Pos::new(0, 1800, 2500), 100, Tick(0));
+    let l = d.add_lair(
+        &mut w,
+        4,
+        "L",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 1800, 2500),
+        100,
+        Tick(0),
+    );
     // Hungry at 30,000 ticks, after the player has left.
     let mut n = adult("x", l, 70, Gender::Male);
     n.seed = Some(aggressive_seed());
@@ -404,12 +515,12 @@ fn grudge_raid(watched: bool, turrets: f32, observed: Option<(u32, u32)>) -> (Dr
             index: &mut index,
         };
         d.run_until(&mut w, &mut link, t);
-        t = t + 1_200;
+        t += 1_200;
     }
     // The player leaves for good (unwatched unless `watched` says the district still is).
     d.player_left(&mut w, player);
     while t.0 < 80_000 {
-        t = t + 1_000;
+        t += 1_000;
         fake.run_until(t);
         let mut link = IndustryLink {
             engine: &mut fake.engine,
@@ -424,18 +535,39 @@ fn grudge_raid(watched: bool, turrets: f32, observed: Option<(u32, u32)>) -> (Dr
 fn an_unwatched_raid_is_never_better_than_observed() {
     // Strong turrets that have never fought: the untested weight applies, still enough to stop it.
     let (d, fake, w) = grudge_raid(false, 200.0, None);
-    let a = fake.engine.district(synth::FARM).unwrap().attacks.back().cloned().expect("raided");
+    let a = fake
+        .engine
+        .district(synth::FARM)
+        .unwrap()
+        .attacks
+        .back()
+        .cloned()
+        .expect("raided");
     let o = a.outcome.expect("resolved abstractly");
     assert!(o.untested);
     assert_eq!(d.stats.district_raids, 1);
     // The same turrets after a real fight where they killed one pass in four: the abstract raid
     // can do no better for the defender than that.
     let (d2, fake2, w2) = grudge_raid(false, 200.0, Some((4, 1)));
-    let a2 = fake2.engine.district(synth::FARM).unwrap().attacks.back().cloned().expect("raided");
+    let a2 = fake2
+        .engine
+        .district(synth::FARM)
+        .unwrap()
+        .attacks
+        .back()
+        .cloned()
+        .expect("raided");
     let o2 = a2.outcome.unwrap();
     assert_eq!(o2.floor, Some(0.75));
-    assert!(o2.survived >= 0.75, "never better than observed: {}", o2.survived);
-    assert!(o2.lanchester < 0.75, "Lanchester alone would have done better for the defender");
+    assert!(
+        o2.survived >= 0.75,
+        "never better than observed: {}",
+        o2.survived
+    );
+    assert!(
+        o2.lanchester < 0.75,
+        "Lanchester alone would have done better for the defender"
+    );
     // Damage is capped (I23) and the books agree with the ledger.
     assert!(a2.destroyed <= fake2.engine.tun.threat.destroy_cap_blocks);
     d2.check(&w2, Some(&fake2.engine.books.stolen)).unwrap();
@@ -448,7 +580,11 @@ fn a_watched_district_gets_a_real_fight_and_no_abstract_damage() {
     assert_eq!(d.stats.district_raids, 0);
     let farm = fake.engine.district(synth::FARM).unwrap();
     assert!(farm.watched);
-    assert!(farm.attacks.iter().all(|a| a.source != rtsim_industry::threat::ThreatSource::Dragon));
+    assert!(
+        farm.attacks
+            .iter()
+            .all(|a| a.source != rtsim_industry::threat::ThreatSource::Dragon)
+    );
     assert!(d.stats.materialized >= 1, "the dragon came in person");
 }
 
@@ -457,7 +593,16 @@ fn a_watched_district_gets_a_real_fight_and_no_abstract_damage() {
 #[test]
 fn untagged_dragons_are_adopted_or_discarded() {
     let (mut w, mut d) = world(17);
-    let l = d.add_lair(&mut w, 77, "Cave", Species::Ice, LairKind::Cave, Pos::new(0, -4000, 4000), 30, Tick(0));
+    let l = d.add_lair(
+        &mut w,
+        77,
+        "Cave",
+        Species::Ice,
+        LairKind::Cave,
+        Pos::new(0, -4000, 4000),
+        30,
+        Tick(0),
+    );
     let u = |entity: u64, spawn: SpawnKind, flags: u32, lair: u64| {
         Obs::Untagged(boundary::Untagged {
             entity: (entity, entity),
@@ -476,24 +621,67 @@ fn untagged_dragons_are_adopted_or_discarded() {
     };
     let mut infra = NoInfrastructure;
     // The lair's own dragon from world generation: adopted as its occupant.
-    d.ingest(&mut w, &mut infra, &u(1, SpawnKind::Structure, boundary::UNTAGGED_SLEEPING, 77), Tick(10));
+    d.ingest(
+        &mut w,
+        &mut infra,
+        &u(1, SpawnKind::Structure, boundary::UNTAGGED_SLEEPING, 77),
+        Tick(10),
+    );
     // A second structure dragon for the same lair: discarded (it has its dragon).
-    d.ingest(&mut w, &mut infra, &u(2, SpawnKind::Structure, 0, 77), Tick(11));
+    d.ingest(
+        &mut w,
+        &mut infra,
+        &u(2, SpawnKind::Structure, 0, 77),
+        Tick(11),
+    );
     // A natural or spawner dragon: discarded (the sim owns the population).
-    d.ingest(&mut w, &mut infra, &u(3, SpawnKind::Spawner, 0, 0), Tick(12));
+    d.ingest(
+        &mut w,
+        &mut infra,
+        &u(3, SpawnKind::Spawner, 0, 0),
+        Tick(12),
+    );
     // A tamed one is the player's (A10): left alone.
-    d.ingest(&mut w, &mut infra, &u(4, SpawnKind::SpawnEgg, boundary::UNTAGGED_TAMED, 0), Tick(13));
+    d.ingest(
+        &mut w,
+        &mut infra,
+        &u(4, SpawnKind::SpawnEgg, boundary::UNTAGGED_TAMED, 0),
+        Tick(13),
+    );
     // A spawn egg's: adopted, as a wanderer.
-    d.ingest(&mut w, &mut infra, &u(5, SpawnKind::SpawnEgg, 0, 0), Tick(14));
+    d.ingest(
+        &mut w,
+        &mut infra,
+        &u(5, SpawnKind::SpawnEgg, 0, 0),
+        Tick(14),
+    );
     let cmds = d.take_commands();
-    let adopted: Vec<_> = cmds.iter().filter_map(|c| match c { Cmd::Adopt(a) => Some(a.entity.0), _ => None }).collect();
-    let discarded: Vec<_> = cmds.iter().filter_map(|c| match c { Cmd::Discard(x) => Some((x.entity.0, x.reason)), _ => None }).collect();
+    let adopted: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Adopt(a) => Some(a.entity.0),
+            _ => None,
+        })
+        .collect();
+    let discarded: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Discard(x) => Some((x.entity.0, x.reason)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(adopted, vec![1, 5]);
     assert_eq!(discarded, vec![(2, 2), (3, 1)]);
     assert_eq!(d.lairs[l as usize].occupants.len(), 1);
     assert_eq!(d.stats.adopted, 2);
     // Adopted dragons are embodied: when the plugin captures one, it goes on abstractly.
-    let a1 = cmds.iter().find_map(|c| match c { Cmd::Adopt(a) if a.entity.0 == 1 => Some(*a), _ => None }).unwrap();
+    let a1 = cmds
+        .iter()
+        .find_map(|c| match c {
+            Cmd::Adopt(a) if a.entity.0 == 1 => Some(*a),
+            _ => None,
+        })
+        .unwrap();
     d.ingest(
         &mut w,
         &mut infra,
@@ -513,5 +701,8 @@ fn untagged_dragons_are_adopted_or_discarded() {
     let id: DragonId = rtsim_ecology::dragon::dragon_of(a1.agent).unwrap();
     assert!(!d.dragon(id).unwrap().is_embodied());
     d.run_until(&mut w, &mut infra, Tick::from_days(3));
-    assert!(d.stats.hunts + d.stats.fruitless > 0, "it lives on in the sim");
+    assert!(
+        d.stats.hunts + d.stats.fruitless > 0,
+        "it lives on in the sim"
+    );
 }

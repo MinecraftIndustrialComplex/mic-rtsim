@@ -11,8 +11,10 @@ use rtsim_kernel::clock::Tick;
 #[test]
 fn winter_shifts_the_prey_from_roads_to_villages() {
     let (mut w, _) = synth::world(7);
-    let mut tun = DragonTunables::default();
-    tun.calendar = Calendar::starting_in(Season::Autumn);
+    let tun = DragonTunables {
+        calendar: Calendar::starting_in(Season::Autumn),
+        ..Default::default()
+    };
     let mut d = synth::dragons(7, tun);
     synth::populate(&mut w, &mut d, &synth::lairs(), Tick::ZERO);
     d.run_until(&mut w, &mut NoInfrastructure, Tick::from_days(48));
@@ -24,5 +26,8 @@ fn winter_shifts_the_prey_from_roads_to_villages() {
         vi as f64 / (r + vi) as f64
     };
     let (autumn, winter) = (share(Season::Autumn), share(Season::Winter));
-    assert!(winter > autumn + 0.25, "villages' share: autumn {autumn:.2}, winter {winter:.2}");
+    assert!(
+        winter > autumn + 0.25,
+        "villages' share: autumn {autumn:.2}, winter {winter:.2}"
+    );
 }

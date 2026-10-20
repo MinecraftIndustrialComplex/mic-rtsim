@@ -380,7 +380,10 @@ impl SpeciesDict {
     }
 
     pub fn species_of(&self, id: u32) -> Option<Species> {
-        self.body.iter().position(|&b| b == id).map(|i| Species::ALL[i])
+        self.body
+            .iter()
+            .position(|&b| b == id)
+            .map(|i| Species::ALL[i])
     }
 
     pub fn structure_of(&self, s: Species, k: LairKind) -> u32 {
@@ -393,7 +396,11 @@ impl SpeciesDict {
                 if v == id {
                     return Some((
                         Species::ALL[i],
-                        if j == 0 { LairKind::Roost } else { LairKind::Cave },
+                        if j == 0 {
+                            LairKind::Roost
+                        } else {
+                            LairKind::Cave
+                        },
                     ));
                 }
             }

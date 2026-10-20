@@ -36,7 +36,11 @@ impl PreyIndex {
                 continue;
             }
             self.villages
-                .entry((n.pos.frame, cell(i64::from(n.pos.x)), cell(i64::from(n.pos.z))))
+                .entry((
+                    n.pos.frame,
+                    cell(i64::from(n.pos.x)),
+                    cell(i64::from(n.pos.z)),
+                ))
                 .or_default()
                 .push(i as u32);
         }
@@ -46,7 +50,10 @@ impl PreyIndex {
             let (z0, z1) = (i64::from(a.z.min(b.z)), i64::from(a.z.max(b.z)));
             for cx in cell(x0)..=cell(x1) {
                 for cz in cell(z0)..=cell(z1) {
-                    self.roads.entry((a.frame, cx, cz)).or_default().push(k as u32);
+                    self.roads
+                        .entry((a.frame, cx, cz))
+                        .or_default()
+                        .push(k as u32);
                 }
             }
         }

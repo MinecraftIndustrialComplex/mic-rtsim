@@ -81,7 +81,9 @@ pub fn cli(rest: &[&str]) -> ExitCode {
 }
 
 fn bad(why: &str) -> ExitCode {
-    eprintln!("{why}\nusage: rtsim-cli sim dragons [--days N] [--seed S] [--out FILE | --no-write] [--quiet]");
+    eprintln!(
+        "{why}\nusage: rtsim-cli sim dragons [--days N] [--seed S] [--out FILE | --no-write] [--quiet]"
+    );
     ExitCode::from(64)
 }
 
@@ -118,7 +120,13 @@ fn script() -> Vec<Phase> {
             x: 490,
             z: 655,
             farm_loaded: false,
-            react: &[("Cinderjaw", Reaction::Wound { share: 0.3, after: 400 })],
+            react: &[(
+                "Cinderjaw",
+                Reaction::Wound {
+                    share: 0.3,
+                    after: 400,
+                },
+            )],
             rob: None,
         },
         Phase {
@@ -268,8 +276,10 @@ pub fn main(o: Options) -> i32 {
     let started = Instant::now();
     let phases = script();
     let (mut w, ids) = synth::world(o.seed);
-    let mut tun = DragonTunables::default();
-    tun.calendar = Calendar::starting_in(Season::Autumn);
+    let tun = DragonTunables {
+        calendar: Calendar::starting_in(Season::Autumn),
+        ..Default::default()
+    };
     let mut dragons = Dragons::new(o.seed, tun, Tick::ZERO);
     dragons.log_enabled = true;
     // The plugin's item dictionary for hoard records.
@@ -289,7 +299,10 @@ pub fn main(o: Options) -> i32 {
         .iter()
         .map(|&i| {
             let m = w.market(i);
-            (m.stock(ids.cattle) as f64 / 1000.0, m.price(ids.cattle) as f64 / 1e6)
+            (
+                m.stock(ids.cattle) as f64 / 1000.0,
+                m.price(ids.cattle) as f64 / 1e6,
+            )
         })
         .collect();
 
@@ -308,7 +321,10 @@ pub fn main(o: Options) -> i32 {
     );
     loop {
         let phase_end = phases.get(phase + 1).map_or(end, |p| day(p.from_day));
-        let rob_at = phases[phase].rob.filter(|_| !robbed).map(|_| day(phases[phase].from_day + 0.5));
+        let rob_at = phases[phase]
+            .rob
+            .filter(|_| !robbed)
+            .map(|_| day(phases[phase].from_day + 0.5));
         let mut next = [
             Some(end),
             dragons.next_due(),
@@ -382,7 +398,11 @@ pub fn main(o: Options) -> i32 {
             let until = phases.get(phase + 1).map_or(end, |q| day(q.from_day));
             dragons.player_stays(&mut w, PLAYER, Pos::new(0, p.x, p.z), next, until);
             if !o.quiet {
-                println!("{:7.2}  the player goes to {}", next.0 as f64 / TICKS_PER_DAY as f64, p.place);
+                println!(
+                    "{:7.2}  the player goes to {}",
+                    next.0 as f64 / TICKS_PER_DAY as f64,
+                    p.place
+                );
             }
         }
         t = next;
@@ -414,13 +434,15 @@ pub fn main(o: Options) -> i32 {
     check(
         "conservation with predation",
         cons.is_ok(),
-        cons.err().unwrap_or_else(|| "world, ledger, hoards and industry books agree".into()),
+        cons.err()
+            .unwrap_or_else(|| "world, ledger, hoards and industry books agree".into()),
     );
     let fc = fake.conservation();
     check(
         "industry world totals",
         fc.is_ok(),
-        fc.err().unwrap_or_else(|| "the farm's physical totals match the engine's books".into()),
+        fc.err()
+            .unwrap_or_else(|| "the farm's physical totals match the engine's books".into()),
     );
     let log = &dragons.log;
     let has = |dragon: &str, kind: &str, contains: &str| {
@@ -453,7 +475,8 @@ pub fn main(o: Options) -> i32 {
         "Cinderjaw dies at the player's hands; its grudges pass to Emberling".into(),
     );
     let emberling_raid = log.iter().any(|l| {
-        l.dragon.as_deref() == Some("Emberling") && (l.kind == "raid" || (l.kind == "hunt" && l.what.contains("grudge")))
+        l.dragon.as_deref() == Some("Emberling")
+            && (l.kind == "raid" || (l.kind == "hunt" && l.what.contains("grudge")))
     });
     check(
         "the heir hunts the player",
@@ -478,7 +501,11 @@ pub fn main(o: Options) -> i32 {
     check(
         "winter shifts the prey",
         winter > autumn + 0.2,
-        format!("villages' share of hunts: autumn {:.0}%, winter {:.0}%", autumn * 100.0, winter * 100.0),
+        format!(
+            "villages' share of hunts: autumn {:.0}%, winter {:.0}%",
+            autumn * 100.0,
+            winter * 100.0
+        ),
     );
 
     // ---- output ----
@@ -567,7 +594,9 @@ pub fn main(o: Options) -> i32 {
     ] {
         ledger.insert(
             name.to_string(),
-            m.iter().map(|(k, v)| (item_name(k), *v)).collect::<BTreeMap<_, _>>(),
+            m.iter()
+                .map(|(k, v)| (item_name(k), *v))
+                .collect::<BTreeMap<_, _>>(),
         );
     }
     let destroyed_applied = fake.districts[0].broken.len();
@@ -650,7 +679,12 @@ fn print_report(o: &Out, _w: &World) {
             "{:7.2}  {:<12} {:<11} {}",
             l.day,
             l.kind,
-            l.dragon.clone().unwrap_or_default().chars().take(11).collect::<String>(),
+            l.dragon
+                .clone()
+                .unwrap_or_default()
+                .chars()
+                .take(11)
+                .collect::<String>(),
             name_villages(&l.what)
         );
     }
@@ -686,7 +720,12 @@ fn print_report(o: &Out, _w: &World) {
     for v in &o.villages {
         println!(
             "{:<11} cattle {:>6.1} -> {:>6.1}, price {:>7.3} -> {:>7.3}, feeling {:>4}",
-            v.name, v.cattle_stock_start, v.cattle_stock_end, v.cattle_price_start, v.cattle_price_end, v.feeling_for_player
+            v.name,
+            v.cattle_stock_start,
+            v.cattle_stock_end,
+            v.cattle_price_start,
+            v.cattle_price_end,
+            v.feeling_for_player
         );
     }
     println!("\n== the farm (industry district) ==");
@@ -701,7 +740,8 @@ fn print_report(o: &Out, _w: &World) {
             a.stolen.iter().collect::<Vec<_>>(),
             a.destroyed,
             if a.machine_lost { ", machine lost" } else { "" },
-            a.skipped.map_or(String::new(), |s| format!(", skipped: {s}"))
+            a.skipped
+                .map_or(String::new(), |s| format!(", skipped: {s}"))
         );
     }
     println!("blocks broken on load: {}", o.farm_destroyed_blocks_applied);
@@ -712,7 +752,12 @@ fn print_report(o: &Out, _w: &World) {
     println!("\n{:?}", o.stats);
     println!("\n== checks ==");
     for c in &o.checks {
-        println!("{} {}: {}", if c.ok { "ok  " } else { "FAIL" }, c.name, c.detail);
+        println!(
+            "{} {}: {}",
+            if c.ok { "ok  " } else { "FAIL" },
+            c.name,
+            c.detail
+        );
     }
     println!("wall {:.0} ms, {} wire bytes", o.wall_ms, o.wire_bytes);
 }

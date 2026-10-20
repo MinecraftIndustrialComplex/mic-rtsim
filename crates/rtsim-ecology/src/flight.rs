@@ -100,7 +100,12 @@ pub fn lerp(a: (i64, i64), b: (i64, i64), milli: u32) -> (i64, i64) {
 }
 
 /// Where two segments cross, as thousandths along each, if they do.
-pub fn crossing(p0: (i64, i64), p1: (i64, i64), q0: (i64, i64), q1: (i64, i64)) -> Option<(u32, u32)> {
+pub fn crossing(
+    p0: (i64, i64),
+    p1: (i64, i64),
+    q0: (i64, i64),
+    q1: (i64, i64),
+) -> Option<(u32, u32)> {
     let r = ((p1.0 - p0.0) as f64, (p1.1 - p0.1) as f64);
     let s = ((q1.0 - q0.0) as f64, (q1.1 - q0.1) as f64);
     let den = r.0 * s.1 - r.1 * s.0;
@@ -137,7 +142,10 @@ mod tests {
 
     #[test]
     fn geometry() {
-        assert_eq!(crossing((0, -10), (0, 10), (-10, 0), (10, 0)), Some((500, 500)));
+        assert_eq!(
+            crossing((0, -10), (0, 10), (-10, 0), (10, 0)),
+            Some((500, 500))
+        );
         assert_eq!(crossing((0, 1), (0, 10), (-10, 0), (10, 0)), None);
         assert_eq!(closest_on((0, 0), (1000, 0), (300, 500), 100, 900), 300);
         assert_eq!(closest_on((0, 0), (1000, 0), (-300, 500), 100, 900), 100);
