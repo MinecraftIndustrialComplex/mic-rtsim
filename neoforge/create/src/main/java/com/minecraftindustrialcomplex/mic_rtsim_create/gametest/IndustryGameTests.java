@@ -480,6 +480,55 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * Mail at an unloaded district (IND_PACKAGE, F26): a package dropped into a postbox's offline buffer
+     * while its district is unloaded is IND_PACKAGE in, with its contents and address; one fetched from it
+     * is IND_PACKAGE out. (MailWatch is driven around the buffer change the way the runMailTransfer mixins
+     * drive it; a real present train needs a track graph.)
+     */
+    @GameTest(template = YARD, batch = "industry_12", timeoutTicks = 400)
+    public static void mailAtAnUnloadedDistrictIsAPackageRecord(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        long farChunk = ChunkPos.asLong((o.getX() >> 4) + 6000, (o.getZ() >> 4) + 6000);
+        BlockPos postbox = new BlockPos(ChunkPos.getX(farChunk) * 16 + 3, 64, ChunkPos.getZ(farChunk) * 16 + 3);
+        District[] d = {null};
+        GlobalStation st = syntheticStation(helper.getLevel(), postbox.east(), "Mail Halt");
+        com.simibubi.create.content.trains.station.GlobalPackagePort port = new com.simibubi.create.content.trains.station.GlobalPackagePort();
+        port.address = "Iron Coast";
+        st.connectedPorts.put(postbox, port);
+        helper.startSequence()
+                .thenExecute(() -> d[0] = ind().districts().createForTest(helper.getLevel(), farChunk))
+                .thenWaitUntil(() -> check("unloaded", d[0].loadState() == IndRecords.LoadState.UNLOADED))
+                .thenExecute(() -> {
+                    ItemStack box = PackageItem.containing(List.of(new ItemStack(Items.IRON_INGOT, 40), new ItemStack(Items.COAL, 3)));
+                    PackageItem.addAddress(box, "Iron Coast");
+                    com.minecraftindustrialcomplex.mic_rtsim_create.MailWatch.before(st);
+                    port.offlineBuffer.setStackInSlot(0, box);
+                    com.minecraftindustrialcomplex.mic_rtsim_create.MailWatch.after(st);
+                    com.minecraftindustrialcomplex.mic_rtsim_create.MailWatch.before(st);
+                    port.offlineBuffer.setStackInSlot(0, ItemStack.EMPTY);
+                    com.minecraftindustrialcomplex.mic_rtsim_create.MailWatch.after(st);
+                })
+                .thenWaitUntil(() -> {
+                    List<ByteBuffer> recs = received(IndRecords.IND_PACKAGE, IndRecords.Package.DISTRICT, d[0].id);
+                    check("two IND_PACKAGE records", recs.size() == 2);
+                    ByteBuffer in = recs.get(0), out = recs.get(1);
+                    check("in, then out", in.getInt(IndRecords.Package.DIRECTION) == IndRecords.Package.IN && out.getInt(IndRecords.Package.DIRECTION) == IndRecords.Package.OUT);
+                    check("one package each", in.getInt(IndRecords.Package.PACKAGES) == 1 && out.getInt(IndRecords.Package.PACKAGES) == 1);
+                    check("addressed to Iron Coast", "Iron Coast".equals(javaName(in.getInt(IndRecords.Package.ADDRESS))));
+                    Map<String, Long> goods = new HashMap<>();
+                    for (int i = 0; i < aux(in); i++) {
+                        int e = IndRecords.Package.ENTRIES + i * IndRecords.ENTRY16;
+                        goods.put(javaName(in.getInt(e)), in.getLong(e + 8));
+                    }
+                    record("mailAtAnUnloadedDistrictIsAPackageRecord", "package in", goods);
+                    check("its contents: 40 iron, 3 coal", goods.getOrDefault("i/64/minecraft:iron_ingot", 0L) == 40 && goods.getOrDefault("i/64/minecraft:coal", 0L) == 3);
+                })
+                .thenSucceed();
+    }
+
     private static String engineName(int engineGoodId) {
         return ind().engineName(IndRecords.DICT_GOOD, engineGoodId);
     }

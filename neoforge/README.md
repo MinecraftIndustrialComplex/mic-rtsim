@@ -157,6 +157,7 @@ which scripts the engine's industry commands; each in its own batch):
 | `abrokenblockdropsitscontents` | C18, I23: a destroy entry with the expected state breaks the chest with drops (12 emeralds on the ground), one with a changed state is skipped, no fire; the result names the block |
 | `aheldreconcileapplieswhenitschunkloads` | §4.1: a far chunk's reconcile is held while it is unloaded, applied at its load after IND_CHUNK_LOADED; after a real unload and reload the epoch comes back from the chunk's NBT |
 | `theledgershowsonadisplay` | I18: a Display Link on a Stock Link shows the district's ledger (name, state, +120/h, "would have made 500") on a sign; IND_LEDGER_REQUEST |
+| `mailatanunloadeddistrictisapackagerecord` | F26, H30: a package dropped into an unloaded district's postbox buffer is IND_PACKAGE in (address, 40 iron and 3 coal), one fetched is IND_PACKAGE out |
 | `sweepcostonlargevaults` | INDUSTRY.md §19 risk 2: a 3 x 3 x 9 vault is one inventory; read cost per inventory and per slot, logged (H10) |
 
 ## Not done yet
@@ -184,7 +185,7 @@ which scripts the engine's industry commands; each in its own batch):
 - **Body kinds as data** (P15): group layouts are code.
 - **A GameTest for a server at simulation distance 10** (risk R1): it needs real players.
 - **The real engine**: every phase 1 test scripts the engine side through the stub.
-- **Industry** (docs/overnight-choices-industrymc.md): IND_PACKAGE (mail at postboxes), IND_WRITE_PACKAGE,
+- **Industry** (docs/overnight-choices-industrymc.md): IND_PACKAGE for loaded districts (H30), IND_WRITE_PACKAGE,
   IND_CHANNEL_DELTA and IND_DEPOSIT_DELTA (answered FAILED: no plugin applies them yet), deposits in
   reconciles, IND_CONDITIONS (seasons), the threat records (IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY),
   the I16 gauge mixins, the PowerGrid, Destroy, Ore Excavation and Ender Transmission plugins; player

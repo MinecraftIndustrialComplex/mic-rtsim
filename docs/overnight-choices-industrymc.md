@@ -58,9 +58,10 @@ so a single-threaded read costs about the same there.
 - **H4.** Detection is one recompute per dimension over every member chunk, after edits at most every
   `rescanIntervalTicks` (20), and every `periodicRescanTicks` (6,000) for loaded districts (inventories
   that machines add). Ids: a pinned group keeps its pin; an automatic group the old district it overlaps
-  most (each old id once, biggest group first); the rest get new ids, never reused (F3). Measured: the
-  test districts detect in well under a millisecond (`/rtsim district perf` shows it); a large base is
-  unmeasured.
+  most (each old id once, biggest group first); the rest get new ids, never reused (F3). Measured: a
+  three-chunk district of 18 block entities (a chest and 17 shafts) detects in 64 us (best of 50,
+  warm; `aDistrictIsDetectedAcrossShaftsAndNamed`), and a repeated detection changes neither its id nor
+  its revision. A large base is unmeasured; `/rtsim district perf` shows the last detection's time.
 - **H5.** `/rtsim district`: `list`, `info`, `ledger`, `rename <name> <new name>` (over the station's
   name), `merge <a> <b>` (a persistent link between their anchor chunks; a pinned district merges by
   moving its pins), `split [radius]` (the member chunks within the radius of yours are pinned to a new
@@ -145,10 +146,13 @@ so a single-threaded read costs about the same there.
 - **H20.** A postbox's removals come out of its packages (rewriting `create:package_contents`; an
   emptied package is gone); additions go in as new packages addressed to the port's own filter, while
   it has a free slot.
-- Mail (IND_PACKAGE) is not sent: for a loaded district the train-side cargo diff already carries what
-  mail moved, packages by their contents, which the design allows ("postbox inventories are stock; the
-  train-side diff is the port"). The engine's mail learning (F26) and unloaded offline buffers need it;
-  see "Not done".
+- **H30.** Mail: IND_PACKAGE only for postboxes of *unloaded* districts, from two more mixins (HEAD and
+  TAIL of `GlobalStation.runMailTransfer`) that diff the ports' `offlineBuffer`s: packages in or out,
+  grouped by address, with their contents. For a loaded district the train-side cargo diff already
+  carries what mail moved (packages by their contents), as the design says ("postbox inventories are
+  stock; the train-side diff is the port"); an IND_PACKAGE as well would count it twice (the engine reads
+  a loaded district's IND_PACKAGE as a port). The cost: the engine's mail-rate learning for loaded
+  districts (F26) gets nothing from Java yet.
 
 **The ledger (I18)**
 - **H21.** "District ledger" is a multi-line display source registered in Create's `display_source`

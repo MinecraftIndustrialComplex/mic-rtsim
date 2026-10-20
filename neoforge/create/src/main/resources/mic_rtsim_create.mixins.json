@@ -4,6 +4,7 @@
   "package": "com.minecraftindustrialcomplex.mic_rtsim_create.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "GlobalStationMixin",
     "TrainMixin"
   ],
   "injectors": {

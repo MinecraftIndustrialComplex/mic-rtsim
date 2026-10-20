@@ -277,10 +277,11 @@ Written overnight in the core's `industry` package and the Create plugin `mic_rt
 - **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_LEDGER_REQUEST, IND_WATCHED; IND_DISTRICT,
   IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED, IND_EDIT (aux 1, 2, 4),
   IND_DISCARD (aux 1), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_PORT (kinds 1, 3, 4, 5, 6),
-  IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_RECONCILE_RESULT, IND_CARRIAGE_RESULT.
+  IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (unloaded districts only, H30), IND_RECONCILE_RESULT,
+  IND_CARRIAGE_RESULT.
 - **Applied:** IND_CHUNK_RECONCILE (§4.1, every step), IND_CARRIAGE_DELTA, IND_LEDGER. IND_CHANNEL_DELTA,
   IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are answered COMMAND_RESULT(failed): no plugin applies them yet.
-- **Not sent yet:** IND_DEPOSIT_SAMPLE, IND_CHANNEL_SAMPLE, IND_CONDITIONS, IND_POWER_LINK, IND_PACKAGE,
+- **Not sent yet:** IND_DEPOSIT_SAMPLE, IND_CHANNEL_SAMPLE, IND_CONDITIONS, IND_POWER_LINK,
   IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY, IND_SURVEY_BLOCKS.
 - **Forms Java decides:** a GOOD component hash is 16 hex digits (H2); a BLOCK_STATE name is
   `BlockStateParser.serialize(state)`, which a destroy entry is compared with; station and train ids are
