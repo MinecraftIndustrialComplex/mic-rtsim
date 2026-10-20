@@ -67,6 +67,13 @@ public final class PuppetRegistry {
         return new ArrayList<>(byAgent.values());
     }
 
+    /** Fills {@code into} (cleared first) with the live groups: the per-tick pass reuses one list. */
+    public List<PuppetGroup> snapshotInto(List<PuppetGroup> into) {
+        into.clear();
+        into.addAll(byAgent.values());
+        return into;
+    }
+
     public int size() {
         return byAgent.size();
     }

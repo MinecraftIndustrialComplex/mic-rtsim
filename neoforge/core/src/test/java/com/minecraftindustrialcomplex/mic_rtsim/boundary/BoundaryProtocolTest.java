@@ -145,7 +145,7 @@ class BoundaryProtocolTest {
         tick(s, sink, e);
         assertEquals(1, s.journal().size(), "applied but not on the engine's disk: still journaled");
 
-        e.requestSave();
+        e.requestSaveAtNextStep();
         tick(s, sink, e); // the step saves its pages and acknowledges in its command header
         tick(s, sink, e); // Java reads that header and trims
         assertEquals(0, s.journal().size());
@@ -175,7 +175,7 @@ class BoundaryProtocolTest {
 
         // The engine saves pages that include the transfer, but the crash comes before the
         // acknowledgement reaches the journal: the journal still holds it.
-        e2.requestSave();
+        e2.requestSaveAtNextStep();
         tick(s2, k2, e2);
         Journal.Snapshot worldSave2 = s2.journal().snapshot();
         assertEquals(1, Journal.restore(worldSave2).size());
@@ -372,5 +372,30 @@ class BoundaryProtocolTest {
         assertEquals(0, e.scriptedPending());
         assertTrue(s.journal().lastAppliedCmdSeq() >= 32, "two DICT and thirty transfers, each with its own sequence");
         assertEquals(0, s.skippedStaleCommands(), "no sequence was reused when a step rolled a command back");
+    }
+
+    @Test
+    void aSaveRequestNeverTakesThePagesPastTheWorldSave() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        Sink sink = new Sink(s);
+        transfer(s, 1, 1);
+        transfer(s, 1, 1);
+        e.requestSave(2); // the world save knew sequences 1 and 2
+        transfer(s, 1, 1); // 3 and 4 come after it, in the same hand-over
+        transfer(s, 1, 1);
+        tick(s, sink, e);
+        assertEquals(4, e.ledger(1), "everything is applied");
+        assertEquals(2, e.pages().obsSeq(), "but the pages stop where the world save did");
+        tick(s, sink, e);
+        assertEquals(2, s.journal().size(), "and only what they include is trimmed");
+    }
+
+    @Test
+    void buffersFromAnEarlierSessionAreRefused() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        Seq.setRelease(e.commandBuffer(1), Layout.H_PUBLISHED, 1);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> new BoundarySession(e, new Journal(), 0, time));
     }
 }

@@ -69,8 +69,9 @@ public final class TakingGameTests {
                     check("member 1 was taken", taken.view().getInt(Obs.Taken.MEMBER) == 1);
                     UUID by = new UUID(taken.view().getLong(Obs.Taken.PLAYER_MOST), taken.view().getLong(Obs.Taken.PLAYER_LEAST));
                     check("by the player who tamed it", by.equals(player.getUUID()));
-                    check("the cargo's transfer carries a Java op id (the Java bit on its own obsSeq)",
-                            taken.view().getLong(Obs.Taken.OP_ID) == (Obs.JAVA_OP_BIT | taken.obsSeq()));
+                    check("the cargo's transfer carries a Java op id (top bit set)",
+                            (taken.view().getLong(Obs.Taken.OP_ID) & Obs.JAVA_OP_BIT) != 0
+                                    && taken.view().getLong(Obs.Taken.OP_ID) != Obs.JAVA_OP_BIT);
                     List<StubEngine.Received> all = RtsimTests.allFor(RtsimTests.stub(), agent);
                     int at = all.indexOf(taken);
                     check("its captured state comes right before it", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE && all.get(at - 1).aux() == 1);
@@ -144,8 +145,12 @@ public final class TakingGameTests {
                     for (int i = 0; i < 3; i++)
                         bodies[i] = RtsimTests.member(g, i);
                     bodies[0].kill();
-                    check("the trader's death left the group", g.members[0].gone);
-                    check("the llamas are still one group", RtsimTests.group(agent) == g && g.liveMembers() == 2);
+                })
+                .thenExecuteAfter(1, () -> {
+                    // The death is journaled at the end of the tick it happened in, once it is certain.
+                    PuppetGroup g = RtsimTests.group(agent);
+                    check("the trader's death left the group", g != null && g.members[0].gone);
+                    check("the llamas are still one group", g.liveMembers() == 2);
                 })
                 .thenIdle(3)
                 .thenExecute(() -> {
@@ -162,7 +167,7 @@ public final class TakingGameTests {
                         int at = all.indexOf(d);
                         check("a MEMBER_STATE comes right before each DIED", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE
                                 && all.get(at - 1).aux() == d.aux());
-                        check("each death's dropped cargo has a Java op id", d.view().getLong(Obs.Died.OP_ID) == (Obs.JAVA_OP_BIT | d.obsSeq()));
+                        check("each death's dropped cargo has a Java op id", (d.view().getLong(Obs.Died.OP_ID) & Obs.JAVA_OP_BIT) != 0);
                     }
                     int at = all.indexOf(died.get(1));
                     check("llama 1's state at death lists the cargo that dropped", all.get(at - 1).view().getInt(Obs.MemberState.ITEM_COUNT) == 2);
@@ -181,11 +186,11 @@ public final class TakingGameTests {
     public static void aMemberRemovedByAnotherModLeavesTheRestAsOneGroup(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1);
-        long before = RtsimTests.session().removedByOther();
         helper.startSequence()
                 .thenWaitUntil(() -> RtsimTests.embodied(agent))
                 .thenExecute(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
+                    long before = RtsimTests.session().removedByOther(); // read here: other tests count too
                     RtsimTests.member(g, 2).discard(); // what another mod's removal looks like
                     check("the removal was counted", RtsimTests.session().removedByOther() == before + 1);
                     check("the rest stays one group", RtsimTests.group(agent) == g && g.liveMembers() == 2);

@@ -66,6 +66,13 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `aleadtakesacreatureoutofthesim` | a lead held by a player takes a llama on the next pass |
 | `amemberremovedbyanothermodleavestherestasonegroup` | risk 11: a member another mod removes leaves as TAKEN(removed by other); the rest stays one unit |
 | `deathsarejournaledandthereststaysonegroup` | DIED after each member's state at death (cargo included); the llamas of a dead trader stay one group and are not "taken" by the dead trader's leash |
+| `despawnofanagentthatisnotembodiedisanswered` | DESPAWN_GROUP for an agent with no puppet gets DEMATERIALIZED(not embodied), so the engine never waits on it |
+| `acapturedcopycomesbackonceasanordinaryentity` | a copy a capture mod serialized while the member was a puppet joins once, untagged; a second copy is stale |
+| `acancelleddeathkeepsthemember` | a death another mod cancels after the bridge saw it journals nothing and keeps the member |
+| `atakenllamadoesnotdespawn` | a taken llama lets go of its trader and its despawn timer is out of reach |
+| `achunksavedaheadofthejournalstopsaresenttransfer` | a chest's chunk saved after an engine transfer, the journal not: the resent transfer is refused by the chunk's own record, which is dropped once the engine acknowledges |
+| `atakencreaturecarriesitstakenuntiltheenginehasit` | a tamed llama carries its TAKEN; a copy read from disk journals it again with the same op id; both drop it on the acknowledgement |
+| `adeadmembersdropscarryitsdied` | the items a dying llama drops carry its MEMBER_STATE and DIED |
 | `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 
@@ -77,6 +84,10 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 - **Commands** beyond spawn, despawn, steer and container transfers: trade offers, gossip, structure
   placement (PLAN.md §6.4).
 - **Item components** in captured cargo (B23).
+- **Picked-up drops**: an item picked up before the engine acknowledges its DIED takes the record
+  into a player's inventory, where nothing carries it (docs/boundary.md §3.1).
+- **A failed journal write** is still reported as saved (WORLD_SAVED), because NeoForge's SavedData
+  write logs the IOException and the chain goes on.
 - **Body kinds as data** (P15): group layouts are code.
 - **Carry On**: the plugin is not written; `RtsimApi.takeFromSim` is its hook point.
 - **A GameTest for a server at simulation distance 10** (risk R1): it needs real players.

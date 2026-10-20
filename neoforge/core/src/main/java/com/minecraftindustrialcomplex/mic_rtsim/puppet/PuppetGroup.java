@@ -23,6 +23,14 @@ public final class PuppetGroup {
         public boolean gone;
         /** State captured when the member left tracking, before the group capture could run. */
         public MemberCapture precaptured;
+        /**
+         * State captured at LivingDeathEvent, before the drops. The DIED is journaled at the end of the
+         * tick, once the member is really dead: a later handler may still cancel the death.
+         */
+        public MemberCapture pendingDeath;
+        public java.util.UUID pendingKiller;
+        /** The items it dropped when it died (LivingDropsEvent), which carry its DIED. */
+        public java.util.List<net.minecraft.world.entity.item.ItemEntity> pendingDrops;
 
         Member(int index, UUID uuid, Entity entity) {
             this.index = index;

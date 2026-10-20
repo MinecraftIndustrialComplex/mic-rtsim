@@ -148,6 +148,10 @@ public final class Obs {
         public static final int ALREADY_EMBODIED = 4;
         public static final int SPAWN_FAILED = 5;
         public static final int BAD_RECORD = 6;
+        /** The server would discard the body on its first tick ({@code spawn-animals} or {@code spawn-npcs} off). */
+        public static final int DISCARDED_BY_SERVER = 7;
+        /** A cargo stack names no item, or does not fit the body (stack size, chest size). */
+        public static final int BAD_CARGO = 8;
     }
 
     /**
@@ -165,6 +169,8 @@ public final class Obs {
         public static final int UNLOADED = 3;
         public static final int SESSION_END = 4;
         public static final int MEMBERS_GONE = 5;
+        /** The answer to a DESPAWN_GROUP for an agent or epoch that is not embodied (MEMBERS = 0). */
+        public static final int NOT_EMBODIED = 6;
     }
 
     /**

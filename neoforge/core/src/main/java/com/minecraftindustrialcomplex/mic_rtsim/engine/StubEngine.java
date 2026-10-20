@@ -133,6 +133,8 @@ public final class StubEngine implements Engine {
 
     private volatile Pages disk;
     private volatile boolean saveRequested;
+    private volatile long saveThrough;
+    private volatile boolean saveAtStepEnd;
     private volatile String protocolError;
 
     // Engine memory. Touched on the worker thread; read by tests through synchronized getters.
@@ -238,8 +240,14 @@ public final class StubEngine implements Engine {
     }
 
     @Override
-    public void requestSave() {
+    public void requestSave(long throughObsSeq) {
+        saveThrough = throughObsSeq;
         saveRequested = true;
+    }
+
+    /** Test helper: save the pages at the end of the next step, whatever it holds. */
+    public void requestSaveAtNextStep() {
+        saveAtStepEnd = true;
     }
 
     @Override
@@ -272,14 +280,23 @@ public final class StubEngine implements Engine {
         }
         long gameTime = o.getLong(Layout.H_WORD_B);
         reader.reset(o, Layout.HEADER_BYTES, o.getInt(Layout.H_USED));
-        while (reader.next())
+        while (reader.next()) {
+            // A save for a world save that knew observations up to saveThrough is taken right before
+            // the first journaled record past it, so the pages never get ahead of that world save.
+            if (saveRequested && Obs.isJournaled(reader.kind())
+                    && reader.buffer().getLong(reader.at() + Obs.OBS_SEQ) > saveThrough) {
+                saveRequested = false;
+                savePages();
+            }
             observe(h, reader);
+        }
         if (reader.error() != null)
             protocolError = "step " + h + ": " + reader.error();
         Seq.setRelease(o, Layout.H_CONSUMED, h);
 
-        if (saveRequested) {
+        if ((saveRequested && maxObsSeq >= saveThrough) || saveAtStepEnd) {
             saveRequested = false;
+            saveAtStepEnd = false;
             savePages();
         }
 

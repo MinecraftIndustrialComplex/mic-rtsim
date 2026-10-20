@@ -49,11 +49,12 @@ public interface Engine extends AutoCloseable {
     void submit(long handover);
 
     /**
-     * Minecraft is saving. The engine snapshots its dirty pages at the next step boundary and writes
-     * them off-thread; once they are on disk, a later command header acknowledges the observations
-     * they include. A signal only: never blocks.
+     * Minecraft is saving, and its journal holds every observation up to {@code throughObsSeq}. The
+     * engine snapshots its pages after applying exactly the observations up to that sequence (no
+     * further: pages ahead of the world save are Proposal P29's case), writes them off-thread, and once
+     * they are on disk a later command header acknowledges them. A signal only: never blocks.
      */
-    void requestSave();
+    void requestSave(long throughObsSeq);
 
     /** A one-line description for logs and {@code /rtsim perf}. */
     String describe();

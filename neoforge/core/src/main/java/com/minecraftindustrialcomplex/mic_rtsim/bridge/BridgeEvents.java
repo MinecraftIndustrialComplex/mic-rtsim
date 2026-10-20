@@ -45,6 +45,8 @@ public final class BridgeEvents {
         bus.addListener(BridgeEvents::onLeave);
         bus.addListener(EventPriority.LOWEST, false, LivingDeathEvent.class, BridgeEvents::onDeath);
         bus.addListener(EventPriority.LOWEST, false, AnimalTameEvent.class, BridgeEvents::onTame);
+        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.entity.living.LivingDropsEvent.class, BridgeEvents::onDrops);
+        bus.addListener(BridgeEvents::onChunkLoad);
         bus.addListener(BridgeEvents::onEntityInteract);
         bus.addListener(BridgeEvents::onRegisterCommands);
     }
@@ -63,24 +65,55 @@ public final class BridgeEvents {
         RtsimSession.stopGlobal();
     }
 
+    /**
+     * Holders of pending records that loaded, waiting for the server thread (ChunkEvent.Load may come
+     * early in a chunk's promotion) or for the session (spawn chunks load before it exists).
+     */
+    private static final java.util.concurrent.ConcurrentLinkedQueue<net.minecraft.world.level.chunk.LevelChunk> LOADED_CHUNKS = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static final java.util.concurrent.ConcurrentLinkedQueue<Entity> LOADED_ENTITIES = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     private static void onServerTick(ServerTickEvent.Post event) {
         RtsimSession s = RtsimSession.current();
+        boolean live = s != null && !s.failed();
+        for (net.minecraft.world.level.chunk.LevelChunk c; (c = LOADED_CHUNKS.poll()) != null; )
+            if (live)
+                s.reassert(c);
+        for (Entity e; (e = LOADED_ENTITIES.poll()) != null; )
+            if (live && !e.isRemoved())
+                s.reassert(e);
         if (s != null)
             s.endOfTick();
+    }
+
+    private static void onChunkLoad(net.neoforged.neoforge.event.level.ChunkEvent.Load event) {
+        if (event.getLevel().isClientSide() || !(event.getChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk))
+            return;
+        if (chunk.hasData(RtsimAttachments.PENDING))
+            LOADED_CHUNKS.add(chunk);
+    }
+
+    private static void onDrops(net.neoforged.neoforge.event.entity.living.LivingDropsEvent event) {
+        if (event.getEntity().level().isClientSide())
+            return;
+        RtsimSession s = RtsimSession.current();
+        if (s != null)
+            s.onDrops(event.getEntity(), event.getDrops());
     }
 
     /**
      * The overworld saved: ask the engine to save its pages, and report when this world save is on
      * disk. The journal was serialized in {@code saveLevelData}, before this event, and NeoForge
      * chains every SavedData write on one future ({@code IOUtilities.withIOWorker}); a marker chained
-     * now runs after the journal's write has finished.
+     * now runs after the journal's write has finished. Not proof that the write succeeded:
+     * {@code SavedData.save} logs an IOException inside its task and the chain goes on, so a failed
+     * journal write is still reported as saved (a known gap; the log says so).
      */
     private static void onLevelSave(LevelEvent.Save event) {
         RtsimSession s = RtsimSession.current();
         if (s == null || !(event.getLevel() instanceof ServerLevel level) || level.dimension() != Level.OVERWORLD)
             return;
-        s.engine().requestSave();
         long through = s.boundary().journal().nextObsSeq() - 1;
+        s.engine().requestSave(through);
         net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> s.boundary().worldSaveDurable(through));
     }
 
@@ -94,14 +127,22 @@ public final class BridgeEvents {
         if (level.isClientSide())
             return;
         Entity e = event.getEntity();
-        if (!RtsimAttachments.isTagged(e))
+        if (!RtsimAttachments.isTagged(e)) {
+            // An ordinary entity back from disk that still carries records the engine may never have
+            // seen (a taken creature, a dropped cargo item): journal them again at the end of the tick.
+            if (event.loadedFromDisk() && e.hasData(RtsimAttachments.PENDING))
+                LOADED_ENTITIES.add(e);
             return;
+        }
         RtsimSession s = RtsimSession.current();
         if (s == null || s.rejectOnJoin(e, level)) {
             event.setCanceled(true);
-            // A copy loaded with passengers or a vehicle must not leave them pointing at it.
+            // A copy loaded with passengers or a vehicle must not leave them pointing at it, and it is
+            // marked removed, so a vehicle that keeps it (another mod cancelled the dismount) does not
+            // tick it. It never joined, so its level callback is the null one and nothing else runs.
             e.ejectPassengers();
             e.stopRiding();
+            e.discard();
         }
     }
 
