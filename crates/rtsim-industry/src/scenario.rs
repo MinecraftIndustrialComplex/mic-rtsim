@@ -18,7 +18,10 @@
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
 use crate::engine::Mode;
-use crate::fake::{FCarriage, FDistrict, FInventory, FStation, FTrain, FakeWorld, Recipe, TrainState, Visit, exposed, survey};
+use crate::fake::{
+    FCarriage, FDistrict, FInventory, FStation, FTrain, FakeWorld, Recipe, TrainState, Visit,
+    exposed, survey,
+};
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec, StationId, TrainId};
 use crate::obs::{BlockFlags, InvKind};
 use crate::threat::{SynthStream, SyntheticThreats, ThreatClass, ThreatSource, ThreatTarget};
@@ -74,7 +77,11 @@ fn district(id: u64, name: &str, x: i32) -> FDistrict {
         inventories: Vec::new(),
         recipes: Vec::new(),
         deposit: None,
-        deposit_chunk: ChunkPos { dim: 0, x: x >> 4, z: 0 },
+        deposit_chunk: ChunkPos {
+            dim: 0,
+            x: x >> 4,
+            z: 0,
+        },
         exposed: Vec::new(),
         survey: None,
         spawn_rate: 0.0,
@@ -103,7 +110,8 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     // Ore Coast: a drill on a finite vein, 16 ore per 200 ticks.
     let mut a = district(1, "Ore Coast", 1_600);
     let drill = BlockPos::new(1_602, 64, 4);
-    a.inventories.push(vault(0, BlockPos::new(1_600, 64, 0), 2, GoodVec::new()));
+    a.inventories
+        .push(vault(0, BlockPos::new(1_600, 64, 0), 2, GoodVec::new()));
     a.recipes.push(Recipe {
         name: "drill".into(),
         inputs: vec![],
@@ -117,10 +125,30 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     a.deposit = Some((VEIN, 14_000));
     a.survey = Some(survey(DistrictId(1), 400, 100, 100, 0, 2, [0.0; 4]));
     a.exposed = vec![
-        exposed(drill, 11, BlockFlags::MACHINE | BlockFlags::ROOFLESS | BlockFlags::PERIMETER, None),
-        exposed(BlockPos::new(1_600, 64, 0), 12, BlockFlags::INVENTORY | BlockFlags::ROOFLESS, Some(0)),
-        exposed(BlockPos::new(1_598, 64, 0), 13, BlockFlags::PERIMETER | BlockFlags::ROOFLESS, None),
-        exposed(BlockPos::new(1_598, 64, 2), 13, BlockFlags::PERIMETER | BlockFlags::ROOFLESS, None),
+        exposed(
+            drill,
+            11,
+            BlockFlags::MACHINE | BlockFlags::ROOFLESS | BlockFlags::PERIMETER,
+            None,
+        ),
+        exposed(
+            BlockPos::new(1_600, 64, 0),
+            12,
+            BlockFlags::INVENTORY | BlockFlags::ROOFLESS,
+            Some(0),
+        ),
+        exposed(
+            BlockPos::new(1_598, 64, 0),
+            13,
+            BlockFlags::PERIMETER | BlockFlags::ROOFLESS,
+            None,
+        ),
+        exposed(
+            BlockPos::new(1_598, 64, 2),
+            13,
+            BlockFlags::PERIMETER | BlockFlags::ROOFLESS,
+            None,
+        ),
     ];
     a.spawn_rate = 5e-7;
     w.districts.push(a);
@@ -128,9 +156,16 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     // Smelter: 8 ore + 1 coal into 8 ingots per 100 ticks; stops at 2,000 ingots.
     let mut b = district(2, "Smelter", 3_200);
     let furnace = BlockPos::new(3_204, 64, 4);
-    b.inventories.push(vault(0, BlockPos::new(3_200, 64, 0), 2, GoodVec::new()));
-    b.inventories.push(vault(1, BlockPos::new(3_200, 64, 8), 1, GoodVec::from_pairs([(COAL, 1_200)])));
-    b.inventories.push(vault(2, BlockPos::new(3_208, 64, 0), 2, GoodVec::new()));
+    b.inventories
+        .push(vault(0, BlockPos::new(3_200, 64, 0), 2, GoodVec::new()));
+    b.inventories.push(vault(
+        1,
+        BlockPos::new(3_200, 64, 8),
+        1,
+        GoodVec::from_pairs([(COAL, 1_200)]),
+    ));
+    b.inventories
+        .push(vault(2, BlockPos::new(3_208, 64, 0), 2, GoodVec::new()));
     b.recipes.push(Recipe {
         name: "smelt".into(),
         inputs: vec![(ORE, 0, 8), (COAL, 1, 1)],
@@ -144,7 +179,12 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     b.survey = Some(survey(DistrictId(2), 0, 2, 100, 1, 2, [0.0, 0.0, 6.0, 0.0]));
     b.exposed = vec![
         exposed(furnace, 21, BlockFlags::MACHINE, None),
-        exposed(BlockPos::new(3_208, 64, 0), 22, BlockFlags::INVENTORY | BlockFlags::PERIMETER, Some(2)),
+        exposed(
+            BlockPos::new(3_208, 64, 0),
+            22,
+            BlockFlags::INVENTORY | BlockFlags::PERIMETER,
+            Some(2),
+        ),
         exposed(BlockPos::new(3_196, 64, 0), 23, BlockFlags::PERIMETER, None),
         exposed(BlockPos::new(3_196, 65, 0), 23, BlockFlags::PERIMETER, None),
         exposed(BlockPos::new(3_196, 64, 4), 23, BlockFlags::PERIMETER, None),
@@ -153,13 +193,19 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
 
     // Home: receives ingots into a 16-block vault (320 slots).
     let mut c = district(3, "Home", 0);
-    c.inventories.push(vault(0, BlockPos::new(0, 64, 0), 16, GoodVec::new()));
+    c.inventories
+        .push(vault(0, BlockPos::new(0, 64, 0), 16, GoodVec::new()));
     w.districts.push(c);
 
     // Power Plant: a coal boiler, 1 coal per 400 ticks.
     let mut d = district(4, "Power Plant", 3_300);
     let boiler = BlockPos::new(3_302, 64, 2);
-    d.inventories.push(vault(0, BlockPos::new(3_300, 64, 0), 1, GoodVec::from_pairs([(COAL, 300)])));
+    d.inventories.push(vault(
+        0,
+        BlockPos::new(3_300, 64, 0),
+        1,
+        GoodVec::from_pairs([(COAL, 300)]),
+    ));
     d.recipes.push(Recipe {
         name: "boiler".into(),
         inputs: vec![(COAL, 0, 1)],
@@ -174,15 +220,61 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     w.power_links.push((SMELTER, POWER));
 
     w.stations = vec![
-        FStation { id: StationId(1), district: ORE_COAST, pos: BlockPos::new(1_604, 64, 0), unload: vec![], load: vec![(ORE, 0)] },
-        FStation { id: StationId(2), district: SMELTER, pos: BlockPos::new(3_202, 64, 0), unload: vec![(ORE, 0)], load: vec![(INGOT, 2)] },
-        FStation { id: StationId(3), district: HOME, pos: BlockPos::new(2, 64, 0), unload: vec![(INGOT, 0)], load: vec![] },
-        FStation { id: StationId(4), district: SMELTER, pos: BlockPos::new(3_202, 64, 6), unload: vec![], load: vec![(INGOT, 2)] },
+        FStation {
+            id: StationId(1),
+            district: ORE_COAST,
+            pos: BlockPos::new(1_604, 64, 0),
+            unload: vec![],
+            load: vec![(ORE, 0)],
+        },
+        FStation {
+            id: StationId(2),
+            district: SMELTER,
+            pos: BlockPos::new(3_202, 64, 0),
+            unload: vec![(ORE, 0)],
+            load: vec![(INGOT, 2)],
+        },
+        FStation {
+            id: StationId(3),
+            district: HOME,
+            pos: BlockPos::new(2, 64, 0),
+            unload: vec![(INGOT, 0)],
+            load: vec![],
+        },
+        FStation {
+            id: StationId(4),
+            district: SMELTER,
+            pos: BlockPos::new(3_202, 64, 6),
+            unload: vec![],
+            load: vec![(INGOT, 2)],
+        },
     ];
-    let cars = |n: u32| (0..n).map(|i| FCarriage { index: i, slots: 27, cargo: GoodVec::new() }).collect();
+    let cars = |n: u32| {
+        (0..n)
+            .map(|i| FCarriage {
+                index: i,
+                slots: 27,
+                cargo: GoodVec::new(),
+            })
+            .collect()
+    };
     w.trains = vec![
-        FTrain { id: TrainId(1), stops: vec![0, 1], travel: 1_200, dwell: 200, carriages: cars(2), state: TrainState::Dwelling { stop: 0, since: 0 } },
-        FTrain { id: TrainId(2), stops: vec![3, 2], travel: 2_000, dwell: 200, carriages: cars(1), state: TrainState::Dwelling { stop: 0, since: 0 } },
+        FTrain {
+            id: TrainId(1),
+            stops: vec![0, 1],
+            travel: 1_200,
+            dwell: 200,
+            carriages: cars(2),
+            state: TrainState::Dwelling { stop: 0, since: 0 },
+        },
+        FTrain {
+            id: TrainId(2),
+            stops: vec![3, 2],
+            travel: 2_000,
+            dwell: 200,
+            carriages: cars(1),
+            state: TrainState::Dwelling { stop: 0, since: 0 },
+        },
     ];
     // Station 4 is the ingot platform; the ore platform (2) only unloads ore for train 1.
     w.stations[1].load.clear();
@@ -190,13 +282,31 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
     // The player builds and runs everything at first (all loaded, so the control run and the
     // simulated run share their history while districts learn), then goes home.
     w.visits = vec![
-        Visit { from: Tick(0), at: vec![ORE_COAST, SMELTER, HOME, POWER] },
-        Visit { from: day(1.5), at: vec![HOME] },
-        Visit { from: day(8.0), at: vec![SMELTER, POWER] },
-        Visit { from: day(8.5), at: vec![ORE_COAST] },
-        Visit { from: day(9.0), at: vec![HOME] },
+        Visit {
+            from: Tick(0),
+            at: vec![ORE_COAST, SMELTER, HOME, POWER],
+        },
+        Visit {
+            from: day(1.5),
+            at: vec![HOME],
+        },
+        Visit {
+            from: day(8.0),
+            at: vec![SMELTER, POWER],
+        },
+        Visit {
+            from: day(8.5),
+            at: vec![ORE_COAST],
+        },
+        Visit {
+            from: day(9.0),
+            at: vec![HOME],
+        },
         // The end: everything loads so every reconcile lands, for the conservation check.
-        Visit { from: day(cfg.days as f64), at: vec![ORE_COAST, SMELTER, HOME, POWER] },
+        Visit {
+            from: day(cfg.days as f64),
+            at: vec![ORE_COAST, SMELTER, HOME, POWER],
+        },
     ];
 
     if cfg.threats {

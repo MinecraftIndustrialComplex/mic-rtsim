@@ -76,7 +76,11 @@ impl GoodInfo {
         }
         Some(GoodInfo {
             class,
-            max_stack: if class == GoodClass::Item { max_stack } else { 0 },
+            max_stack: if class == GoodClass::Item {
+                max_stack
+            } else {
+                0
+            },
             name: rest.to_string(),
         })
     }

@@ -36,7 +36,11 @@ pub enum LinkKey {
     Channel(ChannelId, Good),
     /// Packages the district's packager wrote into a postbox (inventory index) and trains took
     /// away, by address (NAME id). Positive: into the district, so a packager's rate is negative.
-    Mail { inventory: u32, address: u32, good: Good },
+    Mail {
+        inventory: u32,
+        address: u32,
+        good: Good,
+    },
 }
 
 /// Why a window ended without a model.
@@ -69,10 +73,7 @@ pub struct Learned {
 
 impl Learned {
     pub fn rate(&self, g: Good) -> f64 {
-        self.rates
-            .iter()
-            .find(|r| r.0 == g)
-            .map_or(0.0, |r| r.1)
+        self.rates.iter().find(|r| r.0 == g).map_or(0.0, |r| r.1)
     }
 
     pub fn consumed(&self) -> impl Iterator<Item = Good> + '_ {
@@ -325,7 +326,11 @@ impl Window {
         let end = self.points.last()?.t;
         let from = from.max(self.start);
         let mid = from + (end - from) / 2;
-        let first = self.points.iter().filter(|p| p.t >= from && p.t < mid).count();
+        let first = self
+            .points
+            .iter()
+            .filter(|p| p.t >= from && p.t < mid)
+            .count();
         let second = self.points.iter().filter(|p| p.t >= mid).count();
         if first < tun.min_points_per_half || second < tun.min_points_per_half {
             return None;
@@ -342,7 +347,11 @@ impl Window {
             let (x2, y2) = self.series(col, link, mid, end);
             let (r1, r2) = (slope(&x1, &y1), slope(&x2, &y2));
             let big = r1.abs().max(r2.abs());
-            let rel = if big == 0.0 { 0.0 } else { (r1 - r2).abs() / (tun.steady_epsilon * big) };
+            let rel = if big == 0.0 {
+                0.0
+            } else {
+                (r1 - r2).abs() / (tun.steady_epsilon * big)
+            };
             worst = worst.max(rel);
             (rel <= 1.0).then_some(r)
         };
@@ -415,7 +424,12 @@ impl Learner {
     }
 
     /// Feeds one live sweep. Returns a model when a window turns out steady.
-    pub fn push(&mut self, s: Sample<'_>, model: Option<&Learned>, tun: &LearnTunables) -> Option<Learned> {
+    pub fn push(
+        &mut self,
+        s: Sample<'_>,
+        model: Option<&Learned>,
+        tun: &LearnTunables,
+    ) -> Option<Learned> {
         let t = s.at.0;
         if let Some(m) = model {
             self.track_stops(t, s.stock, m, s.space_free, tun);
@@ -482,7 +496,14 @@ impl Learner {
         }
     }
 
-    fn track_stops(&mut self, t: u64, stock: &GoodVec, m: &Learned, space_free: bool, tun: &LearnTunables) {
+    fn track_stops(
+        &mut self,
+        t: u64,
+        stock: &GoodVec,
+        m: &Learned,
+        space_free: bool,
+        tun: &LearnTunables,
+    ) {
         let st = &mut self.stops;
         let mut rose = false;
         for g in m.produced() {
@@ -524,7 +545,12 @@ impl Learner {
         let st = &self.stops;
         let mut out = Vec::new();
         for g in m.produced() {
-            let levels: Vec<i64> = st.stop_levels.iter().map(|v| v.get(g)).filter(|&l| l > 0).collect();
+            let levels: Vec<i64> = st
+                .stop_levels
+                .iter()
+                .map(|v| v.get(g))
+                .filter(|&l| l > 0)
+                .collect();
             let mut confirmed: Option<i64> = None;
             for (i, a) in levels.iter().enumerate() {
                 for b in &levels[i + 1..] {
@@ -610,7 +636,11 @@ mod tests {
         let m = run(20_000, &mut l, &t).expect("a steady window");
         // 2 per 100 ticks = 0.02 per tick, consumed and produced; train steps are ports.
         assert!((m.rate(ORE) + 0.02).abs() < 1e-3, "ore {}", m.rate(ORE));
-        assert!((m.rate(INGOT) - 0.02).abs() < 1e-3, "ingot {}", m.rate(INGOT));
+        assert!(
+            (m.rate(INGOT) - 0.02).abs() < 1e-3,
+            "ingot {}",
+            m.rate(INGOT)
+        );
         assert!(m.window_ticks >= 4_000);
         assert!(m.confidence > 0.5);
     }
@@ -747,7 +777,11 @@ mod persist_impls {
                     c.put(w);
                     g.put(w);
                 }
-                LinkKey::Mail { inventory, address, good } => {
+                LinkKey::Mail {
+                    inventory,
+                    address,
+                    good,
+                } => {
                     w.u8(1);
                     inventory.put(w);
                     address.put(w);
@@ -768,10 +802,36 @@ mod persist_impls {
         }
     }
 
-    persist_unit_enum!(WindowEnd, [WindowEnd::Steady, WindowEnd::NotSteady, WindowEnd::Discarded]);
-    persist_struct!(Learned { at, window_ticks, rates, links, confidence, points, longest_gap, latency_ticks });
-    persist_struct!(LearnedTarget { good, stop_at, restart_at });
-    persist_struct!(Stops { last_rise, last_s, stopped, stop_levels, restart_levels });
+    persist_unit_enum!(
+        WindowEnd,
+        [
+            WindowEnd::Steady,
+            WindowEnd::NotSteady,
+            WindowEnd::Discarded
+        ]
+    );
+    persist_struct!(Learned {
+        at,
+        window_ticks,
+        rates,
+        links,
+        confidence,
+        points,
+        longest_gap,
+        latency_ticks
+    });
+    persist_struct!(LearnedTarget {
+        good,
+        stop_at,
+        restart_at
+    });
+    persist_struct!(Stops {
+        last_rise,
+        last_s,
+        stopped,
+        stop_levels,
+        restart_levels
+    });
     persist_struct!(Point { t, n, l });
     persist_struct!(Window {
         start,
@@ -788,5 +848,11 @@ mod persist_impls {
     });
     // The open window is saved too, so a snapshot is exact; a session start still discards it
     // (F6), which is the host's call after a real restart.
-    persist_struct!(Learner { window, stops, windows_steady, windows_failed, last_end });
+    persist_struct!(Learner {
+        window,
+        stops,
+        windows_steady,
+        windows_failed,
+        last_end
+    });
 }

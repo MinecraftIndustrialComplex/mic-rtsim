@@ -30,7 +30,10 @@ fn boxed(
     requires: Option<u64>,
     latency: u64,
 ) -> MemberSpec {
-    let (i, o) = (PoolKey::Stock(d(id), Good(1)), PoolKey::Stock(d(id), Good(2)));
+    let (i, o) = (
+        PoolKey::Stock(d(id), Good(1)),
+        PoolKey::Stock(d(id), Good(2)),
+    );
     MemberSpec {
         district: d(id),
         pools: vec![(i, stock, None), (o, 0, cap)],
@@ -99,11 +102,23 @@ enum Ev {
 fn world(kind: u8) -> Cluster {
     let mut c = Cluster::new(50);
     match kind % 4 {
-        0 => c.add_member(boxed(1, 300, (3, 100), (2, 100), None, None, None, 0), Tick(0)),
-        1 => c.add_member(boxed(1, 300, (7, 50), (5, 50), Some((400, 100)), None, None, 100), Tick(0)),
+        0 => c.add_member(
+            boxed(1, 300, (3, 100), (2, 100), None, None, None, 0),
+            Tick(0),
+        ),
+        1 => c.add_member(
+            boxed(1, 300, (7, 50), (5, 50), Some((400, 100)), None, None, 100),
+            Tick(0),
+        ),
         2 => {
-            c.add_member(boxed(1, 300, (3, 100), (2, 100), None, Some(250), None, 0), Tick(0));
-            c.add_member(boxed(3, 120, (1, 10), (1, 10), None, None, Some(1), 0), Tick(0));
+            c.add_member(
+                boxed(1, 300, (3, 100), (2, 100), None, Some(250), None, 0),
+                Tick(0),
+            );
+            c.add_member(
+                boxed(3, 120, (1, 10), (1, 10), None, None, Some(1), 0),
+                Tick(0),
+            );
         }
         _ => {
             for m in channel_pair() {
@@ -115,10 +130,16 @@ fn world(kind: u8) -> Cluster {
 }
 
 /// Runs a schedule of events, with optional reads; returns the final model and the books check.
-fn run(kind: u8, events: &[(u64, Ev)], reads: &[u64], end: u64) -> (Cluster, Tick, Result<(), String>) {
+fn run(
+    kind: u8,
+    events: &[(u64, Ev)],
+    reads: &[u64],
+    end: u64,
+) -> (Cluster, Tick, Result<(), String>) {
     let mut t: LazyTable<Cluster> = LazyTable::new(1, SYS, Tick(0));
     let h = t.insert(1, world(kind), Tick(0));
-    let mut sched: Vec<(u64, Option<Ev>)> = events.iter().map(|(a, e)| (*a, Some(e.clone()))).collect();
+    let mut sched: Vec<(u64, Option<Ev>)> =
+        events.iter().map(|(a, e)| (*a, Some(e.clone()))).collect();
     sched.extend(reads.iter().map(|&a| (a, None)));
     sched.sort_by_key(|e| (e.0, e.1.is_none()));
     let mut books = Ok(());
@@ -127,10 +148,14 @@ fn run(kind: u8, events: &[(u64, Ev)], reads: &[u64], end: u64) -> (Cluster, Tic
         while t.next_due(at).is_some() {}
         match ev {
             Some(Ev::Input(n)) => {
-                t.apply(h, at, |c, at| c.add_to_pool(PoolKey::Stock(d(1), Good(1)), n, false, at));
+                t.apply(h, at, |c, at| {
+                    c.add_to_pool(PoolKey::Stock(d(1), Good(1)), n, false, at)
+                });
             }
             Some(Ev::Output(n)) => {
-                t.apply(h, at, |c, at| c.add_to_pool(PoolKey::Stock(d(1), Good(2)), n, false, at));
+                t.apply(h, at, |c, at| {
+                    c.add_to_pool(PoolKey::Stock(d(1), Good(2)), n, false, at)
+                });
             }
             None => {
                 t.read(h, at);
@@ -151,7 +176,13 @@ fn run(kind: u8, events: &[(u64, Ev)], reads: &[u64], end: u64) -> (Cluster, Tic
 }
 
 fn ev() -> impl Strategy<Value = (u64, Ev)> {
-    (0u64..200_000, prop_oneof![(-200i64..400).prop_map(Ev::Input), (-300i64..0).prop_map(Ev::Output)])
+    (
+        0u64..200_000,
+        prop_oneof![
+            (-200i64..400).prop_map(Ev::Input),
+            (-300i64..0).prop_map(Ev::Output)
+        ],
+    )
 }
 
 proptest! {
@@ -197,11 +228,18 @@ fn catch_up_cost_is_independent_of_elapsed_time() {
     let mut costs = Vec::new();
     for elapsed in [1u64, 1_000, 1_000_000, 100_000_000] {
         let mut t: LazyTable<Cluster> = LazyTable::new(1, SYS, Tick(0));
-        let h = t.insert(1, {
-            let mut c = Cluster::new(50);
-            c.add_member(boxed(1, i64::MAX / 4, (3, 100), (2, 100), None, None, None, 0), Tick(0));
-            c
-        }, Tick(0));
+        let h = t.insert(
+            1,
+            {
+                let mut c = Cluster::new(50);
+                c.add_member(
+                    boxed(1, i64::MAX / 4, (3, 100), (2, 100), None, None, None, 0),
+                    Tick(0),
+                );
+                c
+            },
+            Tick(0),
+        );
         t.apply(h, Tick(0), |c, _| c.settles = 0);
         t.reset_stats();
         while t.next_due(Tick(elapsed)).is_some() {}
@@ -213,7 +251,11 @@ fn catch_up_cost_is_independent_of_elapsed_time() {
         costs.push((elapsed, settles, stats.breakpoints, made));
     }
     for w in costs.windows(2) {
-        assert_eq!((w[0].1, w[0].2), (w[1].1, w[1].2), "cost moved with elapsed time: {costs:?}");
+        assert_eq!(
+            (w[0].1, w[0].2),
+            (w[1].1, w[1].2),
+            "cost moved with elapsed time: {costs:?}"
+        );
     }
     // And it really did catch up: 2 per 100 ticks.
     let last = costs.last().unwrap();
@@ -227,7 +269,10 @@ fn a_starved_district_costs_one_breakpoint() {
     for wait in [10_000u64, 10_000_000] {
         let mut t: LazyTable<Cluster> = LazyTable::new(1, SYS, Tick(0));
         let mut c = Cluster::new(50);
-        c.add_member(boxed(1, 30, (3, 100), (2, 100), None, None, None, 0), Tick(0));
+        c.add_member(
+            boxed(1, 30, (3, 100), (2, 100), None, None, None, 0),
+            Tick(0),
+        );
         let h = t.insert(1, c, Tick(0));
         t.reset_stats();
         while t.next_due(Tick(wait)).is_some() {}
@@ -242,14 +287,25 @@ fn a_starved_district_costs_one_breakpoint() {
 fn power_coupling_follows_the_source() {
     let mut t: LazyTable<Cluster> = LazyTable::new(1, SYS, Tick(0));
     let mut c = Cluster::new(1);
-    c.add_member(boxed(1, 30, (3, 100), (2, 100), None, None, None, 0), Tick(0));
-    c.add_member(boxed(2, 1_000_000, (1, 10), (1, 10), None, None, Some(1), 0), Tick(0));
+    c.add_member(
+        boxed(1, 30, (3, 100), (2, 100), None, None, None, 0),
+        Tick(0),
+    );
+    c.add_member(
+        boxed(2, 1_000_000, (1, 10), (1, 10), None, None, Some(1), 0),
+        Tick(0),
+    );
     let h = t.insert(1, c, Tick(0));
     let (at, _) = t.next_due(Tick(1_000_000)).expect("the source starves");
     let m = t.get(h).unwrap().cell().model();
-    assert!(matches!(m.run_of(d(2), 0), Some(Run::Stopped(_))), "sink stops at {at:?}");
+    assert!(
+        matches!(m.run_of(d(2), 0), Some(Run::Stopped(_))),
+        "sink stops at {at:?}"
+    );
     while t.next_due(Tick(5_000)).is_some() {}
-    t.apply(h, Tick(5_000), |c, at| c.add_to_pool(PoolKey::Stock(d(1), Good(1)), 600, false, at));
+    t.apply(h, Tick(5_000), |c, at| {
+        c.add_to_pool(PoolKey::Stock(d(1), Good(1)), 600, false, at)
+    });
     let m = t.get(h).unwrap().cell().model();
     assert_eq!(m.run_of(d(1), 0), Some(Run::Running));
     assert_eq!(m.run_of(d(2), 0), Some(Run::Running));
@@ -282,21 +338,42 @@ fn channels_are_shared_stock() {
 fn removing_a_member_keeps_shared_channels() {
     let link = |id: u16, from: PoolKey, to: PoolKey| ProcSpec {
         id,
-        body: ProcSpecBody::Link { from, to, flow: Diffuser::per(1, 10), batch: None },
+        body: ProcSpecBody::Link {
+            from,
+            to,
+            flow: Diffuser::per(1, 10),
+            batch: None,
+        },
         targets: vec![],
         requires: None,
         latency: 0,
         enabled: true,
     };
-    let (c1, c2) = (PoolKey::Channel(ChannelId(1), Good(2)), PoolKey::Channel(ChannelId(2), Good(2)));
+    let (c1, c2) = (
+        PoolKey::Channel(ChannelId(1), Good(2)),
+        PoolKey::Channel(ChannelId(2), Good(2)),
+    );
     let s1 = PoolKey::Stock(d(1), Good(2));
     let s2 = PoolKey::Stock(d(2), Good(2));
     let mut c = Cluster::new(1);
     c.add_member(
-        MemberSpec { district: d(1), pools: vec![(s1, 10_000, None), (c1, 0, None), (c2, 0, None)], procs: vec![link(1, s1, c1), link(2, s1, c2)], space: None },
+        MemberSpec {
+            district: d(1),
+            pools: vec![(s1, 10_000, None), (c1, 0, None), (c2, 0, None)],
+            procs: vec![link(1, s1, c1), link(2, s1, c2)],
+            space: None,
+        },
         Tick(0),
     );
-    c.add_member(MemberSpec { district: d(2), pools: vec![(s2, 0, None)], procs: vec![link(1, c2, s2)], space: None }, Tick(0));
+    c.add_member(
+        MemberSpec {
+            district: d(2),
+            pools: vec![(s2, 0, None)],
+            procs: vec![link(1, c2, s2)],
+            space: None,
+        },
+        Tick(0),
+    );
     // Settle as the lazy table would: never across a breakpoint.
     let step = |c: &mut Cluster, from: Tick, to: Tick| {
         let mut at = from;
@@ -308,9 +385,15 @@ fn removing_a_member_keeps_shared_channels() {
     };
     step(&mut c, Tick(0), Tick(1_000));
     let out = c.remove_member(d(1), Tick(1_000));
-    assert!(out.pools.iter().any(|p| p.key == c1), "channel 1 leaves with its only user");
-    assert!(c.pool(c2).is_some(), "channel 2 stays: district 2 still links it");
+    assert!(
+        out.pools.iter().any(|p| p.key == c1),
+        "channel 1 leaves with its only user"
+    );
+    assert!(
+        c.pool(c2).is_some(),
+        "channel 2 stays: district 2 still links it"
+    );
     step(&mut c, Tick(1_000), Tick(5_000));
     c.check_books().unwrap();
-    assert_eq!(c.run_of(d(2), 1).is_some(), true);
+    assert!(c.run_of(d(2), 1).is_some());
 }

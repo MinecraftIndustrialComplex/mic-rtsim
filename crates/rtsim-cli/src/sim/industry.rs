@@ -103,7 +103,14 @@ struct Report {
 
 fn names(w: &FakeWorld, v: &GoodVec) -> BTreeMap<String, i64> {
     v.iter()
-        .map(|(g, n)| (w.goods.get(&g).map_or(format!("good {}", g.0), |i| i.name.clone()), n))
+        .map(|(g, n)| {
+            (
+                w.goods
+                    .get(&g)
+                    .map_or(format!("good {}", g.0), |i| i.name.clone()),
+                n,
+            )
+        })
         .collect()
 }
 
@@ -113,7 +120,8 @@ fn run(name: &str, cfg: IronLine) -> (RunOut, FakeWorld) {
     // Stop just before the player returns to the smelter, to read the ledger (I-A's display).
     let before = Tick(8 * TICKS_PER_DAY - 1);
     w.run_until(before);
-    let ids: Vec<(DistrictId, String)> = w.districts.iter().map(|d| (d.id, d.name.clone())).collect();
+    let ids: Vec<(DistrictId, String)> =
+        w.districts.iter().map(|d| (d.id, d.name.clone())).collect();
     let mut before_ledgers = BTreeMap::new();
     for (id, _) in &ids {
         before_ledgers.insert(*id, w.engine.ledger(*id, before));
@@ -179,10 +187,37 @@ pub fn main(opts: Options) -> i32 {
         tick_first: true,
     };
     let (main_run, w) = run("main", base);
-    let (sim, ws) = run("simulated", IronLine { threats: false, ..base });
-    let (norace, wn) = run("simulated, no race", IronLine { threats: false, tick_first: false, ..base });
-    let (control, wc) = run("control", IronLine { threats: false, control: true, ..base });
-    let (ro, _) = run("read-only", IronLine { threats: false, mode: Mode::ReadOnly, ..base });
+    let (sim, ws) = run(
+        "simulated",
+        IronLine {
+            threats: false,
+            ..base
+        },
+    );
+    let (norace, wn) = run(
+        "simulated, no race",
+        IronLine {
+            threats: false,
+            tick_first: false,
+            ..base
+        },
+    );
+    let (control, wc) = run(
+        "control",
+        IronLine {
+            threats: false,
+            control: true,
+            ..base
+        },
+    );
+    let (ro, _) = run(
+        "read-only",
+        IronLine {
+            threats: false,
+            mode: Mode::ReadOnly,
+            ..base
+        },
+    );
 
     // I-B: the simulated world makes at most what the control does, and not much less.
     let mut comparison = Vec::new();
@@ -198,7 +233,11 @@ pub fn main(opts: Options) -> i32 {
         if c == 0 && s == 0 {
             continue;
         }
-        let ratio = if c == 0 { f64::INFINITY } else { s as f64 / c as f64 };
+        let ratio = if c == 0 {
+            f64::INFINITY
+        } else {
+            s as f64 / c as f64
+        };
         comparison.push(Comparison {
             good: w.goods[&g].name.clone(),
             control: c,
@@ -213,18 +252,25 @@ pub fn main(opts: Options) -> i32 {
     let conserved = [&main_run, &sim, &norace, &control]
         .iter()
         .all(|r| r.conservation == "ok" && r.cluster_books == "ok");
-    let passed = conserved && comparison.iter().all(|c| c.at_or_below_control && c.within_tolerance);
+    let passed = conserved
+        && comparison
+            .iter()
+            .all(|c| c.at_or_below_control && c.within_tolerance);
 
     if !opts.quiet {
         print_run(&main_run, &w);
-        println!("\n== read-only (I-A): what the ledger showed just before the player came back ==");
+        println!(
+            "\n== read-only (I-A): what the ledger showed just before the player came back =="
+        );
         for d in &ro.districts {
             if let Some(l) = &d.ledger_before_return {
                 println!(
                     "  {:<12} {:?}{}: would have made {}",
                     d.name,
                     l.state,
-                    l.reason.as_ref().map_or(String::new(), |r| format!(" ({r})")),
+                    l.reason
+                        .as_ref()
+                        .map_or(String::new(), |r| format!(" ({r})")),
                     words(&w, &l.made_since)
                 );
             }
@@ -241,7 +287,11 @@ pub fn main(opts: Options) -> i32 {
                 c.control,
                 c.simulated,
                 c.ratio,
-                if c.at_or_below_control && c.within_tolerance { "ok" } else { "OUT OF BOUNDS" },
+                if c.at_or_below_control && c.within_tolerance {
+                    "ok"
+                } else {
+                    "OUT OF BOUNDS"
+                },
                 c.simulated_with_race,
                 c.race_leak
             );
@@ -250,7 +300,14 @@ pub fn main(opts: Options) -> i32 {
         for r in [&main_run, &sim, &norace, &control, &ro] {
             println!(
                 "  {:<19} conservation {}, cluster books {}, {} observations, {} breakpoints, {} settles, {} wire bytes, {:.0} ms",
-                r.name, r.conservation, r.cluster_books, r.stats.observations, r.stats.breakpoints, r.stats.cluster_settles, r.wire_bytes, r.wall_ms
+                r.name,
+                r.conservation,
+                r.cluster_books,
+                r.stats.observations,
+                r.stats.breakpoints,
+                r.stats.cluster_settles,
+                r.wire_bytes,
+                r.wall_ms
             );
         }
         let _ = (&ws, &wc, &wn);
@@ -271,7 +328,10 @@ pub fn main(opts: Options) -> i32 {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match std::fs::write(&path, serde_json::to_string_pretty(&report).expect("serialize")) {
+        match std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).expect("serialize"),
+        ) {
             Ok(()) => {
                 if !opts.quiet {
                     println!("  wrote {}", path.display());
@@ -291,11 +351,17 @@ fn words(w: &FakeWorld, v: &GoodVec) -> String {
         .iter()
         .map(|(g, n)| format!("{n:+} {}", w.goods.get(&g).map_or("?", |i| i.name.as_str())))
         .collect();
-    if parts.is_empty() { "nothing".to_string() } else { parts.join(", ") }
+    if parts.is_empty() {
+        "nothing".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 fn print_run(r: &RunOut, w: &FakeWorld) {
-    println!("== the iron line: Ore Coast -> (train 1) -> Smelter (+ Power Plant) -> (train 2) -> Home ==");
+    println!(
+        "== the iron line: Ore Coast -> (train 1) -> Smelter (+ Power Plant) -> (train 2) -> Home =="
+    );
     println!("\n-- learned (I5, I6) --");
     for d in &r.districts {
         match &d.learned {
@@ -304,7 +370,13 @@ fn print_run(r: &RunOut, w: &FakeWorld) {
                     .learned
                     .rates
                     .iter()
-                    .map(|&(g, x)| format!("{:+.0}/h {}", x * 72_000.0, w.goods.get(&g).map_or("?", |i| i.name.as_str())))
+                    .map(|&(g, x)| {
+                        format!(
+                            "{:+.0}/h {}",
+                            x * 72_000.0,
+                            w.goods.get(&g).map_or("?", |i| i.name.as_str())
+                        )
+                    })
                     .collect();
                 println!(
                     "  {:<12} window {:>6} ticks, confidence {:.2}, targets {}: {}",
@@ -312,13 +384,19 @@ fn print_run(r: &RunOut, w: &FakeWorld) {
                     m.learned.window_ticks,
                     m.learned.confidence,
                     m.targets.len(),
-                    if rates.is_empty() { "idle".to_string() } else { rates.join(", ") }
+                    if rates.is_empty() {
+                        "idle".to_string()
+                    } else {
+                        rates.join(", ")
+                    }
                 );
             }
             None => println!("  {:<12} not learned", d.name),
         }
     }
-    println!("\n-- replay breakpoints, reconciles, trims and attacks (engine log, exchanges summarised) --");
+    println!(
+        "\n-- replay breakpoints, reconciles, trims and attacks (engine log, exchanges summarised) --"
+    );
     let mut exchanges = 0usize;
     for e in &r.engine_events {
         if e.what.starts_with("station exchange") {
@@ -344,13 +422,23 @@ fn print_run(r: &RunOut, w: &FakeWorld) {
                 "  {:<12} {:?}; last reconcile: {}; attacks: {}",
                 d.name,
                 l.state,
-                l.last_reconcile.as_ref().map_or("none".to_string(), |x| format!(
-                    "epoch {} net {}{}{}",
-                    x.epoch,
-                    words(w, &x.net),
-                    if x.trims.is_empty() { String::new() } else { format!(", trims {}", words(w, &x.trims)) },
-                    if x.untracked.is_empty() { String::new() } else { format!(", untracked {}", words(w, &x.untracked)) }
-                )),
+                l.last_reconcile
+                    .as_ref()
+                    .map_or("none".to_string(), |x| format!(
+                        "epoch {} net {}{}{}",
+                        x.epoch,
+                        words(w, &x.net),
+                        if x.trims.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", trims {}", words(w, &x.trims))
+                        },
+                        if x.untracked.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", untracked {}", words(w, &x.untracked))
+                        }
+                    )),
                 l.attacks.len()
             );
         }
@@ -359,7 +447,17 @@ fn print_run(r: &RunOut, w: &FakeWorld) {
     println!("  engine minted {}", words(w, &r.engine_books.minted));
     println!("  engine burned {}", words(w, &r.engine_books.burned));
     println!("  stolen {}", words(w, &r.engine_books.stolen));
-    println!("  dropped by destroyed blocks {}", words(w, &r.engine_books.dropped));
-    println!("  shortfalls {} -> trimmed {}", words(w, &r.engine_books.shortfall), words(w, &r.engine_books.trimmed));
-    println!("  world machines minted {}", words(w, &r.world_books.minted));
+    println!(
+        "  dropped by destroyed blocks {}",
+        words(w, &r.engine_books.dropped)
+    );
+    println!(
+        "  shortfalls {} -> trimmed {}",
+        words(w, &r.engine_books.shortfall),
+        words(w, &r.engine_books.trimmed)
+    );
+    println!(
+        "  world machines minted {}",
+        words(w, &r.world_books.minted)
+    );
 }

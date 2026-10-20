@@ -107,11 +107,17 @@ pub struct FDistrict {
 
 impl FDistrict {
     fn chunks(&self) -> BTreeSet<ChunkPos> {
-        self.inventories.iter().map(|i| i.pos.chunk(self.dim)).collect()
+        self.inventories
+            .iter()
+            .map(|i| i.pos.chunk(self.dim))
+            .collect()
     }
 
     fn inv(&mut self, index: u32) -> &mut FInventory {
-        self.inventories.iter_mut().find(|i| i.index == index).expect("inventory")
+        self.inventories
+            .iter_mut()
+            .find(|i| i.index == index)
+            .expect("inventory")
     }
 }
 
@@ -461,7 +467,9 @@ impl FakeWorld {
             let mut buf = Vec::new();
             wire::encode_cmd(self.cmd_seq, &c, &mut buf).expect("encodable command");
             self.wire_bytes += buf.len() as u64;
-            let (_, back) = wire::decode_cmd(&buf).expect("decodable").expect("industry kind");
+            let (_, back) = wire::decode_cmd(&buf)
+                .expect("decodable")
+                .expect("industry kind");
             assert_eq!(back, c, "the wire codec changed a command");
             self.queue.push(back);
         }
@@ -499,7 +507,10 @@ impl FakeWorld {
             return;
         }
         self.engine.threat(&th);
-        self.note(format!("{:?} attack ({:?}, {}) on {:?}", th.source, th.class, th.count, th.target));
+        self.note(format!(
+            "{:?} attack ({:?}, {}) on {:?}",
+            th.source, th.class, th.count, th.target
+        ));
     }
 
     fn set_loaded(&mut self, di: usize, loaded: bool) {
@@ -595,7 +606,10 @@ impl FakeWorld {
         // Outputs must fit (after the inputs leave).
         let mut after: BTreeMap<u32, GoodVec> = BTreeMap::new();
         for &(g, inv, n) in &r.inputs {
-            after.entry(inv).or_insert_with(|| d.inv(inv).contents.clone()).add(g, -n);
+            after
+                .entry(inv)
+                .or_insert_with(|| d.inv(inv).contents.clone())
+                .add(g, -n);
         }
         for &(g, inv, n) in &r.outputs {
             let fi = d.inv(inv).clone();
@@ -630,7 +644,12 @@ impl FakeWorld {
         let d = &mut self.districts[di];
         d.sweep += 1;
         let (id, sweep) = (d.id, d.sweep);
-        let invs: Vec<FInventory> = d.inventories.iter().filter(|i| !i.destroyed).cloned().collect();
+        let invs: Vec<FInventory> = d
+            .inventories
+            .iter()
+            .filter(|i| !i.destroyed)
+            .cloned()
+            .collect();
         let deposit = d.deposit;
         let chunk = d.deposit_chunk;
         let mut records = 0u32;
@@ -729,7 +748,12 @@ impl FakeWorld {
                     continue;
                 }
                 let fi = self.districts[di].inv(*inv).clone();
-                let room = room_for(&inv_state(&fi, fi.contents.clone()), &fi.contents, *g, &goods);
+                let room = room_for(
+                    &inv_state(&fi, fi.contents.clone()),
+                    &fi.contents,
+                    *g,
+                    &goods,
+                );
                 let m = n.min(room);
                 self.trains[ti].carriages[c].cargo.add(*g, -m);
                 self.districts[di].inv(*inv).contents.add(*g, m);
@@ -803,7 +827,11 @@ impl FakeWorld {
                     self.districts[di].held.push(rc);
                     return;
                 }
-                let applied_epoch = self.districts[di].epochs.get(&rc.chunk).copied().unwrap_or(0);
+                let applied_epoch = self.districts[di]
+                    .epochs
+                    .get(&rc.chunk)
+                    .copied()
+                    .unwrap_or(0);
                 if rc.epoch <= applied_epoch || self.applied.contains(&rc.op) {
                     return;
                 }
@@ -829,7 +857,8 @@ impl FakeWorld {
                             continue;
                         }
                         let d = &mut self.districts[di];
-                        let Some(fi) = d.inventories.iter_mut().find(|i| i.index == dl.inventory) else {
+                        let Some(fi) = d.inventories.iter_mut().find(|i| i.index == dl.inventory)
+                        else {
                             continue;
                         };
                         let applied = if fi.destroyed {
@@ -863,7 +892,11 @@ impl FakeWorld {
                     }
                     destroyed.push(b.pos);
                     d.broken.insert(b.pos);
-                    if let Some(fi) = d.inventories.iter_mut().find(|i| i.pos == b.pos && !i.destroyed) {
+                    if let Some(fi) = d
+                        .inventories
+                        .iter_mut()
+                        .find(|i| i.pos == b.pos && !i.destroyed)
+                    {
                         fi.destroyed = true;
                         let spill = std::mem::take(&mut fi.contents);
                         self.books.dropped.merge(&spill);
@@ -883,7 +916,10 @@ impl FakeWorld {
                 }));
                 if !destroyed.is_empty() {
                     let name = self.districts[di].name.clone();
-                    self.note(format!("{name}: {} blocks destroyed on load", destroyed.len()));
+                    self.note(format!(
+                        "{name}: {} blocks destroyed on load",
+                        destroyed.len()
+                    ));
                 }
             }
             Cmd::CarriageDelta(cd) => {
@@ -930,7 +966,8 @@ impl FakeWorld {
                     entries,
                 }));
             }
-            Cmd::ChannelDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_) | Cmd::Ledger(_) => {}
+            Cmd::ChannelDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_) | Cmd::Ledger(_) => {
+            }
         }
     }
 
@@ -944,7 +981,10 @@ impl FakeWorld {
             i.destroyed = false;
         }
         let id = self.districts[di].id;
-        let pos = self.districts[di].recipes.first().map_or(BlockPos::default(), |r| r.machine);
+        let pos = self.districts[di]
+            .recipes
+            .first()
+            .map_or(BlockPos::default(), |r| r.machine);
         self.send(Obs::Edit {
             district: id,
             kind: crate::obs::EditKind::Placed,
@@ -986,7 +1026,9 @@ impl FakeWorld {
                 .map(|(g, n)| {
                     format!(
                         "{} {n:+}",
-                        self.goods.get(&g).map_or(format!("good {}", g.0), |i| i.name.clone())
+                        self.goods
+                            .get(&g)
+                            .map_or(format!("good {}", g.0), |i| i.name.clone())
                     )
                 })
                 .collect();
@@ -1020,7 +1062,15 @@ pub fn exposed(pos: BlockPos, state: u32, flags: u32, inventory: Option<u32>) ->
 }
 
 /// A defence survey for scenarios.
-pub fn survey(d: DistrictId, dark: u32, gaps: u32, columns: u32, roofed: u32, machines: u32, turrets: [f32; 4]) -> DefenceSurvey {
+pub fn survey(
+    d: DistrictId,
+    dark: u32,
+    gaps: u32,
+    columns: u32,
+    roofed: u32,
+    machines: u32,
+    turrets: [f32; 4],
+) -> DefenceSurvey {
     DefenceSurvey {
         district: d,
         revision: 1,

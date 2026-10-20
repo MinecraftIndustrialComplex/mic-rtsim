@@ -169,7 +169,9 @@ pub fn plan(invs: &[InvState], delta: &GoodVec, goods: &impl GoodLookup) -> Plan
                 break;
             }
             let idx: Vec<usize> = (0..invs.len())
-                .filter(|&i| invs[i].kind.has(InvKind::POSTBOX) == postbox && contents[i].get(g) > 0)
+                .filter(|&i| {
+                    invs[i].kind.has(InvKind::POSTBOX) == postbox && contents[i].get(g) > 0
+                })
                 .collect();
             let weights: Vec<i64> = idx.iter().map(|&i| contents[i].get(g)).collect();
             let take = left.min(weights.iter().sum());
@@ -321,9 +323,21 @@ mod tests {
         assert_eq!(
             p.deltas,
             vec![
-                Planned { inventory: 0, good: Good(1), delta: -150 },
-                Planned { inventory: 0, good: Good(2), delta: 36 },
-                Planned { inventory: 1, good: Good(2), delta: 64 },
+                Planned {
+                    inventory: 0,
+                    good: Good(1),
+                    delta: -150
+                },
+                Planned {
+                    inventory: 0,
+                    good: Good(2),
+                    delta: 36
+                },
+                Planned {
+                    inventory: 1,
+                    good: Good(2),
+                    delta: 64
+                },
             ]
         );
         assert!(p.unplaced.is_empty());
@@ -339,7 +353,10 @@ mod tests {
 
     #[test]
     fn trims_follow_the_rates() {
-        let rates = [(Good(1), Diffuser::per(-2, 100)), (Good(2), Diffuser::per(3, 100))];
+        let rates = [
+            (Good(1), Diffuser::per(-2, 100)),
+            (Good(2), Diffuser::per(3, 100)),
+        ];
         let planned = GoodVec::from_pairs([(Good(2), 1000)]);
         let t = trims(&GoodVec::from_pairs([(Good(1), 10)]), &rates, &planned);
         assert_eq!(t.get(Good(2)), 15);

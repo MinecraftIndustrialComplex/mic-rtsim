@@ -161,7 +161,8 @@ pub fn next_pressure_attack(
     // (where e^-mean underflows) a binomial of the same mean, which zero almost never hits.
     let k = if mean_per_day > 50.0 {
         let n = 1u64 << 40;
-        rng.binomial(n, mean_per_day / n as f64).clamp(1, u64::from(u32::MAX)) as u32
+        rng.binomial(n, mean_per_day / n as f64)
+            .clamp(1, u64::from(u32::MAX)) as u32
     } else {
         let u = rng.next_f64_open() * p;
         let mut k = 1u32;
@@ -356,7 +357,11 @@ pub fn resolve(t: &Threat, def: &Defence, ammo_held: i64, tun: &ThreatTunables) 
     let untested = !def.observed[c.index()].iter().any(|o| comparable(&o));
     let weight = if untested { tun.untested_weight } else { 1.0 };
     let defender = (turret + other) * weight;
-    let law = if turret > other { Law::Square } else { Law::Linear };
+    let law = if turret > other {
+        Law::Square
+    } else {
+        Law::Linear
+    };
     let (a, d) = (tun.attacker_effectiveness, tun.defender_effectiveness);
     let lanchester = if through <= 0.0 {
         0.0
@@ -365,7 +370,11 @@ pub fn resolve(t: &Threat, def: &Defence, ammo_held: i64, tun: &ThreatTunables) 
             // a·A² vs d·D²: survivors sqrt(A² - (d/a)·D²).
             Law::Square => {
                 let left = through * through - (d / a) * defender * defender;
-                if left <= 0.0 { 0.0 } else { left.sqrt() / through }
+                if left <= 0.0 {
+                    0.0
+                } else {
+                    left.sqrt() / through
+                }
             }
             Law::Linear => {
                 let left = through - (d / a) * defender;
@@ -409,9 +418,17 @@ pub struct Damage {
 /// Damage from an outcome (I23): theft to carry and cap; exposed blocks to the cap; any machine
 /// lost is flagged. Deterministic: block choice is ordered by gate, then by a hash of the attack
 /// id and position.
-pub fn damage(t: &Threat, o: &Outcome, stock: &GoodVec, def: &Defence, tun: &ThreatTunables) -> Damage {
+pub fn damage(
+    t: &Threat,
+    o: &Outcome,
+    stock: &GoodVec,
+    def: &Defence,
+    tun: &ThreatTunables,
+) -> Damage {
     let c = t.class.index();
-    let survivors = (f64::from(t.count) * o.survived + 0.5).floor().min(f64::from(t.count)) as u32;
+    let survivors = (f64::from(t.count) * o.survived + 0.5)
+        .floor()
+        .min(f64::from(t.count)) as u32;
     let mut out = Damage {
         survivors,
         ..Damage::default()
@@ -428,7 +445,12 @@ pub fn damage(t: &Threat, o: &Outcome, stock: &GoodVec, def: &Defence, tun: &Thr
     if carry > 0 {
         let goods: Vec<(Good, i64)> = stock
             .iter()
-            .map(|(g, a)| (g, (i128::from(a.max(0)) * i128::from(tun.theft_cap_ppm) / 1_000_000) as i64))
+            .map(|(g, a)| {
+                (
+                    g,
+                    (i128::from(a.max(0)) * i128::from(tun.theft_cap_ppm) / 1_000_000) as i64,
+                )
+            })
             .filter(|e| e.1 > 0)
             .collect();
         let caps: Vec<i64> = goods.iter().map(|e| e.1).collect();
@@ -446,20 +468,32 @@ pub fn damage(t: &Threat, o: &Outcome, stock: &GoodVec, def: &Defence, tun: &Thr
         0
     };
     if n > 0 && !def.exposed.is_empty() {
-        let first = if t.class.walks() { BlockFlags::PERIMETER } else { BlockFlags::ROOFLESS };
+        let first = if t.class.walks() {
+            BlockFlags::PERIMETER
+        } else {
+            BlockFlags::ROOFLESS
+        };
         let mut order: Vec<(bool, u64, ExposedBlockRow)> = def
             .exposed
             .iter()
             .map(|b| {
                 let h = rtsim_kernel::rng::fnv1a64(
-                    &[t.id.to_le_bytes(), (b.x as i64).to_le_bytes(), (b.y as i64 ^ ((b.z as i64) << 20)).to_le_bytes()].concat(),
+                    &[
+                        t.id.to_le_bytes(),
+                        (b.x as i64).to_le_bytes(),
+                        (b.y as i64 ^ ((b.z as i64) << 20)).to_le_bytes(),
+                    ]
+                    .concat(),
                 );
                 (b.flags & first == 0, h, *b)
             })
             .collect();
         order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         out.destroyed = order.into_iter().take(n as usize).map(|e| e.2).collect();
-        out.machine_lost = out.destroyed.iter().any(|b| b.flags & BlockFlags::MACHINE != 0);
+        out.machine_lost = out
+            .destroyed
+            .iter()
+            .any(|b| b.flags & BlockFlags::MACHINE != 0);
     }
     out
 }
@@ -516,8 +550,14 @@ impl LegIndex {
         let id = self.next;
         self.next += 1;
         let (r0, r1) = (
-            (from.0.div_euclid(REGION_BLOCKS), from.1.div_euclid(REGION_BLOCKS)),
-            (to.0.div_euclid(REGION_BLOCKS), to.1.div_euclid(REGION_BLOCKS)),
+            (
+                from.0.div_euclid(REGION_BLOCKS),
+                from.1.div_euclid(REGION_BLOCKS),
+            ),
+            (
+                to.0.div_euclid(REGION_BLOCKS),
+                to.1.div_euclid(REGION_BLOCKS),
+            ),
         );
         let steps = (r1.0 - r0.0).abs().max((r1.1 - r0.1).abs()).max(1);
         let mut cells = Vec::new();
@@ -527,7 +567,10 @@ impl LegIndex {
             cells.push((x, z));
         }
         cells.dedup();
-        let (w0, w1) = (leg.depart.0 / LEG_WINDOW_TICKS, leg.eta.0 / LEG_WINDOW_TICKS);
+        let (w0, w1) = (
+            leg.depart.0 / LEG_WINDOW_TICKS,
+            leg.eta.0 / LEG_WINDOW_TICKS,
+        );
         for (x, z) in cells {
             for w in w0..=w1 {
                 self.by_cell.entry((dim, x, z, w)).or_default().push(id);
@@ -560,12 +603,11 @@ impl LegIndex {
 
     /// The most recent leg of a train that is under way at `at`.
     pub fn leg_of(&self, train: TrainId, at: Tick) -> Option<u64> {
-        self.by_train
-            .get(&train)?
-            .iter()
-            .rev()
-            .copied()
-            .find(|id| self.legs.get(id).is_some_and(|l| l.depart <= at && l.eta >= at))
+        self.by_train.get(&train)?.iter().rev().copied().find(|id| {
+            self.legs
+                .get(id)
+                .is_some_and(|l| l.depart <= at && l.eta >= at)
+        })
     }
 
     /// Takes looted cargo off a booked leg.
@@ -670,7 +712,8 @@ impl ThreatFeed for SyntheticThreats {
                     break;
                 }
                 if at >= from {
-                    let mut rng = StreamKey::new(self.world_seed, SYNTH, i as u64 | 1 << 32).slot(n);
+                    let mut rng =
+                        StreamKey::new(self.world_seed, SYNTH, i as u64 | 1 << 32).slot(n);
                     let span = u64::from(st.count.1.saturating_sub(st.count.0)) + 1;
                     let count = st.count.0 + rng.below(span) as u32;
                     found.push(Threat {
@@ -732,9 +775,19 @@ mod tests {
     fn a_closed_wall_stops_ground_attackers() {
         let mut d = Defence::default();
         d.set_survey(&survey(0, 0.0, 0));
-        let o = resolve(&threat(ThreatClass::GroundMelee, 10), &d, 0, &ThreatTunables::default());
+        let o = resolve(
+            &threat(ThreatClass::GroundMelee, 10),
+            &d,
+            0,
+            &ThreatTunables::default(),
+        );
         assert_eq!(o.survived, 0.0);
-        let o = resolve(&threat(ThreatClass::Flying, 10), &d, 0, &ThreatTunables::default());
+        let o = resolve(
+            &threat(ThreatClass::Flying, 10),
+            &d,
+            0,
+            &ThreatTunables::default(),
+        );
         assert_eq!(o.survived, 1.0, "walls do nothing against flyers");
     }
 
@@ -748,7 +801,11 @@ mod tests {
         };
         let o = resolve(&threat(ThreatClass::Flying, 10), &d, 0, &tun);
         assert_eq!(o.law, Law::Square);
-        assert!((o.survived - 0.6).abs() < 1e-9, "sqrt(100 - 64)/10, got {}", o.survived);
+        assert!(
+            (o.survived - 0.6).abs() < 1e-9,
+            "sqrt(100 - 64)/10, got {}",
+            o.survived
+        );
     }
 
     #[test]
@@ -757,7 +814,14 @@ mod tests {
         let mut s = survey(100, 0.0, 0);
         s.mob_griefing = false;
         d.set_survey(&s);
-        d.exposed = vec![ExposedBlockRow { x: 0, y: 0, z: 0, state: 1, flags: 5, inventory: None }];
+        d.exposed = vec![ExposedBlockRow {
+            x: 0,
+            y: 0,
+            z: 0,
+            state: 1,
+            flags: 5,
+            inventory: None,
+        }];
         let mut t = threat(ThreatClass::Siege, 5);
         t.source = ThreatSource::Natural;
         let tun = ThreatTunables::default();
@@ -780,15 +844,22 @@ mod tests {
 
     #[test]
     fn a_large_pressure_mean_gives_a_sane_count() {
-        let (_, k) = next_pressure_attack(3, DistrictId(1), ThreatClass::GroundMelee, 1_000.0, 0).unwrap();
+        let (_, k) =
+            next_pressure_attack(3, DistrictId(1), ThreatClass::GroundMelee, 1_000.0, 0).unwrap();
         assert!((800..1_200).contains(&k), "count {k} for a mean of 1,000");
     }
 
     #[test]
     fn pressure_draws_are_deterministic_and_zero_when_lit() {
-        assert_eq!(next_pressure_attack(1, DistrictId(1), ThreatClass::Siege, 0.0, 5), None);
+        assert_eq!(
+            next_pressure_attack(1, DistrictId(1), ThreatClass::Siege, 0.0, 5),
+            None
+        );
         let a = next_pressure_attack(1, DistrictId(1), ThreatClass::Siege, 0.3, 5);
-        assert_eq!(a, next_pressure_attack(1, DistrictId(1), ThreatClass::Siege, 0.3, 5));
+        assert_eq!(
+            a,
+            next_pressure_attack(1, DistrictId(1), ThreatClass::Siege, 0.3, 5)
+        );
         let (day, k) = a.unwrap();
         assert!(day >= 5 && k >= 1);
     }
@@ -800,7 +871,8 @@ mod tests {
         let mut day = 0u64;
         let mut attacks = 0u64;
         while day < 200_000 {
-            let (d, _) = next_pressure_attack(9, DistrictId(3), ThreatClass::GroundMelee, m, day).unwrap();
+            let (d, _) =
+                next_pressure_attack(9, DistrictId(3), ThreatClass::GroundMelee, m, day).unwrap();
             attacks += 1;
             day = d + 1;
         }
@@ -823,7 +895,10 @@ mod tests {
         let id = idx.book(leg, 0, (0, 0), (2_000, 0));
         assert_eq!(idx.in_region(0, (2, 0), Tick(0), Tick(10_000)), vec![id]);
         assert!(idx.in_region(0, (0, 5), Tick(0), Tick(10_000)).is_empty());
-        assert!(idx.in_region(0, (2, 0), Tick(6_000), Tick(7_000)).is_empty());
+        assert!(
+            idx.in_region(0, (2, 0), Tick(6_000), Tick(7_000))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -924,16 +999,39 @@ mod persist_impls {
 
     persist_unit_enum!(
         ThreatClass,
-        [ThreatClass::GroundMelee, ThreatClass::GroundRanged, ThreatClass::Flying, ThreatClass::Siege]
+        [
+            ThreatClass::GroundMelee,
+            ThreatClass::GroundRanged,
+            ThreatClass::Flying,
+            ThreatClass::Siege
+        ]
     );
     persist_unit_enum!(
         ThreatSource,
-        [ThreatSource::Natural, ThreatSource::Dragon, ThreatSource::Bandit, ThreatSource::Boss, ThreatSource::Synthetic]
+        [
+            ThreatSource::Natural,
+            ThreatSource::Dragon,
+            ThreatSource::Bandit,
+            ThreatSource::Boss,
+            ThreatSource::Synthetic
+        ]
     );
     persist_unit_enum!(Law, [Law::Square, Law::Linear]);
-    persist_struct!(Outcome { through, defender, law, survived, lanchester, floor, untested, ammo_used });
+    persist_struct!(Outcome {
+        through,
+        defender,
+        law,
+        survived,
+        lanchester,
+        floor,
+        untested,
+        ammo_used
+    });
     persist_struct!(Observed { strength, survived });
-    persist_struct!(Pressure { block_ticks, spawns });
+    persist_struct!(Pressure {
+        block_ticks,
+        spawns
+    });
     persist_struct!(SurveyFacts {
         mob_griefing,
         perimeter_columns,
@@ -947,8 +1045,33 @@ mod persist_impls {
         ammo_good,
         ammo_per_engagement,
     });
-    persist_struct!(ExposedBlockRow { x, y, z, state, flags, inventory });
-    persist_struct!(Defence { survey, exposed, observed, cooldown_until, pressure });
-    persist_struct!(Leg { train, from, to, depart, eta, cargo });
-    persist_struct!(LegIndex { legs, by_cell, by_train, next });
+    persist_struct!(ExposedBlockRow {
+        x,
+        y,
+        z,
+        state,
+        flags,
+        inventory
+    });
+    persist_struct!(Defence {
+        survey,
+        exposed,
+        observed,
+        cooldown_until,
+        pressure
+    });
+    persist_struct!(Leg {
+        train,
+        from,
+        to,
+        depart,
+        eta,
+        cargo
+    });
+    persist_struct!(LegIndex {
+        legs,
+        by_cell,
+        by_train,
+        next
+    });
 }

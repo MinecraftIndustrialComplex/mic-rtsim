@@ -33,8 +33,8 @@ use crate::cmd::{
 };
 use crate::deposit::{self, Writeback};
 use crate::district::{
-    AttackReport, DEPOSIT_INVENTORY, District, Inventory, Model, PendingChunk,
-    Phase, Presence, ReconcileReport, SimSpan, SweepBuf,
+    AttackReport, DEPOSIT_INVENTORY, District, Inventory, Model, PendingChunk, Phase, Presence,
+    ReconcileReport, SimSpan, SweepBuf,
 };
 use crate::ids::{
     BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId,
@@ -42,8 +42,8 @@ use crate::ids::{
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
-    Carriage, CarriageResult, Conditions, Direction, LoadState, Obs, PackageEvent,
-    PortKind, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    Carriage, CarriageResult, Conditions, Direction, LoadState, Obs, PackageEvent, PortKind,
+    ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -272,12 +272,21 @@ impl Engine {
     }
 
     fn good_name(&self, g: Good) -> String {
-        self.goods.get(&g).map_or_else(|| format!("good {}", g.0), |i| i.name.clone())
+        self.goods
+            .get(&g)
+            .map_or_else(|| format!("good {}", g.0), |i| i.name.clone())
     }
 
     fn goods_words(&self, v: &GoodVec) -> String {
-        let parts: Vec<String> = v.iter().map(|(g, n)| format!("{n:+} {}", self.good_name(g))).collect();
-        if parts.is_empty() { "nothing".to_string() } else { parts.join(", ") }
+        let parts: Vec<String> = v
+            .iter()
+            .map(|(g, n)| format!("{n:+} {}", self.good_name(g)))
+            .collect();
+        if parts.is_empty() {
+            "nothing".to_string()
+        } else {
+            parts.join(", ")
+        }
     }
 
     pub fn now(&self) -> Tick {
@@ -352,7 +361,12 @@ impl Engine {
             return;
         }
         loop {
-            let next_p = self.pressure.keys().next().map(|k| k.0).filter(|&t| t <= to);
+            let next_p = self
+                .pressure
+                .keys()
+                .next()
+                .map(|k| k.0)
+                .filter(|&t| t <= to);
             let limit = next_p.unwrap_or(to);
             while let Some((at, h)) = self.clusters.next_due(limit) {
                 self.stats.breakpoints += 1;
@@ -593,7 +607,9 @@ impl Engine {
                 if *part == 0 {
                     dist.defence.exposed.clear();
                 }
-                dist.defence.exposed.extend(blocks.iter().map(threat::ExposedBlockRow::from));
+                dist.defence
+                    .exposed
+                    .extend(blocks.iter().map(threat::ExposedBlockRow::from));
             }
         }
     }
@@ -604,11 +620,19 @@ impl Engine {
 
     /// Adopts a model as if a steady window had produced it (tests and the bench; the real path is
     /// [`Engine::ingest`] with live sweeps). Scaffolding.
-    pub fn adopt_model(&mut self, d: DistrictId, learned: crate::learn::Learned, targets: Vec<crate::learn::LearnedTarget>) {
+    pub fn adopt_model(
+        &mut self,
+        d: DistrictId,
+        learned: crate::learn::Learned,
+        targets: Vec<crate::learn::LearnedTarget>,
+    ) {
         let season = self.season_at(self.now);
         let dist = self.district_mut(d);
         let batches = dist.batches.clone();
-        dist.models.insert(season, Model::from_learned(learned, targets, season, batches));
+        dist.models.insert(
+            season,
+            Model::from_learned(learned, targets, season, batches),
+        );
         dist.phase = Phase::Learned;
         self.stats.models_adopted += 1;
     }
@@ -619,7 +643,9 @@ impl Engine {
     pub fn inject(&mut self, d: DistrictId, g: Good, n: i64) -> Option<i64> {
         let h = *self.cluster_of.get(&d)?;
         let at = self.now;
-        let got = self.clusters.apply(h, at, |c, at| c.add_to_pool(PoolKey::Stock(d, g), n, false, at));
+        let got = self.clusters.apply(h, at, |c, at| {
+            c.add_to_pool(PoolKey::Stock(d, g), n, false, at)
+        });
         self.after_cluster(h, at);
         got
     }
@@ -643,7 +669,9 @@ impl Engine {
             return None;
         }
         let since = t.0.saturating_sub(c.season_origin.0);
-        Some(Tick(c.season_origin.0 + (since / c.season_length + 1) * c.season_length))
+        Some(Tick(
+            c.season_origin.0 + (since / c.season_length + 1) * c.season_length,
+        ))
     }
 
     // ---- sweeps and learning --------------------------------------------------------------
@@ -711,9 +739,13 @@ impl Engine {
             let targets = dist.learner.targets(&learned, tun);
             let batches = dist.batches.clone();
             let was = dist.phase;
-            let old_goods: Vec<Good> = current.as_ref().map_or(Vec::new(), |m| m.rates.iter().map(|r| r.0).collect());
-            dist.models
-                .insert(season, Model::from_learned(learned, targets, season, batches));
+            let old_goods: Vec<Good> = current
+                .as_ref()
+                .map_or(Vec::new(), |m| m.rates.iter().map(|r| r.0).collect());
+            dist.models.insert(
+                season,
+                Model::from_learned(learned, targets, season, batches),
+            );
             dist.phase = Phase::Learned;
             let m = &dist.models[&season];
             let new_goods: Vec<Good> = m.learned.rates.iter().map(|r| r.0).collect();
@@ -722,13 +754,23 @@ impl Engine {
                 .learned
                 .rates
                 .iter()
-                .map(|&(g, r)| format!("{:+.0}/h {}", r * TICKS_PER_HOUR as f64, goods.get(&g).map_or("?", |i| i.name.as_str())))
+                .map(|&(g, r)| {
+                    format!(
+                        "{:+.0}/h {}",
+                        r * TICKS_PER_HOUR as f64,
+                        goods.get(&g).map_or("?", |i| i.name.as_str())
+                    )
+                })
                 .collect();
             let what = format!(
                 "learned (window {} ticks, confidence {:.2}): {}",
                 m.learned.window_ticks,
                 m.learned.confidence,
-                if rates.is_empty() { "idle".to_string() } else { rates.join(", ") }
+                if rates.is_empty() {
+                    "idle".to_string()
+                } else {
+                    rates.join(", ")
+                }
             );
             self.stats.models_adopted += 1;
             if changed {
@@ -789,7 +831,10 @@ impl Engine {
             .links
             .iter()
             .filter_map(|(k, _)| match k {
-                LinkKey::Channel(c, _) => self.channels.get(c).map(|s| (*c, (s.known.clone(), s.capacity))),
+                LinkKey::Channel(c, _) => self
+                    .channels
+                    .get(c)
+                    .map(|s| (*c, (s.known.clone(), s.capacity))),
                 LinkKey::Mail { .. } => None,
             })
             .collect();
@@ -797,7 +842,10 @@ impl Engine {
         // A power source that is live is assumed running (F21); one that is unloaded and not
         // simulated keeps the requirement, which nothing in the cluster meets, so the sink waits.
         if let Some(src) = dist.power_source
-            && self.districts.get(&src).is_some_and(|s| s.presence != Presence::Unloaded)
+            && self
+                .districts
+                .get(&src)
+                .is_some_and(|s| s.presence != Presence::Unloaded)
         {
             for p in &mut spec.procs {
                 p.requires = None;
@@ -824,7 +872,12 @@ impl Engine {
             linked.insert(src);
         }
         if let Some(sinks) = self.sinks_of.get(&d) {
-            linked.extend(sinks.iter().copied().filter(|o| self.cluster_of.contains_key(o)));
+            linked.extend(
+                sinks
+                    .iter()
+                    .copied()
+                    .filter(|o| self.cluster_of.contains_key(o)),
+            );
         }
         let mut handles: Vec<RegionId<Cluster>> = linked
             .iter()
@@ -851,12 +904,14 @@ impl Engine {
                     }
                     self.clusters.apply(first, at, |c, at| c.absorb(model, at));
                 }
-                self.clusters.apply(first, at, |c, at| c.add_member(spec, at));
+                self.clusters
+                    .apply(first, at, |c, at| c.add_member(spec, at));
                 first
             }
         };
         let boundary = self.next_season_boundary(at);
-        self.clusters.apply(h, at, |c, _| c.set_season_boundary(boundary));
+        self.clusters
+            .apply(h, at, |c, _| c.set_season_boundary(boundary));
         self.cluster_of.insert(d, h);
         for c in &my_channels {
             self.channel_sims.entry(*c).or_default().insert(d);
@@ -875,9 +930,18 @@ impl Engine {
     }
 
     /// Takes a district out of its cluster at `at`; returns its pools' levels (stock and mail).
-    fn stop_sim(&mut self, d: DistrictId, at: Tick) -> Option<(SimSpan, Vec<crate::cluster::Pool>)> {
+    fn stop_sim(
+        &mut self,
+        d: DistrictId,
+        at: Tick,
+    ) -> Option<(SimSpan, Vec<crate::cluster::Pool>)> {
         let h = *self.cluster_of.get(&d)?;
-        if let Some(season) = self.districts.get(&d).and_then(|x| x.sim.as_ref()).map(|s| s.season) {
+        if let Some(season) = self
+            .districts
+            .get(&d)
+            .and_then(|x| x.sim.as_ref())
+            .map(|s| s.season)
+        {
             let channels: Vec<ChannelId> = self.districts[&d]
                 .models
                 .get(&season)
@@ -950,7 +1014,12 @@ impl Engine {
         let mut season_change = false;
         for e in events {
             match e {
-                ClusterEvent::Stopped { at, owner, id: 0, why } => {
+                ClusterEvent::Stopped {
+                    at,
+                    owner,
+                    id: 0,
+                    why,
+                } => {
                     if let Some(dist) = self.districts.get_mut(&owner) {
                         dist.last_run = Some((at, Some(why)));
                     }
@@ -986,15 +1055,29 @@ impl Engine {
     /// replays in the same cluster; nothing when it is live (assumed running); otherwise an
     /// unmet requirement, so the sink waits for power.
     fn refresh_power(&mut self, src: DistrictId, at: Tick) {
-        let sinks: Vec<DistrictId> = self.sinks_of.get(&src).into_iter().flatten().copied().collect();
-        let live = self.districts.get(&src).is_some_and(|s| s.presence != Presence::Unloaded);
+        let sinks: Vec<DistrictId> = self
+            .sinks_of
+            .get(&src)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        let live = self
+            .districts
+            .get(&src)
+            .is_some_and(|s| s.presence != Presence::Unloaded);
         let src_h = self.cluster_of.get(&src).copied();
         for s in sinks {
             let Some(&h) = self.cluster_of.get(&s) else {
                 continue;
             };
-            let req = if src_h == Some(h) || !live { Some((src, 0)) } else { None };
-            self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, req, at));
+            let req = if src_h == Some(h) || !live {
+                Some((src, 0))
+            } else {
+                None
+            };
+            self.clusters
+                .apply(h, at, |c, at| c.set_requires(s, 0, req, at));
             self.after_cluster(h, at);
         }
     }
@@ -1015,11 +1098,23 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn write_packages(&mut self, d: DistrictId, inv: u32, address: u32, g: Good, count: i64, batch: i64, at: Tick) {
+    fn write_packages(
+        &mut self,
+        d: DistrictId,
+        inv: u32,
+        address: u32,
+        g: Good,
+        count: i64,
+        batch: i64,
+        at: Tick,
+    ) {
         let Some(dist) = self.districts.get_mut(&d) else {
             return;
         };
-        let pos = dist.inventories.get(&inv).map_or(BlockPos::default(), |i| i.decl.pos);
+        let pos = dist
+            .inventories
+            .get(&inv)
+            .map_or(BlockPos::default(), |i| i.decl.pos);
         // The packages are physically in the offline buffer now. They came out of the mail pool,
         // not out of stock, so the replay's base does not move: the stock pool already fell by
         // what was packed, and the reconcile takes that from the vaults.
@@ -1154,7 +1249,10 @@ impl Engine {
         let mut by_chunk: BTreeMap<ChunkPos, Vec<InvDelta>> = BTreeMap::new();
         let mut added = GoodVec::new();
         for p in &plan.deltas {
-            let inv = dist.inventories.get_mut(&p.inventory).expect("planned inventory");
+            let inv = dist
+                .inventories
+                .get_mut(&p.inventory)
+                .expect("planned inventory");
             inv.pending.add(p.good, p.delta);
             if p.delta > 0 {
                 added.add(p.good, p.delta);
@@ -1229,8 +1327,16 @@ impl Engine {
             self.goods_words(&report.net),
             report.chunks,
             report.deltas,
-            if report.unplaced.is_empty() { String::new() } else { format!(", unplaced {}", self.goods_words(&report.unplaced)) },
-            if report.destroyed > 0 { format!(", {} blocks to destroy", report.destroyed) } else { String::new() }
+            if report.unplaced.is_empty() {
+                String::new()
+            } else {
+                format!(", unplaced {}", self.goods_words(&report.unplaced))
+            },
+            if report.destroyed > 0 {
+                format!(", {} blocks to destroy", report.destroyed)
+            } else {
+                String::new()
+            }
         );
         let dist = self.districts.get_mut(&d).expect("exists");
         dist.push_report(report);
@@ -1267,7 +1373,10 @@ impl Engine {
             return;
         };
         let list = dist.pending.get_mut(&chunk).expect("pending chunk");
-        let pos = list.iter().position(|p| p.cmd.op == r.op).expect("pending op");
+        let pos = list
+            .iter()
+            .position(|p| p.cmd.op == r.op)
+            .expect("pending op");
         let done = list.remove(pos);
         if list.is_empty() {
             dist.pending.remove(&chunk);
@@ -1322,7 +1431,10 @@ impl Engine {
         // Doomed blocks this command skipped are not doomed any more.
         for b in &done.cmd.destroy {
             if !r.destroyed.contains(&b.pos)
-                && let Some(inv) = dist.inventories.values_mut().find(|i| i.doomed && i.decl.pos == b.pos)
+                && let Some(inv) = dist
+                    .inventories
+                    .values_mut()
+                    .find(|i| i.doomed && i.decl.pos == b.pos)
             {
                 inv.doomed = false;
             }
@@ -1392,7 +1504,10 @@ impl Engine {
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut left = trims.clone();
         for list in dist.pending.values_mut() {
-            for p in list.iter_mut().filter(|p| p.cmd.epoch == epoch && !p.trim && !p.sent) {
+            for p in list
+                .iter_mut()
+                .filter(|p| p.cmd.epoch == epoch && !p.trim && !p.sent)
+            {
                 for delta in p.cmd.deltas.iter_mut().filter(|x| x.delta > 0) {
                     let want = left.get(delta.good);
                     if want <= 0 {
@@ -1495,10 +1610,11 @@ impl Engine {
                 .filter_map(|o| self.cluster_of.get(o).copied())
                 .collect();
             for h in holders {
-                let has = self
-                    .clusters
-                    .get(h)
-                    .is_some_and(|r| p.goods.goods().any(|g| r.cell().model().pool(PoolKey::Channel(ch, g)).is_some()));
+                let has = self.clusters.get(h).is_some_and(|r| {
+                    p.goods
+                        .goods()
+                        .any(|g| r.cell().model().pool(PoolKey::Channel(ch, g)).is_some())
+                });
                 if has {
                     let goods = p.goods.clone();
                     self.clusters.apply(h, at, |c, at| {
@@ -1529,7 +1645,8 @@ impl Engine {
             e.last = at;
         }
         if !c.simulated {
-            self.arrivals.insert((c.train, c.station), c.carriages.clone());
+            self.arrivals
+                .insert((c.train, c.station), c.carriages.clone());
             return;
         }
         let Some(dist) = self.districts.get(&c.district) else {
@@ -1550,7 +1667,11 @@ impl Engine {
         for &g in &rule.unload {
             let mut r = 0i64;
             let mut any = false;
-            for inv in dist.inventories.values().filter(|i| !i.destroyed && i.received.contains(&g)) {
+            for inv in dist
+                .inventories
+                .values()
+                .filter(|i| !i.destroyed && i.received.contains(&g))
+            {
                 any = true;
                 r += reconcile::room_for(&inv.state(), &inv.effective(), g, &self.goods);
             }
@@ -1608,7 +1729,11 @@ impl Engine {
             for &(_, g, n) in &entries {
                 moved.add(g, -n);
             }
-            let what = format!("station exchange with train {}: {}", c.train.0, self.goods_words(&moved));
+            let what = format!(
+                "station exchange with train {}: {}",
+                c.train.0,
+                self.goods_words(&moved)
+            );
             self.note(d, at, what);
         }
         let op = self.ops.allocate();
@@ -1708,10 +1833,14 @@ impl Engine {
                 rule.observed += 1;
             }
         }
-        self.last_departure.insert(dep.train, (dep.station, at, cargo));
+        self.last_departure
+            .insert(dep.train, (dep.station, at, cargo));
         // Book the leg (A15).
         let from = self.stations.get(&dep.station).map(|s| s.decl.clone());
-        let to = dep.destination.and_then(|s| self.stations.get(&s)).map(|s| s.decl.clone());
+        let to = dep
+            .destination
+            .and_then(|s| self.stations.get(&s))
+            .map(|s| s.decl.clone());
         if let Some(from) = from {
             let to_pos = to.as_ref().map_or(from.pos, |t| t.pos);
             self.legs.book(
@@ -1721,7 +1850,11 @@ impl Engine {
                     to: dep.destination,
                     depart: at,
                     eta: at + dep.eta_ticks.max(1),
-                    cargo: dep.carriages.iter().map(|c| (c.index, c.goods.clone())).collect(),
+                    cargo: dep
+                        .carriages
+                        .iter()
+                        .map(|c| (c.index, c.goods.clone()))
+                        .collect(),
                 },
                 from.dim,
                 (from.pos.x, from.pos.z),
@@ -1825,7 +1958,10 @@ impl Engine {
         };
         let stamp = dist.pressure_stamp;
         for c in ThreatClass::ALL {
-            let mean = dist.defence.pressure.per_day(c, survey.dark_spawnable, &tun);
+            let mean = dist
+                .defence
+                .pressure
+                .per_day(c, survey.dark_spawnable, &tun);
             let from = at.max(dist.defence.cooldown_until[c.index()]);
             let mut day = from.day();
             if from.tick_of_day() > NIGHT_ATTACK_TICK {
@@ -1834,12 +1970,17 @@ impl Engine {
             if let Some((night, count)) = next_pressure_attack(seed, d, c, mean, day) {
                 let when = Tick(night * TICKS_PER_DAY + NIGHT_ATTACK_TICK);
                 self.pressure_seq += 1;
-                self.pressure.insert((when, self.pressure_seq), (d, c, count, stamp));
+                self.pressure
+                    .insert((when, self.pressure_seq), (d, c, count, stamp));
             }
         }
     }
 
-    fn pressure_wake(&mut self, at: Tick, (d, c, count, stamp): (DistrictId, ThreatClass, u32, u32)) {
+    fn pressure_wake(
+        &mut self,
+        at: Tick,
+        (d, c, count, stamp): (DistrictId, ThreatClass, u32, u32),
+    ) {
         let live = self
             .districts
             .get(&d)
@@ -1864,7 +2005,13 @@ impl Engine {
     /// The trains a threat leg meets (A15, INDUSTRY.md §13.3): legs booked in the regions it
     /// crosses during `[from, to]`, one lookup per region, never a scan. The caller (a dragon or
     /// raid module) turns each into a [`Threat`] on [`ThreatTarget::Train`].
-    pub fn encounters(&self, dim: u32, regions: &[(i32, i32)], from: Tick, to: Tick) -> Vec<TrainId> {
+    pub fn encounters(
+        &self,
+        dim: u32,
+        regions: &[(i32, i32)],
+        from: Tick,
+        to: Tick,
+    ) -> Vec<TrainId> {
         let mut out: Vec<TrainId> = Vec::new();
         for &r in regions {
             for id in self.legs.in_region(dim, r, from, to) {
@@ -1919,7 +2066,13 @@ impl Engine {
         }
         if report.skipped.is_some() || self.mode == Mode::ReadOnly {
             self.stats.attacks_skipped += 1;
-            let what = format!("{:?} {:?} x{} skipped: {}", t.source, t.class, t.count, report.skipped.unwrap_or("read-only phase"));
+            let what = format!(
+                "{:?} {:?} x{} skipped: {}",
+                t.source,
+                t.class,
+                t.count,
+                report.skipped.unwrap_or("read-only phase")
+            );
             self.note(d, at, what);
             if self.mode == Mode::ReadOnly && report.skipped.is_none() {
                 report.skipped = Some("read-only phase");
@@ -1936,7 +2089,11 @@ impl Engine {
             }
             None => dist.effective_stock(),
         };
-        let ammo = dist.defence.survey.and_then(|s| s.ammo_good).map_or(0, |g| stock.get(g));
+        let ammo = dist
+            .defence
+            .survey
+            .and_then(|s| s.ammo_good)
+            .map_or(0, |g| stock.get(g));
         let outcome = threat::resolve(t, &dist.defence, ammo, &tun);
         // Raiders carry items; fluids, energy and deposits stay (review finding 5).
         let items: GoodVec = stock
@@ -1952,7 +2109,13 @@ impl Engine {
         // Ammunition the turrets fired is used up, never more than is left after the theft.
         let mut fired = GoodVec::new();
         if let Some(g) = dist.defence.survey.and_then(|s| s.ammo_good) {
-            fired.add(g, outcome.ammo_used.min(stock.get(g) - dmg.stolen.get(g)).max(0));
+            fired.add(
+                g,
+                outcome
+                    .ammo_used
+                    .min(stock.get(g) - dmg.stolen.get(g))
+                    .max(0),
+            );
         }
         let mut take = dmg.stolen.clone();
         take.merge(&fired);
@@ -1962,10 +2125,13 @@ impl Engine {
         let mut doomed_any = false;
         for b in &dmg.destroyed {
             let pos = BlockPos::new(b.x, b.y, b.z);
-            dist.destroy_pending.entry(pos.chunk(dim)).or_default().push(BlockDestroy {
-                pos,
-                expected_state: b.state,
-            });
+            dist.destroy_pending
+                .entry(pos.chunk(dim))
+                .or_default()
+                .push(BlockDestroy {
+                    pos,
+                    expected_state: b.state,
+                });
             if let Some(i) = b.inventory
                 && let Some(inv) = dist.inventories.get_mut(&i)
                 && !inv.destroyed
@@ -1984,7 +2150,8 @@ impl Engine {
                     }
                 });
                 if dmg.machine_lost {
-                    self.clusters.apply(h, at, |c, at| c.set_enabled(d, false, at));
+                    self.clusters
+                        .apply(h, at, |c, at| c.set_enabled(d, false, at));
                 }
                 self.after_cluster(h, at);
                 // A doomed inventory takes its room with it: rebuild the member (F20).
@@ -2013,11 +2180,21 @@ impl Engine {
             t.class,
             t.count,
             outcome.survived,
-            if outcome.untested { " (untested defences)" } else { "" },
-            outcome.floor.map_or(String::new(), |f| format!(" (floor {f:.2})")),
+            if outcome.untested {
+                " (untested defences)"
+            } else {
+                ""
+            },
+            outcome
+                .floor
+                .map_or(String::new(), |f| format!(" (floor {f:.2})")),
             self.goods_words(&dmg.stolen),
             dmg.destroyed.len(),
-            if dmg.machine_lost { ", machine lost: stopped" } else { "" }
+            if dmg.machine_lost {
+                ", machine lost: stopped"
+            } else {
+                ""
+            }
         );
         self.note(d, at, what);
         let dist = self.districts.get_mut(&d).expect("exists");
@@ -2030,7 +2207,10 @@ impl Engine {
 
     fn attack_train(&mut self, t: &Threat, train: TrainId) {
         // Trains get the same per-class pacing as districts (I25).
-        let cd = self.train_cooldown.entry(train).or_insert([Tick::ZERO; ThreatClass::COUNT]);
+        let cd = self
+            .train_cooldown
+            .entry(train)
+            .or_insert([Tick::ZERO; ThreatClass::COUNT]);
         if t.at < cd[t.class.index()] {
             self.stats.attacks_skipped += 1;
             return;
@@ -2062,9 +2242,17 @@ impl Engine {
             }
         }
         self.books.stolen.merge(&loot);
-        self.train_cooldown.entry(train).or_insert([Tick::ZERO; ThreatClass::COUNT])[t.class.index()] =
+        self.train_cooldown
+            .entry(train)
+            .or_insert([Tick::ZERO; ThreatClass::COUNT])[t.class.index()] =
             t.at + self.tun.threat.cooldown_ticks[t.class.index()];
-        let what = format!("train {} ambushed ({:?} x{}): looted {}", train.0, t.class, t.count, self.goods_words(&loot));
+        let what = format!(
+            "train {} ambushed ({:?} x{}): looted {}",
+            train.0,
+            t.class,
+            t.count,
+            self.goods_words(&loot)
+        );
         self.note(DistrictId(0), t.at, what);
         let op = self.ops.allocate();
         self.exchanges.insert(
@@ -2093,8 +2281,14 @@ impl Engine {
         let at = at.min(self.now);
         let season = self.season_at(at);
         let dist = self.districts.get(&d)?;
-        let view = self.cluster_of.get(&d).and_then(|&h| self.clusters.read(h, at));
-        let model = dist.models.get(&season).or_else(|| dist.models.values().next_back());
+        let view = self
+            .cluster_of
+            .get(&d)
+            .and_then(|&h| self.clusters.read(h, at));
+        let model = dist
+            .models
+            .get(&season)
+            .or_else(|| dist.models.values().next_back());
         let rates_per_hour = model
             .map(|m| {
                 m.learned
@@ -2111,7 +2305,9 @@ impl Engine {
             (_, Phase::Learning) => (LedgerState::Learning, Some("learning")),
             (_, Phase::Stale) => (LedgerState::Stale, dist.freeze_reason(season)),
             (_, Phase::NotLearnable(_)) => (LedgerState::NotLearnable, dist.freeze_reason(season)),
-            (_, Phase::Learned) if view.is_none() => (LedgerState::OutOfSeason, dist.freeze_reason(season)),
+            (_, Phase::Learned) if view.is_none() => {
+                (LedgerState::OutOfSeason, dist.freeze_reason(season))
+            }
             (_, Phase::Learned) => (LedgerState::Running, None),
         };
         let mut made_since = GoodVec::new();
@@ -2177,7 +2373,13 @@ impl Engine {
             .map(|&(g, ph)| (g, ph.round() as i64, r.made_since.get(g)))
             .collect();
         let (mut next_kind, next_good) = r.next.map_or((0, None), |f| f.code());
-        if next_kind == 1 && next_good.is_some_and(|g| self.goods.get(&g).is_some_and(|i| i.class == GoodClass::Deposit)) {
+        if next_kind == 1
+            && next_good.is_some_and(|g| {
+                self.goods
+                    .get(&g)
+                    .is_some_and(|i| i.class == GoodClass::Deposit)
+            })
+        {
             next_kind = 4;
         }
         LedgerLine {
@@ -2318,7 +2520,13 @@ mod persist_impls {
     };
 
     persist_unit_enum!(Mode, [Mode::ReadOnly, Mode::Apply]);
-    persist_struct!(LineEdge { trips, cargo, travel_ticks, first, last });
+    persist_struct!(LineEdge {
+        trips,
+        cargo,
+        travel_ticks,
+        first,
+        last
+    });
     persist_struct!(Stats {
         observations,
         models_adopted,
@@ -2334,10 +2542,23 @@ mod persist_impls {
         breakpoints,
         cluster_settles,
     });
-    persist_struct!(Books { minted, burned, stolen, dropped, untracked, shortfall, trimmed });
+    persist_struct!(Books {
+        minted,
+        burned,
+        stolen,
+        dropped,
+        untracked,
+        shortfall,
+        trimmed
+    });
     persist_struct!(Station { decl });
     persist_struct!(ChannelState { known, capacity });
-    persist_struct!(PendingExchange { district, train, entries, loot });
+    persist_struct!(PendingExchange {
+        district,
+        train,
+        entries,
+        loot
+    });
 
     fn globals(e: &Engine, w: &mut Writer) {
         e.mode.put(w);
@@ -2367,7 +2588,10 @@ mod persist_impls {
     }
 
     fn key48(id: u64, what: &str) -> u64 {
-        assert!(id < 1 << 48, "{what} id {id} does not fit a page key (48 bits)");
+        assert!(
+            id < 1 << 48,
+            "{what} id {id} does not fit a page key (48 bits)"
+        );
         id
     }
 
@@ -2381,20 +2605,29 @@ mod persist_impls {
             globals(self, &mut w);
             out.push((PageKey::new(GLOBAL_TABLE, 0), w.into_bytes()));
             for (id, d) in &self.districts {
-                out.push((PageKey::new(DISTRICT_TABLE, key48(id.0, "district")), to_bytes(d)));
+                out.push((
+                    PageKey::new(DISTRICT_TABLE, key48(id.0, "district")),
+                    to_bytes(d),
+                ));
             }
             for (_, region) in self.clusters.iter() {
                 let mut w = Writer::new();
                 region.cell().model().put(&mut w);
                 region.cell().anchor().put(&mut w);
                 region.wake().put(&mut w);
-                out.push((PageKey::new(CLUSTER_TABLE, key48(region.key(), "cluster")), w.into_bytes()));
+                out.push((
+                    PageKey::new(CLUSTER_TABLE, key48(region.key(), "cluster")),
+                    w.into_bytes(),
+                ));
             }
             out
         }
 
         /// The engine a [`Engine::snapshot`] describes. Tunables are configuration, not state.
-        pub fn restore(pages: impl IntoIterator<Item = (PageKey, Vec<u8>)>, tun: Tunables) -> Result<Engine> {
+        pub fn restore(
+            pages: impl IntoIterator<Item = (PageKey, Vec<u8>)>,
+            tun: Tunables,
+        ) -> Result<Engine> {
             let mut global = None;
             let mut districts = BTreeMap::new();
             let mut clusters = Vec::new();

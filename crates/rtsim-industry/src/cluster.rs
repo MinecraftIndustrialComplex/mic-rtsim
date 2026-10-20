@@ -461,13 +461,7 @@ fn envelope(v0: i128, bound: Bound, terms: &[Tm]) -> (i128, i128) {
 /// When a constraint that is too tight now could hold for `h` ticks with an extra set of terms
 /// added: `base` is the envelope without them (moving at its own slope until then), `extra` the
 /// terms that join at that moment. `None` if the base does not move in the relieving direction.
-fn relief_time(
-    v0: i64,
-    bound: Bound,
-    base: &[Tm],
-    extra: &[Tm],
-    h: u64,
-) -> Option<u64> {
+fn relief_time(v0: i64, bound: Bound, base: &[Tm], extra: &[Tm], h: u64) -> Option<u64> {
     let v0 = i128::from(v0);
     let (a0, b0) = envelope(v0, bound, base);
     let mut all = base.to_vec();
@@ -681,7 +675,11 @@ impl Cluster {
                 targets,
                 requires: ps.requires,
                 enabled: ps.enabled,
-                run: Run::Stopped(if ps.enabled { Stop::Waiting } else { Stop::Disabled }),
+                run: Run::Stopped(if ps.enabled {
+                    Stop::Waiting
+                } else {
+                    Stop::Disabled
+                }),
                 latency: ps.latency,
                 armed: None,
                 ran: false,
@@ -812,7 +810,11 @@ impl Cluster {
     pub fn add_to_pool(&mut self, key: PoolKey, delta: i64, physical: bool, at: Tick) -> i64 {
         let i = self.ensure_pool(key, 0, None) as usize;
         let p = &mut self.pools[i];
-        let applied = if delta < 0 { delta.max(-p.level) } else { delta };
+        let applied = if delta < 0 {
+            delta.max(-p.level)
+        } else {
+            delta
+        };
         p.level += applied;
         p.books.events += applied;
         if physical {
@@ -858,7 +860,13 @@ impl Cluster {
     }
 
     /// Changes what a process requires (a PowerGrid source starting or stopping its replay).
-    pub fn set_requires(&mut self, owner: DistrictId, id: u16, requires: Option<(DistrictId, u16)>, at: Tick) {
+    pub fn set_requires(
+        &mut self,
+        owner: DistrictId,
+        id: u16,
+        requires: Option<(DistrictId, u16)>,
+        at: Tick,
+    ) {
         for p in &mut self.procs {
             if p.owner == owner && p.id == id {
                 p.requires = requires;
@@ -926,7 +934,12 @@ impl Cluster {
     }
 
     /// The constraint's current value, bound and terms under `running`.
-    fn con_terms(&self, c: Con, running: &dyn Fn(usize) -> bool, out: &mut Vec<Tm>) -> (i64, Bound) {
+    fn con_terms(
+        &self,
+        c: Con,
+        running: &dyn Fn(usize) -> bool,
+        out: &mut Vec<Tm>,
+    ) -> (i64, Bound) {
         out.clear();
         match c {
             Con::Lower(k) => {
@@ -1288,9 +1301,14 @@ impl Cluster {
                 best = Some((n, f));
             }
         };
-        let mine: Vec<usize> = (0..self.procs.len()).filter(|&i| self.procs[i].owner == d).collect();
+        let mine: Vec<usize> = (0..self.procs.len())
+            .filter(|&i| self.procs[i].owner == d)
+            .collect();
         for &c in &cons {
-            if !mine.iter().any(|&i| self.is_running(i) && self.blamed(c, i)) {
+            if !mine
+                .iter()
+                .any(|&i| self.is_running(i) && self.blamed(c, i))
+            {
                 continue;
             }
             let (v0, bound) = self.con_terms(c, &running, &mut ts);
@@ -1332,9 +1350,7 @@ impl Cluster {
     fn collect_batches(&mut self, at: Tick) {
         for i in 0..self.procs.len() {
             if let Body::Link {
-                to,
-                batch: Some(b),
-                ..
+                to, batch: Some(b), ..
             } = self.procs[i].body
             {
                 let p = &mut self.pools[to as usize];
@@ -1570,7 +1586,10 @@ mod tests {
             pools: vec![(o, ore, None), (i, 0, ingot_cap)],
             procs: vec![ProcSpec {
                 id: 0,
-                body: ProcSpecBody::Box(vec![(o, Diffuser::per(-3, 100)), (i, Diffuser::per(3, 100))]),
+                body: ProcSpecBody::Box(vec![
+                    (o, Diffuser::per(-3, 100)),
+                    (i, Diffuser::per(3, 100)),
+                ]),
                 targets: vec![],
                 requires: None,
                 latency: 0,
@@ -1590,10 +1609,20 @@ mod tests {
         // consumption up), so the last tick that still has ore for its draw is 999.
         assert!(bp.0 >= 990 && bp.0 <= 1000, "breakpoint {bp:?}");
         c.settle(Tick(0), bp);
-        assert_eq!(c.run_of(d(1), 0), Some(Run::Stopped(Stop::InputEmpty(PoolKey::Stock(d(1), Good(1))))));
+        assert_eq!(
+            c.run_of(d(1), 0),
+            Some(Run::Stopped(Stop::InputEmpty(PoolKey::Stock(
+                d(1),
+                Good(1)
+            ))))
+        );
         assert!(c.level(PoolKey::Stock(d(1), Good(1))).unwrap() >= 0);
         c.check_books().unwrap();
-        assert_eq!(c.next_breakpoint(bp), None, "a starved box waits for an event");
+        assert_eq!(
+            c.next_breakpoint(bp),
+            None,
+            "a starved box waits for an event"
+        );
     }
 
     #[test]
@@ -1615,7 +1644,10 @@ mod tests {
         let bp = c.next_breakpoint(Tick(0)).unwrap();
         c.settle(Tick(0), bp);
         assert_eq!(c.level(PoolKey::Stock(d(1), Good(2))), Some(50));
-        assert!(matches!(c.run_of(d(1), 0), Some(Run::Stopped(Stop::OutputFull(_)))));
+        assert!(matches!(
+            c.run_of(d(1), 0),
+            Some(Run::Stopped(Stop::OutputFull(_)))
+        ));
     }
 
     #[test]
@@ -1629,7 +1661,10 @@ mod tests {
                 pools: vec![(a, 1_000_000, None), (b, 0, None)],
                 procs: vec![ProcSpec {
                     id: 0,
-                    body: ProcSpecBody::Box(vec![(a, Diffuser::per(-1, 10)), (b, Diffuser::per(1, 10))]),
+                    body: ProcSpecBody::Box(vec![
+                        (a, Diffuser::per(-1, 10)),
+                        (b, Diffuser::per(1, 10)),
+                    ]),
                     targets: vec![],
                     requires: Some((d(1), 0)),
                     latency: 0,
@@ -1642,9 +1677,16 @@ mod tests {
         assert_eq!(c.run_of(d(2), 0), Some(Run::Running));
         let bp = c.next_breakpoint(Tick(0)).unwrap();
         c.settle(Tick(0), bp);
-        assert_eq!(c.run_of(d(2), 0), Some(Run::Stopped(Stop::SourceStopped(d(1)))));
+        assert_eq!(
+            c.run_of(d(2), 0),
+            Some(Run::Stopped(Stop::SourceStopped(d(1))))
+        );
         c.add_to_pool(PoolKey::Stock(d(1), Good(1)), 300, false, bp);
-        assert_eq!(c.run_of(d(2), 0), Some(Run::Running), "the sink restarts with its source");
+        assert_eq!(
+            c.run_of(d(2), 0),
+            Some(Run::Running),
+            "the sink restarts with its source"
+        );
     }
 }
 
@@ -1682,17 +1724,44 @@ mod persist_impls {
             Ok(match r.u8()? {
                 0 => PoolKey::Stock(Persist::get(r)?, Persist::get(r)?),
                 1 => PoolKey::Channel(Persist::get(r)?, Persist::get(r)?),
-                2 => PoolKey::Mail(Persist::get(r)?, Persist::get(r)?, Persist::get(r)?, Persist::get(r)?),
+                2 => PoolKey::Mail(
+                    Persist::get(r)?,
+                    Persist::get(r)?,
+                    Persist::get(r)?,
+                    Persist::get(r)?,
+                ),
                 _ => return invalid("pool key"),
             })
         }
     }
 
-    persist_struct!(Books { initial, events, minted, burned, moved_in, moved_out });
-    persist_struct!(Pool { key, level, cap, pushed, books });
+    persist_struct!(Books {
+        initial,
+        events,
+        minted,
+        burned,
+        moved_in,
+        moved_out
+    });
+    persist_struct!(Pool {
+        key,
+        level,
+        cap,
+        pushed,
+        books
+    });
     persist_struct!(Term { pool, flow });
-    persist_struct!(Target { pool, stop_at, restart_at });
-    persist_struct!(Space { owner, weights, fixed, cap });
+    persist_struct!(Target {
+        pool,
+        stop_at,
+        restart_at
+    });
+    persist_struct!(Space {
+        owner,
+        weights,
+        fixed,
+        cap
+    });
 
     impl Persist for Body {
         fn put(&self, w: &mut Writer) {
@@ -1701,7 +1770,12 @@ mod persist_impls {
                     w.u8(0);
                     terms.put(w);
                 }
-                Body::Link { from, to, flow, batch } => {
+                Body::Link {
+                    from,
+                    to,
+                    flow,
+                    batch,
+                } => {
                     w.u8(1);
                     from.put(w);
                     to.put(w);
@@ -1712,7 +1786,9 @@ mod persist_impls {
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             Ok(match r.u8()? {
-                0 => Body::Box { terms: Persist::get(r)? },
+                0 => Body::Box {
+                    terms: Persist::get(r)?,
+                },
                 1 => Body::Link {
                     from: Persist::get(r)?,
                     to: Persist::get(r)?,
@@ -1784,12 +1860,26 @@ mod persist_impls {
         }
     }
 
-    persist_struct!(Proc { owner, id, body, targets, requires, enabled, run, latency, armed, ran });
+    persist_struct!(Proc {
+        owner,
+        id,
+        body,
+        targets,
+        requires,
+        enabled,
+        run,
+        latency,
+        armed,
+        ran
+    });
 
     /// Events are drained after every touch, so a saved cluster has none.
     impl Persist for Cluster {
         fn put(&self, w: &mut Writer) {
-            debug_assert!(self.events.is_empty(), "saving a cluster with undrained events");
+            debug_assert!(
+                self.events.is_empty(),
+                "saving a cluster with undrained events"
+            );
             self.pools.put(w);
             self.procs.put(w);
             self.spaces.put(w);

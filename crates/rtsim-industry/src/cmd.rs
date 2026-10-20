@@ -174,15 +174,61 @@ mod persist_impls {
     use super::*;
     use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-    persist_struct!(InvDelta { inventory, pos, good, delta });
-    persist_struct!(BlockDestroy { pos, expected_state });
-    persist_struct!(ChunkReconcile { op, district, epoch, chunk, deltas, destroy });
-    persist_unit_enum!(CarriageReason, [CarriageReason::Exchange, CarriageReason::Loot]);
-    persist_struct!(CarriageDelta { op, train, reason, entries });
+    persist_struct!(InvDelta {
+        inventory,
+        pos,
+        good,
+        delta
+    });
+    persist_struct!(BlockDestroy {
+        pos,
+        expected_state
+    });
+    persist_struct!(ChunkReconcile {
+        op,
+        district,
+        epoch,
+        chunk,
+        deltas,
+        destroy
+    });
+    persist_unit_enum!(
+        CarriageReason,
+        [CarriageReason::Exchange, CarriageReason::Loot]
+    );
+    persist_struct!(CarriageDelta {
+        op,
+        train,
+        reason,
+        entries
+    });
     persist_struct!(ChannelDelta { op, channel, goods });
-    persist_struct!(DepositDelta { op, plugin, chunk, good, delta });
-    persist_struct!(WritePackage { op, district, inventory, pos, address, count, goods });
-    persist_struct!(LedgerLine { district, state, freeze, next_breakpoint, next_kind, next_good, since, goods });
+    persist_struct!(DepositDelta {
+        op,
+        plugin,
+        chunk,
+        good,
+        delta
+    });
+    persist_struct!(WritePackage {
+        op,
+        district,
+        inventory,
+        pos,
+        address,
+        count,
+        goods
+    });
+    persist_struct!(LedgerLine {
+        district,
+        state,
+        freeze,
+        next_breakpoint,
+        next_kind,
+        next_good,
+        since,
+        goods
+    });
     persist_struct!(IndustryOps { next });
 
     impl Persist for Cmd {

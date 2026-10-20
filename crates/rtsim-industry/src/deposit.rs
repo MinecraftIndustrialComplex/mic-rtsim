@@ -111,8 +111,17 @@ mod tests {
 
     #[test]
     fn writeback_routes() {
-        assert_eq!(plugin(DepositPluginId::OreExcavation).writeback(), Writeback::WithChunk);
-        assert_eq!(plugin(DepositPluginId::DestroyCrude).writeback(), Writeback::WithChunk);
-        assert_eq!(plugin(DepositPluginId::DieselOil).writeback(), Writeback::Immediate);
+        assert_eq!(
+            plugin(DepositPluginId::OreExcavation).writeback(),
+            Writeback::WithChunk
+        );
+        assert_eq!(
+            plugin(DepositPluginId::DestroyCrude).writeback(),
+            Writeback::WithChunk
+        );
+        assert_eq!(
+            plugin(DepositPluginId::DieselOil).writeback(),
+            Writeback::Immediate
+        );
     }
 }

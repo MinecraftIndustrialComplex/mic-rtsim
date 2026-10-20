@@ -520,11 +520,48 @@ mod persist_impls {
 
     persist_unit_enum!(
         DepositPluginId,
-        [DepositPluginId::OreExcavation, DepositPluginId::DieselOil, DepositPluginId::DestroyCrude]
+        [
+            DepositPluginId::OreExcavation,
+            DepositPluginId::DieselOil,
+            DepositPluginId::DestroyCrude
+        ]
     );
-    persist_struct!(InventoryDecl { district, revision, index, pos, kind, item_slots, fluid_capacity, energy_capacity });
-    persist_struct!(DepositSample { district, good, plugin, chunk, remaining, infinite, sweep });
-    persist_struct!(StationDecl { station, district, dim, pos, name });
-    persist_struct!(Carriage { index, item_slots, fluid_capacity, goods });
-    persist_struct!(Conditions { season, season_count, season_length, season_origin });
+    persist_struct!(InventoryDecl {
+        district,
+        revision,
+        index,
+        pos,
+        kind,
+        item_slots,
+        fluid_capacity,
+        energy_capacity
+    });
+    persist_struct!(DepositSample {
+        district,
+        good,
+        plugin,
+        chunk,
+        remaining,
+        infinite,
+        sweep
+    });
+    persist_struct!(StationDecl {
+        station,
+        district,
+        dim,
+        pos,
+        name
+    });
+    persist_struct!(Carriage {
+        index,
+        item_slots,
+        fluid_capacity,
+        goods
+    });
+    persist_struct!(Conditions {
+        season,
+        season_count,
+        season_length,
+        season_origin
+    });
 }

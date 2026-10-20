@@ -8,7 +8,14 @@ use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
 fn cfg() -> IronLine {
-    IronLine { seed: 5, days: 10, threats: true, control: false, mode: Mode::Apply, tick_first: true }
+    IronLine {
+        seed: 5,
+        days: 10,
+        threats: true,
+        control: false,
+        mode: Mode::Apply,
+        tick_first: true,
+    }
 }
 
 fn snapshot(e: &Engine) -> Vec<(u64, Vec<u8>)> {
@@ -30,14 +37,26 @@ fn a_restored_engine_continues_exactly() {
         w.run_until(cut);
         let pages = w.engine.snapshot();
         let restored = Engine::restore(pages, Tunables::default()).expect("restore");
-        assert_eq!(snapshot(&restored), snapshot(&w.engine), "round trip at day {cut_days}");
+        assert_eq!(
+            snapshot(&restored),
+            snapshot(&w.engine),
+            "round trip at day {cut_days}"
+        );
         w.engine = restored;
         run_iron_line(&mut w, &c);
         let got = snapshot(&w.engine);
-        assert_eq!(got.len(), want.len(), "page count after a restore at day {cut_days}");
+        assert_eq!(
+            got.len(),
+            want.len(),
+            "page count after a restore at day {cut_days}"
+        );
         for (a, b) in got.iter().zip(&want) {
             assert_eq!(a.0, b.0);
-            assert!(a.1 == b.1, "page {:#x} differs after a restore at day {cut_days}", a.0);
+            assert!(
+                a.1 == b.1,
+                "page {:#x} differs after a restore at day {cut_days}",
+                a.0
+            );
         }
         w.conservation().expect("conserves across a restore");
     }
@@ -53,7 +72,10 @@ fn corrupt_pages_are_errors_not_panics() {
         for cut in [0, b.len() / 2, b.len().saturating_sub(1)] {
             let mut broken = pages.clone();
             broken[i] = (*k, b[..cut].to_vec());
-            assert!(Engine::restore(broken, Tunables::default()).is_err(), "page {i} cut at {cut}");
+            assert!(
+                Engine::restore(broken, Tunables::default()).is_err(),
+                "page {i} cut at {cut}"
+            );
         }
     }
 }

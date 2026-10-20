@@ -19,7 +19,9 @@ use serde::Serialize;
 
 use crate::cluster::{MemberSpec, PoolKey, ProcSpec, ProcSpecBody};
 use crate::cmd::{BlockDestroy, ChunkReconcile};
-use crate::ids::{ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap};
+use crate::ids::{
+    ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap,
+};
 use crate::learn::{Learned, LearnedTarget, Learner, LinkKey};
 use crate::obs::{DepositSample, InvKind, InventoryDecl, NotLearnable};
 use crate::reconcile::{GoodLookup, InvState};
@@ -104,7 +106,12 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn from_learned(learned: Learned, targets: Vec<LearnedTarget>, season: u32, batches: BTreeMap<(u32, u32), GoodVec>) -> Model {
+    pub fn from_learned(
+        learned: Learned,
+        targets: Vec<LearnedTarget>,
+        season: u32,
+        batches: BTreeMap<(u32, u32), GoodVec>,
+    ) -> Model {
         let rates = learned
             .rates
             .iter()
@@ -128,7 +135,10 @@ impl Model {
     }
 
     pub fn produced(&self) -> impl Iterator<Item = Good> + '_ {
-        self.rates.iter().filter(|r| r.1.rate_fixed() > 0).map(|r| r.0)
+        self.rates
+            .iter()
+            .filter(|r| r.1.rate_fixed() > 0)
+            .map(|r| r.0)
     }
 }
 
@@ -336,7 +346,9 @@ impl District {
                 Some(NotLearnable::from_code(code).map_or("not learnable", |n| n.words()))
             }
             Phase::Damaged => Some("damaged: a machine was destroyed"),
-            Phase::Learned if !self.models.contains_key(&season) => Some("no model for this season"),
+            Phase::Learned if !self.models.contains_key(&season) => {
+                Some("no model for this season")
+            }
             Phase::Learned => None,
         }
     }
@@ -367,7 +379,11 @@ impl District {
         tun: &Tunables,
     ) -> MemberSpec {
         let d = self.id;
-        let invs: Vec<&Inventory> = self.inventories.values().filter(|i| !i.destroyed && !i.doomed).collect();
+        let invs: Vec<&Inventory> = self
+            .inventories
+            .values()
+            .filter(|i| !i.destroyed && !i.doomed)
+            .collect();
         let produced: BTreeSet<Good> = model.produced().collect();
         let mut pools: Vec<(PoolKey, i64, Option<i64>)> = Vec::new();
         let mut goods_here: BTreeSet<Good> = base.goods().collect();
@@ -377,7 +393,10 @@ impl District {
                 GoodClass::Fluid if produced.contains(&g) => {
                     let c: i64 = invs
                         .iter()
-                        .filter(|i| i.decl.kind.has(InvKind::FLUIDS) && (i.received.contains(&g) || i.known.get(g) > 0))
+                        .filter(|i| {
+                            i.decl.kind.has(InvKind::FLUIDS)
+                                && (i.received.contains(&g) || i.known.get(g) > 0)
+                        })
                         .map(|i| i.decl.fluid_capacity)
                         .sum();
                     Some(c.max(base.get(g)))
@@ -402,7 +421,13 @@ impl District {
         }
         let mut procs = vec![ProcSpec {
             id: 0,
-            body: ProcSpecBody::Box(model.rates.iter().map(|&(g, f)| (PoolKey::Stock(d, g), f)).collect()),
+            body: ProcSpecBody::Box(
+                model
+                    .rates
+                    .iter()
+                    .map(|&(g, f)| (PoolKey::Stock(d, g), f))
+                    .collect(),
+            ),
             targets,
             requires: self.power_source.map(|s| (s, 0)),
             latency: model.learned.latency_ticks,
@@ -424,7 +449,12 @@ impl District {
                     let (from, to) = if rate > 0 { (ck, sk) } else { (sk, ck) };
                     procs.push(ProcSpec {
                         id: next_id,
-                        body: ProcSpecBody::Link { from, to, flow: unit, batch: None },
+                        body: ProcSpecBody::Link {
+                            from,
+                            to,
+                            flow: unit,
+                            batch: None,
+                        },
                         targets: vec![],
                         requires: None,
                         latency: 0,
@@ -432,7 +462,11 @@ impl District {
                     });
                     next_id += 1;
                 }
-                LinkKey::Mail { inventory, address, good } if rate < 0 => {
+                LinkKey::Mail {
+                    inventory,
+                    address,
+                    good,
+                } if rate < 0 => {
                     let batch = model
                         .batches
                         .get(&(inventory, address))
@@ -477,7 +511,11 @@ impl District {
             .collect();
         // An output whose every receiver was destroyed has nowhere to go: the line jams (F20).
         let jammed = produced_items.iter().any(|g| {
-            let mut rec = self.inventories.values().filter(|i| i.received.contains(g)).peekable();
+            let mut rec = self
+                .inventories
+                .values()
+                .filter(|i| i.received.contains(g))
+                .peekable();
             rec.peek().is_some() && rec.all(|i| i.destroyed || i.doomed)
         });
         let space = if produced_items.is_empty() {
@@ -486,13 +524,22 @@ impl District {
             let mut pool_invs: Vec<&Inventory> = invs
                 .iter()
                 .copied()
-                .filter(|i| i.decl.kind.has(InvKind::ITEMS) && produced_items.iter().any(|g| i.received.contains(g)))
+                .filter(|i| {
+                    i.decl.kind.has(InvKind::ITEMS)
+                        && produced_items.iter().any(|g| i.received.contains(g))
+                })
                 .collect();
             if pool_invs.is_empty() {
-                pool_invs = invs.iter().copied().filter(|i| i.decl.kind.has(InvKind::ITEMS)).collect();
+                pool_invs = invs
+                    .iter()
+                    .copied()
+                    .filter(|i| i.decl.kind.has(InvKind::ITEMS))
+                    .collect();
             }
             let slots: i64 = pool_invs.iter().map(|i| i64::from(i.decl.item_slots)).sum();
-            let margin = tun.replay.fragment_margin_slots * produced_items.len() as i64 * pool_invs.len() as i64;
+            let margin = tun.replay.fragment_margin_slots
+                * produced_items.len() as i64
+                * pool_invs.len() as i64;
             let cap = (slots - margin).max(0) * SLOT_UNITS;
             let mut used: i64 = 0;
             let mut counted: BTreeSet<Good> = produced_items.iter().copied().collect();
@@ -509,7 +556,11 @@ impl District {
                 .iter()
                 .map(|&g| (PoolKey::Stock(d, g), weight(goods, g)))
                 .collect();
-            let fixed = used - weights.iter().map(|(k, w)| w * base.get(k.good()).max(0)).sum::<i64>();
+            let fixed = used
+                - weights
+                    .iter()
+                    .map(|(k, w)| w * base.get(k.good()).max(0))
+                    .sum::<i64>();
             Some((weights, fixed, cap))
         };
         // A jammed line does not run at all, whatever its net use of space (F20).
@@ -538,8 +589,20 @@ mod persist_impls {
     use super::*;
     use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-    persist_struct!(Inventory { decl, chunk, known, known_at, pending, received, doomed, destroyed });
-    persist_unit_enum!(Presence, [Presence::Unloaded, Presence::Partial, Presence::Live]);
+    persist_struct!(Inventory {
+        decl,
+        chunk,
+        known,
+        known_at,
+        pending,
+        received,
+        doomed,
+        destroyed
+    });
+    persist_unit_enum!(
+        Presence,
+        [Presence::Unloaded, Presence::Partial, Presence::Live]
+    );
 
     impl Persist for Phase {
         fn put(&self, w: &mut Writer) {
@@ -566,8 +629,19 @@ mod persist_impls {
         }
     }
 
-    persist_struct!(Model { learned, targets, rates, links, batches, season });
-    persist_struct!(SimSpan { started, base, season });
+    persist_struct!(Model {
+        learned,
+        targets,
+        rates,
+        links,
+        batches,
+        season
+    });
+    persist_struct!(SimSpan {
+        started,
+        base,
+        season
+    });
     persist_struct!(PendingChunk { cmd, trim, sent });
     persist_struct!(ReconcileReport {
         epoch,
@@ -583,8 +657,18 @@ mod persist_impls {
         destroyed,
         read_only,
     });
-    persist_struct!(ExchangeRule { unload, load, observed });
-    persist_struct!(SweepBuf { sweep, records, contents, read_at, deposits });
+    persist_struct!(ExchangeRule {
+        unload,
+        load,
+        observed
+    });
+    persist_struct!(SweepBuf {
+        sweep,
+        records,
+        contents,
+        read_at,
+        deposits
+    });
 
     /// `skipped` is one of a few fixed words.
     const SKIPS: [&str; 3] = ["watched", "cooldown", "read-only phase"];
@@ -600,7 +684,12 @@ mod persist_impls {
             self.stolen.put(w);
             self.destroyed.put(w);
             self.machine_lost.put(w);
-            let code = self.skipped.map(|s| SKIPS.iter().position(|x| *x == s).map_or(u8::MAX, |i| i as u8));
+            let code = self.skipped.map(|s| {
+                SKIPS
+                    .iter()
+                    .position(|x| *x == s)
+                    .map_or(u8::MAX, |i| i as u8)
+            });
             code.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -614,7 +703,8 @@ mod persist_impls {
                 stolen: Persist::get(r)?,
                 destroyed: Persist::get(r)?,
                 machine_lost: Persist::get(r)?,
-                skipped: Option::<u8>::get(r)?.map(|c| SKIPS.get(c as usize).copied().unwrap_or("skipped")),
+                skipped: Option::<u8>::get(r)?
+                    .map(|c| SKIPS.get(c as usize).copied().unwrap_or("skipped")),
             })
         }
     }

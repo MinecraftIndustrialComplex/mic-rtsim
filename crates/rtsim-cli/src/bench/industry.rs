@@ -66,7 +66,17 @@ fn add_district(e: &mut Engine, id: u64, ore: i64, slots: u32) {
     let d = DistrictId(id);
     let at = e.now();
     let send = |e: &mut Engine, obs: Obs| e.ingest(&Timed { at, obs });
-    send(e, Obs::District(DistrictDecl { district: d, revision: 1, dim: 0, name: 0, not_learnable: None, inventory_count: 2 }));
+    send(
+        e,
+        Obs::District(DistrictDecl {
+            district: d,
+            revision: 1,
+            dim: 0,
+            name: 0,
+            not_learnable: None,
+            inventory_count: 2,
+        }),
+    );
     for (index, x) in [(0u32, 0i32), (1, 32)] {
         send(
             e,
@@ -82,9 +92,36 @@ fn add_district(e: &mut Engine, id: u64, ore: i64, slots: u32) {
             }),
         );
     }
-    send(e, Obs::StockSample { district: d, inventory: 0, sweep: 1, goods: GoodVec::from_pairs([(ORE, ore)]) });
-    send(e, Obs::StockSample { district: d, inventory: 1, sweep: 1, goods: GoodVec::new() });
-    send(e, Obs::SweepEnd(SweepEnd { district: d, sweep: 1, records: 2, inventories: 2, live: false, creative: false, overstressed: false }));
+    send(
+        e,
+        Obs::StockSample {
+            district: d,
+            inventory: 0,
+            sweep: 1,
+            goods: GoodVec::from_pairs([(ORE, ore)]),
+        },
+    );
+    send(
+        e,
+        Obs::StockSample {
+            district: d,
+            inventory: 1,
+            sweep: 1,
+            goods: GoodVec::new(),
+        },
+    );
+    send(
+        e,
+        Obs::SweepEnd(SweepEnd {
+            district: d,
+            sweep: 1,
+            records: 2,
+            inventories: 2,
+            live: false,
+            creative: false,
+            overstressed: false,
+        }),
+    );
     e.adopt_model(
         d,
         Learned {
@@ -99,8 +136,24 @@ fn add_district(e: &mut Engine, id: u64, ore: i64, slots: u32) {
         },
         vec![],
     );
-    send(e, Obs::LoadState { district: d, state: LoadState::Live, ticking_chunks: 2, total_chunks: 2 });
-    send(e, Obs::LoadState { district: d, state: LoadState::Unloaded, ticking_chunks: 0, total_chunks: 2 });
+    send(
+        e,
+        Obs::LoadState {
+            district: d,
+            state: LoadState::Live,
+            ticking_chunks: 2,
+            total_chunks: 2,
+        },
+    );
+    send(
+        e,
+        Obs::LoadState {
+            district: d,
+            state: LoadState::Unloaded,
+            ticking_chunks: 0,
+            total_chunks: 2,
+        },
+    );
 }
 
 fn engine() -> Engine {
@@ -204,7 +257,11 @@ fn median(mut v: Vec<Point>, key: fn(&Point) -> f64) -> Point {
 }
 
 fn slope(points: &[(f64, f64)]) -> f64 {
-    let pts: Vec<(f64, f64)> = points.iter().filter(|p| p.0 > 0.0 && p.1 > 0.0).map(|p| (p.0.log10(), p.1.log10())).collect();
+    let pts: Vec<(f64, f64)> = points
+        .iter()
+        .filter(|p| p.0 > 0.0 && p.1 > 0.0)
+        .map(|p| (p.0.log10(), p.1.log10()))
+        .collect();
     if pts.len() < 2 {
         return 0.0;
     }
@@ -216,46 +273,105 @@ fn slope(points: &[(f64, f64)]) -> f64 {
     if sxx == 0.0 { 0.0 } else { sxy / sxx }
 }
 
-fn sweep(name: &'static str, metric: &'static str, declared: f64, flat: bool, points: Vec<Point>, get: fn(&Point) -> Option<f64>) -> Sweep {
-    let xy: Vec<(f64, f64)> = points.iter().filter_map(|p| get(p).map(|y| (p.n as f64, y))).collect();
+fn sweep(
+    name: &'static str,
+    metric: &'static str,
+    declared: f64,
+    flat: bool,
+    points: Vec<Point>,
+    get: fn(&Point) -> Option<f64>,
+) -> Sweep {
+    let xy: Vec<(f64, f64)> = points
+        .iter()
+        .filter_map(|p| get(p).map(|y| (p.n as f64, y)))
+        .collect();
     let s = slope(&xy);
     let ys: Vec<f64> = xy.iter().map(|p| p.1).collect();
     let max = ys.iter().cloned().fold(f64::MIN, f64::max);
     let min = ys.iter().cloned().fold(f64::MAX, f64::min);
     let ratio = if min > 0.0 { max / min } else { f64::INFINITY };
     let pass = s <= declared + SLOPE_TOLERANCE && (!flat || ratio <= FLAT_RATIO);
-    Sweep { name, metric, declared, flat, points, slope: s, ratio, pass }
+    Sweep {
+        name,
+        metric,
+        declared,
+        flat,
+        points,
+        slope: s,
+        ratio,
+        pass,
+    }
 }
 
 pub fn run(opts: Options) -> i32 {
     let repeats = if opts.quick { 1 } else { 3 };
-    let sizes: Vec<u64> = if opts.quick { vec![10, 100, 1_000, 10_000] } else { vec![10, 100, 1_000, 10_000, 100_000] };
+    let sizes: Vec<u64> = if opts.quick {
+        vec![10, 100, 1_000, 10_000]
+    } else {
+        vec![10, 100, 1_000, 10_000, 100_000]
+    };
     let days = if opts.quick { 10 } else { 30 };
     let mut out = Vec::new();
 
     let q: Vec<Point> = sizes
         .iter()
-        .map(|&n| median((0..repeats).map(|_| quiet(n, days)).collect(), |p| p.cpu_ns_per_day.unwrap_or(0.0)))
+        .map(|&n| {
+            median((0..repeats).map(|_| quiet(n, days)).collect(), |p| {
+                p.cpu_ns_per_day.unwrap_or(0.0)
+            })
+        })
         .collect();
-    out.push(sweep("quiet", "cpu_ns_per_day", 0.0, true, q.clone(), |p| p.cpu_ns_per_day));
-    out.push(sweep("quiet", "heap_bytes", 1.0, false, q, |p| p.heap_bytes.map(|b| b as f64)));
+    out.push(sweep(
+        "quiet",
+        "cpu_ns_per_day",
+        0.0,
+        true,
+        q.clone(),
+        |p| p.cpu_ns_per_day,
+    ));
+    out.push(sweep("quiet", "heap_bytes", 1.0, false, q, |p| {
+        p.heap_bytes.map(|b| b as f64)
+    }));
 
-    let busy_sizes: Vec<u64> = sizes.iter().copied().filter(|&n| n <= if opts.quick { 10_000 } else { 100_000 }).collect();
+    let busy_sizes: Vec<u64> = sizes
+        .iter()
+        .copied()
+        .filter(|&n| n <= if opts.quick { 10_000 } else { 100_000 })
+        .collect();
     let b: Vec<Point> = busy_sizes
         .iter()
-        .map(|&n| median((0..repeats).map(|_| busy(n, days.min(10))).collect(), |p| p.cpu_ns_per_day.unwrap_or(0.0)))
+        .map(|&n| {
+            median((0..repeats).map(|_| busy(n, days.min(10))).collect(), |p| {
+                p.cpu_ns_per_day.unwrap_or(0.0)
+            })
+        })
         .collect();
-    out.push(sweep("busy", "cpu_ns_per_day", 1.0, false, b, |p| p.cpu_ns_per_day));
+    out.push(sweep("busy", "cpu_ns_per_day", 1.0, false, b, |p| {
+        p.cpu_ns_per_day
+    }));
 
-    let spans: Vec<u64> = if opts.quick { vec![1, 10, 100, 1_000, 10_000] } else { vec![1, 10, 100, 1_000, 10_000, 100_000, 1_000_000] };
+    let spans: Vec<u64> = if opts.quick {
+        vec![1, 10, 100, 1_000, 10_000]
+    } else {
+        vec![1, 10, 100, 1_000, 10_000, 100_000, 1_000_000]
+    };
     let el: Vec<Point> = spans
         .iter()
-        .map(|&d| median((0..repeats.max(3)).map(|_| elapsed(d)).collect(), |p| p.cpu_ns_per_read.unwrap_or(0.0)))
+        .map(|&d| {
+            median((0..repeats.max(3)).map(|_| elapsed(d)).collect(), |p| {
+                p.cpu_ns_per_read.unwrap_or(0.0)
+            })
+        })
         .collect();
-    out.push(sweep("elapsed", "cpu_ns_per_read", 0.0, true, el, |p| p.cpu_ns_per_read));
+    out.push(sweep("elapsed", "cpu_ns_per_read", 0.0, true, el, |p| {
+        p.cpu_ns_per_read
+    }));
 
     let mut ok = true;
-    println!("{:<8} {:<16} {:>10} {:>14} {:>14} {:>9} {:>9}", "sweep", "metric", "n", "value", "setup ms", "bps", "settles");
+    println!(
+        "{:<8} {:<16} {:>10} {:>14} {:>14} {:>9} {:>9}",
+        "sweep", "metric", "n", "value", "setup ms", "bps", "settles"
+    );
     for s in &out {
         for p in &s.points {
             let v = match s.metric {
@@ -265,7 +381,13 @@ pub fn run(opts: Options) -> i32 {
             };
             println!(
                 "{:<8} {:<16} {:>10} {:>14.0} {:>14.1} {:>9} {:>9}",
-                s.name, s.metric, p.n, v.unwrap_or(f64::NAN), p.setup_ms, p.breakpoints, p.settles
+                s.name,
+                s.metric,
+                p.n,
+                v.unwrap_or(f64::NAN),
+                p.setup_ms,
+                p.breakpoints,
+                p.settles
             );
         }
         println!(
@@ -281,7 +403,10 @@ pub fn run(opts: Options) -> i32 {
     if let Some(dir) = &opts.out {
         let _ = std::fs::create_dir_all(dir);
         let (when, stamp) = super::scale::now_utc();
-        let path = dir.join(format!("industry-{stamp}-{}.json", if opts.quick { "quick" } else { "full" }));
+        let path = dir.join(format!(
+            "industry-{stamp}-{}.json",
+            if opts.quick { "quick" } else { "full" }
+        ));
         let doc = serde_json::json!({
             "bench": "industry",
             "when": when,
@@ -291,7 +416,10 @@ pub fn run(opts: Options) -> i32 {
             "flat_ratio": FLAT_RATIO,
             "sweeps": out,
         });
-        if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&doc).expect("serialize")) {
+        if let Err(e) = std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&doc).expect("serialize"),
+        ) {
             eprintln!("cannot write {}: {e}", path.display());
         } else {
             println!("wrote {}", path.display());

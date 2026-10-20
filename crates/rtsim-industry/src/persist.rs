@@ -248,7 +248,8 @@ impl<T: Persist, const N: usize> Persist for [T; N] {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self> {
         let v: Vec<T> = (0..N).map(|_| T::get(r)).collect::<Result<_>>()?;
-        v.try_into().map_err(|_| CodecError::Invalid("array length".into()))
+        v.try_into()
+            .map_err(|_| CodecError::Invalid("array length".into()))
     }
 }
 
@@ -337,7 +338,11 @@ impl Persist for GoodClass {
     }
 }
 
-persist_struct!(GoodInfo { class, max_stack, name });
+persist_struct!(GoodInfo {
+    class,
+    max_stack,
+    name
+});
 
 /// A fieldless enum by its index in a list of its variants.
 macro_rules! persist_unit_enum {
@@ -377,18 +382,35 @@ pub fn from_bytes<T: Persist>(b: &[u8]) -> Result<T> {
 mod tests {
     use super::*;
 
+    /// A tuple of most leaf kinds at once.
+    type Leaves = (
+        GoodVec,
+        Option<Tick>,
+        Vec<(ChunkPos, BTreeSet<Good>)>,
+        Diffuser,
+        f64,
+        String,
+    );
+
     #[test]
     fn leaves_round_trip() {
-        let v: (GoodVec, Option<Tick>, Vec<(ChunkPos, BTreeSet<Good>)>, Diffuser, f64, String) = (
+        let v: Leaves = (
             GoodVec::from_pairs([(Good(3), -7), (Good(1), 1 << 40)]),
             Some(Tick(123)),
-            vec![(ChunkPos { dim: 2, x: -5, z: 9 }, BTreeSet::from([Good(4), Good(1)]))],
+            vec![(
+                ChunkPos {
+                    dim: 2,
+                    x: -5,
+                    z: 9,
+                },
+                BTreeSet::from([Good(4), Good(1)]),
+            )],
             Diffuser::with_carry(-(5 << 31), 77),
             -0.125,
             "i/64/minecraft:iron_ingot".to_string(),
         );
         let b = to_bytes(&v);
-        let back: (GoodVec, Option<Tick>, Vec<(ChunkPos, BTreeSet<Good>)>, Diffuser, f64, String) = from_bytes(&b).unwrap();
+        let back: Leaves = from_bytes(&b).unwrap();
         assert_eq!(back, v);
         assert!(from_bytes::<GoodVec>(&b[..3]).is_err());
     }
