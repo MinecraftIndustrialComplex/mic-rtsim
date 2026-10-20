@@ -7,4 +7,5 @@ pub mod industry;
 pub mod market;
 pub mod restore;
 pub mod scale;
+pub mod ships;
 pub mod world;
