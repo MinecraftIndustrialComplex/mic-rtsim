@@ -18,7 +18,7 @@ otherwise).
 |---|---|
 | I11 | Ore Excavation veins, Diesel chunk oil and Destroy crude oil are deposits (goods of class `d`), read each sweep, written back with the chunk's reconcile (Ore Excavation, Destroy) or at once by IND_DEPOSIT_DELTA (Diesel). |
 | I12 | IND_CONDITIONS from Serene Seasons' calendar (the one mic-climate's YearClock reads) when the climate plugin is present, else vanilla's "no seasons". |
-| I13 | Ender Transmission channels are shared stock (samples, channel ports, IND_CHANNEL_DELTA); PowerGrid lines between districts are measured power links (IND_POWER_LINK). |
+| I13 (as corrected on 2026-10-20) | An Ender Transmission channel's endpoints are one district (Ben: a stop-gap for tightly linked machinery, not long-distance transmission); PowerGrid lines between districts are measured power links (IND_POWER_LINK). |
 | I14 | Destroy pollution attributed by the position of each `changePollution`; written back at the district's reconcile (see Q9 for "level types live"). |
 | I16 | Warn first: a logistics network spanning districts is a ledger warning; no mixin (Q8). |
 | I20 | Natural spawns per dark spawnable block, measured while a player is in the district at night. |
@@ -78,15 +78,22 @@ otherwise).
   logged and counted (the engine keeps its books as written, W10), none at all is FAILED.
 
 **Channels (I13)**
-- **Q7.** Ender Transmission's transmitters never tick a transfer: they are capability proxies onto one
-  shared buffer per channel (javap). A mixin at the end of the transmitter block entity's constructor wraps
-  its public capability supplier, so every handler a lookup returns measures what goes through it; each
-  transfer through a transmitter in a district is booked to (district, channel) and flushed every 20 ticks
-  (PLACEHOLDER) as an IND_PORT of kind 7, + into the district when it left the channel. IND_CHANNEL_SAMPLE
-  every 100 ticks (PLACEHOLDER) for every channel a district's transmitter uses: contents and capacity (an
-  item slot holds what Ender Transmission's slot limit and the item's stack size allow; a tank 1,000 mB).
-  A channel id is FNV-1a 64 over `network|channel|password`, finalized with SplitMix64, never 0.
-  IND_CHANNEL_DELTA applies at once, removals first, through the buffer's own handler.
+- **Q7.** (Reworked after Ben corrected I13: Ender Transmission in this pack is a stop-gap for tightly
+  linked machinery, such as a turret on a Sable vehicle powered by an engine in its body, never long-distance
+  transmission.) Every transmitter links, through the plugin `links` hook, to the other live transmitters on
+  its channel (the same kind: items, fluids or rotation; the same channel number and password) in the same
+  level, so the district detection joins their chunks into one district however far apart they are. The
+  channel's buffer is machinery inside the district, like a pipe's contents: no channel port, no
+  IND_CHANNEL_SAMPLE, and IND_CHANNEL_DELTA is not applied (the core answers it FAILED). Ender
+  Transmission keeps no list of its item and fluid endpoints, so a mixin at the end of the transmitter
+  block entity's constructor registers each in a weak set; rotation transmitters are read from the mod's
+  own `EnergyNetwork.ENERGY` lists without changing them. An endpoint in another level cannot join one
+  district: the districts on such a channel get a ledger warning (checked every 200 ticks, PLACEHOLDER),
+  and what crosses it is learned as the districts' own production and use. A link is seen only while
+  both endpoints' chunks are loaded (as chain conveyors). The settings screen is no block edit, so the
+  200-tick check also compares each transmitter's channel and password with the last check and marks its
+  chunk for detection when they changed. A transmitter on a Sable vehicle is UNVERIFIED (no Sable in the test
+  servers).
 
 **Gauge networks (I16)**
 - **Q8.** Warn only. A Create 6 logistics network whose stock links are in two or more districts puts a
@@ -191,12 +198,21 @@ otherwise).
 2. **Create Radars never checks ammunition** (`isCannonReadyToFire` is true for any mount), and CBC Modern
    Warfare's compact mount cannot be driven by it.
 3. **Ender Transmission's channel buffers are JVM statics** that are never cleared, and looking up a fluid
-   transmitter's capability creates its channel entry.
+   transmitter's capability creates its channel entry. Since I13's correction the engine's channel stock
+   (F8: IND_CHANNEL_SAMPLE, IND_CHANNEL_DELTA, IND_PORT kind 7) has no Java producer; its owner can retire it.
 4. **The GameTest yard's floor is the layer the industry tests place blocks in** (y 1 of the structure):
    a block "on the floor" replaces it. The survey test builds its walls one block higher to stand two above
    the floor.
 5. **A sub-agent of this run (the radar and Create logistics lookup) took about seven hours** under the
    account's rate limit; the rest of the work went on without it.
+6. **The create GameTests' "goods' names do not resolve" on the native engine** (`totals {null=86}`, four
+   tests failing on main since the herds and the world model added records) was the test log, not the
+   bridge: `NativeEngine` kept only the last 10,000 received records, and a busy suite dropped the
+   session's first DICT entries with them. It now keeps every DICT name apart (`javaDictName`); create
+   passes 18 of 18 on the native engine again.
+7. **A GameTest world saved before kernel2's page format 2** (`run-gametest/world/rtsim`) stops the native
+   engine at start ("format 1, this build reads 2"), and every test of that project fails. Delete the
+   project's `run-gametest/world` after merging the kernel change.
 
 ## Proposal: IND_CLIMATE (not built)
 

@@ -250,8 +250,10 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
 - **IND_CARRIAGE_DELTA:** applied to `Carriage.storage` through `TrainCargoManager`'s handlers (whose
   `changeDetected` resets the idle-cargo counter), wherever the train now is. Java journals
   IND_CARRIAGE_RESULT with what it applied.
-- **IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE:** these stores are level SavedData, so
-  Java applies them at once, loaded or not. Each is answered with the bridge's COMMAND_RESULT.
+- **IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE:** these stores are level SavedData, so Java applies them at
+  once, loaded or not. Each is answered with the bridge's COMMAND_RESULT.
+- **IND_CHANNEL_DELTA:** answered FAILED since I13's correction (2026-10-20): an Ender Transmission
+  channel joins its endpoints into one district and is no shared stock, so nothing applies it.
 - **IND_LEDGER:** a reply to IND_LEDGER_REQUEST, for the "District ledger" Display Source (I18).
   - **States:** 0 live, 1 learning, 2 learned (running abstractly), 3 stale, 4 not learnable,
     5 suspended, 6 damaged, 7 frozen out of season.
@@ -278,23 +280,25 @@ constants are `IndRecords.java`, which mirrors wire.rs field for field (the cont
 record below against wire.rs fixtures).
 
 - **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_LEDGER_REQUEST, IND_WATCHED, IND_DEPOSIT_SAMPLE (Ore
-  Excavation, Diesel, Destroy crude oil and pollution), IND_CHANNEL_SAMPLE (Ender Transmission);
+  Excavation, Diesel, Destroy crude oil and pollution);
   IND_DISTRICT, IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED, IND_EDIT (aux 1, 2,
   4), IND_DISCARD (aux 1, 5), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_CONDITIONS, IND_POWER_LINK, IND_PORT
-  (kinds 1, 3, 4, 5, 6, 7), IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (loaded and unloaded
+  (kinds 1, 3, 4, 5, 6), IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (loaded and unloaded
   districts; the mail is out of the train's cargo port, Q6), IND_RECONCILE_RESULT, IND_CARRIAGE_RESULT,
   IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY, IND_SURVEY_BLOCKS.
 - **Applied:** IND_CHUNK_RECONCILE (§4.1, every step; a deposit delta through its plugin, in the chunk's
-  tick), IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA (Ender Transmission's buffer, at once), IND_DEPOSIT_DELTA (by
+  tick), IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA (by
   the plugin that owns the good: Diesel's chunk oil, at once), IND_WRITE_PACKAGE (a loaded postbox or the
   station port's offline buffer), IND_LEDGER.
 - **Forms Java decides:** a GOOD component hash is 16 hex digits (H2); a deposit good is
   `d/0/<kind id>/<16 hex digits of FNV-1a over dimension|chunkX|chunkZ>`, or over `pollution|<district>` for
   attributed pollution (Q3, Q9); a BLOCK_STATE name is `BlockStateParser.serialize(state)`, which a destroy
-  entry is compared with; station and train ids are SplitMix64 of Create's UUIDs (H19); a channel id is
-  FNV-1a over `network|channel|password` finalized with SplitMix64 (Q7); the counterpart of a player port is
-  the player's UUID halves XORed.
-- **Not sent:** temperature (IND_CONDITIONS has no field for it; proposal IND_CLIMATE, Q20).
+  entry is compared with; station and train ids are SplitMix64 of Create's UUIDs (H19); the counterpart
+  of a player port is the player's UUID halves XORed.
+- **Not sent:** temperature (IND_CONDITIONS has no field for it; proposal IND_CLIMATE, Q20);
+  IND_CHANNEL_SAMPLE and channel ports (IND_PORT kind 7): I13 as corrected makes an Ender Transmission
+  channel's endpoints one district (plugin links), its buffer machinery inside it (Q7). The records stay
+  in wire.rs for the engine's owner to retire.
 
 ### 6.1 Proposal: IND_APPROACH (H23)
 

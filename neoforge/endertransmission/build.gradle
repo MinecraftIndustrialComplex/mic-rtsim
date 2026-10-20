@@ -3,7 +3,7 @@ plugins {
     id 'net.neoforged.moddev'
 }
 
-// mic_rtsim_endertransmission (A1, A19): Create Ender Transmission for mic-rtsim industry: channel buffers as shared stock, transfers as ports (I13). Its own jar and mod id, built around the pack's own jars (never bundled);
+// mic_rtsim_endertransmission (A1, A19): Create Ender Transmission for mic-rtsim industry: a channel's endpoints are one district (I13 as corrected). Its own jar and mod id, built around the pack's own jars (never bundled);
 // the shared build logic is ../plugin.gradle.
 ext.packJars = [
     'create-1.21.1-6.0.10.jar',

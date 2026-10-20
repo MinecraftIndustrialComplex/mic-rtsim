@@ -27,7 +27,7 @@ include 'iceandfire' // mic_rtsim_iceandfire: Ice and Fire CE 2.1-beta.1, phase 
 // one mod and sharing ../plugin.gradle.
 include 'oreexcavation'     // mic_rtsim_oreexcavation: Create Ore Excavation veins as finite deposits (I11)
 include 'dieselgenerators'  // mic_rtsim_dieselgenerators: Diesel Generators chunk oil (I11)
-include 'endertransmission' // mic_rtsim_endertransmission: channel buffers as shared stock (I13)
+include 'endertransmission' // mic_rtsim_endertransmission: a channel's endpoints are one district (I13)
 include 'powergrid'         // mic_rtsim_powergrid: batteries and power links (I13)
 include 'destroy'           // mic_rtsim_destroy: pollution attribution (I14) and crude oil (I11)
 include 'climate'           // mic_rtsim_climate: seasons and temperature (I12)

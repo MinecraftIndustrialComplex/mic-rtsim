@@ -156,7 +156,7 @@ public final class Industry {
                 IndustryApi.CommandHandler h = IndustryApi.COMMANDS.get(kind);
                 if (h != null)
                     return h.accept(this, b, at, size, aux, cmdSeq);
-                // No plugin applies it here (no Ender Transmission or deposit plugin yet): say so.
+                // No plugin applies it here (IND_CHANNEL_DELTA since I13 was corrected; a command of a mod not loaded): say so.
                 if (size >= 24) {
                     commandResult(cmdSeq, b.getLong(at + 16), Obs.CommandResult.FAILED);
                     commandsFailed++;

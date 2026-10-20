@@ -13,7 +13,7 @@ per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.2
 | `iceandfire` | `mic_rtsim_iceandfire` | Ice and Fire CE 2.1-beta.1 (with Uranus 2.4.1, Jupiter 2.3.7, GeckoLib 4.9.3; Architectury 13.0.11 at runtime) | phase 2's dragons (PLAN.md §9, docs/boundary.md §6): the dragon body adapter (materialize with the engine's state, steer, depart, capture), wounds, deaths, meals, lairs and robbed hoards, and every other dragon reported untagged for the engine to adopt or discard (P13); no mixin. Choices Z1 to Z21 in `docs/overnight-choices-iceandfire.md` |
 | `oreexcavation` | `mic_rtsim_oreexcavation` | Create Ore Excavation 1.6.8 | veins as finite deposits (I11): read under drilling machines and extractors, depleted by a reconcile's deposit delta |
 | `dieselgenerators` | `mic_rtsim_dieselgenerators` | Create Diesel Generators 1.3.15 | chunk oil as a finite deposit (I11), written at once by IND_DEPOSIT_DELTA |
-| `endertransmission` | `mic_rtsim_endertransmission` | Create Ender Transmission 2.1.1 | channel buffers as shared stock (I13): IND_CHANNEL_SAMPLE, channel ports measured at the transmitters, IND_CHANNEL_DELTA |
+| `endertransmission` | `mic_rtsim_endertransmission` | Create Ender Transmission 2.1.1 | a channel's endpoints (items, fluids, rotation) are one district (I13 as corrected: a stop-gap for tightly linked machinery); a channel into another dimension is a ledger warning |
 | `powergrid` | `mic_rtsim_powergrid` | Create Power Grid 0.6.2 (with Architectury) | batteries as stock, transmission lines between districts as measured power links (I13, IND_POWER_LINK) |
 | `destroy` | `mic_rtsim_destroy` | Destroy 0.4.1 (with Petrolpark 1.5.11) | pollution attributed to districts by position and written back (I14), chunk crude oil as a finite deposit (I11) |
 | `climate` | `mic_rtsim_climate` | mic_climate 0.1.0, Serene Seasons 10.1.0.3, Thermoo 4.8.1 | IND_CONDITIONS from Serene Seasons' calendar, mic-climate's temperature (I12) |
@@ -217,7 +217,7 @@ The industry plugins' GameTests (each in its plugin's namespace, with its mod's 
 |---|---|
 | `aveinisafinitedepositdepletedonload` | Ore Excavation: IND_DEPOSIT_SAMPLE (plugin 1) with the vein's remaining cycles (20,000) under its chunk's good; a reconcile's -25 applied through `OreData.extract`, the next sample 19,975 |
 | `chunkoilisadepositwrittenatonce` | Diesel: IND_DEPOSIT_SAMPLE (plugin 2) of 5,000,000 mB; IND_DEPOSIT_DELTA -1,234 applied at once, again DUPLICATE; a far unloaded chunk's oil changed too |
-| `achannelissharedstockwithports` | Ender Transmission: ten in and four out through a transmitter's capability are one channel port (-6); IND_CHANNEL_SAMPLE (6 iron, capacity 64); IND_CHANNEL_DELTA +20 applied, again DUPLICATE |
+| `achannelsendpointsareonedistrict` | Ender Transmission: an item pair and a rotation pair, each two chunks apart, are one district each (two chunks, not the one between) and two districts between them; ten iron through the channel is no port; an endpoint in the Nether is a ledger warning, cleared when it goes; a new password at one end splits the pair |
 | `abatteryisboundarystock` | PowerGrid: a battery is a plugin store with its 432,000 J capacity, read as whole joules; a reconcile's -5,000 J applied |
 | `alinebetweendistrictsisapowerlink` | PowerGrid: a 5 V creative source in one district and a resistor in another, two real wires: 257 W measured leaving the source's district, IND_POWER_LINK(sink, source) |
 | `pollutionisattributedandcrudeoilisadeposit` | Destroy: +40 greenhouse and +12 smog attributed, +9 smog outside not; the deposits read them and 1,000 crude oil; a reconcile writes +10 greenhouse to the level, +5 smog to the chunk, -100 crude |
@@ -257,7 +257,8 @@ The industry plugins' GameTests (each in its plugin's namespace, with its mod's 
   assembled train on a schedule is not tested (the station hooks run on synthetic trains); level pollution
   types are written back at the next load, not live (Q9); temperature is not sent (Q20); the I16 mixins
   are not built (Q8); an assembled, loaded radar turret is not built in a GameTest (Q17); the threat
-  observation needs a real player at night (the spawn test starts it by hand).
+  observation needs a real player at night (the spawn test starts it by hand); an Ender Transmission
+  channel on a Sable vehicle is not tested (no Sable on the test servers; Q7).
 - **Ice and Fire** (docs/overnight-choices-iceandfire.md): the pack's In Control edits P13 needs are a
   proposal in `iceandfire/pack-proposal/` (not applied); a real lair structure, settling, and the
   not-ticking, dimension-change and session-end captures are not covered by a GameTest.
