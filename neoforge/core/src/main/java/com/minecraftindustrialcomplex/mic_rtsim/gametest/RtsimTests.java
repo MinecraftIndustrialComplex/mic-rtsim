@@ -174,10 +174,23 @@ public final class RtsimTests {
                                                                                          String structure,
                                                                                          net.minecraft.core.BlockPos meeting,
                                                                                          int halfWidth) {
+        return adoptArenaLive(helper, culture, structure, meeting, halfWidth, 0);
+    }
+
+    /** As above, with the structure's piece count (the engine's guess at its population until a census). */
+    public static com.minecraftindustrialcomplex.mic_rtsim.village.Village adoptArenaLive(GameTestHelper helper, String culture,
+                                                                                         String structure,
+                                                                                         net.minecraft.core.BlockPos meeting,
+                                                                                         int halfWidth, int pieces) {
         net.minecraft.world.level.levelgen.structure.BoundingBox box = new net.minecraft.world.level.levelgen.structure.BoundingBox(
                 meeting.getX() - halfWidth, meeting.getY() - 2, meeting.getZ() - halfWidth,
                 meeting.getX() + halfWidth, meeting.getY() + 6, meeting.getZ() + halfWidth);
-        return adopt(helper, newVillageId(), structure, culture, box, meeting);
+        RtsimSession s = session();
+        com.minecraftindustrialcomplex.mic_rtsim.village.Village v = com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.adoptDirect(
+                s, s.phase1.villages, newVillageId(), helper.getLevel().dimension(), net.minecraft.resources.ResourceLocation.parse(structure),
+                culture, box, meeting, pieces, s.gameTime());
+        v.margin = 0;
+        return v;
     }
 
     /** Random low bits: the GameTest world (and its village registry) is reused between runs (B37). */
