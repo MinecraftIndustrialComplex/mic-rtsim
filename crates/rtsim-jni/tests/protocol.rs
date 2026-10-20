@@ -2131,9 +2131,9 @@ mod herds {
         let op2 = saved
             .journal
             .iter()
-            .filter(|(_, r)| wire::u16_at(r, wire::R_KIND) == hb::HERD_KILLED)
+            .rev()
+            .find(|(_, r)| wire::u16_at(r, wire::R_KIND) == hb::HERD_KILLED)
             .map(|(_, r)| wire::u64_at(r, 64))
-            .last()
             .expect("the journal holds what the pages lack");
         let _ = j.crash();
 

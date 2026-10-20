@@ -6,7 +6,7 @@ per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.2
 
 | Project | Mod id | Built around | What |
 |---|---|---|---|
-| `core` | `mic_rtsim` | NeoForge and mic_native, MIC's native host (no pack mod, D4) | the bridge, and phase 1's vanilla side: villages, markets, caravans, gossip, damage, rescues, robbery, player bases, growth |
+| `core` | `mic_rtsim` | NeoForge and mic_native, MIC's native host (no pack mod, D4) | the bridge, and phase 1's vanilla side: villages, markets, caravans, gossip, damage, rescues, robbery, player bases, growth; and the vanilla herd adapter (sheep, cows, pigs, horses and goats, docs/boundary.md §8) |
 | `ribbits` | `mic_rtsim_ribbits` | Ribbits 4.1.6 (with YUNG's API 5.1.9, GeckoLib 4.9.3) | ribbit villages and residents, merchant caravans, touring bands, sorcerers who remember, growth from YUNG's houses (C7, C23) |
 | `carryon` | `mic_rtsim_carryon` | Carry On 2.2.6.13 | a creature picked up leaves the sim (A10) |
 | `create` | `mic_rtsim_create` | Create 6.0.10 (its jar-in-jar Ponder, Flywheel and Registrate for compiling) | the industry plugin (INDUSTRY.md §12 layer 2): kinetic, belt, pipe and chain merging, vault and tank controllers, packager targets, postboxes counted by package contents, station names, train arrivals and departures, carriage deltas through `TrainCargoManager`, the "District ledger" display source; and every industry GameTest |
@@ -91,6 +91,7 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `growth` | phase 1: player-placed block marks, house placement from templates, resident spawns (C7). |
 | `bridge/Phase1` | wires phase 1 to the tick, the events and the commands. |
 | `industry` | the industry module (C15 to C19, INDUSTRY.md, docs/industry-boundary.md): district detection and the index (`Districts`, `data/mic_rtsim_industry.dat`), the boundary stock sampler (`Sampler`), player ports (`PlayerPorts`), reconciles and damage (`Reconciler`, the `mic_rtsim:reconcile` chunk attachment), the read-only ledger (`Ledgers`), GOOD names (`Goods`), `/rtsim district` (`IndustryCommands`), its own server config (`mic_rtsim-industry-server.toml`) and the plugin API (`IndustryPlugin`, `IndustryApi`). Mod-agnostic: capabilities and NeoForge events only. Choices H1 to H29 in `docs/overnight-choices-industrymc.md`. |
+| `herd` | the vanilla herd adapter (docs/boundary.md §8.5, choices Y8 to Y21 in `docs/overnight-choices-herdsmc.md`): a `SessionPlugin` the core registers itself (`HerdBridge`, commands 0x8700 to 0x87FF, agents 0x48) that materializes the engine's herd groups as vanilla animals with the engine's look, age, shearing and identity seed (`HerdBodies`), steers them toward the herd's waypoints with vanilla AI otherwise (`HerdFollowGoal`), captures them with each member's state, reports kills, shearing, takings and obstacles (`HerdRecords`, `HerdEvents`). |
 | `gametest` | the GameTests, in the `mic_rtsim` namespace, and helpers the plugins' tests share (`RtsimTests`, `FakePlayers`). |
 
 ## The GameTests
@@ -134,6 +135,13 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `cargotakenfromachestisreported` | emeralds that leave a chest outside a trade: CARGO_CHANGED -12 |
 | `aplayerbaseismarked` | a long stay marks a base: BASE MARKED; trades there name it |
 | `avillagejoinswhenitsstructurestartgenerates` | a real `village_plains` start through `setStartForStructure`: VILLAGE_ADOPTED, culture human, its pieces |
+| `aherdgroupmaterializeswiththeengineslookageandseeds` | herds (scripted, either engine): sheep with the engine's colours, shearing and a lamb's `Age`, horses with the engine's coat and the stats their seeds roll, a screaming goat; tagged, persistence-required, never saved, on the floor; HERD_MATERIALIZED, HERD_GROUP_STATE; HERD_DESPAWN captures them (the sheared one captured sheared) |
+| `killingaherdanimalreportsitandthegroupshrinks` | a player's kill is HERD_KILLED naming the player, with a Java op id, its drops carrying it; a death with no killer is by none; the group goes on smaller |
+| `aleadtamingandapickuptakeanimalsoutandshearsmarkone` | a lead, taming and the core's pickup hook each take an animal out (HERD_TAKEN with the player; the animal ordinary, carrying its record); shears are HERD_SHEARED with the player, the sheep stays in its group |
+| `acapturekeepseachmembersstateandtheseedbringsbackthesamehorse` | a capture keeps a horse's wound and position; materialized again from its seed, each horse has the same max health, speed and jump |
+| `asaveandreloadduplicatesnothing` | vanilla's entity-chunk save leaves the herd's puppets out and keeps a taken sheep; copies of a puppet never join |
+| `afenceproducesanobstaclereport` | sheep steered past a fence stall at it; HERD_OBSTACLE once, from before the fence, toward the waypoint |
+| `theenginesownherdmaterializesnearaplayerandremembersitssheep` | native engine only: a herd founded with HERD_FOUND far out, a player beside it; the engine's group with the engine's colours; a kill drops the engine's count; the player leaves and comes back: the same sheep, never the dead one |
 
 The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
 
@@ -218,3 +226,8 @@ which scripts the engine's industry commands; each in its own batch):
 - **Ice and Fire** (docs/overnight-choices-iceandfire.md): the pack's In Control edits P13 needs are a
   proposal in `iceandfire/pack-proposal/` (not applied); a real lair structure, settling, and the
   not-ticking, dimension-change and session-end captures are not covered by a GameTest.
+- **Herds** (docs/overnight-choices-herdsmc.md): nothing in the game founds a herd yet (only the test
+  order HERD_FOUND, Y4), and the engine's climate is uniform grassland (Y3); vanilla's own animals are
+  neither adopted nor suppressed (H2-28, Y20); HERD_GROUP_STATE is not read by the engine. Goats'
+  brain steering over a long walk, a dispenser's shearing, and the dimension-change, session-end and
+  switch-off captures are not covered by a GameTest.
