@@ -79,10 +79,39 @@ Checked in NeoForm's decompiled 1.21.1 sources with NeoForge 21.1.249's patches
 | X2-22 | **The world model is shared through one `WorldHandle`** (a provider behind a lock): the step writes HABITAT at its observe point and every reader runs inside the same step, so the lock is never contended. A Deep Time provider replaces the sampled one behind the same handle; `WorldModel::sampled` then answers `None` and HABITAT is counted and ignored. | SCALE.md §12 and PLAN.md §11: the provider is a trait so a Deep Time plugin can take over; modules ask by block rectangle (SCALE.md §2's "queries, never storage") and never see cells. |
 | X2-23 | **`nHabitatInfo`** (JNI, `Engine::habitat_info`): a cell's masks, surface and fingerprint, the counts, and the region's founded herd with its position; `NativeEngine.habitatInfo`. | The GameTests read the engine's own world model (as `nHerdInfo`, Y22). |
 
+## Tests
+
+| # | Choice | Why |
+|---|---|---|
+| X2-24 | **The live caravan GameTest (`aRealCaravanTradesIsRobbedAndTheNewsTravels`) gets 24,000 ticks and 2,000 asks** (it had 6,000 and 500), and logs how many asks the news took. | Found by this branch's runs: with any herd in the world (now one is founded from the habitat test's region, and the batch order changed with the new batches), the shared player areas are booked (U3), the phase 1 world draws another caravan, and the test ran past its 6,000 GameTest ticks while waiting on engine steps; skipping the two herd-making tests made it pass (48 of 48), and so did the larger budget with them (the news reached two villages two asks after the robbery). The test's budget, not phase 1's behaviour, was short. |
+| X2-25 | **GameTests paint what the flat world lacks**: water and ice placed at chunk centres (or a whole sea) far out at a random place, chunks loaded synchronously in the tick that paints them, so the sampler (end of tick) sees the painted ground first. | The GameTest world is superflat plains (FLAT preset) and reused between runs (B37). |
+
 ## Results
 
-To be filled in below as runs finish.
+RESULTS_PLACEHOLDER
 
 ## Not done
 
-To be filled in.
+- **No climate plugin**: the `ClimateSource` hook exists (X2-7) but nothing implements it; Serene
+  Seasons' calendar and mic-climate's degrees reach the sampler only once `mic_rtsim_climate` (the
+  industry plugins' subproject) registers a source. Until then every cell is vanilla's, with no
+  seasons.
+- **Sea ports before their water is sampled are dropped** (the ships crate's `docks_not_on_water`
+  rule): a ships plugin reporting PORT_FOUND at a village's structure start, before the chunks
+  around it are sampled, would lose the port. No ships plugin exists (P8); holding such ports until
+  their water is known is left for it. Lanes are planned once (U12) over the water known then.
+- **Herds walk over unsampled ground only after it is sampled**: a world explored in thin strips
+  closes most forage cells (X2-5); founding still needs a quarter of a region.
+- **The bodies of chunk-generation animals are not adopted** (X2-13): they are counted as founders,
+  and vanilla's animals stay extra bodies beside the herd's (Y20's suppression question stays open).
+- **Seasonal ice** is only seen when a cell is resampled (its chunks loaded again); the herds' and
+  ships' readings follow the last sample, not the season.
+- **Memory is resident**: the sampled world is not paged under the kernel's budget (kernel2's
+  paging landed tonight; the world model writes per-region pages but keeps every region in memory,
+  about 6 KB a fully explored region).
+- **A Deep Time provider** is designed for (the trait, the handle, `sampled()` answering `None`) but
+  not written; its `area` would read Deep Time's tiles by rectangle.
+- **Not covered by a GameTest**: chunk-generation animals (the flat GameTest world spawns none in a
+  way the test could count reliably; covered by the Rust tests of founding), a climate source, a
+  session restart's HABITAT_KNOWN list on the stub (it keeps none; the native list is covered by the
+  Rust protocol test).

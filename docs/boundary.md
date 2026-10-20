@@ -686,7 +686,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      `Java::conflict_obs`, `conflict_command`) plays the plugin with rtsim-conflict's
      `FakeConflict` in the protocol test.
 
-16. **The world model** (`engine/worldmodel.rs`, §10, choices X2-1 to X2-# in
+16. **The world model** (`engine/worldmodel.rs`, §10, choices X2-1 to X2-25 in
    docs/overnight-choices-worldmodel.md): rtsim-space's `SampledWorld`, fed by HABITAT, behind one
    `WorldHandle` the herds' climate and the ships' water mask read.
    - **Observations.** HABITAT (latest wins) is ingested at the observe point: names through Java's

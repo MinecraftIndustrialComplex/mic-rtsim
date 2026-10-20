@@ -476,7 +476,9 @@ mod size {
         let slot = std::mem::size_of::<Option<crate::Habitat>>();
         let mut w = SampledWorld::new();
         let mut p = Painter::default();
-        p.paint(&mut w, 0, (0, 0, 512, 512), &|_, _| land("minecraft:plains"));
+        p.paint(&mut w, 0, (0, 0, 512, 512), &|_, _| {
+            land("minecraft:plains")
+        });
         let per_region = w.heap_bytes();
         eprintln!("a cell slot is {slot} bytes; a plains region holds {per_region} bytes of heap");
         assert!(slot <= 96, "{slot}");
