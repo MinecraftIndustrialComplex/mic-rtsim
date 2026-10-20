@@ -503,6 +503,9 @@ pub struct FakeIaf {
     pub player: Uuid,
     /// Ticks a departing dragon takes to leave view. PLACEHOLDER 300.
     pub leave_ticks: u64,
+    /// The village the player is at (its key), so a dragon materializing there to harass eats
+    /// from its herd as Ice and Fire's own hunting would: `(village, prey body, count)`.
+    pub village_here: Option<(u64, u32, u32)>,
 }
 
 impl FakeIaf {
@@ -520,6 +523,7 @@ impl FakeIaf {
             reaction: Reaction::Ignore,
             player,
             leave_ticks: 300,
+            village_here: None,
         }
     }
 
@@ -569,6 +573,21 @@ impl FakeIaf {
                             entity,
                         }),
                     );
+                    if let Some((village, prey, count)) = self.village_here
+                        && m.flags & boundary::MAT_SLEEPING == 0
+                    {
+                        self.push(
+                            at + 600,
+                            Obs::Ate(boundary::Ate {
+                                agent: m.agent,
+                                epoch: m.epoch,
+                                prey,
+                                count,
+                                village,
+                                pos: m.pos,
+                            }),
+                        );
+                    }
                     match self.reaction {
                         Reaction::Ignore => {}
                         Reaction::Wound { share, after } => {
@@ -677,6 +696,14 @@ impl FakeIaf {
                 && !self.bodies.contains_key(&h.agent)
             {
                 continue;
+            }
+            if let Obs::Ate(a) = &o {
+                match self.bodies.get_mut(&a.agent) {
+                    // Ice and Fire's food points for a cow-sized animal (13, see the prey
+                    // table), into the body's own hunger.
+                    Some(b) => b.hunger = (b.hunger + 13 * a.count as i32).min(100),
+                    None => continue,
+                }
             }
             self.obs_seq += 1;
             let mut buf = Vec::new();

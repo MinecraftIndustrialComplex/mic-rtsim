@@ -148,7 +148,7 @@ impl SpeciesData {
             visit_ticks: 6_000,
             catch_milli: 800,
             caravan_share_milli: 700,
-            village_share_milli: 100,
+            village_share_milli: 50,
             appetite: 100,
             max_health: 500.0,
             regen_per_day_milli: 200,

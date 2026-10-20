@@ -275,6 +275,8 @@ pub fn main(o: Options) -> i32 {
     // The plugin's item dictionary for hoard records.
     dragons.define_item(1, Item::World(ids.emerald));
     dragons.define_item(2, Item::World(ids.gold));
+    // The plugin's body dictionary: entity type 40 is `minecraft:cow`, a village herd's cattle.
+    dragons.define_herd_body(40, ids.cattle);
     synth::populate(&mut w, &mut dragons, &synth::lairs(), Tick::ZERO);
     let mut fake = farm(o.seed, &phases);
     let mut index = DistrictIndex::default();
@@ -373,6 +375,10 @@ pub fn main(o: Options) -> i32 {
             dragons.player_left(&mut w, player);
             phase += 1;
             let p = &phases[phase];
+            iaf.village_here = synth::VILLAGES
+                .iter()
+                .find(|v| p.place == v.1)
+                .map(|v| (v.0, 40, 2));
             let until = phases.get(phase + 1).map_or(end, |q| day(q.from_day));
             dragons.player_stays(&mut w, PLAYER, Pos::new(0, p.x, p.z), next, until);
             if !o.quiet {

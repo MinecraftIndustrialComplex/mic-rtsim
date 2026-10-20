@@ -26,6 +26,7 @@ pub const DRAGON_DIED: u16 = 0x0504;
 pub const LAIR_FOUND: u16 = 0x0505;
 pub const HOARD_ROBBED: u16 = 0x0506;
 pub const DRAGON_UNTAGGED: u16 = 0x0507;
+pub const DRAGON_ATE: u16 = 0x0508;
 
 pub const DRAGON_MATERIALIZE: u16 = 0x8500;
 pub const DRAGON_STEER: u16 = 0x8501;
@@ -210,6 +211,22 @@ pub struct Untagged {
     pub pos: (f64, f64, f64),
 }
 
+/// An embodied dragon killed and ate animals (Ice and Fire's own hunting, `dragon_targets`),
+/// summed over a tick. Near a village, the animals were that village's herd: its market stock
+/// falls by the same count (P28's recommendation: a watched dragon's consequences go through
+/// stock, prices and caravans).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ate {
+    pub agent: u64,
+    pub epoch: u32,
+    /// The prey's entity type (body dictionary, e.g. `minecraft:cow`).
+    pub prey: u32,
+    pub count: u32,
+    /// The village whose bounds hold the kill (its id as VILLAGE_ADOPTED's; 0: none).
+    pub village: u64,
+    pub pos: (f64, f64, f64),
+}
+
 /// An observation from the plugin.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Obs {
@@ -222,6 +239,7 @@ pub enum Obs {
     LairFound(LairFound),
     HoardRobbed(HoardRobbed),
     Untagged(Untagged),
+    Ate(Ate),
 }
 
 impl Obs {
@@ -236,6 +254,7 @@ impl Obs {
             Obs::LairFound(_) => LAIR_FOUND,
             Obs::HoardRobbed(_) => HOARD_ROBBED,
             Obs::Untagged(_) => DRAGON_UNTAGGED,
+            Obs::Ate(_) => DRAGON_ATE,
         }
     }
 
@@ -612,6 +631,14 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.pos(88, u.pos);
             w.finish(DRAGON_UNTAGGED, u.spawn as u32, 112);
         }
+        Obs::Ate(a) => {
+            w.u64(24, a.agent);
+            w.u32(32, a.epoch);
+            w.u32(36, a.prey);
+            w.u64(40, a.village);
+            w.pos(48, a.pos);
+            w.finish(DRAGON_ATE, a.count, 72);
+        }
     }
 }
 
@@ -729,6 +756,14 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             home: r.ipos(68)?,
             lair: r.u64(80)?,
             pos: r.pos(88)?,
+        }),
+        DRAGON_ATE => Obs::Ate(Ate {
+            agent: r.u64(24)?,
+            epoch: r.u32(32)?,
+            prey: r.u32(36)?,
+            count: aux,
+            village: r.u64(40)?,
+            pos: r.pos(48)?,
         }),
         k => return Err(CodecError::Unknown(k)),
     };
@@ -931,6 +966,14 @@ mod tests {
                 variant: 2,
                 home: (1, 64, -1),
                 lair: 5,
+                pos: p,
+            }),
+            Obs::Ate(Ate {
+                agent: 9,
+                epoch: 2,
+                prey: 40,
+                count: 3,
+                village: 1 << 50 | 12,
                 pos: p,
             }),
         ]

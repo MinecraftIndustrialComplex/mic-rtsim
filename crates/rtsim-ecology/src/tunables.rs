@@ -70,7 +70,7 @@ pub struct DragonTunables {
     /// PLACEHOLDER 4.
     pub distance_cost_per_kblock: i32,
     /// A village's defenders (iron golems, guards): utility lost before temperament, in fullness
-    /// points. Bold dragons discount it (C25). PLACEHOLDER 8.
+    /// points. Bold dragons discount it (C25). PLACEHOLDER 15.
     pub village_risk: i32,
     /// Sentiment at or below which a dragon holds a grudge (rtsim-knowledge's scale, -127 to
     /// 127). PLACEHOLDER -40.
@@ -122,9 +122,9 @@ impl Default for DragonTunables {
         let pct = |road: i32, village: i32| [road, village, 100];
         let mut season_percent = [[100; PreyKind::COUNT]; 4];
         season_percent[Season::Spring.index()] = pct(100, 80);
-        season_percent[Season::Summer.index()] = pct(130, 50);
-        season_percent[Season::Autumn.index()] = pct(120, 60);
-        season_percent[Season::Winter.index()] = pct(60, 160);
+        season_percent[Season::Summer.index()] = pct(140, 50);
+        season_percent[Season::Autumn.index()] = pct(130, 60);
+        season_percent[Season::Winter.index()] = pct(50, 180);
         DragonTunables {
             species: [
                 SpeciesData::of(Species::Fire),
@@ -141,7 +141,7 @@ impl Default for DragonTunables {
             starving: 20,
             season_percent,
             distance_cost_per_kblock: 4,
-            village_risk: 8,
+            village_risk: 15,
             grudge_below: -40,
             grudge_weight: 60,
             grudge_cooldown_ticks: 3 * TICKS_PER_DAY,

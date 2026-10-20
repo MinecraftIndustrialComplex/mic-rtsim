@@ -250,6 +250,8 @@ pub struct Dragons {
     by_entity: BTreeMap<Uuid, DragonId>,
     /// Item dictionary ids the plugin uses (HOARD_ROBBED), mapped to ledger items.
     items: BTreeMap<u32, Item>,
+    /// Prey entity types (DRAGON_ATE's body dictionary ids) that are a village herd's good.
+    herd_bodies: BTreeMap<u32, GoodId>,
     next_seed: u64,
     now: Tick,
 }
@@ -292,6 +294,7 @@ impl Dragons {
             index: PreyIndex::default(),
             by_entity: BTreeMap::new(),
             items: BTreeMap::new(),
+            herd_bodies: BTreeMap::new(),
             next_seed: 0,
             now,
         }
@@ -318,6 +321,11 @@ impl Dragons {
     /// Maps a plugin item dictionary id to a ledger item (for HOARD_ROBBED).
     pub fn define_item(&mut self, id: u32, item: Item) {
         self.items.insert(id, item);
+    }
+
+    /// Maps a prey entity type (DRAGON_ATE) to the herd good it is in a village's stock.
+    pub fn define_herd_body(&mut self, body: u32, good: GoodId) {
+        self.herd_bodies.insert(body, good);
     }
 
     pub fn dragon(&self, d: DragonId) -> Option<&Dragon> {
@@ -1135,7 +1143,10 @@ impl Dragons {
         let d = w.edges[e].d as f64;
         for dir in &w.edges[e].dirs {
             let period = dir.lattice.current_period().max(1) as f64;
-            let passing = (d / period).max(1.0);
+            // Caravans on the road at once: its walk over the departure period. The expected
+            // cargo met is the walk times the rate whatever the period (bigger, rarer caravans
+            // carry more each), so batching changes the odds, not the mean.
+            let passing = d / period;
             let mut per_caravan = 0.0;
             for (g, p) in dir.goods.iter() {
                 if let PreyClass::Food { per_item, .. } = self.class_of_world(w, *g) {
@@ -1855,6 +1866,33 @@ impl Dragons {
                 self.resume(w, d, at, leaving);
             }
             Obs::HoardRobbed(h) => self.robbed(w, h, at),
+            Obs::Ate(a) => self.ate(w, a, at),
+        }
+    }
+
+    /// A watched dragon ate animals. Near a village they were its herd: the village's stock
+    /// falls by the count, through the books like an abstract raid (P28: consequences through
+    /// stock and prices), and the dragon's fullness follows Ice and Fire's food points.
+    fn ate(&mut self, w: &mut World, a: &boundary::Ate, at: Tick) {
+        let Some(d) = self.embodied(a.agent, a.epoch) else {
+            return;
+        };
+        let Some(&g) = self.herd_bodies.get(&a.prey) else {
+            return;
+        };
+        let Some(node) = (a.village != 0).then(|| w.node_of_key(a.village)).flatten() else {
+            return;
+        };
+        let want = i64::from(a.count) * Item::World(g).unit();
+        let taken = w.take_stock(node, g, want, at);
+        let mut names = Vec::new();
+        let food = self.take_world(w, g, taken, &mut names);
+        let village = w.nodes[node].actor;
+        self.feed(d, at, food, &[village]);
+        if taken > 0 {
+            self.stats.village_raids += 1;
+            let name = format!("village {} (watched)", w.nodes[node].key);
+            self.record_hunt(at, d, PreyKind::Village, name, food, names);
         }
     }
 
