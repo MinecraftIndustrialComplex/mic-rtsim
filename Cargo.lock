@@ -316,6 +316,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsim-industry"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rtsim-kernel"
 version = "0.0.1"
 dependencies = [
