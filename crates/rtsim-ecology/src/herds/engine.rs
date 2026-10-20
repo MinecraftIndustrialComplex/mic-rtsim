@@ -329,6 +329,9 @@ impl Herds {
 
     /// Hands the engine every frame's topology (TP6). The region index is rebuilt.
     pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if std::sync::Arc::ptr_eq(&t, &self.topo) {
+            return;
+        }
         if *t != *self.topo {
             self.topo = t;
             self.rebuild_regions();

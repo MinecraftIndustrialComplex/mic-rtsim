@@ -124,6 +124,9 @@ const CELL: i64 = 1_024;
 impl DistrictIndex {
     /// Hands the index the frames' topologies; it is rebuilt at the next query.
     pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if std::sync::Arc::ptr_eq(&t, &self.topo) {
+            return;
+        }
         if *t != *self.topo {
             self.topo = t;
             self.known = usize::MAX;

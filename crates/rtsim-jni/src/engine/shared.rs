@@ -24,6 +24,10 @@
 //! 59, so war bands and envoys that enter a player's view materialize). A module that starts
 //! running in the middle of a session hears of the areas already booked through
 //! [`introduce_herds`] and [`introduce_conflict`].
+//!
+//! **Seams** (TP4, TP8): players' positions are canonicalized here, and the area the world books
+//! for them covers canonical regions across every seam (the leg index folds it), so a module's
+//! traveller on the far side of an edge crosses into the area like any other.
 
 use std::collections::BTreeMap;
 
@@ -186,12 +190,14 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
         wire::u64_at(b, obs::player::UUID_MOST),
         wire::u64_at(b, obs::player::UUID_LEAST),
     );
-    let at = (
-        rec.aux as u16,
+    let frame = rec.aux as u16;
+    // Canonical at the door (TP4): a player just past an edge (the frame before Toroidal World
+    // or the wrap engine folds it) is where it is on the world, not a jump.
+    let (x, z) = st.topology.shared.of(frame).canonical_i32(
         wire::f64_at(b, obs::player::X).floor() as i32,
         wire::f64_at(b, obs::player::Z).floor() as i32,
     );
-    st.shared.pending.insert(uuid, at);
+    st.shared.pending.insert(uuid, (frame, x, z));
 }
 
 /// The simulate point, after the modules ran to the hand-over's time: each reported player's
