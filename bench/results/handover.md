@@ -77,3 +77,15 @@ to 1.2 µs and 12.2 to 15.2 µs. The stub: submit to publish 2.6 to 7.9 µs and 
   is worth its CPU is mic_native's pool question (P24), not the link's.
 - Spread between runs is wide (other sessions loaded the machine to 10 to 12); compare runs side by
   side on a quiet machine before reading differences of a few microseconds.
+
+## 2026-10-20 11:34 UTC, after the review fixes (`handover-2026-10-20-1134-gametest.json`)
+
+**Conditions.** Code of commit `9a6831f` (the review fixes of `c587876`: every `NativeEngine`
+native call under its monitor, the outbox trimmed by COMMAND_RESULT, op ids, buffer holds), same
+machine and settings, 1-minute load 5.2 (lower than the three runs above).
+
+**Numbers (p50):** cadence, native: `handOver` 11.4 to 19.5 µs, `submitCall` 10.4 to 16.1 µs,
+submit to publish 27.7 to 43.4 µs (p99 71 to 365 µs), `step` 7.7 to 17.9 µs; stub: `handOver`
+6.9 to 10.1 µs, submit to publish 29.4 to 40.8 µs. Burst, native: submit to publish 2.9 to 4.0 µs
+(preamble only or 30 records) and 11.6 µs (1,000 records). Within the spread of the runs above:
+the fixes did not change the hand-over's cost.
