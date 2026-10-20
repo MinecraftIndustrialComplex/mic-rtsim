@@ -121,6 +121,11 @@ Checked in NeoForm's decompiled 1.21.1 sources with NeoForge 21.1.249's patches
     watched, none in the sea. `habitatIsSentForAGeneratedArea`: four cells, once each, the changed
     one again, the unchanged one not; the engine's world model holds each with its fingerprint.
   - Before X2-24 the native suite failed one test of 48 twice, the live caravan test (above).
+- **GameTests, plugins** (native engine, fresh worlds): carryon 2 of 2, iceandfire 7 of 7, ribbits 5
+  of 5; create 10 of 14, the same four failing identically on origin/main at `f53cfbe`
+  (`aSweepReportsBoundaryStockAndTheLiveFlag`, `aTrainArrivalIsObserved`,
+  `mailAtAnUnloadedDistrictIsAPackageRecord`, `playerPortsAreCounted`: the goods' names do not
+  resolve, `totals {null=86}`), so not this branch's; left for the industry work.
 - **The sampler's cost** (bench/results/habitat-sampler.md, native, warm): 8.5 µs a cell on average,
   0.53 µs a chunk; 229 µs a cell the first time a biome is seen in a session; the chunk-load hook
   1.3 µs a load. A fully sampled region costs the engine about 6 KB. A herd's decision on the world
