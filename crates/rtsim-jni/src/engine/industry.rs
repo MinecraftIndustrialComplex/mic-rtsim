@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The industry engine (`rtsim-industry`, INDUSTRY.md, C15 to C19) behind the boundary: the
-//! records of docs/industry-boundary.md in and out of the bridge's buffers. Choices are W1 to W22
+//! records of docs/industry-boundary.md in and out of the bridge's buffers. Choices are W1 to W23
 //! in docs/overnight-choices-industryjni.md.
 //!
 //! The step calls in here at five points and nowhere else:
@@ -220,27 +220,49 @@ impl Link {
             }
         }
         let has_globals = pages.iter().any(|(k, _)| k.table() == GLOBAL_TABLE);
-        let fresh = !has_globals;
-        let mut engine = if has_globals {
-            Industry::restore(pages, Tunables::default())
-                .map_err(|e| format!("the industry engine's pages: {e}"))?
+        let count = pages.len();
+        // Pages another build wrote in another format do not decode. Before release there is no
+        // backward compatibility (W23): they are dropped, loudly, and the industry engine starts
+        // afresh, rather than keeping the whole engine, core included, from starting.
+        let restored = if has_globals {
+            match Industry::restore(pages, Tunables::default()) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    log_error(&format!(
+                        "the industry engine's {count} pages do not decode ({e}): another build's format;                          the industry engine starts afresh and they are replaced"
+                    ));
+                    None
+                }
+            }
         } else {
-            if !pages.is_empty() {
+            if count > 0 {
                 log_warn(&format!(
-                    "{} industry pages without their globals page are ignored",
-                    pages.len()
+                    "{count} industry pages without their globals page are ignored"
                 ));
             }
+            None
+        };
+        let fresh = restored.is_none();
+        let mut engine = restored.unwrap_or_else(|| {
             let seed = cfg.industry_seed.unwrap_or_else(new_seed);
             Industry::new(seed, Tunables::default(), mode(read_only), Tick::ZERO)
-        };
+        });
         engine.mode = mode(read_only);
         engine.log_enabled = test;
-        let (queue, outbox) = match store
+        let link_page = store
             .get(KEY_LINK)
-            .map_err(|e| format!("cannot read the industry link page: {e}"))?
-        {
-            Some(b) => decode_link(&b).map_err(|e| format!("the industry link page: {e}"))?,
+            .map_err(|e| format!("cannot read the industry link page: {e}"))?;
+        let (queue, outbox) = match link_page {
+            Some(_) if fresh => (VecDeque::new(), VecDeque::new()),
+            Some(b) => match decode_link(&b) {
+                Ok(page) => page,
+                Err(e) => {
+                    log_error(&format!(
+                        "the industry link page does not decode ({e}): another build's format; its queue and outbox are dropped"
+                    ));
+                    (VecDeque::new(), VecDeque::new())
+                }
+            },
             None => (VecDeque::new(), VecDeque::new()),
         };
         let mut link = Link::empty();

@@ -888,3 +888,35 @@ fn a_failed_carriage_delta_is_taken_back_without_a_crash() {
 fn a_failed_carriage_delta_is_taken_back_after_a_crash() {
     failed_carriage(true);
 }
+
+/// Industry pages another build wrote in another format (no backward compatibility before
+/// release, W23) are dropped with an error and the industry engine starts afresh; the engine as a
+/// whole still starts, and the next save replaces them.
+#[test]
+fn industry_pages_in_another_format_start_the_industry_engine_afresh() {
+    use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
+    let dir = tmpdir("ind-format");
+    {
+        let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        let mut b = SaveBatch::new();
+        b.put(PageKey::new(0x4900, 0), b"not a globals page");
+        b.put(PageKey::new(0x4901, 7), b"nor a district");
+        b.put(rtsim_jni::engine::KEY_INDUSTRY_LINK, b"nor a link page");
+        store.commit(b, 0).unwrap();
+    }
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e, WorldSave::fresh());
+    j.idle();
+    assert_eq!(j.e.with_industry(|ie, _| ie.districts().count()), 0);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+    let store = PageStore::open(&dir, Durability::NoSync).unwrap();
+    assert!(
+        !store.contains(PageKey::new(0x4901, 7)),
+        "the stale district page is gone"
+    );
+    drop(store);
+    // And the pages written now restore.
+    let e = engine(&dir, 256 * 1024);
+    let _j = Java::open(e.clone(), WorldSave::fresh());
+    e.close(true, Duration::from_secs(5)).unwrap();
+}

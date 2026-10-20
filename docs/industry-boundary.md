@@ -308,7 +308,7 @@ Since W16 `wire.rs` reads it (`Obs::Approach`) and the engine keeps the latest o
 
 ## 7. The engine side: rtsim-jni
 
-Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W22 in
+Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W23 in
 `docs/overnight-choices-industryjni.md`). What the native engine does with these records:
 
 - **Reading.** Every industry record decodes through `rtsim_industry::wire`. Journaled ones pass the

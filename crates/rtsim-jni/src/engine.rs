@@ -618,8 +618,12 @@ impl Engine {
             // A new industry engine's seed keys its op ids (W3): on disk before any command it
             // decides, or a crash before the first save would derive them again under another (W20).
             let mut batch = SaveBatch::new();
-            for (k, b) in link.pages() {
-                batch.put(k, &b);
+            let pages = link.pages();
+            for k in industry::deletions(&store, &pages) {
+                batch.delete(k);
+            }
+            for (k, b) in &pages {
+                batch.put(*k, b);
             }
             let at = store.obs_seq();
             store

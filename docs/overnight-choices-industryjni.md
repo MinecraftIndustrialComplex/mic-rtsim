@@ -33,6 +33,7 @@ release build) unless marked PLACEHOLDER.
 | W19 | **The engine's session start waits for the replay.** SESSION_START sets the switch at once, but the industry engine's own `session_start` (F6: windows discarded, every district unloaded) runs before the first record of this session (a journaled record at or past the session's first sequence, or a latest-wins record, or the simulate point), after the replayed journal. | Run first, it advanced the engine to this session's game time, and every replayed record was taken as happening now: over pages behind the world save (a crash before the save's page commit landed) the replay re-derived a different reconcile under new op ids and conservation failed by 8 ore and 8 bars (review finding 1). |
 | W20 | **A new industry engine's pages are committed at start**, at the store's current observation sequence, before it decides anything. | Its seed keys its op ids (W3): drawn again after a crash before the first save, every re-derived command would carry a new id and Java would apply it twice (review finding 4). |
 | W21 | **A command waits for a Java dictionary name** (a dimension, GOOD, NAME or BLOCK_STATE it uses that Java has not named yet) up to 200 steps (PLACEHOLDER), holding the buffer as if full; after that it goes without (a dimension: dropped; the others: written without the DICT, so Java skips what uses it). | Java sends its whole dictionary at a session start, over as many hand-overs as it needs: a resend in step 1 could otherwise be dropped, or skipped by Java while its sequence moved past it (review finding 6). |
+| W23 | **Industry pages that do not decode** (another build's format) are dropped with an error and the industry engine starts afresh; the start commit (W20) replaces them, stale district and cluster pages deleted. The core's pages are untouched and the engine as a whole starts. | No backward compatibility before release (Ben's rule): this branch changed the industry page format twice, and the GameTest world (reused across runs, B37) then could not start any session at all (35 core and 14 create GameTests failed with "no mic_rtsim session"). **For Ben, at release:** a format version and a migration instead. |
 | W22 | **District ids past 48 bits are refused** at the link (a bad record). | rtsim-industry pages a district under a 48-bit key (F36) and asserts it; one such id would have failed every save of the session and of every session after it (review finding 8). |
 
 ## Measured
@@ -55,7 +56,7 @@ release build) unless marked PLACEHOLDER.
   sequence and op-id rules; the iron line equals the in-process run; a kept carriage delta is resent
   after a crash with its sequence and op id; every carriage delta failed is taken back, and one
   failed answer before and after a crash; the module switch holds the engine; pages behind the world
-  save re-derive the same reconcile. 13 tests.
+  save re-derive the same reconcile; industry pages in another format start the industry engine afresh. 14 tests.
 - **GameTests on the native engine** (2026-10-20, this laptop): core 36 of 36; create (the industry
   GameTests) 14 of 14, and 14 of 14 again with `-PrtsimEngine=stub`. On the native engine the ledger
   display shows the industry engine's own answer ("live" for a district detected in the test).
