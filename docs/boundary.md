@@ -619,9 +619,35 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    and it covers the next window) and routed to the modules that run (`World::route_area`, the
    `rtsim_world::interest::Viewer` trait): each books what the area needs, the legs sharing its
    cells are looked up once, and each crossing goes to the module that owns the traveller (leg
-   owner bits: 63 players, 62 dragons, 61 ships, 60 reserved for herds, 59 conflict parties (§9, not routed yet)). A player not reported
-   for 200 game ticks leaves; a session start clears every area; with no such module running no
-   area is booked. The dragons' and the ships' events run interleaved in time (`shared::run_to`).
+   owner bits: 63 players, 62 dragons, 61 ships, 60 herds, 59 conflict parties: §9, not routed
+   yet). A player not reported for 200 game ticks leaves; a session start clears every area; with no such module running no area is booked.
+   The dragons', the ships' and the herds' events run interleaved in time (`shared::run_to`); a
+   module that starts running in the middle of a session (the herds' first herd) hears of the areas
+   already booked (`shared::introduce_herds`, Y1).
+
+14. **Herds** (`engine/herds.rs`, §8, choices Y1 to Y7 and Y22 in
+   docs/overnight-choices-herdsmc.md): rtsim-ecology's herds run inside the step, in the phase 1
+   world (their legs and the players' areas are its leg index) on its clock, beside the dragons and
+   the ships.
+   - **Observations.** The journaled kinds 0x0700 to 0x07FF go through `Replay` (HERD_KILLED and
+     HERD_TAKEN by their op ids too) into `Herds::ingest`, at their own time with the other modules
+     run to it first. HERD_GROUP_STATE is latest state, counted and not yet read. Dimensions are
+     Java's ids (the herds' frames).
+   - **Commands.** HERD_MATERIALIZE, STEER and DESPAWN take sequences from the core's counter after
+     every other module's; all are per session, none kept or resent, none with an op id. The species
+     and the dimension go through the engine's dictionary.
+   - **Pages.** Table 0x4800: one page, `Herds::save` with its state hash (checked on load). While
+     there are herds the phase 1 link snapshots at every save, in the same commit. A herds page
+     without the phase 1 world it was saved with, or one this build cannot read, is dropped loudly.
+   - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule).
+   - **Prey.** With the dragons running too, the dragons run with the herds as prey
+     (`Dragons::run_until_with_herds`, Y7).
+   - **Climate and founding.** The climate is `Uniform` (Y3) and nothing in the game founds a herd:
+     only order 28 (`HERD_FOUND`, TEST mode) does (Y4).
+   - **Tests.** Order 27 (`HERD_COMMAND`, TEST mode) queues a herd command record with Java's
+     species and dimension ids as the herds' own (Y5); `nHerdInfo` reads one herd (Y22). The Rust
+     fake Java side (`tests/common`, `Java::herd_obs`, `herd_command`) plays the adapter with
+     rtsim-ecology's `FakeHerds` in the protocol test.
 
 ## 6. Phase 2: dragons (PLAN.md §9; the Ice and Fire plugin)
 
@@ -928,20 +954,19 @@ them is P8: a structure (a harbour piece, an airship tower), a marker block, or 
 - **Losses come back**: a lost merchant or navy ship relaunches at its home dock in its own slot; a
   haven rebuilds a pirate ship when its crew pool can man one; captured crews join the pool.
 
-## 8. Herds (PLAN.md §10.2; a future herd plugin)
+## 8. Herds (PLAN.md §10.2; the core's vanilla herd adapter)
 
 Written 2026-10-20 overnight with the engine side, `crates/rtsim-ecology/src/herds`
-(`herds/boundary.rs` is the reference codec, with round-trip tests). **No plugin exists yet.**
-Bodies are vanilla animals for now (D4: nothing in the core depends on a pack mod), so the first
-plugin is a vanilla adapter; Naturalist is a later body candidate (P8). The executable reference
-for what a plugin answers is the fake in `crates/rtsim-ecology/src/herds/synth.rs` (`FakeHerds`),
-which the tests and `rtsim-cli sim herds` drive through this codec. The native engine does not
-route these records yet (§5 has no herds module; `rtsim_ecology::herds::Herds` implements
-`rtsim_world::interest::Viewer`, so joining the shared interest areas is a line in
-`engine/shared.rs`). Choices are numbered H2-# in
-`docs/overnight-choices-herds.md`. The vanilla facts below were checked in the 1.21.1 sources
-(NeoForm's decompiled `EntityType`, `Sheep`, `Horse`, `Goat`, `AgeableMob`, `EatBlockGoal`,
-`DyeColor`); anything else is the contract a plugin would have to meet.
+(`herds/boundary.rs` is the reference codec, with round-trip tests). Bodies are vanilla animals for
+now (D4: nothing in the core depends on a pack mod), so the adapter is built into the core: package
+`herd` of `mic_rtsim` (`HerdBridge`; `HerdRecords` mirrors this section; choices Y8 to Y21 in
+`docs/overnight-choices-herdsmc.md`). Naturalist is a later body candidate (P8). The native engine
+routes these records (§5 item 14). The fake in `crates/rtsim-ecology/src/herds/synth.rs`
+(`FakeHerds`) plays the adapter in the crate's tests, `rtsim-cli sim herds` and rtsim-jni's
+protocol test. Choices are numbered H2-# in `docs/overnight-choices-herds.md`. The vanilla facts
+below were checked in the 1.21.1 sources (NeoForm's decompiled `EntityType`, `Sheep`, `Horse`,
+`AbstractHorse`, `Goat`, `AgeableMob`, `EatBlockGoal`, `DyeColor`); anything else is the contract
+the adapter meets.
 
 ### 8.1 Kind ranges (reserved)
 
@@ -998,8 +1023,8 @@ All of 0x0700 to 0x0706 are journaled.
 - **HERD_SHEARED** makes the member notable (its sheared state is kept) until its wool has
   regrown, after which it folds back into its cohort (it stays known as seen).
 - **HERD_OBSTACLE**: the group's members keep failing to pass a place on the way to the steer
-  target (the plugin's rule, PLACEHOLDER: most members stalled within a few blocks for 30
-  seconds). The engine raises the cost of entering the cell a cell ahead of `stuck` toward
+  target (the adapter's rule, Y15 in docs/overnight-choices-herdsmc.md: at least half the members
+  present lagging behind the herd and stalled for 30 seconds, PLACEHOLDER). The engine raises the cost of entering the cell a cell ahead of `stuck` toward
   `target` (H2-14) and replans the herd from `stuck` at once; the cost decays with a half-life of
   two sim years (PLACEHOLDER).
 
@@ -1025,29 +1050,51 @@ birth and closer to 0 as it nears the sim's maturity age), 0 for adults and old 
 cohorts run on its own clock (sim years); vanilla's 24,000-tick growth only decides how the body
 looks.
 
-### 8.5 How Java would apply them
+### 8.5 How Java applies them (the core's `herd` package)
 
 **Materialize** spawns every member at its (x, z) as one group in one tick (§2.4's quota counts the
-whole group; with flag 1 each stands on the surface at its own column), all inside the
-entity-ticking area of the player the group was made for (the engine places them in the part of
-the herd's footprint the player's area covers, at its inner edge). Each body gets: the agent and
-epoch tag, persistence required while embodied, vanilla saving suppressed (P3), its variant NBT,
-`Age` = vanillaAge, `Sheared` for flag 1, and its random seeded from the identity seed before
-`finalizeSpawn` rolls anything (horses' attributes). The group walks toward `target` at `speed`
-(the herd's migration speed); a leader with the others following, as §2.4's STEER_GROUP.
+whole group, Y13), all inside the entity-ticking area of the player the group was made for (the
+engine places them in the part of the herd's footprint the player's area covers, at its inner
+edge); a member whose column is not entity-ticking rejects the whole group (reason 1). The record
+has no y: each member stands on the highest motion-blocking, non-leaf block of its column (Y11).
+Each body is made as vanilla makes the animal (`finalizeSpawn`, called directly with spawn type
+EVENT, so no `FinalizeSpawnEvent`), then gets: the agent and epoch tag, persistence required while
+embodied, vanilla saving suppressed (P3), and through its own NBT read its variant (`Color`,
+`Variant`, `IsScreamingGoat`), `Age` = vanillaAge and `Sheared` for flag 1 (Y10). What vanilla rolls
+per animal comes from the identity seed: a horse's max health, speed and jump
+(`AbstractHorse.randomizeAttributes` fed a random seeded with it; vanilla feeds the level's
+random), a goat's lost horn (Y12). HERD_MATERIALIZED answers with the members spawned; a species
+the adapter does not have is rejected with reason 9.
 
-**Steer** sets a new target: the herd's next waypoint. `arriveTick` is when the engine's closed form
-reaches it, so a body that dawdles can catch up.
+**Steering** (Y14): the group's anchor walks from the herd's centre toward `target` at `speed`; each
+member keeps its place around it (its offset from the centre at spawn). A member more than 8 blocks
+from its place (PLACEHOLDER) walks back to it (a goal below panic, breeding and tempting; goats
+through their brain's walk target); otherwise vanilla's own AI runs. **Steer** sets a new target:
+the herd's next waypoint. `arriveTick` is when the engine's closed form reaches it, so a body that
+dawdles can catch up: the anchor arrives then.
 
-**Despawn** captures the group (HERD_DEMATERIALIZED, reason 1) and removes the bodies. Any other loss
-(the area stops ticking, the session ends) is captured the same way with §2.3's reasons.
+**Despawn** captures the group (HERD_DEMATERIALIZED, reason 1, one capture per member present) and
+removes the bodies; for a group not embodied it answers reason 6 with no capture. Any other loss is
+captured the same way with §2.3's reasons: a member not entity-ticking (2), unloaded or changing
+dimension (3), the session ending or the ECOLOGY switch off (4, Y9); a group whose last member died
+or was taken is answered reason 5 with no capture.
 
-**Takings and deaths** are reported as they happen (HERD_KILLED, HERD_TAKEN, HERD_SHEARED); a taken
-animal leaves the group (C25: taking one member splits it from its group) and becomes ordinary.
+**Takings and deaths** are reported as they happen: HERD_KILLED at the end of the tick of a certain
+death, with the killer (Y17), its drops carrying it (§3.1); HERD_TAKEN for a lead (any holder), a
+tamed horse, Carry On's pickup (`RtsimApi.takeFromSim`, through `SessionPlugin.take`) or a body
+another mod removed (Y16), the animal untagged and carrying its record; HERD_SHEARED when a member
+turns sheared, naming the player who used shears on it that tick (Y18). A taken animal leaves the
+group (C25: taking one member splits it from its group) and becomes ordinary.
+
+**Obstacles** (Y15): a member more than 14 blocks behind the anchor's progress toward the waypoint
+that has gained less than a block for 600 ticks (PLACEHOLDER) has failed to pass; when at least half
+the members present have, HERD_OBSTACLE goes once per waypoint, with where they stand on average.
+
+**HERD_GROUP_STATE** goes every 100 ticks per group (Y19).
 
 **Vanilla's own animals.** Vanilla keeps spawning its own passive animals at chunk generation; the
-sim's herds are extra bodies over them. Whether a vanilla adapter should suppress or adopt vanilla
-herds (as the dragons adopt lair dragons, §6.6) is open (H2-28).
+sim's herds are extra bodies over them. The adapter neither suppresses nor adopts them; whether it
+should (as the dragons adopt lair dragons, §6.6) is open (H2-28; the recommendation is Y20).
 
 ### 8.6 What the engine side does with them (rtsim-ecology's herds)
 

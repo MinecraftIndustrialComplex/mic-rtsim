@@ -138,6 +138,9 @@ public final class NativeEngine implements ScriptedEngine {
 
     private static native boolean nOpApplied(long handle, long opId);
 
+    /** The herd behind a group's agent id: {@code HERD_INFO} values; false when there is none. */
+    private static native boolean nHerdInfo(long handle, long agent, long[] out);
+
     /** Null when none. */
     private static native String nProtocolError(long handle);
 
@@ -484,6 +487,40 @@ public final class NativeEngine implements ScriptedEngine {
      */
     public void dragonCommand(List<DictEntry> names, byte[] record) {
         order(new NativeCodec.Orders().dragonCommand(names, record), "DRAGON_COMMAND");
+    }
+
+    /**
+     * Orders a herd command (docs/boundary.md §8.4): {@code record} is the whole record, its cmdSeq
+     * ignored, with Java's own species ids (body dictionary) and dimension id, and {@code names} the
+     * species entries it uses. The engine writes it as the herds' own: their sequence and the DICT
+     * records it needs. TEST mode only: the vanilla herd adapter's GameTests drive the adapter with it;
+     * the herds decide their own commands.
+     */
+    public void herdCommand(List<DictEntry> names, byte[] record) {
+        order(new NativeCodec.Orders().herdCommand(names, record), "HERD_COMMAND");
+    }
+
+    /**
+     * Test only: founds a herd of {@code count} animals of {@code species} ({@code minecraft:sheep} and
+     * the rest) at (x, z) in a dimension (Java's dictionary id) when the engine takes the order; seed 0
+     * draws one. Nothing in the game founds herds yet (no habitat provider).
+     */
+    public void herdFound(String name, String species, int dimension, int x, int z, long count, long seed) {
+        order(new NativeCodec.Orders().herdFound(name, species, dimension, x, z, count, seed), "HERD_FOUND");
+    }
+
+    /** {@link #herdInfo}'s fields. */
+    public static final int HERD_EXISTS = 0, HERD_ALIVE = 1, HERD_KILLED = 2, HERD_TAKEN = 3, HERD_LOST = 4,
+            HERD_EMBODIED_EPOCH = 5, HERD_EMBODIED_MEMBERS = 6, HERD_DEAD = 7, HERD_LAST_EPOCH = 8, HERD_INFO = 9;
+
+    /**
+     * One herd by its group's agent id, as of the engine's last step (indexed by {@code HERD_*}): alive,
+     * killed by players, taken, lost, the embodied group's epoch and members, the dead-index set's
+     * size, the last materialization's epoch. Null when the agent is no herd's.
+     */
+    public synchronized long[] herdInfo(long agent) {
+        long[] out = new long[HERD_INFO];
+        return nHerdInfo(live(), agent, out) ? out : null;
     }
 
     // ---- ScriptedEngine: inspection -------------------------------------------------------------

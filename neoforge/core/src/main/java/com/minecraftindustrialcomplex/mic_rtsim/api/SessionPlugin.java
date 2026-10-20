@@ -63,6 +63,16 @@ public interface SessionPlugin {
     /** A tagged entity whose agent this plugin owns left a level ({@code EntityLeaveLevelEvent}). */
     default void left(RtsimSession session, Entity entity, AgentTag tag) {}
 
+    /**
+     * Takes a live puppet of this plugin out of the sim (A10): what {@link RtsimApi#takeFromSim} (Carry On's
+     * pickup) and the core's taming hook do for a tagged entity whose agent this plugin owns. {@code how}
+     * is {@code Obs.Taken}'s code, {@code player} may be null. True when it was a live puppet and is now
+     * an ordinary entity; false leaves it alone.
+     */
+    default boolean take(RtsimSession session, Entity entity, AgentTag tag, int how, java.util.UUID player) {
+        return false;
+    }
+
     /** A session opened: Java's dictionary and the plugin's per-session state start here. */
     default void sessionStarted(RtsimSession session) {}
 

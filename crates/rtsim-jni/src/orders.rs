@@ -32,6 +32,8 @@
 //! | 24 | TEST: the phase 1 world runs this many more ticks ahead of game time | u64 ticks |
 //! | 25 | TEST: a dragon command (docs/boundary.md §6.4), as if the dragons had decided it: the Ice and Fire plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the species entries the record uses); then the record exactly as `rtsim_ecology::boundary` encodes it (cmdSeq ignored), its species ids Java's own (body dictionary) and its dimension Java's id (the dragons' frame) |
 //! | 26 | TEST: a ship command (docs/boundary.md §7.4), as if the ships had decided it: a future ships plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the body kinds and items the record uses); then the record exactly as `rtsim_ships::boundary` encodes it (cmdSeq ignored), its body and item ids Java's own (body and item dictionaries) and its dimension Java's id (the ships' frame); a SHIP_CARGO with op id 0 gets one from its identity |
+//! | 27 | TEST: a herd command (docs/boundary.md §8.4), as if the herds had decided it: the vanilla herd adapter's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the species entries the record uses); then the record exactly as `rtsim_ecology::herds::boundary` encodes it (cmdSeq ignored), its species ids Java's own (body dictionary) and its dimension Java's id (the herds' frame) |
+//! | 28 | TEST: found a herd (nothing in the game founds one yet: no habitat provider), applied when the engine takes the unit | str name, str species (`minecraft:sheep` and the rest), u32 dimension (Java's id: the herds' frame), i32 x, i32 z, u64 count, u64 seed (0: the herds' own) |
 
 use rtsim_industry::ids::{DistrictId, TrainId};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
@@ -67,6 +69,8 @@ pub const OP_P1_SPAWN_NEAR: u16 = 23;
 pub const OP_P1_ADVANCE: u16 = 24;
 pub const OP_DRAGON_COMMAND: u16 = 25;
 pub const OP_SHIP_COMMAND: u16 = 26;
+pub const OP_HERD_COMMAND: u16 = 27;
+pub const OP_HERD_FOUND: u16 = 28;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,6 +259,25 @@ pub enum Order {
         names: Vec<(u32, u32, String)>,
         record: Vec<u8>,
     },
+    /// TEST: a herd command record (Java's species and dimension ids), queued as the herds' own:
+    /// their sequences and DICT records (the vanilla herd adapter's GameTests). `names` are the
+    /// Java dictionary entries for the species: (kind, Java's id, name).
+    HerdCommand {
+        names: Vec<(u32, u32, String)>,
+        record: Vec<u8>,
+    },
+    /// TEST: a herd founded at (x, z) in a dimension (Java's id, the herds' frame) when the
+    /// engine takes the unit. Nothing in the game founds herds yet (no habitat provider).
+    HerdFound {
+        name: String,
+        species: String,
+        dimension: u32,
+        x: i32,
+        z: i32,
+        count: u64,
+        /// 0: drawn from the herds' own seed.
+        seed: u64,
+    },
 }
 
 impl Order {
@@ -266,6 +289,7 @@ impl Order {
                 | Order::ScriptVillage(_)
                 | Order::Phase1SpawnNear { .. }
                 | Order::Phase1Advance(_)
+                | Order::HerdFound { .. }
         )
     }
 
@@ -278,8 +302,35 @@ impl Order {
                 | Order::Phase1Advance(_)
                 | Order::DragonCommand { .. }
                 | Order::ShipCommand { .. }
+                | Order::HerdCommand { .. }
+                | Order::HerdFound { .. }
         )
     }
+}
+
+/// A herd species by its vanilla entity id (docs/boundary.md §8.2).
+pub fn herd_species(name: &str) -> Option<rtsim_ecology::herds::HerdSpecies> {
+    rtsim_ecology::herds::HerdSpecies::ALL
+        .into_iter()
+        .find(|s| s.entity_id() == name)
+}
+
+/// The herd species' body ids a herd command order's names give (Java's dictionary); `None` when
+/// they name no herd species. Species the names leave out get id 0, which matches nothing.
+pub fn herd_species_dict(
+    names: &[(u32, u32, String)],
+) -> Option<rtsim_ecology::herds::boundary::HerdDict> {
+    let mut d = rtsim_ecology::herds::boundary::HerdDict { body: [0; 5] };
+    let mut any = false;
+    for (kind, id, name) in names {
+        if *kind == crate::wire::DICT_BODY
+            && let Some(s) = herd_species(name)
+        {
+            d.body[s.index()] = *id;
+            any = true;
+        }
+    }
+    any.then_some(d)
 }
 
 struct Cursor<'a> {
@@ -655,6 +706,50 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 }
                 Order::ShipCommand { names, record }
             }
+            OP_HERD_COMMAND => {
+                let n = c.u32()? as usize;
+                if n > 64 {
+                    return Err(format!("a herd command with {n} names"));
+                }
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let kind = c.u32()?;
+                    let id = c.u32()?;
+                    names.push((kind, id, c.str()?));
+                }
+                let record = body[c.at..].to_vec();
+                c.at = body.len();
+                if herd_species_dict(&names).is_none_or(|d| {
+                    rtsim_ecology::herds::boundary::decode_cmd(&record, &d).is_err()
+                }) {
+                    return Err("a herd command order holds no herd command".into());
+                }
+                Order::HerdCommand { names, record }
+            }
+            OP_HERD_FOUND => {
+                let name = c.str()?;
+                let species = c.str()?;
+                if herd_species(&species).is_none() {
+                    return Err(format!("a herd of {species}: not a herd species"));
+                }
+                let dimension = c.u32()?;
+                let x = c.i32()?;
+                let z = c.i32()?;
+                let count = c.u64()?;
+                if count == 0 || count > 1_000_000 {
+                    return Err(format!("a herd of {count} animals"));
+                }
+                let seed = c.u64()?;
+                Order::HerdFound {
+                    name,
+                    species,
+                    dimension,
+                    x,
+                    z,
+                    count,
+                    seed,
+                }
+            }
             other => return Err(format!("unknown order opcode {other}")),
         };
         if c.at != body.len() {
@@ -952,6 +1047,36 @@ impl Encoder {
                 self.buf.extend_from_slice(record);
                 self.end(at);
             }
+            Order::HerdCommand { names, record } => {
+                let at = self.begin(OP_HERD_COMMAND);
+                self.u32(names.len() as u32);
+                for (kind, id, name) in names {
+                    self.u32(*kind);
+                    self.u32(*id);
+                    self.str(name);
+                }
+                self.buf.extend_from_slice(record);
+                self.end(at);
+            }
+            Order::HerdFound {
+                name,
+                species,
+                dimension,
+                x,
+                z,
+                count,
+                seed,
+            } => {
+                let at = self.begin(OP_HERD_FOUND);
+                self.str(name);
+                self.str(species);
+                self.u32(*dimension);
+                self.i32(*x);
+                self.i32(*z);
+                self.u64(*count);
+                self.u64(*seed);
+                self.end(at);
+            }
             Order::DragonCommand { names, record } => {
                 let at = self.begin(OP_DRAGON_COMMAND);
                 self.u32(names.len() as u32);
@@ -1164,6 +1289,38 @@ mod tests {
                     );
                     r
                 },
+            },
+            Order::HerdCommand {
+                names: vec![(3, 9, "minecraft:sheep".into())],
+                record: {
+                    let mut r = Vec::new();
+                    let mut dict = rtsim_ecology::herds::boundary::HerdDict { body: [0; 5] };
+                    dict.body[0] = 9;
+                    rtsim_ecology::herds::boundary::encode_cmd(
+                        0,
+                        &rtsim_ecology::herds::boundary::Cmd::Steer(
+                            rtsim_ecology::herds::boundary::Steer {
+                                agent: 0x48 << 56 | 5,
+                                epoch: 2,
+                                speed: 0.02,
+                                target: (40, -12),
+                                arrive: 90_000,
+                            },
+                        ),
+                        &dict,
+                        &mut r,
+                    );
+                    r
+                },
+            },
+            Order::HerdFound {
+                name: "Testdown flock".into(),
+                species: "minecraft:goat".into(),
+                dimension: 1,
+                x: -40,
+                z: 300,
+                count: 12,
+                seed: 77,
             },
             Order::ShipCommand {
                 names: vec![(2, 4, "minecraft:wheat".into())],

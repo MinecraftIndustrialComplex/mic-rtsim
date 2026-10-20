@@ -418,7 +418,28 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
         return;
     }
     let t = t.max(st.phase1.world.now());
-    with_infra(st, |d, w, infra| d.run_until(w, infra, t));
+    if super::herds::running(st) && t >= st.herds.engine.now() {
+        // The herds are prey (PLAN.md §10.2): their events run in the dragons' time order, and
+        // hungry dragons weigh and hunt them (`Dragons::run_until_with_herds`, Y7).
+        let (d, w, index, h) = (
+            &mut st.dragons.engine,
+            &mut st.phase1.world,
+            &mut st.dragons.index,
+            &mut st.herds.engine,
+        );
+        if st.industry.enabled() {
+            let mut infra = IndustryLink {
+                engine: &mut st.industry.engine,
+                index,
+            };
+            d.run_until_with_herds(w, &mut infra, h, t);
+        } else {
+            d.run_until_with_herds(w, &mut NoInfrastructure, h, t);
+        }
+        super::herds::take_commands(st);
+    } else {
+        with_infra(st, |d, w, infra| d.run_until(w, infra, t));
+    }
     st.phase1.taint();
     take_commands(st);
 }

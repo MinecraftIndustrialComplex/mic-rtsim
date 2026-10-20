@@ -49,6 +49,10 @@ pub use dragons::{MODULE_ECOLOGY, TABLE as DRAGONS_TABLE};
 /// world (docs/boundary.md §7).
 mod ships;
 pub use ships::{MODULE_SHIPS, TABLE as SHIPS_TABLE};
+/// The herds behind the boundary: rtsim-ecology's migrating herds fed by the core's vanilla herd
+/// adapter, in the phase 1 world (docs/boundary.md §8).
+mod herds;
+pub use herds::{HERD_INFO, MODULE_HERDS, TABLE as HERDS_TABLE};
 /// What the modules in the phase 1 world share: one interest area per player, one clock.
 mod shared;
 pub use shared::PLAYER_STALE;
@@ -265,6 +269,8 @@ struct State {
     dragons: dragons::Link,
     /// The ships and their commands (`ships.rs`).
     ships: ships::Link,
+    /// The herds and their commands (`herds.rs`).
+    herds: herds::Link,
     /// Players' interest areas and the modules' clock (`shared.rs`).
     shared: shared::Link,
 }
@@ -293,6 +299,7 @@ impl State {
             phase1: phase1::Link::empty(),
             dragons: dragons::Link::empty(),
             ships: ships::Link::empty(),
+            herds: herds::Link::empty(),
             shared: shared::Link::default(),
         }
     }
@@ -432,7 +439,9 @@ fn command_bytes(order: &Order) -> usize {
         | Order::IndustryThreat(_)
         | Order::IndustryCommand { .. }
         | Order::DragonCommand { .. }
-        | Order::ShipCommand { .. } => 0,
+        | Order::ShipCommand { .. }
+        | Order::HerdCommand { .. }
+        | Order::HerdFound { .. } => 0,
         other => phase1::scripted_bytes(other),
     }
 }
@@ -704,6 +713,7 @@ impl Engine {
         let p1link = phase1::Link::load(&mut store)?;
         let dlink = dragons::Link::load(&mut store, p1link.world_restored())?;
         let slink = ships::Link::load(&mut store, p1link.world_restored())?;
+        let hlink = herds::Link::load(&mut store, p1link.world_restored())?;
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(
@@ -728,6 +738,7 @@ impl Engine {
         st.phase1.resume(last_applied_cmd);
         st.dragons = dlink;
         st.ships = slink;
+        st.herds = hlink;
         st.pages_obs_seq = pages_obs;
         st.session_first = pages_obs + 1;
         let next_cmd = st.outbox.next_seq();
@@ -793,7 +804,7 @@ impl Engine {
         let mut unit = unit;
         if !self.cfg.test && unit.iter().any(Order::test_only) {
             return Err(
-                "a FAIL, P1_SPAWN_NEAR, P1_ADVANCE, DRAGON_COMMAND or SHIP_COMMAND order needs an engine opened in TEST mode"
+                "a FAIL, P1_SPAWN_NEAR, P1_ADVANCE, DRAGON_COMMAND, SHIP_COMMAND, HERD_COMMAND or HERD_FOUND order needs an engine opened in TEST mode"
                     .into(),
             );
         }
@@ -847,13 +858,15 @@ impl Engine {
         if save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
             let (meta, world, industry, extra, obs_seq) = {
                 let mut st = lock(&self.state);
-                // The dragons' and the ships' pages ride with the industry engine's (all whole
+                // The dragons', the ships' and the herds' pages ride with the industry engine's (all whole
                 // pages, deleted by table when gone).
                 let dragons = dragons::snapshot(&mut st);
                 let ships = ships::snapshot(&mut st);
+                let herds = herds::snapshot(&mut st);
                 let mut industry = industry::snapshot(&st);
                 industry.extend(dragons);
                 industry.extend(ships);
+                industry.extend(herds);
                 (
                     encode_meta(&st.replay, &st.outbox),
                     st.world.to_bytes(),
@@ -988,6 +1001,7 @@ impl Engine {
         industry::simulate(&mut st);
         dragons::simulate(&mut st);
         ships::simulate(&mut st);
+        herds::simulate(&mut st);
         shared::simulate(&mut st);
         phase1::simulate(&mut st);
         let req = self.save_through.load(Ordering::Acquire);
@@ -1077,6 +1091,16 @@ impl Engine {
                     dragons::order_command(st, &names, &record)
                 }
                 Order::ShipCommand { names, record } => ships::order_command(st, &names, &record),
+                Order::HerdCommand { names, record } => herds::order_command(st, &names, &record),
+                Order::HerdFound {
+                    name,
+                    species,
+                    dimension,
+                    x,
+                    z,
+                    count,
+                    seed,
+                } => herds::order_found(st, &name, &species, dimension, x, z, count, seed),
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
@@ -1145,6 +1169,7 @@ impl Engine {
                 phase1::session_start(st, mask);
                 dragons::session_start(st, mask);
                 ships::session_start(st, mask);
+                herds::session_start(st, mask);
                 shared::session_start(st);
                 if last_applied > st.last_applied_cmd {
                     st.last_applied_cmd = last_applied;
@@ -1189,6 +1214,7 @@ impl Engine {
                 phase1::observe_state(st, rec);
                 dragons::observe_state(st, rec);
                 ships::observe_state(st, rec);
+                herds::observe_state(st, rec);
                 shared::observe_state(st, rec);
                 Self::log_received(st, h, rec, 0, false);
             }
@@ -1234,6 +1260,7 @@ impl Engine {
             Verdict::Apply if industry::claims(rec) => industry::journaled(st, rec),
             Verdict::Apply if dragons::claims(rec) => dragons::journaled(st, rec),
             Verdict::Apply if ships::claims(rec) => ships::journaled(st, rec),
+            Verdict::Apply if herds::claims(rec) => herds::journaled(st, rec),
             Verdict::Apply if phase1::claims(rec) => {
                 shared::catch_up(st, rec);
                 phase1::journaled(st, rec)
@@ -1279,11 +1306,12 @@ impl Engine {
         let obs_seq = st.replay.applied_through().0;
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
-        // The dragons' and the ships' pages ride with the industry engine's (all whole pages,
+        // The dragons', the ships' and the herds' pages ride with the industry engine's (all whole pages,
         // deleted by table when gone).
         let mut industry = industry::snapshot(st);
         industry.extend(dragons::snapshot(st));
         industry.extend(ships::snapshot(st));
+        industry.extend(herds::snapshot(st));
         let extra = phase1::snapshot(st);
         let this = Arc::clone(self);
         self.spawn_io(move || this.commit(meta, world, industry, extra, obs_seq));
@@ -1313,6 +1341,9 @@ impl Engine {
             batch.delete(k);
         }
         for k in ships::deletions(store, &industry) {
+            batch.delete(k);
+        }
+        for k in herds::deletions(store, &industry) {
             batch.delete(k);
         }
         for k in phase1::deletions(store, &p1_saved) {
@@ -1435,6 +1466,11 @@ impl Engine {
             return (highest, true);
         }
         let (h, more) = ships::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = herds::write_queue(st, w);
         (highest.max(h), more)
     }
 }
@@ -1465,6 +1501,7 @@ fn op_of(rec: &Rec<'_>) -> Option<OpId> {
             industry::op_of(rec),
             dragons::op_of(rec),
             ships::op_of(rec),
+            herds::op_of(rec),
             phase1::op_of(rec),
         ]
         .into_iter()
@@ -1641,7 +1678,9 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
         | Order::IndustryThreat(_)
         | Order::IndustryCommand { .. }
         | Order::DragonCommand { .. }
-        | Order::ShipCommand { .. } => None,
+        | Order::ShipCommand { .. }
+        | Order::HerdCommand { .. }
+        | Order::HerdFound { .. } => None,
         other => phase1::write_scripted(st, w, &other),
     }
 }
