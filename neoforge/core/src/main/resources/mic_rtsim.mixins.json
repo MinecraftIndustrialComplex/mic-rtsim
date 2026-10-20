@@ -11,6 +11,7 @@
     "MerchantResultSlotMixin",
     "ServerLevelAccessor",
     "StructureManagerMixin",
+    "VillagerReputationMixin",
     "VillagerRestockMixin"
   ],
   "injectors": {

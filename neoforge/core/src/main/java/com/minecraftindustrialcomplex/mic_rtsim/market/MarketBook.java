@@ -115,6 +115,12 @@ public final class MarketBook<G> {
         return base.containsKey(good);
     }
 
+    /** {@code p(S)} now, in millionths of a coin per item; 0 for a good the market does not trade. */
+    public long priceNow(G good) {
+        Good g = base.get(good);
+        return g == null ? 0 : g.curve().priceAt(stock(good));
+    }
+
     /** The stock now, in thousandths (snapshot plus local trades). */
     public long stock(G good) {
         return stockView.getOrDefault(good, 0L);

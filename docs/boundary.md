@@ -332,7 +332,7 @@ thousandths of an item or coin, prices in millionths of a coin per whole item; p
 only ever move whole items, so a whole item is 1,000 at the boundary. Culture, gossip type and report
 kind numbers are rtsim-settle's and rtsim-knowledge's.
 
-**Ids.** A village is its structure start: `villageId = dim (16 bits) << 48 | startChunkX (24 bits) << 24
+**Ids.** A village is its structure start: `villageId = dim (14 bits) << 48 | startChunkX (24 bits) << 24
 | startChunkZ (24 bits)`, two's complement, the top two bits clear (rtsim-settle's "packed chunk position
 of its structure start"). A player base is `1 << 62 | dim (14 bits) << 48 | cellX << 24 | cellZ` over
 128-block cells. Both are Java's and stable across sessions (the dimension id is Java's per-world
@@ -443,7 +443,9 @@ killing).
   decayed away. Answered APPLIED (also when no villager was loaded), DUPLICATE (the journal or the
   village's pending list has the op), FAILED (unknown village, a culture without vanilla gossip, a bad
   type or amount), or VANILLA_KNOWS (flag FIRST_HAND with report kind trade, resident assault or resident
-  killing: vanilla writes those itself, PLAN.md §8.7).
+  killing: vanilla writes those itself, PLAN.md §8.7). Vanilla drops an entry whose value is below 2
+  (`GossipContainer.EntityGossips.makeSureValueIsntTooLowOrTooHigh`), so an amount of 1 for a player
+  with no entry of that type changes nothing; send 2 or more.
 - **SENTIMENT** (latest wins). The ribbit sorcerers leave out a player at or below DISLIKE; ribbit
   merchants' prices use the sentiment (above). No snapshot: Ribbits' own behaviour.
 - **PLACE_HOUSE** (C7, P17's recommendation). Placed with vanilla's `StructureTemplate.placeInWorld` and
@@ -463,8 +465,14 @@ killing).
 **Known gaps:** a crash after a house's chunk was saved and before the next world save leaves the
 village's house list without the house; a resent PLACE_HOUSE is answered DUPLICATE when its search
 reaches the chunk that carries the first one's COMMAND_RESULT (a loaded chunk under a candidate plot),
-but a free plot found first elsewhere would still get a second house. Gossip ops a villager carries
-are capped at 64.
+but a free plot found first elsewhere would still get a second house. HOUSE_PLACED itself is not
+carried by the chunk (only the COMMAND_RESULT is): after such a crash the engine hears APPLIED without
+the house's box. A house stopped part way (a player's block or a block entity appeared in what was
+still to be built, NOT_FREE) leaves the layers it placed. Gossip: a villager carries the last 64 op
+ids and one village's high-water mark; a crash that rolls back the village registry's sequence but
+not a villager saved later makes that villager skip the next entries up to its old mark, and a
+villager that moves between villages and back takes the first village's kept entries again (beyond
+its last 64 ops).
 
 ## 5. What the Rust side needs to build (rtsim-jni)
 

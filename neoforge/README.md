@@ -57,7 +57,7 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `puppet` | the `mic_rtsim:agent` attachment (engine id, epoch), groups and the live registry. |
 | `body` | the adapter interface (spawn, capture, steer), group kinds, and the vanilla adapters for `minecraft:wandering_trader` and `minecraft:trader_llama`, plus the human caravan group. |
 | `config` | the server config: one switch per module, PLACEHOLDER budgets. |
-| `mixin` | `EntitySaveMixin` (`shouldBeSaved`, `saveAsPassenger`), `LlamaInvoker` (`setStrength`), two accessors for the save GameTests; phase 1: `StructureManagerMixin` (adoption), `MerchantResultSlotMixin` (trades), `VillagerRestockMixin` (restock and demand), `MerchantOfferAccessor`. All in `../PATCHES.md`. |
+| `mixin` | `EntitySaveMixin` (`shouldBeSaved`, `saveAsPassenger`), `LlamaInvoker` (`setStrength`), two accessors for the save GameTests; phase 1: `StructureManagerMixin` (adoption), `MerchantResultSlotMixin` (trades), `VillagerRestockMixin` (restock and demand), `VillagerReputationMixin` (reputation trim), `MerchantOfferAccessor`. All in `../PATCHES.md`. |
 | `api` | `RtsimApi` for plugins: register bodies and groups, `takeFromSim` (Carry On's hook); phase 1: cultures, residents, resident factories, a village and its sentiment, the restock and demand hooks. |
 | `command` | `/rtsim perf`, `/rtsim stub caravan`. |
 | `village` | phase 1: the village registry (`data/mic_rtsim_villages.dat`), adoption (C22), cultures, residents, the census, gossip writes (C20). |
@@ -94,9 +94,12 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 | `acaravansofferscomefromitschestcargo` | phase 1: the engine's offers replace the trader's; uses are what the llamas carry; a sale takes the goods out of a chest and the emerald in; sold out, the offer shows crossed out; TRADE per sale with an op id |
-| `sellingdrainsthetreasuryandtheoffercrossesout` | walkthrough B: a farmer's wheat offer repriced from the market (21, 22, 23 wheat per emerald as the stock grows), the treasury drained by three sales, crossed out; a stale snapshot does not refund; a refill reopens it |
+| `sellingdrainsthetreasuryandtheoffercrossesout` | walkthrough B: a farmer's wheat offer repriced from the market (21, 22, 23 wheat per emerald as the stock grows), the treasury drained by three sales, crossed out; vanilla's `restock()` leaves it crossed out with demand 0; a stale snapshot does not refund; a refill reopens it |
+| `arobberythenatradearereportedapart` | 5 wheat taken from a chest and a sale of 10 in the same tick: one CARGO_CHANGED of -5 and one TRADE of 10 |
+| `twoscreensshareonetreasury` | two players at two farmers of one village: two sales at one re-cap the other's open offer to the one emerald left |
 | `killingallamadropsitscargoexactlyonceacrossacrash` | DIED with an op id; the dropped cargo's chunk saved and read back through vanilla's entity storage after a "crash"; the DIED arrives again under the same op id and the cargo is in the world once |
 | `gossipiswrittenonce` | WRITE_GOSSIP adds 25 once; a resend is DUPLICATE; after a crash that rolled back the journal and the village, the villager's own record refuses it; VANILLA_KNOWS; a villager that was away gets the news at the census |
+| `moregossipthantheopringisstillwrittenonce` | seventy entries (more than the 64-op ring): two censuses write none of them again; a villager that arrives later takes each once |
 | `ahouseisplacedonlyonafreeplot` | not over a player's block, a block entity or next to another house; placed from a template with its jigsaw replaced; HOUSE_PLACED names the slot; a resend is DUPLICATE |
 | `arescueisreported` | a player kills a zombie targeting the trader: RESCUE |
 | `damagetoacaravanisreportedonceperwindow` | three hits by one player are one HURT |
@@ -120,9 +123,11 @@ The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
 - **The engine.** rtsim-jni and the Rust step do not exist; `StubEngine` stands in.
 - **Observations** not yet sent: chunk loads and tickets, recipes (PLAN.md §6.3). Phase 1's are in
   docs/boundary.md §4.
-- **Phase 1 open ends** (docs/overnight-choices-phase1mc.md): a crash between a new house's chunk save
-  and the next world save can let a resent PLACE_HOUSE build twice; villager gossip ops are capped at 64;
-  robbery is attributed by proximity; puppet offers cannot yet be repriced from a ribbit village's
+- **Phase 1 open ends** (docs/overnight-choices-phase1mc.md, docs/boundary.md §4.3): a crash between a
+  new house's chunk save and the next world save can let a resent PLACE_HOUSE build twice, and
+  HOUSE_PLACED is not carried by the chunk; a house stopped part way leaves its placed layers; a crash
+  that rolls back a village's gossip sequence but not a villager makes that villager skip news up to its
+  old mark; the reputation trim (G31) leaves one bundle's spread; robbery is attributed by proximity; puppet offers cannot yet be repriced from a ribbit village's
   sentiment (only residents are); border-market currency exchange (P21) is not offered.
 - **Item components** in captured cargo (B23).
 - **Picked-up drops**: an item picked up before the engine acknowledges its DIED takes the record

@@ -24,7 +24,7 @@ import java.util.UUID;
 public final class Village {
 
     /** Gossip waiting for residents not loaded when it arrived (C20, PLAN.md §8.7). */
-    public record PendingGossip(long op, UUID player, GossipType type, int amount, long writtenAt) {}
+    public record PendingGossip(long op, UUID player, GossipType type, int amount, long writtenAt, long seq) {}
 
     /** A house the sim placed (C7 growth): its op, footprint and resident slot. */
     public record House(long op, BoundingBox box, BlockPos slot) {}
@@ -44,6 +44,8 @@ public final class Village {
     public final List<BoundingBox> pieces = new ArrayList<>();
     public final List<House> houses = new ArrayList<>();
     public final List<PendingGossip> gossip = new ArrayList<>();
+    /** The last sequence given to a pending gossip entry; entries are kept in sequence order. */
+    public long gossipSeq;
 
     public Village(long id, ResourceKey<Level> dimension, ResourceLocation structure, String culture, long adoptedAt,
                    BoundingBox box, BlockPos meeting, int baseY) {
@@ -94,6 +96,7 @@ public final class Village {
         t.putBoolean("meetingFromPoi", meetingFromPoi);
         t.putInt("baseY", baseY);
         t.putInt("margin", margin);
+        t.putLong("gossipSeq", gossipSeq);
         ListTag p = new ListTag();
         for (BoundingBox b : pieces)
             p.add(new net.minecraft.nbt.IntArrayTag(boxArray(b)));
@@ -115,6 +118,7 @@ public final class Village {
             gt.putString("type", pg.type().getSerializedName());
             gt.putInt("amount", pg.amount());
             gt.putLong("at", pg.writtenAt());
+            gt.putLong("seq", pg.seq());
             g.add(gt);
         }
         t.put("gossip", g);
@@ -136,6 +140,7 @@ public final class Village {
         v.meetingFromPoi = t.getBoolean("meetingFromPoi");
         if (t.contains("margin"))
             v.margin = t.getInt("margin");
+        v.gossipSeq = t.getLong("gossipSeq");
         for (Tag p : t.getList("pieces", Tag.TAG_INT_ARRAY))
             v.pieces.add(box(((net.minecraft.nbt.IntArrayTag) p).getAsIntArray()));
         for (Tag h : t.getList("houses", Tag.TAG_COMPOUND)) {
@@ -146,7 +151,7 @@ public final class Village {
             CompoundTag gt = (CompoundTag) g;
             GossipType type = gossipType(gt.getString("type"));
             if (type != null)
-                v.gossip.add(new PendingGossip(gt.getLong("op"), gt.getUUID("player"), type, gt.getInt("amount"), gt.getLong("at")));
+                v.gossip.add(new PendingGossip(gt.getLong("op"), gt.getUUID("player"), type, gt.getInt("amount"), gt.getLong("at"), gt.getLong("seq")));
         }
         return v;
     }

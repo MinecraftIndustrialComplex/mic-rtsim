@@ -36,8 +36,10 @@ public final class Residents {
         Entity create(ServerLevel level, Vec3 pos, String profession);
     }
 
-    private static final Map<EntityType<?>, Kind> KINDS = new HashMap<>();
-    private static final Map<String, Factory> FACTORIES = new HashMap<>();
+    // Copy on write: registration is rare (mod construction, setup), lookups are on every damage event,
+    // interaction and census entity, so they read a published immutable map with no lock.
+    private static volatile Map<EntityType<?>, Kind> KINDS = Map.of();
+    private static volatile Map<String, Factory> FACTORIES = Map.of();
 
     static {
         register(EntityType.VILLAGER, new Kind(
@@ -48,18 +50,22 @@ public final class Residents {
     }
 
     public static synchronized void register(EntityType<?> type, Kind kind) {
-        KINDS.put(type, kind);
+        Map<EntityType<?>, Kind> m = new HashMap<>(KINDS);
+        m.put(type, kind);
+        KINDS = Map.copyOf(m);
     }
 
     public static synchronized void registerFactory(String bodyKind, Factory factory) {
-        FACTORIES.put(bodyKind, factory);
+        Map<String, Factory> m = new HashMap<>(FACTORIES);
+        m.put(bodyKind, factory);
+        FACTORIES = Map.copyOf(m);
     }
 
-    public static synchronized Kind kind(Entity e) {
+    public static Kind kind(Entity e) {
         return KINDS.get(e.getType());
     }
 
-    public static synchronized Factory factory(String bodyKind) {
+    public static Factory factory(String bodyKind) {
         return FACTORIES.get(bodyKind);
     }
 

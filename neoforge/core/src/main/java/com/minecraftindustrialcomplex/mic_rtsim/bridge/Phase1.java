@@ -88,33 +88,61 @@ public final class Phase1 {
     // ---- the tick -------------------------------------------------------------------------------
 
     void endOfTick(long ticks, long now) {
-        rescues.settle(now);
-        for (int i = 0; i < residentDeaths.size(); i++) {
-            LivingEntity dead = residentDeaths.get(i)[0];
-            if (dead.isDeadOrDying() || dead.isRemoved())
-                hurts.onResidentDeath(dead, residentKillers.get(i), now);
-        }
+        guard("rescues", () -> rescues.settle(now));
+        guard("resident deaths", () -> {
+            for (int i = 0; i < residentDeaths.size(); i++) {
+                LivingEntity dead = residentDeaths.get(i)[0];
+                if (dead.isDeadOrDying() || dead.isRemoved())
+                    hurts.onResidentDeath(dead, residentKillers.get(i), now);
+            }
+        });
         residentDeaths.clear();
         residentKillers.clear();
         if (ticks % 20 == 0)
-            hurts.flush(now, false);
+            guard("hurt reports", () -> hurts.flush(now, false));
         cargoCheckSoon = false;
         // The world's own work runs in the server's session only: a second session (the journal
         // GameTests run their own) must not adopt, count or build into its journal.
         if (RtsimSession.current() != session)
             return;
-        VillageAdoption.drain(session, villages, now);
-        census.tick(ticks, now);
-        houses.tick(now);
-        residents.tick(now, () -> session.spawnBudget, n -> session.spawnBudget -= n);
+        guard("adoption", () -> VillageAdoption.drain(session, villages, now));
+        guard("census", () -> census.tick(ticks, now));
+        guard("houses", () -> houses.tick(now));
+        guard("residents", () -> residents.tick(now, () -> session.spawnBudget, n -> session.spawnBudget -= n));
         if (ticks % 600 == 0)
-            bases.sweep(session, now);
+            guard("bases", () -> bases.sweep(session, now));
+    }
+
+    private final java.util.Map<String, Long> lastError = new java.util.HashMap<>();
+    long phase1Errors;
+
+    /**
+     * Runs one phase 1 part. An exception there is logged (once a minute per part) and the rest of the
+     * bridge goes on: a phase 1 bug must not stop the puppet protocol for the session (B30 is for the
+     * protocol itself).
+     */
+    void guard(String what, Runnable part) {
+        try {
+            part.run();
+        } catch (RuntimeException ex) {
+            phase1Errors++;
+            long now = System.currentTimeMillis();
+            Long last = lastError.get(what);
+            if (last == null || now - last > 60_000) {
+                lastError.put(what, now);
+                MicRtsim.LOGGER.error("[mic_rtsim] phase 1 {} failed; it is skipped this time ({} phase 1 errors so far)", what, phase1Errors, ex);
+            }
+        }
     }
 
     // ---- trades ---------------------------------------------------------------------------------
 
     /** A trade happened (MerchantResultSlotMixin, after {@code notifyTrade}). Server side only. */
     public void onTrade(Entity merchant, MerchantOffer offer, Player player) {
+        guard("trade", () -> trade(merchant, offer, player));
+    }
+
+    private void trade(Entity merchant, MerchantOffer offer, Player player) {
         long now = session.gameTime();
         AgentTag tag = RtsimAttachments.tag(merchant);
         PuppetGroup g = tag == null ? null : session.registry.live(tag, merchant.getUUID());
@@ -176,6 +204,9 @@ public final class Phase1 {
         trades++;
 
         if (g != null) {
+            // A change nobody reported yet (a robbery since the last check) is reported first, or the
+            // new baseline below would swallow it.
+            cargo.check(g, now);
             if (!PuppetOffers.applyTrade(g, member, offer)) {
                 tradesShort++;
                 MicRtsim.LOGGER.warn("[mic_rtsim] agent {} sold {} it no longer carried", g.agent, result);
@@ -201,13 +232,34 @@ public final class Phase1 {
         if (!(target instanceof Merchant m) || m.getTradingPlayer() != null || Residents.kind(target) == null
                 || RtsimAttachments.isTagged(target))
             return; // a puppet merchant's offers are the engine's (MERCHANT_OFFERS), never the village's
-        Village v = Residents.villageOf(villages, target);
-        if (v != null)
-            markets.reprice(target, v, player);
+        guard("repricing", () -> {
+            Village v = Residents.villageOf(villages, target);
+            if (v != null)
+                markets.reprice(target, v, player);
+        });
+    }
+
+    /**
+     * Vanilla just set a villager's reputation prices ({@code Villager.updateSpecialPrices}, the
+     * reputation mixin): on offers the sim prices, a discount may not turn a village's buying price above
+     * its selling price for the same good (no loop of trades makes money, C13).
+     */
+    public void afterSpecialPrices(Entity merchant) {
+        guard("reputation clamp", () -> {
+            if (RtsimAttachments.isTagged(merchant) || Residents.kind(merchant) == null)
+                return;
+            Village v = Residents.villageOf(villages, merchant);
+            if (v != null)
+                markets.clampReputation(merchant, v);
+        });
     }
 
     /** A restock reset one offer's uses (the restock mixins): the treasury rule decides them instead. */
     public void afterResetUses(Entity merchant, MerchantOffer offer) {
+        guard("restock", () -> resetUses(merchant, offer));
+    }
+
+    private void resetUses(Entity merchant, MerchantOffer offer) {
         AgentTag tag = RtsimAttachments.tag(merchant);
         if (tag != null) {
             // A puppet merchant restocked (Ribbits' merchants do, on their own clock): its uses follow its cargo.
@@ -233,22 +285,29 @@ public final class Phase1 {
             return true;
         if (Residents.kind(merchant) == null)
             return false;
-        Village v = Residents.villageOf(villages, merchant);
-        return v != null && markets.prices(v, offer);
+        try {
+            Village v = Residents.villageOf(villages, merchant);
+            return v != null && markets.prices(v, offer);
+        } catch (RuntimeException ex) {
+            guard("demand", () -> { throw ex; });
+            return false;
+        }
     }
 
     // ---- damage, deaths, rescues ---------------------------------------------------------------
 
     public void onDamage(LivingEntity victim, Entity attacker, float amount) {
-        hurts.onDamage(victim, attacker, amount, session.gameTime());
+        guard("hurt", () -> hurts.onDamage(victim, attacker, amount, session.gameTime()));
     }
 
     public void onDeath(LivingEntity dead, Entity killer) {
-        rescues.onDeath(dead, killer);
-        if (!RtsimAttachments.isTagged(dead) && Residents.kind(dead) != null) {
-            residentDeaths.add(new LivingEntity[] {dead});
-            residentKillers.add(killer);
-        }
+        guard("deaths", () -> {
+            rescues.onDeath(dead, killer);
+            if (!RtsimAttachments.isTagged(dead) && Residents.kind(dead) != null) {
+                residentDeaths.add(new LivingEntity[] {dead});
+                residentKillers.add(killer);
+            }
+        });
     }
 
     void observePlayer(ServerPlayer p, long now) {
@@ -342,6 +401,7 @@ public final class Phase1 {
                 + ", gossip commands " + gossipCommands + " (" + gossip.written() + " writes, " + gossip.skippedHasOp() + " already had it)"
                 + ", censuses " + census.taken() + ", hurt reports " + hurts.journaled() + ", rescues " + rescues.journaled()
                 + ", cargo reports " + cargo.reports() + ", bases marked " + bases.marks()
-                + ", houses " + houses.completed() + " built / " + houses.refused() + " refused, residents " + residents.spawned();
+                + ", houses " + houses.completed() + " built / " + houses.refused() + " refused, residents " + residents.spawned()
+                + (phase1Errors > 0 ? ", ERRORS " + phase1Errors : "");
     }
 }

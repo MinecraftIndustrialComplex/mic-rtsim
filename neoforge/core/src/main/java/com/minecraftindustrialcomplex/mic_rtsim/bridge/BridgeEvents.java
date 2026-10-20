@@ -36,6 +36,7 @@ public final class BridgeEvents {
     public static void register(IEventBus modBus) {
         modBus.addListener(BridgeEvents::onConfigReload);
         IEventBus bus = NeoForge.EVENT_BUS;
+        bus.addListener(BridgeEvents::onServerAboutToStart);
         bus.addListener(BridgeEvents::onServerStarted);
         bus.addListener(BridgeEvents::onServerStopping);
         bus.addListener(BridgeEvents::onServerStopped);
@@ -85,11 +86,8 @@ public final class BridgeEvents {
 
     /** Datapacks reloaded: which structures are villages may have changed. */
     private static void onTagsUpdated(net.neoforged.neoforge.event.TagsUpdatedEvent event) {
-        if (event.getUpdateCause() != net.neoforged.neoforge.event.TagsUpdatedEvent.UpdateCause.SERVER_DATA_LOAD)
-            return;
-        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server != null && RtsimSession.current() != null)
-            com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.refresh(server);
+        if (event.getUpdateCause() == net.neoforged.neoforge.event.TagsUpdatedEvent.UpdateCause.SERVER_DATA_LOAD)
+            com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.refresh(event.getRegistryAccess());
     }
 
     /** A horse-like inventory closed: something may have taken a puppet's cargo; check every group next pass. */
@@ -99,6 +97,14 @@ public final class BridgeEvents {
         RtsimSession s = RtsimSession.current();
         if (s != null)
             s.phase1.cargoCheckSoon = true;
+    }
+
+    /**
+     * Before the server prepares the spawn area: which structures are villages must be known by then, or
+     * the village starts generated (and the spawn chunks loaded) during preparation are missed (C22).
+     */
+    private static void onServerAboutToStart(net.neoforged.neoforge.event.server.ServerAboutToStartEvent event) {
+        com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.refresh(event.getServer());
     }
 
     private static void onServerStarted(ServerStartedEvent event) {
@@ -113,6 +119,7 @@ public final class BridgeEvents {
 
     private static void onServerStopped(ServerStoppedEvent event) {
         RtsimSession.stopGlobal();
+        com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.clear();
     }
 
     /**
@@ -238,7 +245,7 @@ public final class BridgeEvents {
             return;
         if (event.getItemStack().is(Items.LEAD))
             s.onLeadInteract(event.getTarget());
-        else if (!s.failed() && event.getTarget() instanceof net.minecraft.world.item.trading.Merchant)
+        if (!s.failed() && event.getTarget() instanceof net.minecraft.world.item.trading.Merchant)
             s.phase1.beforeTrading(event.getEntity(), event.getTarget()); // reprice before vanilla opens the trade
     }
 

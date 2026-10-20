@@ -126,6 +126,99 @@ public final class TradeGameTests {
                 .thenSucceed();
     }
 
+    private static Villager farmer(GameTestHelper helper, double x, double z) {
+        Villager villager = helper.spawn(EntityType.VILLAGER, new Vec3(x, 2, z));
+        villager.setNoAi(true);
+        villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER).setLevel(1));
+        MerchantOffers offers = villager.getOffers();
+        offers.clear();
+        offers.add(new MerchantOffer(new ItemCost(Items.WHEAT, 20), new ItemStack(Items.EMERALD), 16, 2, 0.05f));
+        return villager;
+    }
+
+    /**
+     * A robbery and a trade in the same tick (C21, C24): the chest lost 5 wheat to something that is
+     * not the bridge, then a player bought 10. The engine hears the 5 as CARGO_CHANGED and the 10 as
+     * the TRADE, each once; the robbery is not folded into the sale or lost behind it.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300)
+    public static void aRobberyThenATradeAreReportedApart(GameTestHelper helper) {
+        long agent = RtsimTests.newAgent();
+        Vec3 at = RtsimTests.centre(helper);
+        StubEngine stub = RtsimTests.stub();
+        stub.spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
+                StubEngine.MemberSpec.plain(0),
+                new StubEngine.MemberSpec(1, 0f, 0, 3, List.of(new StubEngine.ItemSpec(0, "minecraft:wheat", 30))),
+                StubEngine.MemberSpec.plain(2)));
+        stub.merchantOffers(agent, 1, 0, List.of(
+                new StubEngine.OfferSpec("minecraft:emerald", 1, null, 0, "minecraft:wheat", 10, 0, Cmd.MerchantOffers.O_FLAG_SELLS)));
+        Player player = helper.makeMockPlayer(GameType.SURVIVAL);
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the offers arrived", RtsimTests.embodied(agent).members[0].offers != null))
+                .thenExecute(() -> {
+                    PuppetGroup g = RtsimTests.group(agent);
+                    WanderingTrader trader = (WanderingTrader) RtsimTests.member(g, 0);
+                    TraderLlama llama = (TraderLlama) RtsimTests.member(g, 1);
+                    llama.getSlot(500).get().shrink(5); // 5 wheat taken by something that is not the bridge
+                    ItemStack got = RtsimTests.trade(trader, player, 0, new ItemStack(Items.EMERALD, 1));
+                    check("the sale went through: " + got, got.is(Items.WHEAT) && got.getCount() == 10);
+                    check("15 wheat left in the chest: " + cargo(llama, Items.WHEAT), cargo(llama, Items.WHEAT) == 15);
+                    check("one more sale of ten left", left(trader.getOffers().get(0)) == 1);
+                })
+                .thenWaitUntil(() -> check("the TRADE and the CARGO_CHANGED reached the engine",
+                        RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.AGENT, agent).size() == 1
+                                && !RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent).isEmpty()))
+                .thenIdle(40) // a cargo pass or two: nothing more may be reported
+                .thenExecute(() -> {
+                    List<StubEngine.Received> changes = RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent);
+                    check("one CARGO_CHANGED: " + changes.size(), changes.size() == 1);
+                    StubEngine.Received c = changes.get(0);
+                    int item = Obs.CargoChanged.ITEMS;
+                    check("the robbery alone: wheat -5", c.view().getInt(Obs.CargoChanged.ITEM_COUNT) == 1
+                            && "minecraft:wheat".equals(stub.javaDictName(c.view().getInt(item + Obs.Item.ITEM)))
+                            && c.view().getInt(item + Obs.Item.COUNT) == -5);
+                    StubEngine.Received t = RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.AGENT, agent).get(0);
+                    check("the trade alone: ten wheat", t.view().getInt(Obs.Trade.RESULT_COUNT) == 10);
+                    record("robberyThenTrade", "reported", "CARGO_CHANGED wheat -5, TRADE wheat 10");
+                    stub.despawnGroup(agent, 1);
+                })
+                .thenWaitUntil(() -> check("the caravan despawned", RtsimTests.group(agent) == null))
+                .thenSucceed();
+    }
+
+    /**
+     * Two players at two farmers of one village (C14): the treasury is the village's, so a sale at one
+     * re-caps the offer the other player has open. Without it each screen would show the whole treasury.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300, batch = "mic_rtsim_p1_screens")
+    public static void twoScreensShareOneTreasury(GameTestHelper helper) {
+        Village v = RtsimTests.adoptArena(helper, "human");
+        StubEngine stub = RtsimTests.stub();
+        Villager a = farmer(helper, 3.5, 3.5), b = farmer(helper, 7.5, 7.5);
+        stub.market(v.id, 0, "minecraft:emerald", 3_000, 20_000, 1, 2, List.of(
+                new StubEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4)));
+        Player pa = helper.makeMockPlayer(GameType.SURVIVAL), pb = helper.makeMockPlayer(GameType.SURVIVAL);
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the market snapshot arrived", RtsimTests.session().phase1.markets.known(v.id) != null))
+                .thenExecute(() -> {
+                    RtsimTests.session().phase1.beforeTrading(pb, b); // player B opens b's screen and keeps it open
+                    b.setTradingPlayer(pb);
+                    check("b offers three sales (three emeralds)", left(b.getOffers().get(0)) == 3);
+                    RtsimTests.session().phase1.beforeTrading(pa, a);
+                    for (int i = 0; i < 2; i++)
+                        check("A's sale " + (i + 1), RtsimTests.trade(a, pa, 0, new ItemStack(Items.WHEAT, 64)).is(Items.EMERALD));
+                    int bLeft = left(b.getOffers().get(0));
+                    record("twoScreens", "b's uses after two sales at a", bLeft);
+                    check("b's open screen was re-capped to the one emerald left: " + bLeft, bLeft == 1);
+                    check("a shows the same", left(a.getOffers().get(0)) == 1);
+                    b.setTradingPlayer(null);
+                    a.discard();
+                    b.discard();
+                    RtsimTests.forget(v);
+                })
+                .thenSucceed();
+    }
+
     /**
      * Walkthrough B (C14): a farmer buys wheat through the village treasury. Each sale drains it at once;
      * the price per emerald rises in wheat as the stock grows; when the treasury cannot pay for one more
@@ -175,6 +268,14 @@ public final class TradeGameTests {
                     check("the treasury is empty", RtsimTests.session().phase1.markets.known(v.id).treasury() == 0);
                     check("the wheat offer shows crossed out", offers.get(0).isOutOfStock());
                     check("and pays nothing more", RtsimTests.trade(villager, player, 0, new ItemStack(Items.WHEAT, 64)).isEmpty());
+                    // Vanilla's restock (updateDemand, then resetUses on every offer) through the restock mixins.
+                    villager.restock();
+                    check("a restock leaves an empty treasury's offer crossed out", offers.get(0).isOutOfStock());
+                    check("and vanilla's demand did not read the sim's uses as sales: " + offers.get(0).getDemand(),
+                            offers.get(0).getDemand() == 0);
+                    check("bread still capped by the stock, not refilled to vanilla's 16", left(offers.get(1)) < 16);
+                    record("treasury", "after a restock", "wheat crossed out, demand " + offers.get(0).getDemand()
+                            + ", bread uses " + left(offers.get(1)));
                 })
                 .thenWaitUntil(() -> check("three TRADEs reached the engine", RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.NODE, v.id).size() == 3))
                 .thenExecute(() -> {

@@ -114,8 +114,10 @@ public final class HurtObserver {
     }
 
     private Pending describe(LivingEntity victim, Entity attacker) {
-        Pending p = new Pending();
         AgentTag tag = RtsimAttachments.tag(victim);
+        if (tag == null && Residents.kind(victim) == null)
+            return null; // nearly every damage event in the world ends here, with nothing allocated
+        Pending p = new Pending();
         if (tag != null) {
             PuppetGroup g = session.registry().live(tag, victim.getUUID());
             if (g == null)
@@ -128,8 +130,6 @@ public final class HurtObserver {
             Village v = villages.at(victim.level().dimension(), victim.blockPosition());
             p.node = v == null ? 0 : v.id;
         } else {
-            if (Residents.kind(victim) == null)
-                return null;
             Village v = Residents.villageOf(villages, victim);
             if (v == null)
                 return null;

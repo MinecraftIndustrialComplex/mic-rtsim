@@ -70,33 +70,52 @@ public final class GossipWriter {
         return true;
     }
 
-    /** Writes a new entry into every loaded resident villager of the village, and keeps it for the rest. */
+    /**
+     * Writes a new entry into every loaded resident villager of the village, and keeps it for the rest.
+     * A villager that has had every earlier entry of the village moves its high-water mark on.
+     */
     public int apply(ServerLevel level, VillageRegistry villages, Village v, long op, UUID player, GossipType type, int amount, long now) {
+        long seq = ++v.gossipSeq;
         int n = 0;
-        for (Villager villager : loadedVillagers(level, villages, v))
+        for (Villager villager : loadedVillagers(level, villages, v)) {
             if (writeInto(villager, op, player, type, amount))
                 n++;
-        v.gossip.add(new Village.PendingGossip(op, player, type, amount, now));
+            GossipOps ops = villager.getData(RtsimAttachments.GOSSIP_OPS);
+            if (ops.mark(v.id) == seq - 1)
+                villager.setData(RtsimAttachments.GOSSIP_OPS, ops.marked(v.id, seq));
+        }
+        v.gossip.add(new Village.PendingGossip(op, player, type, amount, now, seq));
         villages.setDirty();
         return n;
     }
 
-    /** At a census: writes the kept entries, aged by vanilla's decay, into the loaded residents. */
+    /**
+     * At a census: writes the kept entries, aged by vanilla's decay, into the loaded residents. A
+     * villager skips every entry at or below its high-water mark for the village, so however many entries
+     * are kept, each villager takes each one once (the op ring alone holds only the last 64).
+     */
     public void catchUp(ServerLevel level, VillageRegistry villages, Village v, List<Villager> residents, long now) {
         boolean changed = false;
         for (Iterator<Village.PendingGossip> it = v.gossip.iterator(); it.hasNext(); ) {
-            Village.PendingGossip g = it.next();
-            int aged = aged(g, now);
-            if (aged <= 0) {
+            if (aged(it.next(), now) <= 0) {
                 it.remove();
                 changed = true;
-                continue;
             }
-            for (Villager villager : residents)
-                writeInto(villager, g.op(), g.player(), g.type(), aged);
         }
         if (changed)
             villages.setDirty();
+        if (v.gossip.isEmpty())
+            return;
+        long last = v.gossip.get(v.gossip.size() - 1).seq();
+        for (Villager villager : residents) {
+            long mark = villager.getData(RtsimAttachments.GOSSIP_OPS).mark(v.id);
+            if (mark >= last)
+                continue;
+            for (Village.PendingGossip g : v.gossip)
+                if (g.seq() > mark)
+                    writeInto(villager, g.op(), g.player(), g.type(), aged(g, now));
+            villager.setData(RtsimAttachments.GOSSIP_OPS, villager.getData(RtsimAttachments.GOSSIP_OPS).marked(v.id, last));
+        }
     }
 
     /**
@@ -113,12 +132,21 @@ public final class GossipWriter {
         return level.getEntitiesOfClass(Villager.class, box, e -> e.isAlive() && !RtsimAttachments.isTagged(e) && Residents.villageOf(villages, e) == v);
     }
 
-    /** A villager's applied gossip op ids: bounded, oldest dropped first (PLACEHOLDER 64). */
-    public record GossipOps(long[] ops) {
+    /**
+     * A villager's gossip record: the op ids it was last written with (bounded, oldest dropped first,
+     * PLACEHOLDER 64; what stops a resend after a crash), and its high-water mark in its village's
+     * sequence of kept entries (what stops a census writing an entry twice).
+     */
+    public record GossipOps(long[] ops, long village, long mark) {
         public static final int CAP = 64;
-        public static final GossipOps EMPTY = new GossipOps(new long[0]);
+        public static final GossipOps EMPTY = new GossipOps(new long[0], 0, 0);
         public static final com.mojang.serialization.Codec<GossipOps> CODEC =
-                com.mojang.serialization.Codec.LONG_STREAM.xmap(s -> new GossipOps(s.toArray()), g -> java.util.Arrays.stream(g.ops()));
+                com.mojang.serialization.codecs.RecordCodecBuilder.create(i -> i.group(
+                        com.mojang.serialization.Codec.LONG_STREAM.xmap(java.util.stream.LongStream::toArray, java.util.Arrays::stream)
+                                .fieldOf("ops").forGetter(GossipOps::ops),
+                        com.mojang.serialization.Codec.LONG.optionalFieldOf("village", 0L).forGetter(GossipOps::village),
+                        com.mojang.serialization.Codec.LONG.optionalFieldOf("mark", 0L).forGetter(GossipOps::mark)
+                ).apply(i, GossipOps::new));
 
         public boolean has(long op) {
             for (long o : ops)
@@ -132,11 +160,20 @@ public final class GossipWriter {
             long[] out = new long[keep + 1];
             System.arraycopy(ops, ops.length - keep, out, 0, keep);
             out[keep] = op;
-            return new GossipOps(out);
+            return new GossipOps(out, village, mark);
+        }
+
+        /** The high-water mark for a village: 0 when the record is about another village. */
+        public long mark(long villageId) {
+            return village == villageId ? mark : 0;
+        }
+
+        public GossipOps marked(long villageId, long newMark) {
+            return new GossipOps(ops, villageId, newMark);
         }
 
         public boolean isEmpty() {
-            return ops.length == 0;
+            return ops.length == 0 && mark == 0;
         }
     }
 

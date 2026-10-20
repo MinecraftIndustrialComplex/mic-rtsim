@@ -42,6 +42,8 @@ public final class RibbitMusicianAdapter implements BodyAdapter {
     @Override
     public void capture(Entity entity, PuppetGroup group, MemberCapture out) {
         RibbitEntity r = (RibbitEntity) entity;
+        if (group != null && group.members.length > 0 && group.members[0].uuid.equals(entity.getUUID()))
+            RibbitBands.forget(group.agent); // the band goes back to the sim; its waypoint goes with its leader
         out.health = r.getHealth();
         out.maxHealth = r.getMaxHealth();
         out.x = r.getX();

@@ -200,6 +200,64 @@ public final class WorldGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * More news than a villager's op ring holds (C20): seventy entries of 2 (vanilla's
+     * {@code makeSureValueIsntTooLowOrTooHigh} drops an entry below 2), each written once into a loaded
+     * villager, then two censuses: neither writes any of them again (the villager's high-water mark, not
+     * its ring of the last 64 ops, is what stops a census). A villager that arrives later takes all
+     * seventy once, however many censuses run.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_gossip_many")
+    public static void moreGossipThanTheOpRingIsStillWrittenOnce(GameTestHelper helper) {
+        Village v = RtsimTests.adoptArena(helper, Cultures.HUMAN);
+        StubEngine stub = RtsimTests.stub();
+        Villager first = helper.spawn(EntityType.VILLAGER, new Vec3(3.5, 2, 3.5));
+        first.setNoAi(true);
+        UUID player = UUID.randomUUID();
+        int n = com.minecraftindustrialcomplex.mic_rtsim.village.GossipWriter.GossipOps.CAP + 6;
+        long[] ops = new long[n];
+        for (int i = 0; i < n; i++) {
+            ops[i] = engineOp();
+            stub.writeGossip(ops[i], v.id, player, 2, 2, 3, 0); // minor_negative 2 (vanilla drops an entry below 2)
+        }
+        Villager[] late = new Villager[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    for (long op : ops)
+                        check("every entry was answered", result(stub, op) != null);
+                })
+                .thenExecute(() -> {
+                    for (long op : ops)
+                        check("APPLIED", result(stub, op).aux() == Obs.CommandResult.APPLIED);
+                    int rep0 = first.getGossips().getReputation(player, t -> true);
+                    var rec0 = first.getData(RtsimAttachments.GOSSIP_OPS);
+                    record("gossipMany", "loaded villager after the writes", rep0 + " (ops " + rec0.ops().length + ", mark "
+                            + rec0.mark(v.id) + ", kept " + v.gossip.size() + ", seq " + v.gossipSeq + ", written "
+                            + RtsimTests.session().phase1.gossip.written() + ")");
+                    check("seventy entries of 2 (weight -1): -" + 2 * n + ", got " + rep0, rep0 == -2 * n);
+                    RtsimSession s = RtsimTests.session();
+                    s.phase1.census.take(helper.getLevel(), v, s.gameTime());
+                    s.phase1.census.take(helper.getLevel(), v, s.gameTime());
+                    int rep = first.getGossips().getReputation(player, t -> true);
+                    record("gossipMany", "loaded villager after two censuses", rep);
+                    check("two censuses wrote nothing again: " + rep, rep == -2 * n);
+                    late[0] = helper.spawn(EntityType.VILLAGER, new Vec3(7.5, 2, 7.5));
+                    late[0].setNoAi(true);
+                    s.phase1.census.take(helper.getLevel(), v, s.gameTime());
+                    s.phase1.census.take(helper.getLevel(), v, s.gameTime());
+                    int lateRep = late[0].getGossips().getReputation(player, t -> true);
+                    record("gossipMany", "late villager after two censuses", lateRep);
+                    check("the late villager took each entry once: " + lateRep, lateRep == -2 * n);
+                    var rec = late[0].getData(RtsimAttachments.GOSSIP_OPS);
+                    check("its op ring is full and its mark is the last entry", rec.ops().length
+                            == com.minecraftindustrialcomplex.mic_rtsim.village.GossipWriter.GossipOps.CAP && rec.mark(v.id) == n);
+                    first.discard();
+                    late[0].discard();
+                    RtsimTests.forget(v);
+                })
+                .thenSucceed();
+    }
+
     // ---- C7: growth ------------------------------------------------------------------------------
 
     private static boolean testCulture;

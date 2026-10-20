@@ -26,29 +26,30 @@ public final class Cultures {
      */
     public record Rule(Predicate<Holder<Structure>> structures, String culture, String residentPool) {}
 
-    private static final List<Rule> RULES = new ArrayList<>();
-
-    static {
-        register(new Rule(h -> h.is(StructureTags.VILLAGE), HUMAN, null));
-    }
+    // Copy on write: rules are registered during mod construction and read without a lock.
+    private static volatile List<Rule> RULES = List.of(new Rule(h -> h.is(StructureTags.VILLAGE), HUMAN, null));
 
     public static synchronized void register(Rule rule) {
-        RULES.add(rule);
+        List<Rule> l = new ArrayList<>(RULES);
+        l.add(rule);
+        RULES = List.copyOf(l);
     }
 
     /** The rule for a structure, or null when it is not a village the sim adopts. Later rules win. */
-    public static synchronized Rule match(Holder<Structure> structure) {
-        for (int i = RULES.size() - 1; i >= 0; i--)
-            if (RULES.get(i).structures().test(structure))
-                return RULES.get(i);
+    public static Rule match(Holder<Structure> structure) {
+        List<Rule> rules = RULES;
+        for (int i = rules.size() - 1; i >= 0; i--)
+            if (rules.get(i).structures().test(structure))
+                return rules.get(i);
         return null;
     }
 
     /** The resident pool of a culture, or null. */
-    public static synchronized String residentPool(String culture) {
-        for (int i = RULES.size() - 1; i >= 0; i--)
-            if (RULES.get(i).culture().equals(culture) && RULES.get(i).residentPool() != null)
-                return RULES.get(i).residentPool();
+    public static String residentPool(String culture) {
+        List<Rule> rules = RULES;
+        for (int i = rules.size() - 1; i >= 0; i--)
+            if (rules.get(i).culture().equals(culture) && rules.get(i).residentPool() != null)
+                return rules.get(i).residentPool();
         return null;
     }
 }

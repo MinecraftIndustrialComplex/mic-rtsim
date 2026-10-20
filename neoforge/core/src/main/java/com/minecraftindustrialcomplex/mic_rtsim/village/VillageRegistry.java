@@ -10,6 +10,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.saveddata.SavedData;
 
 import java.util.ArrayList;
@@ -160,6 +161,20 @@ public final class VillageRegistry extends SavedData {
         indexVillage(v);
         setDirty();
         return true;
+    }
+
+    /** Widens a village's box to take in a box (a house the sim built at its edge), and re-indexes it. */
+    public void grow(Village v, BoundingBox add) {
+        if (v.box.minX() <= add.minX() && v.box.minY() <= add.minY() && v.box.minZ() <= add.minZ()
+                && v.box.maxX() >= add.maxX() && v.box.maxY() >= add.maxY() && v.box.maxZ() >= add.maxZ())
+            return;
+        Map<Long, List<Village>> cells = index.get(v.dimension);
+        if (cells != null)
+            for (List<Village> list : cells.values())
+                list.remove(v);
+        v.box = BoundingBox.encapsulatingBoxes(List.of(v.box, add)).orElse(v.box);
+        indexVillage(v);
+        setDirty();
     }
 
     /** Forgets a village (GameTests clean up after themselves; the engine is not told). */

@@ -63,8 +63,10 @@ public final class HouseBuilder {
     public static final int SPACING = 2;
     /** Ground must be within this many blocks under a footprint column (PLACEHOLDER). */
     public static final int MAX_DROP = 4;
-    /** Plot candidates tested per tick, all houses together (PLACEHOLDER). */
-    public static final int CANDIDATES_PER_TICK = 64;
+    /** Plot candidates tested per tick, all houses together (PLACEHOLDER; each scans up to a house's volume). */
+    public static final int CANDIDATES_PER_TICK = 8;
+    /** Ticks to wait while a mob or player stands where the next layers go (PLACEHOLDER). */
+    public static final int OCCUPIED_RETRY = 20;
     /** Ring spacing of the plot search, blocks (PLACEHOLDER). */
     public static final int RING_STEP = 4;
     /** How far below a house the client-sync sweep looks for pillar blocks (PLACEHOLDER). */
@@ -75,6 +77,7 @@ public final class HouseBuilder {
     /** Where each build's search stands (not saved: a reload starts the search again). */
     private final Map<Long, Integer> searchIndex = new HashMap<>();
     private final Map<Long, String> lastRefusal = new HashMap<>();
+    private final Map<Long, List<int[]>> ringCache = new HashMap<>();
     long placedBlocks;
     long completed;
     long refused;
@@ -177,6 +180,20 @@ public final class HouseBuilder {
             int layers = Math.max(1, Math.min(height - b.nextLayer, blocks / Math.max(area, 1)));
             BoundingBox slice = new BoundingBox(box.minX(), box.minY() + b.nextLayer, box.minZ(),
                     box.maxX(), box.minY() + b.nextLayer + layers - 1, box.maxZ());
+            // The plot was free when it was chosen; layers go in later (a quota, a wait, a restart). What
+            // is still to be built is checked again: a player's block or a block entity there now stops the
+            // house, and a mob or player standing in the next layers makes it wait rather than wall them in.
+            BoundingBox rest = new BoundingBox(box.minX(), slice.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ());
+            String taken = takenSince(level, rest);
+            if (taken != null) {
+                MicRtsim.LOGGER.info("[mic_rtsim] house {} stopped at layer {} of {}: {}", b.op, b.nextLayer, height, taken);
+                finish(b, Obs.CommandResult.NOT_FREE, null, null, null, now);
+                return blocks;
+            }
+            if (!level.getEntitiesOfClass(net.minecraft.world.entity.LivingEntity.class, net.minecraft.world.phys.AABB.of(slice)).isEmpty()) {
+                b.nextTry = now + OCCUPIED_RETRY;
+                return blocks;
+            }
             t.placeInWorld(level, b.origin, b.origin, settings(level, b).setBoundingBox(slice), level.getRandom(), 2);
             b.nextLayer += layers;
             blocks -= layers * area;
@@ -192,11 +209,28 @@ public final class HouseBuilder {
 
     private enum Search { FOUND, NOT_FREE, WAIT, MORE, BUILT }
 
+    /** A block a player placed or a block entity in what is still to be built, or null. */
+    static String takenSince(ServerLevel level, BoundingBox rest) {
+        for (int cx = rest.minX() >> 4; cx <= rest.maxX() >> 4; cx++) {
+            for (int cz = rest.minZ() >> 4; cz <= rest.maxZ() >> 4; cz++) {
+                LevelChunk chunk = level.getChunkSource().getChunkNow(cx, cz);
+                if (chunk == null)
+                    continue;
+                if (PlayerBlocks.anyIn(chunk, rest))
+                    return "a block a player placed";
+                for (BlockPos be : chunk.getBlockEntities().keySet())
+                    if (rest.isInside(be))
+                        return "a block entity at " + be;
+            }
+        }
+        return null;
+    }
+
     /** Tries plot candidates under the per-tick budget; sets {@code b.origin} when one is free. */
     private Search search(ServerLevel level, Village v, VillageRegistry.Build b, StructureTemplate t, StructurePlaceSettings s, int[] budget) {
         int y = ((b.flags & com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd.PlaceHouse.FLAG_Y_FROM_VILLAGE) != 0 ? v.baseY : b.y) + b.yOffset;
         boolean searching = (b.flags & com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd.PlaceHouse.FLAG_SEARCH) != 0;
-        List<int[]> candidates = searching ? rings(b) : List.of(new int[] {b.x, b.z});
+        List<int[]> candidates = searching ? ringCache.computeIfAbsent(b.op, k -> rings(b)) : List.of(new int[] {b.x, b.z});
         int i = searchIndex.getOrDefault(b.op, 0);
         boolean unloaded = false;
         for (; i < candidates.size() && budget[0] > 0; i++) {
@@ -368,10 +402,12 @@ public final class HouseBuilder {
     private void finish(VillageRegistry.Build b, int status, Village v, BoundingBox box, BlockPos slot, long now) {
         villages.builds.remove(b.op);
         searchIndex.remove(b.op);
+        ringCache.remove(b.op);
         villages.setDirty();
         ServerLevel level = session.server().getLevel(b.dimension);
         if (status == Obs.CommandResult.APPLIED && v != null && box != null) {
             v.houses.add(new Village.House(b.op, box, slot));
+            villages.grow(v, box); // the house and its resident belong to the village
             ByteBuffer r = session.boundary().beginJournaled(Obs.HOUSE_PLACED, Obs.HousePlaced.SIZE, 0, now);
             r.putLong(Obs.HousePlaced.OP_ID, b.op);
             r.putLong(Obs.HousePlaced.VILLAGE, b.village);

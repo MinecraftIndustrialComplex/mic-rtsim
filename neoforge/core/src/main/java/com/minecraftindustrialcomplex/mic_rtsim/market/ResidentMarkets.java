@@ -39,6 +39,8 @@ import java.util.UUID;
 public final class ResidentMarkets {
 
     private final Map<Long, MarketBook<Item>> books = new HashMap<>();
+    /** Residents a player is trading with, per village: a trade at one re-caps the others (one treasury). */
+    private final Map<Long, java.util.List<Entity>> trading = new HashMap<>();
     private final Sentiments sentiments;
     long repriced;
     long capped;
@@ -116,7 +118,55 @@ public final class ResidentMarkets {
             offers.set(i, rebuilt(o, s, q, book.currency()));
             repriced++;
         }
+        if (player != null) {
+            java.util.List<Entity> list = trading.computeIfAbsent(v.id, k -> new java.util.ArrayList<>(2));
+            if (!list.contains(merchant))
+                list.add(merchant);
+        }
+        clampReputation(merchant, v);
         return true;
+    }
+
+    /**
+     * Keeps vanilla's reputation discount (C20) from turning a loop of trades into money (C13): on an
+     * offer the sim prices, the player never pays less per item than the market's marginal price
+     * {@code p(S)} and is never paid more. The market's own bundles already respect it (a buyer pays the
+     * integral from below the stock, a seller is paid the integral from above it), so this only trims a
+     * discount that went past it. Called after vanilla's {@code updateSpecialPrices} (the reputation
+     * mixin) and after every repricing.
+     */
+    public void clampReputation(Entity merchant, Village v) {
+        MarketBook<Item> book = known(v.id);
+        if (book == null || !(merchant instanceof Merchant m))
+            return;
+        for (MerchantOffer o : m.getOffers()) {
+            Shape s = shape(o, book);
+            if (s == null)
+                continue;
+            long p = book.priceNow(s.good());
+            if (p <= 0)
+                continue;
+            int cost = o.getCostA().getCount();
+            long min;
+            if (s.side() == MarketBook.Side.MARKET_SELLS) // pays cost coins for result items
+                min = ceilDiv((long) o.getResult().getCount() * p, PriceCurve.PRICE_ONE);
+            else // gives cost items for result coins
+                min = ceilDiv((long) o.getResult().getCount() * PriceCurve.PRICE_ONE, p);
+            if (cost >= min)
+                continue;
+            if (min > o.getCostA().getMaxStackSize()) {
+                Uses.set(o, o.getMaxUses()); // no bundle fits one stack at this price: crossed out
+                continue;
+            }
+            o.setSpecialPriceDiff(o.getSpecialPriceDiff() + (int) (min - cost));
+            clamped++;
+        }
+    }
+
+    long clamped;
+
+    private static long ceilDiv(long a, long b) {
+        return (a + b - 1) / b;
     }
 
     /**
@@ -222,6 +272,24 @@ public final class ResidentMarkets {
         }
         reprice(merchant, v, player);
         resend(merchant);
+        // The treasury and the stock are the village's: every other screen open on it is re-capped too,
+        // or two players at two villagers could each spend the whole treasury.
+        java.util.List<Entity> others = trading.get(v.id);
+        if (others != null) {
+            for (java.util.Iterator<Entity> it = others.iterator(); it.hasNext(); ) {
+                Entity other = it.next();
+                if (other.isRemoved() || !(other instanceof Merchant om) || om.getTradingPlayer() == null) {
+                    it.remove();
+                    continue;
+                }
+                if (other != merchant) {
+                    reprice(other, v, om.getTradingPlayer());
+                    resend(other);
+                }
+            }
+            if (others.isEmpty())
+                trading.remove(v.id);
+        }
     }
 
     /** Sends a merchant's offers to the player trading with it, as vanilla's own resend does. */

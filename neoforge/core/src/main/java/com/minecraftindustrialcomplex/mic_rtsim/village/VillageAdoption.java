@@ -48,9 +48,17 @@ public final class VillageAdoption {
     private static final ConcurrentLinkedQueue<Seen> QUEUE = new ConcurrentLinkedQueue<>();
     private static volatile Set<Structure> villageStructures = Collections.emptySet();
 
-    /** Recomputes which structures are villages (server start, datapack reload). Server thread. */
+    /** Recomputes which structures are villages. Server thread. */
     public static void refresh(MinecraftServer server) {
-        Registry<Structure> reg = server.registryAccess().registryOrThrow(Registries.STRUCTURE);
+        refresh(server.registryAccess());
+    }
+
+    /**
+     * Recomputes which structures are villages: when the server is about to start (before it prepares
+     * the spawn area, so starts generated then are seen) and after every datapack reload.
+     */
+    public static void refresh(net.minecraft.core.RegistryAccess access) {
+        Registry<Structure> reg = access.registryOrThrow(Registries.STRUCTURE);
         Set<Structure> set = new HashSet<>();
         for (Map.Entry<ResourceKey<Structure>, Structure> e : reg.entrySet()) {
             Holder<Structure> h = reg.wrapAsHolder(e.getValue());
@@ -80,6 +88,12 @@ public final class VillageAdoption {
 
     public static int queued() {
         return QUEUE.size();
+    }
+
+    /** The server stopped: starts seen in this world must not be adopted into the next one (singleplayer). */
+    public static void clear() {
+        QUEUE.clear();
+        villageStructures = Collections.emptySet();
     }
 
     /** Adopts what the queue holds. Server thread, end of tick. */
