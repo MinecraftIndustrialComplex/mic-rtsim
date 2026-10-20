@@ -116,6 +116,8 @@ public final class RtsimSession {
     };
     private final java.util.HashMap<AgentTag, Integer> releaseTokens = new java.util.HashMap<>();
     private static final int RELEASED_CAP = 4096;
+    /** Things to do once the engine acknowledges a sequence: drop pending records from their holders. */
+    private final java.util.TreeMap<Long, java.util.List<Runnable>> ackWaiters = new java.util.TreeMap<>();
     /** The pass's copy of the registry, reused every tick (no allocation per tick). */
     private final java.util.ArrayList<PuppetGroup> passList = new java.util.ArrayList<>();
     private long ticks;
@@ -130,6 +132,7 @@ public final class RtsimSession {
     long deaths;
     long removedByOther;
     long passNanos;
+    long reasserted;
 
     public RtsimSession(MinecraftServer server, Engine engine, JournalSavedData journal) {
         this.server = server;
@@ -137,6 +140,7 @@ public final class RtsimSession {
         this.journalData = journal;
         this.boundary = new BoundarySession(engine, journal.journal(), RtsimConfig.effectiveMask(), gameTime());
         this.commands = new CommandDispatcher(this);
+        this.boundary.onAck(this::onAcked);
         for (int i = 0; i < 2; i++) {
             int o = Buffers.capacity(engine.observationBuffer(i).duplicate().order(Layout.ORDER));
             if (o < Layout.MIN_CAPACITY)
@@ -519,7 +523,7 @@ public final class RtsimSession {
         if (m.entity != entity)
             m.entity = entity;
         MemberCapture cap = capture(g, m);
-        journalMemberState(g, m, cap, now);
+        byte[] state = journalMemberState(g, m, cap, now);
         ByteBuffer r = boundary.beginJournaled(Obs.TAKEN, Obs.Taken.SIZE, how, now);
         r.putLong(Obs.Taken.AGENT, g.agent);
         r.putInt(Obs.Taken.EPOCH, g.epoch);
@@ -530,6 +534,10 @@ public final class RtsimSession {
         }
         boundary.commitWithOpId(r, Obs.Taken.OP_ID);
         entity.removeData(RtsimAttachments.AGENT);
+        // The creature is ordinary now and vanilla saves it, maybe on a chunk unload long before the
+        // journal's next save: it carries its own TAKEN until the engine has it.
+        if (!entity.isRemoved())
+            carry(entity, java.util.List.of(state, r.array()), r.getLong(Obs.OBS_SEQ));
         try {
             adapter(g, m).onTaken(entity, g);
         } catch (RuntimeException ex) {
@@ -580,7 +588,7 @@ public final class RtsimSession {
     }
 
     void died(PuppetGroup g, PuppetGroup.Member m, MemberCapture atDeath, UUID killer, long now) {
-        journalMemberState(g, m, atDeath != null ? atDeath : capture(g, m), now);
+        byte[] state = journalMemberState(g, m, atDeath != null ? atDeath : capture(g, m), now);
         ByteBuffer r = boundary.beginJournaled(Obs.DIED, Obs.Died.SIZE, m.index, now);
         r.putLong(Obs.Died.AGENT, g.agent);
         r.putInt(Obs.Died.EPOCH, g.epoch);
@@ -589,6 +597,14 @@ public final class RtsimSession {
             r.putLong(Obs.Died.KILLER_LEAST, killer.getLeastSignificantBits());
         }
         boundary.commitWithOpId(r, Obs.Died.OP_ID);
+        // Each item it dropped carries the DIED: an item saved on a chunk unload before the journal
+        // must not let the engine bring the cargo back as well.
+        if (m.pendingDrops != null) {
+            for (Entity drop : m.pendingDrops)
+                if (!drop.isRemoved())
+                    carry(drop, java.util.List.of(state, r.array()), r.getLong(Obs.OBS_SEQ));
+            m.pendingDrops = null;
+        }
         m.pendingDeath = null;
         registry.forgetMember(g, m);
         if (registry.byAgent(g.agent) == null)
@@ -596,7 +612,7 @@ public final class RtsimSession {
         deaths++;
     }
 
-    private void journalMemberState(PuppetGroup g, PuppetGroup.Member m, MemberCapture cap, long now) {
+    private byte[] journalMemberState(PuppetGroup g, PuppetGroup.Member m, MemberCapture cap, long now) {
         int items = Math.min(cap.items.size(), (0xFFF8 - Obs.MemberState.ITEMS) / Obs.Item.SIZE);
         ByteBuffer r = boundary.beginJournaled(Obs.MEMBER_STATE, Obs.MemberState.size(items), m.index, now);
         r.putLong(Obs.MemberState.AGENT, g.agent);
@@ -621,6 +637,7 @@ public final class RtsimSession {
             r.putInt(at + Obs.Item.COUNT, s.count());
         }
         boundary.commit(r);
+        return r.array();
     }
 
     private void journalDematerialized(PuppetGroup g, int reason, int members, long now) {
@@ -635,11 +652,120 @@ public final class RtsimSession {
         boundary.commit(r);
     }
 
-    void journalCommandResult(long cmdSeq, long opId, int status, long now) {
+    /** Journals a COMMAND_RESULT; returns the committed record (its sequence at {@link Obs#OBS_SEQ}). */
+    ByteBuffer journalCommandResult(long cmdSeq, long opId, int status, long now) {
         ByteBuffer r = boundary.beginJournaled(Obs.COMMAND_RESULT, Obs.CommandResult.SIZE, status, now);
         r.putLong(Obs.CommandResult.CMD_SEQ, cmdSeq);
         r.putLong(Obs.CommandResult.OP_ID, opId);
         boundary.commit(r);
+        return r;
+    }
+
+    // ---- pending records: the world side of a transfer carries its journal records ---------------
+
+    /** Runs {@code then} once the engine has acknowledged {@code seq} in this session. */
+    void whenAcked(long seq, Runnable then) {
+        ackWaiters.computeIfAbsent(seq, k -> new java.util.ArrayList<>(1)).add(then);
+    }
+
+    private void onAcked(long acked) {
+        while (!ackWaiters.isEmpty() && ackWaiters.firstKey() <= acked) {
+            for (Runnable r : ackWaiters.pollFirstEntry().getValue()) {
+                try {
+                    r.run();
+                } catch (RuntimeException ex) {
+                    MicRtsim.LOGGER.error("[mic_rtsim] dropping acknowledged pending records failed", ex);
+                }
+            }
+        }
+    }
+
+    /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
+    private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
+        holder.setData(RtsimAttachments.PENDING, old.plus(records));
+        dropPendingWhenAcked(holder, lastSeq);
+    }
+
+    private void dropPendingWhenAcked(Entity holder, long lastSeq) {
+        ResourceKey<Level> dim = holder.level().dimension();
+        UUID id = holder.getUUID();
+        whenAcked(lastSeq, () -> {
+            ServerLevel level = server.getLevel(dim);
+            Entity e = level == null ? null : level.getEntity(id);
+            if (e != null)
+                e.removeData(RtsimAttachments.PENDING);
+        });
+    }
+
+    /**
+     * An entity that carries pending records came back from disk: journal them again (the engine has
+     * maybe never seen them, if the journal on disk was older than the entity's chunk) and drop them
+     * once acknowledged in this session.
+     */
+    public void reassert(Entity holder) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
+        if (p == null || p.isEmpty())
+            return;
+        long last = 0;
+        for (byte[] record : p.records())
+            last = boundary.recommit(record);
+        reasserted += p.records().size();
+        dropPendingWhenAcked(holder, last);
+    }
+
+    /** The same for a chunk: its pending records are COMMAND_RESULTs of transfers applied into it. */
+    public void reassert(net.minecraft.world.level.chunk.LevelChunk chunk) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
+        if (p == null || p.isEmpty())
+            return;
+        for (byte[] record : p.records()) {
+            long seq = boundary.recommit(record);
+            long op = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID);
+            dropFromChunkWhenAcked(chunk, op, seq);
+        }
+        reasserted += p.records().size();
+    }
+
+    /** The COMMAND_RESULT of an engine op applied into {@code chunk}, if the chunk still carries one. */
+    public static boolean chunkCarriesOp(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
+        if (p == null)
+            return false;
+        for (byte[] r : p.records())
+            if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) == opId)
+                return true;
+        return false;
+    }
+
+    void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
+        chunk.setData(RtsimAttachments.PENDING, old.plus(java.util.List.of(commandResult.array())));
+        chunk.setUnsaved(true);
+        dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
+    }
+
+    void dropFromChunkWhenAcked(net.minecraft.world.level.chunk.LevelChunk chunk, long opId, long seq) {
+        ResourceKey<Level> dim = chunk.getLevel().dimension();
+        net.minecraft.world.level.ChunkPos pos = chunk.getPos();
+        whenAcked(seq, () -> {
+            ServerLevel level = server.getLevel(dim);
+            net.minecraft.world.level.chunk.LevelChunk c = level == null ? null : level.getChunkSource().getChunkNow(pos.x, pos.z);
+            if (c == null)
+                return; // unloaded: it is journaled again when it loads
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = c.getExistingDataOrNull(RtsimAttachments.PENDING);
+            if (p == null)
+                return;
+            java.util.List<byte[]> keep = new java.util.ArrayList<>();
+            for (byte[] r : p.records())
+                if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) != opId)
+                    keep.add(r);
+            if (keep.isEmpty())
+                c.removeData(RtsimAttachments.PENDING);
+            else
+                c.setData(RtsimAttachments.PENDING, new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+            c.setUnsaved(true);
+        });
     }
 
     /**
@@ -775,6 +901,19 @@ public final class RtsimSession {
         m.pendingKiller = killer == null ? null : killer.getUUID();
     }
 
+    /** LivingDropsEvent: remember a dying member's drops, so they can carry its DIED. */
+    void onDrops(Entity e, java.util.Collection<net.minecraft.world.entity.item.ItemEntity> drops) {
+        AgentTag tag = RtsimAttachments.tag(e);
+        if (tag == null)
+            return;
+        PuppetGroup g = registry.live(tag, e.getUUID());
+        if (g == null)
+            return;
+        PuppetGroup.Member m = g.member(e.getUUID());
+        if (m.pendingDeath != null)
+            m.pendingDrops = new java.util.ArrayList<>(drops);
+    }
+
     void onTame(Entity e, Player tamer) {
         takeEntity(e, Obs.Taken.TAME, tamer == null ? null : tamer.getUUID());
     }
@@ -810,4 +949,6 @@ public final class RtsimSession {
     public long removedByOther() { return removedByOther; }
     public long passNanos() { return passNanos; }
     public long ticks() { return ticks; }
+    public long reasserted() { return reasserted; }
+    public int ackWaiters() { return ackWaiters.size(); }
 }

@@ -45,6 +45,8 @@ public final class BridgeEvents {
         bus.addListener(BridgeEvents::onLeave);
         bus.addListener(EventPriority.LOWEST, false, LivingDeathEvent.class, BridgeEvents::onDeath);
         bus.addListener(EventPriority.LOWEST, false, AnimalTameEvent.class, BridgeEvents::onTame);
+        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.entity.living.LivingDropsEvent.class, BridgeEvents::onDrops);
+        bus.addListener(BridgeEvents::onChunkLoad);
         bus.addListener(BridgeEvents::onEntityInteract);
         bus.addListener(BridgeEvents::onRegisterCommands);
     }
@@ -63,10 +65,39 @@ public final class BridgeEvents {
         RtsimSession.stopGlobal();
     }
 
+    /**
+     * Holders of pending records that loaded, waiting for the server thread (ChunkEvent.Load may come
+     * early in a chunk's promotion) or for the session (spawn chunks load before it exists).
+     */
+    private static final java.util.concurrent.ConcurrentLinkedQueue<net.minecraft.world.level.chunk.LevelChunk> LOADED_CHUNKS = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static final java.util.concurrent.ConcurrentLinkedQueue<Entity> LOADED_ENTITIES = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     private static void onServerTick(ServerTickEvent.Post event) {
         RtsimSession s = RtsimSession.current();
+        boolean live = s != null && !s.failed();
+        for (net.minecraft.world.level.chunk.LevelChunk c; (c = LOADED_CHUNKS.poll()) != null; )
+            if (live)
+                s.reassert(c);
+        for (Entity e; (e = LOADED_ENTITIES.poll()) != null; )
+            if (live && !e.isRemoved())
+                s.reassert(e);
         if (s != null)
             s.endOfTick();
+    }
+
+    private static void onChunkLoad(net.neoforged.neoforge.event.level.ChunkEvent.Load event) {
+        if (event.getLevel().isClientSide() || !(event.getChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk))
+            return;
+        if (chunk.hasData(RtsimAttachments.PENDING))
+            LOADED_CHUNKS.add(chunk);
+    }
+
+    private static void onDrops(net.neoforged.neoforge.event.entity.living.LivingDropsEvent event) {
+        if (event.getEntity().level().isClientSide())
+            return;
+        RtsimSession s = RtsimSession.current();
+        if (s != null)
+            s.onDrops(event.getEntity(), event.getDrops());
     }
 
     /**
@@ -96,8 +127,13 @@ public final class BridgeEvents {
         if (level.isClientSide())
             return;
         Entity e = event.getEntity();
-        if (!RtsimAttachments.isTagged(e))
+        if (!RtsimAttachments.isTagged(e)) {
+            // An ordinary entity back from disk that still carries records the engine may never have
+            // seen (a taken creature, a dropped cargo item): journal them again at the end of the tick.
+            if (event.loadedFromDisk() && e.hasData(RtsimAttachments.PENDING))
+                LOADED_ENTITIES.add(e);
             return;
+        }
         RtsimSession s = RtsimSession.current();
         if (s == null || s.rejectOnJoin(e, level)) {
             event.setCanceled(true);

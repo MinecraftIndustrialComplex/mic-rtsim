@@ -23,6 +23,13 @@ public final class RtsimAttachments {
     public static final Supplier<AttachmentType<AgentTag>> AGENT = TYPES.register("agent",
             () -> AttachmentType.builder(() -> new AgentTag(0L, 0)).serialize(AgentTag.CODEC).build());
 
+    /**
+     * {@code mic_rtsim:pending}: journal records a chunk or an entity carries until the engine has
+     * acknowledged them ({@link PendingRecords}). Saved with its holder, on purpose.
+     */
+    public static final Supplier<AttachmentType<PendingRecords>> PENDING = TYPES.register("pending",
+            () -> AttachmentType.builder(() -> PendingRecords.EMPTY).serialize(PendingRecords.CODEC, p -> !p.isEmpty()).build());
+
     public static void register(IEventBus modBus) {
         TYPES.register(modBus);
     }

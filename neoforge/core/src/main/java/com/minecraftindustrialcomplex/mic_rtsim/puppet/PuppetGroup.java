@@ -29,6 +29,8 @@ public final class PuppetGroup {
          */
         public MemberCapture pendingDeath;
         public java.util.UUID pendingKiller;
+        /** The items it dropped when it died (LivingDropsEvent), which carry its DIED. */
+        public java.util.List<net.minecraft.world.entity.item.ItemEntity> pendingDrops;
 
         Member(int index, UUID uuid, Entity entity) {
             this.index = index;

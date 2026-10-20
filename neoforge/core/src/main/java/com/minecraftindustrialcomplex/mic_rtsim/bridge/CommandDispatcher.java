@@ -223,8 +223,16 @@ final class CommandDispatcher implements Handover.CommandSink {
         BlockPos pos = new BlockPos(b.getInt(at + Cmd.TransferToContainer.X), b.getInt(at + Cmd.TransferToContainer.Y), b.getInt(at + Cmd.TransferToContainer.Z));
         // getChunkNow, not isLoaded: isLoaded reads the ticket level only, and the capability lookup
         // below would then wait on the server thread for the chunk to finish loading.
-        if (level == null || item == null || count <= 0 || level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null) {
+        net.minecraft.world.level.chunk.LevelChunk chunk = level == null ? null : level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        if (level == null || item == null || count <= 0 || chunk == null) {
             session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.FAILED, now);
+            return;
+        }
+        // The chunk itself remembers what was applied into it (PendingRecords): it may have been saved
+        // on unload after the transfer and before the journal, so after a crash only it knows.
+        if (RtsimSession.chunkCarriesOp(chunk, opId)) {
+            ByteBuffer dup = session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP, now);
+            session.dropFromChunkWhenAcked(chunk, opId, dup.getLong(Obs.OBS_SEQ));
             return;
         }
         IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
@@ -249,7 +257,7 @@ final class CommandDispatcher implements Handover.CommandSink {
             MicRtsim.LOGGER.warn("[mic_rtsim] transfer {} left {} x {} over at {}; dropped there", opId, rest.getCount(), item, pos);
             net.minecraft.world.Containers.dropItemStack(level, pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5, rest);
         }
-        session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now);
+        session.carryInChunk(chunk, session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now));
     }
 
     private ServerLevel level(int dimId) {

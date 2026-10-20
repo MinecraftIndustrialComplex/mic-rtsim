@@ -40,6 +40,7 @@ public final class BoundarySession {
     private volatile long durablePending;
 
     private long pendingAck;
+    private java.util.function.LongConsumer ackListener = acked -> {};
     private long droppedRecords;
     private long skippedStaleCommands;
     private long malformed;
@@ -72,6 +73,16 @@ public final class BoundarySession {
 
     public SessionStart start() {
         return start;
+    }
+
+    /** Called with each acknowledgement (the highest sequence the engine's saved pages include). */
+    public void onAck(java.util.function.LongConsumer listener) {
+        this.ackListener = listener;
+    }
+
+    /** Journals a record again under a new sequence ({@link Journal#recommit}). */
+    public long recommit(byte[] recordBytes) {
+        return journal.recommit(recordBytes);
     }
 
     public void setModuleMask(int mask) {
@@ -213,6 +224,7 @@ public final class BoundarySession {
             public void onConsumed(long h) {
                 if (pendingAck > 0) {
                     journal.trim(pendingAck);
+                    ackListener.accept(pendingAck);
                     pendingAck = 0;
                 }
                 sink.onConsumed(h);
