@@ -248,6 +248,8 @@ pub struct Dragons {
     players: BTreeMap<ActorId, PlayerView>,
     index: PreyIndex,
     by_entity: BTreeMap<Uuid, DragonId>,
+    /// Set while removing a dragon whose body already died in game (no despawn to send).
+    dying_by_body: bool,
     /// Item dictionary ids the plugin uses (HOARD_ROBBED), mapped to ledger items.
     items: BTreeMap<u32, Item>,
     /// Prey entity types (DRAGON_ATE's body dictionary ids) that are a village herd's good.
@@ -298,6 +300,7 @@ impl Dragons {
             players: BTreeMap::new(),
             index: PreyIndex::default(),
             by_entity: BTreeMap::new(),
+            dying_by_body: false,
             items: BTreeMap::new(),
             herd_bodies: BTreeMap::new(),
             next_seed: 0,
@@ -476,6 +479,7 @@ impl Dragons {
             fruitless: 0,
             bout: 0,
             last_grudge: None,
+            carried: BTreeMap::new(),
             rest: n.at,
         };
         let d = self.dragons.insert(row);
@@ -1472,19 +1476,18 @@ impl Dragons {
         if amount <= 0 {
             return;
         }
-        // A dragon with no lair yet carries it to wherever it settles: the first lair it has, or
-        // its species' first lair.
-        let l = self.dragons[d]
-            .lair
-            .or_else(|| {
-                self.lairs
-                    .iter()
-                    .position(|l| l.species == self.dragons[d].species)
-                    .map(|i| i as LairId)
-            })
-            .unwrap_or(0);
-        if let Some(lair) = self.lairs.get_mut(l as usize) {
-            *lair.hoard.entry(item).or_default() += amount;
+        // A dragon with no lair yet carries it until it claims one.
+        match self.dragons[d].lair {
+            Some(l) => *self.lairs[l as usize].hoard.entry(item).or_default() += amount,
+            None => {
+                *self
+                    .dragons
+                    .get_mut(d)
+                    .expect("live")
+                    .carried
+                    .entry(item)
+                    .or_default() += amount
+            }
         }
     }
 
@@ -1944,6 +1947,21 @@ impl Dragons {
         }
     }
 
+    /// A session starts: puppets never outlive one (docs/boundary.md §2.3), so every dragon the
+    /// engine thought embodied is abstract again where it was last seen, and carries on.
+    pub fn session_start(&mut self, w: &mut World, at: Tick) {
+        let embodied: Vec<DragonId> = self
+            .dragons
+            .iter()
+            .filter(|(_, x)| x.is_embodied())
+            .map(|(h, _)| h)
+            .collect();
+        for d in embodied {
+            self.resume(w, d, at, true);
+        }
+        self.by_entity.clear();
+    }
+
     /// An observation from the plugin, at `at`.
     pub fn ingest(&mut self, w: &mut World, infra: &mut dyn Infrastructure, o: &Obs, at: Tick) {
         let _ = infra;
@@ -2243,13 +2261,35 @@ impl Dragons {
                 .unwrap_or_else(|| "its lair".to_string());
             self.note(at, "heir", Some(d), format!("its grudges pass to {who}"));
         }
+        self.dying_by_body = true;
         self.remove(w, d, at);
+        self.dying_by_body = false;
     }
 
     /// Takes a dead dragon out: its lair may stand empty (the respawn clock starts), its kin
     /// lose a link and re-point their heirs.
     fn remove(&mut self, w: &mut World, d: DragonId, at: Tick) {
         self.cancel_leg(w, d);
+        // A body still in the world goes with it.
+        if let Some(State::Embodied { epoch, .. } | State::Leaving { epoch, .. }) =
+            self.dragons.get(d).map(|x| x.state)
+            && !self.dying_by_body
+        {
+            let (to, y) = self.dragons[d].position(&self.lairs, at);
+            self.outbox.push(Cmd::Depart(boundary::Depart {
+                agent: agent_of(d),
+                epoch,
+                reason: 5,
+                timeout_ticks: 0,
+                target: (f64::from(to.x), f64::from(y), f64::from(to.z)),
+            }));
+        }
+        // What a lairless dragon carried is lost with it.
+        if let Some(x) = self.dragons.get_mut(d) {
+            for (item, n) in std::mem::take(&mut x.carried) {
+                self.ledger.lose(item, n);
+            }
+        }
         self.leave_lair(w, d, at);
         let Some(x) = self.dragons.remove(d) else {
             return;
@@ -2313,7 +2353,11 @@ impl Dragons {
         lair.vacant_since = None;
         lair.plan += 1;
         let la = lair.actor;
-        self.dragons.get_mut(d).expect("live").lair = Some(l);
+        let x = self.dragons.get_mut(d).expect("live");
+        x.lair = Some(l);
+        for (item, n) in std::mem::take(&mut x.carried) {
+            *lair.hoard.entry(item).or_default() += n;
+        }
         if inherit && was_empty {
             let mut feelings = w.knowledge.sentiment_snapshot(la, at);
             feelings.sort_by_key(|(t, v)| (std::cmp::Reverse(i32::from(*v).abs()), *t));
@@ -2665,6 +2709,11 @@ impl Dragons {
         let mut held: BTreeMap<Item, i128> = BTreeMap::new();
         for l in &self.lairs {
             for (k, v) in &l.hoard {
+                *held.entry(*k).or_default() += i128::from(*v);
+            }
+        }
+        for (_, x) in self.dragons.iter() {
+            for (k, v) in &x.carried {
                 *held.entry(*k).or_default() += i128::from(*v);
             }
         }

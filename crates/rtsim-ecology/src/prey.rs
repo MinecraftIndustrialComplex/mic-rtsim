@@ -117,6 +117,8 @@ pub struct PreyLedger {
     pub hoarded: BTreeMap<Item, i128>,
     /// Taken from hoards by players (they leave the sim to the player).
     pub robbed: BTreeMap<Item, i128>,
+    /// Valuables a dragon with no lair carried when it died: lost with it (consumption).
+    pub lost: BTreeMap<Item, i128>,
 }
 
 impl PreyLedger {
@@ -150,6 +152,12 @@ impl PreyLedger {
         }
     }
 
+    pub fn lose(&mut self, item: Item, amount: i64) {
+        if amount > 0 {
+            *self.lost.entry(item).or_default() += i128::from(amount);
+        }
+    }
+
     /// Taken = eaten + burnt + hoarded, per good.
     pub fn check_split(&self) -> Result<(), String> {
         for (item, &t) in &self.taken {
@@ -165,10 +173,10 @@ impl PreyLedger {
         Ok(())
     }
 
-    /// What hoards should hold per good: hoarded − robbed.
+    /// What hoards (and lairless dragons) should hold per good: hoarded − robbed − lost.
     pub fn in_hoards(&self) -> BTreeMap<Item, i128> {
         let mut out = self.hoarded.clone();
-        for (k, v) in &self.robbed {
+        for (k, v) in self.robbed.iter().chain(self.lost.iter()) {
             *out.entry(*k).or_default() -= v;
         }
         out.retain(|_, v| *v != 0);

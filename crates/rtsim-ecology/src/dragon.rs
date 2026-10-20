@@ -154,6 +154,8 @@ pub struct Dragon {
     pub bout: u8,
     /// When it last went after a grudge (a raid or a visit), for the grudge cooldown.
     pub last_grudge: Option<Tick>,
+    /// Valuables it carries while it has no lair; they go to the hoard of the lair it claims.
+    pub carried: BTreeMap<Item, i64>,
     /// Where it last was when it stopped flying (a captured position).
     pub rest: Option<(Pos, i32)>,
 }
@@ -285,6 +287,7 @@ mod tests {
             fruitless: 0,
             bout: 0,
             last_grudge: None,
+            carried: BTreeMap::new(),
             rest: None,
         }
     }
