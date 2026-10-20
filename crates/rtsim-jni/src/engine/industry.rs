@@ -229,7 +229,7 @@ impl Link {
                 Ok(e) => Some(e),
                 Err(e) => {
                     log_error(&format!(
-                        "the industry engine's {count} pages do not decode ({e}): another build's format;                          the industry engine starts afresh and they are replaced"
+                        "the industry engine's {count} pages do not decode ({e}): another build's format; the industry engine starts afresh and they are replaced"
                     ));
                     None
                 }
