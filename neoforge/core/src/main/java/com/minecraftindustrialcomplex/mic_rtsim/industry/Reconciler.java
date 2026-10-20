@@ -59,6 +59,7 @@ public final class Reconciler {
     private final Set<String> recommitted = new HashSet<>();
     private int opsLeft;
     private int quota;
+    private long quotaTick = Long.MIN_VALUE;
 
     // counters
     long applied;
@@ -113,7 +114,17 @@ public final class Reconciler {
 
     // ---- commands -------------------------------------------------------------------------------
 
+    /** The block quota is per game tick, whether commands or held reconciles spend it. */
+    private void refreshQuota(long now) {
+        if (now != quotaTick) {
+            quotaTick = now;
+            quota = IndustryConfig.get(IndustryConfig.RECONCILE_OPS_PER_TICK);
+            opsLeft = quota;
+        }
+    }
+
     boolean accept(ByteBuffer b, int at, int size, int deltas, long cmdSeq, long now) {
+        refreshQuota(now);
         long opId = b.getLong(at + IndRecords.ChunkReconcile.OP_ID);
         int destroys = b.getInt(at + IndRecords.ChunkReconcile.DESTROY_COUNT);
         if (deltas < 0 || destroys < 0 || IndRecords.ChunkReconcile.size(deltas, destroys) > size) {
@@ -148,8 +159,7 @@ public final class Reconciler {
     }
 
     void tick(long now) {
-        quota = IndustryConfig.get(IndustryConfig.RECONCILE_OPS_PER_TICK);
-        opsLeft = quota;
+        refreshQuota(now);
         if (held.isEmpty())
             return;
         for (Iterator<Map.Entry<ChunkKey, List<Held>>> it = held.entrySet().iterator(); it.hasNext(); ) {

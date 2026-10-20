@@ -371,6 +371,7 @@ public final class IndustryGameTests {
         playerPlaced(helper, chestPos);
         Train[] train = {null};
         GlobalStation[] st = {null};
+        GlobalStation[] next = {null};
         long[] id = {0};
         helper.startSequence()
                 .thenWaitUntil(() -> {
@@ -406,6 +407,10 @@ public final class IndustryGameTests {
                 .thenExecute(() -> {
                     train[0].carriages.get(0).storage.getAllItems().extractItem(0, 10, false);
                     train[0].leaveStation();
+                    // Create sets the next destination after leaveStation (the schedule's next instruction).
+                    next[0] = syntheticStation(helper.getLevel(), new BlockPos(bx + 400, y, z), "Next Halt");
+                    train[0].navigation.destination = next[0];
+                    train[0].navigation.distanceToDestination = 400;
                 })
                 .thenWaitUntil(() -> {
                     long tid = CreateIds.of(train[0].id);
@@ -418,6 +423,10 @@ public final class IndustryGameTests {
                             && p.getLong(IndRecords.Port.ENTRIES + 8) == 10);
                     List<ByteBuffer> dep = received(IndRecords.IND_TRAIN_DEPARTED, IndRecords.Train.TRAIN, tid);
                     check("IND_TRAIN_DEPARTED", dep.size() == 1 && dep.get(0).getLong(IndRecords.Train.STATION) == CreateIds.of(st[0].id));
+                    check("bound for the next station", dep.get(0).getLong(IndRecords.Train.DEPARTED_DESTINATION) == CreateIds.of(next[0].id));
+                    long eta = (long) Math.ceil(400 / Math.max(1e-3, train[0].maxSpeed()));
+                    check("ETA = 400 blocks at its top speed: " + dep.get(0).getLong(IndRecords.Train.DEPARTED_ETA) + " vs " + eta,
+                            dep.get(0).getLong(IndRecords.Train.DEPARTED_ETA) == eta);
                     record("aTrainArrivalIsObserved", "departure", "destination " + dep.get(0).getLong(IndRecords.Train.DEPARTED_DESTINATION)
                             + ", eta " + dep.get(0).getLong(IndRecords.Train.DEPARTED_ETA));
                     TrainWatch.forget(train[0]);
@@ -525,6 +534,72 @@ public final class IndustryGameTests {
                     }
                     record("mailAtAnUnloadedDistrictIsAPackageRecord", "package in", goods);
                     check("its contents: 40 iron, 3 coal", goods.getOrDefault("i/64/minecraft:iron_ingot", 0L) == 40 && goods.getOrDefault("i/64/minecraft:coal", 0L) == 3);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * Ports through a player (§3.3, H14), driven by the NeoForge events a real player fires, with a fake
+     * player: a container session on a district chest (right-click, open, five ingots go in, close) is an
+     * IND_PORT of +5 into the district with the chest's index; a toss inside the district is +3; a pickup
+     * there is -2. None of them is an edit.
+     */
+    @GameTest(template = YARD, batch = "industry_13", timeoutTicks = 400)
+    public static void playerPortsAreCounted(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos chestPos = new BlockPos(bx + 4, y, z);
+        set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        playerPlaced(helper, chestPos);
+        ServerLevel level = helper.getLevel();
+        net.neoforged.neoforge.common.util.FakePlayer fp = net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level);
+        long[] id = {0};
+        int[] edits = {0};
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, chestPos);
+                    check("district", d != null && d.inventoryAt(chestPos) != null);
+                    id[0] = d.id;
+                    edits[0] = received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, d.id).size();
+                })
+                .thenExecute(() -> {
+                    fp.setPos(chestPos.getX() + 0.5, chestPos.getY() + 1, chestPos.getZ() + 1.5);
+                    fp.getInventory().clearContent();
+                    fp.getInventory().setItem(0, new ItemStack(Items.IRON_INGOT, 5));
+                    net.minecraft.world.inventory.ChestMenu menu = net.minecraft.world.inventory.ChestMenu.threeRows(1, fp.getInventory(), chest(helper, chestPos));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(
+                            fp, net.minecraft.world.InteractionHand.MAIN_HAND, chestPos,
+                            new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(chestPos), Direction.UP, chestPos, false)));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Open(fp, menu));
+                    chest(helper, chestPos).setItem(0, fp.getInventory().removeItem(0, 5));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close(fp, menu));
+                    ItemEntity tossed = new ItemEntity(level, fp.getX(), fp.getY(), fp.getZ(), new ItemStack(Items.COAL, 3));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.item.ItemTossEvent(tossed, fp));
+                    ItemEntity lying = new ItemEntity(level, chestPos.getX() + 0.5, chestPos.getY() + 1, chestPos.getZ() + 0.5, new ItemStack(Items.REDSTONE, 2));
+                    ItemStack original = lying.getItem().copy();
+                    lying.setItem(ItemStack.EMPTY);
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.ItemEntityPickupEvent.Post(fp, lying, original));
+                })
+                .thenWaitUntil(() -> {
+                    Map<Integer, Map<String, Long>> byKind = new HashMap<>();
+                    int inventory = -2;
+                    for (ByteBuffer p : received(IndRecords.IND_PORT, IndRecords.Port.DISTRICT, id[0])) {
+                        int kind = p.getInt(IndRecords.Port.PORT_KIND);
+                        if (kind == IndRecords.Port.PLAYER_SESSION)
+                            inventory = p.getInt(IndRecords.Port.INVENTORY);
+                        for (int i = 0; i < aux(p); i++) {
+                            int e = IndRecords.Port.ENTRIES + i * IndRecords.ENTRY16;
+                            byKind.computeIfAbsent(kind, k -> new HashMap<>()).merge(javaName(p.getInt(e)), p.getLong(e + 8), Long::sum);
+                        }
+                    }
+                    record("playerPortsAreCounted", "ports by kind", byKind);
+                    check("the session: +5 iron into the district", byKind.getOrDefault(IndRecords.Port.PLAYER_SESSION, Map.of()).getOrDefault("i/64/minecraft:iron_ingot", 0L) == 5);
+                    check("with the chest's inventory index", inventory == ind().district(id[0]).inventoryAt(chestPos).index());
+                    check("the toss: +3 coal", byKind.getOrDefault(IndRecords.Port.PLAYER_TOSS, Map.of()).getOrDefault("i/64/minecraft:coal", 0L) == 3);
+                    check("the pickup: -2 redstone", byKind.getOrDefault(IndRecords.Port.PLAYER_PICKUP, Map.of()).getOrDefault("i/64/minecraft:redstone", 0L) == -2);
+                    check("no edit from any of them", received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, id[0]).size() == edits[0]);
+                    fp.getInventory().clearContent();
                 })
                 .thenSucceed();
     }
