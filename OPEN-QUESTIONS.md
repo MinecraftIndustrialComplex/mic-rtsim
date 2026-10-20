@@ -4,8 +4,10 @@
 gives the recommended option first, then the alternatives. Answering "P17: recommended" or "I6: b" is
 enough.
 
-**Also review: the overnight implementation choices.** The implementation agent logs them in
-DECISIONS.md under "Overnight choices". They need your review too.
+**Also review: the overnight implementation choices.** Agents logged every reversible choice they made
+while you slept: O1 to O19 in DECISIONS.md ("Overnight choices"), and the rest in
+`docs/overnight-choices-*.md` (B for the bridge, E for the phase 1 engine, K for kernel follow-ups, F for
+the industry engine) and in mic-native's DECISIONS.md (N). They need your review too.
 
 **Where these come from:**
 - **P:** PLAN.md §17. P1 to P10 are also in DECISIONS.md. P19, P20, P22 and P23 are gone: they became
@@ -15,21 +17,29 @@ DECISIONS.md under "Overnight choices". They need your review too.
 
 | Blocks | Count |
 |---|---|
-| Phase 0 | 8 |
+| Phase 0 | 9 |
 | Phase 1 | 8 |
 | Phase 2 | 5 |
 | Industry | 27 |
 | Later | 11 |
-| **All** | **59** |
+| **All** | **60** |
 
 Phase 0 has its own group because it comes before phase 1 and its questions are the first to block
 code.
 
 ## Phase 0
 
-- **P1. Names and the split.** Recommended: working name `mic-rtsim`; mod ids `mic_rtsim` and
-  `mic_rtsim_<mod>`; plugins carry Java and data only, and rules live in generic modules. Alternatives:
-  other names; plugins with their own Rust rule crates. Blocks: the crate and Gradle layout.
+- **P1. The plugin split** (names are decided, A19). Recommended: plugins carry Java and data only, and
+  rules live in generic modules. Alternative: plugins with their own Rust rule crates. Blocks: the plugin
+  layout.
+- **O5. Random processes and elapsed time** (found by the kernel bench overnight). SCALE.md §4 commits
+  random processes once per slot, so a region left unread pays one commit per skipped slot, while §10
+  says no cost may depend on elapsed time. Measured: a random herd model went from 0.49 µs to 3,011 µs
+  per read as the gap grew from 1 to 10,000 days. Recommended: keep slots, and use the kernel's new
+  `dyadic` counts (catch-up cost flat in elapsed time) for processes whose randomness does not depend
+  on state, such as arrivals and deaths at fixed rates. Alternatives: slots everywhere and accept the
+  cost; require closed-form distributions for every random process. Blocks: herds and anything random
+  in lazy regions.
 - **P3. The engine owns the truth.** Recommended: yes; Minecraft entities are puppets vanilla never saves
   (PLAN §6.1, and A9 and A10 assume it). Alternative: vanilla saves entities and the engine reconciles.
   Blocks: the bridge and the puppet GameTests.
