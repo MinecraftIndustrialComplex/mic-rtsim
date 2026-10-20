@@ -226,6 +226,11 @@ Phases are INDUSTRY.md §16 (I-A to I-H).
   records (W8). Recommended: one rule for all, the industry one, so nothing a player did while a module
   was off is lost. Alternative: ignore everything while off, as dragons and ships do now.
 
+- **Herds overnight (docs/overnight-choices-herdsmc.md):** three additions to keep or undo: dragons
+  hunt herds (Y7); herds share the dragons' `ECOLOGY` module switch (Y2); a new `SessionPlugin.take`
+  hook. Also Y4, founding herds in real worlds: being built overnight as a HABITAT boundary record
+  (biome and surface samples per cell), which is a boundary addition for your review.
+
 ## Later
 
 - **P2. Sim calendar.** Recommended: Serene Seasons' calendar, or mic-climate's `YearClock` in Deep Time
