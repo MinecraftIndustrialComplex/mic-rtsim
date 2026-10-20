@@ -152,6 +152,9 @@ pub struct Caravan {
     pub notable: Option<ActorId>,
     /// The price each good was quoted at (the destination's, in its currency), for the sale.
     pub quotes: BTreeMap<GoodId, i64>,
+    /// What it traded with players for its home: the coin a sale brought, the goods it bought.
+    /// Kept apart from the flow's cargo (which belongs to the destination) and handed in at home.
+    pub purse: BTreeMap<GoodId, Amount>,
 }
 
 impl Caravan {
@@ -170,6 +173,35 @@ impl Caravan {
 
     pub fn is_empty(&self) -> bool {
         self.cargo().values().all(|&a| a == 0)
+    }
+
+    /// Everything it holds: the flow's cargo and its purse.
+    pub fn holdings(&self) -> BTreeMap<GoodId, Amount> {
+        let mut out = self.cargo();
+        for (&g, &a) in &self.purse {
+            if a != 0 {
+                *out.entry(g).or_default() += a;
+            }
+        }
+        out
+    }
+
+    /// Takes up to `amount` of `g` from the purse; returns what was taken.
+    pub fn take_purse(&mut self, g: GoodId, amount: Amount) -> Amount {
+        let have = self.purse.entry(g).or_default();
+        let t = (*have).min(amount).max(0);
+        *have -= t;
+        if *have == 0 {
+            self.purse.remove(&g);
+        }
+        t
+    }
+
+    /// Puts `amount` of `g` into the purse.
+    pub fn give_purse(&mut self, g: GoodId, amount: Amount) {
+        if amount > 0 {
+            *self.purse.entry(g).or_default() += amount;
+        }
     }
 
     /// Whether anyone is left to carry on (a trader or a merchant alive and present).

@@ -51,7 +51,7 @@ impl World {
             seen.add(kind(g), a);
         }
         for (_, c) in self.caravans.iter() {
-            for (g, a) in c.cargo() {
+            for (g, a) in c.holdings() {
                 seen.add(kind(g), i128::from(a));
             }
         }
@@ -163,7 +163,7 @@ impl World {
             w.u64(c.seed);
             w.u64(c.leg.end.0);
             w.u32(c.leg.generation);
-            for (g, a) in c.cargo() {
+            for (g, a) in c.holdings() {
                 w.u16(g.0);
                 w.i64(a);
             }
@@ -201,6 +201,12 @@ impl World {
             }
         }
         w.u64(self.op_counter);
+        for (k, id) in &self.promoted {
+            w.u32(k.edge);
+            w.u8(k.dir);
+            w.u64(k.departure);
+            w.u64(id.to_bits());
+        }
         for map in [
             &self.outside.player_in,
             &self.outside.player_out,

@@ -101,13 +101,13 @@ untouched: they stay P9.
 
 | World | Round 1 | Round 2 |
 |---|---|---|
-| Scripted 120-day scenario, days 110 to 120 | 34.3 (377 a day) | 0.65 (7 a day) |
-| Closed 11-node world | 36.5 at days 230 to 240, flat | 2.70, 0.66, 0.44, 0.10, then 0.00 from day 400 to 1,000 (0.01 in two windows: a house booked) |
-| The same world grown by joins (C22) | not measured | 3.15, then 0.00 from day 100 |
-| Grid of 16 villages | 14 to 17 (round 1 rules) | 1.19, then 0.02 to 0.06 |
-| Grid of 64 | 17 to 19 | 1.79, falling to 0.48 by days 700 to 800 |
-| Grid of 256 | not measured | 1.23, falling to 0.11 |
-| Grid of 1,024 | not measured | 1.29, falling to 0.09 |
+| Scripted 120-day scenario, days 110 to 120 | 34.3 (377 a day) | 0.33 (3.6 a day) |
+| Closed 11-node world | 36.5 at days 230 to 240, flat | 2.96, 0.34, then 0.00 from day 200 to 1,000 (0.03 in the last window: a house booked) |
+| The same world grown by joins (C22) | not measured | 3.21, then 0.00 from day 200 |
+| Grid of 16 villages | 14 to 17 (round 1 rules) | 1.24, then 0.00 to 0.05 |
+| Grid of 64 | 17 to 19 | 1.77, then 0.3 to 0.6, 0.42 at days 700 to 800 |
+| Grid of 256 | not measured | 1.22, then 0.13 to 0.24 |
+| Grid of 1,024 | not measured | 1.31, then 0.10 to 0.14 |
 
 Conservation held after every window and, in the tests, after every event. Tests:
 `rtsim-world/tests/quiet.rs` (the scenario world is silent over days 500 to 700; round 1's rules stay
@@ -124,8 +124,8 @@ sensitive, so one run per world is a sample, not a law):
 - Barter in flows: 9 to 20 events per market per day.
 - Best-first allocation when short: 3.4.
 
-**Residuals.** The 64-village grid still has a slow churn (0.5 events per market per day at day 800,
-falling); the trace there shows payments among broke ribbit villages and secondary suppliers. Growth
+**Residuals.** The 64-village grid still has a slow churn (0.3 to 0.6 events per market per day);
+the traces there show payments among broke ribbit villages and secondary suppliers. Growth
 (P17) and bands (P16) perturb a settled world by design: a house booked is a population step, so a
 world quiet for 300 days has an event when a village grows.
 
@@ -140,12 +140,12 @@ world quiet for 300 days has an event when a village grows.
 
 | | Round 1 rule (period at most the walk) | Dock wait |
 |---|---|---|
-| Median load | 0.001 slots | 0.020 slots |
-| 90th percentile | 0.021 | 0.49 |
-| Largest | 0.12 | 0.83 |
-| Carrying nothing over one item | 88% | 50% |
-| Median of its biggest good | 0.04 items | 0.93 items |
-| The robbed caravan of walkthrough D | wheat 0.53, leather 0.12, emerald 0.01 | leather 1.97, iron 1.97, emerald 2.46 |
+| Median load | 0.001 slots | 0.022 slots |
+| 90th percentile | 0.021 | 0.13 |
+| Largest | 0.12 | 0.70 |
+| Carrying nothing over one item | 88% | 49% |
+| Median of its biggest good | 0.04 items | 1.14 items |
+| The robbed caravan of walkthrough D | wheat 0.53, leather 0.12, emerald 0.01 | leather 1.97, iron 1.97, emerald 2.76 |
 
 On a busy road (`busy_roads_send_full_caravans`: 1,500 people fed by one farm) every caravan leaves
 full, at 6.6 slots. The scenario's own flows are small (most roads carry a few items a day), so its
@@ -174,7 +174,7 @@ the scenario before it expires instead of 8. Review with P18's lifetimes.
 
 **Memory per market** (grid of 1,024 villages after 20 days, counting allocator; the bench's 4,096
 point in brackets): round 1 30 KB [120.6 MiB]; round 2 before slimming 20.5 KB [81.8 MiB]; after
-15.8 KB [62.9 MiB, 15.7 KB]. What is left, by the estimate: the market table's timing wheel 3.3 KB
+15.8 KB [63.1 MiB, 15.8 KB]. What is left, by the estimate: the market table's timing wheel 3.3 KB
 (about 14 stale wakes per market and retained slot buffers, inside `rtsim-kernel`), the pipelines'
 vectors 2.0 KB, snapshots 1.9 KB, the world's own wheel 1.7 KB (same cause), market lines 1.4 KB,
 edge rows 1.0 KB, goods' curves and recipes 0.8 KB, the rest under 0.7 KB each.
@@ -182,6 +182,21 @@ edge rows 1.0 KB, goods' curves and recipes 0.8 KB, the rest under 0.7 KB each.
 **Rules kept as toggles** (E63): every quiescence rule is a field of `rtsim_trade::Rules` with the
 chosen default, and `--rules` on `sim phase1` and `sim quiet` turns any off, so each comparison above
 can be rerun.
+
+## Round 2: the adversarial review
+
+An Opus review of the round 2 diff (read-only, with its own scratch copy and tests) confirmed the line
+law with sinks against stepping (100,000 cases including `next_crossing`), the band edges, the exact
+coverage remainder, `net_changes`, removing idle pipelines, rationing, the travellers' windows and the
+road index, and found five bugs, all fixed with regression tests (`rtsim-world/tests/review.rs`):
+
+| # | Finding | Fix |
+|---|---|---|
+| E64 | **Cross-border imports went unpaid** while the payer had money: it paid all in the exporter's coin when it held any, the coverage cut held that line at its income, and nothing paid the rest (12,552 of the review's samples). | A payer pays in the exporter's coin as far as that line lasts (what arrives of it plus its stock over `T`, rounded to its news step) and the rest in its own; E50's cut applies to the home treasury only. A payment dead band (`payband`) was tried with it and left off: it made the larger grids busier (1,024 villages: 1.3 against 0.12 events per market per day). |
+| E65 | **A promoted caravan showed twice** to `visible`: as its row and as a cargo-less ghost traveller. Promoting the same key twice would have cut its consignments twice. | Promoted keys are kept (`promoted_row`) while their departure could still be sampled; `travellers` skips them and `promote` refuses them. |
+| E66 | **A player's trade with an outbound caravan paid the wrong market**: the player's coin rode with the flow's payments to the destination, and goods it bought went there free. | A caravan's trades with players go into its purse (`Caravan::purse`), handed in at home, robbed and dropped with it, counted in conservation; it buys only with what its sales brought. |
+| E67 | **Foreign coin arriving was never a breakpoint**, though "holds any" is news a payer reads. | A currency line also breaks when it crosses zero. |
+| E68 | **A malformed caravan key panicked** in `travellers`, `caravan_offers` and `caravan_trade`. | Bounds checked; such a key has no travellers and is refused. |
 
 ## Round 2: where this departs from the design
 

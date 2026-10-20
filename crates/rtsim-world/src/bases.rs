@@ -160,7 +160,7 @@ impl World {
     /// home's prices, up to the coin it carries (PLAN.md §8.5). A player its home dislikes pays
     /// more and is paid less (E7: never better than fair).
     pub fn caravan_offers(&self, c: CaravanRef, player: ActorId) -> Vec<CaravanOffer> {
-        let Some((from, to, cargo)) = self.caravan_parts(c) else {
+        let Some((from, to, cargo, purse)) = self.caravan_parts(c) else {
             return Vec::new();
         };
         let Some(cur) = self.nodes[from].currency else {
@@ -176,7 +176,9 @@ impl World {
         } else {
             self.nodes[from].news.get(to).cloned()
         };
-        let cash = cargo.get(&cur).copied().unwrap_or(0);
+        // It buys only with what its own sales brought (its purse): the coin in its cargo is
+        // the payment its destination is owed.
+        let cash = purse.get(&cur).copied().unwrap_or(0);
         let mut out = Vec::new();
         for g in self.goods.ids() {
             if self.goods.is_currency(g) {
@@ -238,18 +240,26 @@ impl World {
         }
     }
 
-    /// (origin, destination, cargo) of a caravan.
+    /// (origin, where it walks now, the flow's cargo, its purse) of a caravan.
+    #[allow(clippy::type_complexity)]
     fn caravan_parts(
         &self,
         c: CaravanRef,
-    ) -> Option<(usize, usize, std::collections::BTreeMap<GoodId, Amount>)> {
+    ) -> Option<(
+        usize,
+        usize,
+        std::collections::BTreeMap<GoodId, Amount>,
+        std::collections::BTreeMap<GoodId, Amount>,
+    )> {
         match c {
-            CaravanRef::Sampled(k) => self.traveller(k).map(|t| (t.from, t.to, t.cargo)),
+            CaravanRef::Sampled(k) => self
+                .traveller(k)
+                .map(|t| (t.from, t.to, t.cargo, Default::default())),
             // Where it is walking now: its destination outbound, its home on the way back.
             CaravanRef::Row(id) => self
                 .caravans
                 .get(id)
-                .map(|car| (car.home, car.leg.to, car.cargo())),
+                .map(|car| (car.home, car.leg.to, car.cargo(), car.purse.clone())),
         }
     }
 
@@ -292,18 +302,20 @@ impl World {
         let coins = offer.coins * i64::from(bundles);
         let (cur, at) = (offer.currency, self.now);
         let car = self.caravans.get_mut(id).ok_or(Refusal::NoStock)?;
+        // What a trade brings or buys goes into the purse, for its home (review fix: the flow's
+        // cargo and coin belong to the destination).
         match side {
             Side::Buy => {
                 let got = car.take(good, items * MILLI);
                 debug_assert_eq!(got, items * MILLI);
-                car.give(cur, coins * MILLI);
+                car.give_purse(cur, coins * MILLI);
                 *self.outside.player_out.entry(good).or_default() += i128::from(got);
                 *self.outside.player_in.entry(cur).or_default() += i128::from(coins * MILLI);
             }
             Side::Sell => {
-                let paid = car.take(cur, coins * MILLI);
+                let paid = car.take_purse(cur, coins * MILLI);
                 debug_assert_eq!(paid, coins * MILLI);
-                car.give(good, items * MILLI);
+                car.give_purse(good, items * MILLI);
                 *self.outside.player_out.entry(cur).or_default() += i128::from(paid);
                 *self.outside.player_in.entry(good).or_default() += i128::from(items * MILLI);
             }

@@ -117,6 +117,11 @@ pub struct Rules {
     /// A market that cannot pay for what reaches it asks for no more of anything (overnight
     /// choice E52).
     pub budget: bool,
+    /// A payment whose new rate is within one part in this of its current rate, or within 4
+    /// thousandths, keeps its current rate; an insolvent treasury is cut only when it pays out
+    /// more than that over its income (overnight choice E64). 0: off, the default: tried at 64 it
+    /// left the larger grids busier (1,024 villages: 1.3 events per market per day against 0.12).
+    pub pay_band_div: i64,
 }
 
 impl Default for Rules {
@@ -138,11 +143,28 @@ impl Default for Rules {
             hysteresis: true,
             input_hysteresis: true,
             budget: false,
+            pay_band_div: 0,
         }
     }
 }
 
 impl Rules {
+    /// The payment a pipeline now at `old` should carry when the bill says `new`: `old` while
+    /// they differ by at most a part in `pay_band_div` or 4 thousandths (E64).
+    pub fn pay_held(&self, old: crate::Amount, new: crate::Amount) -> crate::Amount {
+        if self.pay_band_div > 0
+            && old > 0
+            && new > 0
+            && ((new - old).abs() <= 4
+                || i128::from((new - old).abs()) * i128::from(self.pay_band_div)
+                    <= i128::from(old.max(new)))
+        {
+            old
+        } else {
+            new
+        }
+    }
+
     /// The rate a pipeline now at `old` should be set to when the allocation asks for `new`:
     /// `old` when both flow and they differ by less than one part in `sticky_div`.
     pub fn sticky(&self, old: crate::Amount, new: crate::Amount) -> crate::Amount {
@@ -178,6 +200,7 @@ impl Rules {
         hysteresis: false,
         input_hysteresis: false,
         budget: false,
+        pay_band_div: 0,
     };
 
     /// Sets rules from a comma-separated list of `name=value` (`slack=2,money=1,band=1,up=1,
@@ -209,6 +232,7 @@ impl Rules {
                 "hyst" => r.hysteresis = n != 0,
                 "inhyst" => r.input_hysteresis = n != 0,
                 "budget" => r.budget = n != 0,
+                "payband" => r.pay_band_div = n.max(0),
                 "div" => r.news_resolution_div = n.max(1),
                 _ => return Err(format!("unknown rule {k}")),
             }

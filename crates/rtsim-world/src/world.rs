@@ -232,6 +232,8 @@ pub struct World {
     pub(crate) op_counter: u64,
     /// Player bases' markers (P30).
     pub bases: BTreeMap<usize, crate::bases::BaseState>,
+    /// Travellers made individual rows, by key, while their departure could still be sampled.
+    pub(crate) promoted: BTreeMap<rtsim_travel::CaravanKey, CaravanId>,
 }
 
 impl World {
@@ -362,6 +364,7 @@ impl World {
             sentiment_dirty: std::collections::BTreeSet::new(),
             op_counter: 0,
             bases: BTreeMap::new(),
+            promoted: BTreeMap::new(),
         }
     }
 

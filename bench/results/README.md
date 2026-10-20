@@ -117,22 +117,22 @@ sweeps were not rerun here.
   events also grow with degree).
 - A world at rest costs nothing: the two-market test in `rtsim-world` reaches zero events.
 
-## 2026-10-20 11:34 UTC, the phase 1 market sweeps after round 2 (`scale-2026-10-20-1134-markets-edges`)
+## 2026-10-20 12:03 UTC, the phase 1 market sweeps after round 2 (`scale-2026-10-20-1203-markets-edges`)
 
 The same two sweeps (`--only markets,edges`, three repeats, median kept) on branch
-`overnight/phase1b`, after the quiescence rules (choices E43 to E52 in
+`overnight/phase1b`, after the quiescence rules (choices E43 to E52 and the review fixes in
 `docs/overnight-choices-phase1.md`), caravan batching (E53) and the memory work (E58). Same world
 generator and windows as the 10:13 run (trade 10 days, measure days 10 to 20, which is still the
 transient: a closed world settles over a few hundred days, see `rtsim-cli sim quiet`). Every run
 conserved every good and currency. Laptop, other agents' builds running alongside (load about 6).
 
 **Numbers** (10:13 run in brackets):
-- Markets, 16 to 4,096: 0.19 to 144 ms per sim day [1.45 to 984], slope 1.181 [1.165]; live heap 0.3
-  to 62.9 MiB [0.5 to 120.6], slope 0.966. At 4,096 markets that is 15.7 KB per market [30 KB].
+- Markets, 16 to 4,096: 0.20 to 157 ms per sim day [1.45 to 984], slope 1.186 [1.165]; live heap 0.3
+  to 63.1 MiB [0.5 to 120.6], slope 0.965. At 4,096 markets that is 15.8 KB per market [30 KB].
   The CPU drop is fewer events: the same grids make about a sixth of the events in the measured
-  window, and a twentieth or less once settled (`sim quiet --markets 1024`: 1.29 events per market
-  per day in days 0 to 100, 0.09 from day 300 on).
-- Edges, nearest-k 1 to 16 at 512 markets: 0.96 to 247.8 ms per sim day [13.0 to 719.7], slope 1.967
+  window, and a tenth or less once settled (`sim quiet --markets 1024`: 1.31 events per market per
+  day in days 0 to 100, 0.12 from day 300 on).
+- Edges, nearest-k 1 to 16 at 512 markets: 0.98 to 275.6 ms per sim day [13.0 to 719.7], slope 1.992
   [1.431]: the small-degree points fell the most, since a sparse grid settles fastest.
 - Where the memory goes (`rtsim-cli sim memory --markets 1024 --days 20`, counting allocator 15.8 KB
   per market, estimate 15.0 KB): the market table's wheel 3.3 KB (retained slot capacity and about

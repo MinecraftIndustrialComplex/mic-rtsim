@@ -270,6 +270,10 @@ fn step(
     // 4. Payments for what arrives at the next boundary.
     let home = m.currency;
     let mut pay: BTreeMap<(DirRef, GoodId), Amount> = BTreeMap::new();
+    // What each foreign coin can pay out per quantum: what arrives of it plus its stock spent
+    // over `T` (review fix, overnight choice E19 revised): a payer pays in the exporter's coin
+    // as far as that lasts and the rest in its own, never all or nothing.
+    let mut fx_left: BTreeMap<GoodId, Amount> = BTreeMap::new();
     for d in &node.out {
         let e = &edges[d.edge as usize];
         let din = &e.dirs[1 - d.dir as usize];
@@ -285,6 +289,33 @@ fn step(
         }
         let value = value as Amount;
         let theirs = nodes[din.from].currency;
+        if !m.rules.barter_in_flows {
+            let Some(hc) = home else { continue };
+            let mut home_value = value;
+            if let Some(tc) = theirs.filter(|&tc| tc != hc)
+                && m.price(tc) > 0
+            {
+                let left = fx_left.entry(tc).or_insert_with(|| {
+                    // Its stock spent over `T`, rounded down to the line's news step, so a stock
+                    // moving a little does not move every payment (E64).
+                    let l = m.line(tc);
+                    let step = m.news_step(tc);
+                    l.rates.inflow + l.stock.max(0) / m.t_quanta.max(1) as i64 / step * step
+                });
+                let full = mul_div_floor(value, PRICE_ONE, m.price(tc));
+                let in_tc = full.min(*left);
+                let covered = mul_div_floor(in_tc, m.price(tc), PRICE_ONE);
+                if in_tc > 0 && covered > 0 {
+                    *left -= in_tc;
+                    *pay.entry((*d, tc)).or_default() += in_tc;
+                    home_value = (value - covered).max(0);
+                }
+            }
+            if home_value > 0 {
+                *pay.entry((*d, hc)).or_default() += home_value;
+            }
+            continue;
+        }
         let (cur, amount) = match (theirs, home) {
             (Some(tc), Some(hc)) if tc != hc && m.stock(tc) > 0 && m.price(tc) > 0 => {
                 (tc, mul_div_floor(value, PRICE_ONE, m.price(tc)))
@@ -336,8 +367,9 @@ fn step(
             let income = l.rates.inflow + l.rates.cap - l.rates.cons;
             // With stickiness on, a payment a little above income is let stand until the store
             // is out (the uncovered rule below), so small moves of income do not ripple on.
-            let over = if m.rules.sticky_div > 0 {
-                let tol = (income.max(0) / m.rules.sticky_div).max(STICKY_MIN);
+            let over = if m.rules.sticky_div > 0 || m.rules.pay_band_div > 0 {
+                let div = m.rules.sticky_div.max(m.rules.pay_band_div);
+                let tol = (income.max(0) / div).max(STICKY_MIN);
                 l.rates.outflow > income.max(0) + tol
             } else {
                 l.rates.outflow > income.max(0)
@@ -347,7 +379,10 @@ fn step(
                     && m.cut
                     && Some(GoodId(gi as u16)) == m.currency
                     && l.stock < l.target);
-            let insolvent = m.rules.exporter_band && m.goods[gi].currency && below && over;
+            // Only the home treasury: a foreign coin line pays what it holds and receives by the
+            // split above, never cut to its income and held there (review fix).
+            let insolvent =
+                m.rules.exporter_band && Some(GoodId(gi as u16)) == m.currency && below && over;
             if l.rates.outflow == 0 || !(insolvent || l.next_change().uncovered == Some(1)) {
                 continue;
             }
@@ -627,9 +662,11 @@ fn set_payments(
         for cur in curs {
             let p = dir.pay.entry(cur).or_insert_with(|| Pipeline::new(delay));
             let old = p.current_rate();
-            let rate = m
-                .rules
-                .sticky(old, pay.get(&(*d, cur)).copied().unwrap_or(0));
+            let rate = m.rules.pay_held(
+                old,
+                m.rules
+                    .sticky(old, pay.get(&(*d, cur)).copied().unwrap_or(0)),
+            );
             if p.set(nb, rate, 0) {
                 changes.push(Change {
                     dest: to,

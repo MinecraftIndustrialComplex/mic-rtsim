@@ -41,8 +41,13 @@ impl World {
     pub fn travellers(&self, edge: u32, dir: u8) -> Vec<Traveller> {
         let q = self.cfg.trade.quantum;
         let b = q.index(self.now);
-        let e = &self.edges[edge as usize];
-        let d = &e.dirs[dir as usize];
+        // A key from the bridge may be stale or malformed: no such road, no travellers.
+        let Some(e) = self.edges.get(edge as usize) else {
+            return Vec::new();
+        };
+        let Some(d) = e.dirs.get(usize::from(dir)) else {
+            return Vec::new();
+        };
         // On the road: left within the walk's length. Its load is its whole window: every
         // consignment of it stays in transit until the caravan arrives, since a flow's delay is
         // the longest dock wait plus the walk (overnight choice E53).
@@ -52,6 +57,14 @@ impl World {
         d.lattice
             .departures(lo, b)
             .into_iter()
+            // A promoted caravan is a row now, not a traveller (review fix: no ghost).
+            .filter(|&dep| {
+                !self.promoted.contains_key(&CaravanKey {
+                    edge,
+                    dir,
+                    departure: dep,
+                })
+            })
             .map(|dep| {
                 let key = CaravanKey {
                     edge,
@@ -122,6 +135,14 @@ impl World {
         }
     }
 
+    /// The individual row a promoted traveller became, if it is still one.
+    pub fn promoted_row(&self, key: CaravanKey) -> Option<CaravanId> {
+        self.promoted
+            .get(&key)
+            .copied()
+            .filter(|&id| self.caravans.get(id).is_some())
+    }
+
     /// Makes the traveller `key` an individual row (SCALE.md §3): its consignments still on the
     /// road are cut out of the flow and become its cargo, so totals stay exact; its destination is
     /// woken where its arrivals change. `None` if no such caravan is on the road now.
@@ -133,8 +154,13 @@ impl World {
         let ed = e.d;
         let lag = e.lag();
         let edge_seed = e.seed;
-        let d = &e.dirs[key.dir as usize];
+        let d = e.dirs.get(usize::from(key.dir))?;
         let dep = key.departure;
+        // A caravan is promoted once (review fix: a second promotion would cut its consignments
+        // twice); keys of caravans long off the road are forgotten.
+        if self.promoted.contains_key(&key) {
+            return None;
+        }
         if !(dep <= b && b < dep + ed && d.lattice.is_departure(dep)) {
             return None;
         }
@@ -191,9 +217,13 @@ impl World {
             holder,
             notable: None,
             quotes,
+            purse: BTreeMap::new(),
         };
         let path = self.path_of(&leg);
         let id = self.caravans.insert(c);
+        self.promoted
+            .retain(|k, _| k.departure + lag.max(ed) * 2 >= b || k.edge != key.edge);
+        self.promoted.insert(key, id);
         let stamp = self.legs.book(path, Owner(id.to_bits()));
         let c = self.caravans.get_mut(id).expect("just inserted");
         c.leg.generation = stamp.generation;
@@ -274,13 +304,29 @@ impl World {
     /// or turns back home, as its temperament decides (C25).
     pub fn rob(&mut self, c: CaravanId, player: ActorId, share_milli: i64) -> Option<Attack> {
         let at = self.now;
-        let cargo = self.caravans.get(c)?.cargo();
-        let mut taken = BTreeMap::new();
+        let (cargo, purse) = {
+            let car = self.caravans.get(c)?;
+            (car.cargo(), car.purse.clone())
+        };
+        let mut taken: BTreeMap<GoodId, Amount> = BTreeMap::new();
+        let share = share_milli.clamp(0, 1000);
         for (g, a) in cargo {
-            let t = mul_div_floor(a, share_milli.clamp(0, 1000), 1000);
-            let got = self.caravans.get_mut(c)?.take(g, t);
+            let got = self
+                .caravans
+                .get_mut(c)?
+                .take(g, mul_div_floor(a, share, 1000));
             if got > 0 {
-                taken.insert(g, got);
+                *taken.entry(g).or_default() += got;
+                *self.outside.player_out.entry(g).or_default() += i128::from(got);
+            }
+        }
+        for (g, a) in purse {
+            let got = self
+                .caravans
+                .get_mut(c)?
+                .take_purse(g, mul_div_floor(a, share, 1000));
+            if got > 0 {
+                *taken.entry(g).or_default() += got;
                 *self.outside.player_out.entry(g).or_default() += i128::from(got);
             }
         }
@@ -429,7 +475,7 @@ impl World {
             return;
         };
         if !home {
-            for (g, a) in car.cargo() {
+            for (g, a) in car.holdings() {
                 *self.outside.player_out.entry(g).or_default() += i128::from(a);
             }
         }
@@ -465,7 +511,18 @@ impl World {
         let mut sold: BTreeMap<GoodId, Amount> = BTreeMap::new();
         let mut paid: BTreeMap<GoodId, Amount> = BTreeMap::new();
         let goods = &self.goods;
+        let at_home = stage == Stage::Returning || node == home;
         self.markets.apply(region, at, |m, _| {
+            // Home: what it traded with players for home is handed in.
+            if at_home && m.is_storehouse() {
+                for (&g, &a) in &car.purse {
+                    if a > 0 {
+                        let l = m.line_mut(g);
+                        l.stock += a;
+                        l.book.lump_in += a;
+                    }
+                }
+            }
             let cargo = car.cargo();
             for (&g, &a) in &cargo {
                 if a <= 0 {

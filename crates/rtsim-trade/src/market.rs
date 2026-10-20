@@ -692,9 +692,10 @@ impl LazyModel for Market {
             let c = l.next_change();
             if self.goods[i].currency && self.rules.exporter_band {
                 // A treasury drifting between levels decides little: crossing twice its target
-                // (cash refused) and the bottom of its band (it pays only what comes in, E50) do
-                // (overnight choice E47).
-                for th in [l.target.saturating_mul(2), l.target - band(l.target) - 1] {
+                // (cash refused), the bottom of its band (it pays only what comes in, E50) and
+                // zero do (overnight choice E47).
+                // ... and holding any at all, which payers read (review fix).
+                for th in [l.target.saturating_mul(2), l.target - band(l.target) - 1, 0] {
                     if let Some(k) = l.next_crossing(th) {
                         take(first + k - 1);
                     }
@@ -860,6 +861,15 @@ mod tests {
         assert_eq!(b, Ratio::new(256 + 128, 256));
         assert_eq!(s, Ratio::new(256 - 128, 256));
         assert_eq!(markup_for(100, Ratio::new(1, 2)), (FAIR, FAIR));
+    }
+
+    #[test]
+    fn foreign_coin_arriving_is_a_breakpoint() {
+        // A treasury at zero with coin flowing in: holding any at all is news (review fix).
+        let mut m = tiny(40 * MILLI, 0);
+        m.recompute();
+        m.lines[1].rates.inflow = 5;
+        assert_eq!(m.next_breakpoint(Tick(0)), Some(Tick(1000)));
     }
 
     #[test]
