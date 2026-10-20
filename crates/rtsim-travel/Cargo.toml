@@ -12,6 +12,7 @@ repository.workspace = true
 rtsim-kernel.workspace = true
 rtsim-settle.workspace = true
 rtsim-trade.workspace = true
+rtsim-knowledge.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
