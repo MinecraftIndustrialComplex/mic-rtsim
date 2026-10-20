@@ -98,6 +98,9 @@ pub const DEFAULT_INDEX_CACHE_BLOCKS: usize = 128;
 pub const OVERLAY_MAX_PAGES: usize = 16_384;
 /// Log bytes at which the next save folds the log, whatever the overlay holds. PLACEHOLDER.
 pub const LOG_MAX_BYTES: u64 = 4 << 20;
+/// Stored bytes one save moves out of segments being compacted, at most: compaction is streamed
+/// and spread over saves, so its memory stays bounded whatever a segment's size. PLACEHOLDER.
+pub const COMPACT_MAX_BYTES: u64 = 4 << 20;
 
 /// A page's identity. The engine packs (table, region) into it; the store only orders by it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -883,6 +886,22 @@ impl PageStore {
 
     /// Switches fsync on or off for later commits (a bulk build can skip it, then turn it on).
     pub fn set_durability(&mut self, durability: Durability) {
+        if self.durability == Durability::NoSync && durability == Durability::Fsync {
+            // What NoSync wrote is not durable yet: sync it now, or a later fsynced root could
+            // name segments whose bytes never reached the disk. Best effort; errors surface on
+            // the next commit's own syncs.
+            for &seq in self.segments.keys() {
+                if let Ok(f) = File::open(self.segment_path(seq)) {
+                    let _ = f.sync_all();
+                }
+            }
+            for path in [self.dir.join(MANIFEST_NAME), self.log_path(self.ckpt_id)] {
+                if let Ok(f) = File::open(path) {
+                    let _ = f.sync_all();
+                }
+            }
+            sync_dir(&self.dir);
+        }
         self.durability = durability;
     }
 
@@ -987,6 +1006,11 @@ impl PageStore {
     /// Returns the generation the store is at; an error if both are ahead.
     pub fn select_for_journal(&mut self, world_obs_seq: u64) -> Result<Generation> {
         if self.obs_seq <= world_obs_seq {
+            // The world's save holds this generation: it is confirmed, pending or not, so a later
+            // crash can never roll back past it.
+            if self.confirmed != self.current() {
+                self.confirm(self.save_seq)?;
+            }
             return Ok(self.current());
         }
         if self.confirmed.obs_seq <= world_obs_seq {
@@ -1139,13 +1163,19 @@ impl PageStore {
                 }
             }
         }
+        // Streamed, record by record, and capped per save, so compacting a big segment never
+        // holds more than COMPACT_MAX_BYTES; a segment left part-way stays a candidate.
         let mut moved: Vec<(PageKey, PageLoc, Vec<u8>)> = Vec::new();
-        for &c in &compact {
-            let path = self.segment_path(c);
-            let bytes = fs::read(&path).map_err(io(&path))?;
-            for (key, loc, stored) in segment_records(&path, c, &bytes)? {
+        let mut moved_bytes = 0u64;
+        'segments: for &c in &compact {
+            let mut r = SegmentReader::open(&self.segment_path(c), c)?;
+            while let Some((key, loc)) = r.next_record()? {
+                if moved_bytes >= COMPACT_MAX_BYTES {
+                    break 'segments;
+                }
                 if !batch.changes.contains_key(&key) && self.lookup(key)? == Some(loc) {
-                    let actual = crc32fast::hash(stored);
+                    let stored = r.read_body(loc.stored_len)?;
+                    let actual = crc32fast::hash(&stored);
                     if actual != loc.crc {
                         return Err(PageError::Crc {
                             what: format!("page {key:?} during compaction"),
@@ -1153,7 +1183,10 @@ impl PageStore {
                             actual,
                         });
                     }
-                    moved.push((key, loc, stored.to_vec()));
+                    moved_bytes += stored.len() as u64;
+                    moved.push((key, loc, stored));
+                } else {
+                    r.skip_body(loc.stored_len)?;
                 }
             }
         }
@@ -1435,13 +1468,22 @@ impl PageStore {
             }
         }
 
+        // The index segment is written as it is built, one block at a time, so a fold holds one
+        // decoded block (and the bounded cache), whatever the number of blocks it rewrites.
         let seg_seq = self.next_segment;
-        let mut seg = Writer::with_capacity(4096);
-        seg.raw(&SEGMENT_MAGIC);
-        seg.u16(FORMAT_VERSION);
-        seg.u16(SEG_INDEX);
-        seg.u64(u64::from(seg_seq));
-        let mut rewritten: Vec<(u64, Option<PageLoc>, Box<[PageLoc]>)> = Vec::new();
+        let path = self.segment_path(seg_seq);
+        let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+        tmp_name.push(".tmp");
+        let tmp = path.with_file_name(tmp_name);
+        let mut out = std::io::BufWriter::new(File::create(&tmp).map_err(io(&tmp))?);
+        let mut head = Writer::with_capacity(SEGMENT_HEADER as usize);
+        head.raw(&SEGMENT_MAGIC);
+        head.u16(FORMAT_VERSION);
+        head.u16(SEG_INDEX);
+        head.u64(u64::from(seg_seq));
+        out.write_all(head.as_bytes()).map_err(io(&tmp))?;
+        let mut off = SEGMENT_HEADER;
+        let mut placed: Vec<(u64, Option<PageLoc>)> = Vec::with_capacity(touched.len());
         for (b, entries) in touched {
             let cached = lock(&self.cache)
                 .get(b)
@@ -1455,54 +1497,69 @@ impl PageStore {
                 data[i] = v.unwrap_or(ABSENT);
             }
             if data.iter().all(|l| l.segment == 0) {
-                rewritten.push((b, None, data));
+                lock(&self.cache).remove(b);
+                placed.push((b, None));
                 continue;
             }
             let enc = EncodedPage::encode(&encode_block(&data));
-            seg.u64(b);
-            seg.u32(enc.raw_len);
-            seg.u32(enc.stored.len() as u32);
-            seg.u32(enc.crc);
-            let offset = seg.len() as u64;
-            seg.raw(&enc.stored);
+            let mut rec = Writer::with_capacity(RECORD_HEADER as usize);
+            rec.u64(b);
+            rec.u32(enc.raw_len);
+            rec.u32(enc.stored.len() as u32);
+            rec.u32(enc.crc);
+            out.write_all(rec.as_bytes()).map_err(io(&tmp))?;
+            out.write_all(&enc.stored).map_err(io(&tmp))?;
             let loc = PageLoc {
-                offset,
+                offset: off + RECORD_HEADER,
                 segment: seg_seq,
                 raw_len: enc.raw_len,
                 stored_len: enc.stored.len() as u32,
                 crc: enc.crc,
             };
-            rewritten.push((b, Some(loc), data));
+            off += RECORD_HEADER + enc.stored.len() as u64;
+            // A failed fold poisons the store, so the cache may run ahead of the root.
+            lock(&self.cache).insert(b, data);
+            placed.push((b, Some(loc)));
         }
-        let blocks_written = rewritten.iter().filter(|r| r.1.is_some()).count() as u64;
+        let f = out.into_inner().map_err(|e| PageError::Io {
+            path: tmp.clone(),
+            source: e.into_error(),
+        })?;
+        let blocks_written = placed.iter().filter(|p| p.1.is_some()).count() as u64;
         let mut written = 0u64;
         // 1. The index segment, durable before the root names it.
         if blocks_written > 0 {
-            write_atomic(&self.segment_path(seg_seq), seg.as_bytes(), self.durability)?;
-            written += seg.len() as u64;
+            if self.durability == Durability::Fsync {
+                f.sync_all().map_err(io(&tmp))?;
+            }
+            drop(f);
+            fs::rename(&tmp, &path).map_err(io(&path))?;
+            if self.durability == Durability::Fsync {
+                sync_dir(&self.dir);
+            }
+            written += off;
             self.segments.insert(
                 seg_seq,
                 SegmentInfo {
                     kind: SEG_INDEX,
-                    file_bytes: seg.len() as u64,
+                    file_bytes: off,
                     ..SegmentInfo::default()
                 },
             );
             self.next_segment = seg_seq + 1;
+        } else {
+            drop(f);
+            fs::remove_file(&tmp).map_err(io(&tmp))?;
         }
-        // 2. The index in memory: blocks, their references, the cache; the overlay is folded.
+        // 2. The index in memory: blocks and their references; the overlay is folded.
         let mut gone = Vec::new();
-        for (b, loc, data) in rewritten {
+        for (b, loc) in placed {
             if let Some(old) = self.blocks.remove(&b) {
                 self.unref(old, true, &mut gone);
             }
-            match loc {
-                Some(l) => {
-                    self.blocks.insert(b, l);
-                    self.addref(l, true);
-                    lock(&self.cache).insert(b, data);
-                }
-                None => lock(&self.cache).remove(b),
+            if let Some(l) = loc {
+                self.blocks.insert(b, l);
+                self.addref(l, true);
             }
         }
         self.overlay.clear();
@@ -1724,6 +1781,18 @@ impl PageStore {
             let at = off as usize;
             let rlen = u64::from(u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4")));
             let crc = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().expect("4"));
+            if rlen == 0 {
+                // No record is empty. Zeros to the end are a tail a power loss left (file size
+                // extended, data never written): torn. Anything else is corruption.
+                if bytes[at..].iter().all(|&b| b == 0) {
+                    torn = true;
+                    break;
+                }
+                return Err(PageError::Format(format!(
+                    "{}: empty record at {off}",
+                    path.display()
+                )));
+            }
             if off + 8 + rlen > len {
                 torn = true;
                 break;
@@ -1731,7 +1800,7 @@ impl PageStore {
             let payload = &bytes[at + 8..at + 8 + rlen as usize];
             let actual = crc32fast::hash(payload);
             if actual != crc {
-                if off + 8 + rlen == len {
+                if off + 8 + rlen == len || bytes[at + 8..].iter().all(|&b| b == 0) {
                     torn = true;
                     break;
                 }
@@ -1805,45 +1874,78 @@ impl PageStore {
     }
 }
 
-/// The records of a segment file: (key, location, stored bytes).
-fn segment_records<'a>(
-    path: &Path,
+/// Reads a segment's records one at a time, so compaction never loads a whole segment.
+struct SegmentReader {
+    path: PathBuf,
     seq: u32,
-    bytes: &'a [u8],
-) -> Result<Vec<(PageKey, PageLoc, &'a [u8])>> {
-    let bad = |what: &str| PageError::Format(format!("{}: {what}", path.display()));
-    if bytes.len() < SEGMENT_HEADER as usize || bytes[..4] != SEGMENT_MAGIC {
-        return Err(bad("not a segment"));
-    }
-    let mut out = Vec::new();
-    let mut off = SEGMENT_HEADER as usize;
-    while off < bytes.len() {
-        if bytes.len() - off < RECORD_HEADER as usize {
-            return Err(bad("truncated record header"));
+    r: std::io::BufReader<File>,
+    off: u64,
+    len: u64,
+}
+
+impl SegmentReader {
+    fn open(path: &Path, seq: u32) -> Result<SegmentReader> {
+        let f = File::open(path).map_err(io(path))?;
+        let len = f.metadata().map_err(io(path))?.len();
+        let mut r = std::io::BufReader::with_capacity(64 << 10, f);
+        let mut head = [0u8; SEGMENT_HEADER as usize];
+        r.read_exact(&mut head).map_err(io(path))?;
+        if head[..4] != SEGMENT_MAGIC {
+            return Err(PageError::Format(format!(
+                "{}: not a segment",
+                path.display()
+            )));
         }
-        let key = u64::from_le_bytes(bytes[off..off + 8].try_into().expect("8"));
-        let raw_len = u32::from_le_bytes(bytes[off + 8..off + 12].try_into().expect("4"));
-        let stored_len = u32::from_le_bytes(bytes[off + 12..off + 16].try_into().expect("4"));
-        let crc = u32::from_le_bytes(bytes[off + 16..off + 20].try_into().expect("4"));
-        let start = off + RECORD_HEADER as usize;
-        let end = start + stored_len as usize;
-        if end > bytes.len() {
-            return Err(bad("truncated record"));
-        }
-        out.push((
-            PageKey(key),
-            PageLoc {
-                offset: start as u64,
-                segment: seq,
-                raw_len,
-                stored_len,
-                crc,
-            },
-            &bytes[start..end],
-        ));
-        off = end;
+        Ok(SegmentReader {
+            path: path.to_path_buf(),
+            seq,
+            r,
+            off: SEGMENT_HEADER,
+            len,
+        })
     }
-    Ok(out)
+
+    /// The next record's key and location, its body not yet read; `None` at the end.
+    fn next_record(&mut self) -> Result<Option<(PageKey, PageLoc)>> {
+        if self.off >= self.len {
+            return Ok(None);
+        }
+        if self.len - self.off < RECORD_HEADER {
+            return Err(PageError::Format(format!(
+                "{}: truncated record header",
+                self.path.display()
+            )));
+        }
+        let mut h = [0u8; RECORD_HEADER as usize];
+        self.r.read_exact(&mut h).map_err(io(&self.path))?;
+        let u32_at = |i: usize| u32::from_le_bytes(h[i..i + 4].try_into().expect("4"));
+        let key = PageKey(u64::from_le_bytes(h[0..8].try_into().expect("8")));
+        let loc = PageLoc {
+            offset: self.off + RECORD_HEADER,
+            segment: self.seq,
+            raw_len: u32_at(8),
+            stored_len: u32_at(12),
+            crc: u32_at(16),
+        };
+        self.off = loc.offset + u64::from(loc.stored_len);
+        if self.off > self.len {
+            return Err(PageError::Format(format!(
+                "{}: truncated record",
+                self.path.display()
+            )));
+        }
+        Ok(Some((key, loc)))
+    }
+
+    fn read_body(&mut self, len: u32) -> Result<Vec<u8>> {
+        let mut buf = vec![0; len as usize];
+        self.r.read_exact(&mut buf).map_err(io(&self.path))?;
+        Ok(buf)
+    }
+
+    fn skip_body(&mut self, len: u32) -> Result<()> {
+        self.r.seek_relative(i64::from(len)).map_err(io(&self.path))
+    }
 }
 
 /// `path.tmp`, fsync, rename, fsync of the folder: Deep Time's `write_atomic`.
@@ -2080,9 +2182,21 @@ mod tests {
         drop(s);
 
         // The world's save reached observation 30: keep the newest.
+        // Two worlds from here: one whose save reached observation 30, one whose save stopped
+        // at 15 (a copy of the store).
+        let dir2 = tmpdir("gens-copy");
+        fs::create_dir_all(&dir2).unwrap();
+        for e in fs::read_dir(&dir).unwrap() {
+            let e = e.unwrap();
+            fs::copy(e.path(), dir2.join(e.file_name())).unwrap();
+        }
+        // The world's save reached observation 30: keep the newest, and it is confirmed now.
         let mut s = PageStore::open_for_journal(&dir, Durability::NoSync, 30).unwrap();
         assert_eq!(s.get(PageKey(1)).unwrap().unwrap(), b"a3");
+        assert_eq!(s.confirmed().obs_seq, 30);
         drop(s);
+        fs::remove_dir_all(&dir).unwrap();
+        let dir = dir2;
         // The world's save only reached 15: roll back to the confirmed generation.
         let mut s = PageStore::open_for_journal(&dir, Durability::NoSync, 15).unwrap();
         assert_eq!(
@@ -2261,6 +2375,63 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Compacting a big segment is streamed and spread over saves: no save moves more than
+    /// COMPACT_MAX_BYTES (plus the page that crosses it), and every page survives.
+    #[test]
+    fn compaction_is_capped_per_save() {
+        let dir = tmpdir("capped");
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        let big = |k: u64| -> Vec<u8> {
+            let mut x = k.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            (0..2_000)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x as u8
+                })
+                .collect()
+        };
+        // One segment of about 16 MiB.
+        let mut b = SaveBatch::new();
+        for k in 0..8_000u64 {
+            b.put(PageKey(k), &big(k));
+        }
+        s.commit(b, 0).unwrap();
+        // Rewrite two thirds of it, small saves of tiny pages: the big segment falls under half
+        // live and its survivors move out over several saves.
+        let mut moved = 0;
+        for round in 0..54u64 {
+            let mut b = SaveBatch::new();
+            for k in round * 100..(round + 1) * 100 {
+                b.put(PageKey(k), &page(k, 10));
+            }
+            let st = s.commit(b, round + 1).unwrap();
+            // The segment holds this save's 100 small pages and at most COMPACT_MAX_BYTES of
+            // moved pages plus the one that crosses the cap, each with its record header.
+            assert!(
+                st.segment_bytes
+                    <= SEGMENT_HEADER
+                        + 100 * 64
+                        + COMPACT_MAX_BYTES
+                        + 2_100
+                        + 20 * st.pages_compacted,
+                "round {round}: {} bytes, {} pages compacted",
+                st.segment_bytes,
+                st.pages_compacted
+            );
+            moved += st.pages_compacted;
+        }
+        assert!(moved > 0, "the big segment was compacted");
+        drop(s);
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        for k in (0..8_000u64).step_by(7) {
+            let want = if k < 5_400 { page(k, 10) } else { big(k) };
+            assert_eq!(s.get(PageKey(k)).unwrap().unwrap(), want, "page {k}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A manifest that exists but cannot be read must stop the open, not turn every segment into
     /// a stray to delete.
     #[test]
@@ -2309,6 +2480,32 @@ mod tests {
         fs::write(&seg, bytes).unwrap();
         let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
         assert!(matches!(s.get(PageKey(9)), Err(PageError::Crc { .. })));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A log whose tail is zeros (a power loss after the size grew, before the data landed)
+    /// opens at the last whole record.
+    #[test]
+    fn a_zero_filled_log_tail_is_torn() {
+        let dir = tmpdir("zerotail");
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        for round in 0..3u64 {
+            let mut b = SaveBatch::new();
+            b.put(PageKey(round), b"x");
+            s.commit(b, round).unwrap();
+        }
+        drop(s);
+        let log = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "rtl"))
+            .unwrap();
+        let mut bytes = fs::read(&log).unwrap();
+        bytes.extend_from_slice(&[0; 40]);
+        fs::write(&log, bytes).unwrap();
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        assert_eq!(s.obs_seq(), 2);
+        assert_eq!(s.get(PageKey(2)).unwrap().unwrap(), b"x");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -95,3 +95,98 @@ the BTRS bound is computed differently (same distribution where it was already e
 - World age, 1 to 1,000 days, 100,000 regions: closed 0.78 to 0.48 ms per day; dyadic 1.01 to 0.95
   ms; herd 2.45 to 13.61 ms, with slot commits per day rising from 10,424 to 99,809.
 - Events, 10 to 100,000 a day (herd): 0.50 to 13.82 ms per day (slope 0.368).
+
+## 2026-10-20 10:15 to 10:44 UTC, the second kernel run: paging, the parallel step, O5, the potato profile
+
+**Files.** `scale-2026-10-20-1015-full`, `bsp-2026-10-20-1027-full`, `o5-2026-10-20-1028-full`, and
+the potato profile beside them: `scale-2026-10-20-1034-full-potato`, `bsp-2026-10-20-1043-full-potato`,
+`o5-2026-10-20-1044-full-potato` (`.txt` is the printed table).
+
+**Conditions.** Code at commit `241d78b` (release, thin LTO, rustc 1.98.1, baseline x86-64, no
+`target-cpu`). The records say `git_dirty: true` because docs and later kernel edits (streamed
+compaction and folds, review fixes) were uncommitted while they ran; the binary was built at
+`241d78b` before those edits. Nice 10, three repeats, median kept. Full runs on all 24 logical
+CPUs; potato runs pinned with `taskset -c 2,4`: two different physical cores (cores 1 and 2; their
+SMT siblings 3 and 5 unused), as A11 asks. 1-minute load 6.7 to 10.9 throughout: other sessions
+were running (the phase 1 agent was profiling its own bench). **This laptop is a Ryzen AI MAX PRO
+390 at up to 5.1 GHz with a large L3; two of its cores are far faster than a potato's two. A11's
+Windows run was not possible tonight.** Choices K16 to K19 in `docs/overnight-choices-kernel2.md`.
+
+**Paging holds resident memory flat (A16).** The bench world on paged regions, 4 MiB budget
+(PLACEHOLDER), a save every 6,000 ticks, from the `paged` rows of `scale-2026-10-20-1015-full`:
+
+| model | regions | resident pages, peak | live heap | store index | loads/day | prefetch / used | step CPU ms/day | save CPU ms/day | bytes/save |
+|---|---|---|---|---|---|---|---|---|---|
+| closed | 100,000 | 4.0 MiB | 5.0 MiB | 133 KiB | 349 | 321 / 321 | 7.29 | 13.1 | 497 KiB |
+| closed | 1,000,000 | 4.0 MiB | 6.5 MiB | 1,536 KiB | 932 | 844 / 844 | 11.56 | 12.7 | 832 KiB |
+| closed | 10,000,000 | 4.0 MiB | 7.7 MiB | 2,717 KiB | 994 | 897 / 897 | 18.16 | 17.5 | 682 KiB |
+| closed | 100,000,000 | 4.0 MiB | 7.9 MiB | 2,879 KiB | 1,000 | 903 / 903 | 25.86 | 27.7 | 675 KiB |
+| herd | 100,000,000 | 4.0 MiB | 7.8 MiB | 2,878 KiB | 1,000 | 904 / 903 | 37.72 | 34.4 | 1,287 KiB |
+| dyadic | 10,000,000 | 6.2 MiB | 7.6 MiB | 2,717 KiB | 2,016 | 902 / 600 | 30.32 | 19.8 | 1,177 KiB |
+
+- Resident page bytes sit at the budget at every size (slope 0.000 for closed and herd). The live
+  heap grows 5.0 to 7.9 MiB over three orders of magnitude (slope 0.068) and stops: what grows is the
+  store's index block cache and overlay filling to their caps (1.5 MiB and 16,384 entries, K15), and
+  from 10 million to 100 million regions the heap moved 0.2 MiB. In the first run, before the index
+  was paged, the store's index was 925 KiB at 1 million regions and growing by about 33 bytes per page.
+- The dyadic model runs over budget (peak 6.2 MiB): its pages are bigger and dirty pages wait for
+  the next save (K3); `over_budget_checks` in the JSON counts it.
+- RSS after `malloc_trim` was 11 to 31 MiB. The heap peak inside the window reached 80 MiB at 100
+  million regions: a fold held every rewritten index block in memory, and compaction read whole
+  segment files. Both are streamed and capped since (`COMPACT_MAX_BYTES`, K20); these runs predate it.
+- Saves: the log record per save stays 15 to 28 KB and bytes per save 0.5 to 1.5 MiB at every size
+  (slopes 0.03 to 0.07): a save writes what changed, not the world. CPU per day rises with the miss
+  rate (more events miss the cache as the world grows, and index blocks start missing too) until
+  every event misses, then holds; slopes 0.09 to 0.19 against the declared 0.35.
+- Prefetch: caravan destinations booked from their departure, and read-ahead along the observers'
+  path, are used nearly every time; at the hot end of the LRU list they survive their lead time
+  (the first run put them at the cold end and the budget check evicted every one unused).
+
+**The parallel step and the determinism gate** (`bsp-2026-10-20-1027-full`): 200,000 trading posts,
+6 days, saves every 6,000 ticks. Every run of each world ended in the same state hash and mail hash
+at 1, 2, 4, 8 and 16 workers, resident and paged (a quarter of the pages fit): gates for all four
+worlds passed, and grain was conserved in every run. Speed of the step itself, against 1 worker:
+
+| world | 2 | 4 | 8 | 16 | 16, paged |
+|---|---|---|---|---|---|
+| 1 s steps, bare engine | 1.08x | 1.13x | 0.99x | 0.52x | 0.60x |
+| 30 s steps, bare engine | 1.27x | 1.29x | 0.63x | 0.48x | 0.61x |
+| 1 s steps, 1,500 rounds per event (11.6 us measured) | 1.50x | 2.16x | 2.96x | 3.32x | 3.29x |
+| 30 s steps, 1,500 rounds per event | 1.85x | 3.57x | 6.07x | 9.23x | 7.19x |
+
+- The bare engine's own work per event (catch-up of a day's slot, a transfer) is under a
+  microsecond, so the serial gather and merge cost as much as the parallel part and threads do not
+  pay. With per-event work of the size module logic will have, the step scales: 9.2x on 16 workers
+  with 30-second steps (6,095 regions per step), 3.3x with 1-second steps (206 per step).
+- `MIN_JOB_WEIGHT` keeps small steps on the caller; it was added after the first run, where 8 and
+  16 workers ran the bare world 1.5 to 2 times slower than 1.
+
+**O5: where slot commits cost** (`o5-2026-10-20-1028-full`): 1,000 regions read once every k days,
+CPU per region per sim day after k days of warm-up:
+
+| read every k days | 1 | 4 | 16 | 32 | 64 | 256 | 1,024 |
+|---|---|---|---|---|---|---|---|
+| slot model, ns | 337.6 | 358.5 | 388.7 | 338.2 | 362.7 | 359.8 | 321.2 |
+| dyadic model, ns | 5,109.8 | 1,327.6 | 408.0 | 211.5 | 89.0 | 22.5 | 4.8 |
+
+The slot model costs about 320 to 390 ns per region-day whatever the cadence: it is eager stepping,
+paid late. The dyadic model costs about 5 us per read, so it is dearer for regions read more often
+than every 16 days and cheaper past that (67x at 1,024 days). Regions that players and caravans
+visit daily do not need dyadic counts; regions nobody visits for months do.
+
+**The potato profile** (two physical cores, nice 10) beside the full machine:
+
+| | full machine | potato |
+|---|---|---|
+| paged closed, 100 million regions: step CPU ms/day, live heap | 25.86, 7.9 MiB | 22.72, 7.9 MiB |
+| paged herd, 100 million regions | 37.72, 7.8 MiB | 33.70, 7.8 MiB |
+| resident herd, 1 million regions, CPU ms/day | 2.19 | 2.23 |
+| herd read after 10,000 days | 3,564.4 us | 3,004.1 us |
+| step, 30 s steps, 1,500 rounds per event, 2 workers | 1.85x | 1.99x |
+| step, 1 s steps, 1,500 rounds per event, 2 workers | 1.50x | 1.47x |
+| O5 crossover | about 16 days | about 16 days |
+
+Single-threaded numbers match within noise: one fast core is one fast core. The parallel step gets
+close to 2x on two cores when there is work per event. The potato scale check failed one bound: the
+latent sweep's CPU max/min was 4.11 against the PLACEHOLDER 4.0 (the binomial sampler's switch from
+inversion to BTRS, see the 08:30 notes); every slope and every invariant held.

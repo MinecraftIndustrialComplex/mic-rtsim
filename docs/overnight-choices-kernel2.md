@@ -54,10 +54,39 @@ potato profile (A11), and a bench that shows where O5 matters.
 
 | # | Choice | Why |
 |---|---|---|
-| K16 | The scale bench gains `paged` sweeps: the bench world (same regions, caravans, observers) on a `PagedTable` over a store on disk, at 100,000, 1,000,000 and 10,000,000 regions, with a 4 MiB budget (PLACEHOLDER: small enough that every point pages), a save every 6,000 ticks (Minecraft's autosave), caravan destinations prefetched from their departure and observers reading ahead along their path. The world is built page by page with periodic commits, so no point ever holds the whole world. Contracts: resident page bytes flat (slope 0.1, max/min 4), heap flat (0.1), CPU 0.35 and bytes per save 0.35 (both PLACEHOLDERS: they rise until every event misses the cache, then hold). Step CPU excludes save CPU, which is reported beside it. | A16 asks for resident memory that does not grow with the world; the bench shows it at a fixed budget, as Ben asked. |
+| K16 | The scale bench gains `paged` sweeps: the bench world (same regions, caravans, observers) on a `PagedTable` over a store on disk, at 100,000, 1,000,000, 10,000,000 and (closed and herd models) 100,000,000 regions, with a 4 MiB budget (PLACEHOLDER: small enough that every point pages), a save every 6,000 ticks (Minecraft's autosave), caravan destinations prefetched from their departure and observers reading ahead along their path. The world is built page by page with periodic commits, so no point ever holds the whole world. Contracts: resident page bytes flat (slope 0.1, max/min 4), heap flat (0.1), CPU 0.35 and bytes per save 0.35 (both PLACEHOLDERS: they rise until every event misses the cache, then hold). Step CPU excludes save CPU, which is reported beside it. Before the measured window the bench hands freed memory back to the OS (`malloc_trim`) and resets the peak resident size (`/proc/self/clear_refs`), so RSS shows the window, not the build. | A16 asks for resident memory that does not grow with the world; the bench shows it at a fixed budget, as Ben asked. Without the trim, RSS kept what the build phase had passed through the allocator (11 to 23 MiB against 5 to 8 MiB live). The dyadic model stops at 10 million regions because its conservation check walks four trees per region. |
 | K17 | `rtsim-cli bench bsp` runs 200,000 trading posts (`synth::TradePost`: a herd on day slots, grain, a caravan every one to four days carried as a message) for 6 days after 1 day of warm-up, at 1, 2, 4, 8 and 16 workers, with steps of 20 ticks (1 s) and 600 ticks (30 s), resident and paged (a quarter of the pages fit), and with 0 or 1,500 rounds of hashing per event (`TradePost::work`, PLACEHOLDER) standing for a module's work: the first run showed that the bare engine's work per event (under a microsecond) is too small to gain from threads, so the bench also measures a world whose events cost what module logic will. The determinism gate compares the state hash (every page caught up to the end) and the hash of the mail in flight across every run of a step length; `--check` fails when any differs or grain is not conserved. Speedup is measured on the time inside the step, not on wall time, which saves with fsync dominate. | PLAN.md §4.7's gate replays observations and the stretch log; there are none yet, so the gate runs a synthetic world. `TradePost` lives in `synth` with the other scaffolding (O12). |
 | K18 | `rtsim-cli bench o5` reads 1,000 regions once every k days (k from 1 to 1,024, staggered, after k days that bring every region into the cycle) for 1,024 days, slot model against dyadic model, and reports CPU per region per sim day. It changes nothing: O5 is Ben's. | It shows the one number O5 turns on: a slot model costs about one commit per region-day at any cadence (eager stepping, paid late), a dyadic model one read per k days, so the cadence where they cross says which regions need dyadic counts. |
 | K19 | The potato profile (A11) pins every bench to CPUs 2 and 4 with `taskset`, at nice 10. `lscpu -e` and `/sys/devices/system/cpu/cpu*/topology` show SMT siblings in adjacent pairs (0-1, 2-3, ...), so CPUs 2 and 4 are two different physical cores (cores 1 and 2, same L3); CPU 0 is avoided because it takes more interrupts. The parallel-step bench runs at 1 and 2 workers there. | A11 asks for two physical cores, not SMT siblings. **This is a Ryzen AI MAX PRO 390 at up to 5.1 GHz with a large L3, not a low-end PC: two of its cores are much faster than a potato's two.** A11's Windows run was not possible tonight. The build targets baseline x86-64 (no `-C target-cpu`), as A11 wants for natives. |
+
+| K20 | Compaction streams a segment record by record and moves at most `COMPACT_MAX_BYTES` (4 MiB, PLACEHOLDER) per save; a fold writes its index segment block by block to the file. | The paged bench at 100 million regions showed a heap peak of 80 MiB inside the window: a fold held every rewritten block, and compaction read whole segment files. Neither may scale with the world. Measured before this change; not re-measured tonight. |
+
+## Fixes from an adversarial review (same night)
+
+An Opus review of the kernel diff found no critical bug and five major ones. Fixed:
+- A zero-filled log tail (a power loss after the file grew, before its data landed) read as an
+  empty record and made the store unopenable; empty records are now torn when only zeros follow.
+- `select_for_journal` (and so `open_for_journal`) left a generation the world's save holds pending;
+  it now confirms it, so a later crash cannot roll back past it.
+- `set_durability(Fsync)` after a NoSync build now syncs what NoSync wrote.
+
+Not fixed tonight (known, with the fix the review proposed):
+- **Two saves in flight lose changes**: `saving` is a bool, so the first ticket back unpins a page a
+  later snapshot still holds. Fix: a snapshot number per page; `saved` unpins only its own.
+- **An IO error inside a step drops the step's popped wakes and mail.** Fix: re-book what was
+  popped (wakes at their booked time, mail in the mail wheel) before returning, or load first.
+- A dropped `SaveTicket` pins its pages forever; a bad page in a compaction candidate stops every
+  later save; heap accounting ignores catch-up changes (latent: no model reports heap); mail that
+  lags the table lands at an eviction-dependent time (clamp to the window start); a model whose
+  breakpoint is not after its anchor loops forever in a step; a panicking step job loses its pages
+  (a step panic is fatal: drop the table and reopen); keys past the 48-bit page range are not
+  checked outside `insert`; the prefetch wheel grows if the host never calls `prefetch_due`;
+  `Inline::run` stops at the first panic.
+- **For the JNI wiring (K12):** open `PagedTable` and `Bsp` only after `select_for_journal`, and
+  acknowledge observations through `confirmed().obs_seq`, never `obs_seq()`: the journal must still
+  hold everything after the generation a crash can roll back to.
+- Docs: a save is three fsyncs (segment, folder, log), not two; the store's block directory grows by
+  one entry per 512 pages.
 
 ## Where the code and the design documents differ
 
