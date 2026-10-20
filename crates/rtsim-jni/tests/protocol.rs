@@ -2271,9 +2271,9 @@ mod herds {
 mod worldmodel {
     use super::*;
     use rtsim_jni::engine::{HABITAT_INFO, MODULE_HERDS};
+    use rtsim_space::HabitatRecord;
     use rtsim_space::habitat::KNOWN_END;
     use rtsim_space::synth::{Painter, land, sea};
-    use rtsim_space::HabitatRecord;
 
     const MODULES: u32 = 0b1111 | MODULE_HERDS;
 
@@ -2310,11 +2310,9 @@ mod worldmodel {
 
     fn send(j: &mut Java, p: &Painter, recs: &[HabitatRecord]) {
         for r in recs {
-            while !j.habitat(
-                r,
-                &|i| p.biome_name(i).to_string(),
-                &|i| p.body_name(i).to_string(),
-            ) {
+            while !j.habitat(r, &|i| p.biome_name(i).to_string(), &|i| {
+                p.body_name(i).to_string()
+            }) {
                 j.tick();
             }
         }
@@ -2358,7 +2356,15 @@ mod worldmodel {
         });
         assert!(pos.0 >= 128, "founded on land: {pos:?}");
         assert!(
-            e.with_world_model(|w| w.area(0, pos.0 as i32, pos.1 as i32, pos.0 as i32 + 1, pos.1 as i32 + 1).water)
+            e.with_world_model(|w| w
+                .area(
+                    0,
+                    pos.0 as i32,
+                    pos.1 as i32,
+                    pos.0 as i32 + 1,
+                    pos.1 as i32 + 1
+                )
+                .water)
                 == 0
         );
         eprintln!("world model: a herd of {species:?} founded at {pos:?}");
@@ -2386,15 +2392,26 @@ mod worldmodel {
         j.module_mask = MODULES;
         assert_eq!(e.world_model_restore_check(), (None, false));
         j.run_until("the engine's list again", known_end);
-        let lists: Vec<_> = j.known.iter().filter(|k| k.1.flags & KNOWN_END == 0).collect();
+        let lists: Vec<_> = j
+            .known
+            .iter()
+            .filter(|k| k.1.flags & KNOWN_END == 0)
+            .collect();
         assert_eq!(lists.len(), 1, "one region");
         let (_, k, dim) = lists[0];
-        assert_eq!(dim.as_deref(), Some(OVERWORLD), "the dimension through the engine's dictionary");
+        assert_eq!(
+            dim.as_deref(),
+            Some(OVERWORLD),
+            "the dimension through the engine's dictionary"
+        );
         assert_eq!((k.region, k.cells.len()), ((0, 0), 64));
         for (idx, fp) in &k.cells {
             let (cx, cz) = (i32::from(*idx) % 8, i32::from(*idx) / 8);
             let sent = recs.iter().find(|r| r.cell == (cx, cz)).unwrap();
-            assert_eq!(*fp, sent.fingerprint, "the saved fingerprint of cell ({cx}, {cz})");
+            assert_eq!(
+                *fp, sent.fingerprint,
+                "the saved fingerprint of cell ({cx}, {cz})"
+            );
             let flood = flooded.iter().find(|r| r.cell == (cx, cz)).unwrap();
             assert_eq!(
                 *fp != flood.fingerprint,
@@ -2402,7 +2419,11 @@ mod worldmodel {
                 "exactly the flooded cells differ, so only they are sent again"
             );
         }
-        assert_eq!(e.herd_agents(), vec![agent], "the herd came back, not a second one");
+        assert_eq!(
+            e.herd_agents(),
+            vec![agent],
+            "the herd came back, not a second one"
+        );
         let i = info(&e, &mut j, 300, 300);
         assert_eq!((i[7], i[9], i[10]), (64, agent as i64, 1));
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());

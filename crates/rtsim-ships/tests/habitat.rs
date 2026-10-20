@@ -2,12 +2,12 @@
 //! Sea lanes on the world model (rtsim-space) instead of the all-water mask (U11): the coast's
 //! ports linked over water the habitat sampler reported, never across land or unknown ground.
 
-use rtsim_travel::Medium;
 use rtsim_ships::synth::{coast, coastal_on};
 use rtsim_ships::tunables::ShipTunables;
 use rtsim_ships::water::{HabitatWater, WaterMask};
 use rtsim_space::synth::{Painter, land, sea};
 use rtsim_space::{SampledWorld, WorldHandle};
+use rtsim_travel::Medium;
 
 /// The synthetic coast, as the bridge's sampler would report it: one point per chunk.
 fn sampled_coast(rect: (i32, i32, i32, i32)) -> WorldHandle {
@@ -15,7 +15,11 @@ fn sampled_coast(rect: (i32, i32, i32, i32)) -> WorldHandle {
     let mut w = SampledWorld::new();
     let mut p = Painter::default();
     p.paint(&mut w, 0, rect, &|x, z| {
-        if c.water_at(x, z) { sea() } else { land("minecraft:plains") }
+        if c.water_at(x, z) {
+            sea()
+        } else {
+            land("minecraft:plains")
+        }
     });
     WorldHandle::new(Box::new(w))
 }
@@ -40,8 +44,15 @@ fn a_sea_lane_never_crosses_land() {
     let world = sampled_coast((-3_584, -1_024, 4_608, 4_096));
     let mask = HabitatWater::new(world.clone());
     let (_, ships, _, _) = coastal_on(5, ShipTunables::default(), &mask);
-    let sea_lanes = ships.lanes.iter().filter(|l| l.medium == Medium::Sea).count();
-    assert!(sea_lanes >= 4, "the coast's ports are linked: {sea_lanes} sea lanes");
+    let sea_lanes = ships
+        .lanes
+        .iter()
+        .filter(|l| l.medium == Medium::Sea)
+        .count();
+    assert!(
+        sea_lanes >= 4,
+        "the coast's ports are linked: {sea_lanes} sea lanes"
+    );
     // The island between Brightwater and Gullhaven bends some lane: not every lane is straight.
     assert!(
         ships

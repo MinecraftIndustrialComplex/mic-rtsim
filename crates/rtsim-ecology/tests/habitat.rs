@@ -4,8 +4,8 @@
 
 use rtsim_ecology::herds::forage::{CELL_BLOCKS, cell_of};
 use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, RegionPlan, plan_region};
-use rtsim_ecology::herds::{HerdTunables, Herds, NewHerd};
 use rtsim_ecology::herds::{HerdSpecies, climate::Climate};
+use rtsim_ecology::herds::{HerdTunables, Herds, NewHerd};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_space::synth::{Painter, land, sea};
 use rtsim_space::{RegionKey, SampledWorld, WorldHandle};
@@ -136,7 +136,9 @@ fn a_herd_never_plans_into_unknown_ground() {
     // Only a 1,024-block square is known; the herds' reach is far larger.
     let mut w = SampledWorld::new();
     let mut p = Painter::default();
-    p.paint(&mut w, 0, (0, 0, 1024, 1024), &|_, _| land("minecraft:plains"));
+    p.paint(&mut w, 0, (0, 0, 1024, 1024), &|_, _| {
+        land("minecraft:plains")
+    });
     let world = WorldHandle::new(Box::new(w));
     let mut h = herds_on(&world);
     let mut legs = LegIndex::new(1_000);
@@ -173,7 +175,11 @@ fn herds_founded_per_region_stand_on_land_and_stay_there() {
     p.paint(&mut w, 0, (0, 0, 1536, 1536), &|x, z| {
         let (a, b) = (x.div_euclid(384), z.div_euclid(384));
         if (a + b) % 2 == 0 {
-            land(if a == 2 { "minecraft:snowy_slopes" } else { "minecraft:plains" })
+            land(if a == 2 {
+                "minecraft:snowy_slopes"
+            } else {
+                "minecraft:plains"
+            })
         } else {
             sea()
         }
@@ -186,17 +192,29 @@ fn herds_founded_per_region_stand_on_land_and_stay_there() {
     for rz in 0..3 {
         for rx in 0..3 {
             let k = RegionKey { frame: 0, rx, rz };
-            let plan = plan_region(&**world.read(), &climate, k, 9, &FoundingTunables::default());
+            let plan = plan_region(
+                &**world.read(),
+                &climate,
+                k,
+                9,
+                &FoundingTunables::default(),
+            );
             if let RegionPlan::Found(n) = plan {
                 let c = cell_of(i64::from(n.pos.0), i64::from(n.pos.1));
-                assert!(climate.terrain(0, c.0, c.1).is_finite(), "{n:?} on open ground");
+                assert!(
+                    climate.terrain(0, c.0, c.1).is_finite(),
+                    "{n:?} on open ground"
+                );
                 founded.push(n.species);
                 h.add_herd(n, Tick::ZERO);
             }
         }
     }
     assert!(founded.len() >= 4, "most regions hold land: {founded:?}");
-    assert!(founded.contains(&HerdSpecies::Goat), "the snowy east founds goats");
+    assert!(
+        founded.contains(&HerdSpecies::Goat),
+        "the snowy east founds goats"
+    );
     let end = Tick::from_days(96);
     let mut t = Tick::ZERO;
     while t < end {
@@ -205,7 +223,10 @@ fn herds_founded_per_region_stand_on_land_and_stay_there() {
         h.check(t).expect("invariants");
         for (x, z) in route_samples(&h) {
             let c = cell_of(x, z);
-            assert!(climate.terrain(0, c.0, c.1).is_finite(), "({x}, {z}) is open ground");
+            assert!(
+                climate.terrain(0, c.0, c.1).is_finite(),
+                "({x}, {z}) is open ground"
+            );
         }
     }
     // Forage cells are whole habitat cells.

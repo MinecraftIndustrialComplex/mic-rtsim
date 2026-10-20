@@ -210,9 +210,7 @@ impl Painter {
                 d += s.downfall;
             }
         }
-        let land_tags = land_biome
-            .and_then(|b| self.spec(b))
-            .map_or(0, |s| s.tags);
+        let land_tags = land_biome.and_then(|b| self.spec(b)).map_or(0, |s| s.tags);
         let ys: Vec<i16> = pts.iter().map(|p| p.y).collect();
         let mean = |v: &[i16]| -> i16 {
             if v.is_empty() {
@@ -257,7 +255,8 @@ impl Painter {
             u64::from(water) | u64::from(ice) << 16 | u64::from(fluid) << 32,
             rtsim_kernel::rng::fnv1a64(biome.as_bytes()),
             rtsim_kernel::rng::fnv1a64(land_biome.unwrap_or("").as_bytes()),
-            ys.iter().fold(0u64, |h, &y| h.rotate_left(5) ^ y as u16 as u64),
+            ys.iter()
+                .fold(0u64, |h, &y| h.rotate_left(5) ^ y as u16 as u64),
         ]);
         let biome_id = if biome.is_empty() {
             0
@@ -297,11 +296,7 @@ impl Painter {
 
     /// Feeds a record to a world, resolving the fake dictionary.
     pub fn feed(&self, w: &mut SampledWorld, r: &HabitatRecord) -> Ingest {
-        let bodies: Vec<&str> = r
-            .creatures
-            .iter()
-            .map(|c| self.body_name(c.0))
-            .collect();
+        let bodies: Vec<&str> = r.creatures.iter().map(|c| self.body_name(c.0)).collect();
         w.ingest(
             r,
             self.biome_name(r.biome),
@@ -371,7 +366,11 @@ mod tests {
         let mut p = Painter::default();
         // Sea west of x = 0, plains east.
         p.paint(&mut w, 0, (-256, 0, 256, 256), &|x, _| {
-            if x < 0 { sea() } else { land("minecraft:plains") }
+            if x < 0 {
+                sea()
+            } else {
+                land("minecraft:plains")
+            }
         });
         assert_eq!(w.cell_count(), 8 * 4);
         let a: Area = w.area(0, -128, 0, 0, 128);
@@ -403,7 +402,11 @@ mod tests {
         assert_eq!(p.feed(&mut w, &r), Ingest::New);
         assert_eq!(p.feed(&mut w, &r), Ingest::Unchanged);
         let again = p.record(0, 3, 3, &plains, &[]);
-        assert_eq!(p.feed(&mut w, &again), Ingest::Unchanged, "counts kept, not lowered");
+        assert_eq!(
+            p.feed(&mut w, &again),
+            Ingest::Unchanged,
+            "counts kept, not lowered"
+        );
         let more = p.record(0, 3, 3, &plains, &[("minecraft:sheep", 6)]);
         assert_eq!(p.feed(&mut w, &more), Ingest::CreaturesOnly);
         let flooded = p.record(0, 3, 3, &|_, _| sea(), &[]);
@@ -433,8 +436,13 @@ mod tests {
                 land("minecraft:plains")
             }
         });
-        p.paint(&mut w, 2, (0, 0, 128, 128), &|_, _| land("minecraft:desert"));
-        w.set_mark(crate::sampled::RegionKey::of_block(0, 0, 0), crate::sampled::mark::HERDS);
+        p.paint(&mut w, 2, (0, 0, 128, 128), &|_, _| {
+            land("minecraft:desert")
+        });
+        w.set_mark(
+            crate::sampled::RegionKey::of_block(0, 0, 0),
+            crate::sampled::mark::HERDS,
+        );
         let (meta, regions) = w.save_pages(false);
         assert_eq!(regions.len(), w.region_count());
         let (back, saved) =

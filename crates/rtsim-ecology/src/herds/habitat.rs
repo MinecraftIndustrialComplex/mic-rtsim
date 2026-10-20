@@ -26,7 +26,10 @@ use super::engine::NewHerd;
 use super::forage::{CELL_BLOCKS, centre_of};
 use super::species::HerdSpecies;
 
-const _: () = assert!(CELL_BLOCKS % HABITAT_CELL == 0, "forage cells are whole habitat cells");
+const _: () = assert!(
+    CELL_BLOCKS % HABITAT_CELL == 0,
+    "forage cells are whole habitat cells"
+);
 
 /// How the herds read the world model. Every number is a TUNABLE PLACEHOLDER.
 #[derive(Clone, Debug, PartialEq)]
@@ -354,7 +357,11 @@ mod tests {
     fn water_and_unknown_ground_are_closed_and_land_is_open() {
         let h = world(&|p, w| {
             p.paint(w, 0, (0, 0, 512, 256), &|x, _| {
-                if x < 256 { land("minecraft:plains") } else { sea() }
+                if x < 256 {
+                    land("minecraft:plains")
+                } else {
+                    sea()
+                }
             })
         });
         let c = HabitatClimate::new(h);
@@ -372,14 +379,21 @@ mod tests {
     fn a_plains_region_founds_one_herd_of_a_plains_species_on_land() {
         let h = world(&|p, w| {
             p.paint(w, 0, (0, 0, 512, 512), &|x, z| {
-                if x + z < 300 { sea() } else { land("minecraft:plains") }
+                if x + z < 300 {
+                    sea()
+                } else {
+                    land("minecraft:plains")
+                }
             })
         });
         let c = HabitatClimate::new(h.clone());
-        let k = RegionKey { frame: 0, rx: 0, rz: 0 };
+        let k = RegionKey {
+            frame: 0,
+            rx: 0,
+            rz: 0,
+        };
         let w = h.read();
-        let RegionPlan::Found(n) = plan_region(&**w, &c, k, 7, &FoundingTunables::default())
-        else {
+        let RegionPlan::Found(n) = plan_region(&**w, &c, k, 7, &FoundingTunables::default()) else {
             panic!("a plains region founds a herd");
         };
         assert!(matches!(
@@ -402,9 +416,19 @@ mod tests {
             plan_region(&**sea_world.read(), &cs, k, 7, &FoundingTunables::default()),
             RegionPlan::Barren
         );
-        let k2 = RegionKey { frame: 0, rx: 5, rz: 5 };
+        let k2 = RegionKey {
+            frame: 0,
+            rx: 5,
+            rz: 5,
+        };
         assert_eq!(
-            plan_region(&**sea_world.read(), &cs, k2, 7, &FoundingTunables::default()),
+            plan_region(
+                &**sea_world.read(),
+                &cs,
+                k2,
+                7,
+                &FoundingTunables::default()
+            ),
             RegionPlan::NotYet
         );
     }
@@ -413,11 +437,17 @@ mod tests {
     fn species_follow_the_biomes_spawn_data() {
         // Snowy slopes spawn goats and nothing else of the herd species.
         let h = world(&|p, w| {
-            p.paint(w, 0, (0, 0, 512, 512), &|_, _| land("minecraft:snowy_slopes"))
+            p.paint(w, 0, (0, 0, 512, 512), &|_, _| {
+                land("minecraft:snowy_slopes")
+            })
         });
         let c = HabitatClimate::new(h.clone());
         for rx in 0..1 {
-            let k = RegionKey { frame: 0, rx, rz: 0 };
+            let k = RegionKey {
+                frame: 0,
+                rx,
+                rz: 0,
+            };
             let RegionPlan::Found(n) =
                 plan_region(&**h.read(), &c, k, 3, &FoundingTunables::default())
             else {
@@ -432,7 +462,11 @@ mod tests {
             plan_region(
                 &**d.read(),
                 &cd,
-                RegionKey { frame: 0, rx: 0, rz: 0 },
+                RegionKey {
+                    frame: 0,
+                    rx: 0,
+                    rz: 0
+                },
                 3,
                 &FoundingTunables::default()
             ),
@@ -445,7 +479,9 @@ mod tests {
         let mut w = SampledWorld::new();
         let mut p = Painter::default();
         // A forest region (sheep, pig and cow habitat) where vanilla spawned 300 cows.
-        p.paint(&mut w, 0, (0, 0, 512, 512), &|_, _| land("minecraft:forest"));
+        p.paint(&mut w, 0, (0, 0, 512, 512), &|_, _| {
+            land("minecraft:forest")
+        });
         let r = p.record(
             0,
             0,
@@ -459,13 +495,21 @@ mod tests {
         let RegionPlan::Found(n) = plan_region(
             &**h.read(),
             &c,
-            RegionKey { frame: 0, rx: 0, rz: 0 },
+            RegionKey {
+                frame: 0,
+                rx: 0,
+                rz: 0,
+            },
             11,
             &FoundingTunables::default(),
         ) else {
             panic!("a forest region founds a herd");
         };
-        assert_eq!(n.species, HerdSpecies::Cow, "150 cells of founders outweigh the rest");
+        assert_eq!(
+            n.species,
+            HerdSpecies::Cow,
+            "150 cells of founders outweigh the rest"
+        );
         assert_eq!(n.count, 1_200, "four animals a founder");
     }
 }

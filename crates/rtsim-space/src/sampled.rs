@@ -181,9 +181,7 @@ pub fn vegetation(tags: u32, downfall: f32) -> f32 {
         0.0
     } else if tags & (DESERT | BADLANDS) != 0 {
         0.05
-    } else if tags & PEAK != 0 {
-        0.1
-    } else if tags & (BEACH | STONY_SHORES) != 0 {
+    } else if tags & (PEAK | BEACH | STONY_SHORES) != 0 {
         0.1
     } else if tags & SNOWY != 0 {
         0.2
@@ -191,17 +189,13 @@ pub fn vegetation(tags: u32, downfall: f32) -> f32 {
         0.35
     } else if tags & (PLAINS | SAVANNA) != 0 {
         1.0
-    } else if tags & MUSHROOM != 0 {
-        0.4
-    } else if tags & JUNGLE != 0 {
+    } else if tags & (MUSHROOM | JUNGLE) != 0 {
         0.4
     } else if tags & TAIGA != 0 {
         0.5
     } else if tags & SWAMP != 0 {
         0.55
-    } else if tags & FOREST != 0 {
-        0.6
-    } else if tags & (HILL | WINDSWEPT | MOUNTAIN | PLATEAU) != 0 {
+    } else if tags & (FOREST | HILL | WINDSWEPT | MOUNTAIN | PLATEAU) != 0 {
         0.6
     } else {
         0.3 + 0.6 * downfall.clamp(0.0, 1.0)
@@ -291,10 +285,9 @@ impl SampledWorld {
 
     /// The cell (cx, cz) of a frame.
     pub fn cell(&self, frame: u16, cx: i32, cz: i32) -> Option<&Habitat> {
-        self.regions
-            .get(&RegionKey::of_cell(frame, cx, cz))?
-            .cells[habitat::index_in_region(cx, cz)]
-            .as_ref()
+        self.regions.get(&RegionKey::of_cell(frame, cx, cz))?.cells
+            [habitat::index_in_region(cx, cz)]
+        .as_ref()
     }
 
     /// Takes a HABITAT record, its names already resolved from Java's dictionary: `biome` and
@@ -469,10 +462,10 @@ fn terrain_eq(a: &Habitat, b: &Habitat) -> bool {
         && a.season == b.season
         && a.season_count == b.season_count
         && a.fingerprint == b.fingerprint
-        && a.creatures.iter().map(|c| (c.body, c.share)).eq(b
-            .creatures
+        && a.creatures
             .iter()
-            .map(|c| (c.body, c.share)))
+            .map(|c| (c.body, c.share))
+            .eq(b.creatures.iter().map(|c| (c.body, c.share)))
 }
 
 impl WorldModel for SampledWorld {
@@ -575,7 +568,10 @@ impl WorldModel for SampledWorld {
                 };
                 let land = (inside & h.land()).count_ones();
                 // A cell's generation counts go to the rectangle holding its centre.
-                let (mx, mz) = (cx * CELL_BLOCKS + CELL_BLOCKS / 2, cz * CELL_BLOCKS + CELL_BLOCKS / 2);
+                let (mx, mz) = (
+                    cx * CELL_BLOCKS + CELL_BLOCKS / 2,
+                    cz * CELL_BLOCKS + CELL_BLOCKS / 2,
+                );
                 let centre_in = mx >= x0 && mx < x1 && mz >= z0 && mz < z1;
                 for c in &h.creatures {
                     let e = by.entry(c.body).or_default();

@@ -98,7 +98,12 @@ fn climate(world: &WorldHandle) -> Box<HabitatClimate> {
 }
 
 fn new_engine(world: &WorldHandle) -> Herds {
-    Herds::new(HERD_SEED, HerdTunables::default(), climate(world), Tick::ZERO)
+    Herds::new(
+        HERD_SEED,
+        HerdTunables::default(),
+        climate(world),
+        Tick::ZERO,
+    )
 }
 
 /// **The policy for herd pages this build cannot read** (as the dragons' S12 and the ships' U1):
@@ -139,7 +144,9 @@ impl Link {
     ) -> Result<Link, String> {
         let page = match store.get(KEY_HERDS) {
             Ok(p) => p,
-            Err(e) => return when_pages_unreadable(&format!("cannot read the herds' page: {e}"), world),
+            Err(e) => {
+                return when_pages_unreadable(&format!("cannot read the herds' page: {e}"), world);
+            }
         };
         let Some(b) = page else {
             return Ok(Link::empty(world));

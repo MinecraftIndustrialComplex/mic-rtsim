@@ -91,7 +91,9 @@ fn when_pages_unreadable(why: &str, store: &mut PageStore) -> Link {
     }
     let at = store.obs_seq();
     if let Err(e) = store.commit(batch, at) {
-        log_error(&format!("cannot delete the unreadable world-model pages: {e}"));
+        log_error(&format!(
+            "cannot delete the unreadable world-model pages: {e}"
+        ));
     }
     let mut l = Link::empty();
     l.dropped_pages = true;
@@ -127,7 +129,9 @@ impl Link {
                 }
                 return Link::empty();
             }
-            Err(e) => return when_pages_unreadable(&format!("cannot read the meta page: {e}"), store),
+            Err(e) => {
+                return when_pages_unreadable(&format!("cannot read the meta page: {e}"), store);
+            }
         };
         let keys: Vec<PageKey> = store
             .keys()
@@ -139,7 +143,10 @@ impl Link {
                 Ok(Some(b)) => pages.push(b),
                 Ok(None) => {}
                 Err(e) => {
-                    return when_pages_unreadable(&format!("cannot read a region page: {e}"), store);
+                    return when_pages_unreadable(
+                        &format!("cannot read a region page: {e}"),
+                        store,
+                    );
                 }
             }
         }
@@ -263,7 +270,9 @@ pub(super) fn simulate(st: &mut State) {
         st.worldmodel.pending.remove(&k);
         let plan = {
             let w = st.worldmodel.world.read();
-            if w.sampled_ref().is_some_and(|s| s.marks(k) & mark::HERDS != 0) {
+            if w.sampled_ref()
+                .is_some_and(|s| s.marks(k) & mark::HERDS != 0)
+            {
                 continue;
             }
             if herds::has_herd_named(st, &region_herd_name(k)) {
@@ -382,7 +391,11 @@ impl super::Engine {
             .by_name(&region_herd_name(k))
             .map_or(0, |h| rtsim_ecology::herds::herd::agent_of(h) as i64);
         let (cells, regions, marks) = w.sampled_ref().map_or((0, 0, 0), |s| {
-            (s.cell_count() as i64, s.region_count() as i64, i64::from(s.marks(k)))
+            (
+                s.cell_count() as i64,
+                s.region_count() as i64,
+                i64::from(s.marks(k)),
+            )
         });
         let mut out = [0i64; HABITAT_INFO];
         if let Some(h) = w.habitat_at(frame, x, z) {

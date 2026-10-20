@@ -30,8 +30,8 @@ use mic_native_rt::abi;
 use rtsim_kernel::page::Durability;
 
 use crate::engine::{
-    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, HABITAT_INFO, HERD_INFO,
-    PHASE1_STATS, STATS_LEN, last_error, set_last_error,
+    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, HABITAT_INFO,
+    HERD_INFO, PHASE1_STATS, STATS_LEN, last_error, set_last_error,
 };
 use crate::orders;
 

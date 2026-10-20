@@ -1117,7 +1117,8 @@ impl Java {
         body: &dyn Fn(u32) -> String,
     ) -> bool {
         let mut r = r.clone();
-        let map = |j: &mut Java, kind: u32, n: String| if n.is_empty() { 0 } else { j.dict_id(kind, &n) };
+        let map =
+            |j: &mut Java, kind: u32, n: String| if n.is_empty() { 0 } else { j.dict_id(kind, &n) };
         r.biome = map(self, rtsim_space::habitat::DICT_BIOME, biome(r.biome));
         r.land_biome = map(self, rtsim_space::habitat::DICT_BIOME, biome(r.land_biome));
         for c in &mut r.creatures {
