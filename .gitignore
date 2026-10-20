@@ -30,3 +30,6 @@ build/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# cargo-xwin leaves this in the working directory (tools/natives/build-natives.sh)
+.intentionally-empty-file.o
