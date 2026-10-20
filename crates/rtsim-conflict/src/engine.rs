@@ -35,6 +35,7 @@ use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, Temperament, Trait};
 use rtsim_settle::{NodeKind, Pos};
+use rtsim_space::topology::{SharedTopologies, Topology};
 use rtsim_trade::{Amount, GoodId, MILLI, PRICE_ONE};
 use rtsim_travel::legs::{LegIndex, Meeting, Owner, Path, Stamp};
 use rtsim_world::interest::{PLAYER_OWNER, Viewer};
@@ -379,6 +380,7 @@ impl NodeIndex {
     fn nearest(
         &self,
         w: &World,
+        t: &Topology,
         pos: Pos,
         reach: f64,
         mut ok: impl FnMut(usize) -> bool,
@@ -386,6 +388,10 @@ impl NodeIndex {
         let (cx, cz) = (pos.x.div_euclid(NODE_CELL), pos.z.div_euclid(NODE_CELL));
         let rings = (reach / f64::from(NODE_CELL)).ceil() as i32 + 1;
         let mut best: Option<(f64, usize)> = None;
+        // On a world with seams a ring's chart cells are folded onto canonical cells, each looked
+        // at once (TP8): everything within (r - 1) cells through any seam is in the chart square
+        // of ring r - 1.
+        let mut seen: BTreeSet<(i32, i32)> = BTreeSet::new();
         for r in 0..=rings {
             // Every point of ring r is at least (r - 1) cells away.
             if let Some(b) = best
@@ -393,18 +399,46 @@ impl NodeIndex {
             {
                 break;
             }
-            for x in cx - r..=cx + r {
-                for z in cz - r..=cz + r {
-                    if (x - cx).abs() != r && (z - cz).abs() != r {
-                        continue;
+            let ring: Vec<(i32, i32)> = if t.is_flat() {
+                let mut v = Vec::new();
+                for x in cx - r..=cx + r {
+                    for z in cz - r..=cz + r {
+                        if (x - cx).abs() == r || (z - cz).abs() == r {
+                            v.push((x, z));
+                        }
                     }
+                }
+                v
+            } else {
+                let c = i64::from(NODE_CELL);
+                let sq = rtsim_space::topology::Rect::new(
+                    i64::from(cx - r) * c,
+                    i64::from(cz - r) * c,
+                    i64::from(cx + r + 1) * c,
+                    i64::from(cz + r + 1) * c,
+                );
+                let mut v = Vec::new();
+                for part in t.fold_rect(sq) {
+                    let (x0, z0, x1, z1) = part.grid_cells(c);
+                    for x in x0..=x1 {
+                        for z in z0..=z1 {
+                            if seen.insert((x as i32, z as i32)) {
+                                v.push((x as i32, z as i32));
+                            }
+                        }
+                    }
+                }
+                v
+            };
+            for (x, z) in ring {
+                {
                     for &i in self
                         .cells
                         .get(&(pos.frame, x, z))
                         .map(Vec::as_slice)
                         .unwrap_or(&[])
                     {
-                        let d = dist(pxz(w.nodes[i].pos), pxz(pos));
+                        let d = tdist(t, pxz(w.nodes[i].pos), pxz(pos));
                         if d > reach || !ok(i) {
                             continue;
                         }
@@ -445,10 +479,20 @@ pub struct Conflict {
     pub(crate) nodes: NodeIndex,
     /// Sources reaching each (faction, kind): derived from `sources`, rebuilt on load.
     pub(crate) source_index: BTreeMap<(u32, SignalKind), BTreeSet<u64>>,
+    /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
+    pub topo: SharedTopologies,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
     (((a.0 - b.0) as f64).powi(2) + ((a.1 - b.1) as f64).powi(2)).sqrt()
+}
+
+/// The shortest distance through every seam (TP2); on the plane the straight line, bit for bit.
+fn tdist(t: &Topology, a: (i64, i64), b: (i64, i64)) -> f64 {
+    if t.is_flat() {
+        return dist(a, b);
+    }
+    t.dist(a, b)
 }
 
 fn pxz(p: Pos) -> (i64, i64) {
@@ -505,6 +549,49 @@ impl Conflict {
             log_enabled: false,
             nodes: NodeIndex::default(),
             source_index: BTreeMap::new(),
+            topo: rtsim_space::topology::all_flat(),
+        }
+    }
+
+    /// Hands the engine every frame's topology (TP6).
+    pub fn set_topologies(&mut self, t: SharedTopologies) {
+        self.topo = t;
+    }
+
+    /// The topology of `frame`.
+    pub fn topo(&self, frame: u16) -> &Topology {
+        self.topo.of(frame)
+    }
+
+    /// The canonical position of a block the plugin reported (TP4).
+    fn canon(&self, dimension: u32, x: i32, z: i32) -> Pos {
+        let frame = dimension as u16;
+        let (x, z) = self.topo(frame).canonical_i32(x, z);
+        Pos::new(frame, x, z)
+    }
+
+    /// A party's position on its route at `t`, in the route's chart.
+    fn party_chart_pos(&self, p: Handle<Party>, t: Tick) -> (i32, i32) {
+        let x = &self.parties[p];
+        match x.phase {
+            Phase::Mustering => x.route[0],
+            Phase::Waiting | Phase::Fighting => *x.route.last().expect("a route"),
+            Phase::Out | Phase::Home => {
+                let s = (x.seg as usize).min(x.route.len().saturating_sub(2));
+                let (a, b) = (x.route[s], x.route[(s + 1).min(x.route.len() - 1)]);
+                let (t0, t1) = (x.times[s], x.times[(s + 1).min(x.times.len() - 1)]);
+                if t1 <= t0 || t <= t0 {
+                    return a;
+                }
+                if t >= t1 {
+                    return b;
+                }
+                let fr = (t.0 - t0.0) as f64 / (t1.0 - t0.0) as f64;
+                (
+                    (f64::from(a.0) + (f64::from(b.0) - f64::from(a.0)) * fr) as i32,
+                    (f64::from(a.1) + (f64::from(b.1) - f64::from(a.1)) * fr) as i32,
+                )
+            }
         }
     }
 
@@ -698,7 +785,7 @@ impl Conflict {
             .sources
             .iter()
             .filter_map(|(k, s)| {
-                let d = dist(pxz(s.pos), pxz(pos));
+                let d = tdist(self.topo.of(pos.frame), pxz(s.pos), pxz(pos));
                 (s.pos.frame == pos.frame && d <= reach).then(|| {
                     let r = f64::from(cu.def.territory_radius);
                     let fall = if d <= r {
@@ -779,9 +866,21 @@ impl Conflict {
             .max()
             .unwrap_or(0) as i32;
         let c = self.tun.cell_blocks;
+        let t = self.topo.of(pos.frame);
+        let mut cells: Vec<(i32, i32)> = Vec::new();
+        for part in t.rects_near(i64::from(pos.x), i64::from(pos.z), i64::from(far)) {
+            let (x0, z0, x1, z1) = part.grid_cells(i64::from(c));
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    cells.push((cx as i32, cz as i32));
+                }
+            }
+        }
+        cells.sort_unstable();
+        cells.dedup();
         let mut out = Vec::new();
-        for cx in (pos.x - far).div_euclid(c)..=(pos.x + far).div_euclid(c) {
-            for cz in (pos.z - far).div_euclid(c)..=(pos.z + far).div_euclid(c) {
+        for (cx, cz) in cells {
+            {
                 for &f in self
                     .cells
                     .get(&(pos.frame, cx, cz))
@@ -789,7 +888,7 @@ impl Conflict {
                     .unwrap_or(&[])
                 {
                     let x = &self.factions[f as usize];
-                    let d = dist(pxz(x.pos), pxz(pos));
+                    let d = tdist(t, pxz(x.pos), pxz(pos));
                     let r = f64::from(x.radius);
                     let fall = if d <= r {
                         1.0
@@ -1640,18 +1739,20 @@ impl Conflict {
     fn route(&mut self, w: &World, from: usize, to: Pos) -> Vec<(i32, i32)> {
         self.nodes.refresh(w);
         let start = w.nodes[from].pos;
+        let topo = self.topo.clone();
+        let t = topo.of(start.frame);
         let mut out = vec![(start.x, start.z)];
-        let direct = dist(pxz(start), pxz(to));
+        let direct = tdist(t, pxz(start), pxz(to));
         let nearest = self
             .nodes
-            .nearest(w, to, direct, |i| w.nodes[i].pos.frame == to.frame)
+            .nearest(w, t, to, direct, |i| w.nodes[i].pos.frame == to.frame)
             .map(|b| b.1);
         if let Some(goal) = nearest.filter(|&g| g != from) {
             // A* over road edges (lanes are ships'), the straight line as the heuristic: an edge
             // is never shorter than the straight line between its ends (the path factor is at
             // least 1), so the first time the goal is popped its path is the shortest.
             let gp = pxz(w.nodes[goal].pos);
-            let h = |i: usize| dist(pxz(w.nodes[i].pos), gp) as u64;
+            let h = |i: usize| tdist(t, pxz(w.nodes[i].pos), gp) as u64;
             let mut best: BTreeMap<usize, u64> = BTreeMap::new();
             let mut prev: BTreeMap<usize, usize> = BTreeMap::new();
             let mut heap = std::collections::BinaryHeap::new();
@@ -1697,6 +1798,16 @@ impl Conflict {
         }
         if out.last() != Some(&(to.x, to.z)) || out.len() < 2 {
             out.push((to.x, to.z));
+        }
+        // A chart polyline from the canonical start: each point the image of the next stop
+        // nearest the one before, so a march over a seam goes straight across it (TP7).
+        if !t.is_flat() {
+            for k in 1..out.len() {
+                let prev = (i64::from(out[k - 1].0), i64::from(out[k - 1].1));
+                let next = (i64::from(out[k].0), i64::from(out[k].1));
+                let c = t.toward(prev, next);
+                out[k] = (c.0 as i32, c.1 as i32);
+            }
         }
         out
     }
@@ -1830,12 +1941,16 @@ impl Conflict {
         t0: Tick,
         t1: Tick,
     ) {
+        // From the canonical start, the end in the same chart (TP7).
+        let frame = self.parties[p].frame;
+        let f = self.topo(frame).fold(i64::from(from.0), i64::from(from.1));
+        let to = f.iso.cell(i64::from(to.0), i64::from(to.1));
         let path = Path {
-            frame: self.parties[p].frame,
-            x0: from.0,
-            z0: from.1,
-            x1: to.0,
-            z1: to.1,
+            frame,
+            x0: f.x as i32,
+            z0: f.z as i32,
+            x1: to.0 as i32,
+            z1: to.1 as i32,
             t0,
             t1: t1.max(t0),
             radius: self.tun.party_radius,
@@ -1869,29 +1984,10 @@ impl Conflict {
         }
     }
 
-    /// Where a party is at `t`.
+    /// Where a party is at `t`, canonical (its route is a chart polyline, TP7).
     pub fn party_pos(&self, p: Handle<Party>, t: Tick) -> (i32, i32) {
-        let x = &self.parties[p];
-        match x.phase {
-            Phase::Mustering => x.route[0],
-            Phase::Waiting | Phase::Fighting => *x.route.last().expect("a route"),
-            Phase::Out | Phase::Home => {
-                let s = (x.seg as usize).min(x.route.len().saturating_sub(2));
-                let (a, b) = (x.route[s], x.route[(s + 1).min(x.route.len() - 1)]);
-                let (t0, t1) = (x.times[s], x.times[(s + 1).min(x.times.len() - 1)]);
-                if t1 <= t0 || t <= t0 {
-                    return a;
-                }
-                if t >= t1 {
-                    return b;
-                }
-                let fr = (t.0 - t0.0) as f64 / (t1.0 - t0.0) as f64;
-                (
-                    (f64::from(a.0) + (f64::from(b.0) - f64::from(a.0)) * fr) as i32,
-                    (f64::from(a.1) + (f64::from(b.1) - f64::from(a.1)) * fr) as i32,
-                )
-            }
-        }
+        let c = self.party_chart_pos(p, t);
+        self.topo(self.parties[p].frame).canonical_i32(c.0, c.1)
     }
 
     fn party_event(
@@ -1947,7 +2043,25 @@ impl Conflict {
         self.book_leg(w, p, a, b, t0.max(at), t1);
         let plan = self.bump(p);
         self.schedule(t1, Ev::Party { party: p, plan });
-        if embodied {
+        // A watched band never walks a body across an edge_stop seam: it is recalled at the
+        // start of a segment that would, and marches on abstract (TP12).
+        let crosses_stop = {
+            let t = self.topo(frame);
+            t.any_stopped() && {
+                let f = t.fold(i64::from(a.0), i64::from(a.1));
+                let e = f.iso.cell(i64::from(b.0), i64::from(b.1));
+                t.stopped_crossing((f.x, f.z), e).is_some()
+            }
+        };
+        if embodied && crosses_stop {
+            self.note(
+                at,
+                Some(self.parties[p].faction),
+                "recall",
+                "its march crosses an edge_stop seam".into(),
+            );
+            self.recall(p, epoch, boundary::RECALL_PASSING, b);
+        } else if embodied {
             let speed = self
                 .culture(self.parties[p].faction)
                 .def
@@ -1979,6 +2093,7 @@ impl Conflict {
             for k in 0..=steps {
                 let x = i64::from(a.0) + (i64::from(b.0) - i64::from(a.0)) * k / steps;
                 let z = i64::from(a.1) + (i64::from(b.1) - i64::from(a.1)) * k / steps;
+                let (x, z) = self.topo(frame).canonical(x, z);
                 let r = LegIndex::region_of(x, z);
                 let r = (r.0 as i32, r.1 as i32);
                 if !regions.contains(&r) {
@@ -2014,7 +2129,15 @@ impl Conflict {
         let s = (x.seg as usize).min(x.route.len().saturating_sub(2));
         let (a, b) = (x.route[s], x.route[s + 1]);
         let (t0, t1) = (x.times[s], x.times[s + 1]);
-        let now = self.party_pos(p, at);
+        // In the route's chart: the watcher's image nearest the party (TP7).
+        let now = self.party_chart_pos(p, at);
+        let c = {
+            let i = self.topo(x.frame).toward(
+                (i64::from(now.0), i64::from(now.1)),
+                (i64::from(c.0), i64::from(c.1)),
+            );
+            (i.0 as i32, i.1 as i32)
+        };
         let r = f64::from(radius);
         let inside = |q: (i32, i32)| {
             let (dx, dz) = (f64::from(q.0 - c.0), f64::from(q.1 - c.1));
@@ -2296,7 +2419,7 @@ impl Conflict {
             .filter_map(|(a, s)| {
                 let (pp, t) = s.pos?;
                 (pp.frame == pos.frame && at.0.saturating_sub(t.0) <= stale)
-                    .then(|| (dist(pxz(pp), pxz(pos)), *a))
+                    .then(|| (tdist(self.topo.of(pos.frame), pxz(pp), pxz(pos)), *a))
             })
             .filter(|(d, _)| *d <= r)
             .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
@@ -2687,19 +2810,22 @@ impl Conflict {
         let by_key = &self.by_key;
         let cultures = &self.cultures;
         let factions = &self.factions;
-        let best = self.nodes.nearest(w, camp, reach, |i| {
-            let n = &w.nodes[i];
-            if i == own || n.pos.frame != camp.frame {
-                return false;
-            }
-            match n.kind {
-                NodeKind::Village(cu) => c.hates(cu.name()),
-                NodeKind::Haven(_) => by_key
-                    .get(&n.key)
-                    .is_some_and(|&o| c.hates(cultures.get(factions[o as usize].culture).name())),
-                NodeKind::PlayerBase { .. } => false,
-            }
-        });
+        let topo = self.topo.clone();
+        let best = self
+            .nodes
+            .nearest(w, topo.of(camp.frame), camp, reach, |i| {
+                let n = &w.nodes[i];
+                if i == own || n.pos.frame != camp.frame {
+                    return false;
+                }
+                match n.kind {
+                    NodeKind::Village(cu) => c.hates(cu.name()),
+                    NodeKind::Haven(_) => by_key.get(&n.key).is_some_and(|&o| {
+                        c.hates(cultures.get(factions[o as usize].culture).name())
+                    }),
+                    NodeKind::PlayerBase { .. } => false,
+                }
+            });
         let Some((_, i)) = best else {
             self.schedule_plunder(f, at);
             return;
@@ -2726,10 +2852,19 @@ impl Conflict {
         } else {
             x.route[0]
         };
-        let centre = ppos.map_or(*x.route.last().expect("route"), |pp| (pp.x, pp.z));
-        let bearing = (f64::from(from.1 - centre.1))
-            .atan2(f64::from(from.0 - centre.0))
-            .to_degrees() as f32;
+        let centre = ppos.map_or(
+            {
+                let l = *x.route.last().expect("route");
+                self.topo(x.frame).canonical_i32(l.0, l.1)
+            },
+            |pp| (pp.x, pp.z),
+        );
+        // The side it came from, through any seam (TP2).
+        let (bx, bz) = self.topo(x.frame).displacement(
+            (i64::from(centre.0), i64::from(centre.1)),
+            (i64::from(from.0), i64::from(from.1)),
+        );
+        let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
         let ends = (at + self.tun.watched_fight_ticks).min(x.bored_at.max(at + 1));
         let strength = self.strength(p);
         {
@@ -2802,6 +2937,17 @@ impl Conflict {
             return;
         }
         let here = self.party_pos(p, at);
+        // Seen on the march: at the image on the player's side (TP11).
+        let here = match w.players.get(&player).and_then(|s| s.pos) {
+            Some((pp, _)) if pp.frame == self.parties[p].frame => {
+                let i = self.topo(pp.frame).toward(
+                    (i64::from(pp.x), i64::from(pp.z)),
+                    (i64::from(here.0), i64::from(here.1)),
+                );
+                (i.0 as i32, i.1 as i32)
+            }
+            _ => here,
+        };
         let (centre, bearing, radius, half) = match arc {
             Some((c0, b)) => (
                 c0,
@@ -2865,10 +3011,15 @@ impl Conflict {
                 .and_then(|s| s.pos)
                 .map(|e| (e.0.x, e.0.z));
             let from = x.route[x.route.len().saturating_sub(2)];
-            let centre = ppos.unwrap_or(*x.route.last().expect("route"));
-            let bearing = (f64::from(from.1 - centre.1))
-                .atan2(f64::from(from.0 - centre.0))
-                .to_degrees() as f32;
+            let centre = ppos.unwrap_or_else(|| {
+                let l = *x.route.last().expect("route");
+                self.topo(x.frame).canonical_i32(l.0, l.1)
+            });
+            let (bx, bz) = self.topo(x.frame).displacement(
+                (i64::from(centre.0), i64::from(centre.1)),
+                (i64::from(from.0), i64::from(from.1)),
+            );
+            let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
             self.spawn_wave(w, p, player, Some((centre, bearing)), at);
         }
         let plan = self.parties[p].plan;
@@ -2929,7 +3080,10 @@ impl Conflict {
                 continue;
             };
             let hates_us = c.hates(cu.name());
-            if !hates_us || n.pos.frame != camp.frame || dist(pxz(n.pos), pxz(camp)) > r {
+            if !hates_us
+                || n.pos.frame != camp.frame
+                || tdist(self.topo.of(camp.frame), pxz(n.pos), pxz(camp)) > r
+            {
                 continue;
             }
             let (va, pos) = (n.actor, n.pos);
@@ -3221,7 +3375,7 @@ impl Conflict {
                     return;
                 };
                 let cname = self.cultures.get(ci).name().to_string();
-                let pos = Pos::new(ff.dimension as u16, ff.pos.0, ff.pos.2);
+                let pos = self.canon(ff.dimension, ff.pos.0, ff.pos.2);
                 self.add_faction(w, ff.faction, &cname, pos, at);
             }
             Obs::Signal(s) => {
@@ -3234,7 +3388,7 @@ impl Conflict {
                     kind,
                     amount: f64::from(s.count),
                     actor,
-                    pos: Pos::new(s.dimension as u16, s.pos.0, s.pos.2),
+                    pos: self.canon(s.dimension, s.pos.0, s.pos.2),
                     district: None,
                 };
                 self.signal(w, sig, at);
@@ -3256,7 +3410,7 @@ impl Conflict {
                     pl.amount.max(0) as f64 * scale * TICKS_PER_DAY as f64
                         / f64::from(pl.window_ticks)
                 };
-                let pos = Pos::new(pl.dimension as u16, pl.x, pl.z);
+                let pos = self.canon(pl.dimension, pl.x, pl.z);
                 let district = (pl.district != 0).then_some(DistrictId(pl.district));
                 let key = if pl.district != 0 {
                     pl.district
