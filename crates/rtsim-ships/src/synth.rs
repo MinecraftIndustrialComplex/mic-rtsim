@@ -247,12 +247,29 @@ pub fn world_config(seed: u64) -> WorldConfig {
 /// Builds the coastal world: villages, ports and docks, the network, a haven with two sea
 /// pirate ships and one sky pirate ship, and a navy out of Saltmere.
 pub fn coastal(seed: u64, tun: ShipTunables) -> Coastal {
+    let mask = coast();
+    let (world, ships, haven, navy) = coastal_on(seed, tun, &mask);
+    Coastal {
+        world,
+        ships,
+        mask,
+        haven,
+        navy,
+    }
+}
+
+/// [`coastal`]'s world on any water mask (the world model's, in its tests): the world, the
+/// ships, the haven and the navy.
+pub fn coastal_on(
+    seed: u64,
+    tun: ShipTunables,
+    mask: &dyn crate::water::WaterMask,
+) -> (World, Ships, u32, Option<u32>) {
     let (goods, ids) = ws::goods();
     let book = ws::recipes(&ids);
     let ss = sites();
     let data: Vec<NodeData> = ss.iter().map(node_data).collect();
     let mut w = World::build(world_config(seed), goods, book, data);
-    let mask = coast();
     let mut ships = Ships::new(seed, tun, Tick::ZERO);
     for (i, s) in ss.iter().enumerate() {
         if s.sea {
@@ -262,7 +279,7 @@ pub fn coastal(seed: u64, tun: ShipTunables) -> Coastal {
                 Medium::Sea,
                 (s.x, 63, shore(s.x) + 40),
                 4,
-                &mask,
+                mask,
                 Tick::ZERO,
             );
         }
@@ -273,7 +290,7 @@ pub fn coastal(seed: u64, tun: ShipTunables) -> Coastal {
                 Medium::Sky,
                 (s.x + 30, 120, s.z),
                 4,
-                &mask,
+                mask,
                 Tick::ZERO,
             );
         }
@@ -283,15 +300,9 @@ pub fn coastal(seed: u64, tun: ShipTunables) -> Coastal {
     let haven = ships
         .add_haven(&mut w, hi, 3, (hs.x, 63, hs.z + 60), 1, Tick::ZERO)
         .expect("a haven node");
-    ships.build(&mut w, &mask, Tick::ZERO);
+    ships.build(&mut w, mask, Tick::ZERO);
     let navy = ships.add_navy(&mut w, 0, Medium::Sea, Tick::ZERO);
-    Coastal {
-        world: w,
-        ships,
-        mask,
-        haven,
-        navy,
-    }
+    (w, ships, haven, navy)
 }
 
 /// A bench world: `side × side` ports in open sea on a 1,200-block grid with sea docks, no

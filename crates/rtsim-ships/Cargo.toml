@@ -17,6 +17,7 @@ rtsim-knowledge.workspace = true
 rtsim-world.workspace = true
 rtsim-industry.workspace = true
 rtsim-ecology.workspace = true
+rtsim-space.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

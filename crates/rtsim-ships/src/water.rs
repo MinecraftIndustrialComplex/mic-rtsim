@@ -32,6 +32,34 @@ impl WaterMask for AllWater {
     }
 }
 
+/// The world model's water (rtsim-space): a cell is water only when every sample point in it is
+/// known open water (X2-17). Unknown ground is not water, so a lane never sails it (X2-5); ice is
+/// not water. The vanilla sampler has a point per chunk, so the default 32-block cell holds four.
+pub struct HabitatWater {
+    pub world: rtsim_space::WorldHandle,
+    pub cell: i32,
+}
+
+impl HabitatWater {
+    pub fn new(world: rtsim_space::WorldHandle) -> HabitatWater {
+        HabitatWater { world, cell: 32 }
+    }
+}
+
+impl WaterMask for HabitatWater {
+    fn cell(&self) -> i32 {
+        self.cell.max(1)
+    }
+    fn is_water(&self, frame: u16, cx: i32, cz: i32) -> bool {
+        let c = self.cell();
+        let (x0, z0) = (cx * c, cz * c);
+        self.world
+            .read()
+            .area(frame, x0, z0, x0 + c, z0 + c)
+            .all_water()
+    }
+}
+
 /// A synthetic coast for tests and the CLI (scaffolding): land north of a wavy shore at
 /// `z = shore_z + amp · sin(x / wavelength)`, sea south of it, with round islands of land and
 /// round lakes of water carved into either. Only frame 0 has a sea.
