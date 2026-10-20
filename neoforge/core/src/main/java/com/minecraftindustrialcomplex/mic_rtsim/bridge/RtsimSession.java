@@ -97,6 +97,29 @@ public final class RtsimSession {
     final CommandDispatcher commands;
 
     private boolean failed;
+    /**
+     * Tagged entities that belong to no live puppet but were never removed: vanilla never unloads an
+     * entity that refuses to be saved (PersistentEntitySectionManager unloads only what it stored), so
+     * the bridge discards them itself at the end of the tick.
+     */
+    private final java.util.ArrayList<Entity> orphans = new java.util.ArrayList<>();
+    /**
+     * Members that left the sim, by UUID, and one admission token per member by tag. A copy another mod
+     * serialized while the member was still tagged (a capture item) is admitted as an ordinary entity
+     * when it comes back, instead of being discarded as stale. Bounded (PLACEHOLDER size).
+     */
+    private final java.util.LinkedHashMap<UUID, AgentTag> releasedUuids = new java.util.LinkedHashMap<>(16, 0.75f, false) {
+        @Override
+        protected boolean removeEldestEntry(java.util.Map.Entry<UUID, AgentTag> eldest) {
+            return size() > RELEASED_CAP;
+        }
+    };
+    private final java.util.HashMap<AgentTag, Integer> releaseTokens = new java.util.HashMap<>();
+    private static final int RELEASED_CAP = 4096;
+    /** Things to do once the engine acknowledges a sequence: drop pending records from their holders. */
+    private final java.util.TreeMap<Long, java.util.List<Runnable>> ackWaiters = new java.util.TreeMap<>();
+    /** The pass's copy of the registry, reused every tick (no allocation per tick). */
+    private final java.util.ArrayList<PuppetGroup> passList = new java.util.ArrayList<>();
     private long ticks;
     int spawnBudget;
 
@@ -109,6 +132,7 @@ public final class RtsimSession {
     long deaths;
     long removedByOther;
     long passNanos;
+    long reasserted;
 
     public RtsimSession(MinecraftServer server, Engine engine, JournalSavedData journal) {
         this.server = server;
@@ -116,6 +140,7 @@ public final class RtsimSession {
         this.journalData = journal;
         this.boundary = new BoundarySession(engine, journal.journal(), RtsimConfig.effectiveMask(), gameTime());
         this.commands = new CommandDispatcher(this);
+        this.boundary.onAck(this::onAcked);
         for (int i = 0; i < 2; i++) {
             int o = Buffers.capacity(engine.observationBuffer(i).duplicate().order(Layout.ORDER));
             if (o < Layout.MIN_CAPACITY)
@@ -173,6 +198,7 @@ public final class RtsimSession {
             boundary.applyCommands(commands);
             long t0 = System.nanoTime();
             pass(now);
+            discardOrphans();
             passNanos = System.nanoTime() - t0;
             if (ticks % RtsimConfig.playerInterval() == 0)
                 observePlayers(now);
@@ -200,7 +226,10 @@ public final class RtsimSession {
             return;
         boolean full = ticks % RtsimConfig.passInterval() == 0;
         boolean shadow = ticks % RtsimConfig.shadowInterval() == 0;
-        for (PuppetGroup g : registry.snapshot()) {
+        for (PuppetGroup g : registry.snapshotInto(passList)) {
+            settleDeaths(g, now);
+            if (registry.byAgent(g.agent) != g)
+                continue; // every member died
             if (g.captureRequested != 0) {
                 captureGroup(g, g.captureRequested, now);
                 continue;
@@ -218,7 +247,7 @@ public final class RtsimSession {
                     continue;
                 int how = adapter(g, m).takenBy(m.entity, g);
                 if (how != 0)
-                    take(g, m, how, takerOf(m.entity), now);
+                    take(g, m, m.entity, how, takerOf(m.entity), now);
             }
             if (registry.byAgent(g.agent) != g)
                 continue; // every member was taken
@@ -244,12 +273,53 @@ public final class RtsimSession {
             Entity e = m.entity;
             if (e == null || e.isRemoved() || !(e.level() instanceof ServerLevel level))
                 return false;
-            // isPositionEntityTicking is the entity section's TICKING visibility and the distance
-            // manager's entity-ticking range together: exactly the two tests ServerLevel.tick applies.
-            if (!level.isPositionEntityTicking(e.blockPosition()))
+            if (!entitiesTickAt(level, e.blockPosition()))
                 return false;
         }
         return true;
+    }
+
+    /**
+     * Whether an entity standing at {@code pos} is ticked. {@code isPositionEntityTicking} is the entity
+     * section's TICKING visibility and the distance manager's entity-ticking range, the two per-entity
+     * tests ServerLevel.tick applies. ServerLevel.tick also stops ticking every entity in a level that
+     * has had no player and no forced chunk for 300 ticks ({@code emptyTime}, private); a level with
+     * neither counts as not ticking here at once, which is what a puppet there needs anyway: no player
+     * is interested.
+     */
+    static boolean entitiesTickAt(ServerLevel level, net.minecraft.core.BlockPos pos) {
+        if (level.players().isEmpty() && !net.neoforged.neoforge.common.world.chunk.ForcedChunkManager.hasForcedChunks(level))
+            return false;
+        return level.isPositionEntityTicking(pos);
+    }
+
+    /** Journals the deaths LivingDeathEvent reported this tick, for members that are really dead. */
+    private void settleDeaths(PuppetGroup g, long now) {
+        for (PuppetGroup.Member m : g.members) {
+            if (m.gone || m.pendingDeath == null)
+                continue;
+            Entity e = m.entity;
+            boolean dead = e == null || e.isRemoved() || (e instanceof net.minecraft.world.entity.LivingEntity l && l.isDeadOrDying());
+            if (dead) {
+                died(g, m, m.pendingDeath, m.pendingKiller, now);
+            } else {
+                m.pendingDeath = null; // a later handler cancelled the death
+                m.pendingKiller = null;
+            }
+            if (registry.byAgent(g.agent) != g)
+                return;
+        }
+    }
+
+    private void discardOrphans() {
+        if (orphans.isEmpty())
+            return;
+        for (Entity e : orphans) {
+            AgentTag tag = RtsimAttachments.tag(e);
+            if (!e.isRemoved() && tag != null && registry.live(tag, e.getUUID()) == null)
+                e.discard();
+        }
+        orphans.clear();
     }
 
     private static UUID takerOf(Entity e) {
@@ -269,13 +339,14 @@ public final class RtsimSession {
             if (m.gone || m.entity == null)
                 continue;
             Entity e = m.entity;
+            int dim = dimId(e.level().dimension()); // before direct(): an id is defined before its first use
             int at = boundary.direct(Obs.PUPPET_STATE, Obs.PuppetState.SIZE, m.index, now);
             if (at < 0)
                 return;
             ByteBuffer b = boundary.openBuffer();
             b.putLong(at + Obs.PuppetState.AGENT, g.agent);
             b.putInt(at + Obs.PuppetState.EPOCH, g.epoch);
-            b.putInt(at + Obs.PuppetState.DIM, dimId(e.level().dimension()));
+            b.putInt(at + Obs.PuppetState.DIM, dim);
             b.putFloat(at + Obs.PuppetState.HEALTH, e instanceof net.minecraft.world.entity.LivingEntity l ? l.getHealth() : 0f);
             boolean ticking = e.level() instanceof ServerLevel sl && sl.isPositionEntityTicking(e.blockPosition());
             b.putInt(at + Obs.PuppetState.FLAGS, ticking ? Obs.MemberState.FLAG_TICKING : 0);
@@ -315,7 +386,7 @@ public final class RtsimSession {
         Vec3[] at = new Vec3[kind.size()];
         for (int i = 0; i < at.length; i++) {
             at[i] = anchor.add(kind.slots().get(i).offset());
-            if (!level.isPositionEntityTicking(net.minecraft.core.BlockPos.containing(at[i])))
+            if (!entitiesTickAt(level, net.minecraft.core.BlockPos.containing(at[i])))
                 return Obs.SpawnRejected.NOT_TICKING;
         }
         AgentTag tag = new AgentTag(agent, epoch);
@@ -323,16 +394,26 @@ public final class RtsimSession {
         for (int i = 0; i < at.length; i++) {
             MemberSpawn spawn = spawns[i] != null ? spawns[i] : new MemberSpawn(i, 0f, -1, -1, java.util.List.of());
             Entity e;
+            int refused = Obs.SpawnRejected.SPAWN_FAILED;
             try {
                 e = kind.slots().get(i).adapter().create(level, at[i], spawn);
+            } catch (BodyAdapter.SpawnRefused ex) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] spawn of agent {} refused by {}: {}", agent, kind.slots().get(i).adapter().name(), ex.getMessage());
+                e = null;
+                refused = ex.reason;
             } catch (RuntimeException ex) {
                 MicRtsim.LOGGER.error("[mic_rtsim] body adapter {} failed to create a body", kind.slots().get(i).adapter().name(), ex);
                 e = null;
             }
+            if (e != null && wouldBeDiscarded(e)) {
+                e.discard();
+                e = null;
+                refused = Obs.SpawnRejected.DISCARDED_BY_SERVER;
+            }
             if (e == null) {
                 for (int j = 0; j < i; j++)
                     bodies[j].discard();
-                return Obs.SpawnRejected.SPAWN_FAILED;
+                return refused;
             }
             e.setData(RtsimAttachments.AGENT, tag);
             if (e instanceof net.minecraft.world.entity.Mob mob)
@@ -361,6 +442,17 @@ public final class RtsimSession {
         boundary.commit(r);
         spawnedGroups++;
         return 0;
+    }
+
+    /**
+     * ServerLevel.shouldDiscardEntity (private): with {@code spawn-animals} or {@code spawn-npcs} off, the
+     * server discards every animal or NPC on its first tick. A puppet there would be destroyed with its
+     * cargo, so such a spawn is refused.
+     */
+    private boolean wouldBeDiscarded(Entity e) {
+        if (!server.isSpawningAnimals() && (e instanceof net.minecraft.world.entity.animal.Animal || e instanceof net.minecraft.world.entity.animal.WaterAnimal))
+            return true;
+        return !server.areNpcsEnabled() && e instanceof net.minecraft.world.entity.npc.Npc;
     }
 
     void journalRejected(long agent, int epoch, long cmdSeq, int reason, long now) {
@@ -427,9 +519,11 @@ public final class RtsimSession {
      * journaled with a TAKEN event carrying the cargo's op id, its tag is removed (vanilla saves it from
      * now on), and the rest of the group stays one unit.
      */
-    void take(PuppetGroup g, PuppetGroup.Member m, int how, UUID player, long now) {
+    void take(PuppetGroup g, PuppetGroup.Member m, Entity entity, int how, UUID player, long now) {
+        if (m.entity != entity)
+            m.entity = entity;
         MemberCapture cap = capture(g, m);
-        journalMemberState(g, m, cap, now);
+        byte[] state = journalMemberState(g, m, cap, now);
         ByteBuffer r = boundary.beginJournaled(Obs.TAKEN, Obs.Taken.SIZE, how, now);
         r.putLong(Obs.Taken.AGENT, g.agent);
         r.putInt(Obs.Taken.EPOCH, g.epoch);
@@ -439,7 +533,17 @@ public final class RtsimSession {
             r.putLong(Obs.Taken.PLAYER_LEAST, player.getLeastSignificantBits());
         }
         boundary.commitWithOpId(r, Obs.Taken.OP_ID);
-        m.entity.removeData(RtsimAttachments.AGENT);
+        entity.removeData(RtsimAttachments.AGENT);
+        // The creature is ordinary now and vanilla saves it, maybe on a chunk unload long before the
+        // journal's next save: it carries its own TAKEN until the engine has it.
+        if (!entity.isRemoved())
+            carry(entity, java.util.List.of(state, r.array()), r.getLong(Obs.OBS_SEQ));
+        try {
+            adapter(g, m).onTaken(entity, g);
+        } catch (RuntimeException ex) {
+            MicRtsim.LOGGER.error("[mic_rtsim] body adapter {} failed in onTaken", adapter(g, m).name(), ex);
+        }
+        release(g, m);
         registry.forgetMember(g, m);
         if (registry.byAgent(g.agent) == null)
             journalDematerialized(g, Obs.Dematerialized.MEMBERS_GONE, 0, now);
@@ -454,12 +558,37 @@ public final class RtsimSession {
         PuppetGroup g = registry.live(tag, e.getUUID());
         if (g == null)
             return false;
-        take(g, g.member(e.getUUID()), how, player, gameTime());
+        take(g, g.member(e.getUUID()), e, how, player, gameTime());
         return true;
     }
 
-    void died(PuppetGroup g, PuppetGroup.Member m, UUID killer, long now) {
-        journalMemberState(g, m, capture(g, m), now);
+    private void release(PuppetGroup g, PuppetGroup.Member m) {
+        AgentTag tag = g.tag();
+        releasedUuids.put(m.uuid, tag);
+        releaseTokens.merge(tag, 1, Integer::sum);
+        if (releaseTokens.size() > RELEASED_CAP)
+            releaseTokens.clear(); // PLACEHOLDER bound; a copy that comes back later is treated as stale
+    }
+
+    /** A tagged copy of a member that already left the sim: admit it once, as an ordinary entity. */
+    private boolean admitReleased(Entity e, AgentTag tag) {
+        AgentTag byUuid = releasedUuids.remove(e.getUUID());
+        AgentTag key = byUuid != null ? byUuid : tag;
+        Integer tokens = releaseTokens.get(key);
+        if (byUuid == null && (tokens == null || tokens <= 0))
+            return false;
+        if (tokens != null) {
+            if (tokens <= 1)
+                releaseTokens.remove(key);
+            else
+                releaseTokens.put(key, tokens - 1);
+        }
+        e.removeData(RtsimAttachments.AGENT);
+        return true;
+    }
+
+    void died(PuppetGroup g, PuppetGroup.Member m, MemberCapture atDeath, UUID killer, long now) {
+        byte[] state = journalMemberState(g, m, atDeath != null ? atDeath : capture(g, m), now);
         ByteBuffer r = boundary.beginJournaled(Obs.DIED, Obs.Died.SIZE, m.index, now);
         r.putLong(Obs.Died.AGENT, g.agent);
         r.putInt(Obs.Died.EPOCH, g.epoch);
@@ -468,13 +597,22 @@ public final class RtsimSession {
             r.putLong(Obs.Died.KILLER_LEAST, killer.getLeastSignificantBits());
         }
         boundary.commitWithOpId(r, Obs.Died.OP_ID);
+        // Each item it dropped carries the DIED: an item saved on a chunk unload before the journal
+        // must not let the engine bring the cargo back as well.
+        if (m.pendingDrops != null) {
+            for (Entity drop : m.pendingDrops)
+                if (!drop.isRemoved())
+                    carry(drop, java.util.List.of(state, r.array()), r.getLong(Obs.OBS_SEQ));
+            m.pendingDrops = null;
+        }
+        m.pendingDeath = null;
         registry.forgetMember(g, m);
         if (registry.byAgent(g.agent) == null)
             journalDematerialized(g, Obs.Dematerialized.MEMBERS_GONE, 0, now);
         deaths++;
     }
 
-    private void journalMemberState(PuppetGroup g, PuppetGroup.Member m, MemberCapture cap, long now) {
+    private byte[] journalMemberState(PuppetGroup g, PuppetGroup.Member m, MemberCapture cap, long now) {
         int items = Math.min(cap.items.size(), (0xFFF8 - Obs.MemberState.ITEMS) / Obs.Item.SIZE);
         ByteBuffer r = boundary.beginJournaled(Obs.MEMBER_STATE, Obs.MemberState.size(items), m.index, now);
         r.putLong(Obs.MemberState.AGENT, g.agent);
@@ -499,21 +637,135 @@ public final class RtsimSession {
             r.putInt(at + Obs.Item.COUNT, s.count());
         }
         boundary.commit(r);
+        return r.array();
     }
 
     private void journalDematerialized(PuppetGroup g, int reason, int members, long now) {
+        journalDematerialized(g.agent, g.epoch, reason, members, now);
+    }
+
+    void journalDematerialized(long agent, int epoch, int reason, int members, long now) {
         ByteBuffer r = boundary.beginJournaled(Obs.DEMATERIALIZED, Obs.Dematerialized.SIZE, reason, now);
-        r.putLong(Obs.Dematerialized.AGENT, g.agent);
-        r.putInt(Obs.Dematerialized.EPOCH, g.epoch);
+        r.putLong(Obs.Dematerialized.AGENT, agent);
+        r.putInt(Obs.Dematerialized.EPOCH, epoch);
         r.putInt(Obs.Dematerialized.MEMBERS, members);
         boundary.commit(r);
     }
 
-    void journalCommandResult(long cmdSeq, long opId, int status, long now) {
+    /** Journals a COMMAND_RESULT; returns the committed record (its sequence at {@link Obs#OBS_SEQ}). */
+    ByteBuffer journalCommandResult(long cmdSeq, long opId, int status, long now) {
         ByteBuffer r = boundary.beginJournaled(Obs.COMMAND_RESULT, Obs.CommandResult.SIZE, status, now);
         r.putLong(Obs.CommandResult.CMD_SEQ, cmdSeq);
         r.putLong(Obs.CommandResult.OP_ID, opId);
         boundary.commit(r);
+        return r;
+    }
+
+    // ---- pending records: the world side of a transfer carries its journal records ---------------
+
+    /** Runs {@code then} once the engine has acknowledged {@code seq} in this session. */
+    void whenAcked(long seq, Runnable then) {
+        ackWaiters.computeIfAbsent(seq, k -> new java.util.ArrayList<>(1)).add(then);
+    }
+
+    private void onAcked(long acked) {
+        while (!ackWaiters.isEmpty() && ackWaiters.firstKey() <= acked) {
+            for (Runnable r : ackWaiters.pollFirstEntry().getValue()) {
+                try {
+                    r.run();
+                } catch (RuntimeException ex) {
+                    MicRtsim.LOGGER.error("[mic_rtsim] dropping acknowledged pending records failed", ex);
+                }
+            }
+        }
+    }
+
+    /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
+    private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
+        holder.setData(RtsimAttachments.PENDING, old.plus(records));
+        dropPendingWhenAcked(holder, lastSeq);
+    }
+
+    private void dropPendingWhenAcked(Entity holder, long lastSeq) {
+        ResourceKey<Level> dim = holder.level().dimension();
+        UUID id = holder.getUUID();
+        whenAcked(lastSeq, () -> {
+            ServerLevel level = server.getLevel(dim);
+            Entity e = level == null ? null : level.getEntity(id);
+            if (e != null)
+                e.removeData(RtsimAttachments.PENDING);
+        });
+    }
+
+    /**
+     * An entity that carries pending records came back from disk: journal them again (the engine has
+     * maybe never seen them, if the journal on disk was older than the entity's chunk) and drop them
+     * once acknowledged in this session.
+     */
+    public void reassert(Entity holder) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
+        if (p == null || p.isEmpty())
+            return;
+        long last = 0;
+        for (byte[] record : p.records())
+            last = boundary.recommit(record);
+        reasserted += p.records().size();
+        dropPendingWhenAcked(holder, last);
+    }
+
+    /** The same for a chunk: its pending records are COMMAND_RESULTs of transfers applied into it. */
+    public void reassert(net.minecraft.world.level.chunk.LevelChunk chunk) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
+        if (p == null || p.isEmpty())
+            return;
+        for (byte[] record : p.records()) {
+            long seq = boundary.recommit(record);
+            long op = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID);
+            dropFromChunkWhenAcked(chunk, op, seq);
+        }
+        reasserted += p.records().size();
+    }
+
+    /** The COMMAND_RESULT of an engine op applied into {@code chunk}, if the chunk still carries one. */
+    public static boolean chunkCarriesOp(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
+        if (p == null)
+            return false;
+        for (byte[] r : p.records())
+            if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) == opId)
+                return true;
+        return false;
+    }
+
+    void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
+        chunk.setData(RtsimAttachments.PENDING, old.plus(java.util.List.of(commandResult.array())));
+        chunk.setUnsaved(true);
+        dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
+    }
+
+    void dropFromChunkWhenAcked(net.minecraft.world.level.chunk.LevelChunk chunk, long opId, long seq) {
+        ResourceKey<Level> dim = chunk.getLevel().dimension();
+        net.minecraft.world.level.ChunkPos pos = chunk.getPos();
+        whenAcked(seq, () -> {
+            ServerLevel level = server.getLevel(dim);
+            net.minecraft.world.level.chunk.LevelChunk c = level == null ? null : level.getChunkSource().getChunkNow(pos.x, pos.z);
+            if (c == null)
+                return; // unloaded: it is journaled again when it loads
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = c.getExistingDataOrNull(RtsimAttachments.PENDING);
+            if (p == null)
+                return;
+            java.util.List<byte[]> keep = new java.util.ArrayList<>();
+            for (byte[] r : p.records())
+                if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) != opId)
+                    keep.add(r);
+            if (keep.isEmpty())
+                c.removeData(RtsimAttachments.PENDING);
+            else
+                c.setData(RtsimAttachments.PENDING, new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+            c.setUnsaved(true);
+        });
     }
 
     /**
@@ -552,16 +804,23 @@ public final class RtsimSession {
             return false;
         PuppetGroup g = registry.live(tag, e.getUUID());
         if (g == null) {
+            if (admitReleased(e, tag))
+                return false;
             staleDiscarded++;
             MicRtsim.LOGGER.debug("[mic_rtsim] discarding a stale copy of agent {} epoch {} ({})", tag.agent(), tag.epoch(), e);
             return true;
         }
         PuppetGroup.Member m = g.member(e.getUUID());
         if (m.entity != e) {
-            // A dimension change: vanilla rebuilt the member in another level (Entity.restoreFrom copies
-            // the tag through saveWithoutId). Follow it, then capture the group: a group is one unit, and
-            // it can no longer stand together.
+            // Only a dimension change may replace a live member: vanilla removes the old entity
+            // (CHANGED_DIMENSION) before it adds the copy that Entity.restoreFrom built, tag included.
+            // Any other entity with a live member's UUID is a copy, even if it would fail to join anyway.
+            if (m.entity != null && !(m.entity.isRemoved() && m.entity.getRemovalReason() == Entity.RemovalReason.CHANGED_DIMENSION)) {
+                staleDiscarded++;
+                return true;
+            }
             m.entity = e;
+            // A group is one unit and can no longer stand together: capture it.
             if (!level.dimension().equals(g.dimension) && g.captureRequested == 0)
                 g.captureRequested = Obs.Dematerialized.UNLOADED;
         }
@@ -574,24 +833,33 @@ public final class RtsimSession {
         if (tag == null)
             return;
         PuppetGroup g = registry.live(tag, e.getUUID());
-        if (g == null || g.removingByBridge)
+        Entity.RemovalReason reason = e.getRemovalReason();
+        if (g == null) {
+            // Tracking ended for a tagged entity no live puppet owns (a cancelled death, a stray copy):
+            // vanilla will never unload it, because it refuses to be saved. Discard it after the tick.
+            if (reason == null)
+                orphans.add(e);
+            return;
+        }
+        if (g.removingByBridge)
             return;
         PuppetGroup.Member m = g.member(e.getUUID());
         if (m.entity != e)
             return; // an old copy leaving after its replacement joined
-        Entity.RemovalReason reason = e.getRemovalReason();
         long now = gameTime();
+        if (m.index == 0 && (reason == Entity.RemovalReason.CHANGED_DIMENSION || reason == Entity.RemovalReason.DISCARDED))
+            letGoOfLeader(g, e);
         if (reason == Entity.RemovalReason.CHANGED_DIMENSION)
             return; // the copy joins in the other level
         if (reason == Entity.RemovalReason.KILLED) {
-            died(g, m, null, now); // a death that LivingDeathEvent did not report
+            died(g, m, m.pendingDeath, m.pendingKiller, now); // a death LivingDeathEvent reported, or one it did not
             return;
         }
         if (reason == Entity.RemovalReason.DISCARDED) {
             // Not the bridge (removingByBridge is false): vanilla despawn or another mod (PLAN.md §6.2).
             removedByOther++;
             MicRtsim.LOGGER.warn("[mic_rtsim] puppet {} of agent {} was removed by something else; it leaves the sim", e, g.agent);
-            take(g, m, Obs.Taken.REMOVED_BY_OTHER, null, now);
+            take(g, m, e, Obs.Taken.REMOVED_BY_OTHER, null, now);
             return;
         }
         // Tracking ended (its chunk is no longer accessible) or it is being unloaded: capture this member
@@ -603,6 +871,24 @@ public final class RtsimSession {
             g.captureRequested = Obs.Dematerialized.UNLOADED;
     }
 
+    /**
+     * The leader is leaving the level without dying (a portal, another mod): its llamas would see a
+     * holder that is no longer alive on their next tick and drop the leash with a lead item, before the
+     * end-of-tick capture. Letting go now drops no item (this only changes leash data).
+     */
+    private static void letGoOfLeader(PuppetGroup g, Entity leader) {
+        for (PuppetGroup.Member other : g.members) {
+            if (other.gone || other.entity == null || other.entity == leader)
+                continue;
+            if (other.entity instanceof net.minecraft.world.entity.Leashable l && l.getLeashHolder() == leader)
+                l.dropLeash(true, false);
+        }
+    }
+
+    /**
+     * LivingDeathEvent (lowest priority, not cancelled so far): capture the state now, before the drops,
+     * and journal the death at the end of the tick once it has really happened.
+     */
     void onDeath(Entity e, Entity killer) {
         AgentTag tag = RtsimAttachments.tag(e);
         if (tag == null)
@@ -610,7 +896,22 @@ public final class RtsimSession {
         PuppetGroup g = registry.live(tag, e.getUUID());
         if (g == null)
             return;
-        died(g, g.member(e.getUUID()), killer == null ? null : killer.getUUID(), gameTime());
+        PuppetGroup.Member m = g.member(e.getUUID());
+        m.pendingDeath = capture(g, m);
+        m.pendingKiller = killer == null ? null : killer.getUUID();
+    }
+
+    /** LivingDropsEvent: remember a dying member's drops, so they can carry its DIED. */
+    void onDrops(Entity e, java.util.Collection<net.minecraft.world.entity.item.ItemEntity> drops) {
+        AgentTag tag = RtsimAttachments.tag(e);
+        if (tag == null)
+            return;
+        PuppetGroup g = registry.live(tag, e.getUUID());
+        if (g == null)
+            return;
+        PuppetGroup.Member m = g.member(e.getUUID());
+        if (m.pendingDeath != null)
+            m.pendingDrops = new java.util.ArrayList<>(drops);
     }
 
     void onTame(Entity e, Player tamer) {
@@ -648,4 +949,6 @@ public final class RtsimSession {
     public long removedByOther() { return removedByOther; }
     public long passNanos() { return passNanos; }
     public long ticks() { return ticks; }
+    public long reasserted() { return reasserted; }
+    public int ackWaiters() { return ackWaiters.size(); }
 }

@@ -39,6 +39,8 @@ public final class BoundarySession {
     private long durableReported;
     private volatile long durablePending;
 
+    private long pendingAck;
+    private java.util.function.LongConsumer ackListener = acked -> {};
     private long droppedRecords;
     private long skippedStaleCommands;
     private long malformed;
@@ -71,6 +73,16 @@ public final class BoundarySession {
 
     public SessionStart start() {
         return start;
+    }
+
+    /** Called with each acknowledgement (the highest sequence the engine's saved pages include). */
+    public void onAck(java.util.function.LongConsumer listener) {
+        this.ackListener = listener;
+    }
+
+    /** Journals a record again under a new sequence ({@link Journal#recommit}). */
+    public long recommit(byte[] recordBytes) {
+        return journal.recommit(recordBytes);
     }
 
     public void setModuleMask(int mask) {
@@ -199,8 +211,23 @@ public final class BoundarySession {
         handover.drainCommands(new Handover.CommandSink() {
             @Override
             public void onHeader(long h, long ackedObsSeq, long stepTime, int flags) {
-                journal.trim(ackedObsSeq);
+                // Trimmed only once the buffer's commands are applied (onConsumed): if a command in this
+                // buffer re-issues an op whose COMMAND_RESULT the acknowledgement covers, the op must
+                // still be in the journal's index when that command is checked. And never past what
+                // this session sent or the pages held at start: a bad acknowledgement must not drop
+                // entries the engine never saw.
+                pendingAck = Math.min(ackedObsSeq, Math.max(sentObsSeq, start.pagesObsSeq()));
                 sink.onHeader(h, ackedObsSeq, stepTime, flags);
+            }
+
+            @Override
+            public void onConsumed(long h) {
+                if (pendingAck > 0) {
+                    journal.trim(pendingAck);
+                    ackListener.accept(pendingAck);
+                    pendingAck = 0;
+                }
+                sink.onConsumed(h);
             }
 
             @Override

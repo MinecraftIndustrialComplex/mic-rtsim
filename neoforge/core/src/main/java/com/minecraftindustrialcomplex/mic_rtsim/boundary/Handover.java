@@ -26,6 +26,9 @@ public final class Handover {
 
         /** A malformed record; the rest of that buffer is skipped. */
         void onMalformed(long handover, String error);
+
+        /** Every record of command buffer {@code handover} is done with, and it is handed back. */
+        default void onConsumed(long handover) {}
     }
 
     private final Engine engine;
@@ -54,6 +57,15 @@ public final class Handover {
         for (int i = 0; i < 2; i++) {
             obs[i] = Buffers.view(engine.observationBuffer(i));
             cmd[i] = Buffers.view(engine.commandBuffer(i));
+        }
+        // Hand-overs restart at 1 every session, so a buffer still carrying words from an earlier
+        // session would be mistaken for this one's (an engine that kept its buffers across a
+        // singleplayer reload). The engine zeroes them in start(); anything else is a protocol error.
+        for (int i = 0; i < 2; i++) {
+            for (ByteBuffer b : new ByteBuffer[] {obs[i], cmd[i]}) {
+                if (Seq.getAcquire(b, Layout.H_PUBLISHED) != 0 || Seq.getAcquire(b, Layout.H_CONSUMED) != 0)
+                    throw new IllegalStateException("engine protocol violation: boundary buffers are not fresh at session start");
+            }
         }
         open.reset(obs[1]); // hand-over 1 uses observation buffer 1 & 1
     }
@@ -102,10 +114,12 @@ public final class Handover {
                     return; // that step is still running
                 int used = c.getInt(Layout.H_USED);
                 if (used < 0 || used > Buffers.capacity(c)) {
+                    // A broken header: none of it is trusted, the acknowledgement included.
                     sink.onMalformed(nextCmd, "command buffer used=" + used + " beyond capacity");
                     used = 0;
+                } else {
+                    sink.onHeader(nextCmd, c.getLong(Layout.H_WORD_A), c.getLong(Layout.H_WORD_B), c.getInt(Layout.H_FLAGS));
                 }
-                sink.onHeader(nextCmd, c.getLong(Layout.H_WORD_A), c.getLong(Layout.H_WORD_B), c.getInt(Layout.H_FLAGS));
                 cmdCursor = Layout.HEADER_BYTES;
                 cmdEnd = Layout.HEADER_BYTES + used;
             }
@@ -120,6 +134,7 @@ public final class Handover {
             if (reader.error() != null)
                 sink.onMalformed(nextCmd, reader.error());
             Seq.setRelease(c, Layout.H_CONSUMED, nextCmd);
+            sink.onConsumed(nextCmd);
             nextCmd++;
             cmdCursor = -1;
         }

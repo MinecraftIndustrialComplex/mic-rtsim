@@ -1,6 +1,5 @@
 package com.minecraftindustrialcomplex.mic_rtsim.body.vanilla;
 
-import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyAdapter;
 import com.minecraftindustrialcomplex.mic_rtsim.body.MemberCapture;
 import com.minecraftindustrialcomplex.mic_rtsim.body.MemberSpawn;
@@ -54,22 +53,24 @@ public final class TraderLlamaAdapter implements BodyAdapter {
         return llama;
     }
 
+    /**
+     * Loads the cargo, all of it or none: a stack bigger than the item's stack size, or more stacks than
+     * the chest has slots, refuses the spawn (BAD_CARGO) rather than losing goods. A stack whose slot is
+     * taken or out of range goes in the first free slot.
+     */
     private static void load(TraderLlama llama, MemberSpawn spawn) {
         llama.getSlot(SLOT_CHEST).set(new ItemStack(Items.CHEST));
         int slots = llama.getInventoryColumns() * 3;
+        if (spawn.items().size() > slots)
+            throw new SpawnRefused(Obs.SpawnRejected.BAD_CARGO, spawn.items().size() + " stacks for a chest of " + slots);
         for (MemberCapture.Stack s : spawn.items()) {
-            ItemStack stack = new ItemStack(s.item(), Math.min(s.count(), s.item().getDefaultMaxStackSize()));
-            if (stack.getCount() < s.count())
-                MicRtsim.LOGGER.warn("[mic_rtsim] cargo stack of {} x {} clamped to {}", s.count(), s.item(), stack.getCount());
+            if (s.count() > s.item().getDefaultMaxStackSize())
+                throw new SpawnRefused(Obs.SpawnRejected.BAD_CARGO, s.count() + " x " + s.item() + " is more than one stack");
             int slot = s.slot() >= 0 && s.slot() < slots && llama.getSlot(SLOT_CARGO + s.slot()).get().isEmpty() ? s.slot() : -1;
             for (int k = 0; slot < 0 && k < slots; k++)
                 if (llama.getSlot(SLOT_CARGO + k).get().isEmpty())
                     slot = k;
-            if (slot < 0) {
-                MicRtsim.LOGGER.warn("[mic_rtsim] llama chest full: {} x {} not loaded", stack.getCount(), s.item());
-                continue;
-            }
-            llama.getSlot(SLOT_CARGO + slot).set(stack);
+            llama.getSlot(SLOT_CARGO + slot).set(new ItemStack(s.item(), s.count()));
         }
     }
 
@@ -114,6 +115,21 @@ public final class TraderLlamaAdapter implements BodyAdapter {
         // Leashed to the trader, the llama copies the trader's delay (kept positive by the trader's
         // adapter). Off the leash it counts its own down; keep that one from reaching 0 too.
         ((TraderLlama) entity).setDespawnDelay(VANILLA_DESPAWN_DELAY);
+    }
+
+    /**
+     * An ordinary trader llama counts its own despawnDelay down whenever it is untamed, unridden and not
+     * leashed to something other than a trader ({@code TraderLlama.maybeDespawn}), so a stolen llama
+     * that is later let off its lead would vanish with its cargo. The delay is set out of reach, and a
+     * leash still on the group's trader is let go without dropping a lead.
+     */
+    @Override
+    public void onTaken(Entity entity, PuppetGroup group) {
+        TraderLlama llama = (TraderLlama) entity;
+        llama.setDespawnDelay(Integer.MAX_VALUE);
+        Entity holder = llama.getLeashHolder();
+        if (holder != null && holder == group.members[0].entity)
+            llama.dropLeash(true, false);
     }
 
     @Override

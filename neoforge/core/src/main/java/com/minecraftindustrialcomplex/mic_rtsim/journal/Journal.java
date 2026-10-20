@@ -52,6 +52,12 @@ public final class Journal {
     private final List<DictEntry> dict = new ArrayList<>();
     private final Map<DictEntry, Integer> dictIds = new HashMap<>();
     private Runnable onChange = () -> {};
+    /**
+     * Java op ids are random, not the record's sequence: a crash can roll the journal back while a
+     * chunk saved on unload keeps a record (and its op id) from the lost stretch, and that stretch's
+     * sequences are then handed out again. A random 63-bit number never collides in practice.
+     */
+    private final java.util.SplittableRandom opIds = new java.util.SplittableRandom(new java.security.SecureRandom().nextLong());
 
     public void onChange(Runnable onChange) {
         this.onChange = onChange;
@@ -123,14 +129,26 @@ public final class Journal {
     }
 
     /**
-     * Like {@link #commit}, and writes the record's Java op id at {@code opIdOffset}: its own sequence
-     * with {@link Obs#JAVA_OP_BIT} set. Returns the op id.
+     * Like {@link #commit}, and writes a new Java op id at {@code opIdOffset}: 63 random bits with
+     * {@link Obs#JAVA_OP_BIT} set. Returns the op id.
      */
     public long commitWithOpId(ByteBuffer record, int opIdOffset) {
-        long op = Obs.JAVA_OP_BIT | nextObsSeq;
+        long op;
+        do {
+            op = Obs.JAVA_OP_BIT | (opIds.nextLong() >>> 1);
+        } while (op == Obs.JAVA_OP_BIT);
         record.putLong(opIdOffset, op);
         commit(record);
         return op;
+    }
+
+    /**
+     * Journals a record again: the same bytes (op id and game time included) under a new sequence.
+     * Used when a chunk or entity that carries a record loads. Returns the new sequence.
+     */
+    public long recommit(byte[] recordBytes) {
+        ByteBuffer copy = ByteBuffer.wrap(recordBytes.clone()).order(Layout.ORDER);
+        return commit(copy);
     }
 
     /** Drops every entry the engine acknowledged (its pages on disk include them). */
