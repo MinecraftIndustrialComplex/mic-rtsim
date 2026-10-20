@@ -1245,9 +1245,9 @@ mod tests {
             let k = o.kind();
             assert!((0x0090..=0x009F).contains(&k) || (0x0800..=0x08FF).contains(&k));
         }
-        let mut b = vec![0u8; 16];
+        let mut b = vec![0u8; 24];
         b[0..2].copy_from_slice(&0x08FFu16.to_le_bytes());
-        b[2..4].copy_from_slice(&16u16.to_le_bytes());
+        b[2..4].copy_from_slice(&24u16.to_le_bytes());
         assert_eq!(decode_obs(&b), Err(CodecError::Unknown(0x08FF)));
         b[2..4].copy_from_slice(&12u16.to_le_bytes());
         assert_eq!(decode_obs(&b), Err(CodecError::BadSize));

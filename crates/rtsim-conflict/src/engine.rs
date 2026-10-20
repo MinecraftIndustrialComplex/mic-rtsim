@@ -1380,6 +1380,29 @@ impl Conflict {
         self.relieve(w, f, trader, coins * 0.1, at);
     }
 
+    /// Sends a party now, as an order (tests, a plugin's GameTests, an admin command): a war band
+    /// at a district, plunderers at a node, scouts at a place. Plunder and orders with no feud
+    /// serve none. `None` when the faction is unknown or cannot field it.
+    pub fn order_party(
+        &mut self,
+        w: &mut World,
+        faction: u64,
+        kind: PartyKind,
+        target: Target,
+        feud: Option<ActorId>,
+        at: Tick,
+    ) -> Option<Handle<Party>> {
+        self.run_to(at);
+        let f = *self.by_key.get(&faction)?;
+        let p = self.send_party(w, f, feud, kind, target, at)?;
+        if let Some(a) = feud
+            && let Some(x) = self.feuds.get_mut(&(f, a))
+        {
+            x.party = Some(p);
+        }
+        Some(p)
+    }
+
     fn gift_value(
         &mut self,
         w: &mut World,
@@ -2147,15 +2170,12 @@ impl Conflict {
         };
         let pop = w.settlements.get(node.settlement).map_or(0, |x| x.pop);
         let d = f64::from(pop) * per;
-        let lanchester = if s <= 0.0 { 0.0 } else { ((s - d) / s).max(0.0) };
-        let k = self.tun.comparable_strength_factor.max(1.0);
-        let floor = self.factions[f as usize]
-            .observed
-            .iter()
-            .filter(|o| o.0 >= s / k && o.0 <= s * k)
-            .map(|o| o.1)
-            .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.min(x))));
-        let survived = floor.map_or(lanchester, |fl| lanchester.max(fl)).clamp(0.0, 1.0);
+        let (survived, floor) = village_outcome(
+            s,
+            d,
+            &self.factions[f as usize].observed,
+            self.tun.comparable_strength_factor,
+        );
         let alive = self.parties[p].alive();
         let lost = alive - ((f64::from(alive) * survived).round() as u32).min(alive);
         self.lose_units(p, |_| true, lost);
@@ -3217,6 +3237,33 @@ impl Conflict {
             + self.wheel.heap_bytes()
             + self.applied_ops.len() * 16
     }
+}
+
+/// A raid on a village's or a haven's market (I22's rule applied to residents): Lanchester's
+/// linear law of the band's strength against the defence, floored by the faction's real fights at
+/// comparable strength (never better for the defender than observed). Returns the attackers'
+/// surviving share and the floor that applied.
+pub fn village_outcome(
+    strength: f64,
+    defence: f64,
+    observed: &[(f64, f64)],
+    comparable: f64,
+) -> (f64, Option<f64>) {
+    let lanchester = if strength <= 0.0 {
+        0.0
+    } else {
+        ((strength - defence) / strength).max(0.0)
+    };
+    let k = comparable.max(1.0);
+    let floor = observed
+        .iter()
+        .filter(|o| o.0 >= strength / k && o.0 <= strength * k)
+        .map(|o| o.1)
+        .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.min(x))));
+    (
+        floor.map_or(lanchester, |fl| lanchester.max(fl)).clamp(0.0, 1.0),
+        floor,
+    )
 }
 
 /// Splits `total` over `caps` in proportion, never above a cap, remainders to the largest
