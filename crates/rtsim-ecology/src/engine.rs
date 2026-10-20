@@ -2147,11 +2147,20 @@ impl Dragons {
         // edge_stop seam it does not appear at all (TP12).
         let t = self.topo(pos.frame);
         let here = (i64::from(pos.x), i64::from(pos.z));
+        // Where the player is: its interest area's centre, else where it was last seen.
         let viewer = self
-            .homes
-            .last_seen(player)
-            .filter(|(p, _)| p.frame == pos.frame)
-            .map(|(p, _)| (i64::from(p.x), i64::from(p.z)));
+            .players
+            .get(&player)
+            .and_then(|v| v.interest)
+            .and_then(|st| w.legs.get(st.leg))
+            .filter(|r| r.path.frame == pos.frame)
+            .map(|r| (i64::from(r.path.x0), i64::from(r.path.z0)))
+            .or_else(|| {
+                self.homes
+                    .last_seen(player)
+                    .filter(|(p, _)| p.frame == pos.frame)
+                    .map(|(p, _)| (i64::from(p.x), i64::from(p.z)))
+            });
         let spawn = match viewer {
             Some(v) => t.embodied_toward(v, here),
             None => t.embodied_toward(here, here),

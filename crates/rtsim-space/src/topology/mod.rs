@@ -247,6 +247,16 @@ impl Topology {
         (sat_i32(x), sat_i32(z))
     }
 
+    /// An entity position brought into the domain, keeping its place inside its block: the
+    /// motion of the block it is in, applied to the point.
+    pub fn canonical_point(&self, x: f64, z: f64) -> (f64, f64) {
+        if self.is_flat() || !x.is_finite() || !z.is_finite() {
+            return (x, z);
+        }
+        let f = self.fold(x.floor() as i64, z.floor() as i64);
+        f.iso.point_f(x, z)
+    }
+
     /// The canonical cell of an entity position (floored to its block first).
     pub fn canonical_f(&self, x: f64, z: f64) -> (i64, i64) {
         self.canonical(x.floor() as i64, z.floor() as i64)
