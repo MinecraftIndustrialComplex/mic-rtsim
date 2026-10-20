@@ -78,8 +78,10 @@ const DICT_POLLUTION: u32 = boundary::DICT_POLLUTION as u32;
 /// Deposits that are not counted one mining signal per unit (C2-8): their units are millibuckets
 /// (UNVERIFIED), so a bucket counts as one. Every other deposit a district drains (an Ore
 /// Excavation vein's extraction cycles) counts one per unit. PLACEHOLDER.
-const DEPOSIT_MINING_SCALE: [(&str, f64); 2] =
-    [("destroy:crude_oil", 0.001), ("createdieselgenerators:oil", 0.001)];
+const DEPOSIT_MINING_SCALE: [(&str, f64); 2] = [
+    ("destroy:crude_oil", 0.001),
+    ("createdieselgenerators:oil", 0.001),
+];
 
 /// The signals a district's sources carry (C2-7, C2-8).
 const FED_KINDS: [SignalKind; 3] = [SignalKind::Smog, SignalKind::Radiation, SignalKind::Mining];
@@ -137,7 +139,10 @@ pub(super) struct Link {
 /// The conflict's own dictionary (C2-4): the catalogue's goods as items (`item_of`), the culture
 /// data's bodies (`body_id`), every culture's camp structures and the tunables' pollution types,
 /// ids from 1 in a fixed order.
-fn own_names(c: &Cultures, tun: &ConflictTunables) -> (BTreeMap<String, u32>, BTreeMap<String, u32>) {
+fn own_names(
+    c: &Cultures,
+    tun: &ConflictTunables,
+) -> (BTreeMap<String, u32>, BTreeMap<String, u32>) {
     let mut structures = BTreeMap::new();
     for cu in &c.list {
         for s in &cu.def.structures {
@@ -153,7 +158,11 @@ fn own_names(c: &Cultures, tun: &ConflictTunables) -> (BTreeMap<String, u32>, BT
     (structures, pollution)
 }
 
-fn define_own(e: &mut Conflict, structures: &BTreeMap<String, u32>, pollution: &BTreeMap<String, u32>) {
+fn define_own(
+    e: &mut Conflict,
+    structures: &BTreeMap<String, u32>,
+    pollution: &BTreeMap<String, u32>,
+) {
     let (goods, _) = rtsim_world::synth::goods();
     for (g, d) in goods.iter() {
         e.define(2, item_of(g), &d.name);
@@ -489,9 +498,7 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
 fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.conflict.records += 1;
     let was_running = running(st);
-    let at = at
-        .max(st.conflict.engine.now())
-        .max(st.phase1.world.now());
+    let at = at.max(st.conflict.engine.now()).max(st.phase1.world.now());
     with_infra(st, |c, w, infra| c.ingest(w, infra, o, at));
     st.phase1.taint();
     reset_if_due(st);
@@ -535,9 +542,7 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
     }
     // Never behind its own present: an event due before it (none should be) runs now rather than
     // holding the shared clock's rounds at its time.
-    let t = t
-        .max(st.conflict.engine.now())
-        .max(st.phase1.world.now());
+    let t = t.max(st.conflict.engine.now()).max(st.phase1.world.now());
     let before = st.conflict.engine.stats.events;
     with_infra(st, |c, w, infra| c.run_until(w, infra, t));
     if st.conflict.engine.stats.events != before {
@@ -619,7 +624,11 @@ fn feed_districts(st: &mut State, at: Tick) {
                 (a.0 + i64::from(c.0), a.1 + i64::from(c.1))
             });
             let k = d.chunks.len() as i64;
-            let pos = Pos::new(d.dim as u16, (sx * 16 / k + 8) as i32, (sz * 16 / k + 8) as i32);
+            let pos = Pos::new(
+                d.dim as u16,
+                (sx * 16 / k + 8) as i32,
+                (sz * 16 / k + 8) as i32,
+            );
             for (i, kind) in FED_KINDS.iter().enumerate() {
                 // The rate as `Conflict::set_emission` keeps it, so equal means unchanged.
                 let want = per_day[i].max(0.0) / TICKS_PER_DAY as f64;
@@ -642,7 +651,15 @@ fn feed_districts(st: &mut State, at: Tick) {
         st.conflict.fed += 1;
         let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
         let at = at.max(c.now());
-        c.set_emission(w, district, kind, pos, Some(DistrictId(district)), per_day, at);
+        c.set_emission(
+            w,
+            district,
+            kind,
+            pos,
+            Some(DistrictId(district)),
+            per_day,
+            at,
+        );
     }
     st.phase1.taint();
     take_commands(st);
@@ -705,8 +722,12 @@ fn name_of(st: &State, q: &Queued, kind: u32, id: u32) -> Option<String> {
     }
 }
 
-/// The names a queued command needs in the engine's dictionary: (kind, id it carries, name).
-fn names_needed(st: &State, q: &Queued) -> Result<Vec<(u32, u32, String)>, (String, u32)> {
+/// (dictionary kind, the id a command carries, its name).
+type Named = (u32, u32, String);
+
+/// The names a queued command needs in the engine's dictionary, or why it cannot be written and
+/// the SPAWN_REJECTED reason Java would have given.
+fn names_needed(st: &State, q: &Queued) -> Result<Vec<Named>, (String, u32)> {
     let mut out = Vec::new();
     let mut need = |kind: u32, id: u32| -> Result<(), (String, u32)> {
         match name_of(st, q, kind, id) {

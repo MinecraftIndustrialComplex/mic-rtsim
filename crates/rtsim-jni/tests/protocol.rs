@@ -2405,7 +2405,11 @@ mod conflict {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         let (factions, haven) =
             e.with_conflict(|c, w| (c.factions.len(), w.node_of_key(CAMP).is_some()));
-        assert_eq!((factions, haven), (1, true), "the camp is a faction and a haven");
+        assert_eq!(
+            (factions, haven),
+            (1, true),
+            "the camp is a faction and a haven"
+        );
         let territory = cmds(&j)
             .find_map(|c| match c {
                 C::Territory(t) => Some(*t),
@@ -2444,7 +2448,10 @@ mod conflict {
             })
             .unwrap();
         assert_eq!(envoy.agent >> 56, 0x43, "a party's agent (namespace 0x43)");
-        assert_eq!((envoy.faction, envoy.player, envoy.dimension), (CAMP, PLAYER, dim));
+        assert_eq!(
+            (envoy.faction, envoy.player, envoy.dimension),
+            (CAMP, PLAYER, dim)
+        );
         assert_eq!(
             java_name(&j, wire::DICT_ITEM, envoy.tribute_item).as_deref(),
             Some("minecraft:emerald"),
@@ -2520,7 +2527,11 @@ mod conflict {
         wire::put_u64(&mut again, obs::OBS_SEQ, seq);
         j.journal.push_back((seq, again));
         j.idle();
-        assert_eq!(paid(&e), (tributes, emeralds), "a tribute's op id applies once");
+        assert_eq!(
+            paid(&e),
+            (tributes, emeralds),
+            "a tribute's op id applies once"
+        );
         let f = feud(&e, PLAYER).unwrap();
         assert_eq!(f.step, Step::Notice, "paid: back to notice ({f:?})");
 
@@ -2592,16 +2603,22 @@ mod conflict {
         );
         assert!(first <= 16, "a wave within the spawn quota: {first}");
         assert_eq!(waves[0].wave, 0);
-        assert!(waves[1].wave >= 1 && waves[1].epoch == waves[0].epoch, "{waves:?}");
         assert!(
-            waves.iter().all(|w| w.arc_radius == 112 && (w.half_width_deg - 30.0).abs() < 1e-3),
+            waves[1].wave >= 1 && waves[1].epoch == waves[0].epoch,
+            "{waves:?}"
+        );
+        assert!(
+            waves
+                .iter()
+                .all(|w| w.arc_radius == 112 && (w.half_width_deg - 30.0).abs() < 1e-3),
             "on the arc"
         );
         assert!(
             waves[0].flags & cb::BAND_CHIEF != 0,
             "the war chief leads the invasion"
         );
-        let (casualties, chiefs) = e.with_conflict(|c, _| (c.stats.casualties, c.stats.chiefs_killed));
+        let (casualties, chiefs) =
+            e.with_conflict(|c, _| (c.stats.casualties, c.stats.chiefs_killed));
         assert!(casualties > 0, "casualties booked");
         let chief_before = e.with_conflict(|c, _| c.factions[0].chief);
         let ck = O::ChiefKilled(cb::ChiefKilled {
@@ -2613,10 +2630,18 @@ mod conflict {
         });
         j.conflict_obs(&ck);
         j.idle();
-        let (chiefs_now, successions, chief_now) =
-            e.with_conflict(|c, _| (c.stats.chiefs_killed, c.stats.successions, c.factions[0].chief));
+        let (chiefs_now, successions, chief_now) = e.with_conflict(|c, _| {
+            (
+                c.stats.chiefs_killed,
+                c.stats.successions,
+                c.factions[0].chief,
+            )
+        });
         assert_eq!(chiefs_now, chiefs + 1, "the war chief killed");
-        assert!(successions >= 1 && chief_now != chief_before, "the heir takes over");
+        assert!(
+            successions >= 1 && chief_now != chief_before,
+            "the heir takes over"
+        );
         assert!(
             cmds(&j).any(|c| matches!(c, C::Recall(r) if r.agent == inv.agent && r.reason == cb::RECALL_ROUTED)),
             "the band routs"
@@ -2669,7 +2694,11 @@ mod conflict {
         );
         let (_, replay_ok, _) = e.phase1_state();
         assert!(replay_ok, "the world it lives in too");
-        assert_eq!(e.with_conflict(|c, _| c.stats.gifts), gifts, "the pages predate the gift");
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.gifts),
+            gifts,
+            "the pages predate the gift"
+        );
         j.idle();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -2701,5 +2730,158 @@ mod conflict {
             store.get(PageKey::new(CONFLICT_TABLE, 0)).expect("read")
         };
         assert!(page.is_some(), "the conflict's page in table 0x4300");
+    }
+
+    /// C25 (U10, C2-6): with the conflict module switched off, the conflict ignores its records
+    /// (a territory signal), decides and writes nothing, and keeps the page it had; switched on
+    /// again, it runs on and the territory goes out again.
+    #[test]
+    fn switched_off_conflict_ignores_its_records_and_keeps_its_page() {
+        let page = |dir: &std::path::PathBuf| {
+            let mut store =
+                PageStore::open(dir, rtsim_kernel::page::Durability::NoSync).expect("open");
+            store.get(PageKey::new(CONFLICT_TABLE, 0)).expect("read")
+        };
+        let dir = tmpdir("conflict-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        found(&mut j, CAMP_AT);
+        j.idle();
+        signal(&mut j, 2, 100, PLAYER);
+        j.idle();
+        save(&e, &mut j);
+        j.modules(0b1111);
+        j.idle();
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let at_switch = page(&dir).expect("a conflict page");
+
+        // Off from the start of a session: a signal is ignored, days pass, nothing is written.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = 0b1111;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, [f64::from(BASE.0), 64.0, f64::from(BASE.1)])];
+        signal(&mut j, 2, 300, PLAYER);
+        advance_until(&mut j, 2_000, 3 * DAY, "three days", |j| {
+            j.game_time > 3 * DAY
+        });
+        let (_, link) = e.conflict_stats();
+        assert!(link.ignored >= 1, "the signal was ignored ({link:?})");
+        assert_eq!(link.commands_written, 0, "nothing written");
+        assert!(j.conflict.is_empty(), "no conflict command reached Java");
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            page(&dir),
+            Some(at_switch.clone()),
+            "the page kept as it was"
+        );
+
+        // On again: it runs, and the plugin hears the territory again.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        j.idle();
+        assert!(
+            cmds(&j)
+                .any(|c| matches!(c, C::Territory(t) if t.faction == CAMP && t.dimension == dim)),
+            "TERRITORY again"
+        );
+        signal(&mut j, 2, 100, PLAYER);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_ne!(
+            page(&dir),
+            Some(at_switch),
+            "running again, the page moves on"
+        );
+    }
+
+    /// CONFLICT_COMMAND (order 29, TEST mode, C2-15): a command in Java's ids and game time goes
+    /// out as the conflict's own, its body names in the engine's dictionary first; the conflict
+    /// knows nothing of its agent, so Java's answer is ignored.
+    #[test]
+    fn a_conflict_command_order_goes_out_in_the_engines_dictionary() {
+        let dir = tmpdir("conflict-order");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.idle();
+        let warrior = 41;
+        let agent = 0x43 << 56 | 0xABC;
+        let cmd = C::Materialize(cb::BandMaterialize {
+            agent,
+            epoch: 3,
+            dimension: dim,
+            faction: CAMP,
+            purpose: 3,
+            flags: cb::BAND_HOSTILE,
+            wave: 0,
+            arc_centre: (10.0, 20.0),
+            bearing_deg: 90.0,
+            arc_radius: 112,
+            half_width_deg: 30.0,
+            target: (10.0, 64.0, 20.0),
+            target_player: PLAYER,
+            speed: 0.02,
+            members: vec![cb::Stack {
+                body: warrior,
+                count: 5,
+                flags: 0,
+            }],
+        });
+        let mut record = Vec::new();
+        cb::encode_cmd(0, &cmd, &mut record);
+        e.order(vec![Order::ConflictCommand {
+            names: vec![(
+                wire::DICT_BODY,
+                warrior,
+                "mic_rtsim:conflict/goblin/warrior".into(),
+            )],
+            record,
+        }])
+        .unwrap();
+        j.idle();
+        let got = cmds(&j)
+            .find_map(|c| match c {
+                C::Materialize(m) if m.agent == agent => Some(m.clone()),
+                _ => None,
+            })
+            .expect("the ordered BAND_MATERIALIZE");
+        assert_eq!(got.dimension, dim);
+        assert_eq!(
+            java_name(&j, wire::DICT_BODY, got.members[0].body).as_deref(),
+            Some("mic_rtsim:conflict/goblin/warrior"),
+            "the body in the engine's dictionary, as Java maps it"
+        );
+        assert_eq!((got.arc_radius, got.members[0].count), (112, 5));
+        j.conflict_flush();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (st, link) = e.conflict_stats();
+        assert_eq!(st.materialized, 0, "the conflict itself decided nothing");
+        assert_eq!(link.commands_written, 1);
+        // Outside TEST mode the order is refused.
+        let dir2 = tmpdir("conflict-order-live");
+        let live = engine_with(&dir2, 256 * 1024, |c| c.test = false);
+        assert!(
+            live.order(vec![Order::ConflictCommand {
+                names: Vec::new(),
+                record: {
+                    let mut r = Vec::new();
+                    cb::encode_cmd(0, &cmd, &mut r);
+                    r
+                },
+            }])
+            .is_err()
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
     }
 }

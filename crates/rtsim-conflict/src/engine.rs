@@ -1367,7 +1367,15 @@ impl Conflict {
     /// never a signal cut even when no impulse came since (choice C2-12 in
     /// docs/overnight-choices-conflictjni.md). Scouts if grievance is at their threshold, else the
     /// feud stays at envoy above the hysteresis or falls back to notice.
-    fn demand_unmet(&mut self, w: &mut World, f: u32, a: ActorId, d: Demand, outcome: u32, at: Tick) {
+    fn demand_unmet(
+        &mut self,
+        w: &mut World,
+        f: u32,
+        a: ActorId,
+        d: Demand,
+        outcome: u32,
+        at: Tick,
+    ) {
         let lambda = self.culture(f).lambda;
         {
             self.stats.expired += 1;

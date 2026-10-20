@@ -898,7 +898,10 @@ mod tests {
         let mut t = threat(ThreatClass::GroundMelee, 10);
         let o = resolve(&t, &d, 0, &tun);
         let dmg = damage(&t, &o, &stock, &d, &tun);
-        assert!(dmg.stolen.is_empty() && dmg.destroyed.is_empty(), "class defaults");
+        assert!(
+            dmg.stolen.is_empty() && dmg.destroyed.is_empty(),
+            "class defaults"
+        );
         t.loads = Some(Loads {
             carry: 80,
             blocks: 5,
