@@ -129,7 +129,7 @@ fn describe(t: &rtsim_space::topology::Topology) -> String {
 /// Hands the topologies to every module that measures the world. Cheap when nothing changed.
 pub(super) fn sync(st: &mut State) {
     let t = &st.topology.shared;
-    st.phase1.world.legs.set_topologies(t.clone());
+    st.phase1.world.set_topologies(t.clone());
     st.dragons.engine.set_topologies(t.clone());
     st.dragons.index.set_topologies(t.clone());
     st.herds.engine.set_topologies(t.clone());

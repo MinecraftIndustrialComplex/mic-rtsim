@@ -3032,6 +3032,7 @@ impl Ships {
                 (w.nodes[i].actor, Place::new(q.frame, q.x, 64, q.z))
             })
             .collect();
+        let near = w.near_images(place, near);
         let mut seen = witnesses(place, w.cfg.knowledge.witness_radius, near);
         if let Some(to) = self.ships[victim].promoted.map(|q| q.to) {
             seen.push(w.nodes[to].actor);
