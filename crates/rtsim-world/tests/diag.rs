@@ -28,6 +28,9 @@ fn node_detail() {
     if let Ok(r) = std::env::var("RULES") {
         cfg.trade.rules = rtsim_trade::Rules::parse(&r).unwrap();
     }
+    if std::env::var("NOGROWTH").is_ok() {
+        cfg.growth = false;
+    }
     let markets: usize = std::env::var("MARKETS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -112,5 +115,52 @@ fn node_detail() {
             }
             println!("{line}");
         }
+    }
+}
+
+#[test]
+#[ignore]
+fn robbery_spread() {
+    let mut cfg = WorldConfig::new(42);
+    cfg.check_every_event = false;
+    cfg.genesis = Genesis::Share(500);
+    let (mut w, _) = synth::build(cfg, true);
+    let player = w.player(0xB0B);
+    w.run_until(Tick::from_days(20));
+    let mut key = None;
+    let mut t = w.now();
+    while key.is_none() {
+        t += 1000;
+        w.run_until(t);
+        for d in w.nodes[1].out.clone() {
+            for tr in w.travellers(d.edge, d.dir) {
+                if tr.cargo.values().sum::<i64>() > 0 && tr.progress_milli < 700 {
+                    key = Some(tr.key);
+                }
+            }
+        }
+    }
+    let c = w.promote(key.unwrap()).unwrap();
+    let a = w.rob(c, player, 1000).unwrap();
+    println!("robbed at {:?}: {:?}", w.now(), a.outcome);
+    for day in 0..10u64 {
+        w.run_until(Tick(t.0 + day * TICKS_PER_DAY));
+        let knows: Vec<usize> = (0..w.nodes.len())
+            .filter(|&i| w.knowledge.knows(w.nodes[i].actor, a.report))
+            .collect();
+        let pend: Vec<String> = w.nodes[1]
+            .out
+            .iter()
+            .map(|d| {
+                let dir = &w.edges[d.edge as usize].dirs[d.dir as usize];
+                format!(
+                    "to {} pending {:?} period {}",
+                    dir.to,
+                    dir.pending,
+                    dir.lattice.current_period()
+                )
+            })
+            .collect();
+        println!("day +{day}: knows {knows:?}; Oakford's roads: {pend:?}");
     }
 }

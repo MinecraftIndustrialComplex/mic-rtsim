@@ -102,6 +102,23 @@ struct Report {
     state_hash: String,
     final_events_per_day: f64,
     caravan_sizes: SizeStats,
+    features: Features,
+}
+
+/// What the round 2 features did in the run: bands, sorcerers, growth, the base (P16, P17, P30).
+#[derive(Serialize, Default)]
+struct Features {
+    bands: Vec<String>,
+    band_packets: u64,
+    sentiment_snapshots: usize,
+    last_sentiment: BTreeMap<String, Vec<i8>>,
+    sorcerers: BTreeMap<String, String>,
+    houses: Vec<String>,
+    residents: usize,
+    populations: BTreeMap<String, u32>,
+    base_stops: Vec<String>,
+    visible_at_base: usize,
+    base_trade: Option<String>,
 }
 
 /// The cargo of every traveller on the road, sampled once a day after day 20 (so the first fill
@@ -307,6 +324,47 @@ fn track(w: &World, t: &mut Tracked) {
     }
 }
 
+/// Walkthrough J, steps 2 and 3: a caravan whose road stops at the player's farm, near enough to
+/// see; the player sells it what it buys, or buys from it, and the price becomes the farm's news.
+fn base_trade(w: &mut World, player: ActorId, farm: usize, features: &mut Features) {
+    let pos = w.nodes[farm].pos;
+    w.set_player_pos(player, pos, w.now());
+    let seen = w.visible_to(player);
+    features.visible_at_base = features.visible_at_base.max(seen.len());
+    for v in seen {
+        let rtsim_world::Visible::Traveller { traveller, .. } = v else {
+            continue;
+        };
+        if !traveller.stops.contains(&farm) {
+            continue;
+        }
+        let r = rtsim_world::bases::CaravanRef::Sampled(traveller.key);
+        let offers = w.caravan_offers(r, player);
+        let pick = offers
+            .iter()
+            .find(|o| o.side == rtsim_trade::OfferSide::MarketBuys)
+            .map(|o| (o.good, Side::Sell))
+            .or_else(|| offers.first().map(|o| (o.good, Side::Buy)));
+        if let Some((g, side)) = pick
+            && let Ok((_, q)) = w.caravan_trade(r, Some(farm), player, g, side, 1)
+        {
+            let text = format!(
+                "day {:.2}: the player {} {} {} for {} coins with a caravan {} -> {}; the farm's price is now news",
+                day_of(w.now()),
+                if side == Side::Sell { "sells" } else { "buys" },
+                q.items,
+                w.goods.get(g).name,
+                q.coins,
+                NAMES[traveller.from],
+                NAMES[traveller.to]
+            );
+            println!("\n>> {text}");
+            features.base_trade = Some(text);
+            return;
+        }
+    }
+}
+
 /// The busiest road out of `from` right now, with the traveller on it carrying the most.
 fn pick_caravan(w: &World, from: usize) -> Option<rtsim_travel::CaravanKey> {
     let mut best: Option<(i64, rtsim_travel::CaravanKey)> = None;
@@ -352,6 +410,20 @@ pub fn run(o: Options) -> i32 {
     let mut gossip = Vec::new();
     let mut prev_events = 0;
     let mut caravans: Vec<(f64, f64)> = Vec::new();
+    let mut features = Features::default();
+    for b in 0..w.bands.len() {
+        let band = &w.bands[b];
+        features.bands.push(format!(
+            "{}'s band: {} (circuit of {:.1} days)",
+            NAMES[band.home],
+            band.route
+                .iter()
+                .map(|&i| NAMES[i])
+                .collect::<Vec<_>>()
+                .join(" -> "),
+            band.period() as f64 / w.cfg.trade.quantum.per_day_count() as f64
+        ));
+    }
     println!(
         "phase 1 scenario: {} nodes, {} edges, {} goods, seed {}, {} days{}",
         w.nodes.len(),
@@ -373,6 +445,7 @@ pub fn run(o: Options) -> i32 {
     }
     let brindle = 0;
     let oakford = 1;
+    let farm = 10;
     let fernwick = 4;
     let q = w.cfg.trade.quantum.len();
     for day in 0..=o.days {
@@ -383,6 +456,9 @@ pub fn run(o: Options) -> i32 {
             w.run_until(Tick(t));
             for tr in &mut tracked {
                 track(&w, tr);
+            }
+            if o.script && day > 30 && features.base_trade.is_none() {
+                base_trade(&mut w, player, farm, &mut features);
             }
             t += q;
         }
@@ -448,8 +524,16 @@ pub fn run(o: Options) -> i32 {
                     });
                 }
                 20 => {
-                    // Walkthrough D: rob a caravan leaving Oakford.
-                    if let Some(key) = pick_caravan(&w, oakford)
+                    // Walkthrough D: rob a caravan leaving Oakford. Caravans wait at the dock for
+                    // a full load or two days (E53), so wait for the next one out of town.
+                    let mut key = pick_caravan(&w, oakford);
+                    let mut t = w.now();
+                    while key.is_none() && t < Tick::from_days(24) {
+                        t += q;
+                        w.run_until(t);
+                        key = pick_caravan(&w, oakford);
+                    }
+                    if let Some(key) = key
                         && let Some(c) = w.promote(key)
                     {
                         let car = w.caravans.get(c).expect("promoted");
@@ -476,6 +560,74 @@ pub fn run(o: Options) -> i32 {
                     } else {
                         println!("\n>> day 20: no caravan on the road out of Oakford to rob");
                     }
+                }
+                30 => {
+                    // Walkthrough J: the player's farm becomes a base (P30's recommendation): the
+                    // bridge's dwell counter marked it.
+                    let pos = w.nodes[farm].pos;
+                    w.mark_base(w.nodes[farm].key, pos, player, w.now());
+                    let stops: Vec<String> = w
+                        .edges
+                        .iter()
+                        .filter(|e| e.stops.contains(&farm))
+                        .map(|e| format!("{} - {}", NAMES[e.a], NAMES[e.b]))
+                        .collect();
+                    println!(
+                        "\n>> day 30: the player's farm is a base; caravans on {stops:?} stop there"
+                    );
+                    features.base_stops = stops;
+                }
+                35 => {
+                    // Walkthrough F, step 2: the player robs a ribbit caravan out of Mirewater, and
+                    // the news reaches the ribbit villages with their caravans and bands.
+                    let mirewater = 6;
+                    let mut key = pick_caravan(&w, mirewater);
+                    let mut t = w.now();
+                    while key.is_none() && t < Tick::from_days(39) {
+                        t += q;
+                        w.run_until(t);
+                        key = pick_caravan(&w, mirewater);
+                    }
+                    if let Some(key) = key
+                        && let Some(c) = w.promote(key)
+                    {
+                        let car = w.caravans.get(c).expect("promoted");
+                        let (from, to) = (car.leg.from, car.leg.to);
+                        let attack = w.rob(c, player, 1000).expect("robbable");
+                        let mut d = BTreeMap::new();
+                        d.insert("road".into(), format!("{} -> {}", NAMES[from], NAMES[to]));
+                        d.insert("taken".into(), cargo_text(&w, &attack.taken));
+                        println!("\n>> day 35: player robs a ribbit caravan: {d:?}");
+                        script.push(ScriptRow {
+                            day: day_of(w.now()),
+                            what: "rob ribbit caravan".into(),
+                            detail: d,
+                        });
+                        tracked.push(Tracked {
+                            name: format!("robbery on {} -> {}", NAMES[from], NAMES[to]),
+                            report: attack.report,
+                            happened: w.now(),
+                            learned: BTreeMap::new(),
+                        });
+                    }
+                }
+                45 => {
+                    // Walkthrough F: the sorcerers of the ribbit villages decide whether to buff
+                    // the player.
+                    for (i, n) in w.nodes.iter().enumerate() {
+                        if matches!(
+                            n.kind,
+                            rtsim_settle::NodeKind::Village(rtsim_settle::Culture::Ribbit)
+                        ) {
+                            let s = w.knowledge.sentiment(n.actor, player, w.now());
+                            let buffs = w.sorcerer_includes(i, player);
+                            features.sorcerers.insert(
+                                NAMES[i].to_string(),
+                                format!("sentiment {s}, buffs the player: {buffs}"),
+                            );
+                        }
+                    }
+                    println!("\n>> day 45: sorcerers: {:?}", features.sorcerers);
                 }
                 25 => {
                     // Walkthrough I: rescue a caravan leaving Fernwick.
@@ -526,6 +678,27 @@ pub fn run(o: Options) -> i32 {
                         g.amount
                     ));
                 }
+                Command::Sentiment(snap) => {
+                    features.sentiment_snapshots += 1;
+                    if let Some(i) = w.node_of_key(snap.village) {
+                        features.last_sentiment.insert(
+                            NAMES[i].to_string(),
+                            snap.entries.iter().map(|e| e.2).collect(),
+                        );
+                    }
+                }
+                Command::PlaceHouse(h) => {
+                    // The bridge would place it when its chunk next loads; here it stands at once.
+                    let village = w.node_of_key(h.village).map_or("?", |i| NAMES[i]);
+                    features.houses.push(format!(
+                        "day {:.2}: {village} books house template {} (op {})",
+                        day_of(w.now()),
+                        h.template,
+                        h.op
+                    ));
+                    features.residents += w.house_placed(h.op);
+                }
+                Command::SpawnResident(_) => {}
             }
         }
         if day > 20 {
@@ -586,6 +759,35 @@ pub fn run(o: Options) -> i32 {
         "conservation: {conservation}; events per day over the last 10 days: {last10:.1} ({:.2} per market)",
         last10 / w.nodes.len() as f64
     );
+    features.band_packets = w.stats.band_packets;
+    for (i, n) in w.nodes.iter().enumerate() {
+        features
+            .populations
+            .insert(NAMES[i].to_string(), n.local.pop);
+    }
+    println!("\n== round 2 features ==");
+    for b in &features.bands {
+        println!("{b}");
+    }
+    println!(
+        "base stops {:?}; most travellers a player at the base saw at once: {}; {}",
+        features.base_stops,
+        features.visible_at_base,
+        features
+            .base_trade
+            .as_deref()
+            .unwrap_or("no caravan traded at the base")
+    );
+    println!(
+        "news packets carried by bands: {}; sentiment snapshots sent: {}; houses booked: {} ({} residents)",
+        features.band_packets,
+        features.sentiment_snapshots,
+        features.houses.len(),
+        features.residents
+    );
+    for h in &features.houses {
+        println!("  {h}");
+    }
     let caravan_sizes = size_stats(caravans);
     println!(
         "caravans on the road (daily samples after day 20): {} with cargo, {} scouts; slots p10 {:.3}, median {:.3}, p90 {:.3}, max {:.2}; under one slot {:.0}%, nothing over one item {:.0}%; median biggest good {:.2} items",
@@ -630,6 +832,7 @@ pub fn run(o: Options) -> i32 {
         state_hash: format!("{:016x}", w.state_hash()),
         final_events_per_day: last10,
         caravan_sizes,
+        features,
     };
     println!("state hash {}", report.state_hash);
     if let Some(dir) = &o.out {

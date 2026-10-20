@@ -30,7 +30,7 @@ usage:
       --rules sets the markets' decision rules for comparisons: round1, or name=value pairs
       (slack, money, band, up, ask, div; see rtsim_trade::tunables::Rules).
   rtsim-cli sim quiet [--markets N] [--days D] [--every E] [--seed S] [--genesis G] [--rules LIST]
-                     [--trace D] [--grow]
+                     [--trace D] [--grow] [--no-growth] [--no-bands]
       Runs a closed world with no player (the phase 1 world, or a grid of N villages) and prints
       market events per market per day for each E-day window: does it go quiet? --grow builds
       the phase 1 world by joining its villages one a day (C22).";
@@ -140,6 +140,8 @@ fn main() -> ExitCode {
                 rules: None,
                 trace_days: 0,
                 grow: false,
+                growth: true,
+                bands: true,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -166,6 +168,8 @@ fn main() -> ExitCode {
                         None => return usage("--trace needs a number of days"),
                     },
                     "--grow" => o.grow = true,
+                    "--no-growth" => o.growth = false,
+                    "--no-bands" => o.bands = false,
                     "--genesis" => match num(it.next()) {
                         Some(n) => o.genesis = n as i64,
                         None => return usage("--genesis needs thousandths of target"),

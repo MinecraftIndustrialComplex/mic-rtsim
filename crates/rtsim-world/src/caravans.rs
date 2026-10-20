@@ -81,6 +81,7 @@ impl World {
                         / span) as u32,
                     departed,
                     arrives,
+                    stops: e.stops.clone(),
                 }
             })
             .collect()
@@ -236,6 +237,12 @@ impl World {
         let seen = witnesses(place, self.cfg.knowledge.witness_radius, near);
         for h in seen {
             self.knowledge.witness(h, id, at);
+            self.touch_sentiment_actor(h);
+            // A village that saw it tells the next travellers (gossip moves with trade, even in a
+            // world whose markets are quiet).
+            if let Some(i) = self.nodes.iter().position(|n| n.actor == h) {
+                self.emit(i, at, false);
+            }
         }
         // The trader saw it too, as a notable: it remembers, and feels it, so its grudge can
         // pass to its heir (C24).
@@ -340,7 +347,9 @@ impl World {
         let report = self.report(player, c, ReportKind::Killing, at)?;
         if leader {
             if let Some(n) = self.caravans.get(c).and_then(|x| x.notable) {
-                self.knowledge.die(n, at);
+                if let Some(heir) = self.knowledge.die(n, at) {
+                    self.touch_sentiment_actor(heir);
+                }
             }
             self.flush_gossip();
         }
@@ -447,6 +456,9 @@ impl World {
         let mut cursor = rtsim_knowledge::BoardCursor::default();
         let packet = self.knowledge.packet_since(holder, &mut cursor);
         let learned = self.knowledge.deliver(self.nodes[node].actor, &packet, at);
+        if learned > 0 {
+            self.touch_sentiment(node);
+        }
         self.flush_gossip();
         let car = self.caravans.get(c).expect("checked").clone();
         let region = self.nodes[node].region;

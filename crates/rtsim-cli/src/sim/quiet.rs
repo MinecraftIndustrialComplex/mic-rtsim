@@ -24,6 +24,10 @@ pub struct Options {
     /// Grow the phase 1 world by joins instead of building it at once: the first two nodes, then
     /// one more each day (C22).
     pub grow: bool,
+    /// Ribbit villages grow houses (P17).
+    pub growth: bool,
+    /// Ribbit villages have touring bands (P16).
+    pub bands: bool,
 }
 
 /// Builds the world and returns events per market per day for each window, the conservation
@@ -38,6 +42,10 @@ fn series_world(o: &Options) -> (Vec<f64>, Result<(), String>, World) {
     };
     if let Some(r) = o.rules {
         cfg.trade.rules = r;
+    }
+    cfg.growth = o.growth;
+    if !o.bands {
+        cfg.band_min_pop = u32::MAX;
     }
     let mut w: World = if o.markets == 0 && o.grow {
         let (goods, ids) = synth::goods();

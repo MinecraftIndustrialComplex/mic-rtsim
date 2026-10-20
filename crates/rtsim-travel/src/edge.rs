@@ -118,6 +118,9 @@ pub struct Edge {
     pub border: bool,
     /// `dirs[0]` is a to b, `dirs[1]` b to a.
     pub dirs: [Dir; 2],
+    /// Player bases near the road that its caravans stop at (C26, P30's recommendation), as node
+    /// indices.
+    pub stops: Vec<usize>,
 }
 
 impl Edge {
@@ -141,6 +144,7 @@ impl Edge {
             seed,
             border,
             dirs: [Dir::new(a, b, idle_period), Dir::new(b, a, idle_period)],
+            stops: Vec::new(),
         }
     }
 

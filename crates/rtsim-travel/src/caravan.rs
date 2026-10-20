@@ -32,6 +32,12 @@ pub enum Body {
     Llama,
     /// A ribbit merchant (`RibbitData` profession merchant).
     RibbitMerchant,
+    /// A touring band's master (P16): its musicians gather around it to play.
+    RibbitMaster,
+    /// A touring band's musician (a ribbit with an instrument in its `RibbitData`).
+    RibbitMusician,
+    /// A ribbit resident spawned for a grown house (P17).
+    RibbitResident,
 }
 
 /// Which group shape a caravan has (C25; PLAN.md §8.3).
@@ -94,6 +100,8 @@ pub struct Traveller {
     pub progress_milli: u32,
     pub departed: Tick,
     pub arrives: Tick,
+    /// Player bases on its road it stops at, to trade with the players there (C26, P30).
+    pub stops: Vec<usize>,
 }
 
 /// One member of an individual caravan.

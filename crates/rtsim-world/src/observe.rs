@@ -100,6 +100,7 @@ impl World {
                 place: rtsim_knowledge::Place::new(p.frame, p.x, 64, p.z),
             });
             self.knowledge.witness(actor, id, at);
+            self.touch_sentiment(i);
             self.flush_gossip();
             // A trade moves the stock, and with it the price: news, even with no breakpoint.
             self.market_event(i, at, crate::world::Cause::Player);

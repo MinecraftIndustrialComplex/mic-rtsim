@@ -56,16 +56,27 @@ pub struct Node {
     pub raids_in: Vec<DirRef>,
     /// Neighbour node indices, never evicted from the news ring.
     pub neighbours: Vec<usize>,
+    /// Touring bands that stop here: (band, stop index on its circuit).
+    pub bands: Vec<(u32, u32)>,
     /// The last snapshot this node sent, to tell whether the next one is news.
     pub last_sent: Option<Arc<Snapshot>>,
     pub costs: Costs,
     pub local: Local,
 }
 
+/// How a news packet travels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Via {
+    /// With the next caravan (or scout) on this road.
+    Road(DirRef),
+    /// With a touring band, leaving this stop of its circuit (P16).
+    Band { band: u32, stop: u32 },
+}
+
 /// A news packet waiting for its caravan, or on the road.
 #[derive(Clone, Debug)]
 pub struct PacketData {
-    pub dir: DirRef,
+    pub via: Via,
     pub from: usize,
     pub to: usize,
     pub departs: u64,
@@ -84,6 +95,8 @@ pub(crate) enum Ev {
     Deliver(u32),
     /// An individual caravan reaches the end of its leg.
     Arrive { caravan: CaravanId, generation: u32 },
+    /// A ribbit village's growth clock runs out (P17).
+    Grow { node: usize, stamp: u32 },
 }
 
 /// Conserved quantities outside markets and pipelines: what left the world to players or was
@@ -108,12 +121,14 @@ pub enum Cause {
     Arrival,
     /// A player traded (at a storehouse or a base).
     Player,
+    /// The village grew a house and its population stepped up (P17).
+    Growth,
 }
 
 impl Cause {
     /// Whether the event sends news even when nothing changed in kind.
     pub fn forces_news(self) -> bool {
-        matches!(self, Cause::Breakpoint | Cause::Player)
+        matches!(self, Cause::Breakpoint | Cause::Player | Cause::Growth)
     }
 }
 
@@ -155,6 +170,10 @@ pub struct Stats {
     pub caravan_arrivals: u64,
     pub promotions: u64,
     pub player_trades: u64,
+    /// Houses ribbit villages booked (P17).
+    pub houses: u64,
+    /// News packets touring bands carried (P16).
+    pub band_packets: u64,
 }
 
 /// What the engine asks Minecraft to do (the bridge's command buffer, later).
@@ -162,6 +181,12 @@ pub struct Stats {
 pub enum Command {
     /// Write a report into a vanilla village's gossip (C20).
     VanillaGossip(VanillaGossip),
+    /// A ribbit village's feelings toward players (the sorcerers' filter, PLAN.md §8.8).
+    Sentiment(crate::ribbits::SentimentSnapshot),
+    /// Book a house (P17).
+    PlaceHouse(crate::ribbits::PlaceHouse),
+    /// Spawn a grown house's resident.
+    SpawnResident(crate::ribbits::SpawnResident),
 }
 
 pub struct World {
@@ -191,6 +216,22 @@ pub struct World {
     /// Every market event, when enabled ([`World::enable_trace`]). Diagnostics only: it grows
     /// with time.
     pub trace: Option<Vec<TraceRow>>,
+    /// Players the bridge reported (UUIDs, positions, interest areas).
+    pub players: BTreeMap<ActorId, crate::interest::PlayerState>,
+    /// Which roads pass near a place.
+    pub roads: rtsim_travel::RoadIndex,
+    /// Touring bands (P16).
+    pub bands: Vec<crate::ribbits::Band>,
+    /// Ribbit villages' growth clocks (P17).
+    pub growth: BTreeMap<usize, crate::ribbits::Growth>,
+    /// Booked houses not placed yet: PLACE_HOUSE op to node.
+    pub(crate) houses_pending: BTreeMap<u64, usize>,
+    /// Ribbit villages whose feelings may have changed since the last commands.
+    pub(crate) sentiment_dirty: std::collections::BTreeSet<usize>,
+    /// The engine's operation id counter.
+    pub(crate) op_counter: u64,
+    /// Player bases' markers (P30).
+    pub bases: BTreeMap<usize, crate::bases::BaseState>,
 }
 
 impl World {
@@ -266,6 +307,9 @@ impl World {
             );
         }
         for i in 0..w.nodes.len() {
+            w.maybe_band(i, Tick::ZERO);
+        }
+        for i in 0..w.nodes.len() {
             w.emit(i, Tick::ZERO, true);
         }
         w
@@ -303,6 +347,14 @@ impl World {
             mint_cost,
             now: Tick::ZERO,
             trace: None,
+            players: BTreeMap::new(),
+            roads: rtsim_travel::RoadIndex::new(),
+            bands: Vec::new(),
+            growth: BTreeMap::new(),
+            houses_pending: BTreeMap::new(),
+            sentiment_dirty: std::collections::BTreeSet::new(),
+            op_counter: 0,
+            bases: BTreeMap::new(),
         }
     }
 
@@ -334,6 +386,7 @@ impl World {
             out: Vec::new(),
             raids_in: Vec::new(),
             neighbours: Vec::new(),
+            bands: Vec::new(),
             last_sent: None,
             costs,
             local,
@@ -356,6 +409,16 @@ impl World {
             .min(dock.max(1));
         self.edges
             .push(Edge::new(a, b, length, d, dock, seed, border, idle));
+        let (pa, pb) = (self.nodes[a].pos, self.nodes[b].pos);
+        if pa.frame == pb.frame {
+            self.roads.add(
+                e,
+                pa.frame,
+                (i64::from(pa.x), i64::from(pa.z)),
+                (i64::from(pb.x), i64::from(pb.z)),
+                i64::from(self.cfg.view_blocks),
+            );
+        }
         self.nodes[a].out.push(DirRef { edge: e, dir: 0 });
         self.nodes[b].out.push(DirRef { edge: e, dir: 1 });
         self.nodes[a].neighbours.push(b);
@@ -440,6 +503,11 @@ impl World {
             if border {
                 self.open_exchange(j, i, dq, at);
             }
+        }
+        // A ribbit village with ribbit neighbours gets a band; so may a neighbour that had none.
+        self.maybe_band(i, at);
+        for j in self.nodes[i].neighbours.clone() {
+            self.maybe_band(j, at);
         }
         self.emit(i, at, true);
         for j in self.nodes[i].neighbours.clone() {
@@ -623,11 +691,13 @@ impl World {
                 caravan,
                 generation,
             } => self.caravan_arrives(caravan, generation, at),
+            Ev::Grow { node, stamp } => self.grow(node, stamp, at),
         }
     }
 
     /// Commands for the bridge: vanilla gossip writes and the like, oldest first.
     pub fn take_commands(&mut self) -> Vec<Command> {
+        self.flush_sentiments();
         std::mem::take(&mut self.outbox)
     }
 

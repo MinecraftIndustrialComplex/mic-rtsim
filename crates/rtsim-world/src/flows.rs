@@ -30,7 +30,7 @@ use rtsim_travel::edge::{DirRef, caravan_period, split_for_raid};
 use rtsim_travel::news::Snapshot;
 use rtsim_travel::pipeline::Pipeline;
 
-use crate::world::{Cause, Ev, Node, PacketData, TraceRow, World};
+use crate::world::{Cause, Ev, Node, PacketData, TraceRow, Via, World};
 
 /// A pipeline changed: its destination must wake before the first changed arrival.
 #[derive(Clone, Copy, Debug)]
@@ -165,7 +165,17 @@ fn step(
             // asks for less through its advertised rate, so the flow eases off instead of
             // stopping at a margin cliff and starting again when it drains (the bang-bang limit
             // cycle the two-market test measured; overnight choice E18).
-            let bid = gn.price.max(gn.anchor);
+            let mut bid = gn.price.max(gn.anchor);
+            // Hysteresis (overnight choice E51): a supplier already sending keeps sending while
+            // the destination is anywhere in its target's band, as if it stood at the band's
+            // bottom. Otherwise a dearer second supplier is called in by a shortage, ends it,
+            // loses the margin the shortage paid for, stops, and the shortage comes back.
+            if had && m.rules.hysteresis && gn.level >= Level::At {
+                let r = cfg.trade.r;
+                let floor_price = gn.anchor
+                    + mul_div_floor(gn.anchor, r.num, r.den * rtsim_trade::line::BAND_DIV);
+                bid = bid.max(floor_price);
+            }
             // A destination with no cash can still pay in goods.
             let margin = match (
                 to_home(m, snap.currency, bid),
@@ -726,6 +736,7 @@ impl World {
         if news {
             self.emit_snapshot(i, at, snap);
         }
+        self.growth_check(i, at);
         if self.cfg.check_every_event {
             self.assert_conserved(at);
         }
@@ -793,7 +804,7 @@ impl World {
                     self.packets.insert(
                         pid,
                         PacketData {
-                            dir: d,
+                            via: Via::Road(d),
                             from: i,
                             to,
                             departs,
@@ -806,6 +817,55 @@ impl World {
                     self.stats.packets_sent += 1;
                     let when = q.at(departs + ed);
                     self.schedule(when, Ev::Deliver(pid));
+                }
+            }
+        }
+        // Touring bands that stop here carry the same news on to their next stop (P16).
+        for (b, stop) in self.nodes[i].bands.clone() {
+            let (b, stop) = (b as usize, stop as usize);
+            let band = &mut self.bands[b];
+            let n = band.route.len();
+            let to = band.route[(stop + 1) % n];
+            let departs = band.next_departure(stop, nb);
+            let walk = band.walks[stop];
+            let reports = self.knowledge.packet_since(actor, &mut band.cursors[stop]);
+            let mut relays = self.nodes[i].news.received_after(band.relayed[stop], to);
+            relays.truncate(self.cfg.relay_max);
+            band.relayed[stop] = at;
+            let pending = band.pending[stop].filter(|&(dep, _)| dep >= nb);
+            match pending.and_then(|(_, pid)| self.packets.get_mut(&pid)) {
+                Some(p) => {
+                    if own.is_some() {
+                        p.own = own.clone();
+                    }
+                    p.relays.extend(relays);
+                    p.reports.merge(&reports);
+                }
+                None => {
+                    if own.is_none() && reports.is_empty() && relays.is_empty() {
+                        continue;
+                    }
+                    let pid = self.next_packet;
+                    self.next_packet += 1;
+                    self.packets.insert(
+                        pid,
+                        PacketData {
+                            via: Via::Band {
+                                band: b as u32,
+                                stop: stop as u32,
+                            },
+                            from: i,
+                            to,
+                            departs,
+                            own: own.clone(),
+                            relays,
+                            reports,
+                        },
+                    );
+                    self.bands[b].pending[stop] = Some((departs, pid));
+                    self.stats.packets_sent += 1;
+                    self.stats.band_packets += 1;
+                    self.schedule(q.at(departs + walk), Ev::Deliver(pid));
                 }
             }
         }
@@ -826,6 +886,9 @@ impl World {
             }
         }
         let learned = self.knowledge.deliver(self.nodes[to].actor, &p.reports, at);
+        if learned > 0 {
+            self.touch_sentiment(to);
+        }
         self.flush_gossip();
         self.market_event(to, at, Cause::Delivery);
         if learned > 0 {

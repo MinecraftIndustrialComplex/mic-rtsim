@@ -383,6 +383,60 @@ pub fn make_market(
     }
 }
 
+/// Steps a market's population (P17: a ribbit village books a house and its people move in):
+/// household consumption, stock targets and the treasury target follow the new population;
+/// anchors, recipes, capacities and `T` stay as they are, so the market stays piecewise linear and
+/// only its targets move (overnight choice E56). Exchange lines keep their share of the treasury
+/// target.
+pub fn repopulate(m: &mut Market, goods: &Goods, tun: &Tunables, pop: u32, l_mint: f64) {
+    let qn = tun.quantum;
+    let n = m.lines.len();
+    let mut input_use = vec![0 as Amount; n];
+    for gs in &m.goods {
+        for inp in &gs.inputs {
+            input_use[inp.good.index()] += (i128::from(gs.nominal_cap) * i128::from(inp.per)
+                / i128::from(inp.yield_.max(1)))
+                as Amount;
+        }
+    }
+    let old_mbar = m.currency.map_or(0, |c| m.line(c).target);
+    let mbar = if l_mint.is_finite() && l_mint > 0.0 {
+        ((tun.k_days as f64 * f64::from(pop) / l_mint) * MILLI as f64).round() as Amount
+    } else {
+        0
+    };
+    for (g, def) in goods.iter() {
+        let gi = g.index();
+        match def.kind {
+            GoodKind::Item => {
+                let household = qn.per_day(i64::from(pop) * def.need_per_pop_day);
+                m.goods[gi].household = household;
+                let target = tun.target(
+                    m.t_quanta,
+                    household + input_use[gi],
+                    m.goods[gi].nominal_cap,
+                );
+                let anchor = m.goods[gi].curve.anchor;
+                m.goods[gi].curve = PriceCurve::new(anchor, tun.r, target);
+                m.lines[gi].target = target;
+            }
+            GoodKind::Currency(_) if Some(g) == m.currency => {
+                m.lines[gi].target = mbar;
+            }
+            GoodKind::Currency(_) => {
+                let t = m.lines[gi].target;
+                if t > 0 && old_mbar > 0 {
+                    let nt = (i128::from(t) * i128::from(mbar) / i128::from(old_mbar)) as Amount;
+                    let c = m.goods[gi].curve;
+                    m.goods[gi].curve = PriceCurve::new(c.anchor, c.r, nt);
+                    m.lines[gi].target = nt;
+                }
+            }
+        }
+    }
+    m.recompute();
+}
+
 /// The exchange line for foreign currency `g` (of culture `foreign`) at a market whose own mint
 /// costs `l_mint` worker-days a coin and whose treasury target is `mbar`: anchored at mint parity
 /// and floating within the cost of carrying a coin over its shortest border edge (`border_d`,

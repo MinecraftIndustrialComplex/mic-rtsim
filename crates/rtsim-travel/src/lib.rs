@@ -12,6 +12,8 @@
 //!   the chests (C21).
 //! - [`legs`]: the region-and-time leg index with generation stamps and cascade cancellation
 //!   (A15).
+//! - [`roads`]: which roads pass near a place, so a player's interest area finds the flows to
+//!   sample travellers from.
 //!
 //! What happens at a market when a flow arrives is `rtsim-world`'s: this crate holds the state
 //! and the closed forms, not the step loop.
@@ -23,6 +25,7 @@ pub mod lattice;
 pub mod legs;
 pub mod news;
 pub mod pipeline;
+pub mod roads;
 
 pub use caravan::{Body, Caravan, CaravanKey, GroupKind, Leg, Member, Stage, Traveller};
 pub use edge::{Dir, DirRef, Edge, Predation};
@@ -30,3 +33,4 @@ pub use lattice::Lattice;
 pub use legs::{LegIndex, Meeting, Path, Stamp};
 pub use news::{NewsRing, Snapshot};
 pub use pipeline::Pipeline;
+pub use roads::RoadIndex;

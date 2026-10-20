@@ -15,16 +15,21 @@
 //!   [`World::take_member`], [`World::kill_member`]: caravans near players (C21, C24, C25).
 //! - [`World::check_conserved`], [`World::state_hash`]: the ledger and the determinism hash.
 
+pub mod bases;
 pub mod caravans;
 pub mod check;
 pub mod config;
 pub mod flows;
+pub mod interest;
 pub mod observe;
+pub mod ribbits;
 pub mod synth;
 pub mod world;
 
 pub use caravans::{Attack, CaravanOutcome};
 pub use config::WorldConfig;
 pub use flows::PipeKind;
+pub use interest::{PlayerState, Visible};
 pub use observe::Side;
-pub use world::{CaravanId, Cause, Command, NodeData, Outside, Stats, TraceRow, World};
+pub use ribbits::{BandView, PlaceHouse, SentimentSnapshot, SpawnResident};
+pub use world::{CaravanId, Cause, Command, NodeData, Outside, Stats, TraceRow, Via, World};
