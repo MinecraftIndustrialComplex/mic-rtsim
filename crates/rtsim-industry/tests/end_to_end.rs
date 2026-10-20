@@ -258,3 +258,15 @@ fn catch_up_cost_is_independent_of_absence() {
     }
     assert!(costs.windows(2).all(|p| p[0] == p[1]), "cost grew with the absence: {costs:?}");
 }
+
+#[test]
+fn threat_legs_find_the_trains_they_cross() {
+    let c = IronLine { seed: 2, days: 10, threats: false, control: false, mode: Mode::Apply, tick_first: true };
+    let mut w = iron_line(c, Tunables::default());
+    w.run_until(day(3.0));
+    // Train 1 runs between Ore Coast (x 1,604) and the Smelter (x 3,202): regions 3 to 6 on z 0.
+    let now = w.t;
+    let met = w.engine.encounters(0, &[(4, 0), (5, 0)], Tick(now.0 - 3_000), now);
+    assert!(met.contains(&rtsim_industry::ids::TrainId(1)), "met {met:?}");
+    assert!(w.engine.encounters(0, &[(40, 40)], Tick(now.0 - 3_000), now).is_empty());
+}

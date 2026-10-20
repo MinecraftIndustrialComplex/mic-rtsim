@@ -167,6 +167,21 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
 - **F30 (I18).** Ledger rates are per real hour (72,000 ticks at 20 per second). State codes are in
   docs/industry-boundary.md §4.3.
 
+**Persistence**
+- **F36 (A16, INDUSTRY.md §15).** The engine saves into kernel pages:
+  - one page of globals (table 0x4900);
+  - one page per district (0x4901, id = district id);
+  - one page per replay cluster (0x4902) with its booked wake, restored as is (O18).
+
+  The table numbers are PLACEHOLDERS until the module registry exists.
+  - Everything is saved, open learning windows included, so a restore is exact; a real restart's
+    `session_start` then discards the windows (F6).
+  - District and cluster ids must fit 48 bits (the kernel's page key).
+  - No dirty tracking yet: every page is written on every save.
+- **F37 (A15).** `Engine::encounters` returns the trains whose booked legs lie in the regions a
+  threat leg crosses during a window. Turning a meeting into an attack is the threat module's
+  call.
+
 **Scaffolding**
 - **F24.** `fake.rs` (a Java stand-in through the wire codec), `scenario.rs` (the iron line),
   `Engine::adopt_model`, `Engine::inject` and `SyntheticThreats` are scaffolding, to delete once the

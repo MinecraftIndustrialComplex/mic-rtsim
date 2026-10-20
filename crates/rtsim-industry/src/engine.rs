@@ -1730,6 +1730,23 @@ impl Engine {
         self.schedule_pressure(d, at + 1);
     }
 
+    /// The trains a threat leg meets (A15, INDUSTRY.md §13.3): legs booked in the regions it
+    /// crosses during `[from, to]`, one lookup per region, never a scan. The caller (a dragon or
+    /// raid module) turns each into a [`Threat`] on [`ThreatTarget::Train`].
+    pub fn encounters(&self, dim: u32, regions: &[(i32, i32)], from: Tick, to: Tick) -> Vec<TrainId> {
+        let mut out: Vec<TrainId> = Vec::new();
+        for &r in regions {
+            for id in self.legs.in_region(dim, r, from, to) {
+                if let Some(l) = self.legs.get(id)
+                    && !out.contains(&l.train)
+                {
+                    out.push(l.train);
+                }
+            }
+        }
+        out
+    }
+
     /// An attack from another system (I19). Advances to its time first.
     pub fn threat(&mut self, t: &Threat) {
         let at = t.at.max(self.now);
