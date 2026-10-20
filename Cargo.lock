@@ -491,6 +491,7 @@ dependencies = [
  "jni",
  "mic-native-host",
  "mic-native-rt",
+ "proptest",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",

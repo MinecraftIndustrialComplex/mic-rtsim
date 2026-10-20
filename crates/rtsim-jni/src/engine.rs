@@ -1253,6 +1253,9 @@ impl Engine {
         for k in industry::deletions(store, &industry) {
             batch.delete(k);
         }
+        for k in phase1::deletions(store, &p1_saved) {
+            batch.delete(k);
+        }
         for (k, b) in &extra {
             batch.put(*k, b);
         }

@@ -26,5 +26,7 @@ mic-native-rt.workspace = true
 jni.workspace = true
 
 [dev-dependencies]
+# Property tests: the phase 1 world restored at any point of an input script (S6).
+proptest.workspace = true
 # The host, started in the test process: the protocol test runs steps on its real pools.
 mic-native-host.workspace = true
