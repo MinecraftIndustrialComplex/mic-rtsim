@@ -7,7 +7,9 @@ use rtsim_kernel::clock::{SlotPeriod, TICKS_PER_DAY, Tick};
 use rtsim_kernel::conserve::Diffuser;
 use rtsim_kernel::lazy::{Lazy, LazyModel, LazyTable};
 use rtsim_kernel::rng::{SlotRng, StreamKey, SystemId};
-use rtsim_kernel::synth::{GrainHeld, HeadCount, Herd, Stock, SynthRegion};
+use rtsim_kernel::synth::{
+    DyadicHerd, DyadicRegion, GrainHeld, HeadCount, Herd, Stock, SynthRegion,
+};
 
 const KEY: StreamKey = StreamKey::new(0xC0FFEE, SystemId::named("test.region"), 17);
 
@@ -243,5 +245,34 @@ proptest! {
         let (b, lb) = run(&regions, &evs, false);
         prop_assert_eq!(la, lb);
         prop_assert_eq!(a, b);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// A dyadic region (O17) has nothing to commit, yet its herd is random: any read order sees the
+    /// same head counts, and a read long after the last one costs no slot commits.
+    #[test]
+    fn dyadic_regions_are_read_order_free(seed in any::<u64>(), herd in (0u64..100_000, 0u64..100_000, 0u64..100_000), reads in times(8)) {
+        let r = DyadicRegion {
+            stock: Stock::new(0, Diffuser::per(50, TICKS_PER_DAY), i64::MAX),
+            herd: DyadicHerd::new(seed, 3, 0, [herd.0, herd.1, herd.2]),
+            day: 0,
+        };
+        let mut a = Lazy::new(r.clone(), Tick(0));
+        let mut t = Tick(0);
+        let mut seen = Vec::new();
+        for dt in reads {
+            t += dt;
+            prop_assert_eq!(a.catch_up(t, KEY), 0);
+            seen.push((t, a.read(t, KEY)));
+        }
+        // Reverse order, fresh cell: the same views.
+        let b = Lazy::new(r, Tick(0));
+        for (at, v) in seen.into_iter().rev() {
+            prop_assert_eq!(b.view_without_catch_up(at), v);
+        }
+        prop_assert_eq!(&a, &b);
     }
 }

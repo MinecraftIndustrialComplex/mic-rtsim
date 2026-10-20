@@ -23,7 +23,7 @@ use std::time::Instant;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::lazy::LazyTable;
 use rtsim_kernel::rng::SystemId;
-use rtsim_kernel::synth::{Stock, SynthRegion};
+use rtsim_kernel::synth::{DyadicRegion, Stock, SynthRegion};
 use serde::{Deserialize, Serialize};
 
 use super::world::{BenchModel, ModelKind, World, WorldConfig, scratch_store};
@@ -177,7 +177,7 @@ impl Baseline {
                 model: sweep.model,
                 regions: match sweep.model {
                     ModelKind::Closed => self.catch_up_regions_closed,
-                    ModelKind::Herd => self.catch_up_regions_herd,
+                    ModelKind::Herd | ModelKind::Dyadic => self.catch_up_regions_herd,
                 },
                 latent_per_region: self.catch_up_latent_per_region,
                 elapsed_days: value,
@@ -367,6 +367,84 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 "a region first touched at age A pays A slots, so cost per day grows with age until every region is touched within its debt, then holds at regions/slot (eager stepping). 100,000 regions put that point (regions / 2 touches per event / events per day = 50 days) inside the range. DECISIONS O5",
             )],
         },
+        // The dyadic model: the same herd shape with randomness from dyadic counts (O17). It must
+        // be flat where the slot model grows.
+        Sweep {
+            name: "latent".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Latent,
+            regions: None,
+            values: pick(
+                &[
+                    10_000,
+                    1_000_000,
+                    100_000_000,
+                    10_000_000_000,
+                    1_000_000_000_000,
+                ],
+                &[10_000, 100_000_000, 1_000_000_000_000],
+            ),
+            contracts: vec![
+                contract(
+                    Metric::Cpu,
+                    flat,
+                    0.0,
+                    "dyadic counts cost O(levels) binomial draws whatever the population",
+                ),
+                contract(Metric::Heap, flat, 0.0, "latent members cost zero bytes"),
+            ],
+        },
+        Sweep {
+            name: "regions".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Regions,
+            regions: None,
+            values: pick(
+                &[100, 1_000, 10_000, 100_000, 1_000_000],
+                &[100, 10_000, 1_000_000],
+            ),
+            contracts: vec![
+                contract(
+                    Metric::Cpu,
+                    0.15,
+                    0.0,
+                    "no slots to commit: untouched regions cost nothing (O17)",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "every region is resident: paging (A16) is not built yet",
+                ),
+                contract(Metric::Save, 1.1, 1.0, "a full save writes every region"),
+            ],
+        },
+        Sweep {
+            name: "elapsed".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Elapsed,
+            regions: None,
+            values: pick(&[1, 10, 100, 1_000, 10_000], &[1, 100, 10_000]),
+            contracts: vec![contract(
+                Metric::CatchUp,
+                0.15,
+                0.0,
+                "a read walks four trees of 32 levels whatever the elapsed time (O17)",
+            )],
+        },
+        Sweep {
+            name: "age".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Age,
+            regions: Some(AGE_REGIONS),
+            values: pick(&[1, 10, 100, 1_000], &[1, 30, 300]),
+            contracts: vec![contract(
+                Metric::Cpu,
+                0.15,
+                0.0,
+                "no slot debt: a region first touched at any age costs one read (O17)",
+            )],
+        },
     ]
 }
 
@@ -389,10 +467,12 @@ pub fn run_one(spec: &Spec) -> Measured {
         Spec::World(c) => match c.model {
             ModelKind::Herd => run_world::<SynthRegion>(c),
             ModelKind::Closed => run_world::<Stock>(c),
+            ModelKind::Dyadic => run_world::<DyadicRegion>(c),
         },
         Spec::CatchUp(c) => match c.model {
             ModelKind::Herd => run_catch_up::<SynthRegion>(c),
             ModelKind::Closed => run_catch_up::<Stock>(c),
+            ModelKind::Dyadic => run_catch_up::<DyadicRegion>(c),
         },
     }
 }

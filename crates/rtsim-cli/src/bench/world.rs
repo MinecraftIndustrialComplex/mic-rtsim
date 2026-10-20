@@ -20,7 +20,7 @@ use rtsim_kernel::conserve::{Diffuser, transfer_up_to};
 use rtsim_kernel::lazy::{LazyModel, LazyTable, RegionId};
 use rtsim_kernel::page::{CommitStats, Durability, PageKey, PageStore, SaveBatch};
 use rtsim_kernel::rng::{SlotRng, StreamKey, SystemId};
-use rtsim_kernel::synth::{Herd, Stock, SynthRegion};
+use rtsim_kernel::synth::{DyadicHerd, DyadicRegion, Herd, Stock, SynthRegion};
 use rtsim_kernel::wheel::TimingWheel;
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,9 @@ pub enum ModelKind {
     Herd,
     /// [`Stock`] only: deterministic, closed-form catch-up.
     Closed,
+    /// [`DyadicRegion`]: a stock plus a herd whose randomness comes from dyadic counts, so it has
+    /// no slots to commit (DECISIONS.md O17).
+    Dyadic,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -92,16 +95,20 @@ impl BenchModel for Stock {
     }
 }
 
+/// Region `index`'s share of the latent individuals, split young, adult, old.
+fn cohorts(index: u64, cfg: &WorldConfig) -> [u64; 3] {
+    let base = cfg.latent / cfg.regions;
+    let n = base + u64::from(index < cfg.latent % cfg.regions);
+    let young = n / 4;
+    let old = n * 15 / 100;
+    [young, n - young - old, old]
+}
+
 impl BenchModel for SynthRegion {
     fn make(index: u64, cfg: &WorldConfig, rng: &mut SlotRng) -> Self {
-        let base = cfg.latent / cfg.regions;
-        let n = base + u64::from(index < cfg.latent % cfg.regions);
-        let young = n / 4;
-        let old = n * 15 / 100;
-        let adult = n - young - old;
         SynthRegion {
             stock: Stock::new(100, production(rng), i64::MAX),
-            herd: Herd::new(rng.next_u64(), [young, adult, old]),
+            herd: Herd::new(rng.next_u64(), cohorts(index, cfg)),
         }
     }
     fn grain(&mut self) -> &mut i64 {
@@ -115,6 +122,31 @@ impl BenchModel for SynthRegion {
     }
     fn heads(&self) -> Option<(u64, u64, u64)> {
         Some((self.herd.total(), self.herd.born, self.herd.died))
+    }
+}
+
+impl BenchModel for DyadicRegion {
+    fn make(index: u64, cfg: &WorldConfig, rng: &mut SlotRng) -> Self {
+        DyadicRegion {
+            stock: Stock::new(100, production(rng), i64::MAX),
+            herd: DyadicHerd::new(cfg.seed, index, 0, cohorts(index, cfg)),
+            day: 0,
+        }
+    }
+    fn grain(&mut self) -> &mut i64 {
+        &mut self.stock.amount
+    }
+    fn grain_now(&self) -> i64 {
+        self.stock.amount
+    }
+    fn produced(&self) -> i64 {
+        self.stock.produced
+    }
+    fn heads(&self) -> Option<(u64, u64, u64)> {
+        // At the anchor's day: deaths are "died", immigrants are "born".
+        let (deaths, immigrants) = self.herd.changes(self.day);
+        let total = self.herd.counts(self.day).iter().sum();
+        Some((total, immigrants, deaths.iter().sum()))
     }
 }
 

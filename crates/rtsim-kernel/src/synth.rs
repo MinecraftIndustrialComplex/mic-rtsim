@@ -9,15 +9,20 @@
 //! - [`Field`]: counts per grid cell; herds fold into it.
 //! - [`Stock`]: a deterministic piecewise-linear stock with a threshold breakpoint.
 //! - [`SynthRegion`]: a stock and a herd in one lazy region.
+//! - [`DyadicHerd`] and [`DyadicRegion`]: the same shape, with randomness that is a pure function
+//!   of time through [`crate::dyadic`], so it never commits and any read costs O(log horizon).
 //!
 //! Every rate below is a PLACEHOLDER chosen only to keep populations bounded in a bench run.
+
+use std::cell::Cell;
 
 use crate::clock::{SlotPeriod, Tick};
 use crate::codec::{self, Decode, Encode, Reader, Writer};
 use crate::conserve::{Conserved, Diffuser, QuantityKind, Totals};
+use crate::dyadic::{DyadicCounts, Split};
 use crate::ladder::{Answers, Fold, Level, OnLadder, Query, Sample};
 use crate::lazy::LazyModel;
-use crate::rng::{SlotRng, philox4x64_10};
+use crate::rng::{SlotRng, StreamKey, SystemId, philox4x64_10};
 
 pub const SHEEP: QuantityKind = QuantityKind(1);
 pub const GRAIN: QuantityKind = QuantityKind(2);
@@ -371,6 +376,187 @@ impl Answers<HeadCount> for Field {
     }
 }
 
+/// Day slots in a [`DyadicHerd`]'s trees: 2^32 days.
+pub const DYADIC_LEVELS: u32 = 32;
+/// Immigrants per day, as a fraction of the starting head count. PLACEHOLDER.
+pub const IMMIGRATION: f64 = 0.001;
+
+const DYADIC_TREES: [SystemId; 4] = [
+    SystemId::named("synth.dyadic.death.young"),
+    SystemId::named("synth.dyadic.death.adult"),
+    SystemId::named("synth.dyadic.death.old"),
+    SystemId::named("synth.dyadic.immigration"),
+];
+
+/// A herd whose randomness is a pure function of time (DECISIONS.md O17). The cohorts counted at
+/// `born_day` die at [`HERD_PARAMS`]' per-day hazards, and immigrants arrive as a Poisson stream at a
+/// rate fixed at creation. Members do not age between cohorts and immigrants never die: those would
+/// make rates depend on state, which dyadic counts cannot carry. The head count on any day comes
+/// from four dyadic trees, so a read after 10,000 days costs what a read after one costs, and
+/// nothing is ever committed.
+#[derive(Clone, Debug)]
+pub struct DyadicHerd {
+    pub world_seed: u64,
+    pub entity: u64,
+    pub born_day: u64,
+    pub cohorts: [u64; 3],
+    /// Root totals, drawn once at creation: deaths per cohort and immigrants within the horizon.
+    pub roots: [u64; 4],
+    /// Immigrants per day, fixed at creation.
+    pub immigration_per_day: f64,
+    /// The last day's counts. A memo of a pure function, so it is not state: equality and pages
+    /// ignore it. Counts change only at day boundaries, so a region read every second walks its
+    /// trees once a day.
+    memo: Cell<(u64, [u64; 3])>,
+}
+
+const NO_MEMO: (u64, [u64; 3]) = (u64::MAX, [0; 3]);
+
+impl PartialEq for DyadicHerd {
+    fn eq(&self, o: &Self) -> bool {
+        (
+            self.world_seed,
+            self.entity,
+            self.born_day,
+            self.cohorts,
+            self.roots,
+        ) == (o.world_seed, o.entity, o.born_day, o.cohorts, o.roots)
+            && self.immigration_per_day.to_bits() == o.immigration_per_day.to_bits()
+    }
+}
+
+impl DyadicHerd {
+    pub fn new(world_seed: u64, entity: u64, born_day: u64, cohorts: [u64; 3]) -> Self {
+        let immigration_per_day = cohorts.iter().sum::<u64>() as f64 * IMMIGRATION;
+        let mut h = DyadicHerd {
+            world_seed,
+            entity,
+            born_day,
+            cohorts,
+            roots: [0; 4],
+            immigration_per_day,
+            memo: Cell::new(NO_MEMO),
+        };
+        for (c, &n) in cohorts.iter().enumerate() {
+            h.roots[c] = h.tree(c).hazard_total(n, HERD_PARAMS.death[c]);
+        }
+        h.roots[3] = h.tree(3).poisson_total(immigration_per_day);
+        h
+    }
+
+    fn tree(&self, which: usize) -> DyadicCounts {
+        DyadicCounts::new(
+            StreamKey::new(self.world_seed, DYADIC_TREES[which], self.entity),
+            DYADIC_LEVELS,
+        )
+    }
+
+    /// Deaths per cohort and immigrants from `born_day` to the start of `day`.
+    pub fn changes(&self, day: u64) -> ([u64; 3], u64) {
+        let t = day.saturating_sub(self.born_day);
+        let mut deaths = [0; 3];
+        for (c, d) in deaths.iter_mut().enumerate() {
+            *d = self
+                .tree(c)
+                .prefix(self.roots[c], Split::Hazard(HERD_PARAMS.death[c]), t);
+        }
+        (
+            deaths,
+            self.tree(3).prefix(self.roots[3], Split::Uniform, t),
+        )
+    }
+
+    /// Head count per cohort at the start of `day`; immigrants count as adults.
+    pub fn counts(&self, day: u64) -> [u64; 3] {
+        let (memo_day, memo) = self.memo.get();
+        if memo_day == day {
+            return memo;
+        }
+        let (d, imm) = self.changes(day);
+        let counts = [
+            self.cohorts[0] - d[0],
+            self.cohorts[1] - d[1] + imm,
+            self.cohorts[2] - d[2],
+        ];
+        self.memo.set((day, counts));
+        counts
+    }
+}
+
+/// A grain stock and a [`DyadicHerd`]: deterministic between events, random only through dyadic
+/// counts, so it has no slot period at all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DyadicRegion {
+    pub stock: Stock,
+    pub herd: DyadicHerd,
+    /// The day of the last settle, so totals can be read at the anchor.
+    pub day: u64,
+}
+
+impl LazyModel for DyadicRegion {
+    type View = RegionView;
+
+    fn slot_period(&self) -> Option<SlotPeriod> {
+        None
+    }
+
+    fn settle(&mut self, from: Tick, to: Tick) {
+        self.stock.settle(to - from);
+        self.day = to.day();
+    }
+
+    fn commit_slot(&mut self, _slot: u64, _rng: &mut SlotRng) {}
+
+    fn view(&self, anchor: Tick, at: Tick) -> RegionView {
+        RegionView {
+            grain: self.stock.at(at - anchor),
+            herd: self.herd.counts(at.day()),
+        }
+    }
+
+    fn next_breakpoint(&self, anchor: Tick) -> Option<Tick> {
+        self.stock.breakpoint(anchor)
+    }
+}
+
+impl Encode for DyadicRegion {
+    fn encode(&self, w: &mut Writer) {
+        self.stock.encode(w);
+        let h = &self.herd;
+        w.u64(h.world_seed);
+        w.u64(h.entity);
+        w.var_u64(h.born_day);
+        for c in h.cohorts {
+            w.var_u64(c);
+        }
+        for r in h.roots {
+            w.var_u64(r);
+        }
+        w.f64(h.immigration_per_day);
+        w.var_u64(self.day);
+    }
+}
+
+impl Decode for DyadicRegion {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        let stock = Stock::decode(r)?;
+        let herd = DyadicHerd {
+            world_seed: r.u64()?,
+            entity: r.u64()?,
+            born_day: r.var_u64()?,
+            cohorts: [r.var_u64()?, r.var_u64()?, r.var_u64()?],
+            roots: [r.var_u64()?, r.var_u64()?, r.var_u64()?, r.var_u64()?],
+            immigration_per_day: r.f64()?,
+            memo: Cell::new(NO_MEMO),
+        };
+        Ok(DyadicRegion {
+            stock,
+            herd,
+            day: r.var_u64()?,
+        })
+    }
+}
+
 impl Encode for Stock {
     fn encode(&self, w: &mut Writer) {
         w.var_i64(self.amount);
@@ -473,6 +659,26 @@ mod tests {
                 herd: h,
             };
             prop_assert_eq!(SynthRegion::from_bytes(&r.to_bytes()).unwrap(), r);
+        }
+    }
+
+    proptest! {
+        /// A dyadic herd's head count never goes negative, its changes add up, and a page round
+        /// trip keeps it.
+        #[test]
+        fn dyadic_herd_is_consistent(seed in any::<u64>(), entity in any::<u64>(), y in 0u64..10_000, a in 0u64..10_000, o in 0u64..10_000, d1 in 0u64..5000, d2 in 0u64..5000) {
+            let h = DyadicHerd::new(seed, entity, 3, [y, a, o]);
+            let (early, late) = (3 + d1.min(d2), 3 + d1.max(d2));
+            let (de, ie) = h.changes(early);
+            let (dl, il) = h.changes(late);
+            for c in 0..3 {
+                prop_assert!(de[c] <= dl[c] && dl[c] <= h.cohorts[c]);
+            }
+            prop_assert!(ie <= il);
+            let total: u64 = h.counts(late).iter().sum();
+            prop_assert_eq!(total + dl.iter().sum::<u64>(), y + a + o + il);
+            let r = DyadicRegion { stock: Stock::new(5, Diffuser::per(3, 24_000), 99), herd: h, day: late };
+            prop_assert_eq!(DyadicRegion::from_bytes(&r.to_bytes()).unwrap(), r);
         }
     }
 

@@ -12,7 +12,9 @@ measurements, the fitted slopes and contracts, the machine, the git commit and t
   seconds, not a target world (P24). The age sweeps use 100,000 regions (see their notes).
 - **Models:** `herd` regions hold a grain stock (deterministic) and a herd whose births, ageing and
   deaths commit once per day slot (random, SCALE.md §4). `closed` regions hold only the stock, so they
-  catch up in closed form.
+  catch up in closed form. `dyadic` regions (from the 08:38 run on) hold the stock and a herd whose
+  randomness comes from dyadic counts (DECISIONS.md O17): cohort deaths at fixed hazards and Poisson
+  immigration, no ageing between cohorts, nothing to commit.
 - **Metrics:** `cpu ms/day` is thread CPU time per sim day over the measured days. `catchup us` is CPU
   per read of a region left unread for the elapsed time. `heap` is live heap from a counting
   allocator; `rss` and `peak` come from `/proc/self/status`. `save` is the bytes on disk after a full
@@ -48,3 +50,25 @@ declared contract.
   per sim day (slope 0.377: fixed per-tick and observer costs dominate the low end).
 - **Memory is linear in regions, because nothing pages out yet (A16).** At 1,000,000 regions, live
   heap was 94.1 MiB (closed) and 150.1 MiB (herd); a full save was 8,389.6 KiB and 19,052.4 KiB.
+
+## 2026-10-20 08:38 UTC, full, with the dyadic model (`scale-2026-10-20-0838-full`)
+
+**Conditions.** Code at commit `860e351`. The record says `git_dirty: true` because DECISIONS.md and
+README.md had uncommitted edits during the run; no code differed from the commit. Same machine,
+build and settings as above; 1-minute load 6.29 before and 5.83 after. Every configuration conserved
+grain and head counts, and every slope kept its declared contract. The herd and closed rows repeat
+the 08:30 run within noise (for example, a herd read after 10,000 days cost 2,939.616 µs here and
+3,148.206 µs there).
+
+**What the dyadic model adds** (numbers from the run's table):
+- **Reads cost the same after any gap.** A dyadic region read after 1 day cost 7.184 µs, after 100
+  days 6.850 µs, after 10,000 days 2.707 µs (slope -0.098), with no slot commits. The herd model
+  cost 0.438 µs, 35.581 µs and 2,939.616 µs at those gaps, so the dyadic read is dearer than the
+  slot model only for gaps under about 20 days.
+- **No debt with age.** In the 100,000-region world, CPU per sim day stayed between 0.92 and 1.03 ms
+  from age 1 to 1,000 days (slope -0.012). The herd model went from 2.23 to 13.25 ms.
+- **Flat in regions and latent count.** From 100 to 1,000,000 regions, CPU went from 0.59 to 1.39 ms
+  per sim day (slope 0.085); from 10,000 to 10^12 latent individuals it stayed between 0.70 and 1.06
+  ms (slope 0.009).
+- **Memory costs more per region:** 222.1 MiB of live heap at 1,000,000 regions against 150.1 MiB for
+  the herd model, for the stream keys, root totals and the one-day memo each herd carries.

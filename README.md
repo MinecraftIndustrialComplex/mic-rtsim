@@ -28,6 +28,7 @@ The kernel's modules:
 | `ladder` | The detail-ladder operations (fold, sample, query) and reusable law checks | SCALE §2 |
 | `lazy` | Lazy regions: catch-up on read, slot commits, breakpoints on the wheel | SCALE §4, A15 |
 | `conserve` | Totals, ledger, two-sided transfers, fixed-point error diffusion | SCALE §9, C13 |
+| `dyadic` | Random counts over any interval in O(log horizon), the same for every reader (a prototype for O5) | O17 |
 | `codec`, `page` | Page encoding; incremental page store (LZ4 + CRC32, manifest last, crash-safe) | SCALE §8, PLAN §4.9 |
 | `journal` | Observation sequences, operation ids, idempotent replay, command outbox | A9 |
 | `profile` | Named zones, microseconds per system | |
