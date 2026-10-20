@@ -144,6 +144,15 @@ const EPOCH_STRIDE: u32 = 1 << 20;
 const BACKOFF_TICKS: u64 = 6_000;
 /// Vanilla drops a gossip entry below 2 (boundary.md §4.3): smaller amounts are sent as 2.
 const GOSSIP_MIN: i32 = 2;
+/// Price levels a MARKET carries besides the fair one (G31, Ben: "Inside the sim quote"): a
+/// player whose standing with the village (vanilla's reputation with that villager, or a ribbit
+/// village's sentiment) is at or below a threshold pays that level's markup (rtsim-trade
+/// `markup_for` at the threshold). Never better than fair (E7). TUNABLE, PLACEHOLDER: -25 to
+/// -100 by 25 (vanilla's iron golems turn on a player at -100).
+pub const PRICE_LEVELS: [i32; 4] = [-25, -50, -75, -100];
+/// Bundles per MARKET ladder: trades a player can make in a row (a shift-click) before the next
+/// MARKET. PLACEHOLDER: 8.
+pub const LADDER_DEPTH: usize = 8;
 /// A caravan this close to an end of its road (blocks) stands at that market: at a border market
 /// it exchanges coin there (P21, choice PR11).
 const AT_MARKET_RADIUS: f64 = 96.0;

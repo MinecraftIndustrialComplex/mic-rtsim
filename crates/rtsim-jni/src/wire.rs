@@ -508,6 +508,9 @@ pub mod cmd {
     pub const PLACE_HOUSE: u16 = 0x8014;
     pub const SPAWN_RESIDENT: u16 = 0x8015;
 
+    /// MARKET (docs/boundary.md §4.2): a village market's ready-made offer bundles (Ben's morning
+    /// review, "Prices": the engine sends them and the bridge only shows them; G31: a player's
+    /// standing is folded into them as price levels).
     pub mod market {
         pub const VILLAGE: usize = 16;
         pub const AS_OF_OBS_SEQ: usize = 24;
@@ -515,19 +518,36 @@ pub mod cmd {
         pub const FLAGS: usize = 36;
         pub const TREASURY: usize = 40;
         pub const TREASURY_TARGET: usize = 48;
-        pub const WORST_NUM: usize = 56;
-        pub const WORST_DEN: usize = 60;
-        pub const GOODS: usize = 64;
-        pub const GOOD: usize = 40;
+        /// u8: price levels (1 to [`MAX_LEVELS`]); level 0 is the fair price.
+        pub const LEVELS: usize = 56;
+        /// u8: bundles per ladder (1 to [`MAX_DEPTH`]).
+        pub const DEPTH: usize = 57;
+        /// [`MAX_LEVELS`] × i32: level k applies to a player whose standing is at or below it
+        /// (level 0's is 127: everyone); unused ones zero.
+        pub const THRESHOLDS: usize = 64;
+        pub const MAX_LEVELS: usize = 8;
+        pub const MAX_DEPTH: usize = 32;
+        pub const GOODS: usize = 96;
         pub const G_ITEM: usize = 0;
         pub const G_STOCK: usize = 8;
-        pub const G_TARGET: usize = 16;
-        pub const G_ANCHOR: usize = 24;
-        pub const G_R_NUM: usize = 32;
-        pub const G_R_DEN: usize = 36;
+        /// Two ladders, the market's sales (the player buys) then its purchases, each `levels` ×
+        /// `depth` steps of (i32 items, i32 coins); a (0, 0) step ends a ladder.
+        pub const G_LADDERS: usize = 16;
+        pub const STEP: usize = 8;
+        pub const SIDE_SELLS: usize = 0;
+        pub const SIDE_BUYS: usize = 1;
 
-        pub const fn size(goods: usize) -> usize {
-            GOODS + goods * GOOD
+        pub const fn good(levels: usize, depth: usize) -> usize {
+            G_LADDERS + 2 * levels * depth * STEP
+        }
+
+        pub const fn size(goods: usize, levels: usize, depth: usize) -> usize {
+            GOODS + goods * good(levels, depth)
+        }
+
+        /// Step `j` of `side`'s ladder at level `k`, from the good's start.
+        pub const fn step(levels: usize, depth: usize, side: usize, k: usize, j: usize) -> usize {
+            G_LADDERS + ((side * levels + k) * depth + j) * STEP
         }
     }
 
