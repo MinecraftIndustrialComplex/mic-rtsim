@@ -12,6 +12,13 @@ repository = "https://github.com/MinecraftIndustrialComplex/mic-rtsim"
 
 [workspace.dependencies]
 rtsim-kernel = { path = "crates/rtsim-kernel" }
+rtsim-industry = { path = "crates/rtsim-industry" }
+# Phase 1 generic modules (PLAN.md §5.1, §8) and their composition.
+rtsim-settle = { path = "crates/rtsim-settle" }
+rtsim-trade = { path = "crates/rtsim-trade" }
+rtsim-travel = { path = "crates/rtsim-travel" }
+rtsim-knowledge = { path = "crates/rtsim-knowledge" }
+rtsim-world = { path = "crates/rtsim-world" }
 # The page codec, matching Deep Time's tile packs (crates/deeptime-format). MIT.
 lz4_flex = "0.14.0"
 # MIT OR Apache-2.0.

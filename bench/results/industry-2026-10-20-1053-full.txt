@@ -1,0 +1,28 @@
+sweep    metric                    n          value       setup ms       bps   settles
+quiet    cpu_ns_per_day           10          13493            0.2       590      1190
+quiet    cpu_ns_per_day          100          13014            0.3       590      1190
+quiet    cpu_ns_per_day         1000          13409            3.0       590      1190
+quiet    cpu_ns_per_day        10000          13622           36.5       590      1190
+quiet    cpu_ns_per_day       100000          13763          374.4       590      1190
+  slope 0.004 (declared 0.0, flat), max/min 1.06: ok
+quiet    heap_bytes               10         148958            0.2       590      1190
+quiet    heap_bytes              100         689942            0.3       590      1190
+quiet    heap_bytes             1000        6042670            3.0       590      1190
+quiet    heap_bytes            10000       60831886           36.5       590      1190
+quiet    heap_bytes           100000      605841910          374.4       590      1190
+  slope 0.916 (declared 1.0), max/min 4067.20: ok
+busy     cpu_ns_per_day           10          11858            0.0       190       390
+busy     cpu_ns_per_day          100         118185            0.2      1900      3900
+busy     cpu_ns_per_day         1000        1246783            2.8     19000     39000
+busy     cpu_ns_per_day        10000       15882284           35.8    190000    390000
+busy     cpu_ns_per_day       100000      228382244          368.2   1900000   3900000
+  slope 1.070 (declared 1.0), max/min 19259.11: ok
+elapsed  cpu_ns_per_read           1            571            0.0         0         0
+elapsed  cpu_ns_per_read          10            461            0.0         0         0
+elapsed  cpu_ns_per_read         100            431            0.0         0         0
+elapsed  cpu_ns_per_read        1000            421            0.0         0         0
+elapsed  cpu_ns_per_read       10000            451            0.0         0         0
+elapsed  cpu_ns_per_read      100000            441            0.0         0         0
+elapsed  cpu_ns_per_read     1000000            431            0.0         0         0
+  slope -0.014 (declared 0.0, flat), max/min 1.36: ok
+wrote bench/results/industry-2026-10-20-1053-full.json

@@ -310,6 +310,21 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rtsim-industry"
+version = "0.0.1"
+dependencies = [
+ "proptest",
  "rtsim-kernel",
  "serde",
  "serde_json",
@@ -322,6 +337,54 @@ dependencies = [
  "crc32fast",
  "lz4_flex",
  "proptest",
+]
+
+[[package]]
+name = "rtsim-knowledge"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+]
+
+[[package]]
+name = "rtsim-settle"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+]
+
+[[package]]
+name = "rtsim-trade"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+ "rtsim-settle",
+]
+
+[[package]]
+name = "rtsim-travel"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+]
+
+[[package]]
+name = "rtsim-world"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+ "rtsim-travel",
 ]
 
 [[package]]
