@@ -173,22 +173,67 @@ impl LegIndex {
     }
 
     fn rasterize(&mut self, p: Path, s: Stamp) {
+        for cell in self.cells_of(p) {
+            self.cells.entry(cell).or_default().push(s);
+            self.stats.booked_cells += 1;
+        }
+    }
+
+    /// The index cells a path covers: per time window, the regions of the part of the leg inside
+    /// it, as a bounding box widened by the radius.
+    fn cells_of(&self, p: Path) -> Vec<Cell> {
         let (t0, t1) = (p.t0.0, p.t1.0.max(p.t0.0));
         let (w0, w1) = (t0 / self.window, t1 / self.window);
         let r = i64::from(p.radius);
+        let mut out = Vec::new();
         for w in w0..=w1 {
-            // The part of the leg inside this window, as a bounding box widened by the radius.
             let a = p.at(Tick((w * self.window).max(t0)));
             let b = p.at(Tick(((w + 1) * self.window).min(t1)));
             let (xl, xh) = (a.0.min(b.0) - r, a.0.max(b.0) + r);
             let (zl, zh) = (a.1.min(b.1) - r, a.1.max(b.1) + r);
             for rx in xl.div_euclid(REGION_BLOCKS)..=xh.div_euclid(REGION_BLOCKS) {
                 for rz in zl.div_euclid(REGION_BLOCKS)..=zh.div_euclid(REGION_BLOCKS) {
-                    self.cells.entry((w, p.frame, rx, rz)).or_default().push(s);
-                    self.stats.booked_cells += 1;
+                    out.push((w, p.frame, rx, rz));
                 }
             }
         }
+        out
+    }
+
+    /// Ticks per time window.
+    pub fn window_ticks(&self) -> u64 {
+        self.window
+    }
+
+    /// The live legs other than `s` booked in at least one cell `s` covers: the only legs a
+    /// meeting with `s` can involve (A15). Each once, in stamp order. Cost: the cells `s` covers
+    /// and what is booked in them, never a scan of the index. Stale bookings found on the way are
+    /// dropped. Empty when `s` itself is stale.
+    pub fn sharing(&mut self, s: Stamp) -> Vec<Stamp> {
+        let Some(row) = self.legs.get(s.leg) else {
+            return Vec::new();
+        };
+        if row.generation != s.generation {
+            return Vec::new();
+        }
+        let cells = self.cells_of(row.path);
+        let mut out = Vec::new();
+        for cell in cells {
+            let Some(v) = self.cells.get_mut(&cell) else {
+                continue;
+            };
+            let before = v.len();
+            let legs = &self.legs;
+            v.retain(|b| {
+                legs.get(b.leg)
+                    .is_some_and(|r| r.generation == b.generation)
+            });
+            self.stats.stale_dropped += (before - v.len()) as u64;
+            out.extend(v.iter().copied().filter(|b| b.leg != s.leg));
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Live legs booked in a region during the window containing `at`. Stale bookings found on
@@ -334,5 +379,29 @@ mod tests {
         assert!(ix.stats().stale_dropped >= 1);
         ix.purge(Tick(10_000));
         assert!(ix.in_region(0, 0, 0, Tick(500)).is_empty());
+    }
+
+    #[test]
+    fn sharing_finds_each_crossing_leg_once() {
+        let mut ix = LegIndex::new(1000);
+        let a = ix.book(path(0, 4000, 0, 4000), Owner(1));
+        // Shares many cells with a: found once.
+        let b = ix.book(path(4000, 0, 0, 4000), Owner(2));
+        // Far away in space.
+        let mut far = path(0, 10, 0, 4000);
+        far.z0 = 100_000;
+        far.z1 = 100_000;
+        let c = ix.book(far, Owner(3));
+        // Same place, another time.
+        let d = ix.book(path(0, 10, 50_000, 60_000), Owner(4));
+        assert_eq!(ix.sharing(a), vec![b]);
+        assert!(ix.sharing(c).is_empty());
+        assert!(ix.sharing(d).is_empty());
+        // A replanned leg's old bookings are not found, and a stale stamp finds nothing.
+        let b2 = ix.replan(b.leg, path(9000, 9500, 0, 500)).unwrap();
+        assert!(ix.sharing(a).is_empty());
+        assert!(ix.sharing(b).is_empty());
+        assert!(ix.sharing(b2).is_empty());
+        assert_eq!(ix.window_ticks(), 1000);
     }
 }

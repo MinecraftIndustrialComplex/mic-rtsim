@@ -16,6 +16,7 @@
 //! - [`World::check_conserved`], [`World::state_hash`]: the ledger and the determinism hash.
 //! - [`World::trade_exact`], [`World::caravan_trade_exact`], [`World::rob_goods`] and the rest of
 //!   [`bridge`]: what the bridge reports, applied exactly as it happened in Minecraft.
+//! - [`World::take_stock`], [`World::prey_on_traveller`]: predators with no haven (PLAN.md §9).
 
 pub mod bases;
 pub mod bridge;
@@ -26,6 +27,7 @@ pub mod flows;
 pub mod interest;
 pub mod memory;
 pub mod observe;
+pub mod prey;
 pub mod ribbits;
 pub mod synth;
 pub mod world;

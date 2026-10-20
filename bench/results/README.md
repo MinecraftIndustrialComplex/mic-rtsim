@@ -142,3 +142,28 @@ conserved every good and currency. Laptop, other agents' builds running alongsid
   14 stale wakes per market: a kernel matter), pipelines in their sorted vectors 2.0 KB, snapshots
   1.9 KB, the world's own wheel 1.7 KB, market lines 1.4 KB, edge rows 1.0 KB, the rest under 1 KB
   each.
+
+## 2026-10-20 12:24 UTC, the dragon sweep (`scale-2026-10-20-1224-dragons`)
+
+`--only dragons --check`, three repeats, median kept, on branch `overnight/dragons` (phase 2's
+`rtsim-ecology`, choices R1 onward in `docs/overnight-choices-dragons.md`). A fixed grid of 256
+villages (`rtsim_ecology::synth::grid`, livestock as market stock), one dragon per lair spread over
+it, nobody watching; 2 days of warm-up, then 10 measured. The figure the contract reads is the
+dragons' own CPU per dragon-day: the bench steps the world to each dragon event on its own and
+times only the dragons' handlers (their decisions, legs, raids, and the market events the raids
+cause). Every run conserved every good with predation (`Dragons::check`), and no dragon
+materialized. Laptop, other agents' builds running alongside (load about 6).
+
+**Numbers:**
+- Dragons, 8 to 512: 10 to 14 us per dragon-day (slope 0.009, max/min 1.05, contract flat): about
+  1.1 events per dragon a day at about 10 us each. The world's own trade (9.6 to 25 ms per sim day
+  in the table) is the rest.
+- Live heap 4.1 to 10.8 MiB (slope 0.225): the 256-village world dominates; the dragons' own rows,
+  wheel and indexes are 45 KB at 8 and 0.7 MB at 512 (`engine_heap_bytes`).
+- Beyond the sweep, by hand (`bench scale-one`): at 2,048 dragons on the same world (seven lairs a
+  region, far denser than Ice and Fire's own spacing) prey runs out, each dragon makes 2.4 events a
+  day instead of 1.1, and the cost per event stays about 10 us. Growing the map with the dragons
+  (two villages each, 8 to 1,024) holds events per dragon at 1.1 but the cost per event rises from 5
+  to 16 us as the world's working set leaves the caches, as the market sweep's note says; switching
+  rtsim-knowledge's next-death query to the wheel's lower bound changed nothing, so it is not an
+  algorithmic term.

@@ -554,3 +554,167 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      and so on); order 22 marks a village as a test's own, which the engine then leaves alone; orders
      23 (`P1_SPAWN_NEAR`) and 24 (`P1_ADVANCE`) materialize a caravan off the flows at a chosen place
      and run the world ahead of game time (TEST mode only).
+
+## 6. Phase 2: dragons (PLAN.md §9; the Ice and Fire plugin)
+
+Written 2026-10-20 overnight with the engine side, `crates/rtsim-ecology` (`boundary.rs` is the
+reference codec, with round-trip tests); the plugin, `mic_rtsim_iceandfire`, is not written. This
+section and `boundary.rs` change together. Choices are numbered R# in
+`docs/overnight-choices-dragons.md`. Ice and Fire facts below were checked in the CE 2.1-beta.1 jar
+and the pack's `config/iceandfire/iaf-common.json` (2026-10-20); anything not checked says
+UNVERIFIED.
+
+### 6.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x0060 to 0x006F | Java to engine | dragon latest-wins observations |
+| 0x0500 to 0x05FF | Java to engine | dragon journaled observations (the 24-byte prefix of §2.3) |
+| 0x8500 to 0x85FF | engine to Java | dragon commands (`cmdSeq` at 8) |
+
+The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as they are.
+
+### 6.2 Ids and dictionaries
+
+- **Agents.** A dragon's agent id is `0x44 << 56 | handle`, the engine row's 48-bit handle under
+  namespace byte 0x44 (R13), so it never meets another module's agent ids if those keep their top
+  byte clear or take their own. Epochs as §2.2: new for every materialization or adoption.
+- **Lairs** are their structure start, packed as villages are (§4: `dim << 48 | startChunkX << 24 |
+  startChunkZ`). Structures travel in dictionary kind 4: `iceandfire:fire_dragon_roost`,
+  `fire_dragon_cave`, `ice_dragon_roost`, `ice_dragon_cave`, `lightning_dragon_roost`,
+  `lightning_dragon_cave` (verified structure ids).
+- **Species** travel as body kinds (dictionary kind 3): `iceandfire:fire_dragon`, `ice_dragon`,
+  `lightning_dragon` (verified). So do prey animals in DRAGON_ATE (`minecraft:cow`, ...).
+- **Hoard items** are items (dictionary kind 2).
+- **Players** are UUIDs (most, least), as everywhere.
+
+### 6.3 Observations
+
+| Kind | Name | aux | Fields (offset type name) | Size |
+|---|---|---|---|---|
+| 0x0060 | DRAGON_STATE (latest-wins) | flags: 1 sleeping, 2 flying, 4 has an attack target, 8 ticking | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 f32 health, 28 f32 maxHealth, 32 i32 hunger, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z. Every 100 ticks per embodied dragon (PLACEHOLDER) | 64 |
+| 0x0500 | DRAGON_MATERIALIZED | 0 | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast | 56 |
+| 0x0501 | DRAGON_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown species) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
+| 0x0502 | DRAGON_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 f32 health, 44 f32 maxHealth, 48 i32 hunger, 52 i32 ageTicks, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
+| 0x0503 | DRAGON_HURT | attacker kind: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 hits, 40 f32 amount, 44 f32 healthAfter, 48 u64 attackerMost, 56 u64 attackerLeast | 64 |
+| 0x0504 | DRAGON_DIED | killer kind (as HURT) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 killerMost, 48 u64 killerLeast, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
+| 0x0505 | LAIR_FOUND | flags: 1 LATE (in a chunk generated before the plugin) | 24 u64 lair, 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 minX, 44 minY, 48 minZ, 52 maxX, 56 maxY, 60 maxZ, 64 i32 homeX, 68 homeY, 72 homeZ, 76 reserved | 80 |
+| 0x0506 | HOARD_ROBBED | n | 24 u64 lair, 32 u64 opId, 40 u64 playerMost, 48 u64 playerLeast, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
+| 0x0507 | DRAGON_UNTAGGED | spawn: 1 structure, 2 natural, 3 spawner, 4 spawn egg, 5 command, 6 hatched, 7 other | 24 u64 entityMost, 32 u64 entityLeast, 40 u32 species (dictionary 3), 44 u32 dimension, 48 u32 flags (1 tamed, 2 has home, 4 sleeping, 8 aging disabled), 52 i32 ageTicks, 56 i32 hunger, 60 u32 gender (0 female, 1 male), 64 u32 variant (0 to 3 within the species), 68 i32 homeX, 72 homeY, 76 homeZ, 80 u64 lair (0: none), 88 f64 x, 96 f64 y, 104 f64 z | 112 |
+| 0x0508 | DRAGON_ATE | count | 24 u64 agent, 32 u32 epoch, 36 u32 prey (dictionary 3), 40 u64 village (0: none), 48 f64 x, 56 f64 y, 64 f64 z | 72 |
+
+- **DRAGON_HURT** sums one attacker's hits on one dragon over a tick (PLACEHOLDER: over 20 ticks
+  would also do). The engine turns a player's wound into an assault report the dragon and its lair
+  witness (a grudge), and brings the dragon's departure forward (C24).
+- **DRAGON_DIED** is journaled at the end of the tick, as DIED (§2.3). A player's kill is a killing
+  report the dragon's kin and lair witness; the settlements it preyed on get a rescue report (C24:
+  rescues count); its strongest memories and feelings pass to its heir.
+- **DRAGON_ATE**: a sim dragon killed animals (Ice and Fire's own hunting picks them from its
+  `dragon_targets` tag, verified). When the kill is inside a village's bounds, those animals were the
+  village's herd and its market stock falls by the count (P28's recommendation: watched
+  consequences go through stock, prices and caravans). Summed per (dragon, prey type, village) per
+  tick.
+- **HOARD_ROBBED**: a player broke hoard piles (`iceandfire:gold_pile` for fire, `silver_pile` for
+  ice, `copper_pile` for lightning, verified) or took items from a container, inside a known lair's
+  box. Summed per (player, lair) per tick. The engine takes what its abstract hoard holds of each
+  item (the rest was the structure's own treasure, never in its ledger) and the lair and its
+  dragons witness a robbery report. Hoard piles are blocks: how many items a broken pile counts as
+  is the plugin's (UNVERIFIED: the pile's layer count).
+- **DRAGON_UNTAGGED**: an Ice and Fire dragon joined the level without the plugin's tag (§6.5).
+
+### 6.4 Commands
+
+| Kind | Name | aux | Fields | Size | Answered by |
+|---|---|---|---|---|---|
+| 0x8500 | DRAGON_MATERIALIZE | flags: 1 clamp above the surface, 2 has a home, 4 sleeping, 8 hostile | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z, 64 i32 hunger, 68 u32 gender, 72 u32 variant, 76 f32 health (0 full), 80 i32 homeX, 84 homeY, 88 homeZ, 92 reserved, 96 f64 targetX, 104 targetY, 112 targetZ, 120 u64 targetPlayerMost, 128 u64 targetPlayerLeast | 136 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
+| 0x8501 | DRAGON_STEER | flags: 1 settle at the target | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
+| 0x8502 | DRAGON_DEPART | reason: 1 bored, 2 hungry, 3 wounded, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | DRAGON_DEMATERIALIZED |
+| 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved | 64 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
+| 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
+
+### 6.5 How Java applies them
+
+**Materialize.** Spawn the species' entity at (x, y, z); with flag 1, raise y to the motion-blocking
+heightmap plus a margin (PLACEHOLDER 8) where the terrain is higher (the engine flies dragons at a
+forced cruise altitude while unloaded, as Veloren's airships, so one never appears underground).
+Write its NBT before it ticks (verified keys and types, `DragonBaseEntity.addAdditionalSaveData`):
+- `AgeTicks` (int) = ageTicks, and `AgingDisabled` (bool) = true: the engine owns age (structure
+  lair dragons spawn with aging disabled anyway, verified).
+- `Hunger` (int, 0 to 100, higher is fuller) = hunger.
+- `Gender` (bool, true is male) = gender == 1.
+- `Variant` (string): Ice and Fire picks an egg's colour as `DRAGON_COLOR.byId(random(4) +
+  getStartMetaForType())`, offsets 0, 4 and 8 for fire, ice and lightning (verified), so the
+  variant index maps to `DRAGON_COLOR.byId(variant + offset)` and its registry name.
+  UNVERIFIED: that the NBT string is exactly that registry name.
+- With flag 2: `HomeAreaX/Y/Z` (int), `HomeDimension` (string), `HasHomePosition` (bool) = true.
+  **Trap** (verified): on read the home is dropped if any coordinate is exactly 0; the plugin nudges a
+  0 to 1.
+- Health (when not 0) after attributes refresh: `refreshDirtyAttributes` sets max health from age
+  (4% of `maxHealth` at day 0 up to all of it at day 125; the pack's `maxHealth` is 500, verified).
+- Sleeping (flag 4): `setInSittingPose(true)` (the `Sleeping` NBT).
+- Persistence required: the pack's `canDespawn` is true (verified), and a puppet must never be
+  saved by vanilla (§6.1 of PLAN.md; P3).
+- Tag it with the agent and epoch (the plugin's own persistent data), as the bridge tags puppets.
+- First flight target: `dragon.flightManager.setFlightTarget(new Vec3(targetX, targetY,
+  targetZ))` (verified: `public final IafDragonFlightManager flightManager`). Caveats (verified):
+  Ice and Fire overwrites the target while the dragon has a live attack target, and clamps y to its
+  `maxFlight` (256 in the pack).
+- With flag 8 (hostile), make the target player its attack target. The pack's `neutralToPlayer` is
+  false (verified), so a wild dragon attacks players on its own anyway.
+
+**Steer** sets the flight target as above; flag 1 lets it land there.
+
+**Depart.** Steer the dragon to the target and, when it is outside every player's entity-ticking
+range (or `timeoutTicks` pass), capture it and despawn it: DRAGON_DEMATERIALIZED with its health,
+hunger, age and position. Any other loss of the body (its chunk unloads, the session ends) is
+captured the same way with §2.3's reasons.
+
+**Adopt** tags an untagged entity with the agent and epoch, makes it persistent, and sets its home
+when flag 1 is set; from then on it is an embodied puppet like a materialized one, and leaves view
+through DRAGON_DEMATERIALIZED.
+
+**Discard** removes the entity (`discard()`), with no drops.
+
+### 6.6 Owning the population (P13's recommendation: the sim owns every dragon)
+
+What the bridge must do:
+1. **Turn off In Control's fire dragon.** The pack has an In Control spawner entry for
+   `iceandfire:fire_dragon` in `config/incontrol/spawner.json` (`persecond` 0.1, `attempts` 20,
+   overworld, 25 to 100 blocks from a player, `maxthis` 200) and two `onjoin` rules in
+   `config/incontrol/spawn.json` whose mob list holds `minecraft:blaze` and `iceandfire:fire_dragon`
+   (allowed in `c:is_desert`, denied elsewhere when In Control caused the join), all verified in the
+   pack config. Remove the spawner entry and take `iceandfire:fire_dragon` out of both rules' mob
+   lists (the blaze rules stay). This is a pack change (outward-facing: Ben's to apply).
+2. **Report every untagged dragon** that joins a level (`EntityJoinLevelEvent`) as DRAGON_UNTAGGED,
+   with its spawn kind from `FinalizeSpawnEvent.getSpawnType()` where one fired first (STRUCTURE,
+   NATURAL, SPAWNER, SPAWN_EGG, COMMAND, BREEDING mapped to the codes above), its NBT fields, and the
+   lair whose box holds it. UNVERIFIED: whether Ice and Fire's lair pieces spawn their dragon through
+   `finalizeSpawn` (the jar shows lair pieces set hunger 50 themselves) and so whether a
+   STRUCTURE spawn type is seen; the lair's box is the fallback: a dragon that joins inside a known
+   lair's box while the chunk generates counts as a structure spawn.
+3. **Apply the engine's answer:** the engine adopts a lair's own dragon from world generation as its
+   occupant, adopts spawn-egg and command dragons as wanderers, discards natural and spawner dragons
+   (a rule the pack should no longer have) and a second structure dragon for a lair that has one,
+   and leaves **tamed** dragons alone (A10: a creature a player takes leaves the sim). Dragons
+   hatched from eggs are tamed by Ice and Fire (verified, `DragonEggEntity.updateEggCondition`), so
+   they are the player's.
+4. **No respawn of its own.** Population comes back only through the engine: pairs breed in their
+   lair (M1's recommendation, sim-only), young dragons leave to claim empty roosts, and a roost that
+   stands empty for the respawn delay draws a young dragon from afar (TUNABLE, PLACEHOLDER 20 days,
+   `DragonTunables::respawn_delay_days`), which arrives as a flight a player can watch. Ice and
+   Fire's own breeding needs a player to feed mature dragons (verified), so wild dragons in game do
+   not breed by themselves.
+
+### 6.7 What the engine side does with them (rtsim-ecology)
+
+- Player positions (PLAYER, §2.3) feed a decaying home counter per player (P26's recommendation)
+  and book each player's interest area into the shared leg index; a dragon's leg that crosses one
+  books exactly one meeting, which materializes it at the edge of the area if both legs are still
+  as booked when it fires (A15).
+- Every dragon is a knowledge notable; its death of age is one booked event (C24), its heir is its
+  youngest offspring, else its mate, else its lair, and a dragon claiming an empty lair takes over
+  the lair's strongest feelings.
+- A raid on a district goes through the industry engine's threat interface (`docs/industry-
+  boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
+  P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
+  best comparable observed fight, with capped damage applied on load (C18).

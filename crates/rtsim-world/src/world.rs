@@ -123,12 +123,17 @@ pub enum Cause {
     Player,
     /// The village grew a house and its population stepped up (P17).
     Growth,
+    /// A predator with no haven took stock (PLAN.md §9: a dragon raided the village).
+    Predator,
 }
 
 impl Cause {
     /// Whether the event sends news even when nothing changed in kind.
     pub fn forces_news(self) -> bool {
-        matches!(self, Cause::Breakpoint | Cause::Player | Cause::Growth)
+        matches!(
+            self,
+            Cause::Breakpoint | Cause::Player | Cause::Growth | Cause::Predator
+        )
     }
 }
 
