@@ -69,8 +69,8 @@ fn villages_join_one_at_a_time() {
 #[test]
 fn a_grown_world_nearly_settles() {
     let (mut w, all) = start(5, &[0, 1], false);
-    for i in 2..all.len() {
-        w.join(all[i].clone(), Tick::from_days(i as u64));
+    for (i, d) in all.iter().enumerate().skip(2) {
+        w.join(d.clone(), Tick::from_days(i as u64));
     }
     let n = w.nodes.len() as f64;
     w.run_until(Tick::from_days(100));

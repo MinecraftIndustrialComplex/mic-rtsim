@@ -92,7 +92,7 @@ pub fn print_trace(w: &World, days: u64, name: &dyn Fn(usize) -> String) {
         }
     }
     let mut ptop: Vec<_> = pipes.into_iter().collect();
-    ptop.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    ptop.sort_by_key(|a| std::cmp::Reverse(a.1.0));
     println!("  most frequent pipeline changes (count, sum of |change|):");
     for ((i, j, g, k), (n, d)) in ptop.into_iter().take(20) {
         println!(
@@ -102,7 +102,7 @@ pub fn print_trace(w: &World, days: u64, name: &dyn Fn(usize) -> String) {
         );
     }
     let mut top: Vec<_> = diffs.into_iter().collect();
-    top.sort_by(|a, b| b.1.cmp(&a.1));
+    top.sort_by_key(|a| std::cmp::Reverse(a.1));
     println!("  most frequent news changes:");
     for ((i, g, what), n) in top.into_iter().take(25) {
         println!("    {n:>5}  {:<14} {g:<14} {what}", name(i));

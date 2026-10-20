@@ -346,10 +346,10 @@ impl World {
         }
         let report = self.report(player, c, ReportKind::Killing, at)?;
         if leader {
-            if let Some(n) = self.caravans.get(c).and_then(|x| x.notable) {
-                if let Some(heir) = self.knowledge.die(n, at) {
-                    self.touch_sentiment_actor(heir);
-                }
+            if let Some(n) = self.caravans.get(c).and_then(|x| x.notable)
+                && let Some(heir) = self.knowledge.die(n, at)
+            {
+                self.touch_sentiment_actor(heir);
             }
             self.flush_gossip();
         }
