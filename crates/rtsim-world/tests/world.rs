@@ -15,6 +15,29 @@ fn world(seed: u64, check: bool) -> (World, SynthGoods) {
     synth::build(cfg, true)
 }
 
+/// Runs the world an hour at a time from day 6 until a loaded caravan is on a road out of `from`
+/// (caravans wait at the dock until full or for the longest dock wait, so a road can be empty
+/// for a while).
+fn first_caravan(w: &mut World, from: usize) -> rtsim_travel::CaravanKey {
+    let mut t = Tick::from_days(6);
+    loop {
+        w.run_until(t);
+        // Out of sight of both villages: past a fifth of the way.
+        if let Some(k) = busiest(w, from)
+            && w.travellers(k.edge, k.dir)
+                .iter()
+                .any(|x| x.key == k && x.progress_milli > 200)
+        {
+            return k;
+        }
+        t += 1000;
+        assert!(
+            t < Tick::from_days(30),
+            "no caravan left node {from} by day 30"
+        );
+    }
+}
+
 /// The traveller with the most goods on any road out of `from`, if any.
 fn busiest(w: &World, from: usize) -> Option<rtsim_travel::CaravanKey> {
     let mut best: Option<(i64, rtsim_travel::CaravanKey)> = None;
@@ -124,9 +147,8 @@ proptest! {
 fn a_robbery_travels_only_with_travellers() {
     let (mut w, _) = world(11, false);
     let player = w.player(7);
-    w.run_until(Tick::from_days(6));
     // A caravan out of Oakford (node 1).
-    let key = busiest(&w, 1).expect("Oakford trades by day 6");
+    let key = first_caravan(&mut w, 1);
     let c = w.promote(key).expect("on the road");
     let attack = w.rob(c, player, 1000).expect("robbed");
     let report = attack.report;
@@ -273,8 +295,7 @@ fn ribbit_grudges_raise_prices() {
 fn heirs_and_vanilla_gossip() {
     let (mut w, _) = world(9, false);
     let player = w.player(1);
-    w.run_until(Tick::from_days(6));
-    let key = busiest(&w, 1).expect("Oakford trades");
+    let key = first_caravan(&mut w, 1);
     let c = w.promote(key).unwrap();
     let home = w.nodes[w.caravans.get(c).unwrap().home].actor;
     let before = w.knowledge.sentiment(home, player, w.now());

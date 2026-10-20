@@ -333,31 +333,9 @@ pub fn make_market(
                 }
                 GoodKind::Currency(c) => {
                     // A foreign currency: an exchange line at border markets.
-                    let parity = if l_mint.is_finite() {
-                        mint_cost[c.index()] / l_mint
-                    } else {
-                        0.0
-                    };
-                    let anchor = (parity * PRICE_ONE as f64)
-                        .round()
-                        .clamp(0.0, MAX_ANCHOR as f64) as i64;
-                    match border_d {
-                        Some(d) if anchor > 0 => {
-                            let tau = transport_labour(goods, tun, g, d) / l_mint;
-                            let band = ((tau / parity) * 1024.0).round().clamp(0.0, 1023.0) as i64;
-                            let target = (i128::from(mbar) * i128::from(tun.fx_holding_share_milli)
-                                / 1000
-                                * i128::from(PRICE_ONE)
-                                / i128::from(anchor.max(1)))
-                                as Amount;
-                            (
-                                target,
-                                PriceCurve::new(anchor, Ratio::new(band, 1024), target),
-                                0,
-                            )
-                        }
-                        _ => (0, PriceCurve::new(anchor, Ratio::new(0, 1), 0), 0),
-                    }
+                    let (target, curve) =
+                        exchange_line(goods, tun, g, c, l_mint, mint_cost, mbar, border_d);
+                    (target, curve, 0)
                 }
             };
             let stock = match (genesis, def.kind) {
@@ -370,7 +348,7 @@ pub fn make_market(
             };
             let mut line = Line::new(stock, target);
             line.rates.cap = cap;
-            line.book.genesis = i128::from(stock);
+            line.book.genesis = stock;
             if nd.kind == MarketKind::Base {
                 line = Line::default();
             }
@@ -396,10 +374,105 @@ pub fn make_market(
             goods: states,
             order,
             base_prices: vec![None; g_n],
-            news_resolution_div: tun.news_resolution_div,
+            rules: tun.rules,
+            owed: 0,
+            cut: false,
         };
         m.recompute();
         m
+    }
+}
+
+/// Steps a market's population (P17: a ribbit village books a house and its people move in):
+/// household consumption, stock targets and the treasury target follow the new population;
+/// anchors, recipes, capacities and `T` stay as they are, so the market stays piecewise linear and
+/// only its targets move (overnight choice E56). Exchange lines keep their share of the treasury
+/// target.
+pub fn repopulate(m: &mut Market, goods: &Goods, tun: &Tunables, pop: u32, l_mint: f64) {
+    let qn = tun.quantum;
+    let n = m.lines.len();
+    let mut input_use = vec![0 as Amount; n];
+    for gs in &m.goods {
+        for inp in &gs.inputs {
+            input_use[inp.good.index()] += (i128::from(gs.nominal_cap) * i128::from(inp.per)
+                / i128::from(inp.yield_.max(1)))
+                as Amount;
+        }
+    }
+    let old_mbar = m.currency.map_or(0, |c| m.line(c).target);
+    let mbar = if l_mint.is_finite() && l_mint > 0.0 {
+        ((tun.k_days as f64 * f64::from(pop) / l_mint) * MILLI as f64).round() as Amount
+    } else {
+        0
+    };
+    for (g, def) in goods.iter() {
+        let gi = g.index();
+        match def.kind {
+            GoodKind::Item => {
+                let household = qn.per_day(i64::from(pop) * def.need_per_pop_day);
+                m.goods[gi].household = household;
+                let target = tun.target(
+                    m.t_quanta,
+                    household + input_use[gi],
+                    m.goods[gi].nominal_cap,
+                );
+                let anchor = m.goods[gi].curve.anchor;
+                m.goods[gi].curve = PriceCurve::new(anchor, tun.r, target);
+                m.lines[gi].target = target;
+            }
+            GoodKind::Currency(_) if Some(g) == m.currency => {
+                m.lines[gi].target = mbar;
+            }
+            GoodKind::Currency(_) => {
+                let t = m.lines[gi].target;
+                if t > 0 && old_mbar > 0 {
+                    let nt = (i128::from(t) * i128::from(mbar) / i128::from(old_mbar)) as Amount;
+                    let c = m.goods[gi].curve;
+                    m.goods[gi].curve = PriceCurve::new(c.anchor, c.r, nt);
+                    m.lines[gi].target = nt;
+                }
+            }
+        }
+    }
+    m.recompute();
+}
+
+/// The exchange line for foreign currency `g` (of culture `foreign`) at a market whose own mint
+/// costs `l_mint` worker-days a coin and whose treasury target is `mbar`: anchored at mint parity
+/// and floating within the cost of carrying a coin over its shortest border edge (`border_d`,
+/// the gold points); no line (target 0, flat) at a market with no border.
+#[allow(clippy::too_many_arguments)]
+pub fn exchange_line(
+    goods: &Goods,
+    tun: &Tunables,
+    g: GoodId,
+    foreign: Culture,
+    l_mint: f64,
+    mint_cost: [f64; 2],
+    mbar: Amount,
+    border_d: Option<u64>,
+) -> (Amount, PriceCurve) {
+    let parity = if l_mint.is_finite() {
+        mint_cost[foreign.index()] / l_mint
+    } else {
+        0.0
+    };
+    let anchor = (parity * PRICE_ONE as f64)
+        .round()
+        .clamp(0.0, MAX_ANCHOR as f64) as i64;
+    match border_d {
+        Some(d) if anchor > 0 => {
+            let tau = transport_labour(goods, tun, g, d) / l_mint;
+            let band = ((tau / parity) * 1024.0).round().clamp(0.0, 1023.0) as i64;
+            let target = (i128::from(mbar) * i128::from(tun.fx_holding_share_milli) / 1000
+                * i128::from(PRICE_ONE)
+                / i128::from(anchor.max(1))) as Amount;
+            (
+                target,
+                PriceCurve::new(anchor, Ratio::new(band, 1024), target),
+            )
+        }
+        _ => (0, PriceCurve::new(anchor, Ratio::new(0, 1), 0)),
     }
 }
 

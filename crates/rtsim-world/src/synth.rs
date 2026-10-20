@@ -157,7 +157,7 @@ pub fn nodes() -> Vec<NodeData> {
         NodeData {
             key: 11,
             kind: NodeKind::PlayerBase { owner: 1 },
-            pos: Pos::new(0, 300, 300),
+            pos: Pos::new(0, 300, 150),
             pop: 0,
             resources: BTreeMap::new(),
         },

@@ -29,7 +29,7 @@ use rtsim_kernel::lazy::LazyModel;
 use rtsim_settle::Culture;
 
 use crate::goods::GoodId;
-use crate::line::{Level, Line};
+use crate::line::{Level, Line, UNLIMITED, band};
 use crate::price::PriceCurve;
 use crate::tunables::Ratio;
 use crate::units::{Amount, MILLI, PRICE_ONE, Price, Quantum};
@@ -88,8 +88,14 @@ pub struct Market {
     /// For a player base: the last price players traded each good at, and when (C26: the base's
     /// prices are the prices players trade at there).
     pub base_prices: Vec<Option<(Price, Tick)>>,
-    /// The divisor of the news resolution ([`crate::Tunables::news_resolution_div`]).
-    pub news_resolution_div: i64,
+    /// The tunables the market decides with ([`crate::tunables::Rules`]).
+    pub rules: crate::tunables::Rules,
+    /// What the market owes per quantum in its own coin for what arrives, before the coverage
+    /// rule cuts it to what it can pay: set by the flows at every event (overnight choice E52).
+    pub owed: Amount,
+    /// Whether the last event cut the treasury's payments to its income (overnight choice E50):
+    /// a cut treasury stays cut until it is back at its target, not just inside its band.
+    pub cut: bool,
 }
 
 /// Why a player trade is refused.
@@ -233,11 +239,24 @@ impl Market {
             // Consumption: households plus what this market's recipes take, from goods earlier in
             // the order (their production is already set).
             self.lines[i].rates.cons = self.goods[i].household + uses[i];
-            // Capacity: an input with an empty store limits its recipe to what flows in.
+            // Capacity: an input with an empty store limits its recipe to what flows in. With the
+            // band rule, an input below its target's band limits it to what flows in, so a starved
+            // input holds still instead of flickering between empty and a few thousandths, and
+            // the limit depends on rates alone, not on a stock that moves between events
+            // (overnight choice E44).
             let mut cap = self.goods[i].nominal_cap;
+            // Hysteresis (overnight choice E51): a recipe already held back by an input stays
+            // held back until the input is back at its target, not just inside its band.
+            let was_limited = self.lines[i].rates.cap < self.goods[i].nominal_cap;
             for inp in &self.goods[i].inputs {
                 let l = &self.lines[inp.good.index()];
-                if l.stock <= 0 {
+                let short = if self.rules.exporter_band {
+                    l.stock < l.target - band(l.target)
+                        || (self.rules.input_hysteresis && was_limited && l.stock < l.target)
+                } else {
+                    l.stock <= 0
+                };
+                if short {
                     let supply = (l.rates.inflow + l.rates.cap - l.rates.outflow).max(0);
                     let limit = (i128::from(supply) * i128::from(inp.yield_)
                         / i128::from(inp.per.max(1))) as Amount;
@@ -245,6 +264,24 @@ impl Market {
                 }
             }
             self.lines[i].rates.cap = cap.max(0);
+            // What sinks above the ceiling (overnight choice E43): a little plenty for goods,
+            // upkeep for money.
+            let step = self.news_step(g);
+            let money_sink = self.rules.money_sink;
+            let slack_steps = self.rules.goods_slack_steps.max(0);
+            let l = &mut self.lines[i];
+            if self.goods[i].currency {
+                if money_sink {
+                    l.ceiling = l.target.saturating_mul(2);
+                    l.rates.slack = UNLIMITED;
+                } else {
+                    l.ceiling = l.target;
+                    l.rates.slack = 0;
+                }
+            } else {
+                l.ceiling = l.target;
+                l.rates.slack = slack_steps * step;
+            }
             let prod = self.production_now(g);
             for inp in &self.goods[i].inputs {
                 let need = (i128::from(prod) * i128::from(inp.per) / i128::from(inp.yield_.max(1)))
@@ -254,20 +291,65 @@ impl Market {
         }
     }
 
-    /// The total outflow per quantum the line can sustain, for flows to take: nothing below the
-    /// target (the market refills first); at it, capacity plus inflow minus consumption; above
-    /// it, that plus a drain of the surplus over `T` (PLAN.md §8.4; overnight choice E8).
+    /// The news step of good `g`: what the line turns over per quantum at its target (the target
+    /// over `T`, which is `max(c, y)` from the market's recipes and households) over the news
+    /// resolution's divisor, at least an item a day (overnight choice E17). It comes from the
+    /// target, not from the consumption of the moment, so the grid advertisements are rounded to
+    /// stays put when a recipe's output changes (overnight choice E45).
+    pub fn news_step(&self, g: GoodId) -> Amount {
+        let l = &self.lines[g.index()];
+        let turnover = if self.rules.exporter_band {
+            l.target / self.t_quanta.max(1) as i64
+        } else {
+            l.rates.cons
+        };
+        (turnover / self.rules.news_resolution_div.max(1))
+            .max(self.quantum.per_day(self.rules.step_floor_milli_per_day))
+            .max(1)
+    }
+
+    /// The total outflow per quantum the line can sustain, for flows to take: capacity plus
+    /// inflow minus consumption, plus a drain of the surplus over `T` above the target (PLAN.md
+    /// §8.4; overnight choice E8). Nothing below the target's band; within the band below the
+    /// target, the drain is negative, so the market sends a little less and refills (overnight
+    /// choice E45). With [`crate::tunables::Rules::exporter_band`] off, nothing below the target
+    /// itself, as round 1 did.
     pub fn exportable(&self, g: GoodId) -> Amount {
         if !self.is_storehouse() {
             return 0;
         }
         let l = &self.lines[g.index()];
-        if l.stock < l.target || self.goods[g.index()].currency {
+        if self.goods[g.index()].currency {
             return 0;
         }
+        let floor = if self.rules.exporter_band {
+            l.target - band(l.target)
+        } else {
+            l.target
+        };
+        if l.stock < floor || l.target <= 0 {
+            return 0;
+        }
+        let x = self.exportable_raw(g);
+        if self.rules.exporter_band && !self.rules.hysteresis {
+            // Rounded down to the news step, so the stock moving a little between events does not
+            // move every flow by a thousandth (overnight choice E45). What is not sent stays in
+            // the production regime's slack.
+            let step = self.news_step(g);
+            x / step * step
+        } else {
+            x
+        }
+    }
+
+    /// What flows may take before rounding: capacity plus inflow minus consumption plus the
+    /// signed drain of the stock toward the target over `T`, at least zero. Not the band rule:
+    /// see [`Market::exportable`].
+    pub fn exportable_raw(&self, g: GoodId) -> Amount {
+        let l = &self.lines[g.index()];
         let r = l.rates;
         let base = (r.cap + r.inflow - r.cons).max(0);
-        base + (l.stock - l.target) / self.t_quanta as i64
+        (base + (l.stock - l.target) / self.t_quanta as i64).max(0)
     }
 
     /// What the market advertises it can take in per quantum, signed: need minus inbound, where
@@ -288,11 +370,92 @@ impl Market {
         let refill = (l.target - l.stock) / self.t_quanta as i64;
         let need = r.cons + r.outflow - r.cap + refill;
         let raw = need - r.inflow;
-        // A step of the line's own consumption over the divisor, at least an item a day.
-        let step = (r.cons / self.news_resolution_div.max(1))
-            .max(self.quantum.per_day(MILLI))
-            .max(1);
-        raw / step * step
+        let step = self.news_step(g);
+        let q = if self.rules.absorb_round_up {
+            // Up: what rounding leaves is a small oversupply, which the slack absorbs at the
+            // target (overnight choice E43).
+            -((-raw).div_euclid(step)) * step
+        } else {
+            raw / step * step
+        };
+        // Asking to cut more than arrives means nothing to anyone, so it is not news: a producer
+        // that imports nothing advertises zero, however its own exports move (overnight choice
+        // E47).
+        let q = if self.insolvent() { q.min(0) } else { q };
+        if self.rules.clamp_to_inflow {
+            q.max(-r.inflow)
+        } else {
+            q
+        }
+    }
+
+    /// Whether the market cannot pay for what reaches it (overnight choice E52): its treasury is
+    /// below its band and it owes more than its mint and its takings bring in. Such a market asks
+    /// for no more of anything, so a broke village imports what it can pay for instead of growing
+    /// debts its suppliers never see.
+    pub fn insolvent(&self) -> bool {
+        let Some(c) = self.currency else {
+            return false;
+        };
+        let l = &self.lines[c.index()];
+        let income = l.rates.inflow + l.rates.cap - l.rates.cons;
+        self.rules.budget && l.stock < l.target - band(l.target) && self.owed > income.max(0)
+    }
+
+    /// The advertised rate with hysteresis (overnight choice E51). The hysteresis is on what the
+    /// market asks to receive in all (`prev_total`: what it last advertised plus what was then
+    /// arriving), not on the advertised change: while what it needs stays within one news step of
+    /// that total, it keeps asking for the same total, and the advertised change is that total
+    /// minus what arrives now. Holding the change itself would be wrong once the inflow moves: a
+    /// standing "send 41 less" would be read again after the cut and cut a second time.
+    pub fn absorbable_held(&self, g: GoodId, prev_total: Option<Amount>) -> Amount {
+        let q = self.absorbable(g);
+        let (Some(p), true) = (prev_total, self.rules.hysteresis) else {
+            return q;
+        };
+        if !self.is_storehouse() || self.goods[g.index()].currency {
+            return q;
+        }
+        let l = &self.lines[g.index()];
+        let r = l.rates;
+        if l.level() == Level::Glut || !self.can_pay() {
+            return q;
+        }
+        let refill = (l.target - l.stock) / self.t_quanta as i64;
+        let need = r.cons + r.outflow - r.cap + refill;
+        let step = self.news_step(g);
+        if (need - p).abs() >= step {
+            return q;
+        }
+        // The same total as before: the change is what is missing from it now, rounded as
+        // `absorbable` rounds.
+        let raw = p - r.inflow;
+        let a = if self.rules.absorb_round_up {
+            -((-raw).div_euclid(step)) * step
+        } else {
+            raw / step * step
+        };
+        let a = if self.insolvent() { a.min(0) } else { a };
+        if self.rules.clamp_to_inflow {
+            a.max(-r.inflow)
+        } else {
+            a
+        }
+    }
+
+    /// What flows may take with hysteresis (overnight choice E51): a market sending `current`
+    /// keeps sending it while what it can spare stays within one news step of it, so a stock
+    /// moving a little between events does not move every flow it sends.
+    pub fn exportable_held(&self, g: GoodId, current: Amount) -> Amount {
+        let x = self.exportable(g);
+        if !self.rules.hysteresis || current <= 0 || x <= 0 {
+            return x;
+        }
+        if (self.exportable_raw(g) - current).abs() < self.news_step(g) {
+            current
+        } else {
+            x
+        }
     }
 
     // ---- Player trades through the treasury (C14, C23) ----
@@ -354,10 +517,10 @@ impl Market {
         let l = &mut self.lines[g.index()];
         assert!(l.stock >= a, "player bought more than the stock");
         l.stock -= a;
-        l.book.player_out += i128::from(a);
+        l.book.player_out += a;
         let m = &mut self.lines[cur.index()];
         m.stock += c;
-        m.book.player_in += i128::from(c);
+        m.book.player_in += c;
     }
 
     /// Applies a player's sale that [`Market::quote_sell`] priced.
@@ -367,10 +530,10 @@ impl Market {
         let m = &mut self.lines[cur.index()];
         assert!(m.stock >= c, "the treasury paid more than it held");
         m.stock -= c;
-        m.book.player_out += i128::from(c);
+        m.book.player_out += c;
         let l = &mut self.lines[g.index()];
         l.stock += a;
-        l.book.player_in += i128::from(a);
+        l.book.player_in += a;
     }
 
     /// Barter at anchor ratios, for a market that refuses cash: how many whole `want` the market
@@ -391,10 +554,10 @@ impl Market {
         let w = &mut self.lines[want.index()];
         assert!(w.stock >= b);
         w.stock -= b;
-        w.book.player_out += i128::from(b);
+        w.book.player_out += b;
         let gl = &mut self.lines[give.index()];
         gl.stock += a;
-        gl.book.player_in += i128::from(a);
+        gl.book.player_in += a;
     }
 
     /// The integer bundle closest to the market's price (PLAN.md §8.5): one item for whole coins
@@ -527,7 +690,24 @@ impl LazyModel for Market {
         let mut take = |b: u64| best = Some(best.map_or(b, |x| x.min(b)));
         for (i, l) in self.lines.iter().enumerate() {
             let c = l.next_change();
-            if let Some(k) = c.level {
+            if self.goods[i].currency && self.rules.exporter_band {
+                // A treasury drifting between levels decides little: crossing twice its target
+                // (cash refused), the bottom of its band (it pays only what comes in, E50) and
+                // zero do (overnight choice E47).
+                // ... and holding any at all, which payers read (review fix).
+                for th in [l.target.saturating_mul(2), l.target - band(l.target) - 1, 0] {
+                    if let Some(k) = l.next_crossing(th) {
+                        take(first + k - 1);
+                    }
+                }
+                if self.cut
+                    && self.rules.hysteresis
+                    && l.stock < l.target
+                    && let Some(k) = l.next_crossing(l.target - 1)
+                {
+                    take(first + k - 1);
+                }
+            } else if let Some(k) = c.level {
                 take(first + k - 1);
             }
             if let Some(k) = c.uncovered {
@@ -536,6 +716,12 @@ impl LazyModel for Market {
                 // before the owner acts on it), and the owner then cuts outflow; booking the next
                 // boundary keeps it looked at either way.
                 take(first + k.max(2) - 2);
+            }
+            if self.goods[i].used_here && self.rules.input_hysteresis && l.stock < l.target {
+                // An input back at its target lets a held-back recipe run in full (E51).
+                if let Some(k) = l.next_crossing(l.target - 1) {
+                    take(first + k - 1);
+                }
             }
             if self.goods[i].used_here {
                 // A change of production regime changes the inputs it eats.
@@ -560,6 +746,8 @@ impl Encode for Market {
         w.u64(self.key);
         w.u8(matches!(self.kind, MarketKind::Base) as u8);
         w.u64(self.t_quanta);
+        w.i64(self.owed);
+        w.u8(self.cut as u8);
         for l in &self.lines {
             w.i64(l.stock);
             w.i64(l.target);
@@ -576,6 +764,7 @@ impl Encode for Market {
                 l.book.player_out,
                 l.book.genesis,
                 l.book.destroyed,
+                l.book.sunk,
                 l.book.lump_in,
                 l.book.lump_out,
             ] {
@@ -607,6 +796,7 @@ mod tests {
             cons: 0,
             inflow: 0,
             outflow: 0,
+            slack: 0,
         };
         let money = Line::new(treasury, 20 * MILLI);
         Market {
@@ -637,7 +827,9 @@ mod tests {
             ],
             order: vec![GoodId(0), GoodId(1)],
             base_prices: vec![None, None],
-            news_resolution_div: 8,
+            rules: crate::tunables::Rules::default(),
+            owed: 0,
+            cut: false,
         }
     }
 
@@ -672,15 +864,24 @@ mod tests {
     }
 
     #[test]
+    fn foreign_coin_arriving_is_a_breakpoint() {
+        // A treasury at zero with coin flowing in: holding any at all is news (review fix).
+        let mut m = tiny(40 * MILLI, 0);
+        m.recompute();
+        m.lines[1].rates.inflow = 5;
+        assert_eq!(m.next_breakpoint(Tick(0)), Some(Tick(1000)));
+    }
+
+    #[test]
     fn breakpoints_are_level_changes() {
         let mut m = tiny(0, 20 * MILLI);
         m.recompute();
-        // Empty to below at the first boundary.
-        assert_eq!(m.next_breakpoint(Tick(0)), Some(Tick(1000)));
+        // Empty (up to a quarter of the band, 1,250) to below at the third boundary: 417, 834,
+        // 1,251.
+        assert_eq!(m.next_breakpoint(Tick(0)), Some(Tick(3000)));
         let mut m = tiny(20 * MILLI, 20 * MILLI);
         m.recompute();
-        // 1,250 - 833 = 417 a quantum fills the 20,000 gap in 48 quanta (the last one onto the
-        // target).
+        // 1,250 - 833 = 417 a quantum reaches the target's band (35,000) in 36 quanta.
         let b = m.next_breakpoint(Tick(0)).unwrap();
         let lazy = Lazy::new(m.clone(), Tick(0));
         let mut l2 = lazy.clone();
