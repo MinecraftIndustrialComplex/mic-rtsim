@@ -95,6 +95,11 @@ impl Catalog {
         self.items[g.index()]
     }
 
+    /// The item of a good, if the catalogue has that good.
+    pub fn try_item(&self, g: GoodId) -> Option<&'static str> {
+        self.items.get(g.index()).copied()
+    }
+
     pub fn good(&self, item: &str) -> Option<GoodId> {
         self.items
             .iter()

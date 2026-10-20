@@ -3053,6 +3053,16 @@ impl Ships {
         (x.epoch == epoch).then_some(s)
     }
 
+    /// The ship an op-carrying record (CARGO_LOOTED, SHIP_SUNK, SHIP_CAPTURED) is about, whatever
+    /// the epoch: what the plugin moved or destroyed really left, even when the record arrives in
+    /// a later session (replayed from the journal after a crash, when the pages predate the
+    /// materialization; or carried by a chunk) for a body this engine no longer knows. The op id
+    /// applies it once (overnight choice U14, as phase 1's review 3 P2).
+    fn ship_of_op(&self, agent: u64) -> Option<ShipId> {
+        let s = Ship::id_of_agent(agent)?;
+        self.ships.get(s).map(|_| s)
+    }
+
     /// Whether a plugin op id was applied already; remembers it if not.
     fn first_time(&mut self, op: u64) -> bool {
         if op == 0 {
@@ -3131,7 +3141,11 @@ impl Ships {
                 }
             }
             Obs::Sunk(k) => {
-                let Some(s) = self.ship_of(k.agent, k.epoch) else {
+                // A ship already lost is lost once (repeats are no-ops by state).
+                let Some(s) = self
+                    .ship_of_op(k.agent)
+                    .filter(|&s| self.ships[s].is_active())
+                else {
                     return;
                 };
                 let killer = (k.by == By::Player).then(|| self.player(w, k.player));
@@ -3163,7 +3177,10 @@ impl Ships {
             }
             Obs::Boarded(_) => {}
             Obs::Captured(c) => {
-                let Some(s) = self.ship_of(c.agent, c.epoch) else {
+                let Some(s) = self
+                    .ship_of_op(c.agent)
+                    .filter(|&s| self.ships[s].is_active())
+                else {
                     return;
                 };
                 match c.by {
@@ -3204,7 +3221,7 @@ impl Ships {
                 }
             }
             Obs::CargoLooted(c) => {
-                let Some(s) = self.ship_of(c.agent, c.epoch) else {
+                let Some(s) = self.ship_of_op(c.agent) else {
                     return;
                 };
                 if matches!(self.ships[s].role, Role::Merchant) {
