@@ -42,6 +42,27 @@ pub struct LearnTunables {
     /// Two stops within this many units of each other confirm a learned target. TUNABLE,
     /// PLACEHOLDER 64 (one stack of a 64-stack item).
     pub target_tolerance: i64,
+    /// Learned coupling (I6): an input needs this many valid starvation episodes before the
+    /// replay splits anything from it; until then it feeds everything (all-or-nothing). TUNABLE,
+    /// PLACEHOLDER 2.
+    pub coupling_min_episodes: u32,
+    /// Time after an input empties before its episode is measured, for work in progress on belts
+    /// and in machines to drain (at least twice the learned batch cycle). TUNABLE, PLACEHOLDER
+    /// 1,200 ticks (a minute).
+    pub coupling_settle_ticks: u64,
+    /// The shortest measured span of an episode (at least ten batch cycles). TUNABLE, PLACEHOLDER
+    /// 2,400 ticks.
+    pub coupling_min_span_ticks: u64,
+    /// A good moved during an episode if it made at least this share of its learned rate.
+    /// TUNABLE, PLACEHOLDER 0.8.
+    pub coupling_moved_share: f64,
+    /// The input itself stopped if it was used at most this share of its learned rate (else it
+    /// was fed and used as fast as it came, and the episode says nothing). TUNABLE, PLACEHOLDER
+    /// 0.2.
+    pub coupling_stopped_share: f64,
+    /// Goods expected to move fewer units than this over an episode cannot be judged and stay
+    /// coupled. TUNABLE, PLACEHOLDER 4.
+    pub coupling_min_units: f64,
 }
 
 impl Default for LearnTunables {
@@ -57,6 +78,12 @@ impl Default for LearnTunables {
             min_confidence: 0.0,
             stop_quiet_ticks: 2_400,
             target_tolerance: 64,
+            coupling_min_episodes: 2,
+            coupling_settle_ticks: 1_200,
+            coupling_min_span_ticks: 2_400,
+            coupling_moved_share: 0.8,
+            coupling_stopped_share: 0.2,
+            coupling_min_units: 4.0,
         }
     }
 }
@@ -71,6 +98,14 @@ pub struct ReplayTunables {
     /// Item slots held back per produced item good and receiving inventory, for partial stacks
     /// (fragmentation). TUNABLE, PLACEHOLDER 1.
     pub fragment_margin_slots: i64,
+    /// A closing IND_APPROACH at most this far (blocks to the district's chunk box) sends the
+    /// district's reconcile ahead of arrival. TUNABLE, PLACEHOLDER 256: the Java side's own
+    /// approach radius (H23), so every closing record counts.
+    pub approach_distance_blocks: u32,
+    /// The replay stays stopped this long after the last closing record; then the player is
+    /// taken to have turned away and it goes on. TUNABLE, PLACEHOLDER 100 ticks: five of the Java
+    /// side's 20-tick reports.
+    pub approach_hold_ticks: u64,
 }
 
 impl Default for ReplayTunables {
@@ -78,6 +113,8 @@ impl Default for ReplayTunables {
         Self {
             restart_min_run_ticks: 200,
             fragment_margin_slots: 1,
+            approach_distance_blocks: 256,
+            approach_hold_ticks: 100,
         }
     }
 }

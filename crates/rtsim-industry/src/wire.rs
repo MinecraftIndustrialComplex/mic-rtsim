@@ -53,6 +53,9 @@ pub const IND_LOAD_STATE: u16 = 0x0406;
 pub const IND_CHUNK_LOADED: u16 = 0x0407;
 pub const IND_CONDITIONS: u16 = 0x0408;
 pub const IND_POWER_LINK: u16 = 0x0409;
+/// A chunk of a district unloaded (ChunkEvent.Unload): it rejoins the replay of the district's
+/// unloaded part (I7, docs/industry-boundary.md §3.2).
+pub const IND_CHUNK_UNLOADED: u16 = 0x040A;
 pub const IND_PORT: u16 = 0x0410;
 pub const IND_TRAIN_ARRIVED: u16 = 0x0411;
 pub const IND_TRAIN_DEPARTED: u16 = 0x0412;
@@ -73,7 +76,7 @@ pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 pub const IND_LEDGER: u16 = 0x8405;
 
-const OBS_KINDS: [u16; 28] = [
+const OBS_KINDS: [u16; 29] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
@@ -89,6 +92,7 @@ const OBS_KINDS: [u16; 28] = [
     IND_DISCARD,
     IND_LOAD_STATE,
     IND_CHUNK_LOADED,
+    IND_CHUNK_UNLOADED,
     IND_CONDITIONS,
     IND_POWER_LINK,
     IND_PORT,
@@ -662,6 +666,15 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u32(*applied_epoch);
             w.finish()
         }
+        Obs::ChunkUnloaded { district, chunk } => {
+            let mut w = W::obs(out, IND_CHUNK_UNLOADED, 0, seq, at);
+            w.put_u64(district.0);
+            w.put_u32(chunk.dim);
+            w.put_i32(chunk.x);
+            w.put_i32(chunk.z);
+            w.put_u32(0);
+            w.finish()
+        }
         Obs::Conditions(c) => {
             let mut w = W::obs(out, IND_CONDITIONS, 0, seq, at);
             w.put_u32(c.season);
@@ -1002,6 +1015,17 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                     z: r.get_i32(40),
                 },
                 applied_epoch: r.get_u32(44),
+            }
+        }
+        IND_CHUNK_UNLOADED => {
+            check(kind, size, 48)?;
+            Obs::ChunkUnloaded {
+                district: r.district(24),
+                chunk: ChunkPos {
+                    dim: r.get_u32(32),
+                    x: r.get_i32(36),
+                    z: r.get_i32(40),
+                },
             }
         }
         IND_CONDITIONS => {
@@ -1634,6 +1658,14 @@ mod tests {
                 },
                 applied_epoch: 3,
             },
+            Obs::ChunkUnloaded {
+                district: d,
+                chunk: ChunkPos {
+                    dim: 1,
+                    x: -7,
+                    z: 12,
+                },
+            },
             Obs::Conditions(Conditions {
                 season: 2,
                 season_count: 4,
@@ -2063,6 +2095,7 @@ mod tests {
             Obs::Discard { .. } => 32,
             Obs::LoadState { .. } => 40,
             Obs::ChunkLoaded { .. } => 48,
+            Obs::ChunkUnloaded { .. } => 48,
             Obs::Conditions(_) => 48,
             Obs::Port(p) => 56 + 16 * p.goods.len(),
             Obs::TrainArrived(c) => 56 + carriage_bytes(&c.carriages),
@@ -2096,6 +2129,7 @@ mod tests {
             Obs::Discard { .. } => 0x0405,
             Obs::LoadState { .. } => 0x0406,
             Obs::ChunkLoaded { .. } => 0x0407,
+            Obs::ChunkUnloaded { .. } => 0x040A,
             Obs::Conditions(_) => 0x0408,
             Obs::Port(_) => 0x0410,
             Obs::TrainArrived(_) => 0x0411,
@@ -2588,7 +2622,7 @@ mod tests {
     fn unknown_kinds_are_skipped_not_errors() {
         let mut rec = vec![0u8; 16];
         for kind in [
-            0x0001u16, 0x0047, 0x005F, 0x0060, 0x040A, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
+            0x0001u16, 0x0047, 0x005F, 0x0060, 0x040B, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
         ] {
             rec[0..2].copy_from_slice(&kind.to_le_bytes());
             rec[2..4].copy_from_slice(&16u16.to_le_bytes());

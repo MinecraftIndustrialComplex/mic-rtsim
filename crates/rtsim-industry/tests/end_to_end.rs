@@ -3,7 +3,7 @@
 //! every observation and command through the wire codec.
 
 use rtsim_industry::cmd::Cmd;
-use rtsim_industry::engine::{LedgerState, Mode};
+use rtsim_industry::engine::DistrictState;
 use rtsim_industry::fake::{FDistrict, FInventory, FakeWorld, Recipe, Visit};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{InvKind, NotLearnable, Obs, ReconcileResult, Timed};
@@ -20,8 +20,8 @@ fn day(d: f64) -> Tick {
 }
 
 /// One mill: 8 ore into 8 bars every 100 ticks, ore and bars in vaults in different chunks.
-fn mill(ore: i64, visits: Vec<(f64, bool)>, tick_first: bool, mode: Mode) -> FakeWorld {
-    let mut w = FakeWorld::new(3, Tunables::default(), mode);
+fn mill(ore: i64, visits: Vec<(f64, bool)>, tick_first: bool) -> FakeWorld {
+    let mut w = FakeWorld::new(3, Tunables::default());
     w.machines_tick_first = tick_first;
     w.good(ORE.0, GoodInfo::item("ore", 64));
     w.good(BAR.0, GoodInfo::item("bar", 64));
@@ -89,12 +89,7 @@ fn bars(w: &FakeWorld) -> i64 {
 
 #[test]
 fn a_learned_district_runs_while_unloaded_and_reconciles_on_load() {
-    let mut w = mill(
-        20_000,
-        vec![(0.0, true), (1.0, false), (3.0, true)],
-        false,
-        Mode::Apply,
-    );
+    let mut w = mill(20_000, vec![(0.0, true), (1.0, false), (3.0, true)], false);
     w.run_until(day(3.1));
     assert_eq!(w.engine.stats.reconciles, 1);
     // Two days unloaded at 8 per 100 ticks: 3,840 bars by the replay, 1,920 per loaded day.
@@ -107,19 +102,14 @@ fn a_learned_district_runs_while_unloaded_and_reconciles_on_load() {
 #[test]
 fn unlearned_districts_freeze() {
     // Unloaded before any window could be steady (W_min is half a day).
-    let mut w = mill(
-        20_000,
-        vec![(0.0, true), (0.2, false), (2.0, true)],
-        false,
-        Mode::Apply,
-    );
+    let mut w = mill(20_000, vec![(0.0, true), (0.2, false), (2.0, true)], false);
     w.run_until(day(1.0));
     assert!(
         w.engine.sim_run(MILL).is_none(),
         "an unlearned district must not replay"
     );
-    let l = w.engine.ledger(MILL, day(1.0)).unwrap();
-    assert_eq!(l.state, LedgerState::Learning);
+    let l = w.engine.inspect(MILL, day(1.0)).unwrap();
+    assert_eq!(l.state, DistrictState::Learning);
     w.run_until(day(2.0) + 5);
     assert_eq!(w.engine.stats.reconciles, 0);
     w.conservation().unwrap();
@@ -127,12 +117,7 @@ fn unlearned_districts_freeze() {
 
 #[test]
 fn stale_districts_freeze() {
-    let mut w = mill(
-        20_000,
-        vec![(0.0, true), (1.0, false), (3.0, true)],
-        false,
-        Mode::Apply,
-    );
+    let mut w = mill(20_000, vec![(0.0, true), (1.0, false), (3.0, true)], false);
     w.run_until(day(0.9));
     assert!(
         w.engine.district(MILL).unwrap().models.len() == 1,
@@ -152,8 +137,8 @@ fn stale_districts_freeze() {
         "a stale district must not replay"
     );
     assert_eq!(
-        w.engine.ledger(MILL, day(2.0)).unwrap().state,
-        LedgerState::Stale
+        w.engine.inspect(MILL, day(2.0)).unwrap().state,
+        DistrictState::Stale
     );
     w.run_until(day(3.0) + 5);
     assert_eq!(w.engine.stats.reconciles, 0);
@@ -168,12 +153,7 @@ fn stale_districts_freeze() {
 
 #[test]
 fn not_learnable_districts_freeze() {
-    let mut w = mill(
-        20_000,
-        vec![(0.0, true), (1.0, false), (2.0, true)],
-        false,
-        Mode::Apply,
-    );
+    let mut w = mill(20_000, vec![(0.0, true), (1.0, false), (2.0, true)], false);
     let decl = Obs::District(rtsim_industry::obs::DistrictDecl {
         district: MILL,
         revision: 1,
@@ -185,19 +165,14 @@ fn not_learnable_districts_freeze() {
     w.engine.ingest(&Timed { at: w.t, obs: decl });
     w.run_until(day(1.5));
     assert!(w.engine.sim_run(MILL).is_none());
-    let l = w.engine.ledger(MILL, day(1.5)).unwrap();
-    assert_eq!(l.state, LedgerState::NotLearnable);
+    let l = w.engine.inspect(MILL, day(1.5)).unwrap();
+    assert_eq!(l.state, DistrictState::NotLearnable);
     assert_eq!(l.reason.as_deref(), Some("moving drill"));
 }
 
 #[test]
 fn reconcile_is_idempotent_through_op_ids() {
-    let mut w = mill(
-        20_000,
-        vec![(0.0, true), (1.0, false), (3.0, true)],
-        false,
-        Mode::Apply,
-    );
+    let mut w = mill(20_000, vec![(0.0, true), (1.0, false), (3.0, true)], false);
     w.run_until(day(3.0) + 10);
     assert_eq!(w.engine.stats.reconciles, 1);
     let snapshot = |w: &FakeWorld| {
@@ -280,12 +255,7 @@ fn a_shortfall_trims_the_outputs_it_funded() {
     // 3,000 ore runs out after 37,500 ticks of replay. On reload the mill ticks once on stale
     // stock, then runs its regular batch on the load tick, both before the one-tick-late
     // reconcile lands: the ore removal comes up 16 short, and 16 bars are trimmed (8 per 8 ore).
-    let mut w = mill(
-        3_000,
-        vec![(0.0, true), (0.6, false), (4.0, true)],
-        true,
-        Mode::Apply,
-    );
+    let mut w = mill(3_000, vec![(0.0, true), (0.6, false), (4.0, true)], true);
     w.run_until(day(4.0) + 20);
     let b = &w.engine.books;
     assert_eq!(b.shortfall.get(ORE), 16, "books {b:?}");
@@ -306,35 +276,11 @@ fn a_shortfall_trims_the_outputs_it_funded() {
     w.conservation().unwrap();
 }
 
-#[test]
-fn read_only_changes_nothing() {
-    let mut w = mill(
-        20_000,
-        vec![(0.0, true), (1.0, false), (3.0, true)],
-        false,
-        Mode::ReadOnly,
-    );
-    w.run_until(day(2.9));
-    let l = w.engine.ledger(MILL, day(2.9)).unwrap();
-    assert!(
-        l.made_since.get(BAR) > 3_000,
-        "the ledger shows what it would have made: {l:?}"
-    );
-    let before = bars(&w);
-    w.run_until(day(3.0) + 10);
-    let r = w
-        .engine
-        .district(MILL)
-        .unwrap()
-        .reports
-        .back()
-        .unwrap()
-        .clone();
-    assert!(r.read_only);
-    // The vaults hold only what the mill really made while loaded: one batch since the load.
-    assert_eq!(bars(&w), before + 8);
-}
-
+/// I-B (INDUSTRY.md §16): the iron line, simulated, makes at most what a chunk-loaded control
+/// makes, and not much less. Measured with the protocol as built: machines may tick on stale
+/// stock after a load, and the Java side sends IND_APPROACH, so reconciles go out ahead of
+/// arrival (Ben's answer to the stale-tick race). Before it, the same world leaked +40 ingots
+/// (0.4%) above the control through the power plant's boiler.
 #[test]
 fn the_iron_line_conserves_and_meets_ib() {
     let base = IronLine {
@@ -342,34 +288,54 @@ fn the_iron_line_conserves_and_meets_ib() {
         days: 10,
         threats: true,
         control: false,
-        mode: Mode::Apply,
         tick_first: true,
+        approach: true,
     };
     let mut main = iron_line(base, Tunables::default());
     run_iron_line(&mut main, &base);
     main.conservation().unwrap();
     main.engine.check_books().unwrap();
     assert!(main.engine.stats.attacks > 0);
+    assert!(
+        main.engine.stats.reconciles_ahead > 0,
+        "the approach signal sent reconciles ahead"
+    );
     let quiet = IronLine {
         threats: false,
-        tick_first: false,
         ..base
     };
-    let mut sim = iron_line(quiet, Tunables::default());
-    run_iron_line(&mut sim, &quiet);
-    let control_cfg = IronLine {
-        control: true,
-        ..quiet
-    };
-    let mut control = iron_line(control_cfg, Tunables::default());
-    run_iron_line(&mut control, &control_cfg);
-    sim.conservation().unwrap();
-    control.conservation().unwrap();
     let made = |w: &FakeWorld| {
         w.books.minted.get(INGOT) + w.engine.books.minted.get(INGOT)
             - w.engine.books.trimmed.get(INGOT)
     };
-    let (s, c) = (made(&sim), made(&control));
+    let run = |cfg: IronLine| {
+        let mut w = iron_line(cfg, Tunables::default());
+        run_iron_line(&mut w, &cfg);
+        w.conservation().unwrap();
+        w.engine.check_books().unwrap();
+        made(&w)
+    };
+    let s = run(quiet);
+    let c = run(IronLine {
+        control: true,
+        ..quiet
+    });
+    let without = run(IronLine {
+        approach: false,
+        ..quiet
+    });
+    let ideal = run(IronLine {
+        tick_first: false,
+        approach: false,
+        ..quiet
+    });
+    eprintln!(
+        "I-B ingots: control {c}, simulated {s} ({:+}, {:.4}), without approach {without} ({:+}), ideal {ideal} ({:+})",
+        s - c,
+        s as f64 / c as f64,
+        without - c,
+        ideal - c
+    );
     assert!(s <= c, "the replay made more than the control: {s} > {c}");
     assert!(
         s as f64 >= 0.9 * c as f64,
@@ -385,13 +351,12 @@ fn catch_up_cost_is_independent_of_absence() {
             i64::MAX / 1_000_000_000_000,
             vec![(0.0, true), (1.0, false)],
             false,
-            Mode::Apply,
         );
         w.run_until(day(1.0) + 1);
         let before = (w.engine.stats.breakpoints, w.engine.stats.cluster_settles);
         // Nothing reaches it while it is away; then one ledger read.
         w.engine.advance_to(day(days));
-        let l = w.engine.ledger(MILL, day(days)).unwrap();
+        let l = w.engine.inspect(MILL, day(days)).unwrap();
         assert!(l.made_since.get(BAR) > 0);
         costs.push((
             w.engine.stats.breakpoints - before.0,
@@ -411,8 +376,8 @@ fn threat_legs_find_the_trains_they_cross() {
         days: 10,
         threats: false,
         control: false,
-        mode: Mode::Apply,
         tick_first: true,
+        approach: true,
     };
     let mut w = iron_line(c, Tunables::default());
     w.run_until(day(3.0));
@@ -443,7 +408,7 @@ fn packages_written_while_unloaded_are_taken_from_the_vault_once() {
     use rtsim_industry::obs::{
         Direction, DistrictDecl, InventoryDecl, LoadState, PackageEvent, SweepEnd,
     };
-    let mut e = Engine::new(1, Tunables::default(), Mode::Apply, Tick(0));
+    let mut e = Engine::new(1, Tunables::default(), Tick(0));
     e.define_good(BAR, GoodInfo::item("bar", 64));
     let d = MILL;
     let send = |e: &mut Engine, at: u64, obs: Obs| e.ingest(&Timed { at: Tick(at), obs });
@@ -652,18 +617,20 @@ fn packages_written_while_unloaded_are_taken_from_the_vault_once() {
     );
 }
 
-/// Two districts on one Ender Transmission channel (I13): one exports into the shared buffer and
-/// the other imports from it while both are unloaded, in one cluster; the engine pushes the
-/// buffer's changes as channel deltas, and the books close.
+/// Ender Transmission is not long-distance transport in this pack (I13, Ben's correction): its
+/// endpoints belong to one district or vehicle, so a channel is never shared stock between
+/// distant districts. A channel transfer Java reports anyway is an ordinary port, a channel
+/// sample is ignored, and two districts on one channel replay apart and push nothing to it.
 #[test]
-fn a_channel_couples_two_unloaded_districts() {
+fn an_ender_channel_joins_no_districts() {
     use rtsim_industry::cmd::Cmd;
     use rtsim_industry::engine::Engine;
     use rtsim_industry::ids::ChannelId;
-    use rtsim_industry::learn::{Learned, LinkKey};
-    use rtsim_industry::obs::{DistrictDecl, InventoryDecl, LoadState, SweepEnd};
-    let mut e = Engine::new(1, Tunables::default(), Mode::Apply, Tick(0));
+    use rtsim_industry::learn::Learned;
+    use rtsim_industry::obs::{DistrictDecl, InventoryDecl, LoadState, PortKind, PortTransfer};
+    let mut e = Engine::new(1, Tunables::default(), Tick(0));
     e.define_good(BAR, GoodInfo::item("bar", 64));
+    e.define_good(ORE, GoodInfo::item("ore", 64));
     let ch = ChannelId(42);
     let send = |e: &mut Engine, at: u64, obs: Obs| e.ingest(&Timed { at: Tick(at), obs });
     send(
@@ -672,13 +639,10 @@ fn a_channel_couples_two_unloaded_districts() {
         Obs::ChannelSample {
             channel: ch,
             capacity: 10_000,
-            goods: GoodVec::new(),
+            goods: GoodVec::from_pairs([(BAR, 500)]),
         },
     );
-    for (d, stock, rate) in [
-        (DistrictId(1), 3_000i64, -0.04f64),
-        (DistrictId(2), 0, 0.03),
-    ] {
+    for d in [DistrictId(1), DistrictId(2)] {
         send(
             &mut e,
             0,
@@ -717,25 +681,14 @@ fn a_channel_couples_two_unloaded_districts() {
         );
         send(
             &mut e,
-            10,
-            Obs::StockSample {
+            5,
+            Obs::Port(PortTransfer {
                 district: d,
-                inventory: 0,
-                sweep: 1,
-                goods: GoodVec::from_pairs([(BAR, stock)]),
-            },
-        );
-        send(
-            &mut e,
-            10,
-            Obs::SweepEnd(SweepEnd {
-                district: d,
-                sweep: 1,
-                records: 1,
-                inventories: 1,
-                live: true,
-                creative: false,
-                overstressed: false,
+                kind: PortKind::Channel,
+                inventory: Some(0),
+                counterpart: ch.0,
+                op: None,
+                goods: GoodVec::from_pairs([(BAR, if d.0 == 1 { -40 } else { 40 })]),
             }),
         );
         e.adopt_model(
@@ -743,8 +696,8 @@ fn a_channel_couples_two_unloaded_districts() {
             Learned {
                 at: Tick(10),
                 window_ticks: 12_000,
-                rates: vec![],
-                links: vec![(LinkKey::Channel(ch, BAR), rate)],
+                rates: vec![(ORE, -0.04), (BAR, 0.04)],
+                links: vec![],
                 confidence: 1.0,
                 points: 0,
                 longest_gap: 0,
@@ -753,6 +706,8 @@ fn a_channel_couples_two_unloaded_districts() {
             vec![],
         );
     }
+    assert_eq!(e.district(DistrictId(1)).unwrap().ports.get(BAR), -40);
+    assert_eq!(e.district(DistrictId(2)).unwrap().ports.get(BAR), 40);
     for d in [DistrictId(1), DistrictId(2)] {
         send(
             &mut e,
@@ -765,64 +720,19 @@ fn a_channel_couples_two_unloaded_districts() {
             },
         );
     }
-    assert_eq!(e.cluster_count(), 1, "a shared channel makes one cluster");
     e.advance_to(Tick(100 + 24_000));
-    let a = e.sim_stock(DistrictId(1)).unwrap().get(BAR);
-    let b = e.sim_stock(DistrictId(2)).unwrap().get(BAR);
-    // 3,000 bars leave A at 0.04 a tick (empty after 75,000 ticks); B takes 0.03 a tick.
-    assert!(a < 3_000 && b > 0, "a {a}, b {b}");
-    e.check_books().unwrap();
-    // The exporter's breakpoint and later events push the buffer's change by command.
-    e.advance_to(Tick(100 + 80_000));
-    let pushed: i64 = e
-        .drain_commands()
-        .iter()
-        .map(|c| match c {
-            Cmd::ChannelDelta(d) => d.goods.get(BAR),
-            _ => 0,
-        })
-        .sum();
-    let a2 = e.sim_stock(DistrictId(1)).unwrap().get(BAR);
-    let b2 = e.sim_stock(DistrictId(2)).unwrap().get(BAR);
+    assert_eq!(e.cluster_count(), 2, "a channel joins no districts");
     assert!(
-        pushed > 0,
-        "the exporter's changes reach the world: pushed {pushed}"
+        e.drain_commands()
+            .iter()
+            .all(|c| !matches!(c, Cmd::ChannelDelta(_))),
+        "nothing is pushed to a channel"
     );
-    let c2 = e.channel_level(ch, BAR);
     assert_eq!(
-        a2 + b2 + c2,
-        3_000,
-        "bars are only moved: a {a2}, b {b2}, channel {c2}"
+        e.stats.retired_records, 1,
+        "the channel sample is read and ignored"
     );
     e.check_books().unwrap();
-    // Both load: the channel pool leaves the replay, and every change it made reaches the world
-    // (review finding 1).
-    let t = 100 + 80_000 + 10;
-    for d in [DistrictId(1), DistrictId(2)] {
-        send(
-            &mut e,
-            t,
-            Obs::LoadState {
-                district: d,
-                state: LoadState::Live,
-                ticking_chunks: 1,
-                total_chunks: 1,
-            },
-        );
-    }
-    let more: i64 = e
-        .drain_commands()
-        .iter()
-        .map(|c| match c {
-            Cmd::ChannelDelta(d) => d.goods.get(BAR),
-            _ => 0,
-        })
-        .sum();
-    assert_eq!(
-        pushed + more,
-        e.channel_level(ch, BAR),
-        "pushed deltas add up to the buffer"
-    );
 }
 
 /// A chunk-loaded district with nobody near is attacked abstractly and the damage lands at once
@@ -830,7 +740,7 @@ fn a_channel_couples_two_unloaded_districts() {
 #[test]
 fn a_loaded_unwatched_district_is_raided_at_once() {
     use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
-    let mut w = mill(20_000, vec![(0.0, true)], false, Mode::Apply);
+    let mut w = mill(20_000, vec![(0.0, true)], false);
     w.run_until(day(0.1));
     w.engine.ingest(&Timed {
         at: w.t,
@@ -883,51 +793,6 @@ fn a_loaded_unwatched_district_is_raided_at_once() {
     assert_eq!(w.engine.books.stolen.get(ORE), stolen);
 }
 
-/// The ledger says what happens next and when (I18): "ore runs out in H h M min".
-#[test]
-fn the_ledger_forecasts_the_next_breakpoint() {
-    use rtsim_industry::cluster::{Forecast, PoolKey};
-    // 3,000 ore at 8 per 100 ticks lasts 37,500 ticks of replay.
-    let mut w = mill(3_000, vec![(0.0, true), (0.6, false)], false, Mode::Apply);
-    w.run_until(day(0.6) + 10);
-    let l = w.engine.ledger(MILL, w.t).unwrap();
-    assert_eq!(
-        l.next,
-        Some(Forecast::InputEmpty(PoolKey::Stock(MILL, ORE))),
-        "{l:?}"
-    );
-    let at = l.next_breakpoint.unwrap();
-    let left = w
-        .engine
-        .district(MILL)
-        .unwrap()
-        .sim
-        .as_ref()
-        .unwrap()
-        .base
-        .get(ORE);
-    let expect = Tick(day(0.6).0 + 1 + (left as u64) * 100 / 8);
-    assert!(
-        at.0.abs_diff(expect.0) <= 100,
-        "forecast {at:?}, expected about {expect:?}"
-    );
-    // And the Display Source line carries it as kind 1 (input empties) of ore.
-    w.engine.ingest(&Timed {
-        at: w.t,
-        obs: Obs::LedgerRequest { district: MILL },
-    });
-    let line = w
-        .engine
-        .drain_commands()
-        .into_iter()
-        .find_map(|c| match c {
-            Cmd::Ledger(l) => Some(l),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!((line.next_kind, line.next_good), (1, Some(ORE)));
-}
-
 /// A district learned in one season freezes at the next season's boundary while unloaded, unless
 /// it has a model for that season (I12).
 #[test]
@@ -937,7 +802,6 @@ fn a_season_change_freezes_a_district_without_that_seasons_model() {
         1_000_000,
         vec![(0.0, true), (0.7, false), (3.0, true)],
         false,
-        Mode::Apply,
     );
     // Seasons of 40,000 ticks, starting at 0: season 0 until tick 40,000, then season 1.
     w.engine.ingest(&Timed {
@@ -958,8 +822,8 @@ fn a_season_change_freezes_a_district_without_that_seasons_model() {
         "frozen at the boundary: no season 1 model"
     );
     assert_eq!(
-        w.engine.ledger(MILL, w.t).unwrap().state,
-        LedgerState::OutOfSeason
+        w.engine.inspect(MILL, w.t).unwrap().state,
+        DistrictState::OutOfSeason
     );
     // What it made in season 0 is kept and reconciled at the next load.
     w.run_until(day(3.0) + 10);

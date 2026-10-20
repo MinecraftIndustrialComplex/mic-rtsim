@@ -57,7 +57,8 @@ impl NotLearnable {
             NotLearnable::MixtureNotSteady => "mixture composition not steady",
             NotLearnable::FiniteDepositUnknown => "finite deposit unknown",
             NotLearnable::MovingContraption => "moving drill",
-            NotLearnable::SpawnFedFarm => "mob drops not simulated",
+            // Retired by I9: spawn-fed farms replay like everything else.
+            NotLearnable::SpawnFedFarm => "spawn-fed farm (replayed since I9)",
             NotLearnable::Other(_) => "not learnable",
         }
     }
@@ -408,9 +409,9 @@ pub enum Obs {
         district: DistrictId,
         watched: bool,
     },
-    /// A player near an unloaded district (the Java side's IND_APPROACH, H23): data for the
-    /// stale-tick race's option (d). The engine keeps the latest on the district and does not act
-    /// on it (W16); what to do with it is Ben's call.
+    /// A player near an unloaded district (the Java side's IND_APPROACH, H23). Ben chose
+    /// "reconcile ahead of arrival": a closing record sends the district's reconcile before its
+    /// chunks tick.
     Approach {
         district: DistrictId,
         /// Blocks from the nearest player to the district's chunk box.
@@ -452,6 +453,12 @@ pub enum Obs {
         district: DistrictId,
         chunk: ChunkPos,
         applied_epoch: u32,
+    },
+    /// A chunk of the district unloaded (`ChunkEvent.Unload`): it rejoins the replay of the
+    /// district's unloaded part (I7).
+    ChunkUnloaded {
+        district: DistrictId,
+        chunk: ChunkPos,
     },
     Conditions(Conditions),
     /// A PowerGrid transmission line feeds `sink`'s loads from `source`'s generators (I13); `None`

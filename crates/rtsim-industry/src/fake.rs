@@ -21,7 +21,7 @@ use rtsim_kernel::journal::OpId;
 use serde::Serialize;
 
 use crate::cmd::Cmd;
-use crate::engine::{Engine, Mode};
+use crate::engine::Engine;
 use crate::ids::{
     BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, TrainId,
 };
@@ -108,11 +108,42 @@ pub struct FDistrict {
 }
 
 impl FDistrict {
-    fn chunks(&self) -> BTreeSet<ChunkPos> {
-        self.inventories
+    /// Its chunks: those of its inventories, its machines, its surveyed blocks and its deposit.
+    pub fn chunks(&self) -> BTreeSet<ChunkPos> {
+        let mut c: BTreeSet<ChunkPos> = self
+            .inventories
             .iter()
             .map(|i| i.pos.chunk(self.dim))
-            .collect()
+            .collect();
+        c.extend(self.recipes.iter().map(|r| r.machine.chunk(self.dim)));
+        c.extend(self.exposed.iter().map(|e| e.pos.chunk(self.dim)));
+        if self.deposit.is_some() {
+            c.insert(self.deposit_chunk);
+        }
+        c
+    }
+
+    fn inv_chunk(&self, index: u32) -> Option<ChunkPos> {
+        self.inventories
+            .iter()
+            .find(|i| i.index == index)
+            .map(|i| i.pos.chunk(self.dim))
+    }
+
+    /// The chunks a recipe needs loaded to run: its machine's, its inventories', its deposit's.
+    fn recipe_chunks(&self, ri: usize) -> BTreeSet<ChunkPos> {
+        let r = &self.recipes[ri];
+        let mut c = BTreeSet::from([r.machine.chunk(self.dim)]);
+        for &(_, inv, _) in r.inputs.iter().chain(&r.outputs) {
+            c.extend(self.inv_chunk(inv));
+        }
+        if let Some((_, inv, _, _)) = r.target {
+            c.extend(self.inv_chunk(inv));
+        }
+        if r.deposit_per_batch != 0 && self.deposit.is_some() {
+            c.insert(self.deposit_chunk);
+        }
+        c
     }
 
     fn inv(&mut self, index: u32) -> &mut FInventory {
@@ -175,6 +206,16 @@ pub struct Visit {
     pub at: Vec<usize>,
 }
 
+/// From a tick on, exactly these chunks of one district are loaded (I7: a player at its edge).
+/// The latest of a [`Visit`] and a `ChunkVisit` for the district decides; a tie goes to this.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ChunkVisit {
+    #[serde(serialize_with = "crate::ser::tick")]
+    pub from: Tick,
+    pub district: usize,
+    pub chunks: Vec<ChunkPos>,
+}
+
 /// What a remote fake world hands its bridge ([`FakeWorld::remote`]): observations, and the
 /// bridge's own COMMAND_RESULT for every command with an op id it applied or skipped
 /// (docs/boundary.md §2.3), in the order the Java side would journal them.
@@ -232,6 +273,16 @@ pub struct FakeWorld {
     pub stations: Vec<FStation>,
     pub trains: Vec<FTrain>,
     pub visits: Vec<Visit>,
+    /// Partial loads (I7), on top of `visits`.
+    pub chunk_visits: Vec<ChunkVisit>,
+    /// The chunks of each district (by index) loaded now.
+    pub loaded_chunks: BTreeMap<usize, BTreeSet<ChunkPos>>,
+    /// IND_CHUNK_UNLOADED is sent for each chunk that unloads (the Java side's half of I7). Off:
+    /// a Java side that never sends it.
+    pub chunk_unload_records: bool,
+    /// How long before a scripted load the approach signal starts (`approach_signal`).
+    /// PLACEHOLDER 60 ticks: three of the Java side's 20-tick reports.
+    pub approach_lead: u64,
     /// (sink, source) district indices joined by a PowerGrid line (I13).
     pub power_links: Vec<(usize, usize)>,
     /// Every district stays loaded (the control run).
@@ -244,10 +295,16 @@ pub struct FakeWorld {
     /// real protocol is at least one tick late (docs/boundary.md §1.2); this removes the race to
     /// measure the replay alone.
     pub apply_on_load: bool,
+    /// Sends IND_APPROACH before a scripted visit loads a district, and applies the reconciles
+    /// held for a chunk at its load, before any machine ticks (the Java side's half of "reconcile
+    /// ahead of arrival").
+    pub approach_signal: bool,
     /// Every IND_CARRIAGE_DELTA is answered FAILED and changes nothing (a remote world's test of
     /// the engine's correction).
     pub fail_carriage_deltas: bool,
     pub threats: Option<Box<dyn ThreatFeed>>,
+    /// A scripted player's one-off repair has happened (the iron line's).
+    pub repaired: bool,
     pub books: WorldBooks,
     pub log: Vec<Event>,
     pub wire_bytes: u64,
@@ -276,8 +333,8 @@ impl GoodLookup for FakeWorld {
 }
 
 impl FakeWorld {
-    pub fn new(seed: u64, tun: Tunables, mode: Mode) -> Self {
-        let mut engine = Engine::new(seed, tun, mode, Tick::ZERO);
+    pub fn new(seed: u64, tun: Tunables) -> Self {
+        let mut engine = Engine::new(seed, tun, Tick::ZERO);
         engine.log_enabled = true;
         Self {
             engine,
@@ -287,12 +344,18 @@ impl FakeWorld {
             stations: Vec::new(),
             trains: Vec::new(),
             visits: Vec::new(),
+            chunk_visits: Vec::new(),
+            loaded_chunks: BTreeMap::new(),
+            chunk_unload_records: true,
+            approach_lead: 60,
             power_links: Vec::new(),
             control: false,
             sweep_period: 100,
             machines_tick_first: true,
             apply_on_load: false,
+            approach_signal: false,
             threats: None,
+            repaired: false,
             books: WorldBooks::default(),
             log: Vec::new(),
             wire_bytes: 0,
@@ -380,6 +443,7 @@ impl FakeWorld {
         self.applied = s.applied.clone();
         self.queue.clear();
         self.outgoing.clear();
+        self.loaded_chunks.clear();
         for d in &mut self.districts {
             d.loaded = false;
             d.held.clear();
@@ -509,15 +573,43 @@ impl FakeWorld {
         &self.initial
     }
 
-    fn should_load(&self, di: usize) -> bool {
+    /// The chunks of district `di` the script loads at `at`.
+    fn chunks_at(&self, di: usize, at: Tick) -> BTreeSet<ChunkPos> {
+        let all = self.districts[di].chunks();
         if self.control {
-            return true;
+            return all;
         }
-        self.visits
+        let visit = self.visits.iter().rev().find(|v| v.from <= at);
+        let partial = self
+            .chunk_visits
             .iter()
             .rev()
-            .find(|v| v.from <= self.t)
-            .is_some_and(|v| v.at.contains(&di))
+            .find(|v| v.district == di && v.from <= at);
+        match (visit, partial) {
+            (_, Some(p)) if visit.is_none_or(|v| p.from >= v.from) => p
+                .chunks
+                .iter()
+                .copied()
+                .filter(|c| all.contains(c))
+                .collect(),
+            (Some(v), _) if v.at.contains(&di) => all,
+            _ => BTreeSet::new(),
+        }
+    }
+
+    fn chunk_loaded(&self, di: usize, c: ChunkPos) -> bool {
+        self.loaded_chunks.get(&di).is_some_and(|s| s.contains(&c))
+    }
+
+    fn any_loaded(&self, di: usize) -> bool {
+        self.loaded_chunks.get(&di).is_some_and(|s| !s.is_empty())
+    }
+
+    fn recipe_loaded(&self, di: usize, ri: usize) -> bool {
+        self.districts[di]
+            .recipe_chunks(ri)
+            .iter()
+            .all(|c| self.chunk_loaded(di, *c))
     }
 
     /// One game tick.
@@ -528,13 +620,18 @@ impl FakeWorld {
         for c in cmds {
             self.apply(c);
         }
+        // A player heading for a district that will load soon (the approach signal, H23).
+        if self.approach_signal && self.t.0.is_multiple_of(20) {
+            self.approach_records();
+        }
         // Loads and unloads.
         let mut loaded_now = false;
         for di in 0..self.districts.len() {
-            let want = self.should_load(di);
-            if want != self.districts[di].loaded {
-                self.set_loaded(di, want);
-                loaded_now |= want;
+            let want = self.chunks_at(di, self.t);
+            let have = self.loaded_chunks.get(&di).cloned().unwrap_or_default();
+            if want != have {
+                loaded_now |= want.difference(&have).next().is_some();
+                self.set_chunks(di, &have, &want);
             }
         }
         if loaded_now && self.apply_on_load && !self.remote {
@@ -545,26 +642,26 @@ impl FakeWorld {
         }
         // Held reconciles for chunks that are loaded now.
         for di in 0..self.districts.len() {
-            if self.districts[di].loaded && !self.districts[di].held.is_empty() {
+            if !self.districts[di].held.is_empty() {
                 let held = std::mem::take(&mut self.districts[di].held);
                 for c in held {
                     self.apply(Cmd::ChunkReconcile(c));
                 }
             }
         }
-        // Machines.
+        // Machines: those whose chunks are all loaded.
         for di in 0..self.districts.len() {
-            if self.districts[di].loaded {
-                for ri in 0..self.districts[di].recipes.len() {
+            for ri in 0..self.districts[di].recipes.len() {
+                if self.recipe_loaded(di, ri) {
                     self.run_recipe(di, ri);
                 }
             }
         }
         self.trains_tick();
-        // Sampling.
+        // Sampling: the loaded inventories of districts with a chunk loaded.
         if self.t.0.is_multiple_of(self.sweep_period) {
             for di in 0..self.districts.len() {
-                if self.districts[di].loaded {
+                if self.any_loaded(di) {
                     self.sweep(di);
                 }
             }
@@ -624,7 +721,7 @@ impl FakeWorld {
         // A watched district fights for real: a fake fight, observed (I21 calibration).
         if let crate::threat::ThreatTarget::District(d) = th.target
             && let Some(di) = self.districts.iter().position(|x| x.id == d)
-            && self.districts[di].loaded
+            && self.any_loaded(di)
         {
             let killed = th.count / 2;
             self.send(Obs::Fight(FightObserved {
@@ -656,49 +753,130 @@ impl FakeWorld {
         ));
     }
 
-    fn set_loaded(&mut self, di: usize, loaded: bool) {
+    /// IND_APPROACH for every district a scripted load reaches within `approach_lead` ticks,
+    /// while some chunk of it it will load is not loaded yet.
+    fn approach_records(&mut self) {
+        let horizon = self.approach_lead;
+        let mut out = Vec::new();
+        for di in 0..self.districts.len() {
+            let have = self.loaded_chunks.get(&di).cloned().unwrap_or_default();
+            let soon = (1..=horizon).step_by(20).chain([horizon]).find(|&dt| {
+                self.chunks_at(di, self.t + dt)
+                    .difference(&have)
+                    .next()
+                    .is_some()
+            });
+            if let Some(dt) = soon {
+                out.push((self.districts[di].id, dt));
+            }
+        }
+        for (id, dt) in out {
+            self.send(Obs::Approach {
+                district: id,
+                distance: 200,
+                eta_ticks: Some(dt as u32),
+                closing: true,
+            });
+        }
+    }
+
+    /// The district's loaded chunks go from `have` to `want`, as Minecraft's chunk events and the
+    /// Java side's records say it (I7).
+    fn set_chunks(&mut self, di: usize, have: &BTreeSet<ChunkPos>, want: &BTreeSet<ChunkPos>) {
         let id = self.districts[di].id;
-        let chunks: Vec<ChunkPos> = self.districts[di].chunks().into_iter().collect();
-        self.districts[di].loaded = loaded;
-        if loaded {
-            for c in &chunks {
-                let e = self.districts[di].epochs.get(c).copied().unwrap_or(0);
-                self.send(Obs::ChunkLoaded {
+        let total = self.districts[di].chunks().len() as u32;
+        let runnable_before: Vec<bool> = (0..self.districts[di].recipes.len())
+            .map(|ri| self.recipe_loaded(di, ri))
+            .collect();
+        let state = |n: usize| {
+            if n == 0 {
+                LoadState::Unloaded
+            } else if n as u32 == total {
+                LoadState::Live
+            } else {
+                LoadState::Partial
+            }
+        };
+        let old = state(have.len());
+        for c in have.difference(want) {
+            self.loaded_chunks.entry(di).or_default().remove(c);
+            if self.chunk_unload_records {
+                self.send(Obs::ChunkUnloaded {
                     district: id,
                     chunk: *c,
-                    applied_epoch: e,
                 });
             }
-            // A machine that ticks before the reconcile lands takes its inputs first. Only a
-            // reload has a reconcile to race.
-            let reload = std::mem::replace(&mut self.districts[di].ever_loaded, true);
-            if self.machines_tick_first && reload {
-                for ri in 0..self.districts[di].recipes.len() {
+        }
+        let loading: Vec<ChunkPos> = want.difference(have).copied().collect();
+        for c in &loading {
+            self.loaded_chunks.entry(di).or_default().insert(*c);
+            if self.approach_signal {
+                // The Java side applies a reconcile it holds for this chunk at the chunk's load,
+                // before any machine ticks (reconcile ahead of arrival). Its result is journaled
+                // before IND_CHUNK_LOADED, which then carries the epoch now applied.
+                let held: Vec<crate::cmd::ChunkReconcile> = {
+                    let d = &mut self.districts[di];
+                    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut d.held)
+                        .into_iter()
+                        .partition(|r| r.chunk == *c);
+                    d.held = rest;
+                    let mut mine = mine;
+                    mine.sort_by_key(|r| r.epoch);
+                    mine
+                };
+                for rc in held {
+                    self.apply(Cmd::ChunkReconcile(rc));
+                }
+            }
+            let e = self.districts[di].epochs.get(c).copied().unwrap_or(0);
+            self.send(Obs::ChunkLoaded {
+                district: id,
+                chunk: *c,
+                applied_epoch: e,
+            });
+        }
+        let reload =
+            !loading.is_empty() && std::mem::replace(&mut self.districts[di].ever_loaded, true);
+        // A machine that ticks before the reconcile lands takes its inputs first. Only a reload
+        // has a reconcile to race.
+        if self.machines_tick_first && reload {
+            for (ri, before) in runnable_before.iter().enumerate() {
+                if !before && self.recipe_loaded(di, ri) {
                     self.batch(di, ri, true);
                 }
             }
+        }
+        let new = state(want.len());
+        self.districts[di].loaded = new == LoadState::Live;
+        if new != old {
             self.send(Obs::LoadState {
                 district: id,
-                state: LoadState::Live,
-                ticking_chunks: chunks.len() as u32,
-                total_chunks: chunks.len() as u32,
+                state: new,
+                ticking_chunks: want.len() as u32,
+                total_chunks: total,
             });
-            // The player's presence is what loads a district here, so it is watched.
-            self.send(Obs::Watched {
-                district: id,
-                watched: true,
-            });
-            let name = self.districts[di].name.clone();
-            self.note(format!("{name} loads"));
-        } else {
-            self.send(Obs::LoadState {
-                district: id,
-                state: LoadState::Unloaded,
-                ticking_chunks: 0,
-                total_chunks: chunks.len() as u32,
-            });
-            let name = self.districts[di].name.clone();
-            self.note(format!("{name} unloads"));
+        }
+        let name = self.districts[di].name.clone();
+        match (old, new) {
+            (LoadState::Unloaded, LoadState::Unloaded) => {}
+            (LoadState::Unloaded, _) => {
+                // The player's presence is what loads a district here, so it is watched.
+                self.send(Obs::Watched {
+                    district: id,
+                    watched: true,
+                });
+                self.note(format!(
+                    "{name} loads{}",
+                    if new == LoadState::Partial {
+                        " in part"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            (_, LoadState::Unloaded) => self.note(format!("{name} unloads")),
+            (_, LoadState::Partial) => self.note(format!("{name}: part of it loaded")),
+            _ => self.note(format!("{name} loads")),
         }
     }
 
@@ -719,7 +897,7 @@ impl FakeWorld {
             Some((pd, pr)) => {
                 let src = &self.districts[pd];
                 let p = src.recipes[pr].period;
-                src.loaded && t.0.saturating_sub(src.last_ran[pr].0) <= p
+                self.recipe_loaded(pd, pr) && t.0.saturating_sub(src.last_ran[pr].0) <= p
             }
         };
         let d = &mut self.districts[di];
@@ -790,16 +968,19 @@ impl FakeWorld {
     }
 
     fn sweep(&mut self, di: usize) {
+        let loaded = self.loaded_chunks.get(&di).cloned().unwrap_or_default();
+        let live = self.districts[di].loaded;
         let d = &mut self.districts[di];
         d.sweep += 1;
-        let (id, sweep) = (d.id, d.sweep);
+        let (id, sweep, dim) = (d.id, d.sweep, d.dim);
+        // Only inventories in loaded chunks can be read; a partial sweep is no learning point.
         let invs: Vec<FInventory> = d
             .inventories
             .iter()
-            .filter(|i| !i.destroyed)
+            .filter(|i| !i.destroyed && loaded.contains(&i.pos.chunk(dim)))
             .cloned()
             .collect();
-        let deposit = d.deposit;
+        let deposit = d.deposit.filter(|_| loaded.contains(&d.deposit_chunk));
         let chunk = d.deposit_chunk;
         let mut records = 0u32;
         for i in &invs {
@@ -828,7 +1009,7 @@ impl FakeWorld {
             sweep,
             records,
             inventories: invs.len() as u32,
-            live: true,
+            live,
             creative: false,
             overstressed: false,
         }));
@@ -873,7 +1054,10 @@ impl FakeWorld {
         let si = self.trains[ti].stops[stop];
         let st = self.stations[si].clone();
         let di = st.district;
+        // The interfaces work while the whole district is loaded; Java emulates them only while
+        // it is wholly unloaded; in part loaded, nothing moves.
         let loaded = self.districts[di].loaded;
+        let simulated = !self.any_loaded(di);
         let id = self.districts[di].id;
         let train = self.trains[ti].id;
         let cars = self.carriages(ti);
@@ -881,7 +1065,7 @@ impl FakeWorld {
             train,
             station: st.id,
             district: id,
-            simulated: !loaded,
+            simulated,
             carriages: cars,
         }));
         if !loaded {
@@ -972,7 +1156,7 @@ impl FakeWorld {
                 let Some(di) = self.districts.iter().position(|d| d.id == rc.district) else {
                     return;
                 };
-                if !self.districts[di].loaded {
+                if !self.chunk_loaded(di, rc.chunk) {
                     self.districts[di].held.push(rc);
                     return;
                 }
@@ -1204,6 +1388,7 @@ impl FakeWorld {
             owed.merge(&d.owed);
             for inv in d.inventories.values() {
                 owed.merge(&inv.pending);
+                owed.merge(&inv.held);
             }
         }
         want.subtract(&owed);

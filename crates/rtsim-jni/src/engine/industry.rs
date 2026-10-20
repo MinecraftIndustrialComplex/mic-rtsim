@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
 use rtsim_industry::cmd::{Cmd, IndustryOps};
-use rtsim_industry::engine::{Engine as Industry, Mode};
+use rtsim_industry::engine::Engine as Industry;
 use rtsim_industry::ids::{Good, GoodInfo};
 use rtsim_industry::obs::{Obs, Timed};
 use rtsim_industry::persist::{CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE};
@@ -141,14 +141,6 @@ fn tick(game_time: i64) -> Tick {
     Tick(game_time.max(0) as u64)
 }
 
-fn mode(read_only: bool) -> Mode {
-    if read_only {
-        Mode::ReadOnly
-    } else {
-        Mode::Apply
-    }
-}
-
 /// A world seed for a new industry engine: random, then kept in its pages (W5).
 fn new_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
@@ -177,7 +169,7 @@ impl Link {
 
     pub(super) fn empty() -> Link {
         Link {
-            engine: Industry::new(0, Tunables::default(), Mode::Apply, Tick::ZERO),
+            engine: Industry::new(0, Tunables::default(), Tick::ZERO),
             java_names: HashMap::new(),
             dict_sent: HashSet::new(),
             queue: VecDeque::new(),
@@ -210,7 +202,12 @@ impl Link {
 
     /// The engine and the link as the pages hold them, or new ones.
     pub(super) fn load(store: &mut PageStore, cfg: &Config) -> Result<Link, String> {
-        let (read_only, test) = (cfg.industry_read_only, cfg.test);
+        let test = cfg.test;
+        if cfg.industry_read_only {
+            // Phase I-A's read-only mode existed only to show players what a district would have
+            // made; I18 (Ben's correction) removed that, and the mode with it. The flag is ignored.
+            log_warn("the industry read-only flag is retired (I18); the industry engine applies");
+        }
         let keys: Vec<PageKey> = store
             .keys()
             .filter(|k| TABLES.contains(&k.table()))
@@ -250,9 +247,8 @@ impl Link {
         let fresh = restored.is_none();
         let mut engine = restored.unwrap_or_else(|| {
             let seed = cfg.industry_seed.unwrap_or_else(new_seed);
-            Industry::new(seed, Tunables::default(), mode(read_only), Tick::ZERO)
+            Industry::new(seed, Tunables::default(), Tick::ZERO)
         });
-        engine.mode = mode(read_only);
         engine.log_enabled = test;
         let link_page = store
             .get(KEY_LINK)
@@ -598,6 +594,7 @@ fn districts_fit(o: &Obs) -> bool {
         | Obs::Discard { district, .. }
         | Obs::LoadState { district, .. }
         | Obs::ChunkLoaded { district, .. }
+        | Obs::ChunkUnloaded { district, .. }
         | Obs::SurveyBlocks { district, .. } => *district,
         Obs::SweepEnd(e) => e.district,
         Obs::DepositSample(s) => s.district,
