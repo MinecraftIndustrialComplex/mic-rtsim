@@ -280,12 +280,11 @@ pub fn run(opts: Options) -> i32 {
     }
     if let Some(dir) = &opts.out {
         let _ = std::fs::create_dir_all(dir);
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let path = dir.join(format!("industry-{}{stamp}.json", if opts.quick { "quick-" } else { "" }));
+        let (when, stamp) = super::scale::now_utc();
+        let path = dir.join(format!("industry-{stamp}-{}.json", if opts.quick { "quick" } else { "full" }));
         let doc = serde_json::json!({
             "bench": "industry",
+            "when": when,
             "quick": opts.quick,
             "machine": sys::Machine::probe(),
             "slope_tolerance": SLOPE_TOLERANCE,

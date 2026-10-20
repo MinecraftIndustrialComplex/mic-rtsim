@@ -742,7 +742,7 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-fn now_utc() -> (String, String) {
+pub(super) fn now_utc() -> (String, String) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
