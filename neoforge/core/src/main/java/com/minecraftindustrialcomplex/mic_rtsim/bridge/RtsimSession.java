@@ -138,6 +138,8 @@ public final class RtsimSession {
     final CommandDispatcher commands;
     /** Phase 1: villages, markets, gossip, damage, rescues, robbery, bases, growth (PLAN.md §8). */
     public final Phase1 phase1;
+    /** The industry module (C15 to C19, INDUSTRY.md): districts, the stock sampler, ports, reconciles. */
+    public final com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry;
 
     private boolean failed;
     /**
@@ -197,6 +199,7 @@ public final class RtsimSession {
         for (BodyAdapter body : BodyKinds.bodies())
             boundary.dictId(Obs.DICT_BODY, body.name());
         this.phase1 = new Phase1(this);
+        this.industry = new com.minecraftindustrialcomplex.mic_rtsim.industry.Industry(this, server);
     }
 
     public MinecraftServer server() {
@@ -271,6 +274,7 @@ public final class RtsimSession {
             passNanos = System.nanoTime() - t0;
             if (ticks % RtsimConfig.playerInterval() == 0)
                 observePlayers(now);
+            industry.endOfTick(now);
             boundary.handOver(now);
             ticks++;
         } catch (Throwable t) {
@@ -741,6 +745,11 @@ public final class RtsimSession {
     }
 
     // ---- pending records: the world side of a transfer carries its journal records ---------------
+
+    /** Runs {@code then} once the engine has acknowledged {@code seq} in this session (for modules and plugins). */
+    public void afterAck(long seq, Runnable then) {
+        whenAcked(seq, then);
+    }
 
     /** Runs {@code then} once the engine has acknowledged {@code seq} in this session. */
     void whenAcked(long seq, Runnable then) {

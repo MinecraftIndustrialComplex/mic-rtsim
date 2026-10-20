@@ -267,3 +267,38 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
 - Count a player's transfer as anything but a port.
 - Send a learning sweep (`live`) while any chunk of the district is not block-ticking.
 - Apply a reconcile without writing the epoch in the same tick.
+
+## 6. The Java side (2026-10-20)
+
+Written overnight in the core's `industry` package and the Create plugin `mic_rtsim_create`
+(`neoforge/`); choices H1 to H29 in `docs/overnight-choices-industrymc.md`. The Java constants are
+`IndRecords.java`, which mirrors wire.rs field for field.
+
+- **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_LEDGER_REQUEST, IND_WATCHED; IND_DISTRICT,
+  IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED, IND_EDIT (aux 1, 2, 4),
+  IND_DISCARD (aux 1), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_PORT (kinds 1, 3, 4, 5, 6),
+  IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (unloaded districts only, H30), IND_RECONCILE_RESULT,
+  IND_CARRIAGE_RESULT.
+- **Applied:** IND_CHUNK_RECONCILE (§4.1, every step), IND_CARRIAGE_DELTA, IND_LEDGER. IND_CHANNEL_DELTA,
+  IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are answered COMMAND_RESULT(failed): no plugin applies them yet.
+- **Not sent yet:** IND_DEPOSIT_SAMPLE, IND_CHANNEL_SAMPLE, IND_CONDITIONS, IND_POWER_LINK,
+  IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY, IND_SURVEY_BLOCKS.
+- **Forms Java decides:** a GOOD component hash is 16 hex digits (H2); a BLOCK_STATE name is
+  `BlockStateParser.serialize(state)`, which a destroy entry is compared with; station and train ids are
+  SplitMix64 of Create's UUIDs (H19); the counterpart of a player port is the player's UUID halves XORed.
+- **A deposit delta** in a reconcile (inventory 0xFFFFFFFF) is reported with applied 0 until a deposit
+  plugin exists.
+
+### 6.1 Proposal: IND_APPROACH (H23)
+
+A latest-wins record in the reserved range, not yet in wire.rs, so the engine skips it as an unknown
+kind. It is the engine-agnostic half of the stale-tick race's option (d) (`docs/overnight-choices-industry.md`,
+finding 2): the engine could send a district's reconciles ahead when a player heads its way. What to do
+with it is not decided.
+
+| Kind | Name | aux | Fields | Size |
+|---|---|---|---|---|
+| 0x0046 | IND_APPROACH | 1: closing in since the last one | 8 i64 gameTime, 16 u64 district, 24 u32 distance (blocks from the nearest player to the district's chunk box), 28 u32 etaTicks (distance / closing rate; 0xFFFFFFFF unknown) | 32 |
+
+Sent every 20 ticks for each unloaded district within `approachRadiusBlocks` (256, PLACEHOLDER) of a
+player; `approachSignal = false` stops it.
