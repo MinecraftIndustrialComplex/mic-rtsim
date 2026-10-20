@@ -1,0 +1,32 @@
+# Rust and Gradle build outputs
+/target/
+neoforge/build/
+neoforge/.gradle/
+neoforge/bin/
+.gradle/
+build/
+
+# Local runtimes: downloaded pack jars, logs, RCON passwords. Never commit these.
+/run/
+/run-gametest/
+/smoke/
+/libs/
+
+# Scratch output of `rtsim-cli bench scale --out` runs not meant for the record. Committed results
+# live in bench/results/.
+/bench/scratch/
+
+# Editor and tooling state
+.direnv/
+.eclipse/
+.settings/
+.idea/
+.vscode/
+.graphide/
+
+# Claude Code agent worktrees and settings (never part of the project)
+/.claude/
+
+# Python bytecode
+__pycache__/
+*.pyc
