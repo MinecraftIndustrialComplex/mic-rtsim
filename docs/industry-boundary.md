@@ -32,10 +32,10 @@ ranges.**
 | epoch | u32 | engine, per district | reconcile rounds, 1, 2, 3, ...; a chunk attachment holds the last applied |
 | op id | u64 | both | the kernel's `journal::OpId` convention; industry engine ids carry namespace 0x49 in bits 56 to 62 (F4) |
 
-**Op-id bit, open discrepancy.** The kernel (main, DECISIONS.md O10) sets the top bit on ids made on
-the **Java** side (`JAVA_OP_BIT`); the bridge branch's `docs/boundary.md` §2.2 and `Obs.java` say
-the **engine's** ids have it set. This crate uses the kernel's `OpId::engine`, so it follows
-whatever the kernel says. One of the two must change before rtsim-jni exists.
+**Op-id bit.** Java's ids have the top bit set (`Obs.JAVA_OP_BIT`, `OpId::bridge`) and the
+engine's have it clear (`OpId::engine`), as DECISIONS.md O10 and `docs/boundary.md` §2.2 now agree.
+Industry engine ids also carry namespace 0x49 in bits 56 to 62, so they never collide with another
+engine allocator's.
 
 ### 2.2 Dictionaries (F2)
 

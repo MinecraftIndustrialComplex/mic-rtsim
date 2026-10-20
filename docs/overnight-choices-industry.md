@@ -174,9 +174,9 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
 
 ## Design discrepancies and findings for Ben
 
-1. **Op-id top bit.** The kernel on main (O10) sets it on Java's ids. The bridge branch's
-   `docs/boundary.md` §2.2 and `Obs.java` (`ENGINE_OP_BIT`) set it on the engine's. This crate
-   follows the kernel; one of the two must change.
+1. **Op-id top bit: resolved.** When this work began, the bridge branch put the top bit on the
+   engine's ids, against the kernel's O10. Main now has the bridge on O10 (Java's ids set it), which
+   this crate follows.
 2. **The stale-tick race (INDUSTRY.md §19 risk 3) leaks across districts.** Commands land at least
    one tick after a load, so a machine runs on stock the replay already consumed.
    - The trim keeps a district's own books exact.
