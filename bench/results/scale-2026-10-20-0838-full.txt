@@ -1,0 +1,81 @@
+sweep    model    value | cpu ms/day catchup us  commits |  heap MiB   rss MiB  peak MiB |   save KiB   incr KiB | slots/day conserved
+latent   herd      10e3 |       1.00          -        - |       2.7       5.2       5.2 |      295.9      297.4 |      6170 ok
+latent   herd       1e6 |       1.50          -        - |       2.7       5.3       5.3 |      329.5      332.9 |      6170 ok
+latent   herd     100e6 |       3.43          -        - |       2.7       5.2       5.2 |      375.6      380.3 |      6170 ok
+latent   herd      10e9 |       2.11          -        - |       2.7       5.2       5.2 |      414.6      420.9 |      6170 ok
+latent   herd    1000e9 |       2.07          -        - |       2.7       5.2       5.2 |      454.4      461.6 |      6170 ok
+regions  closed     100 |       0.40          -        - |       0.4       3.6       3.6 |        2.0        2.0 |         0 ok
+regions  closed     1e3 |       0.41          -        - |       0.5       3.7       3.7 |       19.4       19.4 |         0 ok
+regions  closed    10e3 |       0.50          -        - |       1.8       4.4       4.4 |      187.0      188.4 |         0 ok
+regions  closed   100e3 |       0.78          -        - |      12.0      12.5      12.5 |     1157.1      864.7 |         0 ok
+regions  closed     1e6 |       1.03          -        - |      94.1      93.2      93.2 |     8389.6     1251.2 |         0 ok
+regions  herd       100 |       0.45          -        - |       0.4       3.8       3.8 |        4.2        4.2 |       100 ok
+regions  herd       1e3 |       0.87          -        - |       0.5       4.0       4.0 |       39.5       39.5 |       985 ok
+regions  herd      10e3 |       2.94          -        - |       2.7       5.3       5.3 |      358.0      361.9 |      6170 ok
+regions  herd     100e3 |       2.29          -        - |      19.0      18.1      18.1 |     2278.5     1676.7 |     10424 ok
+regions  herd       1e6 |       2.33          -        - |     150.1     146.8     146.8 |    19052.4     2541.2 |     11225 ok
+events   herd        10 |       0.45          -        - |       2.3       4.9       4.9 |      197.3       36.3 |       363 ok
+events   herd       100 |       0.85          -        - |       2.4       4.9       4.9 |      236.8      174.0 |      1253 ok
+events   herd       1e3 |       3.08          -        - |       2.7       5.2       5.2 |      358.0      361.9 |      6170 ok
+events   herd      10e3 |       5.45          -        - |       5.4       7.7       7.7 |      375.4      375.7 |      9844 ok
+events   herd     100e3 |      13.52          -        - |      50.7      33.6      33.6 |      373.8      374.5 |     10001 ok
+elapsed  closed       1 |          -      0.004      0.0 |       5.9       9.2       9.2 |          -          - |         - n/a
+elapsed  closed      10 |          -      0.003      0.0 |       5.9       9.1       9.1 |          -          - |         - n/a
+elapsed  closed     100 |          -      0.003      0.0 |       5.9       9.2       9.2 |          -          - |         - n/a
+elapsed  closed     1e3 |          -      0.003      0.0 |       5.9       9.1       9.1 |          -          - |         - n/a
+elapsed  closed    10e3 |          -      0.003      0.0 |       5.9       9.1       9.1 |          -          - |         - n/a
+elapsed  herd         1 |          -      0.438      1.0 |       0.1       3.4       3.4 |          -          - |         - n/a
+elapsed  herd        10 |          -      3.911     10.0 |       0.1       3.4       3.4 |          -          - |         - n/a
+elapsed  herd       100 |          -     35.581    100.0 |       0.1       3.5       3.5 |          -          - |         - n/a
+elapsed  herd       1e3 |          -    316.598   1000.0 |       0.1       3.4       3.4 |          -          - |         - n/a
+elapsed  herd      10e3 |          -   2939.616  10000.0 |       0.1       3.4       3.4 |          -          - |         - n/a
+age      closed       1 |       0.72          -        - |      12.0      12.5      12.5 |     1157.1      864.7 |         0 ok
+age      closed      10 |       0.59          -        - |      12.1      12.6      12.6 |     1356.9     1016.4 |         0 ok
+age      closed     100 |       0.57          -        - |      12.5      13.1      13.1 |     1982.7     1464.3 |         0 ok
+age      closed     1e3 |       0.47          -        - |      14.8      15.7      15.7 |     2210.7     1591.2 |         0 ok
+age      herd         1 |       2.23          -        - |      19.0      18.0      18.0 |     2278.5     1676.7 |     10424 ok
+age      herd        10 |       4.24          -        - |      19.1      18.2      18.2 |     2534.5     1883.7 |     25450 ok
+age      herd       100 |      12.89          -        - |      19.5      18.6      18.6 |     3482.3     2566.3 |     87724 ok
+age      herd       1e3 |      13.25          -        - |      21.8      21.3      21.3 |     3908.2     2809.0 |     99809 ok
+latent   dyadic    10e3 |       0.70          -        - |       3.8       6.0       6.0 |      308.3      310.2 |         0 ok
+latent   dyadic     1e6 |       1.06          -        - |       3.8       5.9       5.9 |      311.4      313.2 |         0 ok
+latent   dyadic   100e6 |       1.02          -        - |       3.8       5.9       5.9 |      326.9      328.7 |         0 ok
+latent   dyadic    10e9 |       0.93          -        - |       3.8       6.0       6.0 |      332.0      333.8 |         0 ok
+latent   dyadic  1000e9 |       0.92          -        - |       3.8       6.0       6.0 |      337.0      338.8 |         0 ok
+regions  dyadic     100 |       0.59          -        - |       0.4       3.7       3.7 |        3.7        3.7 |         0 ok
+regions  dyadic     1e3 |       0.82          -        - |       0.6       4.0       4.0 |       33.5       33.6 |         0 ok
+regions  dyadic    10e3 |       1.07          -        - |       3.8       6.0       6.0 |      323.8      325.6 |         0 ok
+regions  dyadic   100e3 |       1.06          -        - |      28.0      25.0      25.0 |     2224.4     1639.7 |         0 ok
+regions  dyadic     1e6 |       1.39          -        - |     222.1     215.5     215.5 |    18380.2     2449.9 |         0 ok
+elapsed  dyadic       1 |          -      7.184      0.0 |       0.1       3.5       3.5 |          -          - |         - n/a
+elapsed  dyadic      10 |          -      7.004      0.0 |       0.1       3.4       3.4 |          -          - |         - n/a
+elapsed  dyadic     100 |          -      6.850      0.0 |       0.1       3.4       3.4 |          -          - |         - n/a
+elapsed  dyadic     1e3 |          -      5.136      0.0 |       0.1       3.4       3.4 |          -          - |         - n/a
+elapsed  dyadic    10e3 |          -      2.707      0.0 |       0.1       3.5       3.5 |          -          - |         - n/a
+age      dyadic       1 |       0.99          -        - |      28.0      24.9      24.9 |     2224.4     1639.7 |         0 ok
+age      dyadic      10 |       1.03          -        - |      28.1      25.2      25.2 |     2482.6     1845.9 |         0 ok
+age      dyadic     100 |       0.96          -        - |      28.5      25.5      25.5 |     3241.1     2387.9 |         0 ok
+age      dyadic     1e3 |       0.92          -        - |      30.8      28.1      28.1 |     3546.2     2549.5 |         0 ok
+
+sweep    model  metric       slope  declared  SCALE.md  verdict
+latent   herd   cpu          0.039      0.10      0.00  ok
+latent   herd   heap         0.000      0.10      0.00  ok
+latent   herd   save         0.024      0.10      0.00  ok
+regions  closed cpu          0.110      0.15      0.00  ok
+regions  closed heap         0.617      1.10      1.00  ok
+regions  closed save         0.902      1.10      1.00  ok
+regions  herd   cpu          0.185      1.00      0.00  ok  (declared above SCALE.md; see note)
+regions  herd   heap         0.671      1.10      1.00  ok
+regions  herd   save         0.907      1.10      1.00  ok
+events   herd   cpu          0.376      1.10      1.00  ok
+elapsed  closed catchup     -0.029      0.10      0.00  ok
+elapsed  herd   catchup      0.956      1.10      0.00  ok  (declared above SCALE.md; see note)
+age      closed cpu         -0.057      0.15      0.00  ok
+age      herd   cpu          0.281      1.00      0.00  ok  (declared above SCALE.md; see note)
+latent   dyadic cpu          0.009      0.10      0.00  ok
+latent   dyadic heap         0.000      0.10      0.00  ok
+regions  dyadic cpu          0.085      0.15      0.00  ok
+regions  dyadic heap         0.714      1.10      1.00  ok
+regions  dyadic save         0.922      1.10      1.00  ok
+elapsed  dyadic catchup     -0.098      0.15      0.00  ok
+age      dyadic cpu         -0.012      0.15      0.00  ok
