@@ -41,6 +41,8 @@ pub enum Spec {
     Market(super::market::MarketConfig),
     /// Dragons over a fixed village grid, nobody watching (`bench::dragons`).
     Dragons(super::dragons::DragonConfig),
+    /// Merchant ships over a fixed ocean grid of ports, nobody watching (`bench::ships`).
+    Ships(super::ships::ShipsConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -105,6 +107,8 @@ pub enum Vary {
     Edges,
     /// Dragons over a fixed world (PLAN.md §9).
     Dragons,
+    /// Merchant ships per service over a fixed ocean grid (PLAN.md §10.1).
+    Ships,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +206,17 @@ impl Baseline {
     }
 
     fn spec(&self, sweep: &Sweep, value: u64) -> Spec {
+        if sweep.vary == Vary::Ships {
+            return Spec::Ships(super::ships::ShipsConfig {
+                ships_per_service: value,
+                side: SHIP_GRID_SIDE,
+                warmup_days: 2,
+                // A few pirate events a day are all there is to time: five times the baseline's
+                // days, so each point times enough of them to be read above noise.
+                days: self.days * 5,
+                seed: self.seed,
+            });
+        }
         if sweep.vary == Vary::Dragons {
             return Spec::Dragons(super::dragons::DragonConfig {
                 dragons: value,
@@ -252,7 +267,9 @@ impl Baseline {
             Vary::Regions => c.regions = value,
             Vary::Events => c.events_per_day = value,
             Vary::Age => c.warmup_days = value,
-            Vary::Elapsed | Vary::Markets | Vary::Edges | Vary::Dragons => unreachable!(),
+            Vary::Elapsed | Vary::Markets | Vary::Edges | Vary::Dragons | Vary::Ships => {
+                unreachable!()
+            }
         }
         Spec::World(c)
     }
@@ -557,8 +574,35 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 ),
             ],
         },
+        // Ships (rtsim-ships), nobody watching. The model kind is a label only; the value is the
+        // service cap (merchant ships per loop direction), on a fixed 100-port ocean grid.
+        Sweep {
+            name: "ships".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Ships,
+            regions: None,
+            values: pick(&[1, 2, 4, 8, 16], &[1, 4, 16]),
+            contracts: vec![
+                contract(
+                    Metric::Cpu,
+                    flat,
+                    0.0,
+                    "an unobserved merchant ship costs nothing: its position is a closed form of the clock (service timetable and saved clock offset), it books no voyage and schedules no event, so the ships engine's own CPU per sim day (the world stepped apart) stays at the pirates' few events a hunt whatever the ship count. Per ship (cpu_ns_per_unit_day) it falls as one over the count",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "ships are resident rows (paging, A16, is not built yet)",
+                ),
+            ],
+        },
     ]
 }
+
+/// Ports on a side of the ship sweep's ocean grid. PLACEHOLDER 10: 100 ports, from about 70
+/// merchant ships at one a service to about a thousand at sixteen.
+const SHIP_GRID_SIDE: u64 = 10;
 
 /// Markets held fixed while the edge sweep varies nearest-k.
 const MARKET_BASE: u64 = 512;
@@ -596,6 +640,7 @@ pub fn run_one(spec: &Spec) -> Measured {
         },
         Spec::Market(c) => super::market::run(c),
         Spec::Dragons(c) => super::dragons::run(c),
+        Spec::Ships(c) => super::ships::run(c),
     }
 }
 
@@ -1078,6 +1123,7 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
             Spec::World(c) => c.days as f64,
             Spec::Market(c) => c.days as f64,
             Spec::Dragons(c) => c.days as f64,
+            Spec::Ships(c) => c.days as f64,
             Spec::CatchUp(_) => f64::NAN,
         };
         println!(

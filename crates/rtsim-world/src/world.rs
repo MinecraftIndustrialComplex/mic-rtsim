@@ -106,6 +106,10 @@ pub struct Outside {
     pub player_in: BTreeMap<GoodId, i128>,
     pub player_out: BTreeMap<GoodId, i128>,
     pub destroyed: BTreeMap<GoodId, i128>,
+    /// Goods another module's rows hold, still in the world (the ships engine's ships and
+    /// pirates, `rtsim-ships`, overnight choice T6): counted as seen, so moving goods between a
+    /// market or a flow and such a row is internal.
+    pub held: BTreeMap<GoodId, i128>,
 }
 
 /// Why a market event ran (for the trace and the quiescence diagnostics).
@@ -125,6 +129,9 @@ pub enum Cause {
     Growth,
     /// A predator with no haven took stock (PLAN.md §9: a dragon raided the village).
     Predator,
+    /// Something outside the market changed what its flows may carry: a lane's hazard or a
+    /// ship's cargo (rtsim-ships). Sends news only when it changes in kind.
+    Lane,
 }
 
 impl Cause {
@@ -535,7 +542,7 @@ impl World {
     /// the newcomer's currency, it opens one now, at mint parity within the gold points of this
     /// edge, as a border market built at once would have (overnight choice E54). Without it the
     /// foreign coin it is paid in would sink at once (its line's target is zero).
-    fn open_exchange(&mut self, j: usize, newcomer: usize, d: u64, at: Tick) {
+    pub(crate) fn open_exchange(&mut self, j: usize, newcomer: usize, d: u64, at: Tick) {
         let (Some(their), Some(mine)) = (
             self.nodes[newcomer].kind.culture(),
             self.nodes[j].kind.culture(),

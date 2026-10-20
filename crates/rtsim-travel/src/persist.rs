@@ -19,7 +19,7 @@ use rtsim_trade::persist::{get_opt_good, put_opt_good};
 use rtsim_trade::{Amount, GoodId};
 
 use crate::caravan::{Body, Caravan, CaravanKey, GroupKind, Leg, Member, Stage};
-use crate::edge::{Dir, DirRef, Edge, Predation};
+use crate::edge::{Dir, DirRef, Edge, Medium, Predation};
 use crate::lattice::{Lattice, Period};
 use crate::legs::{LegIndex, LegRow, LegStats, Owner, Path, Stamp};
 use crate::news::{GoodNews, NewsRing, Snapshot};
@@ -235,6 +235,8 @@ impl Encode for Edge {
         self.dirs[1].encode(w);
         w.var_u64(self.stops.len() as u64);
         self.stops.iter().for_each(|s| w.var_u64(*s as u64));
+        w.u8(self.medium as u8);
+        w.var_i64(self.cap_slot_milli);
     }
 }
 
@@ -250,6 +252,10 @@ impl Decode for Edge {
         let dirs = [Dir::decode(r)?, Dir::decode(r)?];
         let n = r.len_prefix(1)?;
         let stops = (0..n).map(|_| get_usize(r)).collect::<codec::Result<_>>()?;
+        let m = r.u8()?;
+        let medium =
+            Medium::from_u8(m).ok_or_else(|| CodecError::Invalid(format!("medium {m}")))?;
+        let cap_slot_milli = r.var_i64()?;
         Ok(Edge {
             a,
             b,
@@ -260,6 +266,8 @@ impl Decode for Edge {
             border,
             dirs,
             stops,
+            medium,
+            cap_slot_milli,
         })
     }
 }

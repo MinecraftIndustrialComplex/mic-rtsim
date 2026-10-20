@@ -19,7 +19,7 @@ usage:
       (default bench/results). --check exits 1 when a slope exceeds its declared contract.
       --repeats runs each point N times and keeps the median (default 3, quick 1).
       --only picks sweeps by name: latent, regions, events, elapsed, age, markets, edges,
-      dragons.
+      dragons, ships.
   rtsim-cli bench scale-one --spec JSON
       Runs one configuration and prints its measurements as JSON (used by bench scale).
   rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]
@@ -53,7 +53,12 @@ usage:
       Phase 2's dragons (PLAN.md §9) from autumn into winter on the synthetic world, with a
       scripted player and a farm district: grudges, heirs, bored departures, raids, prey by
       season. Writes JSON to FILE (default scenario/results/sim-dragons.json). Exits 1 if a
-      check fails.";
+      check fails.
+  rtsim-cli sim ships [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      Ships (PLAN.md §10.1) on a synthetic coast: sea and sky lanes, timetables, merchant
+      flows, a pirate haven, a navy patrol, and a scripted player who watches ships pass, sees
+      a raid, loots a hold and sinks a pirate; a restart in the middle. Writes JSON to FILE
+      (default scenario/results/sim-ships.json). Exits 1 if a check fails.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -201,6 +206,7 @@ fn main() -> ExitCode {
             ExitCode::from(sim::phase1::run(o) as u8)
         }
         ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
+        ["sim", "ships", rest @ ..] => sim::ships::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
             let mut o = sim::quiet::Options {
