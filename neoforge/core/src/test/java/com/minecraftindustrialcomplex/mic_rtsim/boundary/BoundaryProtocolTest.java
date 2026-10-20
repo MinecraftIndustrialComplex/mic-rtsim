@@ -129,9 +129,11 @@ class BoundaryProtocolTest {
         assertTrue(tick(s, sink, e), "hand-over 1 is submitted on the first tick");
         assertTrue(sink.kinds.isEmpty(), "nothing is applied before the step ran");
         assertTrue(tick(s, sink, e), "hand-over 2 follows once step 1 finished");
-        assertEquals(List.of(Cmd.DICT, Cmd.DICT, Cmd.TRANSFER_TO_CONTAINER), sink.kinds);
+        // The stub answers the session start with the world model's list (HABITAT_KNOWN, END alone).
+        assertEquals(List.of(Cmd.DICT, Cmd.DICT, Cmd.TRANSFER_TO_CONTAINER,
+                com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatRecords.HABITAT_KNOWN), sink.kinds);
         assertEquals(3, sink.containers.get(5L));
-        assertEquals(3, s.journal().lastAppliedCmdSeq(), "two DICT commands and the transfer, sequences 1 to 3");
+        assertEquals(4, s.journal().lastAppliedCmdSeq(), "two DICT commands, the transfer and the list, sequences 1 to 4");
         assertEquals(1, e.received(Obs.SESSION_START).size());
     }
 

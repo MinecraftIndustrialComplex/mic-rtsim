@@ -464,3 +464,28 @@ mod tests {
         assert!(SampledWorld::load(&meta[..meta.len() - 1], std::iter::empty()).is_err());
     }
 }
+
+#[cfg(test)]
+mod size {
+    use super::*;
+
+    /// What a region costs in memory (bench/results/habitat-sampler.md): its 64 slots and the
+    /// creature entries of its land cells.
+    #[test]
+    fn a_region_costs_a_few_kilobytes() {
+        let slot = std::mem::size_of::<Option<crate::Habitat>>();
+        let mut w = SampledWorld::new();
+        let mut p = Painter::default();
+        p.paint(&mut w, 0, (0, 0, 512, 512), &|_, _| land("minecraft:plains"));
+        let per_region = w.heap_bytes();
+        eprintln!("a cell slot is {slot} bytes; a plains region holds {per_region} bytes of heap");
+        assert!(slot <= 96, "{slot}");
+        assert!(per_region < 16 * 1024, "{per_region}");
+        let (meta, pages) = w.save_pages(true);
+        eprintln!(
+            "its page is {} bytes, the meta page {} bytes",
+            pages[0].1.len(),
+            meta.len()
+        );
+    }
+}

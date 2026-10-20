@@ -232,3 +232,45 @@ fn herds_founded_per_region_stand_on_land_and_stay_there() {
     // Forage cells are whole habitat cells.
     assert_eq!(CELL_BLOCKS % rtsim_space::habitat::CELL_BLOCKS, 0);
 }
+
+/// The cost of a herd's decisions on the world model against the uniform climate (Y3), for
+/// bench/results/habitat-sampler.md: `cargo test --release -p rtsim-ecology --test habitat --
+/// --ignored --nocapture`.
+#[test]
+#[ignore]
+fn decision_cost_on_the_world_model() {
+    use rtsim_ecology::herds::climate::Uniform;
+    let world = strait(true);
+    for (name, climate) in [
+        (
+            "world model",
+            Box::new(HabitatClimate::new(world.clone())) as Box<dyn Climate>,
+        ),
+        ("uniform", Box::new(Uniform) as Box<dyn Climate>),
+    ] {
+        let mut h = Herds::new(41, HerdTunables::default(), climate, Tick::ZERO);
+        let mut legs = LegIndex::new(1_000);
+        for i in 0..16u64 {
+            h.add_herd(
+                NewHerd {
+                    name: format!("h{i}"),
+                    species: HerdSpecies::Sheep,
+                    frame: 0,
+                    pos: (200 + (i as i32 % 4) * 1000, 200 + (i as i32 / 4) * 1000),
+                    count: 3_000,
+                    seed: Some(i + 1),
+                },
+                Tick::ZERO,
+            );
+        }
+        let t0 = std::time::Instant::now();
+        h.run_until(&mut legs, Tick::from_days(2 * 96));
+        let spent = t0.elapsed();
+        let decisions = h.stats.decisions.max(1);
+        eprintln!(
+            "{name}: {decisions} decisions in {:.1} ms, {:.1} us each",
+            spent.as_secs_f64() * 1e3,
+            spent.as_secs_f64() * 1e6 / decisions as f64
+        );
+    }
+}

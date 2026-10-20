@@ -12,6 +12,9 @@
 //! - [`climate`]: sub-seasons over the ecology's calendar and the abstract climate provider.
 //! - [`forage`]: the forage field on a coarse grid, regrowing in closed form (affine maps in
 //!   1/F), lazy per cell.
+//! - [`habitat`]: the climate and the founding of herds from the world model (rtsim-space's
+//!   habitat cells: real biomes, water and temperatures; X2-# in
+//!   docs/overnight-choices-worldmodel.md).
 //! - [`cohort`]: year-classes whose deaths are dyadic counts (O5's recommendation).
 //! - [`herd`]: the group row, its route (a closed form of time) and its ledger.
 //! - [`members`]: derived identity, sampling and the dead-index set (PLAN.md §4.4).

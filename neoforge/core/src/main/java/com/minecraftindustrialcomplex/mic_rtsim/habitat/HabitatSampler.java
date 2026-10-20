@@ -293,6 +293,26 @@ public final class HabitatSampler implements SessionPlugin {
         d.queue.add(cell);
     }
 
+    /**
+     * The bench (GameTests with {@code -PrtsimBench}): reads one cell's sixteen points and builds its record's
+     * fields and fingerprint as {@link #sample} does, writing nothing. Returns the nanoseconds it took, or -1
+     * when a chunk of the cell is not loaded. {@code coldBiomes} forgets the biome facts first.
+     */
+    public long benchRead(ServerLevel level, int cx, int cz, boolean coldBiomes) {
+        if (coldBiomes)
+            biomes.clear();
+        long t0 = System.nanoTime();
+        LevelChunk[] chunks = new LevelChunk[HabitatRecords.POINTS];
+        for (int i = 0; i < HabitatRecords.POINTS; i++) {
+            chunks[i] = level.getChunkSource().getChunkNow(cx * 4 + (i & 3), cz * 4 + (i >> 2));
+            if (chunks[i] == null)
+                return -1;
+        }
+        Cell c = read(level, cx, cz, chunks);
+        long spent = System.nanoTime() - t0;
+        return c.fingerprint == 0x7FFF_FFFF && spent == 0 ? -2 : spent; // keep the read alive
+    }
+
     /** Forgets every loaded chunk (a GameTest server that reloads levels keeps none; not used in play). */
     static void forgetLoaded(ResourceKey<Level> level) {
         LOADED.remove(level);

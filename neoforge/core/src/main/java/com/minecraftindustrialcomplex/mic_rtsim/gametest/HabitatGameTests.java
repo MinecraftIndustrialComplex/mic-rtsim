@@ -205,6 +205,67 @@ public final class HabitatGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * The sampler's cost (only with {@code -PrtsimBench}, results in {@code bench/results/habitat-sampler.md}):
+     * a 32 x 32 chunk area far out is loaded (64 cells, a quarter of them painted water at their points); every
+     * cell is read 50 times as the sampler reads it, warm, and once with the biome facts forgotten (cold). The
+     * chunk-load hook's own cost comes from the sampler's counters over the whole run.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "habitat_bench")
+    public static void habitatSamplerCost(GameTestHelper helper) {
+        String test = "habitatSamplerCost";
+        if (!Boolean.getBoolean("mic_rtsim.bench")) {
+            record(test, "skipped", "only with -PrtsimBench");
+            helper.succeed();
+            return;
+        }
+        ServerLevel level = helper.getLevel();
+        int x0 = 6_000_000 + ThreadLocalRandom.current().nextInt(0, 2_000) * 1_024;
+        int z0 = 6_000_000 + ThreadLocalRandom.current().nextInt(0, 2_000) * 1_024;
+        List<ChunkPos> forced = new ArrayList<>();
+        HabitatSampler sampler = HabitatSampler.INSTANCE;
+        helper.startSequence()
+                .thenExecute(() -> {
+                    long t0 = System.nanoTime();
+                    forced.addAll(load(level, x0, z0, x0 + 512, z0 + 512));
+                    long loadNanos = System.nanoTime() - t0;
+                    for (int cz = 0; cz < 8; cz++)
+                        for (int cx = 0; cx < 2; cx++)
+                            for (int i = 0; i < 16; i++)
+                                paint(level, x0 + cx * 64 + (i & 3) * 16 + 8, z0 + cz * 64 + (i >> 2) * 16 + 8,
+                                        Blocks.WATER.defaultBlockState());
+                    record(test, "loaded", forced.size() + " chunks generated and loaded in " + loadNanos / 1_000_000 + " ms");
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    int cx0 = x0 >> 6, cz0 = z0 >> 6;
+                    long cold = sampler.benchRead(level, cx0, cz0, true);
+                    long[] all = new long[64 * 50];
+                    int n = 0;
+                    for (int round = 0; round < 50; round++)
+                        for (int dz = 0; dz < 8; dz++)
+                            for (int dx = 0; dx < 8; dx++) {
+                                long t = sampler.benchRead(level, cx0 + dx, cz0 + dz, false);
+                                check("every cell's chunks are loaded", t >= 0);
+                                all[n++] = t;
+                            }
+                    java.util.Arrays.sort(all);
+                    long sum = 0;
+                    for (long t : all)
+                        sum += t;
+                    double mean = sum / 1000.0 / all.length;
+                    record(test, "cost", String.format(
+                            "cell reads %d: mean %.2f us, p50 %.2f us, p90 %.2f us, p99 %.2f us, max %.2f us per cell "
+                                    + "(%.3f us per chunk); cold biome facts %.2f us; chunk-load hook %.3f us per load over %d loads",
+                            all.length, mean, all[all.length / 2] / 1000.0, all[all.length * 9 / 10] / 1000.0,
+                            all[all.length * 99 / 100] / 1000.0, all[all.length - 1] / 1000.0, mean / 16, cold / 1000.0,
+                            sampler.chunkLoads == 0 ? 0 : sampler.loadHookNanos / 1000.0 / sampler.chunkLoads, sampler.chunkLoads));
+                    record(test, "sampler", sampler.summary());
+                    forced.forEach(p -> level.setChunkForced(p.x, p.z, false));
+                })
+                .thenSucceed();
+    }
+
     /** Writes a PLAYER record for a GameTest player (the server's player list does not hold them). */
     private static void reportPlayer(ServerPlayer p) {
         var s = RtsimTests.session();

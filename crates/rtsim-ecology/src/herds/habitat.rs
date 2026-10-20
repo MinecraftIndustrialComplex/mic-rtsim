@@ -17,6 +17,9 @@
 //! known cell changes only when a player rebuilds its ground. A grazed row then reads its past
 //! sub-seasons with the new rates (X2-16).
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_space::habitat::{CELL_BLOCKS as HABITAT_CELL, REGION_BLOCKS};
 use rtsim_space::{Area, RegionKey, WorldHandle, WorldModel};
@@ -87,7 +90,28 @@ pub struct HabitatClimate {
     /// In a frame the world model knows nothing of, answer as the uniform grassland (Y3): herds
     /// founded there by an order (tests, tools) behave as before the world model (X2-6).
     pub uniform_unknown_frames: bool,
+    /// What the world model said of each forage cell, at the model's revision: a herd's flow field
+    /// reads the same cells many times (forage per sub-season, terrain, temperature). Cleared when
+    /// the model changes.
+    cache: Mutex<Cache>,
 }
+
+/// One forage cell as last read: `None` for a frame answered as the uniform grassland.
+#[derive(Clone, Copy)]
+struct Seen {
+    area: Option<Area>,
+    /// The season offsets by season of the year (spring to winter).
+    seasons: [f32; 4],
+}
+
+#[derive(Default)]
+struct Cache {
+    revision: u64,
+    cells: HashMap<(u16, i32, i32), Seen>,
+}
+
+/// Cells kept at most before the cache starts afresh (PLACEHOLDER).
+const CACHE_CELLS: usize = 1 << 16;
 
 impl HabitatClimate {
     pub fn new(world: WorldHandle) -> HabitatClimate {
@@ -95,19 +119,32 @@ impl HabitatClimate {
             world,
             tun: HabitatTunables::default(),
             uniform_unknown_frames: true,
+            cache: Mutex::new(Cache::default()),
         }
     }
 
-    /// Whether `frame` answers as the uniform grassland.
-    fn uniform(&self, frame: u16) -> bool {
-        self.uniform_unknown_frames && !self.world.read().knows_frame(frame)
-    }
-
-    fn area(&self, frame: u16, cx: i32, cz: i32) -> Area {
-        let (x0, z0) = (cx * CELL_BLOCKS, cz * CELL_BLOCKS);
-        self.world
-            .read()
-            .area(frame, x0, z0, x0 + CELL_BLOCKS, z0 + CELL_BLOCKS)
+    /// The forage cell (cx, cz) as the world model has it now, read once per model revision.
+    fn seen(&self, frame: u16, cx: i32, cz: i32) -> Seen {
+        let w = self.world.read();
+        let rev = w.revision();
+        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if c.revision != rev || c.cells.len() >= CACHE_CELLS {
+            c.revision = rev;
+            c.cells.clear();
+        }
+        *c.cells.entry((frame, cx, cz)).or_insert_with(|| {
+            if self.uniform_unknown_frames && !w.knows_frame(frame) {
+                return Seen {
+                    area: None,
+                    seasons: [0.0; 4],
+                };
+            }
+            let (x0, z0) = (cx * CELL_BLOCKS, cz * CELL_BLOCKS);
+            Seen {
+                area: Some(w.area(frame, x0, z0, x0 + CELL_BLOCKS, z0 + CELL_BLOCKS)),
+                seasons: [0, 3, 6, 9].map(|s| w.season_offset(frame, s)),
+            }
+        })
     }
 
     /// Growth's share of full at `t` °C.
@@ -144,10 +181,10 @@ impl HabitatClimate {
 
 impl Climate for HabitatClimate {
     fn forage(&self, frame: u16, cx: i32, cz: i32, sub: u32) -> ForageRates {
-        if self.uniform(frame) {
+        let seen = self.seen(frame, cx, cz);
+        let Some(a) = seen.area else {
             return Uniform.forage(frame, cx, cz, sub);
-        }
-        let a = self.area(frame, cx, cz);
+        };
         if a.points == 0 || a.land == 0 {
             return ForageRates {
                 growth_per_day: 0.0,
@@ -155,7 +192,7 @@ impl Climate for HabitatClimate {
                 decay_per_day: 0.0,
             };
         }
-        let t = a.base_celsius + self.world.read().season_offset(frame, sub);
+        let t = a.base_celsius + seen.seasons[((sub % 12) / 3) as usize];
         let capacity = self.tun.capacity * a.land_share() * f64::from(a.vegetation);
         let decay = if t < self.tun.frost {
             self.tun.frost_decay_per_day * f64::from(((self.tun.frost - t) / 10.0).min(1.0))
@@ -174,22 +211,21 @@ impl Climate for HabitatClimate {
     }
 
     fn temperature(&self, frame: u16, cx: i32, cz: i32, sub: u32) -> f32 {
-        if self.uniform(frame) {
+        let seen = self.seen(frame, cx, cz);
+        let Some(a) = seen.area else {
             return Uniform.temperature(frame, cx, cz, sub);
-        }
-        let a = self.area(frame, cx, cz);
+        };
         if a.base_celsius.is_nan() {
             return self.tun.unknown_celsius;
         }
-        a.base_celsius + self.world.read().season_offset(frame, sub)
+        a.base_celsius + seen.seasons[((sub % 12) / 3) as usize]
     }
 
     fn terrain(&self, frame: u16, cx: i32, cz: i32) -> f32 {
-        if self.uniform(frame) {
-            return Uniform.terrain(frame, cx, cz);
+        match self.seen(frame, cx, cz).area {
+            Some(a) => self.terrain_of(&a),
+            None => Uniform.terrain(frame, cx, cz),
         }
-        let a = self.area(frame, cx, cz);
-        self.terrain_of(&a)
     }
 }
 

@@ -92,6 +92,7 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `bridge/Phase1` | wires phase 1 to the tick, the events and the commands. |
 | `industry` | the industry module (C15 to C19, INDUSTRY.md, docs/industry-boundary.md): district detection and the index (`Districts`, `data/mic_rtsim_industry.dat`), the boundary stock sampler (`Sampler`), player ports (`PlayerPorts`), reconciles and damage (`Reconciler`, the `mic_rtsim:reconcile` chunk attachment), the read-only ledger (`Ledgers`), GOOD names (`Goods`), `/rtsim district` (`IndustryCommands`), its own server config (`mic_rtsim-industry-server.toml`) and the plugin API (`IndustryPlugin`, `IndustryApi`). Mod-agnostic: capabilities and NeoForge events only. Choices H1 to H29 in `docs/overnight-choices-industrymc.md`. |
 | `herd` | the vanilla herd adapter (docs/boundary.md §8.5, choices Y8 to Y21 in `docs/overnight-choices-herdsmc.md`): a `SessionPlugin` the core registers itself (`HerdBridge`, commands 0x8700 to 0x87FF, agents 0x48) that materializes the engine's herd groups as vanilla animals with the engine's look, age, shearing and identity seed (`HerdBodies`), steers them toward the herd's waypoints with vanilla AI otherwise (`HerdFollowGoal`), captures them with each member's state, reports kills, shearing, takings and obstacles (`HerdRecords`, `HerdEvents`). |
+| `habitat` | the habitat sampler (docs/boundary.md §10, choices X2-1 to X2-23 in `docs/overnight-choices-worldmodel.md`): a `SessionPlugin` the core registers itself (`HabitatSampler`, commands 0x8900 to 0x89FF) that samples each 64-block cell from its chunks' centre columns once its chunks are loaded (surface, water, ice, biome and its tags, vanilla temperature and downfall, the herd species' spawn shares, chunk-generation animals), under a per-tick budget, and sends HABITAT only when the engine's fingerprint (HABITAT_KNOWN at each session start) differs; `ClimateSource` and `RtsimApi.registerClimate` for a seasons or temperature plugin (`Climates`, vanilla otherwise). |
 | `gametest` | the GameTests, in the `mic_rtsim` namespace, and helpers the plugins' tests share (`RtsimTests`, `FakePlayers`). |
 
 ## The GameTests
@@ -142,6 +143,9 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `aherdwalkstowarditswaypointandturnsonsteer` | sheep (their goal) and goats (their brain's walk target) walk toward the waypoint and turn back on HERD_STEER |
 | `asaveandreloadduplicatesnothing` | vanilla's entity-chunk save leaves the herd's puppets out and keeps a taken sheep; copies of a puppet never join |
 | `afenceproducesanobstaclereport` | sheep steered past a fence stall at it; HERD_OBSTACLE once, from before the fence, toward the waypoint |
+| `habitatissentforageneratedarea` | four cells far out loaded, one painted water and one ice at their points: each crosses once as HABITAT with its masks, plains by Java's dictionary, the flat surface and vanilla plains' sheep share (260 per mille); nothing again while unchanged; a changed cell is sent again, an unchanged one resampled is not; on the native engine the world model holds each with its fingerprint |
+| `aherdfoundedfromthehabitatwalksonland` | native engine only: a quarter of a region far out loaded, its western half painted a sea; the engine founds one herd for the region on the land half; beside a player it materializes on land and none of it walks into the sea for 300 ticks |
+| `habitatsamplercost` | the sampler's cost per cell and per chunk, warm and cold (only with `-PrtsimBench`; results in `bench/results/habitat-sampler.md`) |
 | `theenginesownherdmaterializesnearaplayerandremembersitssheep` | native engine only: a herd founded with HERD_FOUND far out, a player beside it; the engine's group with the engine's colours; a kill drops the engine's count; the player leaves and comes back: the same sheep, never the dead one |
 
 The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
@@ -228,8 +232,8 @@ which scripts the engine's industry commands; each in its own batch):
 - **Ice and Fire** (docs/overnight-choices-iceandfire.md): the pack's In Control edits P13 needs are a
   proposal in `iceandfire/pack-proposal/` (not applied); a real lair structure, settling, and the
   not-ticking, dimension-change and session-end captures are not covered by a GameTest.
-- **Herds** (docs/overnight-choices-herdsmc.md): nothing in the game founds a herd yet (only the test
-  order HERD_FOUND, Y4), and the engine's climate is uniform grassland (Y3); vanilla's own animals are
-  neither adopted nor suppressed (H2-28, Y20); HERD_GROUP_STATE is not read by the engine. Steering
+- **Herds** (docs/overnight-choices-herdsmc.md): herds are founded from the world model (the habitat
+  sampler, X2-11) and their climate is its (X2-9, X2-10); vanilla's own chunk-generation animals are
+  counted as founders but their bodies are neither adopted nor suppressed (X2-13); HERD_GROUP_STATE is not read by the engine. Steering
   over a long walk, a dispenser's shearing, and the dimension-change, session-end and
   switch-off captures are not covered by a GameTest.
