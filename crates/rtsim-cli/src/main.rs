@@ -29,11 +29,22 @@ usage:
       The iron line (rtsim-industry's synthetic scenario) for N days (at least 10): learning,
       replay, reconciles, threats, and simulated against control. Writes JSON to FILE
       (default bench/results/sim-industry.json). Exits 1 if a check fails.
-  rtsim-cli sim phase1 [--days N] [--seed S] [--every D] [--no-script] [--check] [--out DIR | --no-write]
+  rtsim-cli sim phase1 [--days N] [--seed S] [--every D] [--no-script] [--check] [--trace D]
+                       [--rules LIST] [--out DIR | --no-write]
       Runs the phase 1 scenario (PLAN.md §8) on the synthetic world: prices, stocks, flows,
       treasuries, exchange rates and news spread, with a scripted player (dump, rob, rescue).
       Writes JSON to DIR (default scenario/results). --check verifies conservation after every
-      event (slow).
+      event (slow). --trace D prints what caused the market events of the last D days.
+      --rules sets the markets' decision rules for comparisons: round1, or name=value pairs
+      (slack, money, band, up, ask, div; see rtsim_trade::tunables::Rules).
+  rtsim-cli sim quiet [--markets N] [--days D] [--every E] [--seed S] [--genesis G] [--rules LIST]
+                     [--trace D] [--grow] [--no-growth] [--no-bands]
+      Runs a closed world with no player (the phase 1 world, or a grid of N villages) and prints
+      market events per market per day for each E-day window: does it go quiet? --grow builds
+      the phase 1 world by joining its villages one a day (C22).
+  rtsim-cli sim memory [--markets N] [--days D]
+      Builds a grid of N villages (default 1,024), runs D days (default 20) and prints where the
+      memory goes, per market, by component, next to the counting allocator's total.
   rtsim-cli sim dragons [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
       Phase 2's dragons (PLAN.md §9) from autumn into winter on the synthetic world, with a
       scripted player and a farm district: grudges, heirs, bored departures, raids, prey by
@@ -145,6 +156,8 @@ fn main() -> ExitCode {
                 check: false,
                 out: Some(PathBuf::from("scenario/results")),
                 every: 10,
+                trace_days: 0,
+                rules: None,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -162,6 +175,15 @@ fn main() -> ExitCode {
                         Some(n) if n > 0 => o.every = n,
                         _ => return usage("--every needs a positive number"),
                     },
+                    "--trace" => match num(it.next()) {
+                        Some(n) => o.trace_days = n,
+                        None => return usage("--trace needs a number of days"),
+                    },
+                    "--rules" => match it.next().map(|r| rtsim_trade::Rules::parse(r)) {
+                        Some(Ok(r)) => o.rules = Some(r),
+                        Some(Err(e)) => return usage(&format!("--rules: {e}")),
+                        None => return usage("--rules needs a list"),
+                    },
                     "--no-script" => o.script = false,
                     "--check" => o.check = true,
                     "--no-write" => o.out = None,
@@ -175,6 +197,79 @@ fn main() -> ExitCode {
             ExitCode::from(sim::phase1::run(o) as u8)
         }
         ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
+        ["sim", "quiet", rest @ ..] => {
+            let mut o = sim::quiet::Options {
+                markets: 0,
+                days: 400,
+                every: 25,
+                seed: 42,
+                genesis: 500,
+                rules: None,
+                trace_days: 0,
+                grow: false,
+                growth: true,
+                bands: true,
+            };
+            let mut it = rest.iter();
+            while let Some(&a) = it.next() {
+                let num = |v: Option<&&str>| v.and_then(|n| n.parse::<u64>().ok());
+                match a {
+                    "--markets" => match num(it.next()) {
+                        Some(n) => o.markets = n,
+                        None => return usage("--markets needs a number"),
+                    },
+                    "--days" => match num(it.next()) {
+                        Some(n) => o.days = n,
+                        None => return usage("--days needs a number"),
+                    },
+                    "--every" => match num(it.next()) {
+                        Some(n) if n > 0 => o.every = n,
+                        _ => return usage("--every needs a positive number"),
+                    },
+                    "--seed" => match num(it.next()) {
+                        Some(n) => o.seed = n,
+                        None => return usage("--seed needs a number"),
+                    },
+                    "--trace" => match num(it.next()) {
+                        Some(n) => o.trace_days = n,
+                        None => return usage("--trace needs a number of days"),
+                    },
+                    "--grow" => o.grow = true,
+                    "--no-growth" => o.growth = false,
+                    "--no-bands" => o.bands = false,
+                    "--genesis" => match num(it.next()) {
+                        Some(n) => o.genesis = n as i64,
+                        None => return usage("--genesis needs thousandths of target"),
+                    },
+                    "--rules" => match it.next().map(|r| rtsim_trade::Rules::parse(r)) {
+                        Some(Ok(r)) => o.rules = Some(r),
+                        Some(Err(e)) => return usage(&format!("--rules: {e}")),
+                        None => return usage("--rules needs a list"),
+                    },
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            ExitCode::from(sim::quiet::run(o) as u8)
+        }
+        ["sim", "memory", rest @ ..] => {
+            let (mut markets, mut days) = (1_024u64, 20u64);
+            let mut it = rest.iter();
+            while let Some(&a) = it.next() {
+                let num = |v: Option<&&str>| v.and_then(|n| n.parse::<u64>().ok());
+                match a {
+                    "--markets" => match num(it.next()) {
+                        Some(n) if n > 0 => markets = n,
+                        _ => return usage("--markets needs a positive number"),
+                    },
+                    "--days" => match num(it.next()) {
+                        Some(n) => days = n,
+                        None => return usage("--days needs a number"),
+                    },
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            ExitCode::from(sim::memory::run(markets, days) as u8)
+        }
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS

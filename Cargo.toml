@@ -30,12 +30,26 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # Property tests (SCALE.md §2 invariants, §4 composition rule). MIT OR Apache-2.0.
 proptest = "1"
+# The native host's plugin runtime and, for rtsim-jni's tests, the host itself (in process), from
+# the private repository MinecraftIndustrialComplex/mic-native at a pinned commit (choice J1). MPL-2.0.
+mic-native-rt = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
+mic-native-host = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
+# The JNI binding, pinned as mic-native and Deep Time pin it. Only rtsim-jni uses it. MIT OR Apache-2.0.
+jni = "=0.22.4"
 
 [profile.release]
 # Keep unwinding: the JNI crate (later) catches panics at every export (PLAN.md §2).
 panic = "unwind"
 lto = "thin"
 debug = "line-tables-only"
+
+[profile.ship]
+# What ships: release plus fat LTO in one codegen unit, as mic_native's and Deep Time's natives
+# (tools/natives/build-natives.sh). Everyday builds stay on `release`.
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = false
 
 [profile.dev]
 # As Deep Time: the kernel's own crates at -O1 so property tests finish, with debug assertions and

@@ -32,6 +32,12 @@ pub enum Body {
     Llama,
     /// A ribbit merchant (`RibbitData` profession merchant).
     RibbitMerchant,
+    /// A touring band's master (P16): its musicians gather around it to play.
+    RibbitMaster,
+    /// A touring band's musician (a ribbit with an instrument in its `RibbitData`).
+    RibbitMusician,
+    /// A ribbit resident spawned for a grown house (P17).
+    RibbitResident,
 }
 
 /// Which group shape a caravan has (C25; PLAN.md §8.3).
@@ -94,6 +100,8 @@ pub struct Traveller {
     pub progress_milli: u32,
     pub departed: Tick,
     pub arrives: Tick,
+    /// Player bases on its road it stops at, to trade with the players there (C26, P30).
+    pub stops: Vec<usize>,
 }
 
 /// One member of an individual caravan.
@@ -144,6 +152,9 @@ pub struct Caravan {
     pub notable: Option<ActorId>,
     /// The price each good was quoted at (the destination's, in its currency), for the sale.
     pub quotes: BTreeMap<GoodId, i64>,
+    /// What it traded with players for its home: the coin a sale brought, the goods it bought.
+    /// Kept apart from the flow's cargo (which belongs to the destination) and handed in at home.
+    pub purse: BTreeMap<GoodId, Amount>,
 }
 
 impl Caravan {
@@ -162,6 +173,35 @@ impl Caravan {
 
     pub fn is_empty(&self) -> bool {
         self.cargo().values().all(|&a| a == 0)
+    }
+
+    /// Everything it holds: the flow's cargo and its purse.
+    pub fn holdings(&self) -> BTreeMap<GoodId, Amount> {
+        let mut out = self.cargo();
+        for (&g, &a) in &self.purse {
+            if a != 0 {
+                *out.entry(g).or_default() += a;
+            }
+        }
+        out
+    }
+
+    /// Takes up to `amount` of `g` from the purse; returns what was taken.
+    pub fn take_purse(&mut self, g: GoodId, amount: Amount) -> Amount {
+        let have = self.purse.entry(g).or_default();
+        let t = (*have).min(amount).max(0);
+        *have -= t;
+        if *have == 0 {
+            self.purse.remove(&g);
+        }
+        t
+    }
+
+    /// Puts `amount` of `g` into the purse.
+    pub fn give_purse(&mut self, g: GoodId, amount: Amount) {
+        if amount > 0 {
+            *self.purse.entry(g).or_default() += amount;
+        }
     }
 
     /// Whether anyone is left to carry on (a trader or a merchant alive and present).

@@ -39,12 +39,12 @@ impl World {
                 let l = m.line_mut(g);
                 let t = amount.min(l.stock).max(0);
                 l.stock -= t;
-                l.book.destroyed += i128::from(t);
+                l.book.destroyed += t;
                 t
             })
             .unwrap_or(0);
         if taken > 0 {
-            self.market_event(i, at, true);
+            self.market_event(i, at, crate::world::Cause::Predator);
         }
         taken
     }
@@ -80,7 +80,7 @@ impl World {
             let m = self.market_at(i, at);
             for (gi, l) in m.lines.iter().enumerate() {
                 if l.book.destroyed != 0 {
-                    *out.entry(GoodId(gi as u16)).or_default() += l.book.destroyed;
+                    *out.entry(GoodId(gi as u16)).or_default() += i128::from(l.book.destroyed);
                 }
             }
         }

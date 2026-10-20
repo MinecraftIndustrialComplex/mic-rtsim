@@ -13,18 +13,20 @@ hold the industry design and the research behind them.
 | Path | What |
 |---|---|
 | `crates/rtsim-kernel` | The engine kernel: no Minecraft, no JNI, no threads of its own (PLAN.md §5.1). |
-| `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10 (now with market and edge sweeps); `rtsim-cli sim phase1`, the phase 1 scenario; `bench industry` and `sim industry`. |
+| `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10 (now with market and edge sweeps); `rtsim-cli sim phase1`, the phase 1 scenario; `sim quiet`, does a closed world settle; `sim memory`, where a world's memory goes; `bench industry` and `sim industry`. |
 | `crates/rtsim-industry` | The industry engine (INDUSTRY.md, C15 to C19), headless: learning, replay, reconciliation, links, deposits, threats, the ledger. Wire records in `docs/industry-boundary.md`; choices in `docs/overnight-choices-industry.md`. |
 | `crates/rtsim-settle` | Settlements as rows: two cultures, villages, player bases and havens as market nodes, edges by P18's recommended rule (PLAN.md §8.2). |
-| `crates/rtsim-trade` | Storehouse markets (C13): labour costs with Hawkins-Simon, anchors, price as a function of stock, the exact player trade integral, the line law in closed form, money, exchange lines, offers through the treasury (C14, C23). |
-| `crates/rtsim-travel` | Flows on edges as pipelines with holes, the caravan lattice, news snapshots, allocation by margin, caravans and groups, the leg index, raids to havens (SCALE.md §3, PLAN.md §8.6). |
+| `crates/rtsim-trade` | Storehouse markets (C13): labour costs with Hawkins-Simon, anchors, price as a function of stock, the exact player trade integral, the line law in closed form (production below the target, a sink above the ceiling), money, exchange lines, offers through the treasury (C14, C23), and the decision rules that let a closed world settle (`Rules`). |
+| `crates/rtsim-travel` | Flows on edges as pipelines with holes, the caravan lattice with its dock wait, news snapshots, allocation by margin with rationing, caravans and groups, the leg index, the road index, raids to havens (SCALE.md §3, PLAN.md §8.6). |
 | `crates/rtsim-knowledge` | Reports as 32-byte rows, witnesses, sentiment with lazy decay, noticeboards and gossip packets, vanilla gossip writes, notables and heirs, temperament (PLAN.md §5.6, §5.7, §8.7). |
-| `crates/rtsim-world` | The phase 1 composition: build and join, the step loop, flows and payments, news at the speed of trade, caravans near players, player trades, conservation and state hash. Scaffolding until the module registry exists. |
+| `crates/rtsim-world` | The phase 1 composition: build and join, the step loop, flows and payments, news at the speed of trade, caravans near players, player trades, ribbit sorcerers, growth and touring bands, player bases and caravan trades, what players see, conservation, state hash and memory breakdown. Scaffolding until the module registry exists. |
+| `crates/rtsim-jni` | The native link: a `mic_native` plugin (cdylib) that owns the four boundary buffers, runs the engine step on the host's background pool and writes pages on its IO lane; a minimal world of puppet agents for now. The only crate that uses `jni`. |
+| `tools/natives/build-natives.sh` | rtsim-jni for the eight platforms plus x86-64-v3, in mic-native's dev shell (`nix develop ../mic-native -c bash tools/natives/build-natives.sh`). |
 | `scenario/results/` | Output of `rtsim-cli sim phase1`. |
-| `docs/overnight-choices-phase1.md` | The phase 1 engine's reversible choices (E1 to E42), for Ben's review. |
+| `docs/overnight-choices-phase1.md` | The phase 1 engine's reversible choices (E1 to E42, round 2's E43 to E68 with before and after numbers), for Ben's review. |
 | `tools/ci/scale-check.sh` | The CI-style scale check: fails when a growth slope exceeds its contract. |
 | `bench/results/` | Committed bench results, with the machine and conditions. |
-| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies) with a pure-Java stub engine; GameTests. See `neoforge/README.md`. |
+| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies), its `NativeEngine` over rtsim-jni and a pure-Java stub engine for tests; GameTests. See `neoforge/README.md`. |
 | `docs/boundary.md` | The binary contract between the bridge and the engine: four buffers, the hand-over, every record. |
 
 The kernel's modules:
@@ -63,9 +65,10 @@ The industry engine's modules (`crates/rtsim-industry`):
 ./target/release/rtsim-cli bench industry    # quiet and busy district sweeps, elapsed time; --quick, --check
 ```
 
-Not built yet: the native host `mic_native`, the JNI crate (rtsim-jni), the module registry the
-phase 1 crates will register with (PLAN.md §5.4), paging with a residency budget (A16), and the
-parallel step.
+The native host `mic_native` lives in its own repository (`mods/mic-native`, A18); rtsim-jni
+depends on its runtime crate by git (docs/overnight-choices-jni.md J1). Not built yet: the module
+registry the phase 1 crates will register with (PLAN.md §5.4), paging with a residency budget
+(A16), and the parallel step.
 
 ## Build and test
 
@@ -85,12 +88,18 @@ nix develop -c cargo fmt --all --check
 nix develop -c flock /tmp/mic-rtsim-heavy.lock nice -n 10 env CARGO_BUILD_JOBS=6 cargo build --release -p rtsim-cli
 ./target/release/rtsim-cli sim phase1                     # 120 days, scripted player, JSON to scenario/results/
 ./target/release/rtsim-cli sim phase1 --days 60 --check   # conservation checked after every event
+./target/release/rtsim-cli sim phase1 --trace 10          # what caused the last 10 days' market events
+./target/release/rtsim-cli sim quiet --days 1000          # a closed world, no player: does it settle?
+./target/release/rtsim-cli sim quiet --markets 1024       # the same on the bench's grid of villages
+./target/release/rtsim-cli sim memory --markets 1024      # where the memory goes, per market
 ```
 
 Six human villages, three ribbit villages beside a geode, a pillager haven raiding one road and a
 player base trade for months; the run prints prices, stocks, treasuries, exchange rates, the
-busiest flows, and how far a robbery and a rescue have spread. Every number in the world is a
-PLACEHOLDER (P9, P18).
+busiest flows, how far two robberies and a rescue have spread, the touring bands, houses grown, the
+sorcerers' answers, a caravan trade at the player's base, and the size of the caravans on the roads.
+Every number in the world is a PLACEHOLDER (P9, P18). `--rules` turns any of the quiescence rules
+off for comparison (`rtsim_trade::Rules`; `--rules round1` is round 1's).
 
 ## The scale bench
 

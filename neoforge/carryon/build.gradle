@@ -38,6 +38,8 @@ neoForge {
             type = 'gameTestServer'
             systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
             systemProperty 'mic_rtsim.gametest', 'true'
+            // The session's engine, as the core's run: native (rtsim-jni) unless -PrtsimEngine=stub.
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
             jvmArgument '-Xmx3G'
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
@@ -56,6 +58,8 @@ neoForge {
 
 dependencies {
     implementation project(':core')
+    // mic_native, the native host the core requires (and the Rust engine's host).
+    runtimeOnly project(':core').micNativeFiles
     compileOnly files("${packMods}/${carryon_jar}")
     runtimeOnly files("${packMods}/${carryon_jar}")
 }

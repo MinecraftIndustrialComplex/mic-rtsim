@@ -56,16 +56,27 @@ pub struct Node {
     pub raids_in: Vec<DirRef>,
     /// Neighbour node indices, never evicted from the news ring.
     pub neighbours: Vec<usize>,
+    /// Touring bands that stop here: (band, stop index on its circuit).
+    pub bands: Vec<(u32, u32)>,
     /// The last snapshot this node sent, to tell whether the next one is news.
     pub last_sent: Option<Arc<Snapshot>>,
     pub costs: Costs,
     pub local: Local,
 }
 
+/// How a news packet travels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Via {
+    /// With the next caravan (or scout) on this road.
+    Road(DirRef),
+    /// With a touring band, leaving this stop of its circuit (P16).
+    Band { band: u32, stop: u32 },
+}
+
 /// A news packet waiting for its caravan, or on the road.
 #[derive(Clone, Debug)]
 pub struct PacketData {
-    pub dir: DirRef,
+    pub via: Via,
     pub from: usize,
     pub to: usize,
     pub departs: u64,
@@ -84,6 +95,8 @@ pub(crate) enum Ev {
     Deliver(u32),
     /// An individual caravan reaches the end of its leg.
     Arrive { caravan: CaravanId, generation: u32 },
+    /// A ribbit village's growth clock runs out (P17).
+    Grow { node: usize, stamp: u32 },
 }
 
 /// Conserved quantities outside markets and pipelines: what left the world to players or was
@@ -93,6 +106,60 @@ pub struct Outside {
     pub player_in: BTreeMap<GoodId, i128>,
     pub player_out: BTreeMap<GoodId, i128>,
     pub destroyed: BTreeMap<GoodId, i128>,
+}
+
+/// Why a market event ran (for the trace and the quiescence diagnostics).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Cause {
+    /// One of the market's own breakpoints.
+    Breakpoint,
+    /// A pipeline's arrivals change.
+    Wake,
+    /// A news packet arrived.
+    Delivery,
+    /// An individual caravan arrived.
+    Arrival,
+    /// A player traded (at a storehouse or a base).
+    Player,
+    /// The village grew a house and its population stepped up (P17).
+    Growth,
+    /// A predator with no haven took stock (PLAN.md §9: a dragon raided the village).
+    Predator,
+}
+
+impl Cause {
+    /// Whether the event sends news even when nothing changed in kind.
+    pub fn forces_news(self) -> bool {
+        matches!(
+            self,
+            Cause::Breakpoint | Cause::Player | Cause::Growth | Cause::Predator
+        )
+    }
+}
+
+/// One market event, as the trace records it ([`World::trace`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceRow {
+    pub at: Tick,
+    pub node: usize,
+    pub cause: Cause,
+    /// Pipelines whose rate changed.
+    pub changed: u32,
+    /// Which: (destination, good, pipeline, rate before, rate after).
+    pub flows: Vec<(usize, GoodId, crate::flows::PipeKind, Amount, Amount)>,
+    /// Whether a snapshot went out.
+    pub news: bool,
+    /// Goods whose level or advertised rate differs from the last snapshot sent, with the levels
+    /// (last sent, now) and advertised rates (last sent, now).
+    pub diffs: Vec<(
+        GoodId,
+        rtsim_trade::Level,
+        rtsim_trade::Level,
+        Amount,
+        Amount,
+    )>,
+    /// Whether `can_pay` or `refuses_cash` changed.
+    pub cash_changed: bool,
 }
 
 /// Counters for the profiler, the bench and the quiescence test.
@@ -108,6 +175,10 @@ pub struct Stats {
     pub caravan_arrivals: u64,
     pub promotions: u64,
     pub player_trades: u64,
+    /// Houses ribbit villages booked (P17).
+    pub houses: u64,
+    /// News packets touring bands carried (P16).
+    pub band_packets: u64,
 }
 
 /// What the engine asks Minecraft to do (the bridge's command buffer, later).
@@ -115,6 +186,12 @@ pub struct Stats {
 pub enum Command {
     /// Write a report into a vanilla village's gossip (C20).
     VanillaGossip(VanillaGossip),
+    /// A ribbit village's feelings toward players (the sorcerers' filter, PLAN.md §8.8).
+    Sentiment(crate::ribbits::SentimentSnapshot),
+    /// Book a house (P17).
+    PlaceHouse(crate::ribbits::PlaceHouse),
+    /// Spawn a grown house's resident.
+    SpawnResident(crate::ribbits::SpawnResident),
 }
 
 pub struct World {
@@ -127,7 +204,7 @@ pub struct World {
     pub edges: Vec<Edge>,
     pub knowledge: Knowledge,
     pub(crate) wheel: TimingWheel<Ev>,
-    pub(crate) packets: BTreeMap<u32, PacketData>,
+    pub packets: BTreeMap<u32, PacketData>,
     /// Wakes already booked, so two pipeline changes landing at one boundary wake a market once.
     pub(crate) wakes: std::collections::BTreeSet<(Tick, usize)>,
     pub(crate) next_packet: u32,
@@ -141,9 +218,35 @@ pub struct World {
     /// Each culture's mint cost, worker-days per coin.
     pub mint_cost: [f64; 2],
     pub(crate) now: Tick,
+    /// Every market event, when enabled ([`World::enable_trace`]). Diagnostics only: it grows
+    /// with time.
+    pub trace: Option<Vec<TraceRow>>,
+    /// Players the bridge reported (UUIDs, positions, interest areas).
+    pub players: BTreeMap<ActorId, crate::interest::PlayerState>,
+    /// Which roads pass near a place.
+    pub roads: rtsim_travel::RoadIndex,
+    /// Touring bands (P16).
+    pub bands: Vec<crate::ribbits::Band>,
+    /// Ribbit villages' growth clocks (P17).
+    pub growth: BTreeMap<usize, crate::ribbits::Growth>,
+    /// Booked houses not placed yet: PLACE_HOUSE op to node.
+    pub(crate) houses_pending: BTreeMap<u64, usize>,
+    /// Ribbit villages whose feelings may have changed since the last commands.
+    pub(crate) sentiment_dirty: std::collections::BTreeSet<usize>,
+    /// The engine's operation id counter.
+    pub(crate) op_counter: u64,
+    /// Player bases' markers (P30).
+    pub bases: BTreeMap<usize, crate::bases::BaseState>,
+    /// Travellers made individual rows, by key, while their departure could still be sampled.
+    pub(crate) promoted: BTreeMap<rtsim_travel::CaravanKey, CaravanId>,
 }
 
 impl World {
+    /// Starts recording every market event in [`World::trace`].
+    pub fn enable_trace(&mut self) {
+        self.trace.get_or_insert_with(Vec::new);
+    }
+
     /// Builds a world from its settlements at once: markets, edges by the distance rule, actors
     /// and holders, and a first round of news from every market so trade can start.
     pub fn build(cfg: WorldConfig, goods: Goods, book: RecipeBook, data: Vec<NodeData>) -> World {
@@ -211,7 +314,17 @@ impl World {
             );
         }
         for i in 0..w.nodes.len() {
+            w.maybe_band(i, Tick::ZERO);
+        }
+        for i in 0..w.nodes.len() {
             w.emit(i, Tick::ZERO, true);
+        }
+        // The tables are built: no slack from doubling (overnight choice E58).
+        w.edges.shrink_to_fit();
+        w.nodes.shrink_to_fit();
+        for n in &mut w.nodes {
+            n.out.shrink_to_fit();
+            n.neighbours.shrink_to_fit();
         }
         w
     }
@@ -247,6 +360,16 @@ impl World {
             lints: Vec::new(),
             mint_cost,
             now: Tick::ZERO,
+            trace: None,
+            players: BTreeMap::new(),
+            roads: rtsim_travel::RoadIndex::new(),
+            bands: Vec::new(),
+            growth: BTreeMap::new(),
+            houses_pending: BTreeMap::new(),
+            sentiment_dirty: std::collections::BTreeSet::new(),
+            op_counter: 0,
+            bases: BTreeMap::new(),
+            promoted: BTreeMap::new(),
         }
     }
 
@@ -278,6 +401,7 @@ impl World {
             out: Vec::new(),
             raids_in: Vec::new(),
             neighbours: Vec::new(),
+            bands: Vec::new(),
             last_sent: None,
             costs,
             local,
@@ -290,9 +414,26 @@ impl World {
             self.nodes[a].key.min(self.nodes[b].key),
             self.nodes[a].key.max(self.nodes[b].key),
         )[0];
-        let idle = self.cfg.trade.quantum.days(self.cfg.scout_days);
+        let dock = self.cfg.trade.dock_wait_quanta;
+        // Scouts never wait longer at a dock than goods do.
+        let idle = self
+            .cfg
+            .trade
+            .quantum
+            .days(self.cfg.scout_days)
+            .min(dock.max(1));
         self.edges
-            .push(Edge::new(a, b, length, d, seed, border, idle));
+            .push(Edge::new(a, b, length, d, dock, seed, border, idle));
+        let (pa, pb) = (self.nodes[a].pos, self.nodes[b].pos);
+        if pa.frame == pb.frame {
+            self.roads.add(
+                e,
+                pa.frame,
+                (i64::from(pa.x), i64::from(pa.z)),
+                (i64::from(pb.x), i64::from(pb.z)),
+                i64::from(self.cfg.view_blocks),
+            );
+        }
         self.nodes[a].out.push(DirRef { edge: e, dir: 0 });
         self.nodes[b].out.push(DirRef { edge: e, dir: 1 });
         self.nodes[a].neighbours.push(b);
@@ -372,14 +513,60 @@ impl World {
         let i = self.nodes.len();
         // Genesis stock is ledgered in the line books, as at build.
         self.add_node(sid, &d, m, costs, local);
-        for (j, len, dq, border) in links {
+        for &(j, len, dq, border) in &links {
             self.add_edge(i, j, len, dq, border);
+            if border {
+                self.open_exchange(j, i, dq, at);
+            }
+        }
+        // A ribbit village with ribbit neighbours gets a band; so may a neighbour that had none.
+        self.maybe_band(i, at);
+        for j in self.nodes[i].neighbours.clone() {
+            self.maybe_band(j, at);
         }
         self.emit(i, at, true);
         for j in self.nodes[i].neighbours.clone() {
             self.emit(j, at, true);
         }
         i
+    }
+
+    /// Node `j` just gained a border edge to `newcomer` (C22): if it kept no exchange line for
+    /// the newcomer's currency, it opens one now, at mint parity within the gold points of this
+    /// edge, as a border market built at once would have (overnight choice E54). Without it the
+    /// foreign coin it is paid in would sink at once (its line's target is zero).
+    fn open_exchange(&mut self, j: usize, newcomer: usize, d: u64, at: Tick) {
+        let (Some(their), Some(mine)) = (
+            self.nodes[newcomer].kind.culture(),
+            self.nodes[j].kind.culture(),
+        ) else {
+            return;
+        };
+        let Some(g) = self.goods.currency(their) else {
+            return;
+        };
+        let region = self.nodes[j].region;
+        let l_mint = self.mint_cost[mine.index()];
+        let (goods, tun, mint_cost) = (&self.goods, &self.cfg.trade, self.mint_cost);
+        self.markets.apply(region, at, |m, _| {
+            if m.line(g).target > 0 || m.currency.is_none() {
+                return;
+            }
+            let mbar = m.line(m.currency.expect("checked")).target;
+            let (target, curve) = rtsim_trade::build::exchange_line(
+                goods,
+                tun,
+                g,
+                their,
+                l_mint,
+                mint_cost,
+                mbar,
+                Some(d),
+            );
+            m.line_mut(g).target = target;
+            m.goods[g.index()].curve = curve;
+            m.recompute();
+        });
     }
 
     /// Raiders from the haven at node `haven` take `share_milli` thousandths of everything moving
@@ -426,6 +613,12 @@ impl World {
         self.now
     }
 
+    /// Entries in the world's own wheel (deliveries, wakes, arrivals, growth checks), for
+    /// diagnostics.
+    pub fn world_wheel_len(&self) -> usize {
+        self.wheel.len()
+    }
+
     pub fn node_of_key(&self, key: u64) -> Option<usize> {
         self.nodes.iter().position(|n| n.key == key)
     }
@@ -468,7 +661,7 @@ impl World {
                 self.now = self.now.max(at);
                 let i = self.node_of_region(h);
                 self.stats.breakpoints += 1;
-                self.market_event(i, at, true);
+                self.market_event(i, at, Cause::Breakpoint);
                 continue;
             }
             if tw == Some(limit) {
@@ -512,18 +705,20 @@ impl World {
             Ev::Wake(i) => {
                 self.wakes.remove(&(at, i));
                 self.stats.wakes += 1;
-                self.market_event(i, at, false);
+                self.market_event(i, at, Cause::Wake);
             }
             Ev::Deliver(p) => self.deliver(p, at),
             Ev::Arrive {
                 caravan,
                 generation,
             } => self.caravan_arrives(caravan, generation, at),
+            Ev::Grow { node, stamp } => self.grow(node, stamp, at),
         }
     }
 
     /// Commands for the bridge: vanilla gossip writes and the like, oldest first.
     pub fn take_commands(&mut self) -> Vec<Command> {
+        self.flush_sentiments();
         std::mem::take(&mut self.outbox)
     }
 

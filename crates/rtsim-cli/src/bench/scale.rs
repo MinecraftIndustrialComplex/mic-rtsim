@@ -512,7 +512,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Cpu,
                     1.3,
                     1.0,
-                    "an active world: events per market per day are flat (15 to 20), so the algorithm is linear in markets; cost per event still rises (7 to 15 us from 64 to 4,096 markets) as the working set (about 25 KB per market against the research's 1 KB estimate) leaves the caches. Layout work, not an algorithmic slope. A world at rest costs nothing (two_markets test)",
+                    "a world still settling (days 10 to 20): events per market per day are about flat across sizes, so the algorithm is linear in markets; cost per event rises as the working set (about 16 KB per market after round 2, against the research's 1 KB estimate) leaves the caches. Layout work, not an algorithmic slope. A settled world costs a tenth or less of this (sim quiet), and a world at rest nothing",
                 ),
                 contract(
                     Metric::Heap,

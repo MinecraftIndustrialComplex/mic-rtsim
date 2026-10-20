@@ -5,7 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.body.vanilla.WanderingTraderAdapter;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
@@ -39,16 +39,16 @@ public final class CaravanGameTests {
     private CaravanGameTests() {}
 
     public static void spawnCaravan(GameTestHelper helper, long agent, int epoch) {
-        RtsimTests.stub().script(caravanCommand(helper, agent, epoch));
+        RtsimTests.engine().spawnTogether(caravan(helper, agent, epoch));
     }
 
-    public static java.util.function.Consumer<StubEngine.CommandOut> caravanCommand(GameTestHelper helper, long agent, int epoch) {
+    public static ScriptedEngine.SpawnSpec caravan(GameTestHelper helper, long agent, int epoch) {
         Vec3 at = RtsimTests.centre(helper);
-        return RtsimTests.stub().spawnGroupCommand(agent, epoch, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
-                StubEngine.MemberSpec.plain(0),
-                new StubEngine.MemberSpec(1, 0f, 2, 3, List.of(new StubEngine.ItemSpec(0, "minecraft:emerald", 12),
-                        new StubEngine.ItemSpec(4, "minecraft:wheat", 30))),
-                StubEngine.MemberSpec.plain(2)));
+        return new ScriptedEngine.SpawnSpec(agent, epoch, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
+                ScriptedEngine.MemberSpec.plain(0),
+                new ScriptedEngine.MemberSpec(1, 0f, 2, 3, List.of(new ScriptedEngine.ItemSpec(0, "minecraft:emerald", 12),
+                        new ScriptedEngine.ItemSpec(4, "minecraft:wheat", 30))),
+                ScriptedEngine.MemberSpec.plain(2)));
     }
 
     /** A chunk far from every test, forced so that its neighbours are loaded but not entity-ticking. */
@@ -124,28 +124,28 @@ public final class CaravanGameTests {
                         check(b + " was removed by the bridge (DISCARDED in its capture)", b.getRemovalReason() == Entity.RemovalReason.DISCARDED);
                     }
                     check("no member was taken or removed by anything else",
-                            RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty());
+                            RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).isEmpty());
                     check("no lead dropped at the caravan", leads(level, new AABB(helper.absolutePos(BlockPos.ZERO)).inflate(16)) == 0);
                     check("no lead dropped at the frozen llama", leads(level, new AABB(frozenAt).inflate(16)) == 0);
                     level.setChunkForced(forced.x, forced.z, false);
                 })
-                .thenWaitUntil(() -> check("the stub received the capture",
-                        !RtsimTests.recordsFor(RtsimTests.stub(), Obs.DEMATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(() -> check("the engine received the capture",
+                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).isEmpty()))
                 .thenExecute(() -> {
-                    List<StubEngine.Received> recs = RtsimTests.allFor(RtsimTests.stub(), agent);
+                    List<ScriptedEngine.Received> recs = RtsimTests.allFor(RtsimTests.engine(), agent);
                     List<Integer> kinds = new ArrayList<>();
-                    for (StubEngine.Received r : recs)
+                    for (ScriptedEngine.Received r : recs)
                         kinds.add(r.kind());
                     record("caravan", "journaled record kinds for the agent", kinds);
                     check("MATERIALIZED, three MEMBER_STATEs, DEMATERIALIZED: " + kinds, kinds.equals(List.of(
                             Obs.MATERIALIZED, Obs.MEMBER_STATE, Obs.MEMBER_STATE, Obs.MEMBER_STATE, Obs.DEMATERIALIZED)));
-                    StubEngine.Received demat = recs.get(4);
+                    ScriptedEngine.Received demat = recs.get(4);
                     check("captured because a member stopped ticking", demat.aux() == Obs.Dematerialized.NOT_TICKING);
                     check("three members captured", demat.view().getInt(Obs.Dematerialized.MEMBERS) == 3);
                     long t = RtsimTests.gameTimeOf(demat);
                     for (int i = 1; i <= 3; i++)
                         check("member state " + i + " is from the capture tick", RtsimTests.gameTimeOf(recs.get(i)) == t);
-                    StubEngine.Received llama1 = recs.get(2).aux() == 1 ? recs.get(2) : recs.get(1).aux() == 1 ? recs.get(1) : recs.get(3);
+                    ScriptedEngine.Received llama1 = recs.get(2).aux() == 1 ? recs.get(2) : recs.get(1).aux() == 1 ? recs.get(1) : recs.get(3);
                     check("llama 1's captured state lists its two cargo stacks", llama1.view().getInt(Obs.MemberState.ITEM_COUNT) == 2);
                     check("llama 1's captured strength", llama1.view().getInt(Obs.MemberState.BODY_B) == 3);
                 })
@@ -173,13 +173,13 @@ public final class CaravanGameTests {
                     for (Entity b : bodies)
                         check(b + " was removed", b.isRemoved());
                 })
-                .thenWaitUntil(() -> check("the stub received the capture",
-                        !RtsimTests.recordsFor(RtsimTests.stub(), Obs.DEMATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(() -> check("the engine received the capture",
+                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received demat = RtsimTests.recordsFor(RtsimTests.stub(), Obs.DEMATERIALIZED, agent).get(0);
+                    ScriptedEngine.Received demat = RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).get(0);
                     check("captured as unloaded", demat.aux() == Obs.Dematerialized.UNLOADED);
                     check("all three members captured", demat.view().getInt(Obs.Dematerialized.MEMBERS) == 3);
-                    check("three member states", RtsimTests.recordsFor(RtsimTests.stub(), Obs.MEMBER_STATE, agent).size() == 3);
+                    check("three member states", RtsimTests.recordsFor(RtsimTests.engine(), Obs.MEMBER_STATE, agent).size() == 3);
                 })
                 .thenSucceed();
     }
@@ -195,17 +195,17 @@ public final class CaravanGameTests {
         long[] agents = {RtsimTests.newAgent(), RtsimTests.newAgent(), RtsimTests.newAgent()};
         // One scripted unit, so all three land in the same step's command buffer; its own batch, so no
         // other test's spawns share the tick's quota.
-        RtsimTests.stub().scriptTogether(caravanCommand(helper, agents[0], 1), caravanCommand(helper, agents[1], 1),
-                caravanCommand(helper, agents[2], 1));
+        RtsimTests.engine().spawnTogether(caravan(helper, agents[0], 1), caravan(helper, agents[1], 1),
+                caravan(helper, agents[2], 1));
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     for (long a : agents)
-                        check("agent " + a + " materialized", !RtsimTests.recordsFor(RtsimTests.stub(), Obs.MATERIALIZED, a).isEmpty());
+                        check("agent " + a + " materialized", !RtsimTests.recordsFor(RtsimTests.engine(), Obs.MATERIALIZED, a).isEmpty());
                 })
                 .thenExecute(() -> {
                     long[] t = new long[3];
                     for (int i = 0; i < 3; i++) {
-                        StubEngine.Received m = RtsimTests.recordsFor(RtsimTests.stub(), Obs.MATERIALIZED, agents[i]).get(0);
+                        ScriptedEngine.Received m = RtsimTests.recordsFor(RtsimTests.engine(), Obs.MATERIALIZED, agents[i]).get(0);
                         t[i] = RtsimTests.gameTimeOf(m);
                         check("caravan " + i + " materialized whole", m.aux() == 3);
                     }
@@ -213,7 +213,7 @@ public final class CaravanGameTests {
                     check("the first two share a tick", t[0] == t[1]);
                     check("the third waits for the next tick", t[2] == t[0] + 1);
                     for (long a : agents)
-                        RtsimTests.stub().despawnGroup(a, 1);
+                        RtsimTests.engine().despawnGroup(a, 1);
                 })
                 .thenWaitUntil(() -> {
                     for (long a : agents)
@@ -230,17 +230,17 @@ public final class CaravanGameTests {
     public static void aSpawnWhereEntitiesDoNotTickIsRejected(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         BlockPos o = helper.absolutePos(BlockPos.ZERO);
-        RtsimTests.stub().spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper),
+        RtsimTests.engine().spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper),
                 o.getX() + 40_000.5, o.getY() + 1, o.getZ() + 0.5,
-                List.of(StubEngine.MemberSpec.plain(0), StubEngine.MemberSpec.plain(1), StubEngine.MemberSpec.plain(2)));
+                List.of(ScriptedEngine.MemberSpec.plain(0), ScriptedEngine.MemberSpec.plain(1), ScriptedEngine.MemberSpec.plain(2)));
         helper.startSequence()
-                .thenWaitUntil(() -> check("the stub received the rejection",
-                        !RtsimTests.recordsFor(RtsimTests.stub(), Obs.SPAWN_REJECTED, agent).isEmpty()))
+                .thenWaitUntil(() -> check("the engine received the rejection",
+                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.SPAWN_REJECTED, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received r = RtsimTests.recordsFor(RtsimTests.stub(), Obs.SPAWN_REJECTED, agent).get(0);
+                    ScriptedEngine.Received r = RtsimTests.recordsFor(RtsimTests.engine(), Obs.SPAWN_REJECTED, agent).get(0);
                     check("rejected as not ticking", r.aux() == Obs.SpawnRejected.NOT_TICKING);
                     check("nothing was embodied", RtsimTests.group(agent) == null
-                            && RtsimTests.recordsFor(RtsimTests.stub(), Obs.MATERIALIZED, agent).isEmpty());
+                            && RtsimTests.recordsFor(RtsimTests.engine(), Obs.MATERIALIZED, agent).isEmpty());
                 })
                 .thenSucceed();
     }

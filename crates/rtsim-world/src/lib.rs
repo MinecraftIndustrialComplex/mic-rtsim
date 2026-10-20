@@ -16,16 +16,23 @@
 //! - [`World::check_conserved`], [`World::state_hash`]: the ledger and the determinism hash.
 //! - [`World::take_stock`], [`World::prey_on_traveller`]: predators with no haven (PLAN.md §9).
 
+pub mod bases;
 pub mod caravans;
 pub mod check;
 pub mod config;
 pub mod flows;
+pub mod interest;
+pub mod memory;
 pub mod observe;
 pub mod prey;
+pub mod ribbits;
 pub mod synth;
 pub mod world;
 
 pub use caravans::{Attack, CaravanOutcome};
 pub use config::WorldConfig;
+pub use flows::PipeKind;
+pub use interest::{PlayerState, Visible};
 pub use observe::Side;
-pub use world::{CaravanId, Command, NodeData, Outside, Stats, World};
+pub use ribbits::{BandView, PlaceHouse, SentimentSnapshot, SpawnResident};
+pub use world::{CaravanId, Cause, Command, NodeData, Outside, Stats, TraceRow, Via, World};

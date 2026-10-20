@@ -5,9 +5,14 @@
 #   ./gametest.sh                        core, then the plugins (ribbits, carryon)
 #   ./gametest.sh core                   one or more projects by name
 #   ./gametest.sh core -PgametestDebugLog   with DEBUG logging (shows "Mixing ... into ..." lines)
+#   ./gametest.sh -PrtsimEngine=stub -PskipJni   every suite on the pure-Java stub, no cargo
 #
-# Each project boots its own dedicated NeoForge server: the core alone (it depends on NeoForge only,
-# D4), and each plugin with the core and the mod it is built around (Ribbits with YUNG's API and
+# Other arguments go to Gradle as they are. The engine of every server's session is the Rust one
+# (rtsim-jni on mic_native, built with cargo) unless -PrtsimEngine=stub; mic_native's jar is on
+# every server (the core requires it).
+#
+# Each project boots its own dedicated NeoForge server: the core with mic_native (no pack mod, D4),
+# and each plugin with the core, mic_native and the mod it is built around (Ribbits with YUNG's API and
 # GeckoLib; Carry On), loaded from the pack's own jars (gradle.properties: packMods). Every @GameTest
 # in the project's namespace runs; the script exits non-zero if any suite failed. Each full log is left
 # in <project>/build/gametest.log.

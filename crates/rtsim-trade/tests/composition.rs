@@ -29,6 +29,7 @@ fn market(stocks: [i64; 3], caps: [i64; 2], cons: [i64; 2], flows: [(i64, i64); 
             cons: if i < 2 { cons[i] } else { 0 },
             inflow: flows[i].0,
             outflow: flows[i].1,
+            slack: 0,
         };
     }
     let gs = |i: usize, inputs: Vec<Input>, used: bool| GoodState {
@@ -66,7 +67,9 @@ fn market(stocks: [i64; 3], caps: [i64; 2], cons: [i64; 2], flows: [(i64, i64); 
         ],
         order: vec![GoodId(1), GoodId(0), GoodId(2)],
         base_prices: vec![None; 3],
-        news_resolution_div: 8,
+        rules: rtsim_trade::tunables::Rules::default(),
+        owed: 0,
+        cut: false,
     };
     m.recompute();
     m

@@ -15,7 +15,8 @@ import org.slf4j.Logger;
  * <p>It depends on NeoForge only (D4) and is the only Java that talks to the engine. It owns the
  * puppet protocol (puppets are never saved, stale copies are discarded, groups move as one unit), the
  * journal that keeps the sim and the world save consistent, the module switches, and the vanilla body
- * adapters. Until rtsim-jni exists, the engine is the pure-Java {@code StubEngine}.
+ * adapters. The engine is the Rust one (rtsim-jni, a mic_native plugin), or for tests the pure-Java
+ * {@code StubEngine}.
  */
 @Mod(MicRtsim.MODID)
 public final class MicRtsim {

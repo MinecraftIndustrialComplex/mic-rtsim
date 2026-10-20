@@ -3,4 +3,7 @@
 
 pub mod dragons;
 pub mod industry;
+pub mod memory;
 pub mod phase1;
+pub mod quiet;
+pub mod trace;

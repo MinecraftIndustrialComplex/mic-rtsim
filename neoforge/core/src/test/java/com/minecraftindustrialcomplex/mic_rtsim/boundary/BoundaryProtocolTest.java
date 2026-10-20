@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.boundary;
 
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
 import org.junit.jupiter.api.AfterEach;
@@ -272,7 +273,7 @@ class BoundaryProtocolTest {
         for (int i = 0; i < 40 && e.ledger(9) < 50; i++)
             tick(s, sink, e);
         assertEquals(50, e.ledger(9));
-        List<StubEngine.Received> got = e.received(Obs.TRANSFER);
+        List<ScriptedEngine.Received> got = e.received(Obs.TRANSFER);
         assertEquals(50, got.size(), "each one exactly once");
         for (int i = 1; i < got.size(); i++)
             assertTrue(got.get(i).obsSeq() > got.get(i - 1).obsSeq(), "in sequence order");
@@ -306,7 +307,7 @@ class BoundaryProtocolTest {
         assertTrue(at > 0);
         tick(s1, k1, e1);
         assertEquals("minecraft:overworld", e1.javaDictName(dim));
-        List<StubEngine.Received> all = e1.received();
+        List<ScriptedEngine.Received> all = e1.received();
         int dictAt = -1, playerAt = -1;
         for (int i = 0; i < all.size(); i++) {
             if (all.get(i).kind() == Obs.DICT && dictAt < 0)
@@ -332,7 +333,7 @@ class BoundaryProtocolTest {
         tick(s1, k1, e1);
         s1.worldSaveDurable(2);
         tick(s1, k1, e1);
-        List<StubEngine.Received> saved = e1.received(Obs.WORLD_SAVED);
+        List<ScriptedEngine.Received> saved = e1.received(Obs.WORLD_SAVED);
         assertEquals(1, saved.size());
         assertEquals(2L, saved.get(0).view().getLong(Obs.WorldSaved.DURABLE_OBS_SEQ));
         tick(s1, k1, e1);

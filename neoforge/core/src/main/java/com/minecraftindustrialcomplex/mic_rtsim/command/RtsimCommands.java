@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
@@ -16,9 +17,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * {@code /rtsim} (PLAN.md §6.5). For now: {@code perf} (the bridge's counters) and, while the engine is
- * the stub, {@code stub caravan} (have the stub spawn a human caravan next to you, to see the puppet
- * protocol in a real game).
+ * {@code /rtsim} (PLAN.md §6.5). For now: {@code perf} (the bridge's counters) and {@code stub caravan}
+ * (order the engine, stub or native, to spawn a human caravan next to you, to see the puppet protocol
+ * in a real game; the name is from when the stub was the only engine).
  */
 public final class RtsimCommands {
     private RtsimCommands() {}
@@ -40,7 +41,8 @@ public final class RtsimCommands {
     private static int perf(CommandContext<CommandSourceStack> ctx) {
         RtsimSession s = RtsimSession.current();
         if (s == null) {
-            ctx.getSource().sendFailure(Component.literal("mic_rtsim: no session"));
+            String why = RtsimSession.startFailure();
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: no session" + (why == null ? "" : ": " + why)));
             return 0;
         }
         BoundarySession b = s.boundary();
@@ -60,18 +62,18 @@ public final class RtsimCommands {
 
     private static int stubCaravan(CommandContext<CommandSourceStack> ctx) {
         RtsimSession s = RtsimSession.current();
-        if (s == null || !(s.engine() instanceof StubEngine stub)) {
-            ctx.getSource().sendFailure(Component.literal("mic_rtsim: the engine is not the stub"));
+        if (s == null || !(s.engine() instanceof ScriptedEngine engine)) {
+            ctx.getSource().sendFailure(Component.literal("mic_rtsim: the engine takes no scripted orders"));
             return 0;
         }
         Vec3 at = ctx.getSource().getPosition().add(4, 0, 0);
         long agent = NEXT_DEBUG_AGENT.getAndIncrement();
-        stub.spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, ctx.getSource().getLevel().dimension().location().toString(),
+        engine.spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, ctx.getSource().getLevel().dimension().location().toString(),
                 at.x, at.y, at.z, List.of(
-                        StubEngine.MemberSpec.plain(0),
-                        new StubEngine.MemberSpec(1, 0f, -1, -1, List.of(new StubEngine.ItemSpec(0, "minecraft:emerald", 12))),
-                        StubEngine.MemberSpec.plain(2)));
-        ctx.getSource().sendSuccess(() -> Component.literal("mic_rtsim: the stub will spawn caravan agent " + agent), false);
+                        ScriptedEngine.MemberSpec.plain(0),
+                        new ScriptedEngine.MemberSpec(1, 0f, -1, -1, List.of(new ScriptedEngine.ItemSpec(0, "minecraft:emerald", 12))),
+                        ScriptedEngine.MemberSpec.plain(2)));
+        ctx.getSource().sendSuccess(() -> Component.literal("mic_rtsim: the engine will spawn caravan agent " + agent), false);
         return 1;
     }
 
