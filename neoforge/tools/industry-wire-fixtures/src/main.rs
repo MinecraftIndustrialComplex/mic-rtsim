@@ -15,6 +15,8 @@
 //! again by `wire::decode_obs` or `wire::decode_cmd` before it is printed, so the fixtures are
 //! also checked against the reference decoder.
 
+mod glass;
+
 use std::collections::HashMap;
 use std::fmt::{Display, Write as _};
 
@@ -624,6 +626,11 @@ fn code_tables(out: &mut String) {
 // ---------------------------------------------------------------------------------------------
 
 fn main() {
+    // `glass`: the glass-box fixtures (glass.rs) instead of the industry ones.
+    if std::env::args().nth(1).as_deref() == Some("glass") {
+        print!("{}", glass::fixtures());
+        return;
+    }
     let mut out = String::from(HEADER);
 
     // ---- latest-wins observations ----

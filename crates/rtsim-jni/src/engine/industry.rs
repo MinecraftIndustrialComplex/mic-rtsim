@@ -624,6 +624,7 @@ fn dropped(l: &mut Link, c: &Cmd) {
 /// stop the engine at its next save.
 fn districts_fit(o: &Obs) -> bool {
     let d = match o {
+        Obs::Glass(g) => g.district(),
         Obs::StockSample { district, .. }
         | Obs::LedgerRequest { district }
         | Obs::Watched { district, .. }
@@ -666,6 +667,7 @@ fn kind_name(c: &Cmd) -> &'static str {
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
         Cmd::Ledger(_) => "IND_LEDGER",
+        Cmd::ProbeSet(_) => "IND_PROBE_SET",
     }
 }
 
@@ -746,6 +748,7 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
             }
             None
         }
+        Cmd::ProbeSet(_) => None,
     };
     names.sort_unstable();
     names.dedup();

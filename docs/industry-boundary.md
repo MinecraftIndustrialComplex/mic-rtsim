@@ -375,3 +375,86 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
 - **Tests** can order an industry command (`INDUSTRY_COMMAND`, W17): a record with Java's own ids,
   written as the industry engine's own, so the industry GameTests run on either engine.
 - **IND_APPROACH** reconciles ahead of arrival (§6.1).
+
+## 9. The glass box's records (GLASSBOX.md §1.4, G-B19)
+
+**Status:** phase G1, 2026-10-20 (branch `feat/glassbox-g1`). The Rust reference codec is
+`crates/rtsim-industry/src/glass/codec.rs` (types in `records.rs`); the Java mirror is
+`neoforge/core/.../industry/glass/GlassRecords.java`, pinned by `GlassWireContractTest` against
+`glass-wire-fixtures.txt` (printed by `neoforge/tools/industry-wire-fixtures` with the `glass`
+argument). Choices are GB# in `docs/choices-glassbox-g1.md`.
+
+### 9.1 Kinds
+
+| Kind | Name | Class | Direction |
+|---|---|---|---|
+| 0x0048 | IND_GRAPH_NODE | latest-wins | Java to engine |
+| 0x0049 | IND_GRAPH_EDGE | latest-wins | Java to engine |
+| 0x004A | IND_GRAPH_RECIPE | latest-wins | Java to engine |
+| 0x004B | IND_GRAPH_DOMAIN | latest-wins | Java to engine |
+| 0x004C | IND_GRAPH_END | latest-wins | Java to engine |
+| 0x004D | IND_PROBE_SAMPLE | latest-wins, not counted in a sweep | Java to engine |
+| 0x040B | IND_CHUNK_TICKING | journaled | Java to engine |
+| 0x8406 | IND_PROBE_SET | command | engine to Java |
+
+**A compile** is a district's graph: NODE, EDGE, RECIPE and DOMAIN records carrying the district's
+compile number (Java's counter, from 1), then IND_GRAPH_END saying how many records it sent. **The
+engine uses a compile only if it received exactly that many records with its number** (as sweeps,
+F5); a dropped record throws the compile away. Java resends the last compile every
+`glass.resendTicks` (flag RESEND), so a lost compile is redone without a request (GB4).
+
+### 9.2 Layouts
+
+Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 24 u32 compile, 28 u32 index`
+(the record's index within its kind). `NONE` is 0xFFFFFFFF.
+
+| Kind | aux | Fields from 32 | Size |
+|---|---|---|---|
+| IND_GRAPH_NODE | node kind | 32 u32 model, 36 u32 domain (NONE), 40 u32 inventory (NONE), 44 u32 flags, 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 reserved, 64 u32 rule, 68 u32 n rates, 72 i64 capacity, 80 i64 param0, 88 i64 param1, 96 i64 param2, 104 i64 param3, 112 n × Rate24 | 112 + 24n |
+| IND_GRAPH_EDGE | edge kind | 32 u32 from, 36 u32 to, 40 u32 order, 44 u32 flags, 48 u32 capNum, 52 u32 capDen (0/0 unlimited; units per tick), 56 u32 latency, 60 u32 n filter, 64 i64 param, 72 n × u32 good | 72 + 4n, padded to 8 |
+| IND_GRAPH_RECIPE | inputs + outputs | 32 u32 recipeType, 36 u32 heat (at least), 40 u32 n inputs, 44 u32 n outputs, 48 u32 duration, 52 u32 name (NAME, 0 none), 56 n × Term24 (inputs first) | 56 + 24n |
+| IND_GRAPH_DOMAIN | n members | 32 u64 network, 40 u32 n levels, 44 u32 current level, 48 u32 driver node (NONE), 52 u32 flags (1 overstressed now, 2 stress disabled), 56 f64 live stress, 64 f64 live capacity, 72 L × Level24, then n × Member24 | 72 + 24L + 24n |
+| IND_GRAPH_END | flags: 1 complete, 2 not compilable, 4 black box, 8 resend | 16 u64 district, 24 u32 compile, 28 reserved, 32 u32 records, 36 u32 nodes, 40 u32 edges, 44 u32 recipes, 48 u32 domains, 52 u32 reason, 56 u64 fingerprint, 64 u64 frame (0 the level; else a Sable sub-level id), 72 u32 revision, 76 u32 compileTicks | 80 |
+| IND_PROBE_SAMPLE | n entries | 16 u64 district, 24 u32 sweep, 28 u32 node, 32 u32 compile, 36 reserved, 40 n × Entry16 | 40 + 16n |
+| IND_CHUNK_TICKING | 1 ticking, 0 not | (journaled prefix) 24 u64 district, 32 u32 dim, 36 i32 chunkX, 40 i32 chunkZ, 44 reserved | 48 |
+| IND_PROBE_SET | n nodes | (cmdSeq at 8) 16 u64 district, 24 u32 compile, 28 reserved, 32 n × u32 node | 32 + 4n, padded to 8 |
+
+**Sub-records:**
+- **Rate24:** `0 u32 level, 4 u32 recipe (NONE: the transfer, or the only recipe), 8 u32 batch,
+  12 u32 ticksNum, 16 u32 ticksDen, 20 u32 flags (1 shared capacity, 2 first cycle)`: at speed level
+  `level`, one operation on `batch` crafts (machines) or units (movers) every `ticksNum/ticksDen`
+  ticks. Java ran the machine's own countdown for these numbers (G-B5).
+- **Term24:** `0 u32 good, 4 u32 flags (1 catalyst, 2 chance), 8 i64 num, 16 i64 den`: `num/den` of
+  the good per craft; chance outputs at their expectation (G-B11).
+- **Level24:** `0 u32 selector, 4 i32 speedNum, 8 u32 speedDen, 12 reserved, 16 f64 capacity`: the
+  root source's RPM as a rational and the domain's capacity in SU at that level; `selector` is the
+  driver's value that picks the level (a boiler's level, 0 to 18), 0 without a driver.
+- **Member24:** `0 u32 node (NONE), 4 u32 count, 8 i32 ratioNum, 12 u32 ratioDen, 16 f64 impact`:
+  `count` blocks at speed `ratio × root speed` and `impact` SU per RPM each.
+
+**Codes** (the Rust `records.rs` modules, mirrored in `GlassRecords`):
+- **Node kinds:** 1 store, 2 buffer, 3 machine, 4 mover, 5 junction, 6 heater, 7 source, 8 sink,
+  9 black box, 10 controller, 11 port, 12 boiler.
+- **Edge kinds:** 1 adjacency, 2 belt, 3 chute, 4 pipe, 5 chain, 6 air zone, 7 arm reach, 8 heat
+  (param: level), 9 control (param: 1 stop when on, 2 run when on), 10 observe, 11 line, 12 drop.
+- **Node flags:** 1 bounded, 2 any output blocks, 4 stochastic (params 2 and 3: a craft's output
+  second moment as a fraction), 8 fluid, 16 calibrated (TUNABLE), 32 on a moving frame.
+- **Edge flags:** 1 deny list, 2 fluid, 4 bounded, 8 a filtered side.
+- **Rules:** 1 to 7 the brass tunnel's modes (split, forced split, round robin, forced round robin,
+  prefer nearest, randomize, synchronize), 8 prefer first, 9 merge, 10 andesite split, 11 side insert.
+- **Models, recipe types, heat levels:** as `records.rs` lists them (`model::MILLSTONE` 10, ...).
+
+**Node params by kind:** heater: remaining burn ticks, heat level, burn ticks per fuel item,
+insertion threshold; boiler: tank blocks, engines, active heat, water supply (mB per tick × 1,000);
+controller: on-above, off-below, flags (1 inverted), level at compile; animal source: animals,
+eligible animals, a craft's output second moment as num/den.
+
+### 9.3 What the engine does with them (G1, read only)
+
+- Stores the latest complete compile per district, solves it (the floor L and the ceiling U per
+  good, G-B1, G-B15) and checks it against one window of live sweeps (G-B14). Nothing changes the
+  world: the replay still runs the C19 black box.
+- On a mismatch it derates the limiting node, sends IND_PROBE_SET for the buffers upstream of it, and
+  after `glass.mismatchStrikes` windows demotes the node's kind to measured, in its own state only.
+- IND_PROBE_SAMPLE feeds the localization; IND_CHUNK_TICKING is kept per district for G2's partial
+  loads (I7, G-B6).

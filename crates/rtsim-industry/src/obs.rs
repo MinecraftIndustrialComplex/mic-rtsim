@@ -386,6 +386,9 @@ pub struct DefenceSurvey {
 /// Everything the Java side sends the industry engine.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Obs {
+    /// The glass box's records (GLASSBOX.md §1.4, G-B19): the compiled graph, probe samples and
+    /// chunk ticking (docs/industry-boundary.md §9).
+    Glass(crate::glass::records::GlassObs),
     // Latest-wins state.
     StockSample {
         district: DistrictId,
@@ -490,6 +493,9 @@ pub struct Timed {
 impl Obs {
     /// Kinds below 0x0100 are latest-wins; the bridge may drop them when a buffer is full.
     pub fn is_journaled(&self) -> bool {
+        if let Obs::Glass(g) = self {
+            return g.is_journaled();
+        }
         !matches!(
             self,
             Obs::StockSample { .. }

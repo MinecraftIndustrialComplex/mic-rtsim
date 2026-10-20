@@ -110,6 +110,8 @@ pub enum Cmd {
     DepositDelta(DepositDelta),
     WritePackage(WritePackage),
     Ledger(LedgerLine),
+    /// IND_PROBE_SET (GLASSBOX.md §5.3, G-B14): buffers to add to a district's sweeps.
+    ProbeSet(crate::glass::records::ProbeSet),
 }
 
 impl Cmd {
@@ -119,7 +121,7 @@ impl Cmd {
             Cmd::CarriageDelta(c) => Some(c.op),
             Cmd::DepositDelta(c) => Some(c.op),
             Cmd::WritePackage(c) => Some(c.op),
-            Cmd::Ledger(_) => None,
+            Cmd::Ledger(_) | Cmd::ProbeSet(_) => None,
         }
     }
 }
@@ -193,7 +195,7 @@ impl Cmd {
             Cmd::CarriageDelta(x) => x.op = OpId(0),
             Cmd::DepositDelta(x) => x.op = OpId(0),
             Cmd::WritePackage(x) => x.op = OpId(0),
-            Cmd::Ledger(_) => {}
+            Cmd::Ledger(_) | Cmd::ProbeSet(_) => {}
         }
         c
     }
@@ -205,7 +207,7 @@ impl Cmd {
             Cmd::CarriageDelta(x) => x.op = op,
             Cmd::DepositDelta(x) => x.op = op,
             Cmd::WritePackage(x) => x.op = op,
-            Cmd::Ledger(_) => {}
+            Cmd::Ledger(_) | Cmd::ProbeSet(_) => {}
         }
     }
 }
@@ -273,6 +275,11 @@ mod persist_impls {
         goods
     });
     persist_struct!(IndustryOps { recent });
+    persist_struct!(crate::glass::records::ProbeSet {
+        district,
+        compile,
+        nodes
+    });
 
     impl Persist for Cmd {
         fn put(&self, w: &mut Writer) {
@@ -297,6 +304,10 @@ mod persist_impls {
                     w.u8(5);
                     c.put(w);
                 }
+                Cmd::ProbeSet(c) => {
+                    w.u8(6);
+                    c.put(w);
+                }
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -306,6 +317,7 @@ mod persist_impls {
                 3 => Cmd::DepositDelta(Persist::get(r)?),
                 4 => Cmd::WritePackage(Persist::get(r)?),
                 5 => Cmd::Ledger(Persist::get(r)?),
+                6 => Cmd::ProbeSet(Persist::get(r)?),
                 _ => return invalid("command tag"),
             })
         }

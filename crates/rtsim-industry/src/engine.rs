@@ -240,6 +240,9 @@ pub struct Engine {
     /// Keep [`Engine::log`]: off by default (formatting lines costs every breakpoint); the fake
     /// world and the CLI turn it on.
     pub log_enabled: bool,
+    /// The glass box (GLASSBOX.md, G1 read only): compiled graphs, solves and checksums. Not
+    /// paged in G1: Java resends the last compile periodically (choice GB4).
+    pub glass: crate::glass::Glass,
 }
 
 impl Engine {
@@ -275,6 +278,7 @@ impl Engine {
             books: Books::default(),
             log: std::collections::VecDeque::new(),
             log_enabled: false,
+            glass: crate::glass::Glass::default(),
         }
     }
 
@@ -433,6 +437,7 @@ impl Engine {
         self.fire_until(at);
         self.stats.observations += 1;
         match &t.obs {
+            Obs::Glass(g) => self.glass_obs(at, g),
             Obs::StockSample {
                 district,
                 inventory,
@@ -754,6 +759,12 @@ impl Engine {
     }
 
     // ---- sweeps and learning --------------------------------------------------------------
+
+    /// A glass-box record (GLASSBOX.md §1.4): the compiled graph, probe samples, chunk ticking.
+    /// Read only in G1: nothing here changes the replay.
+    fn glass_obs(&mut self, at: Tick, g: &crate::glass::records::GlassObs) {
+        self.glass.ingest(at, g);
+    }
 
     fn sweep_end(&mut self, at: Tick, e: &crate::obs::SweepEnd) {
         let season = self.season_at(at);
