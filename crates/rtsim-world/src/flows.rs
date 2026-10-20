@@ -23,6 +23,7 @@ use std::sync::Arc;
 use rtsim_kernel::clock::Tick;
 use rtsim_trade::build::{MARGIN_SLACK, transport_price};
 use rtsim_trade::units::mul_div_floor;
+use rtsim_trade::line::Level;
 use rtsim_trade::{Amount, GoodId, GoodKind, Market, PRICE_ONE, Price};
 use rtsim_travel::alloc::{Candidate, allocate};
 use rtsim_travel::edge::{DirRef, caravan_period, split_for_raid};
@@ -115,14 +116,19 @@ fn step(
                 (Some(mc), Some(sc)) if mc != sc && snap.good(mc).stock > 0 => Some(mc),
                 (_, sc) => sc,
             };
-            let refused = pay_cur.is_none_or(|c| m.refuses(c));
+            // Cash we refuse can still buy our goods by barter, if the destination has a
+            // surplus of something we need (PLAN.md §8.4: above twice its target a market refuses
+            // cash and barters at anchor ratios).
+            let barter = barter_good_for(m, snap, goods).is_some();
+            let refused = pay_cur.is_none_or(|c| m.refuses(c)) && !barter;
             let tau = transport_price(goods, &cfg.trade, g, e.d, l_mint);
             // The destination's bid: its price, but never below its anchor. Above its target it
             // asks for less through its advertised rate, so the flow eases off instead of
             // stopping at a margin cliff and starting again when it drains (the bang-bang limit
             // cycle the two-market test measured; overnight choice E18).
             let bid = gn.price.max(gn.anchor);
-            let margin = match (to_home(m, snap.currency, bid), refused, snap.can_pay) {
+            // A destination with no cash can still pay in goods.
+            let margin = match (to_home(m, snap.currency, bid), refused, snap.can_pay || barter) {
                 (Some(v), false, true) => v - mine - tau + MARGIN_SLACK,
                 _ => -1,
             };
@@ -197,6 +203,26 @@ fn step(
             (_, Some(hc)) => (hc, value),
             _ => continue,
         };
+        // The exporter refuses that cash: pay in a good it needs and we have to spare, at our
+        // anchor ratio (barter at anchor ratios, PLAN.md §8.4).
+        // So is cash we do not have: a broke market pays in goods too.
+        let refused = node.news.get(din.from).is_some_and(|s| s.good(cur).level == Level::Glut)
+            || m.stock(cur) < amount;
+        let (cur, amount) = match node.news.get(din.from).filter(|_| refused) {
+            Some(snap) => match barter_good_for_payer(m, snap, goods) {
+                Some(h) if m.anchor(h) > 0 => {
+                    // value is in home coins: convert at the anchor of h.
+                    let v_home = if cur == home.unwrap_or(cur) {
+                        value
+                    } else {
+                        mul_div_floor(amount, m.price(cur), PRICE_ONE)
+                    };
+                    (h, mul_div_floor(v_home, PRICE_ONE, m.anchor(h)))
+                }
+                _ => (cur, amount),
+            },
+            None => (cur, amount),
+        };
         *pay.entry((*d, cur)).or_default() += amount;
     }
     set_payments(m, node, edges, &pay, nb, changes);
@@ -214,52 +240,49 @@ fn step(
             let allowed = (l.rates.inflow + l.rates.cap - l.rates.cons).max(0);
             let total = l.rates.outflow;
             let mut sum = 0;
-            let in_pay = goods.is_currency(g);
             for d in &node.out {
                 let e = &mut edges[d.edge as usize];
                 let delay = e.d;
                 let dir = &mut e.dirs[d.dir as usize];
                 let to = dir.to;
                 let pred = dir.predation;
-                // The rate as allocated, raid share included.
-                let raid = if in_pay {
-                    0
-                } else {
-                    dir.raid.get(&g).map_or(0, |r| r.current_rate())
-                };
-                let p = if in_pay {
-                    dir.pay.get_mut(&g)
-                } else {
-                    dir.goods.get_mut(&g)
-                };
-                let Some(p) = p else { continue };
-                let was = p.current_rate() + raid;
-                let now = mul_div_floor(was, allowed, total.max(1));
-                let (to_dest, to_raid) = if in_pay {
-                    (now, 0)
-                } else {
-                    split_for_raid(now, pred)
-                };
-                let quote = p.current_quote();
-                if p.set(nb, to_dest, quote) {
-                    changes.push(Change {
-                        dest: to,
-                        first: nb,
-                        delay,
-                    });
+                // Goods to the destination (plus their raid share) and payments, scaled alike.
+                let raid = dir.raid.get(&g).map_or(0, |r| r.current_rate());
+                if let Some(p) = dir.goods.get_mut(&g) {
+                    let was = p.current_rate() + raid;
+                    let now = mul_div_floor(was, allowed, total.max(1));
+                    let (to_dest, to_raid) = split_for_raid(now, pred);
+                    let quote = p.current_quote();
+                    if p.set(nb, to_dest, quote) {
+                        changes.push(Change {
+                            dest: to,
+                            first: nb,
+                            delay,
+                        });
+                    }
+                    if let Some(pr) = pred
+                        && let Some(rp) = dir.raid.get_mut(&g)
+                        && rp.set(nb, to_raid, 0)
+                    {
+                        changes.push(Change {
+                            dest: pr.haven,
+                            first: nb,
+                            delay: pr.delay,
+                        });
+                    }
+                    sum += now;
                 }
-                if !in_pay
-                    && let Some(pr) = pred
-                    && let Some(rp) = dir.raid.get_mut(&g)
-                    && rp.set(nb, to_raid, 0)
-                {
-                    changes.push(Change {
-                        dest: pr.haven,
-                        first: nb,
-                        delay: pr.delay,
-                    });
+                if let Some(p) = dir.pay.get_mut(&g) {
+                    let now = mul_div_floor(p.current_rate(), allowed, total.max(1));
+                    if p.set(nb, now, 0) {
+                        changes.push(Change {
+                            dest: to,
+                            first: nb,
+                            delay,
+                        });
+                    }
+                    sum += now;
                 }
-                sum += now;
             }
             m.lines[gi].rates.outflow = sum;
         }
@@ -287,6 +310,36 @@ fn step(
         }
         dir.lattice.trim(b.saturating_sub(2 * ed + idle));
     }
+}
+
+/// A good the destination of `snap` could barter with us: it has a surplus (at or above its
+/// target) and we can still store it (not past twice our target). Goods we need come first, then
+/// the one we value most; a cash-refusing market takes goods it can trade on, so a structural
+/// surplus keeps goods moving instead of starving its neighbours (overnight choice E21).
+fn barter_good_for(m: &Market, snap: &Snapshot, goods: &rtsim_trade::Goods) -> Option<GoodId> {
+    goods
+        .ids()
+        .filter(|&h| {
+            goods.get(h).kind == GoodKind::Item
+                && snap.good(h).level >= Level::At
+                && m.line(h).level() != Level::Glut
+                && m.anchor(h) > 0
+        })
+        .max_by_key(|&h| (m.absorbable(h) > 0, m.price(h), std::cmp::Reverse(h)))
+}
+
+/// A good we (the payer) can pay the exporter of `snap` in: we are at or above target in it and
+/// it can still store it. The one it asks for most, then the one it values most.
+fn barter_good_for_payer(m: &Market, snap: &Snapshot, goods: &rtsim_trade::Goods) -> Option<GoodId> {
+    goods
+        .ids()
+        .filter(|&h| {
+            goods.get(h).kind == GoodKind::Item
+                && m.line(h).stock >= m.line(h).target
+                && m.line(h).target > 0
+                && snap.good(h).level != Level::Glut
+        })
+        .max_by_key(|&h| (snap.good(h).absorbable, snap.good(h).price, std::cmp::Reverse(h)))
 }
 
 /// What reaches the market at boundary `nb`, per (source, good), sorted.

@@ -293,25 +293,49 @@ pub fn run(o: Options) -> i32 {
     let brindle = 0;
     let oakford = 1;
     let fernwick = 4;
+    let q = w.cfg.trade.quantum.len();
     for day in 0..=o.days {
-        w.run_until(Tick::from_days(day));
+        // Step a quantum at a time so news spread is timed to the hour.
+        let start = Tick::from_days(day.saturating_sub(1)).0;
+        let mut t = if day == 0 { 0 } else { start + q };
+        while t <= Tick::from_days(day).0 {
+            w.run_until(Tick(t));
+            for tr in &mut tracked {
+                track(&w, tr);
+            }
+            t += q;
+        }
         if o.script {
             match day {
                 10 => {
                     // Walkthrough B: dump wheat at Brindle until its treasury refuses.
                     let before = w.market(brindle);
                     let (t0, p0) = (before.treasury(), before.price(ids.wheat));
+                    // As a player would in game: take the farmer's offer, a bundle of wheat
+                    // for one emerald (PLAN.md §8.5), again and again until it shows crossed out.
                     let mut sold = 0;
                     let mut got = 0;
                     let mut refusal = None;
-                    for _ in 0..100 {
-                        match w.trade(brindle, player, ids.wheat, 32, Side::Sell, w.now()) {
+                    let mut bundles = Vec::new();
+                    for _ in 0..200 {
+                        let offer = w
+                            .offers(brindle, player)
+                            .into_iter()
+                            .find(|o| o.0 == ids.wheat && o.1 == rtsim_trade::OfferSide::MarketBuys);
+                        let Some((_, _, o)) = offer else {
+                            refusal = Some("offer crossed out".to_string());
+                            break;
+                        };
+                        match w.trade(brindle, player, ids.wheat, o.items, Side::Sell, w.now()) {
                             Ok(q) => {
                                 sold += q.items;
                                 got += q.coins;
+                                if bundles.last() != Some(&q.items) {
+                                    bundles.push(q.items);
+                                }
                             }
                             Err(r) => {
-                                refusal = Some(r);
+                                refusal = Some(format!("{r:?}"));
                                 break;
                             }
                         }
@@ -328,7 +352,11 @@ pub fn run(o: Options) -> i32 {
                         "wheat price after".into(),
                         format!("{:.4}", price(after.price(ids.wheat))),
                     );
-                    d.insert("stopped by".into(), format!("{refusal:?}"));
+                    d.insert("stopped by".into(), refusal.unwrap_or_default());
+                    d.insert(
+                        "wheat per emerald, bundle by bundle".into(),
+                        format!("{bundles:?}"),
+                    );
                     println!("\n>> day 10: player dumps wheat at Brindle: {d:?}");
                     script.push(ScriptRow {
                         day: day_of(w.now()),
