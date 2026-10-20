@@ -1,21 +1,41 @@
 # mic-rtsim: a simulated world for MIC
 
-**Status:** design for Ben's review, 2026-10-19. Nothing is built. This replaces the baseline plan of the
-same day.
+**Status:** design for Ben's review, 2026-10-19. Brought in line with D8 and C15 to C26 on 2026-10-20.
+This replaces the baseline plan of 2026-10-19.
 
 **Read it with:**
 - `DECISIONS.md`. It is authoritative. Every D, A, C and X entry there is final, and this plan cites
   them by number.
 - `SCALE.md`. It holds the scale architecture: the detail ladder, flows, lazy regions, paging,
   compaction, complexity contracts and galactic planets. This plan points to it and does not repeat it.
+- `INDUSTRY.md`: distant factories, supply lines and the threats to them (C15 to C19). This plan points
+  to it and does not repeat it.
+- `OPEN-QUESTIONS.md`: every open choice in one place, grouped by what it blocks.
 - `research/economy-2026-10-19.md`: the phase 1 economy (C13).
 - `research/veloren-rtsim-2026-10-19.md`: what Veloren's rtsim really does, read from its source.
+- `research/mcrtsim-mining-2026-10-19.md`: ideas from Ben's earlier mcrtsim, adopted as C24 and C25.
+- `research/industry-inventory-2026-10-19.md`: what each pack machine mod does while unloaded.
 
 **Rules this document follows:**
 - Anything not in DECISIONS.md is a **Proposal Pn (Ben)**, with a recommended option and its
-  alternatives. §17 lists them all. No work depends on a proposal until Ben answers it (D2).
+  alternatives. §17 lists them all. Industry proposals I1 to I26 are in INDUSTRY.md §20. The questions
+  in the mcrtsim mining note (§6) are M1 to M7, numbered as there; C26 answered M5. OPEN-QUESTIONS.md
+  gathers all of them. No work depends on a proposal until Ben answers it (D2).
 - Every number is a verified fact (Appendix A), a recipe or tick value, physics, arithmetic from those,
   or a value labelled TUNABLE, PLACEHOLDER or ESTIMATE. Anything unverified says UNVERIFIED.
+
+**What changed on 2026-10-20:**
+- P19, P20, P22 and P23 are decided as C20 to C23, and their text is now behaviour: the sim writes into
+  vanilla gossip (§8.7), cargo rides in the llama chests (§8.6), villages join when generated (§8.2), and
+  ribbit trades go through the treasury (§8.5).
+- C24 and C25 adopt seven mcrtsim ideas: groups that spawn as one unit (§4.1, §6.1, §8.3), temperament
+  and heirs (§5.7), a switch per module (§5.4), rescues (§8.7), bored threats (§9) and predator havens
+  (§10).
+- C26: every player base is a market node (§8.2). What a base is, is the new P30.
+- C15 to C19: industry is a parallel workstream, designed in INDUSTRY.md (§10.4). The baseline idea that
+  raids wait for an online owner is replaced by C16 and C17 (§10.3).
+- D8: design depth is not a risk to guard against (§0).
+- Two facts that INDUSTRY.md found in conflict are open until a GameTest settles them (§15).
 
 **What changed from the baseline:**
 - Content goes through plugins, one per mod; the core needs no pack mod (D4). Cobblemon is gone. No
@@ -38,13 +58,16 @@ same day.
 - **Choices are judged only on late-stage performance on a weak PC** (D1), never on writing effort.
 - **Scale comes first** (D6). The sim's cost grows with what players observe, how many things happen,
   and how many coarse cells exist. It never grows with how many things exist (SCALE.md §0).
+- **Design depth is not a risk to guard against** (D8). mcrtsim failed on the models that wrote it, not
+  on its ambition. Phase 0 is not rushed as a hedge against over-design; when it starts is open.
 
 | Phase | Content | Basis |
 |---|---|---|
 | 0 | Spikes: the host, the potato harness, the scale bench, the puppet and journal GameTests, the storage bench | A6, A9, A11, A16, P4 |
-| 1 | Caravans and markets between vanilla and Ribbits villages; slights remembered; four Ribbits behaviours | C6 to C9, C11 to C14 |
-| 2 | Dragons on Ice and Fire: slights remembered, migrations on scheduled legs, preying on caravans and herds | C3, A15 |
-| Later | Ships, herds, conflict, industry, kaiju, space, history, civilians | order is P11 |
+| 1 | Caravans and markets between vanilla and Ribbits villages and player bases; slights and rescues remembered; four Ribbits behaviours | C6 to C9, C11 to C14, C20 to C26 |
+| 2 | Dragons on Ice and Fire: slights remembered, migrations on scheduled legs, preying on caravans and herds, attacking player infrastructure, getting bored | C3, A15, C16, C24 |
+| Industry | A parallel workstream: distant factories, supply lines and the threats to them, in INDUSTRY.md | C15 to C19; its phases are I26 |
+| Later | Ships, herds, conflict, kaiju, space, history, civilians | order is P11 |
 
 ## 1. Layers
 
@@ -76,15 +99,17 @@ same day.
 
 | Module (crate) | Rules | Data it loads | First phase |
 |---|---|---|---|
-| knowledge (`rtsim-knowledge`) | reports, witnesses, sentiment, gossip carried by travellers | report kinds, slight weights | 1 |
-| settlements (`rtsim-settle`) | adopting villages, households as cohorts, plots, growth | cultures, house template lists | 1 |
+| knowledge (`rtsim-knowledge`) | reports, witnesses, sentiment, gossip carried by travellers and written into vanilla gossip (C20), rescues, heirs (C24) | report kinds, slight weights | 1 |
+| settlements (`rtsim-settle`) | adopting villages as they generate (C22), player bases as markets (C26), households as cohorts, plots, growth | cultures, house template lists | 1 |
 | trade (`rtsim-trade`) | storehouse markets, currencies, exchange, news (C13) | goods, recipes, currencies | 1 |
 | travel (`rtsim-travel`) | edges, legs, flows, sampled travellers, the encounter index | edge rules | 1 |
 | ecology (`rtsim-ecology`) | hunger, forage, herds, migration, predation | species | 2 (dragon hunger), later (herds) |
-| conflict (`rtsim-conflict`) | grievance, war bands, Lanchester resolution | unit types | later |
+| conflict (`rtsim-conflict`) | grievance, war bands, Lanchester resolution, predator havens (C24), threats to player infrastructure (C16 to C18) | unit types | later; threats to industry per INDUSTRY.md §13 |
 | ships (`rtsim-ships`) | lanes, timetables, ship classes | ship classes, routes | later |
-| industry (`rtsim-industry`) | districts as processes between breakpoints | goods | later |
+| industry (`rtsim-industry`) | districts as black boxes between breakpoints, reconciliation on load (C19) | goods | the industry workstream (C15, INDUSTRY.md) |
 | cosmos (`rtsim-cosmos`) | bodies, orbits, megaprojects | bodies | later |
+
+Every module has its own server config switch (C25, §5.4).
 
 ### 1.3 Plugins and their hooks
 
@@ -99,15 +124,17 @@ Mod ids follow P1. Every hook below is verified unless marked (Appendix A).
 | `mic_rtsim_surveyor` | Surveyor 1.2.4, through Sinytra Connector | `WorldLandmarks.of(Level).put(...)`, `Landmark.global(id, builder)` with `POS`, `NAME`, `LORE`, `COLOR`, `TIME`. A Fabric jar with intermediary names (§7) | first phase that shows map markers |
 | `mic_rtsim_numismatics` | Numismatics 1.1.0 | `GlobalBankManager.BANK`, `BankAccount` by UUID; coins worth 1, 8, 16, 64, 512 and 4,096 spurs; no coin recipe | later (P9 mint rule) |
 | `mic_rtsim_aeronautics` | Sable 2.0.5 + Create Aeronautics 1.3.2 | the spawn recipe in §7; `SubLevelHoldingChunkMap` freezes unloaded ships; `SubLevelLoadingTicketType` | later (ships) |
-| `mic_rtsim_create` | Create 6.0.10 | `GlobalRailwayManager`, `RailwaySavedData` (`create_tracks`), `GlobalPackagePort.offlineBuffer`, `FactoryPanelBehaviour`, `LogisticsNetworkSavedData` (`create_logistics`), `TableClothBlockEntity`, `BlockStressValues` | later (industry) |
-| `mic_rtsim_destroy` | Destroy (MIC fork) | `PollutionHelper`, `PollutionEvents`: smog and radioactivity per chunk; greenhouse, ozone depletion and acid rain per level | later |
+| `mic_rtsim_create` | Create 6.0.10 | `GlobalRailwayManager`, `RailwaySavedData` (`create_tracks`), `GlobalPackagePort.offlineBuffer`, `FactoryPanelBehaviour`, `LogisticsNetworkSavedData` (`create_logistics`), `TableClothBlockEntity`, `BlockStressValues`; the full list is INDUSTRY.md §17 | the industry workstream (INDUSTRY.md §12) |
+| `mic_rtsim_destroy` | Destroy (MIC fork) | `PollutionHelper`, `PollutionEvents`: smog and radioactivity per chunk; greenhouse, ozone depletion and acid rain per level; `changePollution` for pollution while unloaded (I14) | the industry workstream, and conflict for grievance |
 | `mic_rtsim_deeptime` | Deep Time (not in the pack yet) | `WorldData`, `Rivers`, `DeepTimeClimate` (API_VERSION 4), `DeepTimeSites`; event log writer 2; Deep Time files read natively | with Deep Time |
 | `mic_rtsim_nuclear` | mic_nuclear, Create Nuclear 1.3.2-beta.3 | the kaiju trigger (P27); hooks UNVERIFIED | later |
 | `mic_rtsim_kaiju` (name P1) | the kaiju body mod (P8) | UNVERIFIED | later |
 
 Later candidates that would also become plugins: TaCZ (`IGunOperator` on every `LivingEntity`), L2
 Hostility (`l2hostility:level`), Create Big Cannons, Create Radars (a mixin on `IRadar.getTracks`),
-CC: Tweaked (`PeripheralCapability`), Lootr.
+CC: Tweaked (`PeripheralCapability`), Lootr. The industry plugins (PowerGrid, Ore Excavation, Diesel
+Generators, Ender Transmission, Create Nuclear, and Create Radars with Create Big Cannons for the
+defence survey) are listed in INDUSTRY.md §12.
 
 ### 1.4 Body kinds, mapped by data
 
@@ -117,17 +144,23 @@ CC: Tweaked (`PeripheralCapability`), Lootr.
 - **A kind with no installed candidate stays abstract.** It acts only through consequences (losses,
   prices, news) and never appears (part of P15). Every candidate must look like a mob (D7).
 - **The adapter interface is spawn, capture and steer.** No `Entity` appears in the engine.
+- **Groups are one unit** (C25). A group kind lists its member kinds and where each stands at spawn:
+  trader and llamas, rider and mount, ship and crew, band and master. The group materializes, is
+  captured and despawns as one unit (§6.1). The layout is data used only at spawn; the engine has no
+  formations or boids.
 
 | Kind | Phase 1 and 2 bodies (C11) | Fallback |
 |---|---|---|
 | human merchant | `minecraft:wandering_trader` | vanilla |
 | pack animal | `minecraft:trader_llama`, leashed to the trader | vanilla |
+| human caravan (group) | one human merchant and two pack animals, as vanilla spawns them | vanilla |
 | ribbit merchant | `ribbits:ribbit` with `RibbitData` profession merchant | none needed: without Ribbits, no ribbit villages generate |
 | ribbit musician | `ribbits:ribbit` with an instrument in its `RibbitData` | as above |
+| ribbit band (group) | ribbit musicians around one master | as above |
 | dragon | `iceandfire:fire_dragon`, `ice_dragon`, `lightning_dragon` | abstract (P15) |
 | raider (later) | P8 candidates | `minecraft:pillager` |
 
-The file format is **Proposal P15 (Ben)**.
+The file format, group layouts included, is **Proposal P15 (Ben)**.
 
 ## 2. The pack-wide native host `mic_native`
 
@@ -221,7 +254,8 @@ directly. The rtsim's coarse pathfinding and region index are host services in t
   place, chunk load and unload, entity join. It rejects most events with a lookup in a primitive set
   before any module sees them. Modules subscribe inside the engine, not on the NeoForge bus.
 - **Mixins only where no event exists.** Core: `Entity.shouldBeSaved`, `Entity.saveAsPassenger`, and
-  villager restock (§8.5). Ribbits plugin: `RibbitApplyBuffGoal`. Later: `IRadar.getTracks`.
+  villager restock (§8.5). Ribbits plugin: `RibbitApplyBuffGoal` and ribbit merchant restock (C23,
+  §8.5). Later: `IRadar.getTracks`. The industry mixins are listed in INDUSTRY.md §18.
 - **Separate mod ids cost almost nothing;** bundling them later is a build change (jar-in-jar).
 
 ### 2.5 Shared crates and one harness
@@ -280,7 +314,7 @@ These are PLACEHOLDER targets until Ben sets them from phase 0 data (P24).
 | Server-thread cost of the bridge | ≤ 1 ms per tick at p99 | 2% of the 50 ms tick |
 | Sim objects on the Java heap | none beyond the four buffers | §3.2 |
 | Sim threads | none of its own; the host's background pool | §2 |
-| Spawns and despawns per tick | a fixed quota (TUNABLE); the rest queue | spreads bursts |
+| Spawns and despawns per tick | a fixed quota (TUNABLE); the rest queue. A group (C25) is never split across ticks: all its members spawn or despawn in one tick, or the whole group waits | spreads bursts |
 | Blocks placed per tick (growth, later damage) | a fixed quota (TUNABLE) | as above |
 | Puppets per player | a cap per body kind (TUNABLE) | client frame time, entity ticking |
 | Save hitch | a signal only; copy and IO on the host's IO lane | §4.9 |
@@ -333,6 +367,8 @@ it, every individual sits in one relevance band, which decides scheduling order:
     comes back.
 - **A member becomes notable** and gets its own row only when something makes it matter: a player names,
   tames, breeds, robs or hurts it. Promotion runs under a budget; demotion is by importance.
+- **A notable ages and dies on one scheduled event,** and its heir inherits its strongest memories (C24,
+  §5.7).
 
 ### 4.5 Threads and the tick boundary
 
@@ -400,7 +436,9 @@ Row layouts follow SCALE.md §9. Budgets below are layout budgets, with arithmet
 | Forage cell, 64 blocks, Deep Time 16k planet (13,312 × 6,656 blocks → 208 × 104) | 8 B | 21,632 | 173 KB |
 
 - **Every table has a cap** and an eviction rule by importance: player involvement, then recency, then
-  magnitude (SCALE.md §6). Caps are sized from the memory budget (A16).
+  magnitude (SCALE.md §6). Caps are sized from the memory budget (A16). Notables mostly leave by age and
+  hand their memories to an heir (C24, §5.7), so eviction is the fallback, not the rule.
+- **Temperament costs no memory:** it is derived from the notable's seed (C25, §5.7).
 - **Avoid Veloren's inverted cleanup:** its cap drains a max-heap of absolute values, so it deletes the
   strongest sentiments first (`sentiment.rs:78-96`).
 
@@ -427,7 +465,8 @@ Row layouts follow SCALE.md §9. Budgets below are layout budgets, with arithmet
   own save. The engine acknowledges an observation once a page that includes it is on disk, and the
   bridge trims the journal up to that point.
 - **What to do when a crash leaves the engine's pages ahead of the world save** is **Proposal P29
-  (Ben)**.
+  (Ben)**. For vault deltas, INDUSTRY.md's I8 proposes an epoch in a chunk attachment, which answers
+  P29 for them.
 
 **Reboots:** AI plans restart, as Veloren's brains do. Leg schedules, cargo, ship clocks and route
 assignments are saved state; Veloren resets its airship timetable on every boot (`migrate.rs:121-187`).
@@ -491,6 +530,14 @@ needs. Veloren's rules bind handlers to typed events (`Rule::start`), and the ha
 synchronously when an event is emitted (`lib.rs:305`). Ours queue events and declare access, so the
 scheduler can run modules in parallel.
 
+**A switch per module** (C25). Each generic module has an on and off switch in the server config, so a
+potato server can shed a module and Ben can bisect a perf regression.
+- **A module that is off** registers no systems and takes no observations. Its pages stay on disk
+  untouched.
+- **Switching off trade or travel gives traders back to vanilla:** the bridge sets `doTraderSpawning`
+  back to true, so vanilla's random wandering traders return (C8 applies only while the sim owns them).
+- **A module that others need** cannot be on without them; the config check names the missing one.
+
 **Ways to extend, most common first:** datapack data (goods, cultures, body kinds, species, ship
 classes); behaviour as data (utility curves and action plans compiled into flat tables, no script
 interpreter in the hot loop); Rust generic modules, dormant until data or a plugin uses them; and Java
@@ -501,7 +548,7 @@ can listen to NeoForge events natively (UNVERIFIED for KubeJS 2101), so no KubeJ
 
 - **Decisions happen at decision points** (a leg ends, an interrupt, a schedule), never per tick. The
   agent scores a few plans with data-defined utility curves, commits, and the first leg schedules the
-  next event.
+  next event. A notable's temperament weights those curves (C25, §5.7).
 - **Veloren's brain library is worth copying** (`ai/mod.rs`): actions that return Continue or Break; the
   combinators `then`, `repeat`, `stop_if`, `interrupt_with`, `when_cancelled`; and `choose` at three
   priorities (urgent 100, important 50, casual 0). Only a strictly higher priority replaces the running
@@ -521,7 +568,32 @@ can listen to NeoForge events natively (UNVERIFIED for KubeJS 2101), so no KubeJ
 - **Gossip moves physically.** Reports travel with caravans, bands and later ships. A village nobody
   trades with learns nothing. Veloren pushes reports into inboxes and syncs every tick; we gossip only
   what changed, and only when a carrier arrives.
+- **In vanilla villages, the news lands in vanilla gossip** (C20, §8.7), so vanilla's own prices and
+  iron golems act on it.
 - **Caps** follow §4.8; Veloren caps no reports at all.
+
+### 5.7 Notables: temperament, age and heirs (C24, C25)
+
+**Temperament from the seed** (C25).
+- Each notable has a temperament derived from its seed, for example how bold, how sociable and how
+  aggressive it is (the traits mcrtsim's `SimNpc` had). It costs 0 bytes: it is recomputed from the
+  seed when needed.
+- Temperament weights the data-defined utility curves of §5.5, so two dragons of one species differ with
+  no new content. Which traits a kind has, and how far they bend each curve, is data per kind.
+
+**Age and death** (C24).
+- A notable has a lifespan from its kind's data. Its death of age is **one event on the timing wheel**,
+  booked when it becomes notable. Nothing ages per tick; a life stage is derived from age when read.
+  (mcrtsim aged every NPC every tick; that is not copied.)
+
+**Heirs inherit grudges** (C24).
+- When a notable dies, of age or by violence, its strongest memories pass to its heir, or to its home
+  settlement when it has no heir. An offspring hunts its parent's killer; a notable trader killed on the
+  road leaves its grudge with its home market.
+- The heir link is one 6-byte handle, to a notable or a settlement. Where it sits in the row layout is
+  settled with SCALE.md §9. How many memories pass on is a TUNABLE.
+- So a dragon a player fought does not silently vanish when a cap bites (SCALE.md §6): its end is an
+  event in the world, and its grudge outlives it. Where dragon heirs come from is open (M1, §9).
 
 ## 6. The Minecraft bridge
 
@@ -548,12 +620,21 @@ can listen to NeoForge events natively (UNVERIFIED for KubeJS 2101), so no KubeJ
 5. **Capture before removal.** The body adapter captures what the engine cares about (health, cargo,
    leash state) and sends `Dematerialized(id, epoch, state)`. Veloren re-rolls merchant wares on every
    load (`tick.rs:40-141`); we capture through a per-body adapter instead.
-6. **Persistence while embodied.** Vanilla despawns non-persistent mobs beyond 128 blocks, and the pack's
+6. **A group is one puppet unit** (C25): trader and llamas, rider and mount, ship and crew, band and
+   master.
+   - All members carry the group's engine id and epoch. The spawn quota counts the whole group, and all
+     members spawn in one tick (§4.1).
+   - The ticking test is per group: when any member's position stops being entity-ticking, the whole
+     group is captured and removed together.
+   - This closes two splits. The trader can no longer spawn one tick and its llamas the next. And the
+     trader is never taken back while a llama stays frozen in a loaded chunk, where it would hit the
+     `TraderLlama.maybeDespawn` trap below.
+7. **Persistence while embodied.** Vanilla despawns non-persistent mobs beyond 128 blocks, and the pack's
    IaF config has `canDespawn: true`, so every puppet is persistence-required while embodied.
    - **Trap:** a wandering trader's `despawnDelay` of 0 stops its own countdown, but its trader llamas
      copy the trader's delay minus 1 and discard themselves at 0 or below (`TraderLlama.maybeDespawn`).
      The bridge keeps a positive delay on the trader and refreshes it.
-7. **Crash safety comes free.** Puppets never reach disk; the journal covers the rest (§4.9).
+8. **Crash safety comes free.** Puppets never reach disk; the journal covers the rest (§4.9).
 
 **Where puppets appear.** At the edge of the entity-ticking area, out of sight. The pack's singleplayer
 `options.txt` sets `simulationDistance:12`; a dedicated server defaults to 10. Wandering traders,
@@ -575,7 +656,9 @@ puppet may be seen appearing (UNVERIFIED geometry; a GameTest checks it, risk R1
   exact (SCALE.md §3).
 - A leashed trader llama no longer despawns in vanilla (`canDespawn` checks the leash holder), so the
   stolen llama simply stays.
-- **The cargo a stolen llama carries** leaves with it, as a cross-store transfer with an operation id.
+- **Taking one member splits it from its group** (C25). The rest of the group stays one unit.
+- **The cargo a stolen llama carries** leaves with it in its chest (C21), as a cross-store transfer with
+  an operation id.
 - All four hooks go in PATCHES.md.
 
 ### 6.3 What the bridge observes
@@ -586,25 +669,34 @@ puppet may be seen appearing (UNVERIFIED geometry; a GameTest checks it, risk R1
 | Chunks loaded and unloaded, forced tickets | `ChunkEvent.Load/Unload`, ticket controllers | on event |
 | Puppet ticking state | `isPositionEntityTicking` per puppet | each puppet pass |
 | Damage and deaths of puppets and village residents | `LivingIncomingDamageEvent`, `LivingDeathEvent` | on event |
+| Rescues: a player kills a mob whose target is a puppet (C24) | `LivingDeathEvent`, with the dead mob's `Mob.getTarget()` | on event |
 | Trades | `Merchant.notifyTrade(MerchantOffer)` on adopted villagers, sim traders and ribbit merchants | on event |
 | Taking a creature | §6.2 | on event |
+| New villages (C22) | a village structure start as it generates. The hook is UNVERIFIED; phase 0 checks it | on generation |
 | Village census while loaded: villagers by profession, ribbits by profession, beds, workstations | entity and POI queries, filtered by village bounds | staggered, while loaded |
 | Vanilla gossip from villager hurt or killed | `Villager.getGossips()` read on census | staggered |
 | Recipes | `RecipeManager`, exported once per server start and datapack reload | on load |
 | Climate (later) | the bridge samples mic-climate or Serene Seasons on the server thread and writes values into the buffer | per cell, staggered |
+| Districts, ports and stock (industry) | INDUSTRY.md §3 | sampled under quota |
 
 ### 6.4 What the bridge does on command
 
-- Spawn, despawn and steer puppets through adapters, under the per-tick quota.
-- Write trade offers and uses for adopted villagers and sim merchants (§8.5).
-- Write gossip into villagers, if P19 says so.
+- Spawn, despawn and steer puppets through adapters, under the per-tick quota, a whole group at a time
+  (C25).
+- Fill trader llama chests with the caravan's cargo when it materializes (C21, §8.6).
+- Write trade offers and uses for adopted villagers, ribbit merchants and sim merchants (§8.5).
+- Write slights and fair trades into villagers' gossip (C20, §8.7).
+- Set `doTraderSpawning` to false when the sim takes the traders, and back to true when trade or travel
+  is switched off (C8, C25).
 - Place structure templates under the block quota, never over player-placed blocks (§8.8).
+- Industry: reconcile deltas and apply attack damage on chunk load (INDUSTRY.md §5, §13.7).
 - Later: Surveyor landmarks, Numismatics balances, Create package offline buffers.
 
 ### 6.5 Commands for Ben
 
 `/rtsim perf` (µs per system, band counts, lag), `/rtsim inspect <agent|village|market|edge>` (with
-prices and news age), `/rtsim near`, `/rtsim jump <days>`, `/rtsim record start|stop`.
+prices and news age), `/rtsim near`, `/rtsim jump <days>`, `/rtsim record start|stop`. Industry adds
+`/rtsim district` (INDUSTRY.md §2.1, §10).
 
 ## 7. Reuse table: need, mod, verified hook
 
@@ -613,11 +705,13 @@ Verified means seen in the pinned jar or source (Appendix A). The rest is marked
 | Need | Mod (version) | Verified hook |
 |---|---|---|
 | Caravan merchant body | vanilla `WanderingTrader` | `Merchant.overrideOffers(MerchantOffers)`, `notifyTrade`; `setDespawnDelay`; `wander_target` NBT |
-| Caravan pack animals | vanilla `TraderLlama` | leashed to the trader by `setLeashedTo(trader, true)`; strength 1 to 5; chest inventory 3 rows × strength columns (`getInventoryColumns`) |
+| Caravan pack animals and their cargo (C21) | vanilla `TraderLlama` | leashed to the trader by `setLeashedTo(trader, true)`; strength 1 to 5; chest inventory 3 rows × strength columns (`getInventoryColumns`) |
+| Rescues (C24) | vanilla `Zombie` | zombies target `AbstractVillager`, which `WanderingTrader` extends, so caravans are attacked with no sim content |
 | Owning all traders (C8) | vanilla | gamerule `doTraderSpawning` (`GameRules.RULE_DO_TRADER_SPAWNING`), read by `WanderingTraderSpawner` |
 | Villager trades through the treasury (C14) | vanilla `Villager` | `getOffers`, `overrideOffers`, `notifyTrade`; `restock` needs a mixin; `MerchantOffer` uses and max uses |
-| Reputation, prices and golems | vanilla gossip | `GossipContainer.add(UUID, GossipType, int)`; `GossipType` weights; `updateSpecialPrices(Player)` lowers or raises prices by reputation; `DefendVillageTargetGoal` targets a player with reputation ≤ −100 |
+| Reputation, prices and golems (C20) | vanilla gossip | `GossipContainer.add(UUID, GossipType, int)`; `GossipType` weights; `updateSpecialPrices(Player)` lowers or raises prices by reputation; `DefendVillageTargetGoal` targets a player with reputation ≤ −100 |
 | Ribbit merchants, bands, sorcerers | Ribbits 4.1.6 (LGPLv3, by YUNG; needs YUNG's API and GeckoLib) | `RibbitEntity extends AgeableMob implements GeoEntity, Merchant`; `setRibbitData`; goals GoHome, Stroll, Fish, WaterCrops, PlayMusic, ApplyBuff |
+| Ribbit trades through the treasury (C23) | Ribbits 4.1.6 | `getOffers`, `overrideOffers`, `restock()`; `notifyTrade` through `Merchant` |
 | Ribbit village growth | Ribbits 4.1.6 | 14 house templates under `data/ribbits/structure/houses`; vanilla `StructureTemplateManager` and `StructureTemplate.placeInWorld`. Jigsaw blocks inside the templates must be replaced on placement (UNVERIFIED for these templates) |
 | Ribbit village positions | Ribbits 4.1.6 | structure set spacing 25 chunks, separation 8; swamp biomes only; kept 6 chunks from other village sets |
 | Vanilla village positions | vanilla | structure set spacing 34 chunks, separation 8 |
@@ -627,31 +721,43 @@ Verified means seen in the pinned jar or source (Appendix A). The rest is marked
 | Map markers | Surveyor 1.2.4 + Antique Atlas 3.1.2 (listed as "Antique Atlas 4" in the pack) | `WorldLandmarks.of(Level).put(...)`, `Landmark.global`. Surveyor is a Fabric jar loaded through Sinytra Connector 2.0.0-beta.17 (its `neoforge.mods.toml` is a Connector placeholder). Its API uses intermediary names, so the plugin compiles against a remapped copy; recorded in PATCHES.md |
 | Ships (later) | Sable 2.0.5 + Create Aeronautics 1.3.2 | `SchematicLoader.loadSchematic` → `container.allocateNewSubLevel(Pose3d)` → `plot.newEmptyChunk` → `template.placeInWorld(plot.getEmbeddedLevelAccessor(), ...)` → `updateLastPose()` |
 
-Later-phase hooks (Numismatics, Create trains and packages, Destroy, Deep Time) are in §1.3 and
-Appendix A. mic-grid-loader and create-power-loader stay the option for a base that must really run.
+Later-phase hooks (Numismatics, Destroy, Deep Time) are in §1.3 and Appendix A. Industry hooks (Create
+trains, packages, gauges and displays, PowerGrid, deposits, turrets) are in INDUSTRY.md §17. Chunk
+loaders (mic-grid-loader, create_power_loader) work alongside the sim (C15); INDUSTRY.md §9 says how.
+Whether crops grow under their tickets is an open fact (§15).
 
 **No mod in the pack covers:** a simulation of unloaded areas, caravans with real cargo between
 villages, markets that remember stock, or news that travels.
 
 ## 8. Phase 1: caravans and markets between vanilla and Ribbits villages
 
-Decided: C6 to C9, C11 to C14. Ribbits has extra high priority (D5).
+Decided: C6 to C9, C11 to C14, C20 to C26. Ribbits has extra high priority (D5).
 
 ### 8.1 What the player gets
 
 - Wandering traders with trader llamas, and ribbit merchants, travel between real villages with real
-  goods and the news of what they saw.
+  goods and the news of what they saw. The cargo is really in the llamas' chests (C21).
 - Every adopted village runs a storehouse market: prices follow its stock, labour costs and local
   resources. Humans pay in emeralds, ribbits in amethyst, and exchange rates form at border markets.
-- Villager trades draw from and pay into the village treasury, so a poor village cannot pay much.
-- Villages and caravan owners remember robbery, killing and leash theft. Fair trade helps.
+- Caravans visit player bases too, trade there, and carry the base's prices away as news (C26).
+- Villager and ribbit merchant trades draw from and pay into the village treasury, so a poor village
+  cannot pay much (C14, C23).
+- Villages and caravan owners remember robbery, killing and leash theft. Fair trade and rescuing a
+  caravan help (C24). In vanilla villages the memory is vanilla gossip, so prices and iron golems
+  follow it (C20).
 - Ribbit sorcerers buff friends and leave out those who slighted their village. Touring bands play
   between ribbit villages. Ribbit villages grow from YUNG's own house templates.
 
-### 8.2 Villages in the sim
+### 8.2 Markets: villages and player bases
 
 - **Adoption.** The sim adopts each vanilla village (`StructureTags.VILLAGE`) and each
-  `ribbits:ribbit_village` as a market. When a village joins is **Proposal P22 (Ben)**.
+  `ribbits:ribbit_village` as a market.
+- **A village joins when its structure start generates** (C22). Caravans run only between generated
+  villages, so the network grows as players explore, or as a pregenerator such as Chunky runs. How the
+  bridge sees a structure start generate is UNVERIFIED (§6.3).
+- **Later, villages may come from the sim** (C22): the existence of villages, and much of structure
+  generation, will probably move into the sim. That is future direction, recorded in §10.9 and not
+  designed now.
 - **Where they are.** Vanilla village candidates sit one per 34 × 34-chunk cell (544 blocks), Ribbits
   candidates one per 25 × 25-chunk cell (400 blocks), swamp only, kept 6 chunks from other village
   sets. A candidate can fail its biome check, so real neighbours are often further apart. How many ribbit
@@ -663,14 +769,29 @@ Decided: C6 to C9, C11 to C14. Ribbits has extra high priority (D5).
 - **Edges.** Each market links to nearby markets as flow edges. The starting rule is **Proposal P18
   (Ben)**.
 
+**Player bases are market nodes** (C26).
+- Every player base is a stop that caravans visit. A caravan buys and sells there, and carries the
+  base's prices away as news, like any market's.
+- **A base is not a storehouse market.** It has no treasury, labour cost or production regime; the
+  player's goods stay the player's. Its prices are the prices players trade at there.
+- **What counts as a base, and how a caravan trades with it,** is **Proposal P30 (Ben)**. The
+  recommendation: a base is a place a player spends much time (P26's counter) or an industry district
+  (I2), and the caravan trades through its own offers with the players present.
+- **Bases are also targets** of the threats in INDUSTRY.md §13 (C16, C17).
+
 ### 8.3 Bodies (C8, C11, C12)
 
 - **Human caravans:** one wandering trader with two trader llamas, as vanilla spawns them
   (`WanderingTraderSpawner` spawns two llamas within 4 blocks). No guards (C12).
+- **A caravan is one group** (C25). The trader and its llamas spawn in one tick, pass the ticking test
+  together, and are captured and despawned together (§6.1).
+- **Its cargo is in the llamas' chests** (C21, §8.6).
 - **Ribbit caravans:** ribbit merchants (`RibbitData` profession merchant). Ribbits have no pack
-  animals, so a ribbit caravan's capacity is a TUNABLE (P18).
+  animals, so a ribbit caravan's capacity is a TUNABLE (P18). Where a ribbit caravan's cargo is, and
+  what a killed ribbit merchant drops, is **Proposal P31 (Ben)**.
 - **The sim owns every wandering trader** (C8). The bridge sets `doTraderSpawning` to false when the sim
-  starts. Removing the sim leaves the gamerule false until someone resets it.
+  starts. Switching off the trade or travel module sets it back to true (C25, §5.4). Removing the sim
+  mod leaves the gamerule false until someone resets it.
 - **No mods are added for phase 1** (C11).
 
 ### 8.4 The economy (C13)
@@ -720,7 +841,11 @@ crossing 0, the target or twice the target; input or deposit exhaustion; schedul
 walks the breakpoints, so its cost does not grow with elapsed time (A15).
 
 **Conservation.** Per good: Σ stock + in transit + individual cargo = genesis + produced − consumed +
-player in − player out; per currency likewise with mined and burned. Asserted per event in debug.
+player in − player out − destroyed; per currency likewise with mined and burned. Asserted per event in
+debug.
+- **Stolen goods go somewhere** (C24, §10). What raiders and pirates take from a flow is an inbound flow
+  to their haven's market, so it stays in the sum.
+- **Only destruction leaves it.** Cargo lost to a dragon (§9) or to a kaiju is counted as destroyed.
 
 **Stability rule** (derived): `T ≥ 2 × max d` over active edges, so the band between `Sbar` and
 `2 Sbar` absorbs the news lag. The tunables `r`, `T` and `k` are **P9 (Ben)**.
@@ -742,15 +867,22 @@ player in − player out; per currency likewise with mined and burned. Asserted 
 - **Report.** Each trade (`notifyTrade`) is an observation with an operation id. The bridge updates its
   cached stock and treasury at once; the engine applies the trade next step.
 - **Reputation.** Vanilla's own price change from reputation (`updateSpecialPrices`) still applies on
-  top. Whether the sim writes into vanilla gossip is **Proposal P19 (Ben)**.
+  top. The sim writes slights and fair trades into vanilla gossip (C20, §8.7), so that price change
+  carries the village's memory.
 
-**Ribbit merchants in ribbit villages:** whether their trades go through the ribbit treasury in the same
-way (`overrideOffers`, `restock`) is **Proposal P23 (Ben)**.
+**Ribbit merchants in ribbit villages trade through the treasury too** (C23). Their trades and restocks
+go through the ribbit village's treasury and stock, in amethyst, as villagers' do under C14:
+- `overrideOffers` reprices the offers Ribbits made, from the last market snapshot, with the same
+  integer bundles. The sim never adds or removes a ribbit merchant's offers.
+- Uses follow stock for what the village sells, and treasury for what it pays amethyst for.
+- A mixin on `RibbitEntity.restock` hands uses to the treasury rule (PATCHES.md), as for villagers.
+- Each trade is an observation with an operation id (`notifyTrade`).
+- Ribbits have no gossip, so a disliked player's prices rise through the sim's own quote (§8.7).
 
-**Sim caravans:** a trader's offers come from its cargo when it materializes. It sells cargo and buys
-what its home market lacks, up to the cash it carries, at its destination's prices as of the freshest
-news it carries. Whether traders at border markets also exchange emeralds and amethyst for players is
-**Proposal P21 (Ben)**.
+**Sim caravans:** a trader's offers come from its cargo when it materializes, and the cargo is in its
+llamas' chests (C21, §8.6). It sells cargo and buys what its home market lacks, up to the cash it
+carries, at its destination's prices as of the freshest news it carries. Whether traders at border
+markets also exchange emeralds and amethyst for players is **Proposal P21 (Ben)**.
 
 ### 8.6 Caravans
 
@@ -762,7 +894,14 @@ news it carries. Whether traders at border markets also exchange emeralds and am
 - **At a market,** a caravan stays for a stay window (TUNABLE, P18) near the meeting point, then leaves.
 - **A caravan becomes an individual row** when something must persist (robbed, attacked, a llama
   stolen, a player trade). Its departure slot leaves the flow, so totals stay exact.
-- **Whether cargo rides physically in the llamas' chests** is **Proposal P20 (Ben)**.
+
+**Cargo rides in the llamas' chests** (C21).
+- When a human caravan materializes, its sampled cargo fills its trader llamas' chests: 3 rows ×
+  strength slots per llama (§8.4).
+- A sale to a player takes the goods out of the chests, and goods the trader buys go into them.
+- Killing a llama drops its chest and cargo. The loot is a journaled transfer with an operation id, so a
+  crash and replay never pays out twice (§4.9).
+- On capture, the adapter reads the chests back, so what the engine stores is what was really there.
 
 ### 8.7 Slights and memory
 
@@ -776,29 +915,49 @@ news it carries. Whether traders at border markets also exchange emeralds and am
 | Leashing or picking up a caravan's llama (§6.2) | the caravan's owner | theft |
 | Hurting or killing a villager or ribbit resident | the village; vanilla records villager hurt and killed as gossip already | assault, killing |
 | A fair trade | the village or caravan traded with | trade (positive) |
+| A rescue: killing a mob that is attacking a caravan (C24) | the caravan, and its owner once it gets home | rescue (positive) |
 
+- **Rescues come free in phase 1.** Vanilla zombies already attack wandering traders (§7), so a player
+  who kills them saves the caravan with no new content. The bridge sees it as a death of a mob whose
+  target was a puppet (§6.3). Its value is in P18.
 - **Whom players wrong in multiplayer** is per acting player for all of these. Signals with no owner,
   such as pollution later, are **Proposal P14 (Ben)**.
 - **News spreads at the speed of trade.** A village learns of a robbery elsewhere only when a caravan or
   band arrives from a village that knows.
-- **Starting values** (deltas, decay, lifetimes) are **Proposal P18 (Ben)**.
+- **Starting values** (deltas, decay, lifetimes, the rescue value) are **Proposal P18 (Ben)**.
+
+**The sim writes into vanilla gossip** (C20).
+- When a slight or a fair trade reaches a vanilla village, by witness or by news, the bridge writes it
+  into the gossip of that village's villagers through `GossipContainer.add(UUID, GossipType, int)`,
+  as the acting player's entry. A village not loaded gets it at its next census (§6.3).
+- **Vanilla already writes gossip for what it sees:** a villager hurt or killed, a trade with that
+  villager (Appendix A). The sim writes only what vanilla cannot know, such as a robbery on the road or
+  news from another village, so nothing counts twice. It reads vanilla's own entries back on census.
+- Vanilla then spreads and decays the gossip between villagers with its own rules (`GossipType` decay
+  per day and per transfer, Appendix A).
+- Which `GossipType` and amount each report kind writes is part of P18.
 
 **Consequences, not refusals:**
-- **Prices rise** for a disliked player: through vanilla gossip for villagers (P19), and through the
-  sim's own quote for traders and ribbit merchants.
-- **Iron golems** turn on a player whose vanilla reputation reaches −100 or lower, if P19 writes gossip.
-- **Sorcerers leave the player out** of their buffs (§8.8). **Fair trade raises sentiment;** vanilla
-  adds trading gossip on each trade.
+- **Prices rise** for a disliked player: through vanilla gossip and `updateSpecialPrices` for villagers
+  (C20), and through the sim's own quote for traders and ribbit merchants.
+- **Iron golems** turn on a player whose reputation with a nearby villager is −100 or lower
+  (`DefendVillageTargetGoal`, C20).
+- **Sorcerers leave the player out** of their buffs (§8.8). **Fair trade and rescues raise sentiment;**
+  vanilla adds trading gossip on each trade.
+- **A grudge outlives the one who held it** (C24, §5.7): a notable's strongest memories pass to its
+  heir or home.
 
 ### 8.8 Ribbits: four behaviours (C7)
 
 **1. Merchant caravans.** Ribbit merchants travel between ribbit villages, and to human villages at
-border markets. They price in amethyst; `overrideOffers` sets their offers from their cargo.
+border markets. They price in amethyst; `overrideOffers` sets their offers from their cargo. At home,
+ribbit merchants trade through their village's treasury (C23, §8.5).
 
 **2. Touring bands.**
 - A band is a small group of ribbits with instruments in their `RibbitData`, one of them the master. It
   tours ribbit villages as a flow and, when it stops, plays through `RibbitPlayMusicGoal` around its
   `masterRibbit`. How the goal picks its master is UNVERIFIED, so the plugin may need to steer it.
+- The band and its master are one puppet group (C25): they appear, are captured and leave together.
 - What a band does in the sim is **Proposal P16 (Ben)**.
 
 **3. Sorcerers who remember.**
@@ -823,8 +982,8 @@ Village names here are for the reader. Phase 1 shows no names in game.
 
 **A. A caravan arrives.**
 1. You live in Brindle, a vanilla village. No wandering trader ever spawns near you at random.
-2. A wandering trader walks in from the east with two trader llamas. It came from Oakford, and it
-   appeared out of sight at the edge of your simulation distance.
+2. A wandering trader walks in from the east with two trader llamas. It came from Oakford, and the three
+   appeared together, out of sight, at the edge of your simulation distance (C25).
 3. Its offers are what Oakford had too much of, such as wheat and leather. Brindle is short of wheat, so
    the wheat is dear. The trader also buys the iron Oakford lacks.
 4. It stays near the bell for its stay window, then walks west toward Mirewater, a ribbit village. Once
@@ -848,18 +1007,20 @@ Village names here are for the reader. Phase 1 shows no names in game.
 3. A ribbit caravan arrives in Brindle with amethyst and swamp goods, and leaves with bread.
 
 **D. You rob a caravan.**
-1. You kill a trader llama on the road. It drops its chest and cargo (P20).
+1. You kill a trader llama on the road. It drops its chest and the cargo that was really in it (C21).
 2. The caravan becomes an individual row. Its slot leaves the flow. The loot is a transfer with an
    operation id, so a crash and replay never pays out twice.
 3. The trader carries on and goes home to Oakford with the robbery report.
-4. Later you visit Oakford. Its prices for you are higher, and if P19 writes gossip and your reputation
-   is −100 or lower, its iron golem comes for you. Mirewater has not heard yet; it learns only when a
-   caravan from a village that knows arrives there.
+4. The bridge writes the robbery into the gossip of Oakford's villagers (C20). Later you visit Oakford.
+   Its prices for you are higher, through vanilla's own reputation pricing. If your reputation with a
+   villager is −100 or lower, its iron golem comes for you. Mirewater has not heard yet; it learns only
+   when a caravan from a village that knows arrives there.
 5. You trade fairly in Oakford for a while. Its opinion of you recovers slowly.
 
 **E. You steal a llama.**
 1. A caravan rests at Brindle's bell. You put a lead on one of its llamas.
-2. The llama leaves the sim and becomes your ordinary llama (A10). Its cargo goes with it.
+2. The llama leaves the sim and becomes your ordinary llama (A10). Its cargo goes with it, in its chest.
+   The trader and the other llama stay one group (C25).
 3. The caravan reports a theft. Its owner, Oakford, remembers it like a robbery.
 
 **F. A sorcerer remembers.**
@@ -874,18 +1035,39 @@ the swamp, gather around their master and play. They bring the news from their l
 **H. Mirewater grows.** Mirewater trades well all season. You come back after a long trip, and a new
 ribbit house from YUNG's templates stands at the edge of the village, with a new ribbit in it (P17).
 
+**I. You save a caravan** (C24).
+1. Night on the Oakford to Brindle road. A caravan passes your camp, and two zombies go for the trader.
+2. You kill both. The trader and its llamas walk on with their cargo.
+3. The caravan carries a rescue report home. Oakford's villagers get it as gossip (C20), and Oakford
+   thinks a little better of you.
+
+**J. A caravan visits your farm** (C26; what a base is follows P30's recommendation).
+1. You have built a farm off the Brindle to Oakford road, and you spend most of your time there.
+2. A caravan on that route stops at your farm. It sells you leather and buys your surplus wheat, at the
+   prices in the news it carries.
+3. It carries the price you sold at on to Oakford as news. Oakford's next caravans know that wheat is
+   cheap at your farm.
+4. Your farm has no treasury. Nothing is bought from you while you are away.
+
 ### 8.10 Phase 1 exit tests, in game
 
 1. With the sim on, no wandering trader spawns at random; caravans arrive from real neighbouring
    villages, with offers that match their origin's surplus.
-2. Walkthroughs A to H work on a test world with at least two vanilla villages and one ribbit village.
-3. Selling to one villager drains its treasury, and the offer recovers after a caravan visits.
-4. A robbery reaches a second village only after a caravan carries it there (timed in a GameTest).
+2. Walkthroughs A to J work on a test world with at least two vanilla villages, one ribbit village and
+   one player base.
+3. Selling to one villager drains its treasury, and the offer recovers after a caravan visits. The same
+   holds for a ribbit merchant (C23).
+4. A robbery reaches a second village only after a caravan carries it there (timed in a GameTest), and
+   then shows in that village's gossip (C20).
 5. A save and reload mid-caravan, and a kill -9 mid-caravan, give no duplicate trader or llama and lose
-   no cargo (puppet and journal GameTests).
-6. Conservation holds: goods and money totals match after a soak with scripted players.
-7. Perf gates (P24) are green on the potato profile, capped and uncapped, and on the Windows PC.
-8. The 1-worker and 8-worker replays of the same flight recording give the same hash.
+   no cargo (puppet and journal GameTests). The cargo in the llama chests after a reload matches what
+   the engine captured (C21).
+6. A caravan group never splits: no llama is left frozen without its trader, at chunk edges or under
+   the spawn quota (C25).
+7. Switching the trade module off restores vanilla wandering trader spawning (C25).
+8. Conservation holds: goods and money totals match after a soak with scripted players.
+9. Perf gates (P24) are green on the potato profile, capped and uncapped, and on the Windows PC.
+10. The 1-worker and 8-worker replays of the same flight recording give the same hash.
 
 ## 9. Phase 2: dragons on Ice and Fire (C3)
 
@@ -901,8 +1083,25 @@ ribbit house from YUNG's templates stands at the edge of the village, with a new
 - **Prey.** Over an edge, a dragon is a hazard rate on the caravan flow: losses = rate × hazard,
   integrated in closed form (SCALE.md §3). What else dragons prey on in phase 2 is **Proposal P12
   (Ben)**.
+- **Dragons destroy; they have no haven.** Unlike raiders and pirates (§10), what a dragon takes from a
+  flow is counted as destroyed in the conservation sum (§8.4).
+- **Player infrastructure is prey too** (C16, C17). A dragon's hunt leg that crosses a district or a
+  booked train leg schedules an encounter, resolved as INDUSTRY.md §13 says (I19 to I25). The pack sets
+  dragon `griefing` and `stealItems` false, so the damage is the sim's and is bounded.
 - **Memory.** A dragon remembers a player who hurt it, and its next hungry season targets that player's
   home. What "home" means is **Proposal P26 (Ben)**.
+- **Temperament** from its seed makes one dragon bolder or warier than another of its species (C25,
+  §5.7).
+- **Grudges outlive the dragon** (C24, §5.7). When it dies, its strongest memories pass to its heir, or
+  to its lair when it has none. Whether sim dragons breed, and so have offspring for heirs, is open
+  (M1).
+
+**Threats get bored** (C24). An embodied dragon is a heavy puppet, so its visit is bounded.
+- When a dragon materializes to harass a place, a **departure event** is booked on the timing wheel.
+  When it fires, the dragon flies off, and the engine takes it back at the edge of the ticking area.
+- **Damage and hunger bring the departure forward.** Hurting it shortens its visit. Doing nothing still
+  costs stock and blocks until it leaves, so defences still decide the outcome (C17).
+- How long a visit lasts by default is data per species (TUNABLE).
 
 **Minecraft side** (`mic_rtsim_iceandfire`):
 - The dragon materializes as an IaF entity whose NBT comes from engine state (`AgeTicks`, `Hunger`,
@@ -922,19 +1121,32 @@ ribbit house from YUNG's templates stands at the edge of the village, with a new
    prices for leather and wool rise as fewer caravans arrive, and the news spreads with the survivors.
 3. You are on that road when the leg crosses it. Cinderjaw appears at the edge of the entity-ticking
    area, out of sight, and flies at the caravan in front of you.
-4. You drive it off wounded. Its health is captured when it leaves. It remembers you, and next hungry
-   season it hunts near your home.
-5. You kill it. Brindle and Oakford, whose caravans it preyed on, think better of you (a positive report
-   carried by caravans).
+4. You drive it off wounded. Your arrows bring its departure forward, and it flies off early (C24). Its
+   health is captured when it leaves. It remembers you, and next hungry season it hunts near your home.
+5. While you are away, it finds your roofless smelters instead (INDUSTRY.md §14.2).
+6. You kill it. Brindle and Oakford, whose caravans it preyed on, think better of you (a positive report
+   carried by caravans). Its grudge against you passes to its heir or its lair (C24).
 
 **Phase 2 exit tests:** the walkthrough works; a migration leg booked across the player's region fires
-on time with no scan; a dragon's health and memory survive dematerialization and a restart; a killed
-dragon is not silently replaced (if P13 removes the spawner rule).
+on time with no scan; a dragon's health and memory survive dematerialization and a restart; a dragon
+left alone leaves at its booked departure, and a wounded one leaves sooner (C24); a dead dragon's
+grudge reaches its heir or lair (C24); a killed dragon is not silently replaced (if P13 removes the
+spawner rule).
 
 ## 10. Later content, in a proposed order (P11)
 
 Each module below is sketched with its hooks and a short walkthrough. Bodies and structures for each are
-**P8 (Ben)**.
+**P8 (Ben)**. Industry is not in this order: it is a parallel workstream (C15, §10.4).
+
+**Predator havens** (C24) apply to every raider here: sky pirates (§10.1), bandits and war bands
+(§10.3).
+- **Stolen goods go home.** The share a raider takes from a flow becomes an inbound flow to its home
+  market, a pirate haven or a bandit camp, where it is sold. Totals stay conserved (§8.4). One rate
+  changes per hazard change, so the cost is events, not volume.
+- **Havens sell cheap stolen goods,** so players can buy them back or raid the haven. Stock stolen from
+  player districts goes the same way (INDUSTRY.md §13.2).
+- **Dragons destroy instead** (§9). Which structures serve as havens is part of P8.
+- **Patrols** that lower a lane's hazard, and crews converted from captured ships, are open (M2).
 
 ### 10.1 Ships (C5)
 
@@ -945,6 +1157,8 @@ Each module below is sketched with its hooks and a short walkthrough. Bodies and
 - **Sky pirates** hunt sky lanes as hazard rates until observed; **sea ships** run between port
   villages. Body candidates and how ports are provided are P8 (Small Ships, Create Aeronautics
   Structures, the Seven Seas add-on, not yet surveyed).
+- **Pirates take harbour at a haven** (C24): what they take on a lane flows to the haven's market and
+  is sold there. A ship and its crew are one puppet group (C25).
 - **Hooks:** Sable's five-call spawn recipe; `SubLevelHoldingChunkMap` freezes unloaded ships, so the
   engine owns every NPC voyage. Saving a sub-level plot back to a template is UNVERIFIED; without it, hull
   damage persists as a number instead of holes.
@@ -967,39 +1181,49 @@ Each module below is sketched with its hooks and a short walkthrough. Bodies and
 ### 10.3 Conflict, goblins and raiders
 
 - Grievance per player per signal; escalation from notice to raid; war bands as rows on the road graph;
-  a raid director that spawns waves at the edge of the entity-ticking area. The baseline idea that raids
-  on a base resolve only while one of its players is online goes to Ben with this phase.
+  a raid director that spawns waves at the edge of the entity-ticking area.
+- **Raids do not wait for the owner** (C16, C17). The baseline idea that raids on a base resolve only
+  while one of its players is online is replaced. Bandits attack player supply lines and factories even
+  while the player is AFK, and on dedicated servers while the owner is logged off. Unwatched attacks
+  resolve abstractly, and real changes apply on the next chunk load (C18). The defences built decide
+  the outcome. INDUSTRY.md §13 is the design.
+- **A war band leaves when it gets bored** (C24, as dragons do in §9): a booked departure, brought
+  forward by its losses.
+- **Bandit camps are havens** (C24): stolen stock flows to the camp's market, where players can buy it
+  back or raid it.
 - Body candidates (P8): Goblin's Tyranny, Illager Invasion. The fallback raider is `minecraft:pillager`.
   Pollution signals come from `mic_rtsim_destroy`; attribution is **P14 (Ben)**.
 - **Walkthrough:** your Destroy refinery smogs the forest a goblin camp claims. Scouts appear at the
   forest edge. Ignore them, and a war band musters and marches down the trail over days. You are online
   when it arrives; waves come at the edge of your loaded area at night. You break it, and the human
-  village downriver, which hates the goblins, sends its next caravan with better prices.
+  village downriver, which hates the goblins, sends its next caravan with better prices. Had you been
+  away, the band would have met your walls abstractly, and you would find the damage on your return
+  (C18).
 
-### 10.4 Industry, on the Create plugin
+### 10.4 Industry: see INDUSTRY.md
 
-- **Unit:** one Create 6 logistics network (`create_logistics`), **P5 (Ben)**. While loaded, the engine
-  snapshots factory gauges and measures their rates. While unloaded, each gauge is a process between
-  breakpoints. Trains keep running, because Create ticks overworld trains with no chunk check. Remote
-  cargo moves as packages through `GlobalPackagePort.offlineBuffer`.
-- **Walkthrough: selling iron to a town by train.**
-  1. A village with a Create station buys iron at its market (it needs a station; how villages get one is
-     P8).
-  2. Your train runs there while you sit at home. Create's mail transfer drops your iron packages into
-     the station's offline buffer.
-  3. The engine's market reads the buffer at its next step, prices the iron, and puts packages of the
-     grain you ordered into the same buffer.
-  4. **The engine's reply is at least one tick late,** so the grain rides the next train. Or your
-     schedule waits at the station on a cargo condition until the grain is aboard (Create's item cargo
-     condition; class name UNVERIFIED).
-  5. Your account or your next train's cargo shows the trade. The village, with steady iron, grows.
+Industry is a parallel workstream (C15), not a later phase. **INDUSTRY.md is the design;** this plan
+does not repeat it.
+- **Decided:** simulate distant factories and supply lines across Create and its addons without relying
+  on chunk loaders, which still work alongside (C15). Threats attack them while the player is AFK (C16)
+  and, on dedicated servers, logged off (C17). Unwatched attacks resolve abstractly, with real changes on
+  the next load (C18). A district is a black box measured at its boundary, with per-mod plugins for
+  precision (C19).
+- **Open:** I1 to I26 (INDUSTRY.md §20, OPEN-QUESTIONS.md). I2 proposes the district as the unit, which
+  would retire P5.
+- **Two facts are in conflict** and wait for a GameTest (§15): whether Create trains run in other
+  dimensions, and whether random ticks happen under chunk loaders.
+- **Not in INDUSTRY.md:** trade between player trains and village markets, the baseline's "selling iron
+  to a town by train". It needs villages with Create stations, which is M3 (villages advancing in
+  technology). A player base reached by train is a market node under C26 (§8.2).
 
 ### 10.5 Kaiju (C10)
 
 - Late-game bosses that start appearing once players have nukes. The trigger comes from `mic_nuclear`
   and Create Nuclear, **P27 (Ben)**. The body candidate is the Alex's Caves port (P8).
 - A kaiju is a notable individual on scheduled legs, like a dragon, with hazard rates on everything it
-  crosses.
+  crosses. Like a dragon, its visit ends on a booked departure (C24), and it attacks player
+  infrastructure as a boss (C16, I19).
 - **Walkthrough:** the first detonation in the world is observed. Weeks later, news arrives with a
   caravan that something huge has risen in the far ocean. Its leg crosses a sea lane; ships stop
   arriving at a port village, and prices there climb. Later its leg is booked across your region.
@@ -1032,6 +1256,9 @@ Each module below is sketched with its hooks and a short walkthrough. Bodies and
 - It writes to Deep Time's event log as writer 2 (`civ:history`), with negative years before world
   creation (X2). History and refinement stay separable, and the history grid resolution stays a preset
   parameter (A14).
+- **Villages and history meet here.** For now a village joins only when it generates (C22), so history
+  run at world creation knows no villages yet. C22's future direction, villages that come from the sim
+  (§10.9), is where the two would fit together. P6 stays open.
 - **Walkthrough:** you open `rtsim-viewer` on a new world and see which villages traded, which caravan
   routes were robbed, and which roosts held dragons. In game, the villages' first prices and opinions
   already carry that history.
@@ -1039,6 +1266,14 @@ Each module below is sketched with its hooks and a short walkthrough. Bodies and
 ### 10.8 Civilians and villagers (C2)
 
 Not now. Residents stay vanilla entities. Any future civilian body must look like a mob (D7).
+
+### 10.9 Villages and structures from the sim (future direction, C22)
+
+Ben: "eventually we will probably move the existence of villages, and much of structure generation
+into our system." This is recorded as direction only, and is **not designed now**. Until then a village
+joins the sim when its structure start generates (§8.2). Designs made before then should not close the
+door: a village stays a market with a position, wherever its existence comes from. Village decline and
+founding (M4) and villages advancing in technology (M3) would likely be decided with it.
 
 ## 11. Deep Time
 
@@ -1079,19 +1314,20 @@ Sizes are relative: S < M < L < XL.
 | Patch ledger + contract tests | S | PATCHES.md and one GameTest set per adapter (P7) |
 | Engine kernel | XL | clock, timing wheel, lazy regions, storage facade, pages, counter RNG, determinism tests, scale bench |
 | Journal | M | `mic_rtsim:journal` SavedData, operation ids, engine replay, acknowledgement and trimming |
-| JNI boundary and core bridge | L | four buffers, overflow ring, VarHandle hand-over, quotas, puppet registry, the two save mixins, taking-a-creature hooks |
-| Body-kind mapping | S | data loader, candidate resolution, the vanilla adapters |
+| JNI boundary and core bridge | L | four buffers, overflow ring, VarHandle hand-over, quotas, puppet registry and puppet groups (C25), the two save mixins, taking-a-creature hooks, module switches (C25) |
+| Body-kind mapping | S | data loader, candidate resolution, group layouts (C25), the vanilla adapters, llama chest cargo (C21) |
 | Travel and flows | L | edges, legs, sampled travellers, the shared encounter index, cascade cancellation |
-| Knowledge | M | reports, witnesses, sentiment with caps and decay, gossip by carrier |
-| Settlements | M | adoption, census, plots, growth |
+| Knowledge | M | reports, witnesses, sentiment with caps and decay, gossip by carrier, rescues, temperament, lifespans and heirs (C24, C25) |
+| Settlements | M | adoption at generation (C22), player bases as market nodes (C26), census, plots, growth |
 | Economy | L | labour-cost solver from recipes, storehouse markets, currencies, exchange, flows, news, conservation asserts |
-| Treasury adapter | M | offer repricing, uses, restock mixin, gossip writer (if P19) |
-| `mic_rtsim_ribbits` | M | merchant and band adapters, the buff-goal mixin, house placement |
+| Treasury adapter | M | offer repricing, uses, restock mixin, gossip writer (C20) |
+| `mic_rtsim_ribbits` | M | merchant and band adapters, ribbit treasury and restock mixin (C23), the buff-goal mixin, house placement |
 | `mic_rtsim_carryon` | S | one event listener |
 | `mic_rtsim_iceandfire` + dragon rules | M | dragon adapter, flight steering, hunting legs, migration bookings |
 | `mic_rtsim_surveyor` | S | landmark writer against a remapped Surveyor |
 | CLI, bench, replay, viewer | M | headless runs, potato benches, flight recorder, HTML maps |
-| Later: ecology L, conflict L, ships L, industry on `mic_rtsim_create` L, `mic_rtsim_destroy` S, `mic_rtsim_numismatics` S, history XL, `mic_rtsim_deeptime` M, cosmos XL, kaiju M | | |
+| Industry workstream | | its own ledger: INDUSTRY.md §18 |
+| Later: ecology L, conflict L, ships L, `mic_rtsim_numismatics` S, history XL, `mic_rtsim_deeptime` M, cosmos XL, kaiju M | | |
 
 **Removed from the baseline:** the goblin entity, the custom humanoid and its TaCZ body work, the
 dialogue screen, the Cobblemon adapters. **Data is the hidden bulk:** goods from item tags, cultures,
@@ -1100,14 +1336,16 @@ body-kind files, later ship schematics and species.
 ## 14. Phases
 
 Each phase ends with something Ben can see in game and with the perf gates (P24) green on the potato
-profile.
+profile. Design depth is not a risk to hedge against (D8): phase 0 is not rushed to cut design short,
+and when it starts is open.
 
 | Phase | Builds | Exit test |
 |---|---|---|
-| **0. Spikes** | the first `mic_native` (pools, IO lane, governor, C ABI rules); the potato harness with a whole-pack baseline before any sim exists; `rtsim-cli bench scale` (SCALE.md §10); puppet GameTests (no duplicates across save, reload, crash, passengers and other mods' saves); journal GameTests (crash at each point of the save order); the storage bench, `bevy_ecs` against our own columns (P4); a caravan speed GameTest; a ribbit-village census on the pack's worldgen | numbers written into this plan and brought to Ben; the Rust choice holds against them, or §3 is reopened |
-| **1. Caravans and markets** | kernel, core bridge, journal, body kinds, knowledge, settlements, trade, travel, the treasury adapter, `mic_rtsim_ribbits`, `mic_rtsim_carryon` | §8.10 |
-| **2. Dragons** | ecology (hunger), `mic_rtsim_iceandfire`, migration bookings, flow hazards | §9 exit tests |
-| **Later** | in the order P11 settles: ships, herds, conflict, industry, kaiju, space, history | each module's walkthrough works in game |
+| **0. Spikes** | the first `mic_native` (pools, IO lane, governor, C ABI rules); the potato harness with a whole-pack baseline before any sim exists; `rtsim-cli bench scale` (SCALE.md §10); puppet GameTests (no duplicates across save, reload, crash, passengers and other mods' saves), with a caravan group as one unit (C25); journal GameTests (crash at each point of the save order); the storage bench, `bevy_ecs` against our own columns (P4); a caravan speed GameTest; a ribbit-village census on the pack's worldgen; a check that the bridge sees village structure starts as they generate (C22) | numbers written into this plan and brought to Ben; the Rust choice holds against them, or §3 is reopened |
+| **1. Caravans and markets** | kernel, core bridge, journal, body kinds and groups, knowledge (gossip writer, rescues, heirs), settlements (villages and player bases), trade, travel, the treasury adapter, `mic_rtsim_ribbits`, `mic_rtsim_carryon`, module switches | §8.10 |
+| **2. Dragons** | ecology (hunger), `mic_rtsim_iceandfire`, migration bookings, flow hazards, bored departures, dragon threats to districts with industry phase I-G | §9 exit tests |
+| **Industry, in parallel** (C15) | INDUSTRY.md §16: phases I-A (read-only ledger) to I-H (rebuild), order I26 | INDUSTRY.md §16 |
+| **Later** | in the order P11 settles: ships, herds, conflict, kaiju, space, history | each module's walkthrough works in game |
 | **With Deep Time** | `mic_rtsim_deeptime`, the event-log writer, the natives move (§2) | a Deep Time planet's history appears in Deep Time's viewer |
 
 **Tests at every phase:** `cargo test` with property tests for conservation, `fold` after `sample`, and
@@ -1132,6 +1370,34 @@ test on the real pack server. Builds and tests run on the laptop, niced, one hea
 9. **Optimization agents change the mods adapters depend on.** PATCHES.md and contract tests catch it.
 10. **No slack on the weakest PCs** (§2.1). The sim falls further behind; `/micperf` shows it. The pack's
     minimum spec must leave some slack.
+11. **A puppet group split by another mod.** A mod that removes one member (a capture ball, say) leaves
+    the rest of the group (C25). The member leaves the sim as in §6.2; a GameTest checks the rest stays
+    one unit.
+
+Industry has its own risk list: INDUSTRY.md §19.
+
+### 15.1 Open facts, settled by GameTest
+
+These are facts, not choices. The sources disagree, and a GameTest on the pack decides. No design may
+depend on either answer until then.
+
+1. **Do Create trains run in other dimensions?**
+   - INDUSTRY.md §0 reads Create's source as yes. `GlobalRailwayManager.tick(level)` returns unless the
+     level is the overworld, but it then ticks every train in its global map, and carriages resolve
+     their own dimension through `server.getLevel`.
+   - This plan's §10.4 (before 2026-10-20) and the industry inventory read it as "overworld trains
+     only".
+   - **The test:** a train on a Nether loop with no player in the Nether, timed against the schedule.
+     It decides whether INDUSTRY.md's train hooks (§8) cover every dimension.
+2. **Do random ticks happen under chunk loaders?**
+   - `pack/modDocs/create-power-loader.md` says random ticks (crop growth) and mob spawning still need a
+     nearby player, even under its tickets.
+   - INDUSTRY.md §0 reads NeoForge's patched `ServerChunkCache.tickChunks` as random-ticking a chunk
+     under a ticking ticket, and create_power_loader and mic-grid-loader use ticking tickets. So crops
+     would grow under them. The industry inventory says the same, marked UNVERIFIED.
+   - **The test:** crops in a chunk held by each loader, with no player within 128 blocks. It decides
+     I9 (crops replay, spawn-fed farms do not) and the "chunk-loaded or simulated makes the same" claim
+     in INDUSTRY.md §9.
 
 ## 16. What the prior art taught
 
@@ -1151,6 +1417,8 @@ research pass and were not re-read; their numbers have been dropped.
 | Abstract flows, physical only when observed | Dwarf Fortress world activities (baseline) | §4.2 |
 | Generate detail lazily but consistently; match entry and exit rates | Sunshine-Hill and Badler 2010 (baseline) | §4.2 |
 | A pop is a group by design | Victoria 3 (SCALE.md §2); Stellaris pop groups UNVERIFIED | §4.4 |
+| Stolen goods go to a haven; notables age and leave heirs; threats get bored; rescues count; temperament from the seed; a switch per module; groups spawn as one unit | Ben's mcrtsim (research/mcrtsim-mining-2026-10-19.md), adopted as C24 and C25 | §4.1, §5.4, §5.7, §6.1, §8.7, §9, §10 |
+| Never age per tick; never hand over on `ChunkEvent.Unload`; never block the server thread on a result | mcrtsim's traps (mining note §4) | §5.7, §6.1, §4.5 |
 
 **Traps that hurt similar projects:** whole-population scans every tick (Veloren's `sync_npcs`,
 `cleanup`, AI selection, `simulate_npcs` and load check); unbounded history (Dwarf Fortress figures,
@@ -1165,7 +1433,13 @@ NPCs (second-hand, UNVERIFIED).
 ## 17. Proposals waiting for Ben
 
 P1 to P10 are already in DECISIONS.md; they are restated briefly with what this plan adds. P11 onward
-are new. Each has a recommended option first.
+are new. Each has a recommended option first. OPEN-QUESTIONS.md gathers these with the industry
+proposals (I1 to I26) and the mcrtsim questions (M1 to M7), grouped by what they block.
+
+**Decided on 2026-10-20 and removed from this table:** P19 became C20 (the sim writes into vanilla
+gossip, §8.7), P20 became C21 (cargo in the llama chests, §8.6), P22 became C22 (villages join when
+generated, §8.2), and P23 became C23 (ribbit trades through the treasury, §8.5). P30 and P31 are new,
+raised by C26 and C21.
 
 | # | Proposal | Recommended | Alternatives | Needed by |
 |---|---|---|---|---|
@@ -1173,31 +1447,29 @@ are new. Each has a recommended option first.
 | P2 | Sim calendar | Serene Seasons' calendar (8-day sub-season by default), or mic-climate's `YearClock` in Deep Time worlds | the vanilla day count only | herds, growth |
 | P3 | The engine owns the truth; puppets never saved by vanilla | yes, as §6.1 (A9 and A10 already assume it) | vanilla saves entities and the engine reconciles | phase 0 |
 | P4 | Agent storage | settled by the phase 0 storage bench: `bevy_ecs` behind a facade with our own executor, or our own columns | | phase 0 |
-| P5 | Factory unit | one Create 6 logistics network; remote cargo as packages | per-machine or per-chunk units | industry |
-| P6 | History timing | at world creation, after Deep Time's bake when present | lazily, per region on first visit | history |
+| P5 | Factory unit | INDUSTRY.md's I2 proposes the district instead, which would retire P5 (C19 already makes the district the black box) | one Create 6 logistics network, with remote cargo as packages; per-machine or per-chunk units | industry |
+| P6 | History timing | at world creation, after Deep Time's bake when present. Under C22, history at world creation knows no villages yet (§10.7) | lazily, per region on first visit | history |
 | P7 | Patch ledger and contract tests | yes, for every reach into another mod; every MIC mod keeps one | rtsim only | phase 0 |
-| P8 | Bodies, structures and ports for later phases | candidates: Small Ships, Create Aeronautics Structures, the Seven Seas add-on (ships, ports); the Alex's Caves port (kaiju); Goblin's Tyranny (goblins); Illager Invasion (raiders); Naturalist (herds) | vanilla bodies only; abstract only | each later phase |
+| P8 | Bodies, structures, ports and havens for later phases | candidates: Small Ships, Create Aeronautics Structures, the Seven Seas add-on (ships, ports); the Alex's Caves port (kaiju); Goblin's Tyranny (goblins); Illager Invasion (raiders); Naturalist (herds). Haven structures for pirates and bandits (C24) are part of this survey | vanilla bodies only; abstract only | each later phase |
 | P9 | Economy tunables | `r`, `T` above its bound `2 × max d`, `k`; a Numismatics mint rule later | | phase 1 design gate |
 | P10 | The design-changing review fixes | approve the list below as applied | item by item | phase 0 |
-| P11 | Order of later phases | ships, ecology and herds, conflict, industry, history, kaiju, space; civilians only when Ben asks (C2) | herds first (they feed dragons and conflict), then ships; industry first | after phase 2 |
-| P12 | What dragons prey on in phase 2 | caravan flows, plus village livestock counted as market stock; wild herds wait for ecology | a minimal wild-herd model in phase 2; caravans only | phase 2 |
-| P13 | In Control fire-dragon rule | remove it in phase 2 so the sim owns every dragon | keep it and adopt each spawned dragon into the sim on join; keep it and leave untagged dragons alone | phase 2 |
+| P11 | Order of later phases | ships, ecology and herds, conflict, history, kaiju, space; civilians only when Ben asks (C2). Industry is a parallel workstream (C15) and is not in this order | herds first (they feed dragons and conflict), then ships | after phase 2 |
+| P12 | What dragons prey on in phase 2, besides player infrastructure (decided by C16) | caravan flows, plus village livestock counted as market stock; wild herds wait for ecology | a minimal wild-herd model in phase 2; caravans only | phase 2 |
+| P13 | In Control fire-dragon rule | remove it in phase 2 so the sim owns every dragon (INDUSTRY.md I19 assumes the same) | keep it and adopt each spawned dragon into the sim on join; keep it and leave untagged dragons alone | phase 2 |
 | P14 | Multiplayer attribution of unowned signals | direct acts per acting player; unowned signals such as pollution go to one shared "settlers" actor | add a claims or teams mod and attribute to the team; attribute each chunk to the player with most time or blocks there | conflict |
-| P15 | Body-kind format | datapack JSON at `data/<ns>/mic_rtsim/body_kind/<kind>.json`: ordered candidates (entity type, required mod, NBT template, adapter); first installed wins; vanilla last; no candidate means the kind stays abstract | server config TOML; fixed in each plugin's code | phase 1 |
+| P15 | Body-kind format | datapack JSON at `data/<ns>/mic_rtsim/body_kind/<kind>.json`: ordered candidates (entity type, required mod, NBT template, adapter); first installed wins; vanilla last; no candidate means the kind stays abstract. A group kind (C25) lists its member kinds and their spawn offsets in the same format | server config TOML; fixed in each plugin's code | phase 1 |
 | P16 | Touring bands | bands tour ribbit villages as a flow, carry news like caravans, and play at each stop | also tour border human villages; also raise the host village's sentiment toward the band's home village | phase 1 |
 | P17 | Ribbit village growth | a market breakpoint: when stock and treasury stay above target for a TUNABLE time, the village books one house; it is placed when its chunk next loads, under the block quota, never over player blocks (at worst it appears at the edge of view distance); population steps up at that breakpoint, so markets stay piecewise-linear | houses only, population fixed in phase 1; defer growth to a later phase | phase 1 |
-| P18 | Phase 1 starting values | sentiment on vanilla's gossip scale (`GossipType` weights; villager hurt +25 minor negative, killed +25 major negative, trade +2), shared by ribbit villages and caravan owners; report lifetimes from Veloren (15, 5 and 1.5 in-game days); caravans of 1 trader and 2 llamas (vanilla); edges from Veloren's rule (4 nearest within 400 chunks); the rest TUNABLE and set from a soak at the design gate: ribbit caravan capacity, stay window, buff thresholds, growth threshold, path inefficiency, labour per recipe | Ben sets each by hand; plain placeholders | phase 1 design gate |
-| P19 | Sim sentiment and vanilla gossip | the bridge writes village sentiment into nearby villagers' gossip, so vanilla prices and iron golems carry it; vanilla gossip is read back | the sim applies per-player prices itself and leaves gossip and golems alone; read gossip, never write it | phase 1 |
-| P20 | Cargo in llama chests | a materialized caravan's llamas carry its sampled cargo in chests (3 × strength slots each); killing a llama drops it; robbery is a transfer with an operation id | cargo stays abstract and a killed trader drops a loot table scaled by cargo; cargo shown only as offers | phase 1 |
+| P18 | Phase 1 starting values | sentiment on vanilla's gossip scale (`GossipType` weights; villager hurt +25 minor negative, killed +25 major negative, trade +2), shared by ribbit villages and caravan owners; report lifetimes from Veloren (15, 5 and 1.5 in-game days); caravans of 1 trader and 2 llamas (vanilla); edges from Veloren's rule (4 nearest within 400 chunks); the rest TUNABLE and set from a soak at the design gate: ribbit caravan capacity, stay window, buff thresholds, growth threshold, path inefficiency, labour per recipe, the rescue value (C24), which `GossipType` and amount each report kind writes into vanilla gossip (C20), how many memories an heir inherits (C24) | Ben sets each by hand; plain placeholders | phase 1 design gate |
 | P21 | Currency exchange for players | traders and ribbit merchants at border markets offer emerald and amethyst trades at that market's rate | no player exchange in phase 1; exchange through Numismatics later | phase 1 |
-| P22 | When a village joins the sim | when its structure start is generated; caravans run between generated villages | precompute every village inside the world border at world creation, as `/locate` does, so caravans come from unexplored places; only villages a player has visited | phase 1 |
-| P23 | Ribbit merchant trades | through the ribbit treasury, like C14 | leave Ribbits' own trades and restock alone | phase 1 |
 | P24 | Performance and scale targets | keep §4.1's placeholders (bridge ≤ 1 ms p99; no heap objects beyond the buffers); background pool cores − 2 (minimum 1), foreground capped at cores − 2 during play and all cores on a loading screen; scale bench ranges by orders of magnitude (SCALE.md §10); Ben sets final numbers from phase 0 data | Ben sets them now; relative targets only (no measurable MSPT change against the no-sim baseline) | phase 0 |
 | P25 | Regions per province | chosen from the phase 0 bench among 4 × 4, 8 × 8 and 16 × 16 regions | Ben picks now | phase 0 |
-| P26 | A player's home, for targeting | the region where the player spent the most time recently (a decaying counter from position observations) | the respawn point; a claims mod | phase 2 |
+| P26 | A player's home, for targeting | the region where the player spent the most time recently (a decaying counter from position observations). P30 would reuse the counter for bases | the respawn point; a claims mod | phase 2 |
 | P27 | Kaiju trigger | the first nuclear detonation observed in the world | the first device crafted; the first reactor reaching criticality (hooks UNVERIFIED) | kaiju |
-| P28 | Dragon damage with griefing off | no block damage; consequences through stock, prices and caravans | bounded engine-placed fire per raid; turn IaF griefing on | phase 2 |
-| P29 | Engine pages ahead of the world after a crash | keep the previous page generation until Minecraft's save completes; on load use the newest generation not ahead of the journal | write engine pages only after Minecraft's save completes; accept rare loss | phase 0 |
+| P28 | Dragon damage with griefing off. C18 already decides the unwatched case: bounded destroyed blocks, applied on load (INDUSTRY.md I23, never fire). This is now the watched case | a watched dragon breaks no blocks (IaF griefing stays off); consequences through stock, prices and caravans | bounded engine-placed block damage in watched fights too, so watched and unwatched agree; turn IaF griefing on | phase 2 |
+| P29 | Engine pages ahead of the world after a crash | keep the previous page generation until Minecraft's save completes; on load use the newest generation not ahead of the journal. INDUSTRY.md's I8 answers it for vault deltas | write engine pages only after Minecraft's save completes; accept rare loss | phase 0 |
+| P30 | Player bases as market nodes (C26): what a base is, and how a caravan trades there | a base is a region where a player spends much time (P26's counter), or an industry district (I2) once those exist; caravans add bases as stops on their edges (P18's rule); a caravan trades there only through its own offers, with players present, and the prices of those trades are the base's news; a base has no treasury or stock of its own | a base is declared by command (`/rtsim base`); the sim trades automatically with a district's boundary stock (INDUSTRY.md I3) at storehouse prices; caravans also buy from Create table cloth shops (`TableClothBlockEntity`, `owner`, `priceTag`) while the owner is away (how is UNVERIFIED) | phase 1 |
+| P31 | Ribbit caravan cargo (C21 covers llamas only) | the ribbit merchant carries the cargo itself: its offers show it, and killing it drops the cargo as items, a journaled transfer with an operation id, as a llama's chest does | a killed ribbit merchant drops a loot table scaled by its cargo; it drops nothing, and ribbit caravans cannot be robbed | phase 1 |
 
 **P10: the review fixes applied in this plan (2026-10-19).** Already decided: the journal with
 operation ids (A9, §4.9), taking a creature leaves the sim (A10, §6.2), and the potato profile (A11,
@@ -1238,6 +1510,9 @@ source trees. Facts from the 2026-10-19 review or another session say so.
   - `Entity.saveAsPassenger` writes the id and calls `saveWithoutId` without checking `shouldBeSaved`.
   - `ServerLevel.isPositionEntityTicking(BlockPos)` exists; gamerule `spawnChunkRadius` defaults to 2;
     wandering traders, trader llamas and villagers have `clientTrackingRange(10)`.
+  - `Zombie` targets `AbstractVillager`, which `WanderingTrader` extends (mcrtsim mining note, read in
+    the 1.21.1 source).
+  - How the server reports a village structure start as it generates was not checked (C22, §6.3).
   - Village structure set: spacing 34 chunks, separation 8.
 - **NeoForge 21.1:** `EntityJoinLevelEvent` is cancellable and reports `loadedFromDisk`;
   `EntityLeaveLevelEvent`, `AnimalTameEvent`, `PlayerInteractEvent`, `ChunkEvent`,
@@ -1276,7 +1551,8 @@ source trees. Facts from the 2026-10-19 review or another session say so.
   `connector`; LGPL-3.0-or-later. `WorldLandmarks.of(Level)`, `Landmark.global`,
   `LandmarkComponentTypes`. Antique Atlas 3.1.2 draws landmarks.
 - **Create 6.0.10:** `GlobalRailwayManager.tick(level)` returns at once outside the overworld, then
-  ticks every train with no chunk check; a train stalls only when a player rides it and its lookahead is
+  ticks every train with no chunk check (whether trains in other dimensions therefore run is an open
+  fact, §15.1); a train stalls only when a player rides it and its lookahead is
   not entity-ticking. `CarriageEntityHandler` discards carriage entities in non-ticking chunks while
   `Carriage` and `Train.storage` stay; station arrival is graph-side; `StationUnloadedCondition` exists.
   `GlobalStation.runMailTransfer` writes to `GlobalPackagePort.offlineBuffer` when the postbox chunk is
