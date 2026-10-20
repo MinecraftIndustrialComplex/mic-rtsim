@@ -169,6 +169,38 @@ impl World {
             }
         }
         self.knowledge.encode(&mut w);
+        // Round 2's state: growth clocks, houses waiting to be placed, bases' markers, bands'
+        // waiting packets and players' positions.
+        for (n, g) in &self.growth {
+            w.u64(*n as u64);
+            w.u32(g.houses);
+            w.u32(g.stamp);
+            w.u64(g.since.map_or(u64::MAX, |t| t.0));
+        }
+        for (op, n) in &self.houses_pending {
+            w.u64(*op);
+            w.u64(*n as u64);
+        }
+        for (n, b) in &self.bases {
+            w.u64(*n as u64);
+            for p in &b.players {
+                w.u64(p.to_bits());
+            }
+        }
+        for b in &self.bands {
+            for p in &b.pending {
+                w.u64(p.map_or(u64::MAX, |x| x.0));
+            }
+        }
+        for (a, p) in &self.players {
+            w.u64(a.to_bits());
+            if let Some((pos, t)) = p.pos {
+                w.u64(t.0);
+                w.u32(pos.x as u32);
+                w.u32(pos.z as u32);
+            }
+        }
+        w.u64(self.op_counter);
         for map in [
             &self.outside.player_in,
             &self.outside.player_out,
