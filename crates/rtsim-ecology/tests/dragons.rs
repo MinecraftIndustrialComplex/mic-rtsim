@@ -714,14 +714,14 @@ fn untagged_dragons_are_adopted_or_discarded() {
 /// dragons' ledger. A fed dragon flies on.
 #[test]
 fn a_hungry_dragon_raids_a_train_it_crosses() {
-    use rtsim_industry::engine::{Engine, Mode};
+    use rtsim_industry::engine::Engine;
     use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StationId, TrainId};
     use rtsim_industry::obs::{Carriage, StationDecl, TrainDeparture};
     for (fullness, raids) in [(40, 1), (100, 0)] {
         let (mut w, mut d) = world(19);
         let mut tun = rtsim_industry::tunables::Tunables::default();
         tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
-        let mut e = Engine::new(19, tun, Mode::Apply, Tick::ZERO);
+        let mut e = Engine::new(19, tun, Tick::ZERO);
         let (beef, gold) = (Good(2), Good(3));
         e.define_good(beef, GoodInfo::item("minecraft:beef", 64));
         e.define_good(gold, GoodInfo::item("minecraft:gold_ingot", 64));

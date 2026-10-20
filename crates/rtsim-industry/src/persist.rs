@@ -22,8 +22,7 @@ use rtsim_kernel::conserve::Diffuser;
 use rtsim_kernel::journal::OpId;
 
 use crate::ids::{
-    BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId,
-    TrainId, VecMap,
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, TrainId, VecMap,
 };
 
 /// Page tables of the industry engine (the kernel's `PageKey` top 16 bits). PLACEHOLDER numbers,
@@ -278,7 +277,7 @@ macro_rules! persist_newtype {
     };
 }
 
-persist_newtype!(DistrictId, Good, StationId, TrainId, ChannelId, Tick);
+persist_newtype!(DistrictId, Good, StationId, TrainId, Tick);
 
 impl Persist for OpId {
     fn put(&self, w: &mut Writer) {

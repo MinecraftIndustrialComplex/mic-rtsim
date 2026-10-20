@@ -18,10 +18,16 @@ fn run(variant: Variant, restart_day: Option<f64>) -> Outcome {
     })
 }
 
+/// The rungs of the feud the refinery's smog feeds: P14 (changed) gives it to the player who
+/// spends the most time in the refinery's chunk.
 fn settlers_rungs(o: &Outcome) -> Vec<Step> {
+    assert_ne!(
+        o.smog_owner, "the settlers",
+        "the refinery's player owns its smog"
+    );
     o.rungs
         .iter()
-        .filter(|r| r.actor == "the settlers")
+        .filter(|r| r.actor == o.smog_owner)
         .map(|r| r.step)
         .collect()
 }
@@ -127,10 +133,11 @@ fn a_catalytic_converter_de_escalates() {
     assert!(st.cuts >= 1, "the demand met by cutting the signal");
     assert_eq!(st.parties[PartyKind::Raid.index()], 0);
     assert_eq!(st.parties[PartyKind::Scouts.index()], 0);
-    assert_eq!(
-        *settlers_rungs(&o).last().unwrap(),
-        Step::None,
-        "back to nothing"
+    // P14 (changed): the smog is the refinery player's, and that player's own logging (a direct
+    // act) shares the feud, so it calms to notice rather than to nothing.
+    assert!(
+        *settlers_rungs(&o).last().unwrap() <= Step::Notice,
+        "back to notice at most"
     );
     assert!(o.converter_day.is_some());
     o.conflict.check(&o.world).expect("books");

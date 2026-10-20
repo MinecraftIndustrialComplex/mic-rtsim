@@ -116,11 +116,13 @@ public final class Cmd {
     // ---- phase 1 --------------------------------------------------------------------------------
 
     /**
-     * MARKET, aux = goods count. A village market's snapshot (C13, C14, C23): the curve of every good
-     * and the treasury, in rtsim-trade's units (thousandths of an item or coin; prices in millionths of
-     * a coin per item). Latest wins; no answer. The bridge reprices its residents' offers from it on
-     * the server thread (PLAN.md §8.5) and keeps it current with its own trades since
-     * {@code AS_OF_OBS_SEQ}: every observation at or below that sequence is already in the snapshot.
+     * MARKET, aux = goods count. A village market's offers, ready-made (Ben's morning review,
+     * "Prices": one source of truth, the engine's; G31: a player's standing is folded into them as
+     * price levels). Per good, two ladders, the market's sales (the player buys) then its purchases:
+     * for each price level, the bundles a run of trades meets one after another, each priced at the
+     * market the trades before it left. The bridge only shows them: it finds where its own trades
+     * since {@code AS_OF_OBS_SEQ} left each ladder, and uses the step there (choice PR2). Latest wins;
+     * no answer. Units are rtsim-trade's: stock and treasury in thousandths.
      */
     public static final class Market {
         public static final int VILLAGE = 16;         // u64
@@ -129,23 +131,34 @@ public final class Cmd {
         public static final int FLAGS = 36;           // u32, reserved
         public static final int TREASURY = 40;        // i64, thousandths of a coin
         public static final int TREASURY_TARGET = 48; // i64, thousandths (Mbar); above twice it the market refuses cash; 0 = never
-        public static final int WORST_NUM = 56;       // i32, the markup at sentiment -128 (rtsim-trade markup_for); 0 = none
-        public static final int WORST_DEN = 60;       // i32
-        public static final int GOODS = 64;           // aux x Good
-        public static final int GOOD = 40;
+        public static final int LEVELS = 56;          // u8, price levels (level 0 is fair)
+        public static final int DEPTH = 57;           // u8, bundles per ladder
+        public static final int THRESHOLDS = 64;      // MAX_LEVELS x i32: level k applies at standing <= it (level 0: 127)
+        public static final int MAX_LEVELS = 8;
+        public static final int MAX_DEPTH = 32;
+        public static final int GOODS = 96;           // aux x good
+        public static final int SIDE_SELLS = 0;
+        public static final int SIDE_BUYS = 1;
+        public static final int STEP = 8;             // i32 items, i32 coins; (0, 0) ends a ladder
 
-        public static int size(int goods) {
-            return GOODS + goods * GOOD;
-        }
-
-        /** Good offsets, from the good's start. Glut (above twice the target) follows from stock and target. */
+        /** Good offsets, from the good's start. */
         public static final int G_ITEM = 0;    // u32 engine dictionary (item)
         public static final int G_FLAGS = 4;   // u32, reserved
-        public static final int G_STOCK = 8;   // i64, thousandths
-        public static final int G_TARGET = 16; // i64, thousandths (Sbar)
-        public static final int G_ANCHOR = 24; // i64, millionths of a coin per item (p*)
-        public static final int G_R_NUM = 32;  // i32
-        public static final int G_R_DEN = 36;  // i32
+        public static final int G_STOCK = 8;   // i64, thousandths: the stock the ladders start from
+        public static final int G_LADDERS = 16;
+
+        public static int good(int levels, int depth) {
+            return G_LADDERS + 2 * levels * depth * STEP;
+        }
+
+        public static int size(int goods, int levels, int depth) {
+            return GOODS + goods * good(levels, depth);
+        }
+
+        /** Step {@code j} of {@code side}'s ladder at level {@code k}, from the good's start. */
+        public static int step(int levels, int depth, int side, int k, int j) {
+            return G_LADDERS + ((side * levels + k) * depth + j) * STEP;
+        }
     }
 
     /**
