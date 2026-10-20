@@ -317,3 +317,83 @@ fn events_before_draining_breakpoints_are_refused() {
     let booked = t.get(h).unwrap().wake().unwrap();
     t.apply(h, booked, |m, _| m.stock.amount += 1);
 }
+
+/// Runs a table as [`run`] does, but at event `cut` saves it with `encode_with` and goes on with
+/// the table read back: the same breakpoints at the same times and the same final states.
+fn run_saved_at(regions: &[SynthRegion], evs: &[Ev], cut: usize) -> (Vec<(Tick, SynthRegion)>, BreakpointLog) {
+    use rtsim_kernel::codec::{Decode, Encode, Reader, Writer};
+    let mut t: LazyTable<SynthRegion> = LazyTable::new(99, SystemId::named("test.table"), Tick(0));
+    let ids: Vec<_> = regions
+        .iter()
+        .enumerate()
+        .map(|(i, r)| t.insert(i as u64, r.clone(), Tick(0)))
+        .collect();
+    let mut log = Vec::new();
+    let mut now = Tick(0);
+    let fire_until = |t: &mut LazyTable<SynthRegion>, until: Tick, log: &mut Vec<(Tick, usize)>| {
+        while let Some((at, h)) = t.next_due(until) {
+            let i = ids.iter().position(|x| *x == h).unwrap();
+            log.push((at, i));
+            t.apply(h, at, |m, _| {
+                m.stock.amount -= m.stock.amount / 2;
+                m.stock.threshold += 1000;
+            });
+        }
+    };
+    for (k, e) in evs.iter().enumerate() {
+        if k == cut {
+            let mut w = Writer::new();
+            t.encode_with(&mut w, |m, w| m.encode(w));
+            let bytes = w.into_bytes();
+            let mut r = Reader::new(&bytes);
+            t = LazyTable::decode_with(&mut r, SynthRegion::decode).unwrap();
+            r.finish().unwrap();
+        }
+        match *e {
+            Ev::Take { region, amount, dt } => {
+                now += dt;
+                fire_until(&mut t, now, &mut log);
+                t.apply(ids[region], now, |m, _| {
+                    m.stock.amount -= amount.min(m.stock.amount.max(0))
+                });
+            }
+            Ev::Read { region, dt } => {
+                now += dt;
+                fire_until(&mut t, now, &mut log);
+                t.query(ids[region], now, &HeadCount).unwrap();
+                t.query(ids[region], now, &GrainHeld).unwrap();
+            }
+        }
+    }
+    fire_until(&mut t, now, &mut log);
+    t.catch_up_all(now);
+    let out = ids
+        .iter()
+        .map(|&h| {
+            let c = t.get(h).unwrap().cell();
+            (c.anchor(), c.model().clone())
+        })
+        .collect();
+    (out, log)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// A table saved and read back at any point continues exactly as one that never stopped.
+    #[test]
+    fn a_saved_table_continues_as_the_original(
+        regions in prop::collection::vec(arb_region(), 1..6),
+        evs in prop::collection::vec(ev(6), 1..60),
+        cut in 0usize..60,
+    ) {
+        let evs: Vec<Ev> = evs.into_iter().map(|e| match e {
+            Ev::Take { region, amount, dt } => Ev::Take { region: region % regions.len(), amount, dt },
+            Ev::Read { region, dt } => Ev::Read { region: region % regions.len(), dt },
+        }).collect();
+        let (a, la) = run(&regions, &evs, true);
+        let (b, lb) = run_saved_at(&regions, &evs, cut);
+        prop_assert_eq!(la, lb);
+        prop_assert_eq!(a, b);
+    }
+}
