@@ -43,7 +43,8 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
   the world. Inventories are u32 indices per district revision.
 - **F4 (A9, I8).** Industry op ids are the kernel's engine ids with namespace 0x49 in bits 56 to 62,
   so no other engine allocator collides with them. One op id is allocated when a change is decided
-  and is resent unchanged.
+  and is resent unchanged. (Since W3, `docs/overnight-choices-industryjni.md`: the low 56 bits are
+  derived from the command's identity, not counted.)
 - **F5 (I5, INDUSTRY.md §3.2).** Stock samples are latest-wins and ports are journaled.
   - A sweep ends with IND_SWEEP_END and its record count.
   - A sweep missing a record is discarded whole, so a dropped record never corrupts a total.

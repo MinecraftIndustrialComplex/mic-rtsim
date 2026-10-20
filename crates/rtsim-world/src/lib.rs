@@ -14,6 +14,7 @@
 //! - [`World::travellers`], [`World::promote`], [`World::rob`], [`World::rescue`],
 //!   [`World::take_member`], [`World::kill_member`]: caravans near players (C21, C24, C25).
 //! - [`World::check_conserved`], [`World::state_hash`]: the ledger and the determinism hash.
+//! - [`World::take_stock`], [`World::prey_on_traveller`]: predators with no haven (PLAN.md §9).
 
 pub mod bases;
 pub mod caravans;
@@ -23,6 +24,7 @@ pub mod flows;
 pub mod interest;
 pub mod memory;
 pub mod observe;
+pub mod prey;
 pub mod ribbits;
 pub mod synth;
 pub mod world;

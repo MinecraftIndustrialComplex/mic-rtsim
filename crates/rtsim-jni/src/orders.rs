@@ -18,6 +18,12 @@
 //! | 5 | save at the end of the next step | |
 //! | 6 | rewind the command sequence | u64 next |
 //! | 7 | fail: the step that writes it panics (TEST mode only; refused otherwise) | |
+//! | 9 | an industry command (docs/industry-boundary.md §4), as if the industry engine had decided it: tests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the entries the record uses, so it never waits for Java's DICT); then the record exactly as `rtsim_industry::wire` encodes it (cmdSeq ignored), its dictionary ids Java's own (GOOD, NAME, BLOCK_STATE and dimension) |
+//! | 8 | a threat for the industry engine (I19), in place of another system's attack | u64 id, u32 source (0 natural, 1 dragon, 2 bandit, 3 boss, 4 synthetic), u32 class (0 to 3), u32 count, u32 target kind (1 district, 2 train), f64 strength, u64 target, u64 at (game time; 0 or past: now) |
+
+use rtsim_industry::ids::{DistrictId, TrainId};
+use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
+use rtsim_kernel::clock::Tick;
 
 use crate::wire::{f32_at, f64_at, i32_at, u16_at, u32_at, u64_at};
 
@@ -28,6 +34,16 @@ pub const OP_TRANSFER_TO_CONTAINER: u16 = 4;
 pub const OP_SAVE_AT_NEXT_STEP: u16 = 5;
 pub const OP_REWIND_CMD_SEQ: u16 = 6;
 pub const OP_FAIL: u16 = 7;
+pub const OP_INDUSTRY_THREAT: u16 = 8;
+pub const OP_INDUSTRY_COMMAND: u16 = 9;
+
+const SOURCES: [ThreatSource; 5] = [
+    ThreatSource::Natural,
+    ThreatSource::Dragon,
+    ThreatSource::Bandit,
+    ThreatSource::Boss,
+    ThreatSource::Synthetic,
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemOrder {
@@ -77,6 +93,16 @@ pub enum Order {
     RewindCmdSeq(u64),
     /// Tests: the step that writes it panics, to show what an engine failure does.
     Fail,
+    /// An attack for the industry engine (I19), applied at the start of the next step: what the
+    /// dragons, conflict and kaiju modules will hand it.
+    IndustryThreat(Threat),
+    /// An industry command record (Java's dictionary ids), written as the industry engine's own:
+    /// the link's queue, sequences, DICT records and outbox (tests; W17). `names` are the Java
+    /// dictionary entries it uses: (kind, Java's id, name).
+    IndustryCommand {
+        names: Vec<(u32, u32, String)>,
+        record: Vec<u8>,
+    },
 }
 
 struct Cursor<'a> {
@@ -233,6 +259,55 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
             OP_SAVE_AT_NEXT_STEP => Order::SaveAtNextStep,
             OP_REWIND_CMD_SEQ => Order::RewindCmdSeq(c.u64()?),
             OP_FAIL => Order::Fail,
+            OP_INDUSTRY_THREAT => {
+                let id = c.u64()?;
+                let source = *SOURCES
+                    .get(c.u32()? as usize)
+                    .ok_or("a threat source out of range")?;
+                let class = *ThreatClass::ALL
+                    .get(c.u32()? as usize)
+                    .ok_or("a threat class out of range")?;
+                let count = c.u32()?;
+                let target_kind = c.u32()?;
+                let strength = c.f64()?;
+                let target = c.u64()?;
+                let at = Tick(c.u64()?);
+                let target = match target_kind {
+                    1 => ThreatTarget::District(DistrictId(target)),
+                    2 => ThreatTarget::Train(TrainId(target)),
+                    k => return Err(format!("threat target kind {k}")),
+                };
+                Order::IndustryThreat(Threat {
+                    id,
+                    source,
+                    class,
+                    count,
+                    strength,
+                    target,
+                    at,
+                })
+            }
+            OP_INDUSTRY_COMMAND => {
+                let n = c.u32()? as usize;
+                if n > 4096 {
+                    return Err(format!("an industry command with {n} names"));
+                }
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let kind = c.u32()?;
+                    let id = c.u32()?;
+                    names.push((kind, id, c.str()?));
+                }
+                let record = body[c.at..].to_vec();
+                c.at = body.len();
+                if rtsim_industry::wire::decode_cmd(&record)
+                    .map_err(|e| format!("an industry command order: {e}"))?
+                    .is_none()
+                {
+                    return Err("an industry command order holds no industry command".into());
+                }
+                Order::IndustryCommand { names, record }
+            }
             other => return Err(format!("unknown order opcode {other}")),
         };
         if c.at != body.len() {
@@ -383,6 +458,34 @@ impl Encoder {
                 let at = self.begin(OP_FAIL);
                 self.end(at);
             }
+            Order::IndustryThreat(t) => {
+                let at = self.begin(OP_INDUSTRY_THREAT);
+                self.u64(t.id);
+                let source = SOURCES.iter().position(|s| *s == t.source).unwrap_or(4);
+                self.u32(source as u32);
+                self.u32(t.class.index() as u32);
+                self.u32(t.count);
+                let (kind, target) = match t.target {
+                    ThreatTarget::District(d) => (1, d.0),
+                    ThreatTarget::Train(tr) => (2, tr.0),
+                };
+                self.u32(kind);
+                self.f64(t.strength);
+                self.u64(target);
+                self.u64(t.at.0);
+                self.end(at);
+            }
+            Order::IndustryCommand { names, record } => {
+                let at = self.begin(OP_INDUSTRY_COMMAND);
+                self.u32(names.len() as u32);
+                for (kind, id, name) in names {
+                    self.u32(*kind);
+                    self.u32(*id);
+                    self.str(name);
+                }
+                self.buf.extend_from_slice(record);
+                self.end(at);
+            }
         }
         self
     }
@@ -443,6 +546,37 @@ mod tests {
             Order::SaveAtNextStep,
             Order::RewindCmdSeq(17),
             Order::Fail,
+            Order::IndustryThreat(Threat {
+                id: 5,
+                source: ThreatSource::Bandit,
+                class: ThreatClass::Siege,
+                count: 9,
+                strength: 9.5,
+                target: ThreatTarget::District(DistrictId(3)),
+                at: Tick(24_000),
+            }),
+            Order::IndustryCommand {
+                names: vec![(0x10, 2, "i/64/minecraft:iron_ingot".into())],
+                record: {
+                    let mut r = Vec::new();
+                    rtsim_industry::wire::encode_cmd(
+                        0,
+                        &rtsim_industry::cmd::Cmd::ChannelDelta(
+                            rtsim_industry::cmd::ChannelDelta {
+                                op: rtsim_kernel::journal::OpId((0x49 << 56) | 3),
+                                channel: rtsim_industry::ids::ChannelId(4),
+                                goods: rtsim_industry::ids::GoodVec::from_pairs([(
+                                    rtsim_industry::ids::Good(2),
+                                    -9,
+                                )]),
+                            },
+                        ),
+                        &mut r,
+                    )
+                    .unwrap();
+                    r
+                },
+            },
         ];
         let mut e = Encoder::new();
         for o in &orders {

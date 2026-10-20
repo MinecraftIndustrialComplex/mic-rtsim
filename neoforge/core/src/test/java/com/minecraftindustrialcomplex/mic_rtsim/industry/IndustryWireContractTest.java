@@ -76,7 +76,7 @@ class IndustryWireContractTest {
 
     /** What the Rust program must have printed. A missing one fails, so a shrunken file cannot pass. */
     private static final List<String> REQUIRED = List.of(
-            "IND_STOCK_SAMPLE", "IND_SWEEP_END", "IND_LEDGER_REQUEST", "IND_WATCHED", "IND_DISTRICT",
+            "IND_STOCK_SAMPLE", "IND_SWEEP_END", "IND_LEDGER_REQUEST", "IND_WATCHED", "IND_APPROACH", "IND_DISTRICT",
             "IND_DISTRICT_CHUNKS", "IND_INVENTORY", "IND_DISTRICT_REMOVED", "IND_EDIT", "IND_DISCARD",
             "IND_LOAD_STATE", "IND_CHUNK_LOADED", "IND_PORT", "IND_PORT_NO_INVENTORY", "IND_TRAIN_ARRIVED",
             "IND_TRAIN_DEPARTED", "IND_STATION", "IND_RECONCILE_RESULT", "IND_CARRIAGE_RESULT",
@@ -487,6 +487,12 @@ class IndustryWireContractTest {
                 return latest(n, IndRecords.IND_WATCHED, IndRecords.DistrictState.SIZE, f.bool("watched") ? 1 : 0,
                         IndRecords.DistrictState.GAME_TIME, f)
                         .put64("district", IndRecords.DistrictState.DISTRICT, f.u64("district"));
+            case "IND_APPROACH":
+                return latest(n, IndRecords.IND_APPROACH, IndRecords.Approach.SIZE,
+                        f.bool("closing") ? IndRecords.Approach.FLAG_CLOSING : 0, IndRecords.Approach.GAME_TIME, f)
+                        .put64("district", IndRecords.Approach.DISTRICT, f.u64("district"))
+                        .put32("distance", IndRecords.Approach.DISTANCE, f.u32("distance"))
+                        .put32("eta_ticks", IndRecords.Approach.ETA_TICKS, f.u32("eta_ticks"));
             case "IND_DISTRICT":
                 return journaled(n, IndRecords.IND_DISTRICT, IndRecords.District.SIZE,
                         code("not_learnable", f.sym("not_learnable")), f)

@@ -201,7 +201,9 @@ so a single-threaded read costs about the same there.
 - **H25.** Every industry GameTest is in the create project and runs against the stub engine
   (`-Dmic_rtsim.engine=stub` whatever `-PrtsimEngine` says): the industry commands they script are raw
   orders only the stub's script API takes. Each test has its own batch (so none runs beside another),
-  and each starts by forgetting every district of the level (a test helper).
+  and each starts by forgetting every district of the level (a test helper). (Since W17,
+  `docs/overnight-choices-industryjni.md`: the run takes the engine switch, native by default, and the
+  scripted commands reach the native engine as INDUSTRY_COMMAND orders.)
 
 ## Adversarial review (Opus, 2026-10-20) and what changed
 
