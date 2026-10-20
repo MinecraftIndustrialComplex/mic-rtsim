@@ -16,7 +16,8 @@ fact not yet checked).
 - For rtsim it runs as a **sidecar process** (`rtsim-cli view <world>`) reached by an SSH port forward.
   It reads the engine's saved pages, a compact **view tap** the engine writes only while someone is
   watching, and an **event archive**. The server thread never does viewer work; with nobody watching,
-  the engine does nothing for the viewer beyond the archive's recording (§10).
+  the engine's only viewer work is a lease check every 10 s, plus the archive's recording (§5.5,
+  §10).
 - Every module draws through **layer descriptors** and a closed set of generic mark kinds, so a module
   or plugin adds a layer without the core or the page knowing it (D4). The server aggregates by zoom
   on the detail ladder, so a browser draws at most a budget of marks whatever the world holds.
@@ -38,8 +39,9 @@ has rtsim installed and is running. Ben is on his laptop.
 1. **Forward a port.** `ssh -L 8740:127.0.0.1:8740 ben@<server>`. The viewer listens on the server's
    loopback only; the forward is the only way in (Ben for Deep Time: "not putting it on the tailnet").
    Port 8740 is TUNABLE; Deep Time's workbench keeps 8642.
-2. **Start the sidecar** in that SSH session: `rtsim-cli view /path/to/world`. It prints what it
-   found, for example:
+2. **Start the sidecar** in that SSH session: `rtsim-cli view /path/to/world` (a binary built from
+   the mic-rtsim flake at the same commit as the mod on the server, copied there once). It prints what
+   it found, for example:
    ```
    world: overworld flat (no wrap); also the_nether, the_end
    pages: generation <g>, saved at game day <d> <hh:mm>, <m> min ago
@@ -52,9 +54,9 @@ has rtsim installed and is running. Ben is on his laptop.
    nothing into the world folder except one lease file (§5.2).
 3. **Open `http://localhost:8740/`.** The page shows the overworld as far as it has been explored:
    Surveyor's per-block terrain where Surveyor recorded it, HABITAT's 64-block cells elsewhere. The top
-   bar reads "game day 1,204 14:20, live, 2 s behind" and has a dimension switch. The left panel groups
-   the layers by module: Settlements, Trade, Travel, Dragons, Herds, Ships, Conflict, Industry,
-   Players.
+   bar shows the game day and hour, "live", how far behind the tap is (about one tap period, 2 s,
+   TUNABLE), and a dimension switch. The left panel groups the layers by module: Settlements, Trade,
+   Travel, Dragons, Herds, Ships, Conflict, Industry, Players.
 4. **Zoomed out** (a whole continent on screen): villages as dots sized by population and coloured by
    culture; roads as lines whose width is the goods in transit, tinted red where the raid hazard is
    high; districts as squares coloured by their ledger state; lairs; herds as soft discs labelled with
@@ -71,9 +73,9 @@ has rtsim installed and is running. Ben is on his laptop.
    game day, with the wall-clock date under the game days (the server is not always running, so the
    two differ). Filtering to Conflict shows a spike labelled Raid. Clicking it moves the map to that
    moment: the war band's route from the camp to the "North Smelter" district (its legs, from the
-   archive), the raid's row (units, loot, blocks broken, applied when the district loaded two game days
-   later), and the feud's escalation steps before it (Notice, Envoy, Scouts, Raid). Positions in the
-   past are as coarse as the archive keeps them (§10).
+   archive), the raid's row (units, loot, blocks broken, applied when the district next loaded), and
+   the feud's escalation steps before it (Notice, Envoy, Scouts, Raid). Positions in the past are as
+   coarse as the archive keeps them (§10).
 8. **Back to Live; open the district.** The district is drawn as the box of its chunks with its
    stations and postboxes; train lines run to other districts with trips, cargo per trip and travel
    time. Its card is the same ledger as `/rtsim district ledger`: state (running, learning, stale,
@@ -84,13 +86,18 @@ has rtsim installed and is running. Ben is on his laptop.
    engine's view tap stops within 40 s (§5.2). Ctrl-C ends the sidecar. Nothing of the viewer is left
    running on the server.
 
+SRV1's rehearsal is the same with the server on the laptop: no SSH, `rtsim-cli view` on the local
+copy. A singleplayer world works the same way while the game runs, on the client's save folder.
+
 ### 1.2 A Deep Time world
 
-The same commands. The base map is the bake's satellite, elevation and water tiles, rendered by Deep
-Time's own renderer through its plug-in (§3.2), and the readout under the cursor shows latitude and
-longitude. The map wraps east and west. A caravan whose road crosses the north edge is drawn as two
-pieces, one on each side of the half-turn seam (§8). The page is Deep Time's map core, so the look and
-the controls are the workbench's.
+The same commands. The sidecar finds the world's Deep Time data folder (the one Deep Time's data
+reference names inside the world, holding `manifest.json`; `WorldDataBinder` resolves it). The base
+map is the bake's satellite, elevation and water tiles, rendered by Deep Time's own renderer through
+its plug-in (§3.2), and the readout under the cursor shows latitude and longitude. The map wraps east
+and west. A caravan whose road crosses the north edge is drawn as two pieces, one on each side of the
+half-turn seam (§8). The map is the same core as Deep Time's workbench, so the look and the controls
+are the workbench's.
 
 ### 1.3 The headless host on the laptop
 
@@ -245,16 +252,17 @@ Deep Time's coordinator leans towards a sidecar. Ben has not been asked. The hon
 
 | | **A. Sidecar + view tap** (recommended) | **B. In-process mic_native service** | **C. Sidecar on saves only** |
 |---|---|---|---|
-| Nobody watching | the sidecar is not running; the engine stats one file every 10 s (§5.2) | no listener, no thread if started on demand; an atomic flag per step | nothing at all |
+| Nobody watching | the sidecar is not running; the engine makes one integer comparison per step and stats one file every 10 s (§5.2) | no listener, no thread if started on demand; an atomic flag per step | nothing at all |
 | Someone watching | the step tail encodes parts under a budget (250 µs a step, TUNABLE); the IO lane writes them; the sidecar's own process does all HTTP, aggregation and tiles at nice 19 | the step tail publishes parts into a `SnapshotCell`; HTTP, aggregation and tile rendering run inside the server process | the sidecar alone |
 | Freshness | the tap period, 2 s (TUNABLE); moving things animate between publications from their legs | sub-second | the last Minecraft save: autosave every 6,000 ticks, 300 s at 20 TPS (`MinecraftServer.AUTOSAVE_INTERVAL`, 1.21.1 sources) |
-| Cards of heavy things (a district's ledger) | summary live; full ledger from the last save's page, projected to now on the sidecar's copy | on demand from engine state, answered in the step tail | as of the last save |
+| Cards of heavy things (a district's ledger) | summary live; full ledger from the last save's pages, projected to now on the sidecar's copy (whether one district projects without loading the whole industry engine is UNVERIFIED; if not, the ledger as of the save) | on demand from engine state, answered in the step tail | as of the last save |
 | Base maps | Surveyor, HABITAT, Deep Time tiles, all in the sidecar | HABITAT cheaply; Surveyor parsing and Deep Time tiles (about 60 MiB per open map at 16k) would sit in the server process | as A |
 | Threads | none in the server | a listener thread in the server process: **mic_native's contract says a plugin owns no threads**, so the host would need a new facility (a change to mic-native) | none in the server |
 | Isolation | a crash, a leak or a slow request cannot touch the server | panics are caught at the boundary; an abort, an out-of-memory or a stuck socket thread is the server's | as A |
 | Deploying | a second binary on the server (built from the repo by its flake) | nothing extra: it ships in the mod jar | as A |
 | One API for live, saves and the headless host (VW2) | yes: three sources behind one API | live only; saves and the host need a second server anyway | saves only |
-| Deep Time | the same shape as Deep Time's watch process | Deep Time's bakes do not run in the server JVM, so it would not share this | as A |
+| Deep Time | the same shape as Deep Time's workbench, a process of its own (`deeptime watch`) | Deep Time's workbench is its own process, so it would not share the server; in-game bakes run on the host's foreground pool (X1) with no viewer attached | as A |
+| Build skew | the sidecar must be built from the engine's commit (pages carry no format version before release); the tap's header names the engine's build, and a mismatch is refused, module by module | none: one build | as A |
 
 **Recommendation: A.** It is the only option where a stuck viewer can never cost the server anything,
 it needs no change to mic-native's no-threads rule, and the same program serves saves, live servers
@@ -274,6 +282,21 @@ worth a socket inside the game server for an ops tool.
 | **host** | `rtsim-cli run` | the engine in the same process | parts published into a `SnapshotCell` by the host's own step tail | the fork's archive |
 
 All three produce the same thing, **parts** (§4.3), and everything above them is one code path.
+
+- **Loading a save without the JVM.** Every module already has a pure-Rust loader that takes bytes
+  (`World::load`, `Dragons::load`, `Herds::load`, `Ships::load`, `Conflict::load`, industry's and
+  space's `persist.rs`), but the glue that reads them from pages is private to rtsim-jni and tied to
+  its link types. It moves into a library function, `load_world(dir)`, which also rebuilds what the
+  pages do not hold, as rtsim-jni does at start: phase 1's config, goods and recipe book (its catalog
+  and `WORLD_SEED`), the conflict's cultures (`Cultures::from_json`), the herds' climate, each
+  module's tunables.
+- **Build skew.** Pages carry no format version before release (each module checks its own magic and
+  version and drops what it cannot read). The sidecar never drops anything: a module whose pages it
+  cannot read is reported and left out, and the tap's header names the engine's build so the sidecar
+  can say "built from a different commit" before it tries.
+- **Paging.** Once the modules move onto paging (not yet: overnight), the sidecar loads pages through
+  the kernel's `PagedTable` under its own memory budget (64 MiB, the kernel's default, TUNABLE) rather
+  than decoding everything.
 
 ### 4.2 Routes
 
@@ -297,23 +320,36 @@ rule, and here no route has a body at all).
 
 ### 4.3 Layers are data (D4)
 
-A module or plugin adds a layer by implementing `ViewSource` in Rust and registering it with the
-engine's view registry. The core and the page never learn about it: the page draws any layer from its
-descriptor with a closed set of mark kinds.
+A module or plugin adds a layer with two pieces of its own Rust, registered with the view registry
+(the engine's and the sidecar's). The core and the page never learn about it: the page draws any layer
+from its descriptor with a closed set of mark kinds. The writer runs where the module's state is (the
+engine's step tail, or the sidecar over a decoded save); the reader runs in the sidecar over parts
+only, so the live source needs no module state at all. Both halves of a part's format belong to the
+module.
 
 ```rust
+/// Where the state is: writes parts.
 pub trait ViewSource {
-    /// Layer descriptors this source draws (id, group, name, mark kinds, styles, legend,
-    /// zoom range per ladder level, whether it has cards and a past).
+    /// Layer descriptors (id, group, name, mark kinds, styles, legend, zoom range per ladder
+    /// level, whether it has cards and a past).
     fn layers(&self) -> Vec<LayerDesc>;
     /// The parts this source writes: a global part for strategic tables, region buckets for
     /// big tables. Keys are stable (canonical region keys, TP4).
     fn parts(&self) -> Vec<PartKey>;
-    /// Writes one part as of `now`: its rows (marks with the fields cards need for small kinds)
+    /// Writes one part as of `now`: its rows (marks, plus the fields cards need for small kinds)
     /// and a count per kind per 512-block region. `&self` only: a source cannot change state.
     fn write_part(&self, key: PartKey, now: Tick, out: &mut PartWriter);
-    /// A card for one thing, from the parts or (heavy things) from a peek.
-    fn card(&self, layer: LayerId, id: u64, at: Tick) -> Option<Card>;
+}
+
+/// In the sidecar: reads parts.
+pub trait ViewReader {
+    /// Marks of one layer in canonical rectangles, at a ladder level, within a mark budget.
+    fn marks(&self, part: &Part, layer: LayerId, rects: &[Rect], level: Level, budget: usize,
+             out: &mut MarkWriter);
+    /// A card, from the part's rows; a heavy thing (a district's ledger) may also read the sim's
+    /// saved pages through `pages`, read only.
+    fn card(&self, part: &Part, layer: LayerId, id: u64, at: Tick, pages: &SavedPages)
+        -> Option<Card>;
 }
 ```
 
@@ -353,7 +389,11 @@ what it writes:
 - **Never past now.** A read is clamped to the engine's time and never fires what is due (industry's
   review finding 12: "A read reports as of the engine's time: it never fires what is due").
 - **Never a page load the sim did not ask for.** In the live source the tap encodes only resident
-  state; a card that needs a page the engine has evicted reads it from disk in the sidecar instead.
+  state; what the engine has evicted, the sidecar reads from the sim pages on disk (§5.2, item 5).
+- **Never an observer.** A viewer is not an interest area: looking at a road samples its travellers
+  purely and never materializes a caravan, never promotes a traveller to a row, never books a leg.
+- **Never an input.** Nothing a page sends reaches the engine. The only thing the engine reads from
+  the viewer is the lease's modification time, and that only switches the tap.
 
 ### 5.2 The view tap: published like the hand-over
 
@@ -363,31 +403,40 @@ never waits on the writer. The tap follows the same discipline:
 
 1. **The lease.** The sidecar writes `<world>/rtsim/view/lease` (its process id; nothing secret) and
    renews its modification time every 10 s while at least one page has its event stream open. The
-   engine looks at it every 10 s (TUNABLE): one `Instant` comparison per step, and then one `stat` on
-   the IO lane. A lease older than 30 s (TUNABLE) is over.
+   engine looks at it every 200 steps (10 s at 20 TPS, TUNABLE): one integer comparison of the
+   hand-over number per step, and then one `stat` on the IO lane. A lease older than 30 s (TUNABLE)
+   is over.
 2. **Leased.** At the step's tail, after `C[h & 1].published = h` (so Java's commands are never late
    because of it), the tap encodes parts round robin until 250 µs (TUNABLE) have gone, and hands the
-   encoded parts to the IO lane. The IO lane compares each part's CRC32 with the last one it wrote and
-   commits only changed parts into a second page store at `<world>/rtsim/view/`, without fsync
-   (`Durability::NoSync`), with a header page last: game time, wall time, ticks per second over the
-   cycle, a version per layer. A commit is skipped while the IO lane has other work queued
+   encoded parts to the IO lane. The step still holds the state lock then, so step h + 1 can start up
+   to that budget later; the bridge never waits for it (boundary.md §1.2: the sim slows, not the
+   tick). The IO lane compares each part's CRC32 with the last one it wrote and commits only changed
+   parts into a second page store at `<world>/rtsim/view/`, without fsync (`Durability::NoSync`),
+   together with a header page: game time, wall time, ticks per second over the cycle, the engine's
+   build, a version per layer. A commit is skipped while the IO lane has other work queued
    (`pool_info`), so saves and prefetches always go first.
 3. **Not leased.** Nothing: no encoding, no parts, no files. When a lease ends the IO lane deletes
    `<world>/rtsim/view/`.
-4. **The reader** opens the view store read only and reads the header first; a part newer than the
-   header it read is ignored until the next header. It never sees half a publication.
+4. **The reader** opens the view store read only. A page-store commit happens at one moment, the
+   append of its log record (page.rs), so the reader sees a whole publication or none: the log record
+   plays the part of the hand-over's `published` word.
+5. **Regions the engine has evicted** are not encoded (that would load pages the sim did not ask
+   for). They need not be: the paging layer evicts only pages whose state is already on disk, and a
+   change made only by catch-up is a pure function of that state and the time (paging.rs, O4). So
+   the sidecar reads an evicted region from the sim pages and peeks it to now, and gets what the
+   engine would.
 
 **Why round robin and no change tracking.** A part is re-encoded whole and dropped when unchanged.
 That costs work only while leased, and needs no instrumentation in any module (no dirty flags on
 every state change). Moving things are published as legs, which change only at events, so most parts
 are unchanged most of the time and cost an encode but no write.
 
-**Its cost.** Rows times bytes per row per cycle. With 4,096 villages, about 10,000 rows of caravans,
-bands and parties, 512 dragons, 814 ships and 100,000 district summaries (the largest counts the
-benches ran) at about 40 bytes a row (ESTIMATE), a full cycle is about 4.6 MB (derived: 115,422 rows ×
-40 bytes). At 250 µs a step and 20 steps a second the cycle stretches until it fits; the time a cycle
-takes is in the header, so the page can say how stale the slowest layer is. Encode speed is
-UNVERIFIED; §16's exit test measures it.
+**Its cost.** Rows times bytes per row per cycle. With 4,096 villages, 512 dragons, 814 ships and
+100,000 district summaries (the largest counts the benches ran), plus 10,000 rows of caravans, bands
+and parties (ESTIMATE: no bench has run that count), at about 40 bytes a row (ESTIMATE), a full cycle
+is about 4.6 MB (derived: 115,422 rows × 40 bytes). At 250 µs a step and 20 steps a second, the
+cycle stretches until it fits; the time a cycle takes is in the header, so the page can say how stale
+the slowest layer is. Encode speed is UNVERIFIED; §16's exit test measures it.
 
 ### 5.3 Peeks, and opening a store read only
 
@@ -409,8 +458,17 @@ UNVERIFIED; §16's exit test measures it.
 Two runs of the same world for a fixed number of game days, one with a viewer leased and requesting
 every route as fast as it can, one with nothing. The state hashes (`World::state_hash`,
 `Dragons::state_hash`, the herds', ships' and conflict's) must agree every game day, and the bytes of
-`<world>/rtsim/` must be identical at the end. The save source gets its own test: the folder's bytes
-before and after a viewer session are identical.
+the sim pages must be identical at the end (the view store and the lease are outside them). The save
+source gets its own test: the folder's bytes before and after a viewer session are identical.
+
+### 5.5 D1, point by point
+
+| D1 asks | How |
+|---|---|
+| Nothing while nobody watches | no sidecar process; in the engine, one integer comparison per step and one `stat` every 10 s. The archive is recording, not viewing, and is VWD-8. |
+| Bounded while someone watches | the tap's 250 µs a step (TUNABLE), its writes skipped while the IO lane has other work; the sidecar at nice 19 in its own process; 2,000 marks a request; 64 connections |
+| Never on the server thread | the bridge has no viewer code at all; the tap runs at the tail of the engine step on mic_native's background pool, its writes on the IO lane |
+| Reads published state | the tap publishes whole commits, as the hand-over publishes a whole buffer; the host source publishes through `SnapshotCell`; peeks never commit (§5.3) |
 
 ---
 
@@ -443,7 +501,7 @@ count a bench has run, where one exists.
 | Module | What it stores | Layers and marks | Card | Rows |
 |---|---|---|---|---|
 | **Settlements** (rtsim-settle) | `Settlement{key, kind, pos, pop, joined}`; `NodeKind` Village(Human or Ribbit), PlayerBase, Haven | villages and bases as points sized by population | kind, culture, population, joined, neighbours | 4,096 villages (restore bench) |
-| **Markets** (rtsim-trade) | `Market{lines, goods, treasury...}`, no position of its own (its node's); price `p(S) = p*(1 + r(1 - S/S̄))` | villages coloured by one chosen good's price against its anchor (`Market::price`, `anchor`) | per good: price, anchor, stock, target, level; treasury, currency; the news it holds and its age (`NewsRing`) | 15.8 KB per market in memory (overnight) |
+| **Markets** (rtsim-trade) | `Market{lines, goods, treasury...}`, no position of its own (its node's); price `p(S) = p_star * (1 + r * (1 - S / S_bar))` on `[0, 2 S_bar]` (`PriceCurve::price_at`) | villages coloured by one chosen good's price against its anchor (`Market::price`, `anchor`) | per good: price, anchor, stock, target, level; treasury, currency; the news it holds and its age (`NewsRing`) | 15.8 KB per market in memory (overnight) |
 | **Roads and flows** (rtsim-travel) | `Edge{a, b, medium, msg_period...}`, `Dir::in_transit`, `World::lane_hazard` | edges between node positions, width by goods in transit, colour by hazard | rates both ways, raid and predation hazard, messenger period | |
 | **Caravans** (rtsim-travel, rtsim-world) | rows: `Caravan{home, members, stage, leg, purse}`; travellers derived from the flow, never stored | legs; travellers only below 4 bpp | home, stage, leg times and progress, members, cargo, purse, news carried | |
 | **Messengers** | derived from `Edge.msg_period` and `msg_walk`; no position function yet | legs below 64 bpp | edge, departure, the packet's age | |
@@ -453,7 +511,7 @@ count a bench has run, where one exists.
 | **Herds** (rtsim-ecology) | `Herd{species, classes, route, ...}`; latent members cost nothing | an area (`footprint`) with `count`; the route as a path; sampled animals below 4 bpp | species, count, cohorts, condition, ledger (born, died, eaten, taken) | 1,000,000 animals per herd (bench) |
 | **Ships** (rtsim-ships) | `Dock`, `Lane{path}`, `Service` timetables, `Ship{role, cargo, hull}`, `Haven`, `Navy`, `LaneThreat` | docks; lanes as paths tinted by threat; ships as points (`Service::fix`, `pirate_pos`) | role, service, phase, cargo, crew, hull | 814 merchant ships (bench) |
 | **Conflict** (rtsim-conflict) | `Faction{pos, radius, pool}`, `Feud{grievance, step, demand, party}`, `Party{kind, route, times, phase, loot}` | faction areas; feuds as edges coloured by step (Notice to Siege); parties as legs and paths | faction, warriors now (`pool_at`), feuds with grievance by kind (`feud_view`), demands, parties | |
-| **Industry** (rtsim-industry) | `District{chunks, dim, presence, phase, ports, stations, reports, attacks}`; `lines()` (`LineEdge`: trips, cargo, travel ticks); train `legs()` | districts as boxes of their chunks (a box and centre kept at detection: new, small); stations; train lines as edges; trains as legs | the ledger (`ledger_peek`); later the glass-box graph | 100,000 districts (bench) |
+| **Industry** (rtsim-industry) | `District{chunks, dim, presence, phase, ports, stations, reports, attacks}`; `lines()` (`LineEdge`: trips, cargo, travel ticks); train `legs()` | districts as boxes of their chunks (a box and centre kept at detection: new, small); stations; train lines as edges; trains as legs | the ledger (`ledger_peek`): state, rates per hour, made since, next breakpoint, last reconcile, attacks; later the glass-box graph | 100,000 districts (bench) |
 | **World model** (rtsim-space) | HABITAT cells (64 blocks: water, ice, biome, tags, heights, temperatures, creatures) | the base map under everything (§9) | biome, heights, year-round degrees, creatures | about 6 KB per sampled region (overnight) |
 | **Players** (shared interest areas) | `PlayerState{uuid, pos}`, live only | points (ops only; live source only) | UUID; the name from the server's `usercache.json` when the sidecar is given the server folder | |
 
@@ -513,11 +571,11 @@ At points where each module already does the thing (no new scans):
 | Module | Events | Position |
 |---|---|---|
 | Knowledge | every report (assault, killing, robbery, theft, trade, rescue, resident assault and killing), as they are made | the report's own place |
-| Phase 1 | village joined; base marked and unmarked; house placed; caravan promoted to a row, robbed, arrived; **trade shift**: a market's price index moved more than 10% (TUNABLE) since its last recorded value, checked once per game day | the node |
-| Dragons | flight legs (start, end, purpose); hunts (`HuntRecord`); raids on districts and trains; lair claimed; breeding; death | leg ends, target |
-| Herds | founded; route legs; predation; deaths per game day as one count row | route points |
+| Phase 1 | village joined; base marked and unmarked; house placed; caravan promoted to a row, robbed, arrived; **trade shift**: at a market's own events (breakpoint, delivery, arrival), its price index has moved more than 10% (TUNABLE) since its last recorded value. No daily scan: a quiet market writes nothing, and a slow drift is recorded at its next event. | the node |
+| Dragons | flight legs (start, end, purpose); hunts (`HuntRecord`); raids on districts and trains; lair claimed; departure (boredom); breeding; death | leg ends, target |
+| Herds | founded; route legs at each route decision (**migrations**); predation; starvation | route points |
 | Ships | pirate raids and their results; ship lost and back; haven changes (timetabled departures are derived, never recorded) | the lane point |
-| Conflict | escalation step changes per feud; demands, tribute paid or refused; parties launched (their route legs); raid outcomes (units, loot, damage); a party's end | the party, the target |
+| Conflict | escalation step changes per feud (**wars**: Invasion and Siege); demands, tribute paid or refused; parties launched (their route legs); raid outcomes (units, loot, damage); a party's end | the party, the target |
 | Industry | district detected; phase changes (learned, stale, damaged); reconcile reports; attack reports; train line first seen | the district's centre |
 | Players (ops) | none by default (VWD-9) | |
 
@@ -540,9 +598,12 @@ Two 32-byte layouts, after `ReportRow`:
   dictionary file, so a new module adds kinds without a format change.
 - **Coordinates** are 24-bit signed blocks (±8,388,607), as in reports; a Deep Time world at 32k is
   ±13,056. Positions further out are clamped and flagged.
-- **A leg row** gives a mover's exact position at any moment of the leg, which is both more exact and
-  smaller than sampled positions. Movers with no leg (a herd between route points) are sampled once
-  per game hour (TUNABLE).
+- **Positions sampled coarsely (VW4) are leg rows.** Everything that moves in the sim moves on legs
+  or routes of straight pieces (caravans, bands, dragons, herds, parties, trains), so a position is
+  recorded once per decision, and the leg gives the position at any moment between. That is coarser
+  in time than any fixed sampling rate a moving thing would need, and exact. Age thins it further:
+  the notable tier keeps only named movers' legs, the count tier only counts per region per day.
+  Nothing is sampled on a clock, so a quiet world writes nothing.
 - **Payloads** (a raid's loot by good) go in a side block of the chunk, pointed to by a flag; only
   rows with severity at or above "notable" may have one.
 
@@ -579,8 +640,9 @@ Two 32-byte layouts, after `ReportRow`:
 
 Each chunk carries the page save sequence it was flushed with. On open, chunks newer than the page
 generation the engine selected (`select_for_journal`) are cut, so after a crash the archive never
-describes events the rolled-back sim will make differently. Chunks lost to a power failure are lost:
-the archive misses those minutes.
+describes events the rolled-back sim will make differently. The sidecar never cuts anything: it
+ignores chunks newer than the generation it reads. Chunks lost to a power failure are lost: the
+archive misses those minutes.
 
 ### 10.6 The timeline in the page
 
@@ -616,13 +678,22 @@ The alternative is polling `/api/world` every 2 s while the tab is visible, with
 
 ### 12.1 What it is
 
+Ben asked whether running the engine without a server is worth it for development. Yes: it is the only
+way to soak a real world's state for years in minutes (P9's tunables are set "from a soak"), to
+rehearse on a copy of his world (SRV1), to reproduce a bug from a save, and to develop the viewer with
+no server running. Most of it exists already as rtsim-jni's test harness.
+
 `rtsim-cli run <world> --fork <dir> [--speed 1x|10x|max] [--until <ticks or days>] [--view addr]`.
-It copies `<world>/rtsim/` into `<dir>` and never writes into the world. It starts mic_native's host
-in its own process (as rtsim-jni's tests do: `mic_native_host::start`, `register_in_process`), opens
-the engine on the fork's pages, and plays the Java side of a server where nobody is online: each step
-is a hand-over whose TICK advances game time by a stride (20 ticks, or more at higher speeds; the
-engine's lazy regions and timing wheel make a long stride cost about the same as many short ones). It
-reuses the fake Java of rtsim-jni's tests, lifted into a library.
+It copies `<world>/rtsim/` (pages and archive, not the view store) into `<dir>` and never writes into
+the world. It starts mic_native's host in its own process (as rtsim-jni's tests do:
+`mic_native_host::start`, `register_in_process`), opens the engine on the fork's pages (the newest
+committed generation; there is no Minecraft save to match), and plays the Java side of a server where
+nobody is online: each step is a hand-over whose TICK advances game time by a stride (20 ticks, or
+more at higher speeds). Cost follows events and elapsed slots, not steps, because of the lazy regions
+and the timing wheel, so a long stride costs about what many short ones do (ESTIMATE: each step has a
+fixed cost too, which the host measures). The engine is rtsim-jni itself, which is already built as
+an rlib for its tests; the host reuses the fake Java of those tests (1,268 lines), lifted into a
+library.
 
 **What it needs from the world besides the pages:**
 - **The topology:** a Deep Time world's `manifest.json` layout block through deeptime-format (as the
@@ -668,9 +739,10 @@ reuses the fake Java of rtsim-jni's tests, lifted into a library.
 From measured parts (overnight, laptop under shared load): dragons 10 to 14 µs per dragon per game
 day (512 dragons: 5.1 to 7.2 ms a day, derived); ships 17 to 19 µs per game day for up to 814 ships;
 quiet industry 13 to 14 µs per game day up to 100,000 districts; herds 0.8 s for six herds over two
-game years, about 1.1 ms a game day (derived: 0.8 s / 730 days). Those parts sum to about 6 to 8 ms a
-game day, about 125 to 165 game days per second (derived), before phase 1 and conflict, whose per-day
-costs are UNVERIFIED. A real world's speed is measured by the host itself (V2's exit test).
+game years, about 1.1 ms a game day (derived: 0.8 s / 730 days). Those parts sum to about 6.2 to 8.3
+ms a game day, so about 120 to 160 game days per second (derived), before phase 1 and conflict, whose
+per-day costs are UNVERIFIED. At 72 game days per real day, 120 game days per second is a real day of
+24-hour play in 0.6 s. A real world's speed is measured by the host itself (V2's exit test).
 
 ### 12.5 Controls
 
@@ -736,7 +808,7 @@ For Deep Time's coordinator to review.
 
 | Piece | Where | When | Cost | Grows with | Never with |
 |---|---|---|---|---|---|
-| Lease check | step thread, then IO lane | every step; a `stat` every 10 s (TUNABLE) | one `Instant` comparison per step; one `stat` per 10 s | | world size, watchers |
+| Lease check | step thread, then IO lane | every step; a `stat` every 200 steps (10 s, TUNABLE) | one integer comparison per step; one `stat` per 10 s | | world size, watchers |
 | View tap | step tail (after commands are published), then IO lane | only while leased | at most 250 µs a step (TUNABLE) encoding; IO lane writes of changed parts, skipped while it has other work | rows, cycle length | anything while not leased |
 | Archive append | step thread | at archived events, always | a 32-byte push | events | entities, time |
 | Archive flush and compaction | IO lane | at each save | chunk writes; compaction at most 4 MiB a save (TUNABLE) | events | world size |
