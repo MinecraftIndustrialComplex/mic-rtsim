@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class BoundaryProtocolTest {
 
-    private static final long ENGINE_900 = Obs.ENGINE_OP_BIT | 900L;
+    private static final long ENGINE_900 = 900L; // engine op ids leave the top bit clear
 
     private final List<StubEngine> engines = new ArrayList<>();
     private long time = 1000;
@@ -123,7 +123,7 @@ class BoundaryProtocolTest {
         StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
         BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
         Sink sink = new Sink(s);
-        e.transferToContainer(Obs.ENGINE_OP_BIT | 77L, "minecraft:overworld", 5, 64, 9, "minecraft:diamond", 3);
+        e.transferToContainer(77L, "minecraft:overworld", 5, 64, 9, "minecraft:diamond", 3);
 
         assertTrue(tick(s, sink, e), "hand-over 1 is submitted on the first tick");
         assertTrue(sink.kinds.isEmpty(), "nothing is applied before the step ran");
@@ -365,7 +365,7 @@ class BoundaryProtocolTest {
         BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
         Sink sink = new Sink(s);
         for (int i = 0; i < 30; i++)
-            e.transferToContainer(Obs.ENGINE_OP_BIT | (1000 + i), "minecraft:overworld", 8, 0, 0, "minecraft:stone", 1);
+            e.transferToContainer(1000 + i, "minecraft:overworld", 8, 0, 0, "minecraft:stone", 1);
         for (int i = 0; i < 40 && sink.containers.getOrDefault(8L, 0) < 30; i++)
             tick(s, sink, e);
         assertEquals(30, sink.containers.get(8L), "every command arrives, over several steps");

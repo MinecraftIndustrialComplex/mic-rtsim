@@ -262,8 +262,9 @@ public final class Obs {
     }
 
     /**
-     * Op ids the engine allocates have the top bit set; the bridge's have it clear (the kernel's
-     * {@code journal::OpId}). A bridge op id is the obsSeq of the record that carries it.
+     * Op ids made on the Java side have the top bit set; the engine's have it clear. A Java op id is
+     * this bit OR the obsSeq of the record that carries it. The kernel's {@code journal::OpId} uses
+     * the same convention ({@code JAVA_OP_BIT}, decision log O10).
      */
-    public static final long ENGINE_OP_BIT = 0x8000_0000_0000_0000L;
+    public static final long JAVA_OP_BIT = 0x8000_0000_0000_0000L;
 }

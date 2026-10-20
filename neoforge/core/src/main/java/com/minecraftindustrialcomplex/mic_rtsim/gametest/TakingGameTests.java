@@ -69,8 +69,8 @@ public final class TakingGameTests {
                     check("member 1 was taken", taken.view().getInt(Obs.Taken.MEMBER) == 1);
                     UUID by = new UUID(taken.view().getLong(Obs.Taken.PLAYER_MOST), taken.view().getLong(Obs.Taken.PLAYER_LEAST));
                     check("by the player who tamed it", by.equals(player.getUUID()));
-                    check("the cargo's transfer carries a bridge op id (its own obsSeq, top bit clear)",
-                            taken.view().getLong(Obs.Taken.OP_ID) == taken.obsSeq() && (taken.obsSeq() & Obs.ENGINE_OP_BIT) == 0);
+                    check("the cargo's transfer carries a Java op id (the Java bit on its own obsSeq)",
+                            taken.view().getLong(Obs.Taken.OP_ID) == (Obs.JAVA_OP_BIT | taken.obsSeq()));
                     List<StubEngine.Received> all = RtsimTests.allFor(RtsimTests.stub(), agent);
                     int at = all.indexOf(taken);
                     check("its captured state comes right before it", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE && all.get(at - 1).aux() == 1);
@@ -162,7 +162,7 @@ public final class TakingGameTests {
                         int at = all.indexOf(d);
                         check("a MEMBER_STATE comes right before each DIED", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE
                                 && all.get(at - 1).aux() == d.aux());
-                        check("each death's dropped cargo has a bridge op id", d.view().getLong(Obs.Died.OP_ID) == d.obsSeq());
+                        check("each death's dropped cargo has a Java op id", d.view().getLong(Obs.Died.OP_ID) == (Obs.JAVA_OP_BIT | d.obsSeq()));
                     }
                     int at = all.indexOf(died.get(1));
                     check("llama 1's state at death lists the cargo that dropped", all.get(at - 1).view().getInt(Obs.MemberState.ITEM_COUNT) == 2);

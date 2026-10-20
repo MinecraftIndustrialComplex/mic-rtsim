@@ -94,8 +94,8 @@ public final class BoundarySession {
 
     /**
      * Appends a journaled observation that carries a Java-side operation id at {@code opIdOffset}. The
-     * op id is the record's own sequence, top bit clear: unique in the world, and the same bytes on
-     * every replay. Returns the op id.
+     * op id is the record's own sequence with {@link Obs#JAVA_OP_BIT} set: unique in the world, and
+     * the same bytes on every replay. Returns the op id.
      */
     public long commitWithOpId(ByteBuffer record, int opIdOffset) {
         return journal.commitWithOpId(record, opIdOffset);

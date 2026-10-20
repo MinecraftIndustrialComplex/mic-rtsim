@@ -132,10 +132,11 @@ A reader that meets an unknown kind skips `size` bytes. A malformed size ends th
     uses its id.
   - The engine's dictionary is per **session**: Java forgets it at every start, so the engine sends
     it again.
-- **Operation ids** (u64) mark every cross-store transfer, as in rtsim-kernel's `journal::OpId`. The
-  engine's have the top bit set (`OpId::engine`). The bridge's have it clear (`OpId::bridge`), and
-  each is simply the obsSeq of the record that carries it. When the engine re-derives a transfer
-  after a crash it must give it the same op id, or the bridge cannot tell it is a duplicate.
+- **Operation ids** (u64) mark every cross-store transfer, as in rtsim-kernel's `journal::OpId`
+  (decision log O10). Java's have the top bit set (`JAVA_OP_BIT`, `OpId::bridge`) and are that bit
+  on the obsSeq of the record that carries them: `0x8000_0000_0000_0000 | obsSeq`. The engine's have
+  it clear (`OpId::engine`). When the engine re-derives a transfer after a crash it must give it the
+  same op id, or the bridge cannot tell it is a duplicate.
 
 ### 2.3 Observations (Java to the engine)
 
@@ -282,4 +283,4 @@ sent none, so everything unacknowledged goes out again, flagged `REPLAY`. The en
    SESSION_START fields.
 5. Acknowledge (`ackedObsSeq`) only what pages on disk include.
 6. Treat every embodied agent as abstract at SESSION_START.
-7. Mind the op-id bit: engine ids set it, bridge ids never do.
+7. Mind the op-id bit: Java ids set it, engine ids never do.
