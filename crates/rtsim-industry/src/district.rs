@@ -40,6 +40,10 @@ pub struct Inventory {
     pub known_at: Tick,
     pub pending: GoodVec,
     pub received: BTreeSet<Good>,
+    /// An attack will break this block at the next load (I23): it still takes its reconcile
+    /// deltas, then everything in it drops. The replay no longer counts its room.
+    pub doomed: bool,
+    /// The block is gone (Java reported the destroy).
     pub destroyed: bool,
 }
 
@@ -222,11 +226,15 @@ pub struct District {
     pub epoch: u32,
     pub pending: BTreeMap<ChunkPos, Vec<PendingChunk>>,
     pub pending_ops: BTreeMap<OpId, ChunkPos>,
-    /// Additions planned per epoch, which trims are capped by.
+    /// What the replay made in the span each epoch reconciled, which trims are capped by.
     pub round_added: BTreeMap<u32, GoodVec>,
     /// Changes to apply at the next reconcile: additions that did not fit (positive), theft and
     /// corrections while frozen (negative).
     pub owed: GoodVec,
+    /// Deposit depletion carried across a replay restart, written back at the next reconcile.
+    pub deposit_owed: GoodVec,
+    /// What the replay minted in spans ended by a restart, for the next reconcile's trim cap.
+    pub minted_carried: GoodVec,
     pub untracked: GoodVec,
     pub loaded_chunks: BTreeSet<ChunkPos>,
     pub destroy_pending: BTreeMap<ChunkPos, Vec<BlockDestroy>>,
@@ -269,6 +277,8 @@ impl District {
             pending_ops: BTreeMap::new(),
             round_added: BTreeMap::new(),
             owed: GoodVec::new(),
+            deposit_owed: GoodVec::new(),
+            minted_carried: GoodVec::new(),
             untracked: GoodVec::new(),
             loaded_chunks: BTreeSet::new(),
             destroy_pending: BTreeMap::new(),
@@ -296,6 +306,7 @@ impl District {
             s.add(d.good, d.remaining);
         }
         s.merge(&self.owed);
+        s.merge(&self.deposit_owed);
         s
     }
 
@@ -343,7 +354,7 @@ impl District {
         tun: &Tunables,
     ) -> MemberSpec {
         let d = self.id;
-        let invs: Vec<&Inventory> = self.inventories.values().filter(|i| !i.destroyed).collect();
+        let invs: Vec<&Inventory> = self.inventories.values().filter(|i| !i.destroyed && !i.doomed).collect();
         let produced: BTreeSet<Good> = model.produced().collect();
         let mut pools: Vec<(PoolKey, i64, Option<i64>)> = Vec::new();
         let mut goods_here: BTreeSet<Good> = base.goods().collect();
@@ -429,12 +440,19 @@ impl District {
                 LinkKey::Mail { .. } => {}
             }
         }
-        // The shared item space of the inventories that received outputs (I6).
+        // The shared item space of the inventories that received outputs (I6). Every item good
+        // held there counts, so imports fill it and consumption frees it; a good also held
+        // elsewhere is over-counted, which only stops the replay early (F12).
         let produced_items: Vec<Good> = produced
             .iter()
             .copied()
             .filter(|&g| goods.class(g) == GoodClass::Item)
             .collect();
+        // An output whose every receiver was destroyed has nowhere to go: the line jams (F20).
+        let jammed = produced_items.iter().any(|g| {
+            let mut rec = self.inventories.values().filter(|i| i.received.contains(g)).peekable();
+            rec.peek().is_some() && rec.all(|i| i.destroyed || i.doomed)
+        });
         let space = if produced_items.is_empty() {
             None
         } else {
@@ -448,21 +466,25 @@ impl District {
             }
             let slots: i64 = pool_invs.iter().map(|i| i64::from(i.decl.item_slots)).sum();
             let margin = tun.replay.fragment_margin_slots * produced_items.len() as i64 * pool_invs.len() as i64;
-            let cap = (slots - margin).max(0) * SLOT_UNITS;
+            let cap = if jammed { 0 } else { (slots - margin).max(0) * SLOT_UNITS };
             let mut used: i64 = 0;
+            let mut counted: BTreeSet<Good> = produced_items.iter().copied().collect();
             for i in &pool_invs {
                 for (g, c) in i.effective().iter() {
                     if goods.class(g) == GoodClass::Item && c > 0 {
                         let ms = goods.max_stack(g);
                         used += (c + ms - 1) / ms * SLOT_UNITS;
+                        counted.insert(g);
                     }
                 }
             }
-            let weights: Vec<(PoolKey, i64)> = produced_items
+            let weights: Vec<(PoolKey, i64)> = counted
                 .iter()
                 .map(|&g| (PoolKey::Stock(d, g), weight(goods, g)))
                 .collect();
             let fixed = used - weights.iter().map(|(k, w)| w * base.get(k.good()).max(0)).sum::<i64>();
+            // A jam must stop the box even when the space is empty.
+            let cap = if jammed { fixed.min(used) - 1 } else { cap };
             Some((weights, fixed, cap))
         };
         MemberSpec {

@@ -802,6 +802,16 @@ impl Cluster {
         self.evaluate(at);
     }
 
+    /// Changes what a process requires (a PowerGrid source starting or stopping its replay).
+    pub fn set_requires(&mut self, owner: DistrictId, id: u16, requires: Option<(DistrictId, u16)>, at: Tick) {
+        for p in &mut self.procs {
+            if p.owner == owner && p.id == id {
+                p.requires = requires;
+            }
+        }
+        self.evaluate(at);
+    }
+
     // ---- the running set ------------------------------------------------------------------
 
     fn is_running(&self, i: usize) -> bool {

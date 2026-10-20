@@ -143,8 +143,24 @@ pub struct Books {
     pub burned: GoodVec,
     pub stolen: GoodVec,
     pub dropped: GoodVec,
+    /// Trim removals that came up short: outputs the world kept (docs §4.2).
     pub untracked: GoodVec,
+    /// Inputs a removal could not take because a machine took them first (I8).
+    pub shortfall: GoodVec,
+    /// Outputs not delivered, or taken back, because of shortfalls.
+    pub trimmed: GoodVec,
 }
+
+/// One line of the engine's own log, for the CLI and tests. Capped (TUNABLE, PLACEHOLDER 20,000
+/// lines); the oldest go first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EngineEvent {
+    pub tick: u64,
+    pub district: u64,
+    pub what: String,
+}
+
+const LOG_CAP: usize = 20_000;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Station {
@@ -189,6 +205,7 @@ pub struct Engine {
     now: Tick,
     pub stats: Stats,
     pub books: Books,
+    pub log: std::collections::VecDeque<EngineEvent>,
 }
 
 impl Engine {
@@ -217,7 +234,28 @@ impl Engine {
             now,
             stats: Stats::default(),
             books: Books::default(),
+            log: std::collections::VecDeque::new(),
         }
+    }
+
+    fn note(&mut self, d: DistrictId, at: Tick, what: String) {
+        if self.log.len() >= LOG_CAP {
+            self.log.pop_front();
+        }
+        self.log.push_back(EngineEvent {
+            tick: at.0,
+            district: d.0,
+            what,
+        });
+    }
+
+    fn good_name(&self, g: Good) -> String {
+        self.goods.get(&g).map_or_else(|| format!("good {}", g.0), |i| i.name.clone())
+    }
+
+    fn goods_words(&self, v: &GoodVec) -> String {
+        let parts: Vec<String> = v.iter().map(|(g, n)| format!("{n:+} {}", self.good_name(g))).collect();
+        if parts.is_empty() { "nothing".to_string() } else { parts.join(", ") }
     }
 
     pub fn now(&self) -> Tick {
@@ -403,6 +441,7 @@ impl Engine {
                             known_at: Tick::ZERO,
                             pending: GoodVec::new(),
                             received: BTreeSet::new(),
+                            doomed: false,
                             destroyed: false,
                         },
                     );
@@ -527,6 +566,8 @@ impl Engine {
         }
         for (idx, contents) in buf.contents {
             if let Some(inv) = dist.inventories.get_mut(&idx) {
+                // Sampled again: the block was rebuilt.
+                inv.destroyed = false;
                 if e.live {
                     for (g, c) in contents.iter() {
                         if c > inv.known.get(g) {
@@ -568,10 +609,30 @@ impl Engine {
         ) {
             let targets = dist.learner.targets(&learned, &tun);
             let batches = dist.batches.clone();
+            let was = dist.phase;
+            let old_goods: Vec<Good> = current.as_ref().map_or(Vec::new(), |m| m.rates.iter().map(|r| r.0).collect());
             dist.models
                 .insert(season, Model::from_learned(learned, targets, season, batches));
             dist.phase = Phase::Learned;
+            let m = &dist.models[&season];
+            let new_goods: Vec<Good> = m.learned.rates.iter().map(|r| r.0).collect();
+            let changed = was != Phase::Learned || old_goods != new_goods;
+            let rates: Vec<String> = m
+                .learned
+                .rates
+                .iter()
+                .map(|&(g, r)| format!("{:+.0}/h {}", r * TICKS_PER_HOUR as f64, goods.get(&g).map_or("?", |i| i.name.as_str())))
+                .collect();
+            let what = format!(
+                "learned (window {} ticks, confidence {:.2}): {}",
+                m.learned.window_ticks,
+                m.learned.confidence,
+                if rates.is_empty() { "idle".to_string() } else { rates.join(", ") }
+            );
             self.stats.models_adopted += 1;
+            if changed {
+                self.note(e.district, at, what);
+            }
         } else if let Some(m) = current {
             // Targets keep improving between windows.
             let targets = dist.learner.targets(&m, &tun);
@@ -692,6 +753,16 @@ impl Engine {
         let boundary = self.next_season_boundary(at);
         self.clusters.apply(h, at, |c, _| c.set_season_boundary(boundary));
         self.cluster_of.insert(d, h);
+        // Sinks already replaying on this district's power now follow it (I13).
+        let sinks: Vec<DistrictId> = self
+            .districts
+            .values()
+            .filter(|s| s.power_source == Some(d) && self.cluster_of.get(&s.id) == Some(&h))
+            .map(|s| s.id)
+            .collect();
+        for s in sinks {
+            self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, Some((d, 0)), at));
+        }
         let dist = self.districts.get_mut(&d).expect("exists");
         dist.sim = Some(SimSpan {
             started: at,
@@ -699,12 +770,24 @@ impl Engine {
             season,
         });
         self.stats.sims_started += 1;
+        self.note(d, at, "replay starts".to_string());
         self.after_cluster(h, at);
     }
 
     /// Takes a district out of its cluster at `at`; returns its pools' levels (stock and mail).
     fn stop_sim(&mut self, d: DistrictId, at: Tick) -> Option<(SimSpan, Vec<crate::cluster::Pool>)> {
-        let h = self.cluster_of.remove(&d)?;
+        let h = *self.cluster_of.get(&d)?;
+        // Sinks on this district's power: a live source is assumed running (F21).
+        let sinks: Vec<DistrictId> = self
+            .districts
+            .values()
+            .filter(|s| s.power_source == Some(d) && self.cluster_of.get(&s.id) == Some(&h))
+            .map(|s| s.id)
+            .collect();
+        for s in sinks {
+            self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, None, at));
+        }
+        self.cluster_of.remove(&d);
         let out = self.clusters.apply(h, at, |c, at| c.remove_member(d, at))?;
         // Book what the replay made and used.
         let mut minted = GoodVec::new();
@@ -760,14 +843,19 @@ impl Engine {
         for e in events {
             match e {
                 ClusterEvent::Stopped { at, owner, id, why } if id == 0 => {
+                    let words = stop_words(why, &self.goods);
                     if let Some(dist) = self.districts.get_mut(&owner) {
-                        dist.last_run = Some((at, stop_words(why, &self.goods)));
+                        dist.last_run = Some((at, words.clone()));
+                    }
+                    if why != Stop::Disabled {
+                        self.note(owner, at, format!("breakpoint: {words}"));
                     }
                 }
                 ClusterEvent::Started { at, owner, id } if id == 0 => {
                     if let Some(dist) = self.districts.get_mut(&owner) {
                         dist.last_run = Some((at, "running".to_string()));
                     }
+                    self.note(owner, at, "running".to_string());
                 }
                 ClusterEvent::PackagesReady {
                     at,
@@ -826,23 +914,41 @@ impl Engine {
             .filter(|(_, hh)| **hh == h)
             .map(|(&d, _)| d)
             .collect();
-        let season = self.season_at(at);
         for d in members {
-            let Some((span, pools)) = self.stop_sim(d, at) else {
-                continue;
-            };
-            // Carry the replay's levels into a new span as virtual stock (owed), so the reconcile
-            // at the next load still sees the whole change since the first unload.
-            let dist = self.districts.get_mut(&d).expect("member");
-            for p in &pools {
-                if let PoolKey::Stock(_, g) = p.key {
-                    dist.owed.add(g, p.level - span.base.get(g));
-                }
-            }
-            if dist.models.contains_key(&season) {
-                self.start_sim(d, at);
+            self.restart_sim(d, at);
+            if !self.cluster_of.contains_key(&d) {
+                self.note(d, at, "frozen: no model for the new season".to_string());
             }
         }
+    }
+
+    /// Stops a replay and starts it again from where it stood, with a member rebuilt from the
+    /// district as it is now (a new season's model, a destroyed inventory's capacity gone). The
+    /// change so far is carried as virtual stock (owed), so the reconcile at the next load still
+    /// sees the whole change since the first unload.
+    fn restart_sim(&mut self, d: DistrictId, at: Tick) {
+        let Some((span, pools)) = self.stop_sim(d, at) else {
+            return;
+        };
+        let dist = self.districts.get_mut(&d).expect("member");
+        for p in &pools {
+            dist.minted_carried.add(p.key.good(), p.books.minted);
+            match p.key {
+                PoolKey::Stock(_, g) => dist.owed.add(g, p.level - span.base.get(g)),
+                PoolKey::Mail(_, _, g) => dist.owed.add(g, p.level - p.pushed),
+                PoolKey::Channel(..) => {}
+            }
+        }
+        // Deposits are read back from their pools, not carried as owed.
+        let deposit_goods: Vec<Good> = dist.deposits.keys().copied().collect();
+        for g in deposit_goods {
+            let o = dist.owed.get(g);
+            if o != 0 {
+                dist.owed.add(g, -o);
+                dist.deposit_owed.add(g, o);
+            }
+        }
+        self.start_sim(d, at);
     }
 
     // ---- reconcile (I7, I8) ---------------------------------------------------------------
@@ -852,9 +958,11 @@ impl Engine {
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut net = GoodVec::new();
         let mut deposits = GoodVec::new();
+        let mut span_minted = std::mem::take(&mut dist.minted_carried);
         let since = stopped.as_ref().map_or(at, |s| s.0.started);
         if let Some((span, pools)) = stopped {
             for p in &pools {
+                span_minted.add(p.key.good(), p.books.minted);
                 match p.key {
                     PoolKey::Stock(_, g) => {
                         let change = p.level - span.base.get(g);
@@ -871,6 +979,7 @@ impl Engine {
             }
         }
         net.merge(&dist.owed);
+        deposits.merge(&std::mem::take(&mut dist.deposit_owed));
         let had_owed = !dist.owed.is_empty();
         if net.is_empty() && deposits.is_empty() && dist.destroy_pending.is_empty() && !had_owed {
             return;
@@ -897,7 +1006,10 @@ impl Engine {
             // I-A: the vaults stay untouched; the sim's stock is dropped with the span.
             report.epoch = dist.epoch;
             dist.owed = GoodVec::new();
+            let what = format!("would have made: {}", self.goods_words(&report.net));
+            let dist = self.districts.get_mut(&d).expect("exists");
             dist.push_report(report);
+            self.note(d, at, what);
             return;
         }
         dist.epoch += 1;
@@ -967,13 +1079,26 @@ impl Engine {
                 trim: false,
             });
         }
-        dist.round_added.insert(epoch, added);
+        // Trims are capped by what the replay made in the span, not by this round's additions:
+        // outputs already shipped are taken back from whatever holds them, or booked untracked.
+        let _ = added;
+        dist.round_added.insert(epoch, span_minted);
         // Keep the books of the last few rounds only (trims refer to recent ones).
         while dist.round_added.len() > 8 {
             dist.round_added.pop_first();
         }
+        let what = format!(
+            "reconcile epoch {epoch}: {} in {} chunk(s), {} deltas{}{}",
+            self.goods_words(&report.net),
+            report.chunks,
+            report.deltas,
+            if report.unplaced.is_empty() { String::new() } else { format!(", unplaced {}", self.goods_words(&report.unplaced)) },
+            if report.destroyed > 0 { format!(", {} blocks to destroy", report.destroyed) } else { String::new() }
+        );
+        let dist = self.districts.get_mut(&d).expect("exists");
         dist.push_report(report);
         let loaded: Vec<ChunkPos> = dist.loaded_chunks.iter().copied().collect();
+        self.note(d, at, what);
         for c in loaded {
             self.send_pending(d, c, 0);
         }
@@ -1013,6 +1138,14 @@ impl Engine {
         let mut unfit = GoodVec::new();
         for e in &r.entries {
             if e.inventory == DEPOSIT_INVENTORY {
+                // The plugin took what was there; a machine may have drilled first.
+                if let Some(s) = dist.deposits.get_mut(&e.good) {
+                    s.remaining += e.applied - e.requested;
+                }
+                dist.ports.add(e.good, e.applied);
+                if e.requested < 0 && e.applied > e.requested {
+                    shortfall.add(e.good, e.applied - e.requested);
+                }
                 continue;
             }
             if let Some(inv) = dist.inventories.get_mut(&e.inventory) {
@@ -1031,7 +1164,26 @@ impl Engine {
             }
         }
         dist.owed.merge(&unfit);
+        // Blocks broke: doomed inventories in this chunk are gone, and what they held dropped.
+        if r.blocks_destroyed > 0 {
+            for inv in dist.inventories.values_mut() {
+                if inv.doomed && inv.chunk == r.chunk {
+                    inv.doomed = false;
+                    inv.destroyed = true;
+                    let spill = inv.effective();
+                    self.books.dropped.merge(&spill);
+                    dist.ports.subtract(&spill);
+                    inv.known = GoodVec::new();
+                    inv.pending = GoodVec::new();
+                }
+            }
+        }
         if done.trim {
+            for e in &r.entries {
+                if e.requested < 0 {
+                    self.books.trimmed.add(e.good, -e.applied);
+                }
+            }
             // The trimmed outputs had already moved on: book it, visibly (docs §4.2).
             dist.untracked.merge(&shortfall);
             self.books.untracked.merge(&shortfall);
@@ -1043,6 +1195,7 @@ impl Engine {
         if shortfall.is_empty() {
             return;
         }
+        self.books.shortfall.merge(&shortfall);
         let epoch = done.cmd.epoch;
         let rates = dist
             .models
@@ -1060,6 +1213,12 @@ impl Engine {
             return;
         }
         self.stats.trims += 1;
+        let what = format!(
+            "shortfall {} trims {}",
+            self.goods_words(&shortfall),
+            self.goods_words(&trims)
+        );
+        self.note(r.district, at, what);
         self.apply_trims(r.district, epoch, &trims, at);
     }
 
@@ -1078,6 +1237,7 @@ impl Engine {
                     let cut = want.min(delta.delta);
                     delta.delta -= cut;
                     left.add(delta.good, -cut);
+                    self.books.trimmed.add(delta.good, cut);
                     if let Some(inv) = dist.inventories.get_mut(&delta.inventory) {
                         inv.pending.add(delta.good, -cut);
                     }
@@ -1216,12 +1376,33 @@ impl Engine {
         let d = c.district;
         let goods = self.goods.clone();
         let carriages = c.carriages.clone();
+        // A Portable Storage Interface unloads only into room: the receivers' room at the last
+        // sample, less what the replay has already added (F19).
+        let mut room: BTreeMap<Good, (i64, i64)> = BTreeMap::new();
+        for &g in &rule.unload {
+            let mut r = 0i64;
+            let mut any = false;
+            for inv in dist.inventories.values().filter(|i| !i.destroyed && i.received.contains(&g)) {
+                any = true;
+                r += reconcile::room_for(&inv.state(), &inv.effective(), g, &self.goods);
+            }
+            if !any {
+                for inv in dist.inventories.values().filter(|i| !i.destroyed) {
+                    r += reconcile::room_for(&inv.state(), &inv.effective(), g, &self.goods);
+                }
+            }
+            let base = dist.sim.as_ref().map_or(0, |s| s.base.get(g));
+            room.insert(g, (r, base));
+        }
         let entries = self.clusters.apply(h, at, |cl, at| {
             let mut entries = Vec::new();
             for car in &carriages {
                 let mut cargo = car.goods.clone();
                 for &g in &rule.unload {
-                    let n = cargo.get(g);
+                    let (r, base) = room[&g];
+                    let level = cl.level(PoolKey::Stock(d, g)).unwrap_or(0);
+                    let free = (r - (level - base).max(0)).max(0);
+                    let n = cargo.get(g).min(free);
                     if n > 0 {
                         let got = cl.add_to_pool(PoolKey::Stock(d, g), n, false, at);
                         cargo.add(g, -got);
@@ -1249,6 +1430,12 @@ impl Engine {
             return;
         }
         self.stats.exchanges += 1;
+        let mut moved = GoodVec::new();
+        for &(_, g, n) in &entries {
+            moved.add(g, -n);
+        }
+        let what = format!("station exchange with train {}: {}", c.train.0, self.goods_words(&moved));
+        self.note(d, at, what);
         let op = self.ops.allocate();
         self.exchanges.insert(
             op,
@@ -1517,6 +1704,8 @@ impl Engine {
         }
         if report.skipped.is_some() || self.mode == Mode::ReadOnly {
             self.stats.attacks_skipped += 1;
+            let what = format!("{:?} {:?} x{} skipped: {}", t.source, t.class, t.count, report.skipped.unwrap_or("read-only phase"));
+            self.note(d, at, what);
             if self.mode == Mode::ReadOnly && report.skipped.is_none() {
                 report.skipped = Some("read-only phase");
             }
@@ -1547,7 +1736,7 @@ impl Engine {
         }
         let dim = dist.dim;
         let dist = self.districts.get_mut(&d).expect("exists");
-        let mut dropped = GoodVec::new();
+        let mut doomed_any = false;
         for b in &dmg.destroyed {
             let pos = BlockPos::new(b.x, b.y, b.z);
             dist.destroy_pending.entry(pos.chunk(dim)).or_default().push(BlockDestroy {
@@ -1557,30 +1746,31 @@ impl Engine {
             if let Some(i) = b.inventory
                 && let Some(inv) = dist.inventories.get_mut(&i)
                 && !inv.destroyed
+                && !inv.doomed
             {
-                inv.destroyed = true;
-                dropped.merge(&inv.effective());
+                inv.doomed = true;
+                doomed_any = true;
             }
         }
         self.books.stolen.merge(&dmg.stolen);
-        self.books.dropped.merge(&dropped);
-        let mut leave = take.clone();
-        leave.merge(&dropped);
         match h {
             Some(h) => {
                 self.clusters.apply(h, at, |c, at| {
-                    for (g, n) in leave.iter() {
+                    for (g, n) in take.iter() {
                         c.add_to_pool(PoolKey::Stock(d, g), -n, false, at);
                     }
                 });
-                // The dropped contents leave the base too: they fall out when the block breaks.
-                if let Some(span) = self.districts.get_mut(&d).and_then(|x| x.sim.as_mut()) {
-                    span.base.subtract(&dropped);
-                }
                 if dmg.machine_lost {
                     self.clusters.apply(h, at, |c, at| c.set_enabled(d, false, at));
                 }
                 self.after_cluster(h, at);
+                // A doomed inventory takes its room with it: rebuild the member (F20).
+                if doomed_any {
+                    if dmg.machine_lost {
+                        self.districts.get_mut(&d).expect("exists").phase = Phase::Damaged;
+                    }
+                    self.restart_sim(d, at);
+                }
             }
             None => {
                 let dist = self.districts.get_mut(&d).expect("exists");
@@ -1589,6 +1779,19 @@ impl Engine {
                 }
             }
         }
+        let what = format!(
+            "{:?} {:?} x{}: survived {:.2}{}{}, stole {}, destroyed {}{}",
+            t.source,
+            t.class,
+            t.count,
+            outcome.survived,
+            if outcome.untested { " (untested defences)" } else { "" },
+            outcome.floor.map_or(String::new(), |f| format!(" (floor {f:.2})")),
+            self.goods_words(&dmg.stolen),
+            dmg.destroyed.len(),
+            if dmg.machine_lost { ", machine lost: stopped" } else { "" }
+        );
+        self.note(d, at, what);
         let dist = self.districts.get_mut(&d).expect("exists");
         if dmg.machine_lost {
             dist.phase = Phase::Damaged;
@@ -1625,6 +1828,8 @@ impl Engine {
             }
         }
         self.books.stolen.merge(&loot);
+        let what = format!("train {} ambushed ({:?} x{}): looted {}", train.0, t.class, t.count, self.goods_words(&loot));
+        self.note(DistrictId(0), t.at, what);
         let op = self.ops.allocate();
         self.out.push(Cmd::CarriageDelta(CarriageDelta {
             op,
