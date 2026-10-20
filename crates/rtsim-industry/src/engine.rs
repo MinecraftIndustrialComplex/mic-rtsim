@@ -650,9 +650,13 @@ impl Engine {
 
     fn sweep_end(&mut self, at: Tick, e: &crate::obs::SweepEnd) {
         let season = self.season_at(at);
-        let tun = self.tun.learn.clone();
-        let goods = self.goods.clone();
-        let dist = self.district_mut(e.district);
+        // Split borrows: no clone of the GOOD dictionary per sweep (review finding 16).
+        let tun = &self.tun.learn;
+        let goods = &self.goods;
+        let dist = self
+            .districts
+            .entry(e.district)
+            .or_insert_with(|| District::new(e.district));
         let Some(buf) = dist.sweep.take() else {
             return;
         };
@@ -690,7 +694,7 @@ impl Engine {
         }
         let stock = dist.effective_stock();
         let links = dist.cumulative_links();
-        let space_free = space_free(dist, &goods);
+        let space_free = space_free(dist, goods);
         let current = dist.models.get(&season).map(|m| m.learned.clone());
         let ports = dist.ports.clone();
         if let Some(learned) = dist.learner.push(
@@ -702,9 +706,9 @@ impl Engine {
                 space_free,
             },
             current.as_ref(),
-            &tun,
+            tun,
         ) {
-            let targets = dist.learner.targets(&learned, &tun);
+            let targets = dist.learner.targets(&learned, tun);
             let batches = dist.batches.clone();
             let was = dist.phase;
             let old_goods: Vec<Good> = current.as_ref().map_or(Vec::new(), |m| m.rates.iter().map(|r| r.0).collect());
@@ -732,7 +736,7 @@ impl Engine {
             }
         } else if let Some(m) = current {
             // Targets keep improving between windows.
-            let targets = dist.learner.targets(&m, &tun);
+            let targets = dist.learner.targets(&m, tun);
             if let Some(model) = dist.models.get_mut(&season)
                 && !targets.is_empty()
             {
@@ -780,10 +784,14 @@ impl Engine {
         }
         let model = dist.models[&season].clone();
         let base = dist.effective_stock();
-        let channels: BTreeMap<ChannelId, (GoodVec, i64)> = self
-            .channels
+        // Only the channels this model links (review finding 16).
+        let channels: BTreeMap<ChannelId, (GoodVec, i64)> = model
+            .links
             .iter()
-            .map(|(&c, s)| (c, (s.known.clone(), s.capacity)))
+            .filter_map(|(k, _)| match k {
+                LinkKey::Channel(c, _) => self.channels.get(c).map(|s| (*c, (s.known.clone(), s.capacity))),
+                LinkKey::Mail { .. } => None,
+            })
             .collect();
         let mut spec = dist.member_spec(&model, &base, &channels, &self.goods, &self.tun);
         // A power source that is live is assumed running (F21); one that is unloaded and not
@@ -1535,7 +1543,6 @@ impl Engine {
             return;
         };
         let d = c.district;
-        let goods = self.goods.clone();
         let carriages = c.carriages.clone();
         // A Portable Storage Interface unloads only into room: the receivers' room at the last
         // sample, less what the replay has already added (F19).
@@ -1555,6 +1562,7 @@ impl Engine {
             let base = dist.sim.as_ref().map_or(0, |s| s.base.get(g));
             room.insert(g, (r, base));
         }
+        let goods = &self.goods;
         let entries = self.clusters.apply(h, at, |cl, at| {
             let mut entries = Vec::new();
             for car in &carriages {
@@ -1572,7 +1580,7 @@ impl Engine {
                 }
                 for &g in &rule.load {
                     let have = cl.level(PoolKey::Stock(d, g)).unwrap_or(0);
-                    let room = carriage_room(car, &cargo, g, &goods);
+                    let room = carriage_room(car, &cargo, g, goods);
                     let n = have.min(room);
                     if n > 0 {
                         let got = -cl.add_to_pool(PoolKey::Stock(d, g), -n, false, at);

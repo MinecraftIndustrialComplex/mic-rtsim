@@ -233,3 +233,40 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
 9. **A merged cluster costs O(processes × constraints) per event.** Many districts on one channel
    pay quadratically per event. Clusters are formed only by channels and power lines, so this
    is rare.
+
+## Adversarial review (Opus, 2026-10-20) and what changed
+
+An independent review of the crate found fifteen problems. All are fixed, each with a test where it
+can be shown:
+- **Lost channel transfers (1):** a channel pool leaving its cluster now pushes its unpushed
+  changes.
+- **Stale pool indices (2):** `remove_member` matched pools by indices that shift; it now matches
+  by key and keeps departed transfers in the books.
+- **Trims on sent commands (3):** trims never edit a command already sent; they make a new epoch.
+- **Jams that did not stop (4):** a jammed line is disabled outright.
+- **Theft (5):** only raiders steal, and only items: not fluids, energy or deposits.
+- **Ammunition (6):** fired ammunition is booked and clamped.
+- **Destroyed blocks (7):** the reconcile result names the blocks broken; the wire format changed,
+  so `IND_RECONCILE_RESULT` now carries Pos16 entries.
+- **Train loot (8):** loot is reconciled against the carriage result; trains have cooldowns; legs
+  are indexed by train.
+- **Over-trimming (9):** trims accumulate per epoch.
+- **Mail addresses (10):** mail pools carry their address, and the buffer's room counts what is
+  already in it.
+- **Power sinks (11):** sinks follow their source whether or not it replayed.
+- **Ledger reads (12):** the ledger never advances time.
+- **Reconcile races (13):** sample times are per record; an epoch applied without a result is taken
+  as applied.
+- **Double latency (14):** the restart latency was waited twice.
+- **Attacker counts (15):** a large pressure mean drew 10,000 attackers.
+- **Minor (16):** untested now means no comparable fight; read-only mode books nothing; no
+  per-call clones.
+
+Still open:
+- **Channel double-spend (suspected by the review):** a live member's real channel withdrawal can
+  meet virtual draws the replay has not pushed yet. The pool clamps the real withdrawal, and
+  IND_CHANNEL_DELTA has no result to correct it.
+- **Shared postbox buffers:** several mail pools on one postbox each count the whole 18-slot buffer
+  as theirs, and IND_WRITE_PACKAGE has no result for an overflow.
+- **Negative base:** `member_spec` clamps a negative base level to 0, which forgives a negative
+  owed silently.
