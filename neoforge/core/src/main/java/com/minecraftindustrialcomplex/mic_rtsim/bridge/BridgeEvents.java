@@ -80,7 +80,7 @@ public final class BridgeEvents {
     private static void mark(ServerLevel level, net.minecraft.core.BlockPos pos) {
         net.minecraft.world.level.chunk.LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
         if (chunk != null)
-            com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks.mark(chunk, pos);
+            com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks.mark(chunk, pos);
     }
 
     /** Datapacks reloaded: which structures are villages may have changed. */

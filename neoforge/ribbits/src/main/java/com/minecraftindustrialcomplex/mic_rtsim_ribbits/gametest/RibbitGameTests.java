@@ -4,7 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
-import com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks;
+import com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess;

@@ -42,9 +42,9 @@ public final class RtsimAttachments {
      * {@code mic_rtsim:player_blocks}: which blocks of a chunk players placed (per section, a 4096-bit
      * set). Village growth never builds over them (PLAN.md §8.8). Saved with the chunk.
      */
-    public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks>> PLAYER_BLOCKS =
-            TYPES.register("player_blocks", () -> AttachmentType.builder(com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks::new)
-                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks.CODEC, p -> !p.isEmpty()).build());
+    public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks>> PLAYER_BLOCKS =
+            TYPES.register("player_blocks", () -> AttachmentType.builder(com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks::new)
+                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks.CODEC, p -> !p.isEmpty()).build());
 
     public static void register(IEventBus modBus) {
         TYPES.register(modBus);

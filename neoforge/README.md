@@ -64,7 +64,7 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `market` | phase 1: the price curve and market book (a mirror of rtsim-trade), resident repricing through the treasury (C14), puppet merchant offers and cargo (C21), robbery detection. |
 | `knowledge` | phase 1: sentiment snapshots, HURT coalescing, rescues (C24). |
 | `base` | phase 1: player bases as market nodes (C26, P30's recommendation; `data/mic_rtsim_bases.dat`). |
-| `build` | phase 1: player-placed block marks, house placement from templates, resident spawns (C7). |
+| `growth` | phase 1: player-placed block marks, house placement from templates, resident spawns (C7). |
 | `bridge/Phase1` | wires phase 1 to the tick, the events and the commands. |
 | `gametest` | the GameTests, in the `mic_rtsim` namespace, and helpers the plugins' tests share (`RtsimTests`, `FakePlayers`). |
 
