@@ -40,7 +40,7 @@ use rtsim_kernel::codec::{CodecError, Reader, Writer};
 use rtsim_kernel::journal::OpId;
 use rtsim_kernel::page::{PageKey, PageStore};
 
-use super::{Engine, State, lock, log_error, log_info, log_warn};
+use super::{Config, Engine, State, lock, log_error, log_info, log_warn};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 /// The link's own page: its command queue and outbox. Table 1 is rtsim-jni's (J9); id 0x49 keeps
@@ -113,6 +113,9 @@ pub(super) struct Link {
     outbox: VecDeque<(u64, Cmd)>,
     /// Outbox commands to write again at the start of this session, oldest first.
     resend: VecDeque<(u64, Cmd)>,
+    /// Latest-wins industry records of this hand-over not handed to the engine yet: they go in
+    /// game-time order with the journaled ones, journaled first on a tie (W9).
+    deferred: VecDeque<Timed>,
     /// The bridge's industry module switch (C25): off, the engine neither runs nor sends.
     enabled: bool,
     pub(super) stats: IndustryStats,
@@ -159,13 +162,15 @@ impl Link {
             queue: VecDeque::new(),
             outbox: VecDeque::new(),
             resend: VecDeque::new(),
+            deferred: VecDeque::new(),
             enabled: false,
             stats: IndustryStats::default(),
         }
     }
 
     /// The engine and the link as the pages hold them, or new ones.
-    pub(super) fn load(store: &mut PageStore, read_only: bool, test: bool) -> Result<Link, String> {
+    pub(super) fn load(store: &mut PageStore, cfg: &Config) -> Result<Link, String> {
+        let (read_only, test) = (cfg.industry_read_only, cfg.test);
         let keys: Vec<PageKey> = store
             .keys()
             .filter(|k| TABLES.contains(&k.table()))
@@ -190,7 +195,8 @@ impl Link {
                     pages.len()
                 ));
             }
-            Industry::new(new_seed(), Tunables::default(), mode(read_only), Tick::ZERO)
+            let seed = cfg.industry_seed.unwrap_or_else(new_seed);
+            Industry::new(seed, Tunables::default(), mode(read_only), Tick::ZERO)
         };
         engine.mode = mode(read_only);
         engine.log_enabled = test;
@@ -236,6 +242,23 @@ impl Link {
     fn ingest(&mut self, t: &Timed) {
         self.engine.ingest(t);
         self.stats.ingested += 1;
+    }
+
+    /// Hands the engine the deferred latest-wins records from before `until` (all of them for
+    /// None). A hand-over holds its latest-wins records first and its journaled ones after (the
+    /// bridge copies the journal at the hand-over), while within a tick Java journals loads,
+    /// ports and results before it samples stock: merged by game time, a sweep taken in a load
+    /// tick reaches the engine after the load, as it happened.
+    fn flush(&mut self, until: Option<Tick>) {
+        while let Some(t) = self.deferred.front() {
+            if until.is_some_and(|u| t.at >= u) {
+                break;
+            }
+            let t = self.deferred.pop_front().expect("front");
+            if self.enabled {
+                self.ingest(&t);
+            }
+        }
     }
 
     /// One industry record, decoded. Returns whether it was one this build reads.
@@ -358,7 +381,7 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 return;
             }
             if let Some(t) = l.decode(rec) {
-                l.ingest(&t);
+                l.deferred.push_back(t);
             }
         }
         _ => {}
@@ -393,6 +416,7 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 /// it says what happened in the world (W8).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let l = &mut st.industry;
+    l.flush(Some(tick(wire::i64_at(rec.bytes, obs::GAME_TIME))));
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
         command_result(l, op, rec.aux);
@@ -481,6 +505,7 @@ pub(super) fn threat(st: &mut State, t: &Threat) {
 pub(super) fn simulate(st: &mut State) {
     let game_time = st.game_time;
     let l = &mut st.industry;
+    l.flush(None);
     if !l.enabled {
         return;
     }

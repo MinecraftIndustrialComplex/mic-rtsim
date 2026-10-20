@@ -54,12 +54,18 @@ pub fn tmpdir(tag: &str) -> PathBuf {
 }
 
 pub fn engine(dir: &PathBuf, capacity: usize) -> Arc<Engine> {
+    engine_with(dir, capacity, |_| {})
+}
+
+/// [`engine`] with the configuration adjusted first.
+pub fn engine_with(dir: &PathBuf, capacity: usize, f: impl FnOnce(&mut Config)) -> Arc<Engine> {
     host();
     let mut cfg = Config::new(dir);
     cfg.capacity = capacity;
     cfg.test = true;
     cfg.durability = Durability::NoSync;
     cfg.exec = Exec::Host;
+    f(&mut cfg);
     Engine::open(cfg).expect("open")
 }
 
@@ -115,6 +121,8 @@ pub struct Java {
     /// Industry commands applied (not stale): (hand-over, cmdSeq, command as decoded, dimension
     /// in the engine's dictionary).
     pub ind_commands: Vec<(u64, u64, Cmd)>,
+    /// Industry commands read while holding: (cmdSeq, command).
+    pub held_ind: Vec<(u64, Cmd)>,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -196,6 +204,7 @@ impl Java {
             mc: None,
             ind_cmd_seq: HashMap::new(),
             ind_commands: Vec::new(),
+            held_ind: Vec::new(),
         }
     }
 
@@ -261,7 +270,13 @@ impl Java {
     }
 
     /// Journals a record: `body` fills it from offset 24.
-    pub fn journal(&mut self, kind: u16, size: usize, aux: u32, body: impl FnOnce(&mut [u8])) -> u64 {
+    pub fn journal(
+        &mut self,
+        kind: u16,
+        size: usize,
+        aux: u32,
+        body: impl FnOnce(&mut [u8]),
+    ) -> u64 {
         let len = wire::align8(size);
         let mut r = vec![0u8; len];
         wire::put_u16(&mut r, wire::R_KIND, kind);
@@ -445,6 +460,11 @@ impl Java {
                         self.held_ops
                             .push(wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID));
                     }
+                    if (0x8400..=0x84FF).contains(&rec.kind)
+                        && let Ok(Some((_, c))) = iw::decode_cmd(rec.bytes)
+                    {
+                        self.held_ind.push((seq, c));
+                    }
                     continue;
                 }
                 if seq <= self.last_applied_cmd {
@@ -506,9 +526,7 @@ impl Java {
                             wire::put_u32(r, obs::materialized::DIM, dim);
                         });
                     }
-                    k if (0x8400..=0x84FF).contains(&k) => {
-                        self.industry_command(k, seq, rec.bytes)
-                    }
+                    k if (0x8400..=0x84FF).contains(&k) => self.industry_command(k, seq, rec.bytes),
                     _ => {}
                 }
                 self.last_applied_cmd = seq;
@@ -592,7 +610,10 @@ impl Java {
     /// DICT command, with Java's name, before the command that uses it.
     fn check_mirrored(&self, kind: u32, id: u32) {
         let engine = self.cmd_dict.get(&(kind, id));
-        assert!(engine.is_some(), "a DICT ({kind:#x}, {id}) comes before its first use");
+        assert!(
+            engine.is_some(),
+            "a DICT ({kind:#x}, {id}) comes before its first use"
+        );
         let java = self.java_name(id);
         assert_eq!(
             java.map(|(k, n)| (*k, n.as_str())),
@@ -619,7 +640,12 @@ impl Java {
             .unwrap_or_else(|| panic!("industry kind {kind:#06x} is one the codec reads"));
         assert_eq!(s, seq);
         if let Some(op) = c.op() {
-            assert_eq!(op.0 >> 56, 0x49, "an industry op id carries namespace 0x49: {:#x}", op.0);
+            assert_eq!(
+                op.0 >> 56,
+                0x49,
+                "an industry op id carries namespace 0x49: {:#x}",
+                op.0
+            );
             self.ind_cmd_seq.insert(op.0, seq);
         }
         match &mut c {
@@ -679,10 +705,15 @@ impl Java {
     /// Java's own COMMAND_RESULT for an industry op id.
     fn industry_result(&mut self, op: u64, status: u32) {
         let seq = self.ind_cmd_seq.get(&op).copied().unwrap_or(0);
-        self.journal(obs::COMMAND_RESULT, obs::command_result::SIZE, status, |r| {
-            wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
-            wire::put_u64(r, obs::command_result::OP_ID, op);
-        });
+        self.journal(
+            obs::COMMAND_RESULT,
+            obs::command_result::SIZE,
+            status,
+            |r| {
+                wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                wire::put_u64(r, obs::command_result::OP_ID, op);
+            },
+        );
     }
 
     /// One server tick of the industry world in lockstep with the engine: the world ticks
@@ -718,7 +749,11 @@ impl Java {
         self.game_time = gt;
         let deadline = Instant::now() + Duration::from_secs(20);
         while self.e.stats_array()[1] < self.submitted {
-            assert!(Instant::now() < deadline, "step {} never finished", self.submitted);
+            assert!(
+                Instant::now() < deadline,
+                "step {} never finished",
+                self.submitted
+            );
             std::hint::spin_loop();
             std::thread::yield_now();
         }
@@ -751,4 +786,3 @@ impl Java {
         save
     }
 }
-

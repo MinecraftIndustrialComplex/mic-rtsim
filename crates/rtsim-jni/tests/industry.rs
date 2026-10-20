@@ -18,6 +18,9 @@ use rtsim_industry::engine::{Engine as Industry, Mode};
 use rtsim_industry::fake::{FDistrict, FInventory, FakeWorld, Recipe, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{BlockFlags, InvKind, Obs, Timed};
+use rtsim_industry::scenario::{
+    INGOT, IronLine, ORE_COAST, iron_line, iron_line_world, run_iron_line,
+};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_industry::tunables::Tunables;
 use rtsim_jni::engine::{Engine, MODULE_INDUSTRY};
@@ -234,12 +237,18 @@ fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
         1,
         "one reconcile round"
     );
-    assert!(!r.is_empty() && r.iter().all(|x| x.1 == 1), "epoch 1 applied");
+    assert!(
+        !r.is_empty() && r.iter().all(|x| x.1 == 1),
+        "epoch 1 applied"
+    );
     // Two days away at 8 per 100 ticks: 3,840 bars by the replay, give or take the machine that
     // ticks on stale stock before the reconcile (the trim keeps the books exact).
     let made = bars(&j, &ids);
     let expect = loaded_bars + 3_840 + 160;
-    assert!((made - expect).abs() <= 24, "bars {made}, expected about {expect}");
+    assert!(
+        (made - expect).abs() <= 24,
+        "bars {made}, expected about {expect}"
+    );
     conserves(&j);
     assert_eq!(j.stale_commands, 0, "no command at or below an applied one");
     assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
@@ -288,7 +297,11 @@ fn crash_run(crash: Crash) {
     while j.e.durable_obs_seq() < through {
         j.mc_tick();
     }
-    assert_eq!(j.e.durable_obs_seq(), through, "the pages stop at the world save");
+    assert_eq!(
+        j.e.durable_obs_seq(),
+        through,
+        "the pages stop at the world save"
+    );
     let crash_at = match crash {
         Crash::AfterTheResult => day(3.0) + 600,
         Crash::BeforeTheLoad => day(3.0) + 600,
@@ -297,7 +310,10 @@ fn crash_run(crash: Crash) {
     j.mc_run_until(crash_at);
     let first = reconciles(&j);
     let bars_first = bars(&j, &ids);
-    assert!(!first.is_empty(), "the reconcile was applied before the crash");
+    assert!(
+        !first.is_empty(),
+        "the reconcile was applied before the crash"
+    );
     eprintln!("before the crash: reconciles {first:?}, bars {bars_first}");
     let ahead = j.mc().saved();
     // The crash: no save lands, the world rolls back to its save.
@@ -321,7 +337,10 @@ fn crash_run(crash: Crash) {
     };
     j.mc_run_until(end);
     let after: Vec<_> = reconciles(&j)[applied_before..].to_vec();
-    eprintln!("after the restart: reconciles {after:?}, bars {}", bars(&j, &ids));
+    eprintln!(
+        "after the restart: reconciles {after:?}, bars {}",
+        bars(&j, &ids)
+    );
     let epoch1 = |v: &[(u64, u32, ChunkPos)]| {
         let mut x: Vec<_> = v.iter().filter(|r| r.1 == 1).copied().collect();
         x.sort();
@@ -334,7 +353,11 @@ fn crash_run(crash: Crash) {
         Crash::BeforeTheLoad => {
             // The same decision at the same tick from the same pages: the same op ids, applied once
             // in the world that never saw them.
-            assert_eq!(epoch1(&after), epoch1(&first), "epoch 1 re-derived exactly, applied once");
+            assert_eq!(
+                epoch1(&after),
+                epoch1(&first),
+                "epoch 1 re-derived exactly, applied once"
+            );
             assert_eq!(bars_again, bars_first, "the same bars as before the crash");
         }
         Crash::ChunkSavedAhead => {
@@ -405,7 +428,10 @@ fn a_raid_while_away_lands_at_the_next_load() {
     j.mc_run_until(day(3.0) + 2_000);
     let broken = j.mc().districts[0].broken.clone();
     eprintln!("broken at the load: {broken:?}");
-    assert!(!broken.is_empty(), "the raid broke blocks, applied at the load");
+    assert!(
+        !broken.is_empty(),
+        "the raid broke blocks, applied at the load"
+    );
     // The fence went first (perimeter first for walkers), by the BLOCK_STATE the engine named.
     assert!(
         broken.contains(&BlockPos::new(1, 64, 0)) && broken.contains(&BlockPos::new(1, 64, 1)),
@@ -430,16 +456,246 @@ fn a_raid_while_away_lands_at_the_next_load() {
 #[test]
 fn industry_commands_follow_the_bridge_rules() {
     let (_dir, mut j) = mill_engine("ind-rules");
-    let _ids = mill(&mut j, 20_000, &[(0.0, true), (1.0, false), (3.0, true)], false);
+    let _ids = mill(
+        &mut j,
+        20_000,
+        &[(0.0, true), (1.0, false), (3.0, true)],
+        false,
+    );
     j.mc_run_until(day(3.0) + 500);
     let seqs: Vec<u64> = j.ind_commands.iter().map(|c| c.1).collect();
     assert!(!seqs.is_empty());
-    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "sequences rise: {seqs:?}");
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "sequences rise: {seqs:?}"
+    );
     for (_, _, c) in &j.ind_commands {
         if let Some(op) = c.op() {
             assert_eq!(op.0 & wire::JAVA_OP_BIT, 0, "an engine op id");
             assert_eq!((op.0 >> 56) & 0x7f, 0x49, "the industry namespace");
         }
     }
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// The iron line (rtsim-industry's reference scenario: a drill on a finite Ore Excavation vein, two
+/// trains between interface stations, a smelter powered over a PowerGrid line from a boiler, raids
+/// on the smelter and the trains, a dragon on the coast) through the native engine, against the
+/// same world run on an engine in process.
+#[test]
+fn the_iron_line_runs_through_the_native_engine() {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: true,
+        control: false,
+        mode: Mode::Apply,
+        tick_first: true,
+    };
+    let t0 = std::time::Instant::now();
+    let mut reference = iron_line(cfg, Tunables::default());
+    run_iron_line(&mut reference, &cfg);
+    let reference_time = t0.elapsed();
+
+    let dir = tmpdir("ind-iron");
+    let mut j = iron_java(&dir, cfg);
+    let t1 = std::time::Instant::now();
+    iron_run_to_end(&mut j, &cfg);
+    let native_time = t1.elapsed();
+    if std::env::var("IND_DEBUG").is_ok() {
+        j.e.with_industry(|ie, _| {
+            eprintln!("native books: {:?}", ie.books);
+            for ev in ie.log.iter() {
+                eprintln!("N {} d{} {}", ev.tick, ev.district, ev.what);
+            }
+        });
+        eprintln!("reference books: {:?}", reference.engine.books);
+        for ev in reference.engine.log.iter() {
+            eprintln!("R {} d{} {}", ev.tick, ev.district, ev.what);
+        }
+    }
+    conserves(&j);
+    let (stats, link) = j.e.with_industry(|ie, l| (ie.stats, *l));
+    eprintln!(
+        "iron line: {} ticks; in process {reference_time:?}, through the native engine {native_time:?}",
+        j.mc().t.0
+    );
+    eprintln!("native engine: {stats:?}");
+    eprintln!("reference engine: {:?}", reference.engine.stats);
+    eprintln!("link: {link:?}");
+    assert!(stats.attacks > 0, "raids and the dragon happened");
+    assert!(stats.exchanges > 0, "simulated stations exchanged cargo");
+    assert!(stats.reconciles > 0);
+    assert_eq!(link.outbox, 0, "every kept command answered");
+    assert_eq!(
+        link.results_failed + link.dropped + link.bad_records + link.unknown_kinds,
+        0
+    );
+    assert_eq!(j.stale_commands, 0);
+    let made = |w: &FakeWorld, e: &Industry| {
+        w.books.minted.get(INGOT) + e.books.minted.get(INGOT) - e.books.trimmed.get(INGOT)
+    };
+    let native = j.e.with_industry(|ie, _| made(j.mc(), ie));
+    let reference_made = made(&reference, &reference.engine);
+    eprintln!("ingots made: native {native}, reference {reference_made}");
+    let carriage_deltas = j
+        .ind_commands
+        .iter()
+        .filter(|c| matches!(c.2, Cmd::CarriageDelta(_)))
+        .count();
+    eprintln!(
+        "carriage deltas {carriage_deltas}, industry commands {}",
+        j.ind_commands.len()
+    );
+    assert!(carriage_deltas > 0);
+    // The same scenario and world seed, the same engine, the boundary between: the link merges a
+    // hand-over's latest-wins and journaled records back into game-time order (W9), so the run
+    // is the in-process one, decision for decision.
+    assert_eq!(stats, reference.engine.stats, "the same run as in process");
+    assert_eq!(native, reference_made);
+    j.e.with_industry(|ie, _| assert_eq!(ie.books, reference.engine.books));
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// The iron line's world against a native engine with the scenario's world seed. Java's dictionary
+/// holds the scenario's goods as ids 1 to 4 and its block states as 11 to 13 and 21 to 23 (the
+/// harness numbers every kind in one sequence, so it is filled to match).
+fn iron_java(dir: &std::path::Path, cfg: IronLine) -> Java {
+    let e = engine_with(&dir.to_path_buf(), 256 * 1024, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut j = Java::open(e, WorldSave::fresh());
+    // Java's dictionary: the scenario's goods are ids 1 to 4 and its block states 11 to 13 and
+    // 21 to 23, so the harness's one sequence of ids is filled to match.
+    let mut w = iron_line_world(cfg, Tunables::default()).into_remote();
+    for g in 1..=4u32 {
+        let name = w.goods[&Good(g)].dictionary_name();
+        assert_eq!(j.dict_id(DICT_GOOD, &name), g);
+    }
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    let mut next = dim + 1;
+    for state in [11u32, 12, 13, 21, 22, 23] {
+        while next < state {
+            j.dict_id(0x7E, &format!("pad/{next}"));
+            next += 1;
+        }
+        assert_eq!(
+            j.dict_id(DICT_BLOCK_STATE, &format!("test:block_{state}")),
+            state
+        );
+        next += 1;
+    }
+    w.move_to_dim(dim);
+    w.declare();
+    j.mc = Some(w);
+    j.module_mask = MODULE_INDUSTRY;
+    j
+}
+
+/// Runs the iron line to its end as `run_iron_line` does (the player repairs the coast when
+/// there), then until every command is applied: the conservation check's premise.
+fn iron_run_to_end(j: &mut Java, cfg: &IronLine) {
+    let end = Tick(cfg.days * TICKS_PER_DAY);
+    let mut repaired = false;
+    while j.mc().t < end + 2_000 {
+        j.mc_tick();
+        let t = j.mc().t;
+        if !repaired && t >= day(8.6) && t < end && j.mc().districts[ORE_COAST].loaded {
+            j.mc_mut().repair_all(ORE_COAST);
+            repaired = true;
+        }
+    }
+    let mut settle = 0;
+    while j.mc().commands_in_flight() > 0 {
+        j.mc_tick();
+        settle += 1;
+        assert!(settle < 100, "commands keep coming");
+    }
+}
+
+/// A kept command (IND_CARRIAGE_DELTA) written, saved in the pages' outbox and never applied by a
+/// world save that a crash then loses, is written again first after the restart, with its own
+/// sequence and op id, and applied once.
+#[test]
+fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        mode: Mode::Apply,
+        tick_first: true,
+    };
+    let dir = tmpdir("ind-resend");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    // From here Java reads the command buffers but its world never applies them: a world save
+    // that will be lost.
+    j.hold_commands = true;
+    while !j
+        .held_ind
+        .iter()
+        .any(|c| matches!(c.1, Cmd::CarriageDelta(_)))
+    {
+        j.mc_tick();
+        assert!(j.mc().t < day(4.0), "a station exchange within a day");
+    }
+    let (held_seq, held) = j
+        .held_ind
+        .iter()
+        .find(|c| matches!(c.1, Cmd::CarriageDelta(_)))
+        .cloned()
+        .unwrap();
+    let held_op = held.op().unwrap();
+    // The world saves now (it never applied the delta), and the pages stop at the same point:
+    // their outbox holds the delta.
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    let through = j.next_obs - 1;
+    assert!(jsave.last_applied_cmd < held_seq);
+    j.e.request_save(through);
+    while j.e.durable_obs_seq() < through {
+        j.mc_tick();
+    }
+    assert!(
+        j.e.with_industry(|_, l| l.outbox) >= 1,
+        "the delta waits in the outbox"
+    );
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    j.mc_tick();
+    let first = j
+        .ind_commands
+        .iter()
+        .find(|c| matches!(c.2, Cmd::CarriageDelta(_)))
+        .cloned()
+        .expect("the delta is written again in the first step");
+    eprintln!("held seq {held_seq} op {:#x}; resent {first:?}", held_op.0);
+    assert_eq!(first.1, held_seq, "its original sequence");
+    assert_eq!(first.2.op(), Some(held_op), "its own op id");
+    assert!(j.e.with_industry(|_, l| l.resent) >= 1);
+    j.mc_tick();
+    j.mc_tick();
+    assert!(
+        j.mc().applied_ops().contains(&held_op),
+        "applied in the world"
+    );
+    assert_eq!(
+        j.ind_commands
+            .iter()
+            .filter(|c| c.2.op() == Some(held_op))
+            .count(),
+        1,
+        "written once in this session"
+    );
+    iron_run_to_end(&mut j, &cfg);
+    conserves(&j);
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    assert_eq!(j.stale_commands, 0);
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }

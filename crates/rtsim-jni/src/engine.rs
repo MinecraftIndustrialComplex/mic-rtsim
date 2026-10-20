@@ -74,6 +74,8 @@ pub struct Config {
     pub exec: Exec,
     /// The industry engine in read-only mode (F25).
     pub industry_read_only: bool,
+    /// The world seed of a new industry engine (tests); None draws one (W5).
+    pub industry_seed: Option<u64>,
 }
 
 impl Config {
@@ -85,6 +87,7 @@ impl Config {
             durability: Durability::Fsync,
             exec: Exec::Host,
             industry_read_only: false,
+            industry_seed: None,
         }
     }
 }
@@ -608,7 +611,7 @@ impl Engine {
             }
             None => World::default(),
         };
-        let link = industry::Link::load(&mut store, self.cfg.industry_read_only, self.cfg.test)?;
+        let link = industry::Link::load(&mut store, &self.cfg)?;
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(

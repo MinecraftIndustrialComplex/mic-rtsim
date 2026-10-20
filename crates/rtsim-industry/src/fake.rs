@@ -327,9 +327,24 @@ impl FakeWorld {
         self
     }
 
+    /// Moves every district to dimension `dim` (Java's dictionary id) before [`FakeWorld::declare`]:
+    /// a bridge's dictionary ids start at 1, the scenarios use 0.
+    pub fn move_to_dim(&mut self, dim: u32) {
+        for d in &mut self.districts {
+            d.dim = dim;
+            d.deposit_chunk.dim = dim;
+        }
+    }
+
     /// A command from the remote engine, decoded from its buffer: applied at the next tick.
     pub fn deliver(&mut self, c: Cmd) {
         self.queue.push(c);
+    }
+
+    /// Commands delivered and not applied yet (they apply at the next tick), and reconciles held
+    /// for chunks that are not loaded.
+    pub fn commands_in_flight(&self) -> usize {
+        self.queue.len() + self.districts.iter().map(|d| d.held.len()).sum::<usize>()
     }
 
     /// The engine op ids this world applied (its journal's applied set).

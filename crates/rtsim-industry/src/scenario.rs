@@ -98,6 +98,14 @@ fn district(id: u64, name: &str, x: i32) -> FDistrict {
 }
 
 pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
+    let mut w = iron_line_world(cfg, tun);
+    w.declare();
+    w
+}
+
+/// The iron line's world before anything is declared to an engine: for a remote world
+/// ([`FakeWorld::into_remote`]), which declares it to its own engine.
+pub fn iron_line_world(cfg: IronLine, tun: Tunables) -> FakeWorld {
     let mut w = FakeWorld::new(cfg.seed, tun, cfg.mode);
     w.control = cfg.control;
     w.machines_tick_first = cfg.tick_first;
@@ -343,7 +351,6 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
             ],
         )));
     }
-    w.declare();
     w
 }
 
