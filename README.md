@@ -21,7 +21,7 @@ hold the industry design and the research behind them.
 | `crates/rtsim-knowledge` | Reports as 32-byte rows, witnesses, sentiment with lazy decay, noticeboards and gossip packets, vanilla gossip writes, notables and heirs, temperament (PLAN.md §5.6, §5.7, §8.7). |
 | `crates/rtsim-world` | The phase 1 composition: build and join, the step loop, flows and payments, news at the speed of trade, caravans near players, player trades, ribbit sorcerers, growth and touring bands, player bases and caravan trades, what players see, conservation, state hash and memory breakdown. Scaffolding until the module registry exists. |
 | `scenario/results/` | Output of `rtsim-cli sim phase1`. |
-| `docs/overnight-choices-phase1.md` | The phase 1 engine's reversible choices (E1 to E42, round 2's E43 to E63 with before and after numbers), for Ben's review. |
+| `docs/overnight-choices-phase1.md` | The phase 1 engine's reversible choices (E1 to E42, round 2's E43 to E68 with before and after numbers), for Ben's review. |
 | `tools/ci/scale-check.sh` | The CI-style scale check: fails when a growth slope exceeds its contract. |
 | `bench/results/` | Committed bench results, with the machine and conditions. |
 | `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies) with a pure-Java stub engine; GameTests. See `neoforge/README.md`. |
