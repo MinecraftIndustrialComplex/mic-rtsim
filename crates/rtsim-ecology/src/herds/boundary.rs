@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The herd records between the engine and a herd plugin, and their reference codec.
-//! `docs/boundary.md` §8 is the contract; this file and that section change together. The vanilla
-//! adapter (the plugin that would speak these for `minecraft:sheep` and the rest) is not written
-//! yet; `herds::synth::FakeHerds` plays it in tests and the CLI.
+//! `docs/boundary.md` §8 is the contract; this file, that section and the core's
+//! `herd/HerdRecords.java` (the vanilla adapter that speaks these for `minecraft:sheep` and the rest)
+//! change together. `herds::synth::FakeHerds` plays the adapter in tests and the CLI.
 //!
 //! Everything in docs/boundary.md §1 and §2 holds: little-endian, 8-byte header (`kind` u16,
 //! `size` u16, `aux` u32), records on 8-byte boundaries with sizes a multiple of 8, reserved fields

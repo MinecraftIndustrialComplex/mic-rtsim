@@ -1876,3 +1876,391 @@ mod ships {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 }
+
+mod herds {
+    use super::*;
+    use rtsim_ecology::herds::boundary::{self as hb, Cmd as H, MEMBER_SHEARED, Obs as O};
+    use rtsim_ecology::herds::species::Cohort;
+    use rtsim_jni::engine::{HERDS_TABLE, MODULE_HERDS};
+    use rtsim_kernel::page::{PageKey, PageStore};
+
+    /// The core's four phase 1 modules and ECOLOGY, which the herds run under (Y2).
+    const MODULES: u32 = 0b1111 | MODULE_HERDS;
+    const AT: (i32, i32) = (1_000, 1_000);
+
+    fn found(e: &Engine, j: &mut Java, count: u64) -> u64 {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Testdown flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: AT.0,
+            z: AT.1,
+            count,
+            seed: 0,
+        }])
+        .unwrap();
+        j.idle();
+        let agents = e.herd_agents();
+        assert_eq!(agents.len(), 1, "one herd founded");
+        agents[0]
+    }
+
+    fn materializations(j: &Java) -> Vec<hb::Materialize> {
+        j.herds
+            .iter()
+            .filter_map(|(_, c)| match c {
+                H::Materialize(m) => Some(m.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn info(e: &Engine, agent: u64) -> [u64; rtsim_jni::engine::HERD_INFO] {
+        e.herd_info(agent).expect("a herd")
+    }
+
+    /// (alive, killed, taken, lost, dead-set size): what the herd remembers of what players did.
+    fn summary(e: &Engine, agent: u64) -> (u64, u64, u64, u64, u64) {
+        let i = info(e, agent);
+        (i[1], i[2], i[3], i[4], i[7])
+    }
+
+    fn save(e: &Engine, j: &mut Java) {
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The herds through the native engine and a fake vanilla herd adapter (rtsim-ecology's
+    /// `FakeHerds`): a herd founded by the test order, a player beside it seeing a group of its
+    /// sheep materialize (the engine's species, colours, ages and positions, DICT records first),
+    /// a kill, a shearing and a lead (each booked once, by op id), an obstacle (the herd replans),
+    /// the player leaving (the group captured with each member's state), a save, the player back
+    /// (the same sheep, the sheared one still sheared, no dead one), then a kill after the save
+    /// and a crash: the pages read back to their saved state hash and the journal's replay brings
+    /// the herd to the state it had before the crash, the kill booked once.
+    #[test]
+    fn herds_materialize_are_hunted_shorn_led_blocked_and_replay_across_a_crash() {
+        let dir = tmpdir("herds");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 200);
+        assert_eq!(agent >> 56, 0x48, "a herd's agent id (namespace 0x48)");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let alive0 = info(&e, agent)[1];
+        assert_eq!(alive0, 200, "200 sheep founded");
+
+        // A player beside the herd: the group materializes.
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        j.players = vec![(PLAYER, dim, pos)];
+        j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+        j.idle();
+        let m = materializations(&j).remove(0);
+        assert_eq!(m.agent, agent);
+        assert_eq!(m.species, rtsim_ecology::herds::HerdSpecies::Sheep);
+        assert_eq!(m.dimension, dim, "the dimension in Java's dictionary");
+        assert_eq!(
+            m.flags & hb::MAT_SURFACE,
+            hb::MAT_SURFACE,
+            "members stand on the surface"
+        );
+        assert_eq!(
+            m.members.len(),
+            32,
+            "the group cap (every sheep's footprint is in view)"
+        );
+        for b in &m.members {
+            assert!(
+                [0, 6, 7, 8, 12, 15].contains(&b.variant),
+                "a natural sheep colour: {}",
+                b.variant
+            );
+            assert_eq!(b.vanilla_age < 0, b.cohort == Cohort::Young, "{b:?}");
+            let d = ((f64::from(b.x) - pos[0]).powi(2) + (f64::from(b.z) - pos[2]).powi(2)).sqrt();
+            assert!(d <= 160.0, "inside the player's area: {d}");
+        }
+        let distinct: std::collections::BTreeSet<u64> =
+            m.members.iter().map(|b| b.member).collect();
+        assert_eq!(distinct.len(), m.members.len(), "distinct members");
+        let i = info(&e, agent);
+        assert_eq!((i[5], i[6]), (u64::from(m.epoch), 32), "embodied");
+
+        // The player kills one, shears one and leads one away.
+        let before = info(&e, agent)[1];
+        let killed = j.herd_plugin.kill(agent, 1, PLAYER);
+        let sheared = j.herd_plugin.shear(agent, 1, PLAYER);
+        let led = j.herd_plugin.lead(agent, PLAYER).expect("one led away");
+        assert_eq!((killed.len(), sheared.len()), (1, 1));
+        j.herd_flush();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (alive, k, t, lost, dead) = summary(&e, agent);
+        assert_eq!(
+            (k, t, lost, dead),
+            (1, 1, 0, 2),
+            "a kill and a taking, each once"
+        );
+        assert_eq!(alive, before - 2, "the herd's count drops by the two");
+        assert_eq!(e.herd_stats().0.sheared, 1, "the shearing booked");
+        // The kill again under its op id (a carried record journaled again): nothing more.
+        let kill = j
+            .journal
+            .iter()
+            .find(|(_, r)| wire::u16_at(r, wire::R_KIND) == hb::HERD_KILLED)
+            .map(|(_, r)| r.clone());
+        if let Some(mut r) = kill {
+            let seq = j.next_obs;
+            j.next_obs += 1;
+            wire::put_u64(&mut r, obs::OBS_SEQ, seq);
+            j.journal.push_back((seq, r));
+            j.idle();
+        } else {
+            // Already acknowledged and trimmed: send the same kill anew under the same op id.
+            j.herd_obs(&O::Killed(hb::Killed {
+                agent,
+                epoch: m.epoch,
+                member: killed[0],
+                by: hb::KillerKind::Player,
+                killer: PLAYER,
+                op: (1 << 63) | 1,
+            }));
+            j.idle();
+        }
+        assert_eq!(summary(&e, agent).1, 1, "a kill's op id is applied once");
+
+        // A fence: the group keeps failing to pass toward its target. The herd replans.
+        let replans = e.herd_stats().0.replans;
+        j.herd_obs(&O::Obstacle(hb::Obstacle {
+            agent,
+            epoch: m.epoch,
+            failures: 20,
+            present: 29,
+            stuck: (AT.0 + 30, AT.1),
+            target: (AT.0 + 400, AT.1),
+        }));
+        j.idle();
+        let (st, _, _, _) = e.herd_stats();
+        assert_eq!(st.obstacles, 1, "the obstacle booked");
+        assert_eq!(
+            st.replans,
+            replans + 1,
+            "and the herd replanned from where it is stuck"
+        );
+        assert!(
+            e.with_herds(|h, _| !h.obstacles.cells.is_empty()),
+            "the blocked cell costs more"
+        );
+
+        // The player leaves: the group is captured, each member with its state.
+        j.players.clear();
+        j.run_until("the group captured", |j| {
+            j.herds
+                .iter()
+                .any(|(_, c)| matches!(c, H::Despawn(d) if d.agent == agent && d.epoch == m.epoch))
+        });
+        j.idle();
+        assert_eq!(info(&e, agent)[5], 0, "no group embodied");
+        let despawn = j
+            .herds
+            .iter()
+            .find_map(|(_, c)| match c {
+                H::Despawn(d) => Some(*d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(despawn.reason, 2, "the player left");
+        save(&e, &mut j);
+
+        // The player is back: the same sheep, the sheared one still sheared, no dead one.
+        j.players = vec![(PLAYER, dim, pos)];
+        j.run_until("the group again", |j| materializations(j).len() >= 2);
+        j.idle();
+        let m2 = materializations(&j).remove(1);
+        assert!(m2.epoch > m.epoch, "a new epoch for every materialization");
+        let first: std::collections::BTreeMap<u64, u32> =
+            m.members.iter().map(|b| (b.member, b.variant)).collect();
+        let gone = [killed[0], led];
+        for b in &m2.members {
+            assert!(
+                !gone.contains(&b.member),
+                "a dead or taken sheep never comes back"
+            );
+            if let Some(v) = first.get(&b.member) {
+                assert_eq!(*v, b.variant, "the same sheep has the same colour");
+            }
+            assert_eq!(
+                b.flags & MEMBER_SHEARED != 0,
+                b.member == sheared[0],
+                "only the sheared sheep is sheared"
+            );
+        }
+        let again = m2
+            .members
+            .iter()
+            .filter(|b| first.contains_key(&b.member))
+            .count();
+        assert_eq!(
+            again, 30,
+            "every sheep seen and still alive comes back first"
+        );
+        eprintln!(
+            "herds exchange: group of {} (epoch {}), then {} (epoch {}); killed {:?}, led {led}, \
+             sheared {:?}; summary {:?}; stats {:?}",
+            m.members.len(),
+            m.epoch,
+            m2.members.len(),
+            m2.epoch,
+            killed,
+            sheared,
+            summary(&e, agent),
+            e.herd_stats()
+        );
+
+        // After the save: a kill, journaled; the world saves, then the server dies.
+        let k2 = j.herd_plugin.kill(agent, 1, PLAYER);
+        j.herd_flush();
+        j.idle();
+        let before_crash = summary(&e, agent);
+        assert_eq!(before_crash.1, 2);
+        let saved = j.world_save();
+        let op2 = saved
+            .journal
+            .iter()
+            .rev()
+            .find(|(_, r)| wire::u16_at(r, wire::R_KIND) == hb::HERD_KILLED)
+            .map(|(_, r)| wire::u64_at(r, 64))
+            .expect("the journal holds what the pages lack");
+        let _ = j.crash();
+
+        // The restart: the pages read back to their saved state, the replay brings the rest once.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            e.herds_restore_check(),
+            (None, false),
+            "the herds read back to their saved state hash"
+        );
+        let (_, replay_ok, _) = e.phase1_state();
+        assert!(replay_ok, "the world they live in too");
+        assert_eq!(summary(&e, agent).1, 1, "the pages predate the second kill");
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let after = summary(&e, agent);
+        assert_eq!(
+            (after.1, after.2, after.3, after.4),
+            (
+                before_crash.1,
+                before_crash.2,
+                before_crash.3,
+                before_crash.4
+            ),
+            "the kill booked once, the herd as before the crash"
+        );
+        assert_eq!(info(&e, agent)[5], 0, "no group outlives a session");
+        // The second kill again under its op id: nothing more.
+        j.herd_obs(&O::Killed(hb::Killed {
+            agent,
+            epoch: m2.epoch,
+            member: k2[0],
+            by: hb::KillerKind::Player,
+            killer: PLAYER,
+            op: op2,
+        }));
+        j.idle();
+        assert_eq!(summary(&e, agent).1, 2, "and its op id still applies once");
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A clean restart reads them back again.
+        let e = engine(&dir, 256 * 1024);
+        let _j = Java::open(e.clone(), saved);
+        assert_eq!(e.herds_restore_check(), (None, false));
+        assert_eq!(summary(&e, agent).1, 2);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// C25 (U10): with the ecology module switched off the herds ignore their records (an
+    /// obstacle), decide nothing (a player by the herd sees no group) and keep the page they
+    /// had; switched on again, the player sees the herd.
+    #[test]
+    fn switched_off_herds_ignore_their_records_and_keep_their_page() {
+        let page = |dir: &std::path::PathBuf| {
+            let mut store =
+                PageStore::open(dir, rtsim_kernel::page::Durability::NoSync).expect("open");
+            store.get(PageKey::new(HERDS_TABLE, 0)).expect("read")
+        };
+        let dir = tmpdir("herds-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 60);
+        save(&e, &mut j);
+        j.modules(0b1111);
+        j.idle();
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let at_switch = page(&dir).expect("a herds page");
+
+        // Off from the start of a session: a record is ignored, a player by the herd sees
+        // nothing, and the page stays as it was.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = 0b1111;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.herd_obs(&O::Obstacle(hb::Obstacle {
+            agent,
+            epoch: 1,
+            failures: 3,
+            present: 3,
+            stuck: AT,
+            target: (AT.0 + 300, AT.1),
+        }));
+        j.players = vec![(PLAYER, dim, [f64::from(AT.0), 64.0, f64::from(AT.1)])];
+        for _ in 0..600 {
+            j.tick();
+        }
+        j.idle();
+        let (stats, _, ignored, written) = e.herd_stats();
+        assert!(ignored >= 1, "the obstacle was ignored ({ignored})");
+        assert_eq!(
+            (written, stats.seen),
+            (0, 0),
+            "nothing seen, nothing written"
+        );
+        assert!(j.herds.is_empty(), "no herd command reached Java");
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            page(&dir),
+            Some(at_switch.clone()),
+            "the page kept as it was"
+        );
+
+        // On again: they run, and the player sees the herd.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.players = vec![(PLAYER, dim, [f64::from(AT.0), 64.0, f64::from(AT.1)])];
+        assert_eq!(e.herds_restore_check(), (None, false));
+        j.run_until("the herd in view again", |j| {
+            !materializations(j).is_empty()
+        });
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_ne!(
+            page(&dir),
+            Some(at_switch),
+            "running again, the page moves on"
+        );
+    }
+}

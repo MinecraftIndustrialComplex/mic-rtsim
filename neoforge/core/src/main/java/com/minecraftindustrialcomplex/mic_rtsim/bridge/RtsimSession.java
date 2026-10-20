@@ -664,6 +664,17 @@ public final class RtsimSession {
         AgentTag tag = RtsimAttachments.tag(e);
         if (tag == null)
             return false;
+        com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin owner =
+                com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.ownerOf(tag.agent());
+        if (owner != null) {
+            // A plugin's own puppet (a herd animal): the plugin takes it, with its own records.
+            try {
+                return owner.take(this, e, tag, how, player);
+            } catch (RuntimeException ex) {
+                MicRtsim.LOGGER.error("[mic_rtsim] plugin {} failed taking {}", owner.name(), e, ex);
+                return false;
+            }
+        }
         PuppetGroup g = registry.live(tag, e.getUUID());
         if (g == null)
             return false;

@@ -30,8 +30,8 @@ use mic_native_rt::abi;
 use rtsim_kernel::page::Durability;
 
 use crate::engine::{
-    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, PHASE1_STATS,
-    STATS_LEN, last_error, set_last_error,
+    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, HERD_INFO,
+    PHASE1_STATS, STATS_LEN, last_error, set_last_error,
 };
 use crate::orders;
 
@@ -394,6 +394,33 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         let n = out.len(env)?.min(PHASE1_STATS);
         let vals: Vec<jlong> = stats[..n].iter().map(|v| *v as jlong).collect();
         out.set_region(env, 0, &vals)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native boolean nHerdInfo(long handle, long agent, long[] out)`: one herd by its
+/// group's agent id (`Engine::herd_info`, `HERD_INFO` values, as of the herds' present); false
+/// when the agent is no herd's.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nHerdInfo<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    agent: jlong,
+    out: JLongArray<'l>,
+) -> jboolean {
+    env.with_env(|env| -> Result<jboolean, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let Some(info) = e.herd_info(agent as u64) else {
+            return Ok(false);
+        };
+        let n = out.len(env)?.min(HERD_INFO);
+        let vals: Vec<jlong> = info[..n].iter().map(|v| *v as jlong).collect();
+        out.set_region(env, 0, &vals)?;
+        Ok(true)
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }

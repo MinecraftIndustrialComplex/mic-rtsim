@@ -4,6 +4,7 @@
   "package": "com.minecraftindustrialcomplex.mic_rtsim.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "AbstractHorseInvoker",
     "EntitySaveMixin",
     "EntitySectionManagerAccessor",
     "LlamaInvoker",
