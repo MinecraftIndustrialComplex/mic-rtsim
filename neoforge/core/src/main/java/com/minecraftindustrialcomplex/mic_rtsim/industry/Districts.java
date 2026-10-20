@@ -93,6 +93,11 @@ public final class Districts {
         }
     }
 
+    /** The last detection's wall time, in nanoseconds (/rtsim district perf, GameTests). */
+    public long lastRescanNanos() {
+        return lastRescanNanos;
+    }
+
     public District at(ResourceKey<Level> dim, long chunk) {
         Long2ObjectOpenHashMap<District> m = byChunk.get(dim);
         return m == null ? null : m.get(chunk);

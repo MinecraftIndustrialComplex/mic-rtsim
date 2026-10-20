@@ -3,14 +3,15 @@
 Every mixin, every reach into another mod's or vanilla's internals, and every other mod's API the
 rtsim depends on, with the mod and versions it was checked against, the member, and why (P7, taken as
 recommended: a ledger plus contract tests). Written 2026-10-20 for the core bridge `mic_rtsim` and the
-phase 1 plugins `mic_rtsim_ribbits` and `mic_rtsim_carryon` (`neoforge/`).
+phase 1 plugins `mic_rtsim_ribbits` and `mic_rtsim_carryon` (`neoforge/`); the industry module (the
+core's `industry` package) and the Create plugin `mic_rtsim_create` added the same night.
 
 **Contract tests.** Every mixin config is `defaultRequire 1`: a mixin whose target no longer matches
 fails the launch, so booting a GameTest server is the first test of every row marked "mixin". The
 "Checked by" column names the GameTest that exercises the behaviour (`./gametest.sh`; core tests run
 with NeoForge alone, plugin tests with their mod's own jar).
 
-**When a version moves** (a Minecraft, NeoForge, Ribbits or Carry On update): re-read each row's member
+**When a version moves** (a Minecraft, NeoForge, Ribbits, Carry On or Create update): re-read each row's member
 in the new jar with `javap -p -c` (or the mapped source), then run `./gametest.sh`. Ranges below are
 what was verified, not what is known to break.
 
@@ -36,6 +37,8 @@ what was verified, not what is known to break.
 | 15 | mic_rtsim_ribbits | Ribbits 4.1.6 | `RibbitEntity.updateDemand()` (private): calls to `MerchantOffer.updateDemand()` | `@WrapOperation` | As row 10, for ribbits. | `aRibbitMerchantSellsOutOfItsPackAndDropsItWhenKilled` (its restock raised the price before this) |
 | 16 | mic_rtsim_ribbits | Ribbits 4.1.6 | `RibbitEntity.homePosition` (private, no setter) | accessor (setter) | A travelling puppet is homed at its waypoint, so Ribbits' GoHome goal does not walk it back. | `aTouringBandPlaysAroundItsOwnMaster` (steering), by inspection |
 | 17 | mic_rtsim_ribbits | Ribbits 4.1.6 | `RibbitEntity.applyBuffGoal` (private) | accessor (getter), GameTests only | The sorcerer test drives the buff goal itself. | `aSorcererSkipsADislikedPlayer` |
+| 18 | mic_rtsim_create | Create 6.0.10 | `Train.arriveAt(GlobalStation)` (public; ends with `ScheduleRuntime.destinationReached` and `GlobalStation.runMailTransfer`) | inject TAIL | IND_TRAIN_ARRIVED with every carriage's cargo and the simulated flag, and the start of the cargo port (INDUSTRY.md §3.3, §8.1, H18). Create has no arrival event. | `aTrainArrivalIsObserved`, `aSimulatedStationExchangesThroughTheCargoManager` |
+| 19 | mic_rtsim_create | Create 6.0.10 | `Train.leaveStation()` (public; `getCurrentStation`, `GlobalStation.trainDeparted`, then `currentStation = null`) | inject HEAD | The cargo port at departure (arrival minus departure contents) and the pending IND_TRAIN_DEPARTED (H18). | `aTrainArrivalIsObserved` |
 
 ## Other mods' APIs and data (no mixin)
 
@@ -46,6 +49,9 @@ what was verified, not what is known to break.
 | mic_rtsim_ribbits | Ribbits 4.1.6 (data) | entity type `ribbits:ribbit`; structure `ribbits:ribbit_village`; templates `ribbits:houses/*` (14); processor list `ribbits:main`; template pool name `ribbits:ribbits` (the resident jigsaw); profession ids `ribbits:<name>`. | Adoption, residents, growth from YUNG's own templates. | `aRibbitHouseGoesOnAFreePlotAndAResidentMovesIn` |
 | mic_rtsim | Minecraft 1.21.1 | `AbstractVillager.getOffers()` edited in place (wandering traders, villagers); `TraderLlama.getSlot(500 + k)` (the chest); `GossipContainer.add`, `getGossipEntries`, `getReputation`; `Villager` brain memory `MEETING_POINT`; `PoiManager.getInChunk`; `StructureTemplateManager.get`, `StructureTemplate.placeInWorld`, `filterBlocks`, `getBoundingBox`; `JigsawReplacementProcessor.INSTANCE`, `BlockIgnoreProcessor.STRUCTURE_BLOCK`; `ServerChunkCache.blockChanged`; `ServerPlayer.sendMerchantOffers`. | Phase 1 (PLAN.md §8). `overrideOffers` is not used: it is empty on the server (G3). | the core GameTests |
 | mic_rtsim | NeoForge 21.1.249 | Events: `EntityJoinLevelEvent` (HIGHEST), `EntityLeaveLevelEvent`, `LivingDeathEvent` (LOWEST), `LivingDropsEvent` (LOWEST), `AnimalTameEvent` (LOWEST), `PlayerInteractEvent.EntityInteract`, `ChunkEvent.Load`, `LevelEvent.Save`, `ServerTickEvent.Post`, `ServerStartedEvent`, `ServerStoppingEvent`, `ServerStoppedEvent`, `RegisterCommandsEvent`, `ModConfigEvent.Reloading`, `LivingDamageEvent.Post` (LOWEST), `BlockEvent.EntityPlaceEvent` (LOWEST, includes multi-place), `TagsUpdatedEvent`, `PlayerContainerEvent.Close`; `IOUtilities.withIOWorker`; `ForcedChunkManager.hasForcedChunks`; the item handler capability. | Observing the world (PLAN.md §6.3). | the core GameTests |
+| mic_rtsim (industry) | NeoForge 21.1.249 | Events: `ChunkEvent.Load` and `Unload`, `BlockEvent.EntityPlaceEvent` (LOWEST, multi-place included) and `BreakEvent` (LOWEST), `PlayerInteractEvent.RightClickBlock` (LOWEST), `PlayerContainerEvent.Open` and `Close`, `ItemTossEvent` (LOWEST), `ItemEntityPickupEvent.Post`, `EntityJoinLevelEvent` (LOWEST, item entities), `RegisterCommandsEvent`. The item, fluid and energy block capabilities (`Capabilities.ItemHandler/FluidHandler/EnergyStorage.BLOCK`, unsided first, then each side); `ItemHandlerHelper.insertItemStacked`; `LevelChunk.getFullStatus` (BLOCK_TICKING); `LevelChunk.getBlockEntities`; `ServerLevel.destroyBlock(pos, true)`; `BlockStateParser.serialize`; `DataComponentPatch.CODEC` with `RegistryOps`; `PlayerList.getSimulationDistance`. | The district sampler, ports, reconciles and damage (INDUSTRY.md §2, §3, §5; H3 to H16). | the create project's industry GameTests |
+| mic_rtsim_create | Create 6.0.10 | Trains: `Create.RAILWAYS.trains`; `Train.id`, `carriages`, `navigation` (`destination`, `distanceToDestination`), `maxSpeed()`, `getCurrentStation`; `Carriage.storage` (`TrainCargoManager`: `getAllItems()` may be null, risk 5; `getFluids()`; its `CargoInvWrapper` and `CargoTankWrapper` call `changeDetected`), `Carriage.getDimensionalIfPresent(dim).entity`; `GlobalStation.id`, `name`, `blockEntityPos`, `blockEntityDimension`; `StationBlockEntity.getStation()`. Packages: `PackageItem.isPackage`, `getContents`, `containing(List)`, `addAddress`, `SLOTS`; `AllDataComponents.PACKAGE_CONTENTS`; `ItemHelper.containerContentsFromHandler`; `PackagePortBlockEntity.inventory`, `addressFilter` (postboxes, frogports); `PackagerBlockEntity.targetInventory.getTarget()` (catnip `BlockFace.getConnectedPos`). Blocks: `SmartBlockEntity`, `KineticBlockEntity` (`network` is its source's position, `isOverStressed`), `IMultiBlockEntityContainer.getController`, `ChainConveyorBlockEntity.connections` (relative positions), `BeltBlockEntity`, `ChuteBlockEntity`, `FluidPipeBlockEntity`, `StraightPipeBlockEntity`, `CreativeMotorBlockEntity`, `CreativeCrateBlockEntity`. Displays: `CreateRegistries.DISPLAY_SOURCE` (a DeferredRegister registers `mic_rtsim_create:district_ledger`), `DisplaySource.BY_BLOCK.add` for `create:stock_link` and `create:track_station`, `DisplaySource.provideText`, `getPassiveRefreshTicks`, `initConfigurationWidgets` (`ModularGuiLineBuilder.addTextInput`, client only), `DisplayLinkContext.sourceConfig`, `getSourcePos`. GameTests only: `Train(UUID, UUID, TrackGraph, List, List, boolean, int)`, `Carriage(CarriageBogey, CarriageBogey, int)`, `CarriageBogey(AbstractBogeyBlock, boolean, CompoundTag)`, `MountedStorageManager.addBlock` and `initialize`, `GlobalStation()`, the `TrackTargetingBehaviour` NBT keys `TargetTrack` and `TargetDirection`, `TrackBlock.SHAPE`, `DisplayLinkBlockEntity.target`, `activeSource`, `updateGatheredData`, `getSourcePosition`. | The Create plugin (INDUSTRY.md §12 layer 2; H8, H9, H17 to H21). All checked with javap against `create-1.21.1-6.0.10.jar` from the smoke server. | the create project's industry GameTests |
+| mic_rtsim_create | Create 6.0.10 (data) | block ids `create:item_vault`, `create:fluid_tank`, `create:stock_link`, `create:track_station`; `create_connected:item_silo`, `create_connected:fluid_vessel` (optional tag entries, Create Connected 1.3.3). | `#mic_rtsim:district_stock` (H8) and the display source's bindings (H21). | `aSweepReportsBoundaryStockAndTheLiveFlag`, `theLedgerShowsOnADisplay` |
 | mic_rtsim_ribbits | NeoForge 21.1.249 | `LivingDropsEvent` (normal priority, before the core's lowest) | A ribbit's pack is added to its drops, so the drops carry its DIED (P31's recommendation). | `aRibbitMerchantSellsOutOfItsPackAndDropsItWhenKilled` |
 
 ## Data the rtsim attaches to other things
@@ -57,3 +63,12 @@ what was verified, not what is known to break.
 | `mic_rtsim:gossip_ops` | villagers | with the villager | the gossip op ids it was written with, the last 64 (C20, G11) |
 | `mic_rtsim:player_blocks` | chunks | with the chunk | blocks players placed, per section (G12) |
 | `mic_rtsim_ribbits:cargo` | ribbit merchants | with the ribbit | a ribbit caravan's pack (G15) |
+| `mic_rtsim:industry_seeds` | chunks | with the chunk | the player-placed industrial block entities detection starts from (I2, H3) |
+| `mic_rtsim:reconcile` | chunks | with the chunk, in the same NBT as its block entities | per district, the reconcile epoch applied, and its IND_RECONCILE_RESULT until the engine acknowledges it (I8, H15, H16) |
+| `mic_rtsim:ported` | item entities | never | the drops of a stock block a player broke, already counted as that break's port (H14) |
+
+## Saved data
+
+| File | What |
+|---|---|
+| `data/mic_rtsim_industry.dat` (`mic_rtsim:industry`) | the district index: districts (chunks, inventories, stations, names, revisions), the next district id, pins, exclusions and merge links, and the component patches behind GOOD hashes (H2 to H5) |

@@ -130,6 +130,14 @@ public final class IndustryGameTests {
                 .thenExecute(() -> {
                     District d = ind().district(id[0]);
                     record("aDistrictIsDetectedAcrossShaftsAndNamed", "district", d);
+                    // The detection's cost for this district (3 chunks, 18 block entities), warm, timed.
+                    long best = Long.MAX_VALUE;
+                    for (int i = 0; i < 50; i++) {
+                        ind().districts().rescanNow(helper.getLevel());
+                        best = Math.min(best, ind().districts().lastRescanNanos());
+                    }
+                    record("aDistrictIsDetectedAcrossShaftsAndNamed", "detection, best of 50 (us)", best / 1000.0);
+                    check("a repeated detection keeps the district and its revision", ind().district(d.id) == d && d.chunks.size() == 3 && d.revision == rev[0]);
                     check("named by its coordinates, got " + d.displayName(), d.displayName().startsWith("District "));
                     List<ByteBuffer> decl = received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, d.id);
                     check("IND_DISTRICT was journaled", !decl.isEmpty());
