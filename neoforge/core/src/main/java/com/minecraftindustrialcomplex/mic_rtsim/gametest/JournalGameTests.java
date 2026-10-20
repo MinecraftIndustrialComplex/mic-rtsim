@@ -121,7 +121,7 @@ public final class JournalGameTests {
                         // saves: its acknowledgement is then read on the tick after the snapshot below.
                         // (Blocking on the engine is for this test only; the bridge never does.)
                         engine.awaitIdle();
-                        engine.requestSave();
+                        engine.requestSaveAtNextStep();
                         next();
                     }
                 }

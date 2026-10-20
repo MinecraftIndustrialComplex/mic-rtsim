@@ -45,6 +45,19 @@ final class CommandDispatcher implements Handover.CommandSink {
 
     long applied;
     long unknown;
+    long malformed;
+
+    /** The smallest valid size of each command kind; a shorter record is skipped as malformed. */
+    private static int minSize(int kind) {
+        return switch (kind) {
+            case Cmd.DICT -> Cmd.Dict.NAME;
+            case Cmd.SPAWN_GROUP -> Cmd.SpawnGroup.MEMBERS;
+            case Cmd.DESPAWN_GROUP -> Cmd.DespawnGroup.SIZE;
+            case Cmd.STEER_GROUP -> Cmd.SteerGroup.SIZE;
+            case Cmd.TRANSFER_TO_CONTAINER -> Cmd.TransferToContainer.SIZE;
+            default -> Cmd.BODY;
+        };
+    }
 
     CommandDispatcher(RtsimSession session) {
         this.session = session;
@@ -62,11 +75,18 @@ final class CommandDispatcher implements Handover.CommandSink {
     @Override
     public boolean accept(ByteBuffer b, int at, int kind, int size, int aux) {
         long now = session.gameTime();
+        if (size < minSize(kind)) {
+            malformed++;
+            MicRtsim.LOGGER.warn("[mic_rtsim] command 0x{} of {} bytes is shorter than its layout; skipped", Integer.toHexString(kind), size);
+            return true;
+        }
         switch (kind) {
             case Cmd.DICT -> {
                 int len = b.getInt(at + Cmd.Dict.NAME_LEN);
-                if (len < 0 || Cmd.Dict.NAME + len > size)
+                if (len < 0 || len > size - Cmd.Dict.NAME) {
+                    malformed++;
                     return true;
+                }
                 byte[] name = new byte[len];
                 b.get(at + Cmd.Dict.NAME, name, 0, len);
                 dict.put(((long) aux << 32) | (b.getInt(at + Cmd.Dict.ID) & 0xFFFF_FFFFL), new String(name, StandardCharsets.UTF_8));
@@ -76,9 +96,15 @@ final class CommandDispatcher implements Handover.CommandSink {
                 return spawn(b, at, size, aux, now);
             }
             case Cmd.DESPAWN_GROUP -> {
-                PuppetGroup g = session.registry.byAgent(b.getLong(at + Cmd.DespawnGroup.AGENT));
-                if (g == null || g.epoch != b.getInt(at + Cmd.DespawnGroup.EPOCH))
-                    return true; // already captured; the engine has (or will get) that DEMATERIALIZED
+                long agent = b.getLong(at + Cmd.DespawnGroup.AGENT);
+                int epoch = b.getInt(at + Cmd.DespawnGroup.EPOCH);
+                PuppetGroup g = session.registry.byAgent(agent);
+                if (g == null || g.epoch != epoch) {
+                    // Not embodied (already captured, or never: a replay after a crash can leave the engine
+                    // thinking it is). Say so, so the engine is never left waiting for a capture.
+                    session.journalDematerialized(agent, epoch, Obs.Dematerialized.NOT_EMBODIED, 0, now);
+                    return true;
+                }
                 if (!fitsQuota(g.liveMembers()))
                     return false;
                 session.spawnBudget -= g.liveMembers();
@@ -131,17 +157,23 @@ final class CommandDispatcher implements Handover.CommandSink {
             session.journalRejected(agent, epoch, cmdSeq, Obs.SpawnRejected.UNKNOWN_DIMENSION, now);
             return true;
         }
+        // Every member of the kind exactly once, each block inside the record.
+        if (memberCount != kind.size()) {
+            session.journalRejected(agent, epoch, cmdSeq, Obs.SpawnRejected.BAD_RECORD, now);
+            return true;
+        }
         MemberSpawn[] spawns = new MemberSpawn[kind.size()];
         int m0 = at + Cmd.SpawnGroup.MEMBERS;
         int end = at + size;
         for (int i = 0; i < memberCount; i++) {
-            if (m0 + Cmd.SpawnGroup.Member.ITEMS > end) {
+            if (end - m0 < Cmd.SpawnGroup.Member.ITEMS) {
                 session.journalRejected(agent, epoch, cmdSeq, Obs.SpawnRejected.BAD_RECORD, now);
                 return true;
             }
             int index = b.getInt(m0 + Cmd.SpawnGroup.Member.INDEX);
             int items = b.getInt(m0 + Cmd.SpawnGroup.Member.ITEM_COUNT);
-            if (index < 0 || index >= spawns.length || items < 0 || m0 + Cmd.SpawnGroup.Member.size(items) > end) {
+            if (index < 0 || index >= spawns.length || spawns[index] != null
+                    || items < 0 || items > (end - m0 - Cmd.SpawnGroup.Member.ITEMS) / Obs.Item.SIZE) {
                 session.journalRejected(agent, epoch, cmdSeq, Obs.SpawnRejected.BAD_RECORD, now);
                 return true;
             }
@@ -150,8 +182,12 @@ final class CommandDispatcher implements Handover.CommandSink {
                 int it = m0 + Cmd.SpawnGroup.Member.ITEMS + k * Obs.Item.SIZE;
                 Item item = item(b.getInt(it + Obs.Item.ITEM));
                 int count = b.getInt(it + Obs.Item.COUNT);
-                if (item != null && item != Items.AIR && count > 0)
-                    stacks.add(new MemberCapture.Stack(b.getInt(it + Obs.Item.SLOT), item, count));
+                if (item == null || item == Items.AIR || count <= 0) {
+                    // Cargo that names no item would vanish; refuse the spawn instead.
+                    session.journalRejected(agent, epoch, cmdSeq, Obs.SpawnRejected.BAD_CARGO, now);
+                    return true;
+                }
+                stacks.add(new MemberCapture.Stack(b.getInt(it + Obs.Item.SLOT), item, count));
             }
             spawns[index] = new MemberSpawn(index, b.getFloat(m0 + Cmd.SpawnGroup.Member.HEALTH),
                     b.getInt(m0 + Cmd.SpawnGroup.Member.BODY_A), b.getInt(m0 + Cmd.SpawnGroup.Member.BODY_B), stacks);
@@ -185,7 +221,9 @@ final class CommandDispatcher implements Handover.CommandSink {
         Item item = item(b.getInt(at + Cmd.TransferToContainer.ITEM));
         int count = b.getInt(at + Cmd.TransferToContainer.COUNT);
         BlockPos pos = new BlockPos(b.getInt(at + Cmd.TransferToContainer.X), b.getInt(at + Cmd.TransferToContainer.Y), b.getInt(at + Cmd.TransferToContainer.Z));
-        if (level == null || item == null || count <= 0 || !level.isLoaded(pos)) {
+        // getChunkNow, not isLoaded: isLoaded reads the ticket level only, and the capability lookup
+        // below would then wait on the server thread for the chunk to finish loading.
+        if (level == null || item == null || count <= 0 || level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null) {
             session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.FAILED, now);
             return;
         }

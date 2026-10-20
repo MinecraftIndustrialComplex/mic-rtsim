@@ -40,6 +40,23 @@ public interface BodyAdapter {
     default void maintain(Entity entity, PuppetGroup group) {}
 
     /**
+     * The member has left the sim and is an ordinary entity from now on: undo anything that only made
+     * sense while the bridge was looking after it (a despawn timer it kept refreshing, a leash to the
+     * group's leader).
+     */
+    default void onTaken(Entity entity, PuppetGroup group) {}
+
+    /** Thrown by {@link #create} to refuse a spawn with a specific {@code Obs.SpawnRejected} reason. */
+    final class SpawnRefused extends RuntimeException {
+        public final int reason;
+
+        public SpawnRefused(int reason, String message) {
+            super(message, null, false, false);
+            this.reason = reason;
+        }
+    }
+
+    /**
      * Whether a player took this member by some means the bridge only sees by looking (PLAN.md §6.2):
      * a lead (NeoForge 21.1 has no leash event), or a tame that skipped AnimalTameEvent. Returns a
      * {@code Obs.Taken} reason, or 0 when the member is still the sim's.

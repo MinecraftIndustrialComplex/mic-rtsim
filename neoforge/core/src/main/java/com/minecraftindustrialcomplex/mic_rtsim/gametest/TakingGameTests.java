@@ -144,8 +144,12 @@ public final class TakingGameTests {
                     for (int i = 0; i < 3; i++)
                         bodies[i] = RtsimTests.member(g, i);
                     bodies[0].kill();
-                    check("the trader's death left the group", g.members[0].gone);
-                    check("the llamas are still one group", RtsimTests.group(agent) == g && g.liveMembers() == 2);
+                })
+                .thenExecuteAfter(1, () -> {
+                    // The death is journaled at the end of the tick it happened in, once it is certain.
+                    PuppetGroup g = RtsimTests.group(agent);
+                    check("the trader's death left the group", g != null && g.members[0].gone);
+                    check("the llamas are still one group", g.liveMembers() == 2);
                 })
                 .thenIdle(3)
                 .thenExecute(() -> {

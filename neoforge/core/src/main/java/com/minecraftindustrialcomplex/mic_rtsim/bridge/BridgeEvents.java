@@ -73,14 +73,16 @@ public final class BridgeEvents {
      * The overworld saved: ask the engine to save its pages, and report when this world save is on
      * disk. The journal was serialized in {@code saveLevelData}, before this event, and NeoForge
      * chains every SavedData write on one future ({@code IOUtilities.withIOWorker}); a marker chained
-     * now runs after the journal's write has finished.
+     * now runs after the journal's write has finished. Not proof that the write succeeded:
+     * {@code SavedData.save} logs an IOException inside its task and the chain goes on, so a failed
+     * journal write is still reported as saved (a known gap; the log says so).
      */
     private static void onLevelSave(LevelEvent.Save event) {
         RtsimSession s = RtsimSession.current();
         if (s == null || !(event.getLevel() instanceof ServerLevel level) || level.dimension() != Level.OVERWORLD)
             return;
-        s.engine().requestSave();
         long through = s.boundary().journal().nextObsSeq() - 1;
+        s.engine().requestSave(through);
         net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> s.boundary().worldSaveDurable(through));
     }
 
@@ -99,9 +101,12 @@ public final class BridgeEvents {
         RtsimSession s = RtsimSession.current();
         if (s == null || s.rejectOnJoin(e, level)) {
             event.setCanceled(true);
-            // A copy loaded with passengers or a vehicle must not leave them pointing at it.
+            // A copy loaded with passengers or a vehicle must not leave them pointing at it, and it is
+            // marked removed, so a vehicle that keeps it (another mod cancelled the dismount) does not
+            // tick it. It never joined, so its level callback is the null one and nothing else runs.
             e.ejectPassengers();
             e.stopRiding();
+            e.discard();
         }
     }
 
