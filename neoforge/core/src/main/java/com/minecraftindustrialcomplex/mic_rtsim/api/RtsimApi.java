@@ -33,6 +33,14 @@ public final class RtsimApi {
         SessionPlugins.register(plugin);
     }
 
+    /**
+     * Registers a climate source (a seasons or temperature mod's plugin) for the habitat sampler
+     * (docs/boundary.md §10). Call during mod construction.
+     */
+    public static void registerClimate(ClimateSource source) {
+        com.minecraftindustrialcomplex.mic_rtsim.habitat.Climates.register(source);
+    }
+
     /** True when the entity is a puppet: tagged with {@code mic_rtsim:agent}. */
     public static boolean isPuppet(Entity entity) {
         return RtsimAttachments.isTagged(entity);

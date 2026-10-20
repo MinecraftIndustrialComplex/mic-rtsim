@@ -21,6 +21,7 @@ What was built while Ben slept, what it measured, and what needs him first.
 | Ships | `crates/rtsim-ships` (engine only; no plugin yet) | Sea and sky lanes, Veloren-style loop routes, timetabled ships that survive restarts, merchant flows in holds, pirates with havens, navy patrols lowering lane hazard, Lanchester raids never better than observed |
 | Herds | `crates/rtsim-ecology` herds module, `engine/herds.rs`, vanilla adapter in `neoforge/core` (`herd` package) | Migrating herds of tens of thousands with latent members, identity derived from seeds, dyadic deaths, forage, obstacle detours, dragons hunting and following herds |
 | Conflict | `crates/rtsim-conflict`, `engine/conflict.rs` (no Java plugin: bodies are P8) | Factions with culture tolerances, grievance per actor (P14: direct acts per player, pollution to a shared settlers actor), the escalation ladder from notice to siege, envoys with demands, tribute, war bands with heirs and boredom, offline raids through the industry threat interface, village raids to the haven |
+| World model | `crates/rtsim-space`, `engine/worldmodel.rs`, the core's `habitat` package (HABITAT, docs/boundary.md §10: a boundary addition for Ben's review) | The engine knows terrain: 64-block cells sampled from chunk centres (water, ice, biome and tags, temperature, the biome's own creature spawns), sent once and again only on change; herds' forage, temperature and terrain from real biomes (water and unsampled ground closed), one herd founded per suitable region; ships' sea lanes over sampled water only; a provider trait a Deep Time reader can replace |
 | Persistence | phase 1, industry and dragons | Snapshot plus short log tail; restore gives the identical state hash |
 
 ## Numbers measured overnight
@@ -55,6 +56,8 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 | Replay accuracy | 99.7% of a fully chunk-loaded control, never more |
 
 **Dragons:** 10 to 14 µs per dragon per sim day, flat from 8 to 512 dragons.
+
+**World model:** the habitat sampler reads a 64-block cell in 8.5 µs on average (0.53 µs a chunk; 229 µs the first time a biome is seen in a session), and its chunk-load hook costs 1.3 µs a load ([bench/results/habitat-sampler.md](../bench/results/habitat-sampler.md)); a fully sampled region costs the engine about 6 KB.
 
 **Herds:** six herds of 33,000 animals in total over two sim years in 0.8 s; cost per sim day flat from 100 to 1,000,000 animals per herd (slope −0.012), and a read after 10,000 unread days costs 0.02 to 0.04 µs.
 

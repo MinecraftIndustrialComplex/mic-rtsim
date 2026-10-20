@@ -141,6 +141,9 @@ public final class NativeEngine implements ScriptedEngine {
     /** The herd behind a group's agent id: {@code HERD_INFO} values; false when there is none. */
     private static native boolean nHerdInfo(long handle, long agent, long[] out);
 
+    /** The world model at block (x, z) of Java's dimension {@code dim}: {@code HABITAT_INFO} values. */
+    private static native void nHabitatInfo(long handle, int dim, int x, int z, long[] out);
+
     /** Null when none. */
     private static native String nProtocolError(long handle);
 
@@ -512,6 +515,23 @@ public final class NativeEngine implements ScriptedEngine {
     public synchronized long[] herdInfo(long agent) {
         long[] out = new long[HERD_INFO];
         return nHerdInfo(live(), agent, out) ? out : null;
+    }
+
+    /** {@link #habitatInfo}'s fields (docs/boundary.md §10, {@code Engine::habitat_info}). */
+    public static final int HABITAT_KNOWN_CELL = 0, HABITAT_KNOWN_MASK = 1, HABITAT_WATER = 2, HABITAT_ICE = 3, HABITAT_LAND = 4,
+            HABITAT_SURFACE = 5, HABITAT_FINGERPRINT = 6, HABITAT_CELLS = 7, HABITAT_REGIONS = 8, HABITAT_REGION_HERD = 9,
+            HABITAT_REGION_MARKS = 10, HABITAT_RECORDS = 11, HABITAT_HERDS_FOUNDED = 12, HABITAT_KNOWN_WRITTEN = 13,
+            HABITAT_HERD_X = 14, HABITAT_HERD_Z = 15, HABITAT_INFO = 16;
+
+    /**
+     * The engine's world model at block (x, z) of Java's dimension {@code dim}, between steps (tests): whether
+     * the cell is known, its masks, mean surface and fingerprint, the cells and regions known, the herd founded
+     * for the region (its agent, 0 none, and where it is now), and counters.
+     */
+    public synchronized long[] habitatInfo(int dim, int x, int z) {
+        long[] out = new long[HABITAT_INFO];
+        nHabitatInfo(live(), dim, x, z, out);
+        return out;
     }
 
     // ---- ScriptedEngine: inspection -------------------------------------------------------------

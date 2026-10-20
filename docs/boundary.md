@@ -596,7 +596,9 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      (the ships' frames). PORT_FOUND names an adopted village (a port of a village the world
      lacks is ignored); HAVEN_FOUND joins its haven to the world as a haven node (U13). The
      network is built at the first simulate point where two docks share a medium and a dimension;
-     later ports get shuttles (U12). No water mask is provided yet: every cell is water (U11).
+     later ports get shuttles (U12). The water mask is the world model's (item 16, §10:
+     `rtsim_ships::water::HabitatWater`, known open water only, X2-17); in a dimension the world
+     model knows nothing of, every cell is water, as U11 had it (X2-6).
    - **Commands.** SHIP_MATERIALIZE, TIMETABLE, STEER, DEPART, CARGO and DESPAWN take sequences
      from the core's counter after every other module's; all are per session (U4), so none is
      kept or resent. Body kinds, the dimension and cargo items go through the engine's dictionary.
@@ -643,8 +645,12 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule).
    - **Prey.** With the dragons running too, the dragons run with the herds as prey
      (`Dragons::run_until_with_herds`, Y7).
-   - **Climate and founding.** The climate is `Uniform` (Y3) and nothing in the game founds a herd:
-     only order 28 (`HERD_FOUND`, TEST mode) does (Y4).
+   - **Climate and founding** (item 16, §10). The climate is the world model's
+     (`rtsim_ecology::herds::habitat::HabitatClimate`: forage, temperature and terrain from the
+     habitat cells; water and unknown ground closed), and the world model founds one herd per
+     suitable region on its first sample (X2-11). In a dimension the world model knows nothing of,
+     the climate is still Y3's uniform grassland (X2-6), and order 28 (`HERD_FOUND`, TEST mode)
+     founds herds there as before (Y4).
    - **Tests.** Order 27 (`HERD_COMMAND`, TEST mode) queues a herd command record with Java's
      species and dimension ids as the herds' own (Y5); `nHerdInfo` reads one herd (Y22). The Rust
      fake Java side (`tests/common`, `Java::herd_obs`, `herd_command`) plays the adapter with
@@ -679,6 +685,26 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      Java's ids as the conflict's own (C2-15). The Rust fake Java side (`tests/common`,
      `Java::conflict_obs`, `conflict_command`) plays the plugin with rtsim-conflict's
      `FakeConflict` in the protocol test.
+
+16. **The world model** (`engine/worldmodel.rs`, §10, choices X2-1 to X2-25 in
+   docs/overnight-choices-worldmodel.md): rtsim-space's `SampledWorld`, fed by HABITAT, behind one
+   `WorldHandle` the herds' climate and the ships' water mask read.
+   - **Observations.** HABITAT (latest wins) is ingested at the observe point: names through Java's
+     dictionary (biomes kind 0x30, bodies kind 3), latest wins per cell, chunk-generation counts only
+     rise. A record that does not decode or names what Java never named is counted and skipped.
+   - **Founding.** At the simulate point, before the herds run, regions with new cells are judged
+     (at most 64 a step): one herd per suitable region on its first sample (X2-11), only while
+     `Module.ECOLOGY` is on; a decided region is marked in its page and never judged again.
+   - **Commands.** HABITAT_KNOWN at every session start, one per region the world model holds, then
+     END; per session, sequences from the core's counter after every other module's, the dimension
+     through the engine's dictionary.
+   - **Pages.** Table 0x5700: the meta page (name tables, state hash, checked on load); table
+     0x5701: one page per region. A save writes the meta page and the regions changed since the last
+     save (every region after a failed save). Pages this build cannot read are deleted at start and
+     the world model starts empty; Java resends every cell as its chunks load.
+   - **Tests.** `nHabitatInfo` reads a cell, the counts and the region's founded herd; the Rust fake
+     Java side (`tests/common`, `Java::habitat`, `habitat_command`) plays the sampler in the
+     protocol test.
 
 ## 6. Phase 2: dragons (PLAN.md §9; the Ice and Fire plugin)
 
@@ -1313,3 +1339,129 @@ are not materialized.
   engine's per-class tunables. **Watched**, the director above.
 - **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
   and remember the raids on them (a robbery report against the faction).
+
+## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
+
+**Status: a boundary addition made overnight on 2026-10-20 for Ben's review.** Choice Y4 in
+docs/overnight-choices-herdsmc.md flagged a habitat record as his call; it was built as Y4
+recommended so the engine knows terrain, and every choice below (X2-#, in
+docs/overnight-choices-worldmodel.md) can be undone. The engine side is `crates/rtsim-space`
+(`habitat.rs` is the reference codec, with round-trip tests) and `crates/rtsim-jni/src/engine/
+worldmodel.rs`; the Java side is the core's `habitat` package (`HabitatSampler`, `HabitatRecords`
+mirrors this section). Vanilla is built in (D4), so the sampler is the core's own `SessionPlugin`.
+Vanilla facts below were checked in the decompiled 1.21.1 sources with NeoForge 21.1.249's patches.
+
+### 10.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x00A0 to 0x00AF | Java to engine | world-model latest-wins observations |
+| 0x0900 to 0x09FF | Java to engine | world-model journaled observations (none yet) |
+| 0x8900 to 0x89FF | engine to Java | world-model commands (`cmdSeq` at 8) |
+
+The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1), the
+ships' (§7.1), the herds' (§8.1) and the conflict's (§9.1) ranges stay as they are; these three are
+next to the conflict's.
+
+### 10.2 Cells, points and dictionaries
+
+- **A cell** is 64 x 64 blocks (SCALE.md §2's field cells), `cellX = floor(x / 64)`; a 512-block
+  region holds 8 x 8 cells, index `(cellX mod 8) + 8 (cellZ mod 8)`.
+- **A point** is one chunk's centre column (block 8, 8 of the chunk): 16 points a cell, point `i`
+  being chunk `(i & 3, i >> 2)` of the cell. Every mask below has bit `i` for point `i`.
+- **What a point is.** The top block of the `MOTION_BLOCKING_NO_LEAVES` heightmap
+  (`ChunkAccess.getHeight` returns that block's y; the heightmap counts fluids, so a lake's top is
+  its water): **water** when that block's fluid is in `minecraft:water` (`FluidTags.WATER`),
+  **ice** when the block is in `minecraft:ice` (`BlockTags.ICE`), **other** when it holds another
+  fluid or the column has no block at all (the void), **land** otherwise. Under water,
+  `OCEAN_FLOOR` gives the floor. The biome is the chunk's noise biome at the top block
+  (`ChunkAccess.getNoiseBiome`, quart coordinates).
+- **Dictionaries.** Biomes travel as **dictionary kind 0x30** (Java's, per world:
+  `minecraft:plains`); creature kinds as body kinds (kind 3: `minecraft:sheep`); the dimension as
+  kind 1.
+
+### 10.3 HABITAT (0x00A0, latest wins)
+
+| Offset | Type | Name |
+|---|---|---|
+| 4 (aux) | u32 | n: creature entries |
+| 8 | u32 | dimension (dictionary 1) |
+| 12 | u32 | fingerprint (§10.4) |
+| 16, 20 | i32 | cellX, cellZ |
+| 24 | u16 | known: points sampled (the vanilla sampler sends whole cells only: 0xFFFF) |
+| 26, 28, 30 | u16 | water, ice, other: points of each kind |
+| 32 | u32 | biome: the most common biome of the known points (dictionary 0x30; ties go to the earliest point) |
+| 36 | u32 | landBiome: the most common biome of the land points (0: no land) |
+| 40 | u32 | tags: tag bits of every known point's biome, together |
+| 44 | u32 | landTags: tag bits of landBiome |
+| 48, 50, 52 | i16 | surfaceMin, surfaceMax, surfaceMean: top block y over the points |
+| 54, 56 | i16 | waterMean, floorMean: mean water top and `OCEAN_FLOOR` top over the water points (0: none) |
+| 58 | | reserved |
+| 60, 64 | f32 | temperature, downfall: vanilla's biome values (`Biome.getBaseTemperature`, the climate settings' downfall), mean over the points |
+| 68 | f32 | celsius: a climate plugin's degrees at the cell's centre when sampled (`ClimateSource`); NaN without one |
+| 72, 73 | u8 | season, seasonCount: the plugin's calendar when sampled (IND_CONDITIONS' shape); 0, 0 without seasons |
+| 74 | | reserved |
+| 80 | | n entries of 8 bytes: u32 body (dictionary 3), u16 share, u16 generated |
+
+**Tag bits** (vanilla `BiomeTags` and NeoForge's common `Tags.Biomes`, checked with
+`Holder.is`): 0 `minecraft:is_ocean`, 1 `minecraft:is_deep_ocean`, 2 `minecraft:is_river`, 3
+`minecraft:is_beach`, 4 `minecraft:is_mountain`, 5 `minecraft:is_hill`, 6 `minecraft:is_forest`, 7
+`minecraft:is_taiga`, 8 `minecraft:is_jungle`, 9 `minecraft:is_savanna`, 10 `minecraft:is_badlands`,
+11 `c:is_swamp`, 12 `c:is_desert`, 13 `c:is_plains`, 14 `c:is_snowy`, 15 `c:is_cold`, 16 `c:is_hot`,
+17 `c:is_wet`, 18 `c:is_dry`, 19 `c:is_mushroom`, 20 `c:is_underground`, 21 `minecraft:is_overworld`,
+22 `minecraft:is_nether`, 23 `minecraft:is_end`, 24 `c:is_sparse_vegetation`, 25
+`c:is_dense_vegetation`, 26 `c:is_mountain/peak`, 27 `c:is_mountain/slope`, 28 `c:is_plateau`, 29
+`c:is_windswept`, 30 `c:is_stony_shores`; 31 reserved.
+
+**Creature entries.** For each herd species of the core's vanilla adapter (§8.2's five), when either
+number is non-zero: **share**, the species' part of its biome's `CREATURE` spawn weight
+(`Biome.getMobSettings().getMobs(MobCategory.CREATURE)`), per mille, averaged over the cell's land
+points (vanilla plains: sheep 12 of 46, 260); **generated**, the animals of the species vanilla
+spawned in the cell at chunk generation this session (NeoForge's `Mob.getSpawnType()` is
+`CHUNK_GENERATION`; such entities join with `loadedFromDisk` true, in the call that then posts their
+chunk's `ChunkEvent.Load` as a new chunk). The engine keeps the highest count it was ever sent.
+
+### 10.4 When Java sends it
+
+- **Sampled** once all 16 of a cell's chunks are loaded in full (`ServerChunkCache.getChunkNow`),
+  at the end of a tick under a budget (8 cells and 0.25 ms a tick, PLACEHOLDERS), from the queue of
+  cells whose chunks loaded. A cell whose chunks are not all loaded leaves the queue and comes back
+  with its next chunk. A cell is sampled at most once per load of its chunks.
+- **Sent** only when its **fingerprint** differs from the one the engine holds (HABITAT_KNOWN), or
+  when chunk-generation animals were counted in it. The fingerprint is Java's: FNV-1a 64 over the
+  little-endian bytes of eight words (the masks; the two biome names' FNV-1a; the tag bits; the
+  heights; the floor; temperature and downfall; the shares), folded to 32 bits by xoring its halves.
+  Degrees, the season and the counts are left out: they change without the ground changing. The
+  engine stores it and gives it back; it never computes one.
+- **Not before** the engine's HABITAT_KNOWN list has ended this session. At a session start every
+  chunk already loaded counts as a first load.
+
+### 10.5 HABITAT_KNOWN (0x8900, per session)
+
+| Offset | Type | Name |
+|---|---|---|
+| 4 (aux) | u32 | flags: 1 END (the last of the list; the record carries nothing else) |
+| 16 | u32 | dimension (the engine's dictionary, kind 1) |
+| 20, 24 | i32 | regionX, regionZ (512-block regions) |
+| 28 | u32 | n |
+| 32 | | n entries of 8 bytes: u8 cell index in the region, 3 reserved, u32 fingerprint |
+
+The engine sends one per region it holds, then END, right after every SESSION_START; Java keeps the
+fingerprints for the session and samples nothing until END. So a cell crosses the boundary once per
+change, and a cell the engine lost (pages older than the world save, pages dropped) is sent again
+when its chunks next load. Nothing answers it. The stub engine keeps no habitat: its list is END
+alone.
+
+### 10.6 What the engine side does with it
+
+- **rtsim-space's `WorldModel`** is what every module queries, by block rectangle (SCALE.md §2's
+  rule: queries, never storage): `area` (points expected and known, land, water, ice, other,
+  heights, year-round degrees, vegetation, downfall), `season_offset`, `creatures`. A Deep Time
+  provider can replace the sampled one behind the same handle (PLAN.md §11, SCALE.md §12).
+- **Unknown ground is avoided** (X2-5): a rectangle with a point nobody sampled is not passable for
+  herds and not water for ships; founding waits for it.
+- **Herds**: §5 item 14, X2-9 to X2-16. **Ships**: §5 item 12, X2-17.
+- **Degrees**: a cell's year-round °C is the plugin's reading less the season it was taken in, else
+  vanilla's temperature on mic-climate's scale (-0.5 to 2.0 over -20 to +56 °C, X2-8); a dimension
+  where a plugin reported seasons adds mic-climate's default season offsets by sub-season.
+

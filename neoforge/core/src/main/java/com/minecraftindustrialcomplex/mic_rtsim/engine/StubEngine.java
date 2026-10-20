@@ -434,6 +434,13 @@ public final class StubEngine implements ScriptedEngine {
         }
         if (kind == Obs.TICK)
             return;
+        if (kind == Obs.SESSION_START) {
+            // The world model's list (docs/boundary.md §10.5): the stub keeps no habitat, so its list is END
+            // alone, and the bridge's sampler starts at once.
+            script(out -> out.reserve(com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatRecords.HABITAT_KNOWN,
+                    com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatRecords.Known.ENTRIES,
+                    com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatRecords.Known.FLAG_END));
+        }
         long seq = 0;
         boolean skipped = false;
         if (Obs.isJournaled(kind)) {

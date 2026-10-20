@@ -30,5 +30,7 @@ public final class MicRtsim {
         com.minecraftindustrialcomplex.mic_rtsim.industry.Industry.register(modBus, container);
         // The vanilla herd adapter (docs/boundary.md §8): vanilla is built in, so the core registers it.
         com.minecraftindustrialcomplex.mic_rtsim.herd.HerdEvents.register();
+        // The habitat sampler (docs/boundary.md §10): the engine's world model, built in as vanilla is.
+        com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatEvents.register();
     }
 }
