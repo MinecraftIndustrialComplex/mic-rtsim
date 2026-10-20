@@ -115,6 +115,12 @@ code.
 
 ## Industry
 
+- **The stale-tick race** (found overnight by the industry engine). Commands land at least one tick
+  after a chunk loads, so a machine can run once on stock the replay already counted: +40 ingots (0.4%)
+  in the test. No trim inside one district can see it. Four options are in
+  docs/overnight-choices-industry.md; the agent's cleanest is to send a district's reconcile ahead as a
+  player approaches, using player positions from the bridge. Your call.
+
 Phases are INDUSTRY.md §16 (I-A to I-H).
 
 - **P5. Factory unit.** Recommended: retire it in favour of I2's district. Alternatives: one Create 6
