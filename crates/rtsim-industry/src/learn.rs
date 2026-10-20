@@ -159,6 +159,8 @@ struct Episode {
     measure: Option<(u64, GoodVec)>,
     /// The latest sweep that still found the input at 0.
     last_zero: (u64, GoodVec),
+    /// Per good, the largest change of N between two sweeps since measurement began: a batch.
+    max_step: GoodVec,
 }
 
 /// Learned coupling (I6): starvation episodes in, a partition of the model's goods out.
@@ -167,6 +169,11 @@ pub struct Coupling {
     /// Per consumed good, sorted.
     pub evidence: Vec<(Good, InputEvidence)>,
     open: Vec<(Good, Episode)>,
+    /// N at the last live sweep, and per consumed good its largest use between two sweeps: an
+    /// input below that cannot feed another batch, so it has run out (a machine taking 4 a batch
+    /// stops with 2 left).
+    last_n: Option<GoodVec>,
+    batch: GoodVec,
 }
 
 /// More goods than this and the district stays one all-or-nothing process (the partition is
@@ -178,11 +185,14 @@ impl Coupling {
     pub fn reset(&mut self) {
         self.evidence.clear();
         self.open.clear();
+        self.last_n = None;
+        self.batch = GoodVec::new();
     }
 
     /// Open episodes end unjudged (the window was discarded: an unload, an edit, a session).
     fn abandon(&mut self) {
         self.open.clear();
+        self.last_n = None;
     }
 
     pub fn evidence_for(&self, c: Good) -> Option<&InputEvidence> {
@@ -195,14 +205,25 @@ impl Coupling {
     /// One live sweep: `n` is stock minus cumulative ports (internal net production up to a
     /// constant), under the current model.
     fn observe(&mut self, t: u64, stock: &GoodVec, n: &GoodVec, m: &Learned, tun: &LearnTunables) {
-        let settle = tun
-            .coupling_settle_ticks
-            .max(m.latency_ticks.saturating_mul(2));
+        // Not tied to the learned latency: that is the longest gap between rises, which the
+        // starvation gaps themselves stretch. An in-flight batch is caught by `max_step` instead.
+        let settle = tun.coupling_settle_ticks;
         let consumed: Vec<Good> = m.consumed().collect();
+        if let Some(prev) = &self.last_n {
+            for &c in &consumed {
+                let used = prev.get(c) - n.get(c);
+                if used > self.batch.get(c) {
+                    self.batch.set(c, used);
+                }
+            }
+        }
+        self.last_n = Some(n.clone());
         // Episodes of goods no longer consumed by the model end unjudged.
         self.open.retain(|(c, _)| consumed.contains(c));
         for c in consumed {
-            let empty = stock.get(c) <= 0;
+            // Out: less than one sweep's use left (an episode where it was in fact still used is
+            // thrown away by `judge`).
+            let empty = stock.get(c) < self.batch.get(c).max(1);
             let at = self.open.binary_search_by_key(&c, |e| e.0);
             match (at, empty) {
                 (Err(i), true) => self.open.insert(
@@ -213,11 +234,20 @@ impl Coupling {
                             start: t,
                             measure: None,
                             last_zero: (t, n.clone()),
+                            max_step: GoodVec::new(),
                         },
                     ),
                 ),
                 (Ok(i), true) => {
                     let ep = &mut self.open[i].1;
+                    if ep.measure.is_some() {
+                        for g in n.goods().chain(ep.last_zero.1.goods()).collect::<Vec<_>>() {
+                            let step = (n.get(g) - ep.last_zero.1.get(g)).abs();
+                            if step > ep.max_step.get(g) {
+                                ep.max_step.set(g, step);
+                            }
+                        }
+                    }
                     if ep.measure.is_none() && t >= ep.start.saturating_add(settle) {
                         ep.measure = Some((t, n.clone()));
                     }
@@ -239,10 +269,7 @@ impl Coupling {
         };
         let (t1, n1) = &ep.last_zero;
         let span = t1.saturating_sub(*t0);
-        let min_span = tun
-            .coupling_min_span_ticks
-            .max(m.latency_ticks.saturating_mul(10));
-        if span < min_span.max(1) {
+        if span < tun.coupling_min_span_ticks.max(1) {
             return;
         }
         let span_f = span as f64;
@@ -265,7 +292,10 @@ impl Coupling {
                 continue;
             }
             let actual = (n1.get(g) - n0.get(g)) as f64;
-            if actual / expect >= tun.coupling_moved_share {
+            // At least a few of its own batches: a batch already inside a machine when the input
+            // ran out finishes once, and must not pass for a line that goes on without it.
+            let batches = (actual.abs() / ep.max_step.get(g).max(1) as f64).floor();
+            if actual / expect >= tun.coupling_moved_share && batches >= tun.coupling_min_batches {
                 moved.push(g);
             }
         }
@@ -972,6 +1002,183 @@ mod tests {
         assert!(w >= 12_000, "window {w} shorter than 4 batches");
     }
 
+    const WOOD: Good = Good(3);
+    const PLANK: Good = Good(4);
+
+    fn ev(episodes: u32, independent: &[Good]) -> InputEvidence {
+        InputEvidence {
+            episodes,
+            independent: independent.to_vec(),
+        }
+    }
+
+    fn two_lines() -> Vec<(Good, i64)> {
+        vec![(ORE, -8), (INGOT, 8), (WOOD, -4), (PLANK, 4)]
+    }
+
+    #[test]
+    fn without_evidence_everything_is_one_process() {
+        let c = Coupling::default();
+        assert_eq!(
+            c.partition(&two_lines(), &[], 2),
+            vec![vec![ORE, INGOT, WOOD, PLANK]]
+        );
+    }
+
+    #[test]
+    fn starvation_evidence_splits_independent_lines() {
+        let mut c = Coupling::default();
+        // Ore ran out twice and planks kept coming; wood ran out twice and ingots kept coming.
+        c.evidence = vec![(ORE, ev(2, &[WOOD, PLANK])), (WOOD, ev(2, &[ORE, INGOT]))];
+        assert_eq!(
+            c.partition(&two_lines(), &[], 2),
+            vec![vec![ORE, INGOT], vec![WOOD, PLANK]]
+        );
+        // One episode short of the threshold: an input with too little evidence feeds everything.
+        c.evidence[1].1.episodes = 1;
+        assert_eq!(
+            c.partition(&two_lines(), &[], 2),
+            vec![vec![ORE, INGOT, WOOD, PLANK]],
+            "wood unconfirmed: it may feed the ingots"
+        );
+    }
+
+    #[test]
+    fn a_shared_input_without_evidence_keeps_the_lines_together() {
+        // Coal feeds both lines; it never ran out, so nothing shows the lines go on without it.
+        let coal = Good(5);
+        let mut goods = two_lines();
+        goods.push((coal, -2));
+        let mut c = Coupling::default();
+        c.evidence = vec![
+            (ORE, ev(3, &[WOOD, PLANK, coal])),
+            (WOOD, ev(3, &[ORE, INGOT, coal])),
+        ];
+        assert_eq!(c.partition(&goods, &[], 2).len(), 1);
+    }
+
+    #[test]
+    fn targets_and_inputless_outputs_stay_together() {
+        let mut c = Coupling::default();
+        c.evidence = vec![(ORE, ev(2, &[PLANK])), (WOOD, ev(2, &[INGOT]))];
+        // A threshold switch stopped everything at once when it was learned: one process.
+        assert_eq!(c.partition(&two_lines(), &[PLANK], 2).len(), 1);
+        // Two outputs with no input (a mob farm's drops) are never shown apart.
+        let farm = vec![(Good(7), 3), (Good(8), 1)];
+        assert_eq!(c.partition(&farm, &[], 2), vec![vec![Good(7), Good(8)]]);
+    }
+
+    /// A district with two lines while loaded: ore runs out for a while, the plank line goes on.
+    /// The learner sees the episode, checks that ore was not being used, and that ingots stopped.
+    #[test]
+    fn an_episode_is_judged_from_the_sweeps() {
+        let t = LearnTunables {
+            coupling_settle_ticks: 200,
+            coupling_min_span_ticks: 1_000,
+            ..tun()
+        };
+        let model = Learned {
+            at: Tick(0),
+            window_ticks: 1,
+            rates: vec![(ORE, -0.08), (INGOT, 0.08), (WOOD, -0.04), (PLANK, 0.04)],
+            links: vec![],
+            confidence: 1.0,
+            points: 0,
+            longest_gap: 0,
+            latency_ticks: 100,
+        };
+        let mut l = Learner::new();
+        let mut ports = GoodVec::new();
+        let (mut ore, mut ingot, mut wood, mut plank) = (160i64, 0i64, 100_000i64, 0i64);
+        for step in 0..=60u64 {
+            let now = step * 100;
+            if now == 4_000 {
+                // A train brings ore back: the episode ends.
+                ore += 800;
+                ports.add(ORE, 800);
+            }
+            if step > 0 {
+                if ore >= 8 {
+                    ore -= 8;
+                    ingot += 8;
+                }
+                wood -= 4;
+                plank += 4;
+            }
+            let stock =
+                GoodVec::from_pairs([(ORE, ore), (INGOT, ingot), (WOOD, wood), (PLANK, plank)]);
+            l.push(
+                Sample {
+                    at: Tick(now),
+                    stock: &stock,
+                    ports: &ports,
+                    links: &[],
+                    space_free: true,
+                },
+                Some(&model),
+                &t,
+            );
+        }
+        let e = l.coupling.evidence_for(ORE).expect("ore's episode judged");
+        assert_eq!(e.episodes, 1);
+        assert_eq!(
+            e.independent,
+            vec![WOOD, PLANK],
+            "planks went on, ingots stopped"
+        );
+        assert!(
+            l.coupling.evidence_for(WOOD).is_none(),
+            "wood never ran out"
+        );
+    }
+
+    #[test]
+    fn an_input_fed_as_fast_as_it_is_used_is_no_episode() {
+        let t = LearnTunables {
+            coupling_settle_ticks: 200,
+            coupling_min_span_ticks: 1_000,
+            ..tun()
+        };
+        let model = Learned {
+            at: Tick(0),
+            window_ticks: 1,
+            rates: vec![(ORE, -0.08), (INGOT, 0.08)],
+            links: vec![],
+            confidence: 1.0,
+            points: 0,
+            longest_gap: 0,
+            latency_ticks: 0,
+        };
+        let mut l = Learner::new();
+        let mut ports = GoodVec::new();
+        let mut ingot = 0i64;
+        for step in 0..=40u64 {
+            let now = step * 100;
+            // Ore arrives and is used within the sweep: its stock reads 0 throughout.
+            let ore = if now == 3_000 { 5 } else { 0 };
+            if step > 0 {
+                ports.add(ORE, 8);
+                ingot += 8;
+            }
+            let stock = GoodVec::from_pairs([(ORE, ore), (INGOT, ingot)]);
+            l.push(
+                Sample {
+                    at: Tick(now),
+                    stock: &stock,
+                    ports: &ports,
+                    links: &[],
+                    space_free: true,
+                },
+                Some(&model),
+                &t,
+            );
+        }
+        assert!(
+            l.coupling.evidence_for(ORE).is_none(),
+            "ore was used all along: not a starvation"
+        );
+    }
+
     #[test]
     fn repeated_stops_confirm_a_target() {
         let t = LearnTunables {
@@ -1099,9 +1306,15 @@ mod persist_impls {
     persist_struct!(Episode {
         start,
         measure,
-        last_zero
+        last_zero,
+        max_step
     });
-    persist_struct!(Coupling { evidence, open });
+    persist_struct!(Coupling {
+        evidence,
+        open,
+        last_n,
+        batch
+    });
     persist_struct!(Window {
         start,
         s0,

@@ -47,12 +47,14 @@ pub struct LearnTunables {
     /// PLACEHOLDER 2.
     pub coupling_min_episodes: u32,
     /// Time after an input empties before its episode is measured, for work in progress on belts
-    /// and in machines to drain (at least twice the learned batch cycle). TUNABLE, PLACEHOLDER
-    /// 1,200 ticks (a minute).
+    /// and in machines to drain. TUNABLE, PLACEHOLDER 1,200 ticks (a minute).
     pub coupling_settle_ticks: u64,
-    /// The shortest measured span of an episode (at least ten batch cycles). TUNABLE, PLACEHOLDER
-    /// 2,400 ticks.
+    /// The shortest measured span of an episode. TUNABLE, PLACEHOLDER 2,400 ticks.
     pub coupling_min_span_ticks: u64,
+    /// A good moved during an episode only if it made at least this many of its own largest
+    /// sweep-to-sweep steps (its batches) in the measured span, so one batch finishing inside a
+    /// machine never passes for a line that goes on. TUNABLE, PLACEHOLDER 3.
+    pub coupling_min_batches: f64,
     /// A good moved during an episode if it made at least this share of its learned rate.
     /// TUNABLE, PLACEHOLDER 0.8.
     pub coupling_moved_share: f64,
@@ -81,6 +83,7 @@ impl Default for LearnTunables {
             coupling_min_episodes: 2,
             coupling_settle_ticks: 1_200,
             coupling_min_span_ticks: 2_400,
+            coupling_min_batches: 3.0,
             coupling_moved_share: 0.8,
             coupling_stopped_share: 0.2,
             coupling_min_units: 4.0,
@@ -106,6 +109,11 @@ pub struct ReplayTunables {
     /// taken to have turned away and it goes on. TUNABLE, PLACEHOLDER 100 ticks: five of the Java
     /// side's 20-tick reports.
     pub approach_hold_ticks: u64,
+    /// Level-wide pollution (I14: greenhouse, ozone depletion, acid rain) a replayed district makes
+    /// is pushed to the level this often. TUNABLE, PLACEHOLDER 1,200 ticks (a minute): one command
+    /// per polluting unloaded district per period, the only replay cost that grows with time away,
+    /// because "live" asks for it.
+    pub live_pollution_ticks: u64,
 }
 
 impl Default for ReplayTunables {
@@ -115,6 +123,7 @@ impl Default for ReplayTunables {
             fragment_margin_slots: 1,
             approach_distance_blocks: 256,
             approach_hold_ticks: 100,
+            live_pollution_ticks: 1_200,
         }
     }
 }

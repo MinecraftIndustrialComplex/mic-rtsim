@@ -112,6 +112,16 @@ pub struct LineEdge {
     pub last: Tick,
 }
 
+/// A timed wake of the engine's own ([`Engine::advance_to`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wake {
+    /// An approach hold ends, unless the district's stamp moved on.
+    Hold(DistrictId, u32),
+    /// Level-wide pollution a replay makes is pushed to the level (I14), unless the replay that
+    /// booked it (by its start) has ended.
+    Pollution(DistrictId, Tick),
+}
+
 /// What a reconcile round covers ([`Engine::reconcile_round`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Round {
@@ -141,6 +151,8 @@ pub struct Stats {
     pub cluster_settles: u64,
     /// Reconciles sent ahead of arrival (IND_APPROACH, the stale-tick answer).
     pub reconciles_ahead: u64,
+    /// Level-wide pollution pushed to the level while its district was unloaded (I14).
+    pub pollution_pushes: u64,
     /// Records the engine reads and ignores: IND_LEDGER_REQUEST (I18).
     pub retired_records: u64,
 }
@@ -206,9 +218,10 @@ pub struct Engine {
     conditions: Option<Conditions>,
     pressure: BTreeMap<(Tick, u64), (DistrictId, ThreatClass, u32, u32)>,
     pressure_seq: u64,
-    /// When each approach hold ends (lazily cancelled by the district's stamp, as O6).
-    holds: BTreeMap<(Tick, u64), (DistrictId, u32)>,
-    hold_seq: u64,
+    /// Approach holds ending and live pollution pushes, by time (lazily cancelled: a hold by the
+    /// district's stamp, a push by its replay span, as O6).
+    wakes: BTreeMap<(Tick, u64), Wake>,
+    wake_seq: u64,
     /// Districts whose replay coverage changed this tick (I7), brought up to date once the
     /// tick's records are in.
     dirty: BTreeSet<DistrictId>,
@@ -249,8 +262,8 @@ impl Engine {
             conditions: None,
             pressure: BTreeMap::new(),
             pressure_seq: 0,
-            holds: BTreeMap::new(),
-            hold_seq: 0,
+            wakes: BTreeMap::new(),
+            wake_seq: 0,
             dirty: BTreeSet::new(),
             per_chunk_unloads: false,
             exchanges: BTreeMap::new(),
@@ -378,7 +391,7 @@ impl Engine {
         }
         loop {
             let next_p = self.pressure.keys().next().map(|k| k.0);
-            let next_h = self.holds.keys().next().map(|k| k.0);
+            let next_h = self.wakes.keys().next().map(|k| k.0);
             let next = next_p.into_iter().chain(next_h).min().filter(|&t| t <= to);
             let limit = next.unwrap_or(to);
             while let Some((at, h)) = self.clusters.next_due(limit) {
@@ -388,10 +401,13 @@ impl Engine {
             match next {
                 Some(t) => {
                     self.now = self.now.max(t);
-                    // On a tie a hold ends before an attack lands.
+                    // On a tie a hold ends (or pollution is pushed) before an attack lands.
                     if next_h == Some(t) {
-                        let (key, wake) = self.holds.pop_first().expect("peeked");
-                        self.hold_wake(key.0, wake);
+                        let (key, wake) = self.wakes.pop_first().expect("peeked");
+                        match wake {
+                            Wake::Hold(d, stamp) => self.hold_wake(key.0, (d, stamp)),
+                            Wake::Pollution(d, started) => self.pollution_wake(key.0, d, started),
+                        }
                     } else {
                         let (key, wake) = self.pressure.pop_first().expect("peeked");
                         self.pressure_wake(key.0, wake);
@@ -1040,6 +1056,10 @@ impl Engine {
         self.cluster_of.insert(d, h);
         // Sinks already replaying on this district's power now follow it (I13).
         self.refresh_power(d, at);
+        // Level-wide pollution it makes reaches the level while it is away (I14).
+        let pollutes = model.rates.iter().any(|&(g, r)| {
+            r.rate_fixed() > 0 && self.is_live(g) && self.districts[&d].deposits.contains_key(&g)
+        });
         let dist = self.districts.get_mut(&d).expect("exists");
         let whole = dist.is_whole(&part);
         let covered = part.len();
@@ -1050,6 +1070,12 @@ impl Engine {
             invs: part,
         });
         self.stats.sims_started += 1;
+        if pollutes {
+            self.wake_seq += 1;
+            let at_next = at + self.tun.replay.live_pollution_ticks.max(1);
+            self.wakes
+                .insert((at_next, self.wake_seq), Wake::Pollution(d, at));
+        }
         let what = if whole {
             format!("replay starts ({groups} process(es))")
         } else {
@@ -1245,10 +1271,17 @@ impl Engine {
         let Some((span, pools)) = self.stop_sim(d, at) else {
             return;
         };
+        let live: Vec<Good> = pools
+            .iter()
+            .map(|p| p.key.good())
+            .filter(|g| self.is_live(*g))
+            .collect();
         let dist = self.districts.get_mut(&d).expect("member");
         for p in &pools {
             dist.minted_carried.add(p.key.good(), p.books.minted);
             match p.key {
+                // Level pollution pushed live (I14) is in the world (and in `remaining`) already.
+                PoolKey::Stock(_, g) if live.contains(&g) => dist.owed.add(g, p.level - p.pushed),
                 PoolKey::Stock(_, g) => dist.owed.add(g, p.level - span.base.get(g)),
                 PoolKey::Mail(_, _, _, g) => dist.owed.add(g, p.level - p.pushed),
             }
@@ -1290,6 +1323,11 @@ impl Engine {
     ///   the rest stays virtual in `owed` for the replay that goes on (I7).
     fn reconcile_round(&mut self, d: DistrictId, at: Tick, round: Round) {
         let stopped = self.stop_sim(d, at);
+        let live: BTreeSet<Good> = stopped
+            .iter()
+            .flat_map(|(_, pools)| pools.iter().map(|p| p.key.good()))
+            .filter(|g| self.is_live(*g))
+            .collect();
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut net = GoodVec::new();
         let mut deposits = GoodVec::new();
@@ -1310,7 +1348,12 @@ impl Engine {
                 span_minted.add(p.key.good(), p.books.minted);
                 match p.key {
                     PoolKey::Stock(_, g) => {
-                        let change = p.level - span.base.get(g);
+                        // Level pollution pushed live (I14) is in the world already.
+                        let change = if live.contains(&g) {
+                            p.level - p.pushed
+                        } else {
+                            p.level - span.base.get(g)
+                        };
                         if self.goods.get(&g).map(|i| i.class) == Some(GoodClass::Deposit) {
                             deposits.add(g, change);
                         } else {
@@ -1407,20 +1450,22 @@ impl Engine {
             }
             s.remaining += delta;
             sent_net.add(g, delta);
-            match deposit::plugin(s.plugin).writeback() {
+            match deposit::writeback(s.plugin, self.goods.get(&g)) {
                 Writeback::WithChunk => by_chunk.entry(s.chunk).or_default().push(InvDelta {
                     inventory: DEPOSIT_INVENTORY,
                     pos: BlockPos::new(s.chunk.x * 16, 0, s.chunk.z * 16),
                     good: g,
                     delta,
                 }),
-                Writeback::Immediate => immediate.push(Cmd::DepositDelta(DepositDelta {
-                    op: OpId(0),
-                    plugin: s.plugin,
-                    chunk: s.chunk,
-                    good: g,
-                    delta,
-                })),
+                Writeback::Immediate | Writeback::Live => {
+                    immediate.push(Cmd::DepositDelta(DepositDelta {
+                        op: OpId(0),
+                        plugin: s.plugin,
+                        chunk: s.chunk,
+                        good: g,
+                        delta,
+                    }))
+                }
             }
         }
         let mut destroys: BTreeMap<ChunkPos, Vec<BlockDestroy>> = BTreeMap::new();
@@ -2172,8 +2217,9 @@ impl Engine {
         dist.hold_stamp = dist.hold_stamp.wrapping_add(1);
         let stamp = dist.hold_stamp;
         let live = dist.presence == Presence::Live;
-        self.hold_seq += 1;
-        self.holds.insert((until, self.hold_seq), (d, stamp));
+        self.wake_seq += 1;
+        self.wakes
+            .insert((until, self.wake_seq), Wake::Hold(d, stamp));
         if was_held || live {
             return;
         }
@@ -2193,6 +2239,71 @@ impl Engine {
         for c in chunks {
             self.send_unsent(d, c);
         }
+    }
+
+    /// Whether good `g` is level-wide pollution, applied live while its district is unloaded (I14).
+    fn is_live(&self, g: Good) -> bool {
+        self.goods.get(&g).is_some_and(|i| {
+            deposit::writeback(crate::obs::DepositPluginId::DestroyCrude, Some(i))
+                == Writeback::Live
+        })
+    }
+
+    /// Pushes the level-wide pollution district `d`'s replay made since the last push to the level
+    /// (I14: "level-wide types apply live while unloaded"), as IND_DEPOSIT_DELTA, which Java
+    /// applies to the level at once, its chunk loaded or not. A stale wake (the replay that booked
+    /// it has ended) does nothing.
+    fn pollution_wake(&mut self, at: Tick, d: DistrictId, started: Tick) {
+        let Some(dist) = self.districts.get(&d) else {
+            return;
+        };
+        if dist.sim.as_ref().is_none_or(|s| s.started != started) {
+            return;
+        }
+        let Some(&h) = self.cluster_of.get(&d) else {
+            return;
+        };
+        let live: Vec<(Good, crate::obs::DepositPluginId, ChunkPos)> = dist
+            .deposits
+            .values()
+            .filter(|s| self.is_live(s.good))
+            .map(|s| (s.good, s.plugin, s.chunk))
+            .collect();
+        let pushed = self
+            .clusters
+            .apply(h, at, |c, _| {
+                live.iter()
+                    .map(|&(g, _, _)| c.take_unpushed(PoolKey::Stock(d, g)))
+                    .collect::<Vec<i64>>()
+            })
+            .unwrap_or_default();
+        self.after_cluster(h, at);
+        for (&(g, plugin, chunk), &delta) in live.iter().zip(&pushed) {
+            if delta == 0 {
+                continue;
+            }
+            if let Some(s) = self
+                .districts
+                .get_mut(&d)
+                .and_then(|x| x.deposits.get_mut(&g))
+            {
+                s.remaining += delta;
+            }
+            let mut c = Cmd::DepositDelta(DepositDelta {
+                op: OpId(0),
+                plugin,
+                chunk,
+                good: g,
+                delta,
+            });
+            c.set_op(self.ops.derive(self.world_seed, at, &c));
+            self.out.push(c);
+            self.stats.pollution_pushes += 1;
+        }
+        self.wake_seq += 1;
+        let next = at + self.tun.replay.live_pollution_ticks.max(1);
+        self.wakes
+            .insert((next, self.wake_seq), Wake::Pollution(d, started));
     }
 
     /// An approach hold ended with no newer closing record: the player did not come, and the
@@ -2768,6 +2879,7 @@ mod persist_impls {
         breakpoints,
         cluster_settles,
         reconciles_ahead,
+        pollution_pushes,
         retired_records,
     });
     persist_struct!(Books {
@@ -2780,6 +2892,29 @@ mod persist_impls {
         trimmed
     });
     persist_struct!(Station { decl });
+    impl Persist for Wake {
+        fn put(&self, w: &mut Writer) {
+            match *self {
+                Wake::Hold(d, stamp) => {
+                    w.u8(0);
+                    d.put(w);
+                    stamp.put(w);
+                }
+                Wake::Pollution(d, started) => {
+                    w.u8(1);
+                    d.put(w);
+                    started.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Wake::Hold(Persist::get(r)?, Persist::get(r)?),
+                1 => Wake::Pollution(Persist::get(r)?, Persist::get(r)?),
+                _ => return Err(CodecError::Invalid("industry wake".into())),
+            })
+        }
+    }
     persist_struct!(PendingExchange {
         district,
         train,
@@ -2801,8 +2936,8 @@ mod persist_impls {
         e.conditions.put(w);
         e.pressure.put(w);
         e.pressure_seq.put(w);
-        e.holds.put(w);
-        e.hold_seq.put(w);
+        e.wakes.put(w);
+        e.wake_seq.put(w);
         e.dirty.put(w);
         e.per_chunk_unloads.put(w);
         e.exchanges.put(w);
@@ -2893,8 +3028,8 @@ mod persist_impls {
             e.conditions = Persist::get(&mut r)?;
             e.pressure = Persist::get(&mut r)?;
             e.pressure_seq = Persist::get(&mut r)?;
-            e.holds = Persist::get(&mut r)?;
-            e.hold_seq = Persist::get(&mut r)?;
+            e.wakes = Persist::get(&mut r)?;
+            e.wake_seq = Persist::get(&mut r)?;
             e.dirty = Persist::get(&mut r)?;
             e.per_chunk_unloads = Persist::get(&mut r)?;
             e.exchanges = Persist::get(&mut r)?;

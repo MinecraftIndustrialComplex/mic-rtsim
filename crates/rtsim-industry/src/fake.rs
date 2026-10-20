@@ -195,6 +195,8 @@ pub struct WorldBooks {
     pub minted: GoodVec,
     pub burned: GoodVec,
     pub dropped: GoodVec,
+    /// Brought in from outside the world's districts and trains ([`FakeWorld::import`]).
+    pub imported: GoodVec,
     pub batches: u64,
 }
 
@@ -1332,6 +1334,22 @@ impl FakeWorld {
         }
     }
 
+    /// Goods brought into a loaded district's inventory from outside (a player's hands, a train the
+    /// script does not model): a port, so learning never reads it as production.
+    pub fn import(&mut self, di: usize, inv: u32, g: Good, n: i64) {
+        let id = self.districts[di].id;
+        self.districts[di].inv(inv).contents.add(g, n);
+        self.books.imported.add(g, n);
+        self.send(Obs::Port(PortTransfer {
+            district: id,
+            kind: PortKind::Other,
+            inventory: Some(inv),
+            counterpart: 0,
+            op: None,
+            goods: GoodVec::from_pairs([(g, n)]),
+        }));
+    }
+
     /// The player edits a district (a repair after an attack, say): it goes stale and relearns.
     pub fn repair_all(&mut self, di: usize) {
         if self.districts[di].broken.is_empty() {
@@ -1370,6 +1388,7 @@ impl FakeWorld {
         let mut want = self.initial.clone();
         want.merge(&self.books.minted);
         want.subtract(&self.books.burned);
+        want.merge(&self.books.imported);
         want.merge(&b.minted);
         want.subtract(&b.burned);
         want.subtract(&b.stolen);

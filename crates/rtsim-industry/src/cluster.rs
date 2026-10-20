@@ -798,6 +798,18 @@ impl Cluster {
         applied
     }
 
+    /// What a stock pool gained since it was last pushed to the world, now marked as pushed (I14:
+    /// level pollution applied live while unloaded). 0 for a pool that does not exist.
+    pub fn take_unpushed(&mut self, key: PoolKey) -> i64 {
+        let Some(i) = self.pool_index(key) else {
+            return 0;
+        };
+        let p = &mut self.pools[i as usize];
+        let d = p.level - p.pushed;
+        p.pushed = p.level;
+        d
+    }
+
     /// Enables or disables a district's processes (frozen, damaged, live, out of season).
     pub fn set_enabled(&mut self, d: DistrictId, enabled: bool, at: Tick) {
         for p in &mut self.procs {
