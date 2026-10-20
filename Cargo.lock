@@ -618,6 +618,7 @@ dependencies = [
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",
+ "rtsim-space",
  "rtsim-trade",
 ]
 
