@@ -12,11 +12,14 @@ or deferred. The answers are in DECISIONS.md under "Answers to the open question
   industrial activity near oil and target it. An underground threat stops players drilling to oil from
   below. The gate follows deposits from any source: Diesel, Destroy, Deep Time. It must prove at least
   as dangerous as In Control's desert dragons before that spawner is touched.
+  - Ready for review: [OILGATE.md](OILGATE.md), proposals OG-1 to OG-13.
 - **Surplus money buys real things.** Surplus treasury coin buys visible village upgrades, buildings or
   tribute, instead of leaving the world.
+  - Ready for review: [SINK.md](SINK.md), proposals MS-1 to MS-11.
 - **News carried separately from cargo:** messengers and bands carry news on their own schedule.
 - **The player ship voyage plugin (I17, C30):** player Sable ships, such as a sailbot carrying vaults
   between ports, simulated while unloaded.
+  - Ready for review: [VOYAGE.md](VOYAGE.md), proposals V-1 to V-13.
 
 ## Deferred by Ben
 
