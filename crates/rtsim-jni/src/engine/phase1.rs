@@ -812,6 +812,11 @@ pub(super) fn catalog_good(st: &State, item: &str) -> Option<GoodId> {
     st.phase1.cat.good(item)
 }
 
+/// The Minecraft item id of a phase 1 world's good, if the catalogue has it.
+pub(super) fn catalog_item(st: &State, g: GoodId) -> Option<&'static str> {
+    st.phase1.cat.try_item(g)
+}
+
 // ---- hooks: session and latest-wins records -------------------------------------------------------
 
 /// SESSION_START: puppets never outlive a session, and Java forgot the latest-wins snapshots.

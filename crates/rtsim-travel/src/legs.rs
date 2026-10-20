@@ -124,6 +124,12 @@ impl LegIndex {
         self.legs.get(id)
     }
 
+    /// Every live leg, in handle order (tests and diagnostics: the index is never scanned on a
+    /// hot path).
+    pub fn iter(&self) -> impl Iterator<Item = (LegId, &LegRow)> + '_ {
+        self.legs.iter()
+    }
+
     pub fn is_live(&self, s: Stamp) -> bool {
         self.legs
             .get(s.leg)

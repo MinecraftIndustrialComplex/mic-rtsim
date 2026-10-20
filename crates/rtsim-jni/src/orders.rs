@@ -31,6 +31,7 @@
 //! | 23 | TEST: materialize the phase 1 caravan with wares nearest (searchX, searchZ) within radius blocks, as this group, at (x, y, z) | u64 agent, u32 epoch, str dimension, f64 x, f64 y, f64 z, u32 radius, f64 searchX, f64 searchZ |
 //! | 24 | TEST: the phase 1 world runs this many more ticks ahead of game time | u64 ticks |
 //! | 25 | TEST: a dragon command (docs/boundary.md §6.4), as if the dragons had decided it: the Ice and Fire plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the species entries the record uses); then the record exactly as `rtsim_ecology::boundary` encodes it (cmdSeq ignored), its species ids Java's own (body dictionary) and its dimension Java's id (the dragons' frame) |
+//! | 26 | TEST: a ship command (docs/boundary.md §7.4), as if the ships had decided it: a future ships plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the body kinds and items the record uses); then the record exactly as `rtsim_ships::boundary` encodes it (cmdSeq ignored), its body and item ids Java's own (body and item dictionaries) and its dimension Java's id (the ships' frame); a SHIP_CARGO with op id 0 gets one from its identity |
 
 use rtsim_industry::ids::{DistrictId, TrainId};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
@@ -65,6 +66,7 @@ pub const OP_SCRIPT_VILLAGE: u16 = 22;
 pub const OP_P1_SPAWN_NEAR: u16 = 23;
 pub const OP_P1_ADVANCE: u16 = 24;
 pub const OP_DRAGON_COMMAND: u16 = 25;
+pub const OP_SHIP_COMMAND: u16 = 26;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,6 +248,13 @@ pub enum Order {
         names: Vec<(u32, u32, String)>,
         record: Vec<u8>,
     },
+    /// TEST: a ship command record (Java's body, item and dimension ids), queued as the ships'
+    /// own: their sequences and DICT records (a future ships plugin's GameTests). `names` are the
+    /// Java dictionary entries it uses: (kind, Java's id, name).
+    ShipCommand {
+        names: Vec<(u32, u32, String)>,
+        record: Vec<u8>,
+    },
 }
 
 impl Order {
@@ -268,6 +277,7 @@ impl Order {
                 | Order::Phase1SpawnNear { .. }
                 | Order::Phase1Advance(_)
                 | Order::DragonCommand { .. }
+                | Order::ShipCommand { .. }
         )
     }
 }
@@ -627,6 +637,24 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 }
                 Order::DragonCommand { names, record }
             }
+            OP_SHIP_COMMAND => {
+                let n = c.u32()? as usize;
+                if n > 1024 {
+                    return Err(format!("a ship command with {n} names"));
+                }
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let kind = c.u32()?;
+                    let id = c.u32()?;
+                    names.push((kind, id, c.str()?));
+                }
+                let record = body[c.at..].to_vec();
+                c.at = body.len();
+                if rtsim_ships::boundary::decode_cmd(&record).is_err() {
+                    return Err("a ship command order holds no ship command".into());
+                }
+                Order::ShipCommand { names, record }
+            }
             other => return Err(format!("unknown order opcode {other}")),
         };
         if c.at != body.len() {
@@ -913,6 +941,17 @@ impl Encoder {
                 self.u64(t.at.0);
                 self.end(at);
             }
+            Order::ShipCommand { names, record } => {
+                let at = self.begin(OP_SHIP_COMMAND);
+                self.u32(names.len() as u32);
+                for (kind, id, name) in names {
+                    self.u32(*kind);
+                    self.u32(*id);
+                    self.str(name);
+                }
+                self.buf.extend_from_slice(record);
+                self.end(at);
+            }
             Order::DragonCommand { names, record } => {
                 let at = self.begin(OP_DRAGON_COMMAND);
                 self.u32(names.len() as u32);
@@ -1121,6 +1160,23 @@ mod tests {
                             target: (1.0, 90.0, -4.0),
                         }),
                         &rtsim_ecology::boundary::SpeciesDict::default(),
+                        &mut r,
+                    );
+                    r
+                },
+            },
+            Order::ShipCommand {
+                names: vec![(2, 4, "minecraft:wheat".into())],
+                record: {
+                    let mut r = Vec::new();
+                    rtsim_ships::boundary::encode_cmd(
+                        0,
+                        &rtsim_ships::boundary::Cmd::SetCargo(rtsim_ships::boundary::SetCargo {
+                            agent: 0x53 << 56 | 5,
+                            epoch: 2,
+                            op: 0,
+                            items: vec![rtsim_ships::boundary::Item { item: 4, count: 12 }],
+                        }),
                         &mut r,
                     );
                     r

@@ -8,11 +8,14 @@
 //!
 //! - **Observations** ([`observe_state`], [`journaled`]): DRAGON_STATE is latest state; the
 //!   journaled kinds 0x0500 to 0x05FF go through the kernel's `Replay` (HOARD_ROBBED by its op
-//!   id too) and into `Dragons::ingest`; PLAYER positions feed the dragons' interest areas once
-//!   there is a dragon or a lair. Java's dictionary names the species, lairs and dimensions.
-//! - **Simulate** ([`simulate`], [`catch_up`]): the dragons run to the hand-over's game time on
-//!   the phase 1 world's clock, before the world does, so each dragon event sees the world at its
-//!   own time; a phase 1 input runs the dragons to its time first.
+//!   id too) and into `Dragons::ingest`. Players' areas are the engine's shared ones
+//!   (`engine/shared.rs`, U2): PLAYER positions go in there once per hand-over, and the dragons
+//!   see each area through `rtsim_world::interest::Viewer` and feed their home counter. Java's
+//!   dictionary names the species, lairs and dimensions.
+//! - **Simulate** ([`simulate`], [`run_engine`]): the dragons run to the hand-over's game time on
+//!   the phase 1 world's clock, before the world does, interleaved with the ships' events (the
+//!   shared clock, U7), so each dragon event sees the world at its own time; a phase 1 input or a
+//!   record runs them to its time first (`shared::catch_up`).
 //! - **Commands** ([`write_queue`]): DRAGON_MATERIALIZE, STEER, DEPART, ADOPT and DISCARD, with
 //!   sequences from the core's counter, after the core's, the industry's and phase 1's. All are per
 //!   session (S11): puppets never outlive a session, and a lost adoption or discard is decided
@@ -20,6 +23,9 @@
 //! - **Pages** ([`Link::load`], [`snapshot`]): table 0x4400, one page with `Dragons::save`. The
 //!   dragons share the phase 1 world, so while there is any dragon or lair the phase 1 link takes a
 //!   snapshot at every save (S4), and both are written in one commit.
+//! - **The switch** (C25, U10): `Module.ECOLOGY` (bit 4). Off, the dragons ignore their records,
+//!   run nothing, write nothing and keep the page they had; on again, the bodies of before are
+//!   gone (their session reset) and they run on from where they stopped.
 //!
 //! **The Ice and Fire plugin** (`mic_rtsim_iceandfire`, `neoforge/iceandfire`, docs/boundary.md
 //! §6.5 and §6.6) sends these records and applies these commands; its GameTests order dragon
@@ -37,9 +43,8 @@ use rtsim_ecology::{DragonStats, DragonTunables, Dragons};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{CodecError, Reader, Writer};
 use rtsim_kernel::page::{PageKey, PageStore};
-use rtsim_settle::Pos;
 
-use super::{State, log_error, log_info};
+use super::{State, log_error, log_info, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The dragons' pages: table 0x4400 ('D'), next to the industry engine's 0x4900 and phase 1's
@@ -50,7 +55,7 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTDL");
 const VERSION: u16 = 1;
 
 /// Java's module bit the dragons run under (`config/Module.java`: ECOLOGY is ordinal 4). With it
-/// off the dragons decide nothing new; bodies already out are still captured.
+/// off the dragons are frozen (U10): no records, no runs, no commands, their page kept.
 pub const MODULE_ECOLOGY: u32 = 1 << 4;
 
 /// The dragons' seed. PLACEHOLDER: the bridge does not send the Minecraft world's (as phase 1's).
@@ -72,6 +77,11 @@ pub(super) struct Link {
     /// Commands not written yet (per session).
     queue: VecDeque<Cmd>,
     enabled: bool,
+    /// The dragons' session reset (bodies of an earlier session or of before a switch-off are
+    /// gone) is due the next time they run.
+    reset_due: bool,
+    /// The page as last written or read: what a save keeps while the dragons are switched off.
+    last_page: Option<Vec<u8>>,
     /// The Java ids of the species bodies and lair structures, from Java's dictionary (built when
     /// first needed after a DICT).
     java_species: Option<SpeciesDict>,
@@ -82,6 +92,8 @@ pub(super) struct Link {
     /// The last load read back dragons whose state hash is not the one saved: (saved, read).
     pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
+    /// Records ignored while the dragons were switched off.
+    pub(super) ignored: u64,
     pub(super) commands_written: u64,
 }
 
@@ -109,11 +121,14 @@ impl Link {
             index: DistrictIndex::default(),
             queue: VecDeque::new(),
             enabled: true,
+            reset_due: false,
+            last_page: None,
             java_species: None,
             items_defined: BTreeSet::new(),
             dropped_pages: false,
             restore_diverged: None,
             records: 0,
+            ignored: 0,
             commands_written: 0,
         }
     }
@@ -173,6 +188,7 @@ impl Link {
                 let mut l = Link::empty();
                 l.engine = engine;
                 l.restore_diverged = diverged;
+                l.last_page = Some(b);
                 Ok(l)
             }
             Err(e) => when_pages_unreadable(&format!("the dragons' page: {e}")),
@@ -184,6 +200,11 @@ impl Link {
     fn active(&self) -> bool {
         !self.engine.dragons.is_empty() || !self.engine.lairs.is_empty()
     }
+}
+
+/// Whether the dragons run: switched on and in the world.
+pub(super) fn running(st: &State) -> bool {
+    st.dragons.enabled && st.dragons.active()
 }
 
 // ---- dictionaries -----------------------------------------------------------------------------------
@@ -237,14 +258,45 @@ fn define_items(st: &mut State, ids: &[u32]) {
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
 /// SESSION_START: every dragon the engine thought embodied is abstract again where it was last
-/// seen (puppets never outlive a session), and Java forgot the engine's dictionary.
+/// seen (puppets never outlive a session; the reset runs as soon as the dragons run, now or when
+/// switched on), and Java forgot the engine's dictionary.
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
-    st.dragons.enabled = module_mask & MODULE_ECOLOGY != 0;
     st.dragons.queue.clear();
     st.dragons.java_species = None;
     st.dragons.items_defined.clear();
-    if st.dragons.active() {
-        let at = Tick(super::phase1::world_tick(st, st.world.game_time));
+    // The first record of the engine's only session: what it holds is its pages as read, so a
+    // switch that is off from the start keeps exactly those (`last_page`).
+    st.dragons.enabled = module_mask & MODULE_ECOLOGY != 0;
+    st.dragons.reset_due = true;
+    reset_if_due(st);
+}
+
+/// The switch changed (MODULES, U10). Off: what the dragons hold is written once more as it is now and then kept;
+/// queued commands are dropped (all per session, S11). On: the reset is due.
+fn set_enabled(st: &mut State, on: bool) {
+    let was = st.dragons.enabled;
+    st.dragons.enabled = on;
+    if was && !on {
+        // Nothing decided before the switch goes out after it: bodies of before are gone when it
+        // comes back on.
+        let _ = st.dragons.engine.take_commands();
+        st.dragons.queue.clear();
+        if st.dragons.active() {
+            st.dragons.last_page = Some(encode_page(&st.dragons.engine));
+        }
+    }
+    if on && !was {
+        st.dragons.reset_due = true;
+    }
+    reset_if_due(st);
+}
+
+/// Bodies of an earlier session (or of before a switch-off) are gone: every dragon is abstract
+/// again where it was last seen.
+fn reset_if_due(st: &mut State) {
+    if st.dragons.reset_due && running(st) {
+        st.dragons.reset_due = false;
+        let at = Tick(super::phase1::world_tick(st, st.game_time));
         let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
         d.session_start(w, at.max(d.now()));
         st.phase1.taint();
@@ -252,7 +304,8 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
 }
 
 /// A record that is not journaled: Java's DICT entries (they may rename species and lairs),
-/// MODULES, PLAYER positions and DRAGON_STATE.
+/// MODULES and DRAGON_STATE. PLAYER positions go to the shared interest areas
+/// (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
@@ -261,29 +314,14 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             st.dragons.items_defined.clear();
         }
         obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            st.dragons.enabled = wire::u32_at(b, obs::modules::MASK) & MODULE_ECOLOGY != 0;
-        }
-        obs::PLAYER if rec.size() >= obs::player::SIZE => {
-            if !st.dragons.active() || !st.dragons.enabled {
-                return;
-            }
-            let uuid = (
-                wire::u64_at(b, obs::player::UUID_MOST),
-                wire::u64_at(b, obs::player::UUID_LEAST),
-            );
-            let pos = Pos::new(
-                rec.aux as u16,
-                wire::f64_at(b, obs::player::X).floor() as i32,
-                wire::f64_at(b, obs::player::Z).floor() as i32,
-            );
-            let at = Tick(super::phase1::world_tick(st, st.game_time));
-            catch_up_to(st, at);
-            let at = at.max(st.dragons.engine.now());
-            let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
-            d.observe_player(w, uuid, pos, at);
-            st.phase1.taint();
+            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_ECOLOGY != 0;
+            set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
+            if !st.dragons.enabled {
+                st.dragons.ignored += 1;
+                return;
+            }
             let dict = java_species(st);
             if let Ok((_, _, _, o)) = boundary::decode_obs(b, &dict) {
                 ingest(st, &o, st.game_time);
@@ -309,8 +347,14 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A dragon record `Replay` admitted.
+/// A dragon record `Replay` admitted. Switched off, the dragons ignore it (U10).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    if !st.dragons.enabled {
+        st.dragons.ignored += 1;
+        return;
+    }
+    // Everything before it happens first: the ships, the dragons and the world, in time order.
+    shared::catch_up(st, rec);
     let dict = java_species(st);
     let o = match boundary::decode_obs(rec.bytes, &dict) {
         Ok((_, _, _, o)) => o,
@@ -336,6 +380,7 @@ fn ingest(st: &mut State, o: &Obs, game_time: i64) {
     let at = at.max(st.dragons.engine.now()).max(st.phase1.world.now());
     with_infra(st, |d, w, infra| d.ingest(w, infra, o, at));
     st.phase1.taint();
+    reset_if_due(st);
     take_commands(st);
 }
 
@@ -366,34 +411,27 @@ fn with_infra<R>(
 
 // ---- simulate -----------------------------------------------------------------------------------
 
-/// Runs the dragons (and with them the world) to a world tick, if there are any.
-fn catch_up_to(st: &mut State, at: Tick) {
-    if !st.dragons.active() || at <= st.dragons.engine.now() {
+/// One round of the shared clock (`shared::run_to`): the dragons (and with them the world) run
+/// to world tick `t`, if they run. A round at their own time pops what is due then.
+pub(super) fn run_engine(st: &mut State, t: Tick) {
+    if !running(st) || t < st.dragons.engine.now() {
         return;
     }
-    let at = at.max(st.phase1.world.now());
-    with_infra(st, |d, w, infra| d.run_until(w, infra, at));
+    let t = t.max(st.phase1.world.now());
+    with_infra(st, |d, w, infra| d.run_until(w, infra, t));
     st.phase1.taint();
     take_commands(st);
 }
 
-/// Before a phase 1 input at `game_time`: the dragons' events up to it happen first, so the input
-/// meets the world they left (and the world never runs past a dragon event).
-pub(super) fn catch_up(st: &mut State, rec: &Rec<'_>) {
-    if rec.size() >= obs::BODY {
-        let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
-        let at = Tick(super::phase1::world_tick(st, gt));
-        catch_up_to(st, at);
-    }
-}
-
-/// The step's simulate point, before phase 1's: the dragons run to the hand-over's game time.
+/// The step's simulate point, before phase 1's: the dragons run to the hand-over's game time,
+/// with the ships, on the shared clock.
 pub(super) fn simulate(st: &mut State) {
-    if !st.dragons.enabled {
+    if !running(st) {
         return;
     }
+    reset_if_due(st);
     let at = Tick(super::phase1::world_tick(st, st.game_time));
-    catch_up_to(st, at);
+    shared::run_to(st, at);
 }
 
 fn take_commands(st: &mut State) {
@@ -440,6 +478,10 @@ fn cmd_size(c: &Cmd) -> usize {
 /// Writes the queued dragon commands while they fit; each takes the next sequence. Returns the
 /// highest sequence written and whether some wait for the next buffer.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    if !st.dragons.enabled {
+        st.dragons.queue.clear();
+        return (0, false);
+    }
     let mut highest = 0;
     while let Some(c) = st.dragons.queue.front().cloned() {
         // The engine's dictionary: the species bodies, and a materialization's dimension (the
@@ -506,19 +548,35 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 
 /// The dragons' page, taken at this step boundary with the phase 1 world's snapshot (S4).
 /// Commands the dragons decided and the link has not taken go to the queue first, as phase 1's.
+/// Switched off, the page they had (U10).
 pub(super) fn snapshot(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
+    if !st.dragons.enabled {
+        return st
+            .dragons
+            .last_page
+            .clone()
+            .map(|b| vec![(KEY_DRAGONS, b)])
+            .unwrap_or_default();
+    }
     take_commands(st);
     if !st.dragons.active() && !st.dragons.dropped_pages {
+        st.dragons.last_page = None;
         return Vec::new();
     }
     st.dragons.dropped_pages = false;
-    let body = st.dragons.engine.save();
+    let page = encode_page(&st.dragons.engine);
+    st.dragons.last_page = Some(page.clone());
+    vec![(KEY_DRAGONS, page)]
+}
+
+fn encode_page(d: &Dragons) -> Vec<u8> {
+    let body = d.save();
     let mut w = Writer::with_capacity(body.len() + 16);
     w.u32(MAGIC);
     w.u16(VERSION);
-    w.u64(st.dragons.engine.state_hash());
+    w.u64(d.state_hash());
     w.raw(&body);
-    vec![(KEY_DRAGONS, w.into_bytes())]
+    w.into_bytes()
 }
 
 /// Dragon pages a save no longer writes (dropped pages, or no dragons any more).
@@ -554,5 +612,10 @@ impl super::Engine {
             st.dragons.records,
             st.dragons.commands_written,
         )
+    }
+
+    /// How many dragon records the link ignored while the dragons were switched off (U10).
+    pub fn dragons_ignored(&self) -> u64 {
+        super::lock(&self.state).dragons.ignored
     }
 }
