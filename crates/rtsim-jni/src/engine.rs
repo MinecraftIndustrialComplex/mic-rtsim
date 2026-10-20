@@ -215,6 +215,9 @@ pub struct Inspect {
     pub phase1_sentiments: std::collections::BTreeMap<u64, Vec<(u64, u64, i8)>>,
     /// The phase 1 world's villages and bases.
     pub phase1_villages: std::collections::BTreeSet<u64>,
+    /// Every frame's topology as the TOPOLOGY records left it, and the records refused.
+    pub topologies: rtsim_space::SharedTopologies,
+    pub topology_refused: u64,
 }
 
 impl Inspect {
@@ -1112,6 +1115,8 @@ impl Engine {
             counters: st.world.counters,
             phase1_sentiments: phase1::sentiments(st),
             phase1_villages: phase1::villages(st),
+            topologies: st.topology.shared.clone(),
+            topology_refused: st.topology.refused,
         });
     }
 
