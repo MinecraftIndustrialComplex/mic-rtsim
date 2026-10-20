@@ -1090,7 +1090,7 @@ mod dragons {
 
     /// The dragons through the native engine and a fake Ice and Fire plugin: a lair and its
     /// structure dragon adopted, a player's wound (a grudge), the body captured with its health,
-    /// a player at the lair materializing it again, a natural spawn discarded; then a save, a hoard
+    /// a player at the lair materializing it again, a natural spawn left alone; then a save, a hoard
     /// robbery and a spawn-egg dragon after it, and a crash: the pages read back to the saved
     /// state hash, and the journal's replay books the robbery once and adopts the egg dragon once.
     #[test]
@@ -1180,17 +1180,21 @@ mod dragons {
         j.dragon_obs(&captured(agent, m.epoch, dim, 230.0));
         j.idle();
 
-        // A natural spawn: discarded (the sim owns the population, P13), answered by
-        // COMMAND_RESULT.
+        // A natural spawn (In Control's): left alone (R18 as amended by OG-1 and P13), so no
+        // command at all: neither adopted nor discarded.
         j.dragon_obs(&untagged((0xD1, 0x2), SpawnKind::Natural, 0, dim));
         j.idle();
         j.idle();
         let discards: Vec<_> = j
             .iaf
             .iter()
-            .filter(|(_, c)| matches!(c, D::Discard(x) if x.entity == (0xD1, 0x2)))
+            .filter(|(_, c)| match c {
+                D::Discard(x) => x.entity == (0xD1, 0x2),
+                D::Adopt(x) => x.entity == (0xD1, 0x2),
+                _ => false,
+            })
             .collect();
-        assert_eq!(discards.len(), 1, "the natural dragon is discarded");
+        assert!(discards.is_empty(), "the natural dragon is left alone");
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
