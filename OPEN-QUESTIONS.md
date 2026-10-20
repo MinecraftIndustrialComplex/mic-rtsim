@@ -77,6 +77,15 @@ code.
   (`PriceCurve`, `Market::offer`) so offers can be shown at once. Two copies can drift apart.
   Recommended: the engine sends ready-made bundles and Java only shows them; keep the Java copy only as
   a test oracle. Alternative: keep both, with a shared test vector file that both sides must pass.
+- **P3 (review 3): coins duplicated through a llama's chest.** When a caravan llama dies or is taken,
+  the sim books its planned cargo, not what its chest really held. A player who pays coins, kills the
+  llama holding them and picks them up leaves the sim's caravan still owning the coins. Recommended:
+  book exactly the items the bridge reports for that member. Alternative: keep V13 (log the difference,
+  don't correct). See docs/review3-2026-10-20.md.
+- **Phase 1 save pages a build can't read.** Today the whole engine refuses to start. Industry drops its
+  pages and starts fresh instead (W23). Recommended before release: the same as industry (drop and
+  start fresh, with a loud log), since nothing is released (your no-backcompat rule). Alternative:
+  refuse to start, as now.
 - **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 makes a
   caravan wait at the dock until full (6 slots) or two days. Busy roads now send full caravans; small
   flows still make caravans under one slot, and news now waits for caravans, so a robbery report with
