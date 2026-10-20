@@ -112,10 +112,13 @@ otherwise).
   `data/mic_rtsim_destroy_pollution.dat`), reported each sweep at the district's anchor chunk with Destroy's
   plugin code, so the engine learns it as an output of the box with no pollution concept of its own. A
   reconcile's delta writes it back at the anchor chunk: level types (greenhouse, ozone depletion, acid rain)
-  to the level, chunk types (smog, radioactivity) to that chunk. **Not built: "level types live".** The
-  engine writes a plugin's deposits back with the chunk or at once by plugin, not by good, so level types
-  wait for the next load; the Java side already applies an IND_DEPOSIT_DELTA for a pollution good if the
-  engine sends one. Measured in `pollutionIsAttributedAndCrudeOilIsADeposit`: +40 greenhouse and +12 smog
+  to the level, chunk types (smog, radioactivity) to that chunk. **Not built: "level types live"** (I14 as
+  decided on 2026-10-20 asks for it). The Java side is ready: an IND_DEPOSIT_DELTA for a level-type
+  pollution good is applied to the level at once, its chunk loaded or not (Destroy keeps level pollution in
+  the level). The engine is not: it writes deposits back only inside a district's reconcile and routes
+  them by plugin, not by good (`engine.rs`, `deposit.rs`), so live level types need a route by good and an
+  emission while unloaded there, which this branch leaves to the engine's owner (C28 is rebuilding the
+  factory model). Measured in `pollutionIsAttributedAndCrudeOilIsADeposit`: +40 greenhouse and +12 smog
   attributed, +9 smog outside the district not.
 
 **Power (I13, §7)**
@@ -218,6 +221,10 @@ otherwise).
 7. **A GameTest world saved before kernel2's page format 2** (`run-gametest/world/rtsim`) stops the native
    engine at start ("format 1, this build reads 2"), and every test of that project fails. Delete the
    project's `run-gametest/world` after merging the kernel change.
+8. **I18 as changed (no chat ledger, readouts only of what players build)** reaches this branch's ledger
+   warnings (Q8's gauge networks, Q7's channel into another dimension): they ride on the ledger lines the
+   earlier Java work shows in chat and on the display source. Whoever reworks the ledger for I18 decides
+   where they go; nothing here was changed for it.
 
 ## Proposal: IND_CLIMATE (not built)
 
