@@ -12,6 +12,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Engine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
@@ -53,21 +54,61 @@ import java.util.UUID;
 public final class RtsimSession {
 
     private static RtsimSession current;
+    /** Why the last server start opened no session, or null. */
+    private static volatile String startFailure;
 
-    /** The server's session, or null before start, after stop, or on a client. */
+    /** The server's session, or null before start, after stop, on a client, or when the engine did not open. */
     public static RtsimSession current() {
         return current;
     }
 
+    /** Why the last server start has no session (the engine did not open), or null. */
+    public static String startFailure() {
+        return startFailure;
+    }
+
     // ---- lifecycle ------------------------------------------------------------------------------
 
-    /** Server started: open the engine and the journal, replay what the engine has not acknowledged. */
+    /**
+     * Opens the engine {@code engine.implementation} names for this world: the Rust engine on
+     * {@code <world>/rtsim/}, or the stub on {@code <world>/rtsim/stub-pages.bin}.
+     */
+    private static Engine openEngine(MinecraftServer server, String kind) {
+        Path dir = server.getWorldPath(LevelResource.ROOT).resolve("rtsim");
+        if (RtsimConfig.ENGINE_STUB.equals(kind))
+            return StubEngine.open(dir.resolve("stub-pages.bin"));
+        int flags = RtsimConfig.Test.ENABLED ? NativeEngine.FLAG_TEST | NativeEngine.FLAG_NO_FSYNC : 0;
+        return NativeEngine.open(dir, 0, flags);
+    }
+
+    /**
+     * Server started: open the engine and the journal, replay what the engine has not acknowledged.
+     * If the engine does not open, there is no session this time (no fallback to the stub, A8): the
+     * log and {@code /rtsim perf} say why.
+     */
     static void startGlobal(MinecraftServer server) {
         if (current != null)
             current.close();
-        Path pages = server.getWorldPath(LevelResource.ROOT).resolve("rtsim").resolve("stub-pages.bin");
-        Engine engine = StubEngine.open(pages);
-        current = new RtsimSession(server, engine, JournalSavedData.get(server));
+        current = null;
+        startFailure = null;
+        String kind = "configured";
+        Engine engine = null;
+        try {
+            kind = RtsimConfig.engine();
+            engine = openEngine(server, kind);
+            current = new RtsimSession(server, engine, JournalSavedData.get(server));
+        } catch (RuntimeException | LinkageError e) {
+            startFailure = "the " + kind + " engine did not start: " + e.getMessage();
+            MicRtsim.LOGGER.error("[mic_rtsim] {}; the bridge does not run this session (no fallback to the stub)", startFailure, e);
+            if (engine != null) {
+                try {
+                    engine.close();
+                } catch (RuntimeException e2) {
+                    MicRtsim.LOGGER.error("[mic_rtsim] closing the engine that did not start also failed", e2);
+                }
+            }
+            return;
+        }
         MicRtsim.LOGGER.info("[mic_rtsim] session started: {}; journal holds {} unacknowledged observations ({} bytes), last applied command {}",
                 engine.describe(), current.journal().journal().size(), current.journal().journal().bytes(),
                 current.journal().journal().lastAppliedCmdSeq());
@@ -95,6 +136,8 @@ public final class RtsimSession {
     final BoundarySession boundary;
     final PuppetRegistry registry = new PuppetRegistry();
     final CommandDispatcher commands;
+    /** Phase 1: villages, markets, gossip, damage, rescues, robbery, bases, growth (PLAN.md §8). */
+    public final Phase1 phase1;
     /** The industry module (C15 to C19, INDUSTRY.md): districts, the stock sampler, ports, reconciles. */
     public final com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry;
 
@@ -155,7 +198,32 @@ public final class RtsimSession {
             boundary.dictId(Obs.DICT_BODY, kind.name());
         for (BodyAdapter body : BodyKinds.bodies())
             boundary.dictId(Obs.DICT_BODY, body.name());
+        this.phase1 = new Phase1(this);
         this.industry = new com.minecraftindustrialcomplex.mic_rtsim.industry.Industry(this, server);
+    }
+
+    public MinecraftServer server() {
+        return server;
+    }
+
+    /** The id of a name in Java's dictionary (Obs.DICT_*). */
+    public int dictId(int dictKind, String name) {
+        return boundary.dictId(dictKind, name);
+    }
+
+    /** Journals a COMMAND_RESULT; returns the record (its sequence at Obs.OBS_SEQ). */
+    public ByteBuffer commandResult(long cmdSeq, long opId, int status, long now) {
+        return journalCommandResult(cmdSeq, opId, status, now);
+    }
+
+    /** The chunk carries an applied engine op's COMMAND_RESULT until the engine acknowledges it (B42). */
+    public void carryResultInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
+        carryInChunk(chunk, commandResult);
+    }
+
+    /** An entity carries journal records until the engine acknowledges {@code lastSeq} (B42). */
+    public void carryOnEntity(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        carry(holder, records, lastSeq);
     }
 
     public Engine engine() {
@@ -202,6 +270,7 @@ public final class RtsimSession {
             long t0 = System.nanoTime();
             pass(now);
             discardOrphans();
+            phase1.endOfTick(ticks, now);
             passNanos = System.nanoTime() - t0;
             if (ticks % RtsimConfig.playerInterval() == 0)
                 observePlayers(now);
@@ -264,6 +333,8 @@ public final class RtsimSession {
             for (PuppetGroup.Member m : g.members)
                 if (!m.gone)
                     adapter(g, m).maintain(m.entity, g);
+            if (shadow || phase1.cargoCheckSoon)
+                phase1.cargo.check(g, now);
             if (shadow)
                 shadowGroup(g, now);
         }
@@ -362,6 +433,7 @@ public final class RtsimSession {
 
     private void observePlayers(long now) {
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
+            phase1.observePlayer(p, now);
             int dim = dimId(p.level().dimension());
             int at = boundary.direct(Obs.PLAYER, Obs.Player.SIZE, dim, now);
             if (at < 0)
@@ -438,6 +510,7 @@ public final class RtsimSession {
         }
         for (int i = 0; i < bodies.length; i++)
             kind.slots().get(i).adapter().afterGroupSpawned(bodies[i], group);
+        com.minecraftindustrialcomplex.mic_rtsim.market.CargoWatch.expectAll(group);
 
         ByteBuffer r = boundary.beginJournaled(Obs.MATERIALIZED, Obs.Materialized.SIZE, bodies.length, now);
         r.putLong(Obs.Materialized.AGENT, agent);
@@ -474,6 +547,8 @@ public final class RtsimSession {
      * leashed to a removed trader.
      */
     public void captureGroup(PuppetGroup g, int reason, long now) {
+        if (phase1 != null && reason != Obs.Dematerialized.SESSION_END)
+            phase1.cargo.check(g, now); // a change nobody reported yet is attributed before the capture
         g.removingByBridge = true;
         int captured = 0;
         for (PuppetGroup.Member m : g.members) {
@@ -551,6 +626,8 @@ public final class RtsimSession {
         registry.forgetMember(g, m);
         if (registry.byAgent(g.agent) == null)
             journalDematerialized(g, Obs.Dematerialized.MEMBERS_GONE, 0, now);
+        else
+            phase1.recapOffers(g); // the cargo it carried is gone from what the merchant can sell
         takes++;
     }
 
@@ -613,6 +690,8 @@ public final class RtsimSession {
         registry.forgetMember(g, m);
         if (registry.byAgent(g.agent) == null)
             journalDematerialized(g, Obs.Dematerialized.MEMBERS_GONE, 0, now);
+        else
+            phase1.recapOffers(g);
         deaths++;
     }
 
@@ -939,11 +1018,11 @@ public final class RtsimSession {
 
     // ---- dictionary -----------------------------------------------------------------------------
 
-    int dimId(ResourceKey<Level> dim) {
+    public int dimId(ResourceKey<Level> dim) {
         return boundary.dictId(Obs.DICT_DIMENSION, dim.location().toString());
     }
 
-    int itemId(Item item) {
+    public int itemId(Item item) {
         return boundary.dictId(Obs.DICT_ITEM, BuiltInRegistries.ITEM.getKey(item).toString());
     }
 

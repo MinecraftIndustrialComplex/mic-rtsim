@@ -2,7 +2,6 @@ package com.minecraftindustrialcomplex.mic_rtsim.engine;
 
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Buffers;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
-import com.minecraftindustrialcomplex.mic_rtsim.boundary.Engine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.RecordReader;
@@ -47,12 +46,13 @@ import java.util.function.Consumer;
  *   <li>writes the commands a test (or {@code /rtsim stub}) scripts, assigning command sequences and
  *       its own dictionary ids, as many as fit, the rest next step;</li>
  *   <li>keeps "pages": a snapshot taken at a save request, written to {@code pagesFile} when there
- *       is one. The next command header acknowledges what the snapshot includes. A "crash" is simply
- *       dropping the instance and building a new one from the last pages.</li>
+ *       is one. The next command header acknowledges what the snapshot includes. A "crash"
+ *       ({@link #crashAndReopen}) is dropping the instance without saving and building a new one from
+ *       the last pages.</li>
  * </ul>
  * It simulates nothing.
  */
-public final class StubEngine implements Engine {
+public final class StubEngine implements ScriptedEngine {
 
     /** Record bytes per buffer. PLACEHOLDER: the real engine sizes buffers from caps and quotas (PLAN.md §4.5). */
     public static final int DEFAULT_CAPACITY = 256 * 1024;
@@ -104,13 +104,6 @@ public final class StubEngine implements Engine {
         }
     }
 
-    /** One observation record the stub received, for tests and {@code /rtsim stub}. */
-    public record Received(long handover, int kind, int aux, long obsSeq, boolean skipped, byte[] bytes) {
-        public ByteBuffer view() {
-            return ByteBuffer.wrap(bytes).order(Layout.ORDER);
-        }
-    }
-
     /** Writes one scripted command; the stub assigns its sequence. */
     public interface CommandOut {
         /** The stub's dictionary id for a name, sending the DICT command first if it is new. */
@@ -128,6 +121,7 @@ public final class StubEngine implements Engine {
     private final ByteBuffer[] cmd = new ByteBuffer[2];
     private final ExecutorService worker;
     private final Path pagesFile;
+    private final int capacity;
     private final RecordReader reader = new RecordReader();
     private final RecordWriter writer = new RecordWriter();
 
@@ -136,6 +130,9 @@ public final class StubEngine implements Engine {
     private volatile long saveThrough;
     private volatile boolean saveAtStepEnd;
     private volatile String protocolError;
+    /** failForTest: the next step fails, and every one after it. */
+    private volatile boolean failed;
+    private volatile boolean failNext;
 
     // Engine memory. Touched on the worker thread; read by tests through synchronized getters.
     private long maxObsSeq;
@@ -150,13 +147,19 @@ public final class StubEngine implements Engine {
     private long steps;
     private long staleSkipped;
     private long opDuplicates;
+    /** Java op ids of events (TAKEN, DIED, TRADE, CARGO_CHANGED), with how often each arrived unskipped. */
+    private final Map<Long, Integer> eventOps = new HashMap<>();
+    private long eventOpDuplicates;
     private boolean started;
+    /** Guarded by {@code worker}. */
+    private boolean closed;
 
     private final ConcurrentLinkedQueue<Consumer<CommandOut>> script = new ConcurrentLinkedQueue<>();
 
     public StubEngine(Pages pages, Path pagesFile, int capacity) {
         this.disk = pages;
         this.pagesFile = pagesFile;
+        this.capacity = capacity;
         for (int i = 0; i < 2; i++) {
             obs[i] = Buffers.allocate(capacity);
             cmd[i] = Buffers.allocate(capacity);
@@ -245,7 +248,12 @@ public final class StubEngine implements Engine {
         saveRequested = true;
     }
 
-    /** Test helper: save the pages at the end of the next step, whatever it holds. */
+    @Override
+    public void failForTest() {
+        failNext = true;
+    }
+
+    @Override
     public void requestSaveAtNextStep() {
         saveAtStepEnd = true;
     }
@@ -257,22 +265,63 @@ public final class StubEngine implements Engine {
 
     @Override
     public void close() {
-        worker.shutdown();
-        try {
-            worker.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        if (!stopWorker())
+            return;
         synchronized (this) {
             if (pagesFile != null)
                 savePages();
         }
     }
 
+    /** Ends the session without the final save: a crash. Steps already submitted still run. */
+    public void closeWithoutSaving() {
+        stopWorker();
+    }
+
+    /** Stops the worker once; false if this engine was already closed (saved or crashed). */
+    private boolean stopWorker() {
+        synchronized (worker) {
+            if (closed)
+                return false;
+            closed = true;
+        }
+        worker.shutdown();
+        try {
+            worker.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return true;
+    }
+
+    @Override
+    public StubEngine crashAndReopen() {
+        closeWithoutSaving();
+        return new StubEngine(pages(), pagesFile, capacity);
+    }
+
     // ---- the step -------------------------------------------------------------------------------
 
     private synchronized void step(long h) {
         steps++;
+        if (failNext || failed) {
+            failNext = false;
+            failed = true;
+            protocolError = "step " + h + ": failed on purpose (failForTest)";
+            ByteBuffer fo = obs[(int) (h & 1)];
+            if (Seq.getAcquire(fo, Layout.H_PUBLISHED) == h)
+                Seq.setRelease(fo, Layout.H_CONSUMED, h);
+            ByteBuffer fc = cmd[(int) (h & 1)];
+            fc.putInt(Layout.H_USED, 0);
+            fc.putInt(Layout.H_COUNT, 0);
+            fc.putInt(Layout.H_FLAGS, Layout.CMD_FLAG_FAILED);
+            fc.putLong(Layout.H_WORD_A, ackedObsSeq);
+            fc.putLong(Layout.H_WORD_B, 0L);
+            fc.putLong(Layout.H_WORD_C, 0L);
+            fc.putLong(Layout.H_RESERVED, 0L);
+            Seq.setRelease(fc, Layout.H_PUBLISHED, h);
+            return;
+        }
         ByteBuffer o = obs[(int) (h & 1)];
         if (Seq.getAcquire(o, Layout.H_PUBLISHED) != h) {
             protocolError = "step " + h + ": observation buffer not published";
@@ -405,6 +454,19 @@ public final class StubEngine implements Engine {
                     int status = r.aux();
                     if (status == Obs.CommandResult.APPLIED || status == Obs.CommandResult.DUPLICATE_OP)
                         appliedOps.add(b.getLong(at + Obs.CommandResult.OP_ID));
+                } else {
+                    int opAt = switch (kind) {
+                        case Obs.TAKEN -> Obs.Taken.OP_ID;
+                        case Obs.DIED -> Obs.Died.OP_ID;
+                        case Obs.TRADE -> Obs.Trade.OP_ID;
+                        case Obs.CARGO_CHANGED -> Obs.CargoChanged.OP_ID;
+                        default -> -1;
+                    };
+                    if (opAt > 0 && r.size() >= opAt + 8) {
+                        // An event's op id applies at most once: the engine counts the cargo it moves once.
+                        if (eventOps.merge(b.getLong(at + opAt), 1, Integer::sum) > 1)
+                            eventOpDuplicates++;
+                    }
                 }
             }
         }
@@ -435,18 +497,21 @@ public final class StubEngine implements Engine {
         script.add(command);
     }
 
-    /** One member of a scripted SPAWN_GROUP. Items are (slot, item name, count). */
-    public record MemberSpec(int index, float health, int bodyA, int bodyB, List<ItemSpec> items) {
-        public static MemberSpec plain(int index) {
-            return new MemberSpec(index, 0f, -1, -1, List.of());
-        }
-    }
-
-    public record ItemSpec(int slot, String item, int count) {}
-
+    @Override
     public void spawnGroup(long agent, int epoch, String groupKind, String dimension, double x, double y, double z,
                            List<MemberSpec> members) {
         script(spawnGroupCommand(agent, epoch, groupKind, dimension, x, y, z, members));
+    }
+
+    @Override
+    public void spawnTogether(SpawnSpec... spawns) {
+        List<Consumer<CommandOut>> commands = new ArrayList<>();
+        for (SpawnSpec s : spawns)
+            commands.add(spawnGroupCommand(s.agent(), s.epoch(), s.groupKind(), s.dimension(), s.x(), s.y(), s.z(), s.members()));
+        script(out -> {
+            for (Consumer<CommandOut> c : commands)
+                c.accept(out);
+        });
     }
 
     /** A SPAWN_GROUP command, for {@link #scriptTogether}. */
@@ -504,6 +569,7 @@ public final class StubEngine implements Engine {
         });
     }
 
+    @Override
     public void despawnGroup(long agent, int epoch) {
         script(out -> {
             int at = out.reserve(Cmd.DESPAWN_GROUP, Cmd.DespawnGroup.SIZE, 0);
@@ -514,6 +580,7 @@ public final class StubEngine implements Engine {
         });
     }
 
+    @Override
     public void steerGroup(long agent, int epoch, double x, double y, double z, float speed) {
         script(out -> {
             int at = out.reserve(Cmd.STEER_GROUP, Cmd.SteerGroup.SIZE, 0);
@@ -529,10 +596,7 @@ public final class StubEngine implements Engine {
         });
     }
 
-    /**
-     * Scripts a TRANSFER_TO_CONTAINER. The stub does not check its own op ledger first, so a test can
-     * make it issue an op id Java has already applied (what an engine rolled back by a crash does).
-     */
+    @Override
     public void transferToContainer(long opId, String dimension, int x, int y, int z, String item, int count) {
         script(out -> {
             int dim = out.dict(Obs.DICT_DIMENSION, dimension);
@@ -551,12 +615,168 @@ public final class StubEngine implements Engine {
         });
     }
 
-    /**
-     * Test helper: makes the next scripted command carry {@code next} as its sequence, as an engine
-     * whose counter went backwards would. Java must skip anything at or below its last applied one.
-     */
+    @Override
     public synchronized void rewindCommandSequence(long next) {
         nextCmdSeq = next;
+    }
+
+    // ---- phase 1 scripting ----------------------------------------------------------------------
+
+    /** One good of a scripted MARKET, in rtsim-trade units (thousandths; millionths of a coin per item). */
+    public record GoodSpec(String item, long stock, long target, long anchor, int rNum, int rDen) {}
+
+    public void market(long village, long asOfObsSeq, String currency, long treasury, long treasuryTarget, int worstNum, int worstDen,
+                       List<GoodSpec> goods) {
+        script(out -> {
+            int cur = out.dict(Obs.DICT_ITEM, currency);
+            int[] ids = new int[goods.size()];
+            for (int i = 0; i < ids.length; i++)
+                ids[i] = out.dict(Obs.DICT_ITEM, goods.get(i).item());
+            int at = out.reserve(Cmd.MARKET, Cmd.Market.size(goods.size()), goods.size());
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.Market.VILLAGE, village);
+            b.putLong(at + Cmd.Market.AS_OF_OBS_SEQ, asOfObsSeq);
+            b.putInt(at + Cmd.Market.CURRENCY, cur);
+            b.putLong(at + Cmd.Market.TREASURY, treasury);
+            b.putLong(at + Cmd.Market.TREASURY_TARGET, treasuryTarget);
+            b.putInt(at + Cmd.Market.WORST_NUM, worstNum);
+            b.putInt(at + Cmd.Market.WORST_DEN, worstDen);
+            for (int i = 0; i < ids.length; i++) {
+                GoodSpec g = goods.get(i);
+                int o = at + Cmd.Market.GOODS + i * Cmd.Market.GOOD;
+                b.putInt(o + Cmd.Market.G_ITEM, ids[i]);
+                b.putLong(o + Cmd.Market.G_STOCK, g.stock());
+                b.putLong(o + Cmd.Market.G_TARGET, g.target());
+                b.putLong(o + Cmd.Market.G_ANCHOR, g.anchor());
+                b.putInt(o + Cmd.Market.G_R_NUM, g.rNum());
+                b.putInt(o + Cmd.Market.G_R_DEN, g.rDen());
+            }
+        });
+    }
+
+    /** One offer of a scripted MERCHANT_OFFERS; costB null for none. */
+    public record OfferSpec(String costA, int costACount, String costB, int costBCount, String result, int resultCount,
+                            int maxUses, int flags) {}
+
+    public void merchantOffers(long agent, int epoch, int member, List<OfferSpec> offers) {
+        script(out -> {
+            int[][] ids = new int[offers.size()][3];
+            for (int i = 0; i < offers.size(); i++) {
+                OfferSpec o = offers.get(i);
+                ids[i][0] = out.dict(Obs.DICT_ITEM, o.costA());
+                ids[i][1] = o.costB() == null ? 0 : out.dict(Obs.DICT_ITEM, o.costB());
+                ids[i][2] = out.dict(Obs.DICT_ITEM, o.result());
+            }
+            int at = out.reserve(Cmd.MERCHANT_OFFERS, Cmd.MerchantOffers.size(offers.size()), offers.size());
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.MerchantOffers.AGENT, agent);
+            b.putInt(at + Cmd.MerchantOffers.EPOCH, epoch);
+            b.putInt(at + Cmd.MerchantOffers.MEMBER, member);
+            for (int i = 0; i < offers.size(); i++) {
+                OfferSpec o = offers.get(i);
+                int p = at + Cmd.MerchantOffers.OFFERS + i * Cmd.MerchantOffers.OFFER;
+                b.putInt(p + Cmd.MerchantOffers.O_COST_A_ITEM, ids[i][0]);
+                b.putInt(p + Cmd.MerchantOffers.O_COST_A_COUNT, o.costACount());
+                b.putInt(p + Cmd.MerchantOffers.O_COST_B_ITEM, ids[i][1]);
+                b.putInt(p + Cmd.MerchantOffers.O_COST_B_COUNT, o.costBCount());
+                b.putInt(p + Cmd.MerchantOffers.O_RESULT_ITEM, ids[i][2]);
+                b.putInt(p + Cmd.MerchantOffers.O_RESULT_COUNT, o.resultCount());
+                b.putInt(p + Cmd.MerchantOffers.O_MAX_USES, o.maxUses());
+                b.putFloat(p + Cmd.MerchantOffers.O_PRICE_MULT, 0.05f);
+                b.putInt(p + Cmd.MerchantOffers.O_FLAGS, o.flags());
+            }
+        });
+    }
+
+    public void writeGossip(long opId, long village, java.util.UUID player, int gossipType, int amount, int report, int flags) {
+        script(out -> {
+            int at = out.reserve(Cmd.WRITE_GOSSIP, Cmd.WriteGossip.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.WriteGossip.OP_ID, opId);
+            b.putLong(at + Cmd.WriteGossip.VILLAGE, village);
+            b.putLong(at + Cmd.WriteGossip.PLAYER_MOST, player.getMostSignificantBits());
+            b.putLong(at + Cmd.WriteGossip.PLAYER_LEAST, player.getLeastSignificantBits());
+            b.putInt(at + Cmd.WriteGossip.GOSSIP, gossipType);
+            b.putInt(at + Cmd.WriteGossip.AMOUNT, amount);
+            b.putInt(at + Cmd.WriteGossip.REPORT, report);
+            b.putInt(at + Cmd.WriteGossip.FLAGS, flags);
+        });
+    }
+
+    public void sentiment(long holder, int dislike, int friend, boolean replace, Map<java.util.UUID, Integer> entries) {
+        List<Map.Entry<java.util.UUID, Integer>> list = new ArrayList<>(entries.entrySet());
+        script(out -> {
+            int at = out.reserve(Cmd.SENTIMENT, Cmd.Sentiment.size(list.size()), list.size());
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.Sentiment.HOLDER, holder);
+            b.putInt(at + Cmd.Sentiment.DISLIKE, dislike);
+            b.putInt(at + Cmd.Sentiment.FRIEND, friend);
+            b.putInt(at + Cmd.Sentiment.FLAGS, replace ? Cmd.Sentiment.FLAG_REPLACE : 0);
+            for (int i = 0; i < list.size(); i++) {
+                int e = at + Cmd.Sentiment.ENTRIES + i * Cmd.Sentiment.ENTRY;
+                b.putLong(e, list.get(i).getKey().getMostSignificantBits());
+                b.putLong(e + 8, list.get(i).getKey().getLeastSignificantBits());
+                b.putInt(e + 16, list.get(i).getValue());
+            }
+        });
+    }
+
+    public void placeHouse(long opId, long village, String dimension, String template, String processors, int x, int y, int z,
+                           int rotation, int mirror, int flags, int radius, long seed, int yOffset) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int t = out.dict(Obs.DICT_TEMPLATE, template);
+            int p = processors == null ? 0 : out.dict(Obs.DICT_PROCESSORS, processors);
+            int at = out.reserve(Cmd.PLACE_HOUSE, Cmd.PlaceHouse.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.PlaceHouse.OP_ID, opId);
+            b.putLong(at + Cmd.PlaceHouse.VILLAGE, village);
+            b.putInt(at + Cmd.PlaceHouse.DIM, dim);
+            b.putInt(at + Cmd.PlaceHouse.TEMPLATE, t);
+            b.putInt(at + Cmd.PlaceHouse.PROCESSORS, p);
+            b.putInt(at + Cmd.PlaceHouse.X, x);
+            b.putInt(at + Cmd.PlaceHouse.Y, y);
+            b.putInt(at + Cmd.PlaceHouse.Z, z);
+            b.put(at + Cmd.PlaceHouse.ROTATION, (byte) rotation);
+            b.put(at + Cmd.PlaceHouse.MIRROR, (byte) mirror);
+            b.putShort(at + Cmd.PlaceHouse.FLAGS, (short) flags);
+            b.putInt(at + Cmd.PlaceHouse.RADIUS, radius);
+            b.putLong(at + Cmd.PlaceHouse.SEED, seed);
+            b.putInt(at + Cmd.PlaceHouse.Y_OFFSET, yOffset);
+        });
+    }
+
+    public void spawnResident(long opId, long village, String dimension, String body, String profession, int flags,
+                              double x, double y, double z, long house) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int bd = out.dict(Obs.DICT_BODY, body);
+            int pr = profession == null ? 0 : out.dict(Obs.DICT_PROFESSION, profession);
+            int at = out.reserve(Cmd.SPAWN_RESIDENT, Cmd.SpawnResident.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.SpawnResident.OP_ID, opId);
+            b.putLong(at + Cmd.SpawnResident.VILLAGE, village);
+            b.putInt(at + Cmd.SpawnResident.DIM, dim);
+            b.putInt(at + Cmd.SpawnResident.BODY, bd);
+            b.putInt(at + Cmd.SpawnResident.PROFESSION, pr);
+            b.putInt(at + Cmd.SpawnResident.FLAGS, flags);
+            b.putDouble(at + Cmd.SpawnResident.X, x);
+            b.putDouble(at + Cmd.SpawnResident.Y, y);
+            b.putDouble(at + Cmd.SpawnResident.Z, z);
+            b.putLong(at + Cmd.SpawnResident.HOUSE, house);
+        });
     }
 
     // ---- inspection -----------------------------------------------------------------------------
@@ -566,10 +786,12 @@ public final class StubEngine implements Engine {
         return disk;
     }
 
+    @Override
     public synchronized List<Received> received() {
         return Collections.unmodifiableList(new ArrayList<>(received));
     }
 
+    @Override
     public synchronized List<Received> received(int kind) {
         List<Received> out = new ArrayList<>();
         for (Received r : received)
@@ -578,43 +800,67 @@ public final class StubEngine implements Engine {
         return out;
     }
 
+    @Override
     public synchronized long ledger(long store) {
         return ledger.getOrDefault(store, 0L);
     }
 
+    @Override
     public synchronized boolean opApplied(long opId) {
         return appliedOps.contains(opId);
     }
 
+    @Override
     public synchronized long steps() {
         return steps;
     }
 
+    @Override
     public synchronized long staleSkipped() {
         return staleSkipped;
     }
 
+    @Override
     public synchronized long opDuplicates() {
         return opDuplicates;
     }
 
+    /** How many times an event op id (TAKEN, DIED, TRADE, CARGO_CHANGED) arrived unskipped; the engine applies it once. */
+    @Override
+    public synchronized int eventOpCount(long opId) {
+        return eventOps.getOrDefault(opId, 0);
+    }
+
+    public synchronized long eventOpDuplicates() {
+        return eventOpDuplicates;
+    }
+
+    @Override
     public synchronized String javaDictName(int id) {
         return javaDict.get(id);
     }
 
+    @Override
     public synchronized long maxObsSeq() {
         return maxObsSeq;
     }
 
+    @Override
+    public long pagesObsSeq() {
+        return disk.obsSeq();
+    }
+
+    @Override
     public int scriptedPending() {
         return script.size();
     }
 
+    @Override
     public String protocolError() {
         return protocolError;
     }
 
-    /** Test helper: blocks until every submitted step has run. Never call it on a tick in real play. */
+    @Override
     public void awaitIdle() {
         try {
             worker.submit(() -> {}).get(10, TimeUnit.SECONDS);

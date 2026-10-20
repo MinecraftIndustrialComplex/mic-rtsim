@@ -6,7 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeStateData;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.MinecraftServer;
@@ -34,8 +34,8 @@ public final class ModuleSwitchGameTests {
         return server.getGameRules().getBoolean(GameRules.RULE_DO_TRADER_SPAWNING);
     }
 
-    private static int lastModuleMask(StubEngine stub) {
-        List<StubEngine.Received> recs = stub.received(Obs.MODULES);
+    private static int lastModuleMask(ScriptedEngine engine) {
+        List<ScriptedEngine.Received> recs = engine.received(Obs.MODULES);
         return recs.isEmpty() ? -1 : recs.get(recs.size() - 1).view().getInt(Obs.Modules.MASK);
     }
 
@@ -57,8 +57,8 @@ public final class ModuleSwitchGameTests {
                     check("and the sim no longer owns it", !state.traderRuleOwned());
                 })
                 .thenWaitUntil(() -> check("the engine was told trade is off",
-                        lastModuleMask(RtsimTests.stub()) == RtsimConfig.effectiveMask()
-                                && (lastModuleMask(RtsimTests.stub()) & Module.TRADE.bit()) == 0))
+                        lastModuleMask(RtsimTests.engine()) == RtsimConfig.effectiveMask()
+                                && (lastModuleMask(RtsimTests.engine()) & Module.TRADE.bit()) == 0))
                 .thenExecute(() -> {
                     RtsimConfig.Test.setModule(Module.TRADE, null);
                     BridgeEvents.moduleSwitchesChanged(server);
@@ -75,7 +75,7 @@ public final class ModuleSwitchGameTests {
                     check("a hand-set true is taken back while the sim owns traders", !rule(server));
                 })
                 .thenWaitUntil(() -> check("the engine was told trade is back on",
-                        (lastModuleMask(RtsimTests.stub()) & Module.TRADE.bit()) != 0))
+                        (lastModuleMask(RtsimTests.engine()) & Module.TRADE.bit()) != 0))
                 .thenSucceed();
     }
 }

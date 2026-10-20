@@ -55,6 +55,12 @@ final class CommandDispatcher implements Handover.CommandSink {
             case Cmd.DESPAWN_GROUP -> Cmd.DespawnGroup.SIZE;
             case Cmd.STEER_GROUP -> Cmd.SteerGroup.SIZE;
             case Cmd.TRANSFER_TO_CONTAINER -> Cmd.TransferToContainer.SIZE;
+            case Cmd.MARKET -> Cmd.Market.GOODS;
+            case Cmd.MERCHANT_OFFERS -> Cmd.MerchantOffers.OFFERS;
+            case Cmd.WRITE_GOSSIP -> Cmd.WriteGossip.SIZE;
+            case Cmd.SENTIMENT -> Cmd.Sentiment.ENTRIES;
+            case Cmd.PLACE_HOUSE -> Cmd.PlaceHouse.SIZE;
+            case Cmd.SPAWN_RESIDENT -> Cmd.SpawnResident.SIZE;
             default -> Cmd.BODY;
         };
     }
@@ -126,6 +132,40 @@ final class CommandDispatcher implements Handover.CommandSink {
             }
             case Cmd.TRANSFER_TO_CONTAINER -> {
                 transferToContainer(b, at, now);
+                applied++;
+                return true;
+            }
+            case Cmd.MARKET -> {
+                market(b, at, size, aux);
+                applied++;
+                return true;
+            }
+            case Cmd.MERCHANT_OFFERS -> {
+                merchantOffers(b, at, size, aux);
+                applied++;
+                return true;
+            }
+            case Cmd.WRITE_GOSSIP -> {
+                session.phase1.writeGossip(b.getLong(at + Cmd.CMD_SEQ), b.getLong(at + Cmd.WriteGossip.OP_ID),
+                        b.getLong(at + Cmd.WriteGossip.VILLAGE),
+                        new java.util.UUID(b.getLong(at + Cmd.WriteGossip.PLAYER_MOST), b.getLong(at + Cmd.WriteGossip.PLAYER_LEAST)),
+                        b.getInt(at + Cmd.WriteGossip.GOSSIP), b.getInt(at + Cmd.WriteGossip.AMOUNT),
+                        b.getInt(at + Cmd.WriteGossip.REPORT), b.getInt(at + Cmd.WriteGossip.FLAGS), now);
+                applied++;
+                return true;
+            }
+            case Cmd.SENTIMENT -> {
+                sentiment(b, at, size, aux);
+                applied++;
+                return true;
+            }
+            case Cmd.PLACE_HOUSE -> {
+                placeHouse(b, at, now);
+                applied++;
+                return true;
+            }
+            case Cmd.SPAWN_RESIDENT -> {
+                spawnResident(b, at, now); // queued; the spawn itself counts against the quota when it happens
                 applied++;
                 return true;
             }
@@ -266,6 +306,133 @@ final class CommandDispatcher implements Handover.CommandSink {
             net.minecraft.world.Containers.dropItemStack(level, pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5, rest);
         }
         session.carryInChunk(chunk, session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now));
+    }
+
+    // ---- phase 1 --------------------------------------------------------------------------------
+
+    private void market(ByteBuffer b, int at, int size, int goods) {
+        Item currency = item(b.getInt(at + Cmd.Market.CURRENCY));
+        if (currency == null || goods < 0 || Cmd.Market.size(goods) > size) {
+            malformed++;
+            return;
+        }
+        java.util.Map<Item, com.minecraftindustrialcomplex.mic_rtsim.market.MarketBook.Good> lines = new java.util.HashMap<>();
+        for (int i = 0; i < goods; i++) {
+            int g = at + Cmd.Market.GOODS + i * Cmd.Market.GOOD;
+            Item item = item(b.getInt(g + Cmd.Market.G_ITEM));
+            if (item == null) {
+                malformed++;
+                continue;
+            }
+            try {
+                lines.put(item, new com.minecraftindustrialcomplex.mic_rtsim.market.MarketBook.Good(b.getLong(g + Cmd.Market.G_STOCK),
+                        new com.minecraftindustrialcomplex.mic_rtsim.market.PriceCurve(b.getLong(g + Cmd.Market.G_ANCHOR),
+                                b.getInt(g + Cmd.Market.G_R_NUM), b.getInt(g + Cmd.Market.G_R_DEN), b.getLong(g + Cmd.Market.G_TARGET))));
+            } catch (IllegalArgumentException ex) {
+                malformed++;
+            }
+        }
+        session.phase1.market(b.getLong(at + Cmd.Market.VILLAGE), b.getLong(at + Cmd.Market.AS_OF_OBS_SEQ), currency,
+                b.getLong(at + Cmd.Market.TREASURY), b.getLong(at + Cmd.Market.TREASURY_TARGET),
+                b.getInt(at + Cmd.Market.WORST_NUM), b.getInt(at + Cmd.Market.WORST_DEN), lines);
+    }
+
+    private void merchantOffers(ByteBuffer b, int at, int size, int count) {
+        if (count < 0 || Cmd.MerchantOffers.size(count) > size) {
+            malformed++;
+            return;
+        }
+        java.util.List<com.minecraftindustrialcomplex.mic_rtsim.market.PuppetOffers.Spec> specs = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            int o = at + Cmd.MerchantOffers.OFFERS + i * Cmd.MerchantOffers.OFFER;
+            Item a = item(b.getInt(o + Cmd.MerchantOffers.O_COST_A_ITEM));
+            int bId = b.getInt(o + Cmd.MerchantOffers.O_COST_B_ITEM);
+            Item bi = bId == 0 ? null : item(bId);
+            Item r = item(b.getInt(o + Cmd.MerchantOffers.O_RESULT_ITEM));
+            int ac = b.getInt(o + Cmd.MerchantOffers.O_COST_A_COUNT), rc = b.getInt(o + Cmd.MerchantOffers.O_RESULT_COUNT);
+            if (a == null || r == null || (bId != 0 && bi == null) || ac <= 0 || rc <= 0
+                    || ac > a.getDefaultMaxStackSize() || rc > r.getDefaultMaxStackSize()) {
+                malformed++;
+                continue;
+            }
+            specs.add(new com.minecraftindustrialcomplex.mic_rtsim.market.PuppetOffers.Spec(a, ac, bi, b.getInt(o + Cmd.MerchantOffers.O_COST_B_COUNT),
+                    r, rc, b.getInt(o + Cmd.MerchantOffers.O_MAX_USES), b.getInt(o + Cmd.MerchantOffers.O_XP),
+                    b.getFloat(o + Cmd.MerchantOffers.O_PRICE_MULT), b.getInt(o + Cmd.MerchantOffers.O_FLAGS)));
+        }
+        session.phase1.merchantOffers(b.getLong(at + Cmd.MerchantOffers.AGENT), b.getInt(at + Cmd.MerchantOffers.EPOCH),
+                b.getInt(at + Cmd.MerchantOffers.MEMBER), specs);
+    }
+
+    private void sentiment(ByteBuffer b, int at, int size, int count) {
+        if (count < 0 || Cmd.Sentiment.size(count) > size) {
+            malformed++;
+            return;
+        }
+        java.util.List<java.util.UUID> players = new ArrayList<>(count);
+        java.util.List<Integer> values = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            int e = at + Cmd.Sentiment.ENTRIES + i * Cmd.Sentiment.ENTRY;
+            players.add(new java.util.UUID(b.getLong(e), b.getLong(e + 8)));
+            values.add(b.getInt(e + 16));
+        }
+        session.phase1.sentiment(b.getLong(at + Cmd.Sentiment.HOLDER), b.getInt(at + Cmd.Sentiment.DISLIKE),
+                b.getInt(at + Cmd.Sentiment.FRIEND), (b.getInt(at + Cmd.Sentiment.FLAGS) & Cmd.Sentiment.FLAG_REPLACE) != 0, players, values);
+    }
+
+    private void placeHouse(ByteBuffer b, int at, long now) {
+        com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry.Build h = new com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry.Build();
+        h.op = b.getLong(at + Cmd.PlaceHouse.OP_ID);
+        h.cmdSeq = b.getLong(at + Cmd.CMD_SEQ);
+        h.village = b.getLong(at + Cmd.PlaceHouse.VILLAGE);
+        ServerLevel level = level(b.getInt(at + Cmd.PlaceHouse.DIM));
+        h.dimension = level == null ? null : level.dimension();
+        h.template = location(name(Obs.DICT_TEMPLATE, b.getInt(at + Cmd.PlaceHouse.TEMPLATE)));
+        int proc = b.getInt(at + Cmd.PlaceHouse.PROCESSORS);
+        h.processors = proc == 0 ? null : location(name(Obs.DICT_PROCESSORS, proc));
+        h.x = b.getInt(at + Cmd.PlaceHouse.X);
+        h.y = b.getInt(at + Cmd.PlaceHouse.Y);
+        h.z = b.getInt(at + Cmd.PlaceHouse.Z);
+        h.rotation = b.get(at + Cmd.PlaceHouse.ROTATION) & 0xFF;
+        h.mirror = b.get(at + Cmd.PlaceHouse.MIRROR) & 0xFF;
+        h.flags = b.getShort(at + Cmd.PlaceHouse.FLAGS) & 0xFFFF;
+        h.radius = b.getInt(at + Cmd.PlaceHouse.RADIUS);
+        h.seed = b.getLong(at + Cmd.PlaceHouse.SEED);
+        h.yOffset = b.getInt(at + Cmd.PlaceHouse.Y_OFFSET);
+        if (h.dimension == null || h.template == null) {
+            session.journalCommandResult(h.cmdSeq, h.op, Obs.CommandResult.FAILED, now);
+            return;
+        }
+        session.phase1.placeHouse(h, now);
+    }
+
+    private void spawnResident(ByteBuffer b, int at, long now) {
+        com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry.ResidentOrder o = new com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry.ResidentOrder();
+        o.op = b.getLong(at + Cmd.SpawnResident.OP_ID);
+        o.cmdSeq = b.getLong(at + Cmd.CMD_SEQ);
+        o.village = b.getLong(at + Cmd.SpawnResident.VILLAGE);
+        ServerLevel level = level(b.getInt(at + Cmd.SpawnResident.DIM));
+        o.dimension = level == null ? null : level.dimension();
+        o.body = name(Obs.DICT_BODY, b.getInt(at + Cmd.SpawnResident.BODY));
+        int prof = b.getInt(at + Cmd.SpawnResident.PROFESSION);
+        o.profession = prof == 0 ? null : name(Obs.DICT_PROFESSION, prof);
+        o.flags = b.getInt(at + Cmd.SpawnResident.FLAGS);
+        o.x = b.getDouble(at + Cmd.SpawnResident.X);
+        o.y = b.getDouble(at + Cmd.SpawnResident.Y);
+        o.z = b.getDouble(at + Cmd.SpawnResident.Z);
+        o.house = b.getLong(at + Cmd.SpawnResident.HOUSE);
+        if (o.dimension == null || o.body == null) {
+            session.journalCommandResult(o.cmdSeq, o.op, Obs.CommandResult.FAILED, now);
+            return;
+        }
+        session.phase1.spawnResident(o, now);
+    }
+
+    private String name(int dictKind, int id) {
+        return dict.get(((long) dictKind << 32) | (id & 0xFFFF_FFFFL));
+    }
+
+    private static ResourceLocation location(String name) {
+        return name == null ? null : ResourceLocation.tryParse(name);
     }
 
     private ServerLevel level(int dimId) {

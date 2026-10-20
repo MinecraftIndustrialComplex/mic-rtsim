@@ -65,6 +65,11 @@ public final class Layout {
 
     /** Command flag: the engine holds more commands in its overflow ring; they follow in later steps. */
     public static final int CMD_FLAG_MORE = 1;
+    /**
+     * Command flag: the engine failed (a panic or a protocol error) and simulates nothing more this
+     * session; its buffers come back empty. The bridge stops for the session (B30) when it reads it.
+     */
+    public static final int CMD_FLAG_FAILED = 2;
 
     // ---------------------------------------------------------------------------------------------
     // Record header: 8 bytes.

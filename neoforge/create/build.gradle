@@ -58,8 +58,9 @@ neoForge {
             type = 'gameTestServer'
             systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
             systemProperty 'mic_rtsim.gametest', 'true'
-            // The industry GameTests script the engine side through the stub (when the core can run more
-            // than one engine, this picks the stub; the property is ignored otherwise).
+            // The industry GameTests script the engine side through the stub, whatever -PrtsimEngine says:
+            // the industry commands they script (IND_CHUNK_RECONCILE, IND_CARRIAGE_DELTA, IND_LEDGER) are
+            // raw orders only the stub's script API takes (choice H25).
             systemProperty 'mic_rtsim.engine', 'stub'
             jvmArgument '-Xmx4G'
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
@@ -79,6 +80,8 @@ neoForge {
 
 dependencies {
     implementation project(':core')
+    // mic_native, the native host the core requires (the stub engine runs inside it too).
+    runtimeOnly project(':core').micNativeFiles
     compileOnly files(createJar)
     compileOnly createLibs
     // The GameTest server loads Create from the same jar (with its jar-in-jar libraries).
