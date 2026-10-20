@@ -276,3 +276,44 @@ proptest! {
         prop_assert_eq!(&a, &b);
     }
 }
+
+/// A breakpoint booked before a save fires at its booked time after a restore, whatever reads did
+/// to the anchor in between.
+#[test]
+fn restored_wakes_keep_their_time() {
+    let r = region(9, [500, 500, 500], 0, 10, 25);
+    let mut a: LazyTable<SynthRegion> = LazyTable::new(5, SystemId::named("test.table"), Tick(0));
+    let h = a.insert(0, r, Tick(0));
+    let booked = a
+        .get(h)
+        .unwrap()
+        .wake()
+        .expect("the stock books its crossing");
+    // Reads move the anchor past day boundaries; the booked wake must not move with it.
+    let mid = Tick(booked.0 / 2);
+    assert_eq!(a.next_due(mid), None);
+    a.read(h, mid).unwrap();
+    let row = a.get(h).unwrap();
+    let (cell, wake) = (row.cell().clone(), row.wake());
+    assert_eq!(wake, Some(booked));
+
+    let mut b: LazyTable<SynthRegion> = LazyTable::new(5, SystemId::named("test.table"), mid);
+    let h2 = b.restore(0, cell, wake);
+    assert_eq!(b.next_due(Tick(booked.0 - 1)), None);
+    assert_eq!(b.next_due(booked), Some((booked, h2)));
+    assert_eq!(a.next_due(booked), Some((booked, h)));
+    assert_eq!(a.get(h).unwrap().cell(), b.get(h2).unwrap().cell());
+}
+
+/// Applying an event at a time whose breakpoints were not drained is the bug that loses
+/// crossings; debug builds refuse it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "before next_due was drained")]
+fn events_before_draining_breakpoints_are_refused() {
+    let r = region(9, [1, 1, 1], 0, 10, 25);
+    let mut t: LazyTable<SynthRegion> = LazyTable::new(5, SystemId::named("test.table"), Tick(0));
+    let h = t.insert(0, r, Tick(0));
+    let booked = t.get(h).unwrap().wake().unwrap();
+    t.apply(h, booked, |m, _| m.stock.amount += 1);
+}

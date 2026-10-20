@@ -273,9 +273,18 @@ impl PageStore {
             poisoned: false,
             fault: None,
         };
+        // Only a manifest that is certainly absent means an empty store. Any other failure to read
+        // it must stop here: treating it as absent would make every segment a stray to delete.
         let manifest = store.dir.join(MANIFEST_NAME);
-        if manifest.exists() {
-            store.read_manifest(&manifest)?;
+        match fs::read(&manifest) {
+            Ok(bytes) => store.parse_manifest(&manifest, &bytes)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(PageError::Io {
+                    path: manifest,
+                    source: e,
+                });
+            }
         }
         store.remove_strays()?;
         for (&seq, info) in &store.segments {
@@ -566,11 +575,10 @@ impl PageStore {
         out.into_bytes()
     }
 
-    fn read_manifest(&mut self, path: &Path) -> Result<()> {
-        let bytes = fs::read(path).map_err(io(path))?;
+    fn parse_manifest(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
         let bad =
             |e: crate::codec::CodecError| PageError::Format(format!("{}: {e}", path.display()));
-        let mut r = Reader::new(&bytes);
+        let mut r = Reader::new(bytes);
         if r.take(4).map_err(bad)? != MANIFEST_MAGIC {
             return Err(PageError::Format(format!(
                 "{}: not a manifest",
@@ -781,6 +789,34 @@ mod tests {
         // opening removed it as a stray.
         assert_eq!(s.segment_count(), 1);
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A manifest that exists but cannot be read must stop the open, not turn every segment into
+    /// a stray to delete.
+    #[test]
+    fn an_unreadable_manifest_deletes_nothing() {
+        let dir = tmpdir("unreadable");
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        let mut b = SaveBatch::new();
+        b.put(PageKey(1), b"keep me");
+        s.commit(b, 1).unwrap();
+        drop(s);
+        let manifest = dir.join(MANIFEST_NAME);
+        fs::remove_file(&manifest).unwrap();
+        fs::create_dir(&manifest).unwrap();
+        assert!(PageStore::open(&dir, Durability::NoSync).is_err());
+        let segments = fs::read_dir(&dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "rts")
+            })
+            .count();
+        assert_eq!(segments, 1);
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -23,6 +23,17 @@ unsafe impl GlobalAlloc for Counting {
         p
     }
 
+    /// Forwarded, so zeroed memory stays lazily zeroed (calloc): the default would write zeros
+    /// through every page and inflate the resident size the bench reports.
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc_zeroed(layout) };
+        if !p.is_null() {
+            let now = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+            PEAK.fetch_max(now, Ordering::Relaxed);
+        }
+        p
+    }
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) };
         LIVE.fetch_sub(layout.size(), Ordering::Relaxed);

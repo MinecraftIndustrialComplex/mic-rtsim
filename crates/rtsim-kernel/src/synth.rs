@@ -266,8 +266,12 @@ impl Stock {
         if self.amount >= self.threshold {
             return None;
         }
-        let dt = self.flow.ticks_until(self.threshold - self.amount)?;
-        Some(anchor + dt.max(1))
+        // Saturating: an i64::MAX threshold ("never") minus a negative stock must not wrap into a
+        // breakpoint every tick.
+        let dt = self
+            .flow
+            .ticks_until(self.threshold.saturating_sub(self.amount))?;
+        anchor.0.checked_add(dt.max(1)).map(Tick)
     }
 }
 
@@ -376,8 +380,10 @@ impl Answers<HeadCount> for Field {
     }
 }
 
-/// Day slots in a [`DyadicHerd`]'s trees: 2^32 days.
-pub const DYADIC_LEVELS: u32 = 32;
+/// Day slots in a [`DyadicHerd`]'s trees: 2^24 days, about 46,000 years. Fewer levels would cut
+/// the read cost; more would shrink the largest herd whose immigration total fits (see
+/// [`DyadicCounts::poisson_total`]): at 24 levels, about 1.3e11 head.
+pub const DYADIC_LEVELS: u32 = 24;
 /// Immigrants per day, as a fraction of the starting head count. PLACEHOLDER.
 pub const IMMIGRATION: f64 = 0.001;
 

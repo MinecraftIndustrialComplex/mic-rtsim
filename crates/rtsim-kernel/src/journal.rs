@@ -31,23 +31,33 @@ use crate::codec::{self, Decode, Encode, Reader, Writer};
 pub struct ObsSeq(pub u64);
 
 /// A cross-store operation's identity. The top bit says who allocated it, so the engine and the
-/// bridge never collide without coordinating.
+/// bridge never collide without coordinating: set for ids made on the Java side, clear for the
+/// engine's, as the bridge's wire records define it (`Obs.JAVA_OP_BIT` in `neoforge/core`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpId(pub u64);
 
-const ENGINE_BIT: u64 = 1 << 63;
+/// The bridge's `Obs.JAVA_OP_BIT`.
+pub const JAVA_OP_BIT: u64 = 1 << 63;
 
 impl OpId {
+    /// The engine's `n`th id. `n` must leave the top bit clear.
     pub const fn engine(n: u64) -> OpId {
-        OpId(ENGINE_BIT | n)
+        assert!(
+            n & JAVA_OP_BIT == 0,
+            "engine op id counter overflowed into the Java bit"
+        );
+        OpId(n)
     }
 
+    /// An id made on the Java side, from the bridge's own number for it (the bridge uses the
+    /// observation's sequence). `n` must leave the top bit clear.
     pub const fn bridge(n: u64) -> OpId {
-        OpId(n & !ENGINE_BIT)
+        assert!(n & JAVA_OP_BIT == 0, "bridge op id number uses the top bit");
+        OpId(JAVA_OP_BIT | n)
     }
 
     pub const fn is_engine(self) -> bool {
-        self.0 & ENGINE_BIT != 0
+        self.0 & JAVA_OP_BIT == 0
     }
 }
 
@@ -144,7 +154,9 @@ impl Replay {
                 world_next,
             };
         }
-        if journal_first.0 > self.applied_through.0 + 1 && journal_first < world_next {
+        // An empty journal reports journal_first == world_next; a gap above the pages is lost
+        // data either way.
+        if journal_first.0 > self.applied_through.0 + 1 {
             return Reconcile::JournalTrimmedPastPages {
                 pages: self.applied_through,
                 journal_first,
@@ -289,6 +301,8 @@ mod tests {
         assert!(OpId::engine(5).is_engine());
         assert!(!OpId::bridge(5).is_engine());
         assert_ne!(OpId::engine(5), OpId::bridge(5));
+        // The bridge's wire value for its op id 5.
+        assert_eq!(OpId::bridge(5).0, 0x8000_0000_0000_0005);
     }
 
     #[test]
@@ -325,6 +339,11 @@ mod tests {
         ));
         assert!(matches!(
             r.reconcile(ObsSeq(13), ObsSeq(20)),
+            Reconcile::JournalTrimmedPastPages { .. }
+        ));
+        // An empty journal trimmed past the pages: observations 11 to 13 are gone.
+        assert!(matches!(
+            r.reconcile(ObsSeq(14), ObsSeq(14)),
             Reconcile::JournalTrimmedPastPages { .. }
         ));
     }
