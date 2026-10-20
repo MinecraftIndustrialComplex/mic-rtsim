@@ -92,7 +92,7 @@ const HOME_RADIUS: i64 = 512;
 const MAX_CROSSINGS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ev {
+pub(crate) enum Ev {
     Hungry {
         d: DragonId,
         plan: u32,
@@ -230,10 +230,10 @@ pub struct NewDragon {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct PlayerView {
-    uuid: Uuid,
+pub(crate) struct PlayerView {
+    pub(crate) uuid: Uuid,
     /// The player's interest area in the leg index.
-    interest: Option<Stamp>,
+    pub(crate) interest: Option<Stamp>,
 }
 
 pub struct Dragons {
@@ -241,11 +241,11 @@ pub struct Dragons {
     pub seed: u64,
     pub dragons: Arena<Dragon>,
     pub lairs: Vec<Lair>,
-    lair_by_key: BTreeMap<u64, LairId>,
+    pub(crate) lair_by_key: BTreeMap<u64, LairId>,
     /// Lairs by region, so an interest area finds roosting dragons without the leg index: a
     /// dragon at rest books nothing there.
-    lair_cells: BTreeMap<(u16, i64, i64), Vec<LairId>>,
-    wheel: TimingWheel<Ev>,
+    pub(crate) lair_cells: BTreeMap<(u16, i64, i64), Vec<LairId>>,
+    pub(crate) wheel: TimingWheel<Ev>,
     pub homes: Homes,
     pub ledger: PreyLedger,
     pub stats: DragonStats,
@@ -256,18 +256,18 @@ pub struct Dragons {
     pub prey_by_season: [[u64; PreyKind::COUNT]; 4],
     /// Fullness gained, per [season][prey kind].
     pub food_by_season: [[i64; PreyKind::COUNT]; 4],
-    outbox: Vec<Cmd>,
-    players: BTreeMap<ActorId, PlayerView>,
-    index: PreyIndex,
-    by_entity: BTreeMap<Uuid, DragonId>,
+    pub(crate) outbox: Vec<Cmd>,
+    pub(crate) players: BTreeMap<ActorId, PlayerView>,
+    pub(crate) index: PreyIndex,
+    pub(crate) by_entity: BTreeMap<Uuid, DragonId>,
     /// Set while removing a dragon whose body already died in game (no despawn to send).
-    dying_by_body: bool,
+    pub(crate) dying_by_body: bool,
     /// Item dictionary ids the plugin uses (HOARD_ROBBED), mapped to ledger items.
-    items: BTreeMap<u32, Item>,
+    pub(crate) items: BTreeMap<u32, Item>,
     /// Prey entity types (DRAGON_ATE's body dictionary ids) that are a village herd's good.
-    herd_bodies: BTreeMap<u32, GoodId>,
-    next_seed: u64,
-    now: Tick,
+    pub(crate) herd_bodies: BTreeMap<u32, GoodId>,
+    pub(crate) next_seed: u64,
+    pub(crate) now: Tick,
 }
 
 fn day_of(t: Tick) -> f64 {
