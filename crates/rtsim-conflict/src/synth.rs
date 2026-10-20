@@ -18,7 +18,6 @@ use rtsim_industry::engine::Mode;
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{BlockFlags, InvKind};
-use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::rng::{StreamKey, SystemId};
@@ -89,13 +88,11 @@ pub fn define_names(c: &mut Conflict, w: &World) {
 /// The refinery: a vault, a distiller and a smelter at the Thornwood's edge, half-walled (6 gaps
 /// in 40 perimeter columns), no turrets, loaded as `visits` say.
 pub fn refinery(seed: u64, visits: Vec<Visit>) -> FakeWorld {
-    let mut tun = Tunables::default();
     // The industry defaults carry nothing and break nothing for ground attackers (natural mobs,
-    // vanilla). Raiders of a faction do both: the scenario lets a melee raider carry off 8 items
-    // and break a block, an archer carry 4 (TUNABLE, PLACEHOLDER; choice K2-11).
-    tun.threat.carry_per_attacker[ThreatClass::GroundMelee.index()] = 8;
-    tun.threat.carry_per_attacker[ThreatClass::GroundRanged.index()] = 4;
-    tun.threat.blocks_per_attacker[ThreatClass::GroundMelee.index()] = 1;
+    // vanilla). A faction's raiders carry and break by their units' own data (a goblin warrior 8
+    // items and a block, an archer 4 items), which their threats carry (choice C2-1, K2-13's
+    // recommendation), so the refinery keeps the industry defaults.
+    let tun = Tunables::default();
     let mut w = FakeWorld::new(seed, tun, Mode::Apply);
     w.good(IRON.0, GoodInfo::item("minecraft:iron_ingot", 64));
     w.good(BREAD.0, GoodInfo::item("minecraft:bread", 64));

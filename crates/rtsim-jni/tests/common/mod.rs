@@ -146,6 +146,13 @@ pub struct Java {
     /// The vanilla herd adapter this Java plays: rtsim-ecology's fake plugin
     /// (`herds::synth::FakeHerds`), which answers the commands and plays kills, shearing, leads.
     pub herd_plugin: rtsim_ecology::herds::synth::FakeHerds,
+    /// Conflict commands applied, as a conflict plugin would (docs/boundary.md §9.5): (cmdSeq,
+    /// command decoded with the reference codec, its body, item and dimension ids in Java's
+    /// dictionary).
+    pub conflict: Vec<(u64, rtsim_conflict::boundary::Cmd)>,
+    /// The conflict plugin this Java plays: rtsim-conflict's fake plugin (`synth::FakeConflict`),
+    /// which answers envoys and fights bands as its script says.
+    pub conflict_plugin: rtsim_conflict::synth::FakeConflict,
     /// HABITAT_KNOWN commands applied (docs/boundary.md §10.5): (cmdSeq, record, its dimension
     /// as Java's dictionary names it, or None for END).
     pub known: Vec<(u64, rtsim_space::KnownRecord, Option<String>)>,
@@ -240,6 +247,8 @@ impl Java {
             ships: Vec::new(),
             herds: Vec::new(),
             herd_plugin: rtsim_ecology::herds::synth::FakeHerds::default(),
+            conflict: Vec::new(),
+            conflict_plugin: rtsim_conflict::synth::FakeConflict::new((0, 0)),
             known: Vec::new(),
         }
     }
@@ -597,6 +606,7 @@ impl Java {
                     k if (0x8500..=0x85FF).contains(&k) => self.dragon_command(seq, rec.bytes),
                     k if (0x8600..=0x86FF).contains(&k) => self.ship_command(seq, rec.bytes),
                     k if (0x8700..=0x87FF).contains(&k) => self.herd_command(seq, rec.bytes),
+                    k if (0x8800..=0x88FF).contains(&k) => self.conflict_command(seq, rec.bytes),
                     k if (0x8900..=0x89FF).contains(&k) => self.habitat_command(seq, rec.bytes),
                     cmd::DESPAWN_GROUP => {
                         let b = rec.bytes;
@@ -1191,5 +1201,68 @@ impl Java {
         self.herd_plugin.apply(vec![c.clone()], at);
         self.herds.push((seq, c));
         self.herd_flush();
+    }
+
+    // ---- a conflict plugin (docs/boundary.md §9; none exists yet, P8) ---------------------------
+
+    /// A conflict observation, encoded with the reference codec in Java's ids: journaled (a new
+    /// sequence, at the current game time) for kinds 0x0800 to 0x08FF, otherwise into the open
+    /// buffer (latest-wins). Returns the sequence (0 for latest-wins).
+    pub fn conflict_obs(&mut self, o: &rtsim_conflict::boundary::Obs) -> u64 {
+        let mut b = Vec::new();
+        rtsim_conflict::boundary::encode_obs(0, self.game_time, o, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        if !obs::is_journaled(kind) {
+            if self.preamble() {
+                assert!(self.copy(&b), "room for a latest-wins conflict record");
+            }
+            return 0;
+        }
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// Journals what the fake conflict plugin has to say by now (its answers, casualties and
+    /// recalls, each some ticks after the command that caused it).
+    pub fn conflict_flush(&mut self) {
+        let now = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
+        for (_, o) in self.conflict_plugin.due(now) {
+            self.conflict_obs(&o);
+        }
+    }
+
+    /// One conflict command, as a plugin applies it: its dimension, body and item ids are the
+    /// engine's dictionary's (a DICT before first use), translated to Java's; the fake plugin
+    /// answers it (BAND_MATERIALIZED, a tribute or a refusal, casualties, BAND_DEMATERIALIZED).
+    fn conflict_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_conflict::boundary::{self as cb, Cmd as C};
+        let (s, mut c, _) = cb::decode_cmd(bytes).expect("a conflict command decodes");
+        assert_eq!(s, seq);
+        match &mut c {
+            C::Territory(t) => t.dimension = self.java_dim(t.dimension),
+            C::Notice(n) => n.dimension = self.java_dim(n.dimension),
+            C::Envoy(e) => {
+                e.dimension = self.java_dim(e.dimension);
+                for m in &mut e.members {
+                    m.0 = self.java_of_engine(wire::DICT_BODY, m.0);
+                }
+                if e.tribute_item != 0 {
+                    e.tribute_item = self.java_of_engine(wire::DICT_ITEM, e.tribute_item);
+                }
+            }
+            C::Materialize(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                for st in &mut m.members {
+                    st.body = self.java_of_engine(wire::DICT_BODY, st.body);
+                }
+            }
+            C::Steer(_) | C::Recall(_) | C::Settled(_) => {}
+        }
+        let at = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
+        self.conflict_plugin.apply(vec![c.clone()], at);
+        self.conflict.push((seq, c));
     }
 }

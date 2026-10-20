@@ -26,6 +26,7 @@ use rtsim_kernel::rng::SystemId;
 use rtsim_kernel::synth::{DyadicRegion, Stock, SynthRegion};
 use serde::{Deserialize, Serialize};
 
+use super::paged::{PagedSpec, PagedWorld};
 use super::world::{BenchModel, ModelKind, World, WorldConfig, scratch_store};
 use crate::sys;
 
@@ -37,6 +38,8 @@ pub enum Spec {
     World(WorldConfig),
     /// Build `regions` regions, leave them unread for `elapsed_days`, then read each once.
     CatchUp(CatchUpConfig),
+    /// Run a world on paged regions under a memory budget (A16), saving as Minecraft does.
+    Paged(PagedSpec),
     /// A phase 1 market world (`bench::market`).
     Market(super::market::MarketConfig),
     /// Dragons over a fixed village grid, nobody watching (`bench::dragons`).
@@ -87,6 +90,27 @@ pub struct Measured {
     /// commits. Any entry fails `--check`.
     pub failures: Vec<String>,
     pub state_hash: Option<u32>,
+    /// Paged runs only (A16): the table's resident page bytes at the end and at their peak in
+    /// the measured window, the budget, and the page store's always-resident index.
+    pub resident_bytes: Option<u64>,
+    pub resident_peak_bytes: Option<u64>,
+    pub budget_bytes: Option<u64>,
+    pub store_index_bytes: Option<u64>,
+    /// Paged runs: per sim day, pages loaded on demand, evicted, read ahead (and of those, used).
+    pub loads_per_day: Option<f64>,
+    pub evictions_per_day: Option<f64>,
+    pub prefetches_per_day: Option<f64>,
+    pub prefetch_hits_per_day: Option<f64>,
+    /// Paged runs: budget checks that ended over budget (every remaining page dirty).
+    pub over_budget_checks: Option<u64>,
+    /// Paged runs: the periodic saves in the measured window: wall time per sim day, and bytes
+    /// (segment plus log record) per save.
+    pub save_ms_per_day: Option<f64>,
+    /// Paged runs: thread CPU inside those saves, per sim day. `cpu_ns_per_day` excludes it.
+    pub save_cpu_ms_per_day: Option<f64>,
+    pub save_bytes_per_save: Option<f64>,
+    pub save_log_bytes_per_save: Option<f64>,
+    pub checkpoints: Option<u64>,
     /// Edges in a market world.
     #[serde(default)]
     pub edges: Option<u64>,
@@ -132,6 +156,10 @@ pub enum Metric {
     Save,
     /// CPU per catch-up read.
     CatchUp,
+    /// Paged runs: peak resident page bytes in the measured window.
+    Resident,
+    /// Paged runs: bytes per periodic save (segment plus log record).
+    SaveIncr,
     /// CPU per sim day per unit of the swept count (`Measured::cpu_ns_per_unit_day`).
     CpuPerUnit,
     /// Events handled per unit of the swept count over the window (`events / reads`; the
@@ -147,6 +175,8 @@ impl Metric {
             Metric::Heap => Some(m.heap_live_bytes as f64),
             Metric::Save => m.save_full_bytes.map(|b| b as f64),
             Metric::CatchUp => m.catch_up_cpu_ns_per_read,
+            Metric::Resident => m.resident_peak_bytes.map(|b| b as f64),
+            Metric::SaveIncr => m.save_bytes_per_save,
             Metric::CpuPerUnit => m.cpu_ns_per_unit_day,
             Metric::EventsPerUnit => (m.reads > 0).then(|| m.events as f64 / m.reads as f64),
         }
@@ -179,6 +209,9 @@ pub struct Sweep {
     /// A region count that replaces the baseline's for this sweep, with the reason in the
     /// contracts' notes.
     pub regions: Option<u64>,
+    /// Run on paged regions at the baseline's budget (A16).
+    #[serde(default)]
+    pub paged: bool,
     pub contracts: Vec<Contract>,
 }
 
@@ -200,6 +233,11 @@ pub struct Baseline {
     pub catch_up_latent_per_region: u64,
     pub catch_up_elapsed_days: u64,
     pub seed: u64,
+    /// Paged sweeps: the resident budget. PLACEHOLDER: small enough that every point but the
+    /// first pages, not a target (A16, P24).
+    pub paged_budget_bytes: u64,
+    /// Paged sweeps: ticks between saves, Minecraft's autosave interval.
+    pub save_every_ticks: u64,
 }
 
 impl Baseline {
@@ -217,6 +255,8 @@ impl Baseline {
             catch_up_latent_per_region: 1_000,
             catch_up_elapsed_days: 100,
             seed: 0x5CA1_E000,
+            paged_budget_bytes: 4 << 20,
+            save_every_ticks: 6_000,
         }
     }
 
@@ -316,6 +356,13 @@ impl Baseline {
                 unreachable!()
             }
         }
+        if sweep.paged {
+            return Spec::Paged(PagedSpec {
+                world: c,
+                budget_bytes: self.paged_budget_bytes,
+                save_every: self.save_every_ticks,
+            });
+        }
         Spec::World(c)
     }
 }
@@ -342,6 +389,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Herd,
             vary: Vary::Latent,
             regions: None,
+            paged: false,
             values: pick(
                 &[
                     10_000,
@@ -373,6 +421,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Regions,
             regions: None,
+            paged: false,
             values: pick(
                 &[100, 1_000, 10_000, 100_000, 1_000_000],
                 &[100, 10_000, 1_000_000],
@@ -388,7 +437,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "every region is resident: paging (A16) is not built yet",
+                    "this sweep keeps every region resident (LazyTable); the paged sweeps measure A16's budget",
                 ),
                 contract(Metric::Save, 1.1, 1.0, "a full save writes every region"),
             ],
@@ -398,6 +447,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Herd,
             vary: Vary::Regions,
             regions: None,
+            paged: false,
             values: pick(
                 &[100, 1_000, 10_000, 100_000, 1_000_000],
                 &[100, 10_000, 1_000_000],
@@ -413,7 +463,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "every region is resident: paging (A16) is not built yet",
+                    "this sweep keeps every region resident (LazyTable); the paged sweeps measure A16's budget",
                 ),
                 contract(Metric::Save, 1.1, 1.0, "a full save writes every region"),
             ],
@@ -423,6 +473,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Herd,
             vary: Vary::Events,
             regions: None,
+            paged: false,
             values: pick(&[10, 100, 1_000, 10_000, 100_000], &[10, 1_000, 100_000]),
             contracts: vec![contract(
                 Metric::Cpu,
@@ -436,6 +487,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Elapsed,
             regions: None,
+            paged: false,
             values: pick(&[1, 10, 100, 1_000, 10_000], &[1, 100, 10_000]),
             contracts: vec![contract(
                 Metric::CatchUp,
@@ -449,6 +501,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Herd,
             vary: Vary::Elapsed,
             regions: None,
+            paged: false,
             values: pick(&[1, 10, 100, 1_000, 10_000], &[1, 100, 10_000]),
             contracts: vec![contract(
                 Metric::CatchUp,
@@ -462,6 +515,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Age,
             regions: Some(AGE_REGIONS),
+            paged: false,
             values: pick(&[1, 10, 100, 1_000], &[1, 30, 300]),
             contracts: vec![contract(
                 Metric::Cpu,
@@ -475,6 +529,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Herd,
             vary: Vary::Age,
             regions: Some(AGE_REGIONS),
+            paged: false,
             values: pick(&[1, 10, 100, 1_000], &[1, 30, 300]),
             contracts: vec![contract(
                 Metric::Cpu,
@@ -490,6 +545,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Dyadic,
             vary: Vary::Latent,
             regions: None,
+            paged: false,
             values: pick(
                 &[
                     10_000,
@@ -515,6 +571,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Dyadic,
             vary: Vary::Regions,
             regions: None,
+            paged: false,
             values: pick(
                 &[100, 1_000, 10_000, 100_000, 1_000_000],
                 &[100, 10_000, 1_000_000],
@@ -530,7 +587,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "every region is resident: paging (A16) is not built yet",
+                    "this sweep keeps every region resident (LazyTable); the paged sweeps measure A16's budget",
                 ),
                 contract(Metric::Save, 1.1, 1.0, "a full save writes every region"),
             ],
@@ -540,6 +597,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Dyadic,
             vary: Vary::Elapsed,
             regions: None,
+            paged: false,
             values: pick(&[1, 10, 100, 1_000, 10_000], &[1, 100, 10_000]),
             contracts: vec![contract(
                 Metric::CatchUp,
@@ -553,6 +611,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Dyadic,
             vary: Vary::Age,
             regions: Some(AGE_REGIONS),
+            paged: false,
             values: pick(&[1, 10, 100, 1_000], &[1, 30, 300]),
             contracts: vec![contract(
                 Metric::Cpu,
@@ -561,6 +620,11 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 "no slot debt: a region first touched at any age costs one read (O17)",
             )],
         },
+        // Paged regions under a fixed budget (A16, SCALE.md §8): resident memory must not grow
+        // with the world.
+        paged_sweep(ModelKind::Closed, quick),
+        paged_sweep(ModelKind::Herd, quick),
+        paged_sweep(ModelKind::Dyadic, quick),
         // Phase 1 markets (rtsim-world). The model kind is a label only; the spec says what
         // runs.
         Sweep {
@@ -568,6 +632,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Markets,
             regions: None,
+            paged: false,
             values: pick(&[16, 64, 256, 1_024, 4_096], &[16, 256, 4_096]),
             contracts: vec![
                 contract(
@@ -589,6 +654,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Edges,
             regions: None,
+            paged: false,
             values: pick(&[1, 2, 4, 8, 16], &[1, 4, 16]),
             contracts: vec![contract(
                 Metric::Cpu,
@@ -603,6 +669,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Dragons,
             regions: None,
+            paged: false,
             values: pick(&[8, 32, 128, 512], &[8, 128, 512]),
             contracts: vec![
                 contract(
@@ -626,6 +693,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Ships,
             regions: None,
+            paged: false,
             values: pick(&[1, 2, 4, 8, 16], &[1, 4, 16]),
             contracts: vec![
                 contract(
@@ -648,6 +716,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Dyadic,
             vary: Vary::Herds,
             regions: None,
+            paged: false,
             values: pick(&[4, 16, 64, 256], &[4, 64, 256]),
             contracts: vec![
                 contract(
@@ -670,6 +739,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Dyadic,
             vary: Vary::Members,
             regions: None,
+            paged: false,
             values: pick(
                 &[100, 1_000, 10_000, 100_000, 1_000_000],
                 &[100, 10_000, 1_000_000],
@@ -702,6 +772,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             model: ModelKind::Closed,
             vary: Vary::Factions,
             regions: None,
+            paged: false,
             values: pick(&[16, 64, 256, 1024], &[16, 256, 1024]),
             contracts: vec![
                 contract(
@@ -751,6 +822,57 @@ const MARKET_BASE: u64 = 512;
 /// own lair spacing (roost spacing 15 chunks, caves 18, verified in its structure sets).
 const DRAGON_VILLAGES: u64 = 256;
 
+fn paged_sweep(model: ModelKind, quick: bool) -> Sweep {
+    Sweep {
+        name: "paged".into(),
+        model,
+        vary: Vary::Regions,
+        regions: None,
+        paged: true,
+        // A hundred million regions for the cheap models; the dyadic model's conservation check
+        // (its invariants walk four trees per region) would take minutes per repeat there.
+        values: match (quick, model) {
+            (true, _) => vec![100_000, 1_000_000],
+            (false, ModelKind::Dyadic) => vec![100_000, 1_000_000, 10_000_000],
+            (false, _) => vec![100_000, 1_000_000, 10_000_000, 100_000_000],
+        },
+        contracts: vec![
+            contract(
+                Metric::Resident,
+                0.1,
+                0.0,
+                "resident pages are held to the budget whatever the world's size (A16)",
+            ),
+            contract(
+                Metric::Heap,
+                PAGED_HEAP_SLOPE,
+                0.0,
+                "the budget, the store's index-block cache and its overlay, all bounded by constants; the heap rises only until the world's index outgrows the block cache (K15)",
+            ),
+            contract(
+                Metric::Cpu,
+                PAGED_CPU_SLOPE,
+                0.0,
+                "each event costs at most one page load, so cost rises with the miss rate until every event misses, then holds",
+            ),
+            contract(
+                Metric::SaveIncr,
+                PAGED_SAVE_SLOPE,
+                0.0,
+                "a save writes the pages dirtied since the last one and a log record of them, not the world (K11)",
+            ),
+        ],
+    }
+}
+
+/// Declared slopes of the paged sweeps. PLACEHOLDERS set from the first measured runs (bench
+/// results README): the heap holds constants only (the page index is paged, K15), the miss rate
+/// rises until every event misses, and dirty pages per save rise until every event dirties its
+/// own page.
+const PAGED_HEAP_SLOPE: f64 = 0.1;
+const PAGED_CPU_SLOPE: f64 = 0.35;
+const PAGED_SAVE_SLOPE: f64 = 0.35;
+
 /// The age sweeps' region count: see their notes.
 const AGE_REGIONS: u64 = 100_000;
 
@@ -782,6 +904,117 @@ pub fn run_one(spec: &Spec) -> Measured {
         Spec::Ships(c) => super::ships::run(c),
         Spec::Herds(c) => super::herds::run(c),
         Spec::Factions(c) => super::conflict::run(c),
+        Spec::Paged(p) => match p.world.model {
+            ModelKind::Herd => run_paged::<SynthRegion>(p),
+            ModelKind::Closed => run_paged::<Stock>(p),
+            ModelKind::Dyadic => run_paged::<DyadicRegion>(p),
+        },
+    }
+}
+
+/// Bench scratch folders live under the target folder (on disk, not a tmpfs), or the system
+/// temp folder when that is unknown.
+fn scratch_dir(tag: &str) -> PathBuf {
+    let base = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.join("bench-scratch")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join(format!("{tag}-{}", std::process::id()))
+}
+
+fn run_paged<M: BenchModel + rtsim_kernel::paging::PagedModel>(p: &PagedSpec) -> Measured {
+    let c = &p.world;
+    let mut w: PagedWorld<M> = PagedWorld::build(p, scratch_dir("paged"));
+    w.run_to(Tick::from_days(c.warmup_days));
+    w.table.reset_stats();
+    let saves0 = w.saves;
+    let (dep0, arr0) = (w.departures, w.arrivals);
+    sys::reset_heap_peak();
+    // The build phase passed through the allocator; resident size and its peak should show the
+    // measured window only.
+    sys::trim_heap();
+    sys::reset_rss_peak();
+
+    let (cpu0, wall0) = (sys::thread_cpu_ns(), Instant::now());
+    w.run_to(Tick::from_days(c.warmup_days + c.days));
+    let (cpu, wall) = cpu_or_wall(cpu0, wall0);
+    let days = c.days as f64;
+    let ps = w.stats();
+    let lazy = w.table.lazy_stats();
+    let heap_live = sys::heap_live() as u64;
+    let heap_peak = sys::heap_peak() as u64;
+    let (rss, rss_peak) = sys::rss();
+    let resident = w.table.resident_bytes() as u64;
+    let saves = w.saves;
+    let n_saves = (saves.saves - saves0.saves).max(1) as f64;
+
+    let mut failures = Vec::new();
+    // At a step boundary after a save, the budget holds: nothing is dirty.
+    w.save();
+    w.table.enforce_budget();
+    if w.table.resident_bytes() as u64 > p.budget_bytes {
+        failures.push(format!(
+            "resident {} bytes over the budget {} after a save",
+            w.table.resident_bytes(),
+            p.budget_bytes
+        ));
+    }
+    let eager = c.regions * (c.warmup_days + c.days + 1);
+    if lazy.slot_commits > eager {
+        failures.push(format!(
+            "{} slot commits exceed the eager bound {eager}",
+            lazy.slot_commits
+        ));
+    }
+    let store_index = w.store.heap_bytes() as u64;
+    let engine = w.heap_bytes() as u64;
+    // Conservation and the hash load the whole world, page by page: outside the window. The hash
+    // catches every region up, which costs the world's size, so big worlds skip it.
+    let conservation = match w.conservation() {
+        Ok(()) => "ok".to_string(),
+        Err(e) => e,
+    };
+    if conservation != "ok" {
+        failures.push(format!("conservation: {conservation}"));
+    }
+    let state_hash = (c.regions <= 100_000).then(|| w.state_hash());
+
+    let save_cpu = (saves.cpu_ns - saves0.cpu_ns) as f64;
+    Measured {
+        cpu_ns_per_day: cpu.map(|c| (c - save_cpu).max(0.0) / days),
+        wall_ns_per_day: Some(wall / days),
+        heap_live_bytes: heap_live,
+        heap_peak_bytes: heap_peak,
+        engine_heap_bytes: engine,
+        save_cpu_ms_per_day: Some(save_cpu / 1e6 / days),
+        rss_bytes: rss,
+        rss_peak_bytes: rss_peak,
+        save_full_bytes: Some(w.store.disk_bytes()),
+        reads: lazy.reads,
+        events: lazy.events,
+        slot_commits: lazy.slot_commits,
+        caravans: (w.departures - dep0) + (w.arrivals - arr0),
+        conservation,
+        failures,
+        state_hash,
+        resident_bytes: Some(resident),
+        resident_peak_bytes: Some(ps.peak_resident_bytes),
+        budget_bytes: Some(p.budget_bytes),
+        store_index_bytes: Some(store_index),
+        loads_per_day: Some(ps.loads as f64 / days),
+        evictions_per_day: Some(ps.evictions as f64 / days),
+        prefetches_per_day: Some(ps.prefetches as f64 / days),
+        prefetch_hits_per_day: Some(ps.prefetch_hits as f64 / days),
+        over_budget_checks: Some(ps.over_budget),
+        save_ms_per_day: Some((saves.wall_ns - saves0.wall_ns) as f64 / 1e6 / days),
+        save_bytes_per_save: Some(
+            ((saves.segment_bytes - saves0.segment_bytes) + (saves.log_bytes - saves0.log_bytes))
+                as f64
+                / n_saves,
+        ),
+        save_log_bytes_per_save: Some((saves.log_bytes - saves0.log_bytes) as f64 / n_saves),
+        checkpoints: Some(saves.checkpoints - saves0.checkpoints),
+        ..Measured::default()
     }
 }
 
@@ -943,6 +1176,12 @@ pub struct Report {
     pub build_profile: String,
     pub machine: sys::Machine,
     pub nice: Option<i32>,
+    /// Logical CPUs this process may run on (a `taskset` shows here).
+    #[serde(default)]
+    pub allowed_cpus: Option<String>,
+    /// The run's tag (`--tag`), e.g. `potato`.
+    #[serde(default)]
+    pub tag: Option<String>,
     pub loadavg_before: Option<String>,
     pub loadavg_after: Option<String>,
     pub baseline: Baseline,
@@ -1009,6 +1248,8 @@ pub struct Options {
     pub repeats: u32,
     pub out: Option<PathBuf>,
     pub only: Vec<String>,
+    /// Appended to the result file's name and recorded in it (e.g. `potato`).
+    pub tag: Option<String>,
 }
 
 pub(super) fn command_line(cmd: &str, args: &[&str]) -> Option<String> {
@@ -1177,6 +1418,8 @@ pub fn run(opts: Options) -> i32 {
         .into(),
         machine: sys::Machine::probe(),
         nice: nice_level(),
+        allowed_cpus: sys::allowed_cpus(),
+        tag: opts.tag.clone(),
         loadavg_before,
         loadavg_after: sys::loadavg(),
         baseline: base,
@@ -1235,7 +1478,11 @@ pub fn run(opts: Options) -> i32 {
 
 fn write_report(dir: &Path, stamp: &str, report: &Report) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("scale-{stamp}-{}.json", report.mode));
+    let tag = report
+        .tag
+        .as_ref()
+        .map_or(String::new(), |t| format!("-{t}"));
+    let path = dir.join(format!("scale-{stamp}-{}{tag}.json", report.mode));
     let mut f = std::fs::File::create(&path)?;
     serde_json::to_writer_pretty(&mut f, report)?;
     writeln!(f)?;
@@ -1262,6 +1509,7 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
         let m = &r.measured;
         let days = match &r.spec {
             Spec::World(c) => c.days as f64,
+            Spec::Paged(p) => p.world.days as f64,
             Spec::Market(c) => c.days as f64,
             Spec::Dragons(c) => c.days as f64,
             Spec::Ships(c) => c.days as f64,
@@ -1289,6 +1537,55 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
             },
             m.conservation
         );
+    }
+    let paged: Vec<&Run> = runs
+        .iter()
+        .filter(|r| matches!(r.spec, Spec::Paged(_)))
+        .collect();
+    if !paged.is_empty() {
+        println!();
+        println!(
+            "{:<8} {:<6} {:>7} | {:>10} {:>8} {:>8} {:>8} {:>8} | {:>9} {:>9} {:>11} | {:>9} {:>9} {:>8}",
+            "paged",
+            "model",
+            "regions",
+            "step ms/d",
+            "heap MiB",
+            "res MiB",
+            "budget",
+            "idx KiB",
+            "loads/day",
+            "evict/day",
+            "prefetch/hit",
+            "save cpu/d",
+            "KiB/save",
+            "log B"
+        );
+        for r in paged {
+            let m = &r.measured;
+            let mib = |b: Option<u64>| opt(b.map(|b| b as f64), 1048576.0, 1);
+            println!(
+                "{:<8} {:<6} {:>7} | {:>10} {:>8.1} {:>8} {:>8} {:>8} | {:>9} {:>9} {:>11} | {:>9} {:>9} {:>8}",
+                r.sweep,
+                format!("{:?}", r.model).to_lowercase(),
+                fmt_si(r.value as f64),
+                opt(m.cpu_ns_per_day, 1e6, 2),
+                m.heap_live_bytes as f64 / 1048576.0,
+                mib(m.resident_peak_bytes),
+                mib(m.budget_bytes),
+                opt(m.store_index_bytes.map(|b| b as f64), 1024.0, 0),
+                opt(m.loads_per_day, 1.0, 0),
+                opt(m.evictions_per_day, 1.0, 0),
+                format!(
+                    "{}/{}",
+                    opt(m.prefetches_per_day, 1.0, 0),
+                    opt(m.prefetch_hits_per_day, 1.0, 0)
+                ),
+                opt(m.save_cpu_ms_per_day, 1.0, 1),
+                opt(m.save_bytes_per_save, 1024.0, 1),
+                opt(m.save_log_bytes_per_save, 1.0, 0),
+            );
+        }
     }
     println!();
     println!(

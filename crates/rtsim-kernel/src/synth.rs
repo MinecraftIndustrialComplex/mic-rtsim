@@ -16,7 +16,7 @@
 
 use std::cell::Cell;
 
-use crate::clock::{SlotPeriod, Tick};
+use crate::clock::{SlotPeriod, TICKS_PER_DAY, Tick};
 use crate::codec::{self, Decode, Encode, Reader, Writer};
 use crate::conserve::{Conserved, Diffuser, QuantityKind, Totals};
 use crate::dyadic::{DyadicCounts, Split};
@@ -563,6 +563,10 @@ impl Decode for DyadicRegion {
     }
 }
 
+impl crate::paging::PagedModel for Stock {}
+impl crate::paging::PagedModel for SynthRegion {}
+impl crate::paging::PagedModel for DyadicRegion {}
+
 impl Encode for Stock {
     fn encode(&self, w: &mut Writer) {
         w.var_i64(self.amount);
@@ -613,6 +617,164 @@ impl Decode for SynthRegion {
             stock: Stock::decode(r)?,
             herd,
         })
+    }
+}
+
+// ---- A region for the parallel step (crate::bsp): scaffolding for its tests and its bench ----
+
+/// A trading post: a herd on day slots (real catch-up work), grain, and a caravan that leaves
+/// every few days for a destination drawn from the counter RNG, carrying grain as a message.
+/// `work` stands for what a real module does per event (a market solve, a plan): that many rounds
+/// of a hash folded into `ledger`, so the work is state and cannot be skipped. PLACEHOLDER work,
+/// for the parallel step's bench.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TradePost {
+    pub herd: Herd,
+    pub grain: i64,
+    pub received: i64,
+    pub next_departure: Tick,
+    pub departures: u64,
+    pub regions: u64,
+    pub seed: u64,
+    pub work: u32,
+    pub ledger: u64,
+}
+
+impl LazyModel for TradePost {
+    type View = (i64, u64);
+    fn slot_period(&self) -> Option<SlotPeriod> {
+        Some(SlotPeriod::DAY)
+    }
+    fn settle(&mut self, _from: Tick, _to: Tick) {}
+    fn commit_slot(&mut self, _slot: u64, rng: &mut SlotRng) {
+        self.herd.commit_day(rng, &HERD_PARAMS);
+        self.grain += 10;
+    }
+    fn view(&self, _anchor: Tick, _at: Tick) -> (i64, u64) {
+        (self.grain, self.herd.total())
+    }
+    fn next_breakpoint(&self, anchor: Tick) -> Option<Tick> {
+        (self.next_departure > anchor).then_some(self.next_departure)
+    }
+}
+
+impl Encode for TradePost {
+    fn encode(&self, w: &mut Writer) {
+        w.u64(self.herd.seed);
+        for c in self.herd.cohorts {
+            w.var_u64(c);
+        }
+        w.var_u64(self.herd.born);
+        w.var_u64(self.herd.died);
+        w.var_u64(self.herd.capacity);
+        w.var_i64(self.grain);
+        w.var_i64(self.received);
+        w.var_u64(self.next_departure.0);
+        w.var_u64(self.departures);
+        w.var_u64(self.regions);
+        w.u64(self.seed);
+        w.var_u64(u64::from(self.work));
+        w.u64(self.ledger);
+    }
+}
+
+impl Decode for TradePost {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        Ok(TradePost {
+            herd: Herd {
+                seed: r.u64()?,
+                cohorts: [r.var_u64()?, r.var_u64()?, r.var_u64()?],
+                born: r.var_u64()?,
+                died: r.var_u64()?,
+                capacity: r.var_u64()?,
+            },
+            grain: r.var_i64()?,
+            received: r.var_i64()?,
+            next_departure: Tick(r.var_u64()?),
+            departures: r.var_u64()?,
+            regions: r.var_u64()?,
+            seed: r.u64()?,
+            work: u32::try_from(r.var_u64()?)
+                .map_err(|_| codec::CodecError::Invalid("work over u32".into()))?,
+            ledger: r.u64()?,
+        })
+    }
+}
+
+impl crate::paging::PagedModel for TradePost {}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cargo(pub i64);
+impl Encode for Cargo {
+    fn encode(&self, w: &mut Writer) {
+        w.var_i64(self.0);
+    }
+}
+impl Decode for Cargo {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        Ok(Cargo(r.var_i64()?))
+    }
+}
+
+impl crate::bsp::Actor for TradePost {
+    type Msg = Cargo;
+    fn on_wake(&mut self, at: Tick, post: &mut crate::bsp::Post<'_, Cargo>) {
+        let mut rng = StreamKey::new(self.seed, SystemId::named("test.caravan"), post.from())
+            .slot(self.departures);
+        let to = rng.below(self.regions);
+        let travel = TICKS_PER_DAY / 2 + rng.below(TICKS_PER_DAY);
+        let load = self.grain.min(25);
+        self.grain -= load;
+        post.send(to, at + travel, Cargo(load));
+        // A message that arrives within the same window: delivered next step.
+        post.send((to + 1) % self.regions, at + 1, Cargo(0));
+        self.departures += 1;
+        self.next_departure = at + TICKS_PER_DAY + rng.below(3 * TICKS_PER_DAY);
+        self.do_work(at.0);
+    }
+    fn on_message(
+        &mut self,
+        _at: Tick,
+        _from: u64,
+        msg: Cargo,
+        _post: &mut crate::bsp::Post<'_, Cargo>,
+    ) {
+        self.grain += msg.0;
+        self.received += msg.0;
+        self.do_work(msg.0 as u64);
+    }
+}
+
+impl TradePost {
+    /// Region `key` of a world of `regions` posts: a herd, 100 grain, and a first departure in
+    /// the first two days, all drawn from `seed`.
+    pub fn new(seed: u64, key: u64, regions: u64) -> TradePost {
+        let mut rng = StreamKey::new(seed, SystemId::named("bench.post.setup"), 0).slot(key);
+        TradePost {
+            herd: Herd::new(rng.next_u64(), [30, 50, 20]),
+            grain: 100,
+            received: 0,
+            next_departure: Tick(1 + rng.below(2 * TICKS_PER_DAY)),
+            departures: 0,
+            regions,
+            seed,
+            work: 0,
+            ledger: 0,
+        }
+    }
+
+    /// The same post doing `work` rounds per event.
+    pub fn with_work(mut self, work: u32) -> TradePost {
+        self.work = work;
+        self
+    }
+
+    fn do_work(&mut self, salt: u64) {
+        let mut x = self.ledger ^ salt;
+        for i in 0..self.work {
+            x = crate::rng::fnv1a64(&(x ^ u64::from(i)).to_le_bytes());
+        }
+        self.ledger = x;
     }
 }
 

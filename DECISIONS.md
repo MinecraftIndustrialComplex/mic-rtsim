@@ -132,3 +132,18 @@ Ben reviews it; each can be undone.
 | O17 | 2026-10-20 | Added `rtsim_kernel::dyadic`: a total split down a fixed dyadic tree over absolute slots, one binomial per node keyed by the node, so the count over any interval is a pure function of the seed and costs at most 2 × levels draws. Used by a bench-only `DyadicRegion` (cohort deaths at deterministic hazards, Poisson immigration) over 2^24 day slots. It is a prototype for O5's option (b), not a decision to use it. | It gives random processes O(log horizon) catch-up that still obeys the composition rule exactly, for points independent given the total. The bench measures it against the slot model (bench/results/README.md). State-dependent processes (births in proportion to adults) do not fit without restructuring, so SCALE.md §4's slots stay the default. |
 | O18 | 2026-10-20 | A `LazyTable` caller must drain `next_due` up to `t` before reading or applying an event at `t` (debug builds assert it), and each region's booked wake time is saved with it and restored as is, never recomputed on load. | Found by an adversarial review: an event at a breakpoint's own tick superseded the breakpoint so its crossing was never delivered, a read could commit past a breakpoint that then fired against the later state, and a recomputed wake would depend on which reads moved the anchor before a save. |
 | O19 | 2026-10-20 | The scale check also fails when any run breaks an invariant (conservation, a model's own invariants, slot commits above the eager bound), and flat contracts carry a max/min bound of 4 across the sweep (PLACEHOLDER) besides their slope. | A slope tolerance of 0.1 alone allows a 6.3x rise over eight decades, and a printed-only conservation result could fail silently. |
+
+## Answers to the open questions (Ben, morning review 2026-10-20)
+
+Each row answers the open question with the same id in OPEN-QUESTIONS.md.
+
+| Id | Decision | Ben's words or choice |
+|---|---|---|
+| P1 | Three tiers for custom simulation features, because outside modders are expected:<br>1. a data and declarative rule engine for most content;<br>2. a native plugin SDK: plugins are their own cdylibs loaded through mic_native, written against an SDK crate that enforces the contracts (declared cadence and access, catch-up and breakpoints, integer ledgers, kernel RNG, no threads), with a test harness and per-plugin budgets and a kill switch;<br>3. Java and KubeJS event hooks.<br>Our own modules move onto the SDK. No stability promise before release. | "Leaning towards plugins own rust crates & / or having a config engine for mods to create custom sim logic since I'm fully expecting people un-affiliated with me wanting to make plugins that have custmo sim features. LMK if this is a trap."; then chose "Three tiers" |
+| M7 | A third-party API is a goal; see P1. The module API stays free to change until a public release. | as P1 |
+| O5 | Keep slots, and use dyadic counts for randomness that doesn't depend on state. | chose "Slots + dyadic" |
+| P3 | The engine owns the truth; Minecraft entities are puppets vanilla never saves. | chose "Engine owns truth" |
+| P4 | Agent storage stays our own columns, adding a two-column borrow and an index for rare tags. | chose "Our columns" |
+| P7 | Every MIC mod keeps PATCHES.md plus contract GameTests for every reach into another mod. | chose "Every MIC mod" |
+| P10 | Every design-changing review fix of 2026-10-19 is approved, item by item (all 15 listed in PLAN §17). | ticked every item |
+| P24 | Performance targets keep their placeholders; final numbers come after real potato and Windows runs. | chose "Keep, set from data" |

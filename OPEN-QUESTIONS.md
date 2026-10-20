@@ -39,13 +39,18 @@ code.
   `dyadic` counts (catch-up cost flat in elapsed time) for processes whose randomness does not depend
   on state, such as arrivals and deaths at fixed rates. Alternatives: slots everywhere and accept the
   cost; require closed-form distributions for every random process. Blocks: herds and anything random
-  in lazy regions.
+  in lazy regions. Measured since: slots cost 320 to 390 ns per region-day at any read cadence; dyadic
+  costs about 5 µs per read, so it wins for regions read less often than about every 16 days (67x
+  cheaper at 1,024 days). Herds already use dyadic counts on this recommendation.
 - **P3. The engine owns the truth.** Recommended: yes; Minecraft entities are puppets vanilla never saves
   (PLAN §6.1, and A9 and A10 assume it). Alternative: vanilla saves entities and the engine reconciles.
   Blocks: the bridge and the puppet GameTests.
-- **P4. Agent storage.** Recommended: let the phase 0 storage bench decide, `bevy_ecs` behind a facade
-  against our own columns, with the numbers brought to you. Alternative: pick one now. Blocks: the
-  kernel's storage facade.
+- **P4. Agent storage.** The bench is in (bench/results/p4-storage.md, 1e6 rows). Our columns beat
+  bevy_ecs 0.20 on one-field streams (0.022 vs 0.055 ns/row), churn (1.6 vs 8.0), tag changes (9.7 vs
+  468 ns) and memory (36.7 vs 110 to 114 bytes per row). bevy wins random lookups (1.45 to 1.6x) and
+  iterating rare tagged subsets (70 to 120x); our two-field loss goes away with a two-column borrow.
+  Recommended: keep our columns, add a two-column borrow and an index for rare tags. Alternative:
+  bevy_ecs behind the facade.
 - **P7. Patch ledger and contract tests.** Recommended: PATCHES.md plus GameTests for every reach into
   another mod, in every MIC mod. Alternative: the rtsim only. Blocks: the first adapter.
 - **P10. The design-changing review fixes.** Recommended: approve the 2026-10-19 list as applied (PLAN

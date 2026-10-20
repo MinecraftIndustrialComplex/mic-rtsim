@@ -92,6 +92,32 @@ pub struct Threat {
     pub target: ThreatTarget,
     #[serde(serialize_with = "crate::ser::tick")]
     pub at: Tick,
+    /// What the attackers carry off and break between them, when the source knows its units (a
+    /// conflict war band: its units' carry and blocks; overnight choice C2-1, K2-13's
+    /// recommendation). `None` takes the per-class tunables (`carry_per_attacker`,
+    /// `blocks_per_attacker`), as natural mobs, dragons and ships do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loads: Option<Loads>,
+}
+
+/// A threat's own carry and block breaking ([`Threat::loads`]): totals over all its attackers,
+/// of which the survivors' share applies (I23), floored.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Loads {
+    /// Items all the attackers together carry off.
+    pub carry: i64,
+    /// Blocks all the attackers together break.
+    pub blocks: u32,
+}
+
+impl Loads {
+    /// `total`'s share for `survivors` of `count` attackers, floored.
+    pub fn share(total: i64, survivors: u32, count: u32) -> i64 {
+        if count == 0 {
+            return 0;
+        }
+        (i128::from(total.max(0)) * i128::from(survivors.min(count)) / i128::from(count)) as i64
+    }
 }
 
 /// Other systems hand their attacks over through this (I19).
@@ -437,10 +463,10 @@ pub fn damage(
         return out;
     }
     // Theft. Natural mobs take nothing from containers (vanilla), whatever their class.
-    let carry = if t.source == ThreatSource::Natural {
-        0
-    } else {
-        i64::from(survivors).saturating_mul(tun.carry_per_attacker[c])
+    let carry = match t.loads {
+        _ if t.source == ThreatSource::Natural => 0,
+        Some(l) => Loads::share(l.carry, survivors, t.count),
+        None => i64::from(survivors).saturating_mul(tun.carry_per_attacker[c]),
     };
     if carry > 0 {
         let goods: Vec<(Good, i64)> = stock
@@ -463,7 +489,13 @@ pub fn damage(
     let griefing = def.survey.is_some_and(|s| s.mob_griefing);
     let may_break = t.source != ThreatSource::Natural || griefing;
     let n = if may_break {
-        (survivors.saturating_mul(tun.blocks_per_attacker[c])).min(tun.destroy_cap_blocks)
+        let n = match t.loads {
+            Some(l) => {
+                u32::try_from(Loads::share(i64::from(l.blocks), survivors, t.count)).unwrap_or(0)
+            }
+            None => survivors.saturating_mul(tun.blocks_per_attacker[c]),
+        };
+        n.min(tun.destroy_cap_blocks)
     } else {
         0
     };
@@ -723,6 +755,7 @@ impl ThreatFeed for SyntheticThreats {
                         count,
                         strength: f64::from(count) * st.strength_per_attacker,
                         target: st.target,
+                        loads: None,
                         at,
                     });
                     self.next_id += 1;
@@ -767,6 +800,7 @@ mod tests {
             count,
             strength: f64::from(count),
             target: ThreatTarget::District(DistrictId(1)),
+            loads: None,
             at: Tick(1000),
         }
     }
@@ -840,6 +874,48 @@ mod tests {
         let o = resolve(&t, &d, 0, &tun);
         let stock = GoodVec::from_pairs([(Good(1), 10_000)]);
         assert!(damage(&t, &o, &stock, &d, &tun).stolen.is_empty());
+    }
+
+    /// C2-1 (K2-13's recommendation): a threat that names its loads carries and breaks by them,
+    /// the survivors' share, whatever the per-class tunables say; one that does not is unchanged.
+    #[test]
+    fn a_threat_with_its_own_loads_carries_and_breaks_by_them() {
+        let mut d = Defence::default();
+        d.set_survey(&survey(100, 0.0, 0));
+        d.exposed = (0..20)
+            .map(|i| ExposedBlockRow {
+                x: i,
+                y: 0,
+                z: 0,
+                state: 1,
+                flags: BlockFlags::PERIMETER,
+                inventory: None,
+            })
+            .collect();
+        let tun = ThreatTunables::default();
+        assert_eq!(tun.carry_per_attacker[ThreatClass::GroundMelee.index()], 0);
+        let stock = GoodVec::from_pairs([(Good(1), 10_000)]);
+        let mut t = threat(ThreatClass::GroundMelee, 10);
+        let o = resolve(&t, &d, 0, &tun);
+        let dmg = damage(&t, &o, &stock, &d, &tun);
+        assert!(
+            dmg.stolen.is_empty() && dmg.destroyed.is_empty(),
+            "class defaults"
+        );
+        t.loads = Some(Loads {
+            carry: 80,
+            blocks: 5,
+        });
+        let o = Outcome {
+            survived: 0.5,
+            ..resolve(&t, &d, 0, &tun)
+        };
+        let dmg = damage(&t, &o, &stock, &d, &tun);
+        assert_eq!(dmg.survivors, 5);
+        assert_eq!(dmg.stolen.total(), 40, "half of 80 items");
+        assert_eq!(dmg.destroyed.len(), 2, "half of 5 blocks, floored");
+        assert_eq!(Loads::share(7, 3, 0), 0);
+        assert_eq!(Loads::share(7, 9, 3), 7, "never more than all survive");
     }
 
     #[test]

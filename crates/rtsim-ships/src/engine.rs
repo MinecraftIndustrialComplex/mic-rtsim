@@ -2386,6 +2386,7 @@ impl Ships {
                 count: crew,
                 strength,
                 target: ThreatTarget::District(site.id),
+                loads: None,
                 at,
             };
             let Some(o) = infra.raid(&t) else {
@@ -2404,6 +2405,7 @@ impl Ships {
                 count: crew,
                 strength,
                 target: ThreatTarget::Train(tr.train),
+                loads: None,
                 at,
             };
             let Some(l) = infra.raid_train(&t) else {

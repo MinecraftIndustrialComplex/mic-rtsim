@@ -596,7 +596,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      (the ships' frames). PORT_FOUND names an adopted village (a port of a village the world
      lacks is ignored); HAVEN_FOUND joins its haven to the world as a haven node (U13). The
      network is built at the first simulate point where two docks share a medium and a dimension;
-     later ports get shuttles (U12). The water mask is the world model's (item 15, §10:
+     later ports get shuttles (U12). The water mask is the world model's (item 16, §10:
      `rtsim_ships::water::HabitatWater`, known open water only, X2-17); in a dimension the world
      model knows nothing of, every cell is water, as U11 had it (X2-6).
    - **Commands.** SHIP_MATERIALIZE, TIMETABLE, STEER, DEPART, CARGO and DESPAWN take sequences
@@ -621,11 +621,12 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    and it covers the next window) and routed to the modules that run (`World::route_area`, the
    `rtsim_world::interest::Viewer` trait): each books what the area needs, the legs sharing its
    cells are looked up once, and each crossing goes to the module that owns the traveller (leg
-   owner bits: 63 players, 62 dragons, 61 ships, 60 herds, 59 conflict parties: §9, not routed
-   yet). A player not reported for 200 game ticks leaves; a session start clears every area; with no such module running no area is booked.
-   The dragons', the ships' and the herds' events run interleaved in time (`shared::run_to`); a
-   module that starts running in the middle of a session (the herds' first herd) hears of the areas
-   already booked (`shared::introduce_herds`, Y1).
+   owner bits: 63 players, 62 dragons, 61 ships, 60 herds, 59 conflict parties). A player not
+   reported for 200 game ticks leaves; a session start clears every area; with no such module
+   running no area is booked. The dragons', the ships', the herds' and the conflict's events run
+   interleaved in time (`shared::run_to`); a module that starts running in the middle of a session
+   (the herds' first herd, the conflict's first camp) hears of the areas already booked
+   (`shared::introduce_herds`, Y1; `shared::introduce_conflict`, C2-5).
 
 14. **Herds** (`engine/herds.rs`, §8, choices Y1 to Y7 and Y22 in
    docs/overnight-choices-herdsmc.md): rtsim-ecology's herds run inside the step, in the phase 1
@@ -644,7 +645,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule).
    - **Prey.** With the dragons running too, the dragons run with the herds as prey
      (`Dragons::run_until_with_herds`, Y7).
-   - **Climate and founding** (item 15, §10). The climate is the world model's
+   - **Climate and founding** (item 16, §10). The climate is the world model's
      (`rtsim_ecology::herds::habitat::HabitatClimate`: forage, temperature and terrain from the
      habitat cells; water and unknown ground closed), and the world model founds one herd per
      suitable region on its first sample (X2-11). In a dimension the world model knows nothing of,
@@ -655,7 +656,37 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      fake Java side (`tests/common`, `Java::herd_obs`, `herd_command`) plays the adapter with
      rtsim-ecology's `FakeHerds` in the protocol test.
 
-15. **The world model** (`engine/worldmodel.rs`, §10, choices X2-1 to X2-# in
+15. **Conflict** (`engine/conflict.rs`, §9, choices C2-1 to C2-17 in
+   docs/overnight-choices-conflictjni.md): rtsim-conflict's factions, feuds and war bands run
+   inside the step, in the phase 1 world (havens are its nodes, marches legs in its leg index,
+   chiefs notables in its knowledge) on its clock, beside the dragons, the ships and the herds.
+   - **Observations.** The journaled kinds 0x0800 to 0x08FF go through `Replay` (CHIEF_KILLED,
+     TRIBUTE_PAID, GIFT_GIVEN and BAND_LOOTED by their op ids too) into `Conflict::ingest`, at
+     their own time with the other modules run to it first; Java's items, bodies, structures and
+     pollution types are translated to the conflict's own first (C2-4). BAND_STATE is latest
+     state, counted and not yet read. Dimensions are Java's ids (the conflict's frames).
+   - **Signals inside the engine.** Each industry district's learned pollution (deposit goods
+     named for a Destroy pollution type, `d/0/destroy:smog/<hash>`, I14) is the settlers' source
+     while the district runs, loaded or replaying (C2-7); what an unloaded district drains of any
+     other deposit is the settlers' mining (C2-8). Raids on districts go through the industry
+     engine's threat interface with the band's own loads (`Threat::loads`, C2-1); raids on villages
+     and havens move stock in the phase 1 world (`World::stock_to_held`, C2-10).
+   - **Commands.** TERRITORY, FACTION_NOTICE, ENVOY_MATERIALIZE, BAND_MATERIALIZE, BAND_STEER,
+     BAND_RECALL and DEMAND_SETTLED take sequences from the core's counter after every other
+     module's; all are per session (K2-27), none kept, resent or with an op id. TERRITORY goes
+     again for every faction at a session start. Body kinds, the dimension and the tribute item go
+     through the engine's dictionary; deadlines and arrivals are game time.
+   - **Pages.** Table 0x4300: one page, `Conflict::save` with its state hash (checked on load).
+     While the conflict is active the phase 1 link snapshots at every save, in the same commit. A
+     page without the phase 1 world it was saved with, or one this build cannot read, is dropped
+     loudly.
+   - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
+   - **Tests.** Order 29 (`CONFLICT_COMMAND`, TEST mode) queues a conflict command record with
+     Java's ids as the conflict's own (C2-15). The Rust fake Java side (`tests/common`,
+     `Java::conflict_obs`, `conflict_command`) plays the plugin with rtsim-conflict's
+     `FakeConflict` in the protocol test.
+
+16. **The world model** (`engine/worldmodel.rs`, §10, choices X2-1 to X2-# in
    docs/overnight-choices-worldmodel.md): rtsim-space's `SampledWorld`, fed by HABITAT, behind one
    `WorldHandle` the herds' climate and the ships' water mask read.
    - **Observations.** HABITAT (latest wins) is ingested at the observe point: names through Java's
@@ -1153,8 +1184,9 @@ fallback) and which structures are camps and havens are P8 (Ben). So every recor
 body kinds**, and the plugin maps them to a mod's entities (P15's body-kind data); D7: mob-like
 bodies only. The executable reference for what a plugin answers is the fake in
 `crates/rtsim-conflict/src/synth.rs` (`FakeConflict`), which the tests and `rtsim-cli sim conflict`
-drive through this codec. The native engine does not route these records yet (§5 has no conflict
-module). Choices are numbered K2-# in `docs/overnight-choices-conflict.md`. Nothing below about a
+drive through this codec. The native engine routes them (§5 item 15, choices C2-# in
+`docs/overnight-choices-conflictjni.md`). Choices are numbered K2-# in
+`docs/overnight-choices-conflict.md`. Nothing below about a
 body mod is verified: it is the contract a plugin would have to meet.
 
 ### 9.1 Kind ranges (reserved)
@@ -1169,8 +1201,8 @@ The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the d
 ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
 stay as they are; these three are next to the herds'. **Dictionary kind 0x20** (each direction, as
 §2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12 are untouched.
-**Pages** (when the native engine routes conflict): table 0x4300 ('C'), one page with
-`Conflict::save` and its state hash, as the ships' 0x5300.
+**Pages**: table 0x4300 ('C'), one page with `Conflict::save` and its state hash, as the ships'
+0x5300 (§5 item 15).
 
 ### 9.2 Ids and dictionaries
 
@@ -1243,8 +1275,9 @@ All of 0x0800 to 0x080B are journaled.
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
 
 Every conflict command is per session: puppets never outlive one (the dragons' S11 and the ships'
-U4), so none is kept or resent; TERRITORY is sent again for every faction at a session start (the
-native engine's job when it routes conflict).
+U4), so none is kept or resent; TERRITORY is sent again for every faction at a session start
+(`Conflict::session_start`, C2-9). DEMAND_SETTLED 4 (refused) answers an ENVOY_ANSWER refusal or an
+attack: a refused demand is never a cut signal (C2-12).
 
 ### 9.5 How Java would apply them
 
@@ -1301,7 +1334,9 @@ are not materialized.
   player district goes through the industry threat interface (never better than observed, capped,
   applied on load even with the owner offline: C16 to C18), and a raid on a village or a rival
   haven moves stock between the world's markets (taken into the band's hold, stocked at the haven
-  on its return: conservation exact). **Watched**, the director above.
+  on its return: conservation exact). A district raid's threats carry the band's own loads (its
+  units' carry and blocks broken, `Threat::loads`, C2-1); threats without loads keep the industry
+  engine's per-class tunables. **Watched**, the director above.
 - **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
   and remember the raids on them (a robbery report against the faction).
 

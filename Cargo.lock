@@ -512,6 +512,7 @@ dependencies = [
  "mic-native-host",
  "mic-native-rt",
  "proptest",
+ "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
  "rtsim-kernel",

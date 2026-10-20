@@ -48,6 +48,17 @@ struct Ids {
 /// and bars in vaults in different chunks; a fence on its perimeter and the mill itself exposed,
 /// all in the ore vault's chunk (the district's chunks are its inventories').
 fn mill(j: &mut Java, ore: i64, visits: &[(f64, bool)], tick_first: bool) -> Ids {
+    mill_with(j, ore, visits, tick_first, |_, _, _| {})
+}
+
+/// [`mill`], with `extra` changing the world and the district before they are declared.
+fn mill_with(
+    j: &mut Java,
+    ore: i64,
+    visits: &[(f64, bool)],
+    tick_first: bool,
+    extra: impl FnOnce(&mut Java, &mut FakeWorld, &mut FDistrict),
+) -> Ids {
     assert_eq!(j.dict_id(wire::DICT_DIMENSION, OVERWORLD), DIM);
     let ids = Ids {
         ore: Good(j.dict_id(DICT_GOOD, "i/64/test:ore")),
@@ -70,7 +81,7 @@ fn mill(j: &mut Java, ore: i64, visits: &[(f64, bool)], tick_first: bool) -> Ids
         destroyed: false,
     };
     let machine = BlockPos::new(8, 64, 4);
-    w.districts.push(FDistrict {
+    let mut district = FDistrict {
         id: MILL,
         name: "Mill".into(),
         dim: DIM,
@@ -122,7 +133,9 @@ fn mill(j: &mut Java, ore: i64, visits: &[(f64, bool)], tick_first: bool) -> Ids
         broken: Default::default(),
         revision: 0,
         ever_loaded: false,
-    });
+    };
+    extra(j, &mut w, &mut district);
+    w.districts.push(district);
     w.visits = visits
         .iter()
         .map(|&(d, here)| Visit {
@@ -425,6 +438,7 @@ fn a_raid_while_away_lands_at_the_next_load() {
         count: 3,
         strength: 3.0,
         target: ThreatTarget::District(MILL),
+        loads: None,
         at: t,
     })])
     .unwrap();
@@ -919,4 +933,178 @@ fn industry_pages_in_another_format_start_the_industry_engine_afresh() {
     let e = engine(&dir, 256 * 1024);
     let _j = Java::open(e.clone(), WorldSave::fresh());
     e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// The conflict engine raids a district through the industry engine's threat interface (choices
+/// C2-1 and C2-7 in docs/overnight-choices-conflictjni.md): a goblin camp near the mill, whose
+/// smog (the Destroy plugin's attribution, I14, a deposit good the industry engine learns as an
+/// output) is the settlers' grievance (P14) once the model is learned; the ladder climbs while the
+/// player is away (an envoy nobody meets, scouts, a raid), and the war band meets the unloaded
+/// mill abstractly, carrying and breaking by its own units' loads. The world and the pages save
+/// while away, after the raid; the mill loads again and the raid's theft and broken blocks land in
+/// its reconcile; then a crash: the restarted engine derives the same reconcile from the same
+/// pages and the world that never saw it gets it once.
+#[test]
+fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
+    use rtsim_conflict::boundary::{self as cb, Obs as O};
+    use rtsim_jni::engine::MODULE_CONFLICT;
+
+    const CAMP: u64 = 0xC0B1_0002;
+    const SMOG: &str = "d/0/destroy:smog/00c0ffee00c0ffee";
+    // The mill's chunks are (0, 0) and (2, 0): its centre is (24, 8); the camp 145 blocks off.
+    const AT: [f64; 3] = [24.5, 64.0, 8.5];
+    const MODULES: u32 = 0b1111 | MODULE_INDUSTRY | MODULE_CONFLICT;
+    const BACK: f64 = 8.0;
+    let player = (0xA11C_E000_0000_0001u64, 0xB0B0_0000_0000_0002u64);
+    let visits: &[(f64, bool)] = &[(0.0, true), (1.0, false), (BACK, true)];
+    let at_mill = |j: &mut Java, here: bool| {
+        j.players = if here {
+            vec![(player, DIM, AT)]
+        } else {
+            Vec::new()
+        };
+    };
+    let (dir, mut j) = mill_engine("ind-conflict");
+    let mut smog = Good(0);
+    let ids = mill_with(&mut j, 20_000, visits, false, |j, w, d| {
+        // One smog a batch: 240 a day while the mill runs.
+        smog = Good(j.dict_id(DICT_GOOD, SMOG));
+        w.good(smog.0, GoodInfo::deposit(&SMOG[4..]));
+        d.deposit = Some((smog, 0));
+        d.deposit_chunk = ChunkPos {
+            dim: DIM,
+            x: 0,
+            z: 0,
+        };
+        d.recipes[0].deposit_per_batch = -1;
+    });
+    j.module_mask = MODULES;
+    let structure = j.dict_id(wire::DICT_STRUCTURE, "goblinstyranny:goblin_camp");
+    at_mill(&mut j, true);
+    j.conflict_obs(&O::FactionFound(cb::FactionFound {
+        faction: CAMP,
+        flags: 0,
+        dimension: DIM,
+        structure,
+        pos: (150, 64, 80),
+    }));
+    j.mc_run_until(Tick(day(1.0).0 - 1));
+    let phase = industry(&j.e, |ie| ie.district(MILL).map(|d| d.phase));
+    assert_eq!(phase, Some(Phase::Learned), "learned while loaded");
+    let fed = |j: &Java| {
+        j.e.with_conflict(|c, _| {
+            c.sources
+                .get(&(MILL.0, rtsim_conflict::SignalKind::Smog))
+                .map(|s| s.rate * TICKS_PER_DAY as f64)
+        })
+    };
+    let rate = fed(&j).expect("the mill's learned smog is a source");
+    assert!((rate - 240.0).abs() < 5.0, "240 smog a day: {rate}");
+    // Away: the replay runs and so does the smog; the ladder climbs with nobody to meet it.
+    at_mill(&mut j, false);
+    j.mc_run_until(day(BACK - 0.5));
+    let (raids, blocks, unmapped) = j.e.with_conflict(|c, _| {
+        (
+            c.stats.raids_district,
+            c.stats.blocks_destroyed,
+            c.ledger.unmapped.values().sum::<i64>(),
+        )
+    });
+    let stolen = industry(&j.e, |ie| ie.books.stolen.total());
+    let log: Vec<String> = j
+        .conflict
+        .iter()
+        .map(|(s, c)| format!("{s} {}", c.name()))
+        .collect();
+    eprintln!(
+        "conflict while away: {raids} raids, {stolen} items stolen ({unmapped} goods the world lacks), {blocks} blocks; {log:?}"
+    );
+    assert!(raids >= 1, "a war band raided the mill while it was away");
+    assert!(
+        blocks > 0 && stolen > 0,
+        "the band's own loads carry and break (C2-1)"
+    );
+    assert_eq!(
+        i128::from(unmapped),
+        stolen,
+        "the haven counts the mill's goods it has no market good for (K2-15)"
+    );
+    let attacks = industry(&j.e, |ie| ie.district(MILL).map_or(0, |d| d.attacks.len()));
+    assert!(attacks >= 1, "the industry engine booked the attack");
+    let machine_lost = industry(&j.e, |ie| {
+        ie.district(MILL)
+            .is_some_and(|d| d.attacks.iter().any(|a| a.machine_lost))
+    });
+    if machine_lost {
+        assert_eq!(
+            fed(&j),
+            None,
+            "a machine lost: the replay stops, and the mill's smog with it"
+        );
+    }
+    assert!(
+        j.mc().districts[0].broken.is_empty(),
+        "nothing happens in the world while it is away"
+    );
+    // The world saves while away, after the raid; the pages stop exactly there.
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    while j.e.durable_obs_seq() < through {
+        j.mc_tick();
+    }
+    let gt = j.game_time;
+    // The player comes back: the raid lands in the reconcile.
+    at_mill(&mut j, true);
+    j.mc_run_until(day(BACK) + 600);
+    let first = reconciles(&j);
+    let broken = j.mc().districts[0].broken.clone();
+    let bars_first = bars(&j, &ids);
+    eprintln!("at the load: reconciles {first:?}, broken {broken:?}");
+    assert!(!broken.is_empty(), "the raid's blocks broken at the load");
+    assert!(!first.is_empty(), "reconciled before the crash");
+    conserves(&j);
+    // The crash: no save lands, the world rolls back to its save.
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let applied_before = mc.reconciled.len();
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULES;
+    j.game_time = gt;
+    assert_eq!(
+        j.e.conflict_restore_check(),
+        (None, false),
+        "the conflict reads back to its saved state hash"
+    );
+    j.mc_run_until(day(BACK) + 600);
+    let after: Vec<_> = reconciles(&j)[applied_before..].to_vec();
+    let epoch = |v: &[(u64, u32, ChunkPos)]| {
+        let mut x: Vec<_> = v.to_vec();
+        x.sort();
+        x
+    };
+    assert_eq!(
+        epoch(&after),
+        epoch(&first),
+        "the same reconcile re-derived from the same pages, applied once"
+    );
+    assert_eq!(
+        j.mc().districts[0].broken,
+        broken,
+        "the same blocks broken, once"
+    );
+    assert_eq!(bars(&j, &ids), bars_first, "the same theft, once");
+    assert_eq!(
+        j.e.with_conflict(|c, _| c.stats.raids_district),
+        raids,
+        "the raid is not raided again"
+    );
+    conserves(&j);
+    assert_eq!(j.stale_commands, 0);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    j.e.close(true, Duration::from_secs(5)).unwrap();
 }

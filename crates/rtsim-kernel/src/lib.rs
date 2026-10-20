@@ -14,21 +14,28 @@
 //! - [`codec`] and [`page`]: page encoding and the incremental, crash-safe page store (SCALE.md §8,
 //!   PLAN.md §4.9).
 //! - [`journal`]: operation ids and idempotent replay (A9).
+//! - [`paging`]: lazy regions paged to disk under a memory budget, with prefetch (A16, SCALE.md §8).
+//! - [`exec`] and [`bsp`]: the executor the caller hands in, and the bulk-synchronous parallel
+//!   step over paged regions (SCALE.md §5).
 //! - [`profile`]: named zones, microseconds per system.
 //! - [`store`]: the agent storage facade over plain columns (P4 stays open).
 //! - [`synth`]: synthetic kinds for tests and the scale bench. Scaffolding, not content.
 //!
-//! The kernel owns no threads (PLAN.md §2): every entry point runs on the caller's thread.
+//! The kernel owns no threads (PLAN.md §2): every entry point runs on the caller's thread, and
+//! parallel work runs on an [`exec::Executor`] the caller provides.
 
+pub mod bsp;
 pub mod clock;
 pub mod codec;
 pub mod conserve;
 pub mod dyadic;
+pub mod exec;
 pub mod handle;
 pub mod journal;
 pub mod ladder;
 pub mod lazy;
 pub mod page;
+pub mod paging;
 pub mod profile;
 pub mod rng;
 pub mod store;
