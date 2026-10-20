@@ -54,9 +54,14 @@ pub struct PlaceHouse {
     pub frame: u16,
     /// Which of the 14 templates under `data/ribbits/structure/houses`, from the seed.
     pub template: u32,
-    /// Where to start searching for a free plot: the village's meeting point.
+    /// Where to start searching for a free plot: the village's meeting point (the bridge searches
+    /// rings around it, PLACE_HOUSE's SEARCH flag, with the height from the village).
     pub x: i32,
     pub z: i32,
+    /// How far out to search, in blocks. PLACEHOLDER: 48.
+    pub radius: u32,
+    /// Quarter turns, from the seed.
+    pub rotation: u8,
     pub seed: u64,
 }
 
@@ -304,6 +309,8 @@ impl World {
             template: (seed % u64::from(self.cfg.house_templates.max(1))) as u32,
             x: pos.x,
             z: pos.z,
+            radius: 48,
+            rotation: ((seed >> 32) % 4) as u8,
             seed,
         }));
         self.houses_pending.insert(op, node);
