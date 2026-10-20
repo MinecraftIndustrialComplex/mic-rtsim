@@ -131,10 +131,10 @@ A reader that meets an unknown kind skips `size` bytes. A malformed size ends th
     uses its id.
   - The engine's dictionary is per **session**: Java forgets it at every start, so the engine sends
     it again.
-- **Operation ids** (u64) mark every cross-store transfer. Java's have the top bit set and are the
-  carrying record's own obsSeq: `0x8000_0000_0000_0000 | obsSeq`. The engine's have the top bit clear
-  and must be the same when the engine re-derives the same transfer after a crash (derive them from
-  state, not from a counter that a crash rolls back).
+- **Operation ids** (u64) mark every cross-store transfer, as in rtsim-kernel's `journal::OpId`. The
+  engine's have the top bit set (`OpId::engine`). The bridge's have it clear (`OpId::bridge`), and
+  each is simply the obsSeq of the record that carries it. When the engine re-derives a transfer
+  after a crash it must give it the same op id, or the bridge cannot tell it is a duplicate.
 
 ### 2.3 Observations (Java to the engine)
 
@@ -152,10 +152,11 @@ an operation id at most once.
 
 | Kind | Name | aux | Fields (offset type name) | Size |
 |---|---|---|---|---|
-| 0x0001 | SESSION_START | 0 | 8 i64 gameTime, 16 u64 lastAppliedCmdSeq, 24 u32 moduleMask, 28 u32 reserved | 32 |
+| 0x0001 | SESSION_START | 0 | 8 i64 gameTime, 16 u64 lastAppliedCmdSeq, 24 u64 journalFirstObsSeq (0 = empty), 32 u64 worldNextObsSeq, 40 u32 moduleMask, 44 u32 reserved | 48 |
 | 0x0002 | DICT | dict kind | 8 u32 id, 12 u32 nameLen, 16 UTF-8 name, zero-padded | 16 + name, aligned |
 | 0x0003 | TICK | 0 | 8 i64 gameTime. Starts one tick's latest-wins records | 16 |
 | 0x0004 | MODULES | 0 | 8 u32 mask, 12 u32 reserved. At start and on change | 16 |
+| 0x0005 | WORLD_SAVED | 0 | 8 u64 durableObsSeq: a world save holding every observation up to it is on disk. Once per save | 16 |
 | 0x0010 | PLAYER | dimension | 8 u64 uuidMost, 16 u64 uuidLeast, 24 f64 x, 32 f64 y, 40 f64 z. Every 20 ticks per player | 48 |
 | 0x0011 | PUPPET_STATE | member index | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 f32 health, 28 u32 flags, 32 f64 x, 40 f64 y, 48 f64 z | 56 |
 | 0x0100 | MATERIALIZED | member count | 24 u64 agent, 32 u32 epoch, 36 u32 dimension | 40 |
@@ -198,6 +199,17 @@ captured member before it), TAKEN or DIED.
 - TRANSFER kinds: 1 generic (the only one so far).
 - COMMAND_RESULT status: 1 applied, 2 duplicate op id (already applied, skipped), 3 failed.
 
+**SESSION_START and the kernel's `Replay::reconcile`.** `journalFirstObsSeq` and `worldNextObsSeq`
+are the two numbers `reconcile(journal_first, world_next)` takes. `worldNextObsSeq` is the world
+save's own next sequence, read before Java moves past `pagesObsSeq`, so a world save older than the
+pages shows up as `EngineAhead` (P29). Java's sequences in this session then start at
+`max(worldNextObsSeq, pagesObsSeq + 1)`, which keeps `Replay::admit` contiguous.
+
+**WORLD_SAVED and `Replay::forget_ops_through`.** The bridge records `nextObsSeq - 1` at the
+overworld's save event and chains a marker onto NeoForge's SavedData write chain
+(`IOUtilities.withIOWorker`), so the marker runs after the journal's file is written. The next
+hand-over carries the value; the engine may then forget op ids applied at or before it.
+
 **What a session start means:** puppets never outlive a session. At SESSION_START every agent the
 engine thought embodied is abstract again, with the last state it knew. The DEMATERIALIZED records
 of a clean shutdown come later, as journal replay.
@@ -205,7 +217,12 @@ of a clean shutdown come later, as journal replay.
 ### 2.4 Commands (the engine to Java)
 
 Every command has a `cmdSeq` at offset 8: per world, increasing. Java skips any command at or below
-the journal's `lastAppliedCmdSeq`. Bodies start at 16.
+the journal's `lastAppliedCmdSeq` (sent back in every observation header as `wordA`, which is the
+kernel's `Outbox::ack_through`). After a restart the engine resends its outbox (`Outbox::after`)
+with the commands' original sequences; Java applies those above `lastAppliedCmdSeq` and skips any
+whose op id it already applied. New commands must get sequences above `lastAppliedCmdSeq` too, so
+the engine starts its counter at `max(next_seq, lastAppliedCmdSeq + 1)` (`start` returns it). Bodies
+start at 16.
 
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
@@ -259,6 +276,9 @@ sent none, so everything unacknowledged goes out again, flagged `REPLAY`. The en
 1. Allocate four buffers, 64-aligned, write `capacity`, hand them to Java as direct buffers.
 2. `start`: load pages, return `(pagesObsSeq, nextCmdSeq)` with `nextCmdSeq > lastAppliedCmdSeq`.
 3. `submit(h)`: queue step h on the host's background pool and return. The step follows §1.2.
-4. Keep per-world sets of op ids already applied (Java's and its own), saved in pages.
-5. Acknowledge only what is on disk.
+4. Run every journaled observation through `Replay::admit`; feed COMMAND_RESULT(applied or
+   duplicate) to the outbox; call `forget_ops_through` on WORLD_SAVED; call `reconcile` with the
+   SESSION_START fields.
+5. Acknowledge (`ackedObsSeq`) only what pages on disk include.
 6. Treat every embodied agent as abstract at SESSION_START.
+7. Mind the op-id bit: engine ids set it, bridge ids never do.
