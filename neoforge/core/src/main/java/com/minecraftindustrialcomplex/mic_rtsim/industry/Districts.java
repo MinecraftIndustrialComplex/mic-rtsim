@@ -174,6 +174,27 @@ public final class Districts {
                 set.remove(c);
             d.loadDirty = true;
             ind.sampler.chunkUnloaded(d);
+            // I7: the engine's replay of the district's unloaded part takes the chunk back.
+            ByteBuffer r = ind.journal(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.SIZE, 0);
+            r.putLong(IndRecords.ChunkUnloaded.DISTRICT, d.id);
+            r.putInt(IndRecords.ChunkUnloaded.DIM, ind.dimId(level.dimension()));
+            r.putInt(IndRecords.ChunkUnloaded.X, chunk.getPos().x);
+            r.putInt(IndRecords.ChunkUnloaded.Z, chunk.getPos().z);
+            ind.commit(r);
+        }
+    }
+
+    /**
+     * U10, the module switched on again: every district is declared anew, its load state, its watched flag
+     * and its chunks reported anew (the session start that follows does the chunks).
+     */
+    void forgetAnnounced() {
+        for (District d : data.districts.values()) {
+            d.declaredRevision = 0;
+            d.loadState = -1;
+            d.loadDirty = true;
+            d.watched = false;
+            d.watchedSentAt = Long.MIN_VALUE;
         }
     }
 
@@ -1106,7 +1127,7 @@ public final class Districts {
     void declare(District d, long now) {
         int dimId = ind.dimId(d.dim);
         int nameId = ind.nameId(d.displayName());
-        ByteBuffer r = ind.journal(IndRecords.IND_DISTRICT, IndRecords.District.SIZE, d.notLearnable);
+        ByteBuffer r = ind.journal(IndRecords.IND_DISTRICT, IndRecords.District.SIZE, IndRecords.NotLearnable.sent(d.notLearnable));
         r.putLong(IndRecords.District.DISTRICT, d.id);
         r.putInt(IndRecords.District.REVISION, d.revision);
         r.putInt(IndRecords.District.DIM, dimId);

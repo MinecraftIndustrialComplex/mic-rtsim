@@ -72,15 +72,15 @@ class IndustryWireContractTest {
 
     /** The command fixtures; every other record fixture is an observation. */
     private static final Set<String> COMMANDS = Set.of("IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA",
-            "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT", "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
+            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
 
     /** What the Rust program must have printed. A missing one fails, so a shrunken file cannot pass. */
     private static final List<String> REQUIRED = List.of(
-            "IND_STOCK_SAMPLE", "IND_SWEEP_END", "IND_LEDGER_REQUEST", "IND_WATCHED", "IND_APPROACH", "IND_DISTRICT",
+            "IND_STOCK_SAMPLE", "IND_SWEEP_END", "IND_WATCHED", "IND_APPROACH", "IND_DISTRICT",
             "IND_DISTRICT_CHUNKS", "IND_INVENTORY", "IND_DISTRICT_REMOVED", "IND_EDIT", "IND_DISCARD",
             "IND_LOAD_STATE", "IND_CHUNK_LOADED", "IND_CHUNK_UNLOADED", "IND_PORT", "IND_PORT_NO_INVENTORY", "IND_TRAIN_ARRIVED",
             "IND_TRAIN_DEPARTED", "IND_STATION", "IND_RECONCILE_RESULT", "IND_CARRIAGE_RESULT",
-            "IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA", "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT",
+            "IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA",
             // overnight agent 14: the plugin, threat and level-store records
             "IND_DEPOSIT_SAMPLE", "IND_CONDITIONS", "IND_POWER_LINK", "IND_PACKAGE",
             "IND_SPAWN_SAMPLE", "IND_FIGHT", "IND_SURVEY", "IND_SURVEY_BLOCKS",
@@ -135,17 +135,6 @@ class IndustryWireContractTest {
                 "PLUGIN", IndRecords.Inventory.KIND_PLUGIN);
         group("carriage_reason",
                 "Exchange", IndRecords.CarriageDelta.EXCHANGE, "Loot", IndRecords.CarriageDelta.LOOT);
-        // Rust names the running state Running; IndRecords calls it learned.
-        group("ledger_state",
-                "Live", IndRecords.Ledger.STATE_LIVE, "Learning", IndRecords.Ledger.STATE_LEARNING,
-                "Running", IndRecords.Ledger.STATE_LEARNED, "Stale", IndRecords.Ledger.STATE_STALE,
-                "NotLearnable", IndRecords.Ledger.STATE_NOT_LEARNABLE,
-                "Suspended", IndRecords.Ledger.STATE_SUSPENDED, "Damaged", IndRecords.Ledger.STATE_DAMAGED,
-                "OutOfSeason", IndRecords.Ledger.STATE_OUT_OF_SEASON);
-        group("next_kind",
-                "InputEmpty", IndRecords.Ledger.NEXT_INPUT_EMPTIES, "OutputFull", IndRecords.Ledger.NEXT_OUTPUT_FULL,
-                "Target", IndRecords.Ledger.NEXT_TARGET, "Restart", IndRecords.Ledger.NEXT_RESTART,
-                "Season", IndRecords.Ledger.NEXT_NONE);
         group("deposit_plugin",
                 "OreExcavation", IndRecords.DepositPlugin.ORE_EXCAVATION, "DieselOil", IndRecords.DepositPlugin.DIESEL_OIL,
                 "DestroyCrude", IndRecords.DepositPlugin.DESTROY_CRUDE);
@@ -498,10 +487,6 @@ class IndustryWireContractTest {
                         .put32("records", IndRecords.SweepEnd.RECORDS, f.u32("records"))
                         .put32("inventories", IndRecords.SweepEnd.INVENTORIES, f.u32("inventories"));
             }
-            case "IND_LEDGER_REQUEST":
-                return latest(n, IndRecords.IND_LEDGER_REQUEST, IndRecords.DistrictState.SIZE, 0,
-                        IndRecords.DistrictState.GAME_TIME, f)
-                        .put64("district", IndRecords.DistrictState.DISTRICT, f.u64("district"));
             case "IND_WATCHED":
                 return latest(n, IndRecords.IND_WATCHED, IndRecords.DistrictState.SIZE, f.bool("watched") ? 1 : 0,
                         IndRecords.DistrictState.GAME_TIME, f)
@@ -915,29 +900,6 @@ class IndustryWireContractTest {
                 }
                 break;
             }
-            case "IND_LEDGER":
-            case "IND_LEDGER_NO_BREAKPOINT": {
-                int c = f.count("n_goods");
-                r.header(IndRecords.IND_LEDGER, IndRecords.Ledger.size(c), c, f);
-                r.b64("district", IndRecords.Ledger.DISTRICT, f.u64("district"))
-                        .u32("state", IndRecords.Ledger.STATE, code("ledger_state", f.sym("state")))
-                        .u32("freeze", IndRecords.Ledger.FREEZE,
-                                f.none("freeze") ? 0 : code("not_learnable", f.sym("freeze")))
-                        // -1 is "none" (IndRecords.Ledger.NEXT_BREAKPOINT).
-                        .b64("next_breakpoint", IndRecords.Ledger.NEXT_BREAKPOINT,
-                                f.none("next_breakpoint") ? -1L : f.i64("next_breakpoint"))
-                        .u32("next_kind", IndRecords.Ledger.NEXT_KIND, code("next_kind", f.sym("next_kind")))
-                        .u32("next_good", IndRecords.Ledger.NEXT_GOOD, f.none("next_good") ? 0 : f.u32("next_good"))
-                        .b64("since", IndRecords.Ledger.SINCE, f.i64("since"));
-                for (int i = 0; i < c; i++) {
-                    int at = IndRecords.Ledger.GOODS + i * IndRecords.Ledger.GOOD;
-                    String p = "good" + i + ".";
-                    r.u32(p + "good", at + IndRecords.Ledger.G_GOOD, f.u32(p + "good"))
-                            .b64(p + "per_hour", at + IndRecords.Ledger.G_PER_HOUR, f.i64(p + "per_hour"))
-                            .b64(p + "since_start", at + IndRecords.Ledger.G_SINCE_START, f.i64(p + "since_start"));
-                }
-                break;
-            }
             case "IND_DEPOSIT_DELTA": {
                 r.header(IndRecords.IND_DEPOSIT_DELTA, IndRecords.DepositDelta.SIZE, code("deposit_plugin", f.sym("plugin")), f);
                 r.b64("op", IndRecords.DepositDelta.OP_ID, f.u64("op"))
@@ -973,6 +935,26 @@ class IndustryWireContractTest {
     }
 
     // ---- the tests ---------------------------------------------------------------------------------------
+
+    /** I9: IND_DISTRICT never carries not-learnable code 6; the engine reads it as learnable now. */
+    @Test
+    void javaNeverSendsNotLearnableCodeSix() {
+        assertEquals(6, IndRecords.NotLearnable.SPAWN_FED_FARM, "the code stays named, as the engine's table has it");
+        assertEquals(0, IndRecords.NotLearnable.sent(IndRecords.NotLearnable.SPAWN_FED_FARM), "6 goes out as learnable");
+        assertEquals(0, IndRecords.NotLearnable.sent(0));
+        for (int code : new int[] {IndRecords.NotLearnable.ROTATION_CROSSES, IndRecords.NotLearnable.ELECTRIC_LINE_CROSSES,
+                IndRecords.NotLearnable.MIXTURE_NOT_STEADY, IndRecords.NotLearnable.FINITE_DEPOSIT_UNKNOWN,
+                IndRecords.NotLearnable.MOVING_CONTRAPTION, IndRecords.NotLearnable.CONVEYOR_CROSSES})
+            assertEquals(code, IndRecords.NotLearnable.sent(code), "a real reason is sent as it is");
+    }
+
+    /** The retired ledger kinds stay out of IndRecords: the engine reads 0x0044 and 0x8405 as unknown. */
+    @Test
+    void theLedgerKindsAreNotInTheFixtures() {
+        Fixtures fixtures = load();
+        for (String name : fixtures.records.keySet())
+            assertTrue(!name.contains("LEDGER"), "retired record in the fixtures: " + name);
+    }
 
     @Test
     void fixtureFileHoldsEveryRequiredRecord() {

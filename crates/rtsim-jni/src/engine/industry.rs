@@ -22,14 +22,14 @@
 //! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
 //! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
-//! (F27). IND_LEDGER is a reply and is never kept.
+//! (F27).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
 use rtsim_industry::cmd::{Cmd, IndustryOps};
 use rtsim_industry::engine::Engine as Industry;
-use rtsim_industry::ids::{Good, GoodInfo};
+use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
 use rtsim_industry::obs::{Obs, Timed};
 use rtsim_industry::persist::{CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE};
 use rtsim_industry::threat::Threat;
@@ -626,7 +626,6 @@ fn districts_fit(o: &Obs) -> bool {
     let d = match o {
         Obs::Glass(g) => g.district(),
         Obs::StockSample { district, .. }
-        | Obs::LedgerRequest { district }
         | Obs::Watched { district, .. }
         | Obs::Approach { district, .. }
         | Obs::DistrictChunks { district, .. }
@@ -666,7 +665,6 @@ fn kind_name(c: &Cmd) -> &'static str {
         Cmd::CarriageDelta(_) => "IND_CARRIAGE_DELTA",
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
-        Cmd::Ledger(_) => "IND_LEDGER",
         Cmd::ProbeSet(_) => "IND_PROBE_SET",
     }
 }
@@ -739,13 +737,6 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
         Cmd::WritePackage(p) => {
             names.push((DICT_NAME, p.address));
             p.goods.goods().for_each(|g| goods(g, &mut names));
-            None
-        }
-        Cmd::Ledger(l) => {
-            l.goods.iter().for_each(|e| goods(e.0, &mut names));
-            if let Some(g) = l.next_good {
-                goods(g, &mut names);
-            }
             None
         }
         Cmd::ProbeSet(_) => None,
@@ -945,6 +936,82 @@ pub(super) fn deletions(store: &PageStore, snapshot: &[(PageKey, Vec<u8>)]) -> V
         .collect()
 }
 
+// ---- the glass box (G1, read only) ------------------------------------------------------------
+
+impl Engine {
+    /// One district's glass report, flat (`rtsim_industry::glass::report::Report::to_f64s`);
+    /// None while it has no complete compile. Between steps (tests, `/rtsim district`).
+    pub fn glass_report(&self, district: u64) -> Option<Vec<f64>> {
+        let st = lock(&self.state);
+        st.industry
+            .engine
+            .glass
+            .report(DistrictId(district))
+            .map(|r| r.to_f64s())
+    }
+}
+
+/// The glass check offline, for the stub engine's GameTests (choice GB80): a fresh industry engine
+/// takes `stream` (whole records back to back, each sized by its header, in the order Java sent
+/// them: DICT entries, the industry's journaled and latest-wins kinds; others are skipped) the way
+/// the link does, and returns `district`'s report as [`Engine::glass_report`] would. The engine
+/// is deterministic, so the stub's run is checked by the same code as the native one.
+pub fn glass_offline(stream: &[u8], district: u64) -> Result<Option<Vec<f64>>, String> {
+    let mut engine = Industry::new(0, Tunables::default(), Tick::ZERO);
+    let mut started = false;
+    let mut at = 0;
+    while at < stream.len() {
+        if stream.len() - at < 8 {
+            return Err(format!("a record header is cut off at byte {at}"));
+        }
+        let size = usize::from(u16::from_le_bytes([stream[at + 2], stream[at + 3]]));
+        if size < 8 || at + size > stream.len() {
+            return Err(format!("a record at byte {at} has size {size}"));
+        }
+        let rec = &stream[at..at + size];
+        at += size;
+        let kind = u16::from_le_bytes([rec[0], rec[1]]);
+        if kind == obs::DICT && size >= obs::dict::NAME {
+            let dict = wire::u32_at(rec, 4);
+            let id = wire::u32_at(rec, obs::dict::ID);
+            let len = wire::u32_at(rec, obs::dict::NAME_LEN) as usize;
+            if dict == DICT_GOOD && obs::dict::NAME + len <= size {
+                let name = String::from_utf8_lossy(&rec[obs::dict::NAME..obs::dict::NAME + len]);
+                if let Some(info) = GoodInfo::parse(&name) {
+                    engine.define_good(Good(id), info);
+                }
+            }
+            continue;
+        }
+        if !LATEST.contains(&kind) && !JOURNALED.contains(&kind) {
+            continue;
+        }
+        let t = match iw::decode_obs(rec) {
+            Ok(Some((_, t))) => t,
+            Ok(None) => continue,
+            Err(e) => {
+                return Err(format!(
+                    "an industry record of kind {kind:#06x} does not decode: {e}"
+                ));
+            }
+        };
+        if !started {
+            engine.session_start(t.at);
+            started = true;
+        }
+        if t.at > engine.now() {
+            engine.advance_to(t.at);
+        }
+        engine.ingest(&t);
+        // Commands go nowhere offline: nothing applies them, as in G1 nothing changes the world.
+        engine.drain_commands();
+    }
+    Ok(engine
+        .glass
+        .report(DistrictId(district))
+        .map(|r| r.to_f64s()))
+}
+
 // ---- tests ----------------------------------------------------------------------------------
 
 impl Engine {
@@ -962,6 +1029,26 @@ mod tests {
     use rtsim_industry::cmd::{CarriageDelta, CarriageReason, DepositDelta};
     use rtsim_industry::ids::{ChunkPos, TrainId};
     use rtsim_industry::obs::DepositPluginId;
+
+    #[test]
+    fn the_offline_glass_check_reads_whole_records_and_refuses_cut_ones() {
+        use rtsim_industry::glass::records::{ChunkTicking, GlassObs};
+        use rtsim_industry::ids::DistrictId;
+        let mut stream = Vec::new();
+        let t = Timed {
+            at: Tick(100),
+            obs: Obs::Glass(GlassObs::ChunkTicking(ChunkTicking {
+                district: DistrictId(5),
+                chunk: ChunkPos { dim: 0, x: 1, z: 2 },
+                ticking: true,
+            })),
+        };
+        iw::encode_obs(1, &t, &mut stream).unwrap();
+        // A kind no one here reads is skipped, not an error.
+        stream.extend_from_slice(&[0x01, 0x00, 0x08, 0x00, 0, 0, 0, 0]);
+        assert_eq!(glass_offline(&stream, 5), Ok(None));
+        assert!(glass_offline(&stream[..stream.len() - 3], 5).is_err());
+    }
 
     #[test]
     fn the_link_page_round_trips() {

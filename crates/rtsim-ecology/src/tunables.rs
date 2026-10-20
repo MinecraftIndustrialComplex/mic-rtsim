@@ -129,6 +129,13 @@ pub struct DragonTunables {
     pub victims_kept: usize,
     /// Utility lost to a wild herd's risk (a kick, a horn), fullness points. PLACEHOLDER 2.
     pub herd_risk: i32,
+    /// Adopt (and so, per R18, discard) untagged dragons that spawned naturally or from a
+    /// spawner. False leaves them alone: not adopted, not discarded, not tracked, plain Ice and
+    /// Fire mobs exactly as without the mod, so In Control's desert fire dragons stay the oil
+    /// progression gate (P13: In Control stays untouched until the sim version is measured to
+    /// be at least as dangerous; OILGATE.md OG-1). TUNABLE, default false: set true only after
+    /// the oil gate (OILGATE.md OG-10) measures at least as dangerous as In Control.
+    pub adopt_natural_dragons: bool,
 }
 
 impl Default for DragonTunables {
@@ -173,6 +180,7 @@ impl Default for DragonTunables {
             home_regions: 8,
             victims_kept: 4,
             herd_risk: 2,
+            adopt_natural_dragons: false,
         }
     }
 }

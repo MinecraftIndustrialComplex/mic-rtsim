@@ -87,29 +87,12 @@ pub struct WritePackage {
     pub goods: GoodVec,
 }
 
-/// One line of the read-only ledger, for the Display Source (I18).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct LedgerLine {
-    pub district: DistrictId,
-    pub state: u32,
-    pub freeze: u32,
-    #[serde(serialize_with = "crate::ser::opt_tick")]
-    pub next_breakpoint: Option<Tick>,
-    pub next_kind: u32,
-    pub next_good: Option<Good>,
-    #[serde(serialize_with = "crate::ser::tick")]
-    pub since: Tick,
-    /// (good, units per hour, what it made or used since `since`).
-    pub goods: Vec<(Good, i64, i64)>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum Cmd {
     ChunkReconcile(ChunkReconcile),
     CarriageDelta(CarriageDelta),
     DepositDelta(DepositDelta),
     WritePackage(WritePackage),
-    Ledger(LedgerLine),
     /// IND_PROBE_SET (GLASSBOX.md §5.3, G-B14): buffers to add to a district's sweeps.
     ProbeSet(crate::glass::records::ProbeSet),
 }
@@ -121,7 +104,7 @@ impl Cmd {
             Cmd::CarriageDelta(c) => Some(c.op),
             Cmd::DepositDelta(c) => Some(c.op),
             Cmd::WritePackage(c) => Some(c.op),
-            Cmd::Ledger(_) | Cmd::ProbeSet(_) => None,
+            Cmd::ProbeSet(_) => None,
         }
     }
 }
@@ -195,19 +178,19 @@ impl Cmd {
             Cmd::CarriageDelta(x) => x.op = OpId(0),
             Cmd::DepositDelta(x) => x.op = OpId(0),
             Cmd::WritePackage(x) => x.op = OpId(0),
-            Cmd::Ledger(_) | Cmd::ProbeSet(_) => {}
+            Cmd::ProbeSet(_) => {}
         }
         c
     }
 
-    /// Sets the command's op id (no-op for a ledger line).
+    /// Sets the command's op id.
     pub fn set_op(&mut self, op: OpId) {
         match self {
             Cmd::ChunkReconcile(x) => x.op = op,
             Cmd::CarriageDelta(x) => x.op = op,
             Cmd::DepositDelta(x) => x.op = op,
             Cmd::WritePackage(x) => x.op = op,
-            Cmd::Ledger(_) | Cmd::ProbeSet(_) => {}
+            Cmd::ProbeSet(_) => {}
         }
     }
 }
@@ -264,16 +247,6 @@ mod persist_impls {
         count,
         goods
     });
-    persist_struct!(LedgerLine {
-        district,
-        state,
-        freeze,
-        next_breakpoint,
-        next_kind,
-        next_good,
-        since,
-        goods
-    });
     persist_struct!(IndustryOps { recent });
     persist_struct!(crate::glass::records::ProbeSet {
         district,
@@ -300,10 +273,6 @@ mod persist_impls {
                     w.u8(4);
                     c.put(w);
                 }
-                Cmd::Ledger(c) => {
-                    w.u8(5);
-                    c.put(w);
-                }
                 Cmd::ProbeSet(c) => {
                     w.u8(6);
                     c.put(w);
@@ -316,7 +285,6 @@ mod persist_impls {
                 1 => Cmd::CarriageDelta(Persist::get(r)?),
                 3 => Cmd::DepositDelta(Persist::get(r)?),
                 4 => Cmd::WritePackage(Persist::get(r)?),
-                5 => Cmd::Ledger(Persist::get(r)?),
                 6 => Cmd::ProbeSet(Persist::get(r)?),
                 _ => return invalid("command tag"),
             })

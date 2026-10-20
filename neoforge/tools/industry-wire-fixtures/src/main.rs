@@ -20,38 +20,10 @@ mod glass;
 use std::collections::HashMap;
 use std::fmt::{Display, Write as _};
 
-use rtsim_industry::cluster::PoolKey;
-
-/// The retired IND_LEDGER's next kinds (docs/industry-boundary.md §4.3). The engine no longer
-/// writes the record (I18) and has no forecast; the codes live here until the Java display
-/// source that reads them goes.
-#[derive(Clone, Copy)]
-enum Forecast {
-    InputEmpty(PoolKey),
-    OutputFull(PoolKey),
-    Target(PoolKey),
-    Restart,
-    Season,
-}
-
-impl Forecast {
-    fn code(self) -> (u32, Option<Good>) {
-        match self {
-            Forecast::InputEmpty(k) => (1, Some(k.good())),
-            Forecast::OutputFull(k) => (2, Some(k.good())),
-            Forecast::Target(k) => (3, Some(k.good())),
-            Forecast::Restart => (6, None),
-            Forecast::Season => (0, None),
-        }
-    }
-}
 use rtsim_industry::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    LedgerLine, WritePackage,
+    WritePackage,
 };
-// The retired IND_LEDGER (I18) still has its codec until the Java display source goes; its state
-// codes are the engine's inspection states.
-use rtsim_industry::engine::DistrictState as LedgerState;
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use rtsim_industry::obs::{
     BlockFlags, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
@@ -515,37 +487,6 @@ fn code_tables(out: &mut String) {
         .collect();
     table(out, "carriage_reason", &rows);
 
-    // IND_LEDGER state (a plain u32 in the line; the engine writes `LedgerState as u32`).
-    let rows: Vec<_> = [
-        LedgerState::Live,
-        LedgerState::Learning,
-        LedgerState::Running,
-        LedgerState::Stale,
-        LedgerState::NotLearnable,
-        LedgerState::Suspended,
-        LedgerState::Damaged,
-        LedgerState::OutOfSeason,
-    ]
-    .into_iter()
-    .map(|s| (format!("{s:?}"), s as u32))
-    .collect();
-    table(out, "ledger_state", &rows);
-
-    // IND_LEDGER nextKind: what `Forecast::code` gives (the engine adds 4, deposit exhausted, on
-    // top, in `ledger_line`).
-    let key = PoolKey::Stock(d, Good(9));
-    let rows: Vec<_> = [
-        ("InputEmpty", Forecast::InputEmpty(key)),
-        ("OutputFull", Forecast::OutputFull(key)),
-        ("Target", Forecast::Target(key)),
-        ("Restart", Forecast::Restart),
-        ("Season", Forecast::Season),
-    ]
-    .into_iter()
-    .map(|(name, fc)| (name.to_string(), fc.code().0))
-    .collect();
-    table(out, "next_kind", &rows);
-
     // IND_DEPOSIT_SAMPLE aux (also IND_DEPOSIT_DELTA's).
     let rows: Vec<_> = [
         DepositPluginId::OreExcavation,
@@ -684,22 +625,6 @@ fn main() {
             &mut out,
             name,
             wire::IND_SWEEP_END,
-            0,
-            Timed { at, obs: o },
-            &f,
-        );
-    }
-
-    {
-        let name = "IND_LEDGER_REQUEST";
-        let (mut g, mut f) = begin(name);
-        let at = game_time(&mut f, &mut g);
-        let district = district(&mut f, &mut g);
-        let o = Obs::LedgerRequest { district };
-        obs(
-            &mut out,
-            name,
-            wire::IND_LEDGER_REQUEST,
             0,
             Timed { at, obs: o },
             &f,
@@ -1549,79 +1474,6 @@ fn main() {
             entries,
         });
         cmd(&mut out, name, wire::IND_CARRIAGE_DELTA, seq, c, &f);
-    }
-
-    {
-        let name = "IND_LEDGER";
-        let (mut g, mut f) = begin(name);
-        let seq = f.u64("cmd_seq", g.u64());
-        let district = district(&mut f, &mut g);
-        let state = LedgerState::Damaged;
-        f.sym("state", format!("{state:?}"));
-        let freeze = NotLearnable::SpawnFedFarm;
-        f.sym("freeze", format!("{freeze:?}"));
-        let breakpoint = f.i64("next_breakpoint", g.i64(Sign::Pos));
-        let forecast = Forecast::Target(PoolKey::Stock(DistrictId(0), Good(g.u32())));
-        let (next_kind, next_good) = forecast.code();
-        f.sym("next_kind", "Target");
-        let next_good = next_good.expect("a target names a good");
-        f.u32("next_good", next_good.0);
-        let since = f.i64("since", g.i64(Sign::Pos));
-        f.sym("n_goods", 2);
-        let line_goods: Vec<(Good, i64, i64)> = (0..2)
-            .map(|i| {
-                (
-                    Good(f.u32(&format!("good{i}.good"), g.u32())),
-                    f.i64(&format!("good{i}.per_hour"), g.i64(Sign::Pos)),
-                    f.i64(&format!("good{i}.since_start"), g.i64(Sign::Neg)),
-                )
-            })
-            .collect();
-        let c = Cmd::Ledger(LedgerLine {
-            district,
-            state: state as u32,
-            freeze: freeze.code(),
-            next_breakpoint: Some(Tick(breakpoint as u64)),
-            next_kind,
-            next_good: Some(next_good),
-            since: Tick(since as u64),
-            goods: line_goods,
-        });
-        cmd(&mut out, name, wire::IND_LEDGER, seq, c, &f);
-    }
-
-    {
-        // The same kind with no breakpoint (-1) and no next good (0).
-        let name = "IND_LEDGER_NO_BREAKPOINT";
-        let (mut g, mut f) = begin(name);
-        let seq = f.u64("cmd_seq", g.u64());
-        let district = district(&mut f, &mut g);
-        let state = LedgerState::Running;
-        f.sym("state", format!("{state:?}"));
-        f.sym("freeze", "none");
-        f.sym("next_breakpoint", "none");
-        let (next_kind, next_good) = Forecast::Season.code();
-        assert_eq!(next_good, None);
-        f.sym("next_kind", "Season");
-        f.sym("next_good", "none");
-        let since = f.i64("since", g.i64(Sign::Pos));
-        f.sym("n_goods", 1);
-        let line_goods = vec![(
-            Good(f.u32("good0.good", g.u32())),
-            f.i64("good0.per_hour", g.i64(Sign::Pos)),
-            f.i64("good0.since_start", g.i64(Sign::Pos)),
-        )];
-        let c = Cmd::Ledger(LedgerLine {
-            district,
-            state: state as u32,
-            freeze: 0,
-            next_breakpoint: None,
-            next_kind,
-            next_good: None,
-            since: Tick(since as u64),
-            goods: line_goods,
-        });
-        cmd(&mut out, name, wire::IND_LEDGER, seq, c, &f);
     }
 
     {

@@ -316,8 +316,6 @@ pub struct FakeWorld {
     pub remote: bool,
     pub outgoing: Vec<Outgoing>,
     pub threats_out: Vec<Threat>,
-    /// Every ledger line the engine sent (IND_LEDGER), oldest first.
-    pub ledgers: Vec<crate::cmd::LedgerLine>,
     /// Every IND_PROBE_SET the engine sent (GLASSBOX.md §5.3), oldest first.
     pub probes: Vec<crate::glass::records::ProbeSet>,
     /// Every chunk reconcile applied: (op, district, epoch, chunk), oldest first.
@@ -367,7 +365,6 @@ impl FakeWorld {
             fail_carriage_deltas: false,
             outgoing: Vec::new(),
             threats_out: Vec::new(),
-            ledgers: Vec::new(),
             probes: Vec::new(),
             reconciled: Vec::new(),
             obs_seq: 0,
@@ -1378,7 +1375,6 @@ impl FakeWorld {
                 };
                 self.answer(c.op, status);
             }
-            Cmd::Ledger(l) => self.ledgers.push(l),
             Cmd::ProbeSet(p) => self.probes.push(p),
         }
     }
