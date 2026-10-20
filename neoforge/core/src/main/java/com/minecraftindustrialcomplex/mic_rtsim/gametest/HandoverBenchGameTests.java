@@ -385,7 +385,7 @@ public final class HandoverBenchGameTests {
                         .append(",\n     \"handOver\": ").append(stats(s.handOver, s.n))
                         .append(",\n     \"submitCall\": ").append(stats(s.submitCall, s.n))
                         .append(",\n     \"submitToPublish\": ").append(stats(s.submitToPublish, s.n));
-                if (s.engine.equals("native"))
+                if (s.engine.startsWith("native"))
                     json.append(",\n     \"step\": ").append(stats(s.step, s.n));
                 json.append("}").append(i + 1 < done.size() ? ",\n" : "\n");
                 record("handover-bench", s.key(), String.format(Locale.ROOT,
