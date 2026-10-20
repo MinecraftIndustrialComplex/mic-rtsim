@@ -1,0 +1,21 @@
+// The Java side of mic-rtsim: the core bridge mod `mic_rtsim` and, later, one Gradle project per
+// plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Each project is its own jar and mod id (A1).
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = 'https://maven.neoforged.net/releases' }
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
+rootProject.name = 'mic-rtsim-neoforge'
+
+// The core bridge (mod id mic_rtsim). It depends on NeoForge only (D4).
+include 'core'
+
+// Plugins go here as they are written, for example:
+// include 'plugin-carryon'   // mic_rtsim_carryon: Carry On's EntityPickupEvent (PLAN.md §6.2)
+// include 'plugin-ribbits'   // mic_rtsim_ribbits

@@ -1,0 +1,5 @@
+// Root of the mic-rtsim NeoForge build. Every mod project applies ModDevGradle itself; declaring the
+// plugin here once, unapplied, keeps all of them on one version.
+plugins {
+    id 'net.neoforged.moddev' version '2.0.74' apply false
+}

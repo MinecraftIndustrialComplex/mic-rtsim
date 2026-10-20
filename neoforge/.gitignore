@@ -1,0 +1,15 @@
+# Gradle and ModDevGradle outputs
+.gradle/
+build/
+*/build/
+bin/
+*/bin/
+
+# Local runtimes: GameTest servers, dev clients. They hold logs and worlds, never commit them.
+*/run/
+*/run-gametest/
+run/
+run-gametest/
+
+.idea/
+.vscode/
