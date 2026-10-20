@@ -2,12 +2,13 @@
 #
 # mic_rtsim's headless GameTest suite (and the pure-Java unit tests first).
 #
-#   ./gametest.sh                 run both
+#   ./gametest.sh                 run both, the server's engine the Rust one (builds rtsim-jni)
+#   ./gametest.sh -PrtsimEngine=stub -PskipJni   the same tests on the pure-Java stub, no cargo
 #   ./gametest.sh -PgametestDebugLog   with DEBUG logging (shows "Mixing ... into ..." lines)
 #
-# Boots a dedicated NeoForge server with nothing but mic_rtsim on it (the core depends on NeoForge
-# only, D4), runs every @GameTest in the mic_rtsim namespace, and exits non-zero if anything failed.
-# The full log is left in core/build/gametest.log.
+# Extra arguments go to Gradle as they are. Boots a dedicated NeoForge server with mic_rtsim and
+# mic_native (the host of the Rust engine) on it, runs every @GameTest in the mic_rtsim namespace, and
+# exits non-zero if anything failed. The full log is left in core/build/gametest.log.
 #
 # Two things can fail, and they fail differently:
 #   * a mixin that no longer matches its target: mic_rtsim.mixins.json is defaultRequire 1, so the

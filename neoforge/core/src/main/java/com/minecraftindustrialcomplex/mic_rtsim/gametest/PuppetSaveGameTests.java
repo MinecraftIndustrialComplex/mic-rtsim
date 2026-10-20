@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
@@ -72,8 +73,8 @@ public final class PuppetSaveGameTests {
     public static void puppetIsNotSavedAcrossSaveAndReload(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
-        RtsimTests.stub().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
-                List.of(com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine.MemberSpec.plain(0)));
+        RtsimTests.engine().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
+                List.of(ScriptedEngine.MemberSpec.plain(0)));
         WanderingTrader control = helper.spawn(EntityType.WANDERING_TRADER, new Vec3(5.5, 1, 5.5));
         control.setPersistenceRequired();
         ChunkPos chunk = new ChunkPos(net.minecraft.core.BlockPos.containing(at));
@@ -101,7 +102,7 @@ public final class PuppetSaveGameTests {
                     check("the puppet did not reach the disk", find(loaded, puppet[0]) == null);
                     for (Entity e : loaded)
                         check("no tagged entity reloads (" + e + ")", !RtsimAttachments.isTagged(e));
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the puppet was despawned", RtsimTests.group(agent) == null))
                 .thenExecute(control::discard)
@@ -117,8 +118,8 @@ public final class PuppetSaveGameTests {
     public static void puppetRidingABoatIsNotSaved(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
-        RtsimTests.stub().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
-                List.of(com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine.MemberSpec.plain(0)));
+        RtsimTests.engine().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), at.x, at.y, at.z,
+                List.of(ScriptedEngine.MemberSpec.plain(0)));
         Boat boat = helper.spawn(EntityType.BOAT, new Vec3(5.5, 1, 5.5));
         Boat controlBoat = helper.spawn(EntityType.BOAT, new Vec3(5.5, 1, 3.5));
         Pig pig = helper.spawn(EntityType.PIG, new Vec3(5.5, 1, 3.5));
@@ -155,7 +156,7 @@ public final class PuppetSaveGameTests {
                     check("the reloaded boat is empty", reBoat.getPassengers().isEmpty());
                     check("the control boat reloads with its pig", reControl != null && reControl.getPassengers().size() == 1);
                     check("the puppet did not reach the disk", find(loaded, puppet[0]) == null);
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the puppet was despawned", RtsimTests.group(agent) == null))
                 .thenExecute(() -> {

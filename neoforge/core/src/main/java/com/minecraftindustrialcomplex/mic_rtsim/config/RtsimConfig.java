@@ -6,6 +6,7 @@ import net.neoforged.fml.config.ModConfig;
 import net.neoforged.neoforge.common.ModConfigSpec;
 
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -13,7 +14,8 @@ import java.util.Map;
  *
  * <p>One switch per generic module (C25, PLAN.md §5.4). Switching off trade or travel gives wandering
  * traders back to vanilla ({@code bridge.TraderSpawning}). The quotas and intervals are PLACEHOLDER
- * values until phase 0 measures them (PLAN.md §4.1, P24); none of them is a measured number.
+ * values until phase 0 measures them (PLAN.md §4.1, P24); none of them is a measured number. The
+ * engine switch picks the Rust engine (the default) or the pure-Java stub, which simulates nothing.
  */
 public final class RtsimConfig {
     private RtsimConfig() {}
@@ -24,6 +26,12 @@ public final class RtsimConfig {
     private static final ModConfigSpec.IntValue PASS_INTERVAL;
     private static final ModConfigSpec.IntValue SHADOW_INTERVAL;
     private static final ModConfigSpec.IntValue PLAYER_INTERVAL;
+    private static final ModConfigSpec.ConfigValue<String> ENGINE;
+
+    /** {@code engine.implementation}: the Rust engine through mic_native. */
+    public static final String ENGINE_NATIVE = "native";
+    /** {@code engine.implementation}: the pure-Java stub, which simulates nothing (tests). */
+    public static final String ENGINE_STUB = "stub";
 
     /** PLACEHOLDER defaults (not measured). */
     public static final int DEFAULT_SPAWN_QUOTA = 8;
@@ -54,6 +62,15 @@ public final class RtsimConfig {
                 .defineInRange("puppetStateInterval", DEFAULT_SHADOW_INTERVAL, 1, 1200);
         PLAYER_INTERVAL = b.comment("Ticks between PLAYER observations (PLAN.md §6.3 says every 20 ticks).")
                 .defineInRange("playerInterval", DEFAULT_PLAYER_INTERVAL, 1, 1200);
+        b.pop();
+
+        b.push("engine");
+        ENGINE = b.comment("Which engine runs the sim, read at server start:",
+                        "  native: the Rust engine (rtsim-jni), loaded through mic_native. If it cannot be loaded, the",
+                        "          bridge does not start (no fallback) and /rtsim perf says why.",
+                        "  stub:   a pure-Java stand-in that speaks the boundary protocol but simulates nothing.",
+                        "          It exists for tests; a world played on it has no simulated world.")
+                .defineInList("implementation", ENGINE_NATIVE, List.of(ENGINE_NATIVE, ENGINE_STUB));
         b.pop();
         SPEC = b.build();
     }
@@ -119,8 +136,26 @@ public final class RtsimConfig {
     }
 
     /**
+     * The engine to open at server start: {@link #ENGINE_NATIVE} or {@link #ENGINE_STUB}. A GameTest
+     * server may override it with {@code -Dmic_rtsim.engine} (only with {@code -Dmic_rtsim.gametest=true}).
+     */
+    public static String engine() {
+        if (Test.ENABLED) {
+            String override = System.getProperty("mic_rtsim.engine");
+            if (override != null && !override.isBlank()) {
+                String e = override.trim();
+                if (!e.equals(ENGINE_NATIVE) && !e.equals(ENGINE_STUB))
+                    throw new IllegalStateException("-Dmic_rtsim.engine=" + override + ": expected " + ENGINE_NATIVE + " or " + ENGINE_STUB);
+                return e;
+            }
+        }
+        return loaded() ? ENGINE.get() : ENGINE_NATIVE;
+    }
+
+    /**
      * GameTest-only overrides. {@code -Dmic_rtsim.gametest=true} (set by the runGameTestServer run and
      * nothing else) unlocks them, so a normal game cannot move a switch behind the config file's back.
+     * It also unlocks {@code -Dmic_rtsim.engine} ({@link #engine()}).
      */
     public static final class Test {
         private Test() {}

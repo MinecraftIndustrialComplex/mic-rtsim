@@ -3,25 +3,30 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.fml.loading.FMLPaths;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Shared helpers for the mic_rtsim GameTests ({@code ./gametest.sh}).
  *
- * <p>The tests drive the server's real bridge session, whose engine is the {@link StubEngine}: a
- * test scripts commands into the stub, waits for the bridge to apply them on a later tick (the bridge
- * never waits, so neither can a test), and reads back the observations the stub received. Tests in
- * the default batch run at the same time against the one session, so each uses its own agent ids
- * and only looks at records for them.
+ * <p>The tests drive the server's real bridge session, whose engine is a {@link ScriptedEngine}: the
+ * Rust engine ({@link NativeEngine}, the default) or the {@link StubEngine}
+ * ({@code ./gametest.sh -PrtsimEngine=stub}). A test orders commands from the engine, waits for the
+ * bridge to apply them on a later tick (the bridge never waits, so neither can a test), and reads back
+ * the observations the engine received. Tests in the default batch run at the same time against the
+ * one session, so each uses its own agent ids and only looks at records for them.
  */
 public final class RtsimTests {
     private RtsimTests() {}
@@ -45,10 +50,26 @@ public final class RtsimTests {
         return s;
     }
 
-    public static StubEngine stub() {
-        if (!(session().engine() instanceof StubEngine stub))
-            throw new GameTestAssertException("the engine is not the stub: " + session().engine().describe());
-        return stub;
+    /** The session's engine, as the test surface both engines implement. */
+    public static ScriptedEngine engine() {
+        if (!(session().engine() instanceof ScriptedEngine engine))
+            throw new GameTestAssertException("the session's engine takes no scripted orders: " + session().engine().describe());
+        return engine;
+    }
+
+    /**
+     * A new engine of the same kind as the session's, with empty pages, for a test that runs its own
+     * sessions: the native engine on a fresh directory under {@code <game dir>/mic_rtsim-test/}, or a
+     * stub with no pages file.
+     */
+    public static ScriptedEngine freshEngine() {
+        ScriptedEngine kind = engine();
+        if (kind instanceof NativeEngine)
+            return NativeEngine.open(FMLPaths.GAMEDIR.get().resolve("mic_rtsim-test").resolve(UUID.randomUUID().toString()),
+                    0, NativeEngine.FLAG_TEST | NativeEngine.FLAG_NO_FSYNC);
+        if (kind instanceof StubEngine)
+            return new StubEngine(StubEngine.Pages.EMPTY, null, StubEngine.DEFAULT_CAPACITY);
+        throw new GameTestAssertException("no fresh engine of the kind " + kind.getClass().getSimpleName());
     }
 
     /** The arena's middle, standing on the floor, in absolute coordinates. */
@@ -73,25 +94,25 @@ public final class RtsimTests {
     }
 
     /** Journaled records of one kind for one agent (every journaled agent field is at offset 24). */
-    public static List<StubEngine.Received> recordsFor(StubEngine stub, int kind, long agent) {
-        List<StubEngine.Received> out = new ArrayList<>();
-        for (StubEngine.Received r : stub.received(kind))
+    public static List<ScriptedEngine.Received> recordsFor(ScriptedEngine engine, int kind, long agent) {
+        List<ScriptedEngine.Received> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : engine.received(kind))
             if (r.bytes().length >= Obs.BODY + 8 && r.view().getLong(Obs.BODY) == agent && !r.skipped())
                 out.add(r);
         return out;
     }
 
-    /** Every journaled record for one agent, in the order the stub received them. */
-    public static List<StubEngine.Received> allFor(StubEngine stub, long agent) {
-        List<StubEngine.Received> out = new ArrayList<>();
-        for (StubEngine.Received r : stub.received())
+    /** Every journaled record for one agent, in the order the engine received them. */
+    public static List<ScriptedEngine.Received> allFor(ScriptedEngine engine, long agent) {
+        List<ScriptedEngine.Received> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : engine.received())
             if (Obs.isJournaled(r.kind()) && r.kind() != Obs.TRANSFER && r.kind() != Obs.COMMAND_RESULT
                     && r.bytes().length >= Obs.BODY + 8 && r.view().getLong(Obs.BODY) == agent && !r.skipped())
                 out.add(r);
         return out;
     }
 
-    public static long gameTimeOf(StubEngine.Received r) {
+    public static long gameTimeOf(ScriptedEngine.Received r) {
         return r.view().getLong(Obs.GAME_TIME);
     }
 
