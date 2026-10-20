@@ -97,12 +97,21 @@ quota), it does not submit the step that would overwrite them; the sim slows rat
 | `observationBuffer(i)`, `commandBuffer(i)` | once per session | no |
 | `start(lastAppliedCmdSeq) -> (pagesObsSeq, nextCmdSeq)` | once, at server start, before hand-over 1 | may (startup) |
 | `submit(h)` | at most once per tick | **never** |
-| `requestSave()` | Minecraft's overworld save event | never (a signal) |
+| `requestSave(throughObsSeq)` | Minecraft's overworld save event | never (a signal) |
 | `close()` | server stopped | may, briefly |
 
-`start` loads the pages. `pagesObsSeq` is the highest observation sequence the pages include; Java
-moves its next observation sequence past it, so a world save older than the pages never reuses a
-sequence. `nextCmdSeq` must be above `lastAppliedCmdSeq`.
+`start` loads the pages and zeroes the four buffers' `published` and `consumed` words (Java refuses
+buffers that are not fresh: hand-overs restart at 1 every session). `pagesObsSeq` is the highest
+observation sequence the pages include; Java moves its next observation sequence past it, so a world
+save older than the pages never reuses a sequence. `nextCmdSeq` must be above `lastAppliedCmdSeq`.
+
+`requestSave(throughObsSeq)`: the world's journal holds every observation up to `throughObsSeq`. The
+engine snapshots its pages after applying exactly those (before the first journaled record past it),
+never further: pages ahead of the world save are P29's case. The stub does this.
+
+**Acknowledgements** (`ackedObsSeq`) are trusted only from a well-formed header, are clamped to what
+Java sent (or the pages held at start), and trim the journal only after that buffer's commands are
+applied, so a command in the same buffer that re-issues an acknowledged op is still caught.
 
 ## 2. Records
 
@@ -133,10 +142,11 @@ A reader that meets an unknown kind skips `size` bytes. A malformed size ends th
   - The engine's dictionary is per **session**: Java forgets it at every start, so the engine sends
     it again.
 - **Operation ids** (u64) mark every cross-store transfer, as in rtsim-kernel's `journal::OpId`
-  (decision log O10). Java's have the top bit set (`JAVA_OP_BIT`, `OpId::bridge`) and are that bit
-  on the obsSeq of the record that carries them: `0x8000_0000_0000_0000 | obsSeq`. The engine's have
-  it clear (`OpId::engine`). When the engine re-derives a transfer after a crash it must give it the
-  same op id, or the bridge cannot tell it is a duplicate.
+  (decision log O10). Java's have the top bit set (`JAVA_OP_BIT`, `OpId::bridge`) over 63 random
+  bits. They are not the record's obsSeq: a crash can roll the journal back while a chunk saved on
+  unload keeps a record from the lost stretch (§3.1), and the lost sequences are then handed out
+  again. The engine's op ids have the top bit clear (`OpId::engine`). When the engine re-derives a
+  transfer after a crash it must give it the same op id, or the bridge cannot tell it is a duplicate.
 
 ### 2.3 Observations (Java to the engine)
 
@@ -193,9 +203,12 @@ captured member before it), TAKEN or DIED.
 
 **Codes:**
 - SPAWN_REJECTED reasons: 1 not ticking, 2 unknown group kind, 3 unknown dimension, 4 already embodied,
-  5 spawn failed, 6 bad record.
+  5 spawn failed, 6 bad record, 7 the server would discard the body (`spawn-animals` or `spawn-npcs`
+  off), 8 bad cargo (an item id with no item, a stack bigger than one stack, more stacks than the
+  chest holds; cargo is never dropped silently).
 - DEMATERIALIZED reasons: 1 command, 2 a member stopped entity-ticking, 3 a member left tracking or
-  unloaded, 4 session end, 5 no members left (all taken or dead).
+  unloaded, 4 session end, 5 no members left (all taken or dead), 6 not embodied: the answer to a
+  DESPAWN_GROUP for an agent or epoch with no puppet (0 members), so the engine never waits.
 - TAKEN how: 1 lead, 2 taming, 3 pickup (Carry On, later plugin), 4 removed by vanilla or another mod,
   5 a plugin.
 - TRANSFER kinds: 1 generic (the only one so far).
@@ -212,7 +225,15 @@ overworld's save event and chains a marker onto NeoForge's SavedData write chain
 (`IOUtilities.withIOWorker`), so the marker runs after the journal's file is written. The next
 hand-over carries the value; the engine may then forget op ids applied at or before it.
 
-**What a session start means:** puppets never outlive a session. At SESSION_START every agent the
+**Idempotent events.** TAKEN, DIED and COMMAND_RESULT may arrive more than once (§3.1). The engine
+applies each at most once: by op id while it remembers it, and by state after that (a member that
+is already gone, an op that is already done).
+
+**Deaths are journaled at the end of the tick** they happen in, once they are certain: another mod
+can still cancel a death after the bridge saw LivingDeathEvent.
+
+**What a session start means:** puppets never outlive a session. A replayed MATERIALIZED (a record
+from before this session, flagged `REPLAY`) never makes an agent embodied again. At SESSION_START every agent the
 engine thought embodied is abstract again, with the last state it knew. The DEMATERIALIZED records
 of a clean shutdown come later, as journal replay.
 
@@ -271,7 +292,30 @@ sent none, so everything unacknowledged goes out again, flagged `REPLAY`. The en
   acknowledges that record. An engine that a crash rolled back re-derives the op under a new
   `cmdSeq`; Java answers DUPLICATE. The replayed COMMAND_RESULT tells the engine the op is done.
 
-**Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29).
+### 3.1 Chunks saved ahead of the journal
+
+Minecraft saves a chunk, its blocks or its entities, whenever it unloads, but the journal only at an
+autosave. A chunk on disk can therefore be newer than the journal: a chest that received an engine
+transfer, a llama a player took, the items a dying caravan llama dropped. After a crash the journal
+would not know them, and the engine (as old as the journal, or older) would resend the transfer or
+bring the llama and its cargo back.
+
+So the world side carries its own records, in the `mic_rtsim:pending` attachment, until the engine
+acknowledges them **in the same session**:
+- a chunk carries the COMMAND_RESULT of every engine transfer applied into it. Before applying a
+  TRANSFER_TO_CONTAINER, Java looks there: an op id found in the chunk is answered DUPLICATE;
+- a taken creature carries its MEMBER_STATE and TAKEN;
+- each item a dying member dropped carries its MEMBER_STATE and DIED.
+
+When the holder loads in a later session (a chunk load, an entity read from disk), Java journals the
+records again: the same bytes and op ids, new sequences. It drops them from the holder once the engine
+acknowledges a sequence at or past them in this session; within one session sequences are never
+reused, so that comparison is exact. A known gap: an item picked up before the acknowledgement takes
+its record into a player's inventory, where nothing carries it.
+
+**Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29), and a
+journal write that fails (`SavedData.save` logs the IOException and the IO chain goes on, so
+WORLD_SAVED still reports it).
 
 ## 4. What the Rust side needs to build (rtsim-jni)
 
@@ -282,5 +326,6 @@ sent none, so everything unacknowledged goes out again, flagged `REPLAY`. The en
    duplicate) to the outbox; call `forget_ops_through` on WORLD_SAVED; call `reconcile` with the
    SESSION_START fields.
 5. Acknowledge (`ackedObsSeq`) only what pages on disk include.
-6. Treat every embodied agent as abstract at SESSION_START.
+6. Treat every embodied agent as abstract at SESSION_START; never re-embody an agent from a
+   replayed MATERIALIZED.
 7. Mind the op-id bit: Java ids set it, engine ids never do.
