@@ -97,6 +97,8 @@ public final class RtsimSession {
     final CommandDispatcher commands;
 
     private boolean failed;
+    /** The pass's copy of the registry, reused every tick (no allocation per tick). */
+    private final java.util.ArrayList<PuppetGroup> passList = new java.util.ArrayList<>();
     private long ticks;
     int spawnBudget;
 
@@ -200,7 +202,7 @@ public final class RtsimSession {
             return;
         boolean full = ticks % RtsimConfig.passInterval() == 0;
         boolean shadow = ticks % RtsimConfig.shadowInterval() == 0;
-        for (PuppetGroup g : registry.snapshot()) {
+        for (PuppetGroup g : registry.snapshotInto(passList)) {
             if (g.captureRequested != 0) {
                 captureGroup(g, g.captureRequested, now);
                 continue;
