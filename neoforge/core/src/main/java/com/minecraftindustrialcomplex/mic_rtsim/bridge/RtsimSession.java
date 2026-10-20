@@ -581,6 +581,8 @@ public final class RtsimSession {
         registry.forgetMember(g, m);
         if (registry.byAgent(g.agent) == null)
             journalDematerialized(g, Obs.Dematerialized.MEMBERS_GONE, 0, now);
+        else
+            phase1.recapOffers(g); // the cargo it carried is gone from what the merchant can sell
         takes++;
     }
 
@@ -643,6 +645,8 @@ public final class RtsimSession {
         registry.forgetMember(g, m);
         if (registry.byAgent(g.agent) == null)
             journalDematerialized(g, Obs.Dematerialized.MEMBERS_GONE, 0, now);
+        else
+            phase1.recapOffers(g);
         deaths++;
     }
 

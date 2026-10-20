@@ -189,6 +189,13 @@ public final class Phase1 {
         }
     }
 
+    /** A member left a group or its cargo changed: every merchant of the group re-caps its offers' uses. */
+    public void recapOffers(PuppetGroup g) {
+        for (PuppetGroup.Member m : g.members)
+            if (!m.gone && m.offers != null)
+                PuppetOffers.recap(g, m);
+    }
+
     /** A player is about to interact with an entity: a resident merchant is repriced for them first. */
     public void beforeTrading(Player player, Entity target) {
         if (!(target instanceof Merchant m) || m.getTradingPlayer() != null || Residents.kind(target) == null

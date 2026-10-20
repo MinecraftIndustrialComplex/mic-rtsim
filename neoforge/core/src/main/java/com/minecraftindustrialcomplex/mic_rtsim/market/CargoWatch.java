@@ -53,6 +53,7 @@ public final class CargoWatch {
 
     /** Compares each member's cargo with what the bridge left there; reports and accepts any change. */
     public void check(PuppetGroup g, long now) {
+        boolean changed = false;
         for (PuppetGroup.Member m : g.members) {
             if (m.gone || m.entity == null || m.entity.isRemoved() || m.expectedCargo == null)
                 continue;
@@ -73,7 +74,12 @@ public final class CargoWatch {
                 continue;
             report(g, m, delta, now);
             m.expectedCargo = new HashMap<>(now2);
+            changed = true;
         }
+        if (changed) // what the group's merchants can sell or pay for moved
+            for (PuppetGroup.Member m : g.members)
+                if (!m.gone && m.offers != null)
+                    PuppetOffers.recap(g, m);
     }
 
     private void report(PuppetGroup g, PuppetGroup.Member m, Map<Item, Integer> delta, long now) {
