@@ -292,7 +292,7 @@ type QWealth = QueryState<&'static mut Wealth>;
 // so they execute the same machine code at the same address and differ only in how they obtain
 // the slices. A first build inlined the loop into each caller, and identical instructions then ran
 // up to 25% apart depending on unrelated changes elsewhere in the binary (code layout; see
-// bench/results/p4-storage.md).
+// bench/results/p4-storage.md). `.cargo/config.toml` also aligns every loop header to 64 bytes.
 
 #[inline(never)]
 fn bump_hunger(h: &mut [Hunger]) {
@@ -1699,6 +1699,12 @@ fn main() {
     if cfg!(debug_assertions) {
         println!("WARNING: debug assertions are on; this is not an optimised build");
     }
+    if !p4_storage_bench::loops_aligned() {
+        println!(
+            "WARNING: built without -align-loops=64 (rustflags \"{}\"); tight-loop timings depend on code layout. Run from bench/p4-storage.",
+            p4_storage_bench::RUSTFLAGS
+        );
+    }
 
     verify();
 
@@ -1751,7 +1757,7 @@ fn main() {
         .map(|&n| format!("{} of {n}", gen_tags(n).iter().filter(|&&t| t).count()))
         .collect();
     let report = Report {
-        schema: 1,
+        schema: 2,
         bench: "p4-storage".to_string(),
         date_utc,
         profile: cfg.profile.clone(),
@@ -1761,6 +1767,7 @@ fn main() {
         bevy_ecs: p4_storage_bench::BEVY_ECS_VERSION.to_string(),
         bevy_ecs_features: "default-features = false, features = [\"std\"]".to_string(),
         build: "cargo bench profile (inherits release: opt-level 3, lto thin, panic unwind, debug line-tables-only)".to_string(),
+        rustflags: p4_storage_bench::RUSTFLAGS.to_string(),
         debug_assertions: cfg!(debug_assertions),
         machine: Machine::probe(),
         cpus_allowed: p4_storage_bench::cpus_allowed(),
@@ -1780,7 +1787,8 @@ fn main() {
             "Every variant of every pattern was checked to end in the same state on a 20,000-row world before timing.".to_string(),
             format!("Tagged rows (patterns d2, e): {}.", tagged.join(", ")),
             "A counting global allocator is installed for pattern g; every variant pays its atomic add per allocation.".to_string(),
-            "Slice loops (a, b, f and the e flag split) run in shared out-of-line kernels, so cols, bevy contig and bypass execute identical code. Per-row loops (bevy iter, lookups, churn) are inlined where they are used; their speed moved by up to about 25% between builds of unchanged code.".to_string(),
+            "Slice loops (a, b, f and the e flag split) run in shared out-of-line kernels, so cols, bevy contig and bypass execute identical code.".to_string(),
+            "Built with loop headers aligned to 64 bytes (-C llvm-args=-align-loops=64, bench/p4-storage/.cargo/config.toml). Without it, identical loops ran up to 50% apart between builds that differed only in unrelated code.".to_string(),
         ],
     };
     let text = p4_storage_bench::table(&report);

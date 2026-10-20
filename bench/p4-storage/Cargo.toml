@@ -2,10 +2,16 @@
 # the same rows and the same operations. Its own workspace, so the main workspace's
 # `cargo test --workspace` never builds bevy_ecs.
 #
+#   cd bench/p4-storage
 #   flock /tmp/mic-rtsim-kernel2-heavy.lock nice -n 10 env CARGO_BUILD_JOBS=8 \
-#     nix develop -c cargo bench --manifest-path bench/p4-storage/Cargo.toml --bench p4_storage
+#     nix develop -c cargo bench --bench p4_storage
 #
-# Results go to bench/results/p4-storage-<UTC date>-<HHMM>.json and .txt; bench/results/p4-storage.md
+# Run it from this directory: `.cargo/config.toml` here aligns loop headers, and cargo reads it only
+# from the working directory. From elsewhere, pass the same flag in RUSTFLAGS; the bench warns when
+# it is missing.
+#
+# Results go to bench/results/p4-storage-<UTC date>-<HHMM>-<profile>.json and .txt (profile from
+# P4_PROFILE: full, pinned2); bench/results/p4-storage.md
 # reads them.
 
 [package]

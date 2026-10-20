@@ -396,6 +396,13 @@ pub fn git_dirty() -> Option<bool> {
 
 pub const RUSTC_VERSION: &str = env!("P4_RUSTC_VERSION");
 pub const BEVY_ECS_VERSION: &str = env!("P4_BEVY_ECS_VERSION");
+pub const RUSTFLAGS: &str = env!("P4_RUSTFLAGS");
+
+/// Whether the build aligned loop headers (`.cargo/config.toml`). Without it, timings of tight
+/// loops depend on code layout.
+pub fn loops_aligned() -> bool {
+    RUSTFLAGS.contains("align-loops=64")
+}
 
 /// Days since 1970-01-01 to (year, month, day): Howard Hinnant's `civil_from_days`.
 fn civil(days: i64) -> (i64, u32, u32) {
@@ -440,6 +447,7 @@ pub struct Report {
     pub bevy_ecs: String,
     pub bevy_ecs_features: String,
     pub build: String,
+    pub rustflags: String,
     pub debug_assertions: bool,
     pub machine: Machine,
     pub cpus_allowed: Option<String>,
@@ -488,8 +496,8 @@ pub fn table(report: &Report) -> String {
     );
     let _ = writeln!(
         s,
-        "{}; bevy_ecs {} (features: {}); {}",
-        report.rustc, report.bevy_ecs, report.bevy_ecs_features, report.build
+        "{}; bevy_ecs {} (features: {}); {}; rustflags \"{}\"",
+        report.rustc, report.bevy_ecs, report.bevy_ecs_features, report.build, report.rustflags
     );
     let _ = writeln!(
         s,

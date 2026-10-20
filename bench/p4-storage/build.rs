@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Records the compiler and the bevy_ecs version the bench was built with, so the results file
-//! names them even when the binary runs outside the dev shell.
+//! Records the compiler, the bevy_ecs version and the rustflags the bench was built with, so the
+//! results file names them even when the binary runs outside the dev shell.
 
 use std::process::Command;
 
@@ -33,6 +33,13 @@ fn main() {
         }
     }
     println!("cargo:rustc-env=P4_BEVY_ECS_VERSION={bevy}");
+
+    // The flags every crate was built with (`.cargo/config.toml` or RUSTFLAGS).
+    let flags = std::env::var("CARGO_ENCODED_RUSTFLAGS")
+        .unwrap_or_default()
+        .replace('\x1f', " ");
+    println!("cargo:rustc-env=P4_RUSTFLAGS={flags}");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.lock");
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
 }
