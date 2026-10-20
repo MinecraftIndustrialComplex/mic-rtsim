@@ -69,10 +69,19 @@ public final class BridgeEvents {
             s.endOfTick();
     }
 
+    /**
+     * The overworld saved: ask the engine to save its pages, and report when this world save is on
+     * disk. The journal was serialized in {@code saveLevelData}, before this event, and NeoForge
+     * chains every SavedData write on one future ({@code IOUtilities.withIOWorker}); a marker chained
+     * now runs after the journal's write has finished.
+     */
     private static void onLevelSave(LevelEvent.Save event) {
         RtsimSession s = RtsimSession.current();
-        if (s != null && event.getLevel() instanceof ServerLevel level && level.dimension() == Level.OVERWORLD)
-            s.engine().requestSave();
+        if (s == null || !(event.getLevel() instanceof ServerLevel level) || level.dimension() != Level.OVERWORLD)
+            return;
+        s.engine().requestSave();
+        long through = s.boundary().journal().nextObsSeq() - 1;
+        net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> s.boundary().worldSaveDurable(through));
     }
 
     /**

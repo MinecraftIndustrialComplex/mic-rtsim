@@ -33,7 +33,11 @@ public final class BoundarySession {
     private boolean sessionStartPending = true;
     private int moduleMask;
     private boolean modulesDirty = true;
-    private long gameTimeAtStart;
+    private final long gameTimeAtStart;
+    private final long journalFirstAtStart;
+    private final long worldNextAtStart;
+    private long durableReported;
+    private volatile long durablePending;
 
     private long droppedRecords;
     private long skippedStaleCommands;
@@ -45,6 +49,8 @@ public final class BoundarySession {
         this.journal = journal;
         this.moduleMask = moduleMask;
         this.gameTimeAtStart = gameTime;
+        this.journalFirstAtStart = journal.firstSeq();
+        this.worldNextAtStart = journal.nextObsSeq();
         this.start = engine.start(journal.lastAppliedCmdSeq());
         journal.reserveBeyond(start.pagesObsSeq());
         this.replayUpTo = journal.nextObsSeq() - 1;
@@ -88,8 +94,8 @@ public final class BoundarySession {
 
     /**
      * Appends a journaled observation that carries a Java-side operation id at {@code opIdOffset}. The
-     * op id is the record's own sequence with {@link Obs#JAVA_OP_BIT} set: unique in the world, and the
-     * same bytes on every replay. Returns the op id.
+     * op id is the record's own sequence, top bit clear: unique in the world, and the same bytes on
+     * every replay. Returns the op id.
      */
     public long commitWithOpId(ByteBuffer record, int opIdOffset) {
         return journal.commitWithOpId(record, opIdOffset);
@@ -133,6 +139,8 @@ public final class BoundarySession {
                 return false;
             b.putLong(at + Obs.SessionStart.GAME_TIME, gameTimeAtStart);
             b.putLong(at + Obs.SessionStart.LAST_APPLIED_CMD_SEQ, journal.lastAppliedCmdSeq());
+            b.putLong(at + Obs.SessionStart.JOURNAL_FIRST_OBS_SEQ, journalFirstAtStart);
+            b.putLong(at + Obs.SessionStart.WORLD_NEXT_OBS_SEQ, worldNextAtStart);
             b.putInt(at + Obs.SessionStart.MODULE_MASK, moduleMask);
             handover.flagOpen(Layout.OBS_FLAG_SESSION_START);
             sessionStartPending = false;
@@ -157,6 +165,26 @@ public final class BoundarySession {
             tickMarked = gameTime;
         }
         return true;
+    }
+
+    /**
+     * The world save that captured the journal at {@code nextObsSeq - 1} is now on disk. May be called
+     * from an IO thread; the WORLD_SAVED record goes out at the next hand-over.
+     */
+    public void worldSaveDurable(long durableObsSeq) {
+        if (durableObsSeq > durablePending)
+            durablePending = durableObsSeq;
+    }
+
+    private void reportDurable(long gameTime) {
+        long d = durablePending;
+        if (d <= durableReported)
+            return;
+        int at = direct(Obs.WORLD_SAVED, Obs.WorldSaved.SIZE, 0, gameTime);
+        if (at >= 0) {
+            openBuffer().putLong(at + Obs.WorldSaved.DURABLE_OBS_SEQ, d);
+            durableReported = d;
+        }
     }
 
     // ---- the end of a tick ----------------------------------------------------------------------
@@ -207,6 +235,7 @@ public final class BoundarySession {
      * was submitted.
      */
     public boolean handOver(long gameTime) {
+        reportDurable(gameTime);
         if (flushPreamble(gameTime)) {
             long last = journal.drainInto(handover.open(), sentObsSeq);
             if (last > sentObsSeq) {

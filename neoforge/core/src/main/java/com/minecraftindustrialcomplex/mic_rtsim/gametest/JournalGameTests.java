@@ -36,7 +36,8 @@ public final class JournalGameTests {
     private JournalGameTests() {}
 
     private static final long STORE = 7;
-    private static final long ENGINE_OP = 4242;
+    /** An engine-allocated op id: top bit set. */
+    private static final long ENGINE_OP = Obs.ENGINE_OP_BIT | 4242;
 
     private static int diamonds(Container chest) {
         int n = 0;

@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class BoundaryProtocolTest {
 
+    private static final long ENGINE_900 = Obs.ENGINE_OP_BIT | 900L;
+
     private final List<StubEngine> engines = new ArrayList<>();
     private long time = 1000;
 
@@ -121,7 +123,7 @@ class BoundaryProtocolTest {
         StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
         BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
         Sink sink = new Sink(s);
-        e.transferToContainer(77L, "minecraft:overworld", 5, 64, 9, "minecraft:diamond", 3);
+        e.transferToContainer(Obs.ENGINE_OP_BIT | 77L, "minecraft:overworld", 5, 64, 9, "minecraft:diamond", 3);
 
         assertTrue(tick(s, sink, e), "hand-over 1 is submitted on the first tick");
         assertTrue(sink.kinds.isEmpty(), "nothing is applied before the step ran");
@@ -200,7 +202,7 @@ class BoundaryProtocolTest {
         StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
         BoundarySession s1 = new BoundarySession(e1, new Journal(), 0, time);
         Sink k1 = new Sink(s1);
-        e1.transferToContainer(900L, "minecraft:overworld", 1, 64, 1, "minecraft:diamond", 3);
+        e1.transferToContainer(ENGINE_900, "minecraft:overworld", 1, 64, 1, "minecraft:diamond", 3);
         tick(s1, k1, e1);
         tick(s1, k1, e1);
         assertEquals(3, k1.containers.get(1L));
@@ -212,12 +214,12 @@ class BoundaryProtocolTest {
         assertTrue(s2.start().nextCmdSeq() > s1.journal().lastAppliedCmdSeq(), "new sequences start past the last applied one");
         Sink k2 = new Sink(s2);
         k2.containers.putAll(k1.containers); // the world kept the items
-        e2.transferToContainer(900L, "minecraft:overworld", 1, 64, 1, "minecraft:diamond", 3);
+        e2.transferToContainer(ENGINE_900, "minecraft:overworld", 1, 64, 1, "minecraft:diamond", 3);
         tick(s2, k2, e2);
         tick(s2, k2, e2);
         tick(s2, k2, e2);
         assertEquals(3, k2.containers.get(1L), "the second issue of op 900 is a duplicate");
-        assertTrue(e2.opApplied(900L), "the replayed COMMAND_RESULT told the engine op 900 is done");
+        assertTrue(e2.opApplied(ENGINE_900), "the replayed COMMAND_RESULT told the engine op 900 is done");
     }
 
     @Test
@@ -318,5 +320,42 @@ class BoundaryProtocolTest {
         BoundarySession s2 = new BoundarySession(e2, Journal.restore(j.snapshot()), 0, time);
         tick(s2, new Sink(s2), e2);
         assertEquals("minecraft:overworld", e2.javaDictName(dim), "the same id in the next session");
+    }
+
+    @Test
+    void sessionStartCarriesWhatTheKernelReconcilesAndSavesAreReported() {
+        StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s1 = new BoundarySession(e1, new Journal(), 0b101, time);
+        Sink k1 = new Sink(s1);
+        transfer(s1, 1, 1);
+        transfer(s1, 1, 1);
+        tick(s1, k1, e1);
+        s1.worldSaveDurable(2);
+        tick(s1, k1, e1);
+        List<StubEngine.Received> saved = e1.received(Obs.WORLD_SAVED);
+        assertEquals(1, saved.size());
+        assertEquals(2L, saved.get(0).view().getLong(Obs.WorldSaved.DURABLE_OBS_SEQ));
+        tick(s1, k1, e1);
+        assertEquals(1, e1.received(Obs.WORLD_SAVED).size(), "reported once per save");
+
+        // A world save that knew sequences 1 and 2, against engine pages that include only 1.
+        StubEngine e2 = stub(new StubEngine.Pages(1, 1, java.util.Set.of(), java.util.Map.of()), StubEngine.DEFAULT_CAPACITY);
+        Journal j = Journal.restore(s1.journal().snapshot());
+        BoundarySession s2 = new BoundarySession(e2, j, 0b101, time);
+        tick(s2, new Sink(s2), e2);
+        ByteBuffer start = e2.received(Obs.SESSION_START).get(0).view();
+        assertEquals(1L, start.getLong(Obs.SessionStart.JOURNAL_FIRST_OBS_SEQ));
+        assertEquals(3L, start.getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ));
+        assertEquals(0b101, start.getInt(Obs.SessionStart.MODULE_MASK));
+        assertEquals(3L, j.nextObsSeq(), "the world is ahead of the pages: no sequence moves");
+
+        // Engine pages ahead of the world save (P29): Java moves past them and never reuses one.
+        StubEngine e3 = stub(new StubEngine.Pages(10, 1, java.util.Set.of(), java.util.Map.of()), StubEngine.DEFAULT_CAPACITY);
+        Journal j3 = Journal.restore(s1.journal().snapshot());
+        BoundarySession s3 = new BoundarySession(e3, j3, 0, time);
+        tick(s3, new Sink(s3), e3);
+        assertEquals(3L, e3.received(Obs.SESSION_START).get(0).view().getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ),
+                "the engine sees the world's own next sequence, so it can tell it is ahead");
+        assertEquals(11L, j3.nextObsSeq());
     }
 }

@@ -19,6 +19,7 @@ public final class Obs {
     public static final int DICT = 0x0002;
     public static final int TICK = 0x0003;
     public static final int MODULES = 0x0004;
+    public static final int WORLD_SAVED = 0x0005;
     public static final int PLAYER = 0x0010;
     public static final int PUPPET_STATE = 0x0011;
 
@@ -48,13 +49,20 @@ public final class Obs {
     public static final int DICT_ITEM = 2;
     public static final int DICT_BODY = 3;
 
-    /** SESSION_START. The first record of a session's first hand-over. */
+    /**
+     * SESSION_START. The first record of a session's first hand-over. The two journal fields are
+     * what the kernel's {@code Replay::reconcile} compares with its pages: the first sequence still
+     * in the journal, and the next sequence the world save would have assigned, before Java moved it
+     * past the pages.
+     */
     public static final class SessionStart {
-        public static final int GAME_TIME = 8;            // i64
-        public static final int LAST_APPLIED_CMD_SEQ = 16; // u64
-        public static final int MODULE_MASK = 24;          // u32
-        // 28: u32 reserved
-        public static final int SIZE = 32;
+        public static final int GAME_TIME = 8;              // i64
+        public static final int LAST_APPLIED_CMD_SEQ = 16;  // u64
+        public static final int JOURNAL_FIRST_OBS_SEQ = 24; // u64, 0 when the journal is empty
+        public static final int WORLD_NEXT_OBS_SEQ = 32;    // u64, as loaded from the world save
+        public static final int MODULE_MASK = 40;           // u32
+        // 44: u32 reserved
+        public static final int SIZE = 48;
     }
 
     /**
@@ -82,6 +90,16 @@ public final class Obs {
     public static final class Modules {
         public static final int MASK = 8; // u32
         // 12: u32 reserved
+        public static final int SIZE = 16;
+    }
+
+    /**
+     * WORLD_SAVED. A world save is on disk: every observation up to {@code DURABLE_OBS_SEQ} is in it
+     * (as a journal entry, or trimmed after the engine acknowledged it). The engine may forget op ids
+     * applied at or before it (the kernel's {@code Replay::forget_ops_through}). Sent once per save.
+     */
+    public static final class WorldSaved {
+        public static final int DURABLE_OBS_SEQ = 8; // u64
         public static final int SIZE = 16;
     }
 
@@ -243,6 +261,9 @@ public final class Obs {
         public static final int FAILED = 3;
     }
 
-    /** Op ids made on the Java side have the top bit set; the engine's have it clear. */
-    public static final long JAVA_OP_BIT = 0x8000_0000_0000_0000L;
+    /**
+     * Op ids the engine allocates have the top bit set; the bridge's have it clear (the kernel's
+     * {@code journal::OpId}). A bridge op id is the obsSeq of the record that carries it.
+     */
+    public static final long ENGINE_OP_BIT = 0x8000_0000_0000_0000L;
 }

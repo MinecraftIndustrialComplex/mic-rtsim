@@ -69,7 +69,8 @@ public final class TakingGameTests {
                     check("member 1 was taken", taken.view().getInt(Obs.Taken.MEMBER) == 1);
                     UUID by = new UUID(taken.view().getLong(Obs.Taken.PLAYER_MOST), taken.view().getLong(Obs.Taken.PLAYER_LEAST));
                     check("by the player who tamed it", by.equals(player.getUUID()));
-                    check("the cargo's transfer carries a Java op id", (taken.view().getLong(Obs.Taken.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                    check("the cargo's transfer carries a bridge op id (its own obsSeq, top bit clear)",
+                            taken.view().getLong(Obs.Taken.OP_ID) == taken.obsSeq() && (taken.obsSeq() & Obs.ENGINE_OP_BIT) == 0);
                     List<StubEngine.Received> all = RtsimTests.allFor(RtsimTests.stub(), agent);
                     int at = all.indexOf(taken);
                     check("its captured state comes right before it", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE && all.get(at - 1).aux() == 1);

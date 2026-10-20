@@ -123,14 +123,14 @@ public final class Journal {
     }
 
     /**
-     * Like {@link #commit}, and writes the record's Java-side op id ({@link Obs#JAVA_OP_BIT} | its
-     * sequence) at {@code opIdOffset}. Returns the op id.
+     * Like {@link #commit}, and writes the record's bridge op id at {@code opIdOffset}: its own
+     * sequence, top bit clear ({@link Obs#ENGINE_OP_BIT} marks the engine's). Returns the op id.
      */
     public long commitWithOpId(ByteBuffer record, int opIdOffset) {
         long seq = nextObsSeq;
-        record.putLong(opIdOffset, Obs.JAVA_OP_BIT | seq);
+        record.putLong(opIdOffset, seq);
         commit(record);
-        return Obs.JAVA_OP_BIT | seq;
+        return seq;
     }
 
     /** Drops every entry the engine acknowledged (its pages on disk include them). */
