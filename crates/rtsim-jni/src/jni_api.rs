@@ -27,7 +27,9 @@ use jni::{Env, EnvUnowned};
 use mic_native_rt::abi;
 use rtsim_kernel::page::Durability;
 
-use crate::engine::{Config, Engine, Exec, FLAG_NO_FSYNC, FLAG_TEST, STATS_LEN, last_error, set_last_error};
+use crate::engine::{
+    Config, Engine, Exec, FLAG_NO_FSYNC, FLAG_TEST, STATS_LEN, last_error, set_last_error,
+};
 use crate::orders;
 
 /// Borrows the engine behind a handle.
@@ -52,7 +54,9 @@ fn jstr(env: &Env<'_>, s: &JString<'_>) -> Result<String, JniError> {
 /// `static native long nOpen(String pagesDir, int capacity, int flags)`: a handle, or 0 with the
 /// reason in `nLastError()`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nOpen<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nOpen<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     pages_dir: JString<'l>,
@@ -72,7 +76,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         }
         if mic_native_rt::try_host().is_none() {
             // No fallback without the host (A8): the library was System.load-ed before loadPlugin.
-            set_last_error("rtsim-jni has no mic_native host: load it with MicNative.loadPlugin first");
+            set_last_error(
+                "rtsim-jni has no mic_native host: load it with MicNative.loadPlugin first",
+            );
             return Ok(0);
         }
         cfg.exec = Exec::Host;
@@ -89,7 +95,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native ByteBuffer nBuffer(long handle, int which)`: 0, 1 observations; 2, 3 commands.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nBuffer<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nBuffer<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -98,7 +106,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     env.with_env(|env| -> Result<JByteBuffer<'l>, JniError> {
         // SAFETY: Java's contract on handles.
         let e = unsafe { engine(handle) }?;
-        let b = e.buffer(which.max(0) as usize).ok_or(JniError::NullPtr("buffer index out of range"))?;
+        let b = e
+            .buffer(which.max(0) as usize)
+            .ok_or(JniError::NullPtr("buffer index out of range"))?;
         // SAFETY: the memory lives as long as the engine, which outlives every use Java makes of
         // the buffer (it drops its views when the session closes).
         unsafe { env.new_direct_byte_buffer(b.base(), b.total()) }
@@ -109,7 +119,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 /// `static native int nStart(long handle, long lastAppliedCmdSeq, long[] out)`: out[0] the
 /// observation sequence the pages include, out[1] the next command sequence.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nStart<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nStart<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -139,7 +151,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native int nSubmit(long handle, long handover)`: queues the step, returns at once.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nSubmit<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nSubmit<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -161,7 +175,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native void nRequestSave(long handle, long throughObsSeq)`: a signal, never blocks.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nRequestSave<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nRequestSave<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -179,7 +195,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 /// frees the handle. 0, or a negative status with the reason in `nLastError()` (the handle is
 /// freed either way).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nClose<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nClose<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -207,7 +225,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native String nDescribe(long handle)`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDescribe<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDescribe<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -222,16 +242,21 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native String nLastError()`: this thread's last failure message ("" if none).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nLastError<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nLastError<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
 ) -> JString<'l> {
-    env.with_env(|env| JString::from_str(env, last_error())).resolve::<ThrowRuntimeExAndDefault>()
+    env.with_env(|env| JString::from_str(env, last_error()))
+        .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 /// `static native int nOrder(long handle, byte[] orders)`: one unit of orders (`orders` module).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nOrder<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nOrder<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -266,7 +291,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 /// `static native byte[] nDrainReceived(long handle)`: entries of u64 handover, u64 obsSeq,
 /// u32 flags (1: skipped), u32 length, then the record.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDrainReceived<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDrainReceived<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -290,7 +317,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native void nStats(long handle, long[] out)`: the counters (`STATS_LEN` of them).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nStats<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nStats<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -309,7 +338,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native long nLedger(long handle, long store)` (TEST mode; 0 otherwise).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nLedger<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nLedger<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -318,14 +349,20 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     env.with_env(|_env| -> Result<jlong, JniError> {
         // SAFETY: Java's contract on handles.
         let e = unsafe { engine(handle) }?;
-        Ok(e.inspect().ledger.get(&(store as u64)).copied().unwrap_or(0))
+        Ok(e.inspect()
+            .ledger
+            .get(&(store as u64))
+            .copied()
+            .unwrap_or(0))
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 /// `static native boolean nOpApplied(long handle, long opId)` (TEST mode; false otherwise).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nOpApplied<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nOpApplied<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -341,7 +378,9 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
 
 /// `static native String nProtocolError(long handle)`: null when none.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nProtocolError<'l>(
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nProtocolError<
+    'l,
+>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
     handle: jlong,

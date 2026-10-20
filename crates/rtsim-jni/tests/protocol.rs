@@ -21,7 +21,11 @@ use rtsim_kernel::page::Durability;
 fn host() {
     static HOST: OnceLock<()> = OnceLock::new();
     HOST.get_or_init(|| {
-        mic_native_host::start(mic_native_host::Config { fg_threads: 2, bg_threads: 2 }).expect("start the host");
+        mic_native_host::start(mic_native_host::Config {
+            fg_threads: 2,
+            bg_threads: 2,
+        })
+        .expect("start the host");
         let table = mic_native_host::register_in_process("mic_rtsim").expect("register");
         // SAFETY: the table the host just made for this in-process plugin.
         unsafe { mic_native_rt::init(table) }.expect("init the runtime");
@@ -101,14 +105,22 @@ struct WorldSave {
 
 impl WorldSave {
     fn fresh() -> Self {
-        WorldSave { journal: VecDeque::new(), next_obs: 1, last_applied_cmd: 0, dict: Vec::new() }
+        WorldSave {
+            journal: VecDeque::new(),
+            next_obs: 1,
+            last_applied_cmd: 0,
+            dict: Vec::new(),
+        }
     }
 }
 
 impl Java {
     fn open(e: Arc<Engine>, save: WorldSave) -> Java {
         let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd).expect("start");
-        assert!(next_cmd_seq > save.last_applied_cmd, "nextCmdSeq must be above lastAppliedCmdSeq");
+        assert!(
+            next_cmd_seq > save.last_applied_cmd,
+            "nextCmdSeq must be above lastAppliedCmdSeq"
+        );
         for i in 0..4 {
             let b = e.buffer(i).unwrap();
             assert_eq!(b.published().load(Ordering::Acquire), 0, "fresh buffers");
@@ -198,7 +210,11 @@ impl Java {
     }
 
     fn copy(&mut self, rec: &[u8]) -> bool {
-        match self.reserve(wire::u16_at(rec, wire::R_KIND), rec.len(), wire::u32_at(rec, wire::R_AUX)) {
+        match self.reserve(
+            wire::u16_at(rec, wire::R_KIND),
+            rec.len(),
+            wire::u32_at(rec, wire::R_AUX),
+        ) {
             Some(r) => {
                 r.copy_from_slice(rec);
                 true
@@ -228,7 +244,8 @@ impl Java {
         self.next_obs += 1;
         wire::put_u64(&mut r, obs::OBS_SEQ, seq);
         if kind == obs::COMMAND_RESULT && aux == obs::command_result::APPLIED {
-            self.applied_cmd_ops.insert(wire::u64_at(&r, obs::command_result::OP_ID));
+            self.applied_cmd_ops
+                .insert(wire::u64_at(&r, obs::command_result::OP_ID));
         }
         self.journal.push_back((seq, r));
         seq
@@ -245,9 +262,15 @@ impl Java {
 
     fn preamble(&mut self) -> bool {
         if self.session_start_pending {
-            let (gt, la, jf, wn) =
-                (self.game_time, self.last_applied_cmd, self.journal_first_at_start, self.world_next_at_start);
-            let Some(r) = self.reserve(obs::SESSION_START, obs::session_start::SIZE, 0) else { return false };
+            let (gt, la, jf, wn) = (
+                self.game_time,
+                self.last_applied_cmd,
+                self.journal_first_at_start,
+                self.world_next_at_start,
+            );
+            let Some(r) = self.reserve(obs::SESSION_START, obs::session_start::SIZE, 0) else {
+                return false;
+            };
             wire::put_i64(r, obs::session_start::GAME_TIME, gt);
             wire::put_u64(r, obs::session_start::LAST_APPLIED_CMD_SEQ, la);
             wire::put_u64(r, obs::session_start::JOURNAL_FIRST_OBS_SEQ, jf);
@@ -258,7 +281,9 @@ impl Java {
         while self.dict_sent < self.dict.len() {
             let (kind, name) = self.dict[self.dict_sent].clone();
             let id = self.dict_sent as u32 + 1;
-            let Some(r) = self.reserve(obs::DICT, obs::dict::NAME + name.len(), kind) else { return false };
+            let Some(r) = self.reserve(obs::DICT, obs::dict::NAME + name.len(), kind) else {
+                return false;
+            };
             wire::put_u32(r, obs::dict::ID, id);
             wire::put_u32(r, obs::dict::NAME_LEN, name.len() as u32);
             r[obs::dict::NAME..obs::dict::NAME + name.len()].copy_from_slice(name.as_bytes());
@@ -266,7 +291,9 @@ impl Java {
         }
         if self.tick_marked != self.game_time {
             let gt = self.game_time;
-            let Some(r) = self.reserve(obs::TICK, obs::tick::SIZE, 0) else { return false };
+            let Some(r) = self.reserve(obs::TICK, obs::tick::SIZE, 0) else {
+                return false;
+            };
             wire::put_i64(r, obs::tick::GAME_TIME, gt);
             self.tick_marked = gt;
         }
@@ -278,8 +305,12 @@ impl Java {
         self.apply_commands();
         let mut submitted = false;
         if self.preamble() {
-            let entries: Vec<(u64, Vec<u8>)> =
-                self.journal.iter().filter(|(s, _)| *s > self.sent_obs).cloned().collect();
+            let entries: Vec<(u64, Vec<u8>)> = self
+                .journal
+                .iter()
+                .filter(|(s, _)| *s > self.sent_obs)
+                .cloned()
+                .collect();
             for (s, r) in entries {
                 if !self.copy(&r) {
                     break;
@@ -300,7 +331,13 @@ impl Java {
 
     fn try_submit(&mut self) -> bool {
         let h = self.submitted + 1;
-        if self.submitted > 0 && self.cmd_buf(self.submitted).published().load(Ordering::Acquire) != self.submitted {
+        if self.submitted > 0
+            && self
+                .cmd_buf(self.submitted)
+                .published()
+                .load(Ordering::Acquire)
+                != self.submitted
+        {
             return false;
         }
         if self.next_cmd + 1 < h {
@@ -319,7 +356,13 @@ impl Java {
         self.e.submit(h).expect("submit");
         let next = self.obs_buf(h + 1);
         let consumed = next.consumed().load(Ordering::Acquire);
-        assert_eq!(consumed, h - 1, "observation buffer {} reused before step {} consumed it", (h + 1) & 1, h - 1);
+        assert_eq!(
+            consumed,
+            h - 1,
+            "observation buffer {} reused before step {} consumed it",
+            (h + 1) & 1,
+            h - 1
+        );
         self.cursor = 0;
         self.count = 0;
         self.open_flags = 0;
@@ -349,10 +392,16 @@ impl Java {
                 assert!(rec.kind >= 0x8000, "a command kind");
                 let seq = wire::u64_at(rec.bytes, cmd::CMD_SEQ);
                 if rec.kind == cmd::DICT {
-                    assert_eq!(seq, 0, "a DICT carries no sequence, so it never moves lastAppliedCmdSeq");
+                    assert_eq!(
+                        seq, 0,
+                        "a DICT carries no sequence, so it never moves lastAppliedCmdSeq"
+                    );
                     let id = wire::u32_at(rec.bytes, cmd::dict::ID);
                     let len = wire::u32_at(rec.bytes, cmd::dict::NAME_LEN) as usize;
-                    let name = String::from_utf8(rec.bytes[cmd::dict::NAME..cmd::dict::NAME + len].to_vec()).unwrap();
+                    let name = String::from_utf8(
+                        rec.bytes[cmd::dict::NAME..cmd::dict::NAME + len].to_vec(),
+                    )
+                    .unwrap();
                     self.cmd_dict.insert((rec.aux, id), name);
                     continue;
                 }
@@ -390,17 +439,26 @@ impl Java {
                                 wire::i32_at(b, cmd::transfer_to_container::Y),
                                 wire::i32_at(b, cmd::transfer_to_container::Z),
                             ];
-                            *self.containers.entry(pos).or_insert(0) += wire::i32_at(b, cmd::transfer_to_container::COUNT);
+                            *self.containers.entry(pos).or_insert(0) +=
+                                wire::i32_at(b, cmd::transfer_to_container::COUNT);
                             obs::command_result::APPLIED
                         };
-                        self.journal(obs::COMMAND_RESULT, obs::command_result::SIZE, status, |r| {
-                            wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
-                            wire::put_u64(r, obs::command_result::OP_ID, op);
-                        });
+                        self.journal(
+                            obs::COMMAND_RESULT,
+                            obs::command_result::SIZE,
+                            status,
+                            |r| {
+                                wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                                wire::put_u64(r, obs::command_result::OP_ID, op);
+                            },
+                        );
                     }
                     cmd::SPAWN_GROUP => {
                         let b = rec.bytes;
-                        assert!(self.cmd_dict.contains_key(&(wire::DICT_BODY, wire::u32_at(b, cmd::spawn_group::GROUP_KIND))));
+                        assert!(self.cmd_dict.contains_key(&(
+                            wire::DICT_BODY,
+                            wire::u32_at(b, cmd::spawn_group::GROUP_KIND)
+                        )));
                         let agent = wire::u64_at(b, cmd::spawn_group::AGENT);
                         let epoch = wire::u32_at(b, cmd::spawn_group::EPOCH);
                         let dim = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
@@ -415,7 +473,10 @@ impl Java {
                 self.last_applied_cmd = seq;
             }
             assert!(recs.error().is_none(), "{:?}", recs.error());
-            assert_eq!(max_seq, highest, "wordC is the highest cmdSeq in the buffer");
+            assert_eq!(
+                max_seq, highest,
+                "wordC is the highest cmdSeq in the buffer"
+            );
             c.consumed().store(k, Ordering::Release);
             if self.pending_ack > 0 {
                 let a = self.pending_ack;
@@ -451,11 +512,19 @@ impl Java {
             std::thread::sleep(Duration::from_micros(100));
         }
         while self.e.stats_array()[1] < self.submitted {
-            assert!(Instant::now() < deadline, "step {} never finished", self.submitted);
+            assert!(
+                Instant::now() < deadline,
+                "step {} never finished",
+                self.submitted
+            );
             std::thread::sleep(Duration::from_micros(100));
         }
         self.apply_commands();
-        assert_eq!(self.next_cmd, self.submitted + 1, "every finished step's commands applied");
+        assert_eq!(
+            self.next_cmd,
+            self.submitted + 1,
+            "every finished step's commands applied"
+        );
     }
 
     /// Two flushes: what Java journaled reaches the engine, and what the engine answered comes back.
@@ -533,7 +602,13 @@ fn orders_become_commands_dict_first_sequences_rising_and_overflow_waits() {
     let e = engine(&dir, wire::MIN_CAPACITY);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     // 300 units of 300 items each: about 4.8 KiB a unit, so a 64 KiB buffer takes 13 or so a step.
-    let items: Vec<ItemOrder> = (0..300).map(|i| ItemOrder { slot: i, count: 1, item: format!("minecraft:item_{}", i % 7) }).collect();
+    let items: Vec<ItemOrder> = (0..300)
+        .map(|i| ItemOrder {
+            slot: i,
+            count: 1,
+            item: format!("minecraft:item_{}", i % 7),
+        })
+        .collect();
     for a in 0..300u64 {
         e.order(vec![Order::SpawnGroup {
             agent: 100 + a,
@@ -541,7 +616,13 @@ fn orders_become_commands_dict_first_sequences_rising_and_overflow_waits() {
             group_kind: CARAVAN.into(),
             dimension: OVERWORLD.into(),
             pos: [0.5, 64.0, 0.5],
-            members: vec![MemberOrder { index: 0, health: 0.0, body_a: -1, body_b: -1, items: items.clone() }],
+            members: vec![MemberOrder {
+                index: 0,
+                health: 0.0,
+                body_a: -1,
+                body_b: -1,
+                items: items.clone(),
+            }],
         }])
         .unwrap();
     }
@@ -551,13 +632,23 @@ fn orders_become_commands_dict_first_sequences_rising_and_overflow_waits() {
         if k > 0 && j.cmd_buf(k).get_u32(wire::H_FLAGS) & wire::CMD_FLAG_MORE != 0 {
             more_seen = true;
         }
-        j.commands.iter().filter(|c| c.1 == cmd::SPAWN_GROUP).count() == 300
+        j.commands
+            .iter()
+            .filter(|c| c.1 == cmd::SPAWN_GROUP)
+            .count()
+            == 300
     });
     assert!(more_seen, "a full buffer sets MORE and the rest waits");
     let seqs: Vec<u64> = j.commands.iter().map(|c| c.0).collect();
-    assert!(seqs.windows(2).all(|w| w[0] <= w[1]), "commands come in hand-over order");
+    assert!(
+        seqs.windows(2).all(|w| w[0] <= w[1]),
+        "commands come in hand-over order"
+    );
     assert_eq!(e.stats_array()[8], 0, "no order pending");
-    assert_eq!(j.stale_commands, 0, "no command arrived at or below an applied sequence");
+    assert_eq!(
+        j.stale_commands, 0,
+        "no command arrived at or below an applied sequence"
+    );
     // The MATERIALIZED answers embodied every agent.
     j.idle();
     j.idle();
@@ -576,7 +667,9 @@ fn transfers_apply_exactly_once_across_crashes_in_both_directions() {
     j.transfer(java_op, 1, 7, 5);
     e.order(vec![transfer_order(4242, 3)]).unwrap();
     j.run_until("session 1", |j| {
-        ledger(&j.e, 7) == 5 && j.containers.values().sum::<i32>() == 3 && j.e.inspect().op_applied(4242)
+        ledger(&j.e, 7) == 5
+            && j.containers.values().sum::<i32>() == 3
+            && j.e.inspect().op_applied(4242)
     });
     let saved = j.world_save();
     let _ = j.crash();
@@ -587,16 +680,24 @@ fn transfers_apply_exactly_once_across_crashes_in_both_directions() {
     e.order(vec![transfer_order(4242, 3)]).unwrap();
     j.run_until("the duplicate answer", |j| {
         j.journal.iter().any(|(_, r)| {
-            wire::u16_at(r, 0) == obs::COMMAND_RESULT && wire::u32_at(r, wire::R_AUX) == obs::command_result::DUPLICATE_OP
+            wire::u16_at(r, 0) == obs::COMMAND_RESULT
+                && wire::u32_at(r, wire::R_AUX) == obs::command_result::DUPLICATE_OP
         }) && ledger(&j.e, 7) == 5
     });
-    assert_eq!(j.containers.values().sum::<i32>(), 0, "this session's Minecraft never applied it again");
+    assert_eq!(
+        j.containers.values().sum::<i32>(),
+        0,
+        "this session's Minecraft never applied it again"
+    );
     // A save that includes everything, then a crash before the acknowledgement trims the journal.
     j.idle();
     e.order(vec![Order::SaveAtNextStep]).unwrap();
     j.run_until("pages on disk", |j| j.e.durable_obs_seq() > 0);
     let saved = j.world_save();
-    assert!(!saved.journal.is_empty(), "the journal still holds the transfer");
+    assert!(
+        !saved.journal.is_empty(),
+        "the journal still holds the transfer"
+    );
     let _ = j.crash();
 
     // Session 3: pages include the transfer, the replay is skipped, the same op id again is refused.
@@ -604,12 +705,19 @@ fn transfers_apply_exactly_once_across_crashes_in_both_directions() {
     let mut j = Java::open(e.clone(), saved);
     assert!(j.pages_obs > 0);
     j.run_until("the replay", |j| j.e.stats_array()[2] > 0);
-    assert_eq!(ledger(&e, 7), 5, "a replay the pages include changes nothing");
+    assert_eq!(
+        ledger(&e, 7),
+        5,
+        "a replay the pages include changes nothing"
+    );
     j.transfer(java_op, 1, 7, 5);
     j.run_until("the duplicate op", |j| j.e.stats_array()[3] == 1);
     assert_eq!(ledger(&e, 7), 5, "the same op id twice applies once");
     let r = j.received();
-    assert!(r.iter().any(|r| r.skipped), "replayed records were skipped by sequence");
+    assert!(
+        r.iter().any(|r| r.skipped),
+        "replayed records were skipped by sequence"
+    );
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
@@ -630,10 +738,23 @@ fn the_outbox_is_resent_after_a_restart_with_the_same_sequence_and_op() {
     // Whatever Java applied of it was in a world save we threw away; the engine resends.
     let e = engine(&dir, wire::MIN_CAPACITY);
     let mut j = Java::open(e.clone(), save);
-    j.run_until("the resend", |j| j.commands.iter().any(|c| c.1 == cmd::TRANSFER_TO_CONTAINER));
-    let resent = j.commands.iter().find(|c| c.1 == cmd::TRANSFER_TO_CONTAINER).unwrap();
-    assert_eq!(resent.2, 1, "the engine's first op id, kept across the restart");
-    assert_eq!(resent.2 & wire::JAVA_OP_BIT, 0, "an engine op id has the top bit clear");
+    j.run_until("the resend", |j| {
+        j.commands.iter().any(|c| c.1 == cmd::TRANSFER_TO_CONTAINER)
+    });
+    let resent = j
+        .commands
+        .iter()
+        .find(|c| c.1 == cmd::TRANSFER_TO_CONTAINER)
+        .unwrap();
+    assert_eq!(
+        resent.2, 1,
+        "the engine's first op id, kept across the restart"
+    );
+    assert_eq!(
+        resent.2 & wire::JAVA_OP_BIT,
+        0,
+        "an engine op id has the top bit clear"
+    );
     assert_eq!(j.containers.values().sum::<i32>(), 2);
     e.close(true, Duration::from_secs(5)).unwrap();
 }
@@ -656,10 +777,21 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
         j.transfer(wire::JAVA_OP_BIT | (200 + i), 1, 2, 1);
     }
     j.run_until("pages on disk", |j| j.e.durable_obs_seq() > 0);
-    assert_eq!(e.durable_obs_seq(), through, "the pages stop exactly at the world save's journal");
+    assert_eq!(
+        e.durable_obs_seq(),
+        through,
+        "the pages stop exactly at the world save's journal"
+    );
     j.run_until("the acknowledgement", |j| j.acks.contains(&through));
-    assert!(j.acks.iter().all(|a| *a <= e.durable_obs_seq()), "never an ack beyond the disk");
-    assert_eq!(j.journal.front().map(|(s, _)| *s), Some(11), "trimmed to the acknowledgement");
+    assert!(
+        j.acks.iter().all(|a| *a <= e.durable_obs_seq()),
+        "never an ack beyond the disk"
+    );
+    assert_eq!(
+        j.journal.front().map(|(s, _)| *s),
+        Some(11),
+        "trimmed to the acknowledgement"
+    );
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
@@ -674,7 +806,15 @@ fn repeats_are_no_ops_and_a_session_start_disembodies() {
         group_kind: CARAVAN.into(),
         dimension: OVERWORLD.into(),
         pos: [0.0; 3],
-        members: (0..3).map(|i| MemberOrder { index: i, health: 0.0, body_a: -1, body_b: -1, items: vec![] }).collect(),
+        members: (0..3)
+            .map(|i| MemberOrder {
+                index: i,
+                health: 0.0,
+                body_a: -1,
+                body_b: -1,
+                items: vec![],
+            })
+            .collect(),
     }])
     .unwrap();
     j.run_until("embodied", |j| j.e.stats_array()[12] == 1);
@@ -702,11 +842,16 @@ fn repeats_are_no_ops_and_a_session_start_disembodies() {
     // Forget the ops (a durable world save past them), then the TAKEN once more: by state.
     let durable = j.next_obs - 1;
     {
-        let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else { panic!() };
+        let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+            panic!()
+        };
         wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, durable);
     }
     j.idle();
-    assert!(!e.inspect().replay.knows_op(rtsim_kernel::journal::OpId(op)), "forgotten");
+    assert!(
+        !e.inspect().replay.knows_op(rtsim_kernel::journal::OpId(op)),
+        "forgotten"
+    );
     j.journal(obs::TAKEN, obs::taken::SIZE, 1, |r| {
         wire::put_u64(r, obs::taken::AGENT, 77);
         wire::put_u32(r, obs::taken::EPOCH, 1);
@@ -717,21 +862,36 @@ fn repeats_are_no_ops_and_a_session_start_disembodies() {
     j.idle();
     let i = e.inspect();
     let a = &i.agents[&77];
-    assert!(matches!(a.members[1].gone, Some(rtsim_jni::world::Gone::Taken { how: 1, op: o }) if o == op));
-    assert!(matches!(a.members[2].gone, Some(rtsim_jni::world::Gone::Died { .. })));
+    assert!(
+        matches!(a.members[1].gone, Some(rtsim_jni::world::Gone::Taken { how: 1, op: o }) if o == op)
+    );
+    assert!(matches!(
+        a.members[2].gone,
+        Some(rtsim_jni::world::Gone::Died { .. })
+    ));
     assert!(a.members[0].gone.is_none());
-    assert_eq!(i.counters.repeated_events, 1, "the third TAKEN, after its op was forgotten, was refused by state");
+    assert_eq!(
+        i.counters.repeated_events, 1,
+        "the third TAKEN, after its op was forgotten, was refused by state"
+    );
     // A new session: the agent is abstract, and its old MATERIALIZED replayed never embodies it.
     let save = j.world_save();
     e.order(vec![Order::SaveAtNextStep]).unwrap();
     j.run_until("saved", |j| j.e.durable_obs_seq() > 0);
-    let save = WorldSave { journal: save.journal.clone(), ..save };
+    let save = WorldSave {
+        journal: save.journal.clone(),
+        ..save
+    };
     let _ = j.crash();
     let e = engine(&dir, wire::MIN_CAPACITY);
     let mut j = Java::open(e.clone(), save);
     j.idle();
     j.idle();
-    assert_eq!(e.stats_array()[12], 0, "nothing embodied after a session start");
+    assert_eq!(
+        e.stats_array()[12],
+        0,
+        "nothing embodied after a session start"
+    );
     assert_eq!(e.stats_array()[11], 1, "the agent is still known");
     e.close(true, Duration::from_secs(5)).unwrap();
 }

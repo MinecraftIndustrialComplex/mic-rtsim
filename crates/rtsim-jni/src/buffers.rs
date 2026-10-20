@@ -33,10 +33,13 @@ impl Buf {
     /// into its header.
     pub fn new(capacity: usize) -> Buf {
         assert!(
-            capacity > 0 && capacity.is_multiple_of(RECORD_ALIGN) && capacity <= u32::MAX as usize - HEADER_BYTES,
+            capacity > 0
+                && capacity.is_multiple_of(RECORD_ALIGN)
+                && capacity <= u32::MAX as usize - HEADER_BYTES,
             "record area must be a positive multiple of 8 below 4 GiB: {capacity}"
         );
-        let layout = Layout::from_size_align(HEADER_BYTES + capacity, BUFFER_ALIGN).expect("buffer layout");
+        let layout =
+            Layout::from_size_align(HEADER_BYTES + capacity, BUFFER_ALIGN).expect("buffer layout");
         // SAFETY: the layout has a non-zero size.
         let raw = unsafe { alloc_zeroed(layout) };
         let ptr = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
@@ -156,7 +159,11 @@ mod tests {
         assert_eq!(b.total(), 64 + 4096);
         assert_eq!(b.get_u32(H_CAPACITY), 4096);
         b.published().store(7, Ordering::Release);
-        assert_eq!(b.get_u64(H_PUBLISHED), 7, "the atomic word is the little-endian header field");
+        assert_eq!(
+            b.get_u64(H_PUBLISHED),
+            7,
+            "the atomic word is the little-endian header field"
+        );
         b.reset_words();
         assert_eq!(b.published().load(Ordering::Acquire), 0);
     }

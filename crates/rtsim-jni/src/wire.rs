@@ -407,7 +407,11 @@ pub struct Records<'a> {
 
 impl<'a> Records<'a> {
     pub fn new(area: &'a [u8]) -> Self {
-        Records { area, cursor: 0, error: None }
+        Records {
+            area,
+            cursor: 0,
+            error: None,
+        }
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -424,7 +428,10 @@ impl<'a> Iterator for Records<'a> {
             return None;
         }
         if end - self.cursor < RECORD_HEADER {
-            self.error = Some(format!("truncated record header at {}", HEADER_BYTES + self.cursor));
+            self.error = Some(format!(
+                "truncated record header at {}",
+                HEADER_BYTES + self.cursor
+            ));
             self.cursor = end;
             return None;
         }
@@ -455,7 +462,11 @@ pub struct RecordWriter<'a> {
 
 impl<'a> RecordWriter<'a> {
     pub fn new(area: &'a mut [u8]) -> Self {
-        RecordWriter { area, cursor: 0, count: 0 }
+        RecordWriter {
+            area,
+            cursor: 0,
+            count: 0,
+        }
     }
 
     pub fn used(&self) -> usize {
@@ -478,7 +489,10 @@ impl<'a> RecordWriter<'a> {
     /// as a mutable slice, or `None` when it does not fit (nothing is written).
     pub fn reserve(&mut self, kind: u16, size: usize, aux: u32) -> Option<&mut [u8]> {
         let size = align8(size);
-        assert!((RECORD_HEADER..=MAX_RECORD).contains(&size), "bad record size {size} for kind {kind:#06x}");
+        assert!(
+            (RECORD_HEADER..=MAX_RECORD).contains(&size),
+            "bad record size {size} for kind {kind:#06x}"
+        );
         if self.cursor + size > self.area.len() {
             return None;
         }
@@ -526,8 +540,15 @@ mod tests {
         let recs: Vec<_> = Records::new(&area[..used]).collect();
         assert_eq!(recs.len(), 2);
         assert_eq!(i64_at(recs[0].bytes, obs::tick::GAME_TIME), 1234);
-        assert_eq!((recs[1].kind, recs[1].aux, recs[1].size()), (obs::DICT, 2, 24));
-        assert_eq!(recs[1].bytes[obs::dict::NAME + 3..], [0u8; 5], "padding zeroed");
+        assert_eq!(
+            (recs[1].kind, recs[1].aux, recs[1].size()),
+            (obs::DICT, 2, 24)
+        );
+        assert_eq!(
+            recs[1].bytes[obs::dict::NAME + 3..],
+            [0u8; 5],
+            "padding zeroed"
+        );
     }
 
     #[test]

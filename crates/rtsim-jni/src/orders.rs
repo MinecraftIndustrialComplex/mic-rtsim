@@ -83,7 +83,10 @@ struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     fn need(&self, n: usize) -> Result<(), String> {
         if self.at + n > self.b.len() {
-            Err(format!("order truncated at byte {} (wanted {n} more)", self.at))
+            Err(format!(
+                "order truncated at byte {} (wanted {n} more)",
+                self.at
+            ))
         } else {
             Ok(())
         }
@@ -127,7 +130,8 @@ impl<'a> Cursor<'a> {
     fn str(&mut self) -> Result<String, String> {
         let n = self.u32()? as usize;
         self.need(n)?;
-        let s = std::str::from_utf8(&self.b[self.at..self.at + n]).map_err(|e| format!("order string: {e}"))?;
+        let s = std::str::from_utf8(&self.b[self.at..self.at + n])
+            .map_err(|e| format!("order string: {e}"))?;
         self.at += n;
         Ok(s.to_string())
     }
@@ -180,26 +184,57 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                         let item = c.str()?;
                         items.push(ItemOrder { slot, count, item });
                     }
-                    members.push(MemberOrder { index, health, body_a, body_b, items });
+                    members.push(MemberOrder {
+                        index,
+                        health,
+                        body_a,
+                        body_b,
+                        items,
+                    });
                 }
-                Order::SpawnGroup { agent, epoch, group_kind, dimension, pos, members }
+                Order::SpawnGroup {
+                    agent,
+                    epoch,
+                    group_kind,
+                    dimension,
+                    pos,
+                    members,
+                }
             }
-            OP_DESPAWN_GROUP => Order::DespawnGroup { agent: c.u64()?, epoch: c.u32()?, reason: c.u32()? },
-            OP_STEER_GROUP => Order::SteerGroup { agent: c.u64()?, epoch: c.u32()?, speed: c.f32()?, pos: c.pos()? },
+            OP_DESPAWN_GROUP => Order::DespawnGroup {
+                agent: c.u64()?,
+                epoch: c.u32()?,
+                reason: c.u32()?,
+            },
+            OP_STEER_GROUP => Order::SteerGroup {
+                agent: c.u64()?,
+                epoch: c.u32()?,
+                speed: c.f32()?,
+                pos: c.pos()?,
+            },
             OP_TRANSFER_TO_CONTAINER => {
                 let op = c.u64()?;
                 let dimension = c.str()?;
                 let item = c.str()?;
                 let pos = [c.i32()?, c.i32()?, c.i32()?];
                 let count = c.i32()?;
-                Order::TransferToContainer { op, dimension, item, pos, count }
+                Order::TransferToContainer {
+                    op,
+                    dimension,
+                    item,
+                    pos,
+                    count,
+                }
             }
             OP_SAVE_AT_NEXT_STEP => Order::SaveAtNextStep,
             OP_REWIND_CMD_SEQ => Order::RewindCmdSeq(c.u64()?),
             other => return Err(format!("unknown order opcode {other}")),
         };
         if c.at != body.len() {
-            return Err(format!("order {opcode} has {} trailing bytes", body.len() - c.at));
+            return Err(format!(
+                "order {opcode} has {} trailing bytes",
+                body.len() - c.at
+            ));
         }
         out.push(order);
         at += size;
@@ -262,7 +297,14 @@ impl Encoder {
 
     pub fn order(&mut self, o: &Order) -> &mut Self {
         match o {
-            Order::SpawnGroup { agent, epoch, group_kind, dimension, pos, members } => {
+            Order::SpawnGroup {
+                agent,
+                epoch,
+                group_kind,
+                dimension,
+                pos,
+                members,
+            } => {
                 let at = self.begin(OP_SPAWN_GROUP);
                 self.u64(*agent);
                 self.u32(*epoch);
@@ -284,14 +326,23 @@ impl Encoder {
                 }
                 self.end(at);
             }
-            Order::DespawnGroup { agent, epoch, reason } => {
+            Order::DespawnGroup {
+                agent,
+                epoch,
+                reason,
+            } => {
                 let at = self.begin(OP_DESPAWN_GROUP);
                 self.u64(*agent);
                 self.u32(*epoch);
                 self.u32(*reason);
                 self.end(at);
             }
-            Order::SteerGroup { agent, epoch, speed, pos } => {
+            Order::SteerGroup {
+                agent,
+                epoch,
+                speed,
+                pos,
+            } => {
                 let at = self.begin(OP_STEER_GROUP);
                 self.u64(*agent);
                 self.u32(*epoch);
@@ -299,7 +350,13 @@ impl Encoder {
                 pos.iter().for_each(|v| self.f64(*v));
                 self.end(at);
             }
-            Order::TransferToContainer { op, dimension, item, pos, count } => {
+            Order::TransferToContainer {
+                op,
+                dimension,
+                item,
+                pos,
+                count,
+            } => {
                 let at = self.begin(OP_TRANSFER_TO_CONTAINER);
                 self.u64(*op);
                 self.str(dimension);
@@ -336,18 +393,37 @@ mod tests {
                 dimension: "minecraft:overworld".into(),
                 pos: [1.5, 64.0, -3.5],
                 members: vec![
-                    MemberOrder { index: 0, health: 0.0, body_a: -1, body_b: -1, items: vec![] },
+                    MemberOrder {
+                        index: 0,
+                        health: 0.0,
+                        body_a: -1,
+                        body_b: -1,
+                        items: vec![],
+                    },
                     MemberOrder {
                         index: 1,
                         health: 10.0,
                         body_a: 2,
                         body_b: 3,
-                        items: vec![ItemOrder { slot: 0, count: 12, item: "minecraft:emerald".into() }],
+                        items: vec![ItemOrder {
+                            slot: 0,
+                            count: 12,
+                            item: "minecraft:emerald".into(),
+                        }],
                     },
                 ],
             },
-            Order::DespawnGroup { agent: 9, epoch: 2, reason: 1 },
-            Order::SteerGroup { agent: 9, epoch: 2, speed: 1.25, pos: [0.0, 1.0, 2.0] },
+            Order::DespawnGroup {
+                agent: 9,
+                epoch: 2,
+                reason: 1,
+            },
+            Order::SteerGroup {
+                agent: 9,
+                epoch: 2,
+                speed: 1.25,
+                pos: [0.0, 1.0, 2.0],
+            },
             Order::TransferToContainer {
                 op: 4242,
                 dimension: "minecraft:overworld".into(),

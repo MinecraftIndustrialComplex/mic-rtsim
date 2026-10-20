@@ -420,7 +420,10 @@ mod tests {
         assert_eq!(o.take_seq(), 42, "a session-only command takes a sequence");
         let s = o.push_with_op(7, OpId::engine(4242));
         assert_eq!(s, 43);
-        assert_eq!(o.after(42).map(|(_, op, _)| *op).collect::<Vec<_>>(), vec![OpId::engine(4242)]);
+        assert_eq!(
+            o.after(42).map(|(_, op, _)| *op).collect::<Vec<_>>(),
+            vec![OpId::engine(4242)]
+        );
         assert_eq!(o.len(), 1, "take_seq kept nothing");
         let fresh = o.allocate_op();
         assert!(fresh.is_engine());

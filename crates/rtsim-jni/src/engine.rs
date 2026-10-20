@@ -109,9 +109,18 @@ impl Decode for TransferCmd {
     fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
         let dimension = str_of(r.bytes()?)?;
         let item = str_of(r.bytes()?)?;
-        let pos = [i32_of(r.var_i64()?)?, i32_of(r.var_i64()?)?, i32_of(r.var_i64()?)?];
+        let pos = [
+            i32_of(r.var_i64()?)?,
+            i32_of(r.var_i64()?)?,
+            i32_of(r.var_i64()?)?,
+        ];
         let count = i32_of(r.var_i64()?)?;
-        Ok(TransferCmd { dimension, item, pos, count })
+        Ok(TransferCmd {
+            dimension,
+            item,
+            pos,
+            count,
+        })
     }
 }
 
@@ -131,7 +140,9 @@ fn decode_meta(b: &[u8]) -> codec::Result<(Replay, Outbox<TransferCmd>)> {
     }
     let v = r.u16()?;
     if v != META_VERSION {
-        return Err(CodecError::Invalid(format!("meta page version {v}, this build reads {META_VERSION}")));
+        return Err(CodecError::Invalid(format!(
+            "meta page version {v}, this build reads {META_VERSION}"
+        )));
     }
     let replay = Replay::decode(&mut r)?;
     let outbox = Outbox::decode(&mut r)?;
@@ -289,7 +300,12 @@ impl State {
 
 fn names_of(order: &Order, out: &mut Vec<(u32, String)>) {
     match order {
-        Order::SpawnGroup { group_kind, dimension, members, .. } => {
+        Order::SpawnGroup {
+            group_kind,
+            dimension,
+            members,
+            ..
+        } => {
             out.push((wire::DICT_BODY, group_kind.clone()));
             out.push((wire::DICT_DIMENSION, dimension.clone()));
             for m in members {
@@ -298,7 +314,9 @@ fn names_of(order: &Order, out: &mut Vec<(u32, String)>) {
                 }
             }
         }
-        Order::TransferToContainer { dimension, item, .. } => {
+        Order::TransferToContainer {
+            dimension, item, ..
+        } => {
             out.push((wire::DICT_DIMENSION, dimension.clone()));
             out.push((wire::DICT_ITEM, item.clone()));
         }
@@ -307,7 +325,11 @@ fn names_of(order: &Order, out: &mut Vec<(u32, String)>) {
 }
 
 fn spawn_size(members: &[crate::orders::MemberOrder]) -> usize {
-    cmd::spawn_group::MEMBERS + members.iter().map(|m| cmd::spawn_group::member::size(m.items.len())).sum::<usize>()
+    cmd::spawn_group::MEMBERS
+        + members
+            .iter()
+            .map(|m| cmd::spawn_group::member::size(m.items.len()))
+            .sum::<usize>()
 }
 
 /// Bytes of command records an order writes (DICT records not included).
@@ -390,7 +412,12 @@ impl Engine {
         } else {
             (None, None)
         };
-        let bufs = [Buf::new(cfg.capacity), Buf::new(cfg.capacity), Buf::new(cfg.capacity), Buf::new(cfg.capacity)];
+        let bufs = [
+            Buf::new(cfg.capacity),
+            Buf::new(cfg.capacity),
+            Buf::new(cfg.capacity),
+            Buf::new(cfg.capacity),
+        ];
         Ok(Arc::new(Engine {
             bufs,
             cfg,
@@ -487,16 +514,26 @@ impl Engine {
         if self.started.swap(true, Ordering::AcqRel) {
             return Err("start called twice".into());
         }
-        let mut store = PageStore::open(&self.cfg.pages_dir, self.cfg.durability)
-            .map_err(|e| format!("cannot open the engine pages in {}: {e}", self.cfg.pages_dir.display()))?;
-        let meta = store.get(KEY_META).map_err(|e| format!("cannot read the engine's meta page: {e}"))?;
-        let world = store.get(KEY_WORLD).map_err(|e| format!("cannot read the engine's world page: {e}"))?;
+        let mut store = PageStore::open(&self.cfg.pages_dir, self.cfg.durability).map_err(|e| {
+            format!(
+                "cannot open the engine pages in {}: {e}",
+                self.cfg.pages_dir.display()
+            )
+        })?;
+        let meta = store
+            .get(KEY_META)
+            .map_err(|e| format!("cannot read the engine's meta page: {e}"))?;
+        let world = store
+            .get(KEY_WORLD)
+            .map_err(|e| format!("cannot read the engine's world page: {e}"))?;
         let (replay, outbox) = match meta {
             Some(b) => decode_meta(&b).map_err(|e| format!("the engine's meta page: {e}"))?,
             None => (Replay::new(ObsSeq(0)), Outbox::new()),
         };
         let world = match world {
-            Some(b) => World::from_bytes(&b).map_err(|e| format!("the engine's world page: {e}"))?,
+            Some(b) => {
+                World::from_bytes(&b).map_err(|e| format!("the engine's world page: {e}"))?
+            }
             None => World::default(),
         };
         let pages_obs = store.obs_seq();
@@ -526,7 +563,12 @@ impl Engine {
             for off in [wire::H_USED, wire::H_COUNT, wire::H_FLAGS] {
                 b.put_u32(off, 0);
             }
-            for off in [wire::H_WORD_A, wire::H_WORD_B, wire::H_WORD_C, wire::H_RESERVED] {
+            for off in [
+                wire::H_WORD_A,
+                wire::H_WORD_B,
+                wire::H_WORD_C,
+                wire::H_RESERVED,
+            ] {
                 b.put_u64(off, 0);
             }
         }
@@ -568,7 +610,8 @@ impl Engine {
 
     /// A save request (never blocks): pages stop exactly where the world save's journal did.
     pub fn request_save(&self, through: u64) {
-        self.save_through.store(through.saturating_add(1), Ordering::Release);
+        self.save_through
+            .store(through.saturating_add(1), Ordering::Release);
     }
 
     /// Queues one unit of orders (decoded from `nOrder`).
@@ -604,7 +647,9 @@ impl Engine {
             return Ok(());
         }
         let deadline = Instant::now() + timeout;
-        while self.stats.steps_done.load(Ordering::Acquire) < self.stats.steps_submitted.load(Ordering::Acquire) {
+        while self.stats.steps_done.load(Ordering::Acquire)
+            < self.stats.steps_submitted.load(Ordering::Acquire)
+        {
             if Instant::now() > deadline {
                 self.dead.store(true, Ordering::Release);
                 return Err(format!(
@@ -618,7 +663,11 @@ impl Engine {
         if save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
             let (meta, world, obs_seq) = {
                 let st = lock(&self.state);
-                (encode_meta(&st.replay, &st.outbox), st.world.to_bytes(), st.replay.applied_through().0)
+                (
+                    encode_meta(&st.replay, &st.outbox),
+                    st.world.to_bytes(),
+                    st.replay.applied_through().0,
+                )
             };
             let this = Arc::clone(self);
             result = self.run_io_waiting(move || this.commit(meta, world, obs_seq));
@@ -634,7 +683,8 @@ impl Engine {
     fn run_io_waiting(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
         match self.cfg.exec {
             Exec::Host => {
-                let h = rt::spawn_with_handle(Pool::Io, f).map_err(|e| format!("the IO lane refused the job: {e}"))?;
+                let h = rt::spawn_with_handle(Pool::Io, f)
+                    .map_err(|e| format!("the IO lane refused the job: {e}"))?;
                 h.wait().map_err(|e| format!("the IO job failed: {e}"))
             }
             Exec::Inline => {
@@ -682,7 +732,9 @@ impl Engine {
                 }
             }
         }
-        self.stats.last_step_nanos.store(t0.elapsed().as_nanos() as u64, Ordering::Release);
+        self.stats
+            .last_step_nanos
+            .store(t0.elapsed().as_nanos() as u64, Ordering::Release);
         self.stats.steps_done.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -715,7 +767,10 @@ impl Engine {
         let o = self.obs_buffer(h as usize);
         let published = o.published().load(Ordering::Acquire);
         if published != h {
-            return Err(format!("observation buffer {} holds hand-over {published}, not {h}", h & 1));
+            return Err(format!(
+                "observation buffer {} holds hand-over {published}, not {h}",
+                h & 1
+            ));
         }
         for unit in st.orders_rx.try_iter().collect::<Vec<_>>() {
             self.take_unit(&mut st, unit);
@@ -728,7 +783,9 @@ impl Engine {
         if self.save_at_step_end.swap(false, Ordering::AcqRel) {
             self.save_now(&mut st);
         } else if req != 0 && st.replay.applied_through().0 >= req - 1 {
-            let _ = self.save_through.compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
+            let _ = self
+                .save_through
+                .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
             self.save_now(&mut st);
         }
 
@@ -758,7 +815,9 @@ impl Engine {
         c.put_u64(wire::H_WORD_C, highest);
         c.put_u64(wire::H_RESERVED, 0);
         self.stats.acked_sent.store(acked, Ordering::Release);
-        self.stats.commands_written.fetch_add(u64::from(count), Ordering::AcqRel);
+        self.stats
+            .commands_written
+            .fetch_add(u64::from(count), Ordering::AcqRel);
         self.publish_stats(&st);
         if self.cfg.test {
             self.publish_inspect(&st);
@@ -770,10 +829,14 @@ impl Engine {
 
     fn publish_stats(&self, st: &State) {
         let s = &self.stats;
-        s.applied_through.store(st.replay.applied_through().0, Ordering::Release);
-        s.next_cmd_seq.store(st.outbox.next_seq(), Ordering::Release);
-        s.agents.store(st.world.agents.len() as u64, Ordering::Release);
-        s.embodied.store(st.world.embodied() as u64, Ordering::Release);
+        s.applied_through
+            .store(st.replay.applied_through().0, Ordering::Release);
+        s.next_cmd_seq
+            .store(st.outbox.next_seq(), Ordering::Release);
+        s.agents
+            .store(st.world.agents.len() as u64, Ordering::Release);
+        s.embodied
+            .store(st.world.embodied() as u64, Ordering::Release);
     }
 
     fn publish_inspect(&self, st: &State) {
@@ -805,7 +868,9 @@ impl Engine {
     fn read_observations(self: &Arc<Self>, st: &mut State, h: u64, o: &Buf) {
         let mut used = o.get_u32(wire::H_USED) as usize;
         if used > o.capacity() {
-            self.set_protocol_error(format!("step {h}: observation buffer used={used} beyond its capacity"));
+            self.set_protocol_error(format!(
+                "step {h}: observation buffer used={used} beyond its capacity"
+            ));
             used = 0;
         }
         let last_applied = o.get_u64(wire::H_WORD_A);
@@ -830,7 +895,12 @@ impl Engine {
         if let Some(tx) = &st.received_tx
             && rec.kind != obs::TICK
         {
-            let _ = tx.send(Received { handover: h, obs_seq, skipped, bytes: rec.bytes.to_vec() });
+            let _ = tx.send(Received {
+                handover: h,
+                obs_seq,
+                skipped,
+                bytes: rec.bytes.to_vec(),
+            });
         }
     }
 
@@ -849,7 +919,11 @@ impl Engine {
                     st.outbox.ack_through(last_applied);
                 }
                 // An empty journal is sent as 0; the kernel reads it as journal_first == world_next.
-                let jf = if journal_first == 0 { world_next } else { journal_first };
+                let jf = if journal_first == 0 {
+                    world_next
+                } else {
+                    journal_first
+                };
                 match st.replay.reconcile(ObsSeq(jf), ObsSeq(world_next)) {
                     Reconcile::InSync => {}
                     Reconcile::EngineAhead { pages, world_next } => log_warn(&format!(
@@ -858,7 +932,10 @@ impl Engine {
                         pages.0,
                         world_next.0.saturating_sub(1)
                     )),
-                    Reconcile::JournalTrimmedPastPages { pages, journal_first } => log_warn(&format!(
+                    Reconcile::JournalTrimmedPastPages {
+                        pages,
+                        journal_first,
+                    } => log_warn(&format!(
                         "the journal starts at observation {} but the pages only include {}: observations {} to {} are lost",
                         journal_first.0,
                         pages.0,
@@ -885,7 +962,11 @@ impl Engine {
     fn journaled(self: &Arc<Self>, st: &mut State, h: u64, rec: &Rec<'_>) {
         let b = rec.bytes;
         if rec.size() < obs::BODY {
-            self.set_protocol_error(format!("a journaled record of kind {:#06x} is only {} bytes", rec.kind, rec.size()));
+            self.set_protocol_error(format!(
+                "a journaled record of kind {:#06x} is only {} bytes",
+                rec.kind,
+                rec.size()
+            ));
             return;
         }
         let seq = wire::u64_at(b, obs::OBS_SEQ);
@@ -893,7 +974,9 @@ impl Engine {
         // journaled record past it: the pages never get ahead of that world save.
         let req = self.save_through.load(Ordering::Acquire);
         if req != 0 && seq > req - 1 {
-            let _ = self.save_through.compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
+            let _ = self
+                .save_through
+                .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
             self.save_now(st);
         }
         let op = op_of(rec);
@@ -927,7 +1010,9 @@ impl Engine {
                 st.world.refused_journaled(rec);
             }
             Verdict::Gap { .. } => {
-                self.set_protocol_error(format!("observation {seq} still a gap after skipping to it"));
+                self.set_protocol_error(format!(
+                    "observation {seq} still a gap after skipping to it"
+                ));
             }
         }
     }
@@ -971,8 +1056,10 @@ impl Engine {
     fn write_commands(&self, st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
         let mut highest = 0;
         while let Some((seq, op, t)) = st.resend.front().cloned() {
-            let need = st.dict_bytes(&[(wire::DICT_DIMENSION, &t.dimension), (wire::DICT_ITEM, &t.item)])
-                + cmd::transfer_to_container::SIZE;
+            let need = st.dict_bytes(&[
+                (wire::DICT_DIMENSION, &t.dimension),
+                (wire::DICT_ITEM, &t.item),
+            ]) + cmd::transfer_to_container::SIZE;
             if need > w.remaining() {
                 return (highest, true);
             }
@@ -986,9 +1073,12 @@ impl Engine {
             let refs: Vec<(u32, &str)> = names.iter().map(|(k, n)| (*k, n.as_str())).collect();
             let commands: usize = unit.iter().map(command_bytes).sum();
             let need = st.dict_bytes(&refs) + commands;
-            let too_big = unit.iter().any(|o| command_bytes(o) > wire::MAX_RECORD) || need > w.capacity();
+            let too_big =
+                unit.iter().any(|o| command_bytes(o) > wire::MAX_RECORD) || need > w.capacity();
             if too_big {
-                log_error(&format!("an order unit of {need} bytes can never fit a command buffer; dropped"));
+                log_error(&format!(
+                    "an order unit of {need} bytes can never fit a command buffer; dropped"
+                ));
                 st.units.pop_front();
                 self.stats.orders_pending.fetch_sub(1, Ordering::AcqRel);
                 continue;
@@ -1016,7 +1106,8 @@ fn op_of(rec: &Rec<'_>) -> Option<OpId> {
         obs::DIED if rec.size() >= obs::died::SIZE => wire::u64_at(b, obs::died::OP_ID),
         obs::COMMAND_RESULT
             if rec.size() >= obs::command_result::SIZE
-                && (rec.aux == obs::command_result::APPLIED || rec.aux == obs::command_result::DUPLICATE_OP) =>
+                && (rec.aux == obs::command_result::APPLIED
+                    || rec.aux == obs::command_result::DUPLICATE_OP) =>
         {
             wire::u64_at(b, obs::command_result::OP_ID)
         }
@@ -1029,7 +1120,11 @@ fn write_transfer(st: &mut State, w: &mut RecordWriter<'_>, seq: u64, op: OpId, 
     let dim = st.dict_id(w, wire::DICT_DIMENSION, &t.dimension);
     let item = st.dict_id(w, wire::DICT_ITEM, &t.item);
     let r = w
-        .reserve(cmd::TRANSFER_TO_CONTAINER, cmd::transfer_to_container::SIZE, 0)
+        .reserve(
+            cmd::TRANSFER_TO_CONTAINER,
+            cmd::transfer_to_container::SIZE,
+            0,
+        )
         .expect("checked to fit");
     wire::put_u64(r, cmd::CMD_SEQ, seq);
     wire::put_u64(r, cmd::transfer_to_container::OP_ID, op.0);
@@ -1044,12 +1139,24 @@ fn write_transfer(st: &mut State, w: &mut RecordWriter<'_>, seq: u64, op: OpId, 
 /// Writes one order as commands (its DICT records first). Returns the command's sequence.
 fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option<u64> {
     match order {
-        Order::SpawnGroup { agent, epoch, group_kind, dimension, pos, members } => {
+        Order::SpawnGroup {
+            agent,
+            epoch,
+            group_kind,
+            dimension,
+            pos,
+            members,
+        } => {
             let kind = st.dict_id(w, wire::DICT_BODY, &group_kind);
             let dim = st.dict_id(w, wire::DICT_DIMENSION, &dimension);
             let item_ids: Vec<Vec<u32>> = members
                 .iter()
-                .map(|m| m.items.iter().map(|it| st.dict_id(w, wire::DICT_ITEM, &it.item)).collect())
+                .map(|m| {
+                    m.items
+                        .iter()
+                        .map(|it| st.dict_id(w, wire::DICT_ITEM, &it.item))
+                        .collect()
+                })
                 .collect();
             let seq = st.session_seq();
             let r = w
@@ -1093,15 +1200,24 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
                     items: m
                         .items
                         .iter()
-                        .map(|it| Item { slot: it.slot, item: it.item.clone(), count: it.count })
+                        .map(|it| Item {
+                            slot: it.slot,
+                            item: it.item.clone(),
+                            count: it.count,
+                        })
                         .collect(),
                     gone: None,
                 })
                 .collect();
-            st.world.spawning(agent, epoch, &group_kind, &dimension, pos, &world_members);
+            st.world
+                .spawning(agent, epoch, &group_kind, &dimension, pos, &world_members);
             Some(seq)
         }
-        Order::DespawnGroup { agent, epoch, reason } => {
+        Order::DespawnGroup {
+            agent,
+            epoch,
+            reason,
+        } => {
             let seq = st.session_seq();
             let r = w
                 .reserve(cmd::DESPAWN_GROUP, cmd::despawn_group::SIZE, 0)
@@ -1113,9 +1229,16 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             st.world.despawning(agent, epoch);
             Some(seq)
         }
-        Order::SteerGroup { agent, epoch, speed, pos } => {
+        Order::SteerGroup {
+            agent,
+            epoch,
+            speed,
+            pos,
+        } => {
             let seq = st.session_seq();
-            let r = w.reserve(cmd::STEER_GROUP, cmd::steer_group::SIZE, 0).expect("checked to fit");
+            let r = w
+                .reserve(cmd::STEER_GROUP, cmd::steer_group::SIZE, 0)
+                .expect("checked to fit");
             wire::put_u64(r, cmd::CMD_SEQ, seq);
             wire::put_u64(r, cmd::steer_group::AGENT, agent);
             wire::put_u32(r, cmd::steer_group::EPOCH, epoch);
@@ -1125,7 +1248,13 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             wire::put_f64(r, cmd::steer_group::Z, pos[2]);
             Some(seq)
         }
-        Order::TransferToContainer { op, dimension, item, pos, count } => {
+        Order::TransferToContainer {
+            op,
+            dimension,
+            item,
+            pos,
+            count,
+        } => {
             let op = if op == 0 {
                 // The kernel counts engine op ids from 0; 0 reads as "no op id" on the wire.
                 let mut op = st.outbox.allocate_op();
@@ -1136,7 +1265,12 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             } else {
                 OpId(op)
             };
-            let t = TransferCmd { dimension, item, pos, count };
+            let t = TransferCmd {
+                dimension,
+                item,
+                pos,
+                count,
+            };
             // The DICT records go before the command, and the sequence is taken only now, so the
             // buffer's sequences rise in buffer order.
             st.dict_id(w, wire::DICT_DIMENSION, &t.dimension);
@@ -1159,7 +1293,12 @@ mod tests {
         replay.admit(ObsSeq(5), Some(OpId(wire::JAVA_OP_BIT | 3)));
         let mut outbox: Outbox<TransferCmd> = Outbox::new();
         outbox.push_with_op(
-            TransferCmd { dimension: "d".into(), item: "i".into(), pos: [1, -2, 3], count: 64 },
+            TransferCmd {
+                dimension: "d".into(),
+                item: "i".into(),
+                pos: [1, -2, 3],
+                count: 64,
+            },
             OpId(4242),
         );
         let (r, o) = decode_meta(&encode_meta(&replay, &outbox)).unwrap();
