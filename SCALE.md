@@ -2,7 +2,7 @@
 
 **Status:** design for Ben's review, 2026-10-19. This document answers decision D6: plan first for
 late-game load in huge worlds, with special attention to algorithms and data abstraction. Every other
-design must fit inside it. Choices still open are marked **(Ben)** and gathered in §12.
+design must fit inside it. Choices still open are marked **(Ben)** and gathered in §13.
 
 ## 0. The one rule
 
@@ -263,7 +263,59 @@ changes.
 5. **Minecraft's own entity load in loaded areas** is outside the sim. The sim's part is to keep far
    things abstract and to cap puppets; the rest belongs to the pack-wide optimization effort.
 
-## 12. Questions for Ben
+## 12. Galactic scale: whole planets on the ladder
+
+At galactic scale the ladder holds whole worlds as well as the things on them.
+
+| Level | What a planet is | Cost |
+|---|---|---|
+| Latent | derived from the galaxy seed; no row | 0 |
+| Strategic row | a body: its orbit, owner, population totals and output | about 128 B (budget) |
+| Coarse world | a province grid, with history at province level | kilobytes to a few MB (Deep Time session) |
+| Full world | a Deep Time bake, a Minecraft dimension and sim region pages | about 100 MB of terrain data per 16k planet with the timelapse dropped, or about 210 MB keeping one keyframe per 50 Myr; Minecraft region files come on top |
+
+Every figure in this section comes from the Deep Time session's measurements of 2026-10-19 (master
+`db37a097`, the play world and the test VM).
+
+**Coarse and full must agree, and a low-resolution bake cannot provide that.**
+- Deep Time's history is chaotic. Changing the sphere sample count, the L1 grid, the compute path (GPU or
+  CPU) or the build changes the continents.
+- The same seed, preset, build and compute path always gives an identical world. So the rule is: store
+  what was computed, and never regenerate it from the seed.
+- **Three ways to get consistency (Ben):**
+  - **A. Run the real history for every planet,** and keep only a summary until someone visits.
+    Consistent, but the history is most of a bake's cost, so thousands of planets are out of reach.
+  - **B. Make a coarse history authoritative.**
+    - Unvisited planets run a cheap coarse-grid history.
+    - A visit runs only the refinement on the stored state: amplification, L2 and L3 detail, strata,
+      rivers and deposit sites. Consistent by construction.
+    - Deep Time's presets already work this way across sizes: quick 16k and quick 32k share one history
+      grid.
+    - Two things are unmeasured: how coarse the history grid can go, and how a run's time splits between
+      history and refinement.
+    - The Deep Time session recommends B once those are measured.
+  - **C. The rtsim invents province-level planets,** and a visit runs Deep Time constrained to match
+    them. Approximate at best; pinning a plate history to a given map is research.
+- **Resource sites come out of the history,** so they stay consistent only under A or B.
+- **Under B,** the sim's history of an unvisited planet runs on Deep Time's coarse grid, and the sim's
+  provinces are that grid.
+
+**Baking a planet before anyone arrives:**
+- **How long a 16k planet takes over 1,000 Myr:**
+  - 826 to 955 s on the laptop with 8 threads;
+  - 1,290 s on the quiet VM;
+  - Deep Time's target is 900 s on an average gaming rig at normal priority.
+- **In the background,** beside a running game on a few threads at the lowest normal priority, expect
+  two to three times longer: 30 to 45 minutes. Either the trip lasts that long, or the planet shows a
+  "still forming" state on arrival. The bake checkpoints, so it can pause and resume.
+- **Peak memory is 3.2 GB** (quick 16k, 4 threads) **to 4.2 GB** (full 16k, 8 threads), on top of the
+  game. On a potato this is the binding limit. In-game bakes may have to be dedicated-server only, or
+  wait until the player is not playing **(Ben)**.
+- **The compute path is fixed per planet and stored with it.** CPU is the default for in-game bakes,
+  because the game already loads the GPU and GPU and CPU runs give different worlds.
+- **Several players heading to different planets** means a bake queue.
+
+## 13. Questions for Ben
 
 Asked in chat on 2026-10-19; answers go into DECISIONS.md.
 
@@ -271,3 +323,6 @@ Asked in chat on 2026-10-19; answers go into DECISIONS.md.
 2. **Memory policy** for the sim's resident memory.
 3. **Lazy regions:** catch-up on read, or eager coarse stepping.
 4. **Flows:** unobserved traffic as flows, or every traveller always an individual.
+5. **Planet consistency at galactic scale:** option A, B or C in §12.
+6. **In-game planet bakes on weak PCs:** dedicated-server only, run while the player is not playing, or
+   allowed with a warning.
