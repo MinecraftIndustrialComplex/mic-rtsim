@@ -25,6 +25,7 @@
 //! Flows between markets, news and caravans are `rtsim-travel`'s; this crate only knows a
 //! market's own rates.
 
+pub mod build;
 pub mod goods;
 pub mod labour;
 pub mod line;

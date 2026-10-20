@@ -58,7 +58,8 @@ pub struct Local {
 pub struct Costs {
     /// Worker-days per item; infinite when the market can neither make nor import the good.
     pub labour: Vec<f64>,
-    /// The recipe the market makes each good with, if it makes it.
+    /// The recipe the market makes each good with, if it can make it at all: its cheapest local
+    /// one, even when importing is cheaper.
     pub recipe: Vec<Option<usize>>,
     /// Production capacity per day, thousandths, from the chosen recipe.
     pub capacity_per_day: Vec<Amount>,
@@ -163,14 +164,27 @@ impl RecipeBook {
                 }
             }
         }
+        // What the market makes each good with: its cheapest local recipe at the final costs,
+        // even where importing is cheaper still. A farm village that imports cheaper wheat can
+        // still farm; its anchor is the import price, its capacity its own fields.
+        let mut local_best: Vec<Option<usize>> = vec![None; n];
+        let mut local_cost = vec![f64::INFINITY; n];
+        for &r in &avail {
+            let out = self.recipes[r].output.index();
+            let c = self.cost(r, &l);
+            if c.is_finite() && c < local_cost[out] {
+                local_cost[out] = c;
+                local_best[out] = Some(r);
+            }
+        }
         let capacity_per_day = (0..n)
             .map(|g| {
-                chosen[g].map_or(0, |r| self.capacity_per_day(r, local, craft_share_milli))
+                local_best[g].map_or(0, |r| self.capacity_per_day(r, local, craft_share_milli))
             })
             .collect();
         Costs {
             labour: l,
-            recipe: chosen,
+            recipe: local_best,
             capacity_per_day,
         }
     }
