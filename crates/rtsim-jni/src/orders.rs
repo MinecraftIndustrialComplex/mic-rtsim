@@ -30,6 +30,7 @@
 //! | 22 | a scripted village: the engine applies none of its observations and sends none of its own commands for it | u64 village |
 //! | 23 | TEST: materialize the phase 1 caravan with wares nearest (searchX, searchZ) within radius blocks, as this group, at (x, y, z) | u64 agent, u32 epoch, str dimension, f64 x, f64 y, f64 z, u32 radius, f64 searchX, f64 searchZ |
 //! | 24 | TEST: the phase 1 world runs this many more ticks ahead of game time | u64 ticks |
+//! | 25 | TEST: a dragon command (docs/boundary.md §6.4), as if the dragons had decided it: the Ice and Fire plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the species entries the record uses); then the record exactly as `rtsim_ecology::boundary` encodes it (cmdSeq ignored), its species ids Java's own (body dictionary) and its dimension Java's id (the dragons' frame) |
 
 use rtsim_industry::ids::{DistrictId, TrainId};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
@@ -63,6 +64,7 @@ pub const OP_SPAWN_RESIDENT: u16 = 21;
 pub const OP_SCRIPT_VILLAGE: u16 = 22;
 pub const OP_P1_SPAWN_NEAR: u16 = 23;
 pub const OP_P1_ADVANCE: u16 = 24;
+pub const OP_DRAGON_COMMAND: u16 = 25;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,6 +239,13 @@ pub enum Order {
         names: Vec<(u32, u32, String)>,
         record: Vec<u8>,
     },
+    /// TEST: a dragon command record (Java's species and dimension ids), queued as the dragons'
+    /// own: their sequences and DICT records (the Ice and Fire plugin's GameTests). `names` are the
+    /// Java dictionary entries for the species: (kind, Java's id, name).
+    DragonCommand {
+        names: Vec<(u32, u32, String)>,
+        record: Vec<u8>,
+    },
 }
 
 impl Order {
@@ -255,7 +264,10 @@ impl Order {
     pub fn test_only(&self) -> bool {
         matches!(
             self,
-            Order::Fail | Order::Phase1SpawnNear { .. } | Order::Phase1Advance(_)
+            Order::Fail
+                | Order::Phase1SpawnNear { .. }
+                | Order::Phase1Advance(_)
+                | Order::DragonCommand { .. }
         )
     }
 }
@@ -592,6 +604,29 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 }
                 Order::IndustryCommand { names, record }
             }
+            OP_DRAGON_COMMAND => {
+                let n = c.u32()? as usize;
+                if n > 64 {
+                    return Err(format!("a dragon command with {n} names"));
+                }
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let kind = c.u32()?;
+                    let id = c.u32()?;
+                    names.push((kind, id, c.str()?));
+                }
+                let record = body[c.at..].to_vec();
+                c.at = body.len();
+                let kind = if record.len() >= 16 {
+                    u16_at(&record, 0)
+                } else {
+                    0
+                };
+                if !(0x8500..=0x85FF).contains(&kind) {
+                    return Err("a dragon command order holds no dragon command".into());
+                }
+                Order::DragonCommand { names, record }
+            }
             other => return Err(format!("unknown order opcode {other}")),
         };
         if c.at != body.len() {
@@ -878,6 +913,17 @@ impl Encoder {
                 self.u64(t.at.0);
                 self.end(at);
             }
+            Order::DragonCommand { names, record } => {
+                let at = self.begin(OP_DRAGON_COMMAND);
+                self.u32(names.len() as u32);
+                for (kind, id, name) in names {
+                    self.u32(*kind);
+                    self.u32(*id);
+                    self.str(name);
+                }
+                self.buf.extend_from_slice(record);
+                self.end(at);
+            }
             Order::IndustryCommand { names, record } => {
                 let at = self.begin(OP_INDUSTRY_COMMAND);
                 self.u32(names.len() as u32);
@@ -1059,6 +1105,24 @@ mod tests {
                         &mut r,
                     )
                     .unwrap();
+                    r
+                },
+            },
+            Order::DragonCommand {
+                names: vec![(3, 7, "iceandfire:fire_dragon".into())],
+                record: {
+                    let mut r = Vec::new();
+                    rtsim_ecology::boundary::encode_cmd(
+                        0,
+                        &rtsim_ecology::boundary::Cmd::Steer(rtsim_ecology::boundary::Steer {
+                            agent: 0x44 << 56 | 5,
+                            epoch: 2,
+                            flags: 1,
+                            target: (1.0, 90.0, -4.0),
+                        }),
+                        &rtsim_ecology::boundary::SpeciesDict::default(),
+                        &mut r,
+                    );
                     r
                 },
             },

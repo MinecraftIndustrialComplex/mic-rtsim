@@ -402,6 +402,31 @@ fn take_commands(st: &mut State) {
 
 // ---- commands -----------------------------------------------------------------------------------
 
+/// A dragon command a test ordered (`Order::DragonCommand`, the Ice and Fire plugin's GameTests):
+/// it joins the queue as if the dragons had decided it, so it takes their sequences and DICT
+/// records. Its species ids are Java's, named by `names` (so it never waits for Java's DICT
+/// records); its dimension is Java's id, the dragons' own frame. The dragons themselves know
+/// nothing of it: records Java sends back about an agent they do not have are ignored.
+pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record: &[u8]) {
+    let mut dict = SpeciesDict {
+        body: [0; 3],
+        structure: [[0; 2]; 3],
+    };
+    for (kind, id, name) in names {
+        for (i, s) in SPECIES.iter().enumerate() {
+            if *kind == wire::DICT_BODY && name == s.entity_id() {
+                dict.body[i] = *id;
+            }
+        }
+    }
+    match boundary::decode_cmd(record, &dict) {
+        Ok((_, _, c)) => st.dragons.queue.push_back(c),
+        Err(e) => super::log_warn(&format!(
+            "a dragon command order does not decode ({e:?}); dropped"
+        )),
+    }
+}
+
 fn cmd_size(c: &Cmd) -> usize {
     match c {
         Cmd::Materialize(_) => 136,
