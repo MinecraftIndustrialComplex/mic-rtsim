@@ -95,6 +95,10 @@ public final class CaravanGameTests {
                     ((WanderingTrader) bodies[0]).setDespawnDelay(0);
                     trapTick[0] = level.getGameTime();
                     level.setChunkForced(forced.x, forced.z, true);
+                    // Load it now: the GameTest server ticks faster than real time, so 600 ticks can pass
+                    // before an asynchronous load finishes on a busy machine (the test was flaky).
+                    level.getChunk(forced.x, forced.z);
+                    level.getChunk(forced.x + 1, forced.z);
                 })
                 .thenIdle(40)
                 .thenExecute(() -> {

@@ -43,7 +43,7 @@ public final class RtsimAttachments {
      * set). Village growth never builds over them (PLAN.md §8.8). Saved with the chunk.
      */
     public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks>> PLAYER_BLOCKS =
-            TYPES.register("player_blocks", () -> AttachmentType.builder(() -> com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks.EMPTY)
+            TYPES.register("player_blocks", () -> AttachmentType.builder(com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks::new)
                     .serialize(com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks.CODEC, p -> !p.isEmpty()).build());
 
     public static void register(IEventBus modBus) {
