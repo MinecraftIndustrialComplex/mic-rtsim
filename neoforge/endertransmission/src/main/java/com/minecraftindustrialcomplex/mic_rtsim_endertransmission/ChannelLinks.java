@@ -34,8 +34,8 @@ import java.util.function.Consumer;
  * <p>Item and fluid transmitters are found through a weak set the constructor mixin fills (Ender
  * Transmission keeps only the buffers, not the endpoints). Rotation transmitters are found in Ender
  * Transmission's own {@code EnergyNetwork.ENERGY} lists, read without changing them. A channel with
- * an endpoint in another level cannot join one district: the districts on it carry a ledger warning
- * (what crosses it is not simulated as a transfer).
+ * an endpoint in another level cannot join one district: the districts on it carry a diagnostics warning
+ * (server log and operator /rtsim district output only, I18; what crosses it is not simulated as a transfer).
  */
 public final class ChannelLinks {
     private ChannelLinks() {}
@@ -105,7 +105,7 @@ public final class ChannelLinks {
     /**
      * Every {@code WARN_PERIOD} ticks: a transmitter whose channel or password changed since the last check
      * marks its chunk for detection (the settings screen is no block edit), and districts whose channel
-     * reaches another level get the ledger warning.
+     * reaches another level get the diagnostics warning.
      */
     static void tick(Industry ind, long now) {
         if (now % WARN_PERIOD == 0)
@@ -141,9 +141,9 @@ public final class ChannelLinks {
         }
         for (long id : WARNED)
             if (!warn.containsKey(id))
-                ind.ledgers().warn(id, WARN_KEY, null);
+                ind.diagnostics().warn(id, WARN_KEY, null);
         for (Map.Entry<Long, String> e : warn.entrySet())
-            ind.ledgers().warn(e.getKey(), WARN_KEY, e.getValue());
+            ind.diagnostics().warn(e.getKey(), WARN_KEY, e.getValue());
         WARNED.clear();
         WARNED.addAll(warn.keySet());
     }

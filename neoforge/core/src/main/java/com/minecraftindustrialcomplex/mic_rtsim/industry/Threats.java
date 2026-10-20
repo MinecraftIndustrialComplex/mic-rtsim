@@ -113,6 +113,14 @@ public final class Threats {
         return s == null ? null : s.around;
     }
 
+    /** U10, the module switched on again: every district is surveyed anew, so the engine has its survey and blocks. */
+    void forgetAnnounced() {
+        for (State s : states.values()) {
+            s.surveyedRevision = -1;
+            s.surveyedAt = Long.MIN_VALUE / 2;
+        }
+    }
+
     /** Asks for a survey of the district at the next opportunity (commands, GameTests). */
     public void surveySoon(District d) {
         State s = state(d);
