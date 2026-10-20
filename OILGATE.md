@@ -250,8 +250,9 @@ drinking dragons, against the district's players (those who placed its machines:
   bounded damage applies.
 - **Unwatched,** the raid resolves abstractly: Lanchester against the defence vector, theft first of oil
   (§4.3), destroyed blocks from the exposed set, roofless first, capped (I23). Turrets count (I21).
-- **Roofs:** INDUSTRY.md §13.6 says roofs shield machines from flyers, but `threat.rs`'s `resolve()`
-  does not apply roof cover yet. OG-11 asks to build it as designed. With it, a well built under a roof,
+- **Roofs:** INDUSTRY.md §13.6 says roofs shield machines from flyers. `threat.rs` picks roofless
+  blocks first when it chooses what a flyer destroys, but `resolve()` does not gate a flying attack by
+  roof cover, as walls gate ground attackers. OG-11 asks to build the gate as designed. With it, a well built under a roof,
   or underground, is safe from dragons' blocks; its oil stock and its players are not.
 - **Beginning, not only drilling:** the first row fires before any oil is pumped, which is what Ben
   asked for ("when players are beginning to do industrial activity near an oil deposit").
