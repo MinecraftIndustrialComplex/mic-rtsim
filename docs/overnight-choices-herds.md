@@ -70,14 +70,15 @@ choice.
 | H2-32 | The synthetic valley: 0.5 °C a cell colder to the north, ±10 °C over the year; forage stands where it is wet (the north's rains peak in late spring, the south's in late autumn, two sub-seasons ahead of the warmth), capacity 4,000 sheep-days a cell times noise times 0.1 + 0.9 × wet²; an east-west ridge two cells deep and 61 long with one pass a cell wide. Six herds of about 33,000 animals. | A world where following forage means crossing the ridge twice a year, and fencing the pass forces a detour of several kilometres. |
 | H2-33 | A footprint's radius is sqrt(count × ground per animal / π), clamped to 16 to 1,536 blocks. | The cap bounds a decision's grazing work and the forage rows a herd writes. |
 | H2-34 | Founders come with a stable age pyramid at the species' mortalities, ages whole years plus the time since its last birth season. | A herd found in a world should look like one that has lived there. |
+| H2-35 | A member embodied right now never dies off-screen: anonymous deaths and old age skip it, and a year-class holding one stays until the group is captured; it dies of age while away, at the next materialization. A kill reported for a member whose class has already reached zero is booked as that natural death, not as a kill. | Found by the restore property test: a founders' class reached its lifespan while a cow of it stood in front of the player. |
 
 ## Results
 
-- **Tests:** `crates/rtsim-ecology/tests/herds.rs` (11, two of them property tests): founding,
+- **Tests:** `crates/rtsim-ecology/tests/herds.rs` (12, three of them property tests): founding,
   seasonal migration, identity after kills and a season of deaths, flat catch-up, one
   materialization per approach, composition (one run equals many, reads in between change
   nothing), conservation under any script, restore under any script, a truncated page, an
-  obstacle and its replan, dragons eating from and following a herd. Unit tests in the module
+  obstacle and its replan, dragons eating from and following a herd, a new session. Unit tests in the module
   (18): vanilla food points and colour odds, cohorts, the forage closed form against an ODE
   stepper and its composition, grazing's floor and fold, year-class reads and re-anchors, catch-up
   work, the route through a gap and the fenced gap, route closed forms, the codec. Workspace: 388

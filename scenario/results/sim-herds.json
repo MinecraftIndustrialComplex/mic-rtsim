@@ -1,7 +1,7 @@
 {
   "seed": 7,
   "days": 200,
-  "wall_ms": 808.68127,
+  "wall_ms": 810.1779919999999,
   "founded": {
     "Crag goats": 3000,
     "Greyfell flock": 8000,
@@ -4921,8 +4921,8 @@
     ]
   },
   "restart": [
-    2886436517684893513,
-    2886436517684893513
+    3806013402738445294,
+    3806013402738445294
   ],
   "stats": {
     "events": 442,
@@ -12329,7 +12329,7 @@
     {
       "name": "a restart restores the herds' state hash",
       "ok": true,
-      "detail": "0x280eaeb84752d749 saved, 0x280eaeb84752d749 restored"
+      "detail": "0x34d1ad065099cbee saved, 0x34d1ad065099cbee restored"
     },
     {
       "name": "the fenced pass stops the flock's puppets and the plugin reports it",

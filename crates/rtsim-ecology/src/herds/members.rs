@@ -74,9 +74,9 @@ pub fn member(
 }
 
 /// Brings `seen` in line with the counts on `day`: a class whose count fell below its seen
-/// members loses its highest seen indices (not embodied ones first) to the dead set. A
-/// deterministic function of the state and the day, run only at events. Returns how many died
-/// this way.
+/// members loses its highest seen indices to the dead set, never one embodied right now (it
+/// waits for its capture). A deterministic function of the state and the day, run only at
+/// events. Returns how many died this way.
 pub fn reconcile(h: &mut Herd, sp: &HerdSpeciesData, year_days: u32, day: i64) -> u32 {
     let mut died = 0;
     let embodied: Vec<u64> = h
@@ -91,11 +91,10 @@ pub fn reconcile(h: &mut Herd, sp: &HerdSpeciesData, year_days: u32, day: i64) -
             continue;
         }
         let mut excess = seen.len() - alive;
-        let (mut quiet, mut watched): (Vec<u64>, Vec<u64>) =
-            seen.into_iter().partition(|k| !embodied.contains(k));
+        // Members embodied right now cannot die off-screen: they wait for their capture.
+        let mut quiet: Vec<u64> = seen.into_iter().filter(|k| !embodied.contains(k)).collect();
         quiet.reverse();
-        watched.reverse();
-        for k in quiet.into_iter().chain(watched) {
+        for k in quiet {
             if excess == 0 {
                 break;
             }

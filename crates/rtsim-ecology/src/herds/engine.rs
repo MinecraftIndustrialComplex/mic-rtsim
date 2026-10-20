@@ -582,12 +582,20 @@ impl Herds {
         if sp.breeds_in(in_year) && self.herds[h].bred_year != year {
             self.breed(h, at, year);
         }
-        // Classes with nobody left go (their deaths committed first).
+        // Classes with nobody left go (their deaths committed first), except one holding a
+        // member embodied right now: it stays until the capture.
         {
             let x = self.herds.get_mut(h).expect("live");
             let mut died = 0u64;
+            let watched: Vec<u64> = x
+                .embodied
+                .as_ref()
+                .map(|e| e.members.clone())
+                .unwrap_or_default();
             x.classes.retain_mut(|c| {
-                if c.alive_on(&sp, yd, x.seed, day) == 0 {
+                if c.alive_on(&sp, yd, x.seed, day) == 0
+                    && !watched.iter().any(|k| c.contains(*k))
+                {
                     died += u64::from(c.reanchor(&sp, yd, x.seed, day));
                     false
                 } else {
