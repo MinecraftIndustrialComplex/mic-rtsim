@@ -66,6 +66,7 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `aleadtakesacreatureoutofthesim` | a lead held by a player takes a llama on the next pass |
 | `amemberremovedbyanothermodleavestherestasonegroup` | risk 11: a member another mod removes leaves as TAKEN(removed by other); the rest stays one unit |
 | `deathsarejournaledandthereststaysonegroup` | DIED after each member's state at death (cargo included); the llamas of a dead trader stay one group and are not "taken" by the dead trader's leash |
+| `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 
 ## Not done yet
