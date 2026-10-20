@@ -78,6 +78,8 @@ pub(super) struct Link {
     items_defined: BTreeSet<u32>,
     /// The last load dropped pages it could not read ([`when_pages_unreadable`]).
     pub(super) dropped_pages: bool,
+    /// The last load read back dragons whose state hash is not the one saved: (saved, read).
+    pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
     pub(super) commands_written: u64,
 }
@@ -109,6 +111,7 @@ impl Link {
             java_species: None,
             items_defined: BTreeSet::new(),
             dropped_pages: false,
+            restore_diverged: None,
             records: 0,
             commands_written: 0,
         }
@@ -146,9 +149,19 @@ impl Link {
         if let Err(e) = head {
             return when_pages_unreadable(&format!("the dragons' page: {e}"));
         }
+        let Ok(saved_hash) = r.u64() else {
+            return when_pages_unreadable("the dragons' page is cut short");
+        };
         let rest = r.take(r.remaining()).unwrap_or_default();
         match Dragons::load(DragonTunables::default(), rest) {
             Ok(engine) => {
+                let hash = engine.state_hash();
+                let diverged = (hash != saved_hash).then_some((saved_hash, hash));
+                if diverged.is_some() {
+                    super::log_warn(&format!(
+                        "the dragons read back to state {hash:016x}, the save had {saved_hash:016x}"
+                    ));
+                }
                 log_info(&format!(
                     "dragons restored: {} dragons, {} lairs, {} events booked, state {:016x}",
                     engine.dragons.len(),
@@ -158,6 +171,7 @@ impl Link {
                 ));
                 let mut l = Link::empty();
                 l.engine = engine;
+                l.restore_diverged = diverged;
                 Ok(l)
             }
             Err(e) => when_pages_unreadable(&format!("the dragons' page: {e}")),
@@ -463,9 +477,10 @@ pub(super) fn snapshot(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
     }
     st.dragons.dropped_pages = false;
     let body = st.dragons.engine.save();
-    let mut w = Writer::with_capacity(body.len() + 8);
+    let mut w = Writer::with_capacity(body.len() + 16);
     w.u32(MAGIC);
     w.u16(VERSION);
+    w.u64(st.dragons.engine.state_hash());
     w.raw(&body);
     vec![(KEY_DRAGONS, w.into_bytes())]
 }
@@ -486,6 +501,13 @@ impl super::Engine {
     pub fn with_dragons<R>(&self, f: impl FnOnce(&Dragons, &rtsim_world::World) -> R) -> R {
         let st = super::lock(&self.state);
         f(&st.dragons.engine, &st.phase1.world)
+    }
+
+    /// Whether the last start read the dragons back to the state hash they were saved with
+    /// (`None`), or (saved, read); and whether it dropped their pages.
+    pub fn dragons_restore_check(&self) -> (Option<(u64, u64)>, bool) {
+        let st = super::lock(&self.state);
+        (st.dragons.restore_diverged, st.dragons.dropped_pages)
     }
 
     /// The dragons' counters, and how many dragon records and commands went through the link.

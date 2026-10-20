@@ -33,3 +33,53 @@ marked PLACEHOLDER are not measured. Branch `overnight/persist`.
   restarted from the pages at a random point: the same state hash after every op as an engine that
   never stopped, the same snapshot bytes at the end, and both read back their own pages again.
   Passed 1,000 cases.
+
+## The dragons' save and their route through the native engine
+
+| # | Choice | Reason |
+|---|---|---|
+| S8 | **`Dragons::save` and `Dragons::load`** (`crates/rtsim-ecology/src/persist.rs`): every dragon, lair, event (in pop order), player view, home counter, ledger line, dictionary mapping and the commands not taken yet (with the reference codec and a fixed dictionary). Not written: the tunables (the caller's) and the CLI's diagnostics (`log`, `hunts`). The dragons' memories, grudges and flights live in the phase 1 world (its knowledge and leg index), which is saved beside them with `World::save`. | The task: health, memory and grudges survive a restart, with the state hash of an engine that never stopped (tested, `crates/rtsim-ecology/tests/persist.rs`). |
+| S9 | **Dragon epochs come back as saved** (no stride after a restart, unlike phase 1's V26 and review 3's P6). | Their state hash includes every dragon's epoch, and a restore must equal an engine that never stopped. The journal's replay of a lost session reaches the engine in the first hand-overs, before any new materialization, so a replayed record cannot meet a reused epoch; a dragon record carried by a chunk into a later session (§3.1's case) is the plugin's to design: if it does, add a stride on load and compare hashes without epochs. |
+| S10 | **Every adopted entity is remembered** (`Dragons::adopted`, saved; `by_entity` stays per session). An untagged body the engine adopted before is adopted again as the same dragon under a new epoch. | Review 3's open case: a spawn-egg dragon reported again after a crash (its DRAGON_ADOPT never reached a world save) was adopted a second time. |
+| S11 | **Every dragon command is per session**; none is kept or resent. Sequences come from the core's counter and the commands are written after phase 1's. DISCARD has no op id (its COMMAND_RESULT carries op 0). | Puppets never outlive a session; an adoption or discard lost in a crash is decided again when the body rejoins the level and Java reports it untagged (`EntityJoinLevelEvent`). A kept DISCARD would add a wire change (an op id) for no case the re-report does not cover. |
+| S12 | **Dragon pages this build cannot read, or without the world they were saved with** (the phase 1 pages dropped or absent), are dropped with a loud log and the dragons start afresh (`dragons::when_pages_unreadable`); the next save replaces them. | As S5 and W23. Dragons without their world would name actors and legs that do not exist. |
+| S13 | **Order in a step:** the dragons run before the phase 1 world, and a phase 1 journaled input runs them to its time first (`dragons::catch_up`), so a dragon event never meets a world that ran past it. PLAYER positions feed the dragons only once there is a dragon or a lair; while there is one, the phase 1 link snapshots at every save (S4). | The ecology engine catches the world up to each of its events itself; it cannot go back. A pack without Ice and Fire's lairs keeps phase 1's cheap tail saves. |
+| S14 | PLACEHOLDERS of the route: the dragons' pages are table 0x4400 (one page, with the state hash checked on load); they run under Java's ECOLOGY module bit (`1 << 4`); their seed is a constant (as phase 1's, V5); hoard item ids map to the phase 1 catalogue's goods by item name; DRAGON_ATE's prey bodies are not mapped to herd goods (the catalogue has no livestock good; P9 and P18's catalogue work); the industry engine is the dragons' threat interface only while the industry module runs. | Next to the industry and phase 1 tables; the rest follows what the bridge sends today. |
+
+## Tests (dragons)
+
+- `crates/rtsim-ecology/tests/persist.rs`: a wounded dragon's health, memories and grudge are the
+  same after a restart, and it goes on hour by hour for 40 days (capture, hunts) with the state
+  hashes and commands of one that never stopped; the scenario's dragons restored at a random hour
+  of a month continue exactly with a player walking past their lairs (property test); a truncated
+  page is an error; an untagged dragon reported again after a restart is adopted once. Two
+  mutations (home weights, fed_at) fail them.
+- `crates/rtsim-jni/tests/protocol.rs` `dragons::dragons_are_adopted_hurt_captured_materialized_and_replayed_across_a_crash`:
+  through the native engine and a fake Ice and Fire plugin (`tests/common`): a lair and its
+  structure dragon adopted; a player's wound is a grudge; the body captured with its health; a
+  player at the lair materializes it again under a new epoch; a natural spawn discarded and
+  answered; a save; a hoard robbery and a spawn-egg dragon after it; a crash. The pages read back
+  to their saved state hash (and the world's), and the journal's replay books the robbery once,
+  adopts the egg dragon once, and leaves every dragon's health and grudge as before the crash; the
+  same robbery's op id again is applied once.
+
+## Incomplete
+
+- **The kernel follow-up** (`overnight/kernel2`: paging under a memory budget, two save
+  generations for P29, an incremental manifest) had not merged into origin/main when this branch
+  finished, so phase 1, the industry engine and the dragons still use the current `PageStore`.
+  Moving them is a matter of the keys: phase 1's meta page and tail chunks (table 0x5000) and its
+  snapshot pieces (0x5001), the dragons' page (0x4400) and the industry tables (0x4900 to 0x4902)
+  are whole pages written by one commit, so they map onto kernel2's `commit_pending` and
+  `confirm_through` as the core's pages do. `TimingWheel::iter` here is kernel2's, copied
+  verbatim, so that hunk merges clean; `in_pop_order` and the codecs sit after it.
+- **The Ice and Fire plugin** (`mic_rtsim_iceandfire`) is not written: nothing in Java sends the
+  dragons' records yet. Its executable reference is the fake plugin in
+  `crates/rtsim-jni/tests/common` (`dragon_obs`, `dragon_command`); docs/boundary.md §6.5 and §6.6
+  say what it does in game.
+- **No GameTests** were run: nothing on the Java side changed.
+- **Not measured:** a save's snapshot cost with dragons present at every save (S4: about 4.5 ms
+  of encoding and 3.7 ms of LZ4 at 1,024 villages, from the restore bench, plus the dragons'
+  page).
+- **Review 3's other open items** (P3, bands' members, `World::visible` over bands, PreyIndex
+  rebuilds) are untouched.

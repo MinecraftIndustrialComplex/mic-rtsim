@@ -547,18 +547,45 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      resent like transfers. Caravans and touring bands a player can see are materialized as C25
      groups (SPAWN_GROUP with `FLAG_SURFACE`, cargo in the chests), steered toward where the sim
      walks them, and captured back when no player is near or the sim's caravan moved on.
-   - **Pages.** Table 0x5000: a meta page and the world's input log in chunks of 1,024 inputs. The
-     world is deterministic, so `start` rebuilds it by replaying the log and checks the replayed
-     state hash against the one saved.
+   - **Pages** (choices S1 to S7 in docs/overnight-choices-persist.md). Table 0x5001: a snapshot
+     of the world (`World::save`) in 1 MiB pieces; table 0x5000: the meta page and the inputs since
+     the snapshot in chunks of 1,024. `start` reads the snapshot and replays only that tail, then
+     checks the state hash against the one saved. A save writes the meta page and the tail chunks
+     not yet on disk, or a new snapshot when the tail reaches 1,024 inputs or a world day, or the
+     world changed outside the log (the dragons). Pages this build cannot read are dropped with a
+     loud log and the phase 1 world starts afresh (`when_pages_unreadable`, S5).
    - **Tests.** Orders 16 to 21 script the phase 1 commands (the stub's `market`, `merchantOffers`
      and so on); order 22 marks a village as a test's own, which the engine then leaves alone; orders
      23 (`P1_SPAWN_NEAR`) and 24 (`P1_ADVANCE`) materialize a caravan off the flows at a chosen place
      and run the world ahead of game time (TEST mode only).
 
+11. **Dragons** (`engine/dragons.rs`, §6, choices S8 to S14 in docs/overnight-choices-persist.md):
+   rtsim-ecology's engine runs inside the step, in the phase 1 world (its knowledge holds the
+   dragons' memories and grudges, its leg index their flights) on the phase 1 world's clock.
+   - **Observations.** The journaled kinds 0x0500 to 0x05FF go through `Replay` (HOARD_ROBBED by its
+     op id too) into `Dragons::ingest`; DRAGON_STATE and PLAYER (once there is a dragon or a lair)
+     are latest state. Java's dictionary names species (kind 3), lairs (kind 4), dimensions and
+     hoard items. The dragons run before the phase 1 world each step, and a phase 1 input runs them
+     to its time first, so a dragon event never meets a world that ran past it.
+   - **Commands.** DRAGON_MATERIALIZE, STEER, DEPART, ADOPT and DISCARD take sequences from the
+     core's counter, after the core's, the industry's and phase 1's; all are per session (a lost
+     adoption or discard is decided again when Java reports the body again). The species and the
+     dimension go through the engine's dictionary.
+   - **Pages.** Table 0x4400: one page, `Dragons::save` with its state hash (checked on load). While
+     there is a dragon or a lair the phase 1 link snapshots at every save, in the same commit. A
+     dragons page without the phase 1 world it was saved with, or one this build cannot read, is
+     dropped loudly and the dragons start afresh.
+   - **Not wired yet:** the plugin itself (below), and the dragons' raids reach the industry engine
+     only while the industry module runs.
+
 ## 6. Phase 2: dragons (PLAN.md §9; the Ice and Fire plugin)
 
 Written 2026-10-20 overnight with the engine side, `crates/rtsim-ecology` (`boundary.rs` is the
-reference codec, with round-trip tests); the plugin, `mic_rtsim_iceandfire`, is not written. This
+reference codec, with round-trip tests); the plugin, `mic_rtsim_iceandfire`, is not written. The
+native engine routes these records since 2026-10-20 (§5 item 11); the Rust fake Java side in
+`crates/rtsim-jni/tests/common` (`Java::dragon_obs`, `dragon_command`) plays the plugin for the
+protocol test and is the plugin's executable reference: what it answers to each command is what
+the plugin must answer. This
 section and `boundary.rs` change together. Choices are numbered R# in
 `docs/overnight-choices-dragons.md`. Ice and Fire facts below were checked in the CE 2.1-beta.1 jar
 and the pack's `config/iceandfire/iaf-common.json` (2026-10-20); anything not checked says
@@ -671,9 +698,13 @@ captured the same way with §2.3's reasons.
 
 **Adopt** tags an untagged entity with the agent and epoch, makes it persistent, and sets its home
 when flag 1 is set; from then on it is an embodied puppet like a materialized one, and leaves view
-through DRAGON_DEMATERIALIZED.
+through DRAGON_DEMATERIALIZED. Answered by DRAGON_MATERIALIZED with the entity's UUID. An entity the
+engine adopted before and that comes back untagged (the adoption never reached a world save) is
+adopted again as the same agent under a new epoch, never as a second dragon.
 
-**Discard** removes the entity (`discard()`), with no drops.
+**Discard** removes the entity (`discard()`), with no drops. Answered by COMMAND_RESULT (status
+applied, its `cmdSeq`, op id 0: the record has none, and a discard repeated after a crash is
+harmless).
 
 ### 6.6 Owning the population (P13's recommendation: the sim owns every dragon)
 

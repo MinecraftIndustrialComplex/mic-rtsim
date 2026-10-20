@@ -439,8 +439,10 @@ mod tests {
             capacity_per_day: vec![0, -5, 1 << 40],
         };
         assert_eq!(Costs::from_bytes(&c.to_bytes()).unwrap(), c);
-        let mut l = Local::default();
-        l.pop = 12;
+        let mut l = Local {
+            pop: 12,
+            ..Local::default()
+        };
         l.resources.insert(ResourceId(3), 4_000);
         assert_eq!(Local::from_bytes(&l.to_bytes()).unwrap(), l);
         for x in [

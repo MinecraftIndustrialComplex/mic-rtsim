@@ -231,7 +231,7 @@ proptest! {
             da.run_until(&mut wa, &mut NoInfrastructure, t);
             db.run_until(&mut wb, &mut NoInfrastructure, t);
             prop_assert_eq!(da.take_commands(), db.take_commands(), "at {:?}", t);
-            if t.0 % TICKS_PER_DAY == 0 {
+            if t.0.is_multiple_of(TICKS_PER_DAY) {
                 prop_assert_eq!(da.state_hash(), db.state_hash(), "at {:?}", t);
                 prop_assert_eq!(wa.state_hash(), wb.state_hash(), "at {:?}", t);
             }

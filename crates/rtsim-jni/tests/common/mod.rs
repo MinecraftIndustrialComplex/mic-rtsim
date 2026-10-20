@@ -131,6 +131,9 @@ pub struct Java {
     /// stop right before that answer; then `failed_carriage` is (cmdSeq, op id, through).
     pub fail_next_carriage: bool,
     pub failed_carriage: Option<(u64, u64, u64)>,
+    /// Dragon commands applied, as the Ice and Fire plugin would (docs/boundary.md §6.5):
+    /// (cmdSeq, command decoded with the reference codec, its dimension in Java's dictionary).
+    pub iaf: Vec<(u64, rtsim_ecology::boundary::Cmd)>,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -217,6 +220,7 @@ impl Java {
             held_ind: Vec::new(),
             fail_next_carriage: false,
             failed_carriage: None,
+            iaf: Vec::new(),
         }
     }
 
@@ -560,6 +564,7 @@ impl Java {
                         });
                     }
                     k if (0x8400..=0x84FF).contains(&k) => self.industry_command(k, seq, rec.bytes),
+                    k if (0x8500..=0x85FF).contains(&k) => self.dragon_command(seq, rec.bytes),
                     cmd::DESPAWN_GROUP => {
                         let b = rec.bytes;
                         let agent = wire::u64_at(b, cmd::despawn_group::AGENT);
@@ -865,5 +870,98 @@ impl Java {
         let save = self.world_save();
         self.e.close(false, Duration::from_secs(5)).expect("close");
         save
+    }
+
+    // ---- the Ice and Fire plugin (docs/boundary.md §6) -----------------------------------------
+
+    /// The species and lair structures as Java's dictionary numbers them (defined on first use).
+    pub fn java_species(&mut self) -> rtsim_ecology::boundary::SpeciesDict {
+        use rtsim_ecology::boundary::SpeciesDict;
+        use rtsim_ecology::dragon::LairKind;
+        use rtsim_ecology::species::Species;
+        let mut d = SpeciesDict {
+            body: [0; 3],
+            structure: [[0; 2]; 3],
+        };
+        for (i, s) in Species::ALL.iter().enumerate() {
+            d.body[i] = self.dict_id(wire::DICT_BODY, s.entity_id());
+            for (k, kind) in [LairKind::Roost, LairKind::Cave].iter().enumerate() {
+                d.structure[i][k] = self.dict_id(
+                    wire::DICT_STRUCTURE,
+                    &SpeciesDict::structure_name(*s, *kind),
+                );
+            }
+        }
+        d
+    }
+
+    /// Journals a dragon observation (a kind of 0x0500 to 0x05FF), encoded with the reference
+    /// codec in Java's dictionary.
+    pub fn dragon_obs(&mut self, o: &rtsim_ecology::boundary::Obs) -> u64 {
+        let dict = self.java_species();
+        let mut b = Vec::new();
+        rtsim_ecology::boundary::encode_obs(0, self.game_time, o, &dict, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        assert!(obs::is_journaled(kind), "a journaled dragon kind");
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// One dragon command, as the plugin applies it: a materialization or an adoption answers
+    /// DRAGON_MATERIALIZED (the body is there), a discard COMMAND_RESULT; steering and departures
+    /// are recorded (the test captures a departing dragon itself, with DRAGON_DEMATERIALIZED).
+    fn dragon_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_ecology::boundary::{self as db, Cmd as D, SpeciesDict};
+        use rtsim_ecology::species::Species;
+        let mut dict = SpeciesDict {
+            body: [0; 3],
+            structure: [[0; 2]; 3],
+        };
+        for (i, s) in Species::ALL.iter().enumerate() {
+            for (&(kind, id), name) in &self.cmd_dict {
+                if kind == wire::DICT_BODY && name == s.entity_id() {
+                    dict.body[i] = id;
+                }
+            }
+        }
+        let (_, s, mut c) = db::decode_cmd(bytes, &dict).expect("a dragon command decodes");
+        assert_eq!(s, seq);
+        let overworld = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        match &mut c {
+            D::Materialize(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                let (agent, epoch, dimension) = (m.agent, m.epoch, m.dimension);
+                self.dragon_obs(&db::Obs::Materialized(db::Materialized {
+                    agent,
+                    epoch,
+                    dimension,
+                    entity: (0xD0D0, agent),
+                }));
+            }
+            D::Adopt(a) => {
+                let (agent, epoch, entity) = (a.agent, a.epoch, a.entity);
+                self.dragon_obs(&db::Obs::Materialized(db::Materialized {
+                    agent,
+                    epoch,
+                    dimension: overworld,
+                    entity,
+                }));
+            }
+            D::Discard(_) => {
+                self.journal(
+                    obs::COMMAND_RESULT,
+                    obs::command_result::SIZE,
+                    obs::command_result::APPLIED,
+                    |r| {
+                        wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                    },
+                );
+            }
+            D::Steer(_) | D::Depart(_) => {}
+        }
+        self.iaf.push((seq, c));
     }
 }

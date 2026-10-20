@@ -992,3 +992,281 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     );
     e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+// ---- dragons (docs/boundary.md §6) ----------------------------------------------------------------
+
+mod dragons {
+    use super::*;
+    use rtsim_ecology::boundary::{self as db, AttackerKind, Cmd as D, Obs as O, SpawnKind};
+    use rtsim_ecology::dragon::LairKind;
+    use rtsim_ecology::species::{Gender, Species};
+
+    const LAIR: u64 = 0x0000_0BB8_0000_0BB8;
+    const HOME: (i32, i32, i32) = (3000, 100, 3000);
+    const EGG: (u64, u64) = (0xE66, 0xE66);
+
+    /// Every module on: knowledge, settlements, trade, travel and ecology.
+    const MODULES: u32 = 0b1_1111;
+
+    fn untagged(entity: (u64, u64), spawn: SpawnKind, lair: u64, dim: u32) -> O {
+        O::Untagged(db::Untagged {
+            entity,
+            spawn,
+            species: Species::Fire,
+            dimension: dim,
+            flags: if lair != 0 { db::UNTAGGED_HAS_HOME } else { 0 },
+            age_ticks: 110 * 24_000,
+            hunger: 60,
+            gender: Gender::Female,
+            variant: 1,
+            home: if lair != 0 { HOME } else { (0, 0, 0) },
+            lair,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        })
+    }
+
+    fn captured(agent: u64, epoch: u32, dim: u32, health: f32) -> O {
+        O::Dematerialized(db::Dematerialized {
+            agent,
+            epoch,
+            reason: 3,
+            dimension: dim,
+            health,
+            max_health: 500.0,
+            hunger: 55,
+            age_ticks: 110 * 24_000,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        })
+    }
+
+    fn adoptions(j: &Java) -> Vec<db::Adopt> {
+        j.iaf
+            .iter()
+            .filter_map(|(_, c)| match c {
+                D::Adopt(a) => Some(*a),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What must be the same after a crash and the journal's replay: the dragons, their health
+    /// (whole points: regeneration is anchored at whenever it was last read), their feelings
+    /// toward the player, what was robbed, and the counters.
+    #[allow(clippy::type_complexity)]
+    fn summary(e: &Engine) -> (usize, Vec<(u64, i64, i8)>, i128, u64, u64) {
+        e.with_dragons(|d, w| {
+            let p = w.knowledge.actors().find(
+                rtsim_knowledge::ActorKind::Player,
+                rtsim_ecology::engine::uuid_hash(PLAYER.0, PLAYER.1),
+            );
+            let mut rows: Vec<(u64, i64, i8)> = d
+                .dragons
+                .iter()
+                .map(|(h, x)| {
+                    (
+                        h.to_bits(),
+                        x.health.round() as i64,
+                        p.map_or(0, |p| w.knowledge.sentiment(x.actor, p, d.now())),
+                    )
+                })
+                .collect();
+            rows.sort();
+            (
+                d.dragons.len(),
+                rows,
+                d.ledger.robbed.values().sum(),
+                d.stats.hoards_robbed,
+                d.stats.discarded,
+            )
+        })
+    }
+
+    /// The dragons through the native engine and a fake Ice and Fire plugin: a lair and its
+    /// structure dragon adopted, a player's wound (a grudge), the body captured with its health,
+    /// a player at the lair materializing it again, a natural spawn discarded; then a save, a hoard
+    /// robbery and a spawn-egg dragon after it, and a crash: the pages read back to the saved
+    /// state hash, and the journal's replay books the robbery once and adopts the egg dragon once.
+    #[test]
+    fn dragons_are_adopted_hurt_captured_materialized_and_replayed_across_a_crash() {
+        let dir = tmpdir("dragons");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let first = adoptions(&j);
+        assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
+        let (agent, epoch) = (first[0].agent, first[0].epoch);
+        assert_eq!(agent >> 56, 0x44, "a dragon's agent id (R13)");
+        assert_eq!(first[0].home, HOME);
+        assert_eq!(e.with_dragons(|d, _| d.lairs[0].occupants.len()), 1);
+
+        // A player wounds it: a grudge.
+        j.dragon_obs(&O::Hurt(db::Hurt {
+            agent,
+            epoch,
+            attacker_kind: AttackerKind::Player,
+            attacker: PLAYER,
+            hits: 3,
+            amount: 140.0,
+            health_after: 210.0,
+        }));
+        j.idle();
+        let (grudge, threshold) = e.with_dragons(|d, w| {
+            let (h, x) = d.dragons.iter().next().unwrap();
+            let p = w.knowledge.actors().find(
+                rtsim_knowledge::ActorKind::Player,
+                rtsim_ecology::engine::uuid_hash(PLAYER.0, PLAYER.1),
+            );
+            let _ = h;
+            (
+                p.map(|p| w.knowledge.sentiment(x.actor, p, d.now())),
+                d.tun.grudge_below,
+            )
+        });
+        let grudge = grudge.expect("the player is known");
+        assert!(grudge <= threshold, "a wound is a grudge ({grudge})");
+
+        // The body leaves tracking: captured with its health.
+        j.dragon_obs(&captured(agent, epoch, dim, 210.0));
+        j.idle();
+        let health = e.with_dragons(|d, _| d.dragons.iter().next().unwrap().1.health);
+        assert_eq!(health, 210.0, "the capture's health is the dragon's");
+
+        // A player walks up to the lair: the engine materializes the dragon there (a new epoch),
+        // the plugin answers, and the player goes.
+        j.players = vec![(PLAYER, dim, [3010.0, 70.0, 3005.0])];
+        let materialized = |j: &Java| {
+            j.iaf.iter().find_map(|(_, c)| match c {
+                D::Materialize(m) if m.agent == agent => Some(*m),
+                _ => None,
+            })
+        };
+        let mut ticks = 0;
+        while materialized(&j).is_none() {
+            assert!(
+                ticks < 4_000,
+                "no materialization at the lair: {:?}",
+                e.dragon_stats()
+            );
+            j.tick();
+            ticks += 1;
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        j.idle();
+        let m = materialized(&j).unwrap();
+        assert!(m.epoch > epoch, "a new epoch for every materialization");
+        j.players.clear();
+        j.dragon_obs(&captured(agent, m.epoch, dim, 230.0));
+        j.idle();
+
+        // A natural spawn: discarded (the sim owns the population, P13), answered by
+        // COMMAND_RESULT.
+        j.dragon_obs(&untagged((0xD1, 0x2), SpawnKind::Natural, 0, dim));
+        j.idle();
+        j.idle();
+        let discards: Vec<_> = j
+            .iaf
+            .iter()
+            .filter(|(_, c)| matches!(c, D::Discard(x) if x.entity == (0xD1, 0x2)))
+            .collect();
+        assert_eq!(discards.len(), 1, "the natural dragon is discarded");
+        assert_eq!(summary(&e).0, 1, "and never joins the sim");
+
+        // A save: pages with all of that.
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // After the save: a hoard robbery and a spawn-egg dragon, journaled; the world saves,
+        // then the server dies.
+        let item = j.dict_id(wire::DICT_ITEM, EMERALD);
+        j.dragon_obs(&O::HoardRobbed(db::HoardRobbed {
+            lair: LAIR,
+            op: wire::JAVA_OP_BIT | 0xD00D,
+            player: PLAYER,
+            items: vec![(item, 12)],
+        }));
+        j.dragon_obs(&untagged(EGG, SpawnKind::SpawnEgg, 0, dim));
+        j.idle();
+        j.idle();
+        let egg = adoptions(&j)
+            .into_iter()
+            .find(|a| a.entity == EGG)
+            .expect("the egg dragon is adopted");
+        j.dragon_obs(&captured(egg.agent, egg.epoch, dim, 300.0));
+        j.idle();
+        let before = summary(&e);
+        assert_eq!(before.0, 2, "two dragons");
+        assert_eq!(before.3, 1, "one robbery");
+        let saved = j.world_save();
+        assert!(
+            saved
+                .journal
+                .iter()
+                .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == db::HOARD_ROBBED),
+            "the journal holds what the pages lack"
+        );
+        let _ = j.crash();
+
+        // The restart: the pages read back to the state they were saved with, and the journal's
+        // replay brings the rest once.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            e.dragons_restore_check(),
+            (None, false),
+            "the dragons read back to their saved state hash"
+        );
+        let (_, replay_ok, _) = e.phase1_state();
+        assert!(replay_ok, "the world they live in too");
+        assert_eq!(summary(&e).0, 1, "the pages predate the egg dragon");
+        j.idle();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let after = summary(&e);
+        assert_eq!(after.0, 2, "the egg dragon adopted once, never twice");
+        assert_eq!(after.2, before.2, "the robbery booked once");
+        assert_eq!(after.3, before.3);
+        assert_eq!(
+            after.1, before.1,
+            "every dragon's health and grudge as before the crash"
+        );
+        // The replayed robbery again under its op id (a chunk-carried resend): nothing more.
+        j.dragon_obs(&O::HoardRobbed(db::HoardRobbed {
+            lair: LAIR,
+            op: wire::JAVA_OP_BIT | 0xD00D,
+            player: PLAYER,
+            items: vec![(item, 12)],
+        }));
+        j.idle();
+        assert_eq!(summary(&e).3, 1, "a robbery's op id is applied once");
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A clean restart reads them back again.
+        let e = engine(&dir, 256 * 1024);
+        let _j = Java::open(e.clone(), saved);
+        assert_eq!(e.dragons_restore_check(), (None, false));
+        assert_eq!(summary(&e).0, after.0);
+        assert_eq!(summary(&e).2, after.2);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+}

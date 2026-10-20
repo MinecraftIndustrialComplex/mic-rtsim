@@ -2977,7 +2977,7 @@ mod tests {
         }
         // The step takes the world's commands after inputs and every simulate (here: every
         // other op, so some saves find commands not yet taken).
-        if *t % 400 == 0 {
+        if t.is_multiple_of(400) {
             take_world_commands(st);
         }
     }
