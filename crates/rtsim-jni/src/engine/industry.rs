@@ -22,7 +22,7 @@
 //! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
 //! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
-//! (F27). IND_LEDGER is a reply and is never kept.
+//! (F27).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
@@ -625,7 +625,6 @@ fn dropped(l: &mut Link, c: &Cmd) {
 fn districts_fit(o: &Obs) -> bool {
     let d = match o {
         Obs::StockSample { district, .. }
-        | Obs::LedgerRequest { district }
         | Obs::Watched { district, .. }
         | Obs::Approach { district, .. }
         | Obs::DistrictChunks { district, .. }
@@ -665,7 +664,6 @@ fn kind_name(c: &Cmd) -> &'static str {
         Cmd::CarriageDelta(_) => "IND_CARRIAGE_DELTA",
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
-        Cmd::Ledger(_) => "IND_LEDGER",
     }
 }
 
@@ -737,13 +735,6 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
         Cmd::WritePackage(p) => {
             names.push((DICT_NAME, p.address));
             p.goods.goods().for_each(|g| goods(g, &mut names));
-            None
-        }
-        Cmd::Ledger(l) => {
-            l.goods.iter().for_each(|e| goods(e.0, &mut names));
-            if let Some(g) = l.next_good {
-                goods(g, &mut names);
-            }
             None
         }
     };

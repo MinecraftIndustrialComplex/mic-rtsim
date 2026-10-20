@@ -315,7 +315,7 @@ public final class IndustryPluginGameTests {
     }
 
     /**
-     * I16, warn first: a logistics network with links in two districts puts a warning on both ledgers
+     * I16, warn first: a logistics network with links in two districts puts a diagnostics warning on both districts
      * naming the other; with one district left on it the warnings go.
      */
     @GameTest(template = IndustryKit.YARD, batch = "industry_23", timeoutTicks = 400)
@@ -338,13 +338,13 @@ public final class IndustryPluginGameTests {
                     Create.LOGISTICS.logisticsNetworks.put(netId, net);
                     Map<UUID, Set<Long>> spans = GaugeNetworks.check(ind());
                     check("the network spans the two districts", spans.containsKey(netId) && spans.get(netId).equals(Set.of(d[0].id, d[1].id)));
-                    List<String> w0 = ind().ledgers().warnings(d[0].id), w1 = ind().ledgers().warnings(d[1].id);
+                    List<String> w0 = ind().diagnostics().warnings(d[0].id), w1 = ind().diagnostics().warnings(d[1].id);
                     record("aGaugeNetworkAcrossDistrictsIsWarned", "warnings", w0 + " / " + w1);
-                    check("both ledgers warn", w0.size() == 1 && w1.size() == 1);
+                    check("both districts warn", w0.size() == 1 && w1.size() == 1);
                     check("naming the other district", w0.get(0).contains(d[1].displayName()) && w1.get(0).contains(d[0].displayName()));
                     net.totalLinks.removeIf(gp -> (gp.pos().getX() >> 4) == ChunkPos.getX(coastChunk));
                     GaugeNetworks.check(ind());
-                    check("one district left: no warning", ind().ledgers().warnings(d[0].id).isEmpty() && ind().ledgers().warnings(d[1].id).isEmpty());
+                    check("one district left: no warning", ind().diagnostics().warnings(d[0].id).isEmpty() && ind().diagnostics().warnings(d[1].id).isEmpty());
                     Create.LOGISTICS.logisticsNetworks.remove(netId);
                 })
                 .thenSucceed();

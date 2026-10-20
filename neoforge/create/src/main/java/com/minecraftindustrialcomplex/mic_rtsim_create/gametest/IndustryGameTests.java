@@ -1,10 +1,14 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
+import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
+import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
-import com.minecraftindustrialcomplex.mic_rtsim.industry.Ledgers;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.DistrictDiagnostics;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
@@ -12,7 +16,6 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.simibubi.create.content.logistics.box.PackageItem;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
-import com.simibubi.create.content.redstone.displayLink.DisplayLinkBlockEntity;
 import com.simibubi.create.content.trains.bogey.AbstractBogeyBlock;
 import com.simibubi.create.content.trains.entity.Carriage;
 import com.simibubi.create.content.trains.entity.CarriageBogey;
@@ -40,7 +43,6 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.entity.SignBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -846,6 +848,7 @@ public final class IndustryGameTests {
         long[] id = {0};
         int[] heldBefore = {0};
         int[] loadsBefore = {0};
+        int[] unloadsBefore = {0};
         helper.startSequence()
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(() -> {
@@ -862,9 +865,20 @@ public final class IndustryGameTests {
                     check("district", d != null);
                     id[0] = d.id;
                 })
-                .thenExecute(() -> level.setChunkForced(fx, fz, false))
-                .thenWaitUntil(() -> check("the far chunk unloads (ChunkEvent.Unload, saved)", level.getChunkSource().getChunkNow(fx, fz) == null
-                        && ind().districts().loadedChunks(ind().district(id[0])) == 0))
+                .thenExecute(() -> {
+                    unloadsBefore[0] = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size();
+                    level.setChunkForced(fx, fz, false);
+                })
+                .thenWaitUntil(() -> {
+                    check("the far chunk unloads (ChunkEvent.Unload, saved)", level.getChunkSource().getChunkNow(fx, fz) == null
+                            && ind().districts().loadedChunks(ind().district(id[0])) == 0);
+                    // I7: the unload is journaled for the engine, with the chunk's coordinates.
+                    List<ByteBuffer> gone = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]);
+                    check("IND_CHUNK_UNLOADED went out at the unload", gone.size() == unloadsBefore[0] + 1);
+                    ByteBuffer u = gone.get(gone.size() - 1);
+                    check("for that chunk: " + u.getInt(IndRecords.ChunkUnloaded.X) + ", " + u.getInt(IndRecords.ChunkUnloaded.Z),
+                            u.getInt(IndRecords.ChunkUnloaded.X) == fx && u.getInt(IndRecords.ChunkUnloaded.Z) == fz);
+                })
                 .thenExecute(() -> {
                     heldBefore[0] = ind().reconciler().held();
                     reconcile(op, id[0], 1, level, fx, fz, List.of(new Delta(0, "i/64/minecraft:gold_ingot", chestPos, 7)), List.of());
@@ -882,9 +896,16 @@ public final class IndustryGameTests {
                     check("IND_CHUNK_LOADED went out at the load", loads.size() > loadsBefore[0]);
                     check("with epoch 0", loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 0);
                 })
-                .thenExecute(() -> level.setChunkForced(fx, fz, false))
-                .thenWaitUntil(() -> check("unloads again (ChunkEvent.Unload, saved)", level.getChunkSource().getChunkNow(fx, fz) == null
-                        && ind().districts().loadedChunks(ind().district(id[0])) == 0))
+                .thenExecute(() -> {
+                    unloadsBefore[0] = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size();
+                    level.setChunkForced(fx, fz, false);
+                })
+                .thenWaitUntil(() -> {
+                    check("unloads again (ChunkEvent.Unload, saved)", level.getChunkSource().getChunkNow(fx, fz) == null
+                            && ind().districts().loadedChunks(ind().district(id[0])) == 0);
+                    check("IND_CHUNK_UNLOADED again", received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size()
+                            == unloadsBefore[0] + 1);
+                })
                 .thenExecute(() -> {
                     loadsBefore[0] = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]).size();
                     level.setChunkForced(fx, fz, true);
@@ -905,71 +926,160 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
-    // ---- I18: the ledger on a display ---------------------------------------------------------------
+    // ---- I18: the operator debug output -------------------------------------------------------------
 
     /**
-     * The "District ledger" display source on a Stock Link: a Display Link above it targets a sign, and
-     * the sign shows the district's name, state and its top good per hour from the engine's IND_LEDGER.
-     * Asking is IND_LEDGER_REQUEST.
+     * The operator diagnostic ({@code /rtsim district info} and {@code debug}, permission level 2) shows what
+     * Java itself holds: the district's chunks and load state, the last sweep, the plugin warnings and the
+     * last reconcile. No engine round trip: nothing is sent to the engine to produce it, and nothing a
+     * player can see shows it (I18 as decided: there is no display source, no chat ledger, no atlas marker).
+     * A plugin warning goes to the log once and to this output.
      */
     @GameTest(template = YARD, batch = "industry_10", timeoutTicks = 400)
-    public static void theLedgerShowsOnADisplay(GameTestHelper helper) {
+    public static void theDebugOutputShowsWhatJavaKnows(GameTestHelper helper) {
         fastConfig();
         forget(helper);
         int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
         BlockPos vaultPos = new BlockPos(bx + 2, y, z);
-        BlockPos linkPos = vaultPos.east();
-        BlockPos displayPos = linkPos.above();
-        BlockPos signPos = new BlockPos(bx + 6, y, z);
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
-        set(helper, linkPos, block("create:stock_link").defaultBlockState());
-        set(helper, displayPos, block("create:display_link").defaultBlockState().setValue(BlockStateProperties.FACING, Direction.UP));
-        set(helper, signPos, Blocks.OAK_SIGN.defaultBlockState());
         playerPlaced(helper, vaultPos);
         long[] id = {0};
+        int[] sentBefore = {0};
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, vaultPos);
                     check("district", d != null);
                     id[0] = d.id;
                 })
+                .thenWaitUntil(() -> check("its load state went to the engine", ind().district(id[0]).loadState() >= 0))
                 .thenExecute(() -> {
-                    ind().ledgers().request(ind().district(id[0]));
-                    // The native engine's industry engine answers the request itself (its line for a
-                    // district it is still learning); the stub needs the answer scripted.
-                    if (!nativeEngine())
-                        ledger(id[0], IndRecords.Ledger.STATE_LEARNED, 0, -1, 0, null, 0,
-                                List.of(new LedgerGood("i/64/minecraft:iron_ingot", 120, 500)));
+                    sentBefore[0] = engine().received(IndRecords.IND_LOAD_STATE).size() + engine().received(IndRecords.IND_DISTRICT).size();
+                    ind().diagnostics().warn(id[0], "test", "a test warning");
+                    District d = ind().district(id[0]);
+                    StringBuilder sb = new StringBuilder();
+                    for (var c : ind().diagnostics().debugLines(d))
+                        sb.append(c.getString()).append(" / ");
+                    for (var c : ind().diagnostics().detailLines(d))
+                        sb.append(c.getString()).append(" / ");
+                    String all = sb.toString();
+                    record("theDebugOutputShowsWhatJavaKnows", "debug", all);
+                    check("the debug output names the district", all.contains(d.displayName()));
+                    check("and its chunks, " + d.chunks.size(), all.contains(d.chunks.size() + " chunks"));
+                    check("and the load state it reported", all.contains(DistrictDiagnostics.loadStateName(d.loadState())));
+                    check("and the plugin warning", all.contains("warning: a test warning"));
+                    check("and that no reconcile was applied", all.contains("no reconcile applied yet"));
+                    check("and the chunk list", all.contains("chunks: ("));
+                    check("the warning is kept for the operator", ind().diagnostics().warnings(id[0]).contains("a test warning"));
+                    // The same text from the command, at permission 2; a source below 2 may not run it.
+                    var dispatcher = helper.getLevel().getServer().getCommands().getDispatcher();
+                    try {
+                        check("/rtsim district debug runs at permission 2",
+                                dispatcher.execute("rtsim district debug", source(helper, vaultPos).withPermission(2)) == 1);
+                        check("/rtsim district info runs at permission 2",
+                                dispatcher.execute("rtsim district info", source(helper, vaultPos).withPermission(2)) == 1);
+                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                        check("the command ran: " + e.getMessage(), false);
+                    }
+                    boolean refused = false;
+                    try {
+                        dispatcher.execute("rtsim district debug", source(helper, vaultPos).withPermission(1));
+                    } catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+                        refused = true;
+                    }
+                    check("below permission 2 the command is refused", refused);
+                    ind().diagnostics().warn(id[0], "test", null);
+                    check("a cleared warning is gone", ind().diagnostics().warnings(id[0]).isEmpty());
+                    check("and the engine was not asked for anything (0x0044 is retired)", engine().received(0x0044).isEmpty());
                 })
-                .thenWaitUntil(() -> check("the ledger came", ind().ledgers().latest(id[0]) != null))
+                .thenIdle(5)
+                .thenExecute(() -> check("producing the output sent the engine nothing",
+                        engine().received(IndRecords.IND_LOAD_STATE).size() + engine().received(IndRecords.IND_DISTRICT).size() == sentBefore[0]))
+                .thenSucceed();
+    }
+
+    // ---- I7: IND_CHUNK_UNLOADED, U10: the module switch -----------------------------------------------
+
+    /** The kinds a switched-off industry must not send, and the ones it announces again when it is on (U10). */
+    private static final int[] ANNOUNCED = {IndRecords.IND_DISTRICT, IndRecords.IND_DISTRICT_CHUNKS, IndRecords.IND_INVENTORY,
+            IndRecords.IND_CHUNK_LOADED, IndRecords.IND_LOAD_STATE, IndRecords.IND_CONDITIONS};
+
+    /** Every sweep and edit record counts too: nothing at all is sent while off. */
+    private static final int[] QUIET = {IndRecords.IND_DISTRICT, IndRecords.IND_DISTRICT_CHUNKS, IndRecords.IND_INVENTORY,
+            IndRecords.IND_CHUNK_LOADED, IndRecords.IND_CHUNK_UNLOADED, IndRecords.IND_LOAD_STATE, IndRecords.IND_CONDITIONS,
+            IndRecords.IND_EDIT, IndRecords.IND_STOCK_SAMPLE, IndRecords.IND_SWEEP_END, IndRecords.IND_WATCHED, IndRecords.IND_SURVEY,
+            IndRecords.IND_SURVEY_BLOCKS};
+
+    private static int sentCount(int... kinds) {
+        int n = 0;
+        for (int k : kinds)
+            n += engine().received(k).size();
+        return n;
+    }
+
+    /**
+     * U10: while the industry module is off nothing is sent (not at a chunk event, not by a tick); when it
+     * is on again every district, chunk and load state is announced as at a session start: IND_DISTRICT,
+     * IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_CHUNK_LOADED and IND_LOAD_STATE, the calendar, and the survey.
+     */
+    @GameTest(template = YARD, batch = "industry_15", timeoutTicks = 1200)
+    public static void aSwitchedOffIndustrySendsNothingAndAnnouncesEverythingWhenOn(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        var server = helper.getLevel().getServer();
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos chestPos = new BlockPos(bx - 2, y, z);
+        BlockPos vaultPos = new BlockPos(bx + 2, y, z);
+        set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        set(helper, vaultPos, block("create:item_vault").defaultBlockState());
+        playerPlaced(helper, chestPos);
+        playerPlaced(helper, vaultPos);
+        Industry[] industry = {null};
+        long[] id = {0};
+        int[] quiet = {0};
+        int[][] announced = {null};
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, chestPos);
+                    check("one district for the chest and the vault", d != null && d == districtAt(helper, vaultPos));
+                    check("it has declared itself and its load state", d.loadState() >= 0 && d.inventories.size() == 2);
+                    id[0] = d.id;
+                    industry[0] = ind();
+                })
                 .thenExecute(() -> {
-                    DisplayLinkBlockEntity link = (DisplayLinkBlockEntity) helper.getLevel().getBlockEntity(displayPos);
-                    check("the display link's source is the stock link: " + link.getSourcePosition(), link.getSourcePosition().equals(linkPos));
-                    link.target(signPos);
-                    link.activeSource = MicRtsimCreate.DISTRICT_LEDGER.get();
-                    link.updateGatheredData();
+                    // Off: the engine is told the switch (a MODULES record) and Java goes quiet.
+                    RtsimConfig.Test.setModule(Module.INDUSTRY, false);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> {
+                    check("the module is off: no industry for the API", IndustryApi.current() == null);
+                    quiet[0] = sentCount(QUIET);
+                    // A change the module would have sent: a player places a block next to the district.
+                    set(helper, chestPos.above(), Blocks.CHEST.defaultBlockState());
+                    playerPlaced(helper, chestPos.above());
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    check("nothing was sent while off: " + quiet[0] + " then " + sentCount(QUIET), sentCount(QUIET) == quiet[0]);
+                    set(helper, chestPos.above(), Blocks.AIR.defaultBlockState());
+                    announced[0] = new int[ANNOUNCED.length];
+                    for (int i = 0; i < ANNOUNCED.length; i++)
+                        announced[0][i] = engine().received(ANNOUNCED[i]).size();
+                    RtsimConfig.Test.setModule(Module.INDUSTRY, null);
+                    BridgeEvents.moduleSwitchesChanged(server);
                 })
                 .thenWaitUntil(() -> {
-                    SignBlockEntity sign = (SignBlockEntity) helper.getLevel().getBlockEntity(signPos);
-                    List<String> lines = new ArrayList<>();
-                    for (int i = 0; i < 4; i++)
-                        lines.add(sign.getFrontText().getMessage(i, false).getString() + " | " + sign.getBackText().getMessage(i, false).getString());
-                    String all = String.join(" / ", lines);
-                    record("theLedgerShowsOnADisplay", "sign", all);
-                    District d = ind().district(id[0]);
-                    check("the sign names the district", all.contains(d.displayName()));
-                    if (nativeEngine()) {
-                        // The engine's own answer: a district detected this test has not been learned.
-                        var line = ind().ledgers().latest(id[0]);
-                        record("theLedgerShowsOnADisplay", "native ledger state", Ledgers.stateName(line.state()));
-                        check("the engine's own state, " + Ledgers.stateName(line.state()), all.contains(Ledgers.stateName(line.state())));
-                        check("not learned yet", line.state() == IndRecords.Ledger.STATE_LEARNING || line.state() == IndRecords.Ledger.STATE_LIVE);
-                    } else {
-                        check("and its state", all.contains("running (simulated)"));
-                        check("and the iron per hour", all.contains("+120/h"));
-                        check("and what it would have made", all.contains("would have made 500"));
-                    }
-                    check("the display asked for the ledger", !received(IndRecords.IND_LEDGER_REQUEST, IndRecords.DistrictState.DISTRICT, id[0]).isEmpty());
+                    check("the module is on again", IndustryApi.current() == industry[0]);
+                    // Everything again, as at a session start: each kind has records it did not have while off.
+                    for (int i = 0; i < ANNOUNCED.length; i++)
+                        check("announced again: kind 0x" + Integer.toHexString(ANNOUNCED[i]) + ", " + announced[0][i] + " before and "
+                                + engine().received(ANNOUNCED[i]).size() + " now", engine().received(ANNOUNCED[i]).size() > announced[0][i]);
+                    long d = id[0];
+                    List<ByteBuffer> decl = received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, d);
+                    check("IND_DISTRICT for the district again, with its inventories", decl.size() >= 2
+                            && decl.get(decl.size() - 1).getInt(IndRecords.District.INVENTORY_COUNT) == 2);
+                    List<ByteBuffer> loads = received(IndRecords.IND_LOAD_STATE, IndRecords.LoadState.DISTRICT, d);
+                    check("IND_LOAD_STATE of the district again", loads.size() >= 2);
                 })
                 .thenSucceed();
     }

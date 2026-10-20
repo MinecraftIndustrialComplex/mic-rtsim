@@ -46,7 +46,7 @@ entirely: the power plant's coal reconcile lands before its boiler ticks.
 | IR11 | **I14: deposit write-back is routed by good first** (`deposit::writeback`): Destroy's level-wide types (`destroy:greenhouse`, `destroy:ozone_depletion`, `destroy:acid_rain`, as the plugins' attributed deposit goods, Q9) are `Writeback::Live`: what the replay made is pushed as IND_DEPOSIT_DELTA every `live_pollution_ticks` (PLACEHOLDER 1,200) while the district replays, and the rest at its reconcile. A push marks the pool pushed and moves the deposit's `remaining`, so the reconcile writes back only what was not pushed. Chunk types ride the chunk's reconcile. | Ben decided "level-wide types apply live while unloaded"; Java already applies such a delta to the level at once. **The one replay cost that grows with time away**: a command per polluting unloaded district per period, which "live" asks for. |
 | IR12 | **I9: not-learnable code 6 (spawn-fed farm) is read as learnable.** | Ben chose "Everything". An older Java side may still send it. |
 | IR13 | **I13: the channel machinery is gone**: `PoolKey::Channel`, `LinkKey::Channel`, channel clusters, IND_CHANNEL_SAMPLE (0x0043), IND_CHANNEL_DELTA (0x8402) and port kind 7, from the engine, wire.rs, the fixtures, IndRecords and the wire contract test (52 of 52 against the regenerated fixtures). Both kinds are read as unknown kinds. Clusters join districts only by PowerGrid lines. | Ben's correction: an Ender Transmission channel's endpoints belong to one district or vehicle, so it is internal plumbing, never stock shared by distant districts; the industry plugins merged their endpoints into one district on the Java side, and nothing sends the records. |
-| IR14 | **I18: the engine shows players nothing.** It reads and ignores IND_LEDGER_REQUEST (counted, `retired_records`) and never writes IND_LEDGER; the ledger report and `Cluster::forecast` are gone; read-only mode (phase I-A, F25), which existed only to show what a district would have made, is removed with its `Mode`, and the native link reads its `nOpen` flag and ignores it with a warning. `Engine::inspect` stays, a read for tests, the CLI and an operator's log that never reaches the Java side. The IND_LEDGER codec stays until the Java display source goes (the pointer below). | Ben: players see only what their own built readouts measure. Removing the codec now would break the Java side, which still decodes it, before its agent removes the display source. |
+| IR14 | **I18: the engine shows players nothing.** It never writes IND_LEDGER and ignores IND_LEDGER_REQUEST; the ledger report and `Cluster::forecast` are gone; read-only mode (phase I-A, F25), which existed only to show what a district would have made, is removed with its `Mode`, and the native link reads its `nOpen` flag and ignores it with a warning. `Engine::inspect` stays, a read for tests, the CLI and an operator's log that never reaches the Java side. **Update (rework/i18-no-ledger):** the Java display source and chat ledger are gone, so the IND_LEDGER and IND_LEDGER_REQUEST codecs, their kinds (0x8405, 0x0044) and the `retired_records` counter are removed too; both kinds now read as unknown kinds. | Ben: players see only what their own built readouts measure. Removing the codec now would break the Java side, which still decodes it, before its agent removes the display source. |
 
 ## The switch (U10) and the conflict (P14)
 
@@ -87,24 +87,26 @@ this work, and the season models are unchanged.
 
 ## Java pointers (for the Java agents)
 
-1. **I18, no free visibility** (after the industry plugins merge): remove the "District ledger" display
-   source on stock links and stations, the chat ledger (`/rtsim district ledger`), IND_LEDGER_REQUEST
-   sending and IND_LEDGER handling, and the ledger display GameTest (on the native engine it now gets no
-   answer). Then remove IND_LEDGER_REQUEST (0x0044) and IND_LEDGER (0x8405) from wire.rs, IndRecords,
-   `neoforge/tools/industry-wire-fixtures` and the contract test. Whether plugin warnings (Q25) still have
-   a place is that agent's and Ben's call: they are not simulated state.
+1. **I18, no free visibility** (done, branch `rework/i18-no-ledger`): the "District ledger" display source,
+   the chat ledger, the IND_LEDGER_REQUEST sending, the IND_LEDGER handling and the ledger GameTest are
+   gone, and IND_LEDGER_REQUEST (0x0044) and IND_LEDGER (0x8405) are removed from wire.rs, IndRecords,
+   `neoforge/tools/industry-wire-fixtures` and the contract test. `/rtsim district info` and `debug` are
+   operator output (permission 2) from what Java holds, with no engine round trip. Plugin warnings (Q25)
+   stay, as `DistrictDiagnostics.warn`: server log and the operator output only.
 2. **Reconcile ahead of arrival**: apply a held IND_CHUNK_RECONCILE at the chunk's `ChunkEvent.Load`,
    before any block entity ticks (today: at the next server tick), and journal its IND_RECONCILE_RESULT
    before the chunk's IND_CHUNK_LOADED. Send IND_APPROACH for partly loaded districts too (a player
    walking toward the unloaded part), and keep `closing` (aux 1) accurate: only closing records hold a
    district.
-3. **I7**: send IND_CHUNK_UNLOADED (0x040A, `IndRecords.ChunkUnloaded`, already in the contract test) at
-   `ChunkEvent.Unload` for every chunk of a district.
-4. **U10**: with `Module.INDUSTRY` off, send nothing; when it turns on (MODULES, or a session start with
-   the bit), announce every district (IND_DISTRICT, IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION,
-   IND_POWER_LINK, IND_SURVEY with its blocks, IND_CONDITIONS) and every loaded chunk (IND_CHUNK_LOADED)
-   and load state, as at a session start.
-5. **I9**: stop sending not-learnable code 6; no subtraction of mob drops is needed.
+3. **I7** (done): IND_CHUNK_UNLOADED (0x040A, `IndRecords.ChunkUnloaded`) is journaled at `ChunkEvent.Unload`
+   for every chunk of a district (`Districts.onChunkUnload`).
+4. **U10** (done): with `Module.INDUSTRY` off Java sends nothing (`Industry.endOfTick` returns early and
+   `accept` answers nothing); when it turns on, the next tick announces every district (IND_DISTRICT,
+   IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION), the load states and the watched flags, every loaded
+   chunk (IND_CHUNK_LOADED), the calendar (IND_CONDITIONS), the surveys (IND_SURVEY with its blocks) and,
+   through `IndustryPlugin.announce`, the plugins' own (IND_POWER_LINK), as at a session start.
+5. **I9** (done): Java never sends not-learnable code 6 (`IndRecords.NotLearnable.sent`); no subtraction of
+   mob drops is needed.
 6. **I14**: IND_DEPOSIT_DELTA for a level pollution good now comes every minute while its district is
    unloaded; the Destroy plugin already applies it to the level at once.
 7. **Page formats changed** (industry and conflict): delete each project's `run-gametest/world` before
