@@ -64,6 +64,10 @@ import java.util.UUID;
  *       {@code FLAG_TEST} only).</li>
  *   <li>24 P1_ADVANCE: u64 ticks. The phase 1 world runs this many more ticks ahead of game time from
  *       now on (an engine opened with {@code FLAG_TEST} only).</li>
+ *   <li>25 DRAGON_COMMAND: as INDUSTRY_COMMAND, with a dragon command record (docs/boundary.md §6.4,
+ *       its cmdSeq ignored) whose species ids are Java's (body dictionary) and whose dimension is
+ *       Java's id. The engine writes it as the dragons' own (an engine opened with {@code FLAG_TEST}
+ *       only; the Ice and Fire plugin's GameTests).</li>
  * </ul>
  *
  * <p><b>The received log</b>: entries of u64 handover, u64 obsSeq (0 if not journaled), u32 flags
@@ -93,6 +97,7 @@ final class NativeCodec {
     static final int SCRIPT_VILLAGE = 22;
     static final int P1_SPAWN_NEAR = 23;
     static final int P1_ADVANCE = 24;
+    static final int DRAGON_COMMAND = 25;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -315,6 +320,19 @@ final class NativeCodec {
 
         Orders industryCommand(List<NativeEngine.DictEntry> names, byte[] record) {
             begin(INDUSTRY_COMMAND);
+            u32(names.size());
+            for (NativeEngine.DictEntry n : names) {
+                u32(n.kind());
+                u32(n.id());
+                str(n.name());
+            }
+            room(record.length);
+            b.put(record);
+            return end();
+        }
+
+        Orders dragonCommand(List<NativeEngine.DictEntry> names, byte[] record) {
+            begin(DRAGON_COMMAND);
             u32(names.size());
             for (NativeEngine.DictEntry n : names) {
                 u32(n.kind());

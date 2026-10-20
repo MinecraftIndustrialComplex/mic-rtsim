@@ -417,7 +417,8 @@ fn command_bytes(order: &Order) -> usize {
         | Order::RewindCmdSeq(_)
         | Order::Fail
         | Order::IndustryThreat(_)
-        | Order::IndustryCommand { .. } => 0,
+        | Order::IndustryCommand { .. }
+        | Order::DragonCommand { .. } => 0,
         other => phase1::scripted_bytes(other),
     }
 }
@@ -1052,6 +1053,9 @@ impl Engine {
                 Order::IndustryCommand { names, record } => {
                     industry::order_command(st, &names, &record)
                 }
+                Order::DragonCommand { names, record } => {
+                    dragons::order_command(st, &names, &record)
+                }
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
@@ -1593,7 +1597,10 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             None
         }
         Order::Fail => panic!("a FAIL order (tests): the engine fails on purpose"),
-        Order::SaveAtNextStep | Order::IndustryThreat(_) | Order::IndustryCommand { .. } => None,
+        Order::SaveAtNextStep
+        | Order::IndustryThreat(_)
+        | Order::IndustryCommand { .. }
+        | Order::DragonCommand { .. } => None,
         other => phase1::write_scripted(st, w, &other),
     }
 }

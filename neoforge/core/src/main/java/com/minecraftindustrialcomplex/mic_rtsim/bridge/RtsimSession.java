@@ -110,6 +110,8 @@ public final class RtsimSession {
             }
             return;
         }
+        RtsimSession started = current;
+        com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.each("sessionStarted", p -> p.sessionStarted(started));
         MicRtsim.LOGGER.info("[mic_rtsim] session started: {}; journal holds {} unacknowledged observations ({} bytes), last applied command {}",
                 engine.describe(), current.journal().journal().size(), current.journal().journal().bytes(),
                 current.journal().journal().lastAppliedCmdSeq());
@@ -117,8 +119,11 @@ public final class RtsimSession {
 
     /** Server stopping, before the world save: capture every puppet so its state reaches the journal. */
     static void stoppingGlobal() {
-        if (current != null)
-            current.captureAll(Obs.Dematerialized.SESSION_END);
+        if (current != null) {
+            RtsimSession s = current;
+            s.captureAll(Obs.Dematerialized.SESSION_END);
+            com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.each("sessionStopping", p -> p.sessionStopping(s));
+        }
     }
 
     /** Server stopped: close the engine. */
@@ -276,6 +281,7 @@ public final class RtsimSession {
             if (ticks % RtsimConfig.playerInterval() == 0)
                 observePlayers(now);
             industry.endOfTick(now);
+            com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.each("endOfTick", p -> p.endOfTick(this, now));
             boundary.handOver(now);
             ticks++;
         } catch (Throwable t) {
@@ -291,6 +297,7 @@ public final class RtsimSession {
         } catch (Throwable t2) {
             MicRtsim.LOGGER.error("[mic_rtsim] capturing puppets after the failure also failed", t2);
         }
+        com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.each("sessionFailed", p -> p.sessionFailed(this));
     }
 
     // ---- the puppet pass ------------------------------------------------------------------------
@@ -363,10 +370,22 @@ public final class RtsimSession {
      * neither counts as not ticking here at once, which is what a puppet there needs anyway: no player
      * is interested.
      */
-    static boolean entitiesTickAt(ServerLevel level, net.minecraft.core.BlockPos pos) {
+    public static boolean entitiesTickAt(ServerLevel level, net.minecraft.core.BlockPos pos) {
         if (level.players().isEmpty() && !net.neoforged.neoforge.common.world.chunk.ForcedChunkManager.hasForcedChunks(level))
             return false;
         return level.isPositionEntityTicking(pos);
+    }
+
+    /**
+     * Takes {@code bodies} from this tick's spawn and despawn quota (PLAN.md §4.1), for a plugin's own
+     * puppets: false when they do not fit what is left (the command waits for the next tick). A group
+     * bigger than the whole quota goes alone at the start of a tick, as the core's own.
+     */
+    public boolean spendSpawnBudget(int bodies) {
+        if (bodies > spawnBudget && spawnBudget != RtsimConfig.spawnQuota())
+            return false;
+        spawnBudget -= bodies;
+        return true;
     }
 
     /** Journals the deaths LivingDeathEvent reported this tick, for members that are really dead. */
@@ -899,6 +918,19 @@ public final class RtsimSession {
         AgentTag tag = RtsimAttachments.tag(e);
         if (tag == null)
             return false;
+        com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin owner =
+                com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.ownerOf(tag.agent());
+        if (owner != null) {
+            // A plugin's own puppet (a dragon): the plugin knows its live bodies, the registry does not.
+            try {
+                if (owner.admit(this, e, tag, level))
+                    return false;
+            } catch (RuntimeException ex) {
+                MicRtsim.LOGGER.error("[mic_rtsim] plugin {} failed deciding a joining {}", owner.name(), e, ex);
+            }
+            staleDiscarded++;
+            return true;
+        }
         PuppetGroup g = registry.live(tag, e.getUUID());
         if (g == null) {
             if (admitReleased(e, tag))
@@ -929,6 +961,16 @@ public final class RtsimSession {
         AgentTag tag = RtsimAttachments.tag(e);
         if (tag == null)
             return;
+        com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin owner =
+                com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.ownerOf(tag.agent());
+        if (owner != null) {
+            try {
+                owner.left(this, e, tag);
+            } catch (RuntimeException ex) {
+                MicRtsim.LOGGER.error("[mic_rtsim] plugin {} failed on a leaving {}", owner.name(), e, ex);
+            }
+            return;
+        }
         PuppetGroup g = registry.live(tag, e.getUUID());
         Entity.RemovalReason reason = e.getRemovalReason();
         if (g == null) {
