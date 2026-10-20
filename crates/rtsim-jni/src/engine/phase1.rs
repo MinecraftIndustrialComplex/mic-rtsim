@@ -1050,6 +1050,8 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             let l = &mut st.phase1;
             l.outbox.retain(|(_, o, _)| *o != op);
             l.resend.retain(|(_, o, _)| *o != op);
+            // A kept command queued again after a restart that Java applied before the crash.
+            l.queue.retain(|c| c.kept_op() != Some(op));
         }
         _ => {}
     }
@@ -2274,6 +2276,39 @@ mod tests {
             back.next_epoch
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review 3, P1 (follow-up): a kept command queued again after a restart leaves the queue
+    /// when its COMMAND_RESULT comes (replayed from the journal: Java applied it before the
+    /// crash). Written later, after the engine acknowledged that result and Java forgot the op
+    /// id, Java would apply it a second time (a second house).
+    #[test]
+    fn a_queued_kept_command_leaves_when_its_result_comes() {
+        let mut st = state();
+        st.phase1.push(P1Cmd::Gossip(GossipCmd {
+            op: 0x99,
+            village: 1,
+            player: (2, 3),
+            gossip: 2,
+            amount: 2,
+            report: 3,
+            flags: 0,
+        }));
+        let mut b = vec![0u8; obs::command_result::SIZE];
+        wire::put_u16(&mut b, 0, obs::COMMAND_RESULT);
+        wire::put_u16(&mut b, 2, obs::command_result::SIZE as u16);
+        wire::put_u32(&mut b, 4, obs::command_result::APPLIED);
+        wire::put_u64(&mut b, obs::command_result::OP_ID, 0x99);
+        let rec = Rec {
+            kind: obs::COMMAND_RESULT,
+            aux: obs::command_result::APPLIED,
+            bytes: &b,
+        };
+        after_core(&mut st, &rec);
+        assert!(
+            st.phase1.queue.iter().all(|c| c.kept_op() != Some(0x99)),
+            "the answered command is not sent again"
+        );
     }
 
     /// Review 3, P2: which caravan a phase 1 agent is outlives the session, so a record about it
