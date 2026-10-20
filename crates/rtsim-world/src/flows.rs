@@ -56,7 +56,7 @@ fn step(
     m: &mut Market,
     node_index: usize,
     node: &Node,
-    nodes_currency: &[Option<GoodId>],
+    nodes: &[Node],
     edges: &mut [rtsim_travel::Edge],
     goods: &rtsim_trade::Goods,
     cfg: &crate::config::WorldConfig,
@@ -195,7 +195,7 @@ fn step(
             continue;
         }
         let value = value as Amount;
-        let theirs = nodes_currency[din.from];
+        let theirs = nodes[din.from].currency;
         let (cur, amount) = match (theirs, home) {
             (Some(tc), Some(hc)) if tc != hc && m.stock(tc) > 0 && m.price(tc) > 0 => {
                 (tc, mul_div_floor(value, PRICE_ONE, m.price(tc)))
@@ -400,11 +400,6 @@ impl World {
         self.stats.market_events += 1;
         let q = self.cfg.trade.quantum;
         let nb = q.index(at) + 1;
-        let currencies: Vec<Option<GoodId>> = self
-            .nodes
-            .iter()
-            .map(|n| n.kind.culture().and_then(|c| self.goods.currency(c)))
-            .collect();
         let l_mint = self.nodes[i]
             .kind
             .culture()
@@ -421,7 +416,7 @@ impl World {
         let node = &nodes[i];
         let snap = markets
             .apply(node.region, at, |m, at| {
-                step(m, i, node, &currencies, edges, goods, cfg, l_mint, nb, &mut changes);
+                step(m, i, node, nodes, edges, goods, cfg, l_mint, nb, &mut changes);
                 let mut s = Snapshot::of(i, m, at);
                 s.inflows = inflows_by_source(node, edges, nb);
                 s

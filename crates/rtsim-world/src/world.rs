@@ -44,6 +44,8 @@ pub struct Node {
     pub settlement: SettlementId,
     pub key: u64,
     pub kind: NodeKind,
+    /// The currency its market keeps, if any.
+    pub currency: Option<GoodId>,
     pub pos: Pos,
     pub actor: ActorId,
     pub region: RegionId<Market>,
@@ -254,10 +256,12 @@ impl World {
         };
         self.knowledge.add_holder(actor, hk);
         let region = self.markets.insert(d.key, m, self.now);
+        let currency = d.kind.culture().and_then(|c| self.goods.currency(c));
         self.nodes.push(Node {
             settlement: sid,
             key: d.key,
             kind: d.kind,
+            currency,
             pos: d.pos,
             actor,
             region,
@@ -425,17 +429,16 @@ impl World {
     /// world events in the order they were booked, then knowledge housekeeping.
     pub fn run_until(&mut self, to: Tick) {
         loop {
-            let tw = self.wheel.next_due().filter(|&t| t <= to);
+            // A lower bound on the world wheel's next event, in O(levels): an exact peek would
+            // scan a whole wheel slot, which in a big world holds thousands of wakes. Popping up
+            // to the bound cascades that slot, so the bound tightens as the loop goes.
+            let tw = self.wheel.next_due_lower_bound().filter(|&t| t <= to);
             let tk = [self.knowledge.next_expiry(), self.knowledge.next_death()]
                 .into_iter()
                 .flatten()
                 .filter(|&t| t <= to)
                 .min();
-            let limit = match (tw, tk) {
-                (Some(a), Some(b)) => a.min(b),
-                (Some(a), None) | (None, Some(a)) => a,
-                (None, None) => to,
-            };
+            let limit = [tw, tk].into_iter().flatten().min().unwrap_or(to);
             if let Some((at, h)) = self.markets.next_due(limit) {
                 self.now = self.now.max(at);
                 let i = self.node_of_region(h);
@@ -443,22 +446,23 @@ impl World {
                 self.market_event(i, at, true);
                 continue;
             }
-            match (tw, tk) {
-                (Some(a), b) if b.is_none_or(|b| a <= b) => {
-                    let (at, ev) = self.wheel.pop_until(a).expect("peeked");
+            if tw == Some(limit) {
+                if let Some((at, ev)) = self.wheel.pop_until(limit) {
                     self.now = self.now.max(at);
                     self.handle(at, ev);
                 }
-                (_, Some(b)) => {
-                    self.now = self.now.max(b);
-                    self.knowledge.expire_due(b);
-                    while let Some(n) = self.knowledge.death_due(b) {
-                        self.knowledge.die(n, b);
-                    }
-                    self.flush_gossip();
-                }
-                _ => break,
+                continue;
             }
+            if let Some(b) = tk.filter(|&b| b == limit) {
+                self.now = self.now.max(b);
+                self.knowledge.expire_due(b);
+                while let Some(n) = self.knowledge.death_due(b) {
+                    self.knowledge.die(n, b);
+                }
+                self.flush_gossip();
+                continue;
+            }
+            break;
         }
         // Move the world's wheel to `to` so later bookings are never in its past (the market
         // table's wheel got there in the last `next_due`).

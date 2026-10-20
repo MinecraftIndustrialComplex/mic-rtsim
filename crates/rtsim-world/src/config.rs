@@ -48,7 +48,7 @@ impl WorldConfig {
             edge_rule: EdgeRule::P18,
             caravan_blocks_per_tick: 0.1,
             scout_days: 1,
-            news_cap: 32,
+            news_cap: 16,
             relay_max: 8,
             markup_worst: Ratio::new(1, 2),
             genesis: Genesis::AtTarget,

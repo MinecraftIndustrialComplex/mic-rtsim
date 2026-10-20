@@ -37,6 +37,8 @@ pub enum Spec {
     World(WorldConfig),
     /// Build `regions` regions, leave them unread for `elapsed_days`, then read each once.
     CatchUp(CatchUpConfig),
+    /// A phase 1 market world (`bench::market`).
+    Market(super::market::MarketConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,6 +79,9 @@ pub struct Measured {
     /// commits. Any entry fails `--check`.
     pub failures: Vec<String>,
     pub state_hash: Option<u32>,
+    /// Edges in a market world.
+    #[serde(default)]
+    pub edges: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +93,10 @@ pub enum Vary {
     Elapsed,
     /// World age: days the world has run before the measured window.
     Age,
+    /// Markets in a phase 1 world.
+    Markets,
+    /// The edge rule's nearest-k, with markets fixed.
+    Edges,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +191,15 @@ impl Baseline {
     }
 
     fn spec(&self, sweep: &Sweep, value: u64) -> Spec {
+        if matches!(sweep.vary, Vary::Markets | Vary::Edges) {
+            return Spec::Market(super::market::MarketConfig {
+                markets: if sweep.vary == Vary::Markets { value } else { MARKET_BASE },
+                nearest: if sweep.vary == Vary::Edges { value } else { 4 },
+                warmup_days: 10,
+                days: self.days,
+                seed: self.seed,
+            });
+        }
         if sweep.vary == Vary::Elapsed {
             return Spec::CatchUp(CatchUpConfig {
                 model: sweep.model,
@@ -210,7 +228,7 @@ impl Baseline {
             Vary::Regions => c.regions = value,
             Vary::Events => c.events_per_day = value,
             Vary::Age => c.warmup_days = value,
-            Vary::Elapsed => unreachable!(),
+            Vary::Elapsed | Vary::Markets | Vary::Edges => unreachable!(),
         }
         Spec::World(c)
     }
@@ -457,8 +475,42 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 "no slot debt: a region first touched at any age costs one read (O17)",
             )],
         },
+        // Phase 1 markets (rtsim-world). The model kind is a label only; the spec says what
+        // runs.
+        Sweep {
+            name: "markets".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Markets,
+            regions: None,
+            values: pick(&[16, 64, 256, 1_024, 4_096], &[16, 256, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Cpu,
+                    1.3,
+                    1.0,
+                    "an active world: events per market per day are flat (15 to 20), so the algorithm is linear in markets; cost per event still rises (7 to 15 us from 64 to 4,096 markets) as the working set (about 25 KB per market against the research's 1 KB estimate) leaves the caches. Layout work, not an algorithmic slope. A world at rest costs nothing (two_markets test)",
+                ),
+                contract(Metric::Heap, 1.1, 1.0, "markets and edges are resident: paging (A16) is not built yet"),
+            ],
+        },
+        Sweep {
+            name: "edges".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Edges,
+            regions: None,
+            values: pick(&[1, 2, 4, 8, 16], &[1, 4, 16]),
+            contracts: vec![contract(
+                Metric::Cpu,
+                2.1,
+                1.0,
+                "nearest-k at 512 markets: a market event costs O(deg × G) (allocation over its edges) and news reaches every neighbour, so events also grow with degree: up to deg squared",
+            )],
+        },
     ]
 }
+
+/// Markets held fixed while the edge sweep varies nearest-k.
+const MARKET_BASE: u64 = 512;
 
 /// The age sweeps' region count: see their notes.
 const AGE_REGIONS: u64 = 100_000;
@@ -486,6 +538,7 @@ pub fn run_one(spec: &Spec) -> Measured {
             ModelKind::Closed => run_catch_up::<Stock>(c),
             ModelKind::Dyadic => run_catch_up::<DyadicRegion>(c),
         },
+        Spec::Market(c) => super::market::run(c),
     }
 }
 
@@ -966,6 +1019,7 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
         let m = &r.measured;
         let days = match &r.spec {
             Spec::World(c) => c.days as f64,
+            Spec::Market(c) => c.days as f64,
             Spec::CatchUp(_) => f64::NAN,
         };
         println!(
