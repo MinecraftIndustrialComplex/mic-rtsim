@@ -61,6 +61,7 @@
 //! [`PagedTable::prefetch_due`] returns what to load, the IO lane reads each with
 //! [`crate::page::PageLocation::read`] (no access to the store needed), and the step installs the
 //! bytes with [`PagedTable::install`], which drops them if the page changed on disk meanwhile.
+//! A prefetched page enters at the hot end of the LRU list, as if just used.
 //! [`PagedTable::prefetch`] does all of it inline, for tests and the bench.
 
 use std::collections::HashMap;
@@ -314,10 +315,13 @@ impl<M: PagedModel> Page<M> {
 
 const NIL: u32 = u32::MAX;
 
+/// A page's place in the LRU list. Only evictable pages (neither dirty nor in a save) are in the
+/// list, so eviction never walks past pages it may not take.
 #[derive(Clone, Copy)]
 struct Link {
     prev: u32,
     next: u32,
+    linked: bool,
 }
 
 /// What [`PagedTable::save_dirty`] put in a batch; hand it back with [`PagedTable::saved`] once the
@@ -509,10 +513,14 @@ impl<M: PagedModel> PagedTable<M> {
             + self.due.capacity() * size_of::<Booked>()
     }
 
-    // ---- The LRU list over resident pages ----
+    // ---- The LRU list over evictable resident pages ----
 
     fn unlink(&mut self, i: u32) {
-        let Link { prev, next } = self.links[i as usize];
+        let Link { prev, next, linked } = self.links[i as usize];
+        if !linked {
+            return;
+        }
+        self.links[i as usize].linked = false;
         if prev != NIL {
             self.links[prev as usize].next = next;
         } else {
@@ -526,9 +534,11 @@ impl<M: PagedModel> PagedTable<M> {
     }
 
     fn push_front(&mut self, i: u32) {
+        debug_assert!(!self.links[i as usize].linked);
         self.links[i as usize] = Link {
             prev: NIL,
             next: self.head,
+            linked: true,
         };
         if self.head != NIL {
             self.links[self.head as usize].prev = i;
@@ -538,8 +548,23 @@ impl<M: PagedModel> PagedTable<M> {
         self.head = i;
     }
 
+    fn evictable(&self, i: u32) -> bool {
+        let page = self.slab[i as usize].as_ref().expect("resident page");
+        !page.dirty && !page.saving
+    }
+
+    /// Puts the page in the LRU list if it may be evicted, takes it out if not. Call after any
+    /// change to its dirty or saving state.
+    pub(crate) fn sync(&mut self, i: u32) {
+        match (self.evictable(i), self.links[i as usize].linked) {
+            (true, false) => self.push_front(i),
+            (false, true) => self.unlink(i),
+            _ => {}
+        }
+    }
+
     fn touch(&mut self, i: u32) {
-        if self.head != i {
+        if self.links[i as usize].linked && self.head != i {
             self.unlink(i);
             self.push_front(i);
         }
@@ -565,11 +590,13 @@ impl<M: PagedModel> PagedTable<M> {
             self.links.push(Link {
                 prev: NIL,
                 next: NIL,
+                linked: false,
             });
             u32::try_from(self.slab.len() - 1).expect("fewer than 2^32 resident pages")
         };
         self.index.insert(id, i);
-        self.push_front(i);
+        self.links[i as usize].linked = false;
+        self.sync(i);
         i
     }
 
@@ -679,6 +706,7 @@ impl<M: PagedModel> PagedTable<M> {
         });
         page.dirty = true;
         self.reaccount(i, before);
+        self.sync(i);
         self.reschedule(i, key);
         Ok(())
     }
@@ -698,6 +726,7 @@ impl<M: PagedModel> PagedTable<M> {
         page.heap -= old.cell.model().heap_bytes();
         page.dirty = true;
         self.reaccount(i, before);
+        self.sync(i);
         Ok(Some(old.cell))
     }
 
@@ -781,6 +810,7 @@ impl<M: PagedModel> PagedTable<M> {
         page.heap = page.heap + heap1 - heap0;
         page.dirty = true;
         self.reaccount(i, before);
+        self.sync(i);
         self.reschedule(i, key);
         Ok(Some(r))
     }
@@ -837,6 +867,7 @@ impl<M: PagedModel> PagedTable<M> {
         self.lazy.slot_commits += slot.cell.catch_up(at, stream);
         slot.cell.settle_to(at);
         page.dirty = true;
+        self.sync(i);
         self.reschedule(i, b.key);
         Ok(true)
     }
@@ -847,15 +878,9 @@ impl<M: PagedModel> PagedTable<M> {
     /// budget. Call at step boundaries. Returns how many pages went.
     pub fn enforce_budget(&mut self) -> usize {
         let mut evicted = 0;
-        let mut cur = self.tail;
-        while self.resident_bytes > self.cfg.budget_bytes && cur != NIL {
-            let prev = self.links[cur as usize].prev;
-            let page = self.slab[cur as usize].as_ref().expect("resident page");
-            if !page.dirty && !page.saving {
-                self.evict(cur);
-                evicted += 1;
-            }
-            cur = prev;
+        while self.resident_bytes > self.cfg.budget_bytes && self.tail != NIL {
+            self.evict(self.tail);
+            evicted += 1;
         }
         if self.resident_bytes > self.cfg.budget_bytes {
             self.stats.over_budget += 1;
@@ -915,24 +940,10 @@ impl<M: PagedModel> PagedTable<M> {
         page.prefetched = true;
         self.stats.prefetches += 1;
         self.stats.load_bytes += p.location.stored_len() as u64;
-        let i = self.install_page(page);
-        // Read ahead, so least recent: the first eviction takes it unless something uses it.
-        self.unlink(i);
-        self.push_back(i);
+        // At the hot end, like a page just used: it is needed within the lead time, and at the
+        // cold end the very next budget check would evict it again.
+        self.install_page(page);
         Ok(true)
-    }
-
-    fn push_back(&mut self, i: u32) {
-        self.links[i as usize] = Link {
-            prev: self.tail,
-            next: NIL,
-        };
-        if self.tail != NIL {
-            self.links[self.tail as usize].next = i;
-        } else {
-            self.head = i;
-        }
-        self.tail = i;
     }
 
     /// [`PagedTable::prefetch_due`], the reads and [`PagedTable::install`] inline, on the caller.
@@ -953,7 +964,10 @@ impl<M: PagedModel> PagedTable<M> {
     pub fn save_dirty(&mut self, batch: &mut SaveBatch) -> SaveTicket {
         let mut ticket = SaveTicket::default();
         let table = self.cfg.table;
-        for page in self.slab.iter_mut().flatten() {
+        for i in 0..self.slab.len() as u32 {
+            let Some(page) = self.slab[i as usize].as_mut() else {
+                continue;
+            };
             if !(page.dirty || page.caught_up) {
                 continue;
             }
@@ -969,6 +983,7 @@ impl<M: PagedModel> PagedTable<M> {
             page.caught_up = false;
             page.saving = true;
             ticket.pages.push(page.id);
+            self.sync(i);
         }
         ticket
     }
@@ -999,6 +1014,7 @@ impl<M: PagedModel> PagedTable<M> {
                     .as_mut()
                     .expect("resident page")
                     .saving = false;
+                self.sync(i);
             }
         }
     }
@@ -1010,6 +1026,7 @@ impl<M: PagedModel> PagedTable<M> {
                 let page = self.slab[i as usize].as_mut().expect("resident page");
                 page.saving = false;
                 page.dirty = true;
+                self.sync(i);
             }
         }
     }

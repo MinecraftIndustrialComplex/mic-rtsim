@@ -450,6 +450,7 @@ impl<M: Actor> Bsp<M> {
             for (slab, page, before) in r.pages {
                 table.slab[slab as usize] = Some(page);
                 table.reaccount(slab, before);
+                table.sync(slab);
             }
             for (key, at) in r.bookings {
                 table.book(key, Some(at));
