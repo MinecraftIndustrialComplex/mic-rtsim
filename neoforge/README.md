@@ -139,6 +139,7 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `killingaherdanimalreportsitandthegroupshrinks` | a player's kill is HERD_KILLED naming the player, with a Java op id, its drops carrying it; a death with no killer is by none; the group goes on smaller |
 | `aleadtamingandapickuptakeanimalsoutandshearsmarkone` | a lead, taming and the core's pickup hook each take an animal out (HERD_TAKEN with the player; the animal ordinary, carrying its record); shears are HERD_SHEARED with the player, the sheep stays in its group |
 | `acapturekeepseachmembersstateandtheseedbringsbackthesamehorse` | a capture keeps a horse's wound and position; materialized again from its seed, each horse has the same max health, speed and jump |
+| `aherdwalkstowarditswaypointandturnsonsteer` | sheep (their goal) and goats (their brain's walk target) walk toward the waypoint and turn back on HERD_STEER |
 | `asaveandreloadduplicatesnothing` | vanilla's entity-chunk save leaves the herd's puppets out and keeps a taken sheep; copies of a puppet never join |
 | `afenceproducesanobstaclereport` | sheep steered past a fence stall at it; HERD_OBSTACLE once, from before the fence, toward the waypoint |
 | `theenginesownherdmaterializesnearaplayerandremembersitssheep` | native engine only: a herd founded with HERD_FOUND far out, a player beside it; the engine's group with the engine's colours; a kill drops the engine's count; the player leaves and comes back: the same sheep, never the dead one |
@@ -229,6 +230,6 @@ which scripts the engine's industry commands; each in its own batch):
   not-ticking, dimension-change and session-end captures are not covered by a GameTest.
 - **Herds** (docs/overnight-choices-herdsmc.md): nothing in the game founds a herd yet (only the test
   order HERD_FOUND, Y4), and the engine's climate is uniform grassland (Y3); vanilla's own animals are
-  neither adopted nor suppressed (H2-28, Y20); HERD_GROUP_STATE is not read by the engine. Goats'
-  brain steering over a long walk, a dispenser's shearing, and the dimension-change, session-end and
+  neither adopted nor suppressed (H2-28, Y20); HERD_GROUP_STATE is not read by the engine. Steering
+  over a long walk, a dispenser's shearing, and the dimension-change, session-end and
   switch-off captures are not covered by a GameTest.

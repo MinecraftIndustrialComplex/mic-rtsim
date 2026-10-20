@@ -70,7 +70,7 @@ hold; these are the ones the adapter adds.
 | Y18 | **Shearing**: the pass sees a member's `isSheared()` turn true and reports HERD_SHEARED, naming the player who used shears on it this tick (`PlayerInteractEvent.EntityInteract`), else no player (a dispenser). | NeoForge shears through `IShearable` with no event of its own; the state change is certain, the interaction names who. |
 | Y19 | **HERD_GROUP_STATE** every 100 ticks per group (the group's centroid, members present, flag ticking); the engine reads nothing from it yet (counted). | §8.3's PLACEHOLDER interval; the herd's position is its closed form, and the record is there for a later drift correction. |
 | Y20 | **Vanilla's own animals are left alone (H2-28 stays open)**: the adapter neither suppresses nor adopts vanilla's natural or chunk-generation spawns; herd animals are extra bodies. **Recommendation:** keep it so until a habitat provider exists (Y4); then adopt, not suppress: chunk-generation animals of the five species become the founders of a herd for their region, as the dragons adopt lair dragons (P13), since suppressing would empty every place no herd passes. | The brief: leave vanilla spawning alone and log the recommendation. Adopting needs the founding rule Y4 lacks. |
-| Y21 | **GameTests** (core, each in its own batch): six scripted on both engines (HERD_COMMAND on the native one), and one on the native engine only (skipped on the stub), whose herd is founded with HERD_FOUND at a random place 3,000 km out with its 7 × 7 chunks forced, so an earlier run's herds (the GameTest world and pages are reused, B37) are never there; the test writes PLAYER records for its player itself (GameTest players are not in the server's player list). The fence test cuts `stallTicks` to 60. | The native engine decides materializations only for a player near a herd; the stub decides nothing. |
+| Y21 | **GameTests** (core, each in its own batch): seven scripted on both engines (HERD_COMMAND on the native one), and one on the native engine only (skipped on the stub), whose herd is founded with HERD_FOUND at a random place 3,000 km out with its 7 × 7 chunks forced, so an earlier run's herds (the GameTest world and pages are reused, B37) are never there; the test writes PLAYER records for its player itself (GameTest players are not in the server's player list). The fence test cuts `stallTicks` to 60. | The native engine decides materializations only for a player near a herd; the stub decides nothing. |
 | Y23 | **Breeding is vanilla's**: two herd puppets a player feeds breed, and the young is an ordinary animal, not in the herd and not reported. | The young is the player's doing, as a bred dragon's hatchling is not the sim's; no record for it exists in §8. |
 
 ## Results
@@ -83,12 +83,13 @@ hold; these are the ones the adapter adds.
   back after a save: 30 of the same sheep first, the sheared one still sheared, no dead or taken one;
   a kill after the save and a crash: the pages read back to their state hash, the replay books the
   kill once) and `switched_off_herds_ignore_their_records_and_keep_their_page`.
-- **GameTests, native engine** (fresh worlds, `run-gametest` moved aside first): core 44 of 44 (with
-  `:core:test`; the seven herd tests among them), carryon 2 of 2 (one new: a Carry On pickup of a herd
+- **GameTests, native engine** (fresh worlds, `run-gametest` moved aside first): core 45 of 45 (with
+  `:core:test`; the eight herd tests among them, one of them steering sheep and goats east and back
+  west on a STEER), carryon 2 of 2 (one new: a Carry On pickup of a herd
   sheep), iceandfire 7 of 7. The native herd test: 12 sheep founded 3,000 km out, the engine's group of
   12 with its colours, a kill booked (the engine's count 12 to 11), the player gone and back: the same
   11 sheep in epoch 2.
-- **GameTests, stub engine** (fresh worlds): core 44 of 44 (the native herd test skipped by design),
+- **GameTests, stub engine** (fresh worlds): core 45 of 45 (the native herd test skipped by design),
   carryon 2 of 2, iceandfire 7 of 7.
 - **Found by the GameTests**: the framework roofs a test without sky access with barriers, which the
   surface rule (motion-blocking, non-leaf) stands animals on; the scripted herd tests have sky access.
@@ -100,7 +101,7 @@ hold; these are the ones the adapter adds.
   climate is `Uniform` (Y3).
 - **HERD_GROUP_STATE is not read** by the engine (Y19); a body that drifts far from the herd's closed
   form is not corrected.
-- **Not covered by a GameTest**: goats' brain steering over a long walk; a dimension change of a member
+- **Not covered by a GameTest**: steering over a long walk (the steering test stays in its arena); a dimension change of a member
   (captured, by inspection); the session-end and switch-off captures; a dispenser shearing; vanilla's
   natural spawns beside a herd.
 - **Vanilla adoption or suppression** (H2-28, Y20) stays open.

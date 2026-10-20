@@ -510,6 +510,74 @@ public final class HerdGameTests {
                 .thenSucceed();
     }
 
+    private static double meanX(List<Entity> bodies) {
+        double x = 0;
+        for (Entity e : bodies)
+            x += e.getX();
+        return x / Math.max(1, bodies.size());
+    }
+
+    /**
+     * Steering (Y14): a group walks with its herd toward the waypoint, sheep by their goal and goats by
+     * their brain's walk target, as far as the arena lets them; HERD_STEER turns them, and they walk back
+     * the other way. The herd's place moves 0.2 blocks a tick, so the members fall behind it and follow.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1200, batch = "herd_steer", skyAccess = true)
+    public static void aHerdWalksTowardItsWaypointAndTurnsOnSteer(GameTestHelper helper) {
+        String test = "aHerdWalksTowardItsWaypointAndTurnsOnSteer";
+        String dim = RtsimTests.dimension(helper);
+        long sheep = HerdKit.newAgent(), goats = HerdKit.newAgent();
+        int[] c = HerdKit.abs(helper, 2, 5);
+        int[] east = {c[0] + 40, c[1]}, west = {c[0] - 40, c[1]};
+        HerdKit.materialize(sheep, 1, HerdKit.SHEEP, dim, c[0], c[1], east[0], east[1], 0.2f, List.of(
+                HerdKit.Member.adult(1, 1, 0, c[0], c[1] - 1),
+                HerdKit.Member.adult(2, 2, 0, c[0], c[1]),
+                HerdKit.Member.adult(3, 3, 0, c[0], c[1] + 1)));
+        HerdKit.materialize(goats, 1, HerdKit.GOAT, dim, c[0], c[1], east[0], east[1], 0.2f, List.of(
+                HerdKit.Member.adult(1, 4, 0, c[0], c[1] - 3),
+                HerdKit.Member.adult(2, 5, 0, c[0], c[1] + 3)));
+        double[] start = new double[2], turned = new double[2];
+
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    HerdKit.bodies(sheep, 3);
+                    HerdKit.bodies(goats, 2);
+                })
+                .thenExecute(() -> {
+                    start[0] = meanX(HerdKit.bodies(sheep, 3));
+                    start[1] = meanX(HerdKit.bodies(goats, 2));
+                })
+                .thenWaitUntil(() -> {
+                    check("the sheep walk east (" + meanX(HerdKit.bodies(sheep, 3)) + " from " + start[0] + ")",
+                            meanX(HerdKit.bodies(sheep, 3)) > start[0] + 4);
+                    check("the goats too (" + meanX(HerdKit.bodies(goats, 2)) + " from " + start[1] + ")",
+                            meanX(HerdKit.bodies(goats, 2)) > start[1] + 4);
+                })
+                .thenExecute(() -> {
+                    turned[0] = meanX(HerdKit.bodies(sheep, 3));
+                    turned[1] = meanX(HerdKit.bodies(goats, 2));
+                    long now = RtsimTests.session().gameTime();
+                    HerdKit.steer(sheep, 1, HerdKit.SHEEP, 0.2f, west[0], west[1], now + 300);
+                    HerdKit.steer(goats, 1, HerdKit.GOAT, 0.2f, west[0], west[1], now + 300);
+                    record(test, "east", "sheep " + start[0] + " to " + turned[0] + ", goats " + start[1] + " to " + turned[1]);
+                })
+                .thenWaitUntil(() -> {
+                    check("HERD_STEER turns the sheep west (" + meanX(HerdKit.bodies(sheep, 3)) + " from " + turned[0] + ")",
+                            meanX(HerdKit.bodies(sheep, 3)) < turned[0] - 4);
+                    check("and the goats (" + meanX(HerdKit.bodies(goats, 2)) + " from " + turned[1] + ")",
+                            meanX(HerdKit.bodies(goats, 2)) < turned[1] - 4);
+                })
+                .thenExecute(() -> {
+                    check("the waypoint is the STEER's", bridge().group(sheep).targetX() == west[0] && bridge().group(goats).targetX() == west[0]);
+                    record(test, "west", "sheep " + turned[0] + " to " + meanX(HerdKit.bodies(sheep, 3)) + ", goats " + turned[1] + " to "
+                            + meanX(HerdKit.bodies(goats, 2)));
+                    HerdKit.despawn(sheep, 1, HerdKit.SHEEP);
+                    HerdKit.despawn(goats, 1, HerdKit.GOAT);
+                })
+                .thenWaitUntil(() -> check("captured", bridge().group(sheep) == null && bridge().group(goats) == null))
+                .thenSucceed();
+    }
+
     /**
      * A fence across the group's way: its members walk to it and can go no farther while their herd's
      * place moves on toward the waypoint; once most of them have stalled for the stall time, the adapter
