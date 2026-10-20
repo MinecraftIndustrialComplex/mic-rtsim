@@ -627,6 +627,8 @@ Two 32-byte layouts, after `ReportRow`:
   step never waits.
 - **At each save** the IO lane writes the pending rows as chunks, before the page commit, with no
   fsync of their own: the archive is a record, not the truth.
+- **Between saves**, while leased, the tap publishes the pending rows as one more part, so a live
+  page sees an event within a tap period rather than at the next save (up to 300 s later).
 
 ### 10.4 Tiers, budget, compaction (VWD-4)
 
@@ -671,7 +673,8 @@ archive misses those minutes.
 ## 11. Live updates (VWD-5)
 
 **Recommended: SSE, reused from Deep Time's `stream_events`.** One stream per open page carries
-`frame` notices (a new tap header: game time, each layer's version) and new archive rows. The page
+`frame` notices (a new tap header: game time, each layer's version) and new archive rows (the tap's
+pending-rows part, §10.3). The page
 fetches marks only for layers whose version changed, only for its viewport, and animates legs between
 notices at the measured ticks per second. It stops extrapolating after two tap periods without a
 notice and shows the view as stale. The open streams are also the lease (§5.2): when the last tab
