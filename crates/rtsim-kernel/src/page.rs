@@ -173,6 +173,34 @@ fn decode_stored(stored: &[u8], raw_len: u32, crc: u32, what: &str) -> Result<Ve
         .map_err(|e| PageError::Format(format!("{what}: LZ4: {e}")))
 }
 
+/// A page's place on disk, from [`PageStore::locate`]. Two locations are equal when they name the
+/// same bytes, so a reader can tell whether what it read is still the page's current version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageLocation {
+    path: PathBuf,
+    segment: u64,
+    offset: u64,
+    raw_len: u32,
+    stored_len: u32,
+    crc: u32,
+}
+
+impl PageLocation {
+    /// Reads, CRC-checks and decompresses the page, opening the segment itself.
+    pub fn read(&self) -> Result<Vec<u8>> {
+        let mut f = File::open(&self.path).map_err(io(&self.path))?;
+        f.seek(SeekFrom::Start(self.offset))
+            .map_err(io(&self.path))?;
+        let mut buf = vec![0; self.stored_len as usize];
+        f.read_exact(&mut buf).map_err(io(&self.path))?;
+        decode_stored(&buf, self.raw_len, self.crc, "page")
+    }
+
+    pub fn stored_len(&self) -> usize {
+        self.stored_len as usize
+    }
+}
+
 /// The pages one save writes or deletes. Later puts of a key replace earlier ones.
 #[derive(Debug, Default)]
 pub struct SaveBatch {
@@ -377,6 +405,30 @@ impl PageStore {
         };
         let stored = self.read_stored(loc)?;
         decode_stored(&stored, loc.raw_len, loc.crc, &format!("page {key:?}")).map(Some)
+    }
+
+    /// Where the page lives on disk now, for a read on another thread (the host's IO lane):
+    /// [`PageLocation::read`] needs no access to the store. A location stays readable until a
+    /// later commit drops its segment; a read that loses that race fails and is simply retried
+    /// through [`PageStore::get`].
+    pub fn locate(&self, key: PageKey) -> Option<PageLocation> {
+        if self.poisoned {
+            return None;
+        }
+        let loc = *self.pages.get(&key)?;
+        Some(PageLocation {
+            path: self.segment_path(loc.segment),
+            segment: loc.segment,
+            offset: loc.offset,
+            raw_len: loc.raw_len,
+            stored_len: loc.stored_len,
+            crc: loc.crc,
+        })
+    }
+
+    /// Switches fsync on or off for later commits (a bulk build can skip it, then turn it on).
+    pub fn set_durability(&mut self, durability: Durability) {
+        self.durability = durability;
     }
 
     /// Makes `batch` durable as one save that includes observations up to `obs_seq`.

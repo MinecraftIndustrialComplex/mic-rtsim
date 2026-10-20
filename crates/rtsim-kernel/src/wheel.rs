@@ -200,6 +200,15 @@ impl<T> TimingWheel<T> {
         }
     }
 
+    /// Every pending entry with the time it is due, in no particular order. For saving: a caller
+    /// that needs a canonical order sorts what this returns.
+    pub fn iter(&self) -> impl Iterator<Item = (Tick, &T)> {
+        self.ready
+            .iter()
+            .chain(self.slots.iter().flatten())
+            .map(|e| (Tick(e.at), &e.item))
+    }
+
     /// Bytes held on the heap, for the memory budget.
     pub fn heap_bytes(&self) -> usize {
         let entry = std::mem::size_of::<Entry<T>>();

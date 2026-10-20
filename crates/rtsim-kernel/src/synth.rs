@@ -563,6 +563,10 @@ impl Decode for DyadicRegion {
     }
 }
 
+impl crate::paging::PagedModel for Stock {}
+impl crate::paging::PagedModel for SynthRegion {}
+impl crate::paging::PagedModel for DyadicRegion {}
+
 impl Encode for Stock {
     fn encode(&self, w: &mut Writer) {
         w.var_i64(self.amount);

@@ -1,0 +1,29 @@
+# Overnight choices: kernel follow-ups (K)
+
+Reversible choices made on 2026-10-20 while Ben was asleep, by the second kernel agent (branch
+`overnight/kernel2`). Each one is undoable; none is final until Ben reviews it (D10). DECISIONS.md
+is not edited tonight; the O series there is the first kernel agent's.
+
+The work: paging under a memory budget (A16, SCALE.md §8), incremental and two-generation saves
+(PLAN.md §4.9, P29), the bulk-synchronous parallel step (SCALE.md §5), the P4 storage bench, the
+potato profile (A11), and a bench that shows where O5 matters.
+
+## Paging (A16, SCALE.md §8)
+
+| # | Choice | Why |
+|---|---|---|
+| K1 | Paging is a new type, `rtsim_kernel::paging::PagedTable`, beside `LazyTable`, with the same rules (catch-up on read, reads never reschedule, drain `next_due` first). `LazyTable` is unchanged. Regions are named by a stable `u64` key; a region's page is `key / regions_per_page`. `morton2` packs grid coordinates so a page is a square block. | Other agents build on `LazyTable` tonight, so the kernel API only grows. A key that computes its page needs no per-region index, so a region that is not resident costs zero bytes. |
+| K2 | Defaults: budget 64 MiB, 64 regions per page, prefetch 100 ticks (5 s) ahead. All three are PLACEHOLDERS in the code. | A16 says the default comes from phase 0 measurements, and P24 holds the targets. 64 regions per page is the scale bench's existing value. |
+| K3 | Only pages whose state is on disk are evicted. A page changed only by catch-up counts as on disk and may be dropped unsaved: a reload redoes the same slot commits. A page changed by an event, an insert, a removal or a breakpoint is dirty until a save writes it; it is never written out early (no spill), so the budget is soft against dirty pages, and the table counts the checks that end over budget. | O4 makes catch-up a pure function of the stored state and the time, so dropping it is exact. A spill would be a page generation written outside Minecraft's save, which is P29's question; dirty pages are bounded by what happened since the last save, not by world size. |
+| K4 | A booked wake is a wheel entry `(region key, booked tick)`. It is live when the region's page holds the same booked tick; otherwise it is stale. Wakes due at the same tick fire in key order. | Evicting a page then never touches the wheel. Key order is canonical, so a table reopened from a save fires wakes in the same order as one that never stopped. Cost: a stale entry for an evicted region costs one page load. |
+| K5 | The wheel of booked wakes and the clock are resident and saved whole into one meta page at each save (`save_meta`). Opening a table restores them with no page resident. | The wheel is what says which regions wake next (SCALE.md §8), so it stays resident. Its size is the number of pending wakes, not of regions; but it is rewritten whole at each save, so save cost has an O(pending wakes) part. Chunking it into dirty-tracked pages is the fix if the bench ever shows it. |
+| K6 | Prefetch is split for the host's IO lane: `prefetch_due` returns pages with their disk location, `PageLocation::read` reads one without the store, and `install` drops the bytes if the page became resident or moved on disk meanwhile. `prefetch` does it all inline for tests and the bench. A prefetched page enters at the cold end of the LRU list. Sources: every booked wake (lead ticks before it), `prefetch_at` for events the caller has scheduled (a caravan's arrival), and `read_ahead` for player movement (`read_ahead_grid` gives the cells ahead of a player on a square grid). | The engine owns no threads. The location check makes a late install safe without a version number per page. Entering cold means a wasted prefetch is the first thing evicted. |
+| K7 | The budget counts an estimate: each resident page's struct and slot vector, the heap its models report (`PagedModel::heap_bytes`, default 0), and 24 bytes per id-index entry. The bench reports the counting allocator's live heap beside it. | Exact accounting would need an allocator per table. The estimate is checked against the measured heap in the bench. |
+
+## The parallel step (SCALE.md §5)
+
+| # | Choice | Why |
+|---|---|---|
+| K8 | `rtsim_kernel::exec::Executor` has two methods: `workers()` (advice only) and `run(Vec<Job>)`, which runs every job and returns when all have finished, resuming a job's panic on the caller. `exec::scope(exec, \|s\| s.spawn(..))` is the scope-and-spawn form on top. Two implementations: `Inline` (the caller, in order) and `ThreadPool` (std threads the caller creates; the calling thread works too). The module docs show the mic-native-rt implementation over `rt::scope`. | Object-safe, so the engine takes `&dyn Executor`. `rt::scope` already has this contract (jobs borrow from the stack; returns when all finished; a worker helps while it waits). `ThreadPool` needs one `unsafe` lifetime erasure, argued in a SAFETY comment and tested with panicking jobs and concurrent callers. |
+| K9 | `rtsim_kernel::bsp::Bsp` steps a `PagedTable` of `Actor` models over a window `(from, to]`. Each due region handles its work in time order: its own breakpoints (they fire at their own ticks, even several in one window) interleaved with its messages, sorted by (time, breakpoints first, sender, send tick, sequence). A message is never applied in the step that sent it. Pages load on the caller's thread before the parallel phase. Messages to regions that do not exist come back as dead letters. External inputs go in with `post`. | SCALE.md §5's order (region id, then message sequence) made precise. The result is identical at any worker count and any budget (tested), but not across step lengths: the step length is part of the world. |
+| K10 | Messages in flight are saved whole, in canonical order, by `Bsp::save`. | Like K5: in-flight traffic is bounded by activity. |
