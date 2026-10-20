@@ -52,8 +52,8 @@ marked PLACEHOLDER is not measured. No Java.
 ## Results
 
 - On the branch before merging main: `cargo test --workspace` 390 passed, 0 failed (3 ignored, as
-  before). After merging origin/main (the herds and herds-mc): 423 passed, 0 failed, 3 ignored; `cargo clippy
-  --workspace --all-targets -- -D warnings` clean; `cargo fmt --all --check` clean; `sim conflict`
+  before). After merging origin/main (the herds and herds-mc): 423 passed, 0 failed, 3 ignored;
+  `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all --check` clean; `sim conflict`
   and `bench scale --quick --only factions --check` pass. rtsim-conflict's own: 9 unit tests, 9 contract tests (`tests/conflict.rs`, two of them
   property tests) and 4 scenario tests (`tests/scenario.rs`).
 - `rtsim-cli sim conflict`: every check passes (ignore: the ladder in order, a raid while the player
