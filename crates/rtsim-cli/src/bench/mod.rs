@@ -5,5 +5,6 @@
 pub mod dragons;
 pub mod industry;
 pub mod market;
+pub mod restore;
 pub mod scale;
 pub mod world;
