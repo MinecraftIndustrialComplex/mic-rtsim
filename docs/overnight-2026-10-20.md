@@ -16,7 +16,7 @@ What was built while Ben slept, what it measured, and what needs him first.
 | Native link | `crates/rtsim-jni` | The bridge runs on the real engine through `mic_native` |
 | Phase 1 engine | `rtsim-settle`, `-trade`, `-travel`, `-knowledge`, `-world` | Storehouse markets, two currencies, flows, caravans, news by travellers, sentiment, heirs, rescues, bands, sorcerer filter, ribbit growth, player bases |
 | Phase 1 Minecraft side | `neoforge/core` and the `ribbits` and `carryon` plugins | Village adoption, treasury trades, gossip writes, llama-chest cargo, rescues, robbery, houses from YUNG's templates |
-| Dragons (phase 2) | `crates/rtsim-ecology` (engine); the Ice and Fire plugin is being built | Lairs, hunger, scheduled legs, grudges, heirs, boredom, predation, raids on districts and trains, save and restore |
+| Dragons (phase 2) | `crates/rtsim-ecology` (engine), `neoforge/iceandfire` (plugin `mic_rtsim_iceandfire`) | Lairs, hunger, scheduled legs, grudges, heirs, boredom, predation, raids on districts and trains, save and restore |
 | Industry | `crates/rtsim-industry` (engine), `neoforge/core` industry module and the `create` plugin | Districts learned at the boundary, replay between breakpoints, exactly-once reconcile on load, threats, train ports, a ledger on a Create display |
 | Persistence | phase 1, industry and dragons | Snapshot plus short log tail; restore gives the identical state hash |
 
@@ -63,6 +63,7 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 | Suite | Passing |
 |---|---|
 | core | 37 of 37 |
+| iceandfire | 7 of 7 |
 | ribbits | 5 of 5 |
 | carryon | 1 of 1 |
 | create | 14 of 14 |
@@ -77,13 +78,12 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 3. **O5: random processes and elapsed time.** Slots, or the new dyadic counts.
 4. **The industry stale-tick race:** four options.
 5. **G31:** how vanilla's reputation discount stacks on sim prices. Also whether Java should keep its own copy of the price math.
-6. **Dragons: M1 (breeding) was taken at its recommendation.** The In Control spawner change is a pack edit that waits for Ben.
+6. **Dragons: M1 (breeding) was taken at its recommendation.** The In Control spawner change is a pack edit that waits for Ben; the edits are ready, disabled, in `neoforge/iceandfire/pack-proposal/config/incontrol/`.
 7. **Plan facts the jars contradict:** `stealItems` is a pixie setting; the fire dragon is desert-only in effect; dragons do carry prey.
 
 ## Not done, or still running at the time of writing
 
 - **Kernel follow-ups:** paging under a memory budget, two save generations (P29), the parallel step and the P4 storage bench. They are on branch `overnight/kernel2`, not yet merged.
 - **Industry plugins:** PowerGrid, Destroy, Ore Excavation, Diesel Generators, Ender Transmission and threat sampling. Interrupted once by the API rate limit and resumed.
-- **The Ice and Fire Java plugin:** in progress.
 - **Not started:** ships, herds, conflict factions, kaiju, space and history generation.
 - **API rate limits interrupted several agents once.** Every interrupted branch was saved as a WIP commit and pushed before resuming.
