@@ -313,3 +313,47 @@ fn packages_written_while_unloaded_are_taken_from_the_vault_once() {
     let vault_delta: i64 = e.drain_commands().iter().filter_map(|c| match c { Cmd::ChunkReconcile(rc) => Some(rc.deltas.iter().filter(|x| x.inventory == 0).map(|x| x.delta).sum::<i64>()), _ => None }).sum();
     assert_eq!(vault_delta, -448, "the vault gives exactly what was packed into written packages");
 }
+
+/// Two districts on one Ender Transmission channel (I13): one exports into the shared buffer and
+/// the other imports from it while both are unloaded, in one cluster; the engine pushes the
+/// buffer's changes as channel deltas, and the books close.
+#[test]
+fn a_channel_couples_two_unloaded_districts() {
+    use rtsim_industry::cmd::Cmd;
+    use rtsim_industry::engine::Engine;
+    use rtsim_industry::ids::ChannelId;
+    use rtsim_industry::learn::{Learned, LinkKey};
+    use rtsim_industry::obs::{DistrictDecl, InventoryDecl, LoadState, SweepEnd};
+    let mut e = Engine::new(1, Tunables::default(), Mode::Apply, Tick(0));
+    e.define_good(BAR, GoodInfo::item("bar", 64));
+    let ch = ChannelId(42);
+    let send = |e: &mut Engine, at: u64, obs: Obs| e.ingest(&Timed { at: Tick(at), obs });
+    send(&mut e, 0, Obs::ChannelSample { channel: ch, capacity: 10_000, goods: GoodVec::new() });
+    for (d, stock, rate) in [(DistrictId(1), 3_000i64, -0.04f64), (DistrictId(2), 0, 0.03)] {
+        send(&mut e, 0, Obs::District(DistrictDecl { district: d, revision: 1, dim: 0, name: 0, not_learnable: None, inventory_count: 1 }));
+        send(&mut e, 0, Obs::Inventory(InventoryDecl { district: d, revision: 1, index: 0, pos: BlockPos::new(d.0 as i32 * 1_000, 64, 0), kind: InvKind(InvKind::ITEMS), item_slots: 200, fluid_capacity: 0, energy_capacity: 0 }));
+        send(&mut e, 0, Obs::LoadState { district: d, state: LoadState::Live, ticking_chunks: 1, total_chunks: 1 });
+        send(&mut e, 10, Obs::StockSample { district: d, inventory: 0, sweep: 1, goods: GoodVec::from_pairs([(BAR, stock)]) });
+        send(&mut e, 10, Obs::SweepEnd(SweepEnd { district: d, sweep: 1, records: 1, inventories: 1, live: true, creative: false, overstressed: false }));
+        e.adopt_model(d, Learned { at: Tick(10), window_ticks: 12_000, rates: vec![], links: vec![(LinkKey::Channel(ch, BAR), rate)], confidence: 1.0, points: 0, longest_gap: 0, latency_ticks: 0 }, vec![]);
+    }
+    for d in [DistrictId(1), DistrictId(2)] {
+        send(&mut e, 100, Obs::LoadState { district: d, state: LoadState::Unloaded, ticking_chunks: 0, total_chunks: 1 });
+    }
+    assert_eq!(e.cluster_count(), 1, "a shared channel makes one cluster");
+    e.advance_to(Tick(100 + 24_000));
+    let a = e.sim_stock(DistrictId(1)).unwrap().get(BAR);
+    let b = e.sim_stock(DistrictId(2)).unwrap().get(BAR);
+    // 3,000 bars leave A at 0.04 a tick (empty after 75,000 ticks); B takes 0.03 a tick.
+    assert!(a < 3_000 && b > 0, "a {a}, b {b}");
+    e.check_books().unwrap();
+    // The exporter's breakpoint and later events push the buffer's change by command.
+    e.advance_to(Tick(100 + 80_000));
+    let pushed: i64 = e.drain_commands().iter().map(|c| match c { Cmd::ChannelDelta(d) => d.goods.get(BAR), _ => 0 }).sum();
+    let a2 = e.sim_stock(DistrictId(1)).unwrap().get(BAR);
+    let b2 = e.sim_stock(DistrictId(2)).unwrap().get(BAR);
+    assert!(pushed > 0, "the exporter's changes reach the world: pushed {pushed}");
+    let c2 = e.channel_level(ch, BAR);
+    assert_eq!(a2 + b2 + c2, 3_000, "bars are only moved: a {a2}, b {b2}, channel {c2}");
+    e.check_books().unwrap();
+}

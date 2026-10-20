@@ -2040,6 +2040,24 @@ impl Engine {
         Some(stock_of(&v, d))
     }
 
+    /// A channel buffer's level of a good: the replay's (a read, committing nothing) while a
+    /// simulated district links it, else the last sample plus pushed changes.
+    pub fn channel_level(&mut self, ch: ChannelId, g: Good) -> i64 {
+        let now = self.now;
+        let holder = self
+            .channel_sims
+            .get(&ch)
+            .into_iter()
+            .flatten()
+            .find_map(|d| self.cluster_of.get(d).copied());
+        if let Some(h) = holder
+            && let Some(v) = self.clusters.read(h, now)
+        {
+            return v.level(PoolKey::Channel(ch, g));
+        }
+        self.channels.get(&ch).map_or(0, |c| c.known.get(g))
+    }
+
     /// The district's replay run state, if simulated.
     pub fn sim_run(&self, d: DistrictId) -> Option<Run> {
         let h = *self.cluster_of.get(&d)?;
