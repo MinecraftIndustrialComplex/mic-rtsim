@@ -66,6 +66,8 @@ public final class TrainWatch {
     /** Cargo at the head of arriveAt, before Create's own mail transfer moves packages (review finding 1). */
     private static final Map<UUID, List<Cargo>> ARRIVING = new HashMap<>();
     private static final List<Leaving> LEAVING = new ArrayList<>();
+    /** Goods the station's mail moved from the train into postboxes (minus the reverse) during the stop (choice Q6). */
+    private static final Map<UUID, Industry.GoodsCounter> MAIL = new HashMap<>();
 
     static long arrivals;
     static long departures;
@@ -81,6 +83,7 @@ public final class TrainWatch {
             if (ind == null || station == null || station.getBlockEntityPos() == null || station.getBlockEntityDimension() == null)
                 return;
             BlockPos pos = station.getBlockEntityPos();
+            MAIL.remove(train.id);
             if (ind.districtAt(station.getBlockEntityDimension(), ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4)) != null)
                 ARRIVING.put(train.id, cargo(ind, train));
         } catch (RuntimeException e) {
@@ -127,6 +130,7 @@ public final class TrainWatch {
         try {
             Industry ind = IndustryApi.current();
             Stop stop = AT_STATION.remove(train.id);
+            Industry.GoodsCounter mail = MAIL.remove(train.id);
             if (ind == null)
                 return;
             if (stop == null) {
@@ -154,6 +158,9 @@ public final class TrainWatch {
                     port.addAll(c.goods, 1);
                 for (Cargo c : now)
                     port.addAll(c.goods, -1);
+                // Mail went to postboxes, each counted by its own district as IND_PACKAGE (Q6), not here.
+                if (mail != null)
+                    port.addAll(mail, -1);
                 if (!port.isEmpty()) {
                     ind.port(d, IndRecords.Port.TRAIN_CARGO, IndRecords.NO_INVENTORY, CreateIds.of(train.id), 0, port);
                     cargoPorts++;
@@ -163,6 +170,17 @@ public final class TrainWatch {
         } catch (RuntimeException e) {
             MicRtsim.LOGGER.error("[mic_rtsim_create] observing a train's departure failed", e);
         }
+    }
+
+    /**
+     * The station's mail transfer moved these goods out of the train into postboxes (negative: from
+     * postboxes into the train), {@link MailWatch}. Taken out of the train's cargo port at departure.
+     */
+    static void mailMoved(Train train, Industry.GoodsCounter intoPostboxes) {
+        Industry ind = IndustryApi.current();
+        if (ind == null)
+            return;
+        MAIL.computeIfAbsent(train.id, k -> ind.counter()).addAll(intoPostboxes, 1);
     }
 
     /** Each tick: departures whose destination is known now (or that waited 40 ticks) are journaled. */
@@ -361,6 +379,7 @@ public final class TrainWatch {
     public static void forget(Train train) {
         AT_STATION.remove(train.id);
         ARRIVING.remove(train.id);
+        MAIL.remove(train.id);
         SEEN.remove(CreateIds.of(train.id));
     }
 
