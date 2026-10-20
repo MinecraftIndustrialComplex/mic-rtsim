@@ -103,6 +103,7 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 | 0x0406 | IND_LOAD_STATE | 0 unloaded, 1 partial, 2 live | 24 u64 district, 32 u32 tickingChunks, 36 u32 totalChunks | 40 |
 | 0x0407 | IND_CHUNK_LOADED | 0 | 24 u64 district, 32 u32 dim, 36 i32 x, 40 i32 z, 44 u32 appliedEpoch | 48 |
 | 0x0408 | IND_CONDITIONS | 0 | 24 u32 season, 28 u32 seasonCount, 32 i64 seasonLength, 40 i64 seasonOrigin | 48 |
+| 0x0409 | IND_POWER_LINK | 0 | 24 u64 sink, 32 u64 source (0: none, the coupling ends) | 40 |
 | 0x0410 | IND_PORT | n entries | 24 u64 district, 32 u32 portKind, 36 u32 inventory (0xFFFFFFFF none), 40 u64 counterpart, 48 u64 opId (0 none), 56 n × Entry16 (amount: + into the district) | 56 + 16n |
 | 0x0411 | IND_TRAIN_ARRIVED | n carriages | 24 u64 train, 32 u64 station, 40 u64 district, 48 u32 flags (1 simulated), 52 u32 reserved, 56 carriage blocks | 56 + blocks |
 | 0x0412 | IND_TRAIN_DEPARTED | n carriages | 24 u64 train, 32 u64 station, 40 u64 district, 48 u64 destination (0 none), 56 i64 etaTicks, 64 carriage blocks | 64 + blocks |
@@ -124,8 +125,9 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 
 **Codes:**
 - **Port kinds:** 1 train cargo, 2 package, 3 player container session, 4 player toss, 5 player pickup,
-  6 stock block broken by a player, 7 Ender Transmission channel (counterpart: channel), 8 an engine
-  command applied (reconcile, theft), 9 other.
+  6 stock block broken by a player, 7 Ender Transmission channel (counterpart: channel), 8 reserved
+  for engine commands applied (IND_RECONCILE_RESULT already counts as the port, so Java does not
+  send an IND_PORT for a reconcile), 9 other.
 - **Not-learnable reasons** (INDUSTRY.md §6): 1 rotation crosses the boundary, 2 electric line crosses
   the boundary, 3 mixture not steady, 4 finite deposit unknown, 5 moving contraption, 6 spawn-fed
   farm; others are shown as "not learnable".
@@ -172,6 +174,10 @@ port.
 
 **Results.** IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT report, per entry, what was asked and what
 was applied. A shortfall is not an error: the engine trims what it funded (§4.2).
+
+**Power lines.** IND_POWER_LINK is the PowerGrid plugin's: a `TransmissionLine` feeds the sink
+district's loads from the source district's generators. While both are simulated, the sink runs only
+while the source runs (I13). A source that is live is assumed to be running (F21).
 
 **Threat data.**
 - **IND_SPAWN_SAMPLE:** natural hostile spawns counted while a player was in the district at night,

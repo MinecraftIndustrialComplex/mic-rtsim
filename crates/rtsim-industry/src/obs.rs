@@ -435,6 +435,12 @@ pub enum Obs {
         applied_epoch: u32,
     },
     Conditions(Conditions),
+    /// A PowerGrid transmission line feeds `sink`'s loads from `source`'s generators (I13); `None`
+    /// removes the coupling.
+    PowerLink {
+        sink: DistrictId,
+        source: Option<DistrictId>,
+    },
     Port(PortTransfer),
     TrainArrived(TrainCall),
     TrainDeparted(TrainDeparture),

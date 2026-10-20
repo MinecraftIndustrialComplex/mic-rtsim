@@ -49,6 +49,7 @@ pub const IND_DISCARD: u16 = 0x0405;
 pub const IND_LOAD_STATE: u16 = 0x0406;
 pub const IND_CHUNK_LOADED: u16 = 0x0407;
 pub const IND_CONDITIONS: u16 = 0x0408;
+pub const IND_POWER_LINK: u16 = 0x0409;
 pub const IND_PORT: u16 = 0x0410;
 pub const IND_TRAIN_ARRIVED: u16 = 0x0411;
 pub const IND_TRAIN_DEPARTED: u16 = 0x0412;
@@ -69,7 +70,7 @@ pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 pub const IND_LEDGER: u16 = 0x8405;
 
-const OBS_KINDS: [u16; 25] = [
+const OBS_KINDS: [u16; 26] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
@@ -84,6 +85,7 @@ const OBS_KINDS: [u16; 25] = [
     IND_LOAD_STATE,
     IND_CHUNK_LOADED,
     IND_CONDITIONS,
+    IND_POWER_LINK,
     IND_PORT,
     IND_TRAIN_ARRIVED,
     IND_TRAIN_DEPARTED,
@@ -588,6 +590,12 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u64(district.0);
             w.finish()
         }
+        Obs::PowerLink { sink, source } => {
+            let mut w = W::obs(out, IND_POWER_LINK, 0, seq, at);
+            w.put_u64(sink.0);
+            w.put_u64(source.map_or(0, |d| d.0));
+            w.finish()
+        }
         Obs::Edit {
             district,
             kind,
@@ -885,6 +893,14 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             check(kind, size, 32)?;
             Obs::DistrictRemoved {
                 district: r.district(24),
+            }
+        }
+        IND_POWER_LINK => {
+            check(kind, size, 40)?;
+            let source = r.get_u64(32);
+            Obs::PowerLink {
+                sink: r.district(24),
+                source: (source != 0).then_some(DistrictId(source)),
             }
         }
         IND_EDIT => {
@@ -1512,6 +1528,14 @@ mod tests {
                 energy_capacity: 1_000_000,
             }),
             Obs::DistrictRemoved { district: d },
+            Obs::PowerLink {
+                sink: d,
+                source: Some(DistrictId(77)),
+            },
+            Obs::PowerLink {
+                sink: d,
+                source: None,
+            },
             Obs::ChunkLoaded {
                 district: d,
                 chunk: ChunkPos {
@@ -1943,6 +1967,7 @@ mod tests {
             Obs::DistrictChunks { chunks, .. } => 40 + 8 * chunks.len(),
             Obs::Inventory(_) => 72,
             Obs::DistrictRemoved { .. } => 32,
+            Obs::PowerLink { .. } => 40,
             Obs::Edit { .. } => 64,
             Obs::Discard { .. } => 32,
             Obs::LoadState { .. } => 40,
@@ -1973,6 +1998,7 @@ mod tests {
             Obs::DistrictChunks { .. } => 0x0401,
             Obs::Inventory(_) => 0x0402,
             Obs::DistrictRemoved { .. } => 0x0403,
+            Obs::PowerLink { .. } => 0x0409,
             Obs::Edit { .. } => 0x0404,
             Obs::Discard { .. } => 0x0405,
             Obs::LoadState { .. } => 0x0406,
@@ -2104,7 +2130,7 @@ mod tests {
 
     #[test]
     fn kind_constants_match_the_spec_table() {
-        let spec: [(u16, u16); 25] = [
+        let spec: [(u16, u16); 26] = [
             (IND_STOCK_SAMPLE, 0x0040),
             (IND_SWEEP_END, 0x0041),
             (IND_DEPOSIT_SAMPLE, 0x0042),
@@ -2119,6 +2145,7 @@ mod tests {
             (IND_LOAD_STATE, 0x0406),
             (IND_CHUNK_LOADED, 0x0407),
             (IND_CONDITIONS, 0x0408),
+            (IND_POWER_LINK, 0x0409),
             (IND_PORT, 0x0410),
             (IND_TRAIN_ARRIVED, 0x0411),
             (IND_TRAIN_DEPARTED, 0x0412),

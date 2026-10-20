@@ -4,6 +4,8 @@
 pub mod cluster;
 pub mod cmd;
 pub mod deposit;
+pub mod district;
+pub mod engine;
 pub mod ids;
 pub mod learn;
 pub mod obs;
