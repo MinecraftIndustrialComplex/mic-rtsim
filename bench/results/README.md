@@ -7,6 +7,9 @@ measurements, the fitted slopes and contracts, the machine, the git commit and t
 The hand-over bench (Java submit to engine publish, through JNI and mic_native's background pool)
 has its own page: [handover.md](handover.md), with its `handover-<date>-<time>-gametest.json` runs.
 
+The restore bench (the phase 1 world's snapshot against replaying its whole input log) has its own
+page: [restore.md](restore.md), with its `restore-<date>-<time>-<N>m-<D>d.json` runs.
+
 ## How to read them
 
 - **Sweeps** vary one count across orders of magnitude and hold the rest at the baseline in the JSON

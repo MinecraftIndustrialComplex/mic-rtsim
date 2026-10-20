@@ -1219,6 +1219,7 @@ impl Engine {
                     st.resend.retain(|(_, o, _)| *o != op);
                 }
                 st.world.apply_journaled(rec, replayed);
+                dragons::catch_up(st, rec);
                 phase1::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
