@@ -519,6 +519,14 @@ public final class StubEngine implements Engine {
         });
     }
 
+    /**
+     * Test helper: makes the next scripted command carry {@code next} as its sequence, as an engine
+     * whose counter went backwards would. Java must skip anything at or below its last applied one.
+     */
+    public synchronized void rewindCommandSequence(long next) {
+        nextCmdSeq = next;
+    }
+
     // ---- inspection -----------------------------------------------------------------------------
 
     /** The last saved pages: what survives a crash. */
