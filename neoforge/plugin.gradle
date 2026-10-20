@@ -1,0 +1,111 @@
+// Shared build logic of the industry plugins (overnight agent 14: powergrid, destroy, oreexcavation,
+// dieselgenerators, endertransmission, climate, radar; docs/overnight-choices-indplugins.md Q1). Each
+// plugin's build.gradle applies the two plugins in its own plugins block (the root declares ModDevGradle
+// unapplied), sets what it needs, then applies this file:
+//
+//   ext.packJars   = ['mod.jar', ...]     // compileOnly and runtimeOnly: the mod it is built around and its dependencies
+//   ext.runtimeJars = ['dep.jar', ...]    // runtimeOnly only: dependencies the code never names
+//   ext.createLibs = true                 // also compile against Create's jar-in-jar libraries (Ponder, Flywheel, Registrate)
+//
+// The jars come from the pack's own mods folder (gradle.properties: packMods; -PpackMods to point
+// elsewhere), never bundled. The GameTest server runs every @GameTest in the plugin's namespace on the
+// session's engine: native unless -PrtsimEngine=stub (choice W17: industry commands are scripted on either).
+evaluationDependsOn(':core')
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    mavenCentral()
+}
+
+def packModsDir = rootProject.file(project.findProperty('packMods') ?: rootProject.packMods).absolutePath
+def packFiles = files((project.ext.has('packJars') ? project.ext.packJars : []).collect { "${packModsDir}/${it}" })
+def runtimeFiles = files((project.ext.has('runtimeJars') ? project.ext.runtimeJars : []).collect { "${packModsDir}/${it}" })
+
+// Create's jar-in-jar libraries, for compiling only (the full Create jar carries them at runtime).
+def createJarFile = file("${packModsDir}/${rootProject.findProperty('create_jar') ?: 'create-1.21.1-6.0.10.jar'}")
+def createLibsDir = layout.buildDirectory.dir('create-jarjar')
+def extractCreateLibs = tasks.register('extractCreateLibs', Copy) {
+    from(zipTree(createJarFile)) {
+        include 'META-INF/jarjar/*.jar'
+        eachFile { it.path = it.name }
+        includeEmptyDirs = false
+    }
+    into createLibsDir
+}
+def createLibFiles = files({ fileTree(createLibsDir.get().asFile).matching { include '*.jar' }.files }) { builtBy extractCreateLibs }
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            jvmArgument '-Xmx4G'
+            if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
+            gameDirectory = file('run-gametest')
+        }
+    }
+
+    mods {
+        "mic_rtsim" {
+            sourceSet(project(':core').sourceSets.main)
+        }
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+dependencies {
+    implementation project(':core')
+    runtimeOnly project(':core').micNativeFiles
+    compileOnly packFiles
+    runtimeOnly packFiles
+    runtimeOnly runtimeFiles
+    if (project.ext.has('createLibs') && project.ext.createLibs)
+        compileOnly createLibFiles
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}

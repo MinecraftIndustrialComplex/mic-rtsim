@@ -1,0 +1,17 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_radar (A1, A19): Create Radars and Create Big Cannons for mic-rtsim industry: auto-firing turrets in the defence survey (I21). Its own jar and mod id, built around the pack's own jars (never bundled);
+// the shared build logic is ../plugin.gradle.
+ext.packJars = [
+    'create-1.21.1-6.0.10.jar',
+    'createbigcannons-5.11.7+mc.1.21.1.jar',
+    'create_radar-0.4.9.4-1.21.1.jar',
+    'ritchiesprojectilelib-2.1.2+mc.1.21.1-neoforge.jar'
+]
+ext.runtimeJars = []
+ext.createLibs = true
+
+apply from: rootProject.file('plugin.gradle')

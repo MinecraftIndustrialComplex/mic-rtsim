@@ -1,0 +1,16 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_destroy (A1, A19): Destroy for mic-rtsim industry: pollution attributed to districts (I14), chunk crude oil as a finite deposit (I11). Its own jar and mod id, built around the pack's own jars (never bundled);
+// the shared build logic is ../plugin.gradle.
+ext.packJars = [
+    'create-1.21.1-6.0.10.jar',
+    'destroy-1.21.1-0.4.1.jar',
+    'petrolpark-1.21.1-1.5.11.jar'
+]
+ext.runtimeJars = []
+ext.createLibs = true
+
+apply from: rootProject.file('plugin.gradle')

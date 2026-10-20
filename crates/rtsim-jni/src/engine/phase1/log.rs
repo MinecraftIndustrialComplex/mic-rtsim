@@ -72,12 +72,22 @@ pub enum Input {
         caravan: u64,
         goods: Vec<(u16, Amount)>,
     },
-    /// A member taken (`killed` false) or killed; `player` (0, 0) is nobody known.
+    /// A member taken (`killed` false) or killed; `player` (0, 0) is nobody known. Its planned
+    /// cargo leaves with it (the sim's own books, before Review P3).
     Member {
         caravan: u64,
         member: u32,
         player: Uuid,
         killed: bool,
+    },
+    /// The same, booking exactly what the bridge saw it hold (its MEMBER_STATE's items the sim
+    /// trades; Review P3, Ben: "Book what was really there").
+    MemberHeld {
+        caravan: u64,
+        member: u32,
+        player: Uuid,
+        killed: bool,
+        held: Vec<(u16, Amount)>,
     },
     /// A player hurt a caravan member, or killed a mob attacking one.
     CaravanReport {
@@ -261,6 +271,23 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
                 (Some(a), true) => w.kill_member(c, m, a).is_none(),
                 (Some(a), false) => w.take_member(c, m, a).is_none(),
                 (None, k) => w.lose_member(c, m, !k).is_none(),
+            };
+        }
+        Input::MemberHeld {
+            caravan,
+            member,
+            player: p,
+            killed,
+            held,
+        } => {
+            let c = car(*caravan);
+            let m = *member as usize;
+            let held = goods_map(held);
+            let held = Some(&held);
+            out.refused = match (player(w, *p), killed) {
+                (Some(a), true) => w.kill_member_holding(c, m, a, held).is_none(),
+                (Some(a), false) => w.take_member_holding(c, m, a, held).is_none(),
+                (None, k) => w.lose_member_holding(c, m, !k, held).is_none(),
             };
         }
         Input::CaravanReport {
@@ -506,6 +533,20 @@ impl Logged {
                 w.u8(13);
                 w.u64(*op);
             }
+            Input::MemberHeld {
+                caravan,
+                member,
+                player,
+                killed,
+                held,
+            } => {
+                w.u8(14);
+                w.u64(*caravan);
+                w.u32(*member);
+                put_uuid(w, player);
+                w.u8(u8::from(*killed));
+                put_goods(w, held);
+            }
         }
     }
 
@@ -586,6 +627,13 @@ impl Logged {
                 player: get_uuid(r)?,
             },
             13 => Input::HousePlaced { op: r.u64()? },
+            14 => Input::MemberHeld {
+                caravan: r.u64()?,
+                member: r.u32()?,
+                player: get_uuid(r)?,
+                killed: r.u8()? != 0,
+                held: get_goods(r)?,
+            },
             t => return Err(CodecError::Invalid(format!("phase 1 input tag {t}"))),
         };
         Ok(Logged { at, input })
@@ -670,6 +718,13 @@ mod tests {
                 player: p,
             },
             Input::HousePlaced { op: 42 },
+            Input::MemberHeld {
+                caravan: 5,
+                member: 1,
+                player: p,
+                killed: false,
+                held: vec![(7, 3_000), (0, 1_000)],
+            },
         ];
         let mut w = Writer::new();
         for (i, input) in inputs.iter().enumerate() {

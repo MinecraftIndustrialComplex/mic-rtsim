@@ -237,6 +237,8 @@ impl Encode for Edge {
         self.stops.iter().for_each(|s| w.var_u64(*s as u64));
         w.u8(self.medium as u8);
         w.var_i64(self.cap_slot_milli);
+        w.var_u64(self.msg_period);
+        w.var_u64(self.msg_walk);
     }
 }
 
@@ -256,6 +258,8 @@ impl Decode for Edge {
         let medium =
             Medium::from_u8(m).ok_or_else(|| CodecError::Invalid(format!("medium {m}")))?;
         let cap_slot_milli = r.var_i64()?;
+        let msg_period = r.var_u64()?;
+        let msg_walk = r.var_u64()?;
         Ok(Edge {
             a,
             b,
@@ -268,6 +272,8 @@ impl Decode for Edge {
             stops,
             medium,
             cap_slot_milli,
+            msg_period,
+            msg_walk,
         })
     }
 }

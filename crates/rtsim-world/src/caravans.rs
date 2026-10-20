@@ -349,18 +349,25 @@ impl World {
     /// A player leashes or picks up a member (A10): it leaves the sim with what it carries, and
     /// the caravan reports a theft. The rest of the group carries on as one unit (C25).
     pub fn take_member(&mut self, c: CaravanId, member: usize, player: ActorId) -> Option<Attack> {
+        self.take_member_holding(c, member, player, None)
+    }
+
+    /// [`World::take_member`] with what the member really held (`held`, the bridge's
+    /// MEMBER_STATE; Review P3): exactly that leaves the sim, not its planned cargo
+    /// ([`World::take_member_held`]).
+    pub fn take_member_holding(
+        &mut self,
+        c: CaravanId,
+        member: usize,
+        player: ActorId,
+        held: Option<&BTreeMap<GoodId, Amount>>,
+    ) -> Option<Attack> {
         let at = self.now;
-        let car = self.caravans.get_mut(c)?;
-        let m = car.members.get_mut(member)?;
+        let m = self.caravans.get(c)?.members.get(member)?;
         if !m.present {
             return None;
         }
-        m.present = false;
-        let mut taken = BTreeMap::new();
-        for (g, a) in std::mem::take(&mut m.cargo) {
-            *self.outside.player_out.entry(g).or_default() += i128::from(a);
-            taken.insert(g, a);
-        }
+        let taken = self.member_leaves(c, member, held, true);
         let report = self.report(player, c, ReportKind::Theft, at)?;
         Some(Attack {
             taken,
@@ -373,23 +380,28 @@ impl World {
     /// the trader's grudge passes to its home market (C24: heirs inherit grudges), and the group
     /// breaks up.
     pub fn kill_member(&mut self, c: CaravanId, member: usize, player: ActorId) -> Option<Attack> {
+        self.kill_member_holding(c, member, player, None)
+    }
+
+    /// [`World::kill_member`] with what the member really held when it died (`held`, the
+    /// bridge's MEMBER_STATE; Review P3): exactly that drops and leaves the sim.
+    pub fn kill_member_holding(
+        &mut self,
+        c: CaravanId,
+        member: usize,
+        player: ActorId,
+        held: Option<&BTreeMap<GoodId, Amount>>,
+    ) -> Option<Attack> {
         let at = self.now;
-        let car = self.caravans.get_mut(c)?;
-        let m = car.members.get_mut(member)?;
+        let m = self.caravans.get(c)?.members.get(member)?;
         if !m.alive || !m.present {
             return None;
         }
-        m.alive = false;
-        m.present = false;
         let leader = matches!(
             m.body,
             rtsim_travel::Body::Trader | rtsim_travel::Body::RibbitMerchant
         );
-        let mut taken = BTreeMap::new();
-        for (g, a) in std::mem::take(&mut m.cargo) {
-            *self.outside.player_out.entry(g).or_default() += i128::from(a);
-            taken.insert(g, a);
-        }
+        let taken = self.member_leaves(c, member, held, false);
         let report = self.report(player, c, ReportKind::Killing, at)?;
         if leader {
             if let Some(n) = self.caravans.get(c).and_then(|x| x.notable)
@@ -404,6 +416,117 @@ impl World {
             outcome: self.decide_after_attack(c, at),
             report,
         })
+    }
+
+    /// Member `member` leaves the group (taken alive, or dead), and what it carried leaves the
+    /// sim to the world: with `held` (what the bridge saw in its chest or pack), exactly that,
+    /// out of the row ([`World::take_member_held`]); without it, its planned cargo, as before Review P3.
+    /// Returns what left.
+    pub(crate) fn member_leaves(
+        &mut self,
+        c: CaravanId,
+        member: usize,
+        held: Option<&BTreeMap<GoodId, Amount>>,
+        alive: bool,
+    ) -> BTreeMap<GoodId, Amount> {
+        let taken = match held {
+            Some(h) => self.take_member_held(c, member, h),
+            None => {
+                let Some(m) = self
+                    .caravans
+                    .get_mut(c)
+                    .and_then(|car| car.members.get_mut(member))
+                else {
+                    return BTreeMap::new();
+                };
+                let mut taken = BTreeMap::new();
+                for (g, a) in std::mem::take(&mut m.cargo) {
+                    *self.outside.player_out.entry(g).or_default() += i128::from(a);
+                    taken.insert(g, a);
+                }
+                taken
+            }
+        };
+        if let Some(m) = self
+            .caravans
+            .get_mut(c)
+            .and_then(|car| car.members.get_mut(member))
+        {
+            m.present = false;
+            if !alive {
+                m.alive = false;
+            }
+        }
+        if held.is_some() {
+            self.hand_on_planned(c, member);
+        }
+        taken
+    }
+
+    /// Takes what member `member` really held out of caravan `c`'s row (Review P3: book exactly
+    /// the items the bridge reports, never the planned cargo). Each good comes from the member's
+    /// own planned cargo first, then the purse (which rides in the last carrier's chest, choice
+    /// V12), then the other members' cargo; never more than the row holds (a chest holding what
+    /// the sim never put there is not the sim's to book). What leaves is booked to the world.
+    pub fn take_member_held(
+        &mut self,
+        c: CaravanId,
+        member: usize,
+        held: &BTreeMap<GoodId, Amount>,
+    ) -> BTreeMap<GoodId, Amount> {
+        let mut taken = BTreeMap::new();
+        let Some(car) = self.caravans.get_mut(c) else {
+            return taken;
+        };
+        if member >= car.members.len() {
+            return taken;
+        }
+        for (&g, &want) in held {
+            if want <= 0 {
+                continue;
+            }
+            let mut left = want;
+            if let Some(have) = car.members[member].cargo.get_mut(&g) {
+                let t = (*have).min(left).max(0);
+                *have -= t;
+                left -= t;
+            }
+            if left > 0 {
+                left -= car.take_purse(g, left);
+            }
+            if left > 0 {
+                left -= car.take(g, left);
+            }
+            let got = want - left;
+            if got > 0 {
+                taken.insert(g, got);
+                *self.outside.player_out.entry(g).or_default() += i128::from(got);
+            }
+        }
+        taken
+    }
+
+    /// What a member that left was planned to carry and did not hold stays in the sim with the
+    /// rest of the group (the next carrier takes it); with nobody left, it leaves with the group.
+    fn hand_on_planned(&mut self, c: CaravanId, member: usize) {
+        let Some(car) = self.caravans.get_mut(c) else {
+            return;
+        };
+        let Some(m) = car.members.get_mut(member) else {
+            return;
+        };
+        let rest = std::mem::take(&mut m.cargo);
+        let anyone = car.members.iter().any(|m| m.present);
+        for (g, a) in rest {
+            if a == 0 {
+                continue;
+            }
+            if anyone {
+                car.give(g, a);
+            } else {
+                *self.outside.player_out.entry(g).or_default() += i128::from(a);
+            }
+        }
     }
 
     /// After an attack: with no leader the group breaks up (what is left leaves the sim with the

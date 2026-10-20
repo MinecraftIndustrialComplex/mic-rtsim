@@ -963,6 +963,14 @@ public final class Districts {
         int kind = c.kind;
         int slots = 0;
         long fluid = 0, energy = 0;
+        if ((kind & IndRecords.Inventory.KIND_PLUGIN) != 0) {
+            // A plugin's own store (a PowerGrid battery): its shape comes from the plugin, not capabilities.
+            for (IndustryPlugin plugin : IndustryApi.PLUGINS) {
+                long[] shape = plugin.describe(level, c.pos);
+                if (shape != null && shape.length == 4)
+                    return new District.Inventory(0, c.pos, kind | (int) shape[0], (int) shape[1], shape[2], shape[3]);
+            }
+        }
         IItemHandler items = StockAccess.items(level, c.pos);
         if (items != null) {
             kind |= IndRecords.Inventory.KIND_ITEMS;

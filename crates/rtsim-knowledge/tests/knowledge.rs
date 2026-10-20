@@ -140,8 +140,9 @@ fn reports_expire_into_counters() {
     let mut c = BoardCursor::default();
     let p = w.k.packet_since(w.oakford, &mut c);
     w.k.deliver(w.brindle, &p, Tick(10));
-    // Robbery lives 1.5 days (P18's recommendation, Veloren's theft lifetime).
-    let life = TICKS_PER_DAY * 3 / 2;
+    // Robbery lives 6 days (P18, lengthened now that news travels separately; TUNABLE).
+    let life = TICKS_PER_DAY * 6;
+    assert_eq!(w.k.tunables().lifetime(ReportKind::Robbery), life);
     assert_eq!(w.k.next_expiry(), Some(Tick(life)));
     assert_eq!(w.k.expire_due(Tick(life - 1)), 0);
     assert_eq!(w.k.expire_due(Tick(life)), 1);
