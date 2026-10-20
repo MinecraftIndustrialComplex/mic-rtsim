@@ -40,6 +40,7 @@ use rtsim_kernel::handle::Arena;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
+use rtsim_space::topology::{CONE_CLEARANCE, Iso, STOP_MARGIN, SharedTopologies, Topology};
 use rtsim_travel::legs::{LegIndex, Meeting, Owner, Path, REGION_BLOCKS, Stamp};
 use serde::Serialize;
 
@@ -246,6 +247,8 @@ pub struct Herds {
     pub predations: Vec<PreyRecord>,
     pub(crate) next_seed: u64,
     pub(crate) now: Tick,
+    /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
+    pub topo: SharedTopologies,
 }
 
 fn day_of(t: Tick) -> i64 {
@@ -256,8 +259,12 @@ fn dayf(t: Tick) -> f64 {
     t.0 as f64 / TICKS_PER_DAY as f64
 }
 
-fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
-    (((a.0 - b.0) as f64).powi(2) + ((a.1 - b.1) as f64).powi(2)).sqrt()
+/// The shortest distance through every seam; on the plane the old straight line, bit for bit.
+fn dist(t: &Topology, a: (i64, i64), b: (i64, i64)) -> f64 {
+    if t.is_flat() {
+        return (((a.0 - b.0) as f64).powi(2) + ((a.1 - b.1) as f64).powi(2)).sqrt();
+    }
+    t.dist(a, b)
 }
 
 /// Area of the intersection of two discs of radii `r1`, `r2` whose centres are `d` apart.
@@ -311,12 +318,78 @@ impl Herds {
             predations: Vec::new(),
             next_seed: 0,
             now,
+            topo: rtsim_space::topology::all_flat(),
         };
         let subs = h.subs();
         let n = subs.index(now);
         let next_year = subs.start((Subs::year(n) + 1) * 12);
         h.wheel.schedule(next_year, Ev::Year);
         h
+    }
+
+    /// Hands the engine every frame's topology (TP6). The region index is rebuilt.
+    pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if *t != *self.topo {
+            self.topo = t;
+            self.rebuild_regions();
+        }
+    }
+
+    /// The topology of `frame`.
+    pub fn topo(&self, frame: u16) -> &Topology {
+        self.topo.of(frame)
+    }
+
+    /// A herd's canonical position at `t`: its route's chart position folded (TP7).
+    fn at_pos(&self, x: &Herd, t: Tick) -> (i64, i64) {
+        let p = x.route.pos(t);
+        self.topo(x.frame).canonical(p.0, p.1)
+    }
+
+    /// The canonical regions of a square of half-side `r` around a block, across seams.
+    fn regions_near(&self, frame: u16, x: i64, z: i64, r: i64) -> Vec<(i64, i64)> {
+        let mut out = Vec::new();
+        for part in self.topo(frame).rects_near(x, z, r) {
+            let (x0, z0, x1, z1) = part.grid_cells(REGION_BLOCKS);
+            for rx in x0..=x1 {
+                for rz in z0..=z1 {
+                    out.push((rx, rz));
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Where the bodies of an embodied herd are sent: its next waypoint in their frame (TP11).
+    /// `None` when the walk there crosses an edge_stop seam within reach of the herd now, so it
+    /// is dematerialized first (TP12); short of that the waypoint is pulled back to the border.
+    fn body_target(&self, x: &Herd, chart: Iso, at: Tick) -> Option<(i32, i32)> {
+        let w = x.route.heading(at);
+        let t = self.topo(x.frame);
+        if t.any_stopped() {
+            let p = x.route.pos(at);
+            let f = t.fold(p.0, p.1);
+            let wc = f.iso.cell(i64::from(w.0), i64::from(w.1));
+            if let Some(cut) = t.stopped_crossing((f.x, f.z), wc) {
+                let (dx, dz) = (wc.0 - f.x, wc.1 - f.z);
+                let left = cut * ((dx * dx + dz * dz) as f64).sqrt();
+                if left <= f64::from(self.tun.hysteresis) + 4.0 * STOP_MARGIN as f64 {
+                    return None;
+                }
+                let stop = (
+                    f.x + (dx as f64 * cut) as i64,
+                    f.z + (dz as f64 * cut) as i64,
+                );
+                let back = f.iso.inverse().cell(stop.0, stop.1);
+                let b = chart.cell(back.0, back.1);
+                let (bx, bz) = t.off_stopped(b.0, b.1);
+                return Some((bx as i32, bz as i32));
+            }
+        }
+        let b = chart.cell(i64::from(w.0), i64::from(w.1));
+        Some((b.0 as i32, b.1 as i32))
     }
 
     /// An engine with no herds and a uniform climate: a placeholder to swap with.
@@ -374,9 +447,9 @@ impl Herds {
         x.cohorts(self.tun.species(x.species), self.year_days(), day_of(t))
     }
 
-    /// Where a herd's centre is at `t` (closed form).
+    /// Where a herd's centre is at `t` (closed form), canonical.
     pub fn position(&self, h: HerdId, t: Tick) -> (i64, i64) {
-        self.herds[h].route.pos(t)
+        self.at_pos(&self.herds[h], t)
     }
 
     pub fn footprint(&self, h: HerdId, t: Tick) -> u32 {
@@ -508,7 +581,7 @@ impl Herds {
             next_index: next,
             condition: [800; 3],
             satisfaction: 1000,
-            route: Route::stay(n.pos, at, at),
+            route: Route::stay(self.topo(n.frame).canonical_i32(n.pos.0, n.pos.1), at, at),
             reach: 0,
             plan: 0,
             bred_year: Subs::year(subs.index(at)),
@@ -609,8 +682,10 @@ impl Herds {
         }
         let alive = self.count(h, at);
         if alive == 0 {
+            let end = self.herds[h].route.end();
+            let end = self.topo(self.herds[h].frame).canonical_i32(end.0, end.1);
             let x = self.herds.get_mut(h).expect("live");
-            x.route = Route::stay(x.route.end(), at, at);
+            x.route = Route::stay(end, at, at);
             x.next_decide = Tick(u64::MAX);
             self.set_regions(h, Vec::new());
             self.note(at, "extinct", Some(h), "the last animal died".into());
@@ -635,8 +710,14 @@ impl Herds {
         let count = self.count(h, at);
         let x = &self.herds[h];
         let sp = self.tun.species(x.species);
-        let from = x.route.pos(at);
+        // The new route starts at the canonical position (TP7): its chart is the canonical frame
+        // there, so an embodied group's frame is carried over to it.
+        let chart_now = x.route.pos(at);
+        let folded = self.topo(x.frame).fold(chart_now.0, chart_now.1);
+        let from = (folded.x, folded.z);
+        let topo = self.topo.clone();
         let choice = route::plan(&Ask {
+            topo: topo.of(x.frame),
             climate: &*self.climate,
             subs: &subs,
             forage: &self.forage,
@@ -653,8 +734,12 @@ impl Herds {
         });
         self.stats.cells_reached += u64::from(choice.cells_reached);
         let frame = x.frame;
-        let tc = cell_of(i64::from(choice.target.0), i64::from(choice.target.1));
-        self.claims.insert((frame, tc.0, tc.1), h.to_bits());
+        let tc = topo
+            .of(frame)
+            .grid(i64::from(CELL_BLOCKS))
+            .of_block(i64::from(choice.target.0), i64::from(choice.target.1));
+        self.claims
+            .insert((frame, tc.0 as i32, tc.1 as i32), h.to_bits());
         if self.trace_enabled {
             let x = &self.herds[h];
             let sp = self.tun.species(x.species);
@@ -681,8 +766,11 @@ impl Herds {
             x.route = choice.route;
             x.reach = radius;
             x.plan = x.plan.wrapping_add(1);
+            if let Some(e) = x.embodied.as_mut() {
+                e.chart = e.chart.compose(folded.iso.inverse());
+            }
         }
-        let regions = route_regions(&self.herds[h].route, frame, radius);
+        let regions = route_regions(&self.herds[h].route, frame, radius, topo.of(frame));
         self.set_regions(h, regions);
         self.steer(h, at);
         self.meet_players(legs, h, at);
@@ -718,7 +806,7 @@ impl Herds {
             if x.next_decide == Tick(u64::MAX) || x.reach == 0 {
                 continue;
             }
-            let regions = route_regions(&x.route, x.frame, x.reach);
+            let regions = route_regions(&x.route, x.frame, x.reach, self.topo.of(x.frame));
             self.set_regions(h, regions);
         }
     }
@@ -737,21 +825,34 @@ impl Herds {
         let sp = self.tun.species(x.species).clone();
         let count = x.alive(&sp, yd, day);
         let demand = count as f64 * sp.intake_per_day * days;
-        let centre = x.route.pos(at);
+        let centre = self.at_pos(x, at);
         let frame = x.frame;
         let r = f64::from(sp.footprint_radius(count));
         let c0 = cell_of(centre.0, centre.1);
         let span = (r / f64::from(CELL_BLOCKS)).ceil() as i32;
+        let t = self.topo(frame);
+        let grid = t.grid(i64::from(CELL_BLOCKS));
         let mut cells = Vec::new();
         for dx in -span..=span {
             for dz in -span..=span {
+                // The footprint in the chart of the herd's position, each cell grazed at its
+                // canonical cell, once (TP14).
                 let c = (c0.0 + dx, c0.1 + dz);
                 let cc = super::forage::centre_of(c);
-                if dist((i64::from(cc.0), i64::from(cc.1)), centre)
-                    <= r + f64::from(CELL_BLOCKS) / 2.0
-                    && self.climate.terrain(frame, c.0, c.1).is_finite()
+                let k = if t.is_flat() {
+                    c
+                } else {
+                    let (kx, kz) = grid.canonical(i64::from(c.0), i64::from(c.1));
+                    (kx as i32, kz as i32)
+                };
+                let d = (((i64::from(cc.0) - centre.0) as f64).powi(2)
+                    + ((i64::from(cc.1) - centre.1) as f64).powi(2))
+                .sqrt();
+                if d <= r + f64::from(CELL_BLOCKS) / 2.0
+                    && self.climate.terrain(frame, k.0, k.1).is_finite()
+                    && !cells.contains(&(frame, k.0, k.1))
                 {
-                    cells.push((frame, c.0, c.1));
+                    cells.push((frame, k.0, k.1));
                 }
             }
         }
@@ -897,8 +998,10 @@ impl Herds {
         let p = &self.players[slot as usize];
         let keep = p.interest.and_then(|s| {
             let row = legs.get(s.leg).filter(|r| r.generation == s.generation)?;
-            let (dx, dz) = (row.path.x0 - pos.x, row.path.z0 - pos.z);
-            let moved = i64::from(dx).pow(2) + i64::from(dz).pow(2);
+            let moved = self.topo(pos.frame).dist_sq(
+                (i64::from(row.path.x0), i64::from(row.path.z0)),
+                (i64::from(pos.x), i64::from(pos.z)),
+            ) as i64;
             let quarter = i64::from(view / 4).pow(2);
             (row.path.frame == pos.frame && moved <= quarter && row.path.t1.0 >= at.0 + window)
                 .then_some(s)
@@ -923,25 +1026,13 @@ impl Herds {
             None => legs.book(path, player_owner(slot)),
         };
         self.players[slot as usize].interest = Some(stamp);
-        // Herds whose routes pass near.
+        // Herds whose routes pass near, across seams.
         let reach = i64::from(view) + 1_024;
         let (x, z) = (i64::from(pos.x), i64::from(pos.z));
-        let (a, b) = (
-            (
-                (x - reach).div_euclid(REGION_BLOCKS),
-                (z - reach).div_euclid(REGION_BLOCKS),
-            ),
-            (
-                (x + reach).div_euclid(REGION_BLOCKS),
-                (z + reach).div_euclid(REGION_BLOCKS),
-            ),
-        );
         let mut near = BTreeSet::new();
-        for rx in a.0..=b.0 {
-            for rz in a.1..=b.1 {
-                if let Some(s) = self.regions.get(&(pos.frame, rx, rz)) {
-                    near.extend(s.iter().copied());
-                }
+        for (rx, rz) in self.regions_near(pos.frame, x, z, reach) {
+            if let Some(s) = self.regions.get(&(pos.frame, rx, rz)) {
+                near.extend(s.iter().copied());
             }
         }
         for h in near {
@@ -1042,6 +1133,9 @@ impl Herds {
         let r = self.footprint(h, at);
         let depth = self.tun.depth.min(r.saturating_sub(1));
         let (a, b) = (x.route.pos(t0), x.route.pos(t1));
+        // A leg from the canonical start to the end in the same chart (TP7).
+        let f = self.topo(x.frame).fold(a.0, a.1);
+        let (a, b) = ((f.x, f.z), f.iso.cell(b.0, b.1));
         let path = Path {
             frame: x.frame,
             x0: a.0 as i32,
@@ -1100,7 +1194,33 @@ impl Herds {
         let view = f64::from(self.tun.view_radius);
         let p = (i64::from(ppos.x), i64::from(ppos.z));
         let window = legs.window_ticks();
-        let (dmin, _) = self.herds[h].route.closest(p, at, at + 2 * window);
+        // The herd's centre and the image of it on the player's side (TP11); across an
+        // edge_stop seam it stays abstract (TP12).
+        let topo = self.topo.clone();
+        let t = topo.of(self.herds[h].frame);
+        let here = self.at_pos(&self.herds[h], at);
+        let Some((centre, to_body)) = t.embodied_image(p, here) else {
+            self.stats.seen_stale += 1;
+            self.note(
+                at,
+                "materialize",
+                Some(h),
+                format!("stays abstract for player slot {slot}: across an edge_stop seam"),
+            );
+            return;
+        };
+        let chart = {
+            let rp = self.herds[h].route.pos(at);
+            to_body.compose(t.fold(rp.0, rp.1).iso)
+        };
+        let dmin = if t.is_flat() {
+            self.herds[h].route.closest(p, at, at + 2 * window).0
+        } else {
+            self.herds[h]
+                .route
+                .closest_through(t, p, at, at + 2 * window)
+                .0
+        };
         let share = lens_area(r, view, dmin) / (std::f64::consts::PI * r * r);
         let n = ((alive as f64 * share).round() as u64)
             .max(1)
@@ -1111,6 +1231,10 @@ impl Herds {
             self.stats.seen_empty += 1;
             return;
         }
+        let Some(heading) = self.body_target(&self.herds[h], chart, at) else {
+            self.stats.seen_stale += 1;
+            return;
+        };
         let seen_cap = self.tun.seen_cap;
         let regrow = self.tun.sheared_ticks;
         let x = self.herds.get_mut(h).expect("live");
@@ -1118,9 +1242,7 @@ impl Herds {
         let picked = members::pick(x, &sp, yd, day, n, at, seen_cap);
         x.epoch = x.epoch.wrapping_add(1).max(1);
         let epoch = x.epoch;
-        let centre = x.route.pos(at);
-        let heading = x.route.heading(at);
-        let d = dist(centre, p);
+        let d = (((centre.0 - p.0) as f64).powi(2) + ((centre.1 - p.1) as f64).powi(2)).sqrt();
         let inner = (view - 4.0).max(1.0);
         let place = StreamKey::new(x.seed, SYS_PLACE, u64::from(epoch));
         let mut spawns = Vec::with_capacity(picked.len());
@@ -1137,7 +1259,9 @@ impl Herds {
                     centre.0 + (rr * th.cos()) as i64,
                     centre.1 + (rr * th.sin()) as i64,
                 );
-                if dist(q, p) <= inner {
+                if (((q.0 - p.0) as f64).powi(2) + ((q.1 - p.1) as f64).powi(2)).sqrt() <= inner
+                    && !t.near_cone(q.0, q.1, CONE_CLEARANCE)
+                {
                     spot = Some(q);
                     break;
                 }
@@ -1179,6 +1303,7 @@ impl Herds {
             since: at,
             steer: heading,
             leaving: false,
+            chart,
         });
         self.players[slot as usize].puppets += count;
         self.outbox.push(Cmd::Materialize(boundary::Materialize {
@@ -1227,8 +1352,24 @@ impl Herds {
         let (pos, _) = p.pos.expect("checked");
         let r = f64::from(self.footprint(h, at));
         let far = f64::from(self.tun.view_radius) + r + f64::from(self.tun.hysteresis);
-        if dist(x.route.pos(at), (i64::from(pos.x), i64::from(pos.z))) > far {
+        if dist(
+            self.topo(x.frame),
+            self.at_pos(x, at),
+            (i64::from(pos.x), i64::from(pos.z)),
+        ) > far
+        {
             self.despawn(h, 1, at);
+            return;
+        }
+        // Its walk reaches an edge_stop seam: it goes before any body would cross (TP12).
+        if self.body_target(x, e.chart, at).is_none() {
+            self.note(
+                at,
+                "despawn",
+                Some(h),
+                "its walk reaches an edge_stop seam".into(),
+            );
+            self.despawn(h, 3, at);
             return;
         }
         self.steer(h, at);
@@ -1237,8 +1378,14 @@ impl Herds {
 
     fn steer(&mut self, h: HerdId, at: Tick) {
         let speed = (self.sp(h).speed_blocks_per_day / TICKS_PER_DAY as f64) as f32;
+        let Some(chart) = self.herds[h].embodied.as_ref().map(|e| e.chart) else {
+            return;
+        };
+        // The next waypoint in the bodies' frame (TP11), short of any stopped seam (TP12).
+        let Some(heading) = self.body_target(&self.herds[h], chart, at) else {
+            return;
+        };
         let x = self.herds.get_mut(h).expect("live");
-        let heading = x.route.heading(at);
         let arrive = match x.route.segment_at(at) {
             Some(i) => x.route.times[i + 1],
             None => x.route.until,
@@ -1479,19 +1626,40 @@ impl Herds {
     fn obstacle(&mut self, legs: &mut LegIndex, h: HerdId, ob: &boundary::Obstacle, at: Tick) {
         let x = &self.herds[h];
         let frame = x.frame;
+        // The plugin reports in the bodies' frame: back to the route's chart, then keyed by
+        // canonical cell (TP11, TP4).
+        let back = x
+            .embodied
+            .as_ref()
+            .map_or(Iso::IDENTITY, |e| e.chart)
+            .inverse();
+        let topo = self.topo.clone();
+        let t = topo.of(frame);
+        let grid = t.grid(i64::from(CELL_BLOCKS));
+        let key = |p: (i64, i64)| -> (i32, i32) {
+            if t.is_flat() {
+                return cell_of(p.0, p.1);
+            }
+            let q = back.cell(p.0, p.1);
+            let (cx, cz) = grid.of_block(q.0, q.1);
+            (cx as i32, cz as i32)
+        };
         let stuck = (i64::from(ob.stuck.0), i64::from(ob.stuck.1));
         let target = (i64::from(ob.target.0), i64::from(ob.target.1));
-        let here = cell_of(stuck.0, stuck.1);
-        let d = dist(stuck, target).max(1.0);
+        let here = key(stuck);
+        let d = (((stuck.0 - target.0) as f64).powi(2) + ((stuck.1 - target.1) as f64).powi(2))
+            .sqrt()
+            .max(1.0);
         let step = f64::from(CELL_BLOCKS);
         let ahead = (
             stuck.0 + ((target.0 - stuck.0) as f64 * step / d) as i64,
             stuck.1 + ((target.1 - stuck.1) as f64 * step / d) as i64,
         );
-        let mut blocked = cell_of(ahead.0, ahead.1);
+        let mut blocked = key(ahead);
         if blocked == here {
-            blocked = cell_of(target.0, target.1);
+            blocked = key(target);
         }
+        let stuck = back.cell(stuck.0, stuck.1);
         let share = f64::from(ob.failures) / f64::from(ob.present.max(ob.failures).max(1));
         let add = self.tun.obstacle_step * share.max(0.25);
         self.obstacles.report(
@@ -1542,21 +1710,9 @@ impl Herds {
         predator: u64,
     ) -> Vec<HerdOffer> {
         let mut cands = BTreeSet::new();
-        let (a, b) = (
-            (
-                (x - range).div_euclid(REGION_BLOCKS),
-                (z - range).div_euclid(REGION_BLOCKS),
-            ),
-            (
-                (x + range).div_euclid(REGION_BLOCKS),
-                (z + range).div_euclid(REGION_BLOCKS),
-            ),
-        );
-        for rx in a.0..=b.0 {
-            for rz in a.1..=b.1 {
-                if let Some(s) = self.regions.get(&(frame, rx, rz)) {
-                    cands.extend(s.iter().copied());
-                }
+        for (rx, rz) in self.regions_near(frame, x, z, range) {
+            if let Some(s) = self.regions.get(&(frame, rx, rz)) {
+                cands.extend(s.iter().copied());
             }
         }
         let followed: BTreeSet<HerdId> = self
@@ -1590,8 +1746,8 @@ impl Herds {
             } else {
                 range as f64
             };
-            let p = hx.route.pos(at);
-            if dist(p, (x, z)) > reach {
+            let p = self.at_pos(hx, at);
+            if dist(self.topo(frame), p, (x, z)) > reach {
                 continue;
             }
             let alive = self.count(h, at);
@@ -1631,7 +1787,9 @@ impl Herds {
             return Predation::default();
         };
         let r = f64::from(self.footprint(h, at));
-        if dist(hx.route.pos(at), (x, z)) > r + f64::from(self.tun.predation_reach) {
+        if dist(self.topo(hx.frame), self.at_pos(hx, at), (x, z))
+            > r + f64::from(self.tun.predation_reach)
+        {
             return Predation::default();
         }
         let yd = self.year_days();
@@ -1731,7 +1889,7 @@ impl Herds {
                 herd: x.name.clone(),
                 predator,
                 animals: given,
-                herd_pos: x.route.pos(at),
+                herd_pos: self.at_pos(x, at),
                 at: (x_pos, z_pos),
             });
         }
@@ -1867,22 +2025,10 @@ impl Herds {
         let at = path.t0.max(self.now);
         let reach = i64::from(self.tun.view_radius.max(path.radius)) + 1_536;
         let (x, z) = (i64::from(pos.x), i64::from(pos.z));
-        let (a, b) = (
-            (
-                (x - reach).div_euclid(REGION_BLOCKS),
-                (z - reach).div_euclid(REGION_BLOCKS),
-            ),
-            (
-                (x + reach).div_euclid(REGION_BLOCKS),
-                (z + reach).div_euclid(REGION_BLOCKS),
-            ),
-        );
         let mut near = BTreeSet::new();
-        for rx in a.0..=b.0 {
-            for rz in a.1..=b.1 {
-                if let Some(s) = self.regions.get(&(pos.frame, rx, rz)) {
-                    near.extend(s.iter().copied());
-                }
+        for (rx, rz) in self.regions_near(pos.frame, x, z, reach) {
+            if let Some(s) = self.regions.get(&(pos.frame, rx, rz)) {
+                near.extend(s.iter().copied());
             }
         }
         for h in near {
