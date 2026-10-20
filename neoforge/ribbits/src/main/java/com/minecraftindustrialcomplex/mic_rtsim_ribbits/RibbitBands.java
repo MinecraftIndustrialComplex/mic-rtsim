@@ -60,7 +60,9 @@ public final class RibbitBands {
         if (leader == null)
             return false;
         Vec3 t = TARGETS.get(band.agent);
-        return t == null || leader.position().distanceToSqr(t) <= STOP * STOP;
+        // Through any seam (TP11): a band that crossed an edge has not left its stop behind.
+        return t == null || com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.topology(leader.level())
+                .distance(leader.getX(), leader.getZ(), t.x, t.z) <= STOP;
     }
 
     static void forget(long agent) {

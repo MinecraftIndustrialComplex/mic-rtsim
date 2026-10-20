@@ -146,6 +146,9 @@ public final class RtsimSession {
     public final Phase1 phase1;
     /** The industry module (C15 to C19, INDUSTRY.md): districts, the stock sampler, ports, reconciles. */
     public final com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry;
+    /** Every level's topology (TP18): sent to the engine, read by the bridge's steering. */
+    final com.minecraftindustrialcomplex.mic_rtsim.topology.TopologyTracker topology =
+            new com.minecraftindustrialcomplex.mic_rtsim.topology.TopologyTracker();
 
     private boolean failed;
     /**
@@ -184,6 +187,8 @@ public final class RtsimSession {
     long removedByOther;
     long passNanos;
     long reasserted;
+    /** Leaders steered again after a seam folded them (TP11). */
+    long resteered;
 
     public RtsimSession(MinecraftServer server, Engine engine, JournalSavedData journal) {
         this.server = server;
@@ -210,6 +215,16 @@ public final class RtsimSession {
 
     public MinecraftServer server() {
         return server;
+    }
+
+    /** A level's topology as the bridge last sent it to the engine (TP18). */
+    public com.minecraftindustrialcomplex.mic_rtsim.topology.LevelTopology topology(Level level) {
+        return topology.of(level);
+    }
+
+    /** The tracker itself (plugins report a change through {@code RtsimApi.topologyChanged}). */
+    public com.minecraftindustrialcomplex.mic_rtsim.topology.TopologyTracker topologies() {
+        return topology;
     }
 
     /** The id of a name in Java's dictionary (Obs.DICT_*). */
@@ -273,6 +288,7 @@ public final class RtsimSession {
             long now = gameTime();
             spawnBudget = RtsimConfig.spawnQuota();
             boundary.applyCommands(commands);
+            topology.tick(server, now, boundary, this::dimId);
             long t0 = System.nanoTime();
             pass(now);
             discardOrphans();
@@ -341,11 +357,41 @@ public final class RtsimSession {
             for (PuppetGroup.Member m : g.members)
                 if (!m.gone)
                     adapter(g, m).maintain(m.entity, g);
+            resteer(g);
             if (shadow || phase1.cargoCheckSoon)
                 phase1.cargo.check(g, now);
             if (shadow)
                 shadowGroup(g, now);
         }
+    }
+
+    /**
+     * The image of an engine target nearest a body, in the body's own frame (TP11): never through an
+     * edge_stop seam (TP12). On a flat level the target itself.
+     */
+    public Vec3 steerImage(Entity body, Vec3 target) {
+        com.minecraftindustrialcomplex.mic_rtsim.topology.LevelTopology t = topology.of(body.level());
+        if (t.isFlat())
+            return target;
+        double[] i = t.nearestImage(body.getX(), body.getZ(), target.x, target.z, true);
+        return new Vec3(i[0], target.y, i[1]);
+    }
+
+    /**
+     * A leader that crossed a seam was folded back into the domain by Toroidal World or the wrap engine
+     * (no event fires): its target's nearest image moved, so it is steered again toward the new one.
+     * The jump is a short step through the seam, never a teleport (TP11).
+     */
+    private void resteer(PuppetGroup g) {
+        Entity leader = g.leader();
+        if (g.steerTarget == null || leader == null)
+            return;
+        Vec3 image = steerImage(leader, g.steerTarget);
+        if (g.steerImage != null && image.distanceToSqr(g.steerImage) < 1.0)
+            return;
+        g.steerImage = image;
+        adapter(g, g.members[0]).steer(leader, image, g.steerSpeed);
+        resteered++;
     }
 
     /** True while every live member stands where entities actually tick (PLAN.md §6.1 item 4). */

@@ -155,3 +155,33 @@ mod tests {
         assert!(decode(&[0u8; 16]).is_none());
     }
 }
+
+#[cfg(test)]
+mod contract {
+    use super::super::layout;
+    use super::*;
+
+    /// The bytes the bridge's `TopologyRecords` must write for the 16k Guyou world under edge_stop
+    /// (dimension 1, from Deep Time's layout), pinned on both sides: `TopologyRecordsTest` in the
+    /// core asserts the same hex.
+    pub const GUYOU_16K_STOP: &str = "\
+        b000900001000000020401020000000000e6ffffffffffff00f3ffffffffffff001a000000000000\
+        000d000000000000000000000000000000340000000000000000000000000000010000000000000000\
+        ccffffffffffff00000000000000000202010000000000000000000000000000e6ffffffffffff0302\
+        0100000000000000000000000000001a000000000000";
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    #[test]
+    fn guyou_bytes_are_pinned() {
+        let spec = Spec::of(&layout::guyou(layout::GUYOU_16K, true));
+        let b = encode(&spec, Source::DeepTime, 1);
+        let want: String = GUYOU_16K_STOP
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(hex(&b), want, "regenerate both sides together");
+    }
+}
