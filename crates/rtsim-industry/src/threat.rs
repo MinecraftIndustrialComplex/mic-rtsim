@@ -505,6 +505,8 @@ pub struct Leg {
 pub struct LegIndex {
     legs: BTreeMap<u64, Leg>,
     by_cell: BTreeMap<(u32, i32, i32, u64), Vec<u64>>,
+    /// Each train's legs, oldest first, so finding a train's leg never scans every leg.
+    by_train: BTreeMap<TrainId, Vec<u64>>,
     next: u64,
 }
 
@@ -531,6 +533,7 @@ impl LegIndex {
                 self.by_cell.entry((dim, x, z, w)).or_default().push(id);
             }
         }
+        self.by_train.entry(leg.train).or_default().push(id);
         self.legs.insert(id, leg);
         id
     }
@@ -557,11 +560,12 @@ impl LegIndex {
 
     /// The most recent leg of a train that is under way at `at`.
     pub fn leg_of(&self, train: TrainId, at: Tick) -> Option<u64> {
-        self.legs
+        self.by_train
+            .get(&train)?
             .iter()
             .rev()
-            .find(|(_, l)| l.train == train && l.depart <= at && l.eta >= at)
-            .map(|(&id, _)| id)
+            .copied()
+            .find(|id| self.legs.get(id).is_some_and(|l| l.depart <= at && l.eta >= at))
     }
 
     /// Takes looted cargo off a booked leg.
@@ -588,6 +592,10 @@ impl LegIndex {
             self.legs.remove(id);
         }
         self.by_cell.retain(|_, v| {
+            v.retain(|id| !old.contains(id));
+            !v.is_empty()
+        });
+        self.by_train.retain(|_, v| {
             v.retain(|id| !old.contains(id));
             !v.is_empty()
         });
@@ -924,5 +932,5 @@ mod persist_impls {
     persist_struct!(ExposedBlockRow { x, y, z, state, flags, inventory });
     persist_struct!(Defence { survey, exposed, observed, cooldown_until, pressure });
     persist_struct!(Leg { train, from, to, depart, eta, cargo });
-    persist_struct!(LegIndex { legs, by_cell, next });
+    persist_struct!(LegIndex { legs, by_cell, by_train, next });
 }

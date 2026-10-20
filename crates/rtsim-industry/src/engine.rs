@@ -181,6 +181,8 @@ struct PendingExchange {
     train: TrainId,
     /// (carriage, good, delta into the carriage) asked.
     entries: Vec<(u32, Good, i64)>,
+    /// Loot from a train leg (I24) rather than a station exchange.
+    loot: bool,
 }
 
 pub struct Engine {
@@ -207,6 +209,8 @@ pub struct Engine {
     pressure: BTreeMap<(Tick, u64), (DistrictId, ThreatClass, u32, u32)>,
     pressure_seq: u64,
     exchanges: BTreeMap<rtsim_kernel::journal::OpId, PendingExchange>,
+    /// Per train and threat class: no attack lands before this tick (I25).
+    train_cooldown: BTreeMap<TrainId, [Tick; ThreatClass::COUNT]>,
     ops: IndustryOps,
     out: Vec<Cmd>,
     now: Tick,
@@ -242,6 +246,7 @@ impl Engine {
             pressure: BTreeMap::new(),
             pressure_seq: 0,
             exchanges: BTreeMap::new(),
+            train_cooldown: BTreeMap::new(),
             ops: IndustryOps::default(),
             out: Vec::new(),
             now,
@@ -1574,6 +1579,7 @@ impl Engine {
                 district: d,
                 train: c.train,
                 entries: entries.clone(),
+                loot: false,
             },
         );
         self.out.push(Cmd::CarriageDelta(CarriageDelta {
@@ -1588,6 +1594,16 @@ impl Engine {
         let Some(ex) = self.exchanges.remove(&r.op) else {
             return;
         };
+        if ex.loot {
+            // Loot the carriage no longer had was never stolen (review finding 8).
+            for e in &r.entries {
+                let unstolen = e.applied - e.requested;
+                if e.requested < 0 && unstolen > 0 {
+                    self.books.stolen.add(e.good, -unstolen);
+                }
+            }
+            return;
+        }
         // What the district gave or got differs from what was asked: correct its stock.
         let mut fix = GoodVec::new();
         for e in &r.entries {
@@ -1600,17 +1616,24 @@ impl Engine {
         let d = ex.district;
         if let Some(&h) = self.cluster_of.get(&d) {
             let f = fix.clone();
-            self.clusters.apply(h, at, |c, at| {
+            // A give-back the replay's stock cannot cover is owed to the next reconcile.
+            let short = self.clusters.apply(h, at, |c, at| {
+                let mut short = GoodVec::new();
                 for (g, n) in f.iter() {
-                    c.add_to_pool(PoolKey::Stock(d, g), n, false, at);
+                    let got = c.add_to_pool(PoolKey::Stock(d, g), n, false, at);
+                    short.add(g, n - got);
                 }
+                short
             });
             self.after_cluster(h, at);
+            if let Some(short) = short
+                && let Some(dist) = self.districts.get_mut(&d)
+            {
+                dist.owed.merge(&short);
+            }
         } else if let Some(dist) = self.districts.get_mut(&d) {
             dist.owed.merge(&fix);
         }
-        let _ = ex.train;
-        let _ = ex.entries;
     }
 
     fn train_departed(&mut self, at: Tick, dep: &TrainDeparture) {
@@ -1966,6 +1989,12 @@ impl Engine {
     }
 
     fn attack_train(&mut self, t: &Threat, train: TrainId) {
+        // Trains get the same per-class pacing as districts (I25).
+        let cd = self.train_cooldown.entry(train).or_insert([Tick::ZERO; ThreatClass::COUNT]);
+        if t.at < cd[t.class.index()] {
+            self.stats.attacks_skipped += 1;
+            return;
+        }
         let Some(id) = self.legs.leg_of(train, t.at) else {
             return;
         };
@@ -1993,9 +2022,20 @@ impl Engine {
             }
         }
         self.books.stolen.merge(&loot);
+        self.train_cooldown.entry(train).or_insert([Tick::ZERO; ThreatClass::COUNT])[t.class.index()] =
+            t.at + self.tun.threat.cooldown_ticks[t.class.index()];
         let what = format!("train {} ambushed ({:?} x{}): looted {}", train.0, t.class, t.count, self.goods_words(&loot));
         self.note(DistrictId(0), t.at, what);
         let op = self.ops.allocate();
+        self.exchanges.insert(
+            op,
+            PendingExchange {
+                district: DistrictId(0),
+                train,
+                entries: entries.clone(),
+                loot: true,
+            },
+        );
         self.out.push(Cmd::CarriageDelta(CarriageDelta {
             op,
             train,
@@ -2257,7 +2297,7 @@ mod persist_impls {
     persist_struct!(Books { minted, burned, stolen, dropped, untracked, shortfall, trimmed });
     persist_struct!(Station { decl });
     persist_struct!(ChannelState { known, capacity });
-    persist_struct!(PendingExchange { district, train, entries });
+    persist_struct!(PendingExchange { district, train, entries, loot });
 
     fn globals(e: &Engine, w: &mut Writer) {
         e.mode.put(w);
@@ -2277,6 +2317,7 @@ mod persist_impls {
         e.pressure.put(w);
         e.pressure_seq.put(w);
         e.exchanges.put(w);
+        e.train_cooldown.put(w);
         e.ops.put(w);
         e.out.put(w);
         e.now.put(w);
@@ -2355,6 +2396,7 @@ mod persist_impls {
             e.pressure = Persist::get(&mut r)?;
             e.pressure_seq = Persist::get(&mut r)?;
             e.exchanges = Persist::get(&mut r)?;
+            e.train_cooldown = Persist::get(&mut r)?;
             e.ops = Persist::get(&mut r)?;
             e.out = Persist::get(&mut r)?;
             e.now = Persist::get(&mut r)?;
