@@ -140,31 +140,29 @@ impl Cmd {
 /// 62, so they never collide with another engine allocator's (overnight choice F4).
 ///
 /// The low 56 bits are **derived from the command's identity** (docs/boundary.md §2.2, overnight
-/// choice W3): a hash of the world seed, the engine's tick when the change was decided, and the
+/// choice W3): a hash of the world seed, the tick of the event that decided the change, and the
 /// command itself (kind, target, epoch, every delta), never a counter. A counter restored from
 /// the pages hands out again, after a crash, the ids it gave since the last save, to *different*
 /// commands, which the bridge (still holding the first one's COMMAND_RESULT, or a chunk still
 /// carrying its IND_RECONCILE_RESULT) answers DUPLICATE and drops. Re-deriving the *same* decision
-/// gives the same id, so the bridge recognises it. Two identical commands decided in one tick get
-/// the second id from an ordinal, as does a hash that meets another id of the same tick.
+/// gives the same id, so the bridge recognises it. Two identical commands of one tick get the
+/// second id from an ordinal, as does a hash that meets another recent id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndustryOps {
-    /// The tick of the last id derived.
-    at: Tick,
-    /// The low bits of the ids derived at `at`.
-    issued: Vec<u64>,
+    /// The last [`RECENT`] ids derived, with their ticks (a lazily replayed cluster can decide at a
+    /// tick older than another's last decision, so this is a window, not one tick).
+    recent: std::collections::VecDeque<(Tick, u64)>,
 }
 
 const NAMESPACE: u64 = 0x49 << 56;
 const LOW_BITS: u64 = (1 << 56) - 1;
+/// Ids remembered for ordinals and collisions. TUNABLE, PLACEHOLDER 256: identical commands come
+/// from one cluster's burst of events.
+const RECENT: usize = 256;
 
 impl IndustryOps {
     /// The op id of `cmd` (its own op field is ignored), decided at `at` in the world `seed`.
     pub fn derive(&mut self, seed: u64, at: Tick, cmd: &Cmd) -> OpId {
-        if at != self.at {
-            self.at = at;
-            self.issued.clear();
-        }
         let mut bytes = Vec::with_capacity(64);
         bytes.extend_from_slice(&seed.to_le_bytes());
         bytes.extend_from_slice(&at.0.to_le_bytes());
@@ -175,8 +173,11 @@ impl IndustryOps {
         for ordinal in 0u64.. {
             bytes[16..24].copy_from_slice(&ordinal.to_le_bytes());
             let low = mix(rtsim_kernel::rng::fnv1a64(&bytes)) & LOW_BITS;
-            if low != 0 && !self.issued.contains(&low) {
-                self.issued.push(low);
+            if low != 0 && !self.recent.iter().any(|&(_, l)| l == low) {
+                if self.recent.len() >= RECENT {
+                    self.recent.pop_front();
+                }
+                self.recent.push_back((at, low));
                 return OpId::engine(NAMESPACE | low);
             }
         }
@@ -286,7 +287,7 @@ mod persist_impls {
         since,
         goods
     });
-    persist_struct!(IndustryOps { at, issued });
+    persist_struct!(IndustryOps { recent });
 
     impl Persist for Cmd {
         fn put(&self, w: &mut Writer) {

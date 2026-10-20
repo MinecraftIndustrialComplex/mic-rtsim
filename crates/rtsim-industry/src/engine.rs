@@ -989,7 +989,7 @@ impl Engine {
             // A channel pool leaving with its last user takes unpushed changes with it: push them
             // now, or the world's buffer never sees them (review finding 1).
             if let PoolKey::Channel(ch, g) = p.key {
-                self.push_channel(ch, g, p.level - p.pushed);
+                self.push_channel(ch, g, p.level - p.pushed, at);
             }
         }
         if self.mode == Mode::Apply {
@@ -1025,7 +1025,7 @@ impl Engine {
         self.stats.cluster_settles += settles;
         for (key, delta) in pushes {
             if let PoolKey::Channel(ch, g) = key {
-                self.push_channel(ch, g, delta);
+                self.push_channel(ch, g, delta, at);
             }
         }
         let mut season_change = false;
@@ -1101,7 +1101,7 @@ impl Engine {
 
     /// A channel buffer change the replay made, sent to the world (I13). Read-only mode sends
     /// nothing, so the buffer the engine knows stays what the world has.
-    fn push_channel(&mut self, ch: ChannelId, g: Good, delta: i64) {
+    fn push_channel(&mut self, ch: ChannelId, g: Good, delta: i64, at: Tick) {
         if delta == 0 || self.mode != Mode::Apply {
             return;
         }
@@ -1110,7 +1110,9 @@ impl Engine {
             channel: ch,
             goods: GoodVec::from_pairs([(g, delta)]),
         });
-        c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+        // The event's own tick, not the engine's: a breakpoint fires inside `advance_to` before
+        // `now` moves, so `now` would tie the id to where hand-overs fell.
+        c.set_op(self.ops.derive(self.world_seed, at, &c));
         self.out.push(c);
         self.channels.entry(ch).or_default().known.add(g, delta);
     }
@@ -1151,7 +1153,7 @@ impl Engine {
                 count: count as u32,
                 goods: GoodVec::from_pairs([(g, batch)]),
             });
-            c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+            c.set_op(self.ops.derive(self.world_seed, at, &c));
             self.out.push(c);
         }
     }
@@ -1780,6 +1782,37 @@ impl Engine {
             },
         );
         self.out.push(cmd);
+    }
+
+    /// Java answered an industry command failed (COMMAND_RESULT failed, docs/industry-boundary.md
+    /// §4.3): a station exchange or a train's loot moved nothing, so it is taken back as a result
+    /// with nothing applied. Returns whether the engine was waiting on the op. Channel, deposit and
+    /// package commands have no correction yet.
+    pub fn command_failed(&mut self, at: Tick, op: rtsim_kernel::journal::OpId) -> bool {
+        let Some(ex) = self.exchanges.get(&op) else {
+            return false;
+        };
+        let r = CarriageResult {
+            op,
+            train: ex.train,
+            entries: ex
+                .entries
+                .iter()
+                .map(
+                    |&(carriage, good, requested)| crate::obs::CarriageResultEntry {
+                        carriage,
+                        good,
+                        requested,
+                        applied: 0,
+                    },
+                )
+                .collect(),
+        };
+        self.ingest(&Timed {
+            at,
+            obs: Obs::CarriageResult(r),
+        });
+        true
     }
 
     fn carriage_result(&mut self, at: Tick, r: &CarriageResult) {

@@ -771,3 +771,120 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
     assert_eq!(j.stale_commands, 0);
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+/// The pages stop at day 2.5 (a save that landed); the world saves later, at day 3 + 100, after the
+/// reconcile was applied and its result journaled, and the page commit for that save never lands.
+/// The journal then replays 2.5 to 3 + 100 into the engine: with its session start held until the
+/// replay is in (W19), the engine re-derives the same reconcile under the same op ids, takes the
+/// replayed result for it, and the books close. (Review finding 1: run first, the session start
+/// carried the engine to day 3 + 100 and the replay re-derived a different reconcile.)
+#[test]
+fn pages_behind_the_world_save_rederive_the_same_reconcile() {
+    let (dir, mut j) = mill_engine("ind-behind");
+    let _ids = mill(
+        &mut j,
+        20_000,
+        &[(0.0, true), (1.0, false), (3.0, true)],
+        false,
+    );
+    j.mc_run_until(day(2.5));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    while j.e.durable_obs_seq() < through {
+        j.mc_tick();
+    }
+    j.mc_run_until(day(3.0) + 100);
+    assert!(!reconciles(&j).is_empty(), "applied before the world save");
+    let ops = |j: &Java| -> Vec<u64> {
+        let mut v: Vec<u64> = j
+            .ind_commands
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::ChunkReconcile(r) => Some(r.op.0),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let first_ops = ops(&j);
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    j.mc_run_until(day(3.0) + 600);
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let applied_before = mc.reconciled.len();
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    j.mc_run_until(day(3.0) + 2_000);
+    let after: Vec<_> = reconciles(&j)[applied_before..].to_vec();
+    assert!(after.is_empty(), "nothing applied again: {after:?}");
+    let pending = industry(&j.e, |ie| ie.district(MILL).map(|d| d.pending.len()));
+    assert_eq!(
+        pending,
+        Some(0),
+        "the replayed results answered the re-derived reconcile"
+    );
+    eprintln!("first ops {first_ops:x?}, re-derived {:x?}", ops(&j));
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// A carriage delta answered failed (its train gone) is taken back from the engine's exchange
+/// record, with or without a crash after the answer. With the crash the restart trims the
+/// outbox by the world save's lastAppliedCmdSeq, which already counts the failed command, so the
+/// replayed answer finds no outbox copy (review finding 2).
+fn failed_carriage(crash: bool) {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        mode: Mode::Apply,
+        tick_first: true,
+    };
+    let dir = tmpdir("ind-failed");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    j.fail_next_carriage = true;
+    while j.failed_carriage.is_none() {
+        j.mc_tick();
+        assert!(j.mc().t < day(5.0), "a station exchange");
+    }
+    let (seq, _op, through) = j.failed_carriage.unwrap();
+    while j.e.durable_obs_seq() < through {
+        j.mc_tick();
+    }
+    assert_eq!(j.e.durable_obs_seq(), through);
+    if crash {
+        // The world saves now: its journal holds the FAILED answer, lastAppliedCmdSeq >= seq.
+        let jsave = j.world_save();
+        assert!(jsave.last_applied_cmd >= seq);
+        let msave = j.mc().saved();
+        let mut mc = j.mc.take().unwrap();
+        j.e.close(false, Duration::from_secs(5)).unwrap();
+        mc.restore(&msave);
+        let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+        j = Java::open(e, jsave);
+        j.mc = Some(mc);
+        j.module_mask = MODULE_INDUSTRY;
+    }
+    iron_run_to_end(&mut j, &cfg);
+    assert!(j.e.with_industry(|_, l| l.results_failed) >= 1);
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn a_failed_carriage_delta_is_taken_back_without_a_crash() {
+    failed_carriage(false);
+}
+
+#[test]
+fn a_failed_carriage_delta_is_taken_back_after_a_crash() {
+    failed_carriage(true);
+}

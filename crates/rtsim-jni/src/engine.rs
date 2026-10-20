@@ -613,7 +613,20 @@ impl Engine {
             }
             None => World::default(),
         };
-        let link = industry::Link::load(&mut store, &self.cfg)?;
+        let mut link = industry::Link::load(&mut store, &self.cfg)?;
+        if link.fresh {
+            // A new industry engine's seed keys its op ids (W3): on disk before any command it
+            // decides, or a crash before the first save would derive them again under another (W20).
+            let mut batch = SaveBatch::new();
+            for (k, b) in link.pages() {
+                batch.put(k, &b);
+            }
+            let at = store.obs_seq();
+            store
+                .commit(batch, at)
+                .map_err(|e| format!("cannot write the new industry engine's pages: {e}"))?;
+            link.fresh = false;
+        }
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(

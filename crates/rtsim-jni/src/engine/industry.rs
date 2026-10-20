@@ -30,7 +30,7 @@ use std::ops::RangeInclusive;
 use rtsim_industry::cmd::{Cmd, IndustryOps};
 use rtsim_industry::engine::{Engine as Industry, Mode};
 use rtsim_industry::ids::{Good, GoodInfo};
-use rtsim_industry::obs::{CarriageResult, CarriageResultEntry, Obs, Timed};
+use rtsim_industry::obs::{Obs, Timed};
 use rtsim_industry::persist::{CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE};
 use rtsim_industry::threat::Threat;
 use rtsim_industry::tunables::Tunables;
@@ -65,10 +65,9 @@ pub const LATEST: RangeInclusive<u16> = 0x0040..=0x005F;
 pub const JOURNALED: RangeInclusive<u16> = 0x0400..=0x04FF;
 pub const COMMANDS: RangeInclusive<u16> = 0x8400..=0x84FF;
 
-/// IND_PORT and IND_PACKAGE carry Java's op id at 48; the results the engine's at 24.
+/// IND_PORT and IND_PACKAGE carry Java's op id at 48.
 const PORT_OP: usize = 48;
 const PACKAGE_OP: usize = 48;
-const RESULT_OP: usize = 24;
 /// Where an industry command holds its dimension (the engine's dictionary id).
 const RECONCILE_DIM: usize = 36;
 const DEPOSIT_DIM: usize = 24;
@@ -118,8 +117,25 @@ pub(super) struct Link {
     deferred: VecDeque<Timed>,
     /// The bridge's industry module switch (C25): off, the engine neither runs nor sends.
     enabled: bool,
+    /// SESSION_START's game time, until the engine's own session start runs: after the replayed
+    /// journal, before this session's first record (W19).
+    session_start_at: Option<Tick>,
+    /// Threats ordered this step, applied at the simulate point (W12).
+    threats: Vec<Threat>,
+    /// Steps the front command has waited for a Java dictionary name (W21).
+    name_waits: u32,
+    /// The engine was made new at this start (no pages): its seed is committed at once (W20).
+    pub(super) fresh: bool,
     pub(super) stats: IndustryStats,
 }
+
+/// Steps a command waits for a Java dictionary name it uses before it goes without (W21).
+/// PLACEHOLDER 200 (ten seconds of steps at one a tick): Java sends its whole dictionary at a
+/// session start, over as many hand-overs as it needs.
+const NAME_WAIT_STEPS: u32 = 200;
+
+/// District ids must fit a page key (48 bits, F36).
+const DISTRICT_ID_LIMIT: u64 = 1 << 48;
 
 fn tick(game_time: i64) -> Tick {
     Tick(game_time.max(0) as u64)
@@ -164,7 +180,26 @@ impl Link {
             resend: VecDeque::new(),
             deferred: VecDeque::new(),
             enabled: false,
+            session_start_at: None,
+            threats: Vec::new(),
+            name_waits: 0,
+            fresh: false,
             stats: IndustryStats::default(),
+        }
+    }
+
+    /// Every page of the link and its engine (W6).
+    pub(super) fn pages(&self) -> Vec<(PageKey, Vec<u8>)> {
+        let mut pages = self.engine.snapshot();
+        pages.push((KEY_LINK, encode_link(self)));
+        pages
+    }
+
+    /// The engine's own session start, once: after the replayed journal (whose records keep their
+    /// game times), before anything of this session (W19).
+    fn begin_session(&mut self) {
+        if let Some(t) = self.session_start_at.take() {
+            self.engine.session_start(t);
         }
     }
 
@@ -185,6 +220,7 @@ impl Link {
             }
         }
         let has_globals = pages.iter().any(|(k, _)| k.table() == GLOBAL_TABLE);
+        let fresh = !has_globals;
         let mut engine = if has_globals {
             Industry::restore(pages, Tunables::default())
                 .map_err(|e| format!("the industry engine's pages: {e}"))?
@@ -211,6 +247,7 @@ impl Link {
         link.engine = engine;
         link.queue = queue;
         link.outbox = outbox;
+        link.fresh = fresh;
         Ok(link)
     }
 
@@ -256,6 +293,7 @@ impl Link {
             }
             let t = self.deferred.pop_front().expect("front");
             if self.enabled {
+                self.begin_session();
                 self.ingest(&t);
             }
         }
@@ -264,6 +302,14 @@ impl Link {
     /// One industry record, decoded. Returns whether it was one this build reads.
     fn decode(&mut self, rec: &Rec<'_>) -> Option<Timed> {
         match iw::decode_obs(rec.bytes) {
+            Ok(Some((_, t))) if !districts_fit(&t.obs) => {
+                self.stats.bad_records += 1;
+                log_warn(&format!(
+                    "an industry record of kind {:#06x} names a district id past 48 bits; skipped",
+                    rec.kind
+                ));
+                None
+            }
             Ok(Some((_, t))) => Some(t),
             Ok(None) => {
                 self.stats.unknown_kinds += 1;
@@ -338,11 +384,14 @@ fn decode_link(b: &[u8]) -> rtsim_kernel::codec::Result<LinkPage> {
 // ---- observations ---------------------------------------------------------------------------
 
 /// SESSION_START: the switch, and the engine's own session start (F6: open learning windows are
-/// discarded, every district is unloaded until its chunks report in).
+/// discarded, every district is unloaded until its chunks report in). That one waits until the
+/// journal has replayed (W19): run first, it would advance the engine to this session's game time
+/// and every replayed record would be taken as happening now, so a decision the pages had not
+/// reached would come out different from the one Java already applied.
 pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
     let l = &mut st.industry;
     l.enabled = module_mask & MODULE_INDUSTRY != 0;
-    l.engine.session_start(tick(game_time));
+    l.session_start_at = Some(tick(game_time));
 }
 
 /// A record that is not journaled: Java's DICT entries, MODULES, and the latest-wins industry
@@ -402,13 +451,15 @@ pub(super) fn claims(rec: &Rec<'_>) -> bool {
             && IndustryOps::is_industry(OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID))))
 }
 
-/// The op id `Replay` applies an industry record under at most once (0: none).
+/// The op id `Replay` applies an industry record under at most once (0: none). Java's own op ids
+/// only (ports and packages): IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT carry the engine's, and
+/// the engine takes each once by state (its pending reconciles and exchanges), so they need no op
+/// in `Replay` and never meet the COMMAND_RESULT Java journals under the same op id (W11).
 pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     let b = rec.bytes;
     let at = match rec.kind {
         iw::IND_PORT => PORT_OP,
         iw::IND_PACKAGE => PACKAGE_OP,
-        iw::IND_RECONCILE_RESULT | iw::IND_CARRIAGE_RESULT => RESULT_OP,
         _ => return 0,
     };
     if b.len() >= at + 8 {
@@ -421,11 +472,16 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 /// A journaled record `Replay` admitted (see [`claims`]). Applied whether or not the module is on:
 /// it says what happened in the world (W8).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    let this_session = wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first;
     let l = &mut st.industry;
-    l.flush(Some(tick(wire::i64_at(rec.bytes, obs::GAME_TIME))));
+    if this_session {
+        l.begin_session();
+    }
+    let at = tick(wire::i64_at(rec.bytes, obs::GAME_TIME));
+    l.flush(Some(at));
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
-        command_result(l, op, rec.aux);
+        command_result(l, op, rec.aux, at);
         return;
     }
     let Some(t) = l.decode(rec) else { return };
@@ -439,12 +495,10 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
 /// command written under that op id again (a test's order, or the same decision resent) is
 /// answered all the same, so it leaves the outbox.
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
-    let raw = match rec.kind {
-        obs::COMMAND_RESULT => wire::u64_at(rec.bytes, obs::command_result::OP_ID),
-        iw::IND_CARRIAGE_RESULT => op_of(rec),
-        _ => return,
-    };
-    st.industry.complete(OpId(raw));
+    if rec.kind == obs::COMMAND_RESULT {
+        let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
+        st.industry.complete(op);
+    }
 }
 
 /// An industry command a test ordered (`Order::IndustryCommand`, W17): it joins the queue as if
@@ -466,51 +520,79 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
     }
 }
 
-/// Java's answer to an industry command. A kept command leaves the outbox; a failed carriage
-/// delta moved nothing, which the engine hears as a result with nothing applied (W10).
-fn command_result(l: &mut Link, op: OpId, status: u32) {
-    if status == obs::command_result::FAILED {
-        l.stats.results_failed += 1;
-    }
-    let Some(c) = l.complete(op) else {
-        if status == obs::command_result::FAILED {
-            log_warn(&format!(
-                "Minecraft could not apply industry command {:#x}",
-                op.0
-            ));
-        }
-        return;
-    };
+/// Java's answer to an industry command. A kept command leaves the outbox. A failed carriage
+/// delta moved nothing: the engine takes it back from its own exchange record (it holds one until
+/// the result, so this works whether or not the outbox still had the command: a restart trims the
+/// outbox by the world save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
+fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
+    let kept = l.complete(op);
     if status != obs::command_result::FAILED {
         return;
     }
-    match c {
-        Cmd::CarriageDelta(cd) => {
-            let at = l.engine.now();
-            l.ingest(&Timed {
-                at,
-                obs: Obs::CarriageResult(CarriageResult {
-                    op,
-                    train: cd.train,
-                    entries: cd
-                        .entries
-                        .iter()
-                        .map(|&(carriage, good, requested)| CarriageResultEntry {
-                            carriage,
-                            good,
-                            requested,
-                            applied: 0,
-                        })
-                        .collect(),
-                }),
-            });
-        }
-        other => log_warn(&format!(
+    l.stats.results_failed += 1;
+    if l.engine.command_failed(at, op) {
+        return;
+    }
+    match kept {
+        Some(c) => log_warn(&format!(
             "Minecraft could not apply industry command {:#x} ({}); the engine keeps its books as if it had (W10)",
             op.0,
-            kind_name(&other)
+            kind_name(&c)
+        )),
+        None => log_warn(&format!(
+            "Minecraft could not apply industry command {:#x}",
+            op.0
         )),
     }
+}
+
+/// A kept command the link drops (it can never be written): for a carriage delta, as if Java had
+/// answered it failed, so the exchange is taken back.
+fn dropped(l: &mut Link, c: &Cmd) {
+    l.stats.dropped += 1;
+    if let Some(op) = c.op() {
+        l.complete(op);
+        let now = l.engine.now();
+        l.engine.command_failed(now, op);
+    }
+}
+
+/// Every district id an observation names fits 48 bits (F36: the page key); a longer one would
+/// stop the engine at its next save.
+fn districts_fit(o: &Obs) -> bool {
+    let d = match o {
+        Obs::StockSample { district, .. }
+        | Obs::LedgerRequest { district }
+        | Obs::Watched { district, .. }
+        | Obs::Approach { district, .. }
+        | Obs::DistrictChunks { district, .. }
+        | Obs::DistrictRemoved { district }
+        | Obs::Edit { district, .. }
+        | Obs::Discard { district, .. }
+        | Obs::LoadState { district, .. }
+        | Obs::ChunkLoaded { district, .. }
+        | Obs::SurveyBlocks { district, .. } => *district,
+        Obs::SweepEnd(e) => e.district,
+        Obs::DepositSample(s) => s.district,
+        Obs::District(x) => x.district,
+        Obs::Inventory(x) => x.district,
+        Obs::Port(p) => p.district,
+        Obs::TrainArrived(c) => c.district,
+        Obs::TrainDeparted(c) => c.district,
+        Obs::Package(p) => p.district,
+        Obs::ReconcileResult(r) => r.district,
+        Obs::SpawnSample(s) => s.district,
+        Obs::Fight(f) => f.district,
+        Obs::Survey(s) => s.district,
+        Obs::Station(s) => s.district.unwrap_or_default(),
+        Obs::PowerLink { sink, source } => {
+            return sink.0 < DISTRICT_ID_LIMIT && source.is_none_or(|s| s.0 < DISTRICT_ID_LIMIT);
+        }
+        Obs::ChannelSample { .. } | Obs::Conditions(_) | Obs::CarriageResult(_) => {
+            return true;
+        }
+    };
+    d.0 < DISTRICT_ID_LIMIT
 }
 
 fn kind_name(c: &Cmd) -> &'static str {
@@ -524,15 +606,11 @@ fn kind_name(c: &Cmd) -> &'static str {
     }
 }
 
-/// A threat from another system (I19; the dragons and conflict modules, or a test's order).
+/// A threat from another system (I19; the dragons and conflict modules, or a test's order). It
+/// waits for the simulate point, after this hand-over's records: applied at once it would carry
+/// the engine past records of earlier ticks in the same hand-over (W12).
 pub(super) fn threat(st: &mut State, t: &Threat) {
-    let l = &mut st.industry;
-    if !l.enabled {
-        log_warn("a threat for the industry engine while its module is off; dropped");
-        return;
-    }
-    l.engine.threat(t);
-    l.stats.threats += 1;
+    st.industry.threats.push(*t);
 }
 
 // ---- the step's simulation ------------------------------------------------------------------
@@ -542,9 +620,18 @@ pub(super) fn threat(st: &mut State, t: &Threat) {
 pub(super) fn simulate(st: &mut State) {
     let game_time = st.game_time;
     let l = &mut st.industry;
+    l.begin_session();
     l.flush(None);
+    let threats = std::mem::take(&mut l.threats);
     if !l.enabled {
+        if !threats.is_empty() {
+            log_warn("threats for the industry engine while its module is off; dropped");
+        }
         return;
+    }
+    for t in &threats {
+        l.engine.threat(t);
+        l.stats.threats += 1;
     }
     l.engine.advance_to(tick(game_time));
     l.queue.extend(l.engine.drain_commands());
@@ -555,7 +642,7 @@ pub(super) fn simulate(st: &mut State) {
 
 enum One {
     Written(u64),
-    /// Not enough room left in this buffer.
+    /// Not enough room left in this buffer, or a Java name it uses has not come yet (W21).
     Full,
     /// Can never be written.
     Never,
@@ -619,6 +706,19 @@ fn write_one(st: &mut State, w: &mut RecordWriter<'_>, c: &Cmd, seq: Option<u64>
     }
     debug_assert!(COMMANDS.contains(&wire::u16_at(&rec, wire::R_KIND)));
     let (dim, names) = names_of(c);
+    // Java sends its whole dictionary at a session start, over as many hand-overs as it takes:
+    // a name not here yet is waited for, a while (W21).
+    let missing = dim.is_some_and(|(_, d)| {
+        !st.industry
+            .java_names
+            .contains_key(&(wire::DICT_DIMENSION, d))
+    }) || names
+        .iter()
+        .any(|&(kind, id)| st.industry.name(kind, id).is_none());
+    if missing && st.industry.name_waits < NAME_WAIT_STEPS {
+        st.industry.name_waits += 1;
+        return One::Full;
+    }
     let dim = match dim {
         Some((at, java_dim)) => match st
             .industry
@@ -684,6 +784,7 @@ fn write_one(st: &mut State, w: &mut RecordWriter<'_>, c: &Cmd, seq: Option<u64>
     wire::put_u64(&mut rec, cmd::CMD_SEQ, seq);
     assert!(w.copy(&rec), "checked to fit");
     st.industry.stats.commands_written += 1;
+    st.industry.name_waits = 0;
     One::Written(seq)
 }
 
@@ -723,10 +824,7 @@ pub(super) fn write_resends(
             One::Full => return (highest, true),
             One::Never => {
                 st.industry.resend.pop_front();
-                if let Some(op) = c.op() {
-                    st.industry.complete(op);
-                }
-                st.industry.stats.dropped += 1;
+                dropped(&mut st.industry, &c);
             }
         }
     }
@@ -754,7 +852,7 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
             }
             One::Never => {
                 st.industry.queue.pop_front();
-                st.industry.stats.dropped += 1;
+                dropped(&mut st.industry, &c);
             }
         }
     }
@@ -766,9 +864,7 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 
 /// Every industry page, taken at this step boundary: the engine's (F36) and the link's.
 pub(super) fn snapshot(st: &State) -> Vec<(PageKey, Vec<u8>)> {
-    let mut pages = st.industry.engine.snapshot();
-    pages.push((KEY_LINK, encode_link(&st.industry)));
-    pages
+    st.industry.pages()
 }
 
 /// The industry pages the store holds that a snapshot no longer has (a district removed, a replay
