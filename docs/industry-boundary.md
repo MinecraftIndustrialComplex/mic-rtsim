@@ -308,13 +308,15 @@ Since W16 `wire.rs` reads it (`Obs::Approach`) and the engine keeps the latest o
 
 ## 7. The engine side: rtsim-jni
 
-Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W18 in
+Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W22 in
 `docs/overnight-choices-industryjni.md`). What the native engine does with these records:
 
 - **Reading.** Every industry record decodes through `rtsim_industry::wire`. Journaled ones pass the
-  kernel's `Replay` first: IND_PORT and IND_PACKAGE under Java's op id, IND_RECONCILE_RESULT and
-  IND_CARRIAGE_RESULT under the engine's, so a result journaled again from a chunk (the Java side's
-  pending-record pattern) is applied once. Latest-wins records are handed to the engine in game-time
+  kernel's `Replay` first: IND_PORT and IND_PACKAGE also under Java's op id; IND_RECONCILE_RESULT and
+  IND_CARRIAGE_RESULT by sequence only, and the engine takes each once by state, so a result
+  journaled again from a chunk (the Java side's pending-record pattern) is applied once whatever
+  order Java journals it and its COMMAND_RESULT in (W11). The engine's own session start runs after
+  the replayed journal (W19). Latest-wins records are handed to the engine in game-time
   order with the journaled ones, journaled first on a tie (W9): a hand-over carries its latest-wins
   records first, but within a tick a load, a port or a result happens before the stock is sampled.
   Kinds this build does not read are counted and skipped.
@@ -328,8 +330,10 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   kept from the moment they are written until their answer (IND_CARRIAGE_RESULT, or COMMAND_RESULT
   applied, duplicate or failed) is admitted, and written again first after a restart with their
   original sequences and op ids (W4). IND_CHUNK_RECONCILE is resent at the chunk's next
-  IND_CHUNK_LOADED instead (F27). A failed IND_CARRIAGE_DELTA counts as nothing applied; a failed
-  channel, deposit or package command is logged and the engine keeps its books as if applied (W10).
+  IND_CHUNK_LOADED instead (F27). A failed IND_CARRIAGE_DELTA counts as nothing applied, taken back
+  from the engine's exchange record; a failed channel, deposit or package command is logged and the
+  engine keeps its books as if applied (W10). A command waits a while for a dictionary name Java
+  has not sent yet (W21).
 - **The switch.** With `Module.INDUSTRY` off the engine neither runs nor sends, and drops
   latest-wins industry records; journaled ones are still applied (W8).
 - **Mode.** The native engine applies (phase I-B); read-only (phase I-A, F25) is an `nOpen` flag the

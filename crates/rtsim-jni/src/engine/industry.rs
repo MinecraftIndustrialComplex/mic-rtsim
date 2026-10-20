@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The industry engine (`rtsim-industry`, INDUSTRY.md, C15 to C19) behind the boundary: the
-//! records of docs/industry-boundary.md in and out of the bridge's buffers. Choices are W1 to W18
+//! records of docs/industry-boundary.md in and out of the bridge's buffers. Choices are W1 to W22
 //! in docs/overnight-choices-industryjni.md.
 //!
 //! The step calls in here at five points and nowhere else:
