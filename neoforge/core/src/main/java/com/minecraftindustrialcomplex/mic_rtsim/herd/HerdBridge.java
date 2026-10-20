@@ -191,10 +191,16 @@ public final class HerdBridge implements SessionPlugin {
             return entity;
         }
 
-        /** Its slot at the entity's level's game time: the anchor plus its offset, on the ground where loaded. */
+        /**
+         * Its slot at the entity's level's game time: the anchor plus its offset, on the ground where
+         * loaded. Taken as the slot's image nearest the member (TP11): a member Toroidal World or the
+         * wrap engine folded across an edge walks on through the seam, not back across the world.
+         */
         Vec3 slot(Entity e) {
             double[] a = group.anchor(e.level().getGameTime());
-            double x = a[0] + offX, z = a[1] + offZ;
+            double[] near = com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.topology(e.level())
+                    .nearestImage(e.getX(), e.getZ(), a[0] + offX, a[1] + offZ, true);
+            double x = near[0], z = near[1];
             double y = e.getY();
             int bx = Mth.floor(x), bz = Mth.floor(z);
             if (e.level().hasChunk(bx >> 4, bz >> 4))
@@ -202,10 +208,18 @@ public final class HerdBridge implements SessionPlugin {
             return new Vec3(x, y, z);
         }
 
-        /** Horizontal blocks between the member and its slot. */
+        /** Horizontal blocks between the member and its slot, through any seam. */
         double lag(Entity e) {
             double[] a = group.anchor(e.level().getGameTime());
-            return Math.hypot(a[0] + offX - e.getX(), a[1] + offZ - e.getZ());
+            return com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.topology(e.level())
+                    .distance(e.getX(), e.getZ(), a[0] + offX, a[1] + offZ);
+        }
+
+        /** The member's position in its group's anchor frame: its image nearest its slot (TP11). */
+        double[] inAnchorFrame(Entity e) {
+            double[] a = group.anchor(e.level().getGameTime());
+            return com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.topology(e.level())
+                    .nearestImage(a[0] + offX, a[1] + offZ, e.getX(), e.getZ(), true);
         }
 
         /** How far the member has come toward the waypoint since it was set, blocks. */
@@ -214,7 +228,8 @@ public final class HerdBridge implements SessionPlugin {
             double d = Math.hypot(dx, dz);
             if (d < 1e-6 || entity == null)
                 return 0;
-            double px = entity.getX() - (group.ax + offX), pz = entity.getZ() - (group.az + offZ);
+            double[] p = inAnchorFrame(entity);
+            double px = p[0] - (group.ax + offX), pz = p[1] - (group.az + offZ);
             return (px * dx + pz * dz) / d;
         }
 
@@ -701,8 +716,10 @@ public final class HerdBridge implements SessionPlugin {
             boolean lagging = anchor - p > LEASH + LAG;
             if (lagging && now - m.bestAt >= stallTicks) {
                 failing++;
-                sx += m.entity.getX();
-                sz += m.entity.getZ();
+                // In the anchor's frame, so members on either side of a seam average where they are.
+                double[] q = m.inAnchorFrame(m.entity);
+                sx += q[0] - m.offX;
+                sz += q[1] - m.offZ;
             }
         }
         if (present == 0 || failing * 2 < present)
@@ -727,9 +744,11 @@ public final class HerdBridge implements SessionPlugin {
         for (Member m : g.members) {
             if (m.pendingDeath != null || m.entity == null)
                 continue;
-            x += m.entity.getX();
+            // In the anchor's frame: a group astride a seam has its centre between its members.
+            double[] q = m.inAnchorFrame(m.entity);
+            x += q[0] - m.offX;
             y += m.entity.getY();
-            z += m.entity.getZ();
+            z += q[1] - m.offZ;
             present++;
         }
         int at = session.boundary().direct(HerdRecords.HERD_GROUP_STATE, HerdRecords.GroupState.SIZE, HerdRecords.GroupState.FLAG_TICKING, now);

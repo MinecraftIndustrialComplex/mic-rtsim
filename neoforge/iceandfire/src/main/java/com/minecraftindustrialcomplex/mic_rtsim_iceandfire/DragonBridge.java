@@ -398,7 +398,7 @@ public final class DragonBridge implements SessionPlugin {
         if (!sleeping) {
             p.mode = Mode.STEER;
             p.target = new Vec3(b.getDouble(at + Materialize.TARGET_X), b.getDouble(at + Materialize.TARGET_Y), b.getDouble(at + Materialize.TARGET_Z));
-            IafDragons.flyTo(d, p.target);
+            IafDragons.flyTo(d, session.steerImage(d, p.target));
         }
         if ((flags & Materialize.FLAG_HOSTILE) != 0) {
             UUID target = new UUID(b.getLong(at + Materialize.TARGET_PLAYER_MOST), b.getLong(at + Materialize.TARGET_PLAYER_LEAST));
@@ -464,7 +464,7 @@ public final class DragonBridge implements SessionPlugin {
         p.deadline = now + (timeout > 0 ? timeout : DEFAULT_DEPART_TIMEOUT);
         DragonBaseEntity d = p.dragon();
         if (d != null && !d.isRemoved())
-            IafDragons.flyTo(d, target);
+            IafDragons.flyTo(d, session.steerImage(d, target));
     }
 
     /**
@@ -645,23 +645,29 @@ public final class DragonBridge implements SessionPlugin {
         LivingEntity target = d.getTarget();
         if (target != null && target.isAlive())
             return;
-        double dx = p.target.x - d.getX(), dz = p.target.z - d.getZ();
+        // The target's image nearest the dragon (TP11): Toroidal World folds a dragon that crosses an
+        // edge back into the domain without an event, and it flies on through the seam.
+        Vec3 goal = session.steerImage(d, p.target);
+        double dx = goal.x - d.getX(), dz = goal.z - d.getZ();
         if (p.mode != Mode.DEPART && dx * dx + dz * dz <= ARRIVE * ARRIVE) {
             if (p.mode == Mode.SETTLE)
                 IafDragons.land(d);
             p.mode = Mode.IDLE;
             return;
         }
-        IafDragons.flyTo(d, p.target);
+        IafDragons.flyTo(d, goal);
     }
 
     /** True while any player in the level has the dragon's chunk within the simulation distance. */
     private boolean inAnyPlayersRange(ServerLevel level, Entity e) {
         int range = session.server().getPlayerList().getSimulationDistance();
-        int cx = e.blockPosition().getX() >> 4, cz = e.blockPosition().getZ() >> 4;
+        var topo = session.topology(level);
         for (ServerPlayer pl : level.players()) {
             if (pl.isSpectator())
                 continue;
+            // Through the seams (TP11): a player just across an edge has the dragon in range.
+            double[] at = topo.nearestImage(pl.getX(), pl.getZ(), e.getX(), e.getZ(), true);
+            int cx = net.minecraft.util.Mth.floor(at[0]) >> 4, cz = net.minecraft.util.Mth.floor(at[1]) >> 4;
             int px = pl.blockPosition().getX() >> 4, pz = pl.blockPosition().getZ() >> 4;
             if (Math.max(Math.abs(px - cx), Math.abs(pz - cz)) <= range)
                 return true;

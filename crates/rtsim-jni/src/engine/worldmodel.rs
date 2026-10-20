@@ -64,6 +64,8 @@ pub(super) struct Link {
     /// The last load read back a state hash other than the one saved: (saved, read).
     pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
+    /// HABITAT records of cells past a turned seam (copies), dropped (TP17).
+    pub(super) seam_copies: u64,
     /// HABITAT records that did not decode or named what Java's dictionary lacks.
     pub(super) refused: u64,
     pub(super) commands_written: u64,
@@ -111,6 +113,7 @@ impl Link {
             restore_diverged: None,
             records: 0,
             refused: 0,
+            seam_copies: 0,
             commands_written: 0,
             herds_founded: 0,
             regions_barren: 0,
@@ -205,7 +208,7 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     if rec.kind != HABITAT {
         return;
     }
-    let r = match HabitatRecord::decode(rec.bytes) {
+    let mut r = match HabitatRecord::decode(rec.bytes) {
         Ok(r) => r,
         Err(e) => {
             st.worldmodel.refused += 1;
@@ -234,6 +237,20 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
         return;
     };
     let refs: Vec<&str> = bodies.iter().map(|s| s.as_str()).collect();
+    // Cells are keyed canonically (TP4): a cell past a slid edge is its canonical cell moved; one
+    // past a turned edge (the folded copy Deep Time generates beyond a north or south edge) is a
+    // copy of a cell the sampler reports on its own, and is dropped (TP17).
+    let topo = st.topology.shared.clone();
+    let t = topo.of(r.dimension as u16);
+    if !t.is_flat() {
+        let c = i64::from(rtsim_space::habitat::CELL_BLOCKS);
+        let (cx, cz, k) = t.grid(c).fold(i64::from(r.cell.0), i64::from(r.cell.1));
+        if k != 0 {
+            st.worldmodel.seam_copies += 1;
+            return;
+        }
+        r.cell = (cx as i32, cz as i32);
+    }
     st.worldmodel.records += 1;
     let mut w = st.worldmodel.world.write();
     match w.sampled() {

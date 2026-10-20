@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 rtsim-kernel.workspace = true
+rtsim-space.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

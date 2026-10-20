@@ -13,6 +13,9 @@
 //! - [`sampled`]: [`SampledWorld`], the vanilla provider fed by the core's habitat sampler.
 //! - `persist`: its pages (a meta page and one page per region), a state hash checked on load.
 //! - [`synth`]: a fake sampler that paints test worlds. Scaffolding.
+//! - [`topology`]: how each frame's edges are joined (flat, an x wrap, Deep Time's glued
+//!   layout) and the geometry every module measures through: canonical keys, shortest
+//!   displacements, legs and headings across seams (DECISIONS.md C31).
 //!
 //! **Deep Time later** (PLAN.md §11, SCALE.md §12): a `mic_rtsim_deeptime` provider reads Deep
 //! Time's baked tiles (`WorldData`, `DeepTimeClimate`) and implements [`WorldModel`] itself; the
@@ -24,6 +27,7 @@ pub mod model;
 mod persist;
 pub mod sampled;
 pub mod synth;
+pub mod topology;
 
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -31,6 +35,7 @@ pub use habitat::{Habitat, HabitatRecord, KnownRecord, Surface};
 pub use model::{Area, Creatures, WorldModel};
 pub use persist::region_page_id;
 pub use sampled::{Ingest, RegionKey, SampledWorld};
+pub use topology::{SharedTopologies, Topologies, Topology};
 
 /// The world model the engine's modules share: one provider behind a lock. The step is the only
 /// writer (HABITAT records at its observe point) and readers run inside the same step, so the

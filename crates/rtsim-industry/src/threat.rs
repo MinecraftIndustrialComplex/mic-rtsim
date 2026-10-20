@@ -579,6 +579,53 @@ pub struct LegIndex {
 impl LegIndex {
     /// Books a leg along the straight line between two block positions (x, z). Returns its id.
     pub fn book(&mut self, leg: Leg, dim: u32, from: (i32, i32), to: (i32, i32)) -> u64 {
+        self.book_on(&rtsim_space::topology::Topology::flat(), leg, dim, from, to)
+    }
+
+    /// [`LegIndex::book`] on a world with seams (docs/choices-topology.md TP16): the line goes the
+    /// short way, from `from` to the image of `to` nearest it, and every region it passes is
+    /// keyed canonically, so a line across a seam is booked where it runs. On the plane, the
+    /// same cells as `book`.
+    pub fn book_on(
+        &mut self,
+        topo: &rtsim_space::topology::Topology,
+        leg: Leg,
+        dim: u32,
+        from: (i32, i32),
+        to: (i32, i32),
+    ) -> u64 {
+        if !topo.is_flat() {
+            let id = self.next;
+            self.next += 1;
+            let a = topo.canonical(i64::from(from.0), i64::from(from.1));
+            let b = topo.toward(a, (i64::from(to.0), i64::from(to.1)));
+            let half = i64::from(REGION_BLOCKS) / 2;
+            let steps = ((b.0 - a.0).abs().max((b.1 - a.1).abs()) / half).max(1);
+            let mut cells: Vec<(i32, i32)> = (0..=steps)
+                .map(|s| {
+                    let (x, z) = topo
+                        .canonical(a.0 + (b.0 - a.0) * s / steps, a.1 + (b.1 - a.1) * s / steps);
+                    (
+                        x.div_euclid(i64::from(REGION_BLOCKS)) as i32,
+                        z.div_euclid(i64::from(REGION_BLOCKS)) as i32,
+                    )
+                })
+                .collect();
+            cells.sort_unstable();
+            cells.dedup();
+            let (w0, w1) = (
+                leg.depart.0 / LEG_WINDOW_TICKS,
+                leg.eta.0 / LEG_WINDOW_TICKS,
+            );
+            for (x, z) in cells {
+                for w in w0..=w1 {
+                    self.by_cell.entry((dim, x, z, w)).or_default().push(id);
+                }
+            }
+            self.by_train.entry(leg.train).or_default().push(id);
+            self.legs.insert(id, leg);
+            return id;
+        }
         let id = self.next;
         self.next += 1;
         let (r0, r1) = (
