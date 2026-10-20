@@ -308,11 +308,18 @@ impl Glued {
 
     /// The shortest displacement from canonical cell `a` to canonical cell `b`, blocks.
     pub fn displacement(&self, a: (i64, i64), b: (i64, i64)) -> (i64, i64) {
+        let (d, _) = self.nearest(a, b);
+        d
+    }
+
+    /// The shortest displacement from canonical `a` to canonical `b` and the motion of the tile
+    /// it reaches `b`'s image in (canonical → that tile).
+    pub(crate) fn nearest(&self, a: (i64, i64), b: (i64, i64)) -> ((i64, i64), Iso) {
         let (ax, az) = (2 * a.0 + 1, 2 * a.1 + 1);
         let (bx, bz) = (2 * b.0 + 1, 2 * b.1 + 1);
-        let mut best: Option<(i64, i64, i64)> = None;
+        let mut best: Option<(i64, i64, i64, Iso)> = None;
         for t in &self.near {
-            if let Some((d2, _, _)) = best
+            if let Some((d2, _, _, _)) = best
                 && t.gap2 > d2
             {
                 break;
@@ -320,12 +327,12 @@ impl Glued {
             let (ix, iz) = t.h.half(bx, bz);
             let (dx, dz) = (ix - ax, iz - az);
             let d2 = dx * dx + dz * dz;
-            if best.is_none_or(|(b2, _, _)| d2 < b2) {
-                best = Some((d2, dx, dz));
+            if best.is_none_or(|(b2, _, _, _)| d2 < b2) {
+                best = Some((d2, dx, dz, t.h));
             }
         }
-        let (_, dx, dz) = best.expect("the identity tile is always near");
-        (dx / 2, dz / 2)
+        let (_, dx, dz, h) = best.expect("the identity tile is always near");
+        ((dx / 2, dz / 2), h)
     }
 
     /// The pieces of the cover's straight walk from doubled point `a2` to `b2` inside each tile:

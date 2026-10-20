@@ -292,6 +292,44 @@ impl Topology {
         (from.0 + dx, from.1 + dz)
     }
 
+    /// The image of `to` nearest `from`, in `from`'s chart, and the motion that takes `to`'s
+    /// canonical frame onto that image's (so anything near `to`, a waypoint, a heading, moves into
+    /// `from`'s frame by it): `image == iso.cell(canonical(to))`.
+    pub fn nearest_image(&self, from: (i64, i64), to: (i64, i64)) -> ((i64, i64), Iso) {
+        match self {
+            Topology::Flat { .. } => (to, Iso::IDENTITY),
+            Topology::XWrap { .. } => {
+                let f = self.fold(from.0, from.1);
+                let t = self.fold(to.0, to.1);
+                let d = self.displacement((f.x, f.z), (t.x, t.z));
+                let image = (from.0 + d.0, from.1 + d.1);
+                (image, Iso::translation(image.0 - t.x, image.1 - t.z))
+            }
+            Topology::Glued(g) => {
+                let f = g.glued.fold_cell(from.0, from.1);
+                let t = g.glued.fold_cell(to.0, to.1);
+                let (_, h) = g.glued.nearest((f.x, f.z), (t.x, t.z));
+                // canonical `to` → its nearest tile (canonical `from`'s chart) → `from`'s chart.
+                let iso = f.iso.inverse().compose(h);
+                (iso.cell(t.x, t.z), iso)
+            }
+        }
+    }
+
+    /// [`Topology::nearest_image`] for a body: `None` when the short way crosses a stopped seam
+    /// (TP12).
+    pub fn embodied_image(&self, from: (i64, i64), to: (i64, i64)) -> Option<((i64, i64), Iso)> {
+        let (image, iso) = self.nearest_image(from, to);
+        if self.any_stopped() {
+            let f = self.fold(from.0, from.1);
+            let end = f.iso.cell(image.0, image.1);
+            if self.stopped_crossing((f.x, f.z), end).is_some() {
+                return None;
+            }
+        }
+        Some((image, iso))
+    }
+
     /// A chart cell and a heading there, carried to the canonical cell and turned with it (a
     /// heading north over a pole comes out south).
     pub fn transport(&self, x: i64, z: i64, dx: i64, dz: i64) -> ((i64, i64), (i64, i64)) {
@@ -450,6 +488,65 @@ impl Topology {
             Topology::Glued(g) => g.embodied.as_deref().unwrap_or(self),
             _ => self,
         }
+    }
+
+    /// Where something embodied at `from` is sent to reach canonical `to`: the image of `to`
+    /// nearest `from`, kept [`STOP_MARGIN`] inside every stopped edge; `None` when the short way
+    /// crosses a stopped seam (edge_stop), so the caller dematerializes first or does not
+    /// materialize at all (TP12). On a world with nothing stopped it is [`Topology::toward`].
+    pub fn embodied_toward(&self, from: (i64, i64), to: (i64, i64)) -> Option<(i64, i64)> {
+        if self.is_flat() {
+            return Some(to);
+        }
+        let end = self.toward(from, to);
+        if !self.any_stopped() {
+            return Some(end);
+        }
+        let f = self.fold(from.0, from.1);
+        let end_c = f.iso.cell(end.0, end.1);
+        if self.stopped_crossing((f.x, f.z), end_c).is_some() {
+            return None;
+        }
+        Some(self.off_stopped(end.0, end.1))
+    }
+
+    /// Where a body at `from` is steered to reach canonical `to` without ever crossing a
+    /// stopped seam: the nearest image in the embodied world (stopped seams are walls, so the
+    /// route goes round), kept [`STOP_MARGIN`] inside them (TP12). [`Topology::toward`] when
+    /// nothing is stopped.
+    pub fn embodied_route(&self, from: (i64, i64), to: (i64, i64)) -> (i64, i64) {
+        if !self.any_stopped() {
+            return self.toward(from, to);
+        }
+        let e = self.embodied().toward(from, to);
+        self.off_stopped(e.0, e.1)
+    }
+
+    /// A chart cell kept [`STOP_MARGIN`] blocks inside every stopped edge (in its own tile's
+    /// frame), so a body sent there never meets the edge_stop border.
+    pub fn off_stopped(&self, x: i64, z: i64) -> (i64, i64) {
+        let Topology::Glued(g) = self else {
+            return (x, z);
+        };
+        if g.embodied.is_none() {
+            return (x, z);
+        }
+        let f = g.glued.fold_cell(x, z);
+        let d = g.glued.domain();
+        let m = STOP_MARGIN.min(d.width() / 4).min(d.depth() / 4);
+        let (mut cx, mut cz) = (f.x, f.z);
+        for e in g.glued.edges().filter(|e| e.stopped) {
+            match e.side {
+                Side::West => cx = cx.max(d.x0 + m),
+                Side::East => cx = cx.min(d.x1 - 1 - m),
+                Side::North => cz = cz.max(d.z0 + m),
+                Side::South => cz = cz.min(d.z1 - 1 - m),
+            }
+        }
+        if (cx, cz) == (f.x, f.z) {
+            return (x, z);
+        }
+        f.iso.inverse().cell(cx, cz)
     }
 
     /// Where a chart walk from canonical `a` to chart `b` first crosses a stopped seam, as the

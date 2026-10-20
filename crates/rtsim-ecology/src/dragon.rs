@@ -16,6 +16,7 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_knowledge::{ActorId, Temperament};
 use rtsim_settle::Pos;
+use rtsim_space::topology::Topologies;
 use rtsim_travel::legs::{Path, Stamp};
 use serde::Serialize;
 
@@ -242,9 +243,12 @@ impl Dragon {
     }
 
     /// Where it is at `at` while unloaded: on its leg (at the forced altitude) or at rest.
-    pub fn position(&self, lairs: &[Lair], at: Tick) -> (Pos, i32) {
+    /// Where the dragon is at `at`: on its leg (the leg's chart position folded, TP7), at rest, or
+    /// at its lair. Always canonical.
+    pub fn position(&self, topo: &Topologies, lairs: &[Lair], at: Tick) -> (Pos, i32) {
         if let (State::Flying(_) | State::Hunting { .. }, Some(l)) = (self.state, self.leg) {
             let (x, y, z) = l.at(at);
+            let (x, z) = topo.canonical(l.path.frame, x, z);
             return (Pos::new(l.path.frame, x as i32, z as i32), y);
         }
         if let Some(r) = self.rest {

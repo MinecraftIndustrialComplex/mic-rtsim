@@ -64,6 +64,26 @@ proptest! {
     }
 
     #[test]
+    fn nearest_images_carry_their_motion(
+        u0 in 0.0f64..1.0, v0 in 0.0f64..1.0, u1 in 0.0f64..1.0, v1 in 0.0f64..1.0, dx in -40i64..40, dz in -40i64..40,
+    ) {
+        for (name, t) in worlds() {
+            let (a, b) = (in_domain(&t, u0, v0), in_domain(&t, u1, v1));
+            let (img, iso) = t.nearest_image(a, b);
+            prop_assert_eq!(img, t.toward(a, b), "{}", name);
+            let cb = t.canonical(b.0, b.1);
+            prop_assert_eq!(iso.cell(cb.0, cb.1), img, "{}", name);
+            // A point near b moves into a's frame by the same motion, to a point near the image.
+            let near = (cb.0 + dx, cb.1 + dz);
+            if t.fold(near.0, near.1).clamped || t.near_cone(cb.0, cb.1, 130) {
+                continue;
+            }
+            let moved = iso.cell(near.0, near.1);
+            prop_assert_eq!(t.canonical(moved.0, moved.1), t.canonical(near.0, near.1), "{}", name);
+        }
+    }
+
+    #[test]
     fn distance_is_invariant_under_every_edge_motion(
         u0 in 0.0f64..1.0, v0 in 0.0f64..1.0, u1 in 0.0f64..1.0, v1 in 0.0f64..1.0,
     ) {

@@ -686,7 +686,7 @@ fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     Ok(m)
 }
 
-const STATS: usize = 27;
+const STATS: usize = 28;
 
 fn stats_array(s: &DragonStats) -> [u64; STATS] {
     [
@@ -717,6 +717,7 @@ fn stats_array(s: &DragonStats) -> [u64; STATS] {
         s.discarded,
         s.hoards_robbed,
         s.herd_hunts,
+        s.seen_across_stop,
     ]
 }
 
@@ -749,6 +750,7 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
         discarded: v[24],
         hoards_robbed: v[25],
         herd_hunts: v[26],
+        seen_across_stop: v[27],
     }
 }
 
