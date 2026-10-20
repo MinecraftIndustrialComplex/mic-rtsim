@@ -147,3 +147,15 @@ Each row answers the open question with the same id in OPEN-QUESTIONS.md.
 | P7 | Every MIC mod keeps PATCHES.md plus contract GameTests for every reach into another mod. | chose "Every MIC mod" |
 | P10 | Every design-changing review fix of 2026-10-19 is approved, item by item (all 15 listed in PLAN §17). | ticked every item |
 | P24 | Performance targets keep their placeholders; final numbers come after real potato and Windows runs. | chose "Keep, set from data" |
+| P25 | Regions per province are picked from a phase 0 bench, among 4×4, 8×8 and 16×16. | chose "Pick from the bench" |
+| P29 | Keep the previous page generation until Minecraft's save completes, and load the newest generation that is not ahead of the journal. | chose "Keep previous generation" |
+| E-sink | Surplus coin above a treasury's target is not destroyed. It buys something real and visible instead: village upgrades, buildings, tribute. This replaces round 2's "spent and leaves the world" sink, and conservation stays exact. | chose "Sink into something real" |
+| G31 | Vanilla's reputation price change is folded into the sim's own quote, so one formula sets the price. | chose "Inside the sim quote" |
+| Prices | One source of truth: the engine sends ready-made offer bundles and Java only shows them. The Java price copy stays as a test oracle. | chose "Engine sends bundles" |
+| Review P3 | When a caravan llama dies or is taken, the sim books exactly the items the bridge reports in its chest. Ben also wants a report on in-game balance: killing a caravan must not become the best way to get gear early in the game. | "Book what was really there, though I also want a report on the actual in game balance of this. I don't want the mod to make it so the best way to get gear early game is to just kill a caravan." |
+| Pages | Phase 1 pages a build can't read are dropped with a loud log and the world starts fresh, as industry and dragons already do (S5). | chose "Drop and start fresh" |
+| News | News travels separately from cargo: messengers and bands carry it on their own schedule, without waiting for full caravans. | chose "News travels separately" |
+| P9 | The economy tunables r, T and k are set from a soak at the phase 1 design gate. The Numismatics mint rule comes later. | chose "From a soak" |
+| P15 | Body kinds and groups are datapack JSON at `data/<ns>/mic_rtsim/body_kind/<kind>.json`, with ordered candidates and vanilla last. | chose "Datapack JSON" |
+| P16 | Touring bands tour ribbit villages, border human villages, and player settlements whose owner is in good standing. They carry news, play at each stop, and raise the host's opinion of the band's home village. | chose all three options, plus "They should also tour player settlements. (Assuming the player is in good standing.)" |
+| P17 | Ribbit villages grow when prosperity books a house from YUNG's templates. The house is placed when its chunk next loads, never over player blocks, and the population steps up then. | chose "Prosperity books a house" |
