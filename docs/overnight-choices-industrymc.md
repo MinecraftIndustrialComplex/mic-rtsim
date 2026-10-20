@@ -59,8 +59,8 @@ so a single-threaded read costs about the same there.
   `rescanIntervalTicks` (20), and every `periodicRescanTicks` (6,000) for loaded districts (inventories
   that machines add). Ids: a pinned group keeps its pin; an automatic group the old district it overlaps
   most (each old id once, biggest group first); the rest get new ids, never reused (F3). Measured: a
-  three-chunk district of 18 block entities (a chest and 17 shafts) detects in 64 us (best of 50,
-  warm; `aDistrictIsDetectedAcrossShaftsAndNamed`), and a repeated detection changes neither its id nor
+  three-chunk district of 18 block entities (a chest and 17 shafts) detects in 64 and 60 us in two runs
+  (best of 50, warm; `aDistrictIsDetectedAcrossShaftsAndNamed`), and a repeated detection changes neither its id nor
   its revision. A large base is unmeasured; `/rtsim district perf` shows the last detection's time.
 - **H5.** `/rtsim district`: `list`, `info`, `ledger`, `rename <name> <new name>` (over the station's
   name), `merge <a> <b>` (a persistent link between their anchor chunks; a pinned district merges by
@@ -83,11 +83,12 @@ so a single-threaded read costs about the same there.
 **The sampler (I3, F5)**
 - **H10.** K = 64 inventories a tick (PLACEHOLDER) and a slot budget of 20,000 item slots a tick, at least
   one inventory a tick whatever its size. The slot budget is measured, not guessed:
-  - a full 1,620-slot vault (3 x 3 x 9, the largest): 29.9 and 37.7 us per read in two runs, 18.5 and
-    23.3 ns per slot;
-  - one vault block (20 slots): 0.5 and 1.0 us; a full chest (27 slots): 1.0 and 1.1 us;
-  - the first read of a new district, cold (JIT, new GOOD names): 5.9 and 6.7 ms for the slowest inventory.
-  So 20,000 slots is about 0.4 to 0.5 ms a tick, half the 1 ms bridge budget of INDUSTRY.md §3.2. The
+  - a full 1,620-slot vault (3 x 3 x 9, the largest): 37.7, 29.9 and 28.7 us per read in three runs
+    (23.3, 18.5 and 17.7 ns per slot; the third with cargo builds running beside it);
+  - one vault block (20 slots): 1.0, 0.5 and 0.7 us; a full chest (27 slots): 1.1, 1.0 and 2.8 us;
+  - the first read of a new district, cold (JIT, new GOOD names): 6.7, 5.9 and 6.3 ms for the slowest
+    inventory.
+  So 20,000 slots is about 0.35 to 0.5 ms a tick, half the 1 ms bridge budget of INDUSTRY.md §3.2. The
   steady cost is (boundary slots of loaded districts) x about 20 ns / the 100-tick period: 20 full
   vaults cost about 6.5 us a tick on average.
 - **H28.** No change-flag mixin on Create vaults (INDUSTRY.md §19 risk 2): the slot budget bounds the
@@ -192,6 +193,10 @@ so a single-threaded read costs about the same there.
 3. **Synthetic trains work for the station hooks.** The GameTests build a `Train` and `Carriage` with a
    mounted vault (`MountedStorageManager.addBlock`) and call `arriveAt` and `leaveStation`, so the mixins
    are exercised without assembling a train. A real assembled train on a schedule is not tested.
-4. **Real stations do work in a GameTest**: a straight `create:track` line plus a `create:track_station`
+4. **A core GameTest is timing-sensitive under load**: `traderAndLlamasCaptureAsOneGroupAndNoLlamaDespawns`
+   failed once ("the far chunk is entity-ticking") while cargo builds ran beside the suite, and passed
+   on the rerun (36 of 36). It is the phase 0 caravan test, not industry code; the GameTest server's
+   speed makes its tick timeout short in wall time.
+5. **Real stations do work in a GameTest**: a straight `create:track` line plus a `create:track_station`
    whose block entity is given `TargetTrack` in NBT joins the graph in a few ticks, and the district takes
    its name.
