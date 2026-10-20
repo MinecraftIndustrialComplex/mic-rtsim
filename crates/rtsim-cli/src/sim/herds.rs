@@ -12,6 +12,10 @@
 //! **The plugin** is `rtsim_ecology::herds::synth::FakeHerds`: every command and observation goes
 //! through the boundary codec (docs/boundary.md §8).
 //!
+//! **The player's interest area** is the world's one area per player (`World::observe_area`),
+//! routed to the herds as a viewer (`World::route_area`), as the native engine routes it to the
+//! dragons and the ships.
+//!
 //! **The scripted player:**
 //! 1. In early summer of year 0 it walks to the Northdown flock: a group materializes; it kills
 //!    six, shears three and leads one away (A10).
@@ -45,10 +49,12 @@ use rtsim_ecology::herds::synth::{FakeHerds, Valley};
 use rtsim_ecology::herds::{HerdId, HerdLedger, HerdTunables, Herds};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_ecology::species::{Gender, Species};
+use rtsim_ecology::synth::FakeIaf;
 use rtsim_ecology::tunables::{DragonTunables, PreyKind};
 use rtsim_ecology::{calendar::Calendar, synth};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::Pos;
+use rtsim_world::interest::Viewer;
 use rtsim_world::{World, WorldConfig};
 use serde::Serialize;
 
@@ -196,6 +202,9 @@ struct Sim {
     d: Dragons,
     h: Herds,
     fake: FakeHerds,
+    /// The dragons' fake plugin: a dragon that meets the player materializes, harasses, gets bored
+    /// and is captured (Ice and Fire's side, `rtsim_ecology::synth::FakeIaf`).
+    iaf: FakeIaf,
     lairs: BTreeMap<String, Pos>,
     seed: u64,
 }
@@ -259,6 +268,7 @@ fn build(seed: u64) -> Sim {
         d,
         h,
         fake: FakeHerds::default(),
+        iaf: FakeIaf::new(PLAYER),
         lairs,
         seed,
     }
@@ -271,10 +281,20 @@ impl Sim {
         while t < to {
             let next = (t + STEP).min(to);
             if let Some(p) = player {
-                self.h.observe_player(&mut self.w.legs, PLAYER, p, t);
+                // One interest area per player, the world's, routed to the herds (U2 to U6).
+                let (actor, area) = self.w.observe_area(PLAYER, p, t, self.h.tun.view_radius);
+                if let Some(s) = area {
+                    let v: &mut dyn Viewer = &mut self.h;
+                    self.w.route_area(actor, s, &mut [v]);
+                }
+            }
+            for (at, o) in self.iaf.due(next) {
+                self.d.ingest(&mut self.w, &mut NoInfrastructure, &o, at);
             }
             self.d
                 .run_until_with_herds(&mut self.w, &mut NoInfrastructure, &mut self.h, next);
+            let cmds = self.d.take_commands();
+            self.iaf.apply(cmds, next);
             self.pump(next);
             if let Err(e) = self.h.check(next) {
                 checks.push(format!(
@@ -303,7 +323,10 @@ impl Sim {
     }
 
     fn leave(&mut self, at: Tick) {
-        self.h.player_left(&mut self.w.legs, PLAYER, at);
+        self.iaf.player_leaves(at);
+        let actor = self.w.player_uuid(PLAYER.0, PLAYER.1);
+        let v: &mut dyn Viewer = &mut self.h;
+        self.w.leave_area(actor, &mut [v]);
         self.pump(at);
     }
 

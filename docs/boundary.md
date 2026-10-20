@@ -936,7 +936,9 @@ Bodies are vanilla animals for now (D4: nothing in the core depends on a pack mo
 plugin is a vanilla adapter; Naturalist is a later body candidate (P8). The executable reference
 for what a plugin answers is the fake in `crates/rtsim-ecology/src/herds/synth.rs` (`FakeHerds`),
 which the tests and `rtsim-cli sim herds` drive through this codec. The native engine does not
-route these records yet (§5 has no herds module). Choices are numbered H2-# in
+route these records yet (§5 has no herds module; `rtsim_ecology::herds::Herds` implements
+`rtsim_world::interest::Viewer`, so joining the shared interest areas is a line in
+`engine/shared.rs`). Choices are numbered H2-# in
 `docs/overnight-choices-herds.md`. The vanilla facts below were checked in the 1.21.1 sources
 (NeoForm's decompiled `EntityType`, `Sheep`, `Horse`, `Goat`, `AgeableMob`, `EatBlockGoal`,
 `DyeColor`); anything else is the contract a plugin would have to meet.
@@ -1058,8 +1060,9 @@ herds (as the dragons adopt lair dragons, §6.6) is open (H2-28).
   year-class (O5's recommendation), read in O(log) whenever anything asks: catch-up is flat in
   elapsed time.
 - **Legs are booked lazily** (A15): the herds index their routes by region themselves; only when a
-  player's interest area is near does the part of a route inside the area's window go into the
-  shared leg index, with one meeting per approach; the group materializes when the footprint
+  player's interest area is near (the world's one area per player, the herds being one of its
+  viewers, owner bit 60) does the part of a route inside the area's window go into the shared leg
+  index, with one meeting per approach; the group materializes when the footprint
   reaches into the area: count × the share of the footprint in view at closest approach, capped
   per herd (PLACEHOLDER 32) and per player (PLACEHOLDER 48).
 - **Identity**: seen members come back first (most recently seen first), then fresh members by

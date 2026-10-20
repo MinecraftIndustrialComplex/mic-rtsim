@@ -602,3 +602,56 @@ fn a_new_session_makes_groups_abstract_and_the_same_animals_return() {
     let b: std::collections::BTreeSet<u64> = second.bodies.iter().map(|b| b.spawn.member).collect();
     assert!(a.is_subset(&b) || b.is_subset(&a), "{a:?} vs {b:?}");
 }
+
+/// The herds as a viewer of the phase 1 world's one interest area per player (the integration's
+/// `World::observe_area` and `route_area`): no area of their own, one group per approach, and the
+/// group goes home when the player leaves the area.
+#[test]
+fn the_shared_interest_area_brings_one_group_and_takes_it_back() {
+    use rtsim_world::interest::Viewer;
+    let seed = 31;
+    let (mut w, _) = rtsim_ecology::synth::world(seed);
+    let mut h = synth::valley(seed, HerdTunables::default(), Tick::ZERO);
+    let mut fake = FakeHerds::default();
+    let t = Tick::from_days(10);
+    h.run_until(&mut w.legs, t);
+    let f = h.by_name("Northdown flock").unwrap();
+    let p = {
+        let c = h.position(f, t);
+        Pos::new(0, c.0 as i32 + 30, c.1 as i32)
+    };
+    let mut actor = None;
+    for k in 0..300u64 {
+        let at = t + k * 20;
+        let (a, stamp) = w.observe_area(PLAYER, p, at, 160);
+        actor = Some(a);
+        if let Some(s) = stamp {
+            let v: &mut dyn Viewer = &mut h;
+            w.route_area(a, s, &mut [v]);
+        }
+        h.run_until(&mut w.legs, at + 20);
+        fake.apply(h.take_commands(), at + 20);
+        for o in fake.take_obs() {
+            h.ingest(&mut w.legs, &o, at + 20);
+        }
+    }
+    let agent = agent_of(f);
+    assert_eq!(fake.history.iter().filter(|x| x.0 == agent).count(), 1);
+    assert!(fake.group_of(agent).is_some());
+    // The herds booked no player area of their own: theirs is the world's.
+    assert_eq!(h.player_area(PLAYER), w.interest_area(actor.unwrap()));
+    assert!(h.player_area(PLAYER).is_some());
+    // The player leaves the shared area: the group is captured.
+    let now = h.now();
+    {
+        let v: &mut dyn Viewer = &mut h;
+        w.leave_area(actor.unwrap(), &mut [v]);
+    }
+    fake.apply(h.take_commands(), now);
+    for o in fake.take_obs() {
+        h.ingest(&mut w.legs, &o, now);
+    }
+    assert!(fake.group_of(agent).is_none());
+    assert!(h.herd(f).unwrap().embodied.is_none());
+    h.check(now).unwrap();
+}

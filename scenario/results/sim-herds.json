@@ -1,7 +1,7 @@
 {
   "seed": 7,
   "days": 200,
-  "wall_ms": 810.1779919999999,
+  "wall_ms": 808.762834,
   "founded": {
     "Crag goats": 3000,
     "Greyfell flock": 8000,
@@ -1902,9 +1902,9 @@
       "day": 136.0,
       "year": 1,
       "sub_season": 5,
-      "total": 28149,
+      "total": 28154,
       "by_species": {
-        "cow": 6437,
+        "cow": 6442,
         "goat": 2385,
         "horse": 2439,
         "pig": 1653,
@@ -1946,8 +1946,8 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6437,
-          "young": 1376,
+          "count": 6442,
+          "young": 1381,
           "adult": 3766,
           "old": 1295,
           "x": 1901,
@@ -2013,9 +2013,9 @@
       "day": 144.0,
       "year": 1,
       "sub_season": 6,
-      "total": 27788,
+      "total": 27793,
       "by_species": {
-        "cow": 6380,
+        "cow": 6385,
         "goat": 2354,
         "horse": 2420,
         "pig": 1590,
@@ -2057,8 +2057,8 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6380,
-          "young": 1347,
+          "count": 6385,
+          "young": 1352,
           "adult": 3755,
           "old": 1278,
           "x": 724,
@@ -2068,7 +2068,7 @@
             770,
             747
           ],
-          "satisfaction": 873
+          "satisfaction": 872
         },
         {
           "name": "Windmane herd",
@@ -2124,9 +2124,9 @@
       "day": 152.0,
       "year": 1,
       "sub_season": 7,
-      "total": 27463,
+      "total": 27468,
       "by_species": {
-        "cow": 6328,
+        "cow": 6333,
         "goat": 2321,
         "horse": 2403,
         "pig": 1551,
@@ -2168,16 +2168,16 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6328,
-          "young": 1324,
+          "count": 6333,
+          "young": 1329,
           "adult": 3742,
           "old": 1262,
           "x": -704,
           "z": 448,
           "condition": [
-            748,
-            790,
-            769
+            747,
+            789,
+            768
           ],
           "satisfaction": 809
         },
@@ -2235,9 +2235,9 @@
       "day": 160.0,
       "year": 1,
       "sub_season": 8,
-      "total": 27121,
+      "total": 27126,
       "by_species": {
-        "cow": 6258,
+        "cow": 6263,
         "goat": 2287,
         "horse": 2390,
         "pig": 1533,
@@ -2279,18 +2279,18 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6258,
-          "young": 1301,
+          "count": 6263,
+          "young": 1306,
           "adult": 3724,
           "old": 1233,
           "x": -704,
           "z": 1888,
           "condition": [
-            811,
-            842,
-            826
+            810,
+            841,
+            825
           ],
-          "satisfaction": 894
+          "satisfaction": 893
         },
         {
           "name": "Windmane herd",
@@ -2346,9 +2346,9 @@
       "day": 168.0,
       "year": 1,
       "sub_season": 9,
-      "total": 26813,
+      "total": 26822,
       "by_species": {
-        "cow": 6191,
+        "cow": 6200,
         "goat": 2268,
         "horse": 2367,
         "pig": 1509,
@@ -2390,14 +2390,14 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6191,
-          "young": 1272,
+          "count": 6200,
+          "young": 1283,
           "adult": 3709,
-          "old": 1210,
+          "old": 1208,
           "x": -704,
           "z": 3328,
           "condition": [
-            906,
+            905,
             921,
             913
           ],
@@ -2457,9 +2457,9 @@
       "day": 176.0,
       "year": 1,
       "sub_season": 10,
-      "total": 26494,
+      "total": 26508,
       "by_species": {
-        "cow": 6130,
+        "cow": 6144,
         "goat": 2241,
         "horse": 2356,
         "pig": 1467,
@@ -2501,10 +2501,10 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6130,
-          "young": 1252,
+          "count": 6144,
+          "young": 1268,
           "adult": 3692,
-          "old": 1186,
+          "old": 1184,
           "x": -546,
           "z": 4702,
           "condition": [
@@ -2568,9 +2568,9 @@
       "day": 184.0,
       "year": 1,
       "sub_season": 11,
-      "total": 26201,
+      "total": 26216,
       "by_species": {
-        "cow": 6077,
+        "cow": 6092,
         "goat": 2206,
         "horse": 2340,
         "pig": 1438,
@@ -2612,10 +2612,10 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6077,
-          "young": 1232,
+          "count": 6092,
+          "young": 1249,
           "adult": 3680,
-          "old": 1165,
+          "old": 1163,
           "x": 573,
           "z": 5437,
           "condition": [
@@ -2679,9 +2679,9 @@
       "day": 192.0,
       "year": 2,
       "sub_season": 0,
-      "total": 25327,
+      "total": 25338,
       "by_species": {
-        "cow": 6028,
+        "cow": 6039,
         "goat": 2180,
         "horse": 2322,
         "pig": 1382,
@@ -2723,10 +2723,10 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 6028,
-          "young": 1223,
+          "count": 6039,
+          "young": 1236,
           "adult": 3665,
-          "old": 1140,
+          "old": 1138,
           "x": 704,
           "z": 5568,
           "condition": [
@@ -2790,9 +2790,9 @@
       "day": 200.0,
       "year": 2,
       "sub_season": 1,
-      "total": 31886,
+      "total": 31892,
       "by_species": {
-        "cow": 5824,
+        "cow": 5830,
         "goat": 2101,
         "horse": 2314,
         "pig": 2799,
@@ -2834,10 +2834,10 @@
         {
           "name": "Riverbend herd",
           "species": "cow",
-          "count": 5824,
+          "count": 5830,
           "young": 0,
-          "adult": 4474,
-          "old": 1350,
+          "adult": 4482,
+          "old": 1348,
           "x": 1984,
           "z": 5696,
           "condition": [
@@ -2942,7 +2942,7 @@
     "Riverbend herd": {
       "founded": 6000,
       "born": 1491,
-      "died": 1042,
+      "died": 1035,
       "starved": 0,
       "killed": 0,
       "eaten": 36,
@@ -3720,8 +3720,8 @@
         ]
       },
       {
-        "tick": 1784409,
-        "day": 74.350375,
+        "tick": 1786581,
+        "day": 74.440875,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3754,8 +3754,8 @@
         ]
       },
       {
-        "tick": 1905190,
-        "day": 79.38291666666667,
+        "tick": 1907362,
+        "day": 79.47341666666667,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3788,8 +3788,8 @@
         ]
       },
       {
-        "tick": 2025971,
-        "day": 84.41545833333333,
+        "tick": 2028143,
+        "day": 84.50595833333334,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3822,8 +3822,8 @@
         ]
       },
       {
-        "tick": 2146752,
-        "day": 89.448,
+        "tick": 2148924,
+        "day": 89.5385,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3856,8 +3856,8 @@
         ]
       },
       {
-        "tick": 2267533,
-        "day": 94.48054166666667,
+        "tick": 2269705,
+        "day": 94.57104166666667,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3890,8 +3890,8 @@
         ]
       },
       {
-        "tick": 2388314,
-        "day": 99.51308333333333,
+        "tick": 2390486,
+        "day": 99.60358333333333,
         "season": "Spring",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3924,8 +3924,8 @@
         ]
       },
       {
-        "tick": 2509095,
-        "day": 104.545625,
+        "tick": 2511267,
+        "day": 104.636125,
         "season": "Spring",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3958,8 +3958,8 @@
         ]
       },
       {
-        "tick": 2629876,
-        "day": 109.57816666666666,
+        "tick": 2632048,
+        "day": 109.66866666666667,
         "season": "Spring",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -3992,8 +3992,8 @@
         ]
       },
       {
-        "tick": 2750657,
-        "day": 114.61070833333333,
+        "tick": 2752829,
+        "day": 114.70120833333333,
         "season": "Spring",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4011,8 +4011,8 @@
         ]
       },
       {
-        "tick": 2871438,
-        "day": 119.64325,
+        "tick": 2873610,
+        "day": 119.73375,
         "season": "Spring",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4045,8 +4045,8 @@
         ]
       },
       {
-        "tick": 2993744,
-        "day": 124.73933333333333,
+        "tick": 2995875,
+        "day": 124.828125,
         "season": "Summer",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4075,8 +4075,8 @@
         ]
       },
       {
-        "tick": 3118248,
-        "day": 129.927,
+        "tick": 3120349,
+        "day": 130.01454166666667,
         "season": "Summer",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4105,8 +4105,8 @@
         ]
       },
       {
-        "tick": 3241552,
-        "day": 135.06466666666665,
+        "tick": 3243653,
+        "day": 135.15220833333333,
         "season": "Summer",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4135,8 +4135,8 @@
         ]
       },
       {
-        "tick": 3363927,
-        "day": 140.163625,
+        "tick": 3366073,
+        "day": 140.25304166666666,
         "season": "Summer",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4165,8 +4165,8 @@
         ]
       },
       {
-        "tick": 3487160,
-        "day": 145.29833333333335,
+        "tick": 3489343,
+        "day": 145.38929166666668,
         "season": "Autumn",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4195,8 +4195,8 @@
         ]
       },
       {
-        "tick": 3612309,
-        "day": 150.512875,
+        "tick": 3614492,
+        "day": 150.60383333333334,
         "season": "Autumn",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4225,8 +4225,8 @@
         ]
       },
       {
-        "tick": 3737297,
-        "day": 155.72070833333333,
+        "tick": 3739492,
+        "day": 155.81216666666666,
         "season": "Autumn",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4255,8 +4255,8 @@
         ]
       },
       {
-        "tick": 3862727,
-        "day": 160.94695833333333,
+        "tick": 3864950,
+        "day": 161.03958333333333,
         "season": "Autumn",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4285,8 +4285,8 @@
         ]
       },
       {
-        "tick": 3989837,
-        "day": 166.24320833333334,
+        "tick": 3992060,
+        "day": 166.33583333333334,
         "season": "Autumn",
         "dragon": "Cinderjaw",
         "kind": "Herd",
@@ -4300,8 +4300,8 @@
         ]
       },
       {
-        "tick": 4113618,
-        "day": 171.40075,
+        "tick": 4115841,
+        "day": 171.493375,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4338,8 +4338,8 @@
         ]
       },
       {
-        "tick": 4234399,
-        "day": 176.43329166666666,
+        "tick": 4236622,
+        "day": 176.52591666666666,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4376,8 +4376,8 @@
         ]
       },
       {
-        "tick": 4355180,
-        "day": 181.46583333333334,
+        "tick": 4357403,
+        "day": 181.55845833333333,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4414,8 +4414,8 @@
         ]
       },
       {
-        "tick": 4475961,
-        "day": 186.498375,
+        "tick": 4478184,
+        "day": 186.591,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4452,8 +4452,8 @@
         ]
       },
       {
-        "tick": 4596742,
-        "day": 191.53091666666666,
+        "tick": 4598965,
+        "day": 191.62354166666665,
         "season": "Winter",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4490,8 +4490,8 @@
         ]
       },
       {
-        "tick": 4717523,
-        "day": 196.56345833333333,
+        "tick": 4719746,
+        "day": 196.65608333333333,
         "season": "Spring",
         "dragon": "Cinderjaw",
         "kind": "Village",
@@ -4800,11 +4800,11 @@
         6837.558628633468
       ],
       [
-        124.73933333333333,
+        124.828125,
         "Cinderjaw",
         "Riverbend herd",
         4,
-        1888.974589559108
+        1868.6904505562177
       ],
       [
         125.42633333333333,
@@ -4814,11 +4814,11 @@
         6559.723164890421
       ],
       [
-        129.927,
+        130.01454166666667,
         "Cinderjaw",
         "Riverbend herd",
         4,
-        1491.034540176719
+        1476.7545496798039
       ],
       [
         131.00325,
@@ -4828,7 +4828,7 @@
         6179.095888558455
       ],
       [
-        135.06466666666665,
+        135.15220833333333,
         "Cinderjaw",
         "Riverbend herd",
         4,
@@ -4842,11 +4842,11 @@
         6184.559159713811
       ],
       [
-        140.163625,
+        140.25304166666666,
         "Cinderjaw",
         "Riverbend herd",
         4,
-        452.6367196770496
+        475.20311446790834
       ],
       [
         142.13916666666665,
@@ -4856,11 +4856,11 @@
         5752.83582244444
       ],
       [
-        145.29833333333335,
+        145.38929166666668,
         "Cinderjaw",
         "Riverbend herd",
         4,
-        879.3201919664987
+        897.6597350889701
       ],
       [
         147.70945833333334,
@@ -4870,7 +4870,7 @@
         6093.076726908992
       ],
       [
-        150.512875,
+        150.60383333333334,
         "Cinderjaw",
         "Riverbend herd",
         4,
@@ -4884,11 +4884,11 @@
         6266.163100335005
       ],
       [
-        155.72070833333333,
+        155.81216666666666,
         "Cinderjaw",
         "Riverbend herd",
         4,
-        1748.060639680443
+        1754.2819043699903
       ],
       [
         158.93445833333334,
@@ -4898,11 +4898,11 @@
         6943.738474337869
       ],
       [
-        160.94695833333333,
+        161.03958333333333,
         "Cinderjaw",
         "Riverbend herd",
         4,
-        1974.74555322958
+        1988.527344544198
       ],
       [
         165.67745833333333,
@@ -4912,7 +4912,7 @@
         8165.673517842848
       ],
       [
-        166.24320833333334,
+        166.33583333333334,
         "Cinderjaw",
         "Riverbend herd",
         4,
@@ -4921,19 +4921,19 @@
     ]
   },
   "restart": [
-    3806013402738445294,
-    3806013402738445294
+    102621604372385458,
+    102621604372385458
   ],
   "stats": {
-    "events": 442,
+    "events": 447,
     "stale": 0,
     "decisions": 156,
     "cells_reached": 409575,
     "breedings": 9,
     "starvations": 17,
-    "clips": 622,
+    "clips": 878,
     "seen": 5,
-    "seen_stale": 0,
+    "seen_stale": 5,
     "seen_empty": 0,
     "materialized": 5,
     "despawns": 5,
@@ -9781,9 +9781,9 @@
       "day": 136.246875,
       "herd": "Riverbend herd",
       "sub_season": 5,
-      "count": 6437,
+      "count": 6442,
       "cohorts": [
-        1376,
+        1381,
         3766,
         1295
       ],
@@ -9792,7 +9792,7 @@
         770,
         747
       ],
-      "satisfaction": 873,
+      "satisfaction": 872,
       "from": [
         1901,
         1133
@@ -10043,16 +10043,16 @@
       "day": 144.246875,
       "herd": "Riverbend herd",
       "sub_season": 6,
-      "count": 6380,
+      "count": 6385,
       "cohorts": [
-        1347,
+        1352,
         3755,
         1278
       ],
       "condition": [
-        748,
-        790,
-        769
+        747,
+        789,
+        768
       ],
       "satisfaction": 809,
       "from": [
@@ -10289,18 +10289,18 @@
       "day": 152.246875,
       "herd": "Riverbend herd",
       "sub_season": 7,
-      "count": 6328,
+      "count": 6333,
       "cohorts": [
-        1324,
+        1329,
         3742,
         1262
       ],
       "condition": [
-        811,
-        842,
-        826
+        810,
+        841,
+        825
       ],
-      "satisfaction": 894,
+      "satisfaction": 893,
       "from": [
         -704,
         448
@@ -10539,14 +10539,14 @@
       "day": 160.246875,
       "herd": "Riverbend herd",
       "sub_season": 8,
-      "count": 6258,
+      "count": 6263,
       "cohorts": [
-        1301,
+        1306,
         3724,
         1233
       ],
       "condition": [
-        906,
+        905,
         921,
         913
       ],
@@ -10785,11 +10785,11 @@
       "day": 168.246875,
       "herd": "Riverbend herd",
       "sub_season": 9,
-      "count": 6191,
+      "count": 6200,
       "cohorts": [
-        1272,
+        1283,
         3709,
-        1210
+        1208
       ],
       "condition": [
         953,
@@ -11039,11 +11039,11 @@
       "day": 176.246875,
       "herd": "Riverbend herd",
       "sub_season": 10,
-      "count": 6130,
+      "count": 6144,
       "cohorts": [
-        1252,
+        1268,
         3692,
-        1186
+        1184
       ],
       "condition": [
         977,
@@ -11293,11 +11293,11 @@
       "day": 184.246875,
       "herd": "Riverbend herd",
       "sub_season": 11,
-      "count": 6077,
+      "count": 6092,
       "cohorts": [
-        1232,
+        1249,
         3680,
-        1165
+        1163
       ],
       "condition": [
         989,
@@ -11324,7 +11324,7 @@
         ]
       ],
       "temperature": 19.840742,
-      "forage": 2935.0293385150053,
+      "forage": 2933.205143456001,
       "cells_reached": 2292
     },
     {
@@ -11543,11 +11543,11 @@
       "day": 192.246875,
       "herd": "Riverbend herd",
       "sub_season": 0,
-      "count": 6028,
+      "count": 6039,
       "cohorts": [
-        1223,
+        1236,
         3665,
-        1140
+        1138
       ],
       "condition": [
         995,
@@ -12144,8 +12144,8 @@
       "what": "met 14% of its demand; 345 starved"
     },
     {
-      "tick": 2993744,
-      "day": 124.73933333333333,
+      "tick": 2995875,
+      "day": 124.828125,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12165,8 +12165,8 @@
       "what": "met 39% of its demand; 92 starved"
     },
     {
-      "tick": 3118248,
-      "day": 129.927,
+      "tick": 3120349,
+      "day": 130.01454166666667,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12179,8 +12179,8 @@
       "what": "predator 0x100000000 ate 4 sheep"
     },
     {
-      "tick": 3241552,
-      "day": 135.06466666666665,
+      "tick": 3243653,
+      "day": 135.15220833333333,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12200,8 +12200,8 @@
       "what": "predator 0x100000000 ate 4 sheep"
     },
     {
-      "tick": 3363927,
-      "day": 140.163625,
+      "tick": 3366073,
+      "day": 140.25304166666666,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12221,8 +12221,8 @@
       "what": "met 48% of its demand; 10 starved"
     },
     {
-      "tick": 3487160,
-      "day": 145.29833333333335,
+      "tick": 3489343,
+      "day": 145.38929166666668,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12235,8 +12235,8 @@
       "what": "predator 0x100000000 ate 4 sheep"
     },
     {
-      "tick": 3612309,
-      "day": 150.512875,
+      "tick": 3614492,
+      "day": 150.60383333333334,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12249,8 +12249,8 @@
       "what": "predator 0x100000000 ate 4 sheep"
     },
     {
-      "tick": 3737297,
-      "day": 155.72070833333333,
+      "tick": 3739492,
+      "day": 155.81216666666666,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12263,8 +12263,8 @@
       "what": "predator 0x100000000 ate 4 sheep"
     },
     {
-      "tick": 3862727,
-      "day": 160.94695833333333,
+      "tick": 3864950,
+      "day": 161.03958333333333,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12277,8 +12277,8 @@
       "what": "predator 0x100000000 ate 5 sheep"
     },
     {
-      "tick": 3989837,
-      "day": 166.24320833333334,
+      "tick": 3992060,
+      "day": 166.33583333333334,
       "kind": "predation",
       "herd": "Riverbend herd",
       "what": "predator 0x100000001 ate 4 cow"
@@ -12329,7 +12329,7 @@
     {
       "name": "a restart restores the herds' state hash",
       "ok": true,
-      "detail": "0x34d1ad065099cbee saved, 0x34d1ad065099cbee restored"
+      "detail": "0x16c95ce32e58eb2 saved, 0x16c95ce32e58eb2 restored"
     },
     {
       "name": "the fenced pass stops the flock's puppets and the plugin reports it",
@@ -12359,7 +12359,7 @@
     {
       "name": "tens of thousands of animals, conserved as integers after every step",
       "ok": true,
-      "detail": "31886 animals at the end; ledgers balance at every step"
+      "detail": "31892 animals at the end; ledgers balance at every step"
     }
   ]
 }

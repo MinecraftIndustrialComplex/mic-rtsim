@@ -171,6 +171,9 @@ pub struct PreyRecord {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerView {
     pub uuid: Uuid,
+    /// The player's actor in the phase 1 world's knowledge (its bits), when the shared interest
+    /// area introduced it (`Viewer::area_booked`); 0 otherwise.
+    pub actor: u64,
     pub pos: Option<(Pos, Tick)>,
     /// The player's herd interest area in the leg index.
     pub interest: Option<Stamp>,
@@ -876,6 +879,7 @@ impl Herds {
         let s = self.players.len() as u32;
         self.players.push(PlayerView {
             uuid,
+            actor: 0,
             pos: None,
             interest: None,
             puppets: 0,
@@ -1010,6 +1014,13 @@ impl Herds {
     /// Books (or replans) the part of the herd's route inside the player's area window into the
     /// leg index, and the meeting of the two (A15: lazily, only where a player could see it).
     fn clip(&mut self, legs: &mut LegIndex, h: HerdId, slot: u32, at: Tick) {
+        self.clip_with(legs, h, slot, at, true);
+    }
+
+    /// Books the herd's leg for a player's area; with `meet`, also its meeting (without, the
+    /// caller learns the meeting another way: the world's `route_area` hands it to
+    /// `Viewer::crossings`).
+    fn clip_with(&mut self, legs: &mut LegIndex, h: HerdId, slot: u32, at: Tick, meet: bool) {
         let Some(interest) = self.players[slot as usize].interest else {
             return;
         };
@@ -1052,6 +1063,9 @@ impl Herds {
             .clips
             .insert(slot, stamp);
         self.stats.clips += 1;
+        if !meet {
+            return;
+        }
         if let Some(m) = legs.meeting(stamp, interest) {
             self.schedule(
                 m.at,
@@ -1820,5 +1834,130 @@ impl Herds {
                 .map(|s| 32 + s.len() * 16)
                 .sum::<usize>()
             + self.players.capacity() * std::mem::size_of::<PlayerView>()
+    }
+}
+
+// ---- one interest area per player, shared with the other modules ----------------------------------
+
+impl Herds {
+    /// A player's shared interest area (the phase 1 world's, `World::observe_area`) was booked or
+    /// replanned: it is this player's area for the herds too, so the herds book no area of their
+    /// own. The legs of herds whose routes come near are booked against it; their meetings come
+    /// back through `Viewer::crossings`.
+    pub fn shared_area(&mut self, legs: &mut LegIndex, uuid: Uuid, actor: u64, area: Stamp) {
+        let slot = self.slot_of(uuid);
+        let Some(path) = legs
+            .get(area.leg)
+            .filter(|r| r.generation == area.generation)
+            .map(|r| r.path)
+        else {
+            return;
+        };
+        let pos = Pos::new(path.frame, path.x0, path.z0);
+        {
+            let p = &mut self.players[slot as usize];
+            p.actor = actor;
+            if let Some(old) = p.interest.filter(|o| o.leg != area.leg) {
+                // An area of the herds' own from before: the shared one replaces it.
+                legs.cancel(old.leg);
+            }
+            p.interest = Some(area);
+            p.pos = Some((pos, path.t0));
+        }
+        let at = path.t0.max(self.now);
+        let reach = i64::from(self.tun.view_radius.max(path.radius)) + 1_536;
+        let (x, z) = (i64::from(pos.x), i64::from(pos.z));
+        let (a, b) = (
+            (
+                (x - reach).div_euclid(REGION_BLOCKS),
+                (z - reach).div_euclid(REGION_BLOCKS),
+            ),
+            (
+                (x + reach).div_euclid(REGION_BLOCKS),
+                (z + reach).div_euclid(REGION_BLOCKS),
+            ),
+        );
+        let mut near = BTreeSet::new();
+        for rx in a.0..=b.0 {
+            for rz in a.1..=b.1 {
+                if let Some(s) = self.regions.get(&(pos.frame, rx, rz)) {
+                    near.extend(s.iter().copied());
+                }
+            }
+        }
+        for h in near {
+            if self.herds.get(h).is_some_and(|x| x.embodied.is_none()) {
+                self.clip_with(legs, h, slot, at, false);
+            }
+        }
+    }
+
+    /// The interest area the herds hold for a player (their own, or the shared one).
+    pub fn player_area(&self, uuid: Uuid) -> Option<Stamp> {
+        let slot = *self.player_by_key.get(&player_key(uuid))?;
+        self.players.get(slot as usize).and_then(|p| p.interest)
+    }
+
+    fn slot_of_actor(&self, actor: u64) -> Option<u32> {
+        self.players
+            .iter()
+            .position(|p| p.actor == actor && actor != 0)
+            .map(|i| i as u32)
+    }
+}
+
+impl rtsim_world::interest::Viewer for Herds {
+    /// Herd legs: owner bit 60 (the registry in `rtsim_world::interest`), not the herds' own
+    /// player areas (bit 59 under it).
+    fn owns(&self, owner: Owner) -> bool {
+        owner_herd(owner).is_some() && owner.0 & PLAYER_TAG == 0
+    }
+
+    fn area_booked(
+        &mut self,
+        w: &mut rtsim_world::World,
+        player: rtsim_knowledge::ActorId,
+        uuid: Uuid,
+        area: Stamp,
+    ) {
+        self.shared_area(&mut w.legs, uuid, player.to_bits(), area);
+    }
+
+    fn crossings(
+        &mut self,
+        w: &mut rtsim_world::World,
+        player: rtsim_knowledge::ActorId,
+        area: Stamp,
+        found: &[Meeting],
+    ) {
+        let _ = area;
+        let Some(slot) = self.slot_of_actor(player.to_bits()) else {
+            return;
+        };
+        for m in found {
+            let Some(h) = w.legs.get(m.a.leg).and_then(|r| owner_herd(r.owner)) else {
+                continue;
+            };
+            self.schedule(
+                m.at,
+                Ev::Seen {
+                    h,
+                    player: slot,
+                    meeting: *m,
+                },
+            );
+        }
+    }
+
+    fn player_left(&mut self, w: &mut rtsim_world::World, player: rtsim_knowledge::ActorId) {
+        let Some(slot) = self.slot_of_actor(player.to_bits()) else {
+            return;
+        };
+        let uuid = self.players[slot as usize].uuid;
+        // The area itself is the world's (it cancels it): forget it before the herds' own
+        // `player_left`, which would cancel it a second time.
+        self.players[slot as usize].interest = None;
+        let at = self.now;
+        self.player_left(&mut w.legs, uuid, at);
     }
 }

@@ -426,6 +426,7 @@ impl Herds {
         for p in &self.players {
             w.u64(p.uuid.0);
             w.u64(p.uuid.1);
+            w.u64(p.actor);
             match p.pos {
                 Some((pos, t)) => {
                     w.u8(1);
@@ -518,8 +519,9 @@ impl Herds {
             );
         }
         h.wheel = TimingWheel::decode_with(r, get_ev)?;
-        for _ in 0..r.len_prefix(19)? {
+        for _ in 0..r.len_prefix(27)? {
             let uuid = (r.u64()?, r.u64()?);
+            let actor = r.u64()?;
             let pos = match r.u8()? {
                 0 => None,
                 1 => {
@@ -540,6 +542,7 @@ impl Herds {
             h.player_by_key.insert(player_key(uuid), slot);
             h.players.push(PlayerView {
                 uuid,
+                actor,
                 pos,
                 interest,
                 puppets,

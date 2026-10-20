@@ -51,7 +51,7 @@ choice.
 | H2-13 | A herd avoids cells within two of another herd's target this sub-season (−0.4). | Herds spread instead of piling on the same pasture. |
 | H2-14 | **Obstacles raise the cost of entering a cell**, not of one edge: the cell a cell ahead of where the group is stuck, toward its steer target; +100 per report at full failure (the share of the group that failed, at least a quarter), capped at 400, halving every two sim years; the herd replans from where it is stuck at once. | A fence across a pass closes every edge into the cell it blocks; 100 makes a fenced pass a cell wide dearer than a detour of several kilometres. |
 | H2-15 | Herds index their routes by region themselves (derived, rebuilt on load from each route and its saved footprint radius) and book legs into the **shared leg index only for players near** (A15, lazily): one leg per (herd, player), the route's chord over the player's interest window (about two hours), booked with the footprint radius less a depth of 24 blocks, so the one meeting fires when the footprint reaches into the area. | The task's "booked lazily, only where a player could see them"; a herd leg over a sub-season would book hundreds of cells nobody reads. |
-| H2-16 | Herds book their own player interest areas (owner bit 60 with bit 59 and a player slot), as the dragons do theirs (R31); herd legs are bit 60 with the herd's handle (players 63, dragons 62, ships 61). | One interest area per player across modules is the integration agent's work tonight; this keeps the herds out of its way and ignored by every other module's owner decoding. |
+| H2-16 | **One interest area per player, shared:** the herds are a `rtsim_world::interest::Viewer` of the world's one area per player (the integration's `World::observe_area`, `route_area`, merged tonight): `area_booked` books the legs of herds near the area (no area of their own), `crossings` turns the world's meetings into materializations, `player_left` sends the player's groups home. Herd legs carry owner bit 60, the bit the integration's registry reserves for herds (players 63, dragons 62, ships 61). For use without a world (the bench, unit tests) `Herds::observe_player` still books an area of the herds' own, tagged bit 60 with bit 59 and a player slot so no other module mistakes it. `sim herds` and a test drive the shared area. | The integration work landed while this branch was open and left the herds a reserved bit and a trait to implement; implementing it is the additive way in. The native engine's wiring (a line in rtsim-jni's `with_viewers` and `run_to`, the herds' pages, the records' routing) is left for its owner. |
 | H2-17 | A group's size: alive × the share of the footprint inside the player's area at closest approach over the next two hours (a lens area), at least 1, at most 32 a group and 48 a player (PLACEHOLDERS); one group per herd at a time, for the first player near it. | The task's "count × the loaded fraction of its footprint, capped per player". The loaded area is taken as the interest area until the bridge reports loaded chunks per herd. |
 | H2-18 | Members are placed deterministically inside the footprint and inside the player's area (its inner edge), from the member's seed and the epoch; a lens midpoint when no sample lands. | The bridge rejects a spawn outside the entity-ticking area (§2.4); members appear "at the far edge, all moving the same way". |
 | H2-19 | **Which members are alive is a convention over counts:** in a class, the seen ones are alive, and of the unseen ones not dead, the lowest indices are. Anonymous deaths fall on the highest unseen indices; seen members die only when a class's count falls below them (old age), highest index first, unembodied first, into the dead set. A herd remembers 1,024 seen members at most, forgetting the least recently seen. | PLAN.md §4.4's dead-index set and "cohort deaths from unseen indices", with no row per member. |
@@ -74,11 +74,12 @@ choice.
 
 ## Results
 
-- **Tests:** `crates/rtsim-ecology/tests/herds.rs` (12, three of them property tests): founding,
+- **Tests:** `crates/rtsim-ecology/tests/herds.rs` (13, three of them property tests): founding,
   seasonal migration, identity after kills and a season of deaths, flat catch-up, one
   materialization per approach, composition (one run equals many, reads in between change
   nothing), conservation under any script, restore under any script, a truncated page, an
-  obstacle and its replan, dragons eating from and following a herd, a new session. Unit tests in the module
+  obstacle and its replan, dragons eating from and following a herd, a new session, the shared
+  interest area. Unit tests in the module
   (18): vanilla food points and colour odds, cohorts, the forage closed form against an ODE
   stepper and its composition, grazing's floor and fold, year-class reads and re-anchors, catch-up
   work, the route through a gap and the fenced gap, route closed forms, the codec. Workspace: 389
@@ -90,7 +91,8 @@ choice.
 
 - **The native engine does not route herd records** (no herds module in rtsim-jni), and **no vanilla
   adapter exists**: `herds::synth::FakeHerds` is the executable reference.
-- **One interest area per player**: herds book their own (H2-16) until the integration work lands.
+- **The native engine's wiring of the herds' viewer** (rtsim-jni's `engine/shared.rs` names the two
+  lines it needs) and the herds' pages in the native save.
 - **Climate providers**: only the synthetic valley; Serene Seasons and Deep Time plugins later.
 - **Other predators**: wolves and players' own hunting outside a materialized group are not
   modeled; a real dragon eating embodied herd animals comes back as HERD_KILLED (lost), not through
