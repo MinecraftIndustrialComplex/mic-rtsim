@@ -7,8 +7,8 @@
 //!    (`min_j L_g(j) + transport labor`): a shortest path per good over the edges, then the local
 //!    solve again, since an imported input can make a local recipe cheaper. Repeated until nothing
 //!    changes (a few rounds: as deep as the recipe graph).
-//! 3. `L_mint` is the market's cost of one coin of its own culture's currency. The anchor is
-//!    `p*_g = L_g / L_mint`.
+//! 3. `L_mint` is the cost of one coin at its culture's cheapest mint, the same for every market of
+//!    the culture. The anchor is `p*_g = L_g / L_mint`.
 //! 4. Targets: `Sbar = T × max(c, y)` with `T` at least twice the market's longest edge, and
 //!    `Mbar = k × pop / L_mint`.
 //! 5. Border markets (an edge to another culture) get an exchange line for each foreign currency:
@@ -70,6 +70,16 @@ pub fn transport_labour(goods: &Goods, tun: &Tunables, g: GoodId, d_quanta: u64)
     let capacity_items = f64::from(tun.caravan_slots) * f64::from(goods.get(g).stack.max(1));
     tun.upkeep_worker_days_per_day * days / capacity_items
 }
+
+/// Transport cost per item of `g` over `d_quanta` in coins of a culture whose mint costs `l_mint`
+/// worker-days a coin, millionths: `τ_ij = upkeep × d_ij / capacity`, priced like an anchor.
+pub fn transport_price(goods: &Goods, tun: &Tunables, g: GoodId, d_quanta: u64, l_mint: f64) -> i64 {
+    anchor_of(transport_labour(goods, tun, g, d_quanta), l_mint)
+}
+
+/// Integer prices are each rounded once, so a margin built from three of them can be off by up to
+/// this many millionths when the true margin is zero. Not a tunable: the rounding's own bound.
+pub const MARGIN_SLACK: i64 = 2;
 
 fn anchor_of(labour: f64, l_mint: f64) -> i64 {
     if !labour.is_finite() || !l_mint.is_finite() || l_mint <= 0.0 {
@@ -251,11 +261,11 @@ pub fn make_market(
     {
         let cost = costs;
         let currency = nd.culture.and_then(|c| goods.currency(c));
+        // L_mint is the culture's mint cost, the same in every market of the culture: an emerald
+        // is the same labour wherever it is, so prices in emeralds compare across markets and a
+        // steady flow's margin is exactly zero up to rounding (overnight choice E16).
         let l_mint = match (nd.culture, currency) {
-            (Some(c), Some(cur)) => {
-                let own = cost.labour[cur.index()];
-                if own.is_finite() { own } else { mint_cost[c.index()] }
-            }
+            (Some(c), Some(_)) => mint_cost[c.index()],
             _ => f64::INFINITY,
         };
         let t_quanta = tun.target_quanta(max_d);
@@ -528,17 +538,19 @@ mod tests {
         let la = built.costs[0].labour[wheat.index()];
         let lb = built.costs[1].labour[wheat.index()];
         assert!((lb - la - transport_labour(&goods, &tun, wheat, 6)).abs() < 1e-12);
-        // Anchors in coins: A mints at 2 worker-days a coin, wheat costs 0.1: 1/20 coin.
+        // Anchors in coins: A mints at 2 worker-days a coin, wheat costs 0.1: 1/20 coin. B pays
+        // A's price plus transport, in the same emeralds.
         assert_eq!(ma.anchor(wheat), 50_000);
         assert!(mb.anchor(wheat) > ma.anchor(wheat));
         // T is at least twice the longest edge.
         assert!(mb.t_quanta >= 12);
         // Only B and R are border markets; B prices amethyst at mint parity: 0.25 worker-days
-        // per shard over 2 per emerald (plus transport to B for the emerald).
+        // per shard over 2 per emerald, an eighth of an emerald.
         assert!(mb.line(amethyst).target > 0);
         assert_eq!(ma.line(amethyst).target, 0);
         assert!(mr.line(emerald).target > 0);
-        assert!(mb.anchor(amethyst) > 0 && mb.anchor(amethyst) < PRICE_ONE / 8);
+        assert_eq!(mb.anchor(amethyst), PRICE_ONE / 8);
+        assert_eq!(mr.anchor(emerald), 8 * PRICE_ONE);
         // Treasuries start at Mbar.
         assert!(ma.treasury() > 0 && ma.treasury() == ma.line(emerald).target);
         assert!(built.lints.is_empty(), "{:?}", built.lints);
