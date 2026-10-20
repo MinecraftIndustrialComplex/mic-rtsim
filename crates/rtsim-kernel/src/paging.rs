@@ -960,9 +960,29 @@ impl<M: PagedModel> PagedTable<M> {
     // ---- Saves ----
 
     /// Puts every resident page that changed since it was last written into `batch` (a page with
-    /// no region left becomes a delete). The pages stay pinned until the ticket comes back.
+    /// no region left becomes a delete), compressing on the calling thread. The pages stay pinned
+    /// until the ticket comes back.
     pub fn save_dirty(&mut self, batch: &mut SaveBatch) -> SaveTicket {
+        let (pages, ticket) = self.snapshot_dirty();
+        for (key, raw) in pages {
+            match raw {
+                Some(raw) => batch.put(key, &raw),
+                None => batch.delete(key),
+            }
+        }
+        ticket
+    }
+
+    /// The step-boundary half of a save (PLAN.md §4.9): the raw bytes of every resident page that
+    /// changed since it was last written (`None`: no region left, delete it), without
+    /// compressing. The host's IO lane compresses them (`SaveBatch::put`, or
+    /// `EncodedPage::encode` then `put_encoded`) and commits, off the step thread; the pages stay
+    /// pinned until the ticket comes back through [`PagedTable::saved`] or
+    /// [`PagedTable::save_failed`].
+    #[allow(clippy::type_complexity)]
+    pub fn snapshot_dirty(&mut self) -> (Vec<(PageKey, Option<Vec<u8>>)>, SaveTicket) {
         let mut ticket = SaveTicket::default();
+        let mut out = Vec::new();
         let table = self.cfg.table;
         for i in 0..self.slab.len() as u32 {
             let Some(page) = self.slab[i as usize].as_mut() else {
@@ -973,11 +993,11 @@ impl<M: PagedModel> PagedTable<M> {
             }
             let key = PageKey::new(table, page.id);
             if page.present == 0 {
-                batch.delete(key);
+                out.push((key, None));
             } else {
                 let mut w = Writer::with_capacity(64 * page.present as usize);
                 page.encode(&mut w);
-                batch.put(key, w.as_bytes());
+                out.push((key, Some(w.into_bytes())));
             }
             page.dirty = false;
             page.caught_up = false;
@@ -985,7 +1005,7 @@ impl<M: PagedModel> PagedTable<M> {
             ticket.pages.push(page.id);
             self.sync(i);
         }
-        ticket
+        (out, ticket)
     }
 
     /// Puts the table's own state (the clock and every booked wake) into `batch`. Its size is the

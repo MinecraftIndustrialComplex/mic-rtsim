@@ -531,10 +531,12 @@ fn paged_sweep(model: ModelKind, quick: bool) -> Sweep {
         vary: Vary::Regions,
         regions: None,
         paged: true,
-        values: if quick {
-            vec![100_000, 1_000_000]
-        } else {
-            vec![100_000, 1_000_000, 10_000_000]
+        // A hundred million regions for the cheap models; the dyadic model's conservation check
+        // (its invariants walk four trees per region) would take minutes per repeat there.
+        values: match (quick, model) {
+            (true, _) => vec![100_000, 1_000_000],
+            (false, ModelKind::Dyadic) => vec![100_000, 1_000_000, 10_000_000],
+            (false, _) => vec![100_000, 1_000_000, 10_000_000, 100_000_000],
         },
         contracts: vec![
             contract(
@@ -625,6 +627,10 @@ fn run_paged<M: BenchModel + rtsim_kernel::paging::PagedModel>(p: &PagedSpec) ->
     let saves0 = w.saves;
     let (dep0, arr0) = (w.departures, w.arrivals);
     sys::reset_heap_peak();
+    // The build phase passed through the allocator; resident size and its peak should show the
+    // measured window only.
+    sys::trim_heap();
+    sys::reset_rss_peak();
 
     let (cpu0, wall0) = (sys::thread_cpu_ns(), Instant::now());
     w.run_to(Tick::from_days(c.warmup_days + c.days));

@@ -730,18 +730,8 @@ impl PageStore {
         world_obs_seq: u64,
     ) -> Result<PageStore> {
         let mut s = PageStore::open(dir, durability)?;
-        if s.obs_seq <= world_obs_seq {
-            return Ok(s);
-        }
-        if s.confirmed.obs_seq <= world_obs_seq {
-            s.rollback()?;
-            return Ok(s);
-        }
-        Err(PageError::Format(format!(
-            "both generations are ahead of the journal: current includes observations to {}, \
-             confirmed to {}, the world's save to {world_obs_seq}",
-            s.obs_seq, s.confirmed.obs_seq
-        )))
+        s.select_for_journal(world_obs_seq)?;
+        Ok(s)
     }
 
     pub fn dir(&self) -> &Path {
@@ -979,6 +969,35 @@ impl PageStore {
             return Ok(false);
         }
         self.log_and_apply(Rec::Confirm { save_seq }).map(|_| true)
+    }
+
+    /// [`PageStore::confirm`] keyed by what the bridge reports (docs/boundary.md, WORLD_SAVED):
+    /// the world's save holds every observation through `world_obs_seq`, so the current generation
+    /// is confirmed if it includes none past that. Returns whether it confirmed anything.
+    pub fn confirm_through(&mut self, world_obs_seq: u64) -> Result<bool> {
+        if self.obs_seq > world_obs_seq {
+            return Ok(false);
+        }
+        self.confirm(self.save_seq)
+    }
+
+    /// The decision [`PageStore::open_for_journal`] makes, on a store already open (the bridge's
+    /// SESSION_START arrives after `start` opened the pages): keep the current generation if the
+    /// world's save holds every observation it includes, else roll back to the confirmed one.
+    /// Returns the generation the store is at; an error if both are ahead.
+    pub fn select_for_journal(&mut self, world_obs_seq: u64) -> Result<Generation> {
+        if self.obs_seq <= world_obs_seq {
+            return Ok(self.current());
+        }
+        if self.confirmed.obs_seq <= world_obs_seq {
+            self.rollback()?;
+            return Ok(self.current());
+        }
+        Err(PageError::Format(format!(
+            "both generations are ahead of the journal: current includes observations to {}, \
+             confirmed to {}, the world's save to {world_obs_seq}",
+            self.obs_seq, self.confirmed.obs_seq
+        )))
     }
 
     /// Drops every pending generation and returns to the confirmed one. Returns false when
@@ -2089,6 +2108,20 @@ mod tests {
         // Only live segments remain on disk.
         let segs = names(&dir).iter().filter(|n| n.ends_with(".rts")).count();
         assert_eq!(segs, s.segment_count());
+        // The bridge's flow: requestSave(through) makes a pending save at `through`, and
+        // WORLD_SAVED(through) confirms it; a WORLD_SAVED behind the save confirms nothing.
+        let mut b = SaveBatch::new();
+        b.put(PageKey(5), b"e");
+        s.commit_pending(b, 40).unwrap();
+        assert!(!s.confirm_through(39).unwrap());
+        assert!(s.confirm_through(40).unwrap());
+        assert_eq!(s.confirmed().obs_seq, 40);
+        let mut b = SaveBatch::new();
+        b.put(PageKey(5), b"f");
+        s.commit_pending(b, 50).unwrap();
+        // SESSION_START says the world's save stopped at 45: back to 40.
+        assert_eq!(s.select_for_journal(45).unwrap().obs_seq, 40);
+        assert_eq!(s.get(PageKey(5)).unwrap().unwrap(), b"e");
         // Both generations ahead of the journal is an error, not a guess.
         drop(s);
         assert!(PageStore::open_for_journal(&dir, Durability::NoSync, 5).is_err());

@@ -624,6 +624,9 @@ impl Decode for SynthRegion {
 
 /// A trading post: a herd on day slots (real catch-up work), grain, and a caravan that leaves
 /// every few days for a destination drawn from the counter RNG, carrying grain as a message.
+/// `work` stands for what a real module does per event (a market solve, a plan): that many rounds
+/// of a hash folded into `ledger`, so the work is state and cannot be skipped. PLACEHOLDER work,
+/// for the parallel step's bench.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TradePost {
     pub herd: Herd,
@@ -633,6 +636,8 @@ pub struct TradePost {
     pub departures: u64,
     pub regions: u64,
     pub seed: u64,
+    pub work: u32,
+    pub ledger: u64,
 }
 
 impl LazyModel for TradePost {
@@ -668,6 +673,8 @@ impl Encode for TradePost {
         w.var_u64(self.departures);
         w.var_u64(self.regions);
         w.u64(self.seed);
+        w.var_u64(u64::from(self.work));
+        w.u64(self.ledger);
     }
 }
 
@@ -687,6 +694,9 @@ impl Decode for TradePost {
             departures: r.var_u64()?,
             regions: r.var_u64()?,
             seed: r.u64()?,
+            work: u32::try_from(r.var_u64()?)
+                .map_err(|_| codec::CodecError::Invalid("work over u32".into()))?,
+            ledger: r.u64()?,
         })
     }
 }
@@ -720,6 +730,7 @@ impl crate::bsp::Actor for TradePost {
         post.send((to + 1) % self.regions, at + 1, Cargo(0));
         self.departures += 1;
         self.next_departure = at + TICKS_PER_DAY + rng.below(3 * TICKS_PER_DAY);
+        self.do_work(at.0);
     }
     fn on_message(
         &mut self,
@@ -730,6 +741,7 @@ impl crate::bsp::Actor for TradePost {
     ) {
         self.grain += msg.0;
         self.received += msg.0;
+        self.do_work(msg.0 as u64);
     }
 }
 
@@ -746,7 +758,23 @@ impl TradePost {
             departures: 0,
             regions,
             seed,
+            work: 0,
+            ledger: 0,
         }
+    }
+
+    /// The same post doing `work` rounds per event.
+    pub fn with_work(mut self, work: u32) -> TradePost {
+        self.work = work;
+        self
+    }
+
+    fn do_work(&mut self, salt: u64) {
+        let mut x = self.ledger ^ salt;
+        for i in 0..self.work {
+            x = crate::rng::fnv1a64(&(x ^ u64::from(i)).to_le_bytes());
+        }
+        self.ledger = x;
     }
 }
 

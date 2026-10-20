@@ -7,8 +7,10 @@
 //! The world is `regions` trading posts (`rtsim_kernel::synth::TradePost`): each has a herd on
 //! day slots (real catch-up work when it wakes), grain, and a caravan that leaves every one to four
 //! days for a destination drawn from the counter RNG and arrives half a day to a day and a half
-//! later as a message. Steps are `step` ticks long; saves run every 6,000 ticks. Every point runs
-//! in its own child process.
+//! later as a message. Each event can also do `work` rounds of hashing, standing for what a module
+//! does per event: the bare engine's own work per event is under a microsecond, too little to
+//! split across threads. Steps are `step` ticks long; saves run every 6,000 ticks. Every point
+//! runs in its own child process.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -29,6 +31,11 @@ use crate::sys;
 /// Ticks between saves, Minecraft's autosave interval.
 const SAVE_EVERY: u64 = 6_000;
 
+/// The worlds the bench runs: (step length in ticks, rounds of work per event). Work 0 is the bare
+/// engine; 1,500 rounds stand for a module's work per event (about 10 us on the reference laptop;
+/// the results record what it measured). PLACEHOLDER.
+const WORLDS: [(u64, u32); 4] = [(20, 0), (600, 0), (20, 1_500), (600, 1_500)];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BspSpec {
     pub regions: u64,
@@ -41,6 +48,9 @@ pub struct BspSpec {
     pub budget_bytes: Option<u64>,
     pub regions_per_page: u64,
     pub seed: u64,
+    /// Rounds of work per event in each post (`TradePost::work`), standing for module logic.
+    #[serde(default)]
+    pub work: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -91,7 +101,7 @@ pub fn run_one(spec: &BspSpec) -> BspMeasured {
         PagedTable::new(spec.seed, SystemId::named("bench.post"), Tick::ZERO, cfg);
     let mut grain0 = 0i64;
     for k in 0..spec.regions {
-        let p = TradePost::new(spec.seed, k, spec.regions);
+        let p = TradePost::new(spec.seed, k, spec.regions).with_work(spec.work);
         grain0 += p.grain;
         io(table.insert(&mut store, k, p, Tick::ZERO));
         if spec.budget_bytes.is_some() && (k + 1) % (spec.regions_per_page * 256) == 0 {
@@ -142,6 +152,8 @@ pub fn run_one(spec: &BspSpec) -> BspMeasured {
     bsp.reset_stats();
     table.reset_stats();
     sys::reset_heap_peak();
+    sys::trim_heap();
+    sys::reset_rss_peak();
     let (cpu0, wall0) = (sys::process_cpu_ns(), Instant::now());
     let end = Tick::from_days(spec.warmup_days + spec.days);
     run(end, &mut now, &mut table, &mut store, &mut bsp, true);
@@ -222,9 +234,10 @@ pub struct Point {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Gate {
-    /// One configuration of the world (step length); the hashes of every worker count and
-    /// budget that ran it.
+    /// One world (step length and work per event); the hashes of every worker count and budget
+    /// that ran it.
     pub step: u64,
+    pub work: u32,
     pub hashes: Vec<(usize, Option<u64>, u32, u32)>,
     pub pass: bool,
 }
@@ -283,7 +296,7 @@ pub fn run(opts: Options) -> i32 {
     // points evict and reload all the time. PLACEHOLDER.
     let budget = (regions / 64).max(1) * 9 * 1024 / 4;
     let mut specs = Vec::new();
-    for step in [20u64, 600] {
+    for (step, work) in WORLDS {
         for &w in &workers {
             specs.push(BspSpec {
                 regions,
@@ -294,6 +307,7 @@ pub fn run(opts: Options) -> i32 {
                 budget_bytes: None,
                 regions_per_page: 64,
                 seed: 0x0B5F_0001,
+                work,
             });
         }
         // The same world paged: at 1 worker and at the most workers.
@@ -307,6 +321,7 @@ pub fn run(opts: Options) -> i32 {
                 budget_bytes: Some(budget),
                 regions_per_page: 64,
                 seed: 0x0B5F_0001,
+                work,
             });
         }
     }
@@ -320,8 +335,9 @@ pub fn run(opts: Options) -> i32 {
     let mut points = Vec::new();
     for spec in specs {
         eprint!(
-            "  step {} workers {} {} ... ",
+            "  step {} work {} workers {} {} ... ",
             spec.step,
+            spec.work,
             spec.workers,
             spec.budget_bytes
                 .map_or("resident".to_string(), |b| format!(
@@ -352,10 +368,10 @@ pub fn run(opts: Options) -> i32 {
     }
 
     let mut gates = Vec::new();
-    for step in [20u64, 600] {
+    for (step, work) in WORLDS {
         let hashes: Vec<(usize, Option<u64>, u32, u32)> = points
             .iter()
-            .filter(|p| p.spec.step == step)
+            .filter(|p| p.spec.step == step && p.spec.work == work)
             .map(|p| {
                 (
                     p.spec.workers,
@@ -368,7 +384,12 @@ pub fn run(opts: Options) -> i32 {
         let pass = hashes
             .iter()
             .all(|h| (h.2, h.3) == (hashes[0].2, hashes[0].3));
-        gates.push(Gate { step, hashes, pass });
+        gates.push(Gate {
+            step,
+            work,
+            hashes,
+            pass,
+        });
     }
 
     print_tables(&points, &gates);
@@ -447,8 +468,9 @@ fn write_report(dir: &Path, stamp: &str, report: &Report) -> std::io::Result<Pat
 
 fn print_tables(points: &[Point], gates: &[Gate]) {
     println!(
-        "{:>5} {:>7} {:>10} | {:>11} {:>8} {:>11} {:>11} | {:>9} {:>9} {:>8} {:>8} | {:>7} {:>7} | {:>8} {:>8} conserved",
+        "{:>5} {:>5} {:>7} {:>10} | {:>11} {:>8} {:>11} {:>11} | {:>9} {:>9} {:>8} {:>8} | {:>7} {:>7} | {:>8} {:>8} conserved",
         "step",
+        "work",
         "workers",
         "pages",
         "wall ms/day",
@@ -469,14 +491,16 @@ fn print_tables(points: &[Point], gates: &[Gate]) {
             .iter()
             .find(|q| {
                 q.spec.step == p.spec.step
+                    && q.spec.work == p.spec.work
                     && q.spec.budget_bytes == p.spec.budget_bytes
                     && q.spec.workers == 1
             })
             .map(|q| q.measured.step_wall_ns_per_day);
         let m = &p.measured;
         println!(
-            "{:>5} {:>7} {:>10} | {:>11.1} {:>8} {:>11.1} {:>11} | {:>9.0} {:>9.0} {:>8.1} {:>8.1} | {:>7} {:>7} | {:08x} {:08x} {}",
+            "{:>5} {:>5} {:>7} {:>10} | {:>11.1} {:>8} {:>11.1} {:>11} | {:>9.0} {:>9.0} {:>8.1} {:>8.1} | {:>7} {:>7} | {:08x} {:08x} {}",
             p.spec.step,
+            p.spec.work,
             p.spec.workers,
             p.spec
                 .budget_bytes
@@ -503,8 +527,9 @@ fn print_tables(points: &[Point], gates: &[Gate]) {
     println!();
     for g in gates {
         println!(
-            "determinism gate, step {}: {} ({} runs: {})",
+            "determinism gate, step {} work {}: {} ({} runs: {})",
             g.step,
+            g.work,
             if g.pass { "pass" } else { "FAIL" },
             g.hashes.len(),
             g.hashes

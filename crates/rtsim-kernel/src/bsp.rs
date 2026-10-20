@@ -76,6 +76,11 @@ pub struct Envelope<Msg> {
 /// The sender id of messages from outside the engine.
 pub const EXTERNAL: u64 = u64::MAX;
 
+/// Work items (a region's wake, or one message) a job gets at least: below this, handing work to
+/// another thread costs more than it saves, and a step with less runs on the caller. PLACEHOLDER,
+/// from the first `bench bsp` run.
+pub const MIN_JOB_WEIGHT: usize = 64;
+
 impl<Msg> Envelope<Msg> {
     fn order_key(&self) -> (u64, u64, Tick, u32) {
         (self.to, self.from, self.sent_at, self.n)
@@ -323,6 +328,13 @@ impl<M: Actor> Bsp<M> {
     ) -> Result<StepReport<M::Msg>> {
         let from = table.now();
         assert!(to >= from, "step to {to:?} before the table's now {from:?}");
+        if to == from {
+            // An empty window: nothing can be due in it (wakes at `from` were due last step).
+            return Ok(StepReport {
+                regions: 0,
+                dead_letters: Vec::new(),
+            });
+        }
         let start = Tick(from.0 + 1);
         self.stats.steps += 1;
 
@@ -415,7 +427,10 @@ impl<M: Actor> Bsp<M> {
             start,
             to,
         };
-        let target = (exec.workers() * 4).min(work.len()).max(1);
+        let target = (exec.workers() * 4)
+            .min(weight / MIN_JOB_WEIGHT)
+            .min(work.len())
+            .max(1);
         let per_chunk = weight.div_ceil(target).max(1);
         let mut chunks: Vec<Vec<PageWork<M>>> = Vec::new();
         let mut cur: Vec<PageWork<M>> = Vec::new();
@@ -588,6 +603,8 @@ mod tests {
                 departures: 0,
                 regions,
                 seed: 9,
+                work: 3,
+                ledger: 0,
             };
             grain0 += p.grain;
             t.insert(&mut store, k, p, Tick::ZERO).unwrap();
@@ -626,32 +643,37 @@ mod tests {
     /// The determinism gate: 1 worker and N workers, resident or paged, give the same state.
     #[test]
     fn same_state_at_any_worker_count_and_budget() {
-        let one = run(300, 12, 200, &Inline, usize::MAX, "inline");
-        assert!(one.2.wakes > 500 && one.2.messages > 500, "{:?}", one.2);
-        for (workers, budget) in [(2, usize::MAX), (7, usize::MAX), (4, 20_000)] {
-            let pool = ThreadPool::new(workers);
-            let n = run(
-                300,
-                12,
-                200,
-                &pool,
-                budget,
-                &format!("pool{workers}-{budget}"),
-            );
-            assert_eq!(
-                (one.0, one.1),
-                (n.0, n.1),
-                "{workers} workers, budget {budget}"
-            );
-            assert_eq!(one.2.wakes, n.2.wakes);
-            assert_eq!(one.2.messages, n.2.messages);
-            assert!(
-                n.2.jobs > n.2.steps,
-                "the pool ran steps in parallel: {:?}",
-                n.2
-            );
-            if budget != usize::MAX {
-                assert!(n.3 > 0, "the small budget evicted pages");
+        // Short steps run mostly on the caller (under MIN_JOB_WEIGHT); long steps split into jobs.
+        for (regions, step) in [(300u64, 200u64), (1_000, 4_800)] {
+            let one = run(regions, 12, step, &Inline, usize::MAX, "inline");
+            assert!(one.2.wakes > 500 && one.2.messages > 500, "{:?}", one.2);
+            for (workers, budget) in [(2, usize::MAX), (7, usize::MAX), (4, 20_000)] {
+                let pool = ThreadPool::new(workers);
+                let n = run(
+                    regions,
+                    12,
+                    step,
+                    &pool,
+                    budget,
+                    &format!("pool{workers}-{budget}-{step}"),
+                );
+                assert_eq!(
+                    (one.0, one.1),
+                    (n.0, n.1),
+                    "{regions} regions, step {step}, {workers} workers, budget {budget}"
+                );
+                assert_eq!(one.2.wakes, n.2.wakes);
+                assert_eq!(one.2.messages, n.2.messages);
+                if step > 1_000 {
+                    assert!(
+                        n.2.jobs > n.2.steps,
+                        "the pool ran steps in parallel: {:?}",
+                        n.2
+                    );
+                }
+                if budget != usize::MAX {
+                    assert!(n.3 > 0, "the small budget evicted pages");
+                }
             }
         }
     }
@@ -673,6 +695,8 @@ mod tests {
             departures: 0,
             regions: 1,
             seed: 1,
+            work: 0,
+            ledger: 0,
         };
         t.insert(&mut store, 0, p, Tick::ZERO).unwrap();
         let mut bsp: Bsp<TradePost> = Bsp::new(Tick::ZERO);

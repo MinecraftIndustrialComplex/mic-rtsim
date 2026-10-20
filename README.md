@@ -13,7 +13,7 @@ hold the industry design and the research behind them.
 | Path | What |
 |---|---|
 | `crates/rtsim-kernel` | The engine kernel: no Minecraft, no JNI, no threads of its own (PLAN.md §5.1). |
-| `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10. |
+| `crates/rtsim-cli` | `rtsim-cli bench scale` (SCALE.md §10), `bench bsp` (the parallel step and its determinism gate), `bench o5` (slot commits against dyadic counts). |
 | `tools/ci/scale-check.sh` | The CI-style scale check: fails when a growth slope exceeds its contract. |
 | `bench/results/` | Committed bench results, with the machine and conditions. |
 
@@ -29,14 +29,17 @@ The kernel's modules:
 | `lazy` | Lazy regions: catch-up on read, slot commits, breakpoints on the wheel | SCALE §4, A15 |
 | `conserve` | Totals, ledger, two-sided transfers, fixed-point error diffusion | SCALE §9, C13 |
 | `dyadic` | Random counts over any interval in O(log horizon), the same for every reader (a prototype for O5) | O17 |
-| `codec`, `page` | Page encoding; incremental page store (LZ4 + CRC32, manifest last, crash-safe) | SCALE §8, PLAN §4.9 |
+| `codec`, `page` | Page encoding; incremental page store (LZ4 + CRC32, crash-safe): a log record per save, a paged location index, two save generations | SCALE §8, PLAN §4.9, P29 |
+| `paging` | Lazy regions paged to the store under a memory budget: LRU eviction, load on read, prefetch from the wheel, read-ahead hooks | A16, SCALE §8 |
+| `exec`, `bsp` | The executor the caller hands in (the engine owns no threads), and the bulk-synchronous parallel step: same state at any worker count | SCALE §5, PLAN §4.7 |
 | `journal` | Observation sequences, operation ids, idempotent replay, command outbox | A9 |
 | `profile` | Named zones, microseconds per system | |
 | `store` | Agent storage facade (`RowStore`) over plain columns; P4 stays open | P4 |
 | `synth` | Synthetic kinds for tests and the bench. Scaffolding, to be deleted | |
 
 Not built yet: the native host `mic_native`, the NeoForge bridge and JNI crate, the generic modules
-(markets, flows, caravans, knowledge), paging with a residency budget (A16), and the parallel step.
+(markets, flows, caravans, knowledge). The kernel follow-ups of the second overnight run (paging,
+saves, the parallel step) and their open ends are in `docs/overnight-choices-kernel2.md`.
 
 ## Build and test
 
@@ -61,7 +64,15 @@ nix develop -c flock /tmp/mic-rtsim-heavy.lock nice -n 10 tools/ci/scale-check.s
 
 It varies one count at a time (latent individuals, regions, events per day, elapsed time between
 reads, world age), runs each point in its own process, and measures CPU per sim day, heap and RSS,
-full and incremental save bytes, and catch-up latency. It fits log-log growth slopes and compares each
-with the slope its sweep declares; `--check` exits 1 when one is exceeded. Options: `--repeats N`,
-`--only latent,regions,events,elapsed,age`, `--out DIR`, `--no-write`. `bench/results/README.md`
-explains the committed results.
+full and incremental save bytes, and catch-up latency. The `paged` sweeps run the same world on
+paged regions at a fixed memory budget. It fits log-log growth slopes and compares each with the
+slope its sweep declares; `--check` exits 1 when one is exceeded. Options: `--repeats N`,
+`--only latent,regions,events,elapsed,age,paged`, `--out DIR`, `--no-write`, `--tag NAME`.
+`bench/results/README.md` explains the committed results.
+
+```sh
+flock /tmp/mic-rtsim-heavy.lock nice -n 10 ./target/release/rtsim-cli bench bsp --check   # the determinism gate, 1 to 16 workers
+flock /tmp/mic-rtsim-heavy.lock nice -n 10 ./target/release/rtsim-cli bench o5            # O5: slots against dyadic counts
+# The potato profile (A11): two physical cores (not SMT siblings; see lscpu -e), nice 10
+flock /tmp/mic-rtsim-heavy.lock nice -n 10 taskset -c 2,4 ./target/release/rtsim-cli bench scale --tag potato
+```
