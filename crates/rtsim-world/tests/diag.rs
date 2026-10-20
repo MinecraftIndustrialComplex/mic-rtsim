@@ -13,7 +13,9 @@ fn node_detail() {
     let from_day: u64 = std::env::var("FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(110);
     let mut cfg = WorldConfig::new(42);
     cfg.check_every_event = false;
-    cfg.genesis = Genesis::Share(500);
+    cfg.genesis = Genesis::Share(
+        std::env::var("GENESIS").ok().and_then(|s| s.parse().ok()).unwrap_or(500),
+    );
     if let Ok(r) = std::env::var("RULES") {
         cfg.trade.rules = rtsim_trade::Rules::parse(&r).unwrap();
     }

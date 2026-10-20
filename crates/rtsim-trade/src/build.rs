@@ -397,6 +397,8 @@ pub fn make_market(
             order,
             base_prices: vec![None; g_n],
             rules: tun.rules,
+            owed: 0,
+            cut: false,
         };
         m.recompute();
         m

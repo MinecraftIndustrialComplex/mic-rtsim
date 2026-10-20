@@ -68,6 +68,8 @@ fn market(stocks: [i64; 3], caps: [i64; 2], cons: [i64; 2], flows: [(i64, i64); 
         order: vec![GoodId(1), GoodId(0), GoodId(2)],
         base_prices: vec![None; 3],
         rules: rtsim_trade::tunables::Rules::default(),
+        owed: 0,
+        cut: false,
     };
     m.recompute();
     m

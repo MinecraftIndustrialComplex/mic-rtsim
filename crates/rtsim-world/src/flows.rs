@@ -308,6 +308,12 @@ fn step(
         };
         *pay.entry((*d, cur)).or_default() += amount;
     }
+    m.owed = home.map_or(0, |h| {
+        pay.iter()
+            .filter(|((_, c), _)| *c == h)
+            .map(|(_, a)| *a)
+            .sum()
+    });
     set_payments(m, node, edges, &pay, nb, changes);
 
     // 5. Coverage: no step may take out more than there is. A treasury below its band that pays
@@ -318,10 +324,18 @@ fn step(
         for gi in 0..m.lines.len() {
             let l = m.lines[gi];
             let income = l.rates.inflow + l.rates.cap - l.rates.cons;
-            let insolvent = m.rules.exporter_band
-                && m.goods[gi].currency
-                && l.stock < l.target - rtsim_trade::line::band(l.target)
-                && l.rates.outflow > income.max(0);
+            // With stickiness on, a payment a little above income is let stand until the store
+            // is out (the uncovered rule below), so small moves of income do not ripple on.
+            let over = if m.rules.sticky_div > 0 {
+                let tol = (income.max(0) / m.rules.sticky_div).max(STICKY_MIN);
+                l.rates.outflow > income.max(0) + tol
+            } else {
+                l.rates.outflow > income.max(0)
+            };
+            let below = l.stock < l.target - rtsim_trade::line::band(l.target)
+                || (m.rules.hysteresis && m.cut && Some(GoodId(gi as u16)) == m.currency
+                    && l.stock < l.target);
+            let insolvent = m.rules.exporter_band && m.goods[gi].currency && below && over;
             if l.rates.outflow == 0 || !(insolvent || l.next_change().uncovered == Some(1)) {
                 continue;
             }
@@ -349,7 +363,8 @@ fn step(
                 .collect();
             let left = allowed - now.iter().sum::<Amount>();
             if left > 0
-                && let Some(k) = (0..entries.len()).max_by_key(|&k| (entries[k].2, std::cmp::Reverse(k)))
+                && let Some(k) =
+                    (0..entries.len()).max_by_key(|&k| (entries[k].2, std::cmp::Reverse(k)))
             {
                 now[k] += left;
             }
@@ -382,6 +397,9 @@ fn step(
         }
     }
     m.recompute();
+    m.cut = m
+        .currency
+        .is_some_and(|c| m.line(c).rates.outflow < m.owed);
 
     changes.clear();
     let after = pipe_states(node, edges);
@@ -451,6 +469,10 @@ fn barter_good_for_payer(
             )
         })
 }
+
+/// The smallest change of a rate that stickiness lets through, thousandths: a payment moving by a
+/// thousandth or two between two broke markets is not worth a wake (overnight choice E48).
+const STICKY_MIN: Amount = 4;
 
 /// One pipeline leaving a node, as (direction, pipeline, good) with its current (rate, quote).
 type PipeState = ((DirRef, PipeKind, GoodId), (Amount, Price));

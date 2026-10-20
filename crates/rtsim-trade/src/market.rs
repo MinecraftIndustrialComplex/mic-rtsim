@@ -90,6 +90,12 @@ pub struct Market {
     pub base_prices: Vec<Option<(Price, Tick)>>,
     /// The tunables the market decides with ([`crate::tunables::Rules`]).
     pub rules: crate::tunables::Rules,
+    /// What the market owes per quantum in its own coin for what arrives, before the coverage
+    /// rule cuts it to what it can pay: set by the flows at every event (overnight choice E52).
+    pub owed: Amount,
+    /// Whether the last event cut the treasury's payments to its income (overnight choice E50):
+    /// a cut treasury stays cut until it is back at its target, not just inside its band.
+    pub cut: bool,
 }
 
 /// Why a player trade is refused.
@@ -239,10 +245,14 @@ impl Market {
             // the limit depends on rates alone, not on a stock that moves between events
             // (overnight choice E44).
             let mut cap = self.goods[i].nominal_cap;
+            // Hysteresis (overnight choice E51): a recipe already held back by an input stays
+            // held back until the input is back at its target, not just inside its band.
+            let was_limited = self.lines[i].rates.cap < self.goods[i].nominal_cap;
             for inp in &self.goods[i].inputs {
                 let l = &self.lines[inp.good.index()];
                 let short = if self.rules.exporter_band {
                     l.stock < l.target - band(l.target)
+                        || (self.rules.input_hysteresis && was_limited && l.stock < l.target)
                 } else {
                     l.stock <= 0
                 };
@@ -371,6 +381,7 @@ impl Market {
         // Asking to cut more than arrives means nothing to anyone, so it is not news: a producer
         // that imports nothing advertises zero, however its own exports move (overnight choice
         // E47).
+        let q = if self.insolvent() { q.min(0) } else { q };
         if self.rules.clamp_to_inflow {
             q.max(-r.inflow)
         } else {
@@ -378,12 +389,28 @@ impl Market {
         }
     }
 
-    /// The advertised rate with hysteresis (overnight choice E51): while the unrounded rate stays
-    /// within one news step of what was last advertised (`prev`), the advertisement stands, so a
-    /// rate hovering at a rounding edge is not news every time it is looked at.
-    pub fn absorbable_held(&self, g: GoodId, prev: Option<Amount>) -> Amount {
+    /// Whether the market cannot pay for what reaches it (overnight choice E52): its treasury is
+    /// below its band and it owes more than its mint and its takings bring in. Such a market asks
+    /// for no more of anything, so a broke village imports what it can pay for instead of growing
+    /// debts its suppliers never see.
+    pub fn insolvent(&self) -> bool {
+        let Some(c) = self.currency else {
+            return false;
+        };
+        let l = &self.lines[c.index()];
+        let income = l.rates.inflow + l.rates.cap - l.rates.cons;
+        self.rules.budget && l.stock < l.target - band(l.target) && self.owed > income.max(0)
+    }
+
+    /// The advertised rate with hysteresis (overnight choice E51). The hysteresis is on what the
+    /// market asks to receive in all (`prev_total`: what it last advertised plus what was then
+    /// arriving), not on the advertised change: while what it needs stays within one news step of
+    /// that total, it keeps asking for the same total, and the advertised change is that total
+    /// minus what arrives now. Holding the change itself would be wrong once the inflow moves: a
+    /// standing "send 41 less" would be read again after the cut and cut a second time.
+    pub fn absorbable_held(&self, g: GoodId, prev_total: Option<Amount>) -> Amount {
         let q = self.absorbable(g);
-        let (Some(p), true) = (prev, self.rules.hysteresis) else {
+        let (Some(p), true) = (prev_total, self.rules.hysteresis) else {
             return q;
         };
         if !self.is_storehouse() || self.goods[g.index()].currency {
@@ -395,15 +422,21 @@ impl Market {
             return q;
         }
         let refill = (l.target - l.stock) / self.t_quanta as i64;
-        let mut raw = r.cons + r.outflow - r.cap + refill - r.inflow;
-        if self.rules.clamp_to_inflow {
-            raw = raw.max(-r.inflow);
+        let need = r.cons + r.outflow - r.cap + refill;
+        let step = self.news_step(g);
+        if (need - p).abs() >= step {
+            return q;
         }
-        if (raw - p).abs() < self.news_step(g) {
-            if self.rules.clamp_to_inflow { p.max(-r.inflow) } else { p }
+        // The same total as before: the change is what is missing from it now, rounded as
+        // `absorbable` rounds.
+        let raw = p - r.inflow;
+        let a = if self.rules.absorb_round_up {
+            -((-raw).div_euclid(step)) * step
         } else {
-            q
-        }
+            raw / step * step
+        };
+        let a = if self.insolvent() { a.min(0) } else { a };
+        if self.rules.clamp_to_inflow { a.max(-r.inflow) } else { a }
     }
 
     /// What flows may take with hysteresis (overnight choice E51): a market sending `current`
@@ -662,6 +695,13 @@ impl LazyModel for Market {
                         take(first + k - 1);
                     }
                 }
+                if self.cut
+                    && self.rules.hysteresis
+                    && l.stock < l.target
+                    && let Some(k) = l.next_crossing(l.target - 1)
+                {
+                    take(first + k - 1);
+                }
             } else if let Some(k) = c.level {
                 take(first + k - 1);
             }
@@ -671,6 +711,12 @@ impl LazyModel for Market {
                 // before the owner acts on it), and the owner then cuts outflow; booking the next
                 // boundary keeps it looked at either way.
                 take(first + k.max(2) - 2);
+            }
+            if self.goods[i].used_here && self.rules.input_hysteresis && l.stock < l.target {
+                // An input back at its target lets a held-back recipe run in full (E51).
+                if let Some(k) = l.next_crossing(l.target - 1) {
+                    take(first + k - 1);
+                }
             }
             if self.goods[i].used_here {
                 // A change of production regime changes the inputs it eats.
@@ -695,6 +741,8 @@ impl Encode for Market {
         w.u64(self.key);
         w.u8(matches!(self.kind, MarketKind::Base) as u8);
         w.u64(self.t_quanta);
+        w.i64(self.owed);
+        w.u8(self.cut as u8);
         for l in &self.lines {
             w.i64(l.stock);
             w.i64(l.target);
@@ -775,6 +823,8 @@ mod tests {
             order: vec![GoodId(0), GoodId(1)],
             base_prices: vec![None, None],
             rules: crate::tunables::Rules::default(),
+            owed: 0,
+            cut: false,
         }
     }
 

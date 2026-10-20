@@ -66,7 +66,10 @@ impl Snapshot {
                     anchor: m.anchor(g),
                     stock: l.stock,
                     target: l.target,
-                    absorbable: m.absorbable_held(g, prev.map(|p| p.good(g).absorbable)),
+                    absorbable: m.absorbable_held(
+                        g,
+                        prev.map(|p| p.good(g).absorbable + p.inflow_total(g)),
+                    ),
                     level: l.level(),
                     suppliers: 1,
                     currency: m.good(g).currency,

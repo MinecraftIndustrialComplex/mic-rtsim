@@ -103,6 +103,12 @@ pub struct Rules {
     /// Advertised rates and what an exporter can spare hold their last value while the
     /// unrounded value stays within one news step of it (overnight choice E51).
     pub hysteresis: bool,
+    /// A recipe held back by a short input stays held back until the input is back at its
+    /// target (overnight choice E51).
+    pub input_hysteresis: bool,
+    /// A market that cannot pay for what reaches it asks for no more of anything (overnight
+    /// choice E52).
+    pub budget: bool,
 }
 
 impl Default for Rules {
@@ -122,6 +128,8 @@ impl Default for Rules {
             ration: true,
             sticky_goods: false,
             hysteresis: true,
+            input_hysteresis: true,
+            budget: false,
         }
     }
 }
@@ -133,8 +141,9 @@ impl Rules {
         if self.sticky_div > 0
             && old > 0
             && new > 0
-            && (i128::from(new) - i128::from(old)).abs() * i128::from(self.sticky_div)
+            && ((i128::from(new) - i128::from(old)).abs() * i128::from(self.sticky_div)
                 < i128::from(old.max(new))
+                || (new - old).abs() <= 4)
         {
             old
         } else {
@@ -159,6 +168,8 @@ impl Rules {
         ration: false,
         sticky_goods: false,
         hysteresis: false,
+        input_hysteresis: false,
+        budget: false,
     };
 
     /// Sets rules from a comma-separated list of `name=value` (`slack=2,money=1,band=1,up=1,
@@ -186,6 +197,8 @@ impl Rules {
                 "ration" => r.ration = n != 0,
                 "stickygoods" => r.sticky_goods = n != 0,
                 "hyst" => r.hysteresis = n != 0,
+                "inhyst" => r.input_hysteresis = n != 0,
+                "budget" => r.budget = n != 0,
                 "div" => r.news_resolution_div = n.max(1),
                 _ => return Err(format!("unknown rule {k}")),
             }
