@@ -224,8 +224,9 @@ sessions; never an industry or threat test. The wire contract test passes (53 te
 6. **The create GameTests' "goods' names do not resolve" on the native engine** (`totals {null=86}`, four
    tests failing on main since the herds and the world model added records) was the test log, not the
    bridge: `NativeEngine` kept only the last 10,000 received records, and a busy suite dropped the
-   session's first DICT entries with them. It now keeps every DICT name apart (`javaDictName`); create
-   passes 18 of 18 on the native engine again.
+   session's first DICT entries with them. It now keeps every DICT name apart (`javaDictName`; the same fix
+   landed on main from fix/create-gametests at the same time, and the merge keeps main's); create passes 18
+   of 18 on the native engine again.
 7. **A GameTest world saved before kernel2's page format 2** (`run-gametest/world/rtsim`) stops the native
    engine at start ("format 1, this build reads 2"), and every test of that project fails. Delete the
    project's `run-gametest/world` after merging the kernel change.
