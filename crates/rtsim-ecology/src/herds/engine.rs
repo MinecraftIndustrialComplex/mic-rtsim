@@ -593,8 +593,7 @@ impl Herds {
                 .map(|e| e.members.clone())
                 .unwrap_or_default();
             x.classes.retain_mut(|c| {
-                if c.alive_on(&sp, yd, x.seed, day) == 0
-                    && !watched.iter().any(|k| c.contains(*k))
+                if c.alive_on(&sp, yd, x.seed, day) == 0 && !watched.iter().any(|k| c.contains(*k))
                 {
                     died += u64::from(c.reanchor(&sp, yd, x.seed, day));
                     false
