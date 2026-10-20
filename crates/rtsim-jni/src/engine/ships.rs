@@ -279,6 +279,9 @@ fn set_enabled(st: &mut State, on: bool) {
     let was = st.ships.enabled;
     st.ships.enabled = on;
     if was && !on {
+        // Nothing decided before the switch goes out after it: bodies of before are gone when it
+        // comes back on.
+        let _ = st.ships.engine.take_commands();
         st.ships.queue.clear();
         if st.ships.active() {
             st.ships.last_page = Some(encode_page(&st.ships.engine));
@@ -309,7 +312,7 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
-            if !running(st) {
+            if !st.ships.enabled {
                 st.ships.ignored += 1;
                 return;
             }

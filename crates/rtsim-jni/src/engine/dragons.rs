@@ -277,6 +277,9 @@ fn set_enabled(st: &mut State, on: bool) {
     let was = st.dragons.enabled;
     st.dragons.enabled = on;
     if was && !on {
+        // Nothing decided before the switch goes out after it: bodies of before are gone when it
+        // comes back on.
+        let _ = st.dragons.engine.take_commands();
         st.dragons.queue.clear();
         if st.dragons.active() {
             st.dragons.last_page = Some(encode_page(&st.dragons.engine));
@@ -315,7 +318,7 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
-            if !running(st) {
+            if !st.dragons.enabled {
                 st.dragons.ignored += 1;
                 return;
             }
