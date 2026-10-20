@@ -715,6 +715,8 @@ impl Engine {
                 let dist = self.districts.get_mut(&d).expect("exists");
                 dist.pressure_stamp += 1;
                 self.reconcile_on_load(d, at);
+                // Live now: its power sinks may run (F21), whether or not it was replaying.
+                self.refresh_power(d, at);
             }
             (_, Presence::Unloaded) => {
                 let dist = self.districts.get_mut(&d).expect("exists");
@@ -812,17 +814,7 @@ impl Engine {
             self.channel_sims.entry(*c).or_default().insert(d);
         }
         // Sinks already replaying on this district's power now follow it (I13).
-        let sinks: Vec<DistrictId> = self
-            .sinks_of
-            .get(&d)
-            .into_iter()
-            .flatten()
-            .copied()
-            .filter(|s| self.cluster_of.get(s) == Some(&h))
-            .collect();
-        for s in sinks {
-            self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, Some((d, 0)), at));
-        }
+        self.refresh_power(d, at);
         let dist = self.districts.get_mut(&d).expect("exists");
         dist.sim = Some(SimSpan {
             started: at,
@@ -837,35 +829,44 @@ impl Engine {
     /// Takes a district out of its cluster at `at`; returns its pools' levels (stock and mail).
     fn stop_sim(&mut self, d: DistrictId, at: Tick) -> Option<(SimSpan, Vec<crate::cluster::Pool>)> {
         let h = *self.cluster_of.get(&d)?;
-        // Sinks on this district's power: a live source is assumed running (F21).
-        let sinks: Vec<DistrictId> = self
-            .sinks_of
-            .get(&d)
-            .into_iter()
-            .flatten()
-            .copied()
-            .filter(|s| self.cluster_of.get(s) == Some(&h))
-            .collect();
-        for set in self.channel_sims.values_mut() {
-            set.remove(&d);
-        }
-        for s in sinks {
-            self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, None, at));
+        if let Some(season) = self.districts.get(&d).and_then(|x| x.sim.as_ref()).map(|s| s.season) {
+            let channels: Vec<ChannelId> = self.districts[&d]
+                .models
+                .get(&season)
+                .map(|m| {
+                    m.links
+                        .iter()
+                        .filter_map(|(k, _)| match k {
+                            LinkKey::Channel(c, _) => Some(*c),
+                            LinkKey::Mail { .. } => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for c in channels {
+                if let Some(set) = self.channel_sims.get_mut(&c) {
+                    set.remove(&d);
+                }
+            }
         }
         self.cluster_of.remove(&d);
         let out = self.clusters.apply(h, at, |c, at| c.remove_member(d, at))?;
-        // Book what the replay made and used.
+        // Book what the replay made and used (the apply phases; read-only changes nothing).
         let mut minted = GoodVec::new();
         let mut burned = GoodVec::new();
         for p in &out.pools {
             minted.add(p.key.good(), p.books.minted);
             burned.add(p.key.good(), p.books.burned);
+            // A channel pool leaving with its last user takes unpushed changes with it: push them
+            // now, or the world's buffer never sees them (review finding 1).
             if let PoolKey::Channel(ch, g) = p.key {
-                self.channels.entry(ch).or_default().known.set(g, p.level);
+                self.push_channel(ch, g, p.level - p.pushed);
             }
         }
-        self.books.minted.merge(&minted);
-        self.books.burned.merge(&burned);
+        if self.mode == Mode::Apply {
+            self.books.minted.merge(&minted);
+            self.books.burned.merge(&burned);
+        }
         self.after_cluster(h, at);
         if self
             .clusters
@@ -874,6 +875,8 @@ impl Engine {
         {
             self.clusters.remove(h);
         }
+        // Sinks on this district's power follow what it is now (F21).
+        self.refresh_power(d, at);
         let dist = self.districts.get_mut(&d)?;
         let span = dist.sim.take()?;
         dist.made_total.merge(&minted);
@@ -893,15 +896,7 @@ impl Engine {
         self.stats.cluster_settles += settles;
         for (key, delta) in pushes {
             if let PoolKey::Channel(ch, g) = key {
-                if self.mode == Mode::Apply {
-                    let op = self.ops.allocate();
-                    self.out.push(Cmd::ChannelDelta(ChannelDelta {
-                        op,
-                        channel: ch,
-                        goods: GoodVec::from_pairs([(g, delta)]),
-                    }));
-                }
-                self.channels.entry(ch).or_default().known.add(g, delta);
+                self.push_channel(ch, g, delta);
             }
         }
         let mut season_change = false;
@@ -937,6 +932,38 @@ impl Engine {
         if season_change {
             self.season_boundary(h, at);
         }
+    }
+
+    /// Sets what each replaying sink of `src` requires (I13, F21): the source's box when it
+    /// replays in the same cluster; nothing when it is live (assumed running); otherwise an
+    /// unmet requirement, so the sink waits for power.
+    fn refresh_power(&mut self, src: DistrictId, at: Tick) {
+        let sinks: Vec<DistrictId> = self.sinks_of.get(&src).into_iter().flatten().copied().collect();
+        let live = self.districts.get(&src).is_some_and(|s| s.presence != Presence::Unloaded);
+        let src_h = self.cluster_of.get(&src).copied();
+        for s in sinks {
+            let Some(&h) = self.cluster_of.get(&s) else {
+                continue;
+            };
+            let req = if src_h == Some(h) || !live { Some((src, 0)) } else { None };
+            self.clusters.apply(h, at, |c, at| c.set_requires(s, 0, req, at));
+            self.after_cluster(h, at);
+        }
+    }
+
+    /// A channel buffer change the replay made, sent to the world (I13). Read-only mode sends
+    /// nothing, so the buffer the engine knows stays what the world has.
+    fn push_channel(&mut self, ch: ChannelId, g: Good, delta: i64) {
+        if delta == 0 || self.mode != Mode::Apply {
+            return;
+        }
+        let op = self.ops.allocate();
+        self.out.push(Cmd::ChannelDelta(ChannelDelta {
+            op,
+            channel: ch,
+            goods: GoodVec::from_pairs([(g, delta)]),
+        }));
+        self.channels.entry(ch).or_default().known.add(g, delta);
     }
 
     fn write_packages(&mut self, d: DistrictId, inv: u32, g: Good, count: i64, batch: i64, at: Tick) {
@@ -1142,6 +1169,7 @@ impl Engine {
                     destroy,
                 },
                 trim: false,
+                sent: false,
             });
         }
         // Trims are capped by what the replay made in the span, not by this round's additions:
@@ -1170,12 +1198,13 @@ impl Engine {
     }
 
     fn send_pending(&mut self, d: DistrictId, chunk: ChunkPos, applied_epoch: u32) {
-        let Some(dist) = self.districts.get(&d) else {
+        let Some(dist) = self.districts.get_mut(&d) else {
             return;
         };
-        if let Some(list) = dist.pending.get(&chunk) {
-            for p in list {
+        if let Some(list) = dist.pending.get_mut(&chunk) {
+            for p in list.iter_mut() {
                 if p.cmd.epoch > applied_epoch {
+                    p.sent = true;
                     self.stats.chunk_commands += 1;
                     self.out.push(Cmd::ChunkReconcile(p.cmd.clone()));
                 }
@@ -1269,7 +1298,22 @@ impl Engine {
             .map(|m| m.rates.clone())
             .unwrap_or_default();
         let added = dist.round_added.get(&epoch).cloned().unwrap_or_default();
-        let trims = reconcile::trims(&shortfall, &rates, &added);
+        // Every result of an epoch adds to its shortfall; trims are for the largest need over
+        // the inputs, so only the increase is trimmed now.
+        let (short_e, trimmed_e) = dist.round_short.entry(epoch).or_default();
+        short_e.merge(&shortfall);
+        let want = reconcile::trims(short_e, &rates, &added);
+        let mut trims = GoodVec::new();
+        for (g, n) in want.iter() {
+            let more = n - trimmed_e.get(g);
+            if more > 0 {
+                trims.add(g, more);
+            }
+        }
+        trimmed_e.merge(&trims);
+        while dist.round_short.len() > 8 {
+            dist.round_short.pop_first();
+        }
         if let Some(rep) = dist.reports.iter_mut().rev().find(|x| x.epoch == epoch) {
             rep.shortfalls.merge(&shortfall);
             rep.trims.merge(&trims);
@@ -1293,7 +1337,7 @@ impl Engine {
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut left = trims.clone();
         for list in dist.pending.values_mut() {
-            for p in list.iter_mut().filter(|p| p.cmd.epoch == epoch && !p.trim) {
+            for p in list.iter_mut().filter(|p| p.cmd.epoch == epoch && !p.trim && !p.sent) {
                 for delta in p.cmd.deltas.iter_mut().filter(|x| x.delta > 0) {
                     let want = left.get(delta.good);
                     if want <= 0 {
@@ -1355,6 +1399,7 @@ impl Engine {
                     destroy: Vec::new(),
                 },
                 trim: true,
+                sent: false,
             });
         }
         let loaded: Vec<ChunkPos> = dist.loaded_chunks.iter().copied().collect();
@@ -1364,11 +1409,12 @@ impl Engine {
     }
 
     fn send_pending_from(&mut self, d: DistrictId, chunk: ChunkPos, epoch: u32) {
-        let Some(dist) = self.districts.get(&d) else {
+        let Some(dist) = self.districts.get_mut(&d) else {
             return;
         };
-        if let Some(list) = dist.pending.get(&chunk) {
-            for p in list.iter().filter(|p| p.cmd.epoch == epoch) {
+        if let Some(list) = dist.pending.get_mut(&chunk) {
+            for p in list.iter_mut().filter(|p| p.cmd.epoch == epoch) {
+                p.sent = true;
                 self.stats.chunk_commands += 1;
                 self.out.push(Cmd::ChunkReconcile(p.cmd.clone()));
             }
@@ -1818,17 +1864,25 @@ impl Engine {
         };
         let ammo = dist.defence.survey.and_then(|s| s.ammo_good).map_or(0, |g| stock.get(g));
         let outcome = threat::resolve(t, &dist.defence, ammo, &tun);
-        let dmg = threat::damage(t, &outcome, &stock, &dist.defence, &tun);
+        // Raiders carry items; fluids, energy and deposits stay (review finding 5).
+        let items: GoodVec = stock
+            .iter()
+            .filter(|(g, _)| self.goods.get(g).is_none_or(|i| i.class == GoodClass::Item))
+            .collect();
+        let dmg = threat::damage(t, &outcome, &items, &dist.defence, &tun);
         report.outcome = Some(outcome);
         report.survivors = dmg.survivors;
         report.stolen = dmg.stolen.clone();
         report.destroyed = dmg.destroyed.len() as u32;
         report.machine_lost = dmg.machine_lost;
-        // What leaves the stores: theft, ammunition, and the contents of destroyed inventories.
-        let mut take = dmg.stolen.clone();
+        // Ammunition the turrets fired is used up, never more than is left after the theft.
+        let mut fired = GoodVec::new();
         if let Some(g) = dist.defence.survey.and_then(|s| s.ammo_good) {
-            take.add(g, outcome.ammo_used.min(stock.get(g).max(0)));
+            fired.add(g, outcome.ammo_used.min(stock.get(g) - dmg.stolen.get(g)).max(0));
         }
+        let mut take = dmg.stolen.clone();
+        take.merge(&fired);
+        self.books.burned.merge(&fired);
         let dim = dist.dim;
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut doomed_any = false;
@@ -1944,8 +1998,8 @@ impl Engine {
     /// What a district would have made while unloaded, and where it stands. Read-only: it
     /// projects the replay without committing anything (the kernel's read rule).
     pub fn ledger(&mut self, d: DistrictId, at: Tick) -> Option<LedgerReport> {
-        let at = at.max(self.now);
-        self.advance_to(at);
+        // A read reports as of the engine's time: it never fires what is due (review finding 12).
+        let at = at.min(self.now);
         let season = self.season_at(at);
         let dist = self.districts.get(&d)?;
         let view = self.cluster_of.get(&d).and_then(|&h| self.clusters.read(h, at));

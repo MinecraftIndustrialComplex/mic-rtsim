@@ -157,6 +157,9 @@ pub struct PendingChunk {
     pub cmd: ChunkReconcile,
     /// Removals to trim outputs already applied (their shortfalls are untracked mints).
     pub trim: bool,
+    /// Sent to Java: it may be applied at any moment, so it is never edited again (a trim makes
+    /// a new epoch instead; review finding 3).
+    pub sent: bool,
 }
 
 /// What one reconcile round did (the ledger's "last reconcile").
@@ -230,6 +233,9 @@ pub struct District {
     pub pending_ops: BTreeMap<OpId, ChunkPos>,
     /// What the replay made in the span each epoch reconciled, which trims are capped by.
     pub round_added: BTreeMap<u32, GoodVec>,
+    /// Shortfalls reported so far per epoch, and the trims made for them: several results of one
+    /// epoch trim the largest need once, not the sum (review finding 9).
+    pub round_short: BTreeMap<u32, (GoodVec, GoodVec)>,
     /// Changes to apply at the next reconcile: additions that did not fit (positive), theft and
     /// corrections while frozen (negative).
     pub owed: GoodVec,
@@ -279,6 +285,7 @@ impl District {
             pending: BTreeMap::new(),
             pending_ops: BTreeMap::new(),
             round_added: BTreeMap::new(),
+            round_short: BTreeMap::new(),
             owed: GoodVec::new(),
             deposit_owed: GoodVec::new(),
             minted_carried: GoodVec::new(),
@@ -550,7 +557,7 @@ mod persist_impls {
 
     persist_struct!(Model { learned, targets, rates, links, batches, season });
     persist_struct!(SimSpan { started, base, season });
-    persist_struct!(PendingChunk { cmd, trim });
+    persist_struct!(PendingChunk { cmd, trim, sent });
     persist_struct!(ReconcileReport {
         epoch,
         at,
@@ -624,6 +631,7 @@ mod persist_impls {
             self.pending.put(w);
             self.pending_ops.put(w);
             self.round_added.put(w);
+            self.round_short.put(w);
             self.owed.put(w);
             self.deposit_owed.put(w);
             self.minted_carried.put(w);
@@ -664,6 +672,7 @@ mod persist_impls {
                 pending: Persist::get(r)?,
                 pending_ops: Persist::get(r)?,
                 round_added: Persist::get(r)?,
+                round_short: Persist::get(r)?,
                 owed: Persist::get(r)?,
                 deposit_owed: Persist::get(r)?,
                 minted_carried: Persist::get(r)?,

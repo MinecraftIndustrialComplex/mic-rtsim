@@ -157,16 +157,23 @@ pub fn next_pressure_attack(
         let u = rng.next_f64_open();
         ((u.ln() / (-p).ln_1p()).ceil() as u64).saturating_sub(1)
     };
-    // K given K >= 1, by inversion of the zero-truncated Poisson.
-    let u = rng.next_f64_open() * p;
-    let mut k = 1u32;
-    let mut pk = mean_per_day * (-mean_per_day).exp();
-    let mut cum = pk;
-    while cum < u && k < 10_000 {
-        k += 1;
-        pk *= mean_per_day / f64::from(k);
-        cum += pk;
-    }
+    // K given K >= 1: inversion of the zero-truncated Poisson for small means; for large ones
+    // (where e^-mean underflows) a binomial of the same mean, which zero almost never hits.
+    let k = if mean_per_day > 50.0 {
+        let n = 1u64 << 40;
+        rng.binomial(n, mean_per_day / n as f64).clamp(1, u64::from(u32::MAX)) as u32
+    } else {
+        let u = rng.next_f64_open() * p;
+        let mut k = 1u32;
+        let mut pk = mean_per_day * (-mean_per_day).exp();
+        let mut cum = pk;
+        while cum < u && k < 1_000 {
+            k += 1;
+            pk *= mean_per_day / f64::from(k);
+            cum += pk;
+        }
+        k
+    };
     Some((after_day.saturating_add(gap), k))
 }
 
@@ -342,7 +349,11 @@ pub fn resolve(t: &Threat, def: &Defence, ammo_held: i64, tun: &ThreatTunables) 
             other += f64::from(s.kill_machines_at_gaps) * pass;
         }
     }
-    let untested = def.observed[c.index()].is_empty();
+    // Untested: no real fight against this class at comparable strength (a skirmish with one
+    // zombie does not vouch for the walls against a horde).
+    let k = tun.comparable_strength_factor.max(1.0);
+    let comparable = |o: &&Observed| o.strength >= t.strength / k && o.strength <= t.strength * k;
+    let untested = !def.observed[c.index()].iter().any(|o| comparable(&o));
     let weight = if untested { tun.untested_weight } else { 1.0 };
     let defender = (turret + other) * weight;
     let law = if turret > other { Law::Square } else { Law::Linear };
@@ -363,10 +374,9 @@ pub fn resolve(t: &Threat, def: &Defence, ammo_held: i64, tun: &ThreatTunables) 
         }
     };
     // Never better than observed: the floor is the best real outcome at comparable strength.
-    let k = tun.comparable_strength_factor.max(1.0);
     let floor = def.observed[c.index()]
         .iter()
-        .filter(|o| o.strength >= t.strength / k && o.strength <= t.strength * k)
+        .filter(comparable)
         .map(|o| o.survived)
         .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.min(x))));
     // Scale by the share that got through: an attack stopped at the wall does nothing.
@@ -409,8 +419,12 @@ pub fn damage(t: &Threat, o: &Outcome, stock: &GoodVec, def: &Defence, tun: &Thr
     if survivors == 0 {
         return out;
     }
-    // Theft.
-    let carry = i64::from(survivors).saturating_mul(tun.carry_per_attacker[c]);
+    // Theft. Natural mobs take nothing from containers (vanilla), whatever their class.
+    let carry = if t.source == ThreatSource::Natural {
+        0
+    } else {
+        i64::from(survivors).saturating_mul(tun.carry_per_attacker[c])
+    };
     if carry > 0 {
         let goods: Vec<(Good, i64)> = stock
             .iter()
