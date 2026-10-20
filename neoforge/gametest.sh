@@ -2,7 +2,7 @@
 #
 # mic_rtsim's headless GameTest suites (and the pure-Java unit tests first).
 #
-#   ./gametest.sh                        core, then the plugins (ribbits, carryon)
+#   ./gametest.sh                        core, then the plugins (ribbits, carryon, create)
 #   ./gametest.sh core                   one or more projects by name
 #   ./gametest.sh core -PgametestDebugLog   with DEBUG logging (shows "Mixing ... into ..." lines)
 #   ./gametest.sh -PrtsimEngine=stub -PskipJni   every suite on the pure-Java stub, no cargo
@@ -31,11 +31,11 @@ projects=()
 extra=()
 for a in "$@"; do
     case "$a" in
-        core|ribbits|carryon) projects+=("$a") ;;
+        core|ribbits|carryon|create) projects+=("$a") ;;
         *) extra+=("$a") ;;
     esac
 done
-[ ${#projects[@]} -eq 0 ] && projects=(core ribbits carryon)
+[ ${#projects[@]} -eq 0 ] && projects=(core ribbits carryon create)
 
 # A JDK 21: the repository flake's dev shell when there is one, else nixpkgs' jdk21.
 run() {

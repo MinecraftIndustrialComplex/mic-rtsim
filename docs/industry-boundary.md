@@ -30,7 +30,7 @@ ranges.**
 | inventory | u32 | Java, per district revision | index into the district's `IND_INVENTORY` list |
 | station, train, channel | u64 | Java | stable for the world (a hash of Create's UUID is fine) |
 | epoch | u32 | engine, per district | reconcile rounds, 1, 2, 3, ...; a chunk attachment holds the last applied |
-| op id | u64 | both | the kernel's `journal::OpId` convention; industry engine ids carry namespace 0x49 in bits 56 to 62 (F4) over 56 bits derived from the command's identity (W3, §6) |
+| op id | u64 | both | the kernel's `journal::OpId` convention; industry engine ids carry namespace 0x49 in bits 56 to 62 (F4) over 56 bits derived from the command's identity (W3, §7) |
 
 **Op-id bit.** Java's ids have the top bit set (`Obs.JAVA_OP_BIT`, `OpId::bridge`) and the
 engine's have it clear (`OpId::engine`), as DECISIONS.md O10 and `docs/boundary.md` §2.2 now agree.
@@ -268,7 +268,42 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
 - Send a learning sweep (`live`) while any chunk of the district is not block-ticking.
 - Apply a reconcile without writing the epoch in the same tick.
 
-## 6. The engine side: rtsim-jni
+## 6. The Java side (2026-10-20)
+
+Written overnight in the core's `industry` package and the Create plugin `mic_rtsim_create`
+(`neoforge/`); choices H1 to H29 in `docs/overnight-choices-industrymc.md`. The Java constants are
+`IndRecords.java`, which mirrors wire.rs field for field.
+
+- **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_LEDGER_REQUEST, IND_WATCHED; IND_DISTRICT,
+  IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED, IND_EDIT (aux 1, 2, 4),
+  IND_DISCARD (aux 1), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_PORT (kinds 1, 3, 4, 5, 6),
+  IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (unloaded districts only, H30), IND_RECONCILE_RESULT,
+  IND_CARRIAGE_RESULT.
+- **Applied:** IND_CHUNK_RECONCILE (§4.1, every step), IND_CARRIAGE_DELTA, IND_LEDGER. IND_CHANNEL_DELTA,
+  IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are answered COMMAND_RESULT(failed): no plugin applies them yet.
+- **Not sent yet:** IND_DEPOSIT_SAMPLE, IND_CHANNEL_SAMPLE, IND_CONDITIONS, IND_POWER_LINK,
+  IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY, IND_SURVEY_BLOCKS.
+- **Forms Java decides:** a GOOD component hash is 16 hex digits (H2); a BLOCK_STATE name is
+  `BlockStateParser.serialize(state)`, which a destroy entry is compared with; station and train ids are
+  SplitMix64 of Create's UUIDs (H19); the counterpart of a player port is the player's UUID halves XORed.
+- **A deposit delta** in a reconcile (inventory 0xFFFFFFFF) is reported with applied 0 until a deposit
+  plugin exists.
+
+### 6.1 Proposal: IND_APPROACH (H23)
+
+A latest-wins record in the reserved range, not yet in wire.rs, so the engine skips it as an unknown
+kind. It is the engine-agnostic half of the stale-tick race's option (d) (`docs/overnight-choices-industry.md`,
+finding 2): the engine could send a district's reconciles ahead when a player heads its way. What to do
+with it is not decided.
+
+| Kind | Name | aux | Fields | Size |
+|---|---|---|---|---|
+| 0x0046 | IND_APPROACH | 1: closing in since the last one | 8 i64 gameTime, 16 u64 district, 24 u32 distance (blocks from the nearest player to the district's chunk box), 28 u32 etaTicks (distance / closing rate; 0xFFFFFFFF unknown) | 32 |
+
+Sent every 20 ticks for each unloaded district within `approachRadiusBlocks` (256, PLACEHOLDER) of a
+player; `approachSignal = false` stops it.
+
+## 7. The engine side: rtsim-jni
 
 Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W15 in
 `docs/overnight-choices-industryjni.md`). What the native engine does with these records:
@@ -298,4 +333,3 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   bridge does not pass yet (W2).
 - **Threats** from other systems arrive as an order (`IndustryThreat`, W12) until those systems run
   in the engine.
-

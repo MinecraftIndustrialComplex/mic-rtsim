@@ -20,3 +20,4 @@ include 'core'
 // (compileOnly) and loaded only where the mod is installed.
 include 'ribbits'   // mic_rtsim_ribbits: Ribbits 4.1.6 (C7, C23)
 include 'carryon'   // mic_rtsim_carryon: Carry On 2.2.6.13's EntityPickupEvent (A10, PLAN.md §6.2)
+include 'create'    // mic_rtsim_create: Create 6.0.10, the industry plugin (INDUSTRY.md §12 layer 2)
