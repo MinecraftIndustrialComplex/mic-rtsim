@@ -186,6 +186,31 @@ pub struct Space {
     pub cap: i64,
 }
 
+/// What a district's box does next ([`Cluster::forecast`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Forecast {
+    InputEmpty(PoolKey),
+    OutputFull(PoolKey),
+    Target(PoolKey),
+    SpaceFull,
+    Restart,
+    Season,
+}
+
+impl Forecast {
+    /// The ledger line's `nextKind` and `nextGood` (docs/industry-boundary.md §4.3).
+    pub fn code(self) -> (u32, Option<Good>) {
+        match self {
+            Forecast::InputEmpty(k) => (1, Some(k.good())),
+            Forecast::OutputFull(k) => (2, Some(k.good())),
+            Forecast::SpaceFull => (2, None),
+            Forecast::Target(k) => (3, Some(k.good())),
+            Forecast::Restart => (6, None),
+            Forecast::Season => (0, None),
+        }
+    }
+}
+
 /// Something the engine must act on, recorded at a breakpoint or event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ClusterEvent {
@@ -1233,6 +1258,58 @@ impl Cluster {
             keep(b - anchor);
         }
         best.and_then(|n| anchor.0.checked_add(n.max(1)).map(Tick))
+    }
+
+    /// What happens next to district `d`'s box, and when (the ledger's "iron ore runs out in
+    /// H h M min", I18). A read: it recomputes what [`LazyModel::next_breakpoint`] would, for one
+    /// district's processes, and changes nothing.
+    pub fn forecast(&self, anchor: Tick, d: DistrictId) -> Option<(Tick, Forecast)> {
+        let cons = self.constraints();
+        let running = |j: usize| self.is_running(j);
+        let mut ts = Vec::new();
+        let mut best: Option<(u64, Forecast)> = None;
+        let mut keep = |n: u64, f: Forecast| {
+            if best.as_ref().is_none_or(|b| n < b.0) {
+                best = Some((n, f));
+            }
+        };
+        let mine: Vec<usize> = (0..self.procs.len()).filter(|&i| self.procs[i].owner == d).collect();
+        for &c in &cons {
+            if !mine.iter().any(|&i| self.is_running(i) && self.blamed(c, i)) {
+                continue;
+            }
+            let (v0, bound) = self.con_terms(c, &running, &mut ts);
+            if let Some(n) = safe_run(v0, bound, &ts) {
+                let f = match self.stop_reason(c) {
+                    Stop::InputEmpty(k) => Forecast::InputEmpty(k),
+                    Stop::OutputFull(k) => Forecast::OutputFull(k),
+                    Stop::Target(k) => Forecast::Target(k),
+                    Stop::SpaceFull(_) => Forecast::SpaceFull,
+                    _ => continue,
+                };
+                keep(n.max(1), f);
+            }
+        }
+        for &i in &mine {
+            let p = &self.procs[i];
+            if let Some(t) = p.armed
+                && p.run != Run::Running
+            {
+                keep(t.since(anchor).max(1), Forecast::Restart);
+            } else if p.enabled
+                && p.run != Run::Running
+                && self.requirement_met(i, &running)
+                && let Some(n) = self.restart_time(i, &cons)
+            {
+                keep(n.saturating_add(p.latency), Forecast::Restart);
+            }
+        }
+        if let Some(b) = self.season_boundary
+            && b > anchor
+        {
+            keep(b - anchor, Forecast::Season);
+        }
+        best.and_then(|(n, f)| anchor.0.checked_add(n).map(|t| (Tick(t), f)))
     }
 
     /// Package batches completed in mail pools: recorded and marked as written.

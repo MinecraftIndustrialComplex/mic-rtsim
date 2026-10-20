@@ -398,3 +398,22 @@ fn a_loaded_unwatched_district_is_raided_at_once() {
     });
     assert_eq!(w.engine.books.stolen.get(ORE), stolen);
 }
+
+/// The ledger says what happens next and when (I18): "ore runs out in H h M min".
+#[test]
+fn the_ledger_forecasts_the_next_breakpoint() {
+    use rtsim_industry::cluster::{Forecast, PoolKey};
+    // 3,000 ore at 8 per 100 ticks lasts 37,500 ticks of replay.
+    let mut w = mill(3_000, vec![(0.0, true), (0.6, false)], false, Mode::Apply);
+    w.run_until(day(0.6) + 10);
+    let l = w.engine.ledger(MILL, w.t).unwrap();
+    assert_eq!(l.next, Some(Forecast::InputEmpty(PoolKey::Stock(MILL, ORE))), "{l:?}");
+    let at = l.next_breakpoint.unwrap();
+    let left = w.engine.district(MILL).unwrap().sim.as_ref().unwrap().base.get(ORE);
+    let expect = Tick(day(0.6).0 + 1 + (left as u64) * 100 / 8);
+    assert!(at.0.abs_diff(expect.0) <= 100, "forecast {at:?}, expected about {expect:?}");
+    // And the Display Source line carries it as kind 1 (input empties) of ore.
+    w.engine.ingest(&Timed { at: w.t, obs: Obs::LedgerRequest { district: MILL } });
+    let line = w.engine.drain_commands().into_iter().find_map(|c| match c { Cmd::Ledger(l) => Some(l), _ => None }).unwrap();
+    assert_eq!((line.next_kind, line.next_good), (1, Some(ORE)));
+}

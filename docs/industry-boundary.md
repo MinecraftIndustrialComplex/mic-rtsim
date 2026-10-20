@@ -256,7 +256,8 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
     5 suspended, 6 damaged, 7 frozen out of season.
   - **Freeze:** the not-learnable code, or 0.
   - **Next kind:** 0 none, 1 input empties, 2 output full, 3 target reached, 4 deposit exhausted,
-    5 source stopped, 6 restart.
+    5 source stopped (reserved: a sink stops at its source's breakpoint, which the source's own line
+    shows), 6 restart. `nextGood` names the good when there is one.
 
 ## 5. What the sampler must never do
 

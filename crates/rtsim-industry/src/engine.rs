@@ -100,6 +100,8 @@ pub struct LedgerReport {
     pub stop: Option<String>,
     #[serde(serialize_with = "crate::ser::opt_tick")]
     pub next_breakpoint: Option<Tick>,
+    /// What happens then.
+    pub next: Option<crate::cluster::Forecast>,
     pub learning_ticks_to_go: Option<u64>,
     pub last_reconcile: Option<ReconcileReport>,
     pub attacks: Vec<AttackReport>,
@@ -1979,11 +1981,12 @@ impl Engine {
                 stop = Some(stop_words(why, &self.goods));
             }
         }
-        let next_breakpoint = self
+        let forecast = self
             .cluster_of
             .get(&d)
             .and_then(|&h| self.clusters.get(h))
-            .and_then(|r| r.wake());
+            .and_then(|r| r.cell().model().forecast(r.cell().anchor(), d));
+        let next_breakpoint = forecast.map(|f| f.0);
         Some(LedgerReport {
             district: d,
             state,
@@ -1994,6 +1997,7 @@ impl Engine {
             running,
             stop,
             next_breakpoint,
+            next: forecast.map(|f| f.1),
             learning_ticks_to_go: if dist.phase == Phase::Learning {
                 dist.learner.ticks_to_go(at, &self.tun.learn)
             } else {
@@ -2027,13 +2031,17 @@ impl Engine {
             .iter()
             .map(|&(g, ph)| (g, ph.round() as i64, r.made_since.get(g)))
             .collect();
+        let (mut next_kind, next_good) = r.next.map_or((0, None), |f| f.code());
+        if next_kind == 1 && next_good.is_some_and(|g| self.goods.get(&g).is_some_and(|i| i.class == GoodClass::Deposit)) {
+            next_kind = 4;
+        }
         LedgerLine {
             district: d,
             state: r.state as u32,
             freeze,
             next_breakpoint: r.next_breakpoint,
-            next_kind: 0,
-            next_good: None,
+            next_kind,
+            next_good,
             since: r.since.unwrap_or(at),
             goods,
         }
