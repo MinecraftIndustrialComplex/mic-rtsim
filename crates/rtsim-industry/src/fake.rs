@@ -201,6 +201,19 @@ pub struct SavedWorld {
     applied: BTreeSet<OpId>,
 }
 
+impl SavedWorld {
+    /// This save with the districts' chunks (contents, reconcile epochs, broken blocks) and the
+    /// world's books from a later one: chunks Minecraft saved on unload after the world save, which
+    /// a crash then leaves ahead of the journal (docs/boundary.md §3.1).
+    pub fn with_chunks_of(&self, ahead: &SavedWorld) -> SavedWorld {
+        SavedWorld {
+            districts: ahead.districts.clone(),
+            books: ahead.books.clone(),
+            ..self.clone()
+        }
+    }
+}
+
 /// One line of what happened, for the CLI.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Event {
