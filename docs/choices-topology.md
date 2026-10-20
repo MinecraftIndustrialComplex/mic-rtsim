@@ -137,6 +137,23 @@ canonical cell. A cell past a turned edge is the folded copy Deep Time generates
 south edge; it is a copy of a cell the sampler reports on its own, and is dropped
 (`worldmodel.seam_copies`) rather than re-keyed with its sixteen points permuted.
 
+**TP20. Settlements.** A village's position is keyed canonically when it joins. The nearest
+search folds each ring of chart cells onto canonical cells and measures through seams, so a village
+just across an edge is a neighbour and the edge rule links it by the short road. The table holds the
+topology (not saved). A flat frame searches exactly as before (the property test against brute force
+still holds).
+
+**TP21. Roads, caravans, travellers and bands.** A road from `a` to `b` runs the short way
+(`World::road_point`), so a caravan, a traveller sampled from a flow and a touring band are on it
+where it runs, across a seam if it crosses one; caravan legs end at the nearest image; the road
+index books a road the short way; `visible` and `encounters` look up folded regions; base stops,
+haven delays, band tours and witnesses measure through seams. Phase 1's puppets: positions are
+canonical on entry, a caravan or band appears at the image on the player's side and is steered to
+its target's nearest image, and is despawned rather than steered across an edge_stop seam. The test
+`a_caravan_road_crosses_the_x_seam_and_the_world_trades_as_on_the_plane` moves the synthetic
+villages across the seam and finds the same roads, the same lengths and the same trade as on the
+plane.
+
 ## The bridge
 
 **TP18. Detection.** For every level: the first registered `TopologySource` that describes it
@@ -152,6 +169,29 @@ reflection `GeologicChunkGenerator.terrain()` (a `WorldDataTerrain`), its `data(
 edge's `[quarterTurns, tx, tz]` and the border's `stops(name)`. Edge_stop holds while
 `EdgeBorder.stopZ(level)` is a number. A reflective failure is logged once and the level falls back
 to Toroidal World's x wrap.
+
+## Tests
+
+- `rtsim-space/tests/topology.rs`: property tests on a small Guyou world, the 16k one, an x wrap, a
+  torus, Peirce's square and the plane: symmetry, the triangle inequality, invariance under every
+  edge motion, a local isometry through every seam, unique canonical keys, transport through a seam
+  and back is the identity, nearest images carry their motion, rectangles fold onto exactly their
+  cells, legs are continuous through seams, Deep Time's `fold_cell` cell for cell; the layout block
+  parsed from Deep Time's own type; edge_stop; cone points; grids; meetings through a seam.
+- Scenarios on a 16k Guyou world: a herd crosses the x seam, and another goes north over the pole
+  and comes out heading south, animals conserved (`rtsim-ecology/tests/topology.rs`); a caravan road
+  crosses the x seam (`rtsim-world/tests/topology.rs`); sea lanes cross the x seam and the north seam
+  (`rtsim-ships/tests/topology.rs`); a dragon leg crossing the seam enters a player's view exactly
+  once, at the image on the player's side; a player beside the seam sees across it; a glued world's
+  herds give the same hash for the same inputs, and after a save and restore; the leg index books a
+  leg on both sides of a seam and meets it once (`rtsim-travel`); villages across a seam are
+  neighbours (`rtsim-settle`); TOPOLOGY records through the real boundary (`rtsim-jni`).
+- Java: `TopologyRecordsTest` (the record's bytes pinned against the Rust encoder, folds, nearest
+  images, edge_stop, Toroidal World shapes, Deep Time layout parts); GameTests
+  `TopologyGameTests` (a level's topology reaches the engine when it changes; a leader folded
+  across a seam is re-steered, never captured or taken for a stale copy) on the native engine and
+  the stub, with a fake Toroidal World probe: Toroidal World does not shape a GameTest server's
+  superflat level.
 
 ## What waits on Deep Time
 
