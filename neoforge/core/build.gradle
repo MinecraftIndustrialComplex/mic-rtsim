@@ -12,6 +12,40 @@ base {
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
+// The repository root: the Cargo workspace, whose crates/rtsim-jni is the engine's JNI library.
+def repoRoot = rootProject.projectDir.parentFile
+
+// ---------------------------------------------------------------------------
+// mic_native: the native host the engine runs in, a required mod. Compiled against and put on the
+// runs' classpath from its own jar, by default the sibling checkout mods/mic-native
+// (-PmicNativeDir=..., -PmicNativeJar=... to point elsewhere). buildMicNative builds that jar with
+// mic-native's own build when it is missing.
+// ---------------------------------------------------------------------------
+def micNativeDir = file(project.findProperty('micNativeDir') ?: "${rootDir}/../../mic-native")
+def micNativeJar = file(project.findProperty('micNativeJar') ?: "${micNativeDir}/neoforge/build/libs/mic_native-${minecraft_version}-0.1.0.jar")
+
+def buildMicNative = tasks.register('buildMicNative', Exec) {
+    description = 'Builds the mic_native jar with mic-native\'s own build, only when it is missing.'
+    onlyIf { !micNativeJar.isFile() }
+    workingDir micNativeDir
+    commandLine 'nix', 'develop', micNativeDir.absolutePath, '-c', './neoforge/gradlew', '-p', 'neoforge', 'jar', '-PbaselineNativeOnly'
+    ignoreExitValue = true
+    doFirst {
+        if (!new File(micNativeDir, 'neoforge/build.gradle').isFile())
+            throw new GradleException("mic_native's jar ${micNativeJar} is missing, and ${micNativeDir} is not a mic-native checkout to build it from. " +
+                    "Clone MinecraftIndustrialComplex/mic-native next to this repository (mods/mic-native), or pass -PmicNativeDir=<checkout> or -PmicNativeJar=<jar>.")
+        logger.lifecycle("buildMicNative: ${micNativeJar} is missing; building it in ${micNativeDir}")
+    }
+    doLast {
+        if (!micNativeJar.isFile())
+            throw new GradleException("mic_native's build in ${micNativeDir} (exit ${executionResult.get().exitValue}) did not produce ${micNativeJar}. " +
+                    "Build it by hand there (nix develop -c ./neoforge/gradlew -p neoforge jar) or pass -PmicNativeJar=<jar>.")
+    }
+}
+def micNativeFiles = files(micNativeJar) { builtBy buildMicNative }
+// The plugins' GameTest servers load mic_native too: the core requires it.
+ext.micNativeFiles = micNativeFiles
+
 repositories {
     maven { url = 'https://maven.neoforged.net/releases' }
     mavenCentral()
@@ -33,14 +67,18 @@ neoForge {
 
         // `./gradlew :core:runGameTestServer` (or ../gametest.sh): a headless dedicated server that
         // runs every @GameTest in the mic_rtsim namespace and exits with the number of failed
-        // required tests (0 when they all pass). The core depends on NeoForge only (D4), so the run
-        // needs no other mod. mic_rtsim.mixins.json is defaultRequire 1, so a mixin that no longer
+        // required tests (0 when they all pass). The only other mod is mic_native (localRuntime), the
+        // host of the Rust engine. mic_rtsim.mixins.json is defaultRequire 1, so a mixin that no longer
         // matches its target fails the launch: booting at all is the suite's first assertion.
         gameTestServer {
             type = 'gameTestServer'
             systemProperty 'neoforge.enabledGameTestNamespaces', 'mic_rtsim'
             // Unlocks RtsimConfig's test overrides; nothing else sets this property.
             systemProperty 'mic_rtsim.gametest', 'true'
+            // The engine the server's session runs: native (default) or stub (-PrtsimEngine=stub).
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            // The hand-over bench (HandoverBenchGameTests) runs only with -PrtsimBench.
+            systemProperty 'mic_rtsim.bench', project.hasProperty('rtsimBench').toString()
             jvmArgument '-Xmx3G'
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
@@ -54,7 +92,17 @@ neoForge {
     }
 }
 
+// The MDK pattern: localRuntime is on the runs' classpath (runtimeClasspath), never a dependency of
+// anything that depends on this mod.
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+}
+
 dependencies {
+    // The mic_native API (MicNative.loadPlugin) at compile time, and the mod itself in the runs.
+    compileOnly micNativeFiles
+    localRuntime micNativeFiles
+
     // Pure-Java unit tests: the boundary protocol, the journal and the stub engine. They touch no
     // Minecraft class, so they need no game on the classpath.
     testImplementation(platform("org.junit:junit-bom:${junit_version}"))
@@ -67,6 +115,139 @@ tasks.named('test', Test) {
     testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat 'full'
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The engine's native library in the jar, as a mic_native plugin: natives/mic_rtsim/natives.json
+// (schema 2) and natives/mic_rtsim/<platform key>/baseline/<library>. Dev builds pack the host build
+// that jniNatives stages in build/jni-natives/; -Prelease packs ../target/natives-dist-jni/ (every
+// platform, written by the natives build script) instead; -PskipJni packs none, so the Java side
+// builds before the Rust crate compiles (the native engine then cannot load).
+// Adapted from mic-native's neoforge/build.gradle (stageLibrary, writeManifest, platformKeys,
+// hostTriple), MPL-2.0, itself from Deep Time's.
+// ---------------------------------------------------------------------------
+def skipJni = project.hasProperty('skipJni')
+def osName = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+def libFileName = { String stem ->
+    osName.startsWith('windows') ? "${stem}.dll"
+            : (osName.startsWith('mac') || osName.contains('darwin')) ? "lib${stem}.dylib"
+            : "lib${stem}.so"
+}
+def builtJniLib = new File(repoRoot, "target/release/${libFileName('rtsim_jni')}")
+def jniNativesDir = layout.buildDirectory.dir('jni-natives')
+def nativesDistJniDir = new File(repoRoot, 'target/natives-dist-jni')
+
+// The host's Rust triple, asked of rustc when a task first needs it (never at configuration time).
+def hostTripleCache = null
+def hostTriple = {
+    if (hostTripleCache == null) {
+        def rustc = new ProcessBuilder('rustc', '-vV').redirectErrorStream(true).start()
+        def rustcOut = rustc.inputStream.text
+        if (rustc.waitFor() != 0) throw new GradleException("rustc -vV failed:\n${rustcOut}")
+        hostTripleCache = rustcOut.readLines().find { it.startsWith('host: ') }?.substring(6)?.trim()
+    }
+    hostTripleCache
+}
+
+// Rust target triple -> platform key (mic_native's).
+def platformKeys = [
+    'x86_64-unknown-linux-gnu'  : 'linux-x86_64-gnu',
+    'aarch64-unknown-linux-gnu' : 'linux-aarch64-gnu',
+    'x86_64-unknown-linux-musl' : 'linux-x86_64-musl',
+    'aarch64-unknown-linux-musl': 'linux-aarch64-musl',
+    'x86_64-pc-windows-msvc'    : 'windows-x86_64',
+    'aarch64-pc-windows-msvc'   : 'windows-aarch64',
+    'x86_64-apple-darwin'       : 'macos-x86_64',
+    'aarch64-apple-darwin'      : 'macos-aarch64',
+]
+
+// Copies `built` to <destRoot>/<key>/<dir>/ and returns its natives.json entry (schema 2): the
+// sha256, the size and, for a gnu target, the glibc floor (the highest GLIBC_x.y the file needs).
+def stageLibrary = { File built, File destRoot, String key, String triple, String dir, String variant, String label ->
+    if (!built.isFile()) throw new GradleException("${label}: cargo produced no ${built}")
+    def dest = new File(destRoot, "${key}/${dir}")
+    dest.mkdirs()
+    def staged = new File(dest, built.name)
+    java.nio.file.Files.copy(built.toPath(), staged.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+
+    def md = java.security.MessageDigest.getInstance('SHA-256')
+    staged.withInputStream { s -> byte[] buf = new byte[65536]; int n; while ((n = s.read(buf)) > 0) md.update(buf, 0, n) }
+    def sha = md.digest().encodeHex().toString()
+
+    String floor = null
+    if (triple.endsWith('-linux-gnu')) {
+        def text = new String(staged.bytes, 'ISO-8859-1')
+        def versions = (text =~ /GLIBC_(\d+)\.(\d+)(?:\.(\d+))?/).collect { m ->
+            [m[1] as int, m[2] as int, (m[3] ?: '0') as int]
+        }
+        def max = versions.max { a, b -> a[0] <=> b[0] ?: a[1] <=> b[1] ?: a[2] <=> b[2] }
+        if (max != null) floor = max[2] == 0 ? "${max[0]}.${max[1]}" : "${max[0]}.${max[1]}.${max[2]}"
+    }
+    logger.lifecycle("${label}: ${key}/${dir}/${built.name} (${staged.length()} bytes, sha256 ${sha.substring(0, 12)}...)")
+    def e = [platform: key]
+    if (variant != null) e.variant = variant
+    e + [file: built.name, rust_target: triple, glibc_floor: floor, sha256: sha, size: staged.length()]
+}
+def writeManifest = { File file, Map manifest ->
+    file.parentFile.mkdirs()
+    file.setText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(manifest)) + '\n', 'UTF-8')
+}
+
+def cargoBuildJni = tasks.register('cargoBuildJni', Exec) {
+    description = 'cargo build --release -p rtsim-jni in the repository root (plain cargo: run it in the repository flake\'s dev shell, as gametest.sh does).'
+    onlyIf { !skipJni }
+    workingDir repoRoot
+    commandLine 'cargo', 'build', '--release', '-p', 'rtsim-jni'
+    // cargo keeps its own up-to-date state; running it when nothing changed takes a second.
+    outputs.upToDateWhen { false }
+}
+
+def jniNatives = tasks.register('jniNatives') {
+    description = 'Stages the host build of librtsim_jni with its natives.json under build/jni-natives/natives/mic_rtsim/ (baseline only).'
+    onlyIf { !skipJni }
+    dependsOn cargoBuildJni
+    inputs.file builtJniLib
+    inputs.property 'version', mod_version
+    inputs.property 'formatVersion', mic_native_abi
+    outputs.dir jniNativesDir
+    doLast {
+        def triple = hostTriple()
+        def key = platformKeys[triple]
+        if (key == null) throw new GradleException("Host target ${triple} has no platform key")
+        def root = new File(jniNativesDir.get().asFile, 'natives/mic_rtsim')
+        root.deleteDir()
+        def lib = stageLibrary(builtJniLib, root, key, triple, 'baseline', 'baseline', 'jniNatives')
+        writeManifest(new File(root, 'natives.json'), [
+            schema        : 2,
+            version       : mod_version,
+            format_version: mic_native_abi,
+            libraries     : [lib],
+            probes        : [],
+        ])
+    }
+}
+
+def checkReleaseJniNatives = tasks.register('checkReleaseJniNatives') {
+    description = 'Fails unless ../target/natives-dist-jni holds a natives.json for this version and ABI.'
+    doLast {
+        def manifestFile = new File(nativesDistJniDir, 'natives.json')
+        if (!manifestFile.isFile())
+            throw new GradleException("-Prelease: ${manifestFile} is missing; build every platform's librtsim_jni into ${nativesDistJniDir} first")
+        def m = new groovy.json.JsonSlurper().parse(manifestFile, 'UTF-8')
+        if (m.schema != 2 || m.version != mod_version || m.format_version != mic_native_abi)
+            throw new GradleException("-Prelease: ${manifestFile} says schema ${m.schema}, version ${m.version}, format ${m.format_version}; " +
+                    "this build needs schema 2, version ${mod_version}, format ${mic_native_abi}")
+    }
+}
+
+tasks.named('processResources', ProcessResources) {
+    if (project.hasProperty('release')) {
+        dependsOn checkReleaseJniNatives
+        from(nativesDistJniDir) { into 'natives/mic_rtsim' }
+    } else if (!skipJni) {
+        dependsOn jniNatives
+        from(jniNativesDir)
     }
 }
 

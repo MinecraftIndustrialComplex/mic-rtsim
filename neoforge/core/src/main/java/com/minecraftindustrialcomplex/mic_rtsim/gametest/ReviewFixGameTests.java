@@ -3,7 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.gametest.framework.GameTest;
@@ -52,12 +52,12 @@ public final class ReviewFixGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 200)
     public static void despawnOfAnAgentThatIsNotEmbodiedIsAnswered(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
-        RtsimTests.stub().despawnGroup(agent, 3);
+        RtsimTests.engine().despawnGroup(agent, 3);
         helper.startSequence()
-                .thenWaitUntil(() -> check("the stub received DEMATERIALIZED",
-                        !RtsimTests.recordsFor(RtsimTests.stub(), Obs.DEMATERIALIZED, agent).isEmpty()))
+                .thenWaitUntil(() -> check("the engine received DEMATERIALIZED",
+                        !RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received r = RtsimTests.recordsFor(RtsimTests.stub(), Obs.DEMATERIALIZED, agent).get(0);
+                    ScriptedEngine.Received r = RtsimTests.recordsFor(RtsimTests.engine(), Obs.DEMATERIALIZED, agent).get(0);
                     check("as not embodied", r.aux() == Obs.Dematerialized.NOT_EMBODIED);
                     check("with its epoch and no members", r.view().getInt(Obs.Dematerialized.EPOCH) == 3
                             && r.view().getInt(Obs.Dematerialized.MEMBERS) == 0);
@@ -94,7 +94,7 @@ public final class ReviewFixGameTests {
                     again.setUUID(UUID.randomUUID());
                     check("a second copy of the same capture is stale", !level.addFreshEntity(again));
                     back.discard();
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the rest despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();
@@ -118,9 +118,9 @@ public final class ReviewFixGameTests {
                     PuppetGroup g = RtsimTests.group(agent);
                     check("the llama is alive", llama[0].isAlive() && !llama[0].isRemoved());
                     check("and still a member", g != null && !g.members[1].gone && g.liveMembers() == 3);
-                    check("no DIED was journaled", RtsimTests.recordsFor(RtsimTests.stub(), Obs.DIED, agent).isEmpty()
+                    check("no DIED was journaled", RtsimTests.recordsFor(RtsimTests.engine(), Obs.DIED, agent).isEmpty()
                             && RtsimTests.session().registry().byUuid(llama[0].getUUID()) == g);
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();
@@ -143,7 +143,7 @@ public final class ReviewFixGameTests {
                     llama[0].addAdditionalSaveData(tag);
                     check("its despawn delay is out of reach (" + tag.getInt("DespawnDelay") + ")",
                             tag.getInt("DespawnDelay") > 1_000_000_000);
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the rest despawned", RtsimTests.group(agent) == null))
                 .thenExecute(() -> {

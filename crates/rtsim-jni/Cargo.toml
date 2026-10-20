@@ -1,0 +1,23 @@
+[package]
+name = "rtsim-jni"
+description = "mic-rtsim's native link: a mic_native plugin that owns the boundary buffers, runs the engine step on the host's background pool and writes pages on its IO lane (docs/boundary.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "rtsim_jni"
+# cdylib: the plugin library mic_native loads and Java binds; rlib: the tests link it in process.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rtsim-kernel.workspace = true
+mic-native-rt.workspace = true
+jni.workspace = true
+
+[dev-dependencies]
+# The host, started in the test process: the protocol test runs steps on its real pools.
+mic-native-host.workspace = true

@@ -12,6 +12,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Engine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
@@ -53,21 +54,61 @@ import java.util.UUID;
 public final class RtsimSession {
 
     private static RtsimSession current;
+    /** Why the last server start opened no session, or null. */
+    private static volatile String startFailure;
 
-    /** The server's session, or null before start, after stop, or on a client. */
+    /** The server's session, or null before start, after stop, on a client, or when the engine did not open. */
     public static RtsimSession current() {
         return current;
     }
 
+    /** Why the last server start has no session (the engine did not open), or null. */
+    public static String startFailure() {
+        return startFailure;
+    }
+
     // ---- lifecycle ------------------------------------------------------------------------------
 
-    /** Server started: open the engine and the journal, replay what the engine has not acknowledged. */
+    /**
+     * Opens the engine {@code engine.implementation} names for this world: the Rust engine on
+     * {@code <world>/rtsim/}, or the stub on {@code <world>/rtsim/stub-pages.bin}.
+     */
+    private static Engine openEngine(MinecraftServer server, String kind) {
+        Path dir = server.getWorldPath(LevelResource.ROOT).resolve("rtsim");
+        if (RtsimConfig.ENGINE_STUB.equals(kind))
+            return StubEngine.open(dir.resolve("stub-pages.bin"));
+        int flags = RtsimConfig.Test.ENABLED ? NativeEngine.FLAG_TEST | NativeEngine.FLAG_NO_FSYNC : 0;
+        return NativeEngine.open(dir, 0, flags);
+    }
+
+    /**
+     * Server started: open the engine and the journal, replay what the engine has not acknowledged.
+     * If the engine does not open, there is no session this time (no fallback to the stub, A8): the
+     * log and {@code /rtsim perf} say why.
+     */
     static void startGlobal(MinecraftServer server) {
         if (current != null)
             current.close();
-        Path pages = server.getWorldPath(LevelResource.ROOT).resolve("rtsim").resolve("stub-pages.bin");
-        Engine engine = StubEngine.open(pages);
-        current = new RtsimSession(server, engine, JournalSavedData.get(server));
+        current = null;
+        startFailure = null;
+        String kind = "configured";
+        Engine engine = null;
+        try {
+            kind = RtsimConfig.engine();
+            engine = openEngine(server, kind);
+            current = new RtsimSession(server, engine, JournalSavedData.get(server));
+        } catch (RuntimeException | LinkageError e) {
+            startFailure = "the " + kind + " engine did not start: " + e.getMessage();
+            MicRtsim.LOGGER.error("[mic_rtsim] {}; the bridge does not run this session (no fallback to the stub)", startFailure, e);
+            if (engine != null) {
+                try {
+                    engine.close();
+                } catch (RuntimeException e2) {
+                    MicRtsim.LOGGER.error("[mic_rtsim] closing the engine that did not start also failed", e2);
+                }
+            }
+            return;
+        }
         MicRtsim.LOGGER.info("[mic_rtsim] session started: {}; journal holds {} unacknowledged observations ({} bytes), last applied command {}",
                 engine.describe(), current.journal().journal().size(), current.journal().journal().bytes(),
                 current.journal().journal().lastAppliedCmdSeq());

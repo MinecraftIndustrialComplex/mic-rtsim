@@ -211,6 +211,9 @@ public final class BoundarySession {
         handover.drainCommands(new Handover.CommandSink() {
             @Override
             public void onHeader(long h, long ackedObsSeq, long stepTime, int flags) {
+                if ((flags & Layout.CMD_FLAG_FAILED) != 0)
+                    throw new IllegalStateException("the engine failed at hand-over " + h
+                            + " and simulates nothing more this session (" + engine.describe() + ")");
                 // Trimmed only once the buffer's commands are applied (onConsumed): if a command in this
                 // buffer re-issues an op whose COMMAND_RESULT the acknowledgement covers, the op must
                 // still be in the journal's index when that command is checked. And never past what

@@ -3,7 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -62,9 +62,9 @@ public final class TakingGameTests {
                     check("its UUID is not a puppet's", RtsimTests.session().registry().byUuid(id[0]) == null);
                     check("the rest of the group stays one unit", RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 2);
                 })
-                .thenWaitUntil(() -> check("the stub received TAKEN", !RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty()))
+                .thenWaitUntil(() -> check("the engine received TAKEN", !RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received taken = RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).get(0);
+                    ScriptedEngine.Received taken = RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).get(0);
                     check("taken by taming", taken.aux() == Obs.Taken.TAME);
                     check("member 1 was taken", taken.view().getInt(Obs.Taken.MEMBER) == 1);
                     UUID by = new UUID(taken.view().getLong(Obs.Taken.PLAYER_MOST), taken.view().getLong(Obs.Taken.PLAYER_LEAST));
@@ -72,7 +72,7 @@ public final class TakingGameTests {
                     check("the cargo's transfer carries a Java op id (top bit set)",
                             (taken.view().getLong(Obs.Taken.OP_ID) & Obs.JAVA_OP_BIT) != 0
                                     && taken.view().getLong(Obs.Taken.OP_ID) != Obs.JAVA_OP_BIT);
-                    List<StubEngine.Received> all = RtsimTests.allFor(RtsimTests.stub(), agent);
+                    List<ScriptedEngine.Received> all = RtsimTests.allFor(RtsimTests.engine(), agent);
                     int at = all.indexOf(taken);
                     check("its captured state comes right before it", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE && all.get(at - 1).aux() == 1);
                     check("with the cargo it carried off", all.get(at - 1).view().getInt(Obs.MemberState.ITEM_COUNT) == 2);
@@ -82,7 +82,7 @@ public final class TakingGameTests {
                 .thenExecute(() -> {
                     check("the group is still embodied, two members", RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 2);
                     check("the tamed llama is still in the world, as an ordinary entity", !llama[0].isRemoved());
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the rest of the caravan despawned", RtsimTests.group(agent) == null))
                 .thenExecute(() -> check("the tamed llama stays: it is not the sim's any more", !llama[0].isRemoved()))
@@ -114,13 +114,13 @@ public final class TakingGameTests {
                     check("the pass took the leashed llama", !RtsimApi.isPuppet(llama[0]));
                     check("the rest stays one unit", RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 2);
                 })
-                .thenWaitUntil(() -> check("the stub received TAKEN", !RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty()))
+                .thenWaitUntil(() -> check("the engine received TAKEN", !RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received taken = RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).get(0);
+                    ScriptedEngine.Received taken = RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).get(0);
                     check("taken by a lead", taken.aux() == Obs.Taken.LEAD);
                     check("member 2", taken.view().getInt(Obs.Taken.MEMBER) == 2);
                     llama[0].dropLeash(true, false);
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the rest of the caravan despawned", RtsimTests.group(agent) == null))
                 .thenExecute(() -> llama[0].discard())
@@ -155,15 +155,15 @@ public final class TakingGameTests {
                 .thenIdle(3)
                 .thenExecute(() -> {
                     check("no llama was taken by the dead trader's leash",
-                            RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty() && RtsimTests.group(agent).liveMembers() == 2);
+                            RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).isEmpty() && RtsimTests.group(agent).liveMembers() == 2);
                     bodies[1].kill();
                 })
-                .thenWaitUntil(() -> check("the stub received both deaths", RtsimTests.recordsFor(RtsimTests.stub(), Obs.DIED, agent).size() == 2))
+                .thenWaitUntil(() -> check("the engine received both deaths", RtsimTests.recordsFor(RtsimTests.engine(), Obs.DIED, agent).size() == 2))
                 .thenExecute(() -> {
-                    List<StubEngine.Received> all = RtsimTests.allFor(RtsimTests.stub(), agent);
-                    List<StubEngine.Received> died = RtsimTests.recordsFor(RtsimTests.stub(), Obs.DIED, agent);
+                    List<ScriptedEngine.Received> all = RtsimTests.allFor(RtsimTests.engine(), agent);
+                    List<ScriptedEngine.Received> died = RtsimTests.recordsFor(RtsimTests.engine(), Obs.DIED, agent);
                     check("the trader died first", died.get(0).aux() == 0 && died.get(1).aux() == 1);
-                    for (StubEngine.Received d : died) {
+                    for (ScriptedEngine.Received d : died) {
                         int at = all.indexOf(d);
                         check("a MEMBER_STATE comes right before each DIED", at > 0 && all.get(at - 1).kind() == Obs.MEMBER_STATE
                                 && all.get(at - 1).aux() == d.aux());
@@ -172,7 +172,7 @@ public final class TakingGameTests {
                     int at = all.indexOf(died.get(1));
                     check("llama 1's state at death lists the cargo that dropped", all.get(at - 1).view().getInt(Obs.MemberState.ITEM_COUNT) == 2);
                     record("deaths", "DIED members", died.get(0).aux() + ", " + died.get(1).aux());
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the last llama despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();
@@ -198,11 +198,11 @@ public final class TakingGameTests {
                 .thenIdle(3)
                 .thenExecute(() -> check("the trader and the other llama are still embodied",
                         RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 2))
-                .thenWaitUntil(() -> check("the stub received TAKEN", !RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty()))
+                .thenWaitUntil(() -> check("the engine received TAKEN", !RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received t = RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).get(0);
+                    ScriptedEngine.Received t = RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).get(0);
                     check("as removed by another mod", t.aux() == Obs.Taken.REMOVED_BY_OTHER && t.view().getInt(Obs.Taken.MEMBER) == 2);
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the rest despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();

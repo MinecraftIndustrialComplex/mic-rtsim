@@ -23,8 +23,8 @@ import java.nio.ByteBuffer;
  *       and keeps adding observations to the open buffer. Commands are at least one tick late.</li>
  * </ul>
  *
- * <p>Implementations: {@code StubEngine} (pure Java, for tests before JNI exists) and, later, the
- * Rust engine behind rtsim-jni on mic_native's background pool.
+ * <p>Implementations: {@code NativeEngine}, the Rust engine behind rtsim-jni on mic_native's
+ * background pool, and {@code StubEngine} (pure Java, simulates nothing, for tests).
  */
 public interface Engine extends AutoCloseable {
 

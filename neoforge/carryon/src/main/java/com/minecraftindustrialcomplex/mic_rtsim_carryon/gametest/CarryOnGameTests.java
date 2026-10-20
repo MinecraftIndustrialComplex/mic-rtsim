@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_carryon.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.CaravanGameTests;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
@@ -45,7 +46,7 @@ public final class CarryOnGameTests {
     public static void aCarryOnPickupTakesTheCreatureOutOfTheSim(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1);
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         ServerPlayer[] player = new ServerPlayer[1];
         TraderLlama[] llama = new TraderLlama[1];
 

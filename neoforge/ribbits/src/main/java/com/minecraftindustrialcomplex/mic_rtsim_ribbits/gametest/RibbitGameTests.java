@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.growth.PlayerBlocks;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess;
@@ -83,7 +84,7 @@ public final class RibbitGameTests {
         return o.getMaxUses() - o.getUses();
     }
 
-    private static StubEngine.Received result(StubEngine stub, long op) {
+    private static StubEngine.Received result(ScriptedEngine stub, long op) {
         List<StubEngine.Received> rs = RtsimTests.recordsWith(stub, Obs.COMMAND_RESULT, Obs.CommandResult.OP_ID, op);
         return rs.isEmpty() ? null : rs.get(rs.size() - 1);
     }
@@ -106,7 +107,9 @@ public final class RibbitGameTests {
         RibbitEntity sorcerer = spawn(helper, c, RibbitProfessionModule.SORCERER);
         sorcerer.setNoAi(true); // the test drives the buff goal itself
         ServerPlayer friend = player(helper, c.add(2, 0, 0)), foe = player(helper, c.add(-2, 0, 0));
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         stub.sentiment(v.id, -32, 32, true, Map.of(foe.getUUID(), -100, friend.getUUID(), 64));
         RibbitApplyBuffGoal goal = ((RibbitEntityAccessor) sorcerer).mic_rtsim_ribbits$applyBuffGoal();
 
@@ -162,7 +165,9 @@ public final class RibbitGameTests {
         // A block a player placed in the middle: no house may cover it.
         helper.setBlock(new BlockPos(14, 2, 14), Blocks.SNOW);
         PlayerBlocks.mark(level.getChunkAt(centre), centre);
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         String dim = RtsimTests.dimension(helper);
         long house = engineOp(), resident = engineOp();
         stub.placeHouse(house, v.id, dim, "ribbits:houses/small_house_red_1", "ribbits:main", centre.getX(), centre.getY(), centre.getZ(),
@@ -221,7 +226,9 @@ public final class RibbitGameTests {
     public static void aRibbitMerchantSellsOutOfItsPackAndDropsItWhenKilled(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 c = RtsimTests.centre(helper);
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         stub.spawnGroup(agent, 1, RibbitMerchantAdapter.NAME, RtsimTests.dimension(helper), c.x, c.y, c.z, List.of(
                 new StubEngine.MemberSpec(0, 0f, 1, -1, List.of(new StubEngine.ItemSpec(0, "minecraft:slime_ball", 20),
                         new StubEngine.ItemSpec(1, "minecraft:amethyst_shard", 5)))));
@@ -288,7 +295,7 @@ public final class RibbitGameTests {
         local.setNoAi(true);
         local.setMasterRibbit(local); // a village band's master, playing
         local.setPlayingInstrument(true);
-        StubEngine stub = RtsimTests.stub();
+        ScriptedEngine stub = RtsimTests.engine();
         stub.spawnGroup(agent, 1, RibbitBands.BAND, RtsimTests.dimension(helper), c.x, c.y, c.z, List.of(
                 StubEngine.MemberSpec.plain(0), StubEngine.MemberSpec.plain(1), StubEngine.MemberSpec.plain(2), StubEngine.MemberSpec.plain(3)));
 
@@ -328,7 +335,9 @@ public final class RibbitGameTests {
         offers.clear(); // one of Ribbits' own shapes (AmethystForItems), fixed instead of rolled
         offers.add(new MerchantOffer(new ItemCost(Items.SLIME_BALL, 10), new ItemStack(Items.AMETHYST_SHARD), 12, 2, 0.05f));
         Player fair = helper.makeMockPlayer(GameType.SURVIVAL), disliked = helper.makeMockPlayer(GameType.SURVIVAL);
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         stub.market(v.id, 0, "minecraft:amethyst_shard", 2_000, 20_000, 1, 2, List.of(
                 new StubEngine.GoodSpec("minecraft:slime_ball", 100_000, 100_000, 100_000, 3, 4)));
         stub.sentiment(v.id, -32, 32, true, Map.of(disliked.getUUID(), -128));

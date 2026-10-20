@@ -63,7 +63,9 @@ public final class TradeGameTests {
     public static void aCaravansOffersComeFromItsChestCargo(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         stub.spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
                 StubEngine.MemberSpec.plain(0),
                 new StubEngine.MemberSpec(1, 0f, 0, 3, List.of(new StubEngine.ItemSpec(0, "minecraft:wheat", 30),
@@ -145,7 +147,9 @@ public final class TradeGameTests {
     public static void aRobberyThenATradeAreReportedApart(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         stub.spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
                 StubEngine.MemberSpec.plain(0),
                 new StubEngine.MemberSpec(1, 0f, 0, 3, List.of(new StubEngine.ItemSpec(0, "minecraft:wheat", 30))),
@@ -193,7 +197,9 @@ public final class TradeGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300, batch = "mic_rtsim_p1_screens")
     public static void twoScreensShareOneTreasury(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, "human");
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         Villager a = farmer(helper, 3.5, 3.5), b = farmer(helper, 7.5, 7.5);
         stub.market(v.id, 0, "minecraft:emerald", 3_000, 20_000, 1, 2, List.of(
                 new StubEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4)));
@@ -228,7 +234,9 @@ public final class TradeGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_treasury")
     public static void sellingDrainsTheTreasuryAndTheOfferCrossesOut(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, "human");
-        StubEngine stub = RtsimTests.stub();
+        StubEngine stub = RtsimTests.stubOrSkip(helper);
+        if (stub == null)
+            return;
         Villager villager = helper.spawn(EntityType.VILLAGER, new Vec3(5.5, 2, 5.5));
         villager.setNoAi(true);
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER).setLevel(1));

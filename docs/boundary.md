@@ -1,10 +1,11 @@
 # The Java/engine boundary
 
-**Status:** the contract between the core bridge `mic_rtsim` (Java) and the engine (Rust, behind
-rtsim-jni, not written yet). Written 2026-10-20 with the Java side and its pure-Java stand-in,
-`StubEngine`. The Java constants are the source of truth until the Rust side exists:
+**Status:** the contract between the core bridge `mic_rtsim` (Java) and the engine (Rust,
+`crates/rtsim-jni`, a mic_native plugin). Written 2026-10-20 with the Java side and its pure-Java
+stand-in, `StubEngine`; the Rust side followed the same night (§5). Both sides mirror the layout:
 `neoforge/core/src/main/java/com/minecraftindustrialcomplex/mic_rtsim/boundary/Layout.java`,
-`Obs.java` and `Cmd.java`. This page and those three files change together.
+`Obs.java` and `Cmd.java` in Java, `crates/rtsim-jni/src/wire.rs` in Rust. This page and those four
+files change together.
 
 **Rules it follows** (PLAN.md §4.5, §4.9):
 - Four buffers in all, two per direction, allocated by the engine and reused forever.
@@ -53,7 +54,11 @@ new value. The same holds for `consumed` in the other direction.
 
 **Observation flags:** 1 `SESSION_START` (the first hand-over of a session), 2 `REPLAY` (holds
 journal entries from before this session), 4 `DROPPED` (latest-wins records were dropped for space).
-**Command flags:** 1 `MORE` (the engine holds more commands in its overflow ring for later steps).
+**Command flags:** 1 `MORE` (the engine holds more commands in its overflow ring for later steps),
+2 `FAILED` (the engine failed, a panic or a protocol error, and simulates nothing more this session:
+its buffers come back empty from now on, so the bridge is never left waiting. `BoundarySession`
+turns the flag into the bridge's session failure, B30: puppets captured, the journal kept for the
+next session).
 
 ### 1.2 The hand-over
 
@@ -149,7 +154,13 @@ A reader that meets an unknown kind skips `size` bytes. A malformed size ends th
   bits. They are not the record's obsSeq: a crash can roll the journal back while a chunk saved on
   unload keeps a record from the lost stretch (§3.1), and the lost sequences are then handed out
   again. The engine's op ids have the top bit clear (`OpId::engine`). When the engine re-derives a
-  transfer after a crash it must give it the same op id, or the bridge cannot tell it is a duplicate.
+  transfer after a crash it must give it the same op id, or the bridge cannot tell it is a duplicate;
+  and a *different* transfer must never get an id an earlier one had, or the bridge, still holding
+  the first one's COMMAND_RESULT, answers DUPLICATE and drops it. So an engine op id is derived from
+  the transfer's own identity (what the sim decided, and when), never taken from a counter restored
+  from the pages: such a counter hands the ids it gave out since the last save to new transfers
+  after a crash. Transfers that come from outside the sim (test and debug orders) take random ids.
+  Bits 56 to 62 name the engine allocator (0 for the core engine; the industry engine uses 0x49).
 
 ### 2.3 Observations (Java to the engine)
 
@@ -245,10 +256,19 @@ of a clean shutdown come later, as journal replay.
 
 ### 2.4 Commands (the engine to Java)
 
-Every command has a `cmdSeq` at offset 8: per world, increasing. Java skips any command except DICT
-at or below the journal's `lastAppliedCmdSeq` (sent back in every observation header as `wordA`, which is the
-kernel's `Outbox::ack_through`). After a restart the engine resends its outbox (`Outbox::after`)
-with the commands' original sequences; Java applies those above `lastAppliedCmdSeq` and skips any
+Every command has a `cmdSeq` at offset 8: per world, increasing. A DICT's `cmdSeq` means nothing,
+and the native engine writes 0: Java never skips a DICT, but it does record a DICT's sequence as
+applied, so a DICT numbered above a command that follows it (a transfer resent after a restart, with
+its original sequence) would make Java skip that command. Java skips any command except DICT
+at or below the journal's `lastAppliedCmdSeq`, which it also sends back in every observation header
+as `wordA`. **The engine does not trim its outbox by `wordA`**: Java's live value can be ahead of
+the world save the next page snapshot pairs with (a transfer applied after an autosave, in the same
+tick), and a snapshot trimmed by it would lose that transfer on a crash. A transfer leaves the outbox
+when the engine admits its COMMAND_RESULT (applied, duplicate or failed) through `Replay`, so the
+outbox in a snapshot taken at observation N holds exactly the transfers the world save at N lacks
+(`Outbox::complete`). At `start` the engine trims by the `lastAppliedCmdSeq` it is given, which is
+the world save's own (`Outbox::ack_through`). After a restart the engine resends its outbox
+(`Outbox::after`) with the commands' original sequences; Java applies those above `lastAppliedCmdSeq` and skips any
 whose op id it already applied. New commands must get sequences above `lastAppliedCmdSeq` too, so
 the engine starts its counter at `max(next_seq, lastAppliedCmdSeq + 1)` (`start` returns it). Bodies
 start at 16.
@@ -474,22 +494,43 @@ not a villager saved later makes that villager skip the next entries up to its o
 villager that moves between villages and back takes the first village's kept entries again (beyond
 its last 64 ops).
 
-## 5. What the Rust side needs to build (rtsim-jni)
+## 5. The engine side: rtsim-jni
 
-1. Allocate four buffers, 64-aligned, write `capacity`, hand them to Java as direct buffers.
-2. `start`: load pages, return `(pagesObsSeq, nextCmdSeq)` with `nextCmdSeq > lastAppliedCmdSeq`.
-3. `submit(h)`: queue step h on the host's background pool and return. The step follows §1.2.
-4. Run every journaled observation through `Replay::admit`; feed COMMAND_RESULT(applied or
-   duplicate) to the outbox; call `forget_ops_through` on WORLD_SAVED; call `reconcile` with the
-   SESSION_START fields.
-5. Acknowledge (`ackedObsSeq`) only what pages on disk include.
-6. Treat every embodied agent as abstract at SESSION_START; never re-embody an agent from a
-   replayed MATERIALIZED.
-7. Mind the op-id bit: Java ids set it, engine ids never do.
-8. Phase 1 (§4): read VILLAGE_ADOPTED (idempotent by village id) into rtsim-settle; TRADE, CARGO_CHANGED,
-   DIED and TAKEN cargo into the markets and caravans exactly once by op id; HURT, RESCUE, TAKEN and
-   CARGO_CHANGED into rtsim-knowledge reports (skip echoing anything flagged VANILLA_GOSSIP); BASE into
-   rtsim-settle's player-base nodes; VILLAGE_CENSUS and VILLAGE_GOSSIP as latest state. Send MARKET with
-   `asOfObsSeq` = the highest observation sequence the step applied, MERCHANT_OFFERS when a caravan
-   materializes or its news changes, SENTIMENT snapshots for ribbit villages, WRITE_GOSSIP from
-   rtsim-knowledge's `VanillaGossip`, and PLACE_HOUSE then SPAWN_RESIDENT for growth.
+`crates/rtsim-jni` is a mic_native plugin (a cdylib linking `mic-native-rt`) and the only crate that
+uses `jni`; the bridge's `engine/NativeEngine.java` loads it through `MicNative.loadPlugin` and binds
+its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (J1 to J34).
+
+1. **Buffers** (`buffers.rs`): four engine allocations, 64-aligned, `capacity` in the header, handed
+   to Java with `NewDirectByteBuffer`. Rust touches `published` and `consumed` only as `AtomicU64`
+   (acquire loads, release stores); every other byte belongs to one side at a time, handed over by
+   those words.
+2. **`start`** (`engine.rs`): opens the page store in `<world>/rtsim/`, loads `Replay`, the
+   `Outbox` and the world, zeroes the four buffers' words and returns `(pagesObsSeq, nextCmdSeq)`,
+   `nextCmdSeq = max(the outbox's next, lastAppliedCmdSeq + 1)`.
+3. **`submit(h)`** queues step h on mic_native's background pool and returns. The step follows
+   §1.2; its release store of `published` is its last act on the buffers.
+4. **Journaled observations** go through `Replay::admit` (TRANSFER, TAKEN, DIED and
+   COMMAND_RESULT applied or duplicate with their op ids); a gap is logged and skipped
+   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every agent abstract;
+   WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
+5. **Saves**: the pages are snapshotted at a step boundary (before the first journaled record past
+   the requested `through`) and written on the IO lane; `ackedObsSeq` names only pages on disk.
+6. **Commands**: transfers go through the `Outbox`, leave it when their COMMAND_RESULT is admitted,
+   and are resent after a restart with their original sequences and op ids, before anything new;
+   puppet commands are per session. DICT records come before their first use in the same buffer.
+   What does not fit waits (`MORE`).
+7. **Op ids**: Java's have the top bit set; the engine's leave it clear. Ordered transfers take 55
+   random bits (§2.2); the sim's own transfers will derive theirs from their identity.
+8. **Failure**: a panic or protocol error in a step makes every later command buffer empty and
+   flagged `FAILED` (§1.1).
+
+**Still to build: phase 1 (§4).** The native engine reads every phase 1 record safely (journaled
+kinds go through `Replay`; unknown kinds are skipped) but does nothing with them yet, and sends none
+of the phase 1 commands. The integration step should: read VILLAGE_ADOPTED (idempotent by village
+id) into rtsim-settle; TRADE, CARGO_CHANGED, DIED and TAKEN cargo into the markets and caravans
+exactly once by op id; HURT, RESCUE, TAKEN and CARGO_CHANGED into rtsim-knowledge reports (skip
+echoing anything flagged VANILLA_GOSSIP); BASE into rtsim-settle's player-base nodes; VILLAGE_CENSUS
+and VILLAGE_GOSSIP as latest state. Send MARKET with `asOfObsSeq` = the highest observation sequence
+the step applied, MERCHANT_OFFERS when a caravan materializes or its news changes, SENTIMENT
+snapshots for ribbit villages, WRITE_GOSSIP from rtsim-knowledge's `VanillaGossip`, and PLACE_HOUSE
+then SPAWN_RESIDENT for growth.

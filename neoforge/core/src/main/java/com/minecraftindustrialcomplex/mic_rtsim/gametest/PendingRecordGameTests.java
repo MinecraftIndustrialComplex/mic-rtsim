@@ -4,7 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
@@ -75,7 +75,7 @@ public final class PendingRecordGameTests {
             if (done[0])
                 return;
             RtsimSession s = (RtsimSession) st[0];
-            StubEngine e = (StubEngine) st[1];
+            ScriptedEngine e = (ScriptedEngine) st[1];
             if (s != null)
                 s.endOfTick();
             if (++wait[0] > 200)
@@ -84,7 +84,7 @@ public final class PendingRecordGameTests {
             switch (stage[0]) {
                 case 0 -> {
                     JournalSavedData journal = JournalSavedData.fresh();
-                    e = new StubEngine(StubEngine.Pages.EMPTY, null, StubEngine.DEFAULT_CAPACITY);
+                    e = RtsimTests.freshEngine();
                     s = new RtsimSession(level.getServer(), e, journal);
                     st[2] = JournalSavedData.roundTrip(journal, level.registryAccess()); // the last world save
                     e.transferToContainer(ENGINE_OP, dim, chestPos.getX(), chestPos.getY(), chestPos.getZ(), "minecraft:diamond", 3);
@@ -95,8 +95,7 @@ public final class PendingRecordGameTests {
                 case 1 -> {
                     if (diamonds(chest) == 3) {
                         check("the chunk carries the transfer's COMMAND_RESULT", RtsimSession.chunkCarriesOp(chunk, ENGINE_OP));
-                        e.close(); // crash: neither the journal nor the engine's pages know about it
-                        e = new StubEngine(StubEngine.Pages.EMPTY, null, StubEngine.DEFAULT_CAPACITY);
+                        e = e.crashAndReopen(); // crash: neither the journal nor the engine's pages know about it
                         s = new RtsimSession(level.getServer(), e, (JournalSavedData) st[2]);
                         s.reassert(chunk); // what the chunk's load does at the next session start
                         e.transferToContainer(ENGINE_OP, dim, chestPos.getX(), chestPos.getY(), chestPos.getZ(), "minecraft:diamond", 3);
@@ -162,20 +161,20 @@ public final class PendingRecordGameTests {
                     e[1] = copy;
                     check("the copy joined", helper.getLevel().getEntity(copy.getUUID()) == copy);
                 })
-                .thenWaitUntil(() -> check("the stub received the TAKEN twice",
-                        RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).size() == 2))
+                .thenWaitUntil(() -> check("the engine received the TAKEN twice",
+                        RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent).size() == 2))
                 .thenExecute(() -> {
-                    List<StubEngine.Received> t = RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent);
+                    List<ScriptedEngine.Received> t = RtsimTests.recordsFor(RtsimTests.engine(), Obs.TAKEN, agent);
                     check("with the same op id", t.get(0).view().getLong(Obs.Taken.OP_ID) == t.get(1).view().getLong(Obs.Taken.OP_ID));
                     check("under a new sequence", t.get(1).obsSeq() > t.get(0).obsSeq());
-                    RtsimTests.stub().requestSaveAtNextStep();
+                    RtsimTests.engine().requestSaveAtNextStep();
                 })
                 .thenWaitUntil(() -> check("both dropped their records once the engine acknowledged",
                         !e[0].hasData(RtsimAttachments.PENDING) && !e[1].hasData(RtsimAttachments.PENDING)))
                 .thenExecute(() -> {
                     e[0].discard();
                     e[1].discard();
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the rest despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();
@@ -199,7 +198,7 @@ public final class PendingRecordGameTests {
                     }
                     record("pending", "drops carrying the DIED", carriers);
                     check("the cargo items it dropped carry its DIED", carriers >= 2);
-                    RtsimTests.stub().despawnGroup(agent, 1);
+                    RtsimTests.engine().despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> check("the rest despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();
