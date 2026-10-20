@@ -160,6 +160,99 @@ impl World {
     /// home's prices, up to the coin it carries (PLAN.md §8.5). A player its home dislikes pays
     /// more and is paid less (E7: never better than fair).
     pub fn caravan_offers(&self, c: CaravanRef, player: ActorId) -> Vec<CaravanOffer> {
+        self.caravan_offers_at(c, player, None)
+    }
+
+    /// [`World::caravan_offers`] for a caravan standing at node `at`. At a border market its road
+    /// touches (one end of its leg) it also exchanges the two cultures' coins at that market's
+    /// rate (P21, Ben: "At border markets"; overnight choice PR11): it sells the foreign coin for
+    /// the market's own and buys it back, each bundle rounded against the player (a round trip
+    /// never makes coin), with the same markup as its goods.
+    pub fn caravan_offers_at(
+        &self,
+        c: CaravanRef,
+        player: ActorId,
+        at: Option<usize>,
+    ) -> Vec<CaravanOffer> {
+        let mut out = self.goods_offers(c, player);
+        if let Some(node) = at {
+            out.extend(self.exchange_offers(c, player, node));
+        }
+        out
+    }
+
+    /// The border market a caravan at node `at` exchanges coins at, with (its own coin, the
+    /// foreign coin, its rate in its own coin's millionths per foreign coin): `at` must be a
+    /// storehouse with a road to a market of the other culture, and an end of the caravan's leg.
+    pub fn exchange_at(&self, c: CaravanRef, at: usize) -> Option<(GoodId, GoodId, Price)> {
+        let (from, to, _, _) = self.caravan_parts(c)?;
+        if at != from && at != to {
+            return None;
+        }
+        let n = self.nodes.get(at)?;
+        let mine = n.kind.culture()?;
+        if !n.kind.is_storehouse() || !matches!(n.kind, NodeKind::Village(_)) {
+            return None;
+        }
+        let border = n
+            .neighbours
+            .iter()
+            .any(|&j| matches!(self.nodes[j].kind, NodeKind::Village(cu) if cu != mine));
+        if !border {
+            return None;
+        }
+        let other = match mine {
+            rtsim_settle::Culture::Human => rtsim_settle::Culture::Ribbit,
+            rtsim_settle::Culture::Ribbit => rtsim_settle::Culture::Human,
+        };
+        let (home, foreign) = (n.currency?, self.goods.currency(other)?);
+        let rate = self.market(at).price(foreign);
+        (rate > 0).then_some((home, foreign, rate))
+    }
+
+    fn exchange_offers(&self, c: CaravanRef, player: ActorId, at: usize) -> Vec<CaravanOffer> {
+        let Some((home_cur, foreign, rate)) = self.exchange_at(c, at) else {
+            return Vec::new();
+        };
+        let Some((from, _, cargo, purse)) = self.caravan_parts(c) else {
+            return Vec::new();
+        };
+        let (up, down) = self.caravan_markup(from, player);
+        let held =
+            |g: GoodId| cargo.get(&g).copied().unwrap_or(0) + purse.get(&g).copied().unwrap_or(0);
+        let mut out = Vec::new();
+        // It sells foreign coin for the market's own, as far as it carries foreign coin.
+        if let Some((items, coins)) = bundle(mul_div_floor(rate, up.num, up.den), true) {
+            let uses = (held(foreign) / (items * MILLI)).min(i64::from(u32::MAX)) as u32;
+            if uses > 0 {
+                out.push(CaravanOffer {
+                    good: foreign,
+                    side: OfferSide::MarketSells,
+                    items,
+                    coins,
+                    currency: home_cur,
+                    uses,
+                });
+            }
+        }
+        // It buys foreign coin with the market's own, as far as it carries that.
+        if let Some((items, coins)) = bundle(mul_div_floor(rate, down.num, down.den), false) {
+            let uses = (held(home_cur) / (coins * MILLI)).min(i64::from(u32::MAX)) as u32;
+            if uses > 0 {
+                out.push(CaravanOffer {
+                    good: foreign,
+                    side: OfferSide::MarketBuys,
+                    items,
+                    coins,
+                    currency: home_cur,
+                    uses,
+                });
+            }
+        }
+        out
+    }
+
+    fn goods_offers(&self, c: CaravanRef, player: ActorId) -> Vec<CaravanOffer> {
         let Some((from, to, cargo, purse)) = self.caravan_parts(c) else {
             return Vec::new();
         };
@@ -284,7 +377,7 @@ impl World {
             Side::Sell => OfferSide::MarketBuys,
         };
         let offer = self
-            .caravan_offers(c, player)
+            .caravan_offers_at(c, player, at_node)
             .into_iter()
             .find(|o| o.good == good && o.side == want)
             .ok_or(Refusal::NoStock)?;
@@ -306,14 +399,22 @@ impl World {
         // cargo and coin belong to the destination).
         match side {
             Side::Buy => {
-                let got = car.take(good, items * MILLI);
+                let mut got = car.take(good, items * MILLI);
+                if got < items * MILLI {
+                    // Exchange (P21): foreign coin may be in the purse too.
+                    got += car.take_purse(good, items * MILLI - got);
+                }
                 debug_assert_eq!(got, items * MILLI);
                 car.give_purse(cur, coins * MILLI);
                 *self.outside.player_out.entry(good).or_default() += i128::from(got);
                 *self.outside.player_in.entry(cur).or_default() += i128::from(coins * MILLI);
             }
             Side::Sell => {
-                let paid = car.take_purse(cur, coins * MILLI);
+                let mut paid = car.take_purse(cur, coins * MILLI);
+                if paid < coins * MILLI {
+                    // Exchange (P21): it pays out of what it carries of the market's coin.
+                    paid += car.take(cur, coins * MILLI - paid);
+                }
                 debug_assert_eq!(paid, coins * MILLI);
                 car.give_purse(good, items * MILLI);
                 *self.outside.player_out.entry(cur).or_default() += i128::from(paid);
@@ -339,7 +440,9 @@ impl World {
         self.flush_gossip();
         // At a base, the price players traded at is the base's news (C26), in emeralds at mint
         // parity whatever the caravan's coin, so a base's prices compare.
-        if let Some(b) = at_node.filter(|&b| !self.nodes[b].kind.is_storehouse()) {
+        if let Some(b) = at_node.filter(|&b| !self.nodes[b].kind.is_storehouse())
+            && !self.goods.is_currency(good)
+        {
             let unit = coins * PRICE_ONE / items.max(1);
             let parity = match self.nodes[home].kind.culture() {
                 Some(c) if c != rtsim_settle::Culture::Human => {
