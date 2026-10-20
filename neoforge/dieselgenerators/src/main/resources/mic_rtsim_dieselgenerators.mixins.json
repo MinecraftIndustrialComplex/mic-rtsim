@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "OilChunksSavedDataAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

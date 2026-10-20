@@ -34,7 +34,9 @@ public final class MicRtsimCreate {
     public MicRtsimCreate(IEventBus modBus, ModContainer container) {
         SOURCES.register(modBus);
         IndustryApi.register(new CreatePlugin());
+        IndustryApi.register(new CreateDefencePlugin());
         IndustryApi.registerCommand(IndRecords.IND_CARRIAGE_DELTA, TrainWatch::carriageDelta);
+        IndustryApi.registerCommand(IndRecords.IND_WRITE_PACKAGE, WritePackages::accept);
         modBus.addListener(MicRtsimCreate::setup);
     }
 

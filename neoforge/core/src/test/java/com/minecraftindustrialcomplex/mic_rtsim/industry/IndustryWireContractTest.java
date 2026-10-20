@@ -72,7 +72,7 @@ class IndustryWireContractTest {
 
     /** The command fixtures; every other record fixture is an observation. */
     private static final Set<String> COMMANDS = Set.of("IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA",
-            "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT");
+            "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT", "IND_CHANNEL_DELTA", "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
 
     /** What the Rust program must have printed. A missing one fails, so a shrunken file cannot pass. */
     private static final List<String> REQUIRED = List.of(
@@ -80,7 +80,11 @@ class IndustryWireContractTest {
             "IND_DISTRICT_CHUNKS", "IND_INVENTORY", "IND_DISTRICT_REMOVED", "IND_EDIT", "IND_DISCARD",
             "IND_LOAD_STATE", "IND_CHUNK_LOADED", "IND_PORT", "IND_PORT_NO_INVENTORY", "IND_TRAIN_ARRIVED",
             "IND_TRAIN_DEPARTED", "IND_STATION", "IND_RECONCILE_RESULT", "IND_CARRIAGE_RESULT",
-            "IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA", "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT");
+            "IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA", "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT",
+            // overnight agent 14: the plugin, threat and level-store records
+            "IND_DEPOSIT_SAMPLE", "IND_CHANNEL_SAMPLE", "IND_CONDITIONS", "IND_POWER_LINK", "IND_PACKAGE",
+            "IND_SPAWN_SAMPLE", "IND_FIGHT", "IND_SURVEY", "IND_SURVEY_BLOCKS",
+            "IND_CHANNEL_DELTA", "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -142,6 +146,16 @@ class IndustryWireContractTest {
                 "InputEmpty", IndRecords.Ledger.NEXT_INPUT_EMPTIES, "OutputFull", IndRecords.Ledger.NEXT_OUTPUT_FULL,
                 "Target", IndRecords.Ledger.NEXT_TARGET, "Restart", IndRecords.Ledger.NEXT_RESTART,
                 "Season", IndRecords.Ledger.NEXT_NONE);
+        group("deposit_plugin",
+                "OreExcavation", IndRecords.DepositPlugin.ORE_EXCAVATION, "DieselOil", IndRecords.DepositPlugin.DIESEL_OIL,
+                "DestroyCrude", IndRecords.DepositPlugin.DESTROY_CRUDE);
+        group("threat_class",
+                "GroundMelee", IndRecords.ThreatClass.GROUND_MELEE, "GroundRanged", IndRecords.ThreatClass.GROUND_RANGED,
+                "Flying", IndRecords.ThreatClass.FLYING, "Siege", IndRecords.ThreatClass.SIEGE);
+        group("block_flags",
+                "PERIMETER", IndRecords.SurveyBlocks.FLAG_PERIMETER, "ROOFLESS", IndRecords.SurveyBlocks.FLAG_ROOFLESS,
+                "MACHINE", IndRecords.SurveyBlocks.FLAG_MACHINE, "INVENTORY", IndRecords.SurveyBlocks.FLAG_INVENTORY);
+        group("survey_flag", "mob_griefing", IndRecords.Survey.FLAG_MOB_GRIEFING);
     }
 
     private static int code(String group, String variant) {
@@ -222,6 +236,11 @@ class IndustryWireContractTest {
 
         long i64(String k) {
             return Long.parseLong(sym(k));
+        }
+
+        /** An f32, as its bits (unsigned, in a long). */
+        long f32(String k) {
+            return Integer.toUnsignedLong(Float.floatToRawIntBits(Float.parseFloat(sym(k))));
         }
     }
 
@@ -640,6 +659,103 @@ class IndustryWireContractTest {
                 }
                 return r;
             }
+            case "IND_DEPOSIT_SAMPLE":
+                return latest(n, IndRecords.IND_DEPOSIT_SAMPLE, IndRecords.DepositSample.SIZE, code("deposit_plugin", f.sym("plugin")),
+                        IndRecords.DepositSample.GAME_TIME, f)
+                        .put64("district", IndRecords.DepositSample.DISTRICT, f.u64("district"))
+                        .put32("good", IndRecords.DepositSample.GOOD, f.u32("good"))
+                        .put32("sweep", IndRecords.DepositSample.SWEEP, f.u32("sweep"))
+                        .put64("remaining", IndRecords.DepositSample.REMAINING, f.i64("remaining"))
+                        .put32("dim", IndRecords.DepositSample.DIM, f.u32("dim"))
+                        .put32("chunk_x", IndRecords.DepositSample.CHUNK_X, f.i32("chunk_x") & 0xFFFF_FFFFL)
+                        .put32("chunk_z", IndRecords.DepositSample.CHUNK_Z, f.i32("chunk_z") & 0xFFFF_FFFFL)
+                        .put32("infinite", IndRecords.DepositSample.FLAGS, f.bool("infinite") ? IndRecords.DepositSample.FLAG_INFINITE : 0);
+            case "IND_CHANNEL_SAMPLE": {
+                int c = f.count("n_entries");
+                return latest(n, IndRecords.IND_CHANNEL_SAMPLE, IndRecords.ChannelSample.size(c), c, IndRecords.ChannelSample.GAME_TIME, f)
+                        .put64("channel", IndRecords.ChannelSample.CHANNEL, f.u64("channel"))
+                        .put64("capacity", IndRecords.ChannelSample.CAPACITY, f.i64("capacity"))
+                        .entries(IndRecords.ChannelSample.ENTRIES, f, "entry", c);
+            }
+            case "IND_CONDITIONS":
+                return journaled(n, IndRecords.IND_CONDITIONS, IndRecords.Conditions.SIZE, 0, f)
+                        .put32("season", IndRecords.Conditions.SEASON, f.u32("season"))
+                        .put32("season_count", IndRecords.Conditions.SEASON_COUNT, f.u32("season_count"))
+                        .put64("season_length", IndRecords.Conditions.SEASON_LENGTH, f.i64("season_length"))
+                        .put64("season_origin", IndRecords.Conditions.SEASON_ORIGIN, f.i64("season_origin"));
+            case "IND_POWER_LINK":
+                return journaled(n, IndRecords.IND_POWER_LINK, IndRecords.PowerLink.SIZE, 0, f)
+                        .put64("sink", IndRecords.PowerLink.SINK, f.u64("sink"))
+                        .put64("source", IndRecords.PowerLink.SOURCE, f.u64("source"));
+            case "IND_PACKAGE": {
+                int c = f.count("n_entries");
+                return journaled(n, IndRecords.IND_PACKAGE, IndRecords.Package.size(c), c, f)
+                        .put64("district", IndRecords.Package.DISTRICT, f.u64("district"))
+                        .put32("inventory", IndRecords.Package.INVENTORY, f.u32("inventory"))
+                        .put32("direction", IndRecords.Package.DIRECTION, code("package_direction", f.sym("direction")))
+                        .put32("address", IndRecords.Package.ADDRESS, f.u32("address"))
+                        .put32("packages", IndRecords.Package.PACKAGES, f.u32("packages"))
+                        .put64("op", IndRecords.Package.OP_ID, f.u64("op"))
+                        .entries(IndRecords.Package.ENTRIES, f, "entry", c);
+            }
+            case "IND_SPAWN_SAMPLE": {
+                Rec r = journaled(n, IndRecords.IND_SPAWN_SAMPLE, IndRecords.SpawnSample.SIZE, 0, f)
+                        .put64("district", IndRecords.SpawnSample.DISTRICT, f.u64("district"))
+                        .put64("observed_ticks", IndRecords.SpawnSample.OBSERVED_TICKS, f.i64("observed_ticks"))
+                        .put64("dark_blocks", IndRecords.SpawnSample.DARK_BLOCKS, f.i64("dark_blocks"));
+                for (int i = 0; i < IndRecords.ThreatClass.COUNT; i++)
+                    r.put32("spawns" + i, IndRecords.SpawnSample.SPAWNS + 4 * i, f.u32("spawns" + i));
+                return r;
+            }
+            case "IND_FIGHT":
+                return journaled(n, IndRecords.IND_FIGHT, IndRecords.Fight.SIZE, code("threat_class", f.sym("class")), f)
+                        .put64("district", IndRecords.Fight.DISTRICT, f.u64("district"))
+                        .put32("attackers", IndRecords.Fight.ATTACKERS, f.u32("attackers"))
+                        .put32("attacker_strength", IndRecords.Fight.ATTACKER_STRENGTH, f.f32("attacker_strength"))
+                        .put32("attackers_killed", IndRecords.Fight.ATTACKERS_KILLED, f.u32("attackers_killed"))
+                        .put32("blocks_destroyed", IndRecords.Fight.BLOCKS_DESTROYED, f.u32("blocks_destroyed"))
+                        .put32("machines_destroyed", IndRecords.Fight.MACHINES_DESTROYED, f.u32("machines_destroyed"))
+                        .put32("guards_lost", IndRecords.Fight.GUARDS_LOST, f.u32("guards_lost"))
+                        .put64("items_stolen", IndRecords.Fight.ITEMS_STOLEN, f.i64("items_stolen"))
+                        .put64("duration_ticks", IndRecords.Fight.DURATION_TICKS, f.i64("duration_ticks"));
+            case "IND_SURVEY": {
+                Rec r = journaled(n, IndRecords.IND_SURVEY, IndRecords.Survey.SIZE,
+                        f.bool("mob_griefing") ? IndRecords.Survey.FLAG_MOB_GRIEFING : 0, f)
+                        .put64("district", IndRecords.Survey.DISTRICT, f.u64("district"))
+                        .put32("revision", IndRecords.Survey.REVISION, f.u32("revision"))
+                        .put32("perimeter_columns", IndRecords.Survey.PERIMETER_COLUMNS, f.u32("perimeter_columns"))
+                        .put32("perimeter_gaps", IndRecords.Survey.PERIMETER_GAPS, f.u32("perimeter_gaps"))
+                        .put32("dark_spawnable", IndRecords.Survey.DARK_SPAWNABLE, f.u32("dark_spawnable"))
+                        .put32("machine_blocks", IndRecords.Survey.MACHINE_BLOCKS, f.u32("machine_blocks"))
+                        .put32("roofed_machines", IndRecords.Survey.ROOFED_MACHINES, f.u32("roofed_machines"))
+                        .put32("kill_machines_at_gaps", IndRecords.Survey.KILL_MACHINES_AT_GAPS, f.u32("kill_machines_at_gaps"))
+                        .put32("ammo_good", IndRecords.Survey.AMMO_GOOD, f.u32("ammo_good"))
+                        .put32("ammo_per_engagement", IndRecords.Survey.AMMO_PER_ENGAGEMENT, f.u32("ammo_per_engagement"));
+                for (int i = 0; i < IndRecords.ThreatClass.COUNT; i++) {
+                    r.put32("turret" + i, IndRecords.Survey.TURRET_STRENGTH + 4 * i, f.f32("turret" + i));
+                    r.put32("guards" + i, IndRecords.Survey.GUARDS + 4 * i, f.u32("guards" + i));
+                }
+                return r;
+            }
+            case "IND_SURVEY_BLOCKS": {
+                int c = f.count("n_blocks");
+                Rec r = journaled(n, IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.size(c), c, f)
+                        .put64("district", IndRecords.SurveyBlocks.DISTRICT, f.u64("district"))
+                        .put32("revision", IndRecords.SurveyBlocks.REVISION, f.u32("revision"))
+                        .put32("part", IndRecords.SurveyBlocks.PART, f.u32("part"));
+                for (int i = 0; i < c; i++) {
+                    int at = IndRecords.SurveyBlocks.BLOCKS + i * IndRecords.SurveyBlocks.BLOCK;
+                    String p = "block" + i + ".";
+                    r.put32(p + "x", at + IndRecords.SurveyBlocks.B_X, f.i32(p + "x") & 0xFFFF_FFFFL);
+                    r.put32(p + "y", at + IndRecords.SurveyBlocks.B_Y, f.i32(p + "y") & 0xFFFF_FFFFL);
+                    r.put32(p + "z", at + IndRecords.SurveyBlocks.B_Z, f.i32(p + "z") & 0xFFFF_FFFFL);
+                    r.put32(p + "state", at + IndRecords.SurveyBlocks.B_STATE, f.u32(p + "state"));
+                    r.put32(p + "flags", at + IndRecords.SurveyBlocks.B_FLAGS, f.count(p + "flags"));
+                    r.put32(p + "inventory", at + IndRecords.SurveyBlocks.B_INVENTORY,
+                            f.none(p + "inventory") ? IndRecords.NO_INVENTORY & 0xFFFF_FFFFL : f.u32(p + "inventory"));
+                }
+                return r;
+            }
             default:
                 throw new AssertionError("fixture " + n + " is an observation the test has no IndRecords builder for");
         }
@@ -820,6 +936,46 @@ class IndustryWireContractTest {
                     r.u32(p + "good", at + IndRecords.Ledger.G_GOOD, f.u32(p + "good"))
                             .b64(p + "per_hour", at + IndRecords.Ledger.G_PER_HOUR, f.i64(p + "per_hour"))
                             .b64(p + "since_start", at + IndRecords.Ledger.G_SINCE_START, f.i64(p + "since_start"));
+                }
+                break;
+            }
+            case "IND_CHANNEL_DELTA": {
+                int c = f.count("n_entries");
+                r.header(IndRecords.IND_CHANNEL_DELTA, IndRecords.ChannelDelta.ENTRIES + c * IndRecords.ENTRY16, c, f);
+                r.b64("op", IndRecords.ChannelDelta.OP_ID, f.u64("op"))
+                        .b64("channel", IndRecords.ChannelDelta.CHANNEL, f.u64("channel"));
+                for (int i = 0; i < c; i++) {
+                    int at = IndRecords.ChannelDelta.ENTRIES + i * IndRecords.ENTRY16;
+                    r.u32("entry" + i + ".good", at + E_GOOD, f.u32("entry" + i + ".good"))
+                            .b64("entry" + i + ".amount", at + E_AMOUNT, f.i64("entry" + i + ".amount"));
+                }
+                break;
+            }
+            case "IND_DEPOSIT_DELTA": {
+                r.header(IndRecords.IND_DEPOSIT_DELTA, IndRecords.DepositDelta.SIZE, code("deposit_plugin", f.sym("plugin")), f);
+                r.b64("op", IndRecords.DepositDelta.OP_ID, f.u64("op"))
+                        .u32("dim", IndRecords.DepositDelta.DIM, f.u32("dim"))
+                        .i32("chunk_x", IndRecords.DepositDelta.CHUNK_X, f.i32("chunk_x"))
+                        .i32("chunk_z", IndRecords.DepositDelta.CHUNK_Z, f.i32("chunk_z"))
+                        .u32("good", IndRecords.DepositDelta.GOOD, f.u32("good"))
+                        .b64("delta", IndRecords.DepositDelta.DELTA, f.i64("delta"));
+                break;
+            }
+            case "IND_WRITE_PACKAGE": {
+                int c = f.count("n_entries");
+                r.header(IndRecords.IND_WRITE_PACKAGE, IndRecords.WritePackage.size(c), c, f);
+                r.b64("op", IndRecords.WritePackage.OP_ID, f.u64("op"))
+                        .b64("district", IndRecords.WritePackage.DISTRICT, f.u64("district"))
+                        .u32("inventory", IndRecords.WritePackage.INVENTORY, f.u32("inventory"))
+                        .i32("x", IndRecords.WritePackage.X, f.i32("x"))
+                        .i32("y", IndRecords.WritePackage.Y, f.i32("y"))
+                        .i32("z", IndRecords.WritePackage.Z, f.i32("z"))
+                        .u32("address", IndRecords.WritePackage.ADDRESS, f.u32("address"))
+                        .u32("count", IndRecords.WritePackage.COUNT, f.u32("count"));
+                for (int i = 0; i < c; i++) {
+                    int at = IndRecords.WritePackage.ENTRIES + i * IndRecords.ENTRY16;
+                    r.u32("entry" + i + ".good", at + E_GOOD, f.u32("entry" + i + ".good"))
+                            .b64("entry" + i + ".amount", at + E_AMOUNT, f.i64("entry" + i + ".amount"));
                 }
                 break;
             }

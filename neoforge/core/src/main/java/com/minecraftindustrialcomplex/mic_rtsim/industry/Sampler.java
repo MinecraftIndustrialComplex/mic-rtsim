@@ -180,6 +180,7 @@ public final class Sampler {
     }
 
     private void finish(ServerLevel level, District d, long now) {
+        deposits(level, d, now);
         if (d.sweepLive && !ind.districts.allTicking(d))
             d.sweepLive = false;
         int flags = d.sweepLive ? IndRecords.SweepEnd.FLAG_LIVE : 0;
@@ -204,6 +205,57 @@ public final class Sampler {
         lastSweepNanos = System.nanoTime() - sweepStart;
         lastSweep.put(d.id, new long[] {d.sweepNo, flags, d.sweepRecords, d.sweepInventories});
         d.sweepCursor = -1;
+    }
+
+    /**
+     * The district's finite deposits (I11, F15): each plugin reports the deposits of every loaded member
+     * chunk as goods of class {@code d}, one IND_DEPOSIT_SAMPLE each, counted in the sweep's records like
+     * the stock samples, so a dropped one discards the sweep. Read once per sweep, at its end.
+     */
+    private void deposits(ServerLevel level, District d, long now) {
+        if (IndustryApi.PLUGINS.isEmpty())
+            return;
+        int dim = -1;
+        for (long c : d.chunks) {
+            net.minecraft.world.level.chunk.LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+            if (chunk == null)
+                continue;
+            for (IndustryPlugin p : IndustryApi.PLUGINS) {
+                if (dim < 0)
+                    dim = ind.dimId(level.dimension());
+                final int dimId = dim;
+                try {
+                    p.deposits(level, d, chunk, (plugin, good, remaining, infinite) -> {
+                        int at = ind.latest(IndRecords.IND_DEPOSIT_SAMPLE, IndRecords.DepositSample.SIZE, plugin);
+                        d.sweepRecords++;
+                        if (at < 0) {
+                            recordsDropped++;
+                            return;
+                        }
+                        ByteBuffer b = ind.open();
+                        b.putLong(at + IndRecords.DepositSample.GAME_TIME, now);
+                        b.putLong(at + IndRecords.DepositSample.DISTRICT, d.id);
+                        b.putInt(at + IndRecords.DepositSample.GOOD, ind.goodId(good));
+                        b.putInt(at + IndRecords.DepositSample.SWEEP, d.sweepNo);
+                        b.putLong(at + IndRecords.DepositSample.REMAINING, remaining);
+                        b.putInt(at + IndRecords.DepositSample.DIM, dimId);
+                        b.putInt(at + IndRecords.DepositSample.CHUNK_X, chunk.getPos().x);
+                        b.putInt(at + IndRecords.DepositSample.CHUNK_Z, chunk.getPos().z);
+                        b.putInt(at + IndRecords.DepositSample.FLAGS, infinite ? IndRecords.DepositSample.FLAG_INFINITE : 0);
+                        recordsSent++;
+                        depositsSent++;
+                    });
+                } catch (RuntimeException e) {
+                    ind.fail("deposits of " + p.getClass().getSimpleName() + " in " + chunk.getPos(), e);
+                }
+            }
+        }
+    }
+
+    long depositsSent;
+
+    public long depositsSent() {
+        return depositsSent;
     }
 
     /** Test helper: reads one inventory now and returns its goods (no record is sent). */
