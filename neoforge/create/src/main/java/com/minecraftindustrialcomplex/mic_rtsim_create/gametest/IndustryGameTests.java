@@ -3,7 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
-import com.minecraftindustrialcomplex.mic_rtsim.industry.Ledgers;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.DistrictDiagnostics;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
@@ -12,7 +12,6 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.simibubi.create.content.logistics.box.PackageItem;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
-import com.simibubi.create.content.redstone.displayLink.DisplayLinkBlockEntity;
 import com.simibubi.create.content.trains.bogey.AbstractBogeyBlock;
 import com.simibubi.create.content.trains.entity.Carriage;
 import com.simibubi.create.content.trains.entity.CarriageBogey;
@@ -40,7 +39,6 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.entity.SignBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -905,26 +903,21 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
-    // ---- I18: the ledger on a display ---------------------------------------------------------------
+    // ---- I18: the operator debug output -------------------------------------------------------------
 
     /**
-     * The "District ledger" display source on a Stock Link: a Display Link above it targets a sign, and
-     * the sign shows the district's name, state and its top good per hour from the engine's IND_LEDGER.
-     * Asking is IND_LEDGER_REQUEST.
+     * The operator diagnostic ({@code /rtsim district debug}, permission level 2): a district asks the
+     * engine for its ledger line with IND_LEDGER_REQUEST, and the debug lines name the district and the
+     * engine's state for it. Nothing a player can see shows this (I18 as decided): there is no display
+     * source, so the only readers are the command and the GameTests.
      */
     @GameTest(template = YARD, batch = "industry_10", timeoutTicks = 400)
-    public static void theLedgerShowsOnADisplay(GameTestHelper helper) {
+    public static void theDebugOutputShowsTheEngineLedger(GameTestHelper helper) {
         fastConfig();
         forget(helper);
         int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
         BlockPos vaultPos = new BlockPos(bx + 2, y, z);
-        BlockPos linkPos = vaultPos.east();
-        BlockPos displayPos = linkPos.above();
-        BlockPos signPos = new BlockPos(bx + 6, y, z);
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
-        set(helper, linkPos, block("create:stock_link").defaultBlockState());
-        set(helper, displayPos, block("create:display_link").defaultBlockState().setValue(BlockStateProperties.FACING, Direction.UP));
-        set(helper, signPos, Blocks.OAK_SIGN.defaultBlockState());
         playerPlaced(helper, vaultPos);
         long[] id = {0};
         helper.startSequence()
@@ -934,42 +927,34 @@ public final class IndustryGameTests {
                     id[0] = d.id;
                 })
                 .thenExecute(() -> {
-                    ind().ledgers().request(ind().district(id[0]));
+                    ind().diagnostics().request(ind().district(id[0]));
                     // The native engine's industry engine answers the request itself (its line for a
                     // district it is still learning); the stub needs the answer scripted.
                     if (!nativeEngine())
                         ledger(id[0], IndRecords.Ledger.STATE_LEARNED, 0, -1, 0, null, 0,
                                 List.of(new LedgerGood("i/64/minecraft:iron_ingot", 120, 500)));
                 })
-                .thenWaitUntil(() -> check("the ledger came", ind().ledgers().latest(id[0]) != null))
+                .thenWaitUntil(() -> check("the ledger line came", ind().diagnostics().latest(id[0]) != null))
                 .thenExecute(() -> {
-                    DisplayLinkBlockEntity link = (DisplayLinkBlockEntity) helper.getLevel().getBlockEntity(displayPos);
-                    check("the display link's source is the stock link: " + link.getSourcePosition(), link.getSourcePosition().equals(linkPos));
-                    link.target(signPos);
-                    link.activeSource = MicRtsimCreate.DISTRICT_LEDGER.get();
-                    link.updateGatheredData();
-                })
-                .thenWaitUntil(() -> {
-                    SignBlockEntity sign = (SignBlockEntity) helper.getLevel().getBlockEntity(signPos);
-                    List<String> lines = new ArrayList<>();
-                    for (int i = 0; i < 4; i++)
-                        lines.add(sign.getFrontText().getMessage(i, false).getString() + " | " + sign.getBackText().getMessage(i, false).getString());
-                    String all = String.join(" / ", lines);
-                    record("theLedgerShowsOnADisplay", "sign", all);
                     District d = ind().district(id[0]);
-                    check("the sign names the district", all.contains(d.displayName()));
+                    StringBuilder sb = new StringBuilder();
+                    for (var c : ind().diagnostics().debugLines(d))
+                        sb.append(c.getString()).append(" / ");
+                    String all = sb.toString();
+                    record("theDebugOutputShowsTheEngineLedger", "debug", all);
+                    check("the debug output names the district", all.contains(d.displayName()));
+                    var line = ind().diagnostics().latest(id[0]);
+                    check("and the engine's own state, " + DistrictDiagnostics.stateName(line.state()),
+                            all.contains(DistrictDiagnostics.stateName(line.state())));
                     if (nativeEngine()) {
                         // The engine's own answer: a district detected this test has not been learned.
-                        var line = ind().ledgers().latest(id[0]);
-                        record("theLedgerShowsOnADisplay", "native ledger state", Ledgers.stateName(line.state()));
-                        check("the engine's own state, " + Ledgers.stateName(line.state()), all.contains(Ledgers.stateName(line.state())));
+                        record("theDebugOutputShowsTheEngineLedger", "native ledger state", DistrictDiagnostics.stateName(line.state()));
                         check("not learned yet", line.state() == IndRecords.Ledger.STATE_LEARNING || line.state() == IndRecords.Ledger.STATE_LIVE);
                     } else {
-                        check("and its state", all.contains("running (simulated)"));
                         check("and the iron per hour", all.contains("+120/h"));
-                        check("and what it would have made", all.contains("would have made 500"));
+                        check("and the amount since", all.contains("+500 since tick"));
                     }
-                    check("the display asked for the ledger", !received(IndRecords.IND_LEDGER_REQUEST, IndRecords.DistrictState.DISTRICT, id[0]).isEmpty());
+                    check("the engine was asked", !received(IndRecords.IND_LEDGER_REQUEST, IndRecords.DistrictState.DISTRICT, id[0]).isEmpty());
                 })
                 .thenSucceed();
     }

@@ -15,10 +15,14 @@ import net.minecraft.world.level.ChunkPos;
 import java.util.UUID;
 
 /**
- * {@code /rtsim district} (I2's edits, I18's chat ledger). Registered under the core's {@code /rtsim}
- * root (Brigadier merges the two literal trees; the root's permission level 2 applies):
+ * {@code /rtsim district}: an operator and developer diagnostic and editing tool, not a player feature
+ * (I18 as decided: players are shown nothing of what a distant factory does). Registered under the core's
+ * {@code /rtsim} root (Brigadier merges the two literal trees); the district node requires permission
+ * level 2 itself, so every subcommand that shows district output or edits districts needs it:
  * <ul>
- *   <li>{@code list}, {@code info [name]}, {@code ledger [name]}: what the detector and the engine know;</li>
+ *   <li>{@code list}, {@code info [name]}, {@code debug [name]}: what the detector and the engine know,
+ *       including plugin warnings and the last reconcile; {@code debug} also asks the engine for a fresh
+ *       ledger line and prints it when it arrives;</li>
  *   <li>{@code rename <name> <new name>}: the district's name, over its station's;</li>
  *   <li>{@code merge <a> <b>}: one district from two (a merge link between their anchor chunks);</li>
  *   <li>{@code split [radius]}: the member chunks within the radius of your chunk become a district of
@@ -37,13 +41,14 @@ public final class IndustryCommands {
         dispatcher.register(Commands.literal("rtsim")
                 .requires(src -> src.hasPermission(2))
                 .then(Commands.literal("district")
+                        .requires(src -> src.hasPermission(2))
                         .then(Commands.literal("list").executes(IndustryCommands::list))
                         .then(Commands.literal("perf").executes(IndustryCommands::perf))
                         .then(Commands.literal("rescan").executes(IndustryCommands::rescan))
                         .then(Commands.literal("info").executes(c -> info(c, null))
                                 .then(Commands.argument("name", StringArgumentType.string()).executes(c -> info(c, StringArgumentType.getString(c, "name")))))
-                        .then(Commands.literal("ledger").executes(c -> ledger(c, null))
-                                .then(Commands.argument("name", StringArgumentType.string()).executes(c -> ledger(c, StringArgumentType.getString(c, "name")))))
+                        .then(Commands.literal("debug").executes(c -> debug(c, null))
+                                .then(Commands.argument("name", StringArgumentType.string()).executes(c -> debug(c, StringArgumentType.getString(c, "name")))))
                         .then(Commands.literal("rename")
                                 .then(Commands.argument("name", StringArgumentType.string())
                                         .then(Commands.argument("newName", StringArgumentType.greedyString()).executes(IndustryCommands::rename))))
@@ -107,22 +112,22 @@ public final class IndustryCommands {
         District d = find(ctx, ind, name);
         if (d == null)
             return 0;
-        for (MutableComponent c : ind.ledgers.chatLines(d))
+        for (MutableComponent c : ind.diagnostics.debugLines(d))
             ctx.getSource().sendSuccess(() -> c, false);
         return 1;
     }
 
-    private static int ledger(CommandContext<CommandSourceStack> ctx, String name) {
+    private static int debug(CommandContext<CommandSourceStack> ctx, String name) {
         Industry ind = industry(ctx);
         if (ind == null)
             return 0;
         District d = find(ctx, ind, name);
         if (d == null)
             return 0;
-        for (MutableComponent c : ind.ledgers.chatLines(d))
+        for (MutableComponent c : ind.diagnostics.debugLines(d))
             ctx.getSource().sendSuccess(() -> c, false);
-        ind.ledgers.requestFor(ctx.getSource(), d);
-        say(ctx, "mic_rtsim: asked the engine for " + d.displayName() + "'s ledger; it follows when it comes");
+        ind.diagnostics.requestFor(ctx.getSource(), d);
+        say(ctx, "mic_rtsim: asked the engine for " + d.displayName() + "'s ledger line; it follows when it comes");
         return 1;
     }
 
@@ -258,7 +263,7 @@ public final class IndustryCommands {
                         + " short deltas, " + r.blocksBroken + " blocks broken, " + r.blocksSkipped + " skipped",
                 "ports: sessions " + p.sessionPorts + ", tosses " + p.tossPorts + ", pickups " + p.pickupPorts + ", broken stock " + p.brokenPorts
                         + ", unattributed sessions " + p.unattributed,
-                "ledgers received: " + ind.ledgers.received + "; commands applied " + ind.commandsApplied + ", failed " + ind.commandsFailed));
+                "engine ledger lines received: " + ind.diagnostics.received + "; commands applied " + ind.commandsApplied + ", failed " + ind.commandsFailed));
         return 1;
     }
 }

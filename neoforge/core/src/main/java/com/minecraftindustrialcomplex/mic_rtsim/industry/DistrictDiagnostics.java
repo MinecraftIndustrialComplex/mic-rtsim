@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
+import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
@@ -15,11 +16,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The read-only ledger (phase I-A, I18): the engine's IND_LEDGER replies, kept per district, and the
- * text the "District ledger" display source and {@code /rtsim district ledger} show. The ledger never
- * advances the sim (review fix 12); asking for one is a latest-wins IND_LEDGER_REQUEST.
+ * Operator and developer diagnostics for districts (I18, as decided: players are shown nothing of what a
+ * distant factory does; they build their own readouts from real state). It keeps the engine's IND_LEDGER
+ * replies per district, the last reconcile applied, and the warnings plugins attach, and renders them as
+ * the text of {@code /rtsim district info} and {@code /rtsim district debug} (permission level 2). No
+ * player, display block, sign or atlas ever reads it. Reading never advances the sim (review fix 12);
+ * asking the engine is a latest-wins IND_LEDGER_REQUEST.
+ *
+ * <p>Plugin warnings (I16, a Create logistics network spanning districts; an Ender Transmission channel
+ * reaching another dimension) go to two places only: the server log, once when a warning is set or its text
+ * changes and once when it clears, and the operator output above.
  */
-public final class Ledgers {
+public final class DistrictDiagnostics {
 
     /** One good's line: rate per real hour (72,000 ticks, F30) and the amount since {@code since}. */
     public record GoodLine(int good, long perHour, long sinceStart) {}
@@ -28,7 +36,7 @@ public final class Ledgers {
     public record Line(long district, int state, int freeze, long nextBreakpoint, int nextKind, int nextGood, long since,
                        List<GoodLine> goods, long receivedAt) {}
 
-    /** The last reconcile applied to a district: deltas, shortfalls and blocks, for the chat ledger. */
+    /** The last reconcile applied to a district: deltas, shortfalls and blocks, for the operator output. */
     public record Reconcile(long at, int entries, long requested, long applied, int shortfalls, int broken, int skipped) {}
 
     private record Waiter(CommandSourceStack source, long district, long until) {}
@@ -38,28 +46,41 @@ public final class Ledgers {
     private final Map<Long, Reconcile> reconciles = new HashMap<>();
     private final Map<Long, Long> requestedAt = new HashMap<>();
     private final List<Waiter> waiters = new ArrayList<>();
-    /** Warnings plugins attach to a district's ledger, by key (I16: a gauge network that spans districts). */
+    /** Warnings plugins attach to a district, by key (I16: a gauge network that spans districts). */
     private final Map<Long, Map<String, String>> warnings = new HashMap<>();
     long received;
 
-    /** Sets (or, with null text, clears) a warning on a district's ledger. */
+    /**
+     * Sets (or, with null text, clears) a warning on a district. Plugins call it on every sweep, so the log
+     * line is written only when the warning appears, when its text changes and when it clears.
+     */
     public void warn(long district, String key, String text) {
         if (text == null) {
             Map<String, String> m = warnings.get(district);
-            if (m != null && m.remove(key) != null && m.isEmpty())
-                warnings.remove(district);
+            if (m != null && m.remove(key) != null) {
+                MicRtsim.LOGGER.info("[mic_rtsim] industry: district {} warning '{}' cleared", name(district), key);
+                if (m.isEmpty())
+                    warnings.remove(district);
+            }
             return;
         }
-        warnings.computeIfAbsent(district, k -> new java.util.TreeMap<>()).put(key, text);
+        String before = warnings.computeIfAbsent(district, k -> new java.util.TreeMap<>()).put(key, text);
+        if (!text.equals(before))
+            MicRtsim.LOGGER.warn("[mic_rtsim] industry: district {} warning '{}': {}", name(district), key, text);
     }
 
-    /** The warnings on a district's ledger, by key order. */
+    private String name(long district) {
+        District d = ind.district(district);
+        return d == null ? Long.toString(district) : district + " '" + d.displayName() + "'";
+    }
+
+    /** The warnings on a district, by key order. */
     public List<String> warnings(long district) {
         Map<String, String> m = warnings.get(district);
         return m == null ? List.of() : List.copyOf(m.values());
     }
 
-    Ledgers(Industry ind) {
+    DistrictDiagnostics(Industry ind) {
         this.ind = ind;
     }
 
@@ -86,7 +107,7 @@ public final class Ledgers {
         requestedAt.put(d.id, now);
     }
 
-    /** {@code /rtsim district ledger}: shows what is known now, and the engine's next reply when it comes. */
+    /** {@code /rtsim district debug}: shows what is known now, and the engine's next reply when it comes. */
     public void requestFor(CommandSourceStack source, District d) {
         request(d);
         waiters.add(new Waiter(source, d.id, ind.gameTime() + 200));
@@ -113,7 +134,7 @@ public final class Ledgers {
         for (Waiter w : new ArrayList<>(waiters)) {
             if (w.district == line.district) {
                 waiters.remove(w);
-                for (MutableComponent c : chatLines(d))
+                for (MutableComponent c : debugLines(d))
                     w.source.sendSuccess(() -> c, false);
             }
         }
@@ -136,7 +157,7 @@ public final class Ledgers {
             waiters.removeIf(w -> {
                 if (now <= w.until)
                     return false;
-                w.source.sendFailure(Component.literal("mic_rtsim: the engine sent no ledger for district " + w.district + " (it may not track it yet)"));
+                w.source.sendFailure(Component.literal("mic_rtsim: the engine sent no ledger line for district " + w.district + " (it may not track it yet)"));
                 return true;
             });
     }
@@ -201,38 +222,10 @@ public final class Ledgers {
         return v > 0 ? "+" + v : Long.toString(v);
     }
 
-    /** The display source's lines: name and state, the top three goods per hour, the next breakpoint. */
-    public List<MutableComponent> displayLines(District d, int maxLines) {
-        List<MutableComponent> out = new ArrayList<>();
-        Line l = latest.get(d.id);
-        if (l == null) {
-            out.add(Component.literal(d.displayName() + ": no ledger yet"));
-            for (String w : warnings(d.id))
-                if (out.size() < maxLines)
-                    out.add(Component.literal(w));
-            return out;
-        }
+    /** The head line: name and state, with what froze the district if anything did. */
+    private String head(District d, Line l) {
         String head = d.displayName() + ": " + stateName(l.state);
-        if (l.freeze != 0)
-            head += " (" + freezeReason(l.freeze) + ")";
-        out.add(Component.literal(head));
-        List<GoodLine> goods = new ArrayList<>(l.goods);
-        goods.sort(Comparator.comparingLong((GoodLine g) -> -Math.abs(g.perHour)).thenComparingInt(GoodLine::good));
-        boolean simulated = l.state != IndRecords.Ledger.STATE_LIVE && l.state != IndRecords.Ledger.STATE_LEARNING;
-        for (GoodLine g : goods) {
-            if (out.size() >= maxLines - (l.nextKind != 0 ? 1 : 0))
-                break;
-            MutableComponent c = Component.literal(signed(g.perHour) + "/h ").append(goodName(g.good));
-            if (simulated && g.sinceStart != 0)
-                c.append(Component.literal(" (" + (g.sinceStart > 0 ? "would have made " : "would have used ") + Math.abs(g.sinceStart) + ")"));
-            out.add(c);
-        }
-        if (l.nextKind != 0 && out.size() < maxLines)
-            out.add(nextLine(l));
-        for (String w : warnings(d.id))
-            if (out.size() < maxLines)
-                out.add(Component.literal(w));
-        return out;
+        return l.freeze != 0 ? head + " (" + freezeReason(l.freeze) + ")" : head;
     }
 
     private MutableComponent nextLine(Line l) {
@@ -249,18 +242,20 @@ public final class Ledgers {
         };
     }
 
-    /** The chat ledger: everything the display shows, every good, the last reconcile, and what froze it. */
-    public List<MutableComponent> chatLines(District d) {
+    /** The operator output: the district, the engine's ledger line with every good, the last reconcile, warnings. */
+    public List<MutableComponent> debugLines(District d) {
         List<MutableComponent> out = new ArrayList<>();
         Line l = latest.get(d.id);
         out.add(Component.literal("District " + d.id + " '" + d.displayName() + "': " + d.chunks.size() + " chunks, "
                 + d.inventories.size() + " boundary inventories, " + d.stations.size() + " stations, revision " + d.revision
                 + (d.notLearnable != 0 ? ", not learnable: " + freezeReason(d.notLearnable) : "")));
         if (l == null) {
-            out.add(Component.literal("  no ledger from the engine yet"));
+            out.add(Component.literal("  no ledger line from the engine yet (use /rtsim district debug)"));
         } else {
-            out.addAll(displayLines(d, 1).subList(0, 1));
-            for (GoodLine g : l.goods)
+            out.add(Component.literal(head(d, l)));
+            List<GoodLine> goods = new ArrayList<>(l.goods);
+            goods.sort(Comparator.comparingLong((GoodLine g) -> -Math.abs(g.perHour)).thenComparingInt(GoodLine::good));
+            for (GoodLine g : goods)
                 out.add(Component.literal("  " + signed(g.perHour) + "/h, " + signed(g.sinceStart) + " since tick " + l.since + ": ").append(goodName(g.good)));
             if (l.nextKind != 0)
                 out.add(Component.literal("  next: ").append(nextLine(l)));

@@ -55,7 +55,7 @@ public final class Industry {
     final Sampler sampler;
     final Reconciler reconciler;
     final PlayerPorts ports;
-    final Ledgers ledgers;
+    final DistrictDiagnostics diagnostics;
     final Conditions conditions;
     final Threats threats;
     private final Map<String, Integer> goodIds = new HashMap<>();
@@ -76,7 +76,7 @@ public final class Industry {
         this.sampler = new Sampler(this);
         this.reconciler = new Reconciler(this);
         this.ports = new PlayerPorts(this);
-        this.ledgers = new Ledgers(this);
+        this.diagnostics = new DistrictDiagnostics(this);
         this.conditions = new Conditions(this);
         this.threats = new Threats(this);
     }
@@ -117,7 +117,7 @@ public final class Industry {
         districts.tick(now, ticks);
         reconciler.tick(now);
         sampler.tick(now);
-        ledgers.tick(now);
+        diagnostics.tick(now);
         conditions.tick(now);
         threats.tick(now, ticks);
         for (IndustryPlugin p : IndustryApi.PLUGINS) {
@@ -145,7 +145,7 @@ public final class Industry {
                 return reconciler.accept(b, at, size, aux, cmdSeq, gameTime());
             }
             case IndRecords.IND_LEDGER -> {
-                ledgers.accept(b, at, size, aux);
+                diagnostics.accept(b, at, size, aux);
                 return true;
             }
             case IndRecords.IND_DEPOSIT_DELTA -> {
@@ -402,8 +402,8 @@ public final class Industry {
         return reconciler;
     }
 
-    public Ledgers ledgers() {
-        return ledgers;
+    public DistrictDiagnostics diagnostics() {
+        return diagnostics;
     }
 
     public PlayerPorts ports() {

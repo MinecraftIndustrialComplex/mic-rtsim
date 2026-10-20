@@ -306,7 +306,7 @@ public final class Reconciler {
         dropResultWhenAcked(level, cp, districtId, epoch, seq);
         applied++;
         if (d != null)
-            ind.ledgers.noteReconcile(d, results, broken.size(), skipped);
+            ind.diagnostics.noteReconcile(d, results, broken.size(), skipped);
         return true;
     }
 
