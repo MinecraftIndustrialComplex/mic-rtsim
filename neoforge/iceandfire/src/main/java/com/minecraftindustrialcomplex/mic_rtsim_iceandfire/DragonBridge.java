@@ -143,7 +143,7 @@ public final class DragonBridge implements SessionPlugin {
     private final Map<AteKey, AteSum> meals = new LinkedHashMap<>();
     /** Prey a puppet picked up: the village it was taken from (0 none), for its DRAGON_ATE. */
     private final Map<UUID, Long> pickedUpFrom = new HashMap<>();
-    final Lairs lairs = new Lairs(this);
+    public final Lairs lairs = new Lairs(this);
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, adopted, discarded, captured, died, hurtRecords, ateRecords, untagged, stateRecords,
@@ -547,9 +547,15 @@ public final class DragonBridge implements SessionPlugin {
     }
 
     /** The live puppet an entity is, or null. */
-    public Puppet live(Entity e) {
+    Puppet live(Entity e) {
         Puppet p = byUuid.get(e.getUUID());
         return p != null && p.entity == e ? p : null;
+    }
+
+    /** The agent a live puppet embodies, or 0 (GameTests). */
+    public long agentOf(Entity e) {
+        Puppet p = live(e);
+        return p == null ? 0L : p.agent;
     }
 
     /** The live puppet of an agent, or null (GameTests). */
@@ -576,15 +582,18 @@ public final class DragonBridge implements SessionPlugin {
         reportUntagged(now);
         endOfTickRecords(now);
         pass(now);
-        flushMeals(now);
         lairs.flushRobberies(now);
     }
 
-    /** Wounds then deaths of this tick, in that order (a fatal blow is a wound too). */
+    /**
+     * Wounds, meals, then deaths of this tick, in that order: a fatal blow is a wound too, and a meal must
+     * reach the engine while the dragon is still embodied.
+     */
     private void endOfTickRecords(long now) {
         flushHurts(now);
-        settleDeaths(now);
         settleKills(now);
+        flushMeals(now);
+        settleDeaths(now);
     }
 
     private void pass(long now) {
@@ -713,6 +722,7 @@ public final class DragonBridge implements SessionPlugin {
             p.removing = true;
             e.discard();
         }
+        flushMeals(now); // what it ate, before the capture ends its embodiment
         int dim = s == null ? 0 : session.dimId(s.dimension());
         ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DEMATERIALIZED, DragonRecords.Dematerialized.SIZE, reason, now);
         r.putLong(DragonRecords.Dematerialized.AGENT, p.agent);
@@ -730,7 +740,6 @@ public final class DragonBridge implements SessionPlugin {
         session.boundary().commit(r);
         unregister(p);
         captured++;
-        flushMeals(now); // the prey it carried, before anything else about it
     }
 
     // ---- wounds, deaths, meals ------------------------------------------------------------------
