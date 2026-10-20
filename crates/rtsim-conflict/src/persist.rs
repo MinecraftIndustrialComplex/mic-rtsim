@@ -736,6 +736,9 @@ impl Conflict {
             let affects = (0..m)
                 .map(|_| Ok((get_u32(r)?, r.f64()?)))
                 .collect::<codec::Result<Vec<_>>>()?;
+            for (f, _) in &affects {
+                c.source_index.entry((*f, kind)).or_default().insert(k);
+            }
             c.sources.insert(
                 (k, kind),
                 Source {

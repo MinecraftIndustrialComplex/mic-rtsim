@@ -2,6 +2,7 @@
 //! Benches. `scale` is SCALE.md §10's: growth slopes against declared contracts. `industry` is the
 //! industry engine's (INDUSTRY.md §15).
 
+pub mod conflict;
 pub mod dragons;
 pub mod industry;
 pub mod market;

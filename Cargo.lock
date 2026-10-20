@@ -446,6 +446,7 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
  "rtsim-kernel",

@@ -192,3 +192,32 @@ pending. Laptop, other agents' builds running alongside (load about 6).
 - Live heap 2.6 to 4.0 MiB (slope 0.152): the 100-port world dominates; the ships engine's own rows,
   services, lanes and indexes are 129 KB at 56 ships and 381 KB at 814 (`engine_heap_bytes`), about
   310 bytes a ship.
+
+## 2026-10-20 18:47 UTC, the faction sweep (`scale-2026-10-20-1847-factions`)
+
+`--only factions`, three repeats, median kept, on branch `overnight/conflict` (`rtsim-conflict`,
+choices K2-1 onward in `docs/overnight-choices-conflict.md`). `rtsim_conflict::synth::many`: one
+village per camp (the grid grows with the swept count, so density is fixed), goblins, bandits and
+raiders in turn, each with a settlers' smog source inside its territory and a player's logging in
+it, so every faction carries two feuds and plunders the villages and rival havens it hates; nobody
+watching. 2 days of warm-up, then 40 measured. The figures the contracts read are the conflict
+engine's own events and CPU per faction-day: the bench steps the world to each conflict event on its
+own and times only the conflict's handlers (its decisions, legs, raids, and the market transfers
+those cause). Every run conserved every good (`Conflict::check`) and nothing materialized. A rerun
+with `--check` passed. Laptop, other agents' builds running alongside.
+
+**Numbers:**
+- Factions 16 to 1,024: 1.04 events per faction-day at every point (slope 0.006, max/min 1.04,
+  contract flat), at 5.6 to 9.4 us of CPU per faction-day (slope 0.125 here, 0.089 in the `--check`
+  rerun; declared 0.2): the cost per event rises as the world grows 64 times (80 MiB of heap at
+  1,024 camps and villages), the cache effect the dragon sweep's note describes, not a scan.
+- Live heap 1.3 to 80 MiB (slope 0.994): the world's markets (one village and one haven per
+  faction) dominate; the conflict engine's own rows, wheel and indexes are a small part
+  (`engine_heap_bytes`).
+- Two quadratic terms were found and removed on the way: a new faction re-applied every source in
+  the world (each replanning every faction it reached: about a million stale wakes at 1,024
+  factions; now only the sources within the newcomer's reach, through a (faction, kind) source
+  index), and routes and plunder targets scanned every node (now rings of cells, and A* over the
+  roads). At a fixed 256-village world the same build makes 1.0, 1.5 and 2.1 events per faction-day
+  at 16, 256 and 1,024 camps: denser camps feel each other's smog and plunder each other more
+  (behaviour), at a flat cost per event.

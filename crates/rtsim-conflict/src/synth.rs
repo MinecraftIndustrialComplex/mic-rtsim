@@ -465,24 +465,36 @@ impl FakeConflict {
 // ---- many factions, for the bench ---------------------------------------------------------------
 
 /// A grid world of `villages` villages with `factions` camps between them (goblins, bandits and
-/// raiders in turn), each with an emitting source at its territory's edge and a player who logs
-/// there once. Nobody watches. For the faction-count sweep.
+/// raiders in turn), each with an emitting source inside its territory and a player who logs
+/// there once. Nobody watches. For the faction-count sweep. The camps are havens built with the
+/// world (not joined one by one), so a big point builds fast.
 pub fn many(villages: usize, factions: usize, seed: u64) -> (World, Conflict) {
-    let (goods, _) = rtsim_world::synth::goods();
-    let book = rtsim_world::synth::recipes(&rtsim_world::synth::goods().1);
-    let data = rtsim_world::synth::grid(villages, seed);
-    let mut w = World::build(world_config(seed), goods, book, data);
-    let mut c = conflict(seed, &w);
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    let mut data = rtsim_world::synth::grid(villages, seed);
     let side = (villages as f64).sqrt().ceil() as i32;
     let span = side * 544;
     let fside = (factions as f64).sqrt().ceil() as i32;
+    let camp = |k: usize| {
+        let (gx, gz) = ((k as i32) % fside, (k as i32) / fside);
+        let step = span / fside.max(1);
+        Pos::new(0, step / 2 + gx * step, step / 2 + gz * step)
+    };
+    for k in 0..factions {
+        data.push(rtsim_world::NodeData {
+            key: 0xFAC0_0000 + k as u64,
+            kind: rtsim_settle::NodeKind::Haven(rtsim_settle::Culture::Human),
+            pos: camp(k),
+            pop: 10,
+            resources: BTreeMap::new(),
+        });
+    }
+    let mut w = World::build(world_config(seed), goods, book, data);
+    let mut c = conflict(seed, &w);
     let names = ["goblin", "bandit", "raider"];
     let player = c.player(&mut w, (0xBE, 0x7C));
     for k in 0..factions {
-        let (gx, gz) = ((k as i32) % fside, (k as i32) / fside);
-        let x = 272 + gx * span / fside.max(1);
-        let z = 272 + gz * span / fside.max(1);
-        let pos = Pos::new(0, x, z);
+        let pos = camp(k);
         let key = 0xFAC0_0000 + k as u64;
         let Some(f) = c.add_faction(&mut w, key, names[k % 3], pos, Tick::ZERO) else {
             continue;
@@ -492,7 +504,7 @@ pub fn many(villages: usize, factions: usize, seed: u64) -> (World, Conflict) {
             &mut w,
             0xD150_0000 + k as u64,
             crate::culture::SignalKind::Smog,
-            Pos::new(0, x + r, z),
+            Pos::new(0, pos.x + r / 4, pos.z),
             Some(DistrictId(0xD150_0000 + k as u64)),
             12.0,
             Tick::ZERO,
@@ -502,7 +514,7 @@ pub fn many(villages: usize, factions: usize, seed: u64) -> (World, Conflict) {
             kind: crate::culture::SignalKind::Logging,
             amount: 40.0,
             actor: player,
-            pos: Pos::new(0, x - r / 2, z),
+            pos: Pos::new(0, pos.x - r / 2, pos.z),
             district: None,
         };
         c.signal(&mut w, sig, Tick(1));

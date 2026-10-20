@@ -343,6 +343,77 @@ pub struct FeudView {
     pub party: Option<PartyKind>,
 }
 
+/// World nodes by cell, rebuilt when the node count changes (nodes join rarely, never leave), so
+/// a nearest-node or plunder-target search looks at the rings of cells around a place, never at
+/// every node. Derived from the world: not saved.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NodeIndex {
+    cells: BTreeMap<(u16, i32, i32), Vec<usize>>,
+    known: usize,
+}
+
+const NODE_CELL: i32 = 1_024;
+
+impl NodeIndex {
+    fn refresh(&mut self, w: &World) {
+        if w.nodes.len() == self.known {
+            return;
+        }
+        self.cells.clear();
+        for (i, n) in w.nodes.iter().enumerate() {
+            self.cells
+                .entry((
+                    n.pos.frame,
+                    n.pos.x.div_euclid(NODE_CELL),
+                    n.pos.z.div_euclid(NODE_CELL),
+                ))
+                .or_default()
+                .push(i);
+        }
+        self.known = w.nodes.len();
+    }
+
+    /// The nearest node to `pos` within `reach` blocks that `ok` accepts (ties to the lower
+    /// index), searching rings of cells outward and stopping once no nearer ring can hold a
+    /// better one.
+    fn nearest(
+        &self,
+        w: &World,
+        pos: Pos,
+        reach: f64,
+        mut ok: impl FnMut(usize) -> bool,
+    ) -> Option<(f64, usize)> {
+        let (cx, cz) = (pos.x.div_euclid(NODE_CELL), pos.z.div_euclid(NODE_CELL));
+        let rings = (reach / f64::from(NODE_CELL)).ceil() as i32 + 1;
+        let mut best: Option<(f64, usize)> = None;
+        for r in 0..=rings {
+            // Every point of ring r is at least (r - 1) cells away.
+            if let Some(b) = best
+                && b.0 <= f64::from((r - 1).max(0) * NODE_CELL)
+            {
+                break;
+            }
+            for x in cx - r..=cx + r {
+                for z in cz - r..=cz + r {
+                    if (x - cx).abs() != r && (z - cz).abs() != r {
+                        continue;
+                    }
+                    for &i in self.cells.get(&(pos.frame, x, z)).map(Vec::as_slice).unwrap_or(&[]) {
+                        let d = dist(pxz(w.nodes[i].pos), pxz(pos));
+                        if d > reach || !ok(i) {
+                            continue;
+                        }
+                        if best.is_none_or(|b| d < b.0 || (d == b.0 && i < b.1)) {
+                            best = Some((d, i));
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+}
+
 pub struct Conflict {
     pub seed: u64,
     pub tun: ConflictTunables,
@@ -366,6 +437,9 @@ pub struct Conflict {
     pub(crate) now: Tick,
     pub log: Vec<LogEntry>,
     pub log_enabled: bool,
+    pub(crate) nodes: NodeIndex,
+    /// Sources reaching each (faction, kind): derived from `sources`, rebuilt on load.
+    pub(crate) source_index: BTreeMap<(u32, SignalKind), BTreeSet<u64>>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -424,6 +498,8 @@ impl Conflict {
             now,
             log: Vec::new(),
             log_enabled: false,
+            nodes: NodeIndex::default(),
+            source_index: BTreeMap::new(),
         }
     }
 
@@ -437,6 +513,24 @@ impl Conflict {
 
     pub fn pending_events(&self) -> usize {
         self.wheel.len()
+    }
+
+    /// Pending events by kind (diagnostics and the bench).
+    pub fn pending_by_kind(&self) -> BTreeMap<&'static str, usize> {
+        let mut m = BTreeMap::new();
+        for (_, e) in self.wheel.iter() {
+            let k = match e {
+                Ev::Feud { .. } => "feud",
+                Ev::Party { .. } => "party",
+                Ev::Seen { .. } => "seen",
+                Ev::Unseen { .. } => "unseen",
+                Ev::Wave { .. } => "wave",
+                Ev::Ambush { .. } => "ambush",
+                Ev::Plunder { .. } => "plunder",
+            };
+            *m.entry(k).or_default() += 1;
+        }
+        m
     }
 
     pub fn take_commands(&mut self) -> Vec<Cmd> {
@@ -604,11 +698,41 @@ impl Conflict {
             radius: cu.def.territory_radius,
         }));
         self.schedule_plunder(f, at);
-        // Sources already emitting reach the newcomer.
-        let keys: Vec<(u64, SignalKind)> = self.sources.keys().copied().collect();
-        for k in keys {
-            let s = self.sources[&k].clone();
-            self.set_emission_inner(w, k, s.pos, s.district, s.rate, at);
+        // Sources already emitting reach the newcomer (only the newcomer's feud changes).
+        let reach = f64::from(cu.def.territory_radius) + f64::from(cu.def.reach_blocks);
+        let near: Vec<((u64, SignalKind), f64)> = self
+            .sources
+            .iter()
+            .filter_map(|(k, s)| {
+                let d = dist(pxz(s.pos), pxz(pos));
+                (s.pos.frame == pos.frame && d <= reach).then(|| {
+                    let r = f64::from(cu.def.territory_radius);
+                    let fall = if d <= r {
+                        1.0
+                    } else {
+                        (1.0 - (d - r) / f64::from(cu.def.reach_blocks.max(1))).max(0.0)
+                    };
+                    (*k, fall)
+                })
+            })
+            .filter(|e| e.1 > 0.0)
+            .collect();
+        if !near.is_empty() {
+            let settlers = self.settlers(w);
+            let mut kinds = Vec::new();
+            for (k, fall) in near {
+                if let Some(s) = self.sources.get_mut(&k) {
+                    s.affects.push((f, fall));
+                    s.affects.sort_by_key(|e| e.0);
+                }
+                self.source_index.entry((f, k.1)).or_default().insert(k.0);
+                if !kinds.contains(&k.1) {
+                    kinds.push(k.1);
+                }
+            }
+            for kind in kinds {
+                self.refresh_rates(w, f, settlers, kind, at);
+            }
         }
         self.note(
             at,
@@ -886,7 +1010,15 @@ impl Conflict {
         touched.extend(affects.iter().map(|a| a.0));
         touched.sort();
         touched.dedup();
+        for f in &touched {
+            if let Some(v) = self.source_index.get_mut(&(*f, key.1)) {
+                v.remove(&key.0);
+            }
+        }
         if rate > 0.0 {
+            for (f, _) in &affects {
+                self.source_index.entry((*f, key.1)).or_default().insert(key.0);
+            }
             self.sources.insert(
                 key,
                 Source {
@@ -909,14 +1041,18 @@ impl Conflict {
     fn refresh_rates(&mut self, w: &World, f: u32, a: ActorId, kind: SignalKind, at: Tick) {
         let mut raw = 0.0;
         let mut best: Option<Focus> = None;
-        for s in self.sources.iter().filter(|(k, _)| k.1 == kind) {
-            if let Some(&(_, fall)) = s.1.affects.iter().find(|x| x.0 == f) {
-                raw += s.1.rate * fall;
-                let wgt = s.1.rate * fall;
+        // Only the sources that reach this faction (the index), in key order.
+        for &key in self.source_index.get(&(f, kind)).into_iter().flatten() {
+            let Some(s) = self.sources.get(&(key, kind)) else {
+                continue;
+            };
+            if let Some(&(_, fall)) = s.affects.iter().find(|x| x.0 == f) {
+                raw += s.rate * fall;
+                let wgt = s.rate * fall;
                 if best.is_none_or(|b| wgt > b.weight) {
                     best = Some(Focus {
-                        pos: s.1.pos,
-                        district: s.1.district,
+                        pos: s.pos,
+                        district: s.district,
                         weight: wgt,
                     });
                 }
@@ -1458,31 +1594,33 @@ impl Conflict {
 
     /// The road from the camp to `to`: the shortest path over road edges to the node nearest the
     /// target, then straight to it. Straight when no road gets nearer.
-    fn route(&self, w: &World, from: usize, to: Pos) -> Vec<(i32, i32)> {
+    fn route(&mut self, w: &World, from: usize, to: Pos) -> Vec<(i32, i32)> {
+        self.nodes.refresh(w);
         let start = w.nodes[from].pos;
         let mut out = vec![(start.x, start.z)];
-        let nearest = (0..w.nodes.len())
-            .filter(|&i| w.nodes[i].pos.frame == to.frame)
-            .min_by(|&a, &b| {
-                dist(pxz(w.nodes[a].pos), pxz(to))
-                    .total_cmp(&dist(pxz(w.nodes[b].pos), pxz(to)))
-                    .then(a.cmp(&b))
-            });
-        if let Some(goal) = nearest.filter(|&g| {
-            g != from && dist(pxz(w.nodes[g].pos), pxz(to)) < dist(pxz(start), pxz(to))
-        }) {
-            // Dijkstra over road edges (lanes are ships').
-            let n = w.nodes.len();
-            let mut best = vec![u64::MAX; n];
-            let mut prev = vec![usize::MAX; n];
+        let direct = dist(pxz(start), pxz(to));
+        let nearest = self
+            .nodes
+            .nearest(w, to, direct, |i| w.nodes[i].pos.frame == to.frame)
+            .map(|b| b.1);
+        if let Some(goal) = nearest.filter(|&g| g != from) {
+            // A* over road edges (lanes are ships'), the straight line as the heuristic: an edge
+            // is never shorter than the straight line between its ends (the path factor is at
+            // least 1), so the first time the goal is popped its path is the shortest.
+            let gp = pxz(w.nodes[goal].pos);
+            let h = |i: usize| dist(pxz(w.nodes[i].pos), gp) as u64;
+            let mut best: BTreeMap<usize, u64> = BTreeMap::new();
+            let mut prev: BTreeMap<usize, usize> = BTreeMap::new();
             let mut heap = std::collections::BinaryHeap::new();
-            best[from] = 0;
-            heap.push(std::cmp::Reverse((0u64, from)));
-            while let Some(std::cmp::Reverse((d, i))) = heap.pop() {
-                if d > best[i] {
+            best.insert(from, 0);
+            heap.push(std::cmp::Reverse((h(from), 0u64, from)));
+            let mut found = false;
+            while let Some(std::cmp::Reverse((_, d, i))) = heap.pop() {
+                if d > best.get(&i).copied().unwrap_or(u64::MAX) {
                     continue;
                 }
                 if i == goal {
+                    found = true;
                     break;
                 }
                 for r in &w.nodes[i].out {
@@ -1492,20 +1630,20 @@ impl Conflict {
                     }
                     let j = e.dirs[r.dir as usize].to;
                     let nd = d + e.length_blocks;
-                    if nd < best[j] {
-                        best[j] = nd;
-                        prev[j] = i;
-                        heap.push(std::cmp::Reverse((nd, j)));
+                    if nd < best.get(&j).copied().unwrap_or(u64::MAX) {
+                        best.insert(j, nd);
+                        prev.insert(j, i);
+                        heap.push(std::cmp::Reverse((nd + h(j), nd, j)));
                     }
                 }
             }
-            if best[goal] != u64::MAX {
+            if found {
                 let mut path = vec![goal];
                 while let Some(&p) = path.last() {
                     if p == from {
                         break;
                     }
-                    path.push(prev[p]);
+                    path.push(prev[&p]);
                 }
                 path.reverse();
                 for &i in &path[1..] {
@@ -2384,24 +2522,24 @@ impl Conflict {
         let c = self.culture(f).clone();
         let camp = self.factions[f as usize].pos;
         let reach = f64::from(c.def.plunder_reach_blocks);
-        let mut best: Option<(f64, usize)> = None;
-        for (i, n) in w.nodes.iter().enumerate() {
-            if n.pos.frame != camp.frame || i == self.factions[f as usize].node {
-                continue;
+        let own = self.factions[f as usize].node;
+        self.nodes.refresh(w);
+        let by_key = &self.by_key;
+        let cultures = &self.cultures;
+        let factions = &self.factions;
+        let best = self.nodes.nearest(w, camp, reach, |i| {
+            let n = &w.nodes[i];
+            if i == own || n.pos.frame != camp.frame {
+                return false;
             }
-            let hated = match n.kind {
+            match n.kind {
                 NodeKind::Village(cu) => c.hates(cu.name()),
-                NodeKind::Haven(_) => self
-                    .by_key
+                NodeKind::Haven(_) => by_key
                     .get(&n.key)
-                    .is_some_and(|&o| c.hates(self.culture(o).name())),
+                    .is_some_and(|&o| c.hates(cultures.get(factions[o as usize].culture).name())),
                 NodeKind::PlayerBase { .. } => false,
-            };
-            let d = dist(pxz(n.pos), pxz(camp));
-            if hated && d <= reach && best.is_none_or(|b| d < b.0) {
-                best = Some((d, i));
             }
-        }
+        });
         let Some((_, i)) = best else {
             self.schedule_plunder(f, at);
             return;
