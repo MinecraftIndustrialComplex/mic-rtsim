@@ -18,7 +18,8 @@ usage:
       Runs SCALE.md §10's sweeps, prints the table and slopes, writes JSON to DIR
       (default bench/results). --check exits 1 when a slope exceeds its declared contract.
       --repeats runs each point N times and keeps the median (default 3, quick 1).
-      --only picks sweeps by name: latent, regions, events, elapsed, age, markets, edges.
+      --only picks sweeps by name: latent, regions, events, elapsed, age, markets, edges,
+      dragons.
   rtsim-cli bench scale-one --spec JSON
       Runs one configuration and prints its measurements as JSON (used by bench scale).
   rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]

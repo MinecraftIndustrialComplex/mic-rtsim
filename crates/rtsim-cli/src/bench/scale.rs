@@ -39,6 +39,8 @@ pub enum Spec {
     CatchUp(CatchUpConfig),
     /// A phase 1 market world (`bench::market`).
     Market(super::market::MarketConfig),
+    /// Dragons over a fixed village grid, nobody watching (`bench::dragons`).
+    Dragons(super::dragons::DragonConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -82,6 +84,10 @@ pub struct Measured {
     /// Edges in a market world.
     #[serde(default)]
     pub edges: Option<u64>,
+    /// CPU per sim day per unit of the swept count, beyond what the world costs without it (the
+    /// dragon sweep: per dragon).
+    #[serde(default)]
+    pub cpu_ns_per_unit_day: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +103,8 @@ pub enum Vary {
     Markets,
     /// The edge rule's nearest-k, with markets fixed.
     Edges,
+    /// Dragons over a fixed world (PLAN.md §9).
+    Dragons,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +118,8 @@ pub enum Metric {
     Save,
     /// CPU per catch-up read.
     CatchUp,
+    /// CPU per sim day per unit of the swept count (`Measured::cpu_ns_per_unit_day`).
+    CpuPerUnit,
 }
 
 impl Metric {
@@ -119,6 +129,7 @@ impl Metric {
             Metric::Heap => Some(m.heap_live_bytes as f64),
             Metric::Save => m.save_full_bytes.map(|b| b as f64),
             Metric::CatchUp => m.catch_up_cpu_ns_per_read,
+            Metric::CpuPerUnit => m.cpu_ns_per_unit_day,
         }
     }
 }
@@ -191,6 +202,15 @@ impl Baseline {
     }
 
     fn spec(&self, sweep: &Sweep, value: u64) -> Spec {
+        if sweep.vary == Vary::Dragons {
+            return Spec::Dragons(super::dragons::DragonConfig {
+                dragons: value,
+                villages: DRAGON_VILLAGES,
+                warmup_days: 2,
+                days: self.days,
+                seed: self.seed,
+            });
+        }
         if matches!(sweep.vary, Vary::Markets | Vary::Edges) {
             return Spec::Market(super::market::MarketConfig {
                 markets: if sweep.vary == Vary::Markets {
@@ -232,7 +252,7 @@ impl Baseline {
             Vary::Regions => c.regions = value,
             Vary::Events => c.events_per_day = value,
             Vary::Age => c.warmup_days = value,
-            Vary::Elapsed | Vary::Markets | Vary::Edges => unreachable!(),
+            Vary::Elapsed | Vary::Markets | Vary::Edges | Vary::Dragons => unreachable!(),
         }
         Spec::World(c)
     }
@@ -515,11 +535,38 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 "nearest-k at 512 markets: a market event costs O(deg × G) (allocation over its edges) and news reaches every neighbour, so events also grow with degree: up to deg squared",
             )],
         },
+        // Phase 2 dragons (rtsim-ecology), nobody watching. The model kind is a label only.
+        Sweep {
+            name: "dragons".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Dragons,
+            regions: None,
+            values: pick(&[8, 32, 128, 512, 2_048], &[8, 128, 2_048]),
+            contracts: vec![
+                contract(
+                    Metric::CpuPerUnit,
+                    flat,
+                    0.0,
+                    "a flat cost per unobserved dragon: its hunts are a handful of events a day, decisions look up the cells around its lair, legs book and search the cells they cover; nothing is ticked. Measured as the world's CPU with dragons minus without, per dragon-day",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "dragons are resident rows (paging, A16, is not built yet)",
+                ),
+            ],
+        },
     ]
 }
 
 /// Markets held fixed while the edge sweep varies nearest-k.
 const MARKET_BASE: u64 = 512;
+
+/// Villages held fixed while the dragon sweep varies dragons. PLACEHOLDER 256 (a 16 × 16 grid,
+/// about 8,700 blocks across): the densest point is a few lairs per region, about Ice and Fire's
+/// own lair spacing (roost spacing 15 chunks, caves 18, verified in its structure sets).
+const DRAGON_VILLAGES: u64 = 256;
 
 /// The age sweeps' region count: see their notes.
 const AGE_REGIONS: u64 = 100_000;
@@ -548,6 +595,7 @@ pub fn run_one(spec: &Spec) -> Measured {
             ModelKind::Dyadic => run_catch_up::<DyadicRegion>(c),
         },
         Spec::Market(c) => super::market::run(c),
+        Spec::Dragons(c) => super::dragons::run(c),
     }
 }
 
@@ -1029,6 +1077,7 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
         let days = match &r.spec {
             Spec::World(c) => c.days as f64,
             Spec::Market(c) => c.days as f64,
+            Spec::Dragons(c) => c.days as f64,
             Spec::CatchUp(_) => f64::NAN,
         };
         println!(

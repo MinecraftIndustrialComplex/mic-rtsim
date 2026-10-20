@@ -118,6 +118,13 @@ enum Ev {
         player: ActorId,
         meeting: Meeting,
     },
+    /// A player's interest area covers a lair where `d` roosts.
+    SeenAtLair {
+        d: DragonId,
+        player: ActorId,
+        interest: Stamp,
+        lair: LairId,
+    },
     Depart {
         d: DragonId,
         plan: u32,
@@ -223,6 +230,9 @@ pub struct Dragons {
     pub dragons: Arena<Dragon>,
     pub lairs: Vec<Lair>,
     lair_by_key: BTreeMap<u64, LairId>,
+    /// Lairs by region, so an interest area finds roosting dragons without the leg index: a
+    /// dragon at rest books nothing there.
+    lair_cells: BTreeMap<(u16, i64, i64), Vec<LairId>>,
     wheel: TimingWheel<Ev>,
     pub homes: Homes,
     pub ledger: PreyLedger,
@@ -267,6 +277,7 @@ impl Dragons {
             dragons: Arena::new(),
             lairs: Vec::new(),
             lair_by_key: BTreeMap::new(),
+            lair_cells: BTreeMap::new(),
             wheel: TimingWheel::new(now),
             homes,
             ledger: PreyLedger::default(),
@@ -398,6 +409,8 @@ impl Dragons {
             plan: 1,
         });
         self.lair_by_key.insert(key, id);
+        let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(pos.x), i64::from(pos.z));
+        self.lair_cells.entry((pos.frame, rx, rz)).or_default().push(id);
         let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
         self.schedule(at + delay, Ev::Respawn { lair: id, plan: 1 });
         id
@@ -593,6 +606,55 @@ impl Dragons {
                 self.schedule(m.at, Ev::Seen { d, player: p, meeting: m });
             }
         }
+        // Dragons at rest in a lair the area covers.
+        let r = i64::from(path.radius);
+        let (x0, z0) = (i64::from(path.x0.min(path.x1)) - r, i64::from(path.z0.min(path.z1)) - r);
+        let (x1, z1) = (i64::from(path.x0.max(path.x1)) + r, i64::from(path.z0.max(path.z1)) + r);
+        let (ra, rb) = (
+            rtsim_travel::legs::LegIndex::region_of(x0, z0),
+            rtsim_travel::legs::LegIndex::region_of(x1, z1),
+        );
+        let mut found = Vec::new();
+        for rx in ra.0..=rb.0 {
+            for rz in ra.1..=rb.1 {
+                found.extend(self.lair_cells.get(&(path.frame, rx, rz)).into_iter().flatten().copied());
+            }
+        }
+        for l in found {
+            let lp = self.lairs[l as usize].pos;
+            let (px, pz) = path.at(path.t0);
+            if flight::dist((px, pz), (i64::from(lp.x), i64::from(lp.z))) > f64::from(path.radius) {
+                continue;
+            }
+            for d in self.lairs[l as usize].occupants.clone() {
+                let at = path.t0.max(self.now);
+                self.schedule(at, Ev::SeenAtLair { d, player: p, interest: stamp, lair: l });
+            }
+        }
+    }
+
+    /// A dragon settling at its lair: any player whose interest area covers the lair now sees it.
+    fn visitors_at_lair(&mut self, w: &mut World, d: DragonId, at: Tick) {
+        let Some(l) = self.dragons[d].lair else {
+            return;
+        };
+        let lp = self.lairs[l as usize].pos;
+        let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(lp.x), i64::from(lp.z));
+        for s in w.legs.in_region(lp.frame, rx, rz, at) {
+            let Some(row) = w.legs.get(s.leg) else {
+                continue;
+            };
+            let Some(p) = owner_player(row.owner) else {
+                continue;
+            };
+            if row.path.t1 < at {
+                continue;
+            }
+            let (px, pz) = row.path.at(at);
+            if flight::dist((px, pz), (i64::from(lp.x), i64::from(lp.z))) <= f64::from(row.path.radius) {
+                self.schedule(at, Ev::SeenAtLair { d, player: p, interest: s, lair: l });
+            }
+        }
     }
 
     // ---- the step loop -------------------------------------------------------------------------
@@ -655,6 +717,22 @@ impl Dragons {
                 }
             }
             Ev::Seen { d, player, meeting } => self.seen(w, d, player, meeting, at),
+            Ev::SeenAtLair {
+                d,
+                player,
+                interest,
+                lair,
+            } => {
+                let home = self.dragons.get(d).is_some_and(|x| {
+                    x.lair == Some(lair) && matches!(x.state, State::Roosting) && x.rest.is_none()
+                });
+                if !home || !w.legs.is_live(interest) {
+                    self.stats.seen_stale += 1;
+                    return;
+                }
+                self.stats.seen += 1;
+                self.materialize(w, d, player, false, None, at);
+            }
             Ev::Depart { d, plan, reason } => {
                 if self.live(d, plan) {
                     self.depart(d, reason, at);
@@ -817,8 +895,8 @@ impl Dragons {
         }
     }
 
-    /// Settles at its lair: a stay leg there until it next hunts, so a visiting player meets it,
-    /// and one `Hungry` event.
+    /// Settles at its lair: one `Hungry` event, and no leg (a visiting player finds it through
+    /// the lair index).
     fn roost(&mut self, w: &mut World, d: DragonId, at: Tick) {
         let plan = self.bump(d);
         let hunt_below = self.tun.hunt_below;
@@ -828,9 +906,10 @@ impl Dragons {
         x.rest = None;
         x.bout = 0;
         let t = x.hungry_at(&self.tun, hunt_below, at).max(at + rest);
-        let (pos, y) = x.position(&self.lairs, at);
-        self.book_leg(w, d, flight::stay(pos, at, t, BODY_RADIUS), y);
+        // At rest it books nothing in the leg index: players find it through the lair.
+        self.cancel_leg(w, d);
         self.schedule(t, Ev::Hungry { d, plan });
+        self.visitors_at_lair(w, d, at);
     }
 
     /// Sends `d` to lair `l` to claim it (a migration ordered from outside: an admin command, a
@@ -1029,7 +1108,11 @@ impl Dragons {
         if !w.nodes[node].kind.is_storehouse() {
             return 0.0;
         }
-        let m = w.market(node);
+        // The stock as last anchored: an estimate is enough to weigh, and it costs no copy.
+        let Some(region) = w.markets.get(w.nodes[node].region) else {
+            return 0.0;
+        };
+        let m = region.cell().model();
         let mut food = 0.0;
         for (g, _) in w.goods.iter() {
             if let PreyClass::Food {
