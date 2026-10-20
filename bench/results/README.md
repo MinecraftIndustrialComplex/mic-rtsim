@@ -193,6 +193,31 @@ pending. Laptop, other agents' builds running alongside (load about 6).
   services, lanes and indexes are 129 KB at 56 ships and 381 KB at 814 (`engine_heap_bytes`), about
   310 bytes a ship.
 
+## 2026-10-20 17:56 UTC, the herd sweeps (`scale-2026-10-20-1756-herds`)
+
+`--only herds,members --check`, three repeats, median kept, on branch `overnight/herds` (the
+`herds` module of `rtsim-ecology`, choices H2-1 onward in `docs/overnight-choices-herds.md`). Herds
+spread over the synthetic valley (`rtsim_ecology::herds::synth::bench_herds`, the five species in
+turn), nobody watching; 8 days of warm-up (one decision each), then 80 measured days (ten
+sub-seasons). The herds engine is timed alone: herds need only the leg index, no world. After the
+run every herd's cohorts are read 10,000 days later (pure dyadic reads) to time catch-up. Every run
+conserved every herd's animals as integers (`Herds::check`), and nothing materialized or booked a
+leg. Laptop, other agents' builds running alongside (load about 4). The file was written as
+`-full` by `bench scale` and renamed `-herds`, as the dragon and ship runs were.
+
+**Numbers:**
+- Herds, 4 to 256 at 5,000 members each: 250 to 175 µs per herd-day (slope -0.085, max/min 1.43,
+  contract flat), one event (a decision) per herd per sub-season: the flow field of a decision
+  costs about 1.5 to 2 ms, most of it forage reads of the cells in reach. Live heap 0.2 to 1.3 MiB
+  (slope 0.447): herd rows plus the forage rows of grazed cells; the engine's own structures are
+  178 KB at 4 herds and 1.27 MB at 256 (`engine_heap_bytes`).
+- Members per herd, 100 to 1,000,000 (16 herds): 4.20, 3.97, 3.44, 3.69, 3.82 ms per sim day (slope
+  -0.012, max/min 1.22, contract flat): a herd of a million costs what a herd of a hundred does.
+  Catch-up after 10,000 unread days: 0.02 to 0.04 µs per herd read (slope -0.003). Live heap 0.1 to
+  0.6 MiB (slope 0.204, declared 0.3): members cost zero bytes, but a bigger herd's footprint
+  grazes more forage cells, each a row until the yearly fold, up to the footprint's cap (1,536
+  blocks, reached near 50,000 sheep); from 100,000 members on the heap is flat (529 KB and 556 KB
+  of engine structures).
 ## 2026-10-20 18:47 UTC, the faction sweep (`scale-2026-10-20-1847-factions`)
 
 `--only factions`, three repeats, median kept, on branch `overnight/conflict` (`rtsim-conflict`,

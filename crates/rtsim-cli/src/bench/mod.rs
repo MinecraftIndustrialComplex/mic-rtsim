@@ -4,6 +4,7 @@
 
 pub mod conflict;
 pub mod dragons;
+pub mod herds;
 pub mod industry;
 pub mod market;
 pub mod restore;

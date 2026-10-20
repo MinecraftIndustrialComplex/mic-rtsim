@@ -22,16 +22,19 @@ pub enum PreyKind {
     Grudge,
     /// A booked train leg a hungry dragon's flight crosses (INDUSTRY.md §13.3, I24).
     Train,
+    /// A wild herd (`herds`, PLAN.md §10.2; P12's phase 2 note on a minimal wild-herd model).
+    Herd,
 }
 
 impl PreyKind {
-    pub const ALL: [PreyKind; 4] = [
+    pub const ALL: [PreyKind; 5] = [
         PreyKind::Road,
         PreyKind::Village,
         PreyKind::Grudge,
         PreyKind::Train,
+        PreyKind::Herd,
     ];
-    pub const COUNT: usize = 4;
+    pub const COUNT: usize = 5;
 
     pub const fn index(self) -> usize {
         self as usize
@@ -43,6 +46,7 @@ impl PreyKind {
             PreyKind::Village => "village",
             PreyKind::Grudge => "grudge",
             PreyKind::Train => "train",
+            PreyKind::Herd => "herd",
         }
     }
 }
@@ -71,8 +75,8 @@ pub struct DragonTunables {
     /// forward). PLACEHOLDER 20.
     pub starving: i32,
     /// Season weights per prey kind, percent (indexed [season][kind]). The rule they encode is a
-    /// PLACEHOLDER until ecology models herds: in winter herds are penned near villages and easy
-    /// to take, so villages weigh more; in summer they graze wide and roads weigh more.
+    /// PLACEHOLDER: in winter herds are penned near villages and easy to take, so villages weigh
+    /// more; in summer they graze wide, so roads and wild herds weigh more.
     pub season_percent: [[i32; PreyKind::COUNT]; 4],
     /// Utility lost per block of flight to a target, in fullness points per 1,000 blocks.
     /// PLACEHOLDER 4.
@@ -123,16 +127,18 @@ pub struct DragonTunables {
     pub home_regions: usize,
     /// Settlements a dragon remembers preying on, for the thanks a slayer gets. PLACEHOLDER 4.
     pub victims_kept: usize,
+    /// Utility lost to a wild herd's risk (a kick, a horn), fullness points. PLACEHOLDER 2.
+    pub herd_risk: i32,
 }
 
 impl Default for DragonTunables {
     fn default() -> Self {
-        let pct = |road: i32, village: i32| [road, village, 100, 100];
+        let pct = |road: i32, village: i32, herd: i32| [road, village, 100, 100, herd];
         let mut season_percent = [[100; PreyKind::COUNT]; 4];
-        season_percent[Season::Spring.index()] = pct(100, 80);
-        season_percent[Season::Summer.index()] = pct(140, 50);
-        season_percent[Season::Autumn.index()] = pct(130, 60);
-        season_percent[Season::Winter.index()] = pct(50, 180);
+        season_percent[Season::Spring.index()] = pct(100, 80, 110);
+        season_percent[Season::Summer.index()] = pct(140, 50, 130);
+        season_percent[Season::Autumn.index()] = pct(130, 60, 110);
+        season_percent[Season::Winter.index()] = pct(50, 180, 70);
         DragonTunables {
             species: [
                 SpeciesData::of(Species::Fire),
@@ -166,6 +172,7 @@ impl Default for DragonTunables {
             home_half_life_ticks: 3 * TICKS_PER_DAY,
             home_regions: 8,
             victims_kept: 4,
+            herd_risk: 2,
         }
     }
 }

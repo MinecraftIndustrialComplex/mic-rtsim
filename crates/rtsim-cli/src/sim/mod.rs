@@ -3,6 +3,7 @@
 
 pub mod conflict;
 pub mod dragons;
+pub mod herds;
 pub mod industry;
 pub mod memory;
 pub mod phase1;
