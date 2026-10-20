@@ -17,12 +17,12 @@ the industry engine) and in mic-native's DECISIONS.md (N). They need your review
 
 | Blocks | Count |
 |---|---|
-| Phase 0 | 8 |
+| Phase 0 | 9 |
 | Phase 1 | 8 |
 | Phase 2 | 5 |
 | Industry | 27 |
 | Later | 11 |
-| **All** | **59** |
+| **All** | **60** |
 
 Phase 0 has its own group because it comes before phase 1 and its questions are the first to block
 code.
