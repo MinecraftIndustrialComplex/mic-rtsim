@@ -200,3 +200,16 @@ Each row answers the open question with the same id in OPEN-QUESTIONS.md.
 | I23 | For now an unwatched attack can steal up to its carry capacity and a cap, and break exposed blocks up to a cap, with drops. A lost machine stops the district. Never fire. This is revisited with the progression-scaled damage design (I1). | chose "Keep for now" |
 | I24 | An unwatched attack on a train loots carriage cargo and never cuts track. | chose "Loot cargo, keep track" |
 | I25 | Attacks are paced by per-attack caps and a cooldown per threat class, with no shields. | chose "Caps + cooldowns" |
+| I26 | Industry order: (1) compile the Create graph and solve rates, checked against the black box; (2) trains and stations; (3) addon machine models; (4) threats and rebuilding later. | chose "Glass box first" |
+| U10 | A switched-off module ignores everything: it applies no records and runs nothing, and catches up when switched on again. Industry's journaled-records-while-off rule (W8) changes to match. | chose "Ignore everything" |
+| Herds | All four overnight herd additions are kept: dragons hunt herds (Y7); herds share the ECOLOGY switch (Y2); the `SessionPlugin.take` hook; and the HABITAT record (Y4). | ticked all four |
+| P11 | Order after phases 1 and 2: the industry glass box, then conflict bodies (Illager Invasion, Goblin's Tyranny), then ships on Aeronautics. History, kaiju and space come later. | chose "Industry glass box, conflict, ships" |
+| P14 | **Changed:** a signal with no direct actor, such as pollution, goes to the player who has spent the most time in that chunk. This replaces the shared "settlers" actor the conflict engine was built with. | chose "Per chunk by time spent" |
+| P27 | Kaiju start appearing after the first nuclear detonation observed in the world. No body mod is chosen; Alex's Caves is out. | chose "First nuclear detonation" |
+| M3/M4 | Villages advancing in technology, and villages declining or being founded, are decided together with C22's future direction. Until then, growth is ribbit houses only. | chose "With C22 later" |
+| M6 | Caravans are escorted only through rescues for now. Hiring waits for guards, with no dialogue screen. | chose "Escort via rescues" |
+| M2 | Patrols are flows that lower an edge's hazard, on sea lanes and later on roads. Crew conversion is a transfer of group counts. | chose "Patrols as flows" |
+| C27 | Born in Chaos balancing is to be planned later. | chose "Plan later" |
+| P8 (ships) | Choosing an Aeronautics ship mod is deferred. The survey is research/aeronautics-ship-mods-2026-10-20.md. | chose "Defer for now" |
+| Choices | Ben reads the overnight choice files himself. They stand unless he objects. | chose "Read them yourself" |
+| C30 | Players will run their own Sable ships as logistics, for example a sailbot carrying vaults of items between two ports. The voyage plugin (I17) must simulate such player ships and their cargo while unloaded. | "I fully expect players to set things up s.t. they have sable ships doing logistics. I.E. A sailbot going between two ports to move vaults filled with items betewen them." |
