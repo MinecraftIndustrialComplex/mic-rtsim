@@ -223,7 +223,10 @@ impl World {
         for h in seen {
             self.knowledge.witness(h, id, at);
         }
+        // The trader saw it too, as a notable: it remembers, and feels it, so its grudge can
+        // pass to its heir (C24).
         let notable = self.trader_notable(c, at);
+        self.knowledge.witness(notable, id, at);
         self.knowledge.remember(notable, id, SEVERITY_UNIT);
         self.flush_gossip();
         Some(id)
