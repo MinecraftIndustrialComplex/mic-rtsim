@@ -107,7 +107,7 @@ impl World {
             .register(ActorKind::Player, uuid_hash)
     }
 
-    fn place_of(&self, node: usize) -> Place {
+    pub(crate) fn place_of(&self, node: usize) -> Place {
         let p = self.nodes[node].pos;
         Place::new(p.frame, p.x, 64, p.z)
     }
@@ -238,7 +238,7 @@ impl World {
         Some(id)
     }
 
-    fn report(
+    pub(crate) fn report(
         &mut self,
         who: ActorId,
         c: CaravanId,
@@ -410,7 +410,7 @@ impl World {
     /// animals); otherwise a bold trader goes on and a timid one turns back home (C25: the
     /// temperament derived from its seed weighs the choice; the threshold is the middle of the
     /// trait's range).
-    fn decide_after_attack(&mut self, c: CaravanId, at: Tick) -> CaravanOutcome {
+    pub(crate) fn decide_after_attack(&mut self, c: CaravanId, at: Tick) -> CaravanOutcome {
         let Some(car) = self.caravans.get(c) else {
             return CaravanOutcome::Dissolved;
         };

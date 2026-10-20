@@ -475,6 +475,11 @@ dependencies = [
  "mic-native-host",
  "mic-native-rt",
  "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
 ]
 
 [[package]]

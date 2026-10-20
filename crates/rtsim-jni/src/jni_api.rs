@@ -30,7 +30,8 @@ use mic_native_rt::abi;
 use rtsim_kernel::page::Durability;
 
 use crate::engine::{
-    Config, Engine, Exec, FLAG_NO_FSYNC, FLAG_TEST, STATS_LEN, last_error, set_last_error,
+    Config, Engine, Exec, FLAG_NO_FSYNC, FLAG_TEST, PHASE1_STATS, STATS_LEN, last_error,
+    set_last_error,
 };
 use crate::orders;
 
@@ -370,6 +371,51 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         let n = out.len(env)?.min(STATS_LEN);
         let vals: Vec<jlong> = stats[..n].iter().map(|v| *v as jlong).collect();
         out.set_region(env, 0, &vals)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native void nPhase1Stats(long handle, long[] out)`: phase 1's counters
+/// (`PHASE1_STATS` of them, `engine::phase1::stat`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nPhase1Stats<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    out: JLongArray<'l>,
+) {
+    env.with_env(|env| -> Result<(), JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let stats = e.phase1_stats();
+        let n = out.len(env)?.min(PHASE1_STATS);
+        let vals: Vec<jlong> = stats[..n].iter().map(|v| *v as jlong).collect();
+        out.set_region(env, 0, &vals)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native int nPhase1Sentiment(long handle, long village, long most, long least)`: a
+/// phase 1 village's sentiment toward a player as of the last step (TEST mode), 0 when it feels
+/// nothing, `Integer.MIN_VALUE` when the engine knows no such village or is not in TEST mode.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nPhase1Sentiment<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    village: jlong,
+    most: jlong,
+    least: jlong,
+) -> jint {
+    env.with_env(|_env| -> Result<jint, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        Ok(e.phase1_sentiment(village as u64, (most as u64, least as u64))
+            .unwrap_or(jint::MIN))
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
