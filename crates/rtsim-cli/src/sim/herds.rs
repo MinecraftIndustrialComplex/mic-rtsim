@@ -535,6 +535,7 @@ pub fn main(o: Options) -> i32 {
         (Ok(w2), Ok(mut d2), Ok(mut h2)) => {
             h2.log = std::mem::take(&mut sim.h.log);
             h2.trace = std::mem::take(&mut sim.h.trace);
+            h2.predations = std::mem::take(&mut sim.h.predations);
             h2.log_enabled = true;
             h2.trace_enabled = true;
             d2.log_enabled = true;
@@ -654,29 +655,25 @@ pub fn main(o: Options) -> i32 {
             m.insert(k.name(), sim.d.prey_by_season[s.index()][k.index()]);
         }
     }
-    let herd_hunts: Vec<(f64, String, String, i64, f64)> = sim
+    // Herd hunts, with the herd's position at the moment it was taken from (the herds' own
+    // predation records) against the dragon's lair.
+    let names: BTreeMap<u64, String> = sim
         .d
-        .hunts
+        .dragons
         .iter()
-        .filter(|r| r.kind == PreyKind::Herd && r.food > 0)
-        .map(|r| {
-            let lair = sim
-                .lairs
-                .get(&r.dragon)
-                .copied()
-                .unwrap_or(Pos::new(0, 0, 0));
-            let animals = r.taken.iter().map(|t| t.1).sum();
-            // The hunt's place is in its log line; distance from the lair at the herd's position
-            // then.
-            let hp = sim
-                .h
-                .by_name(&r.target)
-                .map(|h| sim.h.position(h, Tick(r.tick)))
-                .unwrap_or((0, 0));
-            let d = (((hp.0 - i64::from(lair.x)) as f64).powi(2)
-                + ((hp.1 - i64::from(lair.z)) as f64).powi(2))
+        .map(|(id, x)| (id.to_bits(), x.name.clone()))
+        .collect();
+    let herd_hunts: Vec<(f64, String, String, i64, f64)> = sim
+        .h
+        .predations
+        .iter()
+        .map(|p| {
+            let dragon = names.get(&p.predator).cloned().unwrap_or_default();
+            let lair = sim.lairs.get(&dragon).copied().unwrap_or(Pos::new(0, 0, 0));
+            let d = (((p.herd_pos.0 - i64::from(lair.x)) as f64).powi(2)
+                + ((p.herd_pos.1 - i64::from(lair.z)) as f64).powi(2))
             .sqrt();
-            (r.day, r.dragon.clone(), r.target.clone(), animals, d)
+            (p.day, dragon, p.herd.clone(), p.animals as i64, d)
         })
         .collect();
     let eaten: u64 = sim.h.herds.iter().map(|(_, x)| x.ledger.eaten).sum();

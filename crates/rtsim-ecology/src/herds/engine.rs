@@ -153,6 +153,20 @@ pub struct Decision {
     pub cells_reached: u32,
 }
 
+/// One predation, for the CLI (kept only while the log is on).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PreyRecord {
+    pub tick: u64,
+    pub day: f64,
+    pub herd: String,
+    pub predator: u64,
+    pub animals: u64,
+    /// The herd's centre when it was taken from.
+    pub herd_pos: (i64, i64),
+    /// Where the predator hunted.
+    pub at: (i64, i64),
+}
+
 /// A player as the herds know it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerView {
@@ -226,6 +240,7 @@ pub struct Herds {
     pub log: Vec<HerdLog>,
     pub trace_enabled: bool,
     pub trace: Vec<Decision>,
+    pub predations: Vec<PreyRecord>,
     pub(crate) next_seed: u64,
     pub(crate) now: Tick,
 }
@@ -290,6 +305,7 @@ impl Herds {
             log: Vec::new(),
             trace_enabled: false,
             trace: Vec::new(),
+            predations: Vec::new(),
             next_seed: 0,
             now,
         };
@@ -1576,6 +1592,7 @@ impl Herds {
         want_food: i32,
         predator: u64,
     ) -> Predation {
+        let (x_pos, z_pos) = (x, z);
         let Some(hx) = self.herds.get(h) else {
             return Predation::default();
         };
@@ -1672,6 +1689,18 @@ impl Herds {
         }
         self.follows.entry(predator).or_default().insert(h);
         self.stats.predations += 1;
+        if self.log_enabled {
+            let x = &self.herds[h];
+            self.predations.push(PreyRecord {
+                tick: at.0,
+                day: dayf(at),
+                herd: x.name.clone(),
+                predator,
+                animals: given,
+                herd_pos: x.route.pos(at),
+                at: (x_pos, z_pos),
+            });
+        }
         let food = (given as i64 * i64::from(food_each)).min(i64::from(i32::MAX)) as i32;
         self.note(
             at,
