@@ -3,7 +3,6 @@ package com.minecraftindustrialcomplex.mic_rtsim_carryon.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.CaravanGameTests;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
@@ -67,13 +66,13 @@ public final class CarryOnGameTests {
                 })
                 .thenWaitUntil(() -> RtsimTests.check("TAKEN reached the engine", !RtsimTests.recordsFor(stub, Obs.TAKEN, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received t = RtsimTests.recordsFor(stub, Obs.TAKEN, agent).get(0);
+                    ScriptedEngine.Received t = RtsimTests.recordsFor(stub, Obs.TAKEN, agent).get(0);
                     RtsimTests.check("taken by a pickup", t.aux() == Obs.Taken.PICKUP);
                     RtsimTests.check("member 1", t.view().getInt(Obs.Taken.MEMBER) == 1);
                     UUID by = new UUID(t.view().getLong(Obs.Taken.PLAYER_MOST), t.view().getLong(Obs.Taken.PLAYER_LEAST));
                     RtsimTests.check("by the player", by.equals(player[0].getUUID()));
                     RtsimTests.check("with a Java op id for its cargo", (t.view().getLong(Obs.Taken.OP_ID) & Obs.JAVA_OP_BIT) != 0);
-                    List<StubEngine.Received> all = RtsimTests.allFor(stub, agent);
+                    List<ScriptedEngine.Received> all = RtsimTests.allFor(stub, agent);
                     int i = all.indexOf(t);
                     RtsimTests.check("its cargo came right before it", i > 0 && all.get(i - 1).kind() == Obs.MEMBER_STATE
                             && all.get(i - 1).view().getInt(Obs.MemberState.ITEM_COUNT) == 2);

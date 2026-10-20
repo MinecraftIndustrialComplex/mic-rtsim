@@ -4,7 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess;
 import com.minecraftindustrialcomplex.mic_rtsim.market.MarketBook;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
@@ -63,18 +63,16 @@ public final class TradeGameTests {
     public static void aCaravansOffersComeFromItsChestCargo(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
-        StubEngine stub = RtsimTests.stubOrSkip(helper);
-        if (stub == null)
-            return;
+        ScriptedEngine stub = RtsimTests.engine();
         stub.spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
-                StubEngine.MemberSpec.plain(0),
-                new StubEngine.MemberSpec(1, 0f, 0, 3, List.of(new StubEngine.ItemSpec(0, "minecraft:wheat", 30),
-                        new StubEngine.ItemSpec(1, "minecraft:leather", 10))),
-                new StubEngine.MemberSpec(2, 0f, 0, 3, List.of(new StubEngine.ItemSpec(0, "minecraft:emerald", 5)))));
+                ScriptedEngine.MemberSpec.plain(0),
+                new ScriptedEngine.MemberSpec(1, 0f, 0, 3, List.of(new ScriptedEngine.ItemSpec(0, "minecraft:wheat", 30),
+                        new ScriptedEngine.ItemSpec(1, "minecraft:leather", 10))),
+                new ScriptedEngine.MemberSpec(2, 0f, 0, 3, List.of(new ScriptedEngine.ItemSpec(0, "minecraft:emerald", 5)))));
         stub.merchantOffers(agent, 1, 0, List.of(
-                new StubEngine.OfferSpec("minecraft:emerald", 1, null, 0, "minecraft:wheat", 10, 0, Cmd.MerchantOffers.O_FLAG_SELLS),
-                new StubEngine.OfferSpec("minecraft:emerald", 2, null, 0, "minecraft:leather", 5, 0, Cmd.MerchantOffers.O_FLAG_SELLS),
-                new StubEngine.OfferSpec("minecraft:iron_ingot", 2, null, 0, "minecraft:emerald", 1, 0, Cmd.MerchantOffers.O_FLAG_BUYS)));
+                new ScriptedEngine.OfferSpec("minecraft:emerald", 1, null, 0, "minecraft:wheat", 10, 0, Cmd.MerchantOffers.O_FLAG_SELLS),
+                new ScriptedEngine.OfferSpec("minecraft:emerald", 2, null, 0, "minecraft:leather", 5, 0, Cmd.MerchantOffers.O_FLAG_SELLS),
+                new ScriptedEngine.OfferSpec("minecraft:iron_ingot", 2, null, 0, "minecraft:emerald", 1, 0, Cmd.MerchantOffers.O_FLAG_BUYS)));
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
         Object[] e = new Object[3];
 
@@ -111,7 +109,7 @@ public final class TradeGameTests {
                         RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.AGENT, agent).size() == 3))
                 .thenExecute(() -> {
                     List<Long> ops = new ArrayList<>();
-                    for (StubEngine.Received r : RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.AGENT, agent)) {
+                    for (ScriptedEngine.Received r : RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.AGENT, agent)) {
                         check("the merchant sold", r.aux() == Obs.Trade.MERCHANT_SELLS);
                         check("member 0", r.view().getInt(Obs.Trade.MEMBER) == 0);
                         check("one emerald paid", r.view().getInt(Obs.Trade.COST_A_COUNT) == 1
@@ -147,15 +145,13 @@ public final class TradeGameTests {
     public static void aRobberyThenATradeAreReportedApart(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         Vec3 at = RtsimTests.centre(helper);
-        StubEngine stub = RtsimTests.stubOrSkip(helper);
-        if (stub == null)
-            return;
+        ScriptedEngine stub = RtsimTests.engine();
         stub.spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper), at.x, at.y, at.z, List.of(
-                StubEngine.MemberSpec.plain(0),
-                new StubEngine.MemberSpec(1, 0f, 0, 3, List.of(new StubEngine.ItemSpec(0, "minecraft:wheat", 30))),
-                StubEngine.MemberSpec.plain(2)));
+                ScriptedEngine.MemberSpec.plain(0),
+                new ScriptedEngine.MemberSpec(1, 0f, 0, 3, List.of(new ScriptedEngine.ItemSpec(0, "minecraft:wheat", 30))),
+                ScriptedEngine.MemberSpec.plain(2)));
         stub.merchantOffers(agent, 1, 0, List.of(
-                new StubEngine.OfferSpec("minecraft:emerald", 1, null, 0, "minecraft:wheat", 10, 0, Cmd.MerchantOffers.O_FLAG_SELLS)));
+                new ScriptedEngine.OfferSpec("minecraft:emerald", 1, null, 0, "minecraft:wheat", 10, 0, Cmd.MerchantOffers.O_FLAG_SELLS)));
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
         helper.startSequence()
                 .thenWaitUntil(() -> check("the offers arrived", RtsimTests.embodied(agent).members[0].offers != null))
@@ -174,14 +170,14 @@ public final class TradeGameTests {
                                 && !RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent).isEmpty()))
                 .thenIdle(40) // a cargo pass or two: nothing more may be reported
                 .thenExecute(() -> {
-                    List<StubEngine.Received> changes = RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent);
+                    List<ScriptedEngine.Received> changes = RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent);
                     check("one CARGO_CHANGED: " + changes.size(), changes.size() == 1);
-                    StubEngine.Received c = changes.get(0);
+                    ScriptedEngine.Received c = changes.get(0);
                     int item = Obs.CargoChanged.ITEMS;
                     check("the robbery alone: wheat -5", c.view().getInt(Obs.CargoChanged.ITEM_COUNT) == 1
                             && "minecraft:wheat".equals(stub.javaDictName(c.view().getInt(item + Obs.Item.ITEM)))
                             && c.view().getInt(item + Obs.Item.COUNT) == -5);
-                    StubEngine.Received t = RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.AGENT, agent).get(0);
+                    ScriptedEngine.Received t = RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.AGENT, agent).get(0);
                     check("the trade alone: ten wheat", t.view().getInt(Obs.Trade.RESULT_COUNT) == 10);
                     record("robberyThenTrade", "reported", "CARGO_CHANGED wheat -5, TRADE wheat 10");
                     stub.despawnGroup(agent, 1);
@@ -197,12 +193,10 @@ public final class TradeGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300, batch = "mic_rtsim_p1_screens")
     public static void twoScreensShareOneTreasury(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, "human");
-        StubEngine stub = RtsimTests.stubOrSkip(helper);
-        if (stub == null)
-            return;
+        ScriptedEngine stub = RtsimTests.engine();
         Villager a = farmer(helper, 3.5, 3.5), b = farmer(helper, 7.5, 7.5);
         stub.market(v.id, 0, "minecraft:emerald", 3_000, 20_000, 1, 2, List.of(
-                new StubEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4)));
+                new ScriptedEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4)));
         Player pa = helper.makeMockPlayer(GameType.SURVIVAL), pb = helper.makeMockPlayer(GameType.SURVIVAL);
         helper.startSequence()
                 .thenWaitUntil(() -> check("the market snapshot arrived", RtsimTests.session().phase1.markets.known(v.id) != null))
@@ -234,9 +228,7 @@ public final class TradeGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_treasury")
     public static void sellingDrainsTheTreasuryAndTheOfferCrossesOut(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, "human");
-        StubEngine stub = RtsimTests.stubOrSkip(helper);
-        if (stub == null)
-            return;
+        ScriptedEngine stub = RtsimTests.engine();
         Villager villager = helper.spawn(EntityType.VILLAGER, new Vec3(5.5, 2, 5.5));
         villager.setNoAi(true);
         villager.setVillagerData(villager.getVillagerData().setProfession(VillagerProfession.FARMER).setLevel(1));
@@ -245,8 +237,8 @@ public final class TradeGameTests {
         offers.add(new MerchantOffer(new ItemCost(Items.WHEAT, 20), new ItemStack(Items.EMERALD), 16, 2, 0.05f));
         offers.add(new MerchantOffer(new ItemCost(Items.EMERALD, 1), new ItemStack(Items.BREAD, 6), 16, 1, 0.05f));
         stub.market(v.id, 0, "minecraft:emerald", 3_000, 20_000, 1, 2, List.of(
-                new StubEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4),
-                new StubEngine.GoodSpec("minecraft:bread", 50_000, 40_000, 200_000, 3, 4)));
+                new ScriptedEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4),
+                new ScriptedEngine.GoodSpec("minecraft:bread", 50_000, 40_000, 200_000, 3, 4)));
         Player player = helper.makeMockPlayer(GameType.SURVIVAL);
         long[] lastSeq = {0};
         List<Integer> wheatPerEmerald = new ArrayList<>();
@@ -287,7 +279,7 @@ public final class TradeGameTests {
                 })
                 .thenWaitUntil(() -> check("three TRADEs reached the engine", RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.NODE, v.id).size() == 3))
                 .thenExecute(() -> {
-                    for (StubEngine.Received r : RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.NODE, v.id)) {
+                    for (ScriptedEngine.Received r : RtsimTests.recordsWith(stub, Obs.TRADE, Obs.Trade.NODE, v.id)) {
                         check("the village bought", r.aux() == Obs.Trade.MERCHANT_BUYS);
                         check("a resident, not a puppet", r.view().getLong(Obs.Trade.AGENT) == 0);
                         check("a farmer", "minecraft:farmer".equals(stub.javaDictName(r.view().getInt(Obs.Trade.PROFESSION))));
@@ -295,7 +287,7 @@ public final class TradeGameTests {
                     }
                     // A late snapshot, computed before the sales: the local sales stand.
                     stub.market(v.id, 0, "minecraft:emerald", 3_000, 20_000, 1, 2, List.of(
-                            new StubEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4)));
+                            new ScriptedEngine.GoodSpec("minecraft:wheat", 400_000, 400_000, 50_000, 3, 4)));
                 })
                 .thenIdle(5)
                 .thenExecute(() -> {
@@ -303,7 +295,7 @@ public final class TradeGameTests {
                     check("a snapshot from before the sales did not refill the treasury: " + book.treasury(), book.treasury() == 0);
                     // Walkthrough B3: a caravan bought the surplus and paid; the snapshot includes the sales.
                     stub.market(v.id, lastSeq[0], "minecraft:emerald", 5_000, 20_000, 1, 2, List.of(
-                            new StubEngine.GoodSpec("minecraft:wheat", 300_000, 400_000, 50_000, 3, 4)));
+                            new ScriptedEngine.GoodSpec("minecraft:wheat", 300_000, 400_000, 50_000, 3, 4)));
                 })
                 .thenWaitUntil(() -> check("the refill arrived", RtsimTests.session().phase1.markets.known(v.id).treasury() == 5_000))
                 .thenExecute(() -> {

@@ -70,22 +70,6 @@ public final class RtsimTests {
      * sessions: the native engine on a fresh directory under {@code <game dir>/mic_rtsim-test/}, or a
      * stub with no pages file.
      */
-    /**
-     * The server's engine when it is the stub, for the phase 1 tests whose commands (MARKET,
-     * MERCHANT_OFFERS, WRITE_GOSSIP, PLACE_HOUSE, SPAWN_RESIDENT, SENTIMENT) only the stub sends
-     * so far: rtsim-jni reads the phase 1 records but sends none of them yet (docs/boundary.md §5).
-     * On the native engine the test is skipped: it succeeds at once, and a [gametest] line says so.
-     * Returns null then, and the test returns.
-     */
-    public static StubEngine stubOrSkip(GameTestHelper helper) {
-        if (session().engine() instanceof StubEngine stub)
-            return stub;
-        String test = StackWalker.getInstance().walk(s -> s.skip(1).findFirst()).map(StackWalker.StackFrame::getMethodName).orElse("?");
-        record(test, "skipped", "needs phase 1 commands the native engine does not send yet; run -PrtsimEngine=stub");
-        helper.succeed();
-        return null;
-    }
-
     public static ScriptedEngine freshEngine() {
         ScriptedEngine kind = engine();
         if (kind instanceof NativeEngine)
@@ -164,19 +148,52 @@ public final class RtsimTests {
     /**
      * Adopts a village over the test's arena, under an id no structure start can have, through the same
      * path a generated start takes (VILLAGE_ADOPTED is journaled). Remove it with {@link #forget}.
+     *
+     * <p>The village is <b>scripted</b>: {@link ScriptedEngine#scriptVillage} is ordered before the
+     * adoption, so the engine never mixes its own decisions (markets, houses, residents, sentiment) into
+     * what the test scripts for it. Use {@link #adoptArenaLive} for a village the engine drives.
      */
     public static com.minecraftindustrialcomplex.mic_rtsim.village.Village adoptArena(GameTestHelper helper, String culture) {
         net.minecraft.core.BlockPos lo = helper.absolutePos(net.minecraft.core.BlockPos.ZERO);
         net.minecraft.core.BlockPos hi = helper.absolutePos(new net.minecraft.core.BlockPos(10, 5, 10));
         net.minecraft.world.level.levelgen.structure.BoundingBox box = net.minecraft.world.level.levelgen.structure.BoundingBox
                 .fromCorners(lo, hi);
-        // Random low bits: the GameTest world (and its village registry) is reused between runs (B37).
-        long id = 0x0F00_0000_0000_0000L | (java.util.concurrent.ThreadLocalRandom.current().nextLong() & 0xFFFF_FFFF_0000L)
+        long id = newVillageId();
+        // Before the adoption: the engine must know the village is scripted when it first hears of it.
+        engine().scriptVillage(id);
+        return adopt(helper, id, "minecraft:village_plains", culture, box, net.minecraft.core.BlockPos.containing(centre(helper)));
+    }
+
+    /**
+     * Adopts a village the engine drives itself (no {@link ScriptedEngine#scriptVillage}): the same id
+     * scheme as {@link #adoptArena}, the given structure id (for example {@code minecraft:village_taiga}),
+     * a box of +-{@code halfWidth} blocks around {@code meeting} (y from {@code meeting.y - 2} to
+     * {@code meeting.y + 6}) and margin 0. Remove it with {@link #forget}.
+     */
+    public static com.minecraftindustrialcomplex.mic_rtsim.village.Village adoptArenaLive(GameTestHelper helper, String culture,
+                                                                                         String structure,
+                                                                                         net.minecraft.core.BlockPos meeting,
+                                                                                         int halfWidth) {
+        net.minecraft.world.level.levelgen.structure.BoundingBox box = new net.minecraft.world.level.levelgen.structure.BoundingBox(
+                meeting.getX() - halfWidth, meeting.getY() - 2, meeting.getZ() - halfWidth,
+                meeting.getX() + halfWidth, meeting.getY() + 6, meeting.getZ() + halfWidth);
+        return adopt(helper, newVillageId(), structure, culture, box, meeting);
+    }
+
+    /** Random low bits: the GameTest world (and its village registry) is reused between runs (B37). */
+    private static long newVillageId() {
+        return 0x0F00_0000_0000_0000L | (java.util.concurrent.ThreadLocalRandom.current().nextLong() & 0xFFFF_FFFF_0000L)
                 | (NEXT_VILLAGE.getAndIncrement() & 0xFFFF);
+    }
+
+    private static com.minecraftindustrialcomplex.mic_rtsim.village.Village adopt(GameTestHelper helper, long id, String structure,
+                                                                                  String culture,
+                                                                                  net.minecraft.world.level.levelgen.structure.BoundingBox box,
+                                                                                  net.minecraft.core.BlockPos meeting) {
         RtsimSession s = session();
         com.minecraftindustrialcomplex.mic_rtsim.village.Village v = com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.adoptDirect(
-                s, s.phase1.villages, id, helper.getLevel().dimension(), net.minecraft.resources.ResourceLocation.parse("minecraft:village_plains"),
-                culture, box, net.minecraft.core.BlockPos.containing(centre(helper)), s.gameTime());
+                s, s.phase1.villages, id, helper.getLevel().dimension(), net.minecraft.resources.ResourceLocation.parse(structure),
+                culture, box, meeting, s.gameTime());
         v.margin = 0; // test arenas sit side by side: a village is its own arena and nothing more
         return v;
     }

@@ -8,6 +8,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.body.MemberCapture;
 import com.minecraftindustrialcomplex.mic_rtsim.body.MemberSpawn;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Buffers;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Engine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
@@ -450,8 +451,11 @@ public final class RtsimSession {
      * Materializes a group as one unit: every member is checked, created and tagged first, the group is
      * registered, and only then are the members added to the level, so the join check already knows
      * them. Returns 0, or a {@code SpawnRejected} reason (the caller journals it).
+     *
+     * @param flags {@code Cmd.SpawnGroup} flags: with {@link Cmd.SpawnGroup#FLAG_SURFACE} each member's y
+     *              is the surface at its own x, z, not the anchor's y
      */
-    int spawnGroup(long agent, int epoch, GroupKind kind, ServerLevel level, Vec3 anchor, MemberSpawn[] spawns, long now) {
+    int spawnGroup(long agent, int epoch, GroupKind kind, ServerLevel level, Vec3 anchor, MemberSpawn[] spawns, int flags, long now) {
         PuppetGroup existing = registry.byAgent(agent);
         if (existing != null)
             return Obs.SpawnRejected.ALREADY_EMBODIED;
@@ -460,6 +464,11 @@ public final class RtsimSession {
             at[i] = anchor.add(kind.slots().get(i).offset());
             if (!entitiesTickAt(level, net.minecraft.core.BlockPos.containing(at[i])))
                 return Obs.SpawnRejected.NOT_TICKING;
+            if ((flags & Cmd.SpawnGroup.FLAG_SURFACE) != 0) {
+                // Only now: the chunk is known to be loaded, so the height map exists.
+                int x = net.minecraft.util.Mth.floor(at[i].x), z = net.minecraft.util.Mth.floor(at[i].z);
+                at[i] = new Vec3(at[i].x, level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z), at[i].z);
+            }
         }
         AgentTag tag = new AgentTag(agent, epoch);
         Entity[] bodies = new Entity[at.length];
