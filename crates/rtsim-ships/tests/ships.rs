@@ -483,3 +483,80 @@ proptest! {
         prop_assert!(a.ships.check(&a.world).is_ok());
     }
 }
+
+/// Infrastructure with one unwatched coastal district everywhere: every raid takes ten iron
+/// ingots and five of a good the world does not know.
+struct Coastline {
+    raids: u32,
+}
+
+impl rtsim_ecology::infra::Infrastructure for Coastline {
+    fn districts_near(
+        &mut self,
+        frame: u16,
+        x: i64,
+        z: i64,
+        _r: i64,
+    ) -> Vec<rtsim_ecology::infra::DistrictSite> {
+        vec![rtsim_ecology::infra::DistrictSite {
+            id: rtsim_industry::ids::DistrictId(77),
+            pos: Pos::new(frame, x as i32, z as i32),
+            watched: false,
+            loaded: false,
+        }]
+    }
+    fn raid(
+        &mut self,
+        t: &rtsim_industry::threat::Threat,
+    ) -> Option<rtsim_ecology::infra::RaidOutcome> {
+        assert_eq!(t.source, rtsim_industry::threat::ThreatSource::Bandit);
+        self.raids += 1;
+        Some(rtsim_ecology::infra::RaidOutcome {
+            survived: 1.0,
+            floor: None,
+            untested: true,
+            stolen: rtsim_industry::ids::GoodVec::from_pairs([
+                (rtsim_industry::ids::Good(1), 10),
+                (rtsim_industry::ids::Good(2), 5),
+            ]),
+            destroyed_blocks: 0,
+            machine_lost: false,
+            skipped: None,
+        })
+    }
+    fn good_name(&self, g: rtsim_industry::ids::Good) -> Option<String> {
+        Some(if g.0 == 1 { "iron_ingot" } else { "copper_ingot" }.into())
+    }
+}
+
+#[test]
+fn pirates_raid_coastal_districts_through_the_threat_interface() {
+    let mut t = ShipTunables::default();
+    t.coast_raid_milli = 2_000;
+    let mut c = synth::coastal(61, t);
+    let mut infra = Coastline { raids: 0 };
+    c.ships
+        .run_until(&mut c.world, &mut infra, Tick::from_days(12));
+    assert!(infra.raids > 0);
+    assert_eq!(u64::from(infra.raids), c.ships.stats.coast_raids);
+    let iron = c.world.goods.find("iron_ingot").unwrap();
+    let from = c.ships.ledger.from_districts[&iron];
+    assert_eq!(from, i128::from(infra.raids) * 10_000);
+    assert_eq!(
+        c.ships.ledger.districts_unmapped["copper_ingot"],
+        i64::from(infra.raids) * 5
+    );
+    // What came home is in the haven's market, booked as players' goods coming in.
+    let landed = c.ships.ledger.districts_landed.get(&iron).copied().unwrap_or(0);
+    let aboard: i128 = c
+        .ships
+        .havens
+        .iter()
+        .flat_map(|h| h.ships.iter())
+        .filter_map(|&p| c.ships.ship(p)?.pirate.as_ref())
+        .map(|p| i128::from(p.district_loot.get(&iron).copied().unwrap_or(0)))
+        .sum();
+    assert_eq!(landed + aboard, from);
+    assert!(landed > 0, "a raid's loot reached the haven");
+    c.ships.check(&c.world).expect("conserved");
+}

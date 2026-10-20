@@ -6,4 +6,5 @@ pub mod industry;
 pub mod memory;
 pub mod phase1;
 pub mod quiet;
+pub mod ships;
 pub mod trace;

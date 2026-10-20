@@ -1690,7 +1690,12 @@ impl Ships {
                     .below(1000);
                 if (roll as i64) < share {
                     let plan = self.ships[p].plan;
-                    let when = (at + self.tun.raid_delay_ticks).min(tick_of(fix.times.arrive));
+                    // The pirates strike while the ship is still in view: by the raid delay, or
+                    // by the time it takes to sail half the view, whichever is sooner.
+                    let speed = self.tun.medium(self.ships[id].medium).speed.max(1e-6);
+                    let half_view = (f64::from(self.tun.view_radius) / speed / 2.0) as u64;
+                    let delay = self.tun.raid_delay_ticks.min(half_view.max(1));
+                    let when = (at + delay).min(tick_of(fix.times.arrive));
                     self.schedule(
                         when,
                         Ev::Raid {
@@ -1845,6 +1850,10 @@ impl Ships {
     /// them until it docks. Idempotent per voyage. Returns false when it cannot (docked between
     /// voyages with nothing booked, or not a merchant).
     pub fn promote(&mut self, w: &mut World, id: ShipId, at: Tick) -> bool {
+        self.promote_with(w, id, at, true)
+    }
+
+    fn promote_with(&mut self, w: &mut World, id: ShipId, at: Tick, may_raid: bool) -> bool {
         let Some(x) = self.ships.get(id) else {
             return false;
         };
@@ -1894,7 +1903,55 @@ impl Ships {
                 voyage: fix.voyage,
             },
         );
+        if may_raid {
+            self.maybe_raid_row(id, fix, at);
+        }
         true
+    }
+
+    /// A merchant row (its cargo out of the flow) on a hunted lane meets the pirates with the
+    /// lane's hazard as the chance, in the middle of its cruise: watched, the plugin plays the
+    /// fight; not, Lanchester resolves it.
+    fn maybe_raid_row(&mut self, id: ShipId, fix: timetable::Fix, at: Tick) {
+        let Some(s) = self.ships[id].service else {
+            return;
+        };
+        let lane = self.services[s as usize].legs[fix.leg].hop.lane;
+        let Some(t) = self.threats.get(&lane) else {
+            return;
+        };
+        if t.share <= 0 {
+            return;
+        }
+        let Some(p) = t.hunters.iter().copied().max_by(|a, b| {
+            self.strength(*a)
+                .total_cmp(&self.strength(*b))
+                .then(b.cmp(a))
+        }) else {
+            return;
+        };
+        let roll = StreamKey::new(self.seed, SYS_RAID, self.ships[id].seed ^ 0x524F_5753)
+            .slot(fix.voyage)
+            .below(1000);
+        if (roll as i64) >= t.share {
+            return;
+        }
+        let when = tick_of((fix.times.cruise + fix.times.approach) / 2).max(at + 1);
+        if when.0 as i64 >= fix.times.arrive {
+            return;
+        }
+        let plan = self.ships[p].plan;
+        let player = self.players.keys().next().copied().unwrap_or(ActorId::NULL);
+        self.schedule(
+            when,
+            Ev::Raid {
+                pirate: p,
+                victim: id,
+                voyage: fix.voyage,
+                plan,
+                player,
+            },
+        );
     }
 
     fn arrive(&mut self, w: &mut World, id: ShipId, voyage: u64, at: Tick) {
@@ -2511,7 +2568,7 @@ impl Ships {
             self.stats.stale += 1;
             return;
         }
-        self.promote(w, victim, at);
+        self.promote_with(w, victim, at, false);
         if self.ships[victim].embodied {
             // Watched: the pirates come into view beside it (or, already in view, turn on it),
             // and the plugin plays the fight.
@@ -2563,9 +2620,13 @@ impl Ships {
                 self.ship_name(victim),
                 out.survived * 100.0,
                 out.lanchester * 100.0,
-                out.floor
-                    .map(|f| format!(", floored by a real fight at {:.0}%", f * 100.0))
-                    .unwrap_or_default()
+                match out.floor {
+                    Some(f) if f > out.lanchester => {
+                        format!(", raised by a real fight where pirates kept {:.0}%", f * 100.0)
+                    }
+                    Some(f) => format!(", a real fight at {:.0}% does not bind", f * 100.0),
+                    None => String::new(),
+                }
             ),
         );
     }
@@ -2626,7 +2687,9 @@ impl Ships {
         }
         if captured {
             let h = self.haven_of(p).expect("a pirate");
-            let joined = vcrew * self.tun.crew_conversion_milli / 1000;
+            // The beaten crew surrendered before the last man: some of them change sides (M2).
+            let standing = vcrew.max((vc * self.tun.surrender_share_milli).div_ceil(1000));
+            let joined = (standing * self.tun.crew_conversion_milli).div_ceil(1000);
             self.havens[h as usize].crew_pool += joined;
             self.stats.captures += 1;
             self.lose_merchant(w, victim, at);

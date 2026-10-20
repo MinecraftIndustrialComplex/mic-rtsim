@@ -107,6 +107,9 @@ pub struct ShipTunables {
     /// Of a captured merchant crew, the share that joins the pirates (M2's crew conversion).
     /// PLACEHOLDER 500 thousandths.
     pub crew_conversion_milli: u32,
+    /// A beaten crew surrenders with this share still standing, so a capture leaves men to
+    /// convert (the square law alone fights to the last). PLACEHOLDER 500 thousandths.
+    pub surrender_share_milli: u32,
     /// A pirate's hold, chest slots: a full hold ends the hunt. PLACEHOLDER 27.
     pub pirate_hold_slots: u32,
     /// Ticks after a ship is seen before its pirates strike (they come into view). PLACEHOLDER 400.
@@ -206,6 +209,7 @@ impl Default for ShipTunables {
             loot_share_milli: 600,
             capture_at: 0.5,
             crew_conversion_milli: 500,
+            surrender_share_milli: 500,
             pirate_hold_slots: 27,
             raid_delay_ticks: 400,
             captain_lifespan_ticks: 200 * 24_000,
