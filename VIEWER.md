@@ -627,6 +627,12 @@ overlay; at 16k, cold tiles take 3 to 26 ms on average by layer, 48 ms at worst,
 | **HABITAT** (always there) | 64 blocks | every cell rtsim sampled (all 16 of its chunks loaded) | nothing extra: the engine already holds it (about 6 KB a region) | water, ice, biome, heights; coarse but always present with rtsim |
 | Region files | 1 block | every generated chunk | the whole `region/` folder (182 MB, 174 MiB, in the MICTest save) parsed with chunk NBT; colours need a table exported from the game, since region files hold block states, not colours | heavy; worth it only if Surveyor leaves the pack |
 
+**Tile cache location:** Deep Time's tiles.rs caches under the run's own folder
+(`<run>/tiles/v<RENDER_VERSION>/...`). On a play world the bake sits inside the world folder
+(`planet/deeptime`), so a sidecar caching there would put tile PNGs into the server's world and its
+backups. The sidecar keeps its cache outside the world folder, keyed by the bake's identity (and, on
+other worlds, the Surveyor and HABITAT inputs' identity).
+
 D4: Surveyor is a pack mod, so it is an optional base-map source: the core falls back to HABITAT when
 `data/surveyor/` is absent. Antique Atlas stores nothing on the server (it reads Surveyor's client
 data). Distant Horizons' server database holds block states, not colours, in an internal format; it
@@ -914,17 +920,29 @@ For Deep Time's coordinator to review.
    (`zRange`, `wrapX`, `canonical`, `latLon`); `fold` is `PetroffGuyou`'s only, and the core needs
    only `canonical`. `drawGrid`'s Lambert-only formulas (an
    inference from the code) become the projection's optional `grid` function.
-3. **Tiles:** `BakeMap` (in `deeptime-cli/src/watch/worldmap.rs`) moves into a library crate
-   (deeptime-viewer is the natural one) and implements mic-viewer's `TileSource`, so rtsim's sidecar
-   can draw a Deep Time world's tiles. The disk cache part of tiles.rs moves to mic-viewer.
+3. **Tiles:** `BakeMap` (in `deeptime-cli/src/watch/worldmap.rs`, most of its 1,924 lines) imports
+   `deeptime_core` (`climate::{glaciers, koppen, snapshot}`, `satellite`, `world::Field`) as well as
+   `deeptime_format`, so it is not a light move into deeptime-viewer, which depends today only on
+   deeptime-format, png, serde and serde_json. Two shapes (Deep Time's review, 2026-10-20):
+   - **(a, default) a small new crate, e.g. `deeptime-tiles`,** holding `BakeMap` behind mic-viewer's
+     `TileSource` and depending on deeptime-core and deeptime-format, so deeptime-viewer stays light.
+     rtsim's sidecar then compiles and links all of deeptime-core to draw a Deep Time world's tiles.
+   - **(b) no link at all:** the sidecar asks `deeptime watch` for tiles over loopback, and Deep Time
+     ships no Rust API to rtsim.
+   `BakeMap`'s Rust tests (5 in `watch/worldmap.rs`, 3 in `tiles.rs`) move with it. The disk cache
+   part of tiles.rs moves to mic-viewer. `sections::route` also takes `&Workbench`, so a registered
+   route gets a state handle, not only the path and query. Pointing `BakeMap` at a play world's bake
+   (`planet/deeptime` inside the world folder) has not been tried: UNVERIFIED.
 4. **http.rs** gives way to mic-viewer's server: Deep Time registers its routes; `tiles::route` and
    `sections::route` already fit. Two behaviour changes come with it: the Host check on GETs (by name,
    any port), and loopback only unless `--allow-tailnet` (the `tailscale serve` notes in http.rs,
    `tools/viewer/mac-watch.sh` and STATUS.md, and the m6 tailnet URL in CLAUDE.md, would follow).
 5. **SSE:** `stream_events` moves as a generic writer; `live.rs` stays Deep Time's.
 6. **Tests stay:** projection-check.js, deposits-check.js, phase1_viewer_check.py and shot.py, run
-   against Deep Time's binary serving the shared map. worldmap.js has no test today; mic-viewer adds
-   its own checks.
+   against Deep Time's binary serving the shared map. worldmap.js is tested today by
+   `tools/viewer/deposits_shots.py`, which opens the Final world view by clicking `#worldbtn`, checks
+   `#worldview` shows and closes it; Deep Time's page keeps those ids when they become parameters, or
+   that shot test changes with the move. mic-viewer adds its own checks.
 7. **A dependency:** mic-viewer pinned by git commit.
 8. **Optional:** an `EventSource` over its event log for the shared timeline.
 9. **P1-19 is untouched:** nothing new runs during a bake. The shared server is the code Deep Time
