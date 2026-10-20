@@ -12,7 +12,7 @@ use rtsim_kernel::journal::OpId;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use crate::threat::ThreatClass;
 
-/// Why a district cannot be learned (INDUSTRY.md §6). The ledger shows the reason in words.
+/// Why a district cannot be learned (INDUSTRY.md §6). The operator's debug output shows the reason in words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NotLearnable {
     RotationCrossesBoundary,
@@ -398,9 +398,6 @@ pub enum Obs {
     },
     SweepEnd(SweepEnd),
     DepositSample(DepositSample),
-    LedgerRequest {
-        district: DistrictId,
-    },
     /// Whether a player is near enough to fight for real (C18, INDUSTRY.md §13.1): sent when it
     /// changes and every few seconds while it holds (latest-wins).
     Watched {
@@ -501,7 +498,6 @@ impl Obs {
             Obs::StockSample { .. }
                 | Obs::SweepEnd(_)
                 | Obs::DepositSample(_)
-                | Obs::LedgerRequest { .. }
                 | Obs::Watched { .. }
                 | Obs::Approach { .. }
         )

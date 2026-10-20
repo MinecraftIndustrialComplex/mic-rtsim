@@ -104,6 +104,13 @@ public interface IndustryPlugin {
     default void tick(Industry industry, long now) {}
 
     /**
+     * The industry module was switched off and is on again (U10): the engine knows nothing of what was
+     * sent before, so send again whatever this plugin keeps the engine told (a power link between
+     * districts), as at a session start. Runs once, after the core's districts are announced.
+     */
+    default void announce(Industry industry) {}
+
+    /**
      * Reads and writes an inventory of a kind this plugin declared (a postbox, whose packages are
      * counted by their contents), or null to use the capabilities.
      */

@@ -231,17 +231,20 @@ public final class DragonGameTests {
      * Two dragons another path spawned: a spawn-egg one and a natural one (In Control's spawner spawns
      * with NATURAL). Both are reported DRAGON_UNTAGGED with their spawn kind and Ice and Fire's state;
      * the engine adopts the egg dragon (DRAGON_ADOPT: tagged, persistence-required, DRAGON_MATERIALIZED
-     * naming it) and discards the natural one (DRAGON_DISCARD: removed, COMMAND_RESULT applied). On the
-     * native engine the engine decides (R18); on the stub the test answers as the engine would.
+     * naming it) and leaves the natural one alone (R18 as amended by OG-1 and P13: In Control's dragons
+     * are the oil gate until the sim version is measured; adopt_natural_dragons is false): it is never
+     * adopted, discarded or tagged, and stays a plain Ice and Fire mob that is saved as usual. On the
+     * native engine the engine decides; on the stub the test answers as the engine would (the egg only).
      */
     @GameTest(template = DragonKit.ARENA, timeoutTicks = 400, batch = "dragon_untagged")
-    public static void untaggedDragonsAreAdoptedOrDiscarded(GameTestHelper helper) {
-        String test = "untaggedDragonsAreAdoptedOrDiscarded";
+    public static void untaggedEggDragonIsAdoptedAndNaturalOneLeftAlone(GameTestHelper helper) {
+        String test = "untaggedEggDragonIsAdoptedAndNaturalOneLeftAlone";
         ServerLevel level = helper.getLevel();
         BlockPos p = BlockPos.containing(DragonKit.centre(helper));
         Entity egg = fire().spawn(level, p.offset(-2, 0, 0), MobSpawnType.SPAWN_EGG);
         Entity natural = fire().spawn(level, p.offset(2, 0, 0), MobSpawnType.NATURAL);
         check("both spawned", egg instanceof DragonBaseEntity && natural instanceof DragonBaseEntity);
+        boolean naturalPersistent = ((DragonBaseEntity) natural).isPersistenceRequired();
         long stubAgent = DragonKit.newAgent();
         long[] adopted = new long[2];
 
@@ -268,11 +271,21 @@ public final class DragonGameTests {
                     record(test, "untagged", "egg dragon " + d.getVariant() + " age " + d.getAgeInTicks() + ", natural dragon");
                     if (!DragonKit.nativeEngine()) {
                         DragonKit.adopt(egg.getUUID(), stubAgent, 1, null);
-                        DragonKit.discard(natural.getUUID(), 1);
                     }
                 })
                 .thenWaitUntil(() -> check("the egg dragon was adopted", RtsimApi.isPuppet(egg) && bridge().agentOf(egg) != 0))
-                .thenWaitUntil(() -> check("the natural dragon was discarded", natural.isRemoved()))
+                // The engine answers in the step that adopted the egg dragon; give a discard time to show.
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    DragonBaseEntity n = (DragonBaseEntity) natural;
+                    check("the natural dragon was left alone (still in the world)", !natural.isRemoved() && natural.isAlive());
+                    check("no tag, not a puppet, no agent", !RtsimAttachments.isTagged(natural) && !RtsimApi.isPuppet(natural)
+                            && bridge().agentOf(natural) == 0);
+                    check("saving unchanged: still saved, persistence as spawned",
+                            n.shouldBeSaved() && n.isPersistenceRequired() == naturalPersistent && !n.isAgingDisabled());
+                    check("no DRAGON_MATERIALIZED names it", DragonKit.received(
+                            DragonRecords.DRAGON_MATERIALIZED, DragonRecords.Materialized.ENTITY_MOST, natural.getUUID().getMostSignificantBits()).isEmpty());
+                })
                 .thenExecute(() -> {
                     long agent = bridge().agentOf(egg);
                     adopted[0] = agent;
@@ -283,11 +296,8 @@ public final class DragonGameTests {
                     adopted[1] = m.get(0).view().getInt(DragonRecords.Materialized.EPOCH);
                     DragonBaseEntity d = (DragonBaseEntity) egg;
                     check("adopted: persistence required, aging the engine's, never saved", d.isPersistenceRequired() && d.isAgingDisabled() && !d.shouldBeSaved());
-                    check("the discard was answered APPLIED", engine().received(Obs.COMMAND_RESULT).stream().anyMatch(r -> !r.skipped()
-                            && r.aux() == Obs.CommandResult.APPLIED && r.view().getLong(Obs.CommandResult.OP_ID) == 0L
-                            && r.obsSeq() > DragonKit.untagged(natural.getUUID()).get(0).obsSeq()));
                     record(test, "answers", "egg dragon adopted as " + Long.toHexString(agent) + " epoch " + adopted[1]
-                            + ", natural dragon discarded (" + (DragonKit.nativeEngine() ? "the engine decided" : "scripted") + ")");
+                            + ", natural dragon left alone (" + (DragonKit.nativeEngine() ? "the engine decided" : "scripted") + ")");
                     DragonKit.depart(agent, (int) adopted[1], 1, 20, DragonKit.centre(helper).add(-400, 40, 0));
                 })
                 .thenWaitUntil(() -> check("the adopted dragon leaves", !about(DragonRecords.DRAGON_DEMATERIALIZED, adopted[0]).isEmpty()))

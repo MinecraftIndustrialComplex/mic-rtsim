@@ -294,35 +294,6 @@ public final class IndustryKit {
         });
     }
 
-    public record LedgerGood(String good, long perHour, long sinceStart) {}
-
-    /** Scripts an IND_LEDGER reply. */
-    public static void ledger(long district, int state, int freeze, long nextBreakpoint, int nextKind, String nextGood, long since, List<LedgerGood> goods) {
-        script(out -> {
-            int[] ids = new int[goods.size()];
-            for (int i = 0; i < goods.size(); i++)
-                ids[i] = out.dict(IndRecords.DICT_GOOD, goods.get(i).good());
-            int next = nextGood == null ? 0 : out.dict(IndRecords.DICT_GOOD, nextGood);
-            int at = out.reserve(IndRecords.IND_LEDGER, IndRecords.Ledger.size(goods.size()), goods.size());
-            if (at < 0)
-                return;
-            ByteBuffer b = out.buffer();
-            b.putLong(at + IndRecords.Ledger.DISTRICT, district);
-            b.putInt(at + IndRecords.Ledger.STATE, state);
-            b.putInt(at + IndRecords.Ledger.FREEZE, freeze);
-            b.putLong(at + IndRecords.Ledger.NEXT_BREAKPOINT, nextBreakpoint);
-            b.putInt(at + IndRecords.Ledger.NEXT_KIND, nextKind);
-            b.putInt(at + IndRecords.Ledger.NEXT_GOOD, next);
-            b.putLong(at + IndRecords.Ledger.SINCE, since);
-            for (int i = 0; i < goods.size(); i++) {
-                int g = at + IndRecords.Ledger.GOODS + i * IndRecords.Ledger.GOOD;
-                b.putInt(g + IndRecords.Ledger.G_GOOD, ids[i]);
-                b.putLong(g + IndRecords.Ledger.G_PER_HOUR, goods.get(i).perHour());
-                b.putLong(g + IndRecords.Ledger.G_SINCE_START, goods.get(i).sinceStart());
-            }
-        });
-    }
-
     /** COMMAND_RESULTs for an op id, statuses in order. */
     public static List<Integer> commandResults(long opId) {
         List<Integer> out = new ArrayList<>();
