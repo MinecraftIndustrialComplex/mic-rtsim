@@ -196,13 +196,20 @@ fn step(
             } else {
                 gn.price
             };
+            let mut want = snap.want_from(node_index, g, m.rules.split_among_suppliers);
+            // A ships' lane carries at most its holds' capacity (rtsim-ships, overnight choice
+            // T4); roads have no cap.
+            if let Some(room) = dir.room_for(goods, g, e.cap_slot_milli) {
+                want = want.min(room);
+            }
             cands.push(Candidate {
                 dir: *d,
                 margin,
-                want: snap.want_from(node_index, g, m.rules.split_among_suppliers),
+                want,
                 quote,
             });
         }
+        share_destinations(&mut cands, edges);
         let wants: Vec<(DirRef, Amount)> = cands.iter().map(|c| (c.dir, c.want)).collect();
         let mut total = 0;
         for gr in allocate_with(exportable, cands, m.rules.ration) {
@@ -489,6 +496,51 @@ fn step(
 /// target) and we can still store it (not past twice our target). Goods we need come first, then
 /// the one we value most; a cash-refusing market takes goods it can trade on, so a structural
 /// surplus keeps goods moving instead of starving its neighbours (overnight choice E21).
+/// Two edges from this market to one destination (a road and a ships' lane, overnight choice T5)
+/// share what the destination wants instead of each sending all of it: the better margin first
+/// (ties by direction), each up to its own want (a lane's is capped by its holds). One edge per
+/// destination, as every phase 1 world has, is left exactly as it was.
+fn share_destinations(cands: &mut [Candidate], edges: &[rtsim_travel::Edge]) {
+    if cands.len() < 2 {
+        return;
+    }
+    let to = |c: &Candidate| edges[c.dir.edge as usize].dirs[c.dir.dir as usize].to;
+    let mut order: Vec<usize> = (0..cands.len()).collect();
+    order.sort_by(|&a, &b| {
+        to(&cands[a])
+            .cmp(&to(&cands[b]))
+            .then(cands[b].margin.cmp(&cands[a].margin))
+            .then(cands[a].dir.cmp(&cands[b].dir))
+    });
+    let mut k = 0;
+    while k < order.len() {
+        let dest = to(&cands[order[k]]);
+        let mut end = k + 1;
+        while end < order.len() && to(&cands[order[end]]) == dest {
+            end += 1;
+        }
+        if end - k > 1 {
+            // What the destination wants from us is the same on every edge (its news): the
+            // largest want stands for it.
+            let mut left = order[k..end]
+                .iter()
+                .map(|&i| cands[i].want)
+                .max()
+                .unwrap_or(0);
+            for &i in &order[k..end] {
+                let c = &mut cands[i];
+                if c.margin < 0 {
+                    continue;
+                }
+                let take = c.want.min(left).max(0);
+                c.want = take;
+                left -= take;
+            }
+        }
+        k = end;
+    }
+}
+
 fn barter_good_for(m: &Market, snap: &Snapshot, goods: &rtsim_trade::Goods) -> Option<GoodId> {
     goods
         .ids()

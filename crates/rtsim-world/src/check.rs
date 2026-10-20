@@ -64,6 +64,9 @@ impl World {
         for (g, a) in &self.outside.destroyed {
             book.burn(kind(*g), *a);
         }
+        for (g, a) in &self.outside.held {
+            seen.add(kind(*g), *a);
+        }
         (seen, book)
     }
 
@@ -211,6 +214,7 @@ impl World {
             &self.outside.player_in,
             &self.outside.player_out,
             &self.outside.destroyed,
+            &self.outside.held,
         ] {
             for (g, a) in map {
                 w.u16(g.0);

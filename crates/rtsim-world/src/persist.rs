@@ -497,6 +497,7 @@ impl World {
         put_i128_map(&mut w, &self.outside.player_in);
         put_i128_map(&mut w, &self.outside.player_out);
         put_i128_map(&mut w, &self.outside.destroyed);
+        put_i128_map(&mut w, &self.outside.held);
         let s = &self.stats;
         for v in [
             s.market_events,
@@ -623,6 +624,7 @@ impl World {
             player_in: get_i128_map(r)?,
             player_out: get_i128_map(r)?,
             destroyed: get_i128_map(r)?,
+            held: get_i128_map(r)?,
         };
         let stats = Stats {
             market_events: r.var_u64()?,
