@@ -135,7 +135,13 @@ impl Decode for Settlements {
             }
             grid.insert(cell, ids);
         }
-        Ok(Settlements { rows, by_key, grid })
+        Ok(Settlements {
+            rows,
+            by_key,
+            grid,
+            // Session state, handed over again by the engine host (topology choice TP6).
+            topo: rtsim_space::topology::all_flat(),
+        })
     }
 }
 

@@ -912,13 +912,15 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 wire::u64_at(b, obs::player::UUID_MOST),
                 wire::u64_at(b, obs::player::UUID_LEAST),
             );
+            let frame = rec.aux as u16;
+            // Canonical at the door (topology choice TP4).
+            let (x, z) = st.topology.shared.of(frame).canonical_point(
+                wire::f64_at(b, obs::player::X),
+                wire::f64_at(b, obs::player::Z),
+            );
             let seen = Seen {
-                frame: rec.aux as u16,
-                pos: [
-                    wire::f64_at(b, obs::player::X),
-                    wire::f64_at(b, obs::player::Y),
-                    wire::f64_at(b, obs::player::Z),
-                ],
+                frame,
+                pos: [x, wire::f64_at(b, obs::player::Y), z],
                 at: st.game_time,
             };
             st.phase1.players.insert(key, seen);
@@ -926,15 +928,18 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
         obs::PUPPET_STATE if rec.size() >= obs::puppet_state::SIZE => {
             let agent = wire::u64_at(b, obs::puppet_state::AGENT);
             let epoch = wire::u32_at(b, obs::puppet_state::EPOCH);
+            let topo = st.topology.shared.clone();
             if rec.aux == 0
                 && let Some(p) = st.phase1.puppets.get_mut(&agent)
                 && p.epoch == epoch
             {
-                p.pos = [
+                // A puppet the frameworks folded across a seam is where it is (TP4, TP11): a
+                // short step, never a teleport.
+                let (x, z) = topo.of(p.frame).canonical_point(
                     wire::f64_at(b, obs::puppet_state::X),
-                    wire::f64_at(b, obs::puppet_state::Y),
                     wire::f64_at(b, obs::puppet_state::Z),
-                ];
+                );
+                p.pos = [x, wire::f64_at(b, obs::puppet_state::Y), z];
             }
         }
         obs::VILLAGE_CENSUS if rec.size() >= obs::village_census::ENTRIES => {
@@ -1031,12 +1036,19 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             let key = wire::u64_at(b, obs::base::BASE);
             let player = uuid_at(b, obs::base::PLAYER_MOST);
             let input = if rec.aux == obs::base::MARKED {
-                Input::MarkBase {
-                    key,
-                    frame: wire::u32_at(b, obs::base::DIM) as u16,
-                    x: wire::f64_at(b, obs::base::X).floor() as i32,
-                    z: wire::f64_at(b, obs::base::Z).floor() as i32,
-                    player,
+                {
+                    let frame = wire::u32_at(b, obs::base::DIM) as u16;
+                    let (x, z) = st.topology.shared.of(frame).canonical_i32(
+                        wire::f64_at(b, obs::base::X).floor() as i32,
+                        wire::f64_at(b, obs::base::Z).floor() as i32,
+                    );
+                    Input::MarkBase {
+                        key,
+                        frame,
+                        x,
+                        z,
+                        player,
+                    }
                 }
             } else {
                 Input::UnmarkBase { key, player }
@@ -1679,6 +1691,17 @@ fn dist2(a: [f64; 3], x: f64, z: f64) -> f64 {
     (a[0] - x).powi(2) + (a[2] - z).powi(2)
 }
 
+/// [`dist2`] through every seam (topology choice TP2): the plane distance on a flat frame.
+fn tdist2(t: &rtsim_space::Topology, a: [f64; 3], x: f64, z: f64) -> f64 {
+    if t.is_flat() {
+        return dist2(a, x, z);
+    }
+    t.dist_sq(
+        (a[0].floor() as i64, a[2].floor() as i64),
+        (x.floor() as i64, z.floor() as i64),
+    ) as f64
+}
+
 fn caravan_agent(id: CaravanId) -> u64 {
     AGENT_P1 | identity_op(id.to_bits(), 0x5031)
 }
@@ -1816,9 +1839,11 @@ fn spawn_caravan(
 /// The end of caravan `id`'s road its puppet stands at (within `AT_MARKET_RADIUS`), if any.
 fn market_at(l: &Link, id: CaravanId, frame: u16, pos: [f64; 3]) -> Option<usize> {
     let car = l.world.caravans.get(id)?;
+    let t = l.world.topo(frame);
     [car.leg.to, car.leg.from].into_iter().find(|&n| {
         let p = l.world.nodes[n].pos;
-        p.frame == frame && dist2(pos, f64::from(p.x), f64::from(p.z)) <= AT_MARKET_RADIUS.powi(2)
+        p.frame == frame
+            && tdist2(t, pos, f64::from(p.x), f64::from(p.z)) <= AT_MARKET_RADIUS.powi(2)
     })
 }
 
@@ -1990,6 +2015,7 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
 fn interest(st: &mut State) {
     let gt = st.game_time;
     let wnow = st.phase1.world.now().0;
+    let topo = st.topology.shared.clone();
     st.phase1.players.retain(|_, s| gt - s.at <= PLAYER_STALE);
     st.phase1.backoff.retain(|_, until| *until > wnow);
 
@@ -2002,8 +2028,9 @@ fn interest(st: &mut State) {
             if p.state != PState::Embodied || p.pinned {
                 continue;
             }
+            let t = topo.of(p.frame);
             let seen = l.players.values().any(|s| {
-                s.frame == p.frame && dist2(s.pos, p.pos[0], p.pos[2]) <= DESPAWN_RADIUS.powi(2)
+                s.frame == p.frame && tdist2(t, s.pos, p.pos[0], p.pos[2]) <= DESPAWN_RADIUS.powi(2)
             });
             let (moved_on, target) = match p.of {
                 PuppetOf::Caravan(bits) => match l.world.caravans.get(Handle::from_bits(bits)) {
@@ -2025,18 +2052,19 @@ fn interest(st: &mut State) {
                     )
                 }
             };
-            if moved_on || !seen {
+            // The target's image nearest the puppet (TP11); one past an edge_stop seam means
+            // the group goes before any body would cross it (TP12).
+            let here = (p.pos[0].floor() as i64, p.pos[2].floor() as i64);
+            let target = target.map(|(x, z)| t.embodied_toward(here, (i64::from(x), i64::from(z))));
+            let blocked = matches!(target, Some(None));
+            if moved_on || !seen || blocked {
                 p.state = PState::Despawning;
                 despawn.push((agent, p.epoch));
-            } else if let Some((x, z)) = target
+            } else if let Some(Some((x, z))) = target
                 && (p.last_steer == i64::MIN || gt - p.last_steer >= STEER_TICKS)
             {
                 p.last_steer = gt;
-                steer.push((
-                    agent,
-                    p.epoch,
-                    [f64::from(x) + 0.5, p.pos[1], f64::from(z) + 0.5],
-                ));
+                steer.push((agent, p.epoch, [x as f64 + 0.5, p.pos[1], z as f64 + 0.5]));
             }
         }
         for (agent, epoch) in despawn {
@@ -2103,7 +2131,8 @@ fn interest(st: &mut State) {
             .values()
             .filter(|p| {
                 p.frame == s.frame
-                    && dist2(s.pos, p.pos[0], p.pos[2]) <= f64::from(SPAWN_RADIUS).powi(2)
+                    && tdist2(topo.of(s.frame), s.pos, p.pos[0], p.pos[2])
+                        <= f64::from(SPAWN_RADIUS).powi(2)
             })
             .count();
         if near_mine >= MAX_PER_PLAYER {
@@ -2116,7 +2145,13 @@ fn interest(st: &mut State) {
             if near_mine + spawned >= MAX_PER_PLAYER {
                 break;
             }
-            let (x, z) = v.pos();
+            // The image on the player's side (TP11); nothing across an edge_stop seam (TP12).
+            let Some((x, z)) = topo
+                .of(s.frame)
+                .embodied_toward((pos.x.into(), pos.z.into()), v.pos())
+            else {
+                continue;
+            };
             let at = [x as f64 + 0.5, s.pos[1], z as f64 + 0.5];
             let ok = match v {
                 Visible::Traveller { traveller, .. } => {
@@ -2176,12 +2211,17 @@ fn markets(st: &mut State) {
     // The villages just traded at, and those in the cells around a player.
     let mut candidates: BTreeSet<u64> = l.market_dirty.clone();
     let r = MARKET_RADIUS.ceil() as i64;
+    let topo = l.world.legs.topologies().clone();
     for s in l.players.values() {
         let (x, z) = (s.pos[0].floor() as i64, s.pos[2].floor() as i64);
-        for cx in (x - r).div_euclid(MARKET_CELL)..=(x + r).div_euclid(MARKET_CELL) {
-            for cz in (z - r).div_euclid(MARKET_CELL)..=(z + r).div_euclid(MARKET_CELL) {
-                if let Some(v) = l.cells.get(&(s.frame, cx, cz)) {
-                    candidates.extend(v.iter().copied());
+        // Across seams (TP8): the square folded onto canonical cells.
+        for part in topo.of(s.frame).rects_near(x, z, r) {
+            let (x0, z0, x1, z1) = part.grid_cells(MARKET_CELL);
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    if let Some(v) = l.cells.get(&(s.frame, cx, cz)) {
+                        candidates.extend(v.iter().copied());
+                    }
                 }
             }
         }
@@ -2200,7 +2240,12 @@ fn markets(st: &mut State) {
         let near = l.market_dirty.contains(&key)
             || l.players.values().any(|s| {
                 s.frame == n.pos.frame
-                    && dist2(s.pos, f64::from(n.pos.x), f64::from(n.pos.z)) <= MARKET_RADIUS.powi(2)
+                    && tdist2(
+                        topo.of(s.frame),
+                        s.pos,
+                        f64::from(n.pos.x),
+                        f64::from(n.pos.z),
+                    ) <= MARKET_RADIUS.powi(2)
             });
         if !near {
             continue;
