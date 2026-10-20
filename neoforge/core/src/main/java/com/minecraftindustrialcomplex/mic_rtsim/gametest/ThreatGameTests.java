@@ -132,7 +132,10 @@ public final class ThreatGameTests {
                     for (int x = 0; x < 16; x += 4)
                         for (int z = 0; z < 16; z += 4)
                             if (Math.abs(x - 8) > 3 || Math.abs(z - 8) > 3)
-                                set(helper, inChunk(helper, x, z), Blocks.TORCH.defaultBlockState());
+                                set(helper, inChunk(helper, x, z).above(), Blocks.TORCH.defaultBlockState());
+                })
+                .thenIdle(40) // the light engine spreads the torches' light over the next ticks
+                .thenExecute(() -> {
                     n[0] = surveyCount(id[0]);
                     ind().threats().surveySoon(ind().district(id[0]));
                 })
