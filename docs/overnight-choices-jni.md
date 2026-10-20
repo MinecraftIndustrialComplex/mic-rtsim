@@ -60,6 +60,12 @@ same night (commit `c587876`); findings 1, 2, 5 and 7 are in J8, J11, J13 and J2
 | J32 | An order unit whose names do not fit a DICT record, or a resend that can never fit a command buffer, is dropped with an error. | It would otherwise panic the step or hold every later command back forever (finding 8). |
 | J33 | Tests can fail an engine on purpose: a `FAIL` order (native, TEST mode only) and `ScriptedEngine.failForTest()`; GameTest `aFailedEngineStopsTheBridgeForTheSession` runs on both engines. | The failure path (J8) is otherwise untestable. |
 
+## Meeting phase 1 on the Minecraft side
+
+| # | Choice | Reason |
+|---|---|---|
+| J34 | After merging phase 1's Java side: its GameTests that only observe run on `ScriptedEngine` (so on the native engine too); the 11 that need phase 1 commands only the stub sends (MARKET, MERCHANT_OFFERS, WRITE_GOSSIP, PLACE_HOUSE, SPAWN_RESIDENT, SENTIMENT) are skipped on the native engine with a `[gametest]` line (`RtsimTests.stubOrSkip`), and run in full with `-PrtsimEngine=stub`. The plugins' GameTest servers load mic_native and take the same engine switch. | Implementing phase 1's records in rtsim-jni is the integration step's work; until then the default suite stays green on the native engine without hiding what it does not cover, and the stub run keeps every phase 1 test. |
+
 ## Kernel
 
 | # | Choice | Reason |

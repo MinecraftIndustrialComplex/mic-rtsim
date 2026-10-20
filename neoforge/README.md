@@ -46,6 +46,9 @@ flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix shell nixpkgs#jdk21 -c ./g
   `natives/mic_rtsim/<platform>/baseline/librtsim_jni.so`. `-PskipJni` packs none, so the Java side
   builds before the Rust crate does (the native engine then cannot load); `-Prelease` packs
   `../target/natives-dist-jni/` (every platform) instead.
+- On the native engine, the phase 1 GameTests that need commands only the stub sends so far
+  (markets, offers, gossip writes, houses, residents, sentiment) log `skipped` and pass
+  (`RtsimTests.stubOrSkip`); run `./gametest.sh -PrtsimEngine=stub -PskipJni` for all of them.
 - `-PrtsimEngine=stub|native` picks the GameTest server's engine (`-Dmic_rtsim.engine`, honoured
   only with `-Dmic_rtsim.gametest=true`). Tests that run their own sessions get an engine of the same
   kind (`RtsimTests.freshEngine`); the native one keeps its pages under `run-gametest/mic_rtsim-test/`.
