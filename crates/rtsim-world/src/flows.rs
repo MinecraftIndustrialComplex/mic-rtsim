@@ -882,8 +882,9 @@ impl World {
         self.emit_packets(i, at, Some(snap));
     }
 
-    /// Packs news and gossip for the next caravan on each of `i`'s edges, merging with a packet
-    /// already waiting for that caravan.
+    /// Packs news and gossip for the next messenger on each of `i`'s roads (the next ship on a
+    /// lane), merging with a packet already waiting for it. News travels separately from cargo:
+    /// it never waits for a caravan's dock to fill (overnight choice PR6).
     fn emit_packets(&mut self, i: usize, at: Tick, own: Option<Arc<Snapshot>>) {
         let q = self.cfg.trade.quantum;
         let nb = q.index(at) + 1;
@@ -891,10 +892,10 @@ impl World {
         let outs = self.nodes[i].out.clone();
         for d in outs {
             let e = &mut self.edges[d.edge as usize];
-            let ed = e.d;
+            let ed = e.news_walk();
+            let departs = e.news_departure(usize::from(d.dir), nb);
             let dir = &mut e.dirs[d.dir as usize];
             let to = dir.to;
-            let departs = dir.lattice.next_departure(nb);
             let reports = self.knowledge.packet_since(actor, &mut dir.board_cursor);
             let mut relays = self.nodes[i].news.received_after(dir.relayed_through, to);
             relays.truncate(self.cfg.relay_max);
@@ -933,7 +934,10 @@ impl World {
                 }
             }
         }
-        // Touring bands that stop here carry the same news on to their next stop (P16).
+        // Touring bands that stop here carry its gossip on to their next stop (P16): word of what
+        // happened, never prices. Prices travel the roads with messengers; a band's circuit
+        // changes with players' standing and bases, and markets must not hang on it (overnight
+        // choice PR9: with prices on bands, a grid of 16 villages fell into a payment churn).
         for (b, stop) in self.nodes[i].bands.clone() {
             let (b, stop) = (b as usize, stop as usize);
             let band = &mut self.bands[b];
@@ -942,22 +946,14 @@ impl World {
             let departs = band.next_departure(stop, nb);
             let walk = band.walks[stop];
             let reports = self.knowledge.packet_since(actor, &mut band.cursors[stop]);
-            let mut relays = self.nodes[i].news.received_after(band.relayed[stop], to);
-            relays.truncate(self.cfg.relay_max);
             band.relayed[stop] = at;
+            if reports.is_empty() {
+                continue;
+            }
             let pending = band.pending[stop].filter(|&(dep, _)| dep >= nb);
             match pending.and_then(|(_, pid)| self.packets.get_mut(&pid)) {
-                Some(p) => {
-                    if own.is_some() {
-                        p.own = own.clone();
-                    }
-                    p.relays.extend(relays);
-                    p.reports.merge(&reports);
-                }
+                Some(p) => p.reports.merge(&reports),
                 None => {
-                    if own.is_none() && reports.is_empty() && relays.is_empty() {
-                        continue;
-                    }
                     let pid = self.next_packet;
                     self.next_packet += 1;
                     self.packets.insert(
@@ -970,8 +966,8 @@ impl World {
                             from: i,
                             to,
                             departs,
-                            own: own.clone(),
-                            relays,
+                            own: None,
+                            relays: Vec::new(),
                             reports,
                         },
                     );
@@ -1003,7 +999,10 @@ impl World {
             self.touch_sentiment(to);
         }
         self.flush_gossip();
-        self.market_event(to, at, Cause::Delivery);
+        // A band brings gossip only: the market has nothing new to act on (PR9).
+        if !matches!(p.via, Via::Band { .. }) {
+            self.market_event(to, at, Cause::Delivery);
+        }
         if learned > 0 {
             // Gossip moves on with the next caravans: at the speed of trade.
             self.emit(to, at, false);

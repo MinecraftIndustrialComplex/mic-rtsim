@@ -11,10 +11,14 @@
 //!   above their targets for a while, it books one house (a PLACE_HOUSE command, placed by the
 //!   bridge when the chunk next loads) and its population steps up at that moment, so the market
 //!   stays piecewise linear: only its targets move.
-//! - **Touring bands** (P16's recommendation): a band of ribbits with instruments tours ribbit
-//!   villages on a fixed circuit, stays a while at each stop to play, and carries news from stop to
-//!   stop as caravans do. Its whereabouts are a closed form of time ([`World::band_view`]); it costs
-//!   an event only when it carries news.
+//! - **Touring bands** (P16, Ben: all three options and player settlements): a band of ribbits
+//!   with instruments tours ribbit villages, the human villages on the border (those with a ribbit
+//!   neighbour) and the player settlements (P30's bases) whose owners are in good standing with
+//!   its home. It stays a while at each stop to play, which raises the host's opinion of the
+//!   band's home village, and carries news from stop to stop. Its whereabouts are a closed form of
+//!   time ([`World::band_view`]); each stay is one event ([`World::band_plays`]), and the circuit
+//!   is charted again at each stay at home, so a base marked or a village joined is on the next
+//!   circuit (overnight choices PR8 to PR10).
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::rng::{StreamKey, SystemId};
@@ -117,6 +121,8 @@ pub struct Band {
     pub pending: Vec<Option<(u64, u32)>>,
     /// Snapshots each stop received after this were relayed already.
     pub relayed: Vec<Tick>,
+    /// Bumped whenever the circuit is charted again: a booked stay with an older stamp is stale.
+    pub stamp: u32,
 }
 
 impl Band {
@@ -128,6 +134,16 @@ impl Band {
     /// Quanta from the start of a circuit to the start of the stay at stop `i`.
     fn offset(&self, i: usize) -> u64 {
         (0..i).map(|j| self.stay + self.walks[j]).sum()
+    }
+
+    /// The first boundary at or after `b` at which the band's stay at stop `i` begins.
+    pub fn stay_start(&self, i: usize, b: u64) -> u64 {
+        let p = self.period();
+        let first = self.start + self.offset(i);
+        if b <= first {
+            return first;
+        }
+        first + (b - first).div_ceil(p) * p
     }
 
     /// The first boundary at or after `b` at which the band leaves stop `i`.
@@ -389,9 +405,9 @@ impl World {
 
     // ---- Bands (P16) ----
 
-    /// Gives `home` a touring band if it is a ribbit village big enough with ribbit neighbours
-    /// (P16's recommendation): the circuit visits its nearest ribbit villages, up to the
-    /// configured number of stops, then comes home.
+    /// Gives `home` a touring band if it is a ribbit village big enough with somewhere to tour
+    /// (P16): the circuit visits the nearest stops a band may visit ([`World::band_may_visit`]),
+    /// up to the configured number, then comes home.
     pub(crate) fn maybe_band(&mut self, home: usize, at: Tick) {
         if !matches!(self.nodes[home].kind, NodeKind::Village(Culture::Ribbit))
             || self.nodes[home].local.pop < self.cfg.band_min_pop
@@ -399,7 +415,62 @@ impl World {
         {
             return;
         }
-        // A circuit: from each stop, the nearest ribbit village not yet on it.
+        let route = self.band_route(home, at);
+        if route.len() < 2 {
+            return;
+        }
+        let q = self.cfg.trade.quantum;
+        let walks = self.band_walks(&route);
+        let key = self.nodes[home].key;
+        let seed = StreamKey::new(self.cfg.seed, SYS_BAND, key).block(0, 0)[0];
+        let n = route.len();
+        let start = q.index(at) + 1;
+        self.bands.push(Band {
+            home,
+            seed,
+            route,
+            walks,
+            stay: self.cfg.band_stay_quanta.max(1),
+            start,
+            members: self.cfg.band_members.max(1),
+            cursors: vec![BoardCursor::default(); n],
+            pending: vec![None; n],
+            relayed: vec![at; n],
+            stamp: 0,
+        });
+        let b = self.bands.len() - 1;
+        self.index_band(b);
+        self.book_stay(b, 0, start);
+    }
+
+    /// Whether a band from `home` may stop at node `j` now (P16): a ribbit village; a human
+    /// village on the border (one with a ribbit neighbour); or a player settlement (an active
+    /// base, P30) whose owners are all in good standing with the band's home (sentiment at or
+    /// above `band_standing_at_or_above`). Havens never.
+    pub fn band_may_visit(&self, home: usize, j: usize, at: Tick) -> bool {
+        let ribbit = |k: usize| matches!(self.nodes[k].kind, NodeKind::Village(Culture::Ribbit));
+        match self.nodes[j].kind {
+            NodeKind::Village(Culture::Ribbit) => true,
+            NodeKind::Village(Culture::Human) => {
+                self.nodes[j].neighbours.iter().any(|&k| ribbit(k))
+            }
+            NodeKind::PlayerBase { .. } => {
+                let holder = self.nodes[home].actor;
+                self.bases.get(&j).is_some_and(|st| {
+                    !st.players.is_empty()
+                        && st.players.iter().all(|&p| {
+                            self.knowledge.sentiment(holder, p, at)
+                                >= self.cfg.band_standing_at_or_above
+                        })
+                })
+            }
+            NodeKind::Haven(_) => false,
+        }
+    }
+
+    /// The circuit a band from `home` would tour now: from each stop, the nearest neighbour it
+    /// may visit and has not visited yet.
+    fn band_route(&self, home: usize, at: Tick) -> Vec<usize> {
         let mut route = vec![home];
         while route.len() <= self.cfg.band_stops {
             let here = *route.last().expect("home");
@@ -407,10 +478,7 @@ impl World {
                 .neighbours
                 .iter()
                 .copied()
-                .filter(|&j| {
-                    matches!(self.nodes[j].kind, NodeKind::Village(Culture::Ribbit))
-                        && !route.contains(&j)
-                })
+                .filter(|&j| !route.contains(&j) && self.band_may_visit(home, j, at))
                 .min_by_key(|&j| {
                     (
                         self.nodes[here].pos.dist(self.nodes[j].pos),
@@ -422,38 +490,116 @@ impl World {
                 None => break,
             }
         }
-        if route.len() < 2 {
-            return;
-        }
+        route
+    }
+
+    /// Quanta walking from each stop of `route` to the next (the last back home).
+    fn band_walks(&self, route: &[usize]) -> Vec<u64> {
         let q = self.cfg.trade.quantum;
         let speed = self.cfg.caravan_blocks_per_tick;
-        let walks: Vec<u64> = (0..route.len())
+        (0..route.len())
             .map(|i| {
                 let (a, b) = (route[i], route[(i + 1) % route.len()]);
                 let dist = self.nodes[a].pos.dist(self.nodes[b].pos).unwrap_or(0);
                 q.covering((dist as f64 / speed).ceil() as u64)
             })
-            .collect();
-        let key = self.nodes[home].key;
-        let seed = StreamKey::new(self.cfg.seed, SYS_BAND, key).block(0, 0)[0];
-        let n = route.len();
-        self.bands.push(Band {
-            home,
-            seed,
-            route,
-            walks,
-            stay: self.cfg.band_stay_quanta.max(1),
-            start: q.index(at) + 1,
-            members: self.cfg.band_members.max(1),
-            cursors: vec![BoardCursor::default(); n],
-            pending: vec![None; n],
-            relayed: vec![at; n],
-        });
-        let b = self.bands.len() - 1;
-        for i in 0..n {
+            .collect()
+    }
+
+    /// Lists band `b`'s stops on their nodes (the news a stop sends rides the band).
+    fn index_band(&mut self, b: usize) {
+        for i in 0..self.bands[b].route.len() {
             let node = self.bands[b].route[i];
             self.nodes[node].bands.push((b as u32, i as u32));
         }
+    }
+
+    fn unindex_band(&mut self, b: usize) {
+        for i in 0..self.bands[b].route.len() {
+            let node = self.bands[b].route[i];
+            self.nodes[node].bands.retain(|&(x, _)| x as usize != b);
+        }
+    }
+
+    /// Books band `b`'s next stay at stop `i`, at or after boundary `from`.
+    fn book_stay(&mut self, b: usize, i: usize, from: u64) {
+        let band = &self.bands[b];
+        let at = self.cfg.trade.quantum.at(band.stay_start(i, from));
+        let stamp = band.stamp;
+        self.schedule(
+            at,
+            Ev::BandPlays {
+                band: b as u32,
+                stop: i as u32,
+                stamp,
+            },
+        );
+    }
+
+    /// Band `b` begins its stay at stop `stop` (P16). Away from home it plays, and the host thinks
+    /// better of the band's home village (`band_performance_delta`, a direct change of the
+    /// host's feeling, not a report: it is not news). A player settlement whose owners fell out
+    /// of good standing since the circuit was charted gets no performance. At home the next
+    /// circuit is charted from who may be visited now; a changed circuit starts here.
+    pub(crate) fn band_plays(&mut self, b: usize, stop: usize, stamp: u32, at: Tick) {
+        let Some(band) = self.bands.get(b) else {
+            return;
+        };
+        if band.stamp != stamp || stop >= band.route.len() {
+            return;
+        }
+        let nb = self.cfg.trade.quantum.index(at);
+        let (home, host) = (band.home, band.route[stop]);
+        if stop == 0 {
+            let route = self.band_route(home, at);
+            // A circuit that would shrink to home alone keeps its old stops: the band walks on,
+            // and plays only where it still may.
+            if route.len() >= 2 && route != self.bands[b].route {
+                self.rechart_band(b, route, nb, at);
+            }
+        } else if self.band_may_visit(home, host, at) {
+            let (h, a) = (self.nodes[host].actor, self.nodes[home].actor);
+            self.knowledge
+                .adjust(h, a, self.cfg.band_performance_delta, at);
+            self.stats.band_plays += 1;
+        }
+        // After a new chart this is stop 1 of the new circuit.
+        let next = (stop + 1) % self.bands[b].route.len();
+        self.book_stay(b, next, nb);
+    }
+
+    /// Band `b` tours `route` from now on, its first stay at home beginning at boundary `nb`.
+    /// What each stop that stays on the circuit knew of the band (its board cursor, the packet
+    /// waiting for the band, what was relayed) carries over.
+    fn rechart_band(&mut self, b: usize, route: Vec<usize>, nb: u64, at: Tick) {
+        self.unindex_band(b);
+        let walks = self.band_walks(&route);
+        let band = &mut self.bands[b];
+        let mut cursors = Vec::with_capacity(route.len());
+        let mut pending = Vec::with_capacity(route.len());
+        let mut relayed = Vec::with_capacity(route.len());
+        for node in &route {
+            match band.route.iter().position(|x| x == node) {
+                Some(i) => {
+                    cursors.push(band.cursors[i]);
+                    pending.push(band.pending[i]);
+                    relayed.push(band.relayed[i]);
+                }
+                None => {
+                    cursors.push(BoardCursor::default());
+                    pending.push(None);
+                    relayed.push(at);
+                }
+            }
+        }
+        band.route = route;
+        band.walks = walks;
+        band.cursors = cursors;
+        band.pending = pending;
+        band.relayed = relayed;
+        band.start = nb;
+        band.stamp = band.stamp.wrapping_add(1);
+        self.index_band(b);
     }
 
     /// Where band `b` is at `at`: a closed form of its circuit.

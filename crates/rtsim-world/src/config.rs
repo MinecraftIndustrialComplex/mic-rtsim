@@ -18,9 +18,15 @@ pub struct WorldConfig {
     /// a phase 0 GameTest of a real caravan walking, not guessed. 0.1 blocks a tick (2 a second)
     /// stands in until then.
     pub caravan_blocks_per_tick: f64,
-    /// Days between scouts on a road with no flow, which carry news and nothing else. PLACEHOLDER
-    /// (P18; overnight choice E10).
+    /// Days between scouts on a road with no flow: empty caravans players may meet. PLACEHOLDER
+    /// (P18; overnight choice E10). News no longer rides them: messengers carry it (PR6).
     pub scout_days: u64,
+    /// Quanta between messengers leaving each end of a road (news travels separately from cargo;
+    /// Ben's morning review, "News"; overnight choice PR6). TUNABLE, PLACEHOLDER: 6 (four a day).
+    pub messenger_quanta: u64,
+    /// A messenger's speed, in thousandths of a caravan's: a walker with no llamas. TUNABLE,
+    /// PLACEHOLDER: 1,500.
+    pub messenger_speed_milli: u32,
     /// Snapshots a market keeps in its news ring. PLACEHOLDER; neighbours are never evicted.
     pub news_cap: usize,
     /// Relayed snapshots a packet carries at most. PLACEHOLDER.
@@ -71,6 +77,13 @@ pub struct WorldConfig {
     pub band_stay_quanta: u64,
     /// Ribbits in a band, its master included. PLACEHOLDER: 3.
     pub band_members: u8,
+    /// A band tours a player settlement only while its home feels at least this about every
+    /// player who marks it (P16: "assuming the player is in good standing"). TUNABLE,
+    /// PLACEHOLDER: 0, nothing held against them.
+    pub band_standing_at_or_above: i8,
+    /// How much a band's performance raises its host's opinion of the band's home village (P16).
+    /// TUNABLE, PLACEHOLDER: 5 on the sentiment scale.
+    pub band_performance_delta: i16,
     /// A player base within this many blocks of a road becomes a stop on it (P30's
     /// recommendation). PLACEHOLDER: 256.
     pub base_stop_blocks: u32,
@@ -85,6 +98,8 @@ impl WorldConfig {
             edge_rule: EdgeRule::P18,
             caravan_blocks_per_tick: 0.1,
             scout_days: 1,
+            messenger_quanta: 6,
+            messenger_speed_milli: 1_500,
             news_cap: 16,
             relay_max: 8,
             markup_worst: Ratio::new(1, 2),
@@ -105,6 +120,8 @@ impl WorldConfig {
             band_stops: 3,
             band_stay_quanta: 6,
             band_members: 3,
+            band_standing_at_or_above: 0,
+            band_performance_delta: 5,
             base_stop_blocks: 256,
         }
     }
