@@ -19,6 +19,12 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::labour::{Recipe, RecipeBook, ResourceId};
 use rtsim_trade::{Amount, GoodDef, GoodId, GoodKind, Goods, MILLI};
+use rtsim_industry::engine::Mode;
+use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
+use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
+use rtsim_industry::obs::{BlockFlags, InvKind};
+use rtsim_industry::threat::ThreatClass;
+use rtsim_industry::tunables::Tunables;
 use rtsim_world::{NodeData, World, WorldConfig};
 
 use crate::boundary::{self, Cmd, Obs, SpeciesDict, Uuid};
@@ -356,6 +362,100 @@ pub fn grid(n: usize, seed: u64) -> World {
 
 pub fn dragons(seed: u64, tun: DragonTunables) -> Dragons {
     Dragons::new(seed, tun, Tick::ZERO)
+}
+
+/// The farm district's id and goods.
+pub const FARM: DistrictId = DistrictId(1);
+pub const WHEAT: Good = Good(1);
+pub const BEEF: Good = Good(2);
+pub const GOLD_ITEM: Good = Good(3);
+
+/// The farm: a roofless, unwalled industry district at the player's home (300, 1300), with a
+/// vault of wheat, beef and gold, a harvester and a butcher; `turrets` per threat class; loaded
+/// as `visits` say (the industry fake world's own timetable).
+pub fn farm(seed: u64, turrets: [f32; 4], visits: Vec<Visit>) -> FakeWorld {
+    let mut tun = Tunables::default();
+    // The industry default carries nothing for flying attackers, on the strength of a dragon
+    // `stealItems` key; the Ice and Fire jar check found `stealItems` is a pixie key, not a
+    // dragon one (docs/overnight-choices-dragons.md). The scenario lets a dragon carry off 32 items a pass, so it eats
+    // meat and hoards gold. TUNABLE, PLACEHOLDER.
+    tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
+    let mut w = FakeWorld::new(seed, tun, Mode::Apply);
+    w.good(WHEAT.0, GoodInfo::item("minecraft:wheat", 64));
+    w.good(BEEF.0, GoodInfo::item("minecraft:beef", 64));
+    w.good(GOLD_ITEM.0, GoodInfo::item("minecraft:gold_ingot", 64));
+    let (bx, bz) = (300, 1300);
+    let vault = BlockPos::new(bx, 64, bz);
+    let harvester = BlockPos::new(bx + 4, 64, bz);
+    let butcher = BlockPos::new(bx + 6, 64, bz + 2);
+    let mut d = FDistrict {
+        id: FARM,
+        name: "Home Farm".to_string(),
+        dim: 0,
+        inventories: vec![FInventory {
+            index: 0,
+            pos: vault,
+            kind: InvKind::ITEMS,
+            slots: 40,
+            fluid_cap: 0,
+            energy_cap: 0,
+            contents: GoodVec::from_pairs([(WHEAT, 600), (BEEF, 300), (GOLD_ITEM, 64)]),
+            destroyed: false,
+        }],
+        recipes: vec![
+            fake::Recipe {
+                name: "harvester".into(),
+                inputs: vec![],
+                outputs: vec![(WHEAT, 0, 8)],
+                period: 600,
+                target: Some((WHEAT, 0, 1_200, 1_000)),
+                deposit_per_batch: 0,
+                power_from: None,
+                machine: harvester,
+            },
+            fake::Recipe {
+                name: "butcher".into(),
+                inputs: vec![],
+                outputs: vec![(BEEF, 0, 1)],
+                period: 2_400,
+                target: Some((BEEF, 0, 600, 500)),
+                deposit_per_batch: 0,
+                power_from: None,
+                machine: butcher,
+            },
+        ],
+        deposit: None,
+        deposit_chunk: ChunkPos {
+            dim: 0,
+            x: bx >> 4,
+            z: bz >> 4,
+        },
+        exposed: Vec::new(),
+        survey: Some(survey(FARM, 40, 4, 64, 0, 2, turrets)),
+        spawn_rate: 0.0,
+        loaded: false,
+        epochs: Default::default(),
+        held: Vec::new(),
+        sweep: 0,
+        threshold_on: Vec::new(),
+        last_ran: Vec::new(),
+        broken: Default::default(),
+        revision: 0,
+        ever_loaded: false,
+    };
+    let roofless = BlockFlags::ROOFLESS;
+    d.exposed = vec![
+        exposed(harvester, 11, BlockFlags::MACHINE | roofless, None),
+        exposed(butcher, 12, BlockFlags::MACHINE | roofless, None),
+        exposed(vault, 13, BlockFlags::INVENTORY, Some(0)),
+    ];
+    for i in 0..6 {
+        d.exposed.push(exposed(BlockPos::new(bx - 3 + i, 64, bz - 3), 20 + i as u32, roofless, None));
+    }
+    w.districts.push(d);
+    w.visits = visits;
+    w.declare();
+    w
 }
 
 // ---- the fake plugin --------------------------------------------------------------------------

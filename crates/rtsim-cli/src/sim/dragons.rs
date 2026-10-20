@@ -35,12 +35,7 @@ use rtsim_ecology::prey::Item;
 use rtsim_ecology::synth::{self, FakeIaf, Reaction};
 use rtsim_ecology::tunables::{DragonTunables, PreyKind};
 use rtsim_industry::district::AttackReport;
-use rtsim_industry::engine::Mode;
-use rtsim_industry::fake::{FDistrict, FInventory, FakeWorld, Recipe, Visit, exposed, survey};
-use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
-use rtsim_industry::obs::{BlockFlags, InvKind};
-use rtsim_industry::threat::ThreatClass;
-use rtsim_industry::tunables::Tunables;
+use rtsim_industry::fake::{FakeWorld, Visit};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::Pos;
 use rtsim_world::World;
@@ -92,11 +87,7 @@ fn bad(why: &str) -> ExitCode {
 
 /// The player's UUID halves.
 const PLAYER: (u64, u64) = (0x1111, 0x2222);
-/// The farm district.
-const FARM: DistrictId = DistrictId(1);
-const WHEAT: Good = Good(1);
-const BEEF: Good = Good(2);
-const GOLD: Good = Good(3);
+use synth::FARM;
 
 /// Where the player is, from a day on, and what it does to dragons it meets.
 struct Phase {
@@ -191,96 +182,16 @@ fn day(d: f64) -> Tick {
     Tick((d * TICKS_PER_DAY as f64) as u64)
 }
 
-/// The farm: a roofless, unwalled, unguarded industry district at the player's home.
+/// The farm (`synth::farm`), loaded while the player is home.
 fn farm(seed: u64, phases: &[Phase]) -> FakeWorld {
-    let mut tun = Tunables::default();
-    // The industry default carries nothing for flying attackers, on the strength of a dragon
-    // `stealItems` key; the Ice and Fire jar check found `stealItems` is a pixie key, not a
-    // dragon one (choices R14). The scenario lets a dragon carry off 32 items a pass, so it eats
-    // meat and hoards gold. TUNABLE, PLACEHOLDER.
-    tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
-    let mut w = FakeWorld::new(seed, tun, Mode::Apply);
-    w.good(WHEAT.0, GoodInfo::item("minecraft:wheat", 64));
-    w.good(BEEF.0, GoodInfo::item("minecraft:beef", 64));
-    w.good(GOLD.0, GoodInfo::item("minecraft:gold_ingot", 64));
-    let (bx, bz) = (300, 1300);
-    let vault = BlockPos::new(bx, 64, bz);
-    let harvester = BlockPos::new(bx + 4, 64, bz);
-    let butcher = BlockPos::new(bx + 6, 64, bz + 2);
-    let mut d = FDistrict {
-        id: FARM,
-        name: "Home Farm".to_string(),
-        dim: 0,
-        inventories: vec![FInventory {
-            index: 0,
-            pos: vault,
-            kind: InvKind::ITEMS,
-            slots: 40,
-            fluid_cap: 0,
-            energy_cap: 0,
-            contents: GoodVec::from_pairs([(WHEAT, 600), (BEEF, 300), (GOLD, 64)]),
-            destroyed: false,
-        }],
-        recipes: vec![
-            Recipe {
-                name: "harvester".into(),
-                inputs: vec![],
-                outputs: vec![(WHEAT, 0, 8)],
-                period: 600,
-                target: Some((WHEAT, 0, 1_200, 1_000)),
-                deposit_per_batch: 0,
-                power_from: None,
-                machine: harvester,
-            },
-            Recipe {
-                name: "butcher".into(),
-                inputs: vec![],
-                outputs: vec![(BEEF, 0, 1)],
-                period: 2_400,
-                target: Some((BEEF, 0, 600, 500)),
-                deposit_per_batch: 0,
-                power_from: None,
-                machine: butcher,
-            },
-        ],
-        deposit: None,
-        deposit_chunk: ChunkPos {
-            dim: 0,
-            x: bx >> 4,
-            z: bz >> 4,
-        },
-        exposed: Vec::new(),
-        survey: Some(survey(FARM, 40, 4, 64, 0, 2, [0.0; 4])),
-        spawn_rate: 0.0,
-        loaded: false,
-        epochs: Default::default(),
-        held: Vec::new(),
-        sweep: 0,
-        threshold_on: Vec::new(),
-        last_ran: Vec::new(),
-        broken: Default::default(),
-        revision: 0,
-        ever_loaded: false,
-    };
-    let roofless = BlockFlags::ROOFLESS;
-    d.exposed = vec![
-        exposed(harvester, 11, BlockFlags::MACHINE | roofless, None),
-        exposed(butcher, 12, BlockFlags::MACHINE | roofless, None),
-        exposed(vault, 13, BlockFlags::INVENTORY, Some(0)),
-    ];
-    for i in 0..6 {
-        d.exposed.push(exposed(BlockPos::new(bx - 3 + i, 64, bz - 3), 20 + i as u32, roofless, None));
-    }
-    w.districts.push(d);
-    w.visits = phases
+    let visits = phases
         .iter()
         .map(|p| Visit {
             from: day(p.from_day),
             at: if p.farm_loaded { vec![0] } else { Vec::new() },
         })
         .collect();
-    w.declare();
-    w
+    synth::farm(seed, [0.0; 4], visits)
 }
 
 #[derive(Serialize)]

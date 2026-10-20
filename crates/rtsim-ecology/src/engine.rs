@@ -1983,10 +1983,15 @@ impl Dragons {
         let Some(l) = self.dragons.get(d).and_then(|x| x.lair) else {
             return;
         };
+        // Where it is stays where it is: a dragon at its lair is at the lair.
+        let here = self.dragons[d].position(&self.lairs, at);
         let lair = &mut self.lairs[l as usize];
         lair.occupants.retain(|o| *o != d);
         if let Some(x) = self.dragons.get_mut(d) {
             x.lair = None;
+            if x.rest.is_none() && !matches!(x.state, State::Flying(_) | State::Hunting { .. }) {
+                x.rest = Some(here);
+            }
         }
         if lair.occupants.is_empty() {
             lair.vacant_since = Some(at);
