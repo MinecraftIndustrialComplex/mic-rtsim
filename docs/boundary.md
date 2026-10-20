@@ -276,7 +276,7 @@ start at 16.
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
 | 0x8001 | DICT | dict kind | 16 u32 id, 20 u32 nameLen, 24 UTF-8 name | 24 + name, aligned | |
-| 0x8002 | SPAWN_GROUP | member count | 16 u64 agent, 24 u32 epoch, 28 u32 groupKind, 32 u32 dimension, 36 u32 flags (0), 40 f64 x, 48 f64 y, 56 f64 z, 64 member blocks | 64 + blocks | MATERIALIZED or SPAWN_REJECTED |
+| 0x8002 | SPAWN_GROUP | member count | 16 u64 agent, 24 u32 epoch, 28 u32 groupKind, 32 u32 dimension, 36 u32 flags (1 SURFACE: each member stands on the highest motion-blocking, non-leaf block at its own x, z, found once its position is entity-ticking), 40 f64 x, 48 f64 y, 56 f64 z, 64 member blocks | 64 + blocks | MATERIALIZED or SPAWN_REJECTED |
 | 0x8003 | DESPAWN_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 u32 reason | 32 | DEMATERIALIZED |
 | 0x8004 | STEER_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8005 | TRANSFER_TO_CONTAINER | 0 | 16 u64 opId, 24 u32 dimension, 28 u32 item, 32 i32 x, 36 i32 y, 40 i32 z, 44 i32 count | 48 | COMMAND_RESULT |
@@ -520,7 +520,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    puppet commands are per session. DICT records come before their first use in the same buffer.
    What does not fit waits (`MORE`).
 7. **Op ids**: Java's have the top bit set; the engine's leave it clear. Ordered transfers take 55
-   random bits (§2.2); the sim's own transfers will derive theirs from their identity.
+   random bits (§2.2); the sim's own commands derive theirs from their identity (industry, phase 1).
 8. **Failure**: a panic or protocol error in a step makes every later command buffer empty and
    flagged `FAILED` (§1.1).
 9. **Industry** (`engine/industry.rs`, docs/industry-boundary.md §7, choices W1 to W23): the industry
@@ -529,13 +529,28 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    (their sequences from the same counter, resent merged in sequence order); its pages are tables
    0x4900 to 0x4902 and page 1:0x49.
 
-**Still to build: phase 1 (§4).** The native engine reads every phase 1 record safely (journaled
-kinds go through `Replay`; unknown kinds are skipped) but does nothing with them yet, and sends none
-of the phase 1 commands. The integration step should: read VILLAGE_ADOPTED (idempotent by village
-id) into rtsim-settle; TRADE, CARGO_CHANGED, DIED and TAKEN cargo into the markets and caravans
-exactly once by op id; HURT, RESCUE, TAKEN and CARGO_CHANGED into rtsim-knowledge reports (skip
-echoing anything flagged VANILLA_GOSSIP); BASE into rtsim-settle's player-base nodes; VILLAGE_CENSUS
-and VILLAGE_GOSSIP as latest state. Send MARKET with `asOfObsSeq` = the highest observation sequence
-the step applied, MERCHANT_OFFERS when a caravan materializes or its news changes, SENTIMENT
-snapshots for ribbit villages, WRITE_GOSSIP from rtsim-knowledge's `VanillaGossip`, and PLACE_HOUSE
-then SPAWN_RESIDENT for growth.
+10. **Phase 1** (`engine/phase1.rs`, choices V1 to V28 in docs/overnight-choices-phase1jni.md): the
+   phase 1 world (`rtsim-world`: settle, trade, travel, knowledge) runs inside the step.
+   - **Observations.** VILLAGE_ADOPTED joins a village (a no-op for one it has); TRADE (a resident's
+     at its village's market, a puppet's at its caravan) and CARGO_CHANGED are booked as the counts
+     the bridge reports, once by op id; HURT and RESCUE become reports of the caravan or the village
+     (a resident's first-hand hurt is still a report: rtsim-knowledge never writes back what vanilla
+     saw itself); TAKEN and DIED of a phase 1 puppet take or kill its member; BASE marks and unmarks
+     player-base nodes; HOUSE_PLACED lets a grown house's residents move in; the first
+     VILLAGE_CENSUS sets a village's population and later ones only raise it; VILLAGE_GOSSIP is read
+     as latest state.
+   - **Commands.** MARKET (`asOfObsSeq` the highest observation the step applied) for villages near
+     a player or just traded at, when they changed; MERCHANT_OFFERS when a caravan materializes;
+     SENTIMENT for ribbit villages whose feelings may have changed; WRITE_GOSSIP from
+     rtsim-knowledge's vanilla gossip (amounts below 2 raised to 2); PLACE_HOUSE then SPAWN_RESIDENT
+     for growth. The last three carry op ids derived from what they are (§2.2) and are kept and
+     resent like transfers. Caravans and touring bands a player can see are materialized as C25
+     groups (SPAWN_GROUP with `FLAG_SURFACE`, cargo in the chests), steered toward where the sim
+     walks them, and captured back when no player is near or the sim's caravan moved on.
+   - **Pages.** Table 0x5000: a meta page and the world's input log in chunks of 1,024 inputs. The
+     world is deterministic, so `start` rebuilds it by replaying the log and checks the replayed
+     state hash against the one saved.
+   - **Tests.** Orders 16 to 21 script the phase 1 commands (the stub's `market`, `merchantOffers`
+     and so on); order 22 marks a village as a test's own, which the engine then leaves alone; orders
+     23 (`P1_SPAWN_NEAR`) and 24 (`P1_ADVANCE`) materialize a caravan off the flows at a chosen place
+     and run the world ahead of game time (TEST mode only).

@@ -74,7 +74,7 @@ public final class LivePhase1GameTests {
         ServerPlayer player = FakePlayers.add(helper.getLevel(), at, "p1_robber");
         long agent = RtsimTests.newAgent();
         long[] base = e.phase1Stats();
-        long[] ask = {Long.MIN_VALUE, 0}; // last game time asked, asks
+        long[] ask = {0, 0}; // ticks waited since the last ask, asks
         boolean[] traded = {false};
         String[] robbed = {null};
         List<String> told = new ArrayList<>();
@@ -88,16 +88,19 @@ public final class LivePhase1GameTests {
                 .thenWaitUntil(() -> {
                     if (RtsimTests.group(agent) != null)
                         return;
-                    long now = helper.getLevel().getGameTime();
-                    if (now - ask[0] >= 10) {
+                    // One call a tick: ask again once the last ask had time to come back (a step, then
+                    // the spawn applied on a later tick).
+                    if (ask[0]++ % 10 == 0) {
                         check("a caravan with wares within 300 asks (75 days of world time)", ask[1] < 300);
                         // A quarter of a day on, then the caravan with wares nearest the villages, here.
                         e.phase1Advance(6_000);
                         e.phase1SpawnNear(agent, 1, dim, at.x, at.y, at.z, 2_000, ox + 150, oz + 150);
-                        ask[0] = now;
                         ask[1]++;
                     }
-                    check("the engine materialized a caravan off its flows", false);
+                    long[] s = e.phase1Stats();
+                    check("the engine materialized a caravan off its flows (asks " + ask[1] + ", world tick "
+                            + s[NativeEngine.P1_WORLD_TICK] + ", spawns sent " + s[NativeEngine.P1_SPAWNS_SENT] + ", steps "
+                            + e.steps() + ", orders pending " + e.scriptedPending() + ")", false);
                 })
                 .thenExecute(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
@@ -160,11 +163,9 @@ public final class LivePhase1GameTests {
                             told.add(Long.toHexString(v.id));
                     if (told.size() >= 2)
                         return;
-                    long now = helper.getLevel().getGameTime();
-                    if (now - ask[0] >= 10) {
+                    if (ask[0]++ % 10 == 0) {
                         check("the news spread within 500 asks in all", ask[1] < 500);
                         e.phase1Advance(6_000);
-                        ask[0] = now;
                         ask[1]++;
                     }
                     check("the robbery is news in two villages' gossip (C20)", false);
