@@ -69,7 +69,6 @@ public final class CaravanGameTests {
     public static void traderAndLlamasCaptureAsOneGroupAndNoLlamaDespawns(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         ServerLevel level = helper.getLevel();
-        long removedBefore = RtsimTests.session().removedByOther();
         spawnCaravan(helper, agent, 1);
         ChunkPos forced = farChunk(helper, 0);
         BlockPos frozenAt = new BlockPos(forced.getMinBlockX() + 16 + 8, (int) RtsimTests.centre(helper).y, forced.getMinBlockZ() + 8);
@@ -104,7 +103,8 @@ public final class CaravanGameTests {
                             ((WanderingTrader) bodies[0]).getDespawnDelay() > WanderingTraderAdapter.VANILLA_DESPAWN_DELAY - 100);
                     for (Entity b : bodies)
                         check(b + " is still embodied after the despawnDelay trap", !b.isRemoved());
-                    check("no puppet was removed by vanilla or another mod", RtsimTests.session().removedByOther() == removedBefore);
+                    check("no member left the group (a despawn would show as removed by another)",
+                            RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 3);
                 })
                 .thenWaitUntil(() -> check("the far chunk is entity-ticking", level.isPositionEntityTicking(forced.getMiddleBlockPosition(64))))
                 .thenWaitUntil(() -> check("its neighbour is loaded", level.hasChunk(forced.x + 1, forced.z)))
@@ -119,7 +119,8 @@ public final class CaravanGameTests {
                         check(b + " was removed", b.isRemoved());
                         check(b + " was removed by the bridge (DISCARDED in its capture)", b.getRemovalReason() == Entity.RemovalReason.DISCARDED);
                     }
-                    check("no puppet was removed by anything else", RtsimTests.session().removedByOther() == removedBefore);
+                    check("no member was taken or removed by anything else",
+                            RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty());
                     check("no lead dropped at the caravan", leads(level, new AABB(helper.absolutePos(BlockPos.ZERO)).inflate(16)) == 0);
                     check("no lead dropped at the frozen llama", leads(level, new AABB(frozenAt).inflate(16)) == 0);
                     level.setChunkForced(forced.x, forced.z, false);

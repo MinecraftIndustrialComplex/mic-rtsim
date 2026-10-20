@@ -64,6 +64,7 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `journalreplayappliesexactlyonceafteracrash` | two simulated crashes; transfers in both directions applied exactly once, one op id sent twice |
 | `tamingtakesacreatureoutofthesim` | taming (vanilla's tame line) takes a llama out of the sim; TAKEN with its cargo; the rest stays one group |
 | `aleadtakesacreatureoutofthesim` | a lead held by a player takes a llama on the next pass |
+| `amemberremovedbyanothermodleavestherestasonegroup` | risk 11: a member another mod removes leaves as TAKEN(removed by other); the rest stays one unit |
 | `deathsarejournaledandthereststaysonegroup` | DIED after each member's state at death (cargo included); the llamas of a dead trader stay one group and are not "taken" by the dead trader's leash |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 
@@ -77,6 +78,5 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 - **Item components** in captured cargo (B23).
 - **Body kinds as data** (P15): group layouts are code.
 - **Carry On**: the plugin is not written; `RtsimApi.takeFromSim` is its hook point.
-- **A GameTest for a server at simulation distance 10** (risk R1) and for a group split by another
-  mod (risk 11, partly covered by the taming test).
+- **A GameTest for a server at simulation distance 10** (risk R1): it needs real players.
 - **PATCHES.md** (P7) does not exist yet; every hook is listed in `BridgeEvents` and the mixins.

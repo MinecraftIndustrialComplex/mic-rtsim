@@ -172,4 +172,34 @@ public final class TakingGameTests {
                 .thenWaitUntil(() -> check("the last llama despawned", RtsimTests.group(agent) == null))
                 .thenSucceed();
     }
+
+    /**
+     * Risk 11 (PLAN.md §15): another mod removes one member (a capture item, a cleanup command). The
+     * member leaves the sim as REMOVED_BY_OTHER with its state, and the rest stays one unit.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 300)
+    public static void aMemberRemovedByAnotherModLeavesTheRestAsOneGroup(GameTestHelper helper) {
+        long agent = RtsimTests.newAgent();
+        CaravanGameTests.spawnCaravan(helper, agent, 1);
+        long before = RtsimTests.session().removedByOther();
+        helper.startSequence()
+                .thenWaitUntil(() -> RtsimTests.embodied(agent))
+                .thenExecute(() -> {
+                    PuppetGroup g = RtsimTests.group(agent);
+                    RtsimTests.member(g, 2).discard(); // what another mod's removal looks like
+                    check("the removal was counted", RtsimTests.session().removedByOther() == before + 1);
+                    check("the rest stays one group", RtsimTests.group(agent) == g && g.liveMembers() == 2);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> check("the trader and the other llama are still embodied",
+                        RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 2))
+                .thenWaitUntil(() -> check("the stub received TAKEN", !RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).isEmpty()))
+                .thenExecute(() -> {
+                    StubEngine.Received t = RtsimTests.recordsFor(RtsimTests.stub(), Obs.TAKEN, agent).get(0);
+                    check("as removed by another mod", t.aux() == Obs.Taken.REMOVED_BY_OTHER && t.view().getInt(Obs.Taken.MEMBER) == 2);
+                    RtsimTests.stub().despawnGroup(agent, 1);
+                })
+                .thenWaitUntil(() -> check("the rest despawned", RtsimTests.group(agent) == null))
+                .thenSucceed();
+    }
 }
