@@ -460,9 +460,11 @@ killing).
   ordinary entities (C2): the spawn chunk and the resident carry the COMMAND_RESULT (§3.1) so a crash
   cannot spawn it twice.
 
-**Known gaps:** a crash after a house's chunk was saved and before the next world save can let a resent
-PLACE_HOUSE build a second house elsewhere (the first house's chunk reports its COMMAND_RESULT when it
-loads, but possibly after the resend); gossip ops a villager carries are capped at 64.
+**Known gaps:** a crash after a house's chunk was saved and before the next world save leaves the
+village's house list without the house; a resent PLACE_HOUSE is answered DUPLICATE when its search
+reaches the chunk that carries the first one's COMMAND_RESULT (a loaded chunk under a candidate plot),
+but a free plot found first elsewhere would still get a second house. Gossip ops a villager carries
+are capped at 64.
 
 ## 5. What the Rust side needs to build (rtsim-jni)
 
