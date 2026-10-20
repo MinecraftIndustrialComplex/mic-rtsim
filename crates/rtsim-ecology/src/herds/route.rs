@@ -172,6 +172,18 @@ pub fn plan(q: &Ask<'_>) -> Choice {
                     continue;
                 }
                 let diag = dx != 0 && dz != 0;
+                // No corner cutting past a closed or obstructed cell: a fence or a cliff
+                // across one of the two cells a diagonal step brushes blocks it.
+                if diag {
+                    let open = |k: (i32, i32)| {
+                        passable(terrain(k))
+                            && q.obstacles.extra((q.frame, k.0, k.1), q.at, q.w.obstacle_half_life)
+                                < 1.0
+                    };
+                    if !open((c.0 + dx, c.1)) || !open((c.0, c.1 + dz)) {
+                        continue;
+                    }
+                }
                 let extra = q
                     .obstacles
                     .extra((q.frame, n.0, n.1), q.at, q.w.obstacle_half_life);

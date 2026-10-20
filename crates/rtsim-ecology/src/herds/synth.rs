@@ -204,6 +204,7 @@ pub struct Group {
 }
 
 /// What a vanilla adapter would do, through the codec.
+#[derive(Clone)]
 pub struct FakeHerds {
     pub dict: HerdDict,
     pub groups: BTreeMap<u64, Group>,

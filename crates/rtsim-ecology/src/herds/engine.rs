@@ -683,7 +683,8 @@ impl Herds {
         let ids: Vec<HerdId> = self.herds.iter().map(|(h, _)| h).collect();
         for h in ids {
             let x = &self.herds[h];
-            if x.next_decide == Tick(u64::MAX) {
+            // Extinct, or not planned yet (a route is indexed when it is planned).
+            if x.next_decide == Tick(u64::MAX) || x.reach == 0 {
                 continue;
             }
             let regions = route_regions(&x.route, x.frame, x.reach);
