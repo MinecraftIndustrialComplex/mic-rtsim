@@ -95,6 +95,8 @@ public final class RtsimSession {
     final BoundarySession boundary;
     final PuppetRegistry registry = new PuppetRegistry();
     final CommandDispatcher commands;
+    /** The industry module (C15 to C19, INDUSTRY.md): districts, the stock sampler, ports, reconciles. */
+    public final com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry;
 
     private boolean failed;
     /**
@@ -153,6 +155,7 @@ public final class RtsimSession {
             boundary.dictId(Obs.DICT_BODY, kind.name());
         for (BodyAdapter body : BodyKinds.bodies())
             boundary.dictId(Obs.DICT_BODY, body.name());
+        this.industry = new com.minecraftindustrialcomplex.mic_rtsim.industry.Industry(this, server);
     }
 
     public Engine engine() {
@@ -202,6 +205,7 @@ public final class RtsimSession {
             passNanos = System.nanoTime() - t0;
             if (ticks % RtsimConfig.playerInterval() == 0)
                 observePlayers(now);
+            industry.endOfTick(now);
             boundary.handOver(now);
             ticks++;
         } catch (Throwable t) {
@@ -662,6 +666,11 @@ public final class RtsimSession {
     }
 
     // ---- pending records: the world side of a transfer carries its journal records ---------------
+
+    /** Runs {@code then} once the engine has acknowledged {@code seq} in this session (for modules and plugins). */
+    public void afterAck(long seq, Runnable then) {
+        whenAcked(seq, then);
+    }
 
     /** Runs {@code then} once the engine has acknowledged {@code seq} in this session. */
     void whenAcked(long seq, Runnable then) {

@@ -16,6 +16,6 @@ rootProject.name = 'mic-rtsim-neoforge'
 // The core bridge (mod id mic_rtsim). It depends on NeoForge only (D4).
 include 'core'
 
-// Plugins go here as they are written, for example:
-// include 'plugin-carryon'   // mic_rtsim_carryon: Carry On's EntityPickupEvent (PLAN.md §6.2)
-// include 'plugin-ribbits'   // mic_rtsim_ribbits
+// Plugins (PLAN.md §1.3): Java adapters and data for one mod each, compiled against that mod's jar
+// (compileOnly) and loaded only where the mod is installed.
+include 'create'    // mic_rtsim_create: Create 6.0.10, the industry plugin (INDUSTRY.md §12 layer 2)

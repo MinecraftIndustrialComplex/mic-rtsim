@@ -1,0 +1,113 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_create (A1, A19): the Create plugin of the industry workstream (INDUSTRY.md §12, layer 2).
+// Its own jar and mod id. It compiles against the core and against the pack's Create 6.0.10 jar, which it
+// never bundles. Create's own libraries (Ponder with catnip, Flywheel, Registrate) are jar-in-jar inside
+// that jar, so the compile classpath gets copies extracted from it; the GameTest server loads the full
+// Create jar, whose jar-in-jar FML unpacks itself.
+evaluationDependsOn(':core')
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    mavenCentral()
+}
+
+def packMods = rootProject.file(project.findProperty('packMods') ?: project.create_packMods).absolutePath
+def createJar = file("${packMods}/${create_jar}")
+
+// Create's jar-in-jar libraries, for compiling only (never on a runtime classpath: the full Create jar
+// carries them, and two copies of a mod id is a hard FML failure).
+def createLibsDir = layout.buildDirectory.dir('create-jarjar')
+def extractCreateLibs = tasks.register('extractCreateLibs', Copy) {
+    description = 'Extracts Ponder (catnip), Flywheel and Registrate from the Create jar, for compiling.'
+    from(zipTree(createJar)) {
+        include 'META-INF/jarjar/*.jar'
+        eachFile { it.path = it.name }
+        includeEmptyDirs = false
+    }
+    into createLibsDir
+}
+def createLibs = files({ fileTree(createLibsDir.get().asFile).matching { include '*.jar' }.files }) { builtBy extractCreateLibs }
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        // `./gradlew :create:runGameTestServer`: the core, this plugin and Create 6.0.10 on a headless
+        // dedicated server, running every @GameTest in this plugin's namespace against the core's
+        // StubEngine (the industry tests script the engine side). mic_rtsim_create.mixins.json is
+        // defaultRequire 1, so a Create mixin that no longer matches fails the launch.
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'mic_rtsim.gametest', 'true'
+            // The industry GameTests script the engine side through the stub (when the core can run more
+            // than one engine, this picks the stub; the property is ignored otherwise).
+            systemProperty 'mic_rtsim.engine', 'stub'
+            jvmArgument '-Xmx4G'
+            if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
+            gameDirectory = file('run-gametest')
+        }
+    }
+
+    mods {
+        "mic_rtsim" {
+            sourceSet(project(':core').sourceSets.main)
+        }
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+dependencies {
+    implementation project(':core')
+    compileOnly files(createJar)
+    compileOnly createLibs
+    // The GameTest server loads Create from the same jar (with its jar-in-jar libraries).
+    runtimeOnly files(createJar)
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}

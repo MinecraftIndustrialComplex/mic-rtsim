@@ -26,5 +26,6 @@ public final class MicRtsim {
         RtsimConfig.register(container);
         RtsimAttachments.register(modBus);
         BridgeEvents.register(modBus);
+        com.minecraftindustrialcomplex.mic_rtsim.industry.Industry.register(modBus, container);
     }
 }

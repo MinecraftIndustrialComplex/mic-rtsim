@@ -130,10 +130,18 @@ final class CommandDispatcher implements Handover.CommandSink {
                 return true;
             }
             default -> {
+                // Industry commands (0x8400 to 0x84FF, docs/industry-boundary.md §4) go to the module.
+                if (com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.isIndustryCommand(kind) && session.industry != null)
+                    return session.industry.accept(b, at, kind, size, aux, this::engineName);
                 unknown++;
                 return true;
             }
         }
+    }
+
+    /** A name in the engine's dictionary for this session, or null. */
+    String engineName(int dictKind, int id) {
+        return dict.get(((long) dictKind << 32) | (id & 0xFFFF_FFFFL));
     }
 
     private boolean fitsQuota(int members) {
