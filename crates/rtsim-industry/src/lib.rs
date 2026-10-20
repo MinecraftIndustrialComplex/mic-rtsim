@@ -4,6 +4,7 @@
 pub mod cluster;
 pub mod cmd;
 pub mod ids;
+pub mod learn;
 pub mod obs;
 pub(crate) mod ser;
 pub mod threat;
