@@ -260,6 +260,11 @@ pub struct Dragons {
     pub(crate) players: BTreeMap<ActorId, PlayerView>,
     pub(crate) index: PreyIndex,
     pub(crate) by_entity: BTreeMap<Uuid, DragonId>,
+    /// Every entity the engine adopted, for good (saved; `by_entity` is this session's bodies):
+    /// an untagged dragon reported again (after a crash its DRAGON_ADOPT never reached a world
+    /// save, or a chunk saved before the adoption loaded again) is the dragon it already is,
+    /// never a second one (review 3).
+    pub(crate) adopted: BTreeMap<Uuid, DragonId>,
     /// Set while removing a dragon whose body already died in game (no despawn to send).
     pub(crate) dying_by_body: bool,
     /// Item dictionary ids the plugin uses (HOARD_ROBBED), mapped to ledger items.
@@ -312,6 +317,7 @@ impl Dragons {
             players: BTreeMap::new(),
             index: PreyIndex::default(),
             by_entity: BTreeMap::new(),
+            adopted: BTreeMap::new(),
             dying_by_body: false,
             items: BTreeMap::new(),
             herd_bodies: BTreeMap::new(),
@@ -2219,6 +2225,7 @@ impl Dragons {
                     ));
                 }
                 self.by_entity.retain(|_, v| *v != d);
+                self.adopted.retain(|_, v| *v != d);
                 let leaving = matches!(self.dragons[d].state, State::Leaving { .. });
                 let what = format!("captured (health {:.0}, hunger {})", m.health, m.hunger);
                 self.note(at, "capture", Some(d), what);
@@ -2746,6 +2753,12 @@ impl Dragons {
         if self.by_entity.contains_key(&u.entity) {
             return;
         }
+        if let Some(&d) = self.adopted.get(&u.entity)
+            && self.dragons.contains(d)
+        {
+            self.adopt_again(w, d, u, at);
+            return;
+        }
         let lair = (u.lair != 0).then(|| self.lair_of_key(u.lair)).flatten();
         let discard = match u.spawn {
             SpawnKind::Natural | SpawnKind::Spawner => Some(1),
@@ -2799,6 +2812,7 @@ impl Dragons {
             home,
         }));
         self.by_entity.insert(u.entity, d);
+        self.adopted.insert(u.entity, d);
         let plan = self.bump(d);
         let _ = plan;
         self.cancel_leg(w, d);
@@ -2811,6 +2825,42 @@ impl Dragons {
             purpose: Purpose::Home,
             harass: false,
         };
+    }
+
+    /// An entity the engine adopted before, reported untagged again: the same dragon takes the
+    /// body back under a new epoch, where the body is (its abstract self is dropped where it
+    /// was), and it is embodied until the plugin hands it back.
+    fn adopt_again(&mut self, w: &mut World, d: DragonId, u: &boundary::Untagged, at: Tick) {
+        self.stats.adopted += 1;
+        self.bump(d);
+        self.cancel_leg(w, d);
+        let x = self.dragons.get_mut(d).expect("live");
+        let epoch = x.epoch + 1;
+        x.epoch = epoch;
+        x.rest = Some((
+            Pos::new(u.dimension as u16, u.pos.0 as i32, u.pos.2 as i32),
+            u.pos.1 as i32,
+        ));
+        x.state = State::Embodied {
+            epoch,
+            since: at,
+            depart_at: Tick(u64::MAX),
+            purpose: Purpose::Home,
+            harass: false,
+        };
+        let lair = x.lair;
+        let home = lair.map_or((0, 0, 0), |l| {
+            let l = &self.lairs[l as usize];
+            (l.pos.x, l.y, l.pos.z)
+        });
+        self.outbox.push(Cmd::Adopt(boundary::Adopt {
+            entity: u.entity,
+            agent: agent_of(d),
+            epoch,
+            flags: lair.is_some() as u32,
+            home,
+        }));
+        self.by_entity.insert(u.entity, d);
     }
 
     /// A player robbed a lair's hoard: what the engine's hoard held comes out (the rest was the

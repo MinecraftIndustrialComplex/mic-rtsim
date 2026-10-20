@@ -799,6 +799,12 @@ impl Dragons {
             w.u64(*least);
             w.u64(d.to_bits());
         }
+        w.var_u64(self.adopted.len() as u64);
+        for ((most, least), d) in &self.adopted {
+            w.u64(*most);
+            w.u64(*least);
+            w.u64(d.to_bits());
+        }
         w.bool(self.dying_by_body);
         w.var_u64(self.items.len() as u64);
         for (id, item) in &self.items {
@@ -885,6 +891,10 @@ impl Dragons {
         for _ in 0..r.len_prefix(24)? {
             let uuid = (r.u64()?, r.u64()?);
             d.by_entity.insert(uuid, h(r)?);
+        }
+        for _ in 0..r.len_prefix(24)? {
+            let uuid = (r.u64()?, r.u64()?);
+            d.adopted.insert(uuid, h(r)?);
         }
         d.dying_by_body = r.bool()?;
         for _ in 0..r.len_prefix(6)? {

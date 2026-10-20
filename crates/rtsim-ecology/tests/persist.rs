@@ -240,3 +240,53 @@ proptest! {
         prop_assert_eq!(wa.save(), wb.save());
     }
 }
+
+/// Review 3: an untagged spawn-egg dragon reported again after a crash (its DRAGON_ADOPT never
+/// reached a world save, so the body comes back untagged) is the dragon the engine already
+/// adopted, under a new epoch, never a second one.
+#[test]
+fn an_untagged_dragon_reported_again_after_a_restart_is_adopted_once() {
+    let seed = 8;
+    let (mut w, _) = synth::world(seed);
+    let mut d = Dragons::new(seed, DragonTunables::default(), Tick::ZERO);
+    let u = Obs::Untagged(boundary::Untagged {
+        entity: (0xE66, 0x2),
+        spawn: boundary::SpawnKind::SpawnEgg,
+        species: Species::Ice,
+        dimension: 0,
+        flags: 0,
+        age_ticks: (60 * TICKS_PER_DAY) as i32,
+        hunger: 70,
+        gender: Gender::Male,
+        variant: 2,
+        home: (0, 0, 0),
+        lair: 0,
+        pos: (120.0, 80.0, -40.0),
+    });
+    let adopt = |cmds: Vec<Cmd>| {
+        cmds.into_iter()
+            .find_map(|c| match c {
+                Cmd::Adopt(a) => Some(a),
+                _ => None,
+            })
+            .expect("an adoption")
+    };
+    d.ingest(&mut w, &mut NoInfrastructure, &u, Tick(100));
+    let first = adopt(d.take_commands());
+    assert_eq!(d.dragons.len(), 1);
+
+    let (mut w2, mut d2) = restart(&w, &d, seed);
+    d2.session_start(&mut w2, Tick(5_000));
+    d2.ingest(&mut w2, &mut NoInfrastructure, &u, Tick(5_100));
+    let again = adopt(d2.take_commands());
+    assert_eq!(d2.dragons.len(), 1, "no second dragon");
+    assert_eq!(again.agent, first.agent, "the same dragon");
+    assert!(again.epoch > first.epoch, "under a new epoch");
+    // Reported a third time while embodied in this session: nothing more.
+    d2.ingest(&mut w2, &mut NoInfrastructure, &u, Tick(5_200));
+    assert!(
+        d2.take_commands()
+            .iter()
+            .all(|c| !matches!(c, Cmd::Adopt(_)))
+    );
+}
