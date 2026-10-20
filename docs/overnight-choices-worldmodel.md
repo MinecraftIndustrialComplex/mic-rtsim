@@ -88,7 +88,43 @@ Checked in NeoForm's decompiled 1.21.1 sources with NeoForge 21.1.249's patches
 
 ## Results
 
-RESULTS_PLACEHOLDER
+- **Rust** (with origin/main merged, the conflict in the native engine and the kernel follow-ups):
+  `cargo test --workspace` 467 passed, 0 failed (6 ignored); `cargo clippy --workspace
+  --all-targets -- -D warnings` and `cargo fmt --all --check` clean. New tests:
+  - rtsim-space (7): the records round-trip; cells, regions and points; area queries on a painted
+    world (known, water, land, degrees, vegetation, a quad straddling a shore, creatures); latest
+    wins and generation counts only rise; pages round-trip to the same state hash, a second save
+    writes no region, a change writes one, a truncated page is refused; a region's memory.
+  - rtsim-ecology (4 unit, 3 + 1 ignored integration): water and unknown ground closed and land
+    open; a plains region founds one herd of a plains species on open ground, the same every time,
+    an all-sea region is barren, an unknown one not yet judged; species follow the spawn data
+    (goats on snowy slopes, nothing in a desert); chunk-generation animals weigh the draw and floor
+    the count. **`a_herd_never_plans_across_water`**: four herds of 3,000 sheep west of a sea strait
+    for two sim years, every route sampled every 8 blocks never in the strait nor in a closed cell;
+    without a land bridge none reaches the richer east, with one they all go round by it.
+    **`a_herd_never_plans_into_unknown_ground`**, **`herds_founded_per_region_stand_on_land_and_stay_there`**
+    (an archipelago of 3 x 3 regions: herds founded on land, goats on the snowy island, every route on
+    open ground for a year); the ignored decision-cost measure.
+  - rtsim-ships (2): **`a_sea_lane_never_crosses_land`** (the synthetic coast sampled as the bridge
+    would, one point per chunk: every sea lane over known water every 8 blocks, one lane bending round
+    the island); `unknown_water_is_never_sailed`.
+  - rtsim-jni protocol (1): `habitat_cells_found_a_herd_on_land_and_are_listed_again_after_a_restart`
+    (a fresh engine's list is END alone; 64 cells of a region with a sea quarter found one herd, a cow
+    herd at (192, 64) on land; the same cells again change nothing and found nothing more; after a
+    save, a flood, and a crash, the pages read back to their state hash and the engine lists the 64
+    saved fingerprints, so exactly the 16 flooded cells differ and would be sent again; the herd came
+    back, not a second one).
+- **GameTests, core** (`run-gametest` moved aside before each run, so each is a fresh world):
+  - stub engine: 48 of 48 (`habitatIsSentForAGeneratedArea` passes; the native-only tests skip);
+  - native engine: 48 of 48. `aHerdFoundedFromTheHabitatWalksOnLand`: a herd of 50 founded on the
+    land half (the sea west of it), 32 animals materialized beside the player, 9,600 animal-ticks
+    watched, none in the sea. `habitatIsSentForAGeneratedArea`: four cells, once each, the changed
+    one again, the unchanged one not; the engine's world model holds each with its fingerprint.
+  - Before X2-24 the native suite failed one test of 48 twice, the live caravan test (above).
+- **The sampler's cost** (bench/results/habitat-sampler.md, native, warm): 8.5 µs a cell on average,
+  0.53 µs a chunk; 229 µs a cell the first time a biome is seen in a session; the chunk-load hook
+  1.3 µs a load. A fully sampled region costs the engine about 6 KB. A herd's decision on the world
+  model, with the forage-cell cache: 507 µs (853 µs on the uniform climate).
 
 ## Not done
 
