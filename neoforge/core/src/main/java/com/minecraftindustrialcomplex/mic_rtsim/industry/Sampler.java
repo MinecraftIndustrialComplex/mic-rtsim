@@ -53,6 +53,7 @@ public final class Sampler {
                 current = null;
         }
         d.nextSweepAt = Math.min(d.nextSweepAt, ind.gameTime());
+        ind.glass.revisionChanged(d); // a new revision (or a removal) recompiles the glass box's graph
     }
 
     void chunkUnloaded(District d) {
@@ -181,6 +182,7 @@ public final class Sampler {
 
     private void finish(ServerLevel level, District d, long now) {
         deposits(level, d, now);
+        ind.glass.swept(level, d, now, d.sweepNo); // probed buffers (IND_PROBE_SAMPLE), not counted in the sweep (GB3)
         if (d.sweepLive && !ind.districts.allTicking(d))
             d.sweepLive = false;
         int flags = d.sweepLive ? IndRecords.SweepEnd.FLAG_LIVE : 0;

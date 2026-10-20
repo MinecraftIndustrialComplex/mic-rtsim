@@ -244,6 +244,7 @@ public final class Districts {
         r.putInt(IndRecords.Edit.Y, pos.getY());
         r.putInt(IndRecords.Edit.Z, pos.getZ());
         ind.commit(r);
+        ind.glass.edited(d); // an edit recompiles the glass box's graph (GLASSBOX.md §1.5)
     }
 
     public void discard(District d, int reason) {

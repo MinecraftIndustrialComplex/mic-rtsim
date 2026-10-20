@@ -217,6 +217,15 @@ public final class GlassCompiler {
             abort("new revision");
     }
 
+    /** The module came back on (U10): resend every compile and report every ticking chunk again. */
+    public void forgetAnnounced() {
+        for (State st : states.values()) {
+            st.ticking.clear();
+            if (st.end != null)
+                st.resendAt = 0;
+        }
+    }
+
     /** Asks for a compile of {@code d} now (commands, GameTests). */
     public void requestCompile(District d) {
         State st = state(d);
