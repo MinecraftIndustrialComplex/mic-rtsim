@@ -49,6 +49,7 @@ use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament};
 use rtsim_knowledge::{Trait, witnesses};
+use rtsim_space::topology::{Iso, SharedTopologies, Topology};
 use rtsim_trade::{Amount, GoodId, MILLI, Price};
 use rtsim_travel::Medium;
 use rtsim_travel::legs::{LegId, LegIndex, Meeting, Owner, Path, Stamp};
@@ -400,6 +401,9 @@ pub struct Ships {
     pub log: Vec<LogEntry>,
     pub(crate) now: Tick,
     pub(crate) built: bool,
+    /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
+    /// Lanes are built under the topology the network sees when it is built.
+    pub topo: SharedTopologies,
 }
 
 fn day_of(t: Tick) -> f64 {
@@ -487,7 +491,106 @@ impl Ships {
             log: Vec::new(),
             now,
             built: false,
+            topo: rtsim_space::topology::all_flat(),
         }
+    }
+
+    /// Hands the engine every frame's topology (TP6). The lane index is rebuilt.
+    pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if *t != *self.topo {
+            self.topo = t;
+            self.lane_cells.clear();
+            for l in 0..self.lanes.len() as u32 {
+                self.index_lane(l);
+            }
+        }
+    }
+
+    /// The topology of `frame`.
+    pub fn topo(&self, frame: u16) -> &Topology {
+        self.topo.of(frame)
+    }
+
+    /// Distance in whole blocks through every seam; on the plane the old straight line.
+    fn sdist(&self, frame: u16, a: (i32, i32), b: (i32, i32)) -> u64 {
+        let t = self.topo(frame);
+        if t.is_flat() {
+            return dist(a, b);
+        }
+        t.dist(
+            (i64::from(a.0), i64::from(a.1)),
+            (i64::from(b.0), i64::from(b.1)),
+        )
+        .round() as u64
+    }
+
+    /// The canonical point `s` blocks along a lane (its path is a chart polyline).
+    fn lane_at(&self, ln: &Lane, s: u64) -> (i32, i32) {
+        let p = ln.path.at(s);
+        self.topo(ln.frame).canonical_i32(p.0, p.1)
+    }
+
+    /// A straight leg between two points of one chart, from the first's canonical position
+    /// (TP7).
+    #[allow(clippy::too_many_arguments)]
+    fn chart_leg(
+        &self,
+        frame: u16,
+        a: (i32, i32),
+        b: (i32, i32),
+        t0: Tick,
+        t1: Tick,
+        radius: u32,
+    ) -> Path {
+        let f = self.topo(frame).fold(i64::from(a.0), i64::from(a.1));
+        let b = f.iso.cell(i64::from(b.0), i64::from(b.1));
+        Path {
+            frame,
+            x0: f.x as i32,
+            z0: f.z as i32,
+            x1: b.0 as i32,
+            z1: b.1 as i32,
+            t0,
+            t1,
+            radius,
+        }
+    }
+
+    /// Where a service's ship is at `t`, canonical, with its lane chart's motion there.
+    fn fix_of(&self, s: u32, offset: u64, t: Tick) -> timetable::Fix {
+        self.services[s as usize].fix_in(&self.topo, &self.lanes, &self.docks, offset, t)
+    }
+
+    /// A lane's waypoints from `from`'s end, moved into a body's frame by `to_body` (lane chart
+    /// → the bodies' frame, TP11).
+    fn body_waypoints(&self, ln: &Lane, forward: bool, to_body: Iso) -> Vec<(i32, i32)> {
+        let pts = if forward {
+            ln.path.pts.clone()
+        } else {
+            ln.path.reversed().pts
+        };
+        if to_body.is_identity() {
+            return pts;
+        }
+        pts.into_iter()
+            .map(|p| {
+                let q = to_body.cell(i64::from(p.0), i64::from(p.1));
+                (q.0 as i32, q.1 as i32)
+            })
+            .collect()
+    }
+
+    /// Whether a lane's path crosses an edge_stop seam (TP12): no ship body sails it.
+    fn lane_crosses_stop(&self, ln: &Lane) -> bool {
+        let t = self.topo(ln.frame);
+        if !t.any_stopped() {
+            return false;
+        }
+        ln.path.pts.windows(2).any(|w| {
+            let f = t.fold(i64::from(w[0].0), i64::from(w[0].1));
+            let b = f.iso.cell(i64::from(w[1].0), i64::from(w[1].1));
+            t.stopped_crossing((f.x, f.z), b).is_some()
+        })
     }
 
     pub fn now(&self) -> Tick {
@@ -646,8 +749,8 @@ impl Ships {
         let mut lanes: Vec<u32> = (0..self.lanes.len() as u32)
             .filter(|&l| {
                 let ln = &self.lanes[l as usize];
-                let mid = ln.path.at(ln.path.length() / 2);
-                ln.frame == hv.frame && dist(mid, (hx, hz)) as i64 <= r
+                let mid = self.lane_at(ln, ln.path.length() / 2);
+                ln.frame == hv.frame && self.sdist(ln.frame, mid, (hx, hz)) as i64 <= r
             })
             .collect();
         lanes.sort_unstable();
@@ -722,9 +825,16 @@ impl Ships {
                 .push(i as u32);
         }
         let mut loops_all: Vec<Loop> = Vec::new();
-        for (_, group) in groups {
-            let cands =
-                network::candidate_lanes(&self.docks, &group, &self.tun, mask, &mut self.lints);
+        for ((frame, _), group) in groups {
+            let topo = self.topo.clone();
+            let cands = network::candidate_lanes(
+                &self.docks,
+                &group,
+                &self.tun,
+                mask,
+                &mut self.lints,
+                topo.of(frame),
+            );
             let mut ids = Vec::new();
             for c in cands {
                 ids.push(self.push_lane(c.a, c.b, c.path));
@@ -769,21 +879,28 @@ impl Ships {
     pub(crate) fn index_lane(&mut self, l: u32) {
         let ln = &self.lanes[l as usize];
         let mut cells = BTreeSet::new();
+        let t = self.topo.of(ln.frame);
         for w in ln.path.pts.windows(2) {
             let (a, b) = (w[0], w[1]);
-            let (ra, rb) = (
-                LegIndex::region_of(i64::from(a.0.min(b.0)), i64::from(a.1.min(b.1))),
-                LegIndex::region_of(i64::from(a.0.max(b.0)), i64::from(a.1.max(b.1))),
+            // The segment's box in the lane's chart, folded onto canonical regions (TP8).
+            let r = rtsim_space::topology::Rect::spanning(
+                (i64::from(a.0), i64::from(a.1)),
+                (i64::from(b.0), i64::from(b.1)),
+                0,
             );
-            for rx in ra.0..=rb.0 {
-                for rz in ra.1..=rb.1 {
-                    cells.insert((ln.frame, rx, rz));
+            for part in t.fold_rect(r) {
+                let (x0, z0, x1, z1) = part.grid_cells(rtsim_travel::legs::REGION_BLOCKS);
+                for rx in x0..=x1 {
+                    for rz in z0..=z1 {
+                        cells.insert((ln.frame, rx, rz));
+                    }
                 }
             }
         }
         if ln.path.pts.len() == 1 {
             let p = ln.path.pts[0];
-            let r = LegIndex::region_of(i64::from(p.0), i64::from(p.1));
+            let (x, z) = t.canonical(i64::from(p.0), i64::from(p.1));
+            let r = LegIndex::region_of(x, z);
             cells.insert((ln.frame, r.0, r.1));
         }
         for c in cells {
@@ -938,13 +1055,21 @@ impl Ships {
             .iter()
             .enumerate()
             .filter(|(i, o)| *i as u32 != dock && o.medium == d.medium && o.frame == d.frame)
-            .map(|(i, o)| (dist(o.xz(), d.xz()), i as u32))
+            .map(|(i, o)| (self.sdist(d.frame, o.xz(), d.xz()), i as u32))
             .collect();
         others.sort_unstable();
         for (_, o) in others.into_iter().take(4) {
             let mut lints = NetworkLints::default();
             let group = vec![dock.min(o), dock.max(o)];
-            let c = network::candidate_lanes(&self.docks, &group, &self.tun, mask, &mut lints);
+            let topo = self.topo.clone();
+            let c = network::candidate_lanes(
+                &self.docks,
+                &group,
+                &self.tun,
+                mask,
+                &mut lints,
+                topo.of(d.frame),
+            );
             let Some(c) = c.into_iter().next() else {
                 continue;
             };
@@ -1145,10 +1270,11 @@ impl Ships {
         }
         let ln = &self.lanes[l as usize];
         let hv = &self.havens[h as usize];
-        let mid = ln.path.at(ln.path.length() / 2);
+        let mid = self.lane_at(ln, ln.path.length() / 2);
         let speed = self.tun.medium(ln.medium).speed;
         let q = w.cfg.trade.quantum;
-        let home = (dist(mid, (hv.dock.0, hv.dock.2)) as f64 / speed.max(1e-6)).ceil() as u64;
+        let home = (self.sdist(ln.frame, mid, (hv.dock.0, hv.dock.2)) as f64 / speed.max(1e-6))
+            .ceil() as u64;
         let edge = ln.edge;
         let lag = w.edges[edge as usize].lag();
         let delay = lag + q.covering(home.max(1));
@@ -1206,8 +1332,10 @@ impl Ships {
         let window = w.legs.window_ticks();
         let keep = self.players.get(&p).and_then(|v| v.interest).and_then(|s| {
             let row = w.legs.get(s.leg).filter(|r| r.generation == s.generation)?;
-            let (dx, dz) = (row.path.x0 - pos.x, row.path.z0 - pos.z);
-            let moved = i64::from(dx).pow(2) + i64::from(dz).pow(2);
+            let moved = self.topo(pos.frame).dist_sq(
+                (i64::from(row.path.x0), i64::from(row.path.z0)),
+                (i64::from(pos.x), i64::from(pos.z)),
+            ) as i64;
             let quarter = i64::from(self.tun.view_radius / 4).pow(2);
             (row.path.frame == pos.frame && moved <= quarter && row.path.t1.0 >= at.0 + window)
                 .then_some(s)
@@ -1292,20 +1420,19 @@ impl Ships {
     fn book_voyages_in_view(&mut self, w: &mut World, path: Path) {
         self.stats.interest_bookings += 1;
         let r = i64::from(path.radius) + i64::from(self.tun.body_radius);
-        let (x0, z0) = (
-            i64::from(path.x0.min(path.x1)) - r,
-            i64::from(path.z0.min(path.z1)) - r,
+        let bbox = rtsim_space::topology::Rect::spanning(
+            (i64::from(path.x0), i64::from(path.z0)),
+            (i64::from(path.x1), i64::from(path.z1)),
+            r,
         );
-        let (x1, z1) = (
-            i64::from(path.x0.max(path.x1)) + r,
-            i64::from(path.z0.max(path.z1)) + r,
-        );
-        let (ra, rb) = (LegIndex::region_of(x0, z0), LegIndex::region_of(x1, z1));
         let mut lanes = BTreeSet::new();
-        for rx in ra.0..=rb.0 {
-            for rz in ra.1..=rb.1 {
-                if let Some(v) = self.lane_cells.get(&(path.frame, rx, rz)) {
-                    lanes.extend(v.iter().copied());
+        for part in self.topo(path.frame).fold_rect(bbox) {
+            let (x0, z0, x1, z1) = part.grid_cells(rtsim_travel::legs::REGION_BLOCKS);
+            for rx in x0..=x1 {
+                for rz in z0..=z1 {
+                    if let Some(v) = self.lane_cells.get(&(path.frame, rx, rz)) {
+                        lanes.extend(v.iter().copied());
+                    }
                 }
             }
         }
@@ -1458,16 +1585,7 @@ impl Ships {
             if t1 < 0 {
                 continue;
             }
-            out.push(Path {
-                frame,
-                x0: a.0,
-                z0: a.1,
-                x1: b.0,
-                z1: b.1,
-                t0: tick_of(t0),
-                t1: tick_of(t1),
-                radius,
-            });
+            out.push(self.chart_leg(frame, a, b, tick_of(t0), tick_of(t1), radius));
         }
         Some((out, t))
     }
@@ -1561,11 +1679,16 @@ impl Ships {
                 }
                 self.stats.seen_pirates += 1;
                 let leg = self.ships[ship].pirate.as_ref().and_then(|p| p.leg);
+                let frame = self.ships[ship].frame;
                 let pos = leg
                     .and_then(|s| w.legs.get(s.leg))
-                    .map(|r| r.path.at(at))
+                    .map(|r| {
+                        let p = r.path.at(at);
+                        self.topo(frame).canonical(p.0, p.1)
+                    })
                     .unwrap_or((0, 0));
-                self.materialize_pirate(ship, (pos.0 as i32, pos.1 as i32), 0, player, at);
+                let viewer = self.viewer_pos(w, player);
+                self.materialize_pirate(ship, (pos.0 as i32, pos.1 as i32), 0, player, viewer, at);
             }
             Ev::Unbook { ship, voyage } => self.unbook(w, ship, voyage),
             Ev::NextLeg { ship, epoch } => self.next_leg(w, ship, epoch, at),
@@ -1709,7 +1832,7 @@ impl Ships {
         let Some(s) = x.service else {
             return;
         };
-        let fix = self.services[s as usize].fix(&self.lanes, &self.docks, x.offset, at);
+        let fix = self.fix_of(s, x.offset, at);
         if fix.voyage != voyage {
             self.stats.seen_stale += 1;
             return;
@@ -1771,17 +1894,33 @@ impl Ships {
         let sv = &self.services[s as usize];
         let g = sv.legs[fix.leg];
         let ln = &self.lanes[g.hop.lane as usize];
+        // A ship body never sails a lane across an edge_stop seam (TP12); it appears at the image
+        // of its position on the player's side (TP11), its waypoints moved there with it.
+        let t = self.topo(x.frame);
+        let viewer = self.viewer_pos(w, player);
+        let here = (i64::from(fix.x), i64::from(fix.z));
+        let image = if self.lane_crosses_stop(ln) {
+            None
+        } else {
+            t.embodied_image(viewer.unwrap_or(here), here)
+        };
+        let Some((spawn, to_body)) = image else {
+            self.stats.seen_stale += 1;
+            self.note(
+                at,
+                "seen",
+                Some(id),
+                "stays abstract: its lane crosses an edge_stop seam, or it is across one".into(),
+            );
+            return;
+        };
+        let waypoints = self.body_waypoints(ln, g.hop.forward, to_body.compose(fix.chart));
         let mt = self.tun.medium(x.medium);
         let (role, body, crew_body) = match x.role {
             Role::Navy { .. } => (WireRole::Navy, mt.navy_body, mt.navy_crew_body),
             _ => (WireRole::Merchant, mt.merchant_body, mt.merchant_crew_body),
         };
         let cargo = self.cargo_of(w, id, fix.voyage);
-        let waypoints = if g.hop.forward {
-            ln.path.pts.clone()
-        } else {
-            ln.path.reversed().pts
-        };
         let mut members = vec![Member {
             body: body_id(&self.tun, body),
             flags: 0,
@@ -1803,7 +1942,7 @@ impl Ships {
             body: body_id(&self.tun, body),
             dimension: u32::from(x.frame),
             flags,
-            pos: (f64::from(fix.x), f64::from(fix.y), f64::from(fix.z)),
+            pos: (spawn.0 as f64, f64::from(fix.y), spawn.1 as f64),
             medium: x.medium,
             role,
             phase: fix.phase as u8,
@@ -1872,14 +2011,31 @@ impl Ships {
             return;
         };
         let sv = &self.services[s as usize];
-        let fix = sv.fix(&self.lanes, &self.docks, x.offset, at);
+        let fix = sv.fix_in(&self.topo, &self.lanes, &self.docks, x.offset, at);
         let g = sv.legs[fix.leg];
         let ln = &self.lanes[g.hop.lane as usize];
-        let waypoints = if g.hop.forward {
-            ln.path.pts.clone()
-        } else {
-            ln.path.reversed().pts
-        };
+        if self.lane_crosses_stop(ln) {
+            // Its next lane crosses an edge_stop seam: the body sails off and is captured before
+            // it would meet the border; the voyage goes on abstract (TP12).
+            let (pos, y) = ((fix.x, fix.z), self.cruise_y_of(id));
+            self.outbox.push(Cmd::Depart(boundary::Depart {
+                agent: Ship::agent(id),
+                epoch,
+                reason: 5,
+                timeout_ticks: 600,
+                pos: (f64::from(pos.0), f64::from(y), f64::from(pos.1)),
+            }));
+            self.note(
+                at,
+                "depart",
+                Some(id),
+                "its next lane crosses an edge_stop seam".into(),
+            );
+            return;
+        }
+        // In the lane's chart (from its first dock, canonical): the plugin steers each waypoint
+        // by its image nearest the body (TP11).
+        let waypoints = self.body_waypoints(ln, g.hop.forward, Iso::IDENTITY);
         let td = &self.docks[g.to_dock as usize];
         self.outbox.push(Cmd::Timetable(boundary::Timetable {
             agent: Ship::agent(id),
@@ -1932,7 +2088,7 @@ impl Ships {
         let Some(s) = x.service else {
             return false;
         };
-        let fix = self.services[s as usize].fix(&self.lanes, &self.docks, x.offset, at);
+        let fix = self.fix_of(s, x.offset, at);
         if x.promoted.is_some_and(|p| p.voyage == fix.voyage) {
             return true;
         }
@@ -2079,7 +2235,8 @@ impl Ships {
         let leg = self.ships[s].pirate.as_ref().and_then(|p| p.leg);
         if let Some(r) = leg.and_then(|l| w.legs.get(l.leg)) {
             let p = r.path.at(at);
-            return (p.0 as i32, p.1 as i32);
+            let (x, z) = self.topo(r.path.frame).canonical(p.0, p.1);
+            return (x as i32, z as i32);
         }
         let h = self.haven_of(s).unwrap_or(0) as usize;
         let d = self.havens[h].dock;
@@ -2125,7 +2282,15 @@ impl Ships {
     fn sail_path(&self, s: ShipId, from: (i32, i32), to: (i32, i32), at: Tick) -> Path {
         let x = &self.ships[s];
         let speed = self.tun.medium(x.medium).speed;
-        let ticks = ((dist(from, to) as f64 / speed.max(1e-6)).ceil() as u64).max(1);
+        let ticks = ((self.sdist(x.frame, from, to) as f64 / speed.max(1e-6)).ceil() as u64).max(1);
+        // The short way: the leg ends at the image of `to` nearest `from` (TP7).
+        let to = {
+            let t = self.topo(x.frame).toward(
+                (i64::from(from.0), i64::from(from.1)),
+                (i64::from(to.0), i64::from(to.1)),
+            );
+            (t.0 as i32, t.1 as i32)
+        };
         Path {
             frame: x.frame,
             x0: from.0,
@@ -2187,8 +2352,8 @@ impl Ships {
             // Bold captains mind patrols less: the survival share is raised to a power from 2
             // (timid) to 0 (reckless).
             let exp = 2.0 - f64::from(tm.bold) / 128.0;
-            let mid = ln.path.at(ln.path.length() / 2);
-            let far = 1.0 + dist(mid, home) as f64 / 2_000.0;
+            let mid = self.lane_at(ln, ln.path.length() / 2);
+            let far = 1.0 + self.sdist(ln.frame, mid, home) as f64 / 2_000.0;
             let greed = f64::from(tm.bend(Trait::Aggressive, 1000, 50)) / 1000.0;
             let wgt = vol as f64 * surv.powf(exp.max(0.0)) * greed / far;
             if wgt > 0.0 {
@@ -2219,7 +2384,7 @@ impl Ships {
             r -= wgt;
         }
         let ln = &self.lanes[pick as usize];
-        let mid = ln.path.at(ln.path.length() / 2);
+        let mid = self.lane_at(ln, ln.path.length() / 2);
         let from = self.pirate_pos(w, s, at);
         let path = self.sail_path(s, from, mid, at);
         let arrive = path.t1;
@@ -2300,7 +2465,7 @@ impl Ships {
         }
         self.stats.hunts += 1;
         let ln = &self.lanes[lane as usize];
-        let mid = ln.path.at(ln.path.length() / 2);
+        let mid = self.lane_at(ln, ln.path.length() / 2);
         let stay = Path {
             frame: ln.frame,
             x0: mid.0,
@@ -2354,7 +2519,7 @@ impl Ships {
             return;
         }
         let ln = &self.lanes[lane as usize];
-        let mid = ln.path.at(ln.path.length() / 2);
+        let mid = self.lane_at(ln, ln.path.length() / 2);
         let frame = ln.frame;
         let x = &self.ships[s];
         let class = match x.medium {
@@ -2553,15 +2718,34 @@ impl Ships {
         self.schedule(until, Ev::Decide { ship: s, plan });
     }
 
+    /// Where a player is, as the centre of its interest area in the shared leg index.
+    fn viewer_pos(&self, w: &World, p: ActorId) -> Option<(i64, i64)> {
+        let s = self.players.get(&p)?.interest?;
+        let r = w.legs.get(s.leg)?;
+        Some((i64::from(r.path.x0), i64::from(r.path.z0)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn materialize_pirate(
         &mut self,
         s: ShipId,
         pos: (i32, i32),
         target: u64,
         player: ActorId,
+        viewer: Option<(i64, i64)>,
         at: Tick,
     ) {
         let x = &self.ships[s];
+        // The image on the player's side (TP11); never across an edge_stop seam (TP12). The
+        // player's position is its interest area's centre, kept in the shared leg index.
+        let t = self.topo(x.frame);
+        let _ = player;
+        let here = (i64::from(pos.0), i64::from(pos.1));
+        let Some((spawn, _)) = t.embodied_image(viewer.unwrap_or(here), here) else {
+            self.stats.seen_stale += 1;
+            return;
+        };
+        let pos = (spawn.0 as i32, spawn.1 as i32);
         let mt = self.tun.medium(x.medium);
         let mut members = vec![Member {
             body: body_id(&self.tun, mt.pirate_body),
@@ -2650,8 +2834,7 @@ impl Ships {
         let Some(vs) = self.ships[victim].service else {
             return;
         };
-        let fix =
-            self.services[vs as usize].fix(&self.lanes, &self.docks, self.ships[victim].offset, at);
+        let fix = self.fix_of(vs, self.ships[victim].offset, at);
         if fix.voyage != voyage || fix.phase == Phase::Dock {
             self.stats.stale += 1;
             return;
@@ -2673,7 +2856,8 @@ impl Ships {
                     target: Ship::agent(victim),
                 }));
             } else {
-                self.materialize_pirate(p, pos, Ship::agent(victim), player, at);
+                let viewer = self.viewer_pos(w, player);
+                self.materialize_pirate(p, pos, Ship::agent(victim), player, viewer, at);
             }
             self.note(
                 at,
@@ -2863,7 +3047,7 @@ impl Ships {
         };
         match x.service {
             Some(sv) => {
-                let f = self.services[sv as usize].fix(&self.lanes, &self.docks, x.offset, at);
+                let f = self.fix_of(sv, x.offset, at);
                 (f.x, f.z)
             }
             None => self.pirate_pos(w, s, at),

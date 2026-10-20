@@ -22,6 +22,7 @@
 //! services of a loop cruise at different heights.
 
 use rtsim_kernel::clock::Tick;
+use rtsim_space::topology::{Iso, Topologies};
 use rtsim_travel::Medium;
 use serde::Serialize;
 
@@ -106,6 +107,9 @@ pub struct Fix {
     /// When this voyage's dock stay began, its departure, its cruise, its approach and its
     /// arrival, in ticks (signed: the first voyage may have started before tick 0).
     pub times: VoyageTimes,
+    /// The motion from the lane's chart to the canonical frame at this fix (TP7): the identity
+    /// from [`Service::fix`], the fold from [`Service::fix_in`].
+    pub chart: Iso,
 }
 
 /// A voyage's phase boundaries in absolute ticks.
@@ -294,7 +298,29 @@ impl Service {
             y,
             guide_y,
             times,
+            chart: Iso::IDENTITY,
         }
+    }
+
+    /// [`Service::fix`] on a world with seams: the position is canonical, and `chart` says how
+    /// the lane's chart maps onto it there.
+    pub fn fix_in(
+        &self,
+        topo: &Topologies,
+        lanes: &[Lane],
+        docks: &[Dock],
+        offset: u64,
+        t: Tick,
+    ) -> Fix {
+        let mut f = self.fix(lanes, docks, offset, t);
+        let s = t.0 + offset;
+        let j = self.leg_at(s % self.period);
+        let frame = lanes[self.legs[j].hop.lane as usize].frame;
+        let fold = topo.of(frame).fold(i64::from(f.x), i64::from(f.z));
+        f.x = fold.x as i32;
+        f.z = fold.z as i32;
+        f.chart = fold.iso;
+        f
     }
 
     /// Voyages of a ship with clock offset `offset` on hop `j` whose span from dock stay to
