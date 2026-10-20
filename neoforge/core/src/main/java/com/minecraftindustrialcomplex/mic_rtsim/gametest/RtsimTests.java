@@ -37,7 +37,15 @@ public final class RtsimTests {
      */
     public static final String TEMPLATE = "arena";
 
-    private static final AtomicLong NEXT_AGENT = new AtomicLong(10_000);
+    /**
+     * Agent ids start at a random base each server run. The GameTest world is reused (B37), so a run
+     * starts by replaying what the last one journaled after its final hand-over (its shutdown
+     * captures), and any journal the engine's pages do not include (a world first run on the stub,
+     * then on the native engine): those records name the last run's agents, and must never be
+     * mistaken for this run's. Far below the {@code /rtsim stub caravan} ids (2^40).
+     */
+    private static final AtomicLong NEXT_AGENT = new AtomicLong(
+            10_000 + 1_000_000L * java.util.concurrent.ThreadLocalRandom.current().nextInt(1, 1 << 19));
 
     public static long newAgent() {
         return NEXT_AGENT.getAndIncrement();
