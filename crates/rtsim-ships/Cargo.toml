@@ -1,0 +1,24 @@
+[package]
+name = "rtsim-ships"
+description = "mic-rtsim's ships: timetabled sky and sea ships between ports, pirates, havens and navies (PLAN.md §10.1; C5, C24, C25)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+rtsim-kernel.workspace = true
+rtsim-settle.workspace = true
+rtsim-trade.workspace = true
+rtsim-travel.workspace = true
+rtsim-knowledge.workspace = true
+rtsim-world.workspace = true
+rtsim-industry.workspace = true
+rtsim-ecology.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
