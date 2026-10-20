@@ -1,0 +1,95 @@
+P4 storage bench, profile pinned2, 2026-10-20T09:38:52Z, commit 17fe4be9777e
+rustc 1.98.1 (48a229cea 2026-09-01); bevy_ecs 0.20.0 (features: default-features = false, features = ["std"]); cargo bench profile (inherits release: opt-level 3, lto thin, panic unwind, debug line-tables-only)
+AMD RYZEN AI MAX PRO 390 w/ Radeon 8050S, 24 logical CPUs, allowed 20,22, nice 10, load before 8.37 6.93 6.15 6/4291 1384180 / after 6.08 6.53 6.10 4/4228 1391182
+Median of 7 runs, each at least 200 ms; spread = (max - min) / median; x = ratio to the block's first line. 128 s in all.
+
+a   stream one field: hunger += 1, all rows
+    variant                        unit                         n = 100000                n = 1000000
+    cols                           ns/row                  0.021 ±5% 1.00x            0.022 ±4% 1.00x
+    bevy iter                      ns/row                  0.044 ±3% 2.05x            0.055 ±2% 2.48x
+    bevy contig                    ns/row                  0.051 ±8% 2.37x            0.060 ±2% 2.69x
+    bevy contig bypass             ns/row                  0.022 ±6% 1.01x            0.023 ±5% 1.03x
+
+b   stream two fields: pos += vel, all rows
+    variant                        unit                         n = 100000                n = 1000000
+    cols copy                      ns/row                  0.272 ±3% 1.00x            0.302 ±6% 1.00x
+    cols split (unsafe)            ns/row                  0.227 ±2% 0.83x            0.234 ±4% 0.77x
+    bevy iter                      ns/row                  0.166 ±4% 0.61x            0.183 ±5% 0.60x
+    bevy contig                    ns/row                  0.257 ±3% 0.94x            0.278 ±6% 0.92x
+    bevy contig bypass             ns/row                 0.232 ±11% 0.85x            0.235 ±3% 0.78x
+
+c   random access by stored handle: 10% of rows, read Pos, write Hunger
+    variant                        unit                         n = 100000                n = 1000000
+    cols get + get_mut             ns/lookup               9.657 ±5% 1.00x           13.92 ±11% 1.00x
+    bevy query.get_mut             ns/lookup               6.391 ±6% 0.66x           12.48 ±26% 0.90x
+    bevy world.get + get_mut       ns/lookup               10.16 ±3% 1.05x            18.37 ±8% 1.32x
+
+d   churn: remove 1% and insert 1% of rows, then hunger += 1 on all rows
+    variant                        unit                         n = 100000                n = 1000000
+    cols                           ns/row                 0.392 ±10% 1.00x           1.439 ±16% 1.00x
+    bevy                           ns/row                 1.632 ±54% 4.16x            7.877 ±9% 5.48x
+
+d0  churn alone: remove 1% and insert 1% of rows (per row of the table)
+    variant                        unit                         n = 100000                n = 1000000
+    cols                           ns/row                  0.376 ±5% 1.00x           1.659 ±14% 1.00x
+    bevy                           ns/row                 1.543 ±17% 4.10x           7.919 ±12% 4.77x
+
+d2  tag churn: per step 0.5% of rows lose the tag and 0.5% gain it (tagged stay at ~1%)
+    variant                        unit                         n = 100000                n = 1000000
+    cols flag bit                  ns/change              9.673 ±12% 1.00x           19.54 ±12% 1.00x
+    cols side table                ns/change               7.706 ±8% 0.80x            10.66 ±8% 0.55x
+    bevy table marker              ns/change             103.7 ±28% 10.73x           538.0 ±7% 27.54x
+    bevy sparse marker             ns/change              41.62 ±18% 4.30x           194.1 ±11% 9.94x
+
+e   sparse filter: hunger += 1 on the ~1% of rows with the tag (per tagged row)
+    variant                        unit                         n = 100000                n = 1000000
+    cols flag scan                 ns/tagged               32.68 ±7% 1.00x            33.61 ±8% 1.00x
+    cols side table                ns/tagged              3.501 ±15% 0.11x            5.508 ±9% 0.16x
+    cols flag split (unsafe)       ns/tagged               5.644 ±9% 0.17x            5.850 ±2% 0.17x
+    bevy table marker              ns/tagged              0.052 ±18% 0.00x            0.047 ±4% 0.00x
+    bevy sparse marker             ns/tagged              0.667 ±18% 0.02x            1.270 ±4% 0.04x
+
+f   wide rows: 352-byte notables as four components, wealth += 1 (one 8-byte field)
+    variant                        unit                         n = 100000                n = 1000000
+    cols                           ns/row                  0.086 ±3% 1.00x           0.091 ±11% 1.00x
+    bevy iter                      ns/row                  0.107 ±6% 1.25x            0.115 ±5% 1.27x
+    bevy contig                    ns/row                  0.121 ±8% 1.42x            0.130 ±3% 1.43x
+    bevy contig bypass             ns/row                  0.084 ±3% 0.98x            0.089 ±2% 0.98x
+    aos Vec<352 B struct>          ns/row                  0.608 ±4% 7.11x           1.856 ±3% 20.49x
+
+h   insert cost: build a store of n agent rows (21 B payload)
+    variant                        unit                         n = 100000                n = 1000000
+    cols insert                    ns/row                  15.81 ±2% 1.00x            16.79 ±3% 1.00x
+    bevy spawn                     ns/row                  28.51 ±2% 1.80x            49.10 ±4% 2.92x
+    bevy spawn_batch               ns/row                  18.92 ±5% 1.20x            30.94 ±3% 1.84x
+
+h352 insert cost: build a store of n notable rows (352 B payload)
+    variant                        unit                         n = 100000                n = 1000000
+    cols insert                    ns/row                  106.0 ±9% 1.00x            128.5 ±4% 1.00x
+    bevy spawn                     ns/row                  140.6 ±5% 1.33x            158.5 ±4% 1.23x
+    bevy spawn_batch               ns/row                  97.55 ±6% 0.92x            125.5 ±5% 0.98x
+    aos Vec push                   ns/row                  77.01 ±4% 0.73x            93.72 ±7% 0.73x
+
+g   memory: live heap after building minus before creating the store (counting allocator)
+    kind     variant                       n  payload     heap bytes     B/row  marginal  empty store   heap_bytes()
+    agent    cols insert              100000       21        4587800      45.9      45.9          280        4587520
+    agent    bevy spawn               100000       21       14301841     143.0     142.9        13591              -
+    agent    bevy spawn_batch         100000       21       11660721     116.6     116.5        13591              -
+    notable  cols insert              100000      352       47972576     479.7     479.7          224       47972352
+    notable  bevy spawn               100000      352       56637859     566.4     566.2        13591              -
+    notable  bevy spawn_batch         100000      352       43960483     439.6     439.5        13591              -
+    agent    cols insert             1000000       21       36700440      36.7      36.7          280       36700160
+    agent    bevy spawn              1000000       21      114309777     114.3     114.3        13591              -
+    agent    bevy spawn_batch        1000000       21      110180817     110.2     110.2        13591              -
+    notable  cols insert             1000000      352      383779040     383.8     383.8          224      383778816
+    notable  bevy spawn              1000000      352      452999587     453.0     453.0        13591              -
+    notable  bevy spawn_batch        1000000      352      433180579     433.2     433.2        13591              -
+
+Notes:
+- Single thread. No bevy Schedule, System or executor: QueryState cached and driven directly.
+- Every bevy step calls World::increment_change_tick first, as a system run would; change ticks are written as bevy always does, except in the 'bypass' lines.
+- Variants of one pattern and size are measured interleaved, run by run, after a calibration that doubles as warm-up.
+- Every variant of every pattern was checked to end in the same state on a 20,000-row world before timing.
+- Tagged rows (patterns d2, e): 1014 of 100000, 9887 of 1000000.
+- A counting global allocator is installed for pattern g; every variant pays its atomic add per allocation.
+- Slice loops (a, b, f and the e flag split) run in shared out-of-line kernels, so cols, bevy contig and bypass execute identical code. Per-row loops (bevy iter, lookups, churn) are inlined where they are used; their speed moved by up to about 25% between builds of unchanged code.

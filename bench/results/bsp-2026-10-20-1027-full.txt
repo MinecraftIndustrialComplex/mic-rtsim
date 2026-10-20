@@ -1,0 +1,34 @@
+ step  work workers      pages | wall ms/day   step x step ms/day  cpu ms/day | wakes/day  msgs/day reg/step  jobs/st |   loads  evicts |     hash     mail conserved
+   20     0       1   resident |       392.4    1.00x       130.2       295.5 |     81865    165282    205.9      4.0 |       0       0 | e30c9b01 0c4f9baf ok
+   20     0       2   resident |       388.9    1.08x       120.5       332.2 |     81865    165282    205.9      4.9 |       0       0 | e30c9b01 0c4f9baf ok
+   20     0       4   resident |       377.0    1.13x       115.3       368.2 |     81865    165282    205.9      4.9 |       0       0 | e30c9b01 0c4f9baf ok
+   20     0       8   resident |       398.0    0.99x       131.5       424.9 |     81865    165282    205.9      4.9 |       0       0 | e30c9b01 0c4f9baf ok
+   20     0      16   resident |       563.3    0.52x       250.6       644.3 |     81865    165282    205.9      4.9 |       0       0 | e30c9b01 0c4f9baf ok
+   20     0       1    7031KiB |       521.7    1.00x       193.1       394.9 |     81865    165282    205.9      4.0 |   71839   95508 | e30c9b01 0c4f9baf ok
+   20     0      16    7031KiB |       689.1    0.60x       322.8       759.0 |     81865    165282    205.9      4.9 |   71839   95508 | e30c9b01 0c4f9baf ok
+  600     0       1   resident |       409.8    1.00x       118.1       283.1 |     81865    165370   6094.6      4.0 |       0       0 | e30c9b01 7bc089be ok
+  600     0       2   resident |       339.1    1.27x        93.1       295.6 |     81865    165370   6094.6      8.0 |       0       0 | e30c9b01 7bc089be ok
+  600     0       4   resident |       354.5    1.29x        91.6       351.7 |     81865    165370   6094.6     16.0 |       0       0 | e30c9b01 7bc089be ok
+  600     0       8   resident |       446.8    0.63x       188.5       893.9 |     81865    165370   6094.6     32.0 |       0       0 | e30c9b01 7bc089be ok
+  600     0      16   resident |       517.3    0.48x       245.6      2166.8 |     81865    165370   6094.6     63.5 |       0       0 | e30c9b01 7bc089be ok
+  600     0       1    7031KiB |       517.2    1.00x       174.1       388.3 |     81865    165370   6094.6      4.0 |   58791   86889 | e30c9b01 7bc089be ok
+  600     0      16    7031KiB |       642.3    0.61x       283.6      2092.8 |     81865    165370   6094.6     63.5 |   58791   86889 | e30c9b01 7bc089be ok
+   20  1500       1   resident |      3142.0    1.00x      2864.3      3024.6 |     81865    165282    205.9      4.0 |       0       0 | 1fa70bb1 0c4f9baf ok
+   20  1500       2   resident |      2529.9    1.50x      1906.7      3782.0 |     81865    165282    205.9      4.9 |       0       0 | 1fa70bb1 0c4f9baf ok
+   20  1500       4   resident |      2048.8    2.16x      1329.1      3925.1 |     81865    165282    205.9      4.9 |       0       0 | 1fa70bb1 0c4f9baf ok
+   20  1500       8   resident |      1489.1    2.96x       966.7      3839.9 |     81865    165282    205.9      4.9 |       0       0 | 1fa70bb1 0c4f9baf ok
+   20  1500      16   resident |      1278.7    3.32x       863.9      3476.0 |     81865    165282    205.9      4.9 |       0       0 | 1fa70bb1 0c4f9baf ok
+   20  1500       1    7031KiB |      3349.2    1.00x      3009.7      3209.2 |     81865    165282    205.9      4.0 |   71839   95508 | 1fa70bb1 0c4f9baf ok
+   20  1500      16    7031KiB |      1257.5    3.29x       914.1      3480.4 |     81865    165282    205.9      4.9 |   71839   95508 | 1fa70bb1 0c4f9baf ok
+  600  1500       1   resident |      3204.7    1.00x      2813.6      2971.4 |     81865    165370   6094.6      4.0 |       0       0 | aed83d51 7bc089be ok
+  600  1500       2   resident |      1909.0    1.85x      1517.8      3179.4 |     81865    165370   6094.6      8.0 |       0       0 | aed83d51 7bc089be ok
+  600  1500       4   resident |      1133.0    3.57x       789.0      3131.2 |     81865    165370   6094.6     16.0 |       0       0 | aed83d51 7bc089be ok
+  600  1500       8   resident |       769.1    6.07x       463.7      3174.4 |     81865    165370   6094.6     32.0 |       0       0 | aed83d51 7bc089be ok
+  600  1500      16   resident |       601.0    9.23x       304.7      3493.4 |     81865    165370   6094.6     63.5 |       0       0 | aed83d51 7bc089be ok
+  600  1500       1    7031KiB |      3222.5    1.00x      2909.6      3111.2 |     81865    165370   6094.6      4.0 |   58791   86889 | aed83d51 7bc089be ok
+  600  1500      16    7031KiB |       721.8    7.19x       404.8      3966.7 |     81865    165370   6094.6     63.5 |   58791   86889 | aed83d51 7bc089be ok
+
+determinism gate, step 20 work 0: pass (7 runs: 1w e30c9b01/0c4f9baf, 2w e30c9b01/0c4f9baf, 4w e30c9b01/0c4f9baf, 8w e30c9b01/0c4f9baf, 16w e30c9b01/0c4f9baf, 1w@7031KiB e30c9b01/0c4f9baf, 16w@7031KiB e30c9b01/0c4f9baf)
+determinism gate, step 600 work 0: pass (7 runs: 1w e30c9b01/7bc089be, 2w e30c9b01/7bc089be, 4w e30c9b01/7bc089be, 8w e30c9b01/7bc089be, 16w e30c9b01/7bc089be, 1w@7031KiB e30c9b01/7bc089be, 16w@7031KiB e30c9b01/7bc089be)
+determinism gate, step 20 work 1500: pass (7 runs: 1w 1fa70bb1/0c4f9baf, 2w 1fa70bb1/0c4f9baf, 4w 1fa70bb1/0c4f9baf, 8w 1fa70bb1/0c4f9baf, 16w 1fa70bb1/0c4f9baf, 1w@7031KiB 1fa70bb1/0c4f9baf, 16w@7031KiB 1fa70bb1/0c4f9baf)
+determinism gate, step 600 work 1500: pass (7 runs: 1w aed83d51/7bc089be, 2w aed83d51/7bc089be, 4w aed83d51/7bc089be, 8w aed83d51/7bc089be, 16w aed83d51/7bc089be, 1w@7031KiB aed83d51/7bc089be, 16w@7031KiB aed83d51/7bc089be)
