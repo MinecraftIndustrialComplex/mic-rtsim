@@ -61,6 +61,14 @@ code.
 
 ## Phase 1
 
+- **Quiescence and money sinks** (found overnight by the phase 1 scenario). An 11-village world never
+  went quiet: about 30 events per market per day, from barter loops and money piling up in surplus
+  villages, because nothing but players removes money. This makes P9 concrete. The round 2 agent picks
+  the smallest fix that lets a closed world settle and logs it (E43 and up in
+  docs/overnight-choices-phase1.md). Review that choice; the r, T and k values stay yours.
+- **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 batches
+  flows into caravans with a dock wait and a departure period per road. Review the batching rule.
+
 - **P9. Economy tunables.** Recommended: set `r`, `T` (at least 2 × the longest edge time) and `k` from
   a soak at the design gate; a Numismatics mint rule later. Alternative: you set each by hand now.
   Blocks: the phase 1 design gate.
@@ -106,6 +114,12 @@ code.
   breeding, the lair is the heir; breeding with no egg slight. Blocks: dragon heirs.
 
 ## Industry
+
+- **The stale-tick race** (found overnight by the industry engine). Commands land at least one tick
+  after a chunk loads, so a machine can run once on stock the replay already counted: +40 ingots (0.4%)
+  in the test. No trim inside one district can see it. Four options are in
+  docs/overnight-choices-industry.md; the agent's cleanest is to send a district's reconcile ahead as a
+  player approaches, using player positions from the bridge. Your call.
 
 Phases are INDUSTRY.md §16 (I-A to I-H).
 
