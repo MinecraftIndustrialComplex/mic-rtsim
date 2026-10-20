@@ -32,8 +32,12 @@ impl World {
                 let k = kind(GoodId(gi as u16));
                 seen.add(k, i128::from(l.stock));
                 let b = l.book;
-                book.mint(k, b.genesis + b.produced + b.player_in);
-                book.burn(k, b.consumed + b.player_out + b.destroyed);
+                let w = i128::from;
+                book.mint(k, w(b.genesis) + w(b.produced) + w(b.player_in));
+                book.burn(
+                    k,
+                    w(b.consumed) + w(b.player_out) + w(b.destroyed) + w(b.sunk),
+                );
             }
         }
         let b = self.cfg.trade.quantum.index(at);
@@ -47,7 +51,7 @@ impl World {
             seen.add(kind(g), a);
         }
         for (_, c) in self.caravans.iter() {
-            for (g, a) in c.cargo() {
+            for (g, a) in c.holdings() {
                 seen.add(kind(g), i128::from(a));
             }
         }
@@ -102,8 +106,9 @@ impl World {
                     dep.get(&g).copied().unwrap_or(0),
                     arr.get(&g).copied().unwrap_or(0),
                 );
-                if pd != l.book.departed || pa != l.book.arrived {
-                    out.push((i, g, l.book.departed, pd, l.book.arrived, pa));
+                let (bd, ba) = (i128::from(l.book.departed), i128::from(l.book.arrived));
+                if pd != bd || pa != ba {
+                    out.push((i, g, bd, pd, ba, pa));
                 }
             }
         }
@@ -158,12 +163,50 @@ impl World {
             w.u64(c.seed);
             w.u64(c.leg.end.0);
             w.u32(c.leg.generation);
-            for (g, a) in c.cargo() {
+            for (g, a) in c.holdings() {
                 w.u16(g.0);
                 w.i64(a);
             }
         }
         self.knowledge.encode(&mut w);
+        // Round 2's state: growth clocks, houses waiting to be placed, bases' markers, bands'
+        // waiting packets and players' positions.
+        for (n, g) in &self.growth {
+            w.u64(*n as u64);
+            w.u32(g.houses);
+            w.u32(g.stamp);
+            w.u64(g.since.map_or(u64::MAX, |t| t.0));
+        }
+        for (op, n) in &self.houses_pending {
+            w.u64(*op);
+            w.u64(*n as u64);
+        }
+        for (n, b) in &self.bases {
+            w.u64(*n as u64);
+            for p in &b.players {
+                w.u64(p.to_bits());
+            }
+        }
+        for b in &self.bands {
+            for p in &b.pending {
+                w.u64(p.map_or(u64::MAX, |x| x.0));
+            }
+        }
+        for (a, p) in &self.players {
+            w.u64(a.to_bits());
+            if let Some((pos, t)) = p.pos {
+                w.u64(t.0);
+                w.u32(pos.x as u32);
+                w.u32(pos.z as u32);
+            }
+        }
+        w.u64(self.op_counter);
+        for (k, id) in &self.promoted {
+            w.u32(k.edge);
+            w.u8(k.dir);
+            w.u64(k.departure);
+            w.u64(id.to_bits());
+        }
         for map in [
             &self.outside.player_in,
             &self.outside.player_out,

@@ -141,6 +141,10 @@ impl Lattice {
         out
     }
 
+    pub fn heap_bytes(&self) -> usize {
+        self.segs.capacity() * std::mem::size_of::<Period>()
+    }
+
     /// Forgets segments that ended before `b`.
     pub fn trim(&mut self, b: u64) {
         while self.segs.len() >= 2 && self.segs[1].start <= b {

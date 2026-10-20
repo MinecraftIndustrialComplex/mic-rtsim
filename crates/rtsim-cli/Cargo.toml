@@ -16,6 +16,7 @@ path = "src/main.rs"
 rtsim-kernel.workspace = true
 rtsim-industry.workspace = true
 rtsim-trade.workspace = true
+rtsim-settle.workspace = true
 rtsim-travel.workspace = true
 rtsim-knowledge.workspace = true
 rtsim-world.workspace = true
