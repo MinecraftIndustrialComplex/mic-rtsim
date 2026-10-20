@@ -147,10 +147,10 @@ impl SlotRng {
         (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
     }
 
-    /// Uniform in (0, 1]: safe to take the log of.
+    /// Uniform in (0, 1), never 0 or 1: safe to take the log of, and the log is never 0.
     #[inline]
-    pub fn next_f64_open0(&mut self) -> f64 {
-        ((self.next_u64() >> 11) + 1) as f64 * (1.0 / (1u64 << 53) as f64)
+    pub fn next_f64_open(&mut self) -> f64 {
+        ((self.next_u64() >> 11) as f64 + 0.5) * (1.0 / (1u64 << 53) as f64)
     }
 
     /// Uniform in [0, n), unbiased. Lemire, "Fast Random Integer Generation in an Interval", ACM
@@ -207,8 +207,9 @@ impl SlotRng {
         let mut sum = 0.0;
         let mut k = 0u64;
         loop {
-            let u = self.next_f64_open0();
-            sum += (u.ln() / log_q).ceil();
+            // A geometric gap is at least one slot; u < 1 keeps ln(u) < 0.
+            let u = self.next_f64_open();
+            sum += (u.ln() / log_q).ceil().max(1.0);
             if sum > n {
                 return k;
             }
@@ -238,9 +239,14 @@ impl SlotRng {
                 return k as u64;
             }
             v = (v * alpha / (a / (us * us) + b)).ln();
-            let bound = (m + 0.5) * ((m + 1.0) / (r * (n - m + 1.0))).ln()
-                + (n + 1.0) * ((n - m + 1.0) / (n - k + 1.0)).ln()
-                + (k + 0.5) * (r * (n - k + 1.0) / (k + 1.0)).ln()
+            // ln f(k) - ln f(m) by Stirling. TensorFlow's form, (n + 1)·ln((n - m + 1)/(n - k + 1))
+            // and kin, takes logs of ratios within 1e-14 of 1 and multiplies their rounding by n:
+            // at n near 2^53 the bound is off by a whole unit and the draws are biased. Here every
+            // log of a near-1 ratio is ln_1p of an exact integer difference, and the remaining
+            // (k - m)·ln(...) term is small near the mode.
+            let bound = (m + 0.5) * ((m - k) / (k + 1.0)).ln_1p()
+                + (n - m + 0.5) * ((k - m) / (n - k + 1.0)).ln_1p()
+                + (k - m) * (r * (n - k + 1.0) / (k + 1.0)).ln()
                 + stirling_tail(m)
                 + stirling_tail(n - m)
                 - stirling_tail(k)
@@ -421,6 +427,55 @@ mod tests {
             assert!(
                 stat < bound,
                 "n={n} p={p}: chi2={stat:.1} df={df} bound={bound:.1}"
+            );
+        }
+    }
+
+    /// Chi-square against the exact pmf at n = 2^53 - 1, where the TensorFlow form of the BTRS
+    /// bound is off by a factor of e (review of 2026-10-20). Small means keep the support short;
+    /// the pmf is summed from logs of the first k factors.
+    #[test]
+    fn binomial_is_exact_at_the_largest_n() {
+        let n = (1u64 << 53) - 1;
+        for (mean, seed) in [(12.0f64, 1u64), (30.0, 2)] {
+            let p = mean / n as f64;
+            let mut r = StreamKey::new(seed, SystemId::named("chi.big"), 0).slot(0);
+            let samples = 400_000u32;
+            let top = (mean * 4.0) as usize;
+            let mut hist = vec![0u32; top + 1];
+            for _ in 0..samples {
+                let k = r.binomial(n, p) as usize;
+                hist[k.min(top)] += 1;
+            }
+            let ln_pmf = |k: u64| {
+                let mut lc = 0.0;
+                for i in 0..k {
+                    lc += ((n - i) as f64).ln() - ((i + 1) as f64).ln();
+                }
+                lc + k as f64 * p.ln() + (n - k) as f64 * (-p).ln_1p()
+            };
+            // Dense bins (expected count >= 5) on their own; everything else, including the
+            // overflow bin at `top`, pooled into one.
+            let s = f64::from(samples);
+            let (mut stat, mut bins) = (0.0, 0usize);
+            let (mut dense_e, mut dense_o) = (0.0, 0.0);
+            for (k, &count) in hist.iter().enumerate().take(top) {
+                let e = ln_pmf(k as u64).exp() * s;
+                if e >= 5.0 {
+                    let o = f64::from(count);
+                    stat += (o - e).powi(2) / e;
+                    bins += 1;
+                    dense_e += e;
+                    dense_o += o;
+                }
+            }
+            let (pooled_e, pooled_o) = (s - dense_e, s - dense_o);
+            stat += (pooled_o - pooled_e).powi(2) / pooled_e;
+            let df = bins as f64;
+            let bound = df + 3.1 * (2.0 * df).sqrt() + 10.0;
+            assert!(
+                stat < bound,
+                "mean {mean}: chi2 {stat:.1}, df {df}, bound {bound:.1}"
             );
         }
     }
