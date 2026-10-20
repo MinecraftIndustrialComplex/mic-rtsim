@@ -34,8 +34,10 @@ to two physical cores. Every configuration conserved grain and head counts. Ever
 declared contract.
 
 **What it shows** (numbers from the run's table):
-- **Latent individuals cost nothing.** From 10,000 to 10^12 latent sheep in 10,000 regions, CPU stayed
-  between 1.11 and 3.49 ms per sim day (slope 0.039), live heap stayed at 2.7 MiB (slope 0.000), and a
+- **CPU does not grow with the latent count, but it is not constant.** From 10,000 to 10^12 latent
+  sheep in 10,000 regions, CPU ran between 1.11 and 3.49 ms per sim day (slope 0.039): it rises
+  between 10^4 and 10^8, which matches the binomial sampler moving from inversion (cheap while n·p
+  is small) to BTRS, and does not rise past 10^8. Live heap stayed at 2.7 MiB (slope 0.000), and a
   full save grew from 295.9 to 454.4 KiB (slope 0.024, wider varints).
 - **Closed-form regions cost nothing until touched.** From 100 to 1,000,000 regions, CPU went from
   0.41 to 0.97 ms per sim day (slope 0.092). A read after 1 day or after 10,000 days cost the same,
@@ -72,3 +74,24 @@ the 08:30 run within noise (for example, a herd read after 10,000 days cost 2,93
   ms (slope 0.009).
 - **Memory costs more per region:** 222.1 MiB of live heap at 1,000,000 regions against 150.1 MiB for
   the herd model, for the stream keys, root totals and the one-day memo each herd carries.
+
+## 2026-10-20 08:59 UTC, full, after the review fixes (`scale-2026-10-20-0859-full`)
+
+**This is the current reference.** Code at commit `9dcb4d7`, clean tree, run with `--check`: it
+passed, every slope and every max/min bound held, and no run broke an invariant (conservation, the
+dyadic model's bounds, the eager bound on slot commits). Same machine and settings as above;
+1-minute load 7.83 before. Changes since 08:38 that move numbers: regions keep their booked wake
+(16 bytes more per region, and in every page), the dyadic trees have 24 levels instead of 32, and
+the BTRS bound is computed differently (same distribution where it was already exact).
+
+**Numbers** (from the run's table; slopes and max/min in the second table):
+- Latent count, herd model: 1.05 to 3.47 ms per sim day (slope 0.036, max/min 3.29); dyadic model:
+  0.58 to 0.91 ms (slope 0.019, max/min 1.56).
+- Regions, 100 to 1,000,000: closed 0.45 to 0.95 ms per day (slope 0.082); dyadic 0.57 to 1.33 ms
+  (slope 0.088); herd 0.54 to 2.48 ms (slope 0.172, a 10-day run). Live heap at 1,000,000 regions:
+  102.1 MiB closed, 158.1 MiB herd, 230.1 MiB dyadic; full save 8,956.9, 19,635.7 and 17,764.1 KiB.
+- Elapsed time before a read, 1 to 10,000 days: closed 0.003 to 0.004 µs; dyadic 6.394 to 1.902 µs
+  (slope -0.118); herd 0.492 to 3,010.510 µs (slope 0.946, one commit per day).
+- World age, 1 to 1,000 days, 100,000 regions: closed 0.78 to 0.48 ms per day; dyadic 1.01 to 0.95
+  ms; herd 2.45 to 13.61 ms, with slot commits per day rising from 10,424 to 99,809.
+- Events, 10 to 100,000 a day (herd): 0.50 to 13.82 ms per day (slope 0.368).
