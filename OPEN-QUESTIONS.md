@@ -61,6 +61,14 @@ code.
 
 ## Phase 1
 
+- **Quiescence and money sinks** (found overnight by the phase 1 scenario). An 11-village world never
+  went quiet: about 30 events per market per day, from barter loops and money piling up in surplus
+  villages, because nothing but players removes money. This makes P9 concrete. The round 2 agent picks
+  the smallest fix that lets a closed world settle and logs it (E43 and up in
+  docs/overnight-choices-phase1.md). Review that choice; the r, T and k values stay yours.
+- **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 batches
+  flows into caravans with a dock wait and a departure period per road. Review the batching rule.
+
 - **P9. Economy tunables.** Recommended: set `r`, `T` (at least 2 × the longest edge time) and `k` from
   a soak at the design gate; a Numismatics mint rule later. Alternative: you set each by hand now.
   Blocks: the phase 1 design gate.
