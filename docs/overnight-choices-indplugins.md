@@ -49,8 +49,9 @@ sessions; never an industry or threat test. The wire contract test passes (53 te
   (`industry_yard`). Create's own `IndustryKit` is unchanged.
 - **Q24.** The threat sampler's and the conditions' settings are a config file of their own,
   `mic_rtsim-threats-server.toml` (all PLACEHOLDER), so the industry config keeps its keys.
-- **Q25.** `Ledgers.warn(district, key, text)`: plugins put warnings on a district's ledger; the display
-  source shows them after the goods when there is room, the chat ledger always.
+- **Q25.** `DistrictDiagnostics.warn(district, key, text)` (was `Ledgers.warn`): plugins put warnings on a
+  district; since I18 as decided they reach the server log and the operator's `/rtsim district info` and
+  `debug` only (finding 8).
 
 **Deposits (I11, F15)**
 - **Q3.** A deposit good is `d/0/<kind id>/<place hash>`, the hash 16 hex digits of FNV-1a 64 over
@@ -234,6 +235,15 @@ sessions; never an industry or threat test. The wire contract test passes (53 te
    warnings (Q8's gauge networks, Q7's channel into another dimension): they ride on the ledger lines the
    earlier Java work shows in chat and on the display source. Whoever reworks the ledger for I18 decides
    where they go; nothing here was changed for it.
+
+   **Where they went (rework/i18-no-ledger).** The display source and the chat ledger are gone, and
+   `Ledgers` is now `DistrictDiagnostics` (operator only). `warn(district, key, text)` keeps its shape and
+   its callers (`GaugeNetworks`, `ChannelLinks`). A warning goes to two places: the server log (a WARN line
+   when it is set or its text changes, an INFO line when it clears, so the plugins' per-sweep calls make no
+   per-tick spam) and the operator output of `/rtsim district info` and `/rtsim district debug`
+   (permission level 2). No player sees one. Q25 below is superseded accordingly. The operator output no
+   longer asks the engine for anything either: the ledger records (IND_LEDGER_REQUEST, IND_LEDGER) are
+   gone from the wire, and `info` and `debug` print what Java holds.
 
 ## Proposal: IND_CLIMATE (not built)
 

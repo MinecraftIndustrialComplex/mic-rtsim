@@ -74,7 +74,7 @@ Offsets from the record start; the 8-byte header is `u16 kind, u16 size, u32 aux
 | 0x0041 | IND_SWEEP_END | flags: 1 live, 2 creative block, 4 overstressed | 8 i64 gameTime, 16 u64 district, 24 u32 sweep, 28 u32 records, 32 u32 inventories, 36 u32 reserved | 40 |
 | 0x0042 | IND_DEPOSIT_SAMPLE | plugin: 1 Ore Excavation, 2 Diesel oil, 3 Destroy crude | 8 i64 gameTime, 16 u64 district, 24 u32 good, 28 u32 sweep, 32 i64 remaining, 40 u32 dim, 44 i32 chunkX, 48 i32 chunkZ, 52 u32 flags (1 infinite) | 56 |
 | 0x0043 | (retired: IND_CHANNEL_SAMPLE) | | read as an unknown kind (I13 as corrected, IR13) | |
-| 0x0044 | IND_LEDGER_REQUEST | 0 | 8 i64 gameTime, 16 u64 district; **retired by I18**: the engine reads and ignores it, and answers nothing (IR14) | 24 |
+| 0x0044 | (retired: IND_LEDGER_REQUEST) | | gone with the ledger (I18 as decided, IR14); read as an unknown kind | |
 | 0x0045 | IND_WATCHED | 1 a player is near enough to fight for real, 0 not | 8 i64 gameTime, 16 u64 district | 24 |
 
 **Sweeps.** The sampler reads a district's boundary inventories round-robin, K per tick (INDUSTRY.md
@@ -206,7 +206,7 @@ next load if not (C18).
 
 ## 4. Commands
 
-Every command has the bridge's `cmdSeq` at 8; bodies start at 16. Every one but IND_LEDGER carries an
+Every command has the bridge's `cmdSeq` at 8; bodies start at 16. Every one carries an
 op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `docs/boundary.md`
 §2.3), and skips when it sees again.
 
@@ -217,7 +217,7 @@ op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `doc
 | 0x8402 | (retired: IND_CHANNEL_DELTA) | | never written; read as an unknown kind (IR13) | |
 | 0x8403 | IND_DEPOSIT_DELTA | plugin | 16 u64 opId, 24 u32 dim, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 good, 40 i64 delta | 48 |
 | 0x8404 | IND_WRITE_PACKAGE | n entries | 16 u64 opId, 24 u64 district, 32 u32 inventory, 36 i32 x, 40 i32 y, 44 i32 z, 48 u32 address (NAME), 52 u32 count, 56 n × Entry16 (one package's contents) | 56 + 16n |
-| 0x8405 | IND_LEDGER | n goods | 16 u64 district, 24 u32 state, 28 u32 freeze, 32 i64 nextBreakpoint (-1 none), 40 u32 nextKind, 44 u32 nextGood (0 none), 48 i64 since, 56 n × (u32 good, u32 reserved, i64 perHour, i64 sinceStart) | 56 + 24n |
+| 0x8405 | (retired: IND_LEDGER) | | gone with the ledger (I18 as decided, IR14); read as an unknown kind | |
 
 - **Delta32:** `0 u32 inventory, 4 u32 good, 8 i32 x, 12 i32 y, 16 i32 z, 20 u32 reserved,
   24 i64 delta`.
@@ -250,7 +250,7 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
   - additions not yet applied (in chunks still unloaded) are reduced;
   - additions already applied get a removal in a new epoch.
 - **An addition that does not fit** stays in the engine's pending stock for the district and is
-  retried at its next load. The ledger shows it. The replay's capacity model is conservative, so this
+  retried at its next load. The replay's capacity model is conservative, so this
   should be rare.
 - **A trim removal that comes up short** (the outputs already moved on) is booked as an untracked
   mint in the ledger, so totals stay exact and the gap is visible.
@@ -265,15 +265,6 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
   delta by good first (IR11): Destroy's level-wide pollution (greenhouse, ozone depletion, acid rain)
   goes as IND_DEPOSIT_DELTA every `live_pollution_ticks` while its district replays (I14: "level-wide
   types apply live while unloaded"), the rest at the reconcile; chunk types ride the chunk's reconcile.
-- **IND_LEDGER:** retired by I18 (players see only what their own built readouts measure): the
-  engine never writes it any more. The codec stays until the Java display source and chat ledger go
-  (the Java pointers in docs/choices-indrework.md).
-  - **States:** 0 live, 1 learning, 2 learned (running abstractly), 3 stale, 4 not learnable,
-    5 suspended, 6 damaged, 7 frozen out of season.
-  - **Freeze:** the not-learnable code, or 0.
-  - **Next kind:** 0 none, 1 input empties, 2 output full, 3 target reached, 4 deposit exhausted,
-    5 source stopped (reserved: a sink stops at its source's breakpoint, which the source's own line
-    shows), 6 restart. `nextGood` names the good when there is one.
 
 ## 5. What the sampler must never do
 
@@ -292,24 +283,27 @@ sampler followed the same day; choices Q1 to Q26 in `docs/overnight-choices-indp
 constants are `IndRecords.java`, which mirrors wire.rs field for field (the contract test pins every
 record below against wire.rs fixtures).
 
-- **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_LEDGER_REQUEST, IND_WATCHED, IND_DEPOSIT_SAMPLE (Ore
+- **Sent:** IND_STOCK_SAMPLE, IND_SWEEP_END, IND_WATCHED, IND_DEPOSIT_SAMPLE (Ore
   Excavation, Diesel, Destroy crude oil and pollution);
   IND_DISTRICT, IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED, IND_EDIT (aux 1, 2,
-  4), IND_DISCARD (aux 1, 5), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_CONDITIONS, IND_POWER_LINK, IND_PORT
+  4), IND_DISCARD (aux 1, 5), IND_LOAD_STATE, IND_CHUNK_LOADED, IND_CHUNK_UNLOADED (at ChunkEvent.Unload), IND_CONDITIONS, IND_POWER_LINK, IND_PORT
   (kinds 1, 3, 4, 5, 6), IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED, IND_PACKAGE (loaded and unloaded
   districts; the mail is out of the train's cargo port, Q6), IND_RECONCILE_RESULT, IND_CARRIAGE_RESULT,
   IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY, IND_SURVEY_BLOCKS.
 - **Applied:** IND_CHUNK_RECONCILE (§4.1, every step; a deposit delta through its plugin, in the chunk's
   tick), IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA (by
   the plugin that owns the good: Diesel's chunk oil, at once), IND_WRITE_PACKAGE (a loaded postbox or the
-  station port's offline buffer), IND_LEDGER.
+  station port's offline buffer).
 - **Forms Java decides:** a GOOD component hash is 16 hex digits (H2); a deposit good is
   `d/0/<kind id>/<16 hex digits of FNV-1a over dimension|chunkX|chunkZ>`, or over `pollution|<district>` for
   attributed pollution (Q3, Q9); a BLOCK_STATE name is `BlockStateParser.serialize(state)`, which a destroy
   entry is compared with; station and train ids are SplitMix64 of Create's UUIDs (H19); the counterpart
   of a player port is the player's UUID halves XORed.
-- **Not sent:** temperature (IND_CONDITIONS has no field for it; proposal IND_CLIMATE, Q20, not built);
-  IND_CHUNK_UNLOADED (I7: defined in IndRecords and the contract test, not sent yet). The channel
+- **Not sent:** temperature (IND_CONDITIONS has no field for it; proposal IND_CLIMATE, Q20, not built).
+  Not-learnable code 6 is never sent in IND_DISTRICT (I9): `IndRecords.NotLearnable.sent` turns it into 0.
+  While the industry module is off Java sends nothing at all, and when it is on again it announces every
+  district (IND_DISTRICT with its chunks, inventories and stations), load state, watched flag, calendar,
+  survey and power link again (U10, IR15). The channel
   records (IND_CHANNEL_SAMPLE, IND_CHANNEL_DELTA, port kind 7) are retired from wire.rs, IndRecords and
   the fixtures (I13 as corrected: an Ender Transmission channel's endpoints are one district, Q7).
 
@@ -367,7 +361,7 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   record, journaled ones included (counted), runs nothing and writes nothing; its queue, outbox and
   pages wait as they are. Switched on in a session, its own session start runs at that game time, so it
   catches up over the time it was off; Java then announces its districts and load states again, as at
-  a session start (IR15).
+  a session start (IR15; `Industry.endOfTick` and `IndustryPlugin.announce`).
 - **Mode.** The native engine applies. Read-only (phase I-A, F25) is retired with the ledger (I18,
   IR14): the `nOpen` flag is read and ignored with a warning.
 - **Threats** from other systems arrive as an order (`IndustryThreat`, W12) until those systems run

@@ -36,7 +36,7 @@ public final class EnderTransmissionGameTests {
      * own, and two rotation transmitters on channel 4 with another. Each pair is one district holding both
      * chunks and not the chunk between; the two pairs are two districts. Ten iron
      * through the item channel (in at one end, out at the other) is no port. An item transmitter on the
-     * same channel in the Nether puts a warning on the district's ledger, cleared when it goes. A new
+     * same channel in the Nether puts a diagnostics warning on the district, cleared when it goes. A new
      * password at one end splits the pair.
      */
     @GameTest(template = "yard", batch = "endertransmission_1", timeoutTicks = 600)
@@ -91,13 +91,13 @@ public final class EnderTransmissionGameTests {
                     nether.getChunk(far);
                     place(nether, far, "item_transmitter", 3, "items-" + tag);
                     ChannelLinks.warnNow(ind());
-                    List<String> w = ind().ledgers().warnings(ids[0]);
-                    check("the ledger warns of the Nether: " + w, w.size() == 1 && w.get(0).contains("minecraft:the_nether"));
-                    check("not the other district", ind().ledgers().warnings(ids[1]).isEmpty());
+                    List<String> w = ind().diagnostics().warnings(ids[0]);
+                    check("the diagnostics warn of the Nether: " + w, w.size() == 1 && w.get(0).contains("minecraft:the_nether"));
+                    check("not the other district", ind().diagnostics().warnings(ids[1]).isEmpty());
                     record("aChannelsEndpointsAreOneDistrict", "warning", w.get(0));
                     nether.setBlock(far, Blocks.AIR.defaultBlockState(), 3);
                     ChannelLinks.warnNow(ind());
-                    check("cleared when it goes", ind().ledgers().warnings(ids[0]).isEmpty());
+                    check("cleared when it goes", ind().diagnostics().warnings(ids[0]).isEmpty());
                     // A new password at one end, as its settings screen sets it: the next check marks
                     // its chunk, and detection splits the pair.
                     ITransmitter t = (ITransmitter) helper.getLevel().getBlockEntity(itemB);

@@ -209,6 +209,12 @@ public final class PowerLinks {
         linksSent++;
     }
 
+    /** U10: the module is on again; every link the engine was told is sent again. */
+    public static void announce(Industry ind) {
+        for (Map.Entry<Long, Long> e : Links.get(ind).links.entrySet())
+            send(ind, e.getKey(), e.getValue());
+    }
+
     /** Forgets the window and the links sent (GameTests). */
     public static void forget(Industry ind) {
         WINDOW.clear();

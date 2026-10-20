@@ -21,7 +21,7 @@ so a single-threaded read costs about the same there.
 | I5 | Only player `BlockEvent`s are IND_EDIT; unattributed container sessions are IND_DISCARD (H14, H29). |
 | I7, I8 | Epochs in the `mic_rtsim:reconcile` chunk attachment, held commands, removals first, the epoch in the same tick (H15, H16). |
 | I15 | IND_CARRIAGE_DELTA through `TrainCargoManager`'s own handlers (H17, H18). |
-| I18 | The "District ledger" display source on Stock Links and Train Stations, and `/rtsim district ledger` (H21). |
+| I18 | Superseded by Ben's I18 as decided (DECISIONS.md): no display source, no player output. `/rtsim district debug` (was `ledger`) is an operator diagnostic (H21, H22). |
 | I23 | Destroy entries broken with `destroyBlock(pos, true)` when the state still matches; no fire (H15). |
 
 ## Choices
@@ -63,7 +63,7 @@ so a single-threaded read costs about the same there.
   three-chunk district of 18 block entities (a chest and 17 shafts) detects in 64 and 60 us in two runs
   (best of 50, warm; `aDistrictIsDetectedAcrossShaftsAndNamed`), and a repeated detection changes neither its id nor
   its revision. A large base is unmeasured; `/rtsim district perf` shows the last detection's time.
-- **H5.** `/rtsim district`: `list`, `info`, `ledger`, `rename <name> <new name>` (over the station's
+- **H5.** `/rtsim district`: `list`, `info`, `debug` (was `ledger`), `rename <name> <new name>` (over the station's
   name), `merge <a> <b>` (a persistent link between their anchor chunks; a pinned district merges by
   moving its pins), `split [radius]` (the member chunks within the radius of yours are pinned to a new
   district), `exclude` and `include` (your chunk), `adopt [radius]` (industrial block entities around you
@@ -172,15 +172,15 @@ so a single-threaded read costs about the same there.
   a loaded district's IND_PACKAGE as a port). The cost: the engine's mail-rate learning for loaded
   districts (F26) gets nothing from Java yet.
 
-**The ledger (I18)**
+**The ledger (I18; H21 was superseded: Ben's I18 as decided removed the display source and every player-facing ledger, and `Ledgers` became `DistrictDiagnostics`, operator only)**
 - **H21.** "District ledger" is a multi-line display source registered in Create's `display_source`
   registry and bound with `DisplaySource.BY_BLOCK.add` to `create:stock_link` and `create:track_station`.
   The district is the link's "District" option (a name or id; a text box in the link's screen), else the
   source block's own. It refreshes every 100 ticks. Lines: name and state (with the freeze reason), the
   top goods per real hour (F30) with "would have made" for simulated states, the next breakpoint. Good
   names are translatable components, so each client reads its own language.
-- **H22.** IND_LEDGER_REQUEST at most once per 20 ticks per district; the chat ledger shows what is known
-  at once and the engine's next reply when it comes (200 ticks, then it says none came).
+- **H22.** (Superseded.) IND_LEDGER_REQUEST and IND_LEDGER are gone from the wire; `/rtsim district info`
+  and `debug` print only what Java holds, with no engine round trip (I18 as decided, IR14).
 - **H27.** Read-only mode (I-A) is the engine's (F25): Java applies what the engine sends and has no
   switch of its own.
 
