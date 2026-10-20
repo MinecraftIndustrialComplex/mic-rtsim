@@ -72,7 +72,8 @@ public final class Census {
         Map<String, Integer> professions = new LinkedHashMap<>();
         List<Villager> villagers = new ArrayList<>();
         int residents = 0;
-        for (Entity e : level.getEntities((Entity) null, box, e -> e.isAlive() && Residents.kind(e) != null)) {
+        for (Entity e : level.getEntities((Entity) null, box, e -> e.isAlive() && Residents.kind(e) != null
+                && !com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.isTagged(e))) {
             if (Residents.villageOf(villages, e) != v)
                 continue;
             residents++;

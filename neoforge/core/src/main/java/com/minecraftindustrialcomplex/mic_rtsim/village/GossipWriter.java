@@ -110,7 +110,7 @@ public final class GossipWriter {
 
     static List<Villager> loadedVillagers(ServerLevel level, VillageRegistry villages, Village v) {
         AABB box = AABB.of(v.box).inflate(VillageRegistry.MARGIN);
-        return level.getEntitiesOfClass(Villager.class, box, e -> e.isAlive() && Residents.villageOf(villages, e) == v);
+        return level.getEntitiesOfClass(Villager.class, box, e -> e.isAlive() && !RtsimAttachments.isTagged(e) && Residents.villageOf(villages, e) == v);
     }
 
     /** A villager's applied gossip op ids: bounded, oldest dropped first (PLACEHOLDER 64). */

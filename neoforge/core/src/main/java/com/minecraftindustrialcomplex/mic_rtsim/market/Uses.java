@@ -14,4 +14,9 @@ public final class Uses {
     public static void set(MerchantOffer offer, int uses) {
         ((MerchantOfferAccessor) offer).mic_rtsim$setUses(Math.max(0, Math.min(uses, offer.getMaxUses())));
     }
+
+    /** Clears vanilla's demand on an offer the sim prices (the market's price is the price). */
+    public static void noDemand(MerchantOffer offer) {
+        ((MerchantOfferAccessor) offer).mic_rtsim$setDemand(0);
+    }
 }

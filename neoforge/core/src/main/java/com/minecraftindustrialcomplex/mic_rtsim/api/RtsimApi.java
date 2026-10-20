@@ -95,6 +95,15 @@ public final class RtsimApi {
             s.phase1.afterResetUses(merchant, offer);
     }
 
+    /**
+     * True when the sim prices this offer, so vanilla's demand must leave it alone: for plugins'
+     * {@code updateDemand} mixins ({@code RibbitEntity.updateDemand}).
+     */
+    public static boolean pricesOffer(Entity merchant, net.minecraft.world.item.trading.MerchantOffer offer) {
+        RtsimSession s = RtsimSession.current();
+        return s != null && !s.failed() && s.phase1.pricesOffer(merchant, offer);
+    }
+
     /** The live puppet group an entity is a member of, or null. */
     public static com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup group(Entity entity) {
         RtsimSession s = RtsimSession.current();

@@ -191,8 +191,9 @@ public final class Phase1 {
 
     /** A player is about to interact with an entity: a resident merchant is repriced for them first. */
     public void beforeTrading(Player player, Entity target) {
-        if (!(target instanceof Merchant m) || m.getTradingPlayer() != null || Residents.kind(target) == null)
-            return;
+        if (!(target instanceof Merchant m) || m.getTradingPlayer() != null || Residents.kind(target) == null
+                || RtsimAttachments.isTagged(target))
+            return; // a puppet merchant's offers are the engine's (MERCHANT_OFFERS), never the village's
         Village v = Residents.villageOf(villages, target);
         if (v != null)
             markets.reprice(target, v, player);
@@ -200,11 +201,33 @@ public final class Phase1 {
 
     /** A restock reset one offer's uses (the restock mixins): the treasury rule decides them instead. */
     public void afterResetUses(Entity merchant, MerchantOffer offer) {
+        AgentTag tag = RtsimAttachments.tag(merchant);
+        if (tag != null) {
+            // A puppet merchant restocked (Ribbits' merchants do, on their own clock): its uses follow its cargo.
+            PuppetGroup g = session.registry.live(tag, merchant.getUUID());
+            if (g != null)
+                PuppetOffers.recap(g, g.member(merchant.getUUID()));
+            return;
+        }
         if (Residents.kind(merchant) == null)
             return;
         Village v = Residents.villageOf(villages, merchant);
         if (v != null)
             markets.capUses(v, offer);
+    }
+
+    /**
+     * True when vanilla's demand must not touch this offer (the demand mixins): a puppet merchant's
+     * offer (the engine priced it from the news it carries), or a resident's market-shaped offer in an
+     * adopted village whose market is known (the market's price is the price).
+     */
+    public boolean pricesOffer(Entity merchant, MerchantOffer offer) {
+        if (RtsimAttachments.isTagged(merchant))
+            return true;
+        if (Residents.kind(merchant) == null)
+            return false;
+        Village v = Residents.villageOf(villages, merchant);
+        return v != null && markets.prices(v, offer);
     }
 
     // ---- damage, deaths, rescues ---------------------------------------------------------------

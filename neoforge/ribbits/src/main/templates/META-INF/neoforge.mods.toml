@@ -1,0 +1,42 @@
+modLoader     = "javafml"
+loaderVersion = "${loader_version_range}"
+license       = "${mod_license}"
+
+[[mixins]]
+config = "${mod_id}.mixins.json"
+
+[[mods]]
+modId       = "${mod_id}"
+version     = "${mod_version}"
+displayName = "${mod_name}"
+authors     = "${mod_authors}"
+description = '''${mod_description}'''
+
+[[dependencies.${mod_id}]]
+    modId        = "minecraft"
+    type         = "required"
+    versionRange = "${minecraft_version_range}"
+    ordering     = "NONE"
+    side         = "BOTH"
+
+[[dependencies.${mod_id}]]
+    modId        = "neoforge"
+    type         = "required"
+    versionRange = "${neo_version_range}"
+    ordering     = "NONE"
+    side         = "BOTH"
+
+[[dependencies.${mod_id}]]
+    modId        = "mic_rtsim"
+    type         = "required"
+    versionRange = "[0.1.0,)"
+    ordering     = "AFTER"
+    side         = "BOTH"
+
+# The plugin is built around one mod (D4); verified against Ribbits 4.1.6.
+[[dependencies.${mod_id}]]
+    modId        = "ribbits"
+    type         = "required"
+    versionRange = "[1.21.1-NeoForge-4.1.6,)"
+    ordering     = "AFTER"
+    side         = "BOTH"

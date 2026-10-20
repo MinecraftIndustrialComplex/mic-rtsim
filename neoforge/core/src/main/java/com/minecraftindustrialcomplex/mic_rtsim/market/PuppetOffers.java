@@ -68,6 +68,7 @@ public final class PuppetOffers {
             MerchantOffer o = offers.get(i);
             int left = remaining(cargo, s);
             Uses.set(o, o.getMaxUses() - Math.min(o.getMaxUses(), left));
+            Uses.noDemand(o);
         }
     }
 

@@ -26,4 +26,16 @@ public abstract class VillagerRestockMixin {
         if (s != null && !s.failed())
             s.phase1.afterResetUses((Villager) (Object) this, offer);
     }
+
+    /**
+     * {@code Villager.updateDemand} raises each offer's demand by its uses, and demand raises the price;
+     * an offer the sim prices keeps demand 0, so its price is the market's (reputation still applies).
+     */
+    @WrapOperation(method = "updateDemand", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/item/trading/MerchantOffer;updateDemand()V"))
+    private void mic_rtsim$marketDemand(MerchantOffer offer, Operation<Void> original) {
+        RtsimSession s = RtsimSession.current();
+        if (s == null || s.failed() || !s.phase1.pricesOffer((Villager) (Object) this, offer))
+            original.call(offer);
+    }
 }

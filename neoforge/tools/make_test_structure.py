@@ -5,6 +5,7 @@ A GameTest structure template is a plain gzipped NBT compound, so no Minecraft r
 make one. Adapted from mods/mic-climate/tools/make_test_structure.py.
 
     python3 tools/make_test_structure.py core/src/main/resources/data/mic_rtsim/structure
+    python3 tools/make_test_structure.py ribbits/src/main/resources/data/mic_rtsim_ribbits/structure plot
 
 writes `arena.nbt`: an 11 x 5 x 11 box with a polished andesite floor (y = 0) and a two-block glass
 ring (y = 1 and 2) around its edge, so a caravan's trader and llamas stay inside the test's bounds
@@ -136,8 +137,36 @@ def write_hut(path: str) -> None:
     print(f"wrote {path}: {len(blocks)} blocks, size 3x3x3")
 
 
+def write_plot(path: str, size_x: int, size_y: int, size_z: int) -> None:
+    """A flat plot: a polished andesite floor (y = 0) under air, tall enough for a ribbit house (GameTest
+    encases every test in barriers at its bounds). The Ribbits plugin's village growth GameTest builds a
+    real ribbit house on it."""
+    names = ["minecraft:polished_andesite", "minecraft:air"]
+    palette = compound_list([named(TAG_STRING, "Name", s(n)) + struct.pack(">B", TAG_END) for n in names])
+    blocks = []
+    for x in range(size_x):
+        for y in range(size_y):
+            for z in range(size_z):
+                blocks.append(named(TAG_LIST, "pos", int_list([x, y, z])) + named(TAG_INT, "state", struct.pack(">i", 0 if y == 0 else 1))
+                              + struct.pack(">B", TAG_END))
+    root = (
+        named(TAG_INT, "DataVersion", struct.pack(">i", DATA_VERSION))
+        + named(TAG_LIST, "size", int_list([size_x, size_y, size_z]))
+        + named(TAG_LIST, "palette", palette)
+        + named(TAG_LIST, "blocks", compound_list(blocks))
+        + named(TAG_LIST, "entities", empty_list())
+        + struct.pack(">B", TAG_END)
+    )
+    with gzip.open(path, "wb") as f:
+        f.write(struct.pack(">B", TAG_COMPOUND) + s("") + root)
+    print(f"wrote {path}: {len(blocks)} blocks, size {size_x}x{size_y}x{size_z}")
+
+
 if __name__ == "__main__":
     out_dir = sys.argv[1]
     os.makedirs(out_dir, exist_ok=True)
-    write_arena(os.path.join(out_dir, "arena.nbt"), 11, 5, 11)
-    write_hut(os.path.join(out_dir, "hut.nbt"))
+    if len(sys.argv) > 2 and sys.argv[2] == "plot":
+        write_plot(os.path.join(out_dir, "plot.nbt"), 28, 14, 28)
+    else:
+        write_arena(os.path.join(out_dir, "arena.nbt"), 11, 5, 11)
+        write_hut(os.path.join(out_dir, "hut.nbt"))

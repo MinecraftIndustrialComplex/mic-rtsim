@@ -185,7 +185,14 @@ public final class ResidentMarkets {
             left = q == null ? 0 : Math.max(0, book.treasury()) / (Math.max(coins, 1) * PriceCurve.MILLI);
         }
         Uses.set(o, o.getMaxUses() - (int) Math.min(o.getMaxUses(), left));
+        Uses.noDemand(o);
         capped++;
+    }
+
+    /** True when the sim prices this offer of a resident: market-shaped, in a village whose market is known. */
+    public boolean prices(Village v, MerchantOffer o) {
+        MarketBook<Item> book = known(v.id);
+        return book != null && shape(o, book) != null;
     }
 
     /**
