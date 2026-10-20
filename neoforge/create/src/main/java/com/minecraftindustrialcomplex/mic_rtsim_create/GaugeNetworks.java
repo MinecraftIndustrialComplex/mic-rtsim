@@ -21,7 +21,8 @@ import java.util.UUID;
  * network whose links ({@code LogisticsNetwork.totalLinks}: stock links, packager links, tickers and
  * factory gauges) lie in two or more districts waits while any of them is unloaded
  * ({@code getUnloadedLinkCount} is {@code totalLinks - loadedLinks}). Each district on such a network
- * gets a ledger warning naming the others, and the server log a line when the set changes.
+ * gets a diagnostics warning naming the others (the server log and the operator /rtsim district output; never
+ * shown to players, I18), and the server log a line when the set changes.
  *
  * <p>No mixin counts a simulated district's links as present (choice Q8): Create's summary
  * ({@code LogisticsManager.getSummaryOfNetwork}) only reads loaded links' inventories, so counting them
@@ -63,7 +64,7 @@ public final class GaugeNetworks {
             Set<Long> now = spans.get(e.getKey());
             for (long d : e.getValue())
                 if (now == null || !now.contains(d))
-                    ind.ledgers().warn(d, KEY + e.getKey(), null);
+                    ind.diagnostics().warn(d, KEY + e.getKey(), null);
             if (now == null) {
                 WARNED.remove(e.getKey());
                 MicRtsimCreate.LOGGER.info("[mic_rtsim_create] logistics network {} no longer spans districts", e.getKey());
@@ -81,7 +82,7 @@ public final class GaugeNetworks {
                 for (Map.Entry<Long, String> n : names.entrySet())
                     if (n.getKey() != d)
                         others.add(n.getValue());
-                ind.ledgers().warn(d, KEY + e.getKey(), net + " spans " + names.get(d) + " and " + String.join(", ", others)
+                ind.diagnostics().warn(d, KEY + e.getKey(), net + " spans " + names.get(d) + " and " + String.join(", ", others)
                         + "; its gauges wait while " + String.join(", ", others) + (others.size() == 1 ? " is" : " are") + " unloaded");
             }
             Set<Long> before = WARNED.put(e.getKey(), e.getValue());

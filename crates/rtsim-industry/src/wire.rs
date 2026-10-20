@@ -17,7 +17,7 @@ use rtsim_kernel::journal::OpId;
 
 use crate::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    LedgerLine, WritePackage,
+    WritePackage,
 };
 use crate::glass;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
@@ -39,7 +39,8 @@ pub const IND_SWEEP_END: u16 = 0x0041;
 pub const IND_DEPOSIT_SAMPLE: u16 = 0x0042;
 // 0x0043 was IND_CHANNEL_SAMPLE: retired with Ender Transmission channels as shared stock (I13 as
 // corrected), and read as an unknown kind.
-pub const IND_LEDGER_REQUEST: u16 = 0x0044;
+// 0x0044 was IND_LEDGER_REQUEST: retired with the ledger (I18 as decided: players are shown nothing),
+// and read as an unknown kind.
 pub const IND_WATCHED: u16 = 0x0045;
 /// The Java side's proposal H23 (docs/industry-boundary.md §6.1), read as data (W16).
 pub const IND_APPROACH: u16 = 0x0046;
@@ -76,13 +77,12 @@ pub const IND_CARRIAGE_DELTA: u16 = 0x8401;
 // 0x8402 was IND_CHANNEL_DELTA: retired with IND_CHANNEL_SAMPLE.
 pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
-pub const IND_LEDGER: u16 = 0x8405;
+// 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
 
-const OBS_KINDS: [u16; 28] = [
+const OBS_KINDS: [u16; 27] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
-    IND_LEDGER_REQUEST,
     IND_WATCHED,
     IND_APPROACH,
     IND_DISTRICT,
@@ -109,12 +109,11 @@ const OBS_KINDS: [u16; 28] = [
     IND_SURVEY_BLOCKS,
 ];
 
-const CMD_KINDS: [u16; 5] = [
+const CMD_KINDS: [u16; 4] = [
     IND_CHUNK_RECONCILE,
     IND_CARRIAGE_DELTA,
     IND_DEPOSIT_DELTA,
     IND_WRITE_PACKAGE,
-    IND_LEDGER,
 ];
 
 /// `Option<u32>` inventory index: none.
@@ -555,11 +554,6 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u32(u32::from(d.infinite));
             w.finish()
         }
-        Obs::LedgerRequest { district } => {
-            let mut w = W::obs(out, IND_LEDGER_REQUEST, 0, seq, at);
-            w.put_u64(district.0);
-            w.finish()
-        }
         Obs::Watched { district, watched } => {
             let mut w = W::obs(out, IND_WATCHED, u32::from(*watched), seq, at);
             w.put_u64(district.0);
@@ -893,12 +887,6 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 infinite: r.get_u32(52) & 1 != 0,
                 sweep: r.get_u32(28),
             })
-        }
-        IND_LEDGER_REQUEST => {
-            check(kind, size, 24)?;
-            Obs::LedgerRequest {
-                district: r.district(16),
-            }
         }
         IND_WATCHED => {
             check(kind, size, 24)?;
@@ -1286,35 +1274,6 @@ pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), Wire
             w.goods(&p.goods);
             w.finish()
         }
-        Cmd::Ledger(l) => {
-            // None is -1, so a tick that does not fit a positive i64 cannot be told from it.
-            let breakpoint = match l.next_breakpoint {
-                None => -1,
-                Some(t) if t.0 <= i64::MAX as u64 => t.0 as i64,
-                Some(t) => {
-                    return Err(WireError::BadCode {
-                        kind: IND_LEDGER,
-                        field: "next_breakpoint",
-                        value: t.0,
-                    });
-                }
-            };
-            let mut w = W::cmd(out, IND_LEDGER, n32(l.goods.len()), cmd_seq);
-            w.put_u64(l.district.0);
-            w.put_u32(l.state);
-            w.put_u32(l.freeze);
-            w.put_i64(breakpoint);
-            w.put_u32(l.next_kind);
-            w.put_u32(l.next_good.map_or(0, |g| g.0));
-            w.put_i64(l.since.0 as i64);
-            for &(good, per_hour, since_start) in &l.goods {
-                w.put_u32(good.0);
-                w.zero(4);
-                w.put_i64(per_hour);
-                w.put_i64(since_start);
-            }
-            w.finish()
-        }
     }
 }
 
@@ -1413,36 +1372,6 @@ pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
                 address: r.get_u32(48),
                 count: r.get_u32(52),
                 goods: r.goods(56, n),
-            })
-        }
-        IND_LEDGER => {
-            check(kind, size, sized(56, n, 24))?;
-            let breakpoint = r.get_i64(32);
-            let next_good = r.get_u32(44);
-            Cmd::Ledger(LedgerLine {
-                district: r.district(16),
-                state: r.get_u32(24),
-                freeze: r.get_u32(28),
-                next_breakpoint: match breakpoint {
-                    -1 => None,
-                    b if b >= 0 => Some(Tick(b as u64)),
-                    b => {
-                        return Err(WireError::BadCode {
-                            kind,
-                            field: "next_breakpoint",
-                            value: b as u64,
-                        });
-                    }
-                },
-                next_kind: r.get_u32(40),
-                next_good: (next_good != 0).then_some(Good(next_good)),
-                since: Tick(r.get_i64(48) as u64),
-                goods: (0..n)
-                    .map(|i| {
-                        let e = 56 + 24 * i;
-                        (Good(r.get_u32(e)), r.get_i64(e + 8), r.get_i64(e + 16))
-                    })
-                    .collect(),
             })
         }
         _ => return Ok(None),
@@ -1566,7 +1495,6 @@ mod tests {
                 creative: true,
                 overstressed: false,
             }),
-            Obs::LedgerRequest { district: d },
             Obs::Watched {
                 district: d,
                 watched: true,
@@ -2005,30 +1933,6 @@ mod tests {
                 count: 4,
                 goods: goods3(),
             }),
-            Cmd::Ledger(LedgerLine {
-                district: d,
-                state: 2,
-                freeze: 0,
-                next_breakpoint: Some(Tick(1_000_000)),
-                next_kind: 3,
-                next_good: Some(Good(12)),
-                since: Tick(500_000),
-                goods: vec![
-                    (Good(3), 7_200, -90),
-                    (Good(4), -3_600, 123_456),
-                    (Good(5), 0, 0),
-                ],
-            }),
-            Cmd::Ledger(LedgerLine {
-                district: d,
-                state: 4,
-                freeze: 5,
-                next_breakpoint: None,
-                next_kind: 0,
-                next_good: None,
-                since: Tick(0),
-                goods: vec![],
-            }),
         ];
         for reason in [CarriageReason::Exchange, CarriageReason::Loot] {
             v.push(Cmd::CarriageDelta(CarriageDelta {
@@ -2083,7 +1987,6 @@ mod tests {
             Obs::StockSample { goods, .. } => 32 + 16 * goods.len(),
             Obs::SweepEnd(_) => 40,
             Obs::DepositSample(_) => 56,
-            Obs::LedgerRequest { .. } => 24,
             Obs::Watched { .. } => 24,
             Obs::Approach { .. } => 32,
             Obs::District(_) => 48,
@@ -2128,7 +2031,6 @@ mod tests {
             Obs::StockSample { .. } => 0x0040,
             Obs::SweepEnd(_) => 0x0041,
             Obs::DepositSample(_) => 0x0042,
-            Obs::LedgerRequest { .. } => 0x0044,
             Obs::Watched { .. } => 0x0045,
             Obs::Approach { .. } => 0x0046,
             Obs::District(_) => 0x0400,
@@ -2163,7 +2065,6 @@ mod tests {
             Cmd::CarriageDelta(c) => 40 + 16 * c.entries.len(),
             Cmd::DepositDelta(_) => 48,
             Cmd::WritePackage(c) => 56 + 16 * c.goods.len(),
-            Cmd::Ledger(c) => 56 + 24 * c.goods.len(),
             Cmd::ProbeSet(p) => (32 + 4 * p.nodes.len()).div_ceil(8) * 8,
         }
     }
@@ -2174,7 +2075,6 @@ mod tests {
             Cmd::CarriageDelta(_) => 0x8401,
             Cmd::DepositDelta(_) => 0x8403,
             Cmd::WritePackage(_) => 0x8404,
-            Cmd::Ledger(_) => 0x8405,
             Cmd::ProbeSet(_) => 0x8406,
         }
     }
@@ -2268,12 +2168,11 @@ mod tests {
 
     #[test]
     fn kind_constants_match_the_spec_table() {
-        let spec: [(u16, u16); 27] = [
+        let spec: [(u16, u16); 26] = [
             (IND_STOCK_SAMPLE, 0x0040),
             (IND_SWEEP_END, 0x0041),
             (IND_DEPOSIT_SAMPLE, 0x0042),
             (IND_CHUNK_UNLOADED, 0x040A),
-            (IND_LEDGER_REQUEST, 0x0044),
             (IND_WATCHED, 0x0045),
             (IND_DISTRICT, 0x0400),
             (IND_DISTRICT_CHUNKS, 0x0401),
@@ -2304,7 +2203,6 @@ mod tests {
         assert_eq!(IND_CARRIAGE_DELTA, 0x8401);
         assert_eq!(IND_DEPOSIT_DELTA, 0x8403);
         assert_eq!(IND_WRITE_PACKAGE, 0x8404);
-        assert_eq!(IND_LEDGER, 0x8405);
     }
 
     #[test]
@@ -2613,26 +2511,14 @@ mod tests {
         assert_eq!(le32(&port, 32), 9);
         assert_eq!(le32(&port, 36), 0xFFFF_FFFF);
         assert_eq!(le64(&port, 48), 0);
-        let ledger = enc_cmd(&Cmd::Ledger(LedgerLine {
-            district: DistrictId(1),
-            state: 0,
-            freeze: 0,
-            next_breakpoint: None,
-            next_kind: 0,
-            next_good: None,
-            since: Tick(0),
-            goods: vec![],
-        }));
-        assert_eq!(le64(&ledger, 32) as i64, -1);
-        assert_eq!(le32(&ledger, 44), 0);
     }
 
     #[test]
     fn unknown_kinds_are_skipped_not_errors() {
         let mut rec = vec![0u8; 16];
         for kind in [
-            0x0001u16, 0x0043, 0x0047, 0x004E, 0x005F, 0x0060, 0x040C, 0x04FF, 0x0500, 0x8001,
-            0x8402, 0x8407, 0x84FF,
+            0x0001u16, 0x0043, 0x0044, 0x0047, 0x004E, 0x005F, 0x0060, 0x040C, 0x04FF, 0x0500,
+            0x8001, 0x8402, 0x8405, 0x8407, 0x84FF,
         ] {
             rec[0..2].copy_from_slice(&kind.to_le_bytes());
             rec[2..4].copy_from_slice(&16u16.to_le_bytes());
@@ -2642,8 +2528,9 @@ mod tests {
         // A real command is not an observation and the other way around.
         let c = enc_cmd(&all_cmds()[0]);
         assert_eq!(decode_obs(&c), Ok(None));
-        let o = enc_obs(Obs::LedgerRequest {
+        let o = enc_obs(Obs::Watched {
             district: DistrictId(1),
+            watched: true,
         });
         assert_eq!(decode_cmd(&o), Ok(None));
     }
@@ -2851,18 +2738,6 @@ mod tests {
                 ..
             })
         ));
-
-        // A ledger breakpoint below -1 is not a tick.
-        let ledger = enc_cmd(&all_cmds()[5]);
-        let mut r = ledger.clone();
-        r[32..40].copy_from_slice(&(-2i64).to_le_bytes());
-        assert!(matches!(
-            decode_cmd(&r),
-            Err(WireError::BadCode {
-                field: "next_breakpoint",
-                ..
-            })
-        ));
     }
 
     #[test]
@@ -2944,35 +2819,6 @@ mod tests {
             })
         ));
         assert_eq!(out, [9]);
-    }
-
-    #[test]
-    fn ledger_breakpoint_must_fit_a_positive_i64() {
-        let line = |bp| {
-            Cmd::Ledger(LedgerLine {
-                district: DistrictId(1),
-                state: 0,
-                freeze: 0,
-                next_breakpoint: bp,
-                next_kind: 0,
-                next_good: None,
-                since: Tick(u64::MAX),
-                goods: vec![],
-            })
-        };
-        let mut out = Vec::new();
-        assert!(matches!(
-            encode_cmd(SEQ, &line(Some(Tick(u64::MAX))), &mut out),
-            Err(WireError::BadCode {
-                field: "next_breakpoint",
-                ..
-            })
-        ));
-        assert!(out.is_empty());
-        for bp in [None, Some(Tick(0)), Some(Tick(i64::MAX as u64))] {
-            let c = line(bp);
-            assert_eq!(decode_cmd(&enc_cmd(&c)).unwrap().unwrap().1, c);
-        }
     }
 
     #[test]
@@ -3151,7 +2997,7 @@ mod tests {
         /// Whatever the bytes, decoding returns a value or an error and never panics.
         #[test]
         fn decoding_arbitrary_bodies_never_panics(
-            kind_ix in 0usize..31,
+            kind_ix in 0usize..30,
             aux in prop_oneof![0u32..40, any::<u32>()],
             body in prop::collection::vec(any::<u8>(), 0..400),
         ) {

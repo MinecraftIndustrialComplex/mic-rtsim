@@ -82,4 +82,9 @@ public final class PowerGridPlugin implements IndustryPlugin {
     public void tick(Industry industry, long now) {
         PowerLinks.tick(industry, now);
     }
+
+    @Override
+    public void announce(Industry industry) {
+        PowerLinks.announce(industry);
+    }
 }
