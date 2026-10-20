@@ -138,6 +138,9 @@ pub struct SweepBuf {
     pub sweep: u32,
     pub records: u32,
     pub contents: BTreeMap<u32, GoodVec>,
+    /// When each inventory was read: its first record's game time, not the sweep's end (a delta
+    /// that landed in between is in the next sweep, not this one; review finding 13).
+    pub read_at: BTreeMap<u32, Tick>,
     pub deposits: Vec<DepositSample>,
 }
 
@@ -436,8 +439,16 @@ impl District {
                         .map(|b| b.get(good))
                         .filter(|&b| b > 0)
                         .unwrap_or_else(|| goods.max_stack(good));
-                    let mk = PoolKey::Mail(d, inventory, good);
-                    pools.push((mk, 0, Some(OFFLINE_BUFFER_PACKAGES * batch)));
+                    let mk = PoolKey::Mail(d, inventory, address, good);
+                    // Room in the 18-slot buffer for packages not already there; the buffer's
+                    // contents count as whole packages of this batch (review finding 10).
+                    let held: i64 = self
+                        .inventories
+                        .get(&inventory)
+                        .map_or(0, |i| i.effective().iter().map(|(_, n)| n.max(0)).sum());
+                    let packages_there = (held + batch - 1) / batch;
+                    let room = (OFFLINE_BUFFER_PACKAGES - packages_there).max(0);
+                    pools.push((mk, 0, Some(room * batch)));
                     procs.push(ProcSpec {
                         id: next_id,
                         body: ProcSpecBody::Link {
@@ -573,7 +584,7 @@ mod persist_impls {
         read_only,
     });
     persist_struct!(ExchangeRule { unload, load, observed });
-    persist_struct!(SweepBuf { sweep, records, contents, deposits });
+    persist_struct!(SweepBuf { sweep, records, contents, read_at, deposits });
 
     /// `skipped` is one of a few fixed words.
     const SKIPS: [&str; 3] = ["watched", "cooldown", "read-only phase"];

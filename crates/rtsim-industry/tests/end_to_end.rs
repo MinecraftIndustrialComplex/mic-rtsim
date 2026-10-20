@@ -204,6 +204,10 @@ fn a_shortfall_trims_the_outputs_it_funded() {
     assert_eq!(b.trimmed.get(BAR), 16, "books {b:?}");
     let rep = w.engine.district(MILL).unwrap().reports.back().unwrap();
     assert_eq!(rep.trims.get(BAR), 16);
+    // Both chunks' commands were sent at once, so the trim is a new epoch of removals, never an
+    // edit of a command Java already applied (review finding 3): nothing is left pending.
+    assert!(w.engine.district(MILL).unwrap().inventories.values().all(|i| i.pending.is_empty()));
+    assert!(w.engine.district(MILL).unwrap().epoch >= 2);
     w.conservation().unwrap();
 }
 
@@ -298,7 +302,7 @@ fn packages_written_while_unloaded_are_taken_from_the_vault_once() {
     send(&mut e, 100, Obs::LoadState { district: d, state: LoadState::Unloaded, ticking_chunks: 0, total_chunks: 2 });
     // A day of packing: 480 bars, 7 whole packages written.
     e.advance_to(Tick(100 + 24_000));
-    let written: u32 = e.drain_commands().iter().map(|c| match c { Cmd::WritePackage(p) => { assert_eq!(p.goods.get(BAR), 64); p.count } _ => 0 }).sum();
+    let written: u32 = e.drain_commands().iter().map(|c| match c { Cmd::WritePackage(p) => { assert_eq!(p.goods.get(BAR), 64); assert_eq!(p.address, 7); p.count } _ => 0 }).sum();
     assert_eq!(written, 7);
     // A train fetches three of them from the offline buffer.
     send(&mut e, 24_200, Obs::Package(PackageEvent { district: d, inventory: 1, direction: Direction::In, address: 7, packages: 0, op: None, goods: GoodVec::new() }));
@@ -356,6 +360,14 @@ fn a_channel_couples_two_unloaded_districts() {
     let c2 = e.channel_level(ch, BAR);
     assert_eq!(a2 + b2 + c2, 3_000, "bars are only moved: a {a2}, b {b2}, channel {c2}");
     e.check_books().unwrap();
+    // Both load: the channel pool leaves the replay, and every change it made reaches the world
+    // (review finding 1).
+    let t = 100 + 80_000 + 10;
+    for d in [DistrictId(1), DistrictId(2)] {
+        send(&mut e, t, Obs::LoadState { district: d, state: LoadState::Live, ticking_chunks: 1, total_chunks: 1 });
+    }
+    let more: i64 = e.drain_commands().iter().map(|c| match c { Cmd::ChannelDelta(d) => d.goods.get(BAR), _ => 0 }).sum();
+    assert_eq!(pushed + more, e.channel_level(ch, BAR), "pushed deltas add up to the buffer");
 }
 
 /// A chunk-loaded district with nobody near is attacked abstractly and the damage lands at once

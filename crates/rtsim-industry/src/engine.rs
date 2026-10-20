@@ -392,6 +392,7 @@ impl Engine {
                 }
                 buf.records += 1;
                 buf.contents.entry(*inventory).or_default().merge(goods);
+                buf.read_at.entry(*inventory).or_insert(at);
             }
             Obs::DepositSample(s) => {
                 let dist = self.district_mut(s.district);
@@ -509,6 +510,39 @@ impl Engine {
                 applied_epoch,
             } => {
                 self.district_mut(*district).loaded_chunks.insert(*chunk);
+                // The chunk's attachment says an epoch is applied whose result never came (a
+                // crash between the chunk's save and the journal's): it was applied as asked
+                // (review finding 13). A late real result is then a duplicate.
+                let done: Vec<ChunkReconcile> = self
+                    .districts
+                    .get(district)
+                    .and_then(|x| x.pending.get(chunk))
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| p.cmd.epoch <= *applied_epoch)
+                    .map(|p| p.cmd.clone())
+                    .collect();
+                for c in done {
+                    let r = ReconcileResult {
+                        op: c.op,
+                        district: c.district,
+                        epoch: c.epoch,
+                        chunk: c.chunk,
+                        entries: c
+                            .deltas
+                            .iter()
+                            .map(|x| crate::obs::ResultEntry {
+                                inventory: x.inventory,
+                                good: x.good,
+                                requested: x.delta,
+                                applied: x.delta,
+                            })
+                            .collect(),
+                        destroyed: c.destroy.iter().map(|b| b.pos).collect(),
+                        blocks_skipped: 0,
+                    };
+                    self.reconcile_result(at, &r);
+                }
                 self.send_pending(*district, *chunk, *applied_epoch);
             }
             Obs::Conditions(c) => self.conditions = Some(*c),
@@ -626,6 +660,7 @@ impl Engine {
             // A latest-wins record was dropped: the whole sweep goes (F5).
             return;
         }
+        let read_at = buf.read_at;
         for (idx, contents) in buf.contents {
             if let Some(inv) = dist.inventories.get_mut(&idx) {
                 // Sampled again: the block was rebuilt.
@@ -638,7 +673,7 @@ impl Engine {
                     }
                 }
                 inv.known = contents;
-                inv.known_at = at;
+                inv.known_at = read_at.get(&idx).copied().unwrap_or(at);
             }
         }
         for s in buf.deposits {
@@ -926,10 +961,10 @@ impl Engine {
                 }
                 ClusterEvent::PackagesReady {
                     at,
-                    pool: PoolKey::Mail(d, inv, g),
+                    pool: PoolKey::Mail(d, inv, address, g),
                     count,
                     batch,
-                } => self.write_packages(d, inv, g, count, batch, at),
+                } => self.write_packages(d, inv, address, g, count, batch, at),
                 ClusterEvent::SeasonBoundary { .. } => season_change = true,
                 _ => {}
             }
@@ -971,15 +1006,11 @@ impl Engine {
         self.channels.entry(ch).or_default().known.add(g, delta);
     }
 
-    fn write_packages(&mut self, d: DistrictId, inv: u32, g: Good, count: i64, batch: i64, at: Tick) {
+    #[allow(clippy::too_many_arguments)]
+    fn write_packages(&mut self, d: DistrictId, inv: u32, address: u32, g: Good, count: i64, batch: i64, at: Tick) {
         let Some(dist) = self.districts.get_mut(&d) else {
             return;
         };
-        let address = dist
-            .batches
-            .keys()
-            .find(|(i, _)| *i == inv)
-            .map_or(0, |k| k.1);
         let pos = dist.inventories.get(&inv).map_or(BlockPos::default(), |i| i.decl.pos);
         // The packages are physically in the offline buffer now. They came out of the mail pool,
         // not out of stock, so the replay's base does not move: the stock pool already fell by
@@ -1032,7 +1063,7 @@ impl Engine {
             dist.minted_carried.add(p.key.good(), p.books.minted);
             match p.key {
                 PoolKey::Stock(_, g) => dist.owed.add(g, p.level - span.base.get(g)),
-                PoolKey::Mail(_, _, g) => dist.owed.add(g, p.level - p.pushed),
+                PoolKey::Mail(_, _, _, g) => dist.owed.add(g, p.level - p.pushed),
                 PoolKey::Channel(..) => {}
             }
         }
@@ -1070,7 +1101,7 @@ impl Engine {
                         }
                     }
                     // Goods packed but not yet a whole package go back to stock.
-                    PoolKey::Mail(_, _, g) => net.add(g, p.level - p.pushed),
+                    PoolKey::Mail(_, _, _, g) => net.add(g, p.level - p.pushed),
                     PoolKey::Channel(..) => {}
                 }
             }
@@ -1737,12 +1768,13 @@ impl Engine {
         let goods = p.goods.clone();
         let out = p.direction == Direction::Out;
         let inv = p.inventory;
+        let address = p.address;
         let moved = self.clusters.apply(h, at, |c, at| {
             let mut moved = GoodVec::new();
             for (g, n) in goods.iter() {
                 if out {
                     // Engine-written packages first, then stock that was already there.
-                    let mail = PoolKey::Mail(d, inv, g);
+                    let mail = PoolKey::Mail(d, inv, address, g);
                     let from_mail = c.pool(mail).map_or(0, |m| m.pushed.min(m.level)).min(n);
                     if from_mail > 0 {
                         c.add_to_pool(mail, -from_mail, true, at);

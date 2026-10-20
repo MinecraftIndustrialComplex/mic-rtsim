@@ -57,20 +57,20 @@ pub enum PoolKey {
     /// An Ender Transmission channel buffer's content of a good (I13).
     Channel(ChannelId, Good),
     /// Goods a district's packager wrote into packages in a postbox offline buffer (inventory
-    /// index), not yet fetched by a train (INDUSTRY.md §8.2).
-    Mail(DistrictId, u32, Good),
+    /// index), to one address (NAME id), not yet fetched by a train (INDUSTRY.md §8.2).
+    Mail(DistrictId, u32, u32, Good),
 }
 
 impl PoolKey {
     pub fn good(self) -> Good {
         match self {
-            PoolKey::Stock(_, g) | PoolKey::Channel(_, g) | PoolKey::Mail(_, _, g) => g,
+            PoolKey::Stock(_, g) | PoolKey::Channel(_, g) | PoolKey::Mail(_, _, _, g) => g,
         }
     }
 
     pub fn district(self) -> Option<DistrictId> {
         match self {
-            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _) => Some(d),
+            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _, _) => Some(d),
             PoolKey::Channel(..) => None,
         }
     }
@@ -1669,10 +1669,11 @@ mod persist_impls {
                     c.put(w);
                     g.put(w);
                 }
-                PoolKey::Mail(d, i, g) => {
+                PoolKey::Mail(d, i, a, g) => {
                     w.u8(2);
                     d.put(w);
                     i.put(w);
+                    a.put(w);
                     g.put(w);
                 }
             }
@@ -1681,7 +1682,7 @@ mod persist_impls {
             Ok(match r.u8()? {
                 0 => PoolKey::Stock(Persist::get(r)?, Persist::get(r)?),
                 1 => PoolKey::Channel(Persist::get(r)?, Persist::get(r)?),
-                2 => PoolKey::Mail(Persist::get(r)?, Persist::get(r)?, Persist::get(r)?),
+                2 => PoolKey::Mail(Persist::get(r)?, Persist::get(r)?, Persist::get(r)?, Persist::get(r)?),
                 _ => return invalid("pool key"),
             })
         }

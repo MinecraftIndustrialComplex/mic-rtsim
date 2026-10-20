@@ -767,6 +767,24 @@ mod tests {
     }
 
     #[test]
+    fn natural_mobs_never_steal() {
+        let mut d = Defence::default();
+        d.set_survey(&survey(100, 0.0, 0));
+        let mut t = threat(ThreatClass::Siege, 20);
+        t.source = ThreatSource::Natural;
+        let tun = ThreatTunables::default();
+        let o = resolve(&t, &d, 0, &tun);
+        let stock = GoodVec::from_pairs([(Good(1), 10_000)]);
+        assert!(damage(&t, &o, &stock, &d, &tun).stolen.is_empty());
+    }
+
+    #[test]
+    fn a_large_pressure_mean_gives_a_sane_count() {
+        let (_, k) = next_pressure_attack(3, DistrictId(1), ThreatClass::GroundMelee, 1_000.0, 0).unwrap();
+        assert!((800..1_200).contains(&k), "count {k} for a mean of 1,000");
+    }
+
+    #[test]
     fn pressure_draws_are_deterministic_and_zero_when_lit() {
         assert_eq!(next_pressure_attack(1, DistrictId(1), ThreatClass::Siege, 0.0, 5), None);
         let a = next_pressure_attack(1, DistrictId(1), ThreatClass::Siege, 0.3, 5);
