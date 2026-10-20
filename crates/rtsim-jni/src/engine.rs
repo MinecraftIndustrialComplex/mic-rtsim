@@ -154,6 +154,8 @@ pub struct Inspect {
     pub ledger: std::collections::BTreeMap<u64, i64>,
     pub done_ops: std::collections::BTreeSet<u64>,
     pub replay: Replay,
+    pub agents: std::collections::BTreeMap<u64, crate::world::Agent>,
+    pub counters: crate::world::WorldCounters,
 }
 
 impl Inspect {
@@ -705,13 +707,10 @@ impl Engine {
     }
 
     fn step_inner(self: &Arc<Self>, h: u64) -> Result<(), String> {
-        let mut st = match self.state.try_lock() {
-            Ok(g) => g,
-            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                return Err("another step or start/close holds the engine (two steps at once)".into());
-            }
-        };
+        // Step h - 1 published its commands before it let go of the state, so step h can start
+        // while h - 1 is still in its last lines: wait for them (microseconds), lending this pool
+        // thread's slot meanwhile. Never a game thread: they take this lock only outside steps.
+        let mut st = rt::blocking(|| lock(&self.state));
         // 1. Observations: published (acquire), read, consumed (release).
         let o = self.obs_buffer(h as usize);
         let published = o.published().load(Ordering::Acquire);
@@ -758,15 +757,14 @@ impl Engine {
         c.put_i64(wire::H_WORD_B, st.game_time);
         c.put_u64(wire::H_WORD_C, highest);
         c.put_u64(wire::H_RESERVED, 0);
-        // 5. Publish (release).
-        c.published().store(h, Ordering::Release);
-
         self.stats.acked_sent.store(acked, Ordering::Release);
         self.stats.commands_written.fetch_add(u64::from(count), Ordering::AcqRel);
         self.publish_stats(&st);
         if self.cfg.test {
             self.publish_inspect(&st);
         }
+        // 5. Publish (release): the last thing the step does with the buffers.
+        c.published().store(h, Ordering::Release);
         Ok(())
     }
 
@@ -783,6 +781,8 @@ impl Engine {
             ledger: st.world.ledger.clone(),
             done_ops: st.world.done_ops.clone(),
             replay: st.replay.clone(),
+            agents: st.world.agents.clone(),
+            counters: st.world.counters,
         });
     }
 
@@ -1126,7 +1126,16 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             Some(seq)
         }
         Order::TransferToContainer { op, dimension, item, pos, count } => {
-            let op = if op == 0 { st.outbox.allocate_op() } else { OpId(op) };
+            let op = if op == 0 {
+                // The kernel counts engine op ids from 0; 0 reads as "no op id" on the wire.
+                let mut op = st.outbox.allocate_op();
+                if op.0 == 0 {
+                    op = st.outbox.allocate_op();
+                }
+                op
+            } else {
+                OpId(op)
+            };
             let t = TransferCmd { dimension, item, pos, count };
             // The DICT records go before the command, and the sequence is taken only now, so the
             // buffer's sequences rise in buffer order.
