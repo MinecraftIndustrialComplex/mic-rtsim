@@ -416,7 +416,9 @@ never waits on the writer. The tap follows the same discipline:
    build, a version per layer. A commit is skipped while the IO lane has other work queued
    (`pool_info`), so saves and prefetches always go first.
 3. **Not leased.** Nothing: no encoding, no parts, no files. When a lease ends the IO lane deletes
-   `<world>/rtsim/view/`.
+   `<world>/rtsim/view/`. The sidecar closes the view store when it stops renewing, and treats a
+   missing store as "waiting for the tap". A delete that fails (Windows refuses to delete a file
+   another process holds open) is left for the next lease's start, which clears the folder first.
 4. **The reader** opens the view store read only. A page-store commit happens at one moment, the
    append of its log record (page.rs), so the reader sees a whole publication or none: the log record
    plays the part of the hand-over's `published` word.
@@ -425,6 +427,10 @@ never waits on the writer. The tap follows the same discipline:
    change made only by catch-up is a pure function of that state and the time (paging.rs, O4). So
    the sidecar reads an evicted region from the sim pages and peeks it to now, and gets what the
    engine would.
+
+**Parts are small.** A part is encoded whole, so it must fit well inside the budget: a module buckets
+a big table by region until each part holds at most 2,000 rows (TUNABLE), and the step stops between
+parts, never inside one.
 
 **Why round robin and no change tracking.** A part is re-encoded whole and dropped when unchanged.
 That costs work only while leased, and needs no instrumentation in any module (no dirty flags on
@@ -842,10 +848,10 @@ Each row: the question, the recommended option first, then the alternatives.
 
 | # | Question | Recommended | Alternatives |
 |---|---|---|---|
-| VWD-1 | Where the HTTP server sits | **A sidecar process** (`rtsim-cli view`) reading the sim pages, a view tap the engine writes only while leased, and the archive (§3.4) | (b) in-process, a mic_native service in the server JVM: freshest and nothing to deploy, but a listener thread breaks mic_native's no-threads rule and the server process carries sockets, tiles and parsing; (c) a sidecar on saves only: zero engine work, up to 300 s stale |
+| VWD-1 | Where the HTTP server sits | **A sidecar process** (`rtsim-cli view`) reading the sim pages, a view tap the engine writes only while leased, and the archive (§3.4) | (b) in-process, a mic_native service in the server JVM: freshest and nothing to deploy, but a listener thread breaks mic_native's no-threads rule and the server process carries sockets, tiles and parsing; (c) a sidecar on saves only: no viewer work in the engine at all, up to 300 s stale |
 | VWD-2 | The shared repo's name | **mic-viewer** (`MinecraftIndustrialComplex/mic-viewer`, private, MPL-2.0), next to mic-native | (b) mic-map; (c) mic-worldview. (mic-atlas would be confused with Antique Atlas.) |
 | VWD-3 | The base map on worlds that are not Deep Time's | **Surveyor's server-side terrain summaries** as an optional source, HABITAT underneath and as the fallback (§9) | (b) HABITAT only: no parser, 64-block pixels, sampled ground only; (c) render region files: every generated chunk, but heavy, and colours need a table exported from the game |
-| VWD-4 | The event archive's retention and budget | **256 MiB hard cap in three tiers**: every row for 504 game days, notable rows and named movers' legs for 7,200, then counts per region per day, coarsened and dropped oldest first (§10.4) | (b) one tier, a ring of the newest rows within the cap; (c) a larger cap (1 GiB) with the same tiers; (d) no cap, compaction only |
+| VWD-4 | The event archive's retention and budget | **256 MiB hard cap in three tiers**: every row for 504 game days, notable rows and named movers' legs up to 7,200 game days, then counts per region per day, coarsened and dropped oldest first (§10.4) | (b) one tier, a ring of the newest rows within the cap; (c) a larger cap (1 GiB) with the same tiers; (d) no cap, compaction only |
 | VWD-5 | The live update transport | **SSE** from Deep Time's `stream_events`: version notices, then fetches of changed layers; open streams are the lease (§11) | (b) polling every 2 s while the tab is visible; (c) WebSocket: nothing to reuse, more code |
 | VWD-6 | The headless host's name and scope | **`rtsim-cli run`** (PLAN.md §4.11's name), beside `rtsim-cli view`; scope as §12: a fork of the pages, nobody online, Java's commands held, terminal controls | (b) a separate binary, `rtsim-host`; (c) the same scope plus a "pretend Java" policy that acknowledges commands as applied (houses appear, transfers succeed), clearly a fiction |
 | VWD-7 | Default exposure | **Loopback only on port 8740, reached by `ssh -L`**; tailnet only with `--allow-tailnet` | (b) loopback and tailnet by default, as Deep Time's code allows today; (c) a Unix socket forwarded by SSH |
