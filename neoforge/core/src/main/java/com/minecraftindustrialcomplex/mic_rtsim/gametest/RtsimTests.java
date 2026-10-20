@@ -53,7 +53,9 @@ public final class RtsimTests {
 
     /** The arena's middle, standing on the floor, in absolute coordinates. */
     public static Vec3 centre(GameTestHelper helper) {
-        return helper.absoluteVec(new Vec3(5.5, 1, 5.5));
+        // Relative y 1 is the arena's floor (the structure sits one block above the test's structure
+        // block, which absolutePos counts from); y 2 stands on it.
+        return helper.absoluteVec(new Vec3(5.5, 2, 5.5));
     }
 
     public static String dimension(GameTestHelper helper) {
@@ -108,5 +110,77 @@ public final class RtsimTests {
         PuppetGroup.Member m = g.members[index];
         check("member " + index + " of agent " + g.agent + " is still in the group", !m.gone && m.entity != null);
         return m.entity;
+    }
+
+    // ---- phase 1 helpers ------------------------------------------------------------------------
+
+    private static final AtomicLong NEXT_VILLAGE = new AtomicLong(1);
+
+    /**
+     * Adopts a village over the test's arena, under an id no structure start can have, through the same
+     * path a generated start takes (VILLAGE_ADOPTED is journaled). Remove it with {@link #forget}.
+     */
+    public static com.minecraftindustrialcomplex.mic_rtsim.village.Village adoptArena(GameTestHelper helper, String culture) {
+        net.minecraft.core.BlockPos lo = helper.absolutePos(net.minecraft.core.BlockPos.ZERO);
+        net.minecraft.core.BlockPos hi = helper.absolutePos(new net.minecraft.core.BlockPos(10, 5, 10));
+        net.minecraft.world.level.levelgen.structure.BoundingBox box = net.minecraft.world.level.levelgen.structure.BoundingBox
+                .fromCorners(lo, hi);
+        // Random low bits: the GameTest world (and its village registry) is reused between runs (B37).
+        long id = 0x0F00_0000_0000_0000L | (java.util.concurrent.ThreadLocalRandom.current().nextLong() & 0xFFFF_FFFF_0000L)
+                | (NEXT_VILLAGE.getAndIncrement() & 0xFFFF);
+        RtsimSession s = session();
+        com.minecraftindustrialcomplex.mic_rtsim.village.Village v = com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.adoptDirect(
+                s, s.phase1.villages, id, helper.getLevel().dimension(), net.minecraft.resources.ResourceLocation.parse("minecraft:village_plains"),
+                culture, box, net.minecraft.core.BlockPos.containing(centre(helper)), s.gameTime());
+        v.margin = 0; // test arenas sit side by side: a village is its own arena and nothing more
+        return v;
+    }
+
+    public static void forget(com.minecraftindustrialcomplex.mic_rtsim.village.Village v) {
+        session().phase1.villages.remove(v.id);
+    }
+
+    /**
+     * One trade through vanilla's own trading screen code: the payment goes into the menu's payment
+     * slots, the result slot offers the selected trade, and taking it runs {@code MerchantResultSlot.onTake}
+     * (the hook the bridge observes). Returns the result taken, or EMPTY when no trade was offered.
+     */
+    public static net.minecraft.world.item.ItemStack trade(net.minecraft.world.item.trading.Merchant merchant,
+                                                           net.minecraft.world.entity.player.Player player, int offer,
+                                                           net.minecraft.world.item.ItemStack payA) {
+        merchant.setTradingPlayer(player);
+        try {
+            net.minecraft.world.inventory.MerchantMenu menu = new net.minecraft.world.inventory.MerchantMenu(0, player.getInventory(), merchant);
+            menu.setSelectionHint(offer);
+            menu.getSlot(0).set(payA.copy());
+            net.minecraft.world.inventory.Slot result = menu.getSlot(2);
+            net.minecraft.world.item.ItemStack out = result.getItem();
+            if (out.isEmpty())
+                return net.minecraft.world.item.ItemStack.EMPTY;
+            net.minecraft.world.item.ItemStack taken = result.remove(out.getCount());
+            result.onTake(player, taken);
+            return taken;
+        } finally {
+            merchant.setTradingPlayer(null);
+        }
+    }
+
+    /** Journaled records of one kind whose u64 at {@code offset} is {@code value}. */
+    public static List<StubEngine.Received> recordsWith(StubEngine stub, int kind, int offset, long value) {
+        List<StubEngine.Received> out = new ArrayList<>();
+        for (StubEngine.Received r : stub.received(kind))
+            if (!r.skipped() && r.bytes().length >= offset + 8 && r.view().getLong(offset) == value)
+                out.add(r);
+        return out;
+    }
+
+    /** Items of {@code item} lying in item entities within {@code radius} of the test's centre. */
+    public static int itemsAround(GameTestHelper helper, net.minecraft.world.item.Item item, double radius) {
+        int n = 0;
+        for (net.minecraft.world.entity.item.ItemEntity e : helper.getLevel().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+                new net.minecraft.world.phys.AABB(net.minecraft.core.BlockPos.containing(centre(helper))).inflate(radius)))
+            if (!e.isRemoved() && e.getItem().is(item))
+                n += e.getItem().getCount();
+        return n;
     }
 }

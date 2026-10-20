@@ -7,7 +7,12 @@
     "EntitySaveMixin",
     "EntitySectionManagerAccessor",
     "LlamaInvoker",
-    "ServerLevelAccessor"
+    "MerchantOfferAccessor",
+    "MerchantResultSlotMixin",
+    "ServerLevelAccessor",
+    "StructureManagerMixin",
+    "VillagerReputationMixin",
+    "VillagerRestockMixin"
   ],
   "injectors": {
     "defaultRequire": 1
