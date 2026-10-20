@@ -28,5 +28,7 @@ public final class MicRtsim {
         RtsimAttachments.register(modBus);
         BridgeEvents.register(modBus);
         com.minecraftindustrialcomplex.mic_rtsim.industry.Industry.register(modBus, container);
+        // The vanilla herd adapter (docs/boundary.md §8): vanilla is built in, so the core registers it.
+        com.minecraftindustrialcomplex.mic_rtsim.herd.HerdEvents.register();
     }
 }
