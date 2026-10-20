@@ -37,6 +37,8 @@ Every decision about mic-rtsim, newest at the bottom.
 | A10 | 2026-10-19 | A creature a player takes (lead, taming, Carry On pickup, capture) leaves the sim and becomes an ordinary entity. | Ben | chose "It leaves the sim" |
 | A11 | 2026-10-19 | The potato reference is the laptop pinned to 2 physical cores, plus runs on a Windows PC. | Ben | chose "Laptop + a Windows run" |
 | A12 | 2026-10-19 | The code lives in a private GitHub repo, `MinecraftIndustrialComplex/mic-rtsim`. | Ben | chose "Private GitHub repo" |
+| A13 | 2026-10-19 | Unobserved traffic (caravans, ships, migrations) is simulated as flows on edges. Individual travellers are sampled only where a player can see, and become rows only when something happens to them. | Ben | chose "Flows" |
+| A14 | 2026-10-19 | At galactic scale, an unvisited planet runs a cheap coarse Deep Time history that is authoritative. A visit runs only the refinement on the stored state (option B in SCALE.md §12). This waits on two Deep Time measurements. | Ben | chose "B: coarse history" |
 
 ## Content
 
@@ -53,6 +55,7 @@ Every decision about mic-rtsim, newest at the bottom.
 | C9 | 2026-10-19 | Each culture has its own currency. Prices follow local resource availability. Trade between villages is driven by a real economy simulation; the model is chosen at the phase 1 design gate. | Ben | "Per Culture + Local Resource Availability, ideally also be trading between villages based upon real economy sims." |
 | C11 | 2026-10-19 | Phase 1 caravans use vanilla and Ribbits bodies only: wandering traders, trader llamas and ribbit merchants. No mods are added to the pack for phase 1. Better Caravans, Goblin Traders and Easy NPC were offered and declined for now. | Ben | chose "None for now" |
 | C12 | 2026-10-19 | Phase 1 caravans have no guards. | Ben | chose "No guards yet" |
+| C13 | 2026-10-19 | The phase 1 economy is cost-anchored storehouse markets joined by news-driven flows (research/economy-2026-10-19.md). Price is a pure function of stock, anchored to labour cost from recipes and local resources. Transfers are integer and two-sided, markets are piecewise-linear between breakpoints, and prices travel only as news. | Ben | chose "Storehouse markets" |
 | C10 | 2026-10-19 | Later: kaiju that start spawning after players gain access to nukes, as late-game bosses. | Ben | "eventually I want to start adding in Kaiju to the pack. (Monsters that start spawning in after players have gotten access to nukes, that serve as late game bosses." |
 
 ## Agreed with the Deep Time session
@@ -77,5 +80,5 @@ These are in PLAN.md but not decided. Each one goes to Ben before work depends o
 | P6 | History is generated at world creation, after Deep Time's bake when one is present. | history |
 | P7 | A patch ledger plus contract tests for every reach into another mod. | phase 0 |
 | P8 | Which mods supply bodies, structures and ports for later phases. Survey candidates (2026-10-19): Small Ships and Create Aeronautics Structures (ships), the Alex's Caves port (kaiju), Goblin's Tyranny (goblins), Illager Invasion (raiders), Naturalist (herds). D7 rules out player-like NPCs. | each later phase |
-| P9 | The economy model (research running 2026-10-19). | phase 1 design gate |
+| P9 | Economy details left open by C13: whether vanilla villager trades must draw emeralds from the village treasury or are logged as a player money source; the tunables r, T and k; a Numismatics mint rule (later). | phase 1 design gate |
 | P10 | The fixes from the 2026-10-19 adversarial review that change the design, listed in PLAN.md. | phase 0 |
