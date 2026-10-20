@@ -2656,7 +2656,7 @@
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9533,
+        "observations": 9544,
         "models_adopted": 15,
         "sims_started": 8,
         "reconciles": 6,
@@ -2670,8 +2670,8 @@
         "breakpoints": 8,
         "cluster_settles": 359
       },
-      "wire_bytes": 470824,
-      "wall_ms": 14.545786
+      "wire_bytes": 471088,
+      "wall_ms": 13.942861
     },
     {
       "name": "simulated",
@@ -4583,7 +4583,7 @@
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9659,
+        "observations": 9670,
         "models_adopted": 15,
         "sims_started": 7,
         "reconciles": 4,
@@ -4597,8 +4597,8 @@
         "breakpoints": 4,
         "cluster_settles": 331
       },
-      "wire_bytes": 474648,
-      "wall_ms": 11.324580000000001
+      "wire_bytes": 474912,
+      "wall_ms": 10.882401999999999
     },
     {
       "name": "simulated, no race",
@@ -6413,7 +6413,7 @@
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9654,
+        "observations": 9665,
         "models_adopted": 15,
         "sims_started": 7,
         "reconciles": 3,
@@ -6427,8 +6427,8 @@
         "breakpoints": 4,
         "cluster_settles": 330
       },
-      "wire_bytes": 473352,
-      "wall_ms": 11.259408
+      "wire_bytes": 473616,
+      "wall_ms": 11.05698
     },
     {
       "name": "control",
@@ -6759,7 +6759,7 @@
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 27388,
+        "observations": 27392,
         "models_adopted": 59,
         "sims_started": 0,
         "reconciles": 0,
@@ -6773,8 +6773,8 @@
         "breakpoints": 0,
         "cluster_settles": 0
       },
-      "wire_bytes": 1242208,
-      "wall_ms": 17.249126
+      "wire_bytes": 1242304,
+      "wall_ms": 18.521906
     },
     {
       "name": "read-only",
@@ -7941,7 +7941,7 @@
       "conservation": "not applicable (read-only)",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9528,
+        "observations": 9539,
         "models_adopted": 16,
         "sims_started": 7,
         "reconciles": 7,
@@ -7955,8 +7955,8 @@
         "breakpoints": 3,
         "cluster_settles": 295
       },
-      "wire_bytes": 457576,
-      "wall_ms": 13.472793000000001
+      "wire_bytes": 457840,
+      "wall_ms": 12.510174000000001
     }
   ],
   "comparison": [

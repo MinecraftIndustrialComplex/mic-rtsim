@@ -207,7 +207,10 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
      - (a) accept a tolerance on both sides;
      - (b) the bridge holds a reloaded chunk's machines until its reconcile lands (feasibility
        UNVERIFIED);
-     - (c) trims follow power links.
+     - (c) trims follow power links;
+     - (d) the engine sends a district's reconcile ahead, when a player heads its way (the read-ahead
+       of SCALE.md §8). The bridge would then apply it at `ChunkEvent.Load`, before the first tick.
+       This removes the race at its cause, but needs the bridge's player positions.
 3. **I20 says one draw per (district, night slot).** The geometric-gap draw (F17) has the same
    distribution and costs per attack instead of per night.
 4. **"Cost does not grow with elapsed time" has one exception.** A consumer bottlenecked on a
