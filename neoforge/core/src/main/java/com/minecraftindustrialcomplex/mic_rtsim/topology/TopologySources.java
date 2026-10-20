@@ -23,9 +23,24 @@ public final class TopologySources {
         return SOURCES;
     }
 
+    private static final ToroidalWorldProbe REFLECTIVE = ToroidalWorldProbe.reflective();
+    private static volatile boolean overridden;
+
     /** Tests: the Toroidal World probe the detection uses (a fake, or {@link ToroidalWorldProbe#reflective}). */
     public static void setToroidalProbe(ToroidalWorldProbe probe) {
         toroidal = probe;
+        overridden = true;
+    }
+
+    /** Tests: the real probe again. */
+    public static void resetToroidalProbe() {
+        toroidal = REFLECTIVE;
+        overridden = false;
+    }
+
+    /** A test's fake probe is in place: the tracker looks every tick, so a fake that expires goes at once. */
+    public static boolean probeOverridden() {
+        return overridden;
     }
 
     /**

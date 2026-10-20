@@ -48,7 +48,7 @@ public final class TopologyTracker {
 
     /** At the end of a tick, before the hand-over: detect and send what changed. */
     public void tick(MinecraftServer server, long now, BoundarySession boundary, ToIntFunction<ResourceKey<Level>> dimId) {
-        if (!dirty && lastCheck != Long.MIN_VALUE && now - lastCheck < CHECK_TICKS)
+        if (!dirty && lastCheck != Long.MIN_VALUE && now - lastCheck < CHECK_TICKS && !TopologySources.probeOverridden())
             return;
         dirty = false;
         lastCheck = now;
