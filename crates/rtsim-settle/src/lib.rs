@@ -176,12 +176,19 @@ pub struct EdgeSpec {
 }
 
 /// The settlement table with a coarse grid for nearest-neighbour searches.
+///
+/// **Seams** (docs/choices-topology.md TP20): positions are canonical; on a wrapped or glued
+/// frame the nearest search folds each ring of chart cells onto canonical cells and measures
+/// through the seams, so a village just across an edge is a neighbour and its road is the short
+/// one. On a flat frame nothing changes.
 #[derive(Default)]
 pub struct Settlements {
     rows: Arena<Settlement>,
     by_key: BTreeMap<u64, SettlementId>,
     /// (frame, cell x, cell z) to the settlements in that cell.
     grid: BTreeMap<(u16, i32, i32), Vec<SettlementId>>,
+    /// Every frame's topology (TP6): session state, set by the world; not saved.
+    topo: rtsim_space::SharedTopologies,
 }
 
 /// Grid cell edge in blocks. A vanilla village candidate cell is 544 blocks and a Ribbits one 400
@@ -195,6 +202,26 @@ fn cell_of(p: Pos) -> (u16, i32, i32) {
 impl Settlements {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Hands the table every frame's topology.
+    pub fn set_topologies(&mut self, t: rtsim_space::SharedTopologies) {
+        self.topo = t;
+    }
+
+    /// Squared distance between two positions through every seam, `None` across frames.
+    pub fn dist_sq(&self, a: Pos, b: Pos) -> Option<u64> {
+        if a.frame != b.frame {
+            return None;
+        }
+        let t = self.topo.of(a.frame);
+        if t.is_flat() {
+            return a.dist_sq(b);
+        }
+        Some(t.dist_sq(
+            (i64::from(a.x), i64::from(a.z)),
+            (i64::from(b.x), i64::from(b.z)),
+        ))
     }
 
     pub fn len(&self) -> usize {
@@ -262,6 +289,8 @@ impl Settlements {
         let (frame, cx, cz) = cell_of(me.pos);
         let max_sq = max_blocks.saturating_mul(max_blocks);
         let max_ring = (max_blocks / CELL as u64) as i32 + 1;
+        let topo = self.topo.of(frame);
+        let mut seen: std::collections::BTreeSet<(i32, i32)> = std::collections::BTreeSet::new();
         let mut found: Vec<(u64, u64, SettlementId)> = Vec::new();
         for ring in 0..=max_ring {
             // Every point outside ring r-1 is at least (r-1)·CELL blocks away.
@@ -272,12 +301,41 @@ impl Settlements {
                     break;
                 }
             }
-            for dx in -ring..=ring {
-                for dz in -ring..=ring {
-                    if dx.abs() != ring && dz.abs() != ring {
-                        continue;
+            let cells: Vec<(i32, i32)> = if topo.is_flat() {
+                let mut v = Vec::new();
+                for dx in -ring..=ring {
+                    for dz in -ring..=ring {
+                        if dx.abs() == ring || dz.abs() == ring {
+                            v.push((cx + dx, cz + dz));
+                        }
                     }
-                    let Some(cell) = self.grid.get(&(frame, cx + dx, cz + dz)) else {
+                }
+                v
+            } else {
+                // The ring's chart square folded onto canonical cells, each looked at once.
+                let c = i64::from(CELL);
+                let sq = rtsim_space::topology::Rect::new(
+                    i64::from(cx - ring) * c,
+                    i64::from(cz - ring) * c,
+                    i64::from(cx + ring + 1) * c,
+                    i64::from(cz + ring + 1) * c,
+                );
+                let mut v = Vec::new();
+                for part in topo.fold_rect(sq) {
+                    let (x0, z0, x1, z1) = part.grid_cells(c);
+                    for x in x0..=x1 {
+                        for z in z0..=z1 {
+                            if seen.insert((x as i32, z as i32)) {
+                                v.push((x as i32, z as i32));
+                            }
+                        }
+                    }
+                }
+                v
+            };
+            for (x, z) in cells {
+                {
+                    let Some(cell) = self.grid.get(&(frame, x, z)) else {
                         continue;
                     };
                     for &other in cell {
@@ -285,7 +343,7 @@ impl Settlements {
                             continue;
                         }
                         let o = self.row(other);
-                        if let Some(d2) = me.pos.dist_sq(o.pos)
+                        if let Some(d2) = self.dist_sq(me.pos, o.pos)
                             && d2 <= max_sq
                         {
                             found.push((d2, o.key, other));
@@ -304,7 +362,7 @@ impl Settlements {
 
     fn spec(&self, x: SettlementId, y: SettlementId, rule: &EdgeRule) -> Option<EdgeSpec> {
         let (sx, sy) = (self.rows.get(x)?, self.rows.get(y)?);
-        let straight = sx.pos.dist(sy.pos)?;
+        let straight = isqrt(self.dist_sq(sx.pos, sy.pos)?);
         let (a, b) = if sx.key <= sy.key { (x, y) } else { (y, x) };
         let border = match (sx.kind.culture(), sy.kind.culture()) {
             (Some(p), Some(q)) => p != q,
@@ -422,6 +480,36 @@ mod tests {
         let e = s.edges(&EdgeRule::P18);
         assert_eq!(e.len(), 3);
         assert_eq!(e.iter().filter(|e| e.border).count(), 2);
+    }
+
+    /// Villages either side of a seam are neighbours, linked by the short road through it
+    /// (TP20), and the grid search through seams finds what a scan through seams finds.
+    #[test]
+    fn villages_across_a_seam_are_neighbours() {
+        let mut t = rtsim_space::Topologies::new();
+        t.set(0, rtsim_space::topology::layout::guyou(6_656, true));
+        let mut s = Settlements::new();
+        s.set_topologies(std::sync::Arc::new(t));
+        let a = s.insert(village(1, 6_500, 0, Culture::Human));
+        let b = s.insert(village(2, -6_500, 100, Culture::Human));
+        // And over the north seam near a pole: (-3000, -3300) and (3000, -3300) are 57 apart.
+        let c = s.insert(village(3, -3_000, -3_300, Culture::Human));
+        let d = s.insert(village(4, 3_000, -3_300, Culture::Human));
+        let rule = EdgeRule {
+            nearest: 1,
+            max_blocks: 1_000,
+            path_factor_milli: 1_000,
+        };
+        assert_eq!(s.nearest(a, 1, 1_000), vec![(327, b)]);
+        assert_eq!(s.nearest(c, 1, 1_000), vec![(57, d)]);
+        let e = s.edges(&rule);
+        assert_eq!(e.len(), 2);
+        assert!(e.iter().all(|e| e.length_blocks < 400), "{e:?}");
+        // On the plane they are worlds apart.
+        let mut flat = Settlements::new();
+        flat.insert(village(1, 6_500, 0, Culture::Human));
+        flat.insert(village(2, -6_500, 100, Culture::Human));
+        assert!(flat.edges(&rule).is_empty());
     }
 
     #[test]
