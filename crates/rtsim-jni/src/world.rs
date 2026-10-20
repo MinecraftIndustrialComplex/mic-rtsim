@@ -180,7 +180,7 @@ impl World {
         for a in self.agents.values_mut() {
             a.state = AgentState::Abstract;
         }
-        self.captured.clear();
+        // Captures stay: the event they wait for replays in this session.
         self.java_dict.clear();
         self.players.clear();
     }
@@ -497,7 +497,65 @@ fn get_pos(r: &mut Reader<'_>) -> codec::Result<[f64; 3]> {
     Ok([r.f64()?, r.f64()?, r.f64()?])
 }
 
-const WORLD_VERSION: u16 = 1;
+/// 2: captures waiting for their event are saved. Before release a version change wipes the pages
+/// (PLAN.md §4.9): `start` refuses an older page with its reason.
+const WORLD_VERSION: u16 = 2;
+
+fn put_member(w: &mut Writer, m: &Member) {
+    w.u32(m.index);
+    put_str(w, &m.body_kind);
+    w.u32(m.health.to_bits());
+    w.u32(m.max_health.to_bits());
+    w.var_i64(i64::from(m.body_a));
+    w.var_i64(i64::from(m.body_b));
+    w.u32(m.flags);
+    put_pos(w, &m.pos);
+    w.var_u64(m.items.len() as u64);
+    for it in &m.items {
+        w.u32(it.slot);
+        put_str(w, &it.item);
+        w.var_i64(i64::from(it.count));
+    }
+    match m.gone {
+        None => w.u8(0),
+        Some(Gone::Taken { how, op }) => {
+            w.u8(1);
+            w.u32(how);
+            w.u64(op);
+        }
+        Some(Gone::Died { op }) => {
+            w.u8(2);
+            w.u64(op);
+        }
+    }
+}
+
+fn get_member(r: &mut Reader<'_>) -> codec::Result<Member> {
+    let mut m = Member::new(r.u32()?);
+    m.body_kind = get_str(r)?;
+    m.health = f32::from_bits(r.u32()?);
+    m.max_health = f32::from_bits(r.u32()?);
+    m.body_a = i32_of(r.var_i64()?)?;
+    m.body_b = i32_of(r.var_i64()?)?;
+    m.flags = r.u32()?;
+    m.pos = get_pos(r)?;
+    for _ in 0..r.var_u64()? {
+        let slot = r.u32()?;
+        let item = get_str(r)?;
+        let count = i32_of(r.var_i64()?)?;
+        m.items.push(Item { slot, item, count });
+    }
+    m.gone = match r.u8()? {
+        0 => None,
+        1 => Some(Gone::Taken {
+            how: r.u32()?,
+            op: r.u64()?,
+        }),
+        2 => Some(Gone::Died { op: r.u64()? }),
+        g => return Err(CodecError::Invalid(format!("member gone tag {g}"))),
+    };
+    Ok(m)
+}
 
 impl Encode for World {
     fn encode(&self, w: &mut Writer) {
@@ -512,33 +570,16 @@ impl Encode for World {
             put_pos(w, &a.pos);
             w.var_u64(a.members.len() as u64);
             for m in &a.members {
-                w.u32(m.index);
-                put_str(w, &m.body_kind);
-                w.u32(m.health.to_bits());
-                w.u32(m.max_health.to_bits());
-                w.var_i64(i64::from(m.body_a));
-                w.var_i64(i64::from(m.body_b));
-                w.u32(m.flags);
-                put_pos(w, &m.pos);
-                w.var_u64(m.items.len() as u64);
-                for it in &m.items {
-                    w.u32(it.slot);
-                    put_str(w, &it.item);
-                    w.var_i64(i64::from(it.count));
-                }
-                match m.gone {
-                    None => w.u8(0),
-                    Some(Gone::Taken { how, op }) => {
-                        w.u8(1);
-                        w.u32(how);
-                        w.u64(op);
-                    }
-                    Some(Gone::Died { op }) => {
-                        w.u8(2);
-                        w.u64(op);
-                    }
-                }
+                put_member(w, m);
             }
+        }
+        // A capture waiting for its event: a snapshot can fall between a MEMBER_STATE and the
+        // TAKEN, DIED or DEMATERIALIZED it belongs to (review finding 3).
+        w.var_u64(self.captured.len() as u64);
+        for c in &self.captured {
+            w.u64(c.agent);
+            w.u32(c.epoch);
+            put_member(w, &c.member);
         }
         w.var_u64(self.ledger.len() as u64);
         for (k, v) in &self.ledger {
@@ -573,32 +614,19 @@ impl Decode for World {
             a.dimension = get_str(r)?;
             a.pos = get_pos(r)?;
             for _ in 0..r.var_u64()? {
-                let mut m = Member::new(r.u32()?);
-                m.body_kind = get_str(r)?;
-                m.health = f32::from_bits(r.u32()?);
-                m.max_health = f32::from_bits(r.u32()?);
-                m.body_a = i32_of(r.var_i64()?)?;
-                m.body_b = i32_of(r.var_i64()?)?;
-                m.flags = r.u32()?;
-                m.pos = get_pos(r)?;
-                for _ in 0..r.var_u64()? {
-                    let slot = r.u32()?;
-                    let item = get_str(r)?;
-                    let count = i32_of(r.var_i64()?)?;
-                    m.items.push(Item { slot, item, count });
-                }
-                m.gone = match r.u8()? {
-                    0 => None,
-                    1 => Some(Gone::Taken {
-                        how: r.u32()?,
-                        op: r.u64()?,
-                    }),
-                    2 => Some(Gone::Died { op: r.u64()? }),
-                    g => return Err(CodecError::Invalid(format!("member gone tag {g}"))),
-                };
-                a.members.push(m);
+                a.members.push(get_member(r)?);
             }
             world.agents.insert(a.id, a);
+        }
+        for _ in 0..r.var_u64()? {
+            let agent = r.u64()?;
+            let epoch = r.u32()?;
+            let member = get_member(r)?;
+            world.captured.push(Captured {
+                agent,
+                epoch,
+                member,
+            });
         }
         for _ in 0..r.var_u64()? {
             let k = r.u64()?;
@@ -691,6 +719,44 @@ mod tests {
 
         world.session_start();
         assert_eq!(world.agents[&5].state, AgentState::Abstract);
+    }
+
+    #[test]
+    fn a_capture_waiting_for_its_event_survives_a_snapshot() {
+        let mut world = World::default();
+        world.spawning(
+            6,
+            1,
+            "kind",
+            "dim",
+            [0.0; 3],
+            &[Member::new(0), Member::new(1)],
+        );
+        let state = records(|w| {
+            let r = w
+                .reserve(obs::MEMBER_STATE, obs::member_state::size(0), 1)
+                .unwrap();
+            wire::put_u64(r, obs::member_state::AGENT, 6);
+            wire::put_u32(r, obs::member_state::EPOCH, 1);
+            wire::put_f32(r, obs::member_state::HEALTH, 3.5);
+        });
+        let taken = records(|w| {
+            let r = w.reserve(obs::TAKEN, obs::taken::SIZE, 1).unwrap();
+            wire::put_u64(r, obs::taken::AGENT, 6);
+            wire::put_u32(r, obs::taken::EPOCH, 1);
+            wire::put_u32(r, obs::taken::MEMBER, 1);
+        });
+        world.apply_journaled(&Records::new(&state).next().unwrap(), false);
+        // The snapshot falls here; a new session starts from it.
+        let mut back = World::from_bytes(&world.to_bytes()).unwrap();
+        back.session_start();
+        back.apply_journaled(&Records::new(&taken).next().unwrap(), true);
+        let m = &back.agents[&6].members[1];
+        assert_eq!(
+            m.health, 3.5,
+            "the capture reached its event across the snapshot"
+        );
+        assert!(m.gone.is_some());
     }
 
     #[test]

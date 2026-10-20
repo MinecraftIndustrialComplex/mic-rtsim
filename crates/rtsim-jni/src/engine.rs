@@ -216,9 +216,13 @@ struct State {
     session_first: u64,
     pages_obs_seq: u64,
     last_applied_cmd: u64,
-    /// A test's rewound command sequence for session-only commands (`REWIND_CMD_SEQ`).
+    /// A test's rewound command sequence (`REWIND_CMD_SEQ`): the next commands take sequences
+    /// from here until it catches up with the outbox's counter.
     rewind: Option<u64>,
     game_time: i64,
+    /// Where the op ids of ordered transfers come from (`random_op`).
+    op_salt: std::collections::hash_map::RandomState,
+    op_counter: u64,
 }
 
 impl State {
@@ -239,18 +243,52 @@ impl State {
             last_applied_cmd: 0,
             rewind: None,
             game_time: 0,
+            op_salt: std::collections::hash_map::RandomState::new(),
+            op_counter: 0,
         }
     }
 
-    fn session_seq(&mut self) -> u64 {
-        if let Some(r) = self.rewind {
-            if r < self.outbox.next_seq() {
-                self.rewind = Some(r + 1);
-                return r;
-            }
-            self.rewind = None;
+    /// A rewound sequence, while a test's `REWIND_CMD_SEQ` is behind the outbox's counter.
+    fn rewound_seq(&mut self) -> Option<u64> {
+        let r = self.rewind?;
+        if r < self.outbox.next_seq() {
+            self.rewind = Some(r + 1);
+            return Some(r);
         }
-        self.outbox.take_seq()
+        self.rewind = None;
+        None
+    }
+
+    fn session_seq(&mut self) -> u64 {
+        match self.rewound_seq() {
+            Some(r) => r,
+            None => self.outbox.take_seq(),
+        }
+    }
+
+    /// An op id for a transfer an order asks for without one: 55 random bits, never 0. Never a
+    /// counter restored from the pages: after a crash such a counter hands the ids it gave out
+    /// since the last save to *different* transfers, and Java, still holding the first one's
+    /// COMMAND_RESULT, would answer the new one DUPLICATE and drop it. Bits 55 to 63 stay clear:
+    /// the top bit is Java's, bits 56 to 62 name other engine allocators (industry uses 0x49).
+    /// A transfer the sim decides must instead derive its id from its own identity, so that
+    /// re-deriving it after a crash gives the same id (docs/boundary.md §2.2).
+    fn random_op(&mut self) -> OpId {
+        use std::hash::{BuildHasher, Hasher};
+        loop {
+            self.op_counter += 1;
+            let mut h = self.op_salt.build_hasher();
+            h.write_u64(self.op_counter);
+            h.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+            );
+            let op = h.finish() & ((1 << 55) - 1);
+            if op != 0 {
+                return OpId(op);
+            }
+        }
     }
 
     /// The dictionary id of a name, sent as a DICT command first if this session has not sent it.
@@ -339,7 +377,7 @@ fn command_bytes(order: &Order) -> usize {
         Order::DespawnGroup { .. } => cmd::despawn_group::SIZE,
         Order::SteerGroup { .. } => cmd::steer_group::SIZE,
         Order::TransferToContainer { .. } => cmd::transfer_to_container::SIZE,
-        Order::SaveAtNextStep | Order::RewindCmdSeq(_) => 0,
+        Order::SaveAtNextStep | Order::RewindCmdSeq(_) | Order::Fail => 0,
     }
 }
 
@@ -375,7 +413,9 @@ fn log_error(msg: &str) {
 /// One session of the engine.
 pub struct Engine {
     /// Observation buffers 0 and 1, then command buffers 0 and 1.
-    bufs: [Buf; 4],
+    /// Shared with Java's buffer holds (`hold_buffers`): Java's direct `ByteBuffer`s point into
+    /// this memory, so it is freed only once the engine and every Java buffer are gone.
+    bufs: Arc<[Buf; 4]>,
     cfg: Config,
     state: Mutex<State>,
     store: Mutex<Option<PageStore>>,
@@ -419,7 +459,7 @@ impl Engine {
             Buf::new(cfg.capacity),
         ];
         Ok(Arc::new(Engine {
-            bufs,
+            bufs: Arc::new(bufs),
             cfg,
             state: Mutex::new(State::new(orders_rx, received_tx)),
             store: Mutex::new(None),
@@ -436,6 +476,23 @@ impl Engine {
             protocol_error: SnapshotCell::new(None),
             inspect: SnapshotCell::new(Inspect::default()),
         }))
+    }
+
+    /// A strong reference to the buffers for one Java `ByteBuffer`, as a raw pointer; Java gives it
+    /// back with [`Engine::release_buffers`] when that buffer is unreachable (a `Cleaner`).
+    pub fn hold_buffers(&self) -> usize {
+        Arc::into_raw(Arc::clone(&self.bufs)) as usize
+    }
+
+    /// Gives back a hold from [`Engine::hold_buffers`].
+    ///
+    /// # Safety
+    /// `token` came from `hold_buffers` and is released once.
+    pub unsafe fn release_buffers(token: usize) {
+        if token != 0 {
+            // SAFETY: the caller's contract.
+            drop(unsafe { Arc::from_raw(token as *const [Buf; 4]) });
+        }
     }
 
     pub fn config(&self) -> &Config {
@@ -558,7 +615,7 @@ impl Engine {
         st.session_first = pages_obs + 1;
         let next_cmd = st.outbox.next_seq();
         self.durable.store(pages_obs, Ordering::Release);
-        for b in &self.bufs {
+        for b in self.bufs.iter() {
             b.reset_words();
             for off in [wire::H_USED, wire::H_COUNT, wire::H_FLAGS] {
                 b.put_u32(off, 0);
@@ -617,6 +674,9 @@ impl Engine {
     /// Queues one unit of orders (decoded from `nOrder`).
     pub fn order(&self, unit: Vec<Order>) -> Result<(), String> {
         let mut unit = unit;
+        if !self.cfg.test && unit.iter().any(|o| matches!(o, Order::Fail)) {
+            return Err("a FAIL order needs an engine opened in TEST mode".into());
+        }
         if unit.iter().any(|o| matches!(o, Order::SaveAtNextStep)) {
             self.save_at_step_end.store(true, Ordering::Release);
             unit.retain(|o| !matches!(o, Order::SaveAtNextStep));
@@ -651,9 +711,13 @@ impl Engine {
             < self.stats.steps_submitted.load(Ordering::Acquire)
         {
             if Instant::now() > deadline {
+                // The step finishes on its own (it holds its own Arc), but no save of it may land:
+                // the folder may be reopened at once (a singleplayer world loaded again).
                 self.dead.store(true, Ordering::Release);
+                let _ = self.run_io_waiting(|| {});
+                *lock(&self.store) = None;
                 return Err(format!(
-                    "a step was still running after {} ms; the engine finishes it on its own, pages not saved",
+                    "a step was still running after {} ms; it finishes on its own, pages not saved",
                     timeout.as_millis()
                 ));
             }
@@ -717,7 +781,13 @@ impl Engine {
         } else {
             match catch_unwind(AssertUnwindSafe(|| self.step_inner(h))) {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => self.set_protocol_error(format!("step {h}: {e}")),
+                Ok(Err(e)) => {
+                    self.failed.store(true, Ordering::Release);
+                    self.set_protocol_error(format!(
+                        "step {h}: {e}; the engine stops simulating for this session"
+                    ));
+                    self.publish_empty(h);
+                }
                 Err(p) => {
                     let msg = p
                         .downcast_ref::<&str>()
@@ -738,7 +808,9 @@ impl Engine {
         self.stats.steps_done.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// After a failure: hand the buffers back empty so the bridge keeps running (it never waits).
+    /// After a failure: hand the buffers back empty with the FAILED flag, so the bridge is never
+    /// left waiting and knows to stop this session (docs/boundary.md §1.1). Writes the command
+    /// buffer only when the protocol gives it to the engine (Java consumed step h - 2's).
     fn publish_empty(&self, h: u64) {
         let o = self.obs_buffer(h as usize);
         if o.published().load(Ordering::Acquire) == h {
@@ -748,9 +820,12 @@ impl Engine {
         if c.published().load(Ordering::Acquire) == h {
             return;
         }
+        if h > 2 && c.consumed().load(Ordering::Acquire) != h - 2 {
+            return; // Java still reads it: a broken protocol, nothing safe to write
+        }
         c.put_u32(wire::H_USED, 0);
         c.put_u32(wire::H_COUNT, 0);
-        c.put_u32(wire::H_FLAGS, 0);
+        c.put_u32(wire::H_FLAGS, wire::CMD_FLAG_FAILED);
         c.put_u64(wire::H_WORD_A, self.durable_obs_seq());
         c.put_i64(wire::H_WORD_B, 0);
         c.put_u64(wire::H_WORD_C, 0);
@@ -793,12 +868,11 @@ impl Engine {
         let c = self.cmd_buffer(h as usize);
         let consumed = c.consumed().load(Ordering::Acquire);
         if h > 2 && consumed != h - 2 {
-            self.set_protocol_error(format!(
-                "step {h}: command buffer {} still held by Java (consumed {consumed}); no commands this step",
-                h & 1
+            return Err(format!(
+                "command buffer {} still held by Java (consumed {consumed}, expected {})",
+                h & 1,
+                h - 2
             ));
-            self.publish_empty(h);
-            return Ok(());
         }
         // SAFETY: Java finished with this buffer (consumed == h - 2) and reads it only after the
         // release store of `published = h` below.
@@ -853,8 +927,8 @@ impl Engine {
         let mut kept = Vec::with_capacity(unit.len());
         for o in unit {
             match o {
-                Order::RewindCmdSeq(next) => st.rewind = Some(next),
                 Order::SaveAtNextStep => self.save_at_step_end.store(true, Ordering::Release),
+                // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
             }
         }
@@ -875,10 +949,11 @@ impl Engine {
         }
         let last_applied = o.get_u64(wire::H_WORD_A);
         st.game_time = o.get_i64(wire::H_WORD_B);
+        // Java's live lastAppliedCmdSeq can be ahead of the world save the next snapshot pairs
+        // with, so it never trims the outbox (review finding 1); COMMAND_RESULTs do (`journaled`).
         if last_applied > st.last_applied_cmd {
             st.last_applied_cmd = last_applied;
         }
-        st.outbox.ack_through(st.last_applied_cmd);
         // SAFETY: Java published hand-over h into this buffer and does not touch it again before
         // the release store of `consumed = h`, which follows this read.
         let area = unsafe { o.area(used) };
@@ -916,7 +991,6 @@ impl Engine {
                 st.world.game_time = wire::i64_at(b, obs::session_start::GAME_TIME);
                 if last_applied > st.last_applied_cmd {
                     st.last_applied_cmd = last_applied;
-                    st.outbox.ack_through(last_applied);
                 }
                 // An empty journal is sent as 0; the kernel reads it as journal_first == world_next.
                 let jf = if journal_first == 0 {
@@ -997,6 +1071,14 @@ impl Engine {
         match verdict {
             Verdict::Apply => {
                 let replayed = seq < st.session_first;
+                if rec.kind == obs::COMMAND_RESULT && rec.size() >= obs::command_result::SIZE {
+                    // Done in Minecraft (applied, a duplicate, or failed): the transfer leaves
+                    // the outbox at this observation, so a snapshot here keeps exactly what the
+                    // world save here lacks.
+                    let op = OpId(wire::u64_at(b, obs::command_result::OP_ID));
+                    st.outbox.complete(op);
+                    st.resend.retain(|(_, o, _)| *o != op);
+                }
                 st.world.apply_journaled(rec, replayed);
             }
             Verdict::AlreadyApplied => {
@@ -1060,6 +1142,18 @@ impl Engine {
                 (wire::DICT_DIMENSION, &t.dimension),
                 (wire::DICT_ITEM, &t.item),
             ]) + cmd::transfer_to_container::SIZE;
+            let name_too_big = [&t.dimension, &t.item]
+                .iter()
+                .any(|n| cmd::dict::size(n.len()) > wire::MAX_RECORD);
+            if name_too_big || need > w.capacity() {
+                // Can never be written; it would hold everything after it back forever.
+                log_error(&format!(
+                    "a resent transfer (op {}) can never fit a command buffer; dropped",
+                    op.0
+                ));
+                st.resend.pop_front();
+                continue;
+            }
             if need > w.remaining() {
                 return (highest, true);
             }
@@ -1073,8 +1167,11 @@ impl Engine {
             let refs: Vec<(u32, &str)> = names.iter().map(|(k, n)| (*k, n.as_str())).collect();
             let commands: usize = unit.iter().map(command_bytes).sum();
             let need = st.dict_bytes(&refs) + commands;
-            let too_big =
-                unit.iter().any(|o| command_bytes(o) > wire::MAX_RECORD) || need > w.capacity();
+            let too_big = unit.iter().any(|o| command_bytes(o) > wire::MAX_RECORD)
+                || names
+                    .iter()
+                    .any(|(_, n)| cmd::dict::size(n.len()) > wire::MAX_RECORD)
+                || need > w.capacity();
             if too_big {
                 log_error(&format!(
                     "an order unit of {need} bytes can never fit a command buffer; dropped"
@@ -1255,16 +1352,7 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             pos,
             count,
         } => {
-            let op = if op == 0 {
-                // The kernel counts engine op ids from 0; 0 reads as "no op id" on the wire.
-                let mut op = st.outbox.allocate_op();
-                if op.0 == 0 {
-                    op = st.outbox.allocate_op();
-                }
-                op
-            } else {
-                OpId(op)
-            };
+            let op = if op == 0 { st.random_op() } else { OpId(op) };
             let t = TransferCmd {
                 dimension,
                 item,
@@ -1275,11 +1363,20 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             // buffer's sequences rise in buffer order.
             st.dict_id(w, wire::DICT_DIMENSION, &t.dimension);
             st.dict_id(w, wire::DICT_ITEM, &t.item);
-            let seq = st.outbox.push_with_op(t.clone(), op);
+            // A rewound transfer (a test's broken engine) is written but never kept for resend.
+            let seq = match st.rewound_seq() {
+                Some(r) => r,
+                None => st.outbox.push_with_op(t.clone(), op),
+            };
             write_transfer(st, w, seq, op, &t);
             Some(seq)
         }
-        Order::SaveAtNextStep | Order::RewindCmdSeq(_) => None,
+        Order::RewindCmdSeq(next) => {
+            st.rewind = Some(next);
+            None
+        }
+        Order::Fail => panic!("a FAIL order (tests): the engine fails on purpose"),
+        Order::SaveAtNextStep => None,
     }
 }
 

@@ -28,6 +28,8 @@ import java.util.List;
  *       i32 x, i32 y, i32 z, i32 count.</li>
  *   <li>5 SAVE_AT_NEXT_STEP: no body.</li>
  *   <li>6 REWIND_CMD_SEQ: u64 next.</li>
+ *   <li>7 FAIL: no body. The step that writes it panics on purpose (an engine opened with
+ *       {@code FLAG_TEST} only).</li>
  * </ul>
  *
  * <p><b>The received log</b>: entries of u64 handover, u64 obsSeq (0 if not journaled), u32 flags
@@ -45,6 +47,7 @@ final class NativeCodec {
     static final int TRANSFER_TO_CONTAINER = 4;
     static final int SAVE_AT_NEXT_STEP = 5;
     static final int REWIND_CMD_SEQ = 6;
+    static final int FAIL = 7;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -119,6 +122,11 @@ final class NativeCodec {
 
         Orders saveAtNextStep() {
             begin(SAVE_AT_NEXT_STEP);
+            return end();
+        }
+
+        Orders fail() {
+            begin(FAIL);
             return end();
         }
 

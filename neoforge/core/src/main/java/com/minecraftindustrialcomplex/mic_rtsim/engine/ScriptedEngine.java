@@ -77,6 +77,12 @@ public interface ScriptedEngine extends Engine {
     /** Saves the pages at the end of the next step, whatever it holds. */
     void requestSaveAtNextStep();
 
+    /**
+     * Makes the engine fail on purpose at its next step (the native engine: a panic in the step),
+     * after which every command buffer comes back empty with {@code CMD_FLAG_FAILED}. Tests only.
+     */
+    void failForTest();
+
     /** The received log, oldest first. */
     List<Received> received();
 

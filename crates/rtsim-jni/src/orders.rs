@@ -17,6 +17,7 @@
 //! | 4 | transfer to a container | u64 opId (0: the engine allocates one), str dimension, str item, i32 x, i32 y, i32 z, i32 count |
 //! | 5 | save at the end of the next step | |
 //! | 6 | rewind the command sequence | u64 next |
+//! | 7 | fail: the step that writes it panics (TEST mode only; refused otherwise) | |
 
 use crate::wire::{f32_at, f64_at, i32_at, u16_at, u32_at, u64_at};
 
@@ -26,6 +27,7 @@ pub const OP_STEER_GROUP: u16 = 3;
 pub const OP_TRANSFER_TO_CONTAINER: u16 = 4;
 pub const OP_SAVE_AT_NEXT_STEP: u16 = 5;
 pub const OP_REWIND_CMD_SEQ: u16 = 6;
+pub const OP_FAIL: u16 = 7;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemOrder {
@@ -73,6 +75,8 @@ pub enum Order {
     },
     SaveAtNextStep,
     RewindCmdSeq(u64),
+    /// Tests: the step that writes it panics, to show what an engine failure does.
+    Fail,
 }
 
 struct Cursor<'a> {
@@ -228,6 +232,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
             }
             OP_SAVE_AT_NEXT_STEP => Order::SaveAtNextStep,
             OP_REWIND_CMD_SEQ => Order::RewindCmdSeq(c.u64()?),
+            OP_FAIL => Order::Fail,
             other => return Err(format!("unknown order opcode {other}")),
         };
         if c.at != body.len() {
@@ -374,6 +379,10 @@ impl Encoder {
                 self.u64(*next);
                 self.end(at);
             }
+            Order::Fail => {
+                let at = self.begin(OP_FAIL);
+                self.end(at);
+            }
         }
         self
     }
@@ -433,6 +442,7 @@ mod tests {
             },
             Order::SaveAtNextStep,
             Order::RewindCmdSeq(17),
+            Order::Fail,
         ];
         let mut e = Encoder::new();
         for o in &orders {

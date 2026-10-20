@@ -36,6 +36,9 @@ pub const OBS_FLAG_SESSION_START: u32 = 1;
 pub const OBS_FLAG_REPLAY: u32 = 2;
 pub const OBS_FLAG_DROPPED: u32 = 4;
 pub const CMD_FLAG_MORE: u32 = 1;
+/// Command flag: the engine failed (a panic or a protocol error) and simulates nothing more this
+/// session. The bridge stops the session's bridge (B30) when it reads it.
+pub const CMD_FLAG_FAILED: u32 = 2;
 
 pub const R_KIND: usize = 0;
 pub const R_SIZE: usize = 2;

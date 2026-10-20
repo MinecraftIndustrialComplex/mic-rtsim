@@ -307,6 +307,17 @@ impl<C> Outbox<C> {
     pub fn allocate_op(&mut self) -> OpId {
         self.ids.allocate()
     }
+
+    /// The bridge reported the command with this operation id done (applied, a duplicate, or
+    /// failed), in an observation the replay admitted: it leaves the outbox. Unlike
+    /// [`Outbox::ack_through`], this follows the observation sequence, so a snapshot taken at any
+    /// observation keeps exactly the commands the world save at that observation lacks. Returns
+    /// whether anything was removed. Linear in the outbox's length.
+    pub fn complete(&mut self, op: OpId) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|(_, o, _)| *o != op);
+        self.pending.len() != before
+    }
 }
 
 impl<C: Encode> Encode for Outbox<C> {
@@ -427,6 +438,9 @@ mod tests {
         assert_eq!(o.len(), 1, "take_seq kept nothing");
         let fresh = o.allocate_op();
         assert!(fresh.is_engine());
+        assert!(o.complete(OpId::engine(4242)));
+        assert!(!o.complete(OpId::engine(4242)), "once");
+        assert!(o.is_empty());
     }
 
     #[test]

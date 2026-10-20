@@ -97,6 +97,26 @@ public final class NativeEngine implements ScriptedEngine {
     /** Null when none. */
     private static native String nProtocolError(long handle);
 
+    /** A hold on the engine's buffer memory for one Java buffer; {@link #nReleaseBuffers} gives it back. */
+    private static native long nHoldBuffers(long handle);
+
+    private static native void nReleaseBuffers(long token);
+
+    /**
+     * Frees the engine's buffer memory only once no Java buffer can reach it: each buffer from
+     * {@code nBuffer} (and every duplicate or view of it, which keeps it reachable) holds the memory
+     * until this cleaner runs, whatever {@code nClose} did meanwhile.
+     */
+    private static final java.lang.ref.Cleaner BUFFERS = java.lang.ref.Cleaner.create();
+
+    /** The cleaner's action: it must not refer to the buffer itself. */
+    private record ReleaseHold(long token) implements Runnable {
+        @Override
+        public void run() {
+            nReleaseBuffers(token);
+        }
+    }
+
     // ---- loading --------------------------------------------------------------------------------
 
     private static boolean loaded;
@@ -157,6 +177,7 @@ public final class NativeEngine implements ScriptedEngine {
             ByteBuffer b = nBuffer(handle, i);
             if (b == null)
                 throw new IllegalStateException("rtsim_jni returned no buffer " + i + ": " + nLastError());
+            BUFFERS.register(b, new ReleaseHold(nHoldBuffers(handle)));
             buffers[i] = b.order(Layout.ORDER);
         }
     }
@@ -218,37 +239,38 @@ public final class NativeEngine implements ScriptedEngine {
         return buffers[2 + index];
     }
 
+    // Every native call that takes the handle runs under this object's monitor, and so does close:
+    // a call can never use a handle another thread is freeing.
+
     @Override
-    public SessionStart start(long lastAppliedCmdSeq) {
+    public synchronized SessionStart start(long lastAppliedCmdSeq) {
         long[] out = new long[2];
         check(nStart(live(), lastAppliedCmdSeq, out), "start");
         return new SessionStart(out[0], out[1]);
     }
 
     @Override
-    public void submit(long handover) {
+    public synchronized void submit(long handover) {
         check(nSubmit(live(), handover), "submit(" + handover + ")");
-        synchronized (this) {
-            submits++;
-        }
+        submits++;
         if ((flags & FLAG_TEST) != 0)
             drain();
     }
 
     @Override
-    public void requestSave(long throughObsSeq) {
+    public synchronized void requestSave(long throughObsSeq) {
         nRequestSave(live(), throughObsSeq);
     }
 
     @Override
-    public String describe() {
+    public synchronized String describe() {
         long h = handle;
         return h == 0 ? "native engine (closed)" : nDescribe(h);
     }
 
     /** The final save, waited for (up to 5 s for a step in flight). Idempotent. */
     @Override
-    public void close() {
+    public synchronized void close() {
         long h = takeHandle();
         if (h == 0)
             return;
@@ -269,7 +291,7 @@ public final class NativeEngine implements ScriptedEngine {
 
     // ---- ScriptedEngine: orders -----------------------------------------------------------------
 
-    private void order(NativeCodec.Orders orders, String what) {
+    private synchronized void order(NativeCodec.Orders orders, String what) {
         check(nOrder(live(), orders.toBytes()), "order " + what);
     }
 
@@ -305,6 +327,11 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public void rewindCommandSequence(long next) {
         order(new NativeCodec.Orders().rewindCommandSequence(next), "REWIND_CMD_SEQ");
+    }
+
+    @Override
+    public void failForTest() {
+        order(new NativeCodec.Orders().fail(), "FAIL");
     }
 
     @Override
@@ -353,12 +380,12 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     @Override
-    public long ledger(long store) {
+    public synchronized long ledger(long store) {
         return nLedger(live(), store);
     }
 
     @Override
-    public boolean opApplied(long opId) {
+    public synchronized boolean opApplied(long opId) {
         return nOpApplied(live(), opId);
     }
 
@@ -398,7 +425,7 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     @Override
-    public String protocolError() {
+    public synchronized String protocolError() {
         return nProtocolError(live());
     }
 
@@ -422,7 +449,7 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     @Override
-    public NativeEngine crashAndReopen() {
+    public synchronized NativeEngine crashAndReopen() {
         long h = takeHandle();
         if (h == 0)
             throw new IllegalStateException("the native engine is closed");

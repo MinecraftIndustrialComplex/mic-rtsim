@@ -92,6 +92,10 @@ struct Java {
     /// Read and hand back command buffers without applying anything (a world save that will be
     /// lost: whatever Minecraft did is rolled back with it).
     hold_commands: bool,
+    /// The op ids of transfers read while holding.
+    held_ops: Vec<u64>,
+    /// The FAILED flag was seen on a command buffer.
+    failed_seen: bool,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -167,6 +171,8 @@ impl Java {
             acks: Vec::new(),
             stale_commands: 0,
             hold_commands: false,
+            held_ops: Vec::new(),
+            failed_seen: false,
         }
     }
 
@@ -381,6 +387,9 @@ impl Java {
             let used = c.get_u32(wire::H_USED) as usize;
             assert!(used <= c.capacity(), "command used beyond capacity");
             let ack = c.get_u64(wire::H_WORD_A);
+            if c.get_u32(wire::H_FLAGS) & wire::CMD_FLAG_FAILED != 0 {
+                self.failed_seen = true;
+            }
             let highest = c.get_u64(wire::H_WORD_C);
             self.pending_ack = ack.min(self.sent_obs.max(self.pages_obs));
             // SAFETY: the step published k; it does not touch this buffer until Java stores
@@ -407,6 +416,10 @@ impl Java {
                 }
                 max_seq = max_seq.max(seq);
                 if self.hold_commands {
+                    if rec.kind == cmd::TRANSFER_TO_CONTAINER {
+                        self.held_ops
+                            .push(wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID));
+                    }
                     continue;
                 }
                 if seq <= self.last_applied_cmd {
@@ -734,6 +747,7 @@ fn the_outbox_is_resent_after_a_restart_with_the_same_sequence_and_op() {
     let before = j.e.stats_array()[9];
     j.run_until("saved", |j| j.e.stats_array()[9] > before);
     let save = WorldSave::fresh();
+    let written_op = *j.held_ops.first().expect("the transfer was written");
     let _ = j.crash();
     // Whatever Java applied of it was in a world save we threw away; the engine resends.
     let e = engine(&dir, wire::MIN_CAPACITY);
@@ -747,8 +761,8 @@ fn the_outbox_is_resent_after_a_restart_with_the_same_sequence_and_op() {
         .find(|c| c.1 == cmd::TRANSFER_TO_CONTAINER)
         .unwrap();
     assert_eq!(
-        resent.2, 1,
-        "the engine's first op id, kept across the restart"
+        resent.2, written_op,
+        "the same op id, kept across the restart"
     );
     assert_eq!(
         resent.2 & wire::JAVA_OP_BIT,
@@ -908,5 +922,144 @@ fn a_journal_trimmed_past_the_pages_is_a_counted_gap_not_a_stall() {
     j.transfer(wire::JAVA_OP_BIT | 2, 1, 3, 4);
     j.run_until("applied", |j| ledger(&j.e, 3) == 8);
     assert_eq!(e.stats_array()[13], 1, "one gap");
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// Review finding 1: Java's live lastAppliedCmdSeq is ahead of the world save the snapshot pairs
+/// with, so trimming the outbox by it lost a transfer the world save never applied.
+#[test]
+fn a_transfer_applied_after_a_world_save_is_resent_after_a_crash() {
+    let dir = tmpdir("adv-outbox");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    // Something journaled, so the world save has a non-zero through.
+    j.transfer(wire::JAVA_OP_BIT | 7, 1, 2, 1);
+    j.idle();
+    // The engine decides a transfer; step h writes it.
+    e.order(vec![transfer_order(0, 3)]).unwrap();
+    let written_before = e.stats_array()[14];
+    // Hand over until the step that writes it has published, but do not apply it yet.
+    loop {
+        // tick without applying: submit only
+        j.preamble();
+        if j.try_submit() {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while e.stats_array()[1] < j.submitted {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    assert!(
+        e.stats_array()[14] > written_before,
+        "the transfer was written"
+    );
+    // World save S: the journal is serialized now (lastApplied does not include the transfer).
+    let s = j.world_save();
+    let through = j.next_obs - 1;
+    e.request_save(through);
+    eprintln!(
+        "world save S: through {through}, lastApplied {}",
+        s.last_applied_cmd
+    );
+    // Same tick, ServerTickEvent.Post: Java applies the transfer, journals COMMAND_RESULT, submits.
+    let saves_before = e.stats_array()[9];
+    j.run_until("the engine's save for S", |j| {
+        j.e.stats_array()[9] > saves_before
+    });
+    eprintln!(
+        "engine pages durable through {}, Java lastApplied now {}",
+        e.durable_obs_seq(),
+        j.last_applied_cmd
+    );
+    assert_eq!(
+        j.containers.values().sum::<i32>(),
+        3,
+        "applied in session 1"
+    );
+    // Crash before the next world save: the world rolls back to S, the engine to its pages.
+    e.close(false, Duration::from_secs(5)).unwrap();
+    let e2 = engine(&dir, wire::MIN_CAPACITY);
+    let mut j2 = Java::open(e2.clone(), s);
+    for _ in 0..5 {
+        j2.idle();
+    }
+    eprintln!(
+        "after restart: containers {:?}, commands {:?}",
+        j2.containers, j2.commands
+    );
+    assert_eq!(
+        j2.containers.values().sum::<i32>(),
+        3,
+        "the world save S never applied the transfer, so it must be resent"
+    );
+}
+
+/// Review finding 2: op ids from a counter restored from the pages were reused after a crash for
+/// a different transfer, which Java answered DUPLICATE and never applied.
+#[test]
+fn a_new_transfer_after_a_crash_never_reuses_an_op_id() {
+    let dir = tmpdir("adv-opid");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    e.order(vec![transfer_order(0, 3)]).unwrap();
+    j.idle();
+    j.idle();
+    assert_eq!(j.containers.values().sum::<i32>(), 3);
+    let first_op = j
+        .commands
+        .iter()
+        .find(|c| c.1 == cmd::TRANSFER_TO_CONTAINER)
+        .unwrap()
+        .2;
+    // The world saves after applying it (journal holds COMMAND_RESULT(applied)); the engine had
+    // no save since. Crash.
+    let s = j.world_save();
+    e.close(false, Duration::from_secs(5)).unwrap();
+    let e2 = engine(&dir, wire::MIN_CAPACITY);
+    let mut j2 = Java::open(e2.clone(), s);
+    // A different transfer, decided after the restart.
+    e2.order(vec![Order::TransferToContainer {
+        op: 0,
+        dimension: OVERWORLD.into(),
+        item: "minecraft:emerald".into(),
+        pos: [9, 64, 9],
+        count: 5,
+    }])
+    .unwrap();
+    for _ in 0..4 {
+        j2.idle();
+    }
+    let second_op = j2
+        .commands
+        .iter()
+        .find(|c| c.1 == cmd::TRANSFER_TO_CONTAINER)
+        .map(|c| c.2);
+    eprintln!(
+        "first op {first_op}, second op {second_op:?}, containers {:?}",
+        j2.containers
+    );
+    assert_eq!(
+        j2.containers.get(&[9, 64, 9]).copied().unwrap_or(0),
+        5,
+        "the new transfer must be applied"
+    );
+}
+
+#[test]
+fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
+    let dir = tmpdir("fail");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.idle();
+    e.order(vec![Order::Fail]).unwrap();
+    j.run_until("the FAILED flag", |j| j.failed_seen);
+    assert!(e.protocol_error().is_some_and(|m| m.contains("panicked")));
+    // The bridge is never left waiting: steps keep publishing.
+    let before = j.submitted;
+    j.idle();
+    assert!(j.submitted > before);
     e.close(true, Duration::from_secs(5)).unwrap();
 }

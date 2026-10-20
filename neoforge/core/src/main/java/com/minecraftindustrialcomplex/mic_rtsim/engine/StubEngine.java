@@ -130,6 +130,9 @@ public final class StubEngine implements ScriptedEngine {
     private volatile long saveThrough;
     private volatile boolean saveAtStepEnd;
     private volatile String protocolError;
+    /** failForTest: the next step fails, and every one after it. */
+    private volatile boolean failed;
+    private volatile boolean failNext;
 
     // Engine memory. Touched on the worker thread; read by tests through synchronized getters.
     private long maxObsSeq;
@@ -243,6 +246,11 @@ public final class StubEngine implements ScriptedEngine {
     }
 
     @Override
+    public void failForTest() {
+        failNext = true;
+    }
+
+    @Override
     public void requestSaveAtNextStep() {
         saveAtStepEnd = true;
     }
@@ -293,6 +301,24 @@ public final class StubEngine implements ScriptedEngine {
 
     private synchronized void step(long h) {
         steps++;
+        if (failNext || failed) {
+            failNext = false;
+            failed = true;
+            protocolError = "step " + h + ": failed on purpose (failForTest)";
+            ByteBuffer fo = obs[(int) (h & 1)];
+            if (Seq.getAcquire(fo, Layout.H_PUBLISHED) == h)
+                Seq.setRelease(fo, Layout.H_CONSUMED, h);
+            ByteBuffer fc = cmd[(int) (h & 1)];
+            fc.putInt(Layout.H_USED, 0);
+            fc.putInt(Layout.H_COUNT, 0);
+            fc.putInt(Layout.H_FLAGS, Layout.CMD_FLAG_FAILED);
+            fc.putLong(Layout.H_WORD_A, ackedObsSeq);
+            fc.putLong(Layout.H_WORD_B, 0L);
+            fc.putLong(Layout.H_WORD_C, 0L);
+            fc.putLong(Layout.H_RESERVED, 0L);
+            Seq.setRelease(fc, Layout.H_PUBLISHED, h);
+            return;
+        }
         ByteBuffer o = obs[(int) (h & 1)];
         if (Seq.getAcquire(o, Layout.H_PUBLISHED) != h) {
             protocolError = "step " + h + ": observation buffer not published";

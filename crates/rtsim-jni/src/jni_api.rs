@@ -11,9 +11,11 @@
 //! the message in `nLastError()`, as mic_native's own `HostNative` does.
 //!
 //! **Handles.** `nOpen` returns a boxed `Arc<Engine>` as a `long`; every other call borrows it and
-//! `nClose` frees the box. A step job holds its own `Arc`, so the engine's memory (the buffers Java
-//! sees) lives until a running step ends even after `nClose`. Java must not use a handle after
-//! `nClose` (`NativeEngine` guards it).
+//! `nClose` frees the box. A step job holds its own `Arc`, so the engine lives until a running step
+//! ends even after `nClose`. Java must not use a handle after `nClose` (`NativeEngine` makes every
+//! call and the close one critical section). The buffer memory Java's direct `ByteBuffer`s point
+//! into has holds of its own (`nHoldBuffers`), released by a `Cleaner` per buffer, so it outlives
+//! any Java view of it.
 //!
 //! Only game threads call these. Pool threads never call into Java (PLAN.md §2).
 
@@ -112,6 +114,42 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         // SAFETY: the memory lives as long as the engine, which outlives every use Java makes of
         // the buffer (it drops its views when the session closes).
         unsafe { env.new_direct_byte_buffer(b.base(), b.total()) }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native long nHoldBuffers(long handle)`: a hold on the engine's buffer memory for one
+/// Java `ByteBuffer`; `nReleaseBuffers` gives it back (from a `Cleaner`, once that buffer and every
+/// view of it are unreachable). The memory lives until the engine and every hold are gone.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nHoldBuffers<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+) -> jlong {
+    env.with_env(|_env| -> Result<jlong, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        Ok(e.hold_buffers() as jlong)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native void nReleaseBuffers(long token)`: gives back one `nHoldBuffers` hold.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nReleaseBuffers<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    token: jlong,
+) {
+    env.with_env(|_env| -> Result<(), JniError> {
+        // SAFETY: Java releases each token once (one Cleaner action per hold).
+        unsafe { Engine::release_buffers(token as usize) };
+        Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
