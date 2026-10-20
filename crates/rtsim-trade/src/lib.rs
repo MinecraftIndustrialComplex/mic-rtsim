@@ -38,5 +38,5 @@ pub use goods::{GoodDef, GoodId, GoodKind, Goods};
 pub use line::{Level, Line, Rates};
 pub use market::{Market, MarketKind, Offer, OfferSide, Quote, Refusal};
 pub use price::PriceCurve;
-pub use tunables::Tunables;
+pub use tunables::{Rules, Tunables};
 pub use units::{Amount, MILLI, PRICE_ONE, Price, Quantum};

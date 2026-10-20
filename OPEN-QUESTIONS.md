@@ -63,9 +63,11 @@ code.
 
 - **Quiescence and money sinks** (found overnight by the phase 1 scenario). An 11-village world never
   went quiet: about 30 events per market per day, from barter loops and money piling up in surplus
-  villages, because nothing but players removes money. This makes P9 concrete. The round 2 agent picks
-  the smallest fix that lets a closed world settle and logs it (E43 and up in
-  docs/overnight-choices-phase1.md). Review that choice; the r, T and k values stay yours.
+  villages, because nothing but players removes money. This makes P9 concrete. **Round 2 chose (E43 to
+  E68 in docs/overnight-choices-phase1.md):** a money sink (coin above twice the treasury target is spent
+  and leaves the world, booked as "sunk"), replacing "refuse cash and barter"; plus spoilage at target,
+  stock bands, hysteresis and rationing. A closed 11-village world now goes fully quiet (36.5 to 0.00
+  events per market per day); large grids keep 0.1 to 0.6. Review the sink; r, T and k stay yours.
 - **G31: vanilla's reputation discount on sim prices.** The plan says vanilla's discount still applies
   on top of sim prices. The phase 1 Java agent trims it at the market's current price, so a buy and a
   sale can't loop into money, but the trim leaves the price change across one bundle. Alternatives: no
@@ -75,8 +77,11 @@ code.
   (`PriceCurve`, `Market::offer`) so offers can be shown at once. Two copies can drift apart.
   Recommended: the engine sends ready-made bundles and Java only shows them; keep the Java copy only as
   a test oracle. Alternative: keep both, with a shared test vector file that both sides must pass.
-- **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 batches
-  flows into caravans with a dock wait and a departure period per road. Review the batching rule.
+- **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 makes a
+  caravan wait at the dock until full (6 slots) or two days. Busy roads now send full caravans; small
+  flows still make caravans under one slot, and news now waits for caravans, so a robbery report with
+  P18's 1.5-day lifetime reaches 3 to 7 villages instead of 8. Review the wait and the report lifetimes
+  together.
 
 - **P9. Economy tunables.** Recommended: set `r`, `T` (at least 2 × the longest edge time) and `k` from
   a soak at the design gate; a Numismatics mint rule later. Alternative: you set each by hand now.
