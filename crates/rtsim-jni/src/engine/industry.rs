@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
 use rtsim_industry::cmd::{Cmd, IndustryOps};
-use rtsim_industry::engine::{Engine as Industry, Mode};
+use rtsim_industry::engine::Engine as Industry;
 use rtsim_industry::ids::{Good, GoodInfo};
 use rtsim_industry::obs::{Obs, Timed};
 use rtsim_industry::persist::{CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE};
@@ -95,6 +95,8 @@ pub struct IndustryStats {
     pub queued: u64,
     /// Threats handed to the engine.
     pub threats: u64,
+    /// Industry records ignored while the module was switched off (U10).
+    pub ignored: u64,
 }
 
 /// The industry side of one session.
@@ -115,7 +117,8 @@ pub(super) struct Link {
     /// Latest-wins industry records of this hand-over not handed to the engine yet: they go in
     /// game-time order with the journaled ones, journaled first on a tie (W9).
     deferred: VecDeque<Timed>,
-    /// The bridge's industry module switch (C25): off, the engine neither runs nor sends.
+    /// The bridge's industry module switch (C25, U10): off, the engine applies no record, runs
+    /// nothing and sends nothing; on again, it catches up.
     enabled: bool,
     /// SESSION_START's game time, until the engine's own session start runs: after the replayed
     /// journal, before this session's first record (W19).
@@ -141,14 +144,6 @@ fn tick(game_time: i64) -> Tick {
     Tick(game_time.max(0) as u64)
 }
 
-fn mode(read_only: bool) -> Mode {
-    if read_only {
-        Mode::ReadOnly
-    } else {
-        Mode::Apply
-    }
-}
-
 /// A world seed for a new industry engine: random, then kept in its pages (W5).
 fn new_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
@@ -164,7 +159,7 @@ fn new_seed() -> u64 {
 fn kept(c: &Cmd) -> bool {
     matches!(
         c,
-        Cmd::CarriageDelta(_) | Cmd::ChannelDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_)
+        Cmd::CarriageDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_)
     )
 }
 
@@ -177,7 +172,7 @@ impl Link {
 
     pub(super) fn empty() -> Link {
         Link {
-            engine: Industry::new(0, Tunables::default(), Mode::Apply, Tick::ZERO),
+            engine: Industry::new(0, Tunables::default(), Tick::ZERO),
             java_names: HashMap::new(),
             dict_sent: HashSet::new(),
             queue: VecDeque::new(),
@@ -210,7 +205,12 @@ impl Link {
 
     /// The engine and the link as the pages hold them, or new ones.
     pub(super) fn load(store: &mut PageStore, cfg: &Config) -> Result<Link, String> {
-        let (read_only, test) = (cfg.industry_read_only, cfg.test);
+        let test = cfg.test;
+        if cfg.industry_read_only {
+            // Phase I-A's read-only mode existed only to show players what a district would have
+            // made; I18 (Ben's correction) removed that, and the mode with it. The flag is ignored.
+            log_warn("the industry read-only flag is retired (I18); the industry engine applies");
+        }
         let keys: Vec<PageKey> = store
             .keys()
             .filter(|k| TABLES.contains(&k.table()))
@@ -250,9 +250,8 @@ impl Link {
         let fresh = restored.is_none();
         let mut engine = restored.unwrap_or_else(|| {
             let seed = cfg.industry_seed.unwrap_or_else(new_seed);
-            Industry::new(seed, Tunables::default(), mode(read_only), Tick::ZERO)
+            Industry::new(seed, Tunables::default(), Tick::ZERO)
         });
-        engine.mode = mode(read_only);
         engine.log_enabled = test;
         let link_page = store
             .get(KEY_LINK)
@@ -322,6 +321,8 @@ impl Link {
             if self.enabled {
                 self.begin_session();
                 self.ingest(&t);
+            } else {
+                self.stats.ignored += 1;
             }
         }
     }
@@ -418,7 +419,34 @@ fn decode_link(b: &[u8]) -> rtsim_kernel::codec::Result<LinkPage> {
 pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
     let l = &mut st.industry;
     l.enabled = module_mask & MODULE_INDUSTRY != 0;
+    // Switched off, the engine's own session start waits for the switch (U10): run now, it would
+    // advance the engine while it is meant to be frozen.
     l.session_start_at = Some(tick(game_time));
+}
+
+/// The switch changed in a session (MODULES, U10). Off: the engine is frozen where it stands (its
+/// queue and outbox wait, its pages stay what they are, every record is ignored). On: its own
+/// session start runs at once, at this game time, so it catches up to now (every breakpoint and
+/// wake of the time it was off fires) and takes every district as unloaded until Java reports
+/// them again; Java announces its districts and load states again when the module turns on, as
+/// at a session start.
+fn set_enabled(st: &mut State, on: bool) {
+    let gt = tick(st.game_time);
+    let l = &mut st.industry;
+    let was = l.enabled;
+    l.enabled = on;
+    if on && !was {
+        l.session_start_at = Some(gt.max(l.engine.now()));
+        // An answer that came while off was ignored: every kept command goes again, under a new
+        // sequence (Java skips any at or below the last it applied), and Java answers it by op id
+        // (DUPLICATE if it had applied it), so none waits in the outbox for an answer already gone.
+        let kept: Vec<Cmd> = l.outbox.drain(..).map(|(_, c)| c).collect();
+        l.resend.clear();
+        for c in kept.into_iter().rev() {
+            l.queue.push_front(c);
+        }
+        l.gauges();
+    }
 }
 
 /// A record that is not journaled: Java's DICT entries, MODULES, and the latest-wins industry
@@ -442,10 +470,12 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             java_name(l, kind, id, name);
         }
         obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            l.enabled = wire::u32_at(b, obs::modules::MASK) & MODULE_INDUSTRY != 0;
+            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_INDUSTRY != 0;
+            set_enabled(st, on);
         }
         k if LATEST.contains(&k) => {
             if !l.enabled {
+                l.stats.ignored += 1;
                 return;
             }
             if let Some(t) = l.decode(rec) {
@@ -496,11 +526,17 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A journaled record `Replay` admitted (see [`claims`]). Applied whether or not the module is on:
-/// it says what happened in the world (W8).
+/// A journaled record `Replay` admitted (see [`claims`]). Switched off, the industry ignores it,
+/// as the dragons and ships do (U10, replacing W8's "journaled records are still applied"): it is
+/// admitted for its sequence and op id, counted, and dropped; a COMMAND_RESULT too, so a kept
+/// command stays in the outbox and goes again once the module is on.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let this_session = wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first;
     let l = &mut st.industry;
+    if !l.enabled {
+        l.stats.ignored += 1;
+        return;
+    }
     if this_session {
         l.begin_session();
     }
@@ -598,6 +634,7 @@ fn districts_fit(o: &Obs) -> bool {
         | Obs::Discard { district, .. }
         | Obs::LoadState { district, .. }
         | Obs::ChunkLoaded { district, .. }
+        | Obs::ChunkUnloaded { district, .. }
         | Obs::SurveyBlocks { district, .. } => *district,
         Obs::SweepEnd(e) => e.district,
         Obs::DepositSample(s) => s.district,
@@ -615,7 +652,7 @@ fn districts_fit(o: &Obs) -> bool {
         Obs::PowerLink { sink, source } => {
             return sink.0 < DISTRICT_ID_LIMIT && source.is_none_or(|s| s.0 < DISTRICT_ID_LIMIT);
         }
-        Obs::ChannelSample { .. } | Obs::Conditions(_) | Obs::CarriageResult(_) => {
+        Obs::Conditions(_) | Obs::CarriageResult(_) => {
             return true;
         }
     };
@@ -626,7 +663,6 @@ fn kind_name(c: &Cmd) -> &'static str {
     match c {
         Cmd::ChunkReconcile(_) => "IND_CHUNK_RECONCILE",
         Cmd::CarriageDelta(_) => "IND_CARRIAGE_DELTA",
-        Cmd::ChannelDelta(_) => "IND_CHANNEL_DELTA",
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
         Cmd::Ledger(_) => "IND_LEDGER",
@@ -692,10 +728,6 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
         }
         Cmd::CarriageDelta(d) => {
             d.entries.iter().for_each(|e| goods(e.1, &mut names));
-            None
-        }
-        Cmd::ChannelDelta(d) => {
-            d.goods.goods().for_each(|g| goods(g, &mut names));
             None
         }
         Cmd::DepositDelta(d) => {
@@ -924,16 +956,23 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtsim_industry::cmd::{CarriageDelta, CarriageReason, ChannelDelta};
-    use rtsim_industry::ids::{ChannelId, GoodVec, TrainId};
+    use rtsim_industry::cmd::{CarriageDelta, CarriageReason, DepositDelta};
+    use rtsim_industry::ids::{ChunkPos, TrainId};
+    use rtsim_industry::obs::DepositPluginId;
 
     #[test]
     fn the_link_page_round_trips() {
         let mut l = Link::empty();
-        l.queue.push_back(Cmd::ChannelDelta(ChannelDelta {
+        l.queue.push_back(Cmd::DepositDelta(DepositDelta {
             op: OpId((0x49 << 56) | 5),
-            channel: ChannelId(3),
-            goods: GoodVec::from_pairs([(Good(2), -7)]),
+            plugin: DepositPluginId::DieselOil,
+            chunk: ChunkPos {
+                dim: 1,
+                x: 3,
+                z: -2,
+            },
+            good: Good(2),
+            delta: -7,
         }));
         l.outbox.push_back((
             41,

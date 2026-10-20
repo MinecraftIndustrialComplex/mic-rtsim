@@ -53,7 +53,7 @@ public final class IndRecords {
     public static final int IND_STOCK_SAMPLE = 0x0040;
     public static final int IND_SWEEP_END = 0x0041;
     public static final int IND_DEPOSIT_SAMPLE = 0x0042;
-    public static final int IND_CHANNEL_SAMPLE = 0x0043;
+    // 0x0043 was IND_CHANNEL_SAMPLE: retired (I13 as corrected, a channel joins one district).
     public static final int IND_LEDGER_REQUEST = 0x0044;
     public static final int IND_WATCHED = 0x0045;
     /**
@@ -74,6 +74,7 @@ public final class IndRecords {
     public static final int IND_CHUNK_LOADED = 0x0407;
     public static final int IND_CONDITIONS = 0x0408;
     public static final int IND_POWER_LINK = 0x0409;
+    public static final int IND_CHUNK_UNLOADED = 0x040A;
     public static final int IND_PORT = 0x0410;
     public static final int IND_TRAIN_ARRIVED = 0x0411;
     public static final int IND_TRAIN_DEPARTED = 0x0412;
@@ -89,7 +90,7 @@ public final class IndRecords {
     // ---- commands ---------------------------------------------------------------------------------
     public static final int IND_CHUNK_RECONCILE = 0x8400;
     public static final int IND_CARRIAGE_DELTA = 0x8401;
-    public static final int IND_CHANNEL_DELTA = 0x8402;
+    // 0x8402 was IND_CHANNEL_DELTA: retired with IND_CHANNEL_SAMPLE; the engine reads it as unknown.
     public static final int IND_DEPOSIT_DELTA = 0x8403;
     public static final int IND_WRITE_PACKAGE = 0x8404;
     public static final int IND_LEDGER = 0x8405;
@@ -237,6 +238,20 @@ public final class IndRecords {
         public static final int LIVE = 2;
     }
 
+    /**
+     * IND_CHUNK_UNLOADED (0x040A, journaled; I7): a chunk of a district unloaded, sent at ChunkEvent.Unload.
+     * The engine's replay of the district's unloaded part takes the chunk back. Not sent yet (the Java side
+     * that sends it is the next Java agent's; docs/choices-indrework.md, Java pointers).
+     */
+    public static final class ChunkUnloaded {
+        public static final int DISTRICT = 24;      // u64
+        public static final int DIM = 32;           // u32
+        public static final int X = 36;             // i32
+        public static final int Z = 40;             // i32
+        public static final int RESERVED = 44;      // u32, zero
+        public static final int SIZE = 48;
+    }
+
     /** IND_CHUNK_LOADED. */
     public static final class ChunkLoaded {
         public static final int DISTRICT = 24;      // u64
@@ -267,7 +282,8 @@ public final class IndRecords {
         public static final int PLAYER_TOSS = 4;
         public static final int PLAYER_PICKUP = 5;
         public static final int STOCK_BROKEN = 6;
-        public static final int CHANNEL = 7;
+        /** Retired (I13 as corrected): a channel crosses no boundary, so nothing sends kind 7. */
+        public static final int RETIRED_CHANNEL = 7;
         public static final int OTHER = 9;
     }
 
@@ -413,13 +429,6 @@ public final class IndRecords {
         public static final int LOOT = 2;
     }
 
-    /** IND_CHANNEL_DELTA, aux = n entries. */
-    public static final class ChannelDelta {
-        public static final int OP_ID = 16;   // u64
-        public static final int CHANNEL = 24; // u64
-        public static final int ENTRIES = 32;
-    }
-
     /** IND_DEPOSIT_DELTA, aux = plugin. */
     public static final class DepositDelta {
         public static final int OP_ID = 16;   // u64
@@ -508,19 +517,6 @@ public final class IndRecords {
         public static final int ORE_EXCAVATION = 1;
         public static final int DIESEL_OIL = 2;
         public static final int DESTROY_CRUDE = 3;
-    }
-
-    /** IND_CHANNEL_SAMPLE (latest-wins), aux = n entries. */
-    public static final class ChannelSample {
-        public static final int GAME_TIME = 8; // i64
-        public static final int CHANNEL = 16;  // u64
-        public static final int CAPACITY = 24; // i64
-        public static final int ENTRIES = 32;  // n x Entry16
-        public static final int MAX_ENTRIES = (0xFFF8 - ENTRIES) / ENTRY16;
-
-        public static int size(int n) {
-            return ENTRIES + n * ENTRY16;
-        }
     }
 
     /** IND_CONDITIONS (journaled). */

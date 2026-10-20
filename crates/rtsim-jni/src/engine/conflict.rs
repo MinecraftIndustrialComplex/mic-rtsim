@@ -19,7 +19,9 @@
 //!   to the conflict's own dictionary; dimensions are Java's ids (the conflict's frames).
 //! - **Signals inside the engine** ([`simulate`], C2-7 to C2-9): each district's learned pollution
 //!   (the Destroy plugin's attribution, I14, written as deposit goods) and, while unloaded, the
-//!   deposits it drains, become the settlers' continuous sources; raids on districts go through
+//!   deposits it drains, become continuous sources counted against the player who spent the most
+//!   time in the district's chunks (P14, changed; the settlers while nobody has, fed by every
+//!   PLAYER report through `shared.rs`); raids on districts go through
 //!   the industry engine's threat interface carrying the band's own loads (C2-1); raids on
 //!   villages and havens move stock in the phase 1 world (`World::stock_to_held`).
 //! - **Simulate** ([`simulate`], [`run_engine`]): the conflict runs to the hand-over's time on the
@@ -45,6 +47,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rtsim_conflict::boundary::{self, Cmd, Item, Obs};
 use rtsim_conflict::engine::{body_id, body_names, item_of};
+use rtsim_conflict::presence::ChunkKey;
 use rtsim_conflict::{Conflict, ConflictStats, ConflictTunables, Cultures, SignalKind};
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
 use rtsim_industry::cluster::Run;
@@ -564,8 +567,13 @@ pub(super) fn simulate(st: &mut State) {
     feed_districts(st, at);
 }
 
-/// The settlers' continuous sources from the industry engine's districts (P14: a district's
-/// emissions are unowned), keyed by the district's id as a POLLUTION record's are (K2-9):
+/// A district source's owner is found over at most this many of its chunks (P14). PLACEHOLDER 64.
+const MAX_SOURCE_CHUNKS: usize = 64;
+
+/// Continuous sources from the industry engine's districts, keyed by the district's id as a
+/// POLLUTION record's are (K2-9). A district's emissions have no direct actor, so they count
+/// against the player who has spent the most time in its chunks, and the settlers only while
+/// nobody has (P14, changed by Ben on 2026-10-20):
 ///
 /// - **Pollution** (C2-7): the learned rate of each deposit good whose registry id is a Destroy
 ///   pollution type (the Destroy plugin's attribution, I14, written as `d/0/destroy:smog/<hash>`
@@ -583,7 +591,7 @@ fn feed_districts(st: &mut State, at: Tick) {
     if st.conflict.engine.factions.is_empty() || !st.industry.enabled() {
         return;
     }
-    let mut changes: Vec<(u64, SignalKind, Pos, f64)> = Vec::new();
+    let mut changes: Vec<(u64, SignalKind, Pos, Vec<ChunkKey>, f64)> = Vec::new();
     {
         let ie = &st.industry.engine;
         let tun = &st.conflict.engine.tun;
@@ -639,7 +647,16 @@ fn feed_districts(st: &mut State, at: Tick) {
                     .get(&(d.id.0, *kind))
                     .map_or(0.0, |s| s.rate);
                 if want != have {
-                    changes.push((d.id.0, *kind, pos, per_day[i]));
+                    // P14 (changed): the district's emissions count against the player who spent
+                    // the most time in its chunks (capped, PLACEHOLDER 64: a source's owner is
+                    // found over them on every change).
+                    let chunks: Vec<ChunkKey> = d
+                        .chunks
+                        .iter()
+                        .take(MAX_SOURCE_CHUNKS)
+                        .map(|&(x, z)| (d.dim as u16, x, z))
+                        .collect();
+                    changes.push((d.id.0, *kind, pos, chunks, per_day[i]));
                 }
             }
         }
@@ -647,16 +664,17 @@ fn feed_districts(st: &mut State, at: Tick) {
     if changes.is_empty() {
         return;
     }
-    for (district, kind, pos, per_day) in changes {
+    for (district, kind, pos, chunks, per_day) in changes {
         st.conflict.fed += 1;
         let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
         let at = at.max(c.now());
-        c.set_emission(
+        c.set_emission_in(
             w,
             district,
             kind,
             pos,
             Some(DistrictId(district)),
+            &chunks,
             per_day,
             at,
         );

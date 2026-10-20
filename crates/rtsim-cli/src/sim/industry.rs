@@ -3,20 +3,19 @@
 //! headless, through the fake world.
 //!
 //! Five runs of the same world and seed:
-//! 1. **main:** threats on, the engine applies (phases I-B onward);
-//! 2. **simulated:** threats off;
-//! 3. **simulated, no race:** threats off, and machines never tick before a reconcile lands;
-//! 4. **control:** threats off, every district chunk-loaded all the time, so the factories run for
-//!    real;
-//! 5. **read-only:** phase I-A, where the ledger says what districts would have made and nothing
-//!    is applied.
+//! 1. **main:** threats on, the protocol as built (machines may tick on stale stock, and the Java
+//!    side sends IND_APPROACH so reconciles are sent ahead of arrival);
+//! 2. **simulated:** threats off, the same protocol;
+//! 3. **without approach:** threats off, machines tick first, and reconciles land only after the
+//!    load (the protocol before Ben's "reconcile ahead of arrival");
+//! 4. **ideal:** threats off, and machines never tick before a reconcile lands;
+//! 5. **control:** threats off, every district chunk-loaded all the time, so the factories run for
+//!    real.
 //!
-//! **The I-B check** is run 3 against run 4: the simulated world makes at most what the control
-//! makes, and no less than the tolerance below it. Run 2 against run 4 measures INDUSTRY.md §19
-//! risk 3: a machine that ticks on stale stock before its reconcile lands. The trim keeps a
-//! district's own books exact, but a boiler that burns already-replayed coal can power a
-//! neighbour's real batches, which no trim sees; the leak is reported, bounded by one machine
-//! period per load.
+//! **The I-B check** is run 2 against run 5: the simulated world makes at most what the control
+//! makes, and no less than the tolerance below it. Run 3 measures INDUSTRY.md §19 risk 3, the
+//! stale-tick race the approach removes: a boiler that burns already-replayed coal can power a
+//! neighbour's real batches, which no trim sees. Run 4 is the replay alone.
 //!
 //! It prints what each district learned, the replay's breakpoints, the reconcile deltas, the
 //! threat outcomes, the I-B comparison of simulated against control, and the conservation check,
@@ -26,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use rtsim_industry::engine::{EngineEvent, LedgerReport, Mode, Stats};
+use rtsim_industry::engine::{EngineEvent, Inspection, Stats};
 use rtsim_industry::fake::{Event, FakeWorld};
 use rtsim_industry::ids::{DistrictId, Good, GoodVec};
 use rtsim_industry::scenario::{IronLine, iron_line, run_iron_line};
@@ -50,8 +49,9 @@ struct DistrictOut {
     id: u64,
     name: String,
     learned: Option<rtsim_industry::district::Model>,
-    ledger_before_return: Option<LedgerReport>,
-    ledger_end: Option<LedgerReport>,
+    /// The engine's own view just before the player returns (never shown to a player, I18).
+    before_return: Option<Inspection>,
+    at_end: Option<Inspection>,
     reconciles: Vec<rtsim_industry::district::ReconcileReport>,
     attacks: Vec<rtsim_industry::district::AttackReport>,
 }
@@ -59,8 +59,9 @@ struct DistrictOut {
 #[derive(Serialize)]
 struct RunOut {
     name: String,
-    mode: Mode,
     threats: bool,
+    tick_first: bool,
+    approach: bool,
     control: bool,
     districts: Vec<DistrictOut>,
     engine_events: Vec<EngineEvent>,
@@ -79,14 +80,15 @@ struct RunOut {
 struct Comparison {
     good: String,
     control: i64,
-    /// Without the stale-tick race (the I-B check).
+    /// The protocol as built: machines tick first, reconciles sent ahead of arrival (the I-B check).
     simulated: i64,
     ratio: f64,
     at_or_below_control: bool,
     within_tolerance: bool,
-    /// With the race (risk 3): what leaked through machines ticking first.
-    simulated_with_race: i64,
-    race_leak: i64,
+    /// Machines tick first and reconciles land after the load (risk 3, before the approach).
+    without_approach: i64,
+    /// Machines never tick before a reconcile lands: the replay alone.
+    ideal: i64,
 }
 
 #[derive(Serialize)]
@@ -117,37 +119,36 @@ fn names(w: &FakeWorld, v: &GoodVec) -> BTreeMap<String, i64> {
 fn run(name: &str, cfg: IronLine) -> (RunOut, FakeWorld) {
     let start = Instant::now();
     let mut w = iron_line(cfg, Tunables::default());
-    // Stop just before the player returns to the smelter, to read the ledger (I-A's display).
-    let before = Tick(8 * TICKS_PER_DAY - 1);
+    // Stop just before the player heads back to the smelter, to read the engine's own view.
+    let before = Tick(8 * TICKS_PER_DAY - 200);
     w.run_until(before);
     let ids: Vec<(DistrictId, String)> =
         w.districts.iter().map(|d| (d.id, d.name.clone())).collect();
-    let mut before_ledgers = BTreeMap::new();
+    let mut before_return = BTreeMap::new();
     for (id, _) in &ids {
-        before_ledgers.insert(*id, w.engine.ledger(*id, before));
+        before_return.insert(*id, w.engine.inspect(*id, before));
     }
     run_iron_line(&mut w, &cfg);
     let wall_ms = start.elapsed().as_secs_f64() * 1e3;
     let now = w.t;
     let mut districts = Vec::new();
     for (id, dname) in &ids {
-        let end = w.engine.ledger(*id, now);
+        let end = w.engine.inspect(*id, now);
         let d = w.engine.district(*id).expect("declared");
         districts.push(DistrictOut {
             id: id.0,
             name: dname.clone(),
             learned: d.models.values().next_back().cloned(),
-            ledger_before_return: before_ledgers.remove(id).flatten(),
-            ledger_end: end,
+            before_return: before_return.remove(id).flatten(),
+            at_end: end,
             reconciles: d.reports.iter().cloned().collect(),
             attacks: d.attacks.iter().cloned().collect(),
         });
     }
     let totals = names(&w, &w.totals());
-    let conservation = match (cfg.mode, w.conservation()) {
-        (Mode::ReadOnly, _) => "not applicable (read-only)".to_string(),
-        (_, Ok(())) => "ok".to_string(),
-        (_, Err(e)) => e,
+    let conservation = match w.conservation() {
+        Ok(()) => "ok".to_string(),
+        Err(e) => e,
     };
     let cluster_books = match w.engine.check_books() {
         Ok(()) => "ok".to_string(),
@@ -155,8 +156,9 @@ fn run(name: &str, cfg: IronLine) -> (RunOut, FakeWorld) {
     };
     let out = RunOut {
         name: name.to_string(),
-        mode: cfg.mode,
         threats: cfg.threats,
+        tick_first: cfg.tick_first,
+        approach: cfg.approach,
         control: cfg.control,
         districts,
         engine_events: w.engine.log.iter().cloned().collect(),
@@ -183,8 +185,8 @@ pub fn main(opts: Options) -> i32 {
         days: opts.days.max(10),
         threats: true,
         control: false,
-        mode: Mode::Apply,
         tick_first: true,
+        approach: true,
     };
     let (main_run, w) = run("main", base);
     let (sim, ws) = run(
@@ -194,11 +196,20 @@ pub fn main(opts: Options) -> i32 {
             ..base
         },
     );
-    let (norace, wn) = run(
-        "simulated, no race",
+    let (noapp, wa) = run(
+        "without approach",
+        IronLine {
+            threats: false,
+            approach: false,
+            ..base
+        },
+    );
+    let (ideal, wi) = run(
+        "ideal",
         IronLine {
             threats: false,
             tick_first: false,
+            approach: false,
             ..base
         },
     );
@@ -207,14 +218,6 @@ pub fn main(opts: Options) -> i32 {
         IronLine {
             threats: false,
             control: true,
-            ..base
-        },
-    );
-    let (ro, _) = run(
-        "read-only",
-        IronLine {
-            threats: false,
-            mode: Mode::ReadOnly,
             ..base
         },
     );
@@ -229,7 +232,7 @@ pub fn main(opts: Options) -> i32 {
         if !rtsim_industry::fake::is_item(&w.goods, g) {
             continue;
         }
-        let (c, s, r) = (made(&wc, g), made(&wn, g), made(&ws, g));
+        let (c, s, a, i) = (made(&wc, g), made(&ws, g), made(&wa, g), made(&wi, g));
         if c == 0 && s == 0 {
             continue;
         }
@@ -245,11 +248,11 @@ pub fn main(opts: Options) -> i32 {
             ratio,
             at_or_below_control: s <= c,
             within_tolerance: ratio >= 1.0 - TOLERANCE,
-            simulated_with_race: r,
-            race_leak: r - s,
+            without_approach: a,
+            ideal: i,
         });
     }
-    let conserved = [&main_run, &sim, &norace, &control]
+    let conserved = [&main_run, &sim, &noapp, &ideal, &control]
         .iter()
         .all(|r| r.conservation == "ok" && r.cluster_books == "ok");
     let passed = conserved
@@ -260,44 +263,31 @@ pub fn main(opts: Options) -> i32 {
     if !opts.quiet {
         print_run(&main_run, &w);
         println!(
-            "\n== read-only (I-A): what the ledger showed just before the player came back =="
-        );
-        for d in &ro.districts {
-            if let Some(l) = &d.ledger_before_return {
-                println!(
-                    "  {:<12} {:?}{}: would have made {}",
-                    d.name,
-                    l.state,
-                    l.reason
-                        .as_ref()
-                        .map_or(String::new(), |r| format!(" ({r})")),
-                    words(&w, &l.made_since)
-                );
-            }
-        }
-        println!(
             "\n== I-B: made in {} days, simulated against control (threats off; tolerance {:.0}% below) ==",
             base.days,
             TOLERANCE * 100.0
         );
         for c in &comparison {
             println!(
-                "  {:<26} control {:>7}  simulated {:>7}  ratio {:.4}  {}   with the stale-tick race {:>7} ({:+} leaked)",
+                "  {:<26} control {:>7}  simulated {:>7} ({:+})  ratio {:.4}  {}   without approach {:>7} ({:+})  ideal {:>7} ({:+})",
                 c.good,
                 c.control,
                 c.simulated,
+                c.simulated - c.control,
                 c.ratio,
                 if c.at_or_below_control && c.within_tolerance {
                     "ok"
                 } else {
                     "OUT OF BOUNDS"
                 },
-                c.simulated_with_race,
-                c.race_leak
+                c.without_approach,
+                c.without_approach - c.control,
+                c.ideal,
+                c.ideal - c.control
             );
         }
         println!("\n== checks ==");
-        for r in [&main_run, &sim, &norace, &control, &ro] {
+        for r in [&main_run, &sim, &noapp, &ideal, &control] {
             println!(
                 "  {:<19} conservation {}, cluster books {}, {} observations, {} breakpoints, {} settles, {} wire bytes, {:.0} ms",
                 r.name,
@@ -310,7 +300,7 @@ pub fn main(opts: Options) -> i32 {
                 r.wall_ms
             );
         }
-        let _ = (&ws, &wc, &wn);
+        let _ = (&ws, &wc, &wa, &wi);
         println!("  {}", if passed { "PASSED" } else { "FAILED" });
     }
 
@@ -320,7 +310,7 @@ pub fn main(opts: Options) -> i32 {
         days: base.days,
         tolerance: TOLERANCE,
         tunables: Tunables::default(),
-        runs: vec![main_run, sim, norace, control, ro],
+        runs: vec![main_run, sim, noapp, ideal, control],
         comparison,
         passed,
     };
@@ -415,9 +405,9 @@ fn print_run(r: &RunOut, w: &FakeWorld) {
     for e in &r.world_events {
         println!("  {} {}", day(e.tick), e.what);
     }
-    println!("\n-- ledger at the end --");
+    println!("\n-- the engine's view at the end (never shown to a player, I18) --");
     for d in &r.districts {
-        if let Some(l) = &d.ledger_end {
+        if let Some(l) = &d.at_end {
             println!(
                 "  {:<12} {:?}; last reconcile: {}; attacks: {}",
                 d.name,

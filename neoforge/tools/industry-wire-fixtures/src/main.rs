@@ -18,18 +18,42 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Write as _};
 
-use rtsim_industry::cluster::{Forecast, PoolKey};
+use rtsim_industry::cluster::PoolKey;
+
+/// The retired IND_LEDGER's next kinds (docs/industry-boundary.md §4.3). The engine no longer
+/// writes the record (I18) and has no forecast; the codes live here until the Java display
+/// source that reads them goes.
+#[derive(Clone, Copy)]
+enum Forecast {
+    InputEmpty(PoolKey),
+    OutputFull(PoolKey),
+    Target(PoolKey),
+    Restart,
+    Season,
+}
+
+impl Forecast {
+    fn code(self) -> (u32, Option<Good>) {
+        match self {
+            Forecast::InputEmpty(k) => (1, Some(k.good())),
+            Forecast::OutputFull(k) => (2, Some(k.good())),
+            Forecast::Target(k) => (3, Some(k.good())),
+            Forecast::Restart => (6, None),
+            Forecast::Season => (0, None),
+        }
+    }
+}
 use rtsim_industry::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChannelDelta, ChunkReconcile, Cmd, DepositDelta,
-    InvDelta, LedgerLine, WritePackage,
+    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
+    LedgerLine, WritePackage,
 };
-use rtsim_industry::engine::LedgerState;
-use rtsim_industry::ids::{
-    BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId,
-};
+// The retired IND_LEDGER (I18) still has its codec until the Java display source goes; its state
+// codes are the engine's inspection states.
+use rtsim_industry::engine::DistrictState as LedgerState;
+use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use rtsim_industry::obs::{
     BlockFlags, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
-    DepositPluginId, DepositSample, DiscardReason, DistrictDecl, Direction, EditKind, ExposedBlock,
+    DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl, EditKind, ExposedBlock,
     FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind,
     PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, SweepEnd, Timed,
     TrainCall, TrainDeparture,
@@ -251,7 +275,11 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn check_header(name: &str, bytes: &[u8], kind: u16) {
-    assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), kind, "{name}: kind");
+    assert_eq!(
+        u16::from_le_bytes([bytes[0], bytes[1]]),
+        kind,
+        "{name}: kind"
+    );
     let size = usize::from(u16::from_le_bytes([bytes[2], bytes[3]]));
     assert_eq!(size, bytes.len(), "{name}: size");
     assert_eq!(size % 8, 0, "{name}: size is a multiple of 8");
@@ -271,7 +299,11 @@ fn obs(out: &mut String, name: &str, kind: u16, seq: u64, t: Timed, f: &Fields) 
         .expect("decode_obs")
         .expect("a known kind");
     assert_eq!(back, t, "{name}: round trip");
-    assert_eq!(got_seq, if t.obs.is_journaled() { seq } else { 0 }, "{name}: obsSeq");
+    assert_eq!(
+        got_seq,
+        if t.obs.is_journaled() { seq } else { 0 },
+        "{name}: obsSeq"
+    );
     emit(out, name, &bytes, f);
 }
 
@@ -293,7 +325,10 @@ fn cmd(out: &mut String, name: &str, kind: u16, seq: u64, c: Cmd, f: &Fields) {
 
 fn obs_bytes(o: Obs) -> Vec<u8> {
     let mut bytes = Vec::new();
-    let t = Timed { at: Tick(1), obs: o };
+    let t = Timed {
+        at: Tick(1),
+        obs: o,
+    };
     wire::encode_obs(7, &t, &mut bytes).expect("encode_obs");
     bytes
 }
@@ -341,7 +376,10 @@ fn code_tables(out: &mut String) {
     ]
     .into_iter()
     .map(|reason| {
-        let b = obs_bytes(Obs::Discard { district: d, reason });
+        let b = obs_bytes(Obs::Discard {
+            district: d,
+            reason,
+        });
         (format!("{reason:?}"), u32_at(&b, 4))
     })
     .collect();
@@ -370,7 +408,6 @@ fn code_tables(out: &mut String) {
         PortKind::PlayerToss,
         PortKind::PlayerPickup,
         PortKind::StockBroken,
-        PortKind::Channel,
         PortKind::Other,
     ]
     .into_iter()
@@ -577,7 +614,10 @@ fn code_tables(out: &mut String) {
             ammo_per_engagement: 0,
         }))
     };
-    let rows = vec![("mob_griefing".to_string(), u32_at(&survey(true), 4) & !u32_at(&survey(false), 4))];
+    let rows = vec![(
+        "mob_griefing".to_string(),
+        u32_at(&survey(true), 4) & !u32_at(&survey(false), 4),
+    )];
     table(out, "survey_flag", &rows);
 }
 
@@ -603,7 +643,14 @@ fn main() {
             sweep,
             goods,
         };
-        obs(&mut out, name, wire::IND_STOCK_SAMPLE, 0, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_STOCK_SAMPLE,
+            0,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -626,7 +673,14 @@ fn main() {
             creative: false,
             overstressed: true,
         });
-        obs(&mut out, name, wire::IND_SWEEP_END, 0, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_SWEEP_END,
+            0,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -635,7 +689,14 @@ fn main() {
         let at = game_time(&mut f, &mut g);
         let district = district(&mut f, &mut g);
         let o = Obs::LedgerRequest { district };
-        obs(&mut out, name, wire::IND_LEDGER_REQUEST, 0, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_LEDGER_REQUEST,
+            0,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -648,7 +709,14 @@ fn main() {
             district,
             watched: true,
         };
-        obs(&mut out, name, wire::IND_WATCHED, 0, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_WATCHED,
+            0,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -666,9 +734,15 @@ fn main() {
             eta_ticks: Some(eta),
             closing: true,
         };
-        obs(&mut out, name, wire::IND_APPROACH, 0, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_APPROACH,
+            0,
+            Timed { at, obs: o },
+            &f,
+        );
     }
-
 
     {
         let name = "IND_DEPOSIT_SAMPLE";
@@ -693,23 +767,14 @@ fn main() {
             infinite: true,
             sweep,
         });
-        obs(&mut out, name, wire::IND_DEPOSIT_SAMPLE, 0, Timed { at, obs: o }, &f);
-    }
-
-    {
-        let name = "IND_CHANNEL_SAMPLE";
-        let (mut g, mut f) = begin(name);
-        let at = game_time(&mut f, &mut g);
-        let channel = ChannelId(f.u64("channel", g.u64()));
-        let capacity = f.i64("capacity", g.i64(Sign::Pos));
-        f.sym("n_entries", 2);
-        let goods = goods(&mut f, &mut g, "entry", 2);
-        let o = Obs::ChannelSample {
-            channel,
-            capacity,
-            goods,
-        };
-        obs(&mut out, name, wire::IND_CHANNEL_SAMPLE, 0, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_DEPOSIT_SAMPLE,
+            0,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     // ---- journaled observations ----
@@ -734,7 +799,14 @@ fn main() {
             not_learnable: Some(reason),
             inventory_count,
         });
-        obs(&mut out, name, wire::IND_DISTRICT, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_DISTRICT,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -760,7 +832,14 @@ fn main() {
             part,
             chunks,
         };
-        obs(&mut out, name, wire::IND_DISTRICT_CHUNKS, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_DISTRICT_CHUNKS,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -786,7 +865,14 @@ fn main() {
             fluid_capacity,
             energy_capacity,
         });
-        obs(&mut out, name, wire::IND_INVENTORY, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_INVENTORY,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -796,7 +882,14 @@ fn main() {
         let at = game_time(&mut f, &mut g);
         let district = district(&mut f, &mut g);
         let o = Obs::DistrictRemoved { district };
-        obs(&mut out, name, wire::IND_DISTRICT_REMOVED, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_DISTRICT_REMOVED,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -816,7 +909,14 @@ fn main() {
             player: (most, least),
             pos: p,
         };
-        obs(&mut out, name, wire::IND_EDIT, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_EDIT,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -828,7 +928,14 @@ fn main() {
         let reason = DiscardReason::ProgressiveContraption;
         f.sym("discard_reason", format!("{reason:?}"));
         let o = Obs::Discard { district, reason };
-        obs(&mut out, name, wire::IND_DISCARD, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_DISCARD,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -847,7 +954,14 @@ fn main() {
             ticking_chunks,
             total_chunks,
         };
-        obs(&mut out, name, wire::IND_LOAD_STATE, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_LOAD_STATE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -865,7 +979,38 @@ fn main() {
             chunk: ChunkPos { dim, x, z },
             applied_epoch,
         };
-        obs(&mut out, name, wire::IND_CHUNK_LOADED, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_CHUNK_LOADED,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // I7: a chunk of a district unloaded; the reserved field at 44 is zero.
+        let name = "IND_CHUNK_UNLOADED";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let dim = f.u32("dim", g.u32());
+        let x = f.i32("chunk_x", g.i32(Sign::Neg));
+        let z = f.i32("chunk_z", g.i32(Sign::Pos));
+        let o = Obs::ChunkUnloaded {
+            district,
+            chunk: ChunkPos { dim, x, z },
+        };
+        obs(
+            &mut out,
+            name,
+            wire::IND_CHUNK_UNLOADED,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -890,7 +1035,14 @@ fn main() {
             op: Some(op),
             goods,
         });
-        obs(&mut out, name, wire::IND_PORT, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_PORT,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -900,7 +1052,7 @@ fn main() {
         let seq = f.u64("obs_seq", g.u64());
         let at = game_time(&mut f, &mut g);
         let district = district(&mut f, &mut g);
-        let kind = PortKind::Channel;
+        let kind = PortKind::Other;
         f.sym("port_kind", format!("{kind:?}"));
         f.sym("inventory", "none");
         let counterpart = f.u64("counterpart", g.u64());
@@ -915,7 +1067,14 @@ fn main() {
             op: None,
             goods,
         });
-        obs(&mut out, name, wire::IND_PORT, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_PORT,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -935,7 +1094,14 @@ fn main() {
             simulated: true,
             carriages,
         });
-        obs(&mut out, name, wire::IND_TRAIN_ARRIVED, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_TRAIN_ARRIVED,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -957,7 +1123,14 @@ fn main() {
             eta_ticks: eta_ticks as u64,
             carriages,
         });
-        obs(&mut out, name, wire::IND_TRAIN_DEPARTED, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_TRAIN_DEPARTED,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -977,7 +1150,14 @@ fn main() {
             pos: p,
             name: name_id,
         });
-        obs(&mut out, name, wire::IND_STATION, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_STATION,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1015,7 +1195,14 @@ fn main() {
             destroyed,
             blocks_skipped,
         });
-        obs(&mut out, name, wire::IND_RECONCILE_RESULT, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_RECONCILE_RESULT,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1036,9 +1223,15 @@ fn main() {
             })
             .collect();
         let o = Obs::CarriageResult(CarriageResult { op, train, entries });
-        obs(&mut out, name, wire::IND_CARRIAGE_RESULT, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_CARRIAGE_RESULT,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
-
 
     {
         let name = "IND_CONDITIONS";
@@ -1055,7 +1248,14 @@ fn main() {
             season_length: season_length as u64,
             season_origin: Tick(season_origin as u64),
         });
-        obs(&mut out, name, wire::IND_CONDITIONS, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_CONDITIONS,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1069,7 +1269,14 @@ fn main() {
             sink,
             source: Some(source),
         };
-        obs(&mut out, name, wire::IND_POWER_LINK, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_POWER_LINK,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1096,7 +1303,14 @@ fn main() {
             op: Some(op),
             goods,
         });
-        obs(&mut out, name, wire::IND_PACKAGE, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_PACKAGE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1114,7 +1328,14 @@ fn main() {
             dark_blocks: dark_blocks as u64,
             spawns,
         });
-        obs(&mut out, name, wire::IND_SPAWN_SAMPLE, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_SPAWN_SAMPLE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1145,7 +1366,14 @@ fn main() {
             items_stolen,
             duration_ticks: duration_ticks as u64,
         });
-        obs(&mut out, name, wire::IND_FIGHT, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_FIGHT,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1163,7 +1391,8 @@ fn main() {
         let roofed_machines = f.u32("roofed_machines", g.u32());
         let kill_machines_at_gaps = f.u32("kill_machines_at_gaps", g.u32());
         let ammo = Good(f.u32("ammo_good", g.u32()));
-        let turret_strength: [f32; 4] = std::array::from_fn(|i| f.f32(&format!("turret{i}"), g.f32()));
+        let turret_strength: [f32; 4] =
+            std::array::from_fn(|i| f.f32(&format!("turret{i}"), g.f32()));
         let guards: [u32; 4] = std::array::from_fn(|i| f.u32(&format!("guards{i}"), g.u32()));
         let ammo_per_engagement = f.u32("ammo_per_engagement", g.u32());
         let o = Obs::Survey(DefenceSurvey {
@@ -1181,7 +1410,14 @@ fn main() {
             ammo_good: Some(ammo),
             ammo_per_engagement,
         });
-        obs(&mut out, name, wire::IND_SURVEY, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_SURVEY,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     {
@@ -1224,7 +1460,14 @@ fn main() {
             part,
             blocks,
         };
-        obs(&mut out, name, wire::IND_SURVEY_BLOCKS, seq, Timed { at, obs: o }, &f);
+        obs(
+            &mut out,
+            name,
+            wire::IND_SURVEY_BLOCKS,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
     }
 
     // ---- commands ----
@@ -1372,20 +1615,6 @@ fn main() {
             goods: line_goods,
         });
         cmd(&mut out, name, wire::IND_LEDGER, seq, c, &f);
-    }
-
-
-    {
-        let name = "IND_CHANNEL_DELTA";
-        let (mut g, mut f) = begin(name);
-        let seq = f.u64("cmd_seq", g.u64());
-        let op = g.engine_op();
-        f.num("op", op.0);
-        let channel = ChannelId(f.u64("channel", g.u64()));
-        f.sym("n_entries", 2);
-        let goods = goods(&mut f, &mut g, "entry", 2);
-        let c = Cmd::ChannelDelta(ChannelDelta { op, channel, goods });
-        cmd(&mut out, name, wire::IND_CHANNEL_DELTA, seq, c, &f);
     }
 
     {

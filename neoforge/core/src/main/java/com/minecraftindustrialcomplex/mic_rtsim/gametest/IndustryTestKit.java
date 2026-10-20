@@ -269,27 +269,6 @@ public final class IndustryTestKit {
         });
     }
 
-    /** Scripts an IND_CHANNEL_DELTA: goods by name, deltas into the channel. */
-    public static void channelDelta(long opId, long channel, Map<String, Long> goods) {
-        List<Map.Entry<String, Long>> list = new ArrayList<>(goods.entrySet());
-        script(out -> {
-            int[] ids = new int[list.size()];
-            for (int i = 0; i < list.size(); i++)
-                ids[i] = out.dict(IndRecords.DICT_GOOD, list.get(i).getKey());
-            int at = out.reserve(IndRecords.IND_CHANNEL_DELTA, IndRecords.ChannelDelta.ENTRIES + list.size() * IndRecords.ENTRY16, list.size());
-            if (at < 0)
-                return;
-            ByteBuffer b = out.buffer();
-            b.putLong(at + IndRecords.ChannelDelta.OP_ID, opId);
-            b.putLong(at + IndRecords.ChannelDelta.CHANNEL, channel);
-            for (int i = 0; i < list.size(); i++) {
-                int e = at + IndRecords.ChannelDelta.ENTRIES + i * IndRecords.ENTRY16;
-                b.putInt(e, ids[i]);
-                b.putLong(e + 8, list.get(i).getValue());
-            }
-        });
-    }
-
     /** Scripts an IND_WRITE_PACKAGE: {@code count} packages of one content each, to a postbox. */
     public static void writePackage(long opId, long district, int inventory, BlockPos pos, String address, int count, Map<String, Long> contents) {
         List<Map.Entry<String, Long>> list = new ArrayList<>(contents.entrySet());
