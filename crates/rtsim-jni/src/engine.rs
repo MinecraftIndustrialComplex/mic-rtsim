@@ -574,6 +574,17 @@ impl Engine {
         ]
     }
 
+    /// The phase 1 world's determinism hash, and whether the last load replayed its log to the
+    /// state the save had. Takes the state lock: tests and `/rtsim` only, never a game tick.
+    pub fn phase1_state(&self) -> (u64, bool, u64) {
+        let st = lock(&self.state);
+        (
+            st.phase1.world.state_hash(),
+            st.phase1.replay_diverged.is_none(),
+            st.phase1.capture_mismatches,
+        )
+    }
+
     /// Phase 1's counters as of the last step (`phase1::stat` indexes).
     pub fn phase1_stats(&self) -> [u64; PHASE1_STATS] {
         std::array::from_fn(|i| self.stats.phase1[i].load(Ordering::Acquire))

@@ -198,6 +198,9 @@ pub(super) struct Link {
     pub(super) stats: [u64; STATS],
     /// Captured cargo that did not match the sim's row at a despawn (logged, not reconciled).
     pub(super) capture_mismatches: u64,
+    /// The last load replayed the log to a state other than the one saved (`state_hash`): the
+    /// world is still the replayed one, but the build changed what the inputs mean.
+    pub(super) replay_diverged: Option<(u64, u64)>,
 }
 
 fn fresh_world() -> (World, catalog::Catalog) {
@@ -234,6 +237,7 @@ impl Link {
             enabled: true,
             stats: [0; STATS],
             capture_mismatches: 0,
+            replay_diverged: None,
         }
     }
 
@@ -274,6 +278,14 @@ impl Link {
         // Commands the replay re-decided were decided before the save: those still unanswered
         // are in the kept outbox, the rest (latest wins) are decided again this session.
         let _ = link.world.take_commands();
+        let hash = link.world.state_hash();
+        if hash != m.hash {
+            link.replay_diverged = Some((m.hash, hash));
+            log_warn(&format!(
+                "the phase 1 world replayed to state {hash:016x}, the save had {:016x}: this build reads the inputs differently (the replayed world stands)",
+                m.hash
+            ));
+        }
         log_info(&format!(
             "phase 1 world rebuilt from {} inputs to world tick {} in {} ms: {} nodes, {} caravans, state {:016x}",
             log.len(),
@@ -333,6 +345,7 @@ impl Link {
 
 struct Meta {
     now: u64,
+    hash: u64,
     offset: u64,
     next_epoch: u32,
     log_len: usize,
@@ -345,6 +358,7 @@ fn encode_meta(l: &Link) -> Vec<u8> {
     w.u32(META_MAGIC);
     w.u16(META_VERSION);
     w.u64(l.world.now().0);
+    w.u64(l.world.state_hash());
     w.u64(l.offset);
     w.u32(l.next_epoch);
     w.var_u64(l.log.len() as u64);
@@ -371,6 +385,7 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
         )));
     }
     let now = r.u64()?;
+    let hash = r.u64()?;
     let offset = r.u64()?;
     let next_epoch = r.u32()?;
     let log_len = r.var_u64()? as usize;
@@ -387,6 +402,7 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     r.finish()?;
     Ok(Meta {
         now,
+        hash,
         offset,
         next_epoch,
         log_len,
@@ -1033,9 +1049,8 @@ fn take_world_commands(st: &mut State) {
                     continue;
                 }
                 let player = l.world.player_uuid_of(g.player);
-                let report = l.world.knowledge.report(g.report);
-                let kind = report.map_or(0, |r| r.kind as u32);
-                let when = report.map_or(0, |r| r.at.0);
+                let kind = g.kind as u32;
+                let when = g.at.0;
                 // The write's identity: which village hears what about whom, done when. The same
                 // decision re-derived after a crash gets the same id (docs/boundary.md §2.2).
                 let identity = StreamKey::new(village, SystemId::named("phase1.gossip"), player.0)
@@ -1047,7 +1062,13 @@ fn take_world_commands(st: &mut State) {
                     gossip: g.gossip as u32,
                     amount: g.amount.max(GOSSIP_MIN),
                     report: kind,
-                    flags: 0,
+                    // rtsim-knowledge never asks for what vanilla records first-hand itself (E36),
+                    // so the bridge's VANILLA_KNOWS refusal cannot come from these.
+                    flags: if g.first_hand {
+                        cmd::write_gossip::FLAG_FIRST_HAND
+                    } else {
+                        0
+                    },
                 })
             }
             Command::Sentiment(s) => {
@@ -1364,9 +1385,14 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
     };
     let pos = Pos::new(frame, s.pos[0].floor() as i32, s.pos[2].floor() as i32);
     let visible = st.phase1.world.visible(pos, s.radius);
+    let carries = |c: &BTreeMap<GoodId, Amount>| c.values().any(|&a| a >= MILLI);
     for v in visible {
         let id = match v {
             Visible::Traveller { traveller, .. } => {
+                // A test wants a caravan with wares: scouts carrying only news are passed over.
+                if !carries(&traveller.cargo) {
+                    continue;
+                }
                 let k = traveller.key;
                 let at = st.phase1.world.now().0;
                 let out = st.phase1.input(
@@ -1382,7 +1408,12 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
                     None => continue,
                 }
             }
-            Visible::Caravan { id, .. } => id,
+            Visible::Caravan { id, .. } => {
+                if !st.phase1.world.caravans.get(id).is_some_and(|c| carries(&c.cargo())) {
+                    continue;
+                }
+                id
+            }
             Visible::Band { .. } => continue,
         };
         if spawn_caravan(st, id, frame, s.pos, 0, Some((s.agent, s.epoch)), true) {
@@ -1390,7 +1421,7 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
         }
     }
     log_warn(&format!(
-        "phase 1: P1_SPAWN_NEAR found no caravan within {} blocks of ({}, {})",
+        "phase 1: P1_SPAWN_NEAR found no caravan with wares within {} blocks of ({}, {})",
         s.radius, s.pos[0], s.pos[2]
     ));
 }

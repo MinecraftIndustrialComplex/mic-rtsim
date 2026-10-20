@@ -11,6 +11,7 @@
 
 use crate::actor::ActorId;
 use crate::report::{ReportId, ReportKind};
+use rtsim_kernel::clock::Tick;
 
 /// Vanilla's `GossipType`, by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,6 +32,12 @@ pub struct VanillaGossip {
     pub gossip: GossipType,
     pub amount: i32,
     pub report: ReportId,
+    /// What the report was and when it happened, kept with the write: by the time the bridge
+    /// writes it the report itself may have expired from the table.
+    pub kind: ReportKind,
+    pub at: Tick,
+    /// The village witnessed it (first-hand), not heard it as news.
+    pub first_hand: bool,
 }
 
 /// Which gossip a report kind writes, and how much at the base severity, first-hand.
