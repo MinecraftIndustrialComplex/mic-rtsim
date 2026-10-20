@@ -158,6 +158,8 @@ which scripts the engine's industry commands; each in its own batch):
 | `aheldreconcileapplieswhenitschunkloads` | §4.1: a far chunk's reconcile is held while it is unloaded, applied at its load after IND_CHUNK_LOADED; after a real unload and reload the epoch comes back from the chunk's NBT |
 | `theledgershowsonadisplay` | I18: a Display Link on a Stock Link shows the district's ledger (name, state, +120/h, "would have made 500") on a sign; IND_LEDGER_REQUEST |
 | `mailatanunloadeddistrictisapackagerecord` | F26, H30: a package dropped into an unloaded district's postbox buffer is IND_PACKAGE in (address, 40 iron and 3 coal), one fetched is IND_PACKAGE out |
+| `playerportsarecounted` | §3.3, H14: a fake player's container session on a district chest (+5 iron, with the chest's index), a toss (+3) and a pickup (-2) through NeoForge's own events; none is an edit |
+| `adoublechestisoneinventory` | H8: two chest halves are one 54-slot inventory at the lower half; the canonical lookup never loads a chunk |
 | `sweepcostonlargevaults` | INDUSTRY.md §19 risk 2: a 3 x 3 x 9 vault is one inventory; read cost per inventory and per slot, logged (H10) |
 
 ## Not done yet
@@ -188,6 +190,7 @@ which scripts the engine's industry commands; each in its own batch):
 - **Industry** (docs/overnight-choices-industrymc.md): IND_PACKAGE for loaded districts (H30), IND_WRITE_PACKAGE,
   IND_CHANNEL_DELTA and IND_DEPOSIT_DELTA (answered FAILED: no plugin applies them yet), deposits in
   reconciles, IND_CONDITIONS (seasons), the threat records (IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY),
-  the I16 gauge mixins, the PowerGrid, Destroy, Ore Excavation and Ender Transmission plugins; player
-  container sessions, tosses and pickups are not covered by a GameTest (no real player); a real
-  assembled train on a schedule is not tested (the station hooks run on synthetic trains).
+  the I16 gauge mixins, the PowerGrid, Destroy, Ore Excavation and Ender Transmission plugins; IND_WATCHED
+  with a real player near and the simulation-distance rule are not covered by a GameTest (no real
+  player); a real assembled train on a schedule is not tested (the station hooks run on synthetic
+  trains).

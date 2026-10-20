@@ -55,9 +55,10 @@ so a single-threaded read costs about the same there.
   member chunks 8-neighbour. Unloaded member chunks keep their membership. A loaded member chunk without
   seeds whose industrial block entity faces an unloaded member chunk is kept too (what it touches
   cannot be seen; dropping it would flap the district at every load).
-- **H4.** Detection is one recompute per dimension over every member chunk, after edits at most every
-  `rescanIntervalTicks` (20), and every `periodicRescanTicks` (6,000) for loaded districts (inventories
-  that machines add). Ids: a pinned group keeps its pin; an automatic group the old district it overlaps
+- **H4.** Detection after edits recomputes only the districts an edit can change (those owning or next
+  to an edited chunk, grown until nothing the walk reaches belongs to another), at most every
+  `rescanIntervalTicks` (20); every `periodicRescanTicks` (6,000) and after a `/rtsim district` edit it
+  recomputes the whole dimension (inventories that machines add). Ids: a pinned group keeps its pin; an automatic group the old district it overlaps
   most (each old id once, biggest group first); the rest get new ids, never reused (F3). Measured: a
   three-chunk district of 18 block entities (a chest and 17 shafts) detects in 64 and 60 us in two runs
   (best of 50, warm; `aDistrictIsDetectedAcrossShaftsAndNamed`), and a repeated detection changes neither its id nor
@@ -77,8 +78,15 @@ so a single-threaded read costs about the same there.
 - **H8.** `#mic_rtsim:district_stock`: the core adds `#c:chests` and `#c:barrels` (and the vanilla ids);
   the Create plugin adds `create:item_vault`, `create:fluid_tank` and, if present, Create Connected's
   item silo and fluid vessel. A multiblock is one inventory at its controller
-  (`IMultiBlockEntityContainer.getController`); a vanilla double chest is one at its lower half.
-  `sweepCostOnLargeVaults` checks that a 3 x 3 x 9 vault is one inventory.
+  (`IMultiBlockEntityContainer.getController`); a vanilla double chest is one at its lower half. One
+  function (`Districts.canonicalInventory`) does this for tagged storage, packager targets and clicks,
+  and returns nothing rather than load a chunk. `sweepCostOnLargeVaults` checks that a 3 x 3 x 9 vault
+  is one inventory, `aDoubleChestIsOneInventory` the chest.
+- **H31.** The Create plugin's industrial block entities are a list, not every `SmartBlockEntity`:
+  kinetics, pipes, chutes, funnels, tunnels, packagers, stock links and tickers, factory gauges,
+  threshold switches, smart observers, stations, postboxes and frogports, depots, basins, crates and
+  multiblock storage. Copycats, clipboards, signals, curved tracks and display boards are decoration and
+  make no district.
 
 **The sampler (I3, F5)**
 - **H10.** K = 64 inventories a tick (PLACEHOLDER) and a slot budget of 20,000 item slots a tick, at least
@@ -94,8 +102,10 @@ so a single-threaded read costs about the same there.
 - **H28.** No change-flag mixin on Create vaults (INDUSTRY.md §19 risk 2): the slot budget bounds the
   burst, and a vault in a working factory changes every sweep anyway, so a flag would save least where
   the cost is. It stays the next step if many idle full vaults show up in a profile.
-- **H11.** `live` is set only when every chunk of the district is block-ticking
-  (`FullChunkStatus.BLOCK_TICKING`) at the sweep's first read and at every tick until its end. An
+- **H11.** `live` is set only when every chunk of the district is block-ticking at the sweep's first
+  read and at every tick until its end: `FullChunkStatus.BLOCK_TICKING` *and* `shouldTickBlocksAt`
+  (the simulation distance; player tickets give chunks within the view distance a ticking status, but
+  their block entities tick only within the simulation distance). An
   inventory in an unloaded chunk is skipped and makes the sweep partial (not live). A revision change
   abandons the running sweep (inventory indices are per revision). Records are counted when attempted,
   so a record dropped for space makes the engine discard that sweep (F5).
@@ -108,10 +118,12 @@ so a single-threaded read costs about the same there.
 
 **Ports (§3.3)**
 - **H14.** A container session belongs to the block the player right-clicked at most 2 ticks before the
-  menu opened. In a district, its port (kind 3) is the negated change of the player's own inventory and
-  carried stack between Open and Close, with the inventory's index when the block is boundary stock. A
-  menu that cannot be attributed while the player stands in a district discards the window
-  (IND_DISCARD 1). Tosses count where the player stands, pickups where the item lies. A stock block a
+  menu opened, and counts only on boundary stock: its port (kind 3) is the negated change of the player's
+  own inventory and carried stack between Open and Close, with the inventory's index. A menu on any
+  other district block (a crafting table, a furnace) or on nothing we can tell discards the window
+  (IND_DISCARD 1): its effect cannot be told from production. A click on boundary stock that opens no
+  menu (a bucket into a tank) is a port of the player's change over that tick. Tosses and pickups while
+  a session is open are left to the session's diff. Only goods whose amount changed are named. Tosses count where the player stands, pickups where the item lies. A stock block a
   player breaks is a port of its contents (kind 6), and its drops are marked (`mic_rtsim:ported`, never
   saved) so picking them up is not counted again; breaking one block of a multiblock vault is no port
   (its contents stay in the rest).
@@ -135,14 +147,19 @@ so a single-threaded read costs about the same there.
   still reports what was applied, not only the epoch (F13 would have taken it as fully applied).
 
 **Trains (I15, §8.1)**
-- **H18.** Two Create mixins: TAIL of `Train.arriveAt(GlobalStation)` and HEAD of `Train.leaveStation()`.
-  IND_TRAIN_ARRIVED only at stations whose block is in a district. The cargo port (kind 1) goes out at
-  departure from a loaded district: carriage contents at arrival minus at departure, packages by their
-  contents. IND_TRAIN_DEPARTED waits until `navigation.destination` is set (Create sets it after
+- **H18.** Three Create mixins: HEAD and TAIL of `Train.arriveAt(GlobalStation)` and HEAD of
+  `Train.leaveStation()`. The cargo the train brought is taken at the head of `arriveAt`, because
+  `arriveAt` runs Create's own mail transfer before it returns. IND_TRAIN_ARRIVED only at stations whose
+  block is in a district. The cargo port (kind 1) goes out at departure from a loaded district: carriage
+  contents at arrival minus at departure, packages by their contents. A departure with no arrival this
+  session (a restart while the train stood there), or from a district that loaded while a simulated
+  train stood there, discards the window instead (IND_DISCARD 5). IND_TRAIN_DEPARTED waits until `navigation.destination` is set (Create sets it after
   `leaveStation`), at most 40 ticks; ETA = `distanceToDestination / maxSpeed()` in ticks.
 - **H17.** IND_CARRIAGE_DELTA is deduplicated by the journal's op index alone: train cargo
   (`RailwaySavedData`) and the journal are both SavedData written by the same save. Removals go first,
-  as in a reconcile.
+  as in a reconcile. A train that is not found still gets an IND_CARRIAGE_RESULT (everything applied 0),
+  since the engine corrects stock from the result and not from COMMAND_RESULT; a carriage storage that
+  is not initialized (Create throws) counts as empty.
 - **H19.** Station and train ids on the wire: SplitMix64 of the UUID's halves, never 0.
 - **H20.** A postbox's removals come out of its packages (rewriting `create:package_contents`; an
   emptied package is gone); additions go in as new packages addressed to the port's own filter, while
@@ -176,10 +193,37 @@ so a single-threaded read costs about the same there.
   `ChunkEvent.Load`, no holding of machines. That policy is Ben's (options a to d).
 
 **Tests**
+- **H32.** `IndustryWireContractTest` (core unit tests) rebuilds 19 observation kinds from IndRecords
+  and compares them byte for byte with records wire.rs encoded, reads 4 command fixtures back at
+  IndRecords offsets, and checks 11 code tables. The fixtures come from
+  `neoforge/tools/industry-wire-fixtures` (its own Cargo workspace, path dependencies on the crates);
+  regenerate them when wire.rs changes.
 - **H25.** Every industry GameTest is in the create project and runs against the stub engine
   (`-Dmic_rtsim.engine=stub` whatever `-PrtsimEngine` says): the industry commands they script are raw
   orders only the stub's script API takes. Each test has its own batch (so none runs beside another),
   and each starts by forgetting every district of the level (a test helper).
+
+## Adversarial review (Opus, 2026-10-20) and what changed
+
+An independent review of the Java side against wire.rs, docs/industry-boundary.md and the engine found
+no wire-format mismatch (a separate contract test, `IndustryWireContractTest`, checks every IndRecords
+offset against fixtures encoded by wire.rs itself: 36 tests). It found these, all fixed:
+- **Ticking (2):** chunks within the view distance but outside the simulation distance counted as
+  block-ticking (H11).
+- **Counting twice (3, 8, 15):** a double chest behind a packager; the drops of a block a reconcile
+  broke (the engine already books the spill); a double-chest half broken by a player (H8, H14).
+- **Ports (1, 4):** mail moved inside `arriveAt` was in no diff (H18); sessions on non-stock menus taught
+  the engine that a district crafts; tosses and pickups inside a session counted twice (H14).
+- **Crash safety (6, 7):** a throwing `onRemove` or an uninitialized carriage storage could stop the
+  bridge mid-command; a missing train got no result (H15, H17).
+- **Restarts (9):** a departure whose arrival was before the session (H18).
+- **Cost (5, 10, 11, 12, 13):** chunk-load events queued while nothing drained them; a canonical lookup
+  that could load a chunk; whole-dimension detection after every edit (H4); every Create smart block
+  entity a seed (H31); every stack in a player's pockets named as a good (H14).
+- **Smaller (14, 17):** a dropped IND_WATCHED change waited for the resend; a GOOD name whose registry
+  path holds '/' was misread.
+One finding (the stock tag files swapped) was wrong: the core's tag lists the vanilla chests and
+barrels, the Create plugin's the vaults and tanks.
 
 ## Findings for Ben
 
