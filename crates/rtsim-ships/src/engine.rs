@@ -497,6 +497,9 @@ impl Ships {
 
     /// Hands the engine every frame's topology (TP6). The lane index is rebuilt.
     pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if std::sync::Arc::ptr_eq(&t, &self.topo) {
+            return;
+        }
         if *t != *self.topo {
             self.topo = t;
             self.lane_cells.clear();

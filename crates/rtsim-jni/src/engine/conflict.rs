@@ -106,7 +106,7 @@ struct Queued {
 pub(super) struct Link {
     pub(super) engine: Conflict,
     /// Districts by cell for the industry engine's threat interface (not saved).
-    index: DistrictIndex,
+    pub(super) index: DistrictIndex,
     /// Commands not written yet (per session).
     queue: VecDeque<Queued>,
     enabled: bool,

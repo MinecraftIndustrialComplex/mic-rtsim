@@ -310,6 +310,9 @@ impl Dragons {
     /// Hands the engine every frame's topology (TP6): flights, hunts, lairs and the prey index
     /// measure through seams from then on. The prey index is rebuilt.
     pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if std::sync::Arc::ptr_eq(&t, &self.topo) {
+            return;
+        }
         if *t != *self.topo {
             self.topo = t;
             self.index = PreyIndex::default();

@@ -555,6 +555,9 @@ impl Conflict {
 
     /// Hands the engine every frame's topology (TP6).
     pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if std::sync::Arc::ptr_eq(&t, &self.topo) {
+            return;
+        }
         self.topo = t;
     }
 
