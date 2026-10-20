@@ -168,8 +168,14 @@ impl World {
         };
         let (up, down) = self.caravan_markup(from, player);
         let home = self.market(from);
-        let news = self.nodes[from].news.get(to).cloned();
         let mine = self.nodes[from].last_sent.clone();
+        // The prices it sells at: where it is going, as of the news it carries (its home's own
+        // when it is walking home).
+        let news = if to == from {
+            mine.clone()
+        } else {
+            self.nodes[from].news.get(to).cloned()
+        };
         let cash = cargo.get(&cur).copied().unwrap_or(0);
         let mut out = Vec::new();
         for g in self.goods.ids() {
@@ -239,10 +245,11 @@ impl World {
     ) -> Option<(usize, usize, std::collections::BTreeMap<GoodId, Amount>)> {
         match c {
             CaravanRef::Sampled(k) => self.traveller(k).map(|t| (t.from, t.to, t.cargo)),
+            // Where it is walking now: its destination outbound, its home on the way back.
             CaravanRef::Row(id) => self
                 .caravans
                 .get(id)
-                .map(|car| (car.home, car.leg.to.max(car.leg.from), car.cargo())),
+                .map(|car| (car.home, car.leg.to, car.cargo())),
         }
     }
 
