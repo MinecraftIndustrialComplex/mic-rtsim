@@ -59,6 +59,7 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `staleepochcopyisdiscardedonjoin` | copies built from the puppet's own NBT, made stale four ways (old epoch fresh, old epoch from disk, live epoch under another UUID, an agent not embodied), never join |
 | `traderandllamascaptureasonegroupandnollamadespawns` | the despawnDelay trap is closed; one llama in a loaded but frozen chunk captures the whole caravan in one tick; no lead drops; cargo, variant and strength are captured |
 | `amemberleavingtrackingcapturesthegroup` | a member whose chunk stops being accessible captures the whole caravan |
+| `aspawnwhereentitiesdonottickisrejected` | a spawn in a chunk that is not entity-ticking is answered SPAWN_REJECTED(not ticking) and creates nothing |
 | `spawnquotaneversplitsagroup` | three caravans, quota 8 bodies a tick: two in one tick, the third whole in the next |
 | `journalreplayappliesexactlyonceafteracrash` | two simulated crashes; transfers in both directions applied exactly once, one op id sent twice |
 | `tamingtakesacreatureoutofthesim` | taming (vanilla's tame line) takes a llama out of the sim; TAKEN with its cargo; the rest stays one group |

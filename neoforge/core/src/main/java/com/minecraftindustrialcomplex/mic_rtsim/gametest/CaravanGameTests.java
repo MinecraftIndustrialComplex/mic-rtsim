@@ -216,4 +216,27 @@ public final class CaravanGameTests {
                 })
                 .thenSucceed();
     }
+
+    /**
+     * A puppet appears only where entities tick (PLAN.md §6.1 item 4): a spawn whose members would stand
+     * in a chunk that is not entity-ticking is rejected, journaled, and nothing is created.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 200)
+    public static void aSpawnWhereEntitiesDoNotTickIsRejected(GameTestHelper helper) {
+        long agent = RtsimTests.newAgent();
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        RtsimTests.stub().spawnGroup(agent, 1, BodyKinds.HUMAN_CARAVAN, RtsimTests.dimension(helper),
+                o.getX() + 40_000.5, o.getY() + 1, o.getZ() + 0.5,
+                List.of(StubEngine.MemberSpec.plain(0), StubEngine.MemberSpec.plain(1), StubEngine.MemberSpec.plain(2)));
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the stub received the rejection",
+                        !RtsimTests.recordsFor(RtsimTests.stub(), Obs.SPAWN_REJECTED, agent).isEmpty()))
+                .thenExecute(() -> {
+                    StubEngine.Received r = RtsimTests.recordsFor(RtsimTests.stub(), Obs.SPAWN_REJECTED, agent).get(0);
+                    check("rejected as not ticking", r.aux() == Obs.SpawnRejected.NOT_TICKING);
+                    check("nothing was embodied", RtsimTests.group(agent) == null
+                            && RtsimTests.recordsFor(RtsimTests.stub(), Obs.MATERIALIZED, agent).isEmpty());
+                })
+                .thenSucceed();
+    }
 }
