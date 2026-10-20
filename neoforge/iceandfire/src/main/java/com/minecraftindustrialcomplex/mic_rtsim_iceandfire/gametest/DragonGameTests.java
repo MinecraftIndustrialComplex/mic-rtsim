@@ -452,6 +452,54 @@ public final class DragonGameTests {
     }
 
     /**
+     * Two ways a body leaves: a puppet a player tames leaves the sim (A10) as a DRAGON_DIED with no killer
+     * (the dragon records have no TAKEN, choice Z7), and stays in the world as the player's, untagged; a
+     * puppet carried out of the entity-ticking area is captured (DRAGON_DEMATERIALIZED, not ticking or
+     * unloaded) and its body removed.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 300, batch = "dragon_leaves")
+    public static void aTamedOrFarAwayPuppetLeavesTheSim(GameTestHelper helper) {
+        String test = "aTamedOrFarAwayPuppetLeavesTheSim";
+        long tamed = DragonKit.newAgent();
+        long far = DragonKit.newAgent();
+        Vec3 c = DragonKit.centre(helper);
+        DragonKit.materialize(DragonKit.young(tamed, helper, c.add(-2, 0, 0), DragonRecords.Materialize.FLAG_SLEEPING));
+        DragonKit.materialize(DragonKit.young(far, helper, c.add(2, 0, 0), DragonRecords.Materialize.FLAG_SLEEPING));
+        ServerPlayer[] player = new ServerPlayer[1];
+        DragonBaseEntity[] bodies = new DragonBaseEntity[2];
+
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    body(tamed);
+                    body(far);
+                })
+                .thenExecute(() -> {
+                    bodies[0] = body(tamed);
+                    bodies[1] = body(far);
+                    player[0] = FakePlayers.add(helper.getLevel(), c.add(0, 0, 3), "dragon-tamer");
+                    bodies[0].tame(player[0]);
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.living.AnimalTameEvent(bodies[0], player[0]));
+                    check("the tamed dragon is no longer a puppet", !RtsimApi.isPuppet(bodies[0]) && bridge().body(tamed) == null);
+                    bodies[1].teleportTo(bodies[1].getX() + 20_000, bodies[1].getY(), bodies[1].getZ());
+                })
+                .thenWaitUntil(() -> check("DRAGON_DIED for the tamed one", !about(DragonRecords.DRAGON_DIED, tamed).isEmpty()))
+                .thenWaitUntil(() -> check("the far one was captured", !about(DragonRecords.DRAGON_DEMATERIALIZED, far).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received died = about(DragonRecords.DRAGON_DIED, tamed).get(0);
+                    check("no killer", died.aux() == DragonRecords.ATTACKER_NONE && died.view().getLong(DragonRecords.Died.KILLER_MOST) == 0L);
+                    check("the tamed body stays, the player's", !bodies[0].isRemoved() && bodies[0].isTame());
+                    ScriptedEngine.Received gone = about(DragonRecords.DRAGON_DEMATERIALIZED, far).get(0);
+                    check("not ticking or unloaded (" + gone.aux() + ")", gone.aux() == DragonRecords.Dematerialized.NOT_TICKING
+                            || gone.aux() == DragonRecords.Dematerialized.UNLOADED);
+                    check("the far body is gone", bodies[1].isRemoved() && bridge().body(far) == null);
+                    record(test, "left", "tamed: DRAGON_DIED with no killer, body kept; far: DEMATERIALIZED reason " + gone.aux());
+                    FakePlayers.remove(player[0]);
+                    bodies[0].discard();
+                })
+                .thenSucceed();
+    }
+
+    /**
      * A puppet kills a village's cow: DRAGON_ATE (count 1, minecraft:cow, the village). It picks up a
      * second cow and departs with it: the carried cow goes with it as one unit (C25), reported eaten
      * against the village it was taken from, and removed.

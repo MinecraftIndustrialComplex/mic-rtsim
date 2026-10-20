@@ -157,6 +157,7 @@ DRAGON_COMMAND orders, and the native engine answers untagged dragons itself; ea
 | `untaggeddragonsareadoptedordiscarded` | a spawn-egg dragon and a NATURAL one (In Control's spawn type) reported DRAGON_UNTAGGED; the first adopted, the second discarded |
 | `alairsdragonisadoptedanditshoardrobbed` | a dragon with no spawn type in a lair's box is that lair's STRUCTURE dragon (after LAIR_FOUND), adopted with the lair's home; a gold pile broken and ingots taken from a lair chest are one HOARD_ROBBED |
 | `apuppetdragonisneversavedandacopyneverjoins` | vanilla's entity-chunk save leaves the dragon out; copies built from its NBT (new UUID, older epoch) never join |
+| `atamedorfarawaypuppetleavesthesim` | a tamed puppet leaves the sim as a DRAGON_DIED with no killer (no TAKEN for dragons) and stays the player's; one carried out of the ticking area is captured and removed |
 | `adragonsmealinavillageisreported` | a kill of a village's cow is DRAGON_ATE for the village; a cow carried at departure is eaten with the capture (C25) |
 
 The industry GameTests (`mic_rtsim_create` namespace; Create 6.0.10's own jar; always the stub engine,
@@ -215,5 +216,5 @@ which scripts the engine's industry commands; each in its own batch):
   player); a real assembled train on a schedule is not tested (the station hooks run on synthetic
   trains).
 - **Ice and Fire** (docs/overnight-choices-iceandfire.md): the pack's In Control edits P13 needs are a
-  proposal in `iceandfire/pack-proposal/` (not applied); a real lair structure, taming, settling and the
-  unload, not-ticking and session-end captures are not covered by a GameTest.
+  proposal in `iceandfire/pack-proposal/` (not applied); a real lair structure, settling, and the
+  not-ticking, dimension-change and session-end captures are not covered by a GameTest.

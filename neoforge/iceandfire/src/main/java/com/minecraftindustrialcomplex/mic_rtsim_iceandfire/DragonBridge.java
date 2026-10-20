@@ -620,6 +620,10 @@ public final class DragonBridge implements SessionPlugin {
             DragonBaseEntity d = p.dragon();
             if (d == null || IafDragons.dead(d))
                 continue;
+            if (d.isTame()) {
+                onTame(d, now); // tamed by a path that fired no AnimalTameEvent (another mod's tool)
+                continue;
+            }
             if (p.mode == Mode.DEPART && (now >= p.deadline || !inAnyPlayersRange(level, e))) {
                 capture(p, DragonRecords.Dematerialized.COMMAND, now);
                 continue;
