@@ -51,11 +51,17 @@ public final class Cmd {
         public static final int EPOCH = 24;      // u32, the new materialization epoch
         public static final int GROUP_KIND = 28; // u32 engine dictionary id (DICT_BODY)
         public static final int DIM = 32;        // u32 engine dictionary id (DICT_DIMENSION)
-        public static final int FLAGS = 36;      // u32 reserved, zero
+        public static final int FLAGS = 36;      // u32, below
         public static final int X = 40;          // f64, the group's anchor
         public static final int Y = 48;          // f64
         public static final int Z = 56;          // f64
         public static final int MEMBERS = 64;    // aux x Member, each followed by its items
+
+        /**
+         * {@code Y} is the surface: each member stands on the highest motion-blocking, non-leaf block
+         * at its own x, z (the anchor's x and z plus the member's slot offset), whatever {@code Y} says.
+         */
+        public static final int FLAG_SURFACE = 1;
 
         /** A member block: 24 bytes, then ITEM_COUNT x {@link Obs.Item} (items use engine ids). */
         public static final class Member {

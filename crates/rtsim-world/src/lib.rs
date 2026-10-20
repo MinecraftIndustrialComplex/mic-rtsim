@@ -14,9 +14,12 @@
 //! - [`World::travellers`], [`World::promote`], [`World::rob`], [`World::rescue`],
 //!   [`World::take_member`], [`World::kill_member`]: caravans near players (C21, C24, C25).
 //! - [`World::check_conserved`], [`World::state_hash`]: the ledger and the determinism hash.
+//! - [`World::trade_exact`], [`World::caravan_trade_exact`], [`World::rob_goods`] and the rest of
+//!   [`bridge`]: what the bridge reports, applied exactly as it happened in Minecraft.
 //! - [`World::take_stock`], [`World::prey_on_traveller`]: predators with no haven (PLAN.md §9).
 
 pub mod bases;
+pub mod bridge;
 pub mod caravans;
 pub mod check;
 pub mod config;
@@ -34,5 +37,5 @@ pub use config::WorldConfig;
 pub use flows::PipeKind;
 pub use interest::{PlayerState, Visible};
 pub use observe::Side;
-pub use ribbits::{BandView, PlaceHouse, SentimentSnapshot, SpawnResident};
+pub use ribbits::{BandView, PlaceHouse, SentimentSnapshot, SpawnResident, identity_op};
 pub use world::{CaravanId, Cause, Command, NodeData, Outside, Stats, TraceRow, Via, World};

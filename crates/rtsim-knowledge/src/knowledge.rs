@@ -286,6 +286,9 @@ impl Knowledge {
                     gossip,
                     amount,
                     report: id,
+                    kind: report.kind,
+                    at: report.at,
+                    first_hand: !hearsay,
                 });
             }
         }

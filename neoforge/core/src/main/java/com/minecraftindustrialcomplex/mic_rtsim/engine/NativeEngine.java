@@ -10,6 +10,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * The Rust engine (crates/rtsim-jni) through JNI, a plugin of mic_native: its steps run on the host's
@@ -53,6 +55,42 @@ public final class NativeEngine implements ScriptedEngine {
     static final int STAT_SAVE_FAILURES = 15;
     static final int STATS = 16;
 
+    // nPhase1Stats indexes.
+    /** Phase 1 villages the engine knows. */
+    public static final int P1_VILLAGES = 0;
+    /** Phase 1 agents embodied now. */
+    public static final int P1_EMBODIED = 1;
+    /** Trades with a village resident the engine counted. */
+    public static final int P1_RESIDENT_TRADES = 2;
+    /** Trades with a caravan the engine counted. */
+    public static final int P1_CARAVAN_TRADES = 3;
+    /** Trades the engine refused. */
+    public static final int P1_TRADES_REFUSED = 4;
+    /** Robberies the engine counted. */
+    public static final int P1_ROBBERIES = 5;
+    /** Reports (of assaults, killings) the engine took in. */
+    public static final int P1_REPORTS = 6;
+    /** WRITE_GOSSIP commands the engine sent. */
+    public static final int P1_GOSSIP_SENT = 7;
+    /** MARKET commands the engine sent. */
+    public static final int P1_MARKETS_SENT = 8;
+    /** MERCHANT_OFFERS commands the engine sent. */
+    public static final int P1_OFFERS_SENT = 9;
+    /** PLACE_HOUSE commands the engine sent. */
+    public static final int P1_HOUSES_SENT = 10;
+    /** SPAWN_RESIDENT commands the engine sent. */
+    public static final int P1_RESIDENTS_SENT = 11;
+    /** SENTIMENT commands the engine sent. */
+    public static final int P1_SENTIMENTS_SENT = 12;
+    /** Phase 1 observations the engine took in. */
+    public static final int P1_INPUTS = 13;
+    /** SPAWN_GROUP commands the engine sent for phase 1 travellers. */
+    public static final int P1_SPAWNS_SENT = 14;
+    /** The phase 1 world's tick. */
+    public static final int P1_WORLD_TICK = 15;
+    /** The length of the array {@link #phase1Stats} returns. */
+    public static final int PHASE1_STATS = 16;
+
     private static final int RECEIVED_CAP = 10_000;
     private static final int CLOSE_TIMEOUT_MS = 5000;
     private static final long IDLE_TIMEOUT_NANOS = 10_000_000_000L;
@@ -89,6 +127,12 @@ public final class NativeEngine implements ScriptedEngine {
 
     /** out.length >= 16; indexes STAT_*. */
     private static native void nStats(long handle, long[] out);
+
+    /** out.length >= PHASE1_STATS; indexes P1_*. */
+    private static native void nPhase1Stats(long handle, long[] out);
+
+    /** A phase 1 village's sentiment toward a player (-128 to 127), Integer.MIN_VALUE when the engine knows no such village (TEST mode). */
+    private static native int nPhase1Sentiment(long handle, long village, long most, long least);
 
     private static native long nLedger(long handle, long store);
 
@@ -330,6 +374,65 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     @Override
+    public void scriptVillage(long village) {
+        order(new NativeCodec.Orders().scriptVillage(village), "SCRIPT_VILLAGE");
+    }
+
+    @Override
+    public void market(long village, long asOfObsSeq, String currency, long treasury, long treasuryTarget, int worstNum, int worstDen,
+                       List<GoodSpec> goods) {
+        order(new NativeCodec.Orders().market(village, asOfObsSeq, currency, treasury, treasuryTarget, worstNum, worstDen, goods), "MARKET");
+    }
+
+    @Override
+    public void merchantOffers(long agent, int epoch, int member, List<OfferSpec> offers) {
+        order(new NativeCodec.Orders().merchantOffers(agent, epoch, member, offers), "MERCHANT_OFFERS");
+    }
+
+    @Override
+    public void writeGossip(long opId, long village, UUID player, int gossipType, int amount, int report, int flags) {
+        order(new NativeCodec.Orders().writeGossip(opId, village, player, gossipType, amount, report, flags), "WRITE_GOSSIP");
+    }
+
+    @Override
+    public void sentiment(long holder, int dislike, int friend, boolean replace, Map<UUID, Integer> entries) {
+        order(new NativeCodec.Orders().sentiment(holder, dislike, friend, replace, entries), "SENTIMENT");
+    }
+
+    @Override
+    public void placeHouse(long opId, long village, String dimension, String template, String processors, int x, int y, int z,
+                           int rotation, int mirror, int flags, int radius, long seed, int yOffset) {
+        order(new NativeCodec.Orders().placeHouse(opId, village, dimension, template, processors, x, y, z, rotation, mirror,
+                flags, radius, seed, yOffset), "PLACE_HOUSE");
+    }
+
+    @Override
+    public void spawnResident(long opId, long village, String dimension, String body, String profession, int flags,
+                              double x, double y, double z, long house) {
+        order(new NativeCodec.Orders().spawnResident(opId, village, dimension, body, profession, flags, x, y, z, house), "SPAWN_RESIDENT");
+    }
+
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): materializes the phase 1 caravan with wares
+     * nearest (searchX, searchZ) within {@code radius} blocks, as group {@code agent}/{@code epoch}, at
+     * (x, y, z). Nothing spawns if no caravan carrying at least one whole item is that close (the
+     * engine logs it): advance the world and ask again.
+     */
+    public void phase1SpawnNear(long agent, int epoch, String dimension, double x, double y, double z, int radius,
+                                double searchX, double searchZ) {
+        order(new NativeCodec.Orders().phase1SpawnNear(agent, epoch, dimension, x, y, z, radius, searchX, searchZ),
+                "P1_SPAWN_NEAR");
+    }
+
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): the phase 1 world runs this many more ticks
+     * ahead of game time from now on.
+     */
+    public void phase1Advance(long ticks) {
+        order(new NativeCodec.Orders().phase1Advance(ticks), "P1_ADVANCE");
+    }
+
+    @Override
     public synchronized String javaDictName(int id) {
         drain();
         String name = null;
@@ -420,6 +523,21 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public synchronized boolean opApplied(long opId) {
         return nOpApplied(live(), opId);
+    }
+
+    /** The phase 1 world's counters, indexed by {@code P1_*}; {@link #PHASE1_STATS} long. */
+    public synchronized long[] phase1Stats() {
+        long[] out = new long[PHASE1_STATS];
+        nPhase1Stats(live(), out);
+        return out;
+    }
+
+    /**
+     * A phase 1 village's sentiment toward a player, -128 to 127; {@link Integer#MIN_VALUE} when the
+     * engine knows no such village. An engine opened with {@link #FLAG_TEST} only.
+     */
+    public synchronized int phase1Sentiment(long village, UUID player) {
+        return nPhase1Sentiment(live(), village, player.getMostSignificantBits(), player.getLeastSignificantBits());
     }
 
     @Override

@@ -47,9 +47,11 @@ flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix shell nixpkgs#jdk21 -c ./g
   `natives/mic_rtsim/<platform>/baseline/librtsim_jni.so`. `-PskipJni` packs none, so the Java side
   builds before the Rust crate does (the native engine then cannot load); `-Prelease` packs
   `../target/natives-dist-jni/` (every platform) instead.
-- On the native engine, the phase 1 GameTests that need commands only the stub sends so far
-  (markets, offers, gossip writes, houses, residents, sentiment) log `skipped` and pass
-  (`RtsimTests.stubOrSkip`); run `./gametest.sh -PrtsimEngine=stub -PskipJni` for all of them.
+- The phase 1 GameTests that script commands (markets, offers, gossip writes, houses, residents,
+  sentiment) order them through `ScriptedEngine`, so they run on both engines
+  (`./gametest.sh -PrtsimEngine=stub|native`). `RtsimTests.adoptArena` adopts a scripted village
+  (`ScriptedEngine.scriptVillage`: the engine decides nothing for it); `RtsimTests.adoptArenaLive`
+  adopts one the engine drives itself.
 - `-PrtsimEngine=stub|native` picks the GameTest server's engine (`-Dmic_rtsim.engine`, honoured
   only with `-Dmic_rtsim.gametest=true`). Tests that run their own sessions get an engine of the same
   kind (`RtsimTests.freshEngine`); the native one keeps its pages under `run-gametest/mic_rtsim-test/`.
@@ -114,13 +116,14 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `atakencreaturecarriesitstakenuntiltheenginehasit` | a tamed llama carries its TAKEN; a copy read from disk journals it again with the same op id; both drop it on the acknowledgement |
 | `adeadmembersdropscarryitsdied` | the items a dying llama drops carry its MEMBER_STATE and DIED |
 | `afailedenginestopsthebridgeforthesession` | an engine that fails (a panic in a native step) hands back empty buffers flagged FAILED, and the bridge stops for the session instead of waiting on it |
-| `handovercostpertick` | the hand-over bench: submit to publish on the native engine and the stub, burst and 50 ms cadence (only with `-PrtsimBench`; results in `bench/results/handover.md`) |
+| `handovercostpertick` | the hand-over bench: submit to publish on the native engine (with and without a running phase 1 world) and the stub, burst and 50 ms cadence (only with `-PrtsimBench`; results in `bench/results/handover.md`) |
 | `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 | `acaravansofferscomefromitschestcargo` | phase 1: the engine's offers replace the trader's; uses are what the llamas carry; a sale takes the goods out of a chest and the emerald in; sold out, the offer shows crossed out; TRADE per sale with an op id |
 | `sellingdrainsthetreasuryandtheoffercrossesout` | walkthrough B: a farmer's wheat offer repriced from the market (21, 22, 23 wheat per emerald as the stock grows), the treasury drained by three sales, crossed out; vanilla's `restock()` leaves it crossed out with demand 0; a stale snapshot does not refund; a refill reopens it |
 | `arobberythenatradearereportedapart` | 5 wheat taken from a chest and a sale of 10 in the same tick: one CARGO_CHANGED of -5 and one TRADE of 10 |
 | `twoscreensshareonetreasury` | two players at two farmers of one village: two sales at one re-cap the other's open offer to the one emerald left |
+| `arealcaravantradesisrobbedandthenewstravels` | phase 1 decided by the native engine: three villages far away, a caravan off its flows materialized at a player (`P1_SPAWN_NEAR`) with its real chest cargo and offers, a trade and a robbery booked once, and the robbery written into two other villages' gossip days later (`P1_ADVANCE`); skipped on the stub |
 | `killingallamadropsitscargoexactlyonceacrossacrash` | DIED with an op id; the dropped cargo's chunk saved and read back through vanilla's entity storage after a "crash"; the DIED arrives again under the same op id and the cargo is in the world once |
 | `gossipiswrittenonce` | WRITE_GOSSIP adds 25 once; a resend is DUPLICATE; after a crash that rolled back the journal and the village, the villager's own record refuses it; VANILLA_KNOWS; a villager that was away gets the news at the census |
 | `moregossipthantheopringisstillwrittenonce` | seventy entries (more than the 64-op ring): two censuses write none of them again; a villager that arrives later takes each once |
@@ -186,7 +189,10 @@ which scripts the engine's industry commands; each in its own batch):
   write logs the IOException and the chain goes on.
 - **Body kinds as data** (P15): group layouts are code.
 - **A GameTest for a server at simulation distance 10** (risk R1): it needs real players.
-- **The real engine**: every phase 1 test scripts the engine side through the stub.
+- **The real engine's own phase 1 decisions** are GameTested only by `arealcaravantradesisrobbedandthenewstravels`
+  (a caravan off the engine's flows, its trade, robbery and news); markets, sentiment, houses and
+  residents the engine decides are covered by rtsim-jni's protocol test and rtsim-world's tests, and
+  the GameTests that check how the bridge applies them script them (on either engine).
 - **Industry** (docs/overnight-choices-industrymc.md): IND_PACKAGE for loaded districts (H30), IND_WRITE_PACKAGE,
   IND_CHANNEL_DELTA and IND_DEPOSIT_DELTA (answered FAILED: no plugin applies them yet), deposits in
   reconciles, IND_CONDITIONS (seasons), the threat records (IND_SPAWN_SAMPLE, IND_FIGHT, IND_SURVEY),

@@ -810,6 +810,12 @@ fn write_one(st: &mut State, w: &mut RecordWriter<'_>, c: &Cmd, seq: Option<u64>
     One::Written(seq)
 }
 
+/// The sequence of the next kept command to resend, if any (the step merges every resend queue in
+/// sequence order).
+pub(super) fn next_resend(st: &State) -> Option<u64> {
+    st.industry.resend.front().map(|r| r.0)
+}
+
 /// Writes the resend queue's commands whose sequences are below `before` (the core's next resend,
 /// or None for all): Java skips a command at or below the last one it applied, so the two resend
 /// queues go out merged in sequence order. Returns the highest sequence written and whether the

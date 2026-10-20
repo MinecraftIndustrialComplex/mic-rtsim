@@ -16,6 +16,12 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rtsim-kernel.workspace = true
 rtsim-industry.workspace = true
+# Phase 1 (docs/boundary.md §4): the world and the modules whose types it speaks.
+rtsim-world.workspace = true
+rtsim-settle.workspace = true
+rtsim-trade.workspace = true
+rtsim-travel.workspace = true
+rtsim-knowledge.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 

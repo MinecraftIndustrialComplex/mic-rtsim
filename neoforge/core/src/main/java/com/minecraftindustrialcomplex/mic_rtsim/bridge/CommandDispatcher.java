@@ -242,7 +242,8 @@ final class CommandDispatcher implements Handover.CommandSink {
             m0 += Cmd.SpawnGroup.Member.size(items);
         }
         Vec3 anchor = new Vec3(b.getDouble(at + Cmd.SpawnGroup.X), b.getDouble(at + Cmd.SpawnGroup.Y), b.getDouble(at + Cmd.SpawnGroup.Z));
-        int result = session.spawnGroup(agent, epoch, kind, level, anchor, spawns, now);
+        int flags = b.getInt(at + Cmd.SpawnGroup.FLAGS);
+        int result = session.spawnGroup(agent, epoch, kind, level, anchor, spawns, flags, now);
         if (result != 0) {
             session.journalRejected(agent, epoch, cmdSeq, result, now);
             return true;

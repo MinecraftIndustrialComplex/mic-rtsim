@@ -114,6 +114,10 @@ pub struct Java {
     pub failed_seen: bool,
     /// SESSION_START's module mask (the bridge's `Module` bits).
     pub module_mask: u32,
+    /// Phase 1 commands applied, in order: (kind, record bytes).
+    pub p1: Vec<(u16, Vec<u8>)>,
+    /// Players reported every tick: (UUID, dimension id, position).
+    pub players: Vec<((u64, u64), u32, [f64; 3])>,
     /// The industry world this Java plays (rtsim-industry's fake world in remote mode), if any.
     pub mc: Option<FakeWorld>,
     /// The cmdSeq of the industry command that carried each engine op id (for COMMAND_RESULT).
@@ -205,6 +209,8 @@ impl Java {
             held_ops: Vec::new(),
             failed_seen: false,
             module_mask: 0,
+            p1: Vec::new(),
+            players: Vec::new(),
             mc: None,
             ind_cmd_seq: HashMap::new(),
             ind_commands: Vec::new(),
@@ -348,6 +354,16 @@ impl Java {
             };
             wire::put_i64(r, obs::tick::GAME_TIME, gt);
             self.tick_marked = gt;
+            for (uuid, dim, pos) in self.players.clone() {
+                let Some(r) = self.reserve(obs::PLAYER, obs::player::SIZE, dim) else {
+                    return false;
+                };
+                wire::put_u64(r, obs::player::UUID_MOST, uuid.0);
+                wire::put_u64(r, obs::player::UUID_LEAST, uuid.1);
+                wire::put_f64(r, obs::player::X, pos[0]);
+                wire::put_f64(r, obs::player::Y, pos[1]);
+                wire::put_f64(r, obs::player::Z, pos[2]);
+            }
         }
         true
     }
@@ -477,11 +493,22 @@ impl Java {
                     self.stale_commands += 1;
                     continue;
                 }
-                let op = if rec.kind == cmd::TRANSFER_TO_CONTAINER {
-                    wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID)
-                } else {
-                    0
+                let op = match rec.kind {
+                    cmd::TRANSFER_TO_CONTAINER => {
+                        wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID)
+                    }
+                    cmd::WRITE_GOSSIP => wire::u64_at(rec.bytes, cmd::write_gossip::OP_ID),
+                    cmd::PLACE_HOUSE => wire::u64_at(rec.bytes, cmd::place_house::OP_ID),
+                    cmd::SPAWN_RESIDENT => wire::u64_at(rec.bytes, cmd::spawn_resident::OP_ID),
+                    _ => 0,
                 };
+                if (cmd::MARKET..=cmd::SPAWN_RESIDENT).contains(&rec.kind)
+                    || rec.kind == cmd::SPAWN_GROUP
+                    || rec.kind == cmd::DESPAWN_GROUP
+                    || rec.kind == cmd::STEER_GROUP
+                {
+                    self.p1.push((rec.kind, rec.bytes.to_vec()));
+                }
                 self.commands.push((k, rec.kind, op));
                 match rec.kind {
                     cmd::TRANSFER_TO_CONTAINER => {
@@ -533,6 +560,43 @@ impl Java {
                         });
                     }
                     k if (0x8400..=0x84FF).contains(&k) => self.industry_command(k, seq, rec.bytes),
+                    cmd::DESPAWN_GROUP => {
+                        let b = rec.bytes;
+                        let agent = wire::u64_at(b, cmd::despawn_group::AGENT);
+                        let epoch = wire::u32_at(b, cmd::despawn_group::EPOCH);
+                        self.journal(
+                            obs::DEMATERIALIZED,
+                            obs::dematerialized::SIZE,
+                            obs::dematerialized::COMMAND,
+                            |r| {
+                                wire::put_u64(r, obs::dematerialized::AGENT, agent);
+                                wire::put_u32(r, obs::dematerialized::EPOCH, epoch);
+                            },
+                        );
+                    }
+                    cmd::WRITE_GOSSIP | cmd::PLACE_HOUSE | cmd::SPAWN_RESIDENT => {
+                        let status = if self.applied_cmd_ops.contains(&op) {
+                            obs::command_result::DUPLICATE_OP
+                        } else {
+                            if rec.kind == cmd::PLACE_HOUSE {
+                                let village = wire::u64_at(rec.bytes, cmd::place_house::VILLAGE);
+                                self.journal(obs::HOUSE_PLACED, obs::house_placed::SIZE, 0, |r| {
+                                    wire::put_u64(r, obs::house_placed::OP_ID, op);
+                                    wire::put_u64(r, obs::house_placed::VILLAGE, village);
+                                });
+                            }
+                            obs::command_result::APPLIED
+                        };
+                        self.journal(
+                            obs::COMMAND_RESULT,
+                            obs::command_result::SIZE,
+                            status,
+                            |r| {
+                                wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                                wire::put_u64(r, obs::command_result::OP_ID, op);
+                            },
+                        );
+                    }
                     _ => {}
                 }
                 self.last_applied_cmd = seq;

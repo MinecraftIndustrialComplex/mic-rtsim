@@ -5,6 +5,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * The test and debug surface of an engine: what the GameTests, the unit tests and {@code /rtsim stub}
@@ -48,6 +50,13 @@ public interface ScriptedEngine extends Engine {
         }
     }
 
+    /** One good of a scripted MARKET, in rtsim-trade units (thousandths; millionths of a coin per item). */
+    record GoodSpec(String item, long stock, long target, long anchor, int rNum, int rDen) {}
+
+    /** One offer of a scripted MERCHANT_OFFERS; costB null for none. */
+    record OfferSpec(String costA, int costACount, String costB, int costBCount, String result, int resultCount,
+                     int maxUses, int flags) {}
+
     /** Orders a SPAWN_GROUP. */
     void spawnGroup(long agent, int epoch, String groupKind, String dimension, double x, double y, double z,
                     List<MemberSpec> members);
@@ -67,6 +76,49 @@ public interface ScriptedEngine extends Engine {
      * crash does).
      */
     void transferToContainer(long opId, String dimension, int x, int y, int z, String item, int count);
+
+    // ---- phase 1 orders -------------------------------------------------------------------------
+
+    /**
+     * A test scripts this village's phase 1 commands: the engine applies none of its observations to
+     * its own world and sends no phase 1 command of its own for it. The stub, which decides nothing,
+     * ignores it.
+     */
+    void scriptVillage(long village);
+
+    /**
+     * Orders a MARKET: a village's treasury and goods.
+     *
+     * @param asOfObsSeq the observation sequence the figures are as of
+     * @param currency   the coin item
+     * @param goods      stock, target and anchor price per good, in rtsim-trade units
+     */
+    void market(long village, long asOfObsSeq, String currency, long treasury, long treasuryTarget, int worstNum, int worstDen,
+                List<GoodSpec> goods);
+
+    /** Orders a MERCHANT_OFFERS: the offers one group member's merchant menu shows. */
+    void merchantOffers(long agent, int epoch, int member, List<OfferSpec> offers);
+
+    /**
+     * Orders a WRITE_GOSSIP: gossip about {@code player} written into a vanilla village's gossip (type 1
+     * to 5 as in {@code Cmd.WriteGossip.GOSSIP}). {@code opId} makes each villager take it at most once.
+     */
+    void writeGossip(long opId, long village, UUID player, int gossipType, int amount, int report, int flags);
+
+    /**
+     * Orders a SENTIMENT: a holder's (a village's) feelings toward players, on a scale of -128 to 127.
+     *
+     * @param replace true for a full snapshot (players not listed are neutral), false to update the last one
+     */
+    void sentiment(long holder, int dislike, int friend, boolean replace, Map<UUID, Integer> entries);
+
+    /** Orders a PLACE_HOUSE: a house template placed for a village. {@code processors} may be null. */
+    void placeHouse(long opId, long village, String dimension, String template, String processors, int x, int y, int z,
+                    int rotation, int mirror, int flags, int radius, long seed, int yOffset);
+
+    /** Orders a SPAWN_RESIDENT: a resident of a village in a house. {@code profession} may be null. */
+    void spawnResident(long opId, long village, String dimension, String body, String profession, int flags,
+                       double x, double y, double z, long house);
 
     /**
      * Makes the next ordered command carry {@code next} as its sequence, as an engine whose counter went

@@ -521,3 +521,355 @@ fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
     assert!(j.submitted > before);
     e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+// ---- phase 1 (docs/boundary.md §4) ----------------------------------------------------------------
+
+const PLAYER: (u64, u64) = (0x1111_2222_3333_4444, 0x5555_6666_7777_8888);
+const EMERALD: &str = "minecraft:emerald";
+
+impl Java {
+    /// Journals a VILLAGE_ADOPTED for a village whose meeting point is (x, z).
+    fn adopt(&mut self, village: u64, structure: &str, culture: &str, pieces: u32, x: i32, z: i32) {
+        let dim = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let st = self.dict_id(wire::DICT_STRUCTURE, structure);
+        let cu = self.dict_id(wire::DICT_CULTURE, culture);
+        use obs::village_adopted as k;
+        self.journal(obs::VILLAGE_ADOPTED, k::SIZE, 0, |r| {
+            wire::put_u64(r, k::VILLAGE, village);
+            wire::put_u32(r, k::DIM, dim);
+            wire::put_u32(r, k::STRUCTURE, st);
+            wire::put_u32(r, k::CULTURE, cu);
+            wire::put_u32(r, k::PIECES, pieces);
+            wire::put_i32(r, k::MIN_X, x - 20);
+            wire::put_i32(r, k::MIN_Y, 60);
+            wire::put_i32(r, k::MIN_Z, z - 20);
+            wire::put_i32(r, k::MAX_X, x + 20);
+            wire::put_i32(r, k::MAX_Y, 80);
+            wire::put_i32(r, k::MAX_Z, z + 20);
+            wire::put_i32(r, k::MEET_X, x);
+            wire::put_i32(r, k::MEET_Y, 64);
+            wire::put_i32(r, k::MEET_Z, z);
+        });
+    }
+
+    /// The engine dictionary's name for an id the commands used.
+    fn cmd_name(&self, kind: u32, id: u32) -> String {
+        self.cmd_dict.get(&(kind, id)).cloned().unwrap_or_default()
+    }
+
+    fn p1_of(&self, kind: u16) -> Vec<Vec<u8>> {
+        self.p1
+            .iter()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+
+    /// A TRADE with a puppet merchant: the player paid `cost` and got `result`.
+    #[allow(clippy::too_many_arguments)]
+    fn trade_with(
+        &mut self,
+        agent: u64,
+        epoch: u32,
+        side: u32,
+        cost: (&str, i32),
+        result: (&str, i32),
+        op: u64,
+    ) -> u64 {
+        let a = self.dict_id(wire::DICT_ITEM, cost.0);
+        let r_ = self.dict_id(wire::DICT_ITEM, result.0);
+        use obs::trade as k;
+        self.journal(obs::TRADE, k::SIZE, side, |r| {
+            wire::put_u64(r, k::OP_ID, op);
+            wire::put_u64(r, k::AGENT, agent);
+            wire::put_u32(r, k::EPOCH, epoch);
+            wire::put_u64(r, k::PLAYER_MOST, PLAYER.0);
+            wire::put_u64(r, k::PLAYER_LEAST, PLAYER.1);
+            wire::put_u32(r, k::COST_A_ITEM, a);
+            wire::put_i32(r, k::COST_A_COUNT, cost.1);
+            wire::put_u32(r, k::RESULT_ITEM, r_);
+            wire::put_i32(r, k::RESULT_COUNT, result.1);
+        })
+    }
+
+    /// A CARGO_CHANGED: `items` taken out of member `member`'s cargo by the player.
+    fn robbed(
+        &mut self,
+        agent: u64,
+        epoch: u32,
+        member: u32,
+        items: &[(&str, i32)],
+        op: u64,
+    ) -> u64 {
+        let ids: Vec<u32> = items
+            .iter()
+            .map(|(n, _)| self.dict_id(wire::DICT_ITEM, n))
+            .collect();
+        use obs::cargo_changed as k;
+        self.journal(obs::CARGO_CHANGED, k::size(items.len()), member, |r| {
+            wire::put_u64(r, k::OP_ID, op);
+            wire::put_u64(r, k::AGENT, agent);
+            wire::put_u32(r, k::EPOCH, epoch);
+            wire::put_u32(r, k::FLAGS, k::FLAG_BY_PROXIMITY);
+            wire::put_u64(r, k::PLAYER_MOST, PLAYER.0);
+            wire::put_u64(r, k::PLAYER_LEAST, PLAYER.1);
+            wire::put_u32(r, k::ITEM_COUNT, items.len() as u32);
+            for (i, ((_, n), id)) in items.iter().zip(&ids).enumerate() {
+                let it = k::ITEMS + i * obs::item::SIZE;
+                wire::put_u32(r, it + obs::item::SLOT, u32::MAX);
+                wire::put_u32(r, it + obs::item::ITEM, *id);
+                wire::put_i32(r, it + obs::item::COUNT, -*n);
+            }
+        })
+    }
+}
+
+fn p1_stat(e: &Engine, i: usize) -> u64 {
+    e.phase1_stats()[i]
+}
+
+/// Phase 1 end to end over the real boundary: villages adopted, a market snapshot for the one a
+/// player stands in, a caravan materialized from the engine's own flows with its cargo in the
+/// chests and its offers, a trade and a robbery booked once, the news carried to other villages
+/// (WRITE_GOSSIP for a human village, sentiment), and after a crash the world rebuilt from the
+/// pages' input log to the same state.
+#[test]
+fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
+    let dir = tmpdir("phase1");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = 0b1111; // knowledge, settlements, trade, travel
+    let (a, b, c) = (
+        0x0001_0000_0000_0001u64,
+        0x0001_0000_0000_0002,
+        0x0001_0000_0000_0003,
+    );
+    j.adopt(a, "minecraft:village_plains", "human", 90, 0, 0);
+    j.adopt(b, "minecraft:village_taiga", "human", 90, 400, 0);
+    j.adopt(c, "minecraft:village_desert", "human", 90, 0, 400);
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    j.players = vec![(PLAYER, dim, [10.0, 64.0, 0.0])];
+    j.idle();
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(p1_stat(&e, 0), 3, "three villages joined");
+    // The player stands in A: its market snapshot came, in emeralds.
+    let markets = j.p1_of(cmd::MARKET);
+    let am = markets
+        .iter()
+        .find(|m| wire::u64_at(m, cmd::market::VILLAGE) == a)
+        .expect("a MARKET for the village the player stands in");
+    assert_eq!(
+        j.cmd_name(wire::DICT_ITEM, wire::u32_at(am, cmd::market::CURRENCY)),
+        EMERALD
+    );
+    assert!(wire::i64_at(am, cmd::market::TREASURY) > 0);
+    assert!(
+        !markets
+            .iter()
+            .any(|m| wire::u64_at(m, cmd::market::VILLAGE) == b),
+        "no snapshot for a village no player is near"
+    );
+
+    // Days on: news has crossed the roads and caravans with wares walk them (a caravan leaves
+    // when its dock fills or after two days, so a road may be empty for a while).
+    let agent = 0xCA4A_u64;
+    let spawned = |j: &Java| {
+        j.p1_of(cmd::SPAWN_GROUP)
+            .iter()
+            .any(|s| wire::u64_at(s, cmd::spawn_group::AGENT) == agent)
+    };
+    let mut days = 0;
+    while !spawned(&j) {
+        assert!(
+            days < 240,
+            "no caravan with wares on any road in 30 days: stats {:?}, log {}",
+            e.phase1_stats(),
+            mic_native_host::drain_log()
+        );
+        e.order(vec![Order::Phase1Advance(3_000)]).unwrap();
+        j.idle();
+        days += 1;
+        e.order(vec![Order::Phase1SpawnNear {
+            agent,
+            epoch: 1,
+            dimension: OVERWORLD.into(),
+            pos: [10.5, 64.0, 0.5],
+            radius: 2_000,
+            search: [10.5, 0.5],
+        }])
+        .unwrap();
+        j.idle();
+    }
+    eprintln!("a caravan with wares after {} quanta", days * 3);
+    j.idle();
+    let spawn = j
+        .p1_of(cmd::SPAWN_GROUP)
+        .into_iter()
+        .find(|s| wire::u64_at(s, cmd::spawn_group::AGENT) == agent)
+        .unwrap();
+    assert_eq!(
+        j.cmd_name(
+            wire::DICT_BODY,
+            wire::u32_at(&spawn, cmd::spawn_group::GROUP_KIND)
+        ),
+        CARAVAN
+    );
+    // Its cargo, chest by chest (C21): (member, item, count).
+    let mut cargo: Vec<(u32, String, i32)> = Vec::new();
+    let mut at = cmd::spawn_group::MEMBERS;
+    for _ in 0..wire::u32_at(&spawn, wire::R_AUX) {
+        use cmd::spawn_group::member as mb;
+        let idx = wire::u32_at(&spawn, at + mb::INDEX);
+        let n = wire::u32_at(&spawn, at + mb::ITEM_COUNT) as usize;
+        for i in 0..n {
+            let ia = at + mb::ITEMS + i * obs::item::SIZE;
+            cargo.push((
+                idx,
+                j.cmd_name(wire::DICT_ITEM, wire::u32_at(&spawn, ia + obs::item::ITEM)),
+                wire::i32_at(&spawn, ia + obs::item::COUNT),
+            ));
+        }
+        at += mb::size(n);
+    }
+    eprintln!("the caravan's cargo: {cargo:?}");
+    assert!(!cargo.is_empty(), "a caravan off a flow carries something");
+    assert_eq!(p1_stat(&e, 1), 1, "embodied");
+    let offers = j.p1_of(cmd::MERCHANT_OFFERS);
+    let mine: Vec<&Vec<u8>> = offers
+        .iter()
+        .filter(|o| wire::u64_at(o, cmd::merchant_offers::AGENT) == agent)
+        .collect();
+    assert_eq!(mine.len(), 1, "its offers came with it");
+    let o = mine[0];
+    let n_offers = wire::u32_at(o, wire::R_AUX) as usize;
+    eprintln!("{n_offers} offers");
+
+    // A trade off its first selling offer, if it has one, then a robbery of a stack of its cargo.
+    let mut trades = 0;
+    for i in 0..n_offers {
+        use cmd::merchant_offers as k;
+        let p = k::OFFERS + i * k::OFFER;
+        if wire::u32_at(o, p + k::O_FLAGS) != k::O_FLAG_SELLS {
+            continue;
+        }
+        let cost = j.cmd_name(wire::DICT_ITEM, wire::u32_at(o, p + k::O_COST_A_ITEM));
+        let result = j.cmd_name(wire::DICT_ITEM, wire::u32_at(o, p + k::O_RESULT_ITEM));
+        let (cn, rn) = (
+            wire::i32_at(o, p + k::O_COST_A_COUNT),
+            wire::i32_at(o, p + k::O_RESULT_COUNT),
+        );
+        let op = wire::JAVA_OP_BIT | 0x7a11;
+        j.trade_with(
+            agent,
+            1,
+            obs::trade::MERCHANT_SELLS,
+            (&cost, cn),
+            (&result, rn),
+            op,
+        );
+        // The same trade again under the same op id (a chunk-carried resend): applied once.
+        j.trade_with(
+            agent,
+            1,
+            obs::trade::MERCHANT_SELLS,
+            (&cost, cn),
+            (&result, rn),
+            op,
+        );
+        trades = 1;
+        break;
+    }
+    let (robbed_item, robbed_n) = {
+        let (_, item, n) = cargo
+            .iter()
+            .find(|(_, i, _)| i != EMERALD)
+            .unwrap_or(&cargo[0]);
+        (item.clone(), (*n).min(5))
+    };
+    let member = cargo.iter().find(|(_, i, _)| *i == robbed_item).unwrap().0;
+    j.robbed(
+        agent,
+        1,
+        member,
+        &[(&robbed_item, robbed_n)],
+        wire::JAVA_OP_BIT | 0x7a12,
+    );
+    j.idle();
+    assert_eq!(p1_stat(&e, 3), trades, "the caravan trade booked once");
+    assert_eq!(p1_stat(&e, 5), 1, "one robbery");
+    let before = e.phase1_state();
+
+    // News travels: a few days later some village other than the caravan's own feels the
+    // robbery, and a human village is told to write it into its villagers' gossip.
+    e.order(vec![Order::Phase1Advance(4 * 24_000)]).unwrap();
+    j.idle();
+    j.idle();
+    let feel: Vec<(u64, i32)> = [a, b, c]
+        .iter()
+        .filter_map(|&v| e.phase1_sentiment(v, PLAYER).map(|s| (v, s)))
+        .collect();
+    eprintln!("sentiment toward the robber: {feel:?}");
+    assert!(
+        feel.iter().any(|(_, s)| *s < 0),
+        "a village still holds the robbery against the player: {feel:?}"
+    );
+    let gossip = j.p1_of(cmd::WRITE_GOSSIP);
+    for g in &gossip {
+        use cmd::write_gossip as k;
+        eprintln!(
+            "WRITE_GOSSIP village {:#x} player {:#x} gossip {} amount {} report {}",
+            wire::u64_at(g, k::VILLAGE),
+            wire::u64_at(g, k::PLAYER_MOST),
+            wire::u32_at(g, k::GOSSIP),
+            wire::i32_at(g, k::AMOUNT),
+            wire::u32_at(g, k::REPORT)
+        );
+    }
+    eprintln!("phase 1 stats {:?}", e.phase1_stats());
+    let told: std::collections::BTreeSet<u64> = gossip
+        .iter()
+        .filter(|g| {
+            wire::u64_at(g, cmd::write_gossip::PLAYER_MOST) == PLAYER.0
+                && wire::u32_at(g, cmd::write_gossip::REPORT) == 3
+        })
+        .map(|g| wire::u64_at(g, cmd::write_gossip::VILLAGE))
+        .collect();
+    assert!(
+        told.len() >= 2,
+        "the robbery was written into more than one village's gossip: {told:?}"
+    );
+    assert!(
+        gossip
+            .iter()
+            .all(|g| wire::i32_at(g, cmd::write_gossip::AMOUNT) >= 2),
+        "never an amount vanilla drops"
+    );
+    assert!(p1_stat(&e, 7) >= 1, "gossip sent");
+
+    // A save, then a crash: the pages' input log rebuilds the same world.
+    e.order(vec![Order::SaveAtNextStep]).unwrap();
+    j.idle();
+    while e.durable_obs_seq() < e.stats_array()[4] {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let (hash, _, _) = e.phase1_state();
+    assert_ne!(hash, before.0, "the world moved on");
+    let saved = j.world_save();
+    let inputs = p1_stat(&e, 13);
+    let _ = j.crash();
+    let e = engine(&dir, 256 * 1024);
+    let t0 = Instant::now();
+    let mut j = Java::open(e.clone(), saved);
+    j.module_mask = 0b1111;
+    eprintln!(
+        "start with a phase 1 replay of {inputs} inputs: {:?}",
+        t0.elapsed()
+    );
+    let (_, replay_ok, _) = e.phase1_state();
+    assert!(replay_ok, "the replayed world is the saved one");
+    j.idle();
+    assert_eq!(p1_stat(&e, 0), 3, "the villages are back");
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    e.close(true, Duration::from_secs(5)).unwrap();
+}

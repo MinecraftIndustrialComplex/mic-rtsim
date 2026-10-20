@@ -163,6 +163,16 @@ public final class VillageAdoption {
     /** As above, under a given id (GameTests use ids no structure start can have). */
     public static Village adoptDirect(RtsimSession session, VillageRegistry villages, long villageId, ResourceKey<Level> dimension,
                                       ResourceLocation structure, String culture, BoundingBox box, BlockPos meeting, long now) {
+        return adoptDirect(session, villages, villageId, dimension, structure, culture, box, meeting, 0, now);
+    }
+
+    /**
+     * As above, with the structure's piece count (the engine guesses a village's population from it
+     * until its first census; GameTests use it for villages far from any loaded chunk).
+     */
+    public static Village adoptDirect(RtsimSession session, VillageRegistry villages, long villageId, ResourceKey<Level> dimension,
+                                      ResourceLocation structure, String culture, BoundingBox box, BlockPos meeting, int pieces,
+                                      long now) {
         int dim = session.dimId(dimension);
         Village existing = villages.get(villageId);
         if (existing != null)
@@ -174,6 +184,7 @@ public final class VillageAdoption {
         r.putInt(Obs.VillageAdopted.DIM, dim);
         r.putInt(Obs.VillageAdopted.STRUCTURE, session.dictId(Obs.DICT_STRUCTURE, structure.toString()));
         r.putInt(Obs.VillageAdopted.CULTURE, session.dictId(Obs.DICT_CULTURE, culture));
+        r.putInt(Obs.VillageAdopted.PIECES, pieces);
         r.putInt(Obs.VillageAdopted.MIN_X, box.minX());
         r.putInt(Obs.VillageAdopted.MIN_Y, box.minY());
         r.putInt(Obs.VillageAdopted.MIN_Z, box.minZ());

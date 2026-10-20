@@ -25,6 +25,17 @@ use rtsim_travel::caravan::Body;
 
 use crate::world::{Cause, Command, Ev, World};
 
+/// Op ids derived from identity: 55 bits of a hash of `(identity, slot)`, never 0 (bits 55 to 63
+/// clear: the top bit is the bridge's, bits 56 to 62 name an engine allocator, 0 for the core).
+pub const SYS_OP: SystemId = SystemId::named("world.op");
+
+/// An engine op id for the command whose identity is `(identity, slot)` (docs/boundary.md §2.2):
+/// the same decision re-derived after a crash gets the same id, a different one never does.
+pub fn identity_op(identity: u64, slot: u64) -> u64 {
+    let h = StreamKey::new(identity, SYS_OP, slot).block(0, 0)[0] & ((1 << 55) - 1);
+    if h == 0 { 1 } else { h }
+}
+
 /// Growth's RNG system: which template, which seed.
 pub const SYS_GROWTH: SystemId = SystemId::named("ribbits.growth");
 /// Bands' RNG system: their seeds.
@@ -300,7 +311,10 @@ impl World {
         let houses = g.houses + 1;
         let key = self.nodes[node].key;
         let seed = StreamKey::new(self.cfg.seed, SYS_GROWTH, key).block(u64::from(houses), 0)[0];
-        let op = self.next_op();
+        // The op id is the house's identity (this village's nth house), never a counter: an engine
+        // a crash rolled back books the same house under the same id, and the bridge answers it
+        // DUPLICATE; a counter would hand that id to a different command (docs/boundary.md §2.2).
+        let op = identity_op(seed, 0);
         let pos = self.nodes[node].pos;
         self.outbox.push(Command::PlaceHouse(PlaceHouse {
             op,
@@ -352,8 +366,9 @@ impl World {
             return 0;
         };
         let village = self.nodes[node].key;
-        for _ in 0..self.cfg.growth_pop_per_house {
-            let rop = self.next_op();
+        for k in 0..self.cfg.growth_pop_per_house {
+            // The resident's identity: its house and its place in it.
+            let rop = identity_op(op, u64::from(k) + 1);
             self.outbox.push(Command::SpawnResident(SpawnResident {
                 op: rop,
                 village,
@@ -364,7 +379,9 @@ impl World {
         self.cfg.growth_pop_per_house as usize
     }
 
-    /// A fresh engine operation id (top bit clear, O10), deterministic.
+    /// A fresh engine operation id (top bit clear, O10), deterministic. Commands the bridge
+    /// answers by op id take [`identity_op`] instead (docs/boundary.md §2.2).
+    #[allow(dead_code)]
     pub(crate) fn next_op(&mut self) -> u64 {
         self.op_counter += 1;
         self.op_counter & !(1 << 63)
