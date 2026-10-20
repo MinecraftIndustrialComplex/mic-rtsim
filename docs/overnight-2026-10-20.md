@@ -92,7 +92,7 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 
 ## Not done, or still running at the time of writing
 
-- **Kernel follow-ups:** paging under a memory budget, two save generations (P29), the parallel step and the P4 storage bench. They are on branch `overnight/kernel2`, not yet merged.
+- **Kernel follow-ups merged (5081491):** paging under a memory budget (resident pages flat at 4.0 MiB from 100,000 to 100 million regions), two save generations, an incremental save index, a SIGKILL crash test, the parallel step (same hash at 1 to 16 workers; 6.07x at 8 workers with realistic work per event), the P4 storage bench, and potato-profile runs. Two review bugs are open: two saves in flight can lose a page's changes, and an IO error inside a parallel step drops that step's wakes and messages. The modules are not yet moved onto paging.
 - **Industry plugins:** PowerGrid, Destroy, Ore Excavation, Diesel Generators, Ender Transmission and threat sampling. Interrupted once by the API rate limit and resumed.
 - **Done since:** ships run through the native link; one interest area per player is shared by phase 1, dragons and ships; module switches exist for dragons and ships; traders price pirate hazard on lanes (368 Rust tests pass).
 - **Done since:** herds run on the native engine as vanilla animals (401 Rust tests; GameTests core 45/45, carryon 2/2, iceandfire 7/7 on both engines). No herd appears in a real world yet: only a test order founds one.
