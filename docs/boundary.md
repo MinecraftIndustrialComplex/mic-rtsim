@@ -878,3 +878,144 @@ them is P8: a structure (a harbour piece, an airship tower), a marker block, or 
   players' escorts add to it (`Ships::set_escort`, for a future plugin).
 - **Losses come back**: a lost merchant or navy ship relaunches at its home dock in its own slot; a
   haven rebuilds a pirate ship when its crew pool can man one; captured crews join the pool.
+
+## 8. Herds (PLAN.md §10.2; a future herd plugin)
+
+Written 2026-10-20 overnight with the engine side, `crates/rtsim-ecology/src/herds`
+(`herds/boundary.rs` is the reference codec, with round-trip tests). **No plugin exists yet.**
+Bodies are vanilla animals for now (D4: nothing in the core depends on a pack mod), so the first
+plugin is a vanilla adapter; Naturalist is a later body candidate (P8). The executable reference
+for what a plugin answers is the fake in `crates/rtsim-ecology/src/herds/synth.rs` (`FakeHerds`),
+which the tests and `rtsim-cli sim herds` drive through this codec. The native engine does not
+route these records yet (§5 has no herds module). Choices are numbered H2-# in
+`docs/overnight-choices-herds.md`. The vanilla facts below were checked in the 1.21.1 sources
+(NeoForm's decompiled `EntityType`, `Sheep`, `Horse`, `Goat`, `AgeableMob`, `EatBlockGoal`,
+`DyeColor`); anything else is the contract a plugin would have to meet.
+
+### 8.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x0080 to 0x008F | Java to engine | herd latest-wins observations |
+| 0x0700 to 0x07FF | Java to engine | herd journaled observations (the 24-byte prefix of §2.3) |
+| 0x8700 to 0x87FF | engine to Java | herd commands (`cmdSeq` at 8) |
+
+The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1) and
+the ships' (§7.1) ranges stay as they are; these three are next to the ships'.
+
+### 8.2 Ids and dictionaries
+
+- **Agents.** A herd's materialized group has the agent id `0x48 << 56 | handle` (namespace byte
+  0x48, "H"), the herd row's 48-bit handle, as dragons use 0x44 and ships 0x53. A herd has at most
+  one group at a time; the group is one puppet unit (C25): one agent, one epoch, every member
+  spawned, steered and captured together. Epochs as §2.2: new for every materialization.
+- **Members** are not agents. A member is its **member index** (u64) in its herd: the identity
+  the engine derives everything from (PLAN.md §4.4). Indices are never reused (births take a
+  monotonic next index), so a member index names one animal forever.
+- **Identity seed** (u64, per member): a pure function of (herd seed, member index). The plugin
+  seeds the body's own random with it wherever vanilla rolls something per animal (a horse's
+  health, speed and jump strength), so the same horse comes back with the same stats.
+- **Species** (dictionary kind 3, body kinds): `minecraft:sheep`, `minecraft:cow`, `minecraft:pig`,
+  `minecraft:horse`, `minecraft:goat` (verified entity type ids).
+- **Players** are UUIDs (most, least), as everywhere. **Op ids** are the plugin's (top bit set,
+  §2.2) on HERD_KILLED and HERD_TAKEN; the engine applies each once.
+
+### 8.3 Observations
+
+| Kind | Name | aux | Fields (offset type name) | Size |
+|---|---|---|---|---|
+| 0x0080 | HERD_GROUP_STATE (latest-wins) | flags: 1 ticking | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 members present, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z (the group's centroid). Every 100 ticks per embodied group (PLACEHOLDER) | 56 |
+| 0x0700 | HERD_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension | 40 |
+| 0x0701 | HERD_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown species) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
+| 0x0702 | HERD_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × capture (24 bytes: 0 u64 member, 8 u32 flags (1 sheared), 12 f32 health, 16 i32 x, 20 i32 z) | 40 + 24n |
+| 0x0703 | HERD_KILLED | by: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 member, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
+| 0x0704 | HERD_SHEARED | 0 | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 member, 48 u64 playerMost, 56 u64 playerLeast | 64 |
+| 0x0705 | HERD_TAKEN | how: 1 lead, 2 taming, 3 pickup, 4 another mod, 5 a plugin (§2.3's TAKEN codes) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 member, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId | 72 |
+| 0x0706 | HERD_OBSTACLE | members that failed to pass | 24 u64 agent, 32 u32 epoch, 36 u32 members present, 40 i32 stuckX, 44 i32 stuckZ, 48 i32 targetX, 52 i32 targetZ | 56 |
+
+All of 0x0700 to 0x0706 are journaled.
+
+- **HERD_DEMATERIALIZED** captures the group: one entry per member still present. A member
+  missing from it without a HERD_KILLED or HERD_TAKEN before is treated as still alive (the plugin
+  lost track of it), never as dead.
+- **HERD_KILLED** is journaled at the end of the tick, as DIED (§2.3). A player's kill is booked
+  as killed; any other death (a wolf, a fall, a dragon's real attack while embodied) as lost. The
+  member goes to the herd's dead-index set: it never materializes again.
+- **HERD_TAKEN** (A10): a lead, taming (horses), a Carry On pickup or another mod's capture. The
+  plugin strips the tag and the animal becomes an ordinary entity that vanilla saves; the engine
+  removes the member from its year-class and books it as taken. It never materializes again.
+- **HERD_SHEARED** makes the member notable (its sheared state is kept) until its wool has
+  regrown, after which it folds back into its cohort (it stays known as seen).
+- **HERD_OBSTACLE**: the group's members keep failing to pass a place on the way to the steer
+  target (the plugin's rule, PLACEHOLDER: most members stalled within a few blocks for 30
+  seconds). The engine raises the cost of entering the cell a cell ahead of `stuck` toward
+  `target` (H2-14) and replans the herd from `stuck` at once; the cost decays with a half-life of
+  two sim years (PLACEHOLDER).
+
+### 8.4 Commands
+
+| Kind | Name | aux | Fields | Size | Answered by |
+|---|---|---|---|---|---|
+| 0x8700 | HERD_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 u32 flags (1 SURFACE: each member stands on the surface at its own x, z), 40 i32 centreX, 44 i32 centreZ, 48 i32 targetX, 52 i32 targetZ, 56 f32 speed (blocks a tick), 60 u32 footprint radius (blocks), 64 m × member (40 bytes: 0 u64 member, 8 u64 identity seed, 16 u32 variant, 20 i32 vanillaAge, 24 u32 ageDays, 28 u8 cohort (0 young, 1 adult, 2 old), 29 u8 flags (1 sheared), 30 u16 reserved, 32 i32 x, 36 i32 z) | 64 + 40m | HERD_MATERIALIZED or HERD_SPAWN_REJECTED |
+| 0x8701 | HERD_STEER | 0 | 16 u64 agent, 24 u32 epoch, 28 f32 speed (blocks a tick), 32 i32 targetX, 36 i32 targetZ, 40 i64 arriveTick | 48 | |
+| 0x8702 | HERD_DESPAWN | reason: 1 left view, 2 the player left, 3 recalled | 16 u64 agent, 24 u32 epoch, 28 reserved | 32 | HERD_DEMATERIALIZED |
+
+The member **variant** is, per species (vanilla NBT, verified):
+- sheep: the `Color` byte's dye id (white 0, pink 6, gray 7, light gray 8, brown 12, black 15),
+  rolled with vanilla's own odds (`Sheep.getRandomSheepColor`: 5% black, 5% gray, 5% light gray, 3%
+  brown, the rest white but one in 500 of those pink);
+- horse: the `Variant` int, `colour | markings << 8` (7 colours, 5 markings, uniform as
+  `Horse.finalizeSpawn` rolls them);
+- goat: 1 for `IsScreamingGoat` (2%, as `Goat.finalizeSpawn`), else 0; horns as spawned;
+- cow and pig: 0 (no variants in 1.21.1).
+
+**vanillaAge** is `AgeableMob`'s `Age`: negative for a young member (a baby, at most −24,000 at
+birth and closer to 0 as it nears the sim's maturity age), 0 for adults and old members. The sim's
+cohorts run on its own clock (sim years); vanilla's 24,000-tick growth only decides how the body
+looks.
+
+### 8.5 How Java would apply them
+
+**Materialize** spawns every member at its (x, z) as one group in one tick (§2.4's quota counts the
+whole group; with flag 1 each stands on the surface at its own column), all inside the
+entity-ticking area of the player the group was made for (the engine places them in the part of
+the herd's footprint the player's area covers, at its inner edge). Each body gets: the agent and
+epoch tag, persistence required while embodied, vanilla saving suppressed (P3), its variant NBT,
+`Age` = vanillaAge, `Sheared` for flag 1, and its random seeded from the identity seed before
+`finalizeSpawn` rolls anything (horses' attributes). The group walks toward `target` at `speed`
+(the herd's migration speed); a leader with the others following, as §2.4's STEER_GROUP.
+
+**Steer** sets a new target: the herd's next waypoint. `arriveTick` is when the engine's closed form
+reaches it, so a body that dawdles can catch up.
+
+**Despawn** captures the group (HERD_DEMATERIALIZED, reason 1) and removes the bodies. Any other loss
+(the area stops ticking, the session ends) is captured the same way with §2.3's reasons.
+
+**Takings and deaths** are reported as they happen (HERD_KILLED, HERD_TAKEN, HERD_SHEARED); a taken
+animal leaves the group (C25: taking one member splits it from its group) and becomes ordinary.
+
+**Vanilla's own animals.** Vanilla keeps spawning its own passive animals at chunk generation; the
+sim's herds are extra bodies over them. Whether a vanilla adapter should suppress or adopt vanilla
+herds (as the dragons adopt lair dragons, §6.6) is open (H2-28).
+
+### 8.6 What the engine side does with them (rtsim-ecology's herds)
+
+- **Herds are group rows** (SCALE.md §2): counts per year-class (young, adult and old are sums by
+  age), body condition per cohort, a route that is a closed form of time, and the few members a
+  player has seen. An animal nobody has seen costs zero bytes.
+- **Each sub-season** (staggered by a hash of the herd) a herd is charged for its grazing, gives
+  birth if it is its breeding sub-season (one binomial draw on the adults), and picks its next
+  target from a forage flow field within its comfort band. Deaths are dyadic counts per
+  year-class (O5's recommendation), read in O(log) whenever anything asks: catch-up is flat in
+  elapsed time.
+- **Legs are booked lazily** (A15): the herds index their routes by region themselves; only when a
+  player's interest area is near does the part of a route inside the area's window go into the
+  shared leg index, with one meeting per approach; the group materializes when the footprint
+  reaches into the area: count × the share of the footprint in view at closest approach, capped
+  per herd (PLACEHOLDER 32) and per player (PLACEHOLDER 48).
+- **Identity**: seen members come back first (most recently seen first), then fresh members by
+  cohort share; anonymous deaths never fall on a seen member while unseen ones remain; killed and
+  taken members are in the dead-index set and never come back.
+- **Predators**: dragons weigh herds near their lair (and farther for a herd they follow) and take
+  latent animals by cohort weight (`Herds::predate`); an embodied group's animals are the
+  plugin's, lost only in a real fight (HERD_KILLED, by 2).
