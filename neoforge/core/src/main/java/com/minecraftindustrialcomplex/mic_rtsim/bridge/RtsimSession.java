@@ -1140,6 +1140,7 @@ public final class RtsimSession {
     public long rejectedSpawns() { return rejectedSpawns; }
     public long capturedGroups() { return capturedGroups; }
     public long staleDiscarded() { return staleDiscarded; }
+    public long resteered() { return resteered; }
     public long takes() { return takes; }
     public long deaths() { return deaths; }
     public long removedByOther() { return removedByOther; }
