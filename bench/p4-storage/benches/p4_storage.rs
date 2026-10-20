@@ -288,12 +288,44 @@ type QMove = QueryState<(&'static mut Pos, &'static Vel)>;
 type QLookup = QueryState<(&'static Pos, &'static mut Hunger)>;
 type QWealth = QueryState<&'static mut Wealth>;
 
+// Slice kernels. Every variant that hands over plain slices runs the same out-of-line function,
+// so they execute the same machine code at the same address and differ only in how they obtain
+// the slices. A first build inlined the loop into each caller, and identical instructions then ran
+// up to 25% apart depending on unrelated changes elsewhere in the binary (code layout; see
+// bench/results/p4-storage.md).
+
+#[inline(never)]
+fn bump_hunger(h: &mut [Hunger]) {
+    for h in h {
+        h.0 = h.0.saturating_add(1);
+    }
+}
+
+#[inline(never)]
+fn move_all(p: &mut [Pos], v: &[Vel]) {
+    for (p, v) in p.iter_mut().zip(v) {
+        add_vel(p, v);
+    }
+}
+
+#[inline(never)]
+fn bump_tagged(h: &mut [Hunger], f: &[Flags]) {
+    for (h, f) in h.iter_mut().zip(f) {
+        h.0 = h.0.saturating_add(u16::from(f.0 & TAG));
+    }
+}
+
+#[inline(never)]
+fn bump_wealth(w: &mut [Wealth]) {
+    for w in w {
+        w.0 = w.0.wrapping_add(1);
+    }
+}
+
 // a: hunger += 1.
 
 fn a_cols(t: &mut Agents) {
-    for h in t.column_mut::<Hunger>() {
-        h.0 = h.0.saturating_add(1);
-    }
+    bump_hunger(t.column_mut::<Hunger>());
 }
 
 fn a_bevy_iter(w: &mut World, q: &mut QHunger) {
@@ -304,18 +336,15 @@ fn a_bevy_iter(w: &mut World, q: &mut QHunger) {
 fn a_bevy_contig(w: &mut World, q: &mut QHunger) {
     w.increment_change_tick();
     for mut h in q.contiguous_iter_mut(w).expect("dense query") {
-        for x in h.iter_mut() {
-            x.0 = x.0.saturating_add(1);
-        }
+        // DerefMut marks every row of the slice changed, then the kernel runs.
+        bump_hunger(&mut h);
     }
 }
 
 fn a_bevy_bypass(w: &mut World, q: &mut QHunger) {
     w.increment_change_tick();
     for mut h in q.contiguous_iter_mut(w).expect("dense query") {
-        for x in h.bypass_change_detection() {
-            x.0 = x.0.saturating_add(1);
-        }
+        bump_hunger(h.bypass_change_detection());
     }
 }
 
@@ -331,9 +360,7 @@ fn add_vel(p: &mut Pos, v: &Vel) {
 fn b_cols_copy(t: &mut Agents, scratch: &mut Vec<Vel>) {
     scratch.clear();
     scratch.extend_from_slice(t.column::<Vel>());
-    for (p, v) in t.column_mut::<Pos>().iter_mut().zip(scratch.iter()) {
-        add_vel(p, v);
-    }
+    move_all(t.column_mut::<Pos>(), scratch);
 }
 
 /// What a two-column borrow on `ColumnTable` would give: both columns at once, no copy. Not in the
@@ -346,9 +373,7 @@ fn b_cols_split(t: &mut Agents) {
     // table and the `Pos` vector only, never the `Vel` vector's buffer, and nothing resizes a column
     // while `vel` lives. So the `Vel` buffer stays valid and unaliased by `pos`.
     let vel = unsafe { std::slice::from_raw_parts(ptr, len) };
-    for (p, v) in pos.iter_mut().zip(vel) {
-        add_vel(p, v);
-    }
+    move_all(pos, vel);
 }
 
 fn b_bevy_iter(w: &mut World, q: &mut QMove) {
@@ -359,18 +384,14 @@ fn b_bevy_iter(w: &mut World, q: &mut QMove) {
 fn b_bevy_contig(w: &mut World, q: &mut QMove) {
     w.increment_change_tick();
     for (mut p, v) in q.contiguous_iter_mut(w).expect("dense query") {
-        for (p, v) in p.iter_mut().zip(v) {
-            add_vel(p, v);
-        }
+        move_all(&mut p, v);
     }
 }
 
 fn b_bevy_bypass(w: &mut World, q: &mut QMove) {
     w.increment_change_tick();
     for (mut p, v) in q.contiguous_iter_mut(w).expect("dense query") {
-        for (p, v) in p.bypass_change_detection().iter_mut().zip(v) {
-            add_vel(p, v);
-        }
+        move_all(p.bypass_change_detection(), v);
     }
 }
 
@@ -579,9 +600,7 @@ fn e_cols_flag_split(t: &mut Agents) {
     let hunger = t.column_mut::<Hunger>();
     // SAFETY: as in `b_cols_split`: distinct columns, nothing resizes while `flags` lives.
     let flags = unsafe { std::slice::from_raw_parts(ptr, len) };
-    for (h, f) in hunger.iter_mut().zip(flags) {
-        h.0 = h.0.saturating_add(u16::from(f.0 & TAG));
-    }
+    bump_tagged(hunger, flags);
 }
 
 /// Walk the side table and look each tagged agent up by handle.
@@ -600,9 +619,7 @@ fn e_bevy<M: Component>(w: &mut World, q: &mut QueryState<&'static mut Hunger, W
 // f: wealth += 1 on 352-byte rows.
 
 fn f_cols(t: &mut Notables) {
-    for w in t.column_mut::<Wealth>() {
-        w.0 = w.0.wrapping_add(1);
-    }
+    bump_wealth(t.column_mut::<Wealth>());
 }
 
 fn f_bevy_iter(w: &mut World, q: &mut QWealth) {
@@ -613,18 +630,14 @@ fn f_bevy_iter(w: &mut World, q: &mut QWealth) {
 fn f_bevy_contig(w: &mut World, q: &mut QWealth) {
     w.increment_change_tick();
     for mut s in q.contiguous_iter_mut(w).expect("dense query") {
-        for x in s.iter_mut() {
-            x.0 = x.0.wrapping_add(1);
-        }
+        bump_wealth(&mut s);
     }
 }
 
 fn f_bevy_bypass(w: &mut World, q: &mut QWealth) {
     w.increment_change_tick();
     for mut s in q.contiguous_iter_mut(w).expect("dense query") {
-        for x in s.bypass_change_detection() {
-            x.0 = x.0.wrapping_add(1);
-        }
+        bump_wealth(s.bypass_change_detection());
     }
 }
 
@@ -1767,6 +1780,7 @@ fn main() {
             "Every variant of every pattern was checked to end in the same state on a 20,000-row world before timing.".to_string(),
             format!("Tagged rows (patterns d2, e): {}.", tagged.join(", ")),
             "A counting global allocator is installed for pattern g; every variant pays its atomic add per allocation.".to_string(),
+            "Slice loops (a, b, f and the e flag split) run in shared out-of-line kernels, so cols, bevy contig and bypass execute identical code. Per-row loops (bevy iter, lookups, churn) are inlined where they are used; their speed moved by up to about 25% between builds of unchanged code.".to_string(),
         ],
     };
     let text = p4_storage_bench::table(&report);
