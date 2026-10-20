@@ -18,6 +18,7 @@ Every decision about mic-rtsim, newest at the bottom.
 | D3 | 2026-10-19 | The rtsim is backend infrastructure for emergent gameplay. It adds no bespoke entities, blocks or items unless absolutely necessary. Bodies, structures and content come from other mods. | Ben | "I ideally (unless absolutely necessary) want to avoid this mod having it's own bespoke entitites, when possible look into other mods that could provide blocks / in game content. I want this mod to primarly serve as backend infrastructure for emergent gameplay." |
 | D4 | 2026-10-19 | Nothing in the core depends on a pack mod. A plugin may be built around one mod. | Ben | "In general, don't gate stuff behind mods in this pack. (Especially cobblemon, I honestly think I'm going to be removing cobblemon from the pack sooner rather than later.)" and "Tho, individual plugins can be based around a mod. I.E. The dragon raids mod can & probably should be based around Ice & Fire." |
 | D5 | 2026-10-19 | Ribbits gets extra high priority. | Ben | "Also, give the ribbits mod extra high priority for this (It's one of my favourite mods.)" |
+| D7 | 2026-10-19 | NPC bodies should look and feel like Minecraft mobs, not players. Player-skinned humanoid NPC mods are not the default body source; each phase picks mob-like bodies. | Ben | "In general, really not a big fan of NPC's that look / feel like actual minecraft players instead of minecraft mobs." |
 | D6 | 2026-10-19 | Planning for late-game load in huge worlds with millions of entities or more starts first. Algorithms and data abstraction get special attention. | Ben | "we need plans extremely early on for how to actualyl handle late late game load for absolutely fucking massive worlds with millions or more entities." and "What is the current plan to deal with this in terms of algorithms, you also need to be paying special attention to data abstractino, etc." |
 
 ## Architecture
@@ -50,6 +51,8 @@ Every decision about mic-rtsim, newest at the bottom.
 | C7 | 2026-10-19 | The sim drives four Ribbits behaviours: merchant caravans, touring bands, sorcerers who remember, and village growth from YUNG's own house templates. | Ben | chose all four |
 | C8 | 2026-10-19 | The sim owns all wandering traders. Vanilla's random trader spawning is turned off. | Ben | chose "Sim owns them" |
 | C9 | 2026-10-19 | Each culture has its own currency. Prices follow local resource availability. Trade between villages is driven by a real economy simulation; the model is chosen at the phase 1 design gate. | Ben | "Per Culture + Local Resource Availability, ideally also be trading between villages based upon real economy sims." |
+| C11 | 2026-10-19 | Phase 1 caravans use vanilla and Ribbits bodies only: wandering traders, trader llamas and ribbit merchants. No mods are added to the pack for phase 1. Better Caravans, Goblin Traders and Easy NPC were offered and declined for now. | Ben | chose "None for now" |
+| C12 | 2026-10-19 | Phase 1 caravans have no guards. | Ben | chose "No guards yet" |
 | C10 | 2026-10-19 | Later: kaiju that start spawning after players gain access to nukes, as late-game bosses. | Ben | "eventually I want to start adding in Kaiju to the pack. (Monsters that start spawning in after players have gotten access to nukes, that serve as late game bosses." |
 
 ## Agreed with the Deep Time session
@@ -73,6 +76,6 @@ These are in PLAN.md but not decided. Each one goes to Ben before work depends o
 | P5 | Unit of abstraction for factories: one Create 6 logistics network; remote cargo moves as packages. | industry |
 | P6 | History is generated at world creation, after Deep Time's bake when one is present. | history |
 | P7 | A patch ledger plus contract tests for every reach into another mod. | phase 0 |
-| P8 | Which mods supply bodies, structures and ports (survey running 2026-10-19). | phase 1 (traders), later phases |
+| P8 | Which mods supply bodies, structures and ports for later phases. Survey candidates (2026-10-19): Small Ships and Create Aeronautics Structures (ships), the Alex's Caves port (kaiju), Goblin's Tyranny (goblins), Illager Invasion (raiders), Naturalist (herds). D7 rules out player-like NPCs. | each later phase |
 | P9 | The economy model (research running 2026-10-19). | phase 1 design gate |
 | P10 | The fixes from the 2026-10-19 adversarial review that change the design, listed in PLAN.md. | phase 0 |
