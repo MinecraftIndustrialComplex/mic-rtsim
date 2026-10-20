@@ -14,9 +14,16 @@
 //! IND_CHUNK_RECONCILE, so the depletion and the chunk's contents reach disk together. Level
 //! SavedData (Diesel's `OilChunksSavedData`) is written at once with IND_DEPOSIT_DELTA, loaded or
 //! not (overnight choice F15).
+//!
+//! **Routed by good first** ([`writeback`]): Destroy's pollution attributed to a district is a deposit
+//! good it produces (the plugins' Q9), and I14 (Ben) applies the level-wide types (greenhouse,
+//! ozone depletion, acid rain) live while the district is unloaded: [`Writeback::Live`], pushed as
+//! IND_DEPOSIT_DELTA on a periodic wake during the replay, the rest at the reconcile. The chunk
+//! types (smog, radioactivity) go with the chunk's reconcile, as Destroy's crude oil does.
 
 use serde::Serialize;
 
+use crate::ids::{GoodClass, GoodInfo};
 use crate::obs::{DepositPluginId, DepositSample};
 
 /// When a deposit's depletion is written back into the world.
@@ -26,6 +33,31 @@ pub enum Writeback {
     WithChunk,
     /// At once, by command (the store is level SavedData).
     Immediate,
+    /// As it accrues while the district is unloaded, by command, and what is left at the reconcile
+    /// (I14: Destroy's level-wide pollution types).
+    Live,
+}
+
+/// Destroy's level-wide pollution types (`DestroyRegistries.LEVEL_POLLUTION_TYPES`): I14 applies
+/// them live while their district is unloaded.
+pub const LEVEL_POLLUTION: [&str; 3] = [
+    "destroy:greenhouse",
+    "destroy:ozone_depletion",
+    "destroy:acid_rain",
+];
+
+/// Whether a deposit good's name (`<registry id>/<hash>`) is a level-wide pollution type.
+pub fn is_level_pollution(name: &str) -> bool {
+    LEVEL_POLLUTION.contains(&name.split('/').next().unwrap_or(""))
+}
+
+/// How a deposit good is written back: by the good first (level pollution is live, I14), else by
+/// its plugin.
+pub fn writeback(plugin_id: DepositPluginId, info: Option<&GoodInfo>) -> Writeback {
+    if info.is_some_and(|i| i.class == GoodClass::Deposit && is_level_pollution(&i.name)) {
+        return Writeback::Live;
+    }
+    plugin(plugin_id).writeback()
 }
 
 /// What a deposit plugin is, engine side.
@@ -122,6 +154,34 @@ mod tests {
         assert_eq!(
             plugin(DepositPluginId::DieselOil).writeback(),
             Writeback::Immediate
+        );
+    }
+
+    #[test]
+    fn level_pollution_is_routed_by_good() {
+        let crude = DepositPluginId::DestroyCrude;
+        let d = |n: &str| GoodInfo::deposit(n);
+        assert_eq!(
+            writeback(crude, Some(&d("destroy:greenhouse/0a1b2c3d4e5f6a7b"))),
+            Writeback::Live
+        );
+        assert_eq!(
+            writeback(crude, Some(&d("destroy:acid_rain/1"))),
+            Writeback::Live
+        );
+        assert_eq!(
+            writeback(crude, Some(&d("destroy:smog/0a1b2c3d4e5f6a7b"))),
+            Writeback::WithChunk
+        );
+        assert_eq!(
+            writeback(crude, Some(&d("destroy:crude_oil/9"))),
+            Writeback::WithChunk
+        );
+        assert_eq!(writeback(crude, None), Writeback::WithChunk);
+        assert_eq!(
+            writeback(crude, Some(&GoodInfo::item("destroy:greenhouse", 64))),
+            Writeback::WithChunk,
+            "only deposit goods"
         );
     }
 }

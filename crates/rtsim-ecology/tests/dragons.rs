@@ -590,9 +590,11 @@ fn a_watched_district_gets_a_real_fight_and_no_abstract_damage() {
 
 // ---- the population (P13) -----------------------------------------------------------------------
 
-#[test]
-fn untagged_dragons_are_adopted_or_discarded() {
+/// R18 as amended by OG-1 and P13 (2026-10-20): natural and spawner dragons (In Control's) are
+/// left alone unless `adopt_natural_dragons` is set, when they are discarded as R18 had it.
+fn untagged_dragons_run(adopt_natural: bool) {
     let (mut w, mut d) = world(17);
+    d.tun.adopt_natural_dragons = adopt_natural;
     let l = d.add_lair(
         &mut w,
         77,
@@ -634,7 +636,7 @@ fn untagged_dragons_are_adopted_or_discarded() {
         &u(2, SpawnKind::Structure, 0, 77),
         Tick(11),
     );
-    // A natural or spawner dragon: discarded (the sim owns the population).
+    // A natural or spawner dragon: left alone, or discarded with the setting on.
     d.ingest(
         &mut w,
         &mut infra,
@@ -671,7 +673,19 @@ fn untagged_dragons_are_adopted_or_discarded() {
         })
         .collect();
     assert_eq!(adopted, vec![1, 5]);
-    assert_eq!(discarded, vec![(2, 2), (3, 1)]);
+    if adopt_natural {
+        assert_eq!(discarded, vec![(2, 2), (3, 1)]);
+    } else {
+        // Only the second lair dragon (it has its dragon); the natural one gets no command.
+        assert_eq!(discarded, vec![(2, 2)]);
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, Cmd::Adopt(a) if a.entity.0 == 3)),
+            "a natural dragon is not adopted"
+        );
+        assert_eq!(d.stats.discarded, 1);
+    }
     assert_eq!(d.lairs[l as usize].occupants.len(), 1);
     assert_eq!(d.stats.adopted, 2);
     // Adopted dragons are embodied: when the plugin captures one, it goes on abstractly.
@@ -707,6 +721,17 @@ fn untagged_dragons_are_adopted_or_discarded() {
     );
 }
 
+#[test]
+fn natural_and_spawner_dragons_are_left_alone_by_default() {
+    assert!(!DragonTunables::default().adopt_natural_dragons);
+    untagged_dragons_run(false);
+}
+
+#[test]
+fn natural_and_spawner_dragons_are_discarded_with_the_setting_on() {
+    untagged_dragons_run(true);
+}
+
 // ---- trains (INDUSTRY.md §13.3, I24) -------------------------------------------------------------
 
 /// A hungry dragon whose flight crosses a booked train leg meets the train while both are under
@@ -714,14 +739,14 @@ fn untagged_dragons_are_adopted_or_discarded() {
 /// dragons' ledger. A fed dragon flies on.
 #[test]
 fn a_hungry_dragon_raids_a_train_it_crosses() {
-    use rtsim_industry::engine::{Engine, Mode};
+    use rtsim_industry::engine::Engine;
     use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StationId, TrainId};
     use rtsim_industry::obs::{Carriage, StationDecl, TrainDeparture};
     for (fullness, raids) in [(40, 1), (100, 0)] {
         let (mut w, mut d) = world(19);
         let mut tun = rtsim_industry::tunables::Tunables::default();
         tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
-        let mut e = Engine::new(19, tun, Mode::Apply, Tick::ZERO);
+        let mut e = Engine::new(19, tun, Tick::ZERO);
         let (beef, gold) = (Good(2), Good(3));
         e.define_good(beef, GoodInfo::item("minecraft:beef", 64));
         e.define_good(gold, GoodInfo::item("minecraft:gold_ingot", 64));

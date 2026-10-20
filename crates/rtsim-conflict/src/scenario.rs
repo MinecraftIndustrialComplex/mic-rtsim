@@ -3,7 +3,8 @@
 //! conflict`. **Scaffolding.**
 //!
 //! A goblin tribe at Gloomhollow claims the Thornwood. A player builds a polluting refinery at the
-//! forest's edge (an industry district: its smog is the settlers', P14) and logs the forest for
+//! forest's edge (an industry district: its smog counts against the player, who spends the most
+//! time in its chunk, P14 as changed) and logs the forest for
 //! five days (a direct act: the player's). The tribe takes notice, sends an envoy with a demand,
 //! and, in the run where the player ignores it, sends scouts and then a war band down the trail.
 //! The player logs off before it arrives: the band meets the refinery abstractly through the
@@ -18,6 +19,7 @@ use rtsim_ecology::infra::{DistrictIndex, IndustryLink};
 use rtsim_industry::district::{AttackReport, Phase as DPhase};
 use rtsim_industry::fake::{FakeWorld, Visit};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_knowledge::ActorId;
 use rtsim_world::World;
 use serde::Serialize;
 
@@ -78,6 +80,9 @@ pub struct Outcome {
     /// The day the refinery's district loaded again after the raid, if it did.
     pub reloaded_day: Option<f64>,
     pub converter_day: Option<f64>,
+    /// Whom the refinery's smog counted against (P14, changed: the player who spent the most time
+    /// in its chunk; the settlers while nobody had), by name as the rungs give it.
+    pub smog_owner: String,
     /// State hashes at the end: the conflict engine's and the world's.
     pub hashes: (u64, u64),
 }
@@ -88,7 +93,7 @@ pub fn run(o: &Options) -> Outcome {
     let mut c = synth::conflict(o.seed, &w);
     c.log_enabled = true;
     let player = c.player(&mut w, synth::PLAYER);
-    let settlers = c.settlers(&mut w);
+    let mut smog_owner: Option<ActorId> = None;
     let visits = vec![
         Visit {
             from: Tick::ZERO,
@@ -199,10 +204,18 @@ pub fn run(o: &Options) -> Outcome {
             };
             c.signal(&mut w, sig, next);
         }
-        // The converter goes in half a day after the settlers' demand is made.
-        if o.variant == Variant::Converter && converter_at.is_none() {
+        // Whom the smog counts against (P14): the player who runs the refinery, once they have
+        // spent time in its chunk.
+        if let Some(s) = c.sources.get(&(synth::REFINERY.0, SignalKind::Smog)) {
+            smog_owner = Some(s.actor);
+        }
+        // The converter goes in half a day after the demand on the smog's owner is made.
+        if o.variant == Variant::Converter
+            && converter_at.is_none()
+            && let Some(owner) = smog_owner
+        {
             let f = c.faction_of_key(synth::CAMP).expect("camp");
-            if let Some(d) = c.feuds.get(&(f, settlers)).and_then(|x| x.demand) {
+            if let Some(d) = c.feuds.get(&(f, owner)).and_then(|x| x.demand) {
                 converter_at = Some(d.made + TICKS_PER_DAY / 2);
             }
         }
@@ -299,6 +312,7 @@ pub fn run(o: &Options) -> Outcome {
         .map(|d| d.attacks.iter().cloned().collect())
         .unwrap_or_default();
     let blocks_broken = fake.districts[0].broken.len();
+    let smog_owner = smog_owner.map_or_else(|| "nobody".to_string(), |a| c.actor_name(&w, a));
     let hashes = (c.state_hash(), w.state_hash());
     Outcome {
         world: w,
@@ -310,6 +324,7 @@ pub fn run(o: &Options) -> Outcome {
         blocks_broken,
         reloaded_day,
         converter_day,
+        smog_owner,
         hashes,
     }
 }

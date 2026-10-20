@@ -5,19 +5,25 @@
 //! # Pools, processes, constraints
 //!
 //! - A **pool** is integer stock: a district's boundary stock of one good (summed over its
-//!   inventories), an Ender Transmission channel buffer (I13), the packages a district has written
-//!   into a postbox's offline buffer, or a finite deposit (a good of class `Deposit`, I11).
-//! - A **box** process is a district's learned model (I6): one diffuser per good, negative for the
-//!   goods it consumes and positive for those it produces. It runs at full rate or not at all.
+//!   inventories), the packages a district has written into a postbox's offline buffer, or a
+//!   finite deposit (a good of class `Deposit`, I11). No pool is shared between districts: an
+//!   Ender Transmission channel joins machines of one district (I13, Ben's correction), so it is
+//!   internal plumbing, never stock between distant districts.
+//! - A **box** process is one group of a district's learned model (I6): one diffuser per good,
+//!   negative for the goods it consumes and positive for those it produces. It runs at full rate
+//!   or not at all. A district has one per coupling group its starvation episodes showed apart
+//!   (one, all-or-nothing, until there is evidence).
 //!   Its emissions are mints and burns, booked per pool.
-//! - A **link** process moves one good from one pool to another at a rate (a transmitter, a
-//!   receiver, a packager filling a postbox). Its emissions are transfers: one diffuser, so what
+//! - A **link** process moves one good from one pool to another at a rate (a packager filling a
+//!   postbox). Its emissions are transfers: one diffuser, so what
 //!   leaves one pool is exactly what enters the other.
 //! - **Constraints:** every pool stays at or above 0 and at or below its capacity; a process with
 //!   a learned **target** stops when the target pool reaches it and restarts at or below its
 //!   restart level; a district's shared **item space** (a weighted sum of its item pools) stays
 //!   under the slot capacity of the inventories that received its outputs; a process that
-//!   **requires** another (PowerGrid coupling, I13) runs only while that one runs.
+//!   **requires** a district (PowerGrid coupling, I13) runs only while every box process of that
+//!   district runs: the black box cannot tell which of a source's processes is its generator, so
+//!   any of them stopping cuts the power (the safe side).
 //!
 //! # Breakpoints
 //!
@@ -44,7 +50,7 @@ use rtsim_kernel::lazy::LazyModel;
 use rtsim_kernel::rng::SlotRng;
 use serde::Serialize;
 
-use crate::ids::{ChannelId, DistrictId, Good};
+use crate::ids::{DistrictId, Good};
 
 /// One unit in 32.32 fixed point.
 const U: i128 = 1 << 32;
@@ -54,8 +60,6 @@ const U: i128 = 1 << 32;
 pub enum PoolKey {
     /// A district's boundary stock of a good (a deposit is a good of class `Deposit`).
     Stock(DistrictId, Good),
-    /// An Ender Transmission channel buffer's content of a good (I13).
-    Channel(ChannelId, Good),
     /// Goods a district's packager wrote into packages in a postbox offline buffer (inventory
     /// index), to one address (NAME id), not yet fetched by a train (INDUSTRY.md §8.2).
     Mail(DistrictId, u32, u32, Good),
@@ -64,14 +68,13 @@ pub enum PoolKey {
 impl PoolKey {
     pub fn good(self) -> Good {
         match self {
-            PoolKey::Stock(_, g) | PoolKey::Channel(_, g) | PoolKey::Mail(_, _, _, g) => g,
+            PoolKey::Stock(_, g) | PoolKey::Mail(_, _, _, g) => g,
         }
     }
 
-    pub fn district(self) -> Option<DistrictId> {
+    pub fn district(self) -> DistrictId {
         match self {
-            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _, _) => Some(d),
-            PoolKey::Channel(..) => None,
+            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _, _) => d,
         }
     }
 }
@@ -81,11 +84,10 @@ impl PoolKey {
 pub struct Pool {
     pub key: PoolKey,
     pub level: i64,
-    /// Physical capacity, if any (a tank, an energy store, a channel buffer, a postbox's 18
-    /// slots).
+    /// Physical capacity, if any (a tank, an energy store, a postbox's 18 slots).
     pub cap: Option<i64>,
-    /// Channel and mail pools: the level the world already holds (what Java was last told, plus
-    /// real transfers it reported). The rest is pushed by command (I13, §8.2).
+    /// Mail pools: the level the world already holds (packages written, plus real transfers it
+    /// reported). The rest is pushed by command (§8.2).
     pub pushed: i64,
     pub books: Books,
 }
@@ -159,12 +161,13 @@ pub enum Run {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Proc {
     pub owner: DistrictId,
-    /// 0 is the box; links follow. Lower ids have priority when stock is shared.
+    /// Box processes first (0, 1, ...), links after. Lower ids have priority when stock is shared.
     pub id: u16,
     pub body: Body,
     pub targets: Vec<Target>,
-    /// (district, process id) that must be running for this one to run.
-    pub requires: Option<(DistrictId, u16)>,
+    /// A district every box process of which must be running for this one to run (a PowerGrid
+    /// source, I13).
+    pub requires: Option<DistrictId>,
     pub enabled: bool,
     pub run: Run,
     /// A batch machine starts only at its next cycle after its input arrives: a restart after a
@@ -184,31 +187,6 @@ pub struct Space {
     pub weights: Vec<(u16, i64)>,
     pub fixed: i64,
     pub cap: i64,
-}
-
-/// What a district's box does next ([`Cluster::forecast`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum Forecast {
-    InputEmpty(PoolKey),
-    OutputFull(PoolKey),
-    Target(PoolKey),
-    SpaceFull,
-    Restart,
-    Season,
-}
-
-impl Forecast {
-    /// The ledger line's `nextKind` and `nextGood` (docs/industry-boundary.md §4.3).
-    pub fn code(self) -> (u32, Option<Good>) {
-        match self {
-            Forecast::InputEmpty(k) => (1, Some(k.good())),
-            Forecast::OutputFull(k) => (2, Some(k.good())),
-            Forecast::SpaceFull => (2, None),
-            Forecast::Target(k) => (3, Some(k.good())),
-            Forecast::Restart => (6, None),
-            Forecast::Season => (0, None),
-        }
-    }
 }
 
 /// Something the engine must act on, recorded at a breakpoint or event.
@@ -259,7 +237,7 @@ pub struct ProcSpec {
     pub body: ProcSpecBody,
     /// (pool, stop at, restart at).
     pub targets: Vec<(PoolKey, i64, i64)>,
-    pub requires: Option<(DistrictId, u16)>,
+    pub requires: Option<DistrictId>,
     /// Restart latency in ticks ([`Proc::latency`]).
     pub latency: u64,
     /// False starts the process disabled (a jammed line, F20).
@@ -273,8 +251,7 @@ pub type SpaceSpec = (Vec<(PoolKey, i64)>, i64, i64);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberSpec {
     pub district: DistrictId,
-    /// (pool, level, cap). Shared pools (channels) that already exist keep their level; the one
-    /// given here is used only when the pool is new.
+    /// (pool, level, cap).
     pub pools: Vec<(PoolKey, i64, Option<i64>)>,
     pub procs: Vec<ProcSpec>,
     pub space: Option<SpaceSpec>,
@@ -309,7 +286,7 @@ impl ClusterView {
     }
 }
 
-/// One unloaded cluster: districts that share pools (channels) or running states (power lines).
+/// One unloaded cluster: districts that share running states (PowerGrid lines, I13).
 /// Most clusters hold one district.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cluster {
@@ -320,7 +297,8 @@ pub struct Cluster {
     restart_min_run: u64,
     events: Vec<ClusterEvent>,
     /// Link transfers into and out of pools that have left with their district, so the
-    /// remaining books still balance.
+    /// remaining books still balance (a link never crosses districts, so this stays balanced on
+    /// its own; it is kept as a check).
     departed: (i64, i64),
     /// Settles and evaluations so far: the cost the scale contract counts.
     pub settles: u64,
@@ -519,7 +497,7 @@ impl Cluster {
     /// The districts with processes or pools here.
     pub fn members(&self) -> BTreeSet<DistrictId> {
         let mut s: BTreeSet<DistrictId> = self.procs.iter().map(|p| p.owner).collect();
-        s.extend(self.pools.iter().filter_map(|p| p.key.district()));
+        s.extend(self.pools.iter().map(|p| p.key.district()));
         s
     }
 
@@ -536,6 +514,23 @@ impl Cluster {
 
     pub fn level(&self, key: PoolKey) -> Option<i64> {
         self.pool(key).map(|p| p.level)
+    }
+
+    /// A district's box processes together: running if any runs, else the first one's stop.
+    /// `None` when it has none here.
+    pub fn box_run(&self, owner: DistrictId) -> Option<Run> {
+        let mut first = None;
+        for p in self
+            .procs
+            .iter()
+            .filter(|p| p.owner == owner && matches!(p.body, Body::Box { .. }))
+        {
+            if p.run == Run::Running {
+                return Some(Run::Running);
+            }
+            first.get_or_insert(p.run);
+        }
+        first
     }
 
     pub fn run_of(&self, owner: DistrictId, id: u16) -> Option<Run> {
@@ -706,36 +701,15 @@ impl Cluster {
         self.evaluate(at);
     }
 
-    /// Takes a district out: its processes, its space, and the pools it owns. Shared pools
-    /// (channels) stay. Callers settle the cluster to the moment first (an event).
+    /// Takes a district out: its processes, its space, and the pools it owns. Callers settle the
+    /// cluster to the moment first (an event).
     pub fn remove_member(&mut self, d: DistrictId, at: Tick) -> MemberOut {
         self.procs.retain(|p| p.owner != d);
         self.spaces.retain(|s| s.owner != d);
         let mut out = Vec::new();
         let mut i = 0;
         while i < self.pools.len() {
-            if self.pools[i].key.district() == Some(d) {
-                out.push(self.pools.remove(i));
-                self.shift_pool_refs(i as u16 + 1, -1);
-            } else {
-                i += 1;
-            }
-        }
-        // Channels nobody links to any more are dropped; the engine keeps their level. Pools are
-        // matched by key: indices shift as pools are removed.
-        let used: BTreeSet<PoolKey> = self
-            .procs
-            .iter()
-            .flat_map(|p| match &p.body {
-                Body::Box { terms } => terms.iter().map(|t| t.pool).collect::<Vec<_>>(),
-                Body::Link { from, to, .. } => vec![*from, *to],
-            })
-            .map(|i| self.pools[i as usize].key)
-            .collect();
-        let mut i = 0;
-        while i < self.pools.len() {
-            let k = self.pools[i].key;
-            if !used.contains(&k) && matches!(k, PoolKey::Channel(..)) {
+            if self.pools[i].key.district() == d {
                 out.push(self.pools.remove(i));
                 self.shift_pool_refs(i as u16 + 1, -1);
             } else {
@@ -804,8 +778,8 @@ impl Cluster {
     // ---- events ---------------------------------------------------------------------------
 
     /// An import (positive) or export (negative) at an event, creating the pool if needed. A
-    /// `physical` change is one the world already made (a real channel transfer, a package a train
-    /// fetched), so it is not pushed again. Returns the amount applied: an export never takes a
+    /// `physical` change is one the world already made (a package a train fetched), so it is not
+    /// pushed again. Returns the amount applied: an export never takes a
     /// pool below 0.
     pub fn add_to_pool(&mut self, key: PoolKey, delta: i64, physical: bool, at: Tick) -> i64 {
         let i = self.ensure_pool(key, 0, None) as usize;
@@ -824,16 +798,16 @@ impl Cluster {
         applied
     }
 
-    /// The changes to channel and mail pools not yet in the world, marked as pushed.
-    pub fn take_unpushed(&mut self) -> Vec<(PoolKey, i64)> {
-        let mut out = Vec::new();
-        for p in &mut self.pools {
-            if matches!(p.key, PoolKey::Channel(..)) && p.level != p.pushed {
-                out.push((p.key, p.level - p.pushed));
-                p.pushed = p.level;
-            }
-        }
-        out
+    /// What a stock pool gained since it was last pushed to the world, now marked as pushed (I14:
+    /// level pollution applied live while unloaded). 0 for a pool that does not exist.
+    pub fn take_unpushed(&mut self, key: PoolKey) -> i64 {
+        let Some(i) = self.pool_index(key) else {
+            return 0;
+        };
+        let p = &mut self.pools[i as usize];
+        let d = p.level - p.pushed;
+        p.pushed = p.level;
+        d
     }
 
     /// Enables or disables a district's processes (frozen, damaged, live, out of season).
@@ -859,16 +833,11 @@ impl Cluster {
         self.evaluate(at);
     }
 
-    /// Changes what a process requires (a PowerGrid source starting or stopping its replay).
-    pub fn set_requires(
-        &mut self,
-        owner: DistrictId,
-        id: u16,
-        requires: Option<(DistrictId, u16)>,
-        at: Tick,
-    ) {
+    /// Changes what a district's box processes require (a PowerGrid source starting or stopping
+    /// its replay).
+    pub fn set_requires(&mut self, owner: DistrictId, requires: Option<DistrictId>, at: Tick) {
         for p in &mut self.procs {
-            if p.owner == owner && p.id == id {
+            if p.owner == owner && matches!(p.body, Body::Box { .. }) {
                 p.requires = requires;
             }
         }
@@ -884,11 +853,18 @@ impl Cluster {
     fn requirement_met(&self, i: usize, running: &dyn Fn(usize) -> bool) -> bool {
         match self.procs[i].requires {
             None => true,
-            Some((d, id)) => self
-                .procs
-                .iter()
-                .position(|p| p.owner == d && p.id == id)
-                .is_some_and(running),
+            Some(d) => {
+                let mut any = false;
+                for (j, p) in self.procs.iter().enumerate() {
+                    if p.owner == d && matches!(p.body, Body::Box { .. }) {
+                        if !running(j) {
+                            return false;
+                        }
+                        any = true;
+                    }
+                }
+                any
+            }
         }
     }
 
@@ -1073,7 +1049,7 @@ impl Cluster {
         'stops: loop {
             for i in 0..self.procs.len() {
                 if self.is_running(i) && !self.requirement_met(i, &|j| self.is_running(j)) {
-                    let src = self.procs[i].requires.expect("requirement").0;
+                    let src = self.procs[i].requires.expect("requirement");
                     self.set_run(i, Run::Stopped(Stop::SourceStopped(src)), at);
                     continue 'stops;
                 }
@@ -1143,7 +1119,7 @@ impl Cluster {
     fn blocking(&self, i: usize, cons: &[Con]) -> Option<Stop> {
         let h = self.restart_min_run.max(1);
         if !self.requirement_met(i, &|j| self.is_running(j)) {
-            return self.procs[i].requires.map(|r| Stop::SourceStopped(r.0));
+            return self.procs[i].requires.map(Stop::SourceStopped);
         }
         let mut ts = Vec::new();
         let with = |j: usize| j == i || self.is_running(j);
@@ -1286,64 +1262,6 @@ impl Cluster {
             keep(b - anchor);
         }
         best.and_then(|n| anchor.0.checked_add(n.max(1)).map(Tick))
-    }
-
-    /// What happens next to district `d`'s box, and when (the ledger's "iron ore runs out in
-    /// H h M min", I18). A read: it recomputes what [`LazyModel::next_breakpoint`] would, for one
-    /// district's processes, and changes nothing.
-    pub fn forecast(&self, anchor: Tick, d: DistrictId) -> Option<(Tick, Forecast)> {
-        let cons = self.constraints();
-        let running = |j: usize| self.is_running(j);
-        let mut ts = Vec::new();
-        let mut best: Option<(u64, Forecast)> = None;
-        let mut keep = |n: u64, f: Forecast| {
-            if best.as_ref().is_none_or(|b| n < b.0) {
-                best = Some((n, f));
-            }
-        };
-        let mine: Vec<usize> = (0..self.procs.len())
-            .filter(|&i| self.procs[i].owner == d)
-            .collect();
-        for &c in &cons {
-            if !mine
-                .iter()
-                .any(|&i| self.is_running(i) && self.blamed(c, i))
-            {
-                continue;
-            }
-            let (v0, bound) = self.con_terms(c, &running, &mut ts);
-            if let Some(n) = safe_run(v0, bound, &ts) {
-                let f = match self.stop_reason(c) {
-                    Stop::InputEmpty(k) => Forecast::InputEmpty(k),
-                    Stop::OutputFull(k) => Forecast::OutputFull(k),
-                    Stop::Target(k) => Forecast::Target(k),
-                    Stop::SpaceFull(_) => Forecast::SpaceFull,
-                    _ => continue,
-                };
-                keep(n.max(1), f);
-            }
-        }
-        for &i in &mine {
-            let p = &self.procs[i];
-            if let Some(t) = p.armed
-                && p.run != Run::Running
-            {
-                keep(t.since(anchor).max(1), Forecast::Restart);
-            } else if p.enabled
-                && p.run != Run::Running
-                && self.requirement_met(i, &running)
-                && let Some(n) = self.restart_time(i, &cons)
-            {
-                keep(n.saturating_add(p.latency), Forecast::Restart);
-            }
-            // (The forecast reports when the restart lands, relief plus latency.)
-        }
-        if let Some(b) = self.season_boundary
-            && b > anchor
-        {
-            keep(b - anchor, Forecast::Season);
-        }
-        best.and_then(|(n, f)| anchor.0.checked_add(n).map(|t| (Tick(t), f)))
     }
 
     /// Package batches completed in mail pools: recorded and marked as written.
@@ -1666,7 +1584,7 @@ mod tests {
                         (b, Diffuser::per(1, 10)),
                     ]),
                     targets: vec![],
-                    requires: Some((d(1), 0)),
+                    requires: Some(d(1)),
                     latency: 0,
                     enabled: true,
                 }],
@@ -1706,11 +1624,6 @@ mod persist_impls {
                     d.put(w);
                     g.put(w);
                 }
-                PoolKey::Channel(c, g) => {
-                    w.u8(1);
-                    c.put(w);
-                    g.put(w);
-                }
                 PoolKey::Mail(d, i, a, g) => {
                     w.u8(2);
                     d.put(w);
@@ -1723,7 +1636,6 @@ mod persist_impls {
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             Ok(match r.u8()? {
                 0 => PoolKey::Stock(Persist::get(r)?, Persist::get(r)?),
-                1 => PoolKey::Channel(Persist::get(r)?, Persist::get(r)?),
                 2 => PoolKey::Mail(
                     Persist::get(r)?,
                     Persist::get(r)?,

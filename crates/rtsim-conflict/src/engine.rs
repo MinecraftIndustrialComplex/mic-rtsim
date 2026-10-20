@@ -45,6 +45,7 @@ use serde::Serialize;
 use crate::boundary::{self, Cmd, Obs, Uuid};
 use crate::culture::{Culture, Cultures, PartyKind, SignalKind, Step, days_to_ticks};
 use crate::grievance::{Grievance, K};
+use crate::presence::{ChunkKey, Presence, chunk_of};
 use crate::tunables::ConflictTunables;
 
 /// Leg owner bit of a conflict party (the registry is in `rtsim_world::interest::Viewer`).
@@ -128,7 +129,9 @@ pub struct Feud {
     pub raids: u32,
 }
 
-/// A continuous source (P14: unowned, the settlers'): a district's or a chunk's emissions.
+/// A continuous source with no direct actor: a district's or a chunk's emissions. P14 as Ben
+/// changed it: it counts against the player who has spent the most time in its chunks
+/// ([`crate::presence`]), and against the shared settlers only while nobody has.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source {
     pub pos: Pos,
@@ -137,6 +140,10 @@ pub struct Source {
     pub rate: f64,
     /// (faction, falloff) it reaches.
     pub affects: Vec<(u32, f64)>,
+    /// Whom it counts against now.
+    pub actor: ActorId,
+    /// The chunks it comes from (a district's chunks, or a record's one chunk).
+    pub chunks: Vec<ChunkKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -290,6 +297,8 @@ pub struct ConflictStats {
     pub items_from_villages: u64,
     pub blocks_destroyed: u64,
     pub feuds_forgotten: u64,
+    /// Sources whose owner changed: the player with the most time in their chunks moved (P14).
+    pub reattributed: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -479,6 +488,10 @@ pub struct Conflict {
     pub(crate) nodes: NodeIndex,
     /// Sources reaching each (faction, kind): derived from `sources`, rebuilt on load.
     pub(crate) source_index: BTreeMap<(u32, SignalKind), BTreeSet<u64>>,
+    /// Time spent per chunk (P14): whom an unowned source counts against.
+    pub presence: Presence,
+    /// Sources by chunk: derived from `sources`, rebuilt on load.
+    pub(crate) source_chunks: BTreeMap<ChunkKey, BTreeSet<(u64, SignalKind)>>,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
     pub topo: SharedTopologies,
 }
@@ -526,6 +539,12 @@ pub fn item_of(g: GoodId) -> u32 {
 
 impl Conflict {
     pub fn new(seed: u64, tun: ConflictTunables, cultures: Cultures, now: Tick) -> Conflict {
+        let presence = Presence::new(
+            tun.presence_half_life_ticks,
+            tun.presence_top,
+            tun.presence_chunks,
+            tun.presence_max_gap,
+        );
         Conflict {
             seed,
             tun,
@@ -549,6 +568,8 @@ impl Conflict {
             log_enabled: false,
             nodes: NodeIndex::default(),
             source_index: BTreeMap::new(),
+            presence,
+            source_chunks: BTreeMap::new(),
             topo: rtsim_space::topology::all_flat(),
         }
     }
@@ -802,20 +823,20 @@ impl Conflict {
             .filter(|e| e.1 > 0.0)
             .collect();
         if !near.is_empty() {
-            let settlers = self.settlers(w);
-            let mut kinds = Vec::new();
+            // Each source counts against its own actor (P14): one refresh per (actor, kind).
+            let mut feeds: Vec<(ActorId, SignalKind)> = Vec::new();
             for (k, fall) in near {
                 if let Some(s) = self.sources.get_mut(&k) {
                     s.affects.push((f, fall));
                     s.affects.sort_by_key(|e| e.0);
+                    if !feeds.contains(&(s.actor, k.1)) {
+                        feeds.push((s.actor, k.1));
+                    }
                 }
                 self.source_index.entry((f, k.1)).or_default().insert(k.0);
-                if !kinds.contains(&k.1) {
-                    kinds.push(k.1);
-                }
             }
-            for kind in kinds {
-                self.refresh_rates(w, f, settlers, kind, at);
+            for (a, kind) in feeds {
+                self.refresh_rates(w, f, a, kind, at);
             }
         }
         self.note(
@@ -1082,9 +1103,10 @@ impl Conflict {
         }
     }
 
-    /// A continuous source's rate (P14: unowned, so the settlers'): a district's emissions while
-    /// unloaded (the industry engine's learned rate of a pollution good) or a loaded chunk's
-    /// (POLLUTION records). Units per day; 0 stops it.
+    /// A continuous source's rate: a district's emissions while unloaded (the industry engine's
+    /// learned rate of a pollution good) or a loaded chunk's (POLLUTION records). Units per day; 0
+    /// stops it. It has no direct actor, so it counts against the player who has spent the most
+    /// time in the chunk of `pos` (P14, changed), or the settlers while nobody has.
     #[allow(clippy::too_many_arguments)]
     pub fn set_emission(
         &mut self,
@@ -1096,33 +1118,81 @@ impl Conflict {
         per_day: f64,
         at: Tick,
     ) {
+        self.set_emission_in(w, key, kind, pos, district, &[], per_day, at);
+    }
+
+    /// [`Conflict::set_emission`] for a source that spans `chunks` (an industry district's): it
+    /// counts against the player with the most time in them together. No chunks: the chunk of
+    /// `pos`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_emission_in(
+        &mut self,
+        w: &mut World,
+        key: u64,
+        kind: SignalKind,
+        pos: Pos,
+        district: Option<DistrictId>,
+        chunks: &[ChunkKey],
+        per_day: f64,
+        at: Tick,
+    ) {
         self.run_to(at);
         self.stats.emissions += 1;
+        let mut chunks = if chunks.is_empty() {
+            vec![chunk_of(pos)]
+        } else {
+            chunks.to_vec()
+        };
+        chunks.sort();
+        chunks.dedup();
         self.set_emission_inner(
             w,
             (key, kind),
             pos,
             district,
+            chunks,
             per_day.max(0.0) / TICKS_PER_DAY as f64,
             at,
         );
     }
 
+    /// Whom a source counts against now (P14): the player with the most time in its chunks, or the
+    /// settlers.
+    fn owner_of(&mut self, w: &mut World, chunks: &[ChunkKey], at: Tick) -> ActorId {
+        match self.presence.top_of(chunks, at) {
+            Some(p) => p,
+            None => self.settlers(w),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn set_emission_inner(
         &mut self,
         w: &mut World,
         key: (u64, SignalKind),
         pos: Pos,
         district: Option<DistrictId>,
+        chunks: Vec<ChunkKey>,
         rate: f64,
         at: Tick,
     ) {
-        let settlers = self.settlers(w);
+        let actor = self.owner_of(w, &chunks, at);
         let old: Vec<u32> = self
             .sources
             .get(&key)
             .map(|s| s.affects.iter().map(|a| a.0).collect())
             .unwrap_or_default();
+        let old_actor = self.sources.get(&key).map(|s| s.actor);
+        if let Some(s) = self.sources.get(&key) {
+            for c in &s.chunks {
+                if let Some(v) = self.source_chunks.get_mut(c) {
+                    v.remove(&key);
+                    if v.is_empty() {
+                        self.source_chunks.remove(c);
+                    }
+                }
+            }
+        }
         let affects = if rate > 0.0 {
             self.factions_near(pos, true)
         } else {
@@ -1144,6 +1214,9 @@ impl Conflict {
                     .or_default()
                     .insert(key.0);
             }
+            for c in &chunks {
+                self.source_chunks.entry(*c).or_default().insert(key);
+            }
             self.sources.insert(
                 key,
                 Source {
@@ -1151,18 +1224,65 @@ impl Conflict {
                     district,
                     rate,
                     affects,
+                    actor,
+                    chunks,
                 },
             );
         } else {
             self.sources.remove(&key);
         }
         for f in touched {
-            self.refresh_rates(w, f, settlers, key.1, at);
+            self.refresh_rates(w, f, actor, key.1, at);
+            if let Some(o) = old_actor.filter(|o| *o != actor) {
+                self.refresh_rates(w, f, o, key.1, at);
+            }
         }
     }
 
-    /// Recomputes a settlers feud's raw rate of one kind from the sources (exact, no drift) and
-    /// its focus (the strongest source with a district).
+    /// A player was seen at `pos` (P14's time-spent counter). When the player who has spent the
+    /// most time in a chunk changes, the sources there count against the new one from now on.
+    /// The shared interest service calls this for every PLAYER report (rtsim-jni `shared.rs`);
+    /// [`Conflict::observe_player`] does too.
+    pub fn observe_presence(&mut self, w: &mut World, uuid: Uuid, pos: Pos, at: Tick) {
+        let p = self.player(w, uuid);
+        if let Some(chunk) = self.presence.observe(p, pos, at) {
+            self.reattribute(w, chunk, at);
+        }
+    }
+
+    /// The sources in `chunk` follow its new leading player.
+    fn reattribute(&mut self, w: &mut World, chunk: ChunkKey, at: Tick) {
+        let keys: Vec<(u64, SignalKind)> = self
+            .source_chunks
+            .get(&chunk)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        if keys.is_empty() {
+            return;
+        }
+        self.run_to(at);
+        for key in keys {
+            let Some(s) = self.sources.get(&key) else {
+                continue;
+            };
+            let chunks = s.chunks.clone();
+            let old = s.actor;
+            let factions: Vec<u32> = s.affects.iter().map(|a| a.0).collect();
+            let new = self.owner_of(w, &chunks, at);
+            if new == old {
+                continue;
+            }
+            self.sources.get_mut(&key).expect("listed").actor = new;
+            self.stats.reattributed += 1;
+            for f in factions {
+                self.refresh_rates(w, f, old, key.1, at);
+                self.refresh_rates(w, f, new, key.1, at);
+            }
+        }
+    }
+
+    /// Recomputes a feud's raw rate of one kind from the sources that count against its actor
+    /// (exact, no drift) and its focus (the strongest source with a district).
     fn refresh_rates(&mut self, w: &World, f: u32, a: ActorId, kind: SignalKind, at: Tick) {
         let mut raw = 0.0;
         let mut best: Option<Focus> = None;
@@ -1171,6 +1291,9 @@ impl Conflict {
             let Some(s) = self.sources.get(&(key, kind)) else {
                 continue;
             };
+            if s.actor != a {
+                continue;
+            }
             if let Some(&(_, fall)) = s.affects.iter().find(|x| x.0 == f) {
                 raw += s.rate * fall;
                 let wgt = s.rate * fall;
@@ -3295,6 +3418,7 @@ impl Conflict {
     /// Where a player is, through the world's shared interest area (choice U2): the area is kept
     /// or booked anew and routed to this engine.
     pub fn observe_player(&mut self, w: &mut World, uuid: Uuid, pos: Pos, at: Tick) -> ActorId {
+        self.observe_presence(w, uuid, pos, at);
         let (p, stamp) = w.observe_area(uuid, pos, at, self.tun.view_radius);
         self.players.insert(p, uuid);
         if let Some(s) = stamp {
@@ -3782,8 +3906,9 @@ impl Conflict {
             + self
                 .sources
                 .values()
-                .map(|s| 64 + s.affects.len() * 16)
+                .map(|s| 64 + s.affects.len() * 16 + s.chunks.len() * 12)
                 .sum::<usize>()
+            + self.presence.heap_bytes()
             + self
                 .parties
                 .iter()
@@ -3892,6 +4017,8 @@ impl Viewer for Conflict {
 
     fn player_left(&mut self, w: &mut World, player: ActorId) {
         let _ = w;
+        // P14's counter: the gap until the player's next report is not time spent anywhere.
+        self.presence.left(player);
         let ids: Vec<Handle<Party>> = self
             .parties
             .iter()

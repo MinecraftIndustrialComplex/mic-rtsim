@@ -57,8 +57,7 @@ marked PLACEHOLDER are not measured. Branch `overnight/persist`.
 - `crates/rtsim-jni/tests/protocol.rs` `dragons::dragons_are_adopted_hurt_captured_materialized_and_replayed_across_a_crash`:
   through the native engine and a fake Ice and Fire plugin (`tests/common`): a lair and its
   structure dragon adopted; a player's wound is a grudge; the body captured with its health; a
-  player at the lair materializes it again under a new epoch; a natural spawn discarded and
-  answered; a save; a hoard robbery and a spawn-egg dragon after it; a crash. The pages read back
+  player at the lair materializes it again under a new epoch; a natural spawn left alone (its spawn-egg sibling adopted); a save; a hoard robbery and a spawn-egg dragon after it; a crash. The pages read back
   to their saved state hash (and the world's), and the journal's replay books the robbery once,
   adopts the egg dragon once, and leaves every dragon's health and grudge as before the crash; the
   same robbery's op id again is applied once.

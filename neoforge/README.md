@@ -176,7 +176,7 @@ DRAGON_COMMAND orders, and the native engine answers untagged dragons itself; ea
 |---|---|
 | `adragonmaterializeswiththeenginesstateandsteerstoitstarget` | the engine's AgeTicks (aging disabled), Hunger, Gender, Variant (`bronze`), health and home on a tagged, persistence-required dragon; it flies to its first target and turns on DRAGON_STEER; DRAGON_STATE; DRAGON_DEPART captures it with health, hunger, age and position |
 | `aplayershitishurtandakillisdiedwiththekiller` | two hits in a tick are one DRAGON_HURT with the player; a kill is DRAGON_DIED naming the killer, after the lethal blow's HURT; the corpse stays tagged until the engine's save has the death |
-| `untaggeddragonsareadoptedordiscarded` | a spawn-egg dragon and a NATURAL one (In Control's spawn type) reported DRAGON_UNTAGGED; the first adopted, the second discarded |
+| `untaggedeggdragonisadoptedandnaturaloneleftalone` | a spawn-egg dragon and a NATURAL one (In Control's spawn type) reported DRAGON_UNTAGGED; the first adopted, the second left alone (R18a) |
 | `alairsdragonisadoptedanditshoardrobbed` | a dragon with no spawn type in a lair's box is that lair's STRUCTURE dragon (after LAIR_FOUND), adopted with the lair's home; a gold pile broken and ingots taken from a lair chest are one HOARD_ROBBED |
 | `apuppetdragonisneversavedandacopyneverjoins` | vanilla's entity-chunk save leaves the dragon out; copies built from its NBT (new UUID, older epoch) never join |
 | `atamedorfarawaypuppetleavesthesim` | a tamed puppet leaves the sim as a DRAGON_DIED with no killer (no TAKEN for dragons) and stays the player's; one carried out of the ticking area is captured and removed |

@@ -24,10 +24,6 @@ pub struct StationId(pub u64);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TrainId(pub u64);
 
-/// An Ender Transmission channel buffer (I13), numbered by the Java side.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct ChannelId(pub u64);
-
 /// What kind of thing a good is. Decides how capacity is counted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum GoodClass {

@@ -29,6 +29,7 @@ use crate::engine::{
     Source, Target,
 };
 use crate::grievance::{Grievance, K};
+use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
 use crate::tunables::ConflictTunables;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"RTC1");
@@ -58,6 +59,64 @@ fn get_i32(r: &mut Reader<'_>) -> codec::Result<i32> {
 
 fn handle<T>(r: &mut Reader<'_>) -> codec::Result<Handle<T>> {
     Ok(Handle::from_bits(r.u64()?))
+}
+
+fn put_chunk(w: &mut Writer, c: ChunkKey) {
+    w.u16(c.0);
+    w.var_i64(i64::from(c.1));
+    w.var_i64(i64::from(c.2));
+}
+
+fn get_chunk(r: &mut Reader<'_>) -> codec::Result<ChunkKey> {
+    Ok((r.u16()?, get_i32(r)?, get_i32(r)?))
+}
+
+/// P14's time-spent counter, in key order (its touch index is rebuilt).
+fn put_presence(w: &mut Writer, p: &Presence) {
+    put_usize(w, p.chunks.len());
+    for (k, ct) in &p.chunks {
+        put_chunk(w, *k);
+        w.u64(ct.touched.0);
+        put_usize(w, ct.stays.len());
+        for s in &ct.stays {
+            w.u64(s.player.to_bits());
+            w.f64(s.v);
+            w.u64(s.at.0);
+        }
+    }
+    put_usize(w, p.last.len());
+    for (a, (k, t)) in &p.last {
+        w.u64(a.to_bits());
+        put_chunk(w, *k);
+        w.u64(t.0);
+    }
+}
+
+fn get_presence(r: &mut Reader<'_>, p: &mut Presence) -> codec::Result<()> {
+    let n = r.len_prefix(12)?;
+    for _ in 0..n {
+        let k = get_chunk(r)?;
+        let touched = Tick(r.u64()?);
+        let m = r.len_prefix(24)?;
+        let stays = (0..m)
+            .map(|_| {
+                Ok(Stay {
+                    player: handle(r)?,
+                    v: r.f64()?,
+                    at: Tick(r.u64()?),
+                })
+            })
+            .collect::<codec::Result<Vec<_>>>()?;
+        p.by_touch.insert((touched, k));
+        p.chunks.insert(k, ChunkTime { stays, touched });
+    }
+    let n = r.len_prefix(20)?;
+    for _ in 0..n {
+        let a = handle(r)?;
+        let k = get_chunk(r)?;
+        p.last.insert(a, (k, Tick(r.u64()?)));
+    }
+    Ok(())
 }
 
 fn put_pos(w: &mut Writer, p: Pos) {
@@ -571,6 +630,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.items_from_villages,
         s.blocks_destroyed,
         s.feuds_forgotten,
+        s.reattributed,
     ]);
     v
 }
@@ -616,6 +676,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.items_from_villages = n();
     s.blocks_destroyed = n();
     s.feuds_forgotten = n();
+    s.reattributed = n();
     s
 }
 
@@ -649,6 +710,11 @@ impl Conflict {
                 w.var_u64(u64::from(*f));
                 w.f64(*fall);
             }
+            w.u64(s.actor.to_bits());
+            put_usize(&mut w, s.chunks.len());
+            for c in &s.chunks {
+                put_chunk(&mut w, *c);
+            }
         }
         self.parties.encode_with(&mut w, |x, w| put_party(w, x));
         self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
@@ -677,6 +743,7 @@ impl Conflict {
             boundary::encode_cmd(0, c, &mut b);
             w.bytes(&b);
         }
+        put_presence(&mut w, &self.presence);
         w.into_bytes()
     }
 
@@ -734,8 +801,16 @@ impl Conflict {
             let affects = (0..m)
                 .map(|_| Ok((get_u32(r)?, r.f64()?)))
                 .collect::<codec::Result<Vec<_>>>()?;
+            let actor = handle(r)?;
+            let m = r.len_prefix(9)?;
+            let chunks = (0..m)
+                .map(|_| get_chunk(r))
+                .collect::<codec::Result<Vec<_>>>()?;
             for (f, _) in &affects {
                 c.source_index.entry((*f, kind)).or_default().insert(k);
+            }
+            for ch in &chunks {
+                c.source_chunks.entry(*ch).or_default().insert((k, kind));
             }
             c.sources.insert(
                 (k, kind),
@@ -744,6 +819,8 @@ impl Conflict {
                     district,
                     rate,
                     affects,
+                    actor,
+                    chunks,
                 },
             );
         }
@@ -782,6 +859,7 @@ impl Conflict {
                 .map_err(|e| CodecError::Invalid(format!("a queued command: {e:?}")))?;
             c.outbox.push(cmd);
         }
+        get_presence(r, &mut c.presence)?;
         r.finish_check()?;
         Ok(c)
     }

@@ -6,10 +6,10 @@
 
 use proptest::prelude::*;
 use rtsim_industry::cluster::{Cluster, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, Run};
-use rtsim_industry::ids::{ChannelId, DistrictId, Good};
+use rtsim_industry::ids::{DistrictId, Good};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::conserve::Diffuser;
-use rtsim_kernel::lazy::{LazyModel, LazyTable};
+use rtsim_kernel::lazy::LazyTable;
 use rtsim_kernel::rng::SystemId;
 
 const SYS: SystemId = SystemId::named("test.industry.replay");
@@ -44,7 +44,7 @@ fn boxed(
                 (o, Diffuser::per(rate_out.0, rate_out.1)),
             ]),
             targets: target.map(|(s, r)| vec![(o, s, r)]).unwrap_or_default(),
-            requires: requires.map(|r| (d(r), 0)),
+            requires: requires.map(d),
             latency,
             enabled: true,
         }],
@@ -52,43 +52,41 @@ fn boxed(
     }
 }
 
-/// A district that exports its output into a channel another district imports from (I13).
-fn channel_pair() -> Vec<MemberSpec> {
-    let ch = PoolKey::Channel(ChannelId(9), Good(2));
+/// One district with two processes its learned coupling split apart (I6): the smelter of
+/// [`boxed`] on goods 1 and 2, and a second line on goods 3 and 4 whose output a packager writes
+/// into a postbox (a mail link, batches of 16).
+fn coupled() -> MemberSpec {
     let mut a = boxed(1, 5_000, (3, 100), (3, 100), None, None, None, 0);
-    a.pools.push((ch, 0, Some(500)));
+    let (i2, o2) = (PoolKey::Stock(d(1), Good(3)), PoolKey::Stock(d(1), Good(4)));
+    let mail = PoolKey::Mail(d(1), 7, 1, Good(4));
+    a.pools.push((i2, 2_000, None));
+    a.pools.push((o2, 0, None));
+    a.pools.push((mail, 0, Some(18 * 16)));
     a.procs.push(ProcSpec {
         id: 1,
+        body: ProcSpecBody::Box(vec![
+            (i2, Diffuser::per(-2, 100)),
+            (o2, Diffuser::per(2, 100)),
+        ]),
+        targets: vec![],
+        requires: None,
+        latency: 0,
+        enabled: true,
+    });
+    a.procs.push(ProcSpec {
+        id: 0x100,
         body: ProcSpecBody::Link {
-            from: PoolKey::Stock(d(1), Good(2)),
-            to: ch,
-            flow: Diffuser::per(2, 100),
-            batch: None,
+            from: o2,
+            to: mail,
+            flow: Diffuser::per(1, 100),
+            batch: Some(16),
         },
         targets: vec![],
         requires: None,
         latency: 0,
         enabled: true,
     });
-    let b = MemberSpec {
-        district: d(2),
-        pools: vec![(PoolKey::Stock(d(2), Good(2)), 0, None)],
-        procs: vec![ProcSpec {
-            id: 1,
-            body: ProcSpecBody::Link {
-                from: ch,
-                to: PoolKey::Stock(d(2), Good(2)),
-                flow: Diffuser::per(5, 100),
-                batch: None,
-            },
-            targets: vec![],
-            requires: None,
-            latency: 0,
-            enabled: true,
-        }],
-        space: None,
-    };
-    vec![a, b]
+    a
 }
 
 #[derive(Clone, Debug)]
@@ -120,11 +118,7 @@ fn world(kind: u8) -> Cluster {
                 Tick(0),
             );
         }
-        _ => {
-            for m in channel_pair() {
-                c.add_member(m, Tick(0));
-            }
-        }
+        _ => c.add_member(coupled(), Tick(0)),
     }
     c
 }
@@ -311,89 +305,30 @@ fn power_coupling_follows_the_source() {
     assert_eq!(m.run_of(d(2), 0), Some(Run::Running));
 }
 
-/// A channel shared by two districts: what one exports the other imports, and the buffer's cap
-/// stops the exporter's link (I13).
+/// Two coupling groups of one district stop apart (I6): when the first runs out of its input the
+/// second goes on, and the packager link behind it keeps writing whole packages.
 #[test]
-fn channels_are_shared_stock() {
+fn coupling_groups_stop_apart() {
     let mut t: LazyTable<Cluster> = LazyTable::new(1, SYS, Tick(0));
     let mut c = Cluster::new(50);
-    for m in channel_pair() {
-        c.add_member(m, Tick(0));
-    }
+    let mut m = coupled();
+    // A small input for the first group: 30 units at 3 per 100 ticks.
+    m.pools[0].1 = 30;
+    c.add_member(m, Tick(0));
     let h = t.insert(1, c, Tick(0));
-    while t.next_due(Tick(100_000)).is_some() {}
-    let v = t.read(h, Tick(100_000)).unwrap();
-    let got = v.level(PoolKey::Stock(d(2), Good(2)));
-    let ch = v.level(PoolKey::Channel(ChannelId(9), Good(2)));
-    // The importer is faster than the exporter, so it takes all that reaches the channel.
-    assert!(got > 1_000, "district 2 got {got}");
-    assert!(ch <= 500);
-    t.apply(h, Tick(100_000), |_, _| ());
+    while t.next_due(Tick(20_000)).is_some() {}
+    let v = t.read(h, Tick(20_000)).unwrap();
+    assert!(
+        matches!(v.run_of(d(1), 0), Some(Run::Stopped(_))),
+        "the first group starved"
+    );
+    assert_eq!(v.run_of(d(1), 1), Some(Run::Running), "the second goes on");
+    assert!(v.level(PoolKey::Stock(d(1), Good(3))) < 2_000 - 300);
+    t.apply(h, Tick(20_000), |_, _| ());
     t.get(h).unwrap().cell().model().check_books().unwrap();
-}
-
-/// Removing a district keeps every channel another district still uses (review finding 2: the
-/// old code checked pools by indices that shift as pools are removed).
-#[test]
-fn removing_a_member_keeps_shared_channels() {
-    let link = |id: u16, from: PoolKey, to: PoolKey| ProcSpec {
-        id,
-        body: ProcSpecBody::Link {
-            from,
-            to,
-            flow: Diffuser::per(1, 10),
-            batch: None,
-        },
-        targets: vec![],
-        requires: None,
-        latency: 0,
-        enabled: true,
-    };
-    let (c1, c2) = (
-        PoolKey::Channel(ChannelId(1), Good(2)),
-        PoolKey::Channel(ChannelId(2), Good(2)),
+    assert_eq!(
+        t.get(h).unwrap().cell().model().box_run(d(1)),
+        Some(Run::Running),
+        "the district runs while any group does"
     );
-    let s1 = PoolKey::Stock(d(1), Good(2));
-    let s2 = PoolKey::Stock(d(2), Good(2));
-    let mut c = Cluster::new(1);
-    c.add_member(
-        MemberSpec {
-            district: d(1),
-            pools: vec![(s1, 10_000, None), (c1, 0, None), (c2, 0, None)],
-            procs: vec![link(1, s1, c1), link(2, s1, c2)],
-            space: None,
-        },
-        Tick(0),
-    );
-    c.add_member(
-        MemberSpec {
-            district: d(2),
-            pools: vec![(s2, 0, None)],
-            procs: vec![link(1, c2, s2)],
-            space: None,
-        },
-        Tick(0),
-    );
-    // Settle as the lazy table would: never across a breakpoint.
-    let step = |c: &mut Cluster, from: Tick, to: Tick| {
-        let mut at = from;
-        while at < to {
-            let next = c.next_breakpoint(at).map_or(to, |b| b.min(to));
-            c.settle(at, next);
-            at = next;
-        }
-    };
-    step(&mut c, Tick(0), Tick(1_000));
-    let out = c.remove_member(d(1), Tick(1_000));
-    assert!(
-        out.pools.iter().any(|p| p.key == c1),
-        "channel 1 leaves with its only user"
-    );
-    assert!(
-        c.pool(c2).is_some(),
-        "channel 2 stays: district 2 still links it"
-    );
-    step(&mut c, Tick(1_000), Tick(5_000));
-    c.check_books().unwrap();
-    assert!(c.run_of(d(2), 1).is_some());
 }

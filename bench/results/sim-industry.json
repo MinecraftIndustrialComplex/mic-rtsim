@@ -14,11 +14,21 @@
       "steady_epsilon": 0.1,
       "min_confidence": 0.0,
       "stop_quiet_ticks": 2400,
-      "target_tolerance": 64
+      "target_tolerance": 64,
+      "coupling_min_episodes": 2,
+      "coupling_settle_ticks": 1200,
+      "coupling_min_span_ticks": 2400,
+      "coupling_min_batches": 3.0,
+      "coupling_moved_share": 0.8,
+      "coupling_stopped_share": 0.2,
+      "coupling_min_units": 4.0
     },
     "replay": {
       "restart_min_run_ticks": 200,
-      "fragment_margin_slots": 1
+      "fragment_margin_slots": 1,
+      "approach_distance_blocks": 256,
+      "approach_hold_ticks": 100,
+      "live_pollution_ticks": 1200
     },
     "threat": {
       "night_ticks_per_day": 10000,
@@ -52,8 +62,9 @@
   "runs": [
     {
       "name": "main",
-      "mode": "Apply",
       "threats": true,
+      "tick_first": true,
+      "approach": true,
       "control": false,
       "districts": [
         {
@@ -83,7 +94,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 1,
             "state": "Running",
             "reason": null,
@@ -110,8 +121,6 @@
             ],
             "running": false,
             "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -264,7 +273,7 @@
               }
             ]
           },
-          "ledger_end": {
+          "at_end": {
             "district": 1,
             "state": "Live",
             "reason": null,
@@ -282,12 +291,10 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
-              "epoch": 3,
-              "at": 240000,
+              "epoch": 2,
+              "at": 239940,
               "since": 216000,
               "net": [],
               "chunks": 1,
@@ -296,8 +303,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 1,
-              "read_only": false
+              "destroyed": 1
             },
             "attacks": [
               {
@@ -494,36 +500,29 @@
           "reconciles": [
             {
               "epoch": 1,
-              "at": 204000,
+              "at": 203940,
               "since": 36000,
               "net": [
                 [
                   1,
                   -176
+                ],
+                [
+                  4,
+                  -11136
                 ]
               ],
               "chunks": 1,
               "deltas": 2,
               "unplaced": [],
-              "shortfalls": [
-                [
-                  4,
-                  32
-                ]
-              ],
-              "trims": [
-                [
-                  1,
-                  32
-                ]
-              ],
+              "shortfalls": [],
+              "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             {
-              "epoch": 3,
-              "at": 240000,
+              "epoch": 2,
+              "at": 239940,
               "since": 216000,
               "net": [],
               "chunks": 1,
@@ -532,8 +531,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 1,
-              "read_only": false
+              "destroyed": 1
             }
           ],
           "attacks": [
@@ -759,7 +757,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 2,
             "state": "Running",
             "reason": null,
@@ -786,8 +784,6 @@
             ],
             "running": false,
             "stop": "stopped: frozen",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -903,7 +899,7 @@
               }
             ]
           },
-          "ledger_end": {
+          "at_end": {
             "district": 2,
             "state": "Live",
             "reason": null,
@@ -925,17 +921,15 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 2,
-              "at": 240000,
+              "at": 239940,
               "since": 204000,
               "net": [
                 [
                   1,
-                  -373
+                  -377
                 ],
                 [
                   3,
@@ -948,8 +942,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 5,
-              "read_only": false
+              "destroyed": 5
             },
             "attacks": [
               {
@@ -1081,7 +1074,7 @@
                 "stolen": [
                   [
                     1,
-                    373
+                    377
                   ],
                   [
                     3,
@@ -1097,7 +1090,7 @@
           "reconciles": [
             {
               "epoch": 1,
-              "at": 192000,
+              "at": 191940,
               "since": 153843,
               "net": [
                 [
@@ -1119,17 +1112,16 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 3,
-              "read_only": false
+              "destroyed": 3
             },
             {
               "epoch": 2,
-              "at": 240000,
+              "at": 239940,
               "since": 204000,
               "net": [
                 [
                   1,
-                  -373
+                  -377
                 ],
                 [
                   3,
@@ -1142,8 +1134,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 5,
-              "read_only": false
+              "destroyed": 5
             }
           ],
           "attacks": [
@@ -1276,7 +1267,7 @@
               "stolen": [
                 [
                   1,
-                  373
+                  377
                 ],
                 [
                   3,
@@ -1294,7 +1285,7 @@
           "name": "Home",
           "learned": {
             "learned": {
-              "at": 240100,
+              "at": 240000,
               "window_ticks": 12000,
               "rates": [],
               "links": [],
@@ -1307,7 +1298,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -1316,13 +1307,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -1331,51 +1320,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
-            "last_reconcile": {
-              "epoch": 1,
-              "at": 216000,
-              "since": 192000,
-              "net": [
-                [
-                  2,
-                  32
-                ]
-              ],
-              "chunks": 1,
-              "deltas": 1,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": false
-            },
+            "last_reconcile": null,
             "attacks": []
           },
-          "reconciles": [
-            {
-              "epoch": 1,
-              "at": 216000,
-              "since": 192000,
-              "net": [
-                [
-                  2,
-                  32
-                ]
-              ],
-              "chunks": 1,
-              "deltas": 1,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": false
-            }
-          ],
+          "reconciles": [],
           "attacks": []
         },
         {
@@ -1401,7 +1350,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 4,
             "state": "Running",
             "reason": null,
@@ -1420,13 +1369,11 @@
             ],
             "running": false,
             "stop": "stopped: no minecraft:coal",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 4,
             "state": "Live",
             "reason": null,
@@ -1440,12 +1387,10 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
-              "at": 192000,
+              "at": 191940,
               "since": 36000,
               "net": [
                 [
@@ -1456,23 +1401,17 @@
               "chunks": 1,
               "deltas": 1,
               "unplaced": [],
-              "shortfalls": [
-                [
-                  3,
-                  2
-                ]
-              ],
+              "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             "attacks": []
           },
           "reconciles": [
             {
               "epoch": 1,
-              "at": 192000,
+              "at": 191940,
               "since": 36000,
               "net": [
                 [
@@ -1483,16 +1422,10 @@
               "chunks": 1,
               "deltas": 1,
               "unplaced": [],
-              "shortfalls": [
-                [
-                  3,
-                  2
-                ]
-              ],
+              "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             }
           ],
           "attacks": []
@@ -1522,7 +1455,7 @@
         {
           "tick": 36000,
           "district": 1,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 36000,
@@ -1532,7 +1465,12 @@
         {
           "tick": 36000,
           "district": 2,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 36000,
+          "district": 4,
+          "what": "running"
         },
         {
           "tick": 36000,
@@ -1542,12 +1480,7 @@
         {
           "tick": 36000,
           "district": 4,
-          "what": "running"
-        },
-        {
-          "tick": 36000,
-          "district": 4,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 36400,
@@ -2152,7 +2085,7 @@
         {
           "tick": 153843,
           "district": 2,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 153843,
@@ -2275,64 +2208,59 @@
           "what": "Natural GroundRanged x1: survived 1.00 (untested defences), stole nothing, destroyed 0"
         },
         {
-          "tick": 192000,
+          "tick": 191940,
           "district": 2,
-          "what": "reconcile epoch 1: +4447 create:crushed_raw_iron, -56 minecraft:iron_ingot, -864 minecraft:coal in 2 chunk(s), 5 deltas, 3 blocks to destroy"
+          "what": "a player is on the way: reconcile ahead of arrival"
         },
         {
-          "tick": 192000,
-          "district": 3,
-          "what": "replay starts"
+          "tick": 191940,
+          "district": 2,
+          "what": "reconcile epoch 1 (ahead of arrival): +4447 create:crushed_raw_iron, -56 minecraft:iron_ingot, -864 minecraft:coal in 2 chunk(s), 5 deltas, 3 blocks to destroy"
         },
         {
-          "tick": 192000,
-          "district": 3,
-          "what": "running"
-        },
-        {
-          "tick": 192000,
+          "tick": 191940,
           "district": 4,
-          "what": "reconcile epoch 1: -211 minecraft:coal in 1 chunk(s), 1 deltas"
+          "what": "a player is on the way: reconcile ahead of arrival"
         },
         {
-          "tick": 195800,
-          "district": 3,
-          "what": "station exchange with train 2: +32 minecraft:iron_ingot"
+          "tick": 191940,
+          "district": 4,
+          "what": "reconcile epoch 1 (ahead of arrival): -211 minecraft:coal in 1 chunk(s), 1 deltas"
         },
         {
-          "tick": 204000,
+          "tick": 203940,
           "district": 1,
-          "what": "reconcile epoch 1: -176 create:crushed_raw_iron in 1 chunk(s), 2 deltas"
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 203940,
+          "district": 1,
+          "what": "reconcile epoch 1 (ahead of arrival): -176 create:crushed_raw_iron, -11136 createoreexcavation:iron_vein in 1 chunk(s), 2 deltas"
         },
         {
           "tick": 204000,
           "district": 2,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 204000,
           "district": 4,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
-          "tick": 204001,
-          "district": 1,
-          "what": "shortfall +32 createoreexcavation:iron_vein trims +32 create:crushed_raw_iron"
+          "tick": 215940,
+          "district": 3,
+          "what": "a player is on the way: reconcile ahead of arrival"
         },
         {
           "tick": 216000,
           "district": 1,
-          "what": "replay starts"
-        },
-        {
-          "tick": 216000,
-          "district": 3,
-          "what": "reconcile epoch 1: +32 minecraft:iron_ingot in 1 chunk(s), 1 deltas"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 227881,
           "district": 2,
-          "what": "Bandit Siege x12: survived 0.50 (floor 0.50), stole +373 create:crushed_raw_iron, +1 minecraft:coal, destroyed 5, machine lost: stopped"
+          "what": "Bandit Siege x12: survived 0.50 (floor 0.50), stole +377 create:crushed_raw_iron, +1 minecraft:coal, destroyed 5, machine lost: stopped"
         },
         {
           "tick": 234000,
@@ -2345,14 +2273,29 @@
           "what": "Dragon Flying x1: survived 1.00 (untested defences), stole nothing, destroyed 1, machine lost: stopped"
         },
         {
-          "tick": 240000,
+          "tick": 239940,
           "district": 1,
-          "what": "reconcile epoch 3: nothing in 1 chunk(s), 0 deltas, 1 blocks to destroy"
+          "what": "a player is on the way: reconcile ahead of arrival"
         },
         {
-          "tick": 240000,
+          "tick": 239940,
+          "district": 1,
+          "what": "reconcile epoch 2 (ahead of arrival): nothing in 1 chunk(s), 0 deltas, 1 blocks to destroy"
+        },
+        {
+          "tick": 239940,
           "district": 2,
-          "what": "reconcile epoch 2: -373 create:crushed_raw_iron, -1 minecraft:coal in 2 chunk(s), 3 deltas, 5 blocks to destroy"
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 239940,
+          "district": 2,
+          "what": "reconcile epoch 2 (ahead of arrival): -377 create:crushed_raw_iron, -1 minecraft:coal in 2 chunk(s), 3 deltas, 5 blocks to destroy"
+        },
+        {
+          "tick": 239940,
+          "district": 4,
+          "what": "a player is on the way: reconcile ahead of arrival"
         }
       ],
       "world_events": [
@@ -2454,6 +2397,16 @@
         {
           "tick": 192000,
           "day": 8.0,
+          "what": "Smelter: 2 blocks destroyed on load"
+        },
+        {
+          "tick": 192000,
+          "day": 8.0,
+          "what": "Smelter: 1 blocks destroyed on load"
+        },
+        {
+          "tick": 192000,
+          "day": 8.0,
           "what": "Smelter loads"
         },
         {
@@ -2465,11 +2418,6 @@
           "tick": 192000,
           "day": 8.0,
           "what": "Power Plant loads"
-        },
-        {
-          "tick": 192001,
-          "day": 8.000041666666666,
-          "what": "Smelter: 1 blocks destroyed on load"
         },
         {
           "tick": 203391,
@@ -2514,7 +2462,22 @@
         {
           "tick": 240000,
           "day": 10.0,
+          "what": "Ore Coast: 1 blocks destroyed on load"
+        },
+        {
+          "tick": 240000,
+          "day": 10.0,
           "what": "Ore Coast loads"
+        },
+        {
+          "tick": 240000,
+          "day": 10.0,
+          "what": "Smelter: 1 blocks destroyed on load"
+        },
+        {
+          "tick": 240000,
+          "day": 10.0,
+          "what": "Smelter: 1 blocks destroyed on load"
         },
         {
           "tick": 240000,
@@ -2525,22 +2488,12 @@
           "tick": 240000,
           "day": 10.0,
           "what": "Power Plant loads"
-        },
-        {
-          "tick": 240001,
-          "day": 10.000041666666666,
-          "what": "Ore Coast: 1 blocks destroyed on load"
-        },
-        {
-          "tick": 240001,
-          "day": 10.000041666666666,
-          "what": "Smelter: 1 blocks destroyed on load"
         }
       ],
       "totals": {
-        "create:crushed_raw_iron": 4186,
-        "minecraft:coal": 13,
-        "minecraft:iron_ingot": 9266
+        "create:crushed_raw_iron": 4222,
+        "minecraft:coal": 18,
+        "minecraft:iron_ingot": 9226
       },
       "engine_books": {
         "minted": [
@@ -2570,7 +2523,7 @@
         "stolen": [
           [
             1,
-            534
+            538
           ],
           [
             2,
@@ -2585,91 +2538,74 @@
           [
             1,
             823
-          ],
-          [
-            2,
-            8
           ]
         ],
         "untracked": [],
-        "shortfall": [
-          [
-            3,
-            2
-          ],
-          [
-            4,
-            32
-          ]
-        ],
-        "trimmed": [
-          [
-            1,
-            32
-          ]
-        ]
+        "shortfall": [],
+        "trimmed": []
       },
       "world_books": {
         "minted": [
           [
             1,
-            2896
+            2864
           ],
           [
             2,
-            2576
+            2536
           ]
         ],
         "burned": [
           [
             1,
-            2576
+            2536
           ],
           [
             3,
-            413
+            406
           ],
           [
             4,
-            2896
+            2864
           ]
         ],
         "dropped": [
           [
             1,
             823
-          ],
-          [
-            2,
-            8
           ]
         ],
-        "batches": 594
+        "imported": [],
+        "batches": 585
       },
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9543,
+        "observations": 9585,
         "models_adopted": 15,
-        "sims_started": 8,
-        "reconciles": 6,
+        "sims_started": 7,
+        "reconciles": 5,
         "chunk_commands": 7,
         "duplicate_results": 0,
-        "trims": 1,
-        "exchanges": 122,
+        "trims": 0,
+        "exchanges": 121,
         "attacks": 15,
         "attacks_skipped": 5,
         "packages_written": 0,
         "breakpoints": 8,
-        "cluster_settles": 359
+        "cluster_settles": 350,
+        "reconciles_ahead": 7,
+        "pollution_pushes": 0,
+        "retired_records": 0
       },
-      "wire_bytes": 471016,
-      "wall_ms": 15.510856
+      "wire_bytes": 472472,
+      "wall_ms": 461.914133
     },
     {
       "name": "simulated",
-      "mode": "Apply",
       "threats": false,
+      "tick_first": true,
+      "approach": true,
       "control": false,
       "districts": [
         {
@@ -2699,7 +2635,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 1,
             "state": "Running",
             "reason": null,
@@ -2726,8 +2662,6 @@
             ],
             "running": false,
             "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -2880,7 +2814,7 @@
               }
             ]
           },
-          "ledger_end": {
+          "at_end": {
             "district": 1,
             "state": "Live",
             "reason": null,
@@ -2898,37 +2832,28 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
-              "at": 204000,
+              "at": 203940,
               "since": 36000,
               "net": [
                 [
                   1,
                   -176
+                ],
+                [
+                  4,
+                  -11136
                 ]
               ],
               "chunks": 1,
               "deltas": 2,
               "unplaced": [],
-              "shortfalls": [
-                [
-                  4,
-                  32
-                ]
-              ],
-              "trims": [
-                [
-                  1,
-                  32
-                ]
-              ],
+              "shortfalls": [],
+              "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             "attacks": [
               {
@@ -3104,32 +3029,25 @@
           "reconciles": [
             {
               "epoch": 1,
-              "at": 204000,
+              "at": 203940,
               "since": 36000,
               "net": [
                 [
                   1,
                   -176
+                ],
+                [
+                  4,
+                  -11136
                 ]
               ],
               "chunks": 1,
               "deltas": 2,
               "unplaced": [],
-              "shortfalls": [
-                [
-                  4,
-                  32
-                ]
-              ],
-              "trims": [
-                [
-                  1,
-                  32
-                ]
-              ],
+              "shortfalls": [],
+              "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             }
           ],
           "attacks": [
@@ -3334,7 +3252,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 2,
             "state": "Running",
             "reason": null,
@@ -3369,13 +3287,11 @@
             ],
             "running": false,
             "stop": "stopped: power source 4 stopped",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 2,
             "state": "Live",
             "reason": null,
@@ -3397,12 +3313,10 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
-              "at": 192000,
+              "at": 191940,
               "since": 36000,
               "net": [
                 [
@@ -3424,15 +3338,14 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             "attacks": []
           },
           "reconciles": [
             {
               "epoch": 1,
-              "at": 192000,
+              "at": 191940,
               "since": 36000,
               "net": [
                 [
@@ -3454,8 +3367,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             }
           ],
           "attacks": []
@@ -3465,7 +3377,7 @@
           "name": "Home",
           "learned": {
             "learned": {
-              "at": 240100,
+              "at": 240000,
               "window_ticks": 12000,
               "rates": [],
               "links": [],
@@ -3478,7 +3390,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -3487,13 +3399,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -3502,51 +3412,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
-            "last_reconcile": {
-              "epoch": 1,
-              "at": 216000,
-              "since": 192000,
-              "net": [
-                [
-                  2,
-                  40
-                ]
-              ],
-              "chunks": 1,
-              "deltas": 1,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": false
-            },
+            "last_reconcile": null,
             "attacks": []
           },
-          "reconciles": [
-            {
-              "epoch": 1,
-              "at": 216000,
-              "since": 192000,
-              "net": [
-                [
-                  2,
-                  40
-                ]
-              ],
-              "chunks": 1,
-              "deltas": 1,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": false
-            }
-          ],
+          "reconciles": [],
           "attacks": []
         },
         {
@@ -3572,7 +3442,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 4,
             "state": "Running",
             "reason": null,
@@ -3591,13 +3461,11 @@
             ],
             "running": false,
             "stop": "stopped: no minecraft:coal",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 4,
             "state": "Live",
             "reason": null,
@@ -3611,12 +3479,10 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
-              "at": 192000,
+              "at": 191940,
               "since": 36000,
               "net": [
                 [
@@ -3627,23 +3493,17 @@
               "chunks": 1,
               "deltas": 1,
               "unplaced": [],
-              "shortfalls": [
-                [
-                  3,
-                  2
-                ]
-              ],
+              "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             "attacks": []
           },
           "reconciles": [
             {
               "epoch": 1,
-              "at": 192000,
+              "at": 191940,
               "since": 36000,
               "net": [
                 [
@@ -3654,16 +3514,10 @@
               "chunks": 1,
               "deltas": 1,
               "unplaced": [],
-              "shortfalls": [
-                [
-                  3,
-                  2
-                ]
-              ],
+              "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             }
           ],
           "attacks": []
@@ -3693,7 +3547,7 @@
         {
           "tick": 36000,
           "district": 1,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 36000,
@@ -3703,7 +3557,12 @@
         {
           "tick": 36000,
           "district": 2,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 36000,
+          "district": 4,
+          "what": "running"
         },
         {
           "tick": 36000,
@@ -3713,12 +3572,1881 @@
         {
           "tick": 36000,
           "district": 4,
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 36400,
+          "district": 1,
+          "what": "station exchange with train 1: -208 create:crushed_raw_iron"
+        },
+        {
+          "tick": 37800,
+          "district": 2,
+          "what": "station exchange with train 1: +208 create:crushed_raw_iron"
+        },
+        {
+          "tick": 39200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 39600,
+          "district": 2,
+          "what": "station exchange with train 2: -344 minecraft:iron_ingot"
+        },
+        {
+          "tick": 40499,
+          "district": 2,
+          "what": "breakpoint: stopped: no create:crushed_raw_iron"
+        },
+        {
+          "tick": 40600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 40700,
+          "district": 2,
+          "what": "running"
+        },
+        {
+          "tick": 42000,
+          "district": 1,
+          "what": "Natural GroundMelee x1: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 42000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 43400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 44000,
+          "district": 2,
+          "what": "station exchange with train 2: -335 minecraft:iron_ingot"
+        },
+        {
+          "tick": 44800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 46200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 47600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 48400,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 49000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 50400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 51800,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 52800,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 53200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 54600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 56000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 57200,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 57400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 58800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 60200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 61600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 61600,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 63000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 64400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 65800,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 66000,
+          "district": 1,
+          "what": "Natural GroundMelee x2: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 66000,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 67200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 68600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 70000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 70400,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 71400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 72800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 74200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 74800,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 75600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 77000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 78400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 79200,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 79800,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 81200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 82600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 83600,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 84000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 85400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 86800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 88000,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 88200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 89600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 90000,
+          "district": 1,
+          "what": "Natural GroundMelee x1: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 91000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 92400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 92400,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 93800,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 95200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 96600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 96800,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 98000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 99400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 100800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 101200,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 102200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 103600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 105000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 105600,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 106400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 107800,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 109200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 110000,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 110600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 112000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 113400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 114000,
+          "district": 1,
+          "what": "Natural GroundMelee x2: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 114400,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 114800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 116200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 117600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 118800,
+          "district": 2,
+          "what": "station exchange with train 2: -352 minecraft:iron_ingot"
+        },
+        {
+          "tick": 119000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 120365,
+          "district": 4,
+          "what": "breakpoint: stopped: no minecraft:coal"
+        },
+        {
+          "tick": 120365,
+          "district": 2,
+          "what": "breakpoint: stopped: power source 4 stopped"
+        },
+        {
+          "tick": 120400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 121800,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 123200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 123200,
+          "district": 2,
+          "what": "station exchange with train 2: -126 minecraft:iron_ingot"
+        },
+        {
+          "tick": 124600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 126000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 127400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 128800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 130200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 131600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 133000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 134400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 135800,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 137200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 138000,
+          "district": 1,
+          "what": "Natural GroundMelee x2: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 138600,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 140000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 141400,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 142800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 144200,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 145600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 147000,
+          "district": 2,
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 148400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 149800,
+          "district": 2,
+          "what": "station exchange with train 1: +198 create:crushed_raw_iron"
+        },
+        {
+          "tick": 151200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 154000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 156800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 159600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 162000,
+          "district": 1,
+          "what": "Natural GroundMelee x3: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 162400,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 165200,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 168000,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 170800,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 173600,
+          "district": 1,
+          "what": "station exchange with train 1: -224 create:crushed_raw_iron"
+        },
+        {
+          "tick": 175199,
+          "district": 1,
+          "what": "breakpoint: stopped: deposit exhausted (createoreexcavation:iron_vein)"
+        },
+        {
+          "tick": 176400,
+          "district": 1,
+          "what": "station exchange with train 1: -127 create:crushed_raw_iron"
+        },
+        {
+          "tick": 186000,
+          "district": 1,
+          "what": "Natural GroundRanged x1: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 191940,
+          "district": 2,
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 191940,
+          "district": 2,
+          "what": "reconcile epoch 1 (ahead of arrival): +2408 create:crushed_raw_iron, -56 minecraft:iron_ingot, -842 minecraft:coal in 1 chunk(s), 3 deltas"
+        },
+        {
+          "tick": 191940,
+          "district": 4,
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 191940,
+          "district": 4,
+          "what": "reconcile epoch 1 (ahead of arrival): -211 minecraft:coal in 1 chunk(s), 1 deltas"
+        },
+        {
+          "tick": 203940,
+          "district": 1,
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 203940,
+          "district": 1,
+          "what": "reconcile epoch 1 (ahead of arrival): -176 create:crushed_raw_iron, -11136 createoreexcavation:iron_vein in 1 chunk(s), 2 deltas"
+        },
+        {
+          "tick": 204000,
+          "district": 2,
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 204000,
+          "district": 4,
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 215940,
+          "district": 3,
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 216000,
+          "district": 1,
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 234000,
+          "district": 1,
+          "what": "Natural GroundMelee x3: survived 1.00 (untested defences), stole nothing, destroyed 0"
+        },
+        {
+          "tick": 239940,
+          "district": 1,
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 239940,
+          "district": 2,
+          "what": "a player is on the way: reconcile ahead of arrival"
+        },
+        {
+          "tick": 239940,
+          "district": 4,
+          "what": "a player is on the way: reconcile ahead of arrival"
+        }
+      ],
+      "world_events": [
+        {
+          "tick": 1,
+          "day": 0.000041666666666666665,
+          "what": "Ore Coast loads"
+        },
+        {
+          "tick": 1,
+          "day": 0.000041666666666666665,
+          "what": "Smelter loads"
+        },
+        {
+          "tick": 1,
+          "day": 0.000041666666666666665,
+          "what": "Home loads"
+        },
+        {
+          "tick": 1,
+          "day": 0.000041666666666666665,
+          "what": "Power Plant loads"
+        },
+        {
+          "tick": 36000,
+          "day": 1.5,
+          "what": "Ore Coast unloads"
+        },
+        {
+          "tick": 36000,
+          "day": 1.5,
+          "what": "Smelter unloads"
+        },
+        {
+          "tick": 36000,
+          "day": 1.5,
+          "what": "Power Plant unloads"
+        },
+        {
+          "tick": 192000,
+          "day": 8.0,
+          "what": "Smelter loads"
+        },
+        {
+          "tick": 192000,
+          "day": 8.0,
+          "what": "Home unloads"
+        },
+        {
+          "tick": 192000,
+          "day": 8.0,
+          "what": "Power Plant loads"
+        },
+        {
+          "tick": 204000,
+          "day": 8.5,
+          "what": "Ore Coast loads"
+        },
+        {
+          "tick": 204000,
+          "day": 8.5,
+          "what": "Smelter unloads"
+        },
+        {
+          "tick": 204000,
+          "day": 8.5,
+          "what": "Power Plant unloads"
+        },
+        {
+          "tick": 216000,
+          "day": 9.0,
+          "what": "Ore Coast unloads"
+        },
+        {
+          "tick": 216000,
+          "day": 9.0,
+          "what": "Home loads"
+        },
+        {
+          "tick": 240000,
+          "day": 10.0,
+          "what": "Ore Coast loads"
+        },
+        {
+          "tick": 240000,
+          "day": 10.0,
+          "what": "Smelter loads"
+        },
+        {
+          "tick": 240000,
+          "day": 10.0,
+          "what": "Power Plant loads"
+        }
+      ],
+      "totals": {
+        "create:crushed_raw_iron": 4729,
+        "minecraft:coal": 41,
+        "minecraft:iron_ingot": 9269
+      },
+      "engine_books": {
+        "minted": [
+          [
+            1,
+            11135
+          ],
+          [
+            2,
+            6733
+          ]
+        ],
+        "burned": [
+          [
+            1,
+            6734
+          ],
+          [
+            3,
+            1053
+          ],
+          [
+            4,
+            11136
+          ]
+        ],
+        "stolen": [],
+        "dropped": [],
+        "untracked": [],
+        "shortfall": [],
+        "trimmed": []
+      },
+      "world_books": {
+        "minted": [
+          [
+            1,
+            2864
+          ],
+          [
+            2,
+            2536
+          ]
+        ],
+        "burned": [
+          [
+            1,
+            2536
+          ],
+          [
+            3,
+            406
+          ],
+          [
+            4,
+            2864
+          ]
+        ],
+        "dropped": [],
+        "imported": [],
+        "batches": 585
+      },
+      "conservation": "ok",
+      "cluster_books": "ok",
+      "stats": {
+        "observations": 9710,
+        "models_adopted": 15,
+        "sims_started": 6,
+        "reconciles": 3,
+        "chunk_commands": 3,
+        "duplicate_results": 0,
+        "trims": 0,
+        "exchanges": 112,
+        "attacks": 8,
+        "attacks_skipped": 0,
+        "packages_written": 0,
+        "breakpoints": 4,
+        "cluster_settles": 322,
+        "reconciles_ahead": 7,
+        "pollution_pushes": 0,
+        "retired_records": 0
+      },
+      "wire_bytes": 475704,
+      "wall_ms": 362.108582
+    },
+    {
+      "name": "without approach",
+      "threats": false,
+      "tick_first": true,
+      "approach": false,
+      "control": false,
+      "districts": [
+        {
+          "id": 1,
+          "name": "Ore Coast",
+          "learned": {
+            "learned": {
+              "at": 24100,
+              "window_ticks": 12000,
+              "rates": [
+                [
+                  1,
+                  0.08
+                ],
+                [
+                  4,
+                  -0.08
+                ]
+              ],
+              "links": [],
+              "confidence": 0.9916712937257093,
+              "points": 121,
+              "longest_gap": 200,
+              "latency_ticks": 200
+            },
+            "targets": [],
+            "batches": {},
+            "season": 0
+          },
+          "before_return": {
+            "district": 1,
+            "state": "Running",
+            "reason": null,
+            "rates_per_hour": [
+              [
+                1,
+                5760.0
+              ],
+              [
+                4,
+                -5760.0
+              ]
+            ],
+            "since": 36000,
+            "made_since": [
+              [
+                1,
+                -176
+              ],
+              [
+                4,
+                -11136
+              ]
+            ],
+            "running": false,
+            "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
+            "learning_ticks_to_go": null,
+            "last_reconcile": null,
+            "attacks": [
+              {
+                "at": 42000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 1,
+                "outcome": {
+                  "through": 1.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 1,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 66000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 2,
+                "outcome": {
+                  "through": 2.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 2,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 90000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 1,
+                "outcome": {
+                  "through": 1.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 1,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 114000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 2,
+                "outcome": {
+                  "through": 2.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 2,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 138000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 2,
+                "outcome": {
+                  "through": 2.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 2,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 162000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 3,
+                "outcome": {
+                  "through": 3.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 3,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 186000,
+                "source": "Natural",
+                "class": "GroundRanged",
+                "count": 1,
+                "outcome": {
+                  "through": 1.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 1,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              }
+            ]
+          },
+          "at_end": {
+            "district": 1,
+            "state": "Live",
+            "reason": null,
+            "rates_per_hour": [
+              [
+                1,
+                5760.0
+              ],
+              [
+                4,
+                -5760.0
+              ]
+            ],
+            "since": null,
+            "made_since": [],
+            "running": null,
+            "stop": null,
+            "learning_ticks_to_go": null,
+            "last_reconcile": {
+              "epoch": 1,
+              "at": 204000,
+              "since": 36000,
+              "net": [
+                [
+                  1,
+                  -176
+                ],
+                [
+                  4,
+                  -11136
+                ]
+              ],
+              "chunks": 1,
+              "deltas": 2,
+              "unplaced": [],
+              "shortfalls": [
+                [
+                  4,
+                  32
+                ]
+              ],
+              "trims": [
+                [
+                  1,
+                  32
+                ]
+              ],
+              "untracked": [],
+              "destroyed": 0
+            },
+            "attacks": [
+              {
+                "at": 42000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 1,
+                "outcome": {
+                  "through": 1.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 1,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 66000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 2,
+                "outcome": {
+                  "through": 2.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 2,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 90000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 1,
+                "outcome": {
+                  "through": 1.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 1,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 114000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 2,
+                "outcome": {
+                  "through": 2.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 2,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 138000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 2,
+                "outcome": {
+                  "through": 2.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 2,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 162000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 3,
+                "outcome": {
+                  "through": 3.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 3,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 186000,
+                "source": "Natural",
+                "class": "GroundRanged",
+                "count": 1,
+                "outcome": {
+                  "through": 1.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 1,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              },
+              {
+                "at": 234000,
+                "source": "Natural",
+                "class": "GroundMelee",
+                "count": 3,
+                "outcome": {
+                  "through": 3.0,
+                  "defender": 0.0,
+                  "law": "Linear",
+                  "survived": 1.0,
+                  "lanchester": 1.0,
+                  "floor": null,
+                  "untested": true,
+                  "ammo_used": 0
+                },
+                "survivors": 3,
+                "stolen": [],
+                "destroyed": 0,
+                "machine_lost": false,
+                "skipped": null
+              }
+            ]
+          },
+          "reconciles": [
+            {
+              "epoch": 1,
+              "at": 204000,
+              "since": 36000,
+              "net": [
+                [
+                  1,
+                  -176
+                ],
+                [
+                  4,
+                  -11136
+                ]
+              ],
+              "chunks": 1,
+              "deltas": 2,
+              "unplaced": [],
+              "shortfalls": [
+                [
+                  4,
+                  32
+                ]
+              ],
+              "trims": [
+                [
+                  1,
+                  32
+                ]
+              ],
+              "untracked": [],
+              "destroyed": 0
+            }
+          ],
+          "attacks": [
+            {
+              "at": 42000,
+              "source": "Natural",
+              "class": "GroundMelee",
+              "count": 1,
+              "outcome": {
+                "through": 1.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 1,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            },
+            {
+              "at": 66000,
+              "source": "Natural",
+              "class": "GroundMelee",
+              "count": 2,
+              "outcome": {
+                "through": 2.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 2,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            },
+            {
+              "at": 90000,
+              "source": "Natural",
+              "class": "GroundMelee",
+              "count": 1,
+              "outcome": {
+                "through": 1.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 1,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            },
+            {
+              "at": 114000,
+              "source": "Natural",
+              "class": "GroundMelee",
+              "count": 2,
+              "outcome": {
+                "through": 2.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 2,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            },
+            {
+              "at": 138000,
+              "source": "Natural",
+              "class": "GroundMelee",
+              "count": 2,
+              "outcome": {
+                "through": 2.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 2,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            },
+            {
+              "at": 162000,
+              "source": "Natural",
+              "class": "GroundMelee",
+              "count": 3,
+              "outcome": {
+                "through": 3.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 3,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            },
+            {
+              "at": 186000,
+              "source": "Natural",
+              "class": "GroundRanged",
+              "count": 1,
+              "outcome": {
+                "through": 1.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 1,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            },
+            {
+              "at": 234000,
+              "source": "Natural",
+              "class": "GroundMelee",
+              "count": 3,
+              "outcome": {
+                "through": 3.0,
+                "defender": 0.0,
+                "law": "Linear",
+                "survived": 1.0,
+                "lanchester": 1.0,
+                "floor": null,
+                "untested": true,
+                "ammo_used": 0
+              },
+              "survivors": 3,
+              "stolen": [],
+              "destroyed": 0,
+              "machine_lost": false,
+              "skipped": null
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "Smelter",
+          "learned": {
+            "learned": {
+              "at": 27100,
+              "window_ticks": 12000,
+              "rates": [
+                [
+                  1,
+                  -0.08
+                ],
+                [
+                  2,
+                  0.08
+                ],
+                [
+                  3,
+                  -0.01
+                ]
+              ],
+              "links": [],
+              "confidence": 1.0,
+              "points": 121,
+              "longest_gap": 100,
+              "latency_ticks": 100
+            },
+            "targets": [],
+            "batches": {},
+            "season": 0
+          },
+          "before_return": {
+            "district": 2,
+            "state": "Running",
+            "reason": null,
+            "rates_per_hour": [
+              [
+                1,
+                -5760.0
+              ],
+              [
+                2,
+                5760.0
+              ],
+              [
+                3,
+                -720.0
+              ]
+            ],
+            "since": 36000,
+            "made_since": [
+              [
+                1,
+                2408
+              ],
+              [
+                2,
+                -56
+              ],
+              [
+                3,
+                -842
+              ]
+            ],
+            "running": false,
+            "stop": "stopped: power source 4 stopped",
+            "learning_ticks_to_go": null,
+            "last_reconcile": null,
+            "attacks": []
+          },
+          "at_end": {
+            "district": 2,
+            "state": "Live",
+            "reason": null,
+            "rates_per_hour": [
+              [
+                1,
+                -5760.0
+              ],
+              [
+                2,
+                5760.0
+              ],
+              [
+                3,
+                -720.0
+              ]
+            ],
+            "since": null,
+            "made_since": [],
+            "running": null,
+            "stop": null,
+            "learning_ticks_to_go": null,
+            "last_reconcile": {
+              "epoch": 1,
+              "at": 192000,
+              "since": 36000,
+              "net": [
+                [
+                  1,
+                  2408
+                ],
+                [
+                  2,
+                  -56
+                ],
+                [
+                  3,
+                  -842
+                ]
+              ],
+              "chunks": 1,
+              "deltas": 3,
+              "unplaced": [],
+              "shortfalls": [],
+              "trims": [],
+              "untracked": [],
+              "destroyed": 0
+            },
+            "attacks": []
+          },
+          "reconciles": [
+            {
+              "epoch": 1,
+              "at": 192000,
+              "since": 36000,
+              "net": [
+                [
+                  1,
+                  2408
+                ],
+                [
+                  2,
+                  -56
+                ],
+                [
+                  3,
+                  -842
+                ]
+              ],
+              "chunks": 1,
+              "deltas": 3,
+              "unplaced": [],
+              "shortfalls": [],
+              "trims": [],
+              "untracked": [],
+              "destroyed": 0
+            }
+          ],
+          "attacks": []
+        },
+        {
+          "id": 3,
+          "name": "Home",
+          "learned": {
+            "learned": {
+              "at": 123300,
+              "window_ticks": 17600,
+              "rates": [],
+              "links": [],
+              "confidence": 1.0,
+              "points": 177,
+              "longest_gap": 4400,
+              "latency_ticks": 0
+            },
+            "targets": [],
+            "batches": {},
+            "season": 0
+          },
+          "before_return": {
+            "district": 3,
+            "state": "Live",
+            "reason": null,
+            "rates_per_hour": [],
+            "since": null,
+            "made_since": [],
+            "running": null,
+            "stop": null,
+            "learning_ticks_to_go": null,
+            "last_reconcile": null,
+            "attacks": []
+          },
+          "at_end": {
+            "district": 3,
+            "state": "Live",
+            "reason": null,
+            "rates_per_hour": [],
+            "since": null,
+            "made_since": [],
+            "running": null,
+            "stop": null,
+            "learning_ticks_to_go": null,
+            "last_reconcile": null,
+            "attacks": []
+          },
+          "reconciles": [],
+          "attacks": []
+        },
+        {
+          "id": 4,
+          "name": "Power Plant",
+          "learned": {
+            "learned": {
+              "at": 24100,
+              "window_ticks": 12000,
+              "rates": [
+                [
+                  3,
+                  -0.002501016122476629
+                ]
+              ],
+              "links": [],
+              "confidence": 0.9924829524099316,
+              "points": 121,
+              "longest_gap": 400,
+              "latency_ticks": 0
+            },
+            "targets": [],
+            "batches": {},
+            "season": 0
+          },
+          "before_return": {
+            "district": 4,
+            "state": "Running",
+            "reason": null,
+            "rates_per_hour": [
+              [
+                3,
+                -180.0731608183173
+              ]
+            ],
+            "since": 36000,
+            "made_since": [
+              [
+                3,
+                -211
+              ]
+            ],
+            "running": false,
+            "stop": "stopped: no minecraft:coal",
+            "learning_ticks_to_go": null,
+            "last_reconcile": null,
+            "attacks": []
+          },
+          "at_end": {
+            "district": 4,
+            "state": "Live",
+            "reason": null,
+            "rates_per_hour": [
+              [
+                3,
+                -180.0731608183173
+              ]
+            ],
+            "since": null,
+            "made_since": [],
+            "running": null,
+            "stop": null,
+            "learning_ticks_to_go": null,
+            "last_reconcile": {
+              "epoch": 1,
+              "at": 192000,
+              "since": 36000,
+              "net": [
+                [
+                  3,
+                  -211
+                ]
+              ],
+              "chunks": 1,
+              "deltas": 1,
+              "unplaced": [],
+              "shortfalls": [
+                [
+                  3,
+                  2
+                ]
+              ],
+              "trims": [],
+              "untracked": [],
+              "destroyed": 0
+            },
+            "attacks": []
+          },
+          "reconciles": [
+            {
+              "epoch": 1,
+              "at": 192000,
+              "since": 36000,
+              "net": [
+                [
+                  3,
+                  -211
+                ]
+              ],
+              "chunks": 1,
+              "deltas": 1,
+              "unplaced": [],
+              "shortfalls": [
+                [
+                  3,
+                  2
+                ]
+              ],
+              "trims": [],
+              "untracked": [],
+              "destroyed": 0
+            }
+          ],
+          "attacks": []
+        }
+      ],
+      "engine_events": [
+        {
+          "tick": 12100,
+          "district": 1,
+          "what": "learned (window 12000 ticks, confidence 0.99): +5760/h create:crushed_raw_iron, -5760/h createoreexcavation:iron_vein"
+        },
+        {
+          "tick": 12100,
+          "district": 4,
+          "what": "learned (window 12000 ticks, confidence 0.99): -180/h minecraft:coal"
+        },
+        {
+          "tick": 15100,
+          "district": 2,
+          "what": "learned (window 12000 ticks, confidence 0.04): -5614/h create:crushed_raw_iron, +5614/h minecraft:iron_ingot, -702/h minecraft:coal"
+        },
+        {
+          "tick": 17700,
+          "district": 3,
+          "what": "learned (window 17600 ticks, confidence 1.00): idle"
+        },
+        {
+          "tick": 36000,
+          "district": 1,
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 36000,
+          "district": 1,
+          "what": "running"
+        },
+        {
+          "tick": 36000,
+          "district": 2,
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 36000,
+          "district": 4,
+          "what": "running"
+        },
+        {
+          "tick": 36000,
+          "district": 2,
           "what": "running"
         },
         {
           "tick": 36000,
           "district": 4,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 36400,
@@ -4347,48 +6075,23 @@
         },
         {
           "tick": 192000,
-          "district": 3,
-          "what": "replay starts"
-        },
-        {
-          "tick": 192000,
-          "district": 3,
-          "what": "running"
-        },
-        {
-          "tick": 192000,
           "district": 4,
           "what": "reconcile epoch 1: -211 minecraft:coal in 1 chunk(s), 1 deltas"
         },
         {
-          "tick": 195800,
-          "district": 3,
-          "what": "station exchange with train 2: +40 minecraft:iron_ingot"
-        },
-        {
           "tick": 204000,
           "district": 1,
-          "what": "reconcile epoch 1: -176 create:crushed_raw_iron in 1 chunk(s), 2 deltas"
+          "what": "reconcile epoch 1: -176 create:crushed_raw_iron, -11136 createoreexcavation:iron_vein in 1 chunk(s), 2 deltas"
         },
         {
           "tick": 204000,
           "district": 2,
-          "what": "replay starts"
-        },
-        {
-          "tick": 204000,
-          "district": 2,
-          "what": "running"
-        },
-        {
-          "tick": 204000,
-          "district": 2,
-          "what": "breakpoint: stopped: power source 4 stopped"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 204000,
           "district": 4,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 204001,
@@ -4398,12 +6101,7 @@
         {
           "tick": 216000,
           "district": 1,
-          "what": "replay starts"
-        },
-        {
-          "tick": 216000,
-          "district": 3,
-          "what": "reconcile epoch 1: +40 minecraft:iron_ingot in 1 chunk(s), 1 deltas"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 234000,
@@ -4579,32 +6277,37 @@
           ]
         ],
         "dropped": [],
+        "imported": [],
         "batches": 594
       },
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9670,
-        "models_adopted": 15,
-        "sims_started": 7,
-        "reconciles": 4,
-        "chunk_commands": 5,
+        "observations": 9686,
+        "models_adopted": 13,
+        "sims_started": 6,
+        "reconciles": 3,
+        "chunk_commands": 4,
         "duplicate_results": 0,
         "trims": 1,
-        "exchanges": 113,
+        "exchanges": 112,
         "attacks": 8,
         "attacks_skipped": 0,
         "packages_written": 0,
         "breakpoints": 4,
-        "cluster_settles": 331
+        "cluster_settles": 322,
+        "reconciles_ahead": 0,
+        "pollution_pushes": 0,
+        "retired_records": 0
       },
-      "wire_bytes": 474912,
-      "wall_ms": 11.053291999999999
+      "wire_bytes": 475840,
+      "wall_ms": 411.819769
     },
     {
-      "name": "simulated, no race",
-      "mode": "Apply",
+      "name": "ideal",
       "threats": false,
+      "tick_first": false,
+      "approach": false,
       "control": false,
       "districts": [
         {
@@ -4634,7 +6337,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 1,
             "state": "Running",
             "reason": null,
@@ -4661,8 +6364,6 @@
             ],
             "running": false,
             "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -4815,7 +6516,7 @@
               }
             ]
           },
-          "ledger_end": {
+          "at_end": {
             "district": 1,
             "state": "Live",
             "reason": null,
@@ -4833,8 +6534,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -4844,6 +6543,10 @@
                 [
                   1,
                   -176
+                ],
+                [
+                  4,
+                  -11136
                 ]
               ],
               "chunks": 1,
@@ -4852,8 +6555,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             "attacks": [
               {
@@ -5035,6 +6737,10 @@
                 [
                   1,
                   -176
+                ],
+                [
+                  4,
+                  -11136
                 ]
               ],
               "chunks": 1,
@@ -5043,8 +6749,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             }
           ],
           "attacks": [
@@ -5249,7 +6954,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 2,
             "state": "Running",
             "reason": null,
@@ -5284,13 +6989,11 @@
             ],
             "running": false,
             "stop": "stopped: power source 4 stopped",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 2,
             "state": "Live",
             "reason": null,
@@ -5312,8 +7015,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -5339,8 +7040,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             "attacks": []
           },
@@ -5369,8 +7069,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             }
           ],
           "attacks": []
@@ -5393,7 +7092,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -5402,13 +7101,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -5417,8 +7114,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -5449,7 +7144,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 4,
             "state": "Running",
             "reason": null,
@@ -5468,13 +7163,11 @@
             ],
             "running": false,
             "stop": "stopped: no minecraft:coal",
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 4,
             "state": "Live",
             "reason": null,
@@ -5488,8 +7181,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -5507,8 +7198,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             },
             "attacks": []
           },
@@ -5529,8 +7219,7 @@
               "shortfalls": [],
               "trims": [],
               "untracked": [],
-              "destroyed": 0,
-              "read_only": false
+              "destroyed": 0
             }
           ],
           "attacks": []
@@ -5560,7 +7249,7 @@
         {
           "tick": 36000,
           "district": 1,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 36000,
@@ -5570,7 +7259,12 @@
         {
           "tick": 36000,
           "district": 2,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
+        },
+        {
+          "tick": 36000,
+          "district": 4,
+          "what": "running"
         },
         {
           "tick": 36000,
@@ -5580,12 +7274,7 @@
         {
           "tick": 36000,
           "district": 4,
-          "what": "running"
-        },
-        {
-          "tick": 36000,
-          "district": 4,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 36400,
@@ -6214,48 +7903,28 @@
         },
         {
           "tick": 192000,
-          "district": 3,
-          "what": "replay starts"
-        },
-        {
-          "tick": 192000,
-          "district": 3,
-          "what": "running"
-        },
-        {
-          "tick": 192000,
           "district": 4,
           "what": "reconcile epoch 1: -211 minecraft:coal in 1 chunk(s), 1 deltas"
         },
         {
           "tick": 204000,
           "district": 1,
-          "what": "reconcile epoch 1: -176 create:crushed_raw_iron in 1 chunk(s), 2 deltas"
+          "what": "reconcile epoch 1: -176 create:crushed_raw_iron, -11136 createoreexcavation:iron_vein in 1 chunk(s), 2 deltas"
         },
         {
           "tick": 204000,
           "district": 2,
-          "what": "replay starts"
-        },
-        {
-          "tick": 204000,
-          "district": 2,
-          "what": "running"
-        },
-        {
-          "tick": 204000,
-          "district": 2,
-          "what": "breakpoint: stopped: power source 4 stopped"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 204000,
           "district": 4,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 216000,
           "district": 1,
-          "what": "replay starts"
+          "what": "replay starts (1 process(es))"
         },
         {
           "tick": 234000,
@@ -6417,14 +8086,15 @@
           ]
         ],
         "dropped": [],
+        "imported": [],
         "batches": 585
       },
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9665,
+        "observations": 9682,
         "models_adopted": 15,
-        "sims_started": 7,
+        "sims_started": 6,
         "reconciles": 3,
         "chunk_commands": 3,
         "duplicate_results": 0,
@@ -6434,15 +8104,19 @@
         "attacks_skipped": 0,
         "packages_written": 0,
         "breakpoints": 4,
-        "cluster_settles": 330
+        "cluster_settles": 322,
+        "reconciles_ahead": 0,
+        "pollution_pushes": 0,
+        "retired_records": 0
       },
-      "wire_bytes": 473616,
-      "wall_ms": 10.703023
+      "wire_bytes": 474448,
+      "wall_ms": 321.76402199999995
     },
     {
       "name": "control",
-      "mode": "Apply",
       "threats": false,
+      "tick_first": true,
+      "approach": true,
       "control": true,
       "districts": [
         {
@@ -6472,7 +8146,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 1,
             "state": "Live",
             "reason": null,
@@ -6490,13 +8164,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 1,
             "state": "Live",
             "reason": null,
@@ -6514,8 +8186,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6541,7 +8211,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 2,
             "state": "Live",
             "reason": null,
@@ -6550,13 +8220,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 2,
             "state": "Live",
             "reason": null,
@@ -6565,8 +8233,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6592,7 +8258,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -6601,13 +8267,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 3,
             "state": "Live",
             "reason": null,
@@ -6616,8 +8280,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6643,7 +8305,7 @@
             "batches": {},
             "season": 0
           },
-          "ledger_before_return": {
+          "before_return": {
             "district": 4,
             "state": "Live",
             "reason": null,
@@ -6652,13 +8314,11 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
           },
-          "ledger_end": {
+          "at_end": {
             "district": 4,
             "state": "Live",
             "reason": null,
@@ -6667,8 +8327,6 @@
             "made_since": [],
             "running": null,
             "stop": null,
-            "next_breakpoint": null,
-            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6771,12 +8429,13 @@
           ]
         ],
         "dropped": [],
+        "imported": [],
         "batches": 2337
       },
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 27392,
+        "observations": 27394,
         "models_adopted": 59,
         "sims_started": 0,
         "reconciles": 0,
@@ -6788,1178 +8447,13 @@
         "attacks_skipped": 0,
         "packages_written": 0,
         "breakpoints": 0,
-        "cluster_settles": 0
+        "cluster_settles": 0,
+        "reconciles_ahead": 0,
+        "pollution_pushes": 0,
+        "retired_records": 0
       },
-      "wire_bytes": 1242304,
-      "wall_ms": 17.602791
-    },
-    {
-      "name": "read-only",
-      "mode": "ReadOnly",
-      "threats": false,
-      "control": false,
-      "districts": [
-        {
-          "id": 1,
-          "name": "Ore Coast",
-          "learned": {
-            "learned": {
-              "at": 24100,
-              "window_ticks": 12000,
-              "rates": [
-                [
-                  1,
-                  0.08
-                ],
-                [
-                  4,
-                  -0.08
-                ]
-              ],
-              "links": [],
-              "confidence": 0.9916712937257093,
-              "points": 121,
-              "longest_gap": 200,
-              "latency_ticks": 200
-            },
-            "targets": [],
-            "batches": {},
-            "season": 0
-          },
-          "ledger_before_return": {
-            "district": 1,
-            "state": "Running",
-            "reason": null,
-            "rates_per_hour": [
-              [
-                1,
-                5760.0
-              ],
-              [
-                4,
-                -5760.0
-              ]
-            ],
-            "since": 36000,
-            "made_since": [
-              [
-                1,
-                -176
-              ],
-              [
-                4,
-                -11136
-              ]
-            ],
-            "running": false,
-            "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": null,
-            "attacks": [
-              {
-                "at": 42000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 1,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 66000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 2,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 90000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 1,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 114000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 2,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 138000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 2,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 162000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 3,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 186000,
-                "source": "Natural",
-                "class": "GroundRanged",
-                "count": 1,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              }
-            ]
-          },
-          "ledger_end": {
-            "district": 1,
-            "state": "Live",
-            "reason": null,
-            "rates_per_hour": [
-              [
-                1,
-                5760.0
-              ],
-              [
-                4,
-                -5760.0
-              ]
-            ],
-            "since": null,
-            "made_since": [],
-            "running": null,
-            "stop": null,
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": {
-              "epoch": 0,
-              "at": 240000,
-              "since": 216000,
-              "net": [
-                [
-                  1,
-                  144
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            },
-            "attacks": [
-              {
-                "at": 42000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 1,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 66000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 2,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 90000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 1,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 114000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 2,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 138000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 2,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 162000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 3,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 186000,
-                "source": "Natural",
-                "class": "GroundRanged",
-                "count": 1,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              },
-              {
-                "at": 234000,
-                "source": "Natural",
-                "class": "GroundMelee",
-                "count": 3,
-                "outcome": null,
-                "survivors": 0,
-                "stolen": [],
-                "destroyed": 0,
-                "machine_lost": false,
-                "skipped": "read-only phase"
-              }
-            ]
-          },
-          "reconciles": [
-            {
-              "epoch": 0,
-              "at": 204000,
-              "since": 36000,
-              "net": [
-                [
-                  1,
-                  -176
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            },
-            {
-              "epoch": 0,
-              "at": 240000,
-              "since": 216000,
-              "net": [
-                [
-                  1,
-                  144
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            }
-          ],
-          "attacks": [
-            {
-              "at": 42000,
-              "source": "Natural",
-              "class": "GroundMelee",
-              "count": 1,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            },
-            {
-              "at": 66000,
-              "source": "Natural",
-              "class": "GroundMelee",
-              "count": 2,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            },
-            {
-              "at": 90000,
-              "source": "Natural",
-              "class": "GroundMelee",
-              "count": 1,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            },
-            {
-              "at": 114000,
-              "source": "Natural",
-              "class": "GroundMelee",
-              "count": 2,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            },
-            {
-              "at": 138000,
-              "source": "Natural",
-              "class": "GroundMelee",
-              "count": 2,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            },
-            {
-              "at": 162000,
-              "source": "Natural",
-              "class": "GroundMelee",
-              "count": 3,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            },
-            {
-              "at": 186000,
-              "source": "Natural",
-              "class": "GroundRanged",
-              "count": 1,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            },
-            {
-              "at": 234000,
-              "source": "Natural",
-              "class": "GroundMelee",
-              "count": 3,
-              "outcome": null,
-              "survivors": 0,
-              "stolen": [],
-              "destroyed": 0,
-              "machine_lost": false,
-              "skipped": "read-only phase"
-            }
-          ]
-        },
-        {
-          "id": 2,
-          "name": "Smelter",
-          "learned": {
-            "learned": {
-              "at": 27100,
-              "window_ticks": 12000,
-              "rates": [
-                [
-                  1,
-                  -0.08
-                ],
-                [
-                  2,
-                  0.08
-                ],
-                [
-                  3,
-                  -0.01
-                ]
-              ],
-              "links": [],
-              "confidence": 1.0,
-              "points": 121,
-              "longest_gap": 100,
-              "latency_ticks": 100
-            },
-            "targets": [],
-            "batches": {},
-            "season": 0
-          },
-          "ledger_before_return": {
-            "district": 2,
-            "state": "Running",
-            "reason": null,
-            "rates_per_hour": [
-              [
-                1,
-                -5760.0
-              ],
-              [
-                2,
-                5760.0
-              ],
-              [
-                3,
-                -720.0
-              ]
-            ],
-            "since": 36000,
-            "made_since": [
-              [
-                1,
-                -152
-              ],
-              [
-                2,
-                -56
-              ],
-              [
-                3,
-                -19
-              ]
-            ],
-            "running": false,
-            "stop": "stopped: no create:crushed_raw_iron",
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": null,
-            "attacks": []
-          },
-          "ledger_end": {
-            "district": 2,
-            "state": "Live",
-            "reason": null,
-            "rates_per_hour": [
-              [
-                1,
-                -5760.0
-              ],
-              [
-                2,
-                5760.0
-              ],
-              [
-                3,
-                -720.0
-              ]
-            ],
-            "since": null,
-            "made_since": [],
-            "running": null,
-            "stop": null,
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": {
-              "epoch": 0,
-              "at": 240000,
-              "since": 204000,
-              "net": [
-                [
-                  1,
-                  2512
-                ],
-                [
-                  2,
-                  192
-                ],
-                [
-                  3,
-                  -343
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            },
-            "attacks": []
-          },
-          "reconciles": [
-            {
-              "epoch": 0,
-              "at": 192000,
-              "since": 36000,
-              "net": [
-                [
-                  1,
-                  -152
-                ],
-                [
-                  2,
-                  -56
-                ],
-                [
-                  3,
-                  -19
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            },
-            {
-              "epoch": 0,
-              "at": 240000,
-              "since": 204000,
-              "net": [
-                [
-                  1,
-                  2512
-                ],
-                [
-                  2,
-                  192
-                ],
-                [
-                  3,
-                  -343
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            }
-          ],
-          "attacks": []
-        },
-        {
-          "id": 3,
-          "name": "Home",
-          "learned": {
-            "learned": {
-              "at": 191300,
-              "window_ticks": 12000,
-              "rates": [],
-              "links": [],
-              "confidence": 1.0,
-              "points": 121,
-              "longest_gap": 0,
-              "latency_ticks": 0
-            },
-            "targets": [],
-            "batches": {},
-            "season": 0
-          },
-          "ledger_before_return": {
-            "district": 3,
-            "state": "Live",
-            "reason": null,
-            "rates_per_hour": [],
-            "since": null,
-            "made_since": [],
-            "running": null,
-            "stop": null,
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": null,
-            "attacks": []
-          },
-          "ledger_end": {
-            "district": 3,
-            "state": "Live",
-            "reason": null,
-            "rates_per_hour": [],
-            "since": null,
-            "made_since": [],
-            "running": null,
-            "stop": null,
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": {
-              "epoch": 0,
-              "at": 216000,
-              "since": 192000,
-              "net": [
-                [
-                  2,
-                  1024
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            },
-            "attacks": []
-          },
-          "reconciles": [
-            {
-              "epoch": 0,
-              "at": 216000,
-              "since": 192000,
-              "net": [
-                [
-                  2,
-                  1024
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            }
-          ],
-          "attacks": []
-        },
-        {
-          "id": 4,
-          "name": "Power Plant",
-          "learned": {
-            "learned": {
-              "at": 24100,
-              "window_ticks": 12000,
-              "rates": [
-                [
-                  3,
-                  -0.002501016122476629
-                ]
-              ],
-              "links": [],
-              "confidence": 0.9924829524099316,
-              "points": 121,
-              "longest_gap": 400,
-              "latency_ticks": 0
-            },
-            "targets": [],
-            "batches": {},
-            "season": 0
-          },
-          "ledger_before_return": {
-            "district": 4,
-            "state": "Running",
-            "reason": null,
-            "rates_per_hour": [
-              [
-                3,
-                -180.0731608183173
-              ]
-            ],
-            "since": 36000,
-            "made_since": [
-              [
-                3,
-                -211
-              ]
-            ],
-            "running": false,
-            "stop": "stopped: no minecraft:coal",
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": null,
-            "attacks": []
-          },
-          "ledger_end": {
-            "district": 4,
-            "state": "Live",
-            "reason": null,
-            "rates_per_hour": [
-              [
-                3,
-                -180.0731608183173
-              ]
-            ],
-            "since": null,
-            "made_since": [],
-            "running": null,
-            "stop": null,
-            "next_breakpoint": null,
-            "next": null,
-            "learning_ticks_to_go": null,
-            "last_reconcile": {
-              "epoch": 0,
-              "at": 240000,
-              "since": 204000,
-              "net": [
-                [
-                  3,
-                  -91
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            },
-            "attacks": []
-          },
-          "reconciles": [
-            {
-              "epoch": 0,
-              "at": 192000,
-              "since": 36000,
-              "net": [
-                [
-                  3,
-                  -211
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            },
-            {
-              "epoch": 0,
-              "at": 240000,
-              "since": 204000,
-              "net": [
-                [
-                  3,
-                  -91
-                ]
-              ],
-              "chunks": 0,
-              "deltas": 0,
-              "unplaced": [],
-              "shortfalls": [],
-              "trims": [],
-              "untracked": [],
-              "destroyed": 0,
-              "read_only": true
-            }
-          ],
-          "attacks": []
-        }
-      ],
-      "engine_events": [
-        {
-          "tick": 12100,
-          "district": 1,
-          "what": "learned (window 12000 ticks, confidence 0.99): +5760/h create:crushed_raw_iron, -5760/h createoreexcavation:iron_vein"
-        },
-        {
-          "tick": 12100,
-          "district": 4,
-          "what": "learned (window 12000 ticks, confidence 0.99): -180/h minecraft:coal"
-        },
-        {
-          "tick": 15100,
-          "district": 2,
-          "what": "learned (window 12000 ticks, confidence 0.04): -5614/h create:crushed_raw_iron, +5614/h minecraft:iron_ingot, -702/h minecraft:coal"
-        },
-        {
-          "tick": 17700,
-          "district": 3,
-          "what": "learned (window 17600 ticks, confidence 1.00): idle"
-        },
-        {
-          "tick": 36000,
-          "district": 1,
-          "what": "replay starts"
-        },
-        {
-          "tick": 36000,
-          "district": 1,
-          "what": "running"
-        },
-        {
-          "tick": 36000,
-          "district": 2,
-          "what": "replay starts"
-        },
-        {
-          "tick": 36000,
-          "district": 2,
-          "what": "running"
-        },
-        {
-          "tick": 36000,
-          "district": 4,
-          "what": "running"
-        },
-        {
-          "tick": 36000,
-          "district": 4,
-          "what": "replay starts"
-        },
-        {
-          "tick": 37899,
-          "district": 2,
-          "what": "breakpoint: stopped: no create:crushed_raw_iron"
-        },
-        {
-          "tick": 42000,
-          "district": 1,
-          "what": "Natural GroundMelee x1 skipped: read-only phase"
-        },
-        {
-          "tick": 66000,
-          "district": 1,
-          "what": "Natural GroundMelee x2 skipped: read-only phase"
-        },
-        {
-          "tick": 90000,
-          "district": 1,
-          "what": "Natural GroundMelee x1 skipped: read-only phase"
-        },
-        {
-          "tick": 114000,
-          "district": 1,
-          "what": "Natural GroundMelee x2 skipped: read-only phase"
-        },
-        {
-          "tick": 120365,
-          "district": 4,
-          "what": "breakpoint: stopped: no minecraft:coal"
-        },
-        {
-          "tick": 138000,
-          "district": 1,
-          "what": "Natural GroundMelee x2 skipped: read-only phase"
-        },
-        {
-          "tick": 162000,
-          "district": 1,
-          "what": "Natural GroundMelee x3 skipped: read-only phase"
-        },
-        {
-          "tick": 175199,
-          "district": 1,
-          "what": "breakpoint: stopped: deposit exhausted (createoreexcavation:iron_vein)"
-        },
-        {
-          "tick": 186000,
-          "district": 1,
-          "what": "Natural GroundRanged x1 skipped: read-only phase"
-        },
-        {
-          "tick": 192000,
-          "district": 2,
-          "what": "would have made: -152 create:crushed_raw_iron, -56 minecraft:iron_ingot, -19 minecraft:coal"
-        },
-        {
-          "tick": 192000,
-          "district": 3,
-          "what": "replay starts"
-        },
-        {
-          "tick": 192000,
-          "district": 3,
-          "what": "running"
-        },
-        {
-          "tick": 192000,
-          "district": 4,
-          "what": "would have made: -211 minecraft:coal"
-        },
-        {
-          "tick": 204000,
-          "district": 1,
-          "what": "would have made: -176 create:crushed_raw_iron"
-        },
-        {
-          "tick": 204000,
-          "district": 2,
-          "what": "replay starts"
-        },
-        {
-          "tick": 204000,
-          "district": 4,
-          "what": "running"
-        },
-        {
-          "tick": 204000,
-          "district": 4,
-          "what": "replay starts"
-        },
-        {
-          "tick": 205800,
-          "district": 2,
-          "what": "running"
-        },
-        {
-          "tick": 216000,
-          "district": 1,
-          "what": "replay starts"
-        },
-        {
-          "tick": 216000,
-          "district": 1,
-          "what": "running"
-        },
-        {
-          "tick": 216000,
-          "district": 3,
-          "what": "would have made: +1024 minecraft:iron_ingot"
-        },
-        {
-          "tick": 234000,
-          "district": 1,
-          "what": "Natural GroundMelee x3 skipped: read-only phase"
-        },
-        {
-          "tick": 240000,
-          "district": 1,
-          "what": "would have made: +144 create:crushed_raw_iron"
-        },
-        {
-          "tick": 240000,
-          "district": 2,
-          "what": "would have made: +2512 create:crushed_raw_iron, +192 minecraft:iron_ingot, -343 minecraft:coal"
-        },
-        {
-          "tick": 240000,
-          "district": 4,
-          "what": "would have made: -91 minecraft:coal"
-        }
-      ],
-      "world_events": [
-        {
-          "tick": 1,
-          "day": 0.000041666666666666665,
-          "what": "Ore Coast loads"
-        },
-        {
-          "tick": 1,
-          "day": 0.000041666666666666665,
-          "what": "Smelter loads"
-        },
-        {
-          "tick": 1,
-          "day": 0.000041666666666666665,
-          "what": "Home loads"
-        },
-        {
-          "tick": 1,
-          "day": 0.000041666666666666665,
-          "what": "Power Plant loads"
-        },
-        {
-          "tick": 36000,
-          "day": 1.5,
-          "what": "Ore Coast unloads"
-        },
-        {
-          "tick": 36000,
-          "day": 1.5,
-          "what": "Smelter unloads"
-        },
-        {
-          "tick": 36000,
-          "day": 1.5,
-          "what": "Power Plant unloads"
-        },
-        {
-          "tick": 192000,
-          "day": 8.0,
-          "what": "Smelter loads"
-        },
-        {
-          "tick": 192000,
-          "day": 8.0,
-          "what": "Home unloads"
-        },
-        {
-          "tick": 192000,
-          "day": 8.0,
-          "what": "Power Plant loads"
-        },
-        {
-          "tick": 204000,
-          "day": 8.5,
-          "what": "Ore Coast loads"
-        },
-        {
-          "tick": 204000,
-          "day": 8.5,
-          "what": "Smelter unloads"
-        },
-        {
-          "tick": 204000,
-          "day": 8.5,
-          "what": "Power Plant unloads"
-        },
-        {
-          "tick": 216000,
-          "day": 9.0,
-          "what": "Ore Coast unloads"
-        },
-        {
-          "tick": 216000,
-          "day": 9.0,
-          "what": "Home loads"
-        },
-        {
-          "tick": 240000,
-          "day": 10.0,
-          "what": "Ore Coast loads"
-        },
-        {
-          "tick": 240000,
-          "day": 10.0,
-          "what": "Smelter loads"
-        },
-        {
-          "tick": 240000,
-          "day": 10.0,
-          "what": "Power Plant loads"
-        }
-      ],
-      "totals": {
-        "create:crushed_raw_iron": 1344,
-        "createoreexcavation:iron_vein": 9968,
-        "minecraft:coal": 1037,
-        "minecraft:iron_ingot": 2688
-      },
-      "engine_books": {
-        "minted": [],
-        "burned": [],
-        "stolen": [],
-        "dropped": [],
-        "untracked": [],
-        "shortfall": [],
-        "trimmed": []
-      },
-      "world_books": {
-        "minted": [
-          [
-            1,
-            4032
-          ],
-          [
-            2,
-            2688
-          ]
-        ],
-        "burned": [
-          [
-            1,
-            2688
-          ],
-          [
-            3,
-            463
-          ],
-          [
-            4,
-            4032
-          ]
-        ],
-        "dropped": [],
-        "batches": 715
-      },
-      "conservation": "not applicable (read-only)",
-      "cluster_books": "ok",
-      "stats": {
-        "observations": 9539,
-        "models_adopted": 16,
-        "sims_started": 7,
-        "reconciles": 7,
-        "chunk_commands": 0,
-        "duplicate_results": 0,
-        "trims": 0,
-        "exchanges": 86,
-        "attacks": 0,
-        "attacks_skipped": 8,
-        "packages_written": 0,
-        "breakpoints": 3,
-        "cluster_settles": 295
-      },
-      "wire_bytes": 457840,
-      "wall_ms": 10.796258
+      "wire_bytes": 1242416,
+      "wall_ms": 387.326827
     }
   ],
   "comparison": [
@@ -7970,8 +8464,8 @@
       "ratio": 0.9999285714285714,
       "at_or_below_control": true,
       "within_tolerance": true,
-      "simulated_with_race": 13999,
-      "race_leak": 0
+      "without_approach": 13999,
+      "ideal": 13999
     },
     {
       "good": "minecraft:iron_ingot",
@@ -7980,8 +8474,8 @@
       "ratio": 0.9970955249569707,
       "at_or_below_control": true,
       "within_tolerance": true,
-      "simulated_with_race": 9309,
-      "race_leak": 40
+      "without_approach": 9309,
+      "ideal": 9269
     }
   ],
   "passed": true

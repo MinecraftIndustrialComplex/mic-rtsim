@@ -14,7 +14,7 @@ use std::time::Duration;
 use common::*;
 use rtsim_industry::cmd::Cmd;
 use rtsim_industry::district::Phase;
-use rtsim_industry::engine::{Engine as Industry, Mode};
+use rtsim_industry::engine::Engine as Industry;
 use rtsim_industry::fake::{FDistrict, FInventory, FakeWorld, Recipe, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{BlockFlags, InvKind, Obs, Timed};
@@ -66,7 +66,7 @@ fn mill_with(
         fence: j.dict_id(DICT_BLOCK_STATE, "minecraft:oak_fence[east=true]"),
         mill_block: j.dict_id(DICT_BLOCK_STATE, "create:millstone"),
     };
-    let mut w = FakeWorld::new(3, Tunables::default(), Mode::Apply).into_remote();
+    let mut w = FakeWorld::new(3, Tunables::default()).into_remote();
     w.machines_tick_first = tick_first;
     w.good(ids.ore.0, GoodInfo::item("test:ore", 64));
     w.good(ids.bar.0, GoodInfo::item("test:bar", 64));
@@ -170,9 +170,9 @@ fn conserves(j: &Java) {
     });
 }
 
-/// Asks for the district's ledger as the Display Source does (IND_LEDGER_REQUEST, latest-wins)
-/// and returns the IND_LEDGER line that comes back.
-fn ledger(j: &mut Java, d: DistrictId) -> rtsim_industry::cmd::LedgerLine {
+/// Asks for the district's ledger as the Display Source did (IND_LEDGER_REQUEST): under I18 no
+/// player sees simulated state, so the engine reads the record and answers nothing.
+fn ledger_is_retired(j: &mut Java, d: DistrictId) {
     let before = j.mc().ledgers.len();
     let t = j.mc().t;
     j.industry_obs(&Timed {
@@ -181,11 +181,12 @@ fn ledger(j: &mut Java, d: DistrictId) -> rtsim_industry::cmd::LedgerLine {
     });
     for _ in 0..4 {
         j.mc_tick();
-        if j.mc().ledgers.len() > before {
-            return j.mc().ledgers.last().unwrap().clone();
-        }
     }
-    panic!("no IND_LEDGER came back");
+    assert_eq!(
+        j.mc().ledgers.len(),
+        before,
+        "no IND_LEDGER comes back (I18)"
+    );
 }
 
 fn reconciles(j: &Java) -> Vec<(u64, u32, ChunkPos)> {
@@ -202,7 +203,8 @@ fn mill_engine(tag: &str) -> (std::path::PathBuf, Java) {
     (dir.clone(), Java::open(e, WorldSave::fresh()))
 }
 
-/// Learn while loaded, unload, replay, reload and reconcile; the ledger while away.
+/// Learn while loaded, unload, replay, reconcile ahead of a player who turns away, replay on,
+/// reload and reconcile.
 #[test]
 fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
     let (_dir, mut j) = mill_engine("ind-mill");
@@ -225,7 +227,8 @@ fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
         "replaying while unloaded"
     );
     assert_eq!(bars(&j, &ids), loaded_bars, "nothing runs in the world");
-    // IND_APPROACH (the Java side's H23) reaches the district as data; nothing acts on it (W16).
+    // IND_APPROACH (the Java side's H23), closing: the reconcile goes out ahead of arrival, held by
+    // Java until the chunks load; the player turns away, the hold ends and the replay goes on.
     let t = j.mc().t;
     j.industry_obs(&Timed {
         at: t,
@@ -242,18 +245,18 @@ fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
         approach.map(|a| (a.distance, a.eta_ticks, a.closing)),
         Some((120, Some(300), true))
     );
-    let line = ledger(&mut j, MILL);
-    eprintln!("ledger while away: {line:?}");
-    assert_eq!(line.district, MILL);
-    assert_eq!(line.state, 2, "learned, running abstractly");
-    let rate = |g: Good| line.goods.iter().find(|x| x.0 == g).map(|x| x.1);
-    // 8 a batch every 100 ticks: 5,760 an hour of 72,000 ticks.
+    assert_eq!(industry(&j.e, |ie| ie.stats.reconciles_ahead), 1);
     assert!(
-        rate(ids.bar).is_some_and(|r| (r - 5_760).abs() <= 60),
-        "bars per hour {:?}",
-        rate(ids.bar)
+        industry(&j.e, |ie| ie.sim_run(MILL).is_none()),
+        "held while the player comes"
     );
-    assert!(rate(ids.ore).is_some_and(|r| (r + 5_760).abs() <= 60));
+    assert!(j.mc().commands_in_flight() > 0, "Java holds the reconcile");
+    j.mc_run_until(day(2.0) + 400);
+    assert!(
+        industry(&j.e, |ie| ie.sim_run(MILL).is_some()),
+        "the player turned away: the replay goes on"
+    );
+    ledger_is_retired(&mut j, MILL);
     // Reload: the reconcile lands one tick or two after the chunks report their epochs.
     j.mc_run_until(day(3.0) + 2_000);
     let r = reconciles(&j);
@@ -264,17 +267,18 @@ fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
     );
     assert_eq!(
         industry(&j.e, |ie| ie.stats.reconciles),
-        1,
-        "one reconcile round"
+        2,
+        "two reconcile rounds: ahead of the approach, and at the load"
     );
     assert!(
-        !r.is_empty() && r.iter().all(|x| x.1 == 1),
-        "epoch 1 applied"
+        !r.is_empty() && r.iter().all(|x| x.1 == 1 || x.1 == 2),
+        "epochs 1 and 2 applied: {r:?}"
     );
-    // Two days away at 8 per 100 ticks: 3,840 bars by the replay, give or take the machine that
-    // ticks on stale stock before the reconcile (the trim keeps the books exact).
+    // Two days away at 8 per 100 ticks: 3,840 bars by the replay, less the 100 ticks it was held
+    // for the player who turned away, give or take the machine that ticks on stale stock before
+    // the reconcile (the trim keeps the books exact).
     let made = bars(&j, &ids);
-    let expect = loaded_bars + 3_840 + 160;
+    let expect = loaded_bars + 3_840 - 8 + 160;
     assert!(
         (made - expect).abs() <= 24,
         "bars {made}, expected about {expect}"
@@ -520,8 +524,8 @@ fn the_iron_line_runs_through_the_native_engine() {
         days: 10,
         threats: true,
         control: false,
-        mode: Mode::Apply,
         tick_first: true,
+        approach: true,
     };
     let t0 = std::time::Instant::now();
     let mut reference = iron_line(cfg, Tunables::default());
@@ -653,8 +657,8 @@ fn a_failed_carriage_delta_is_taken_back() {
         days: 10,
         threats: false,
         control: false,
-        mode: Mode::Apply,
         tick_first: true,
+        approach: true,
     };
     let dir = tmpdir("ind-failcar");
     let mut j = iron_java(&dir, cfg);
@@ -669,33 +673,83 @@ fn a_failed_carriage_delta_is_taken_back() {
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
-/// The industry module switch (C25, W8): off, the engine takes no latest-wins industry records and
-/// sends nothing; on again, it learns.
+/// MODULES with or without the industry bit, as the bridge sends it mid-session.
+fn switch_industry(j: &mut Java, on: bool) {
+    let Some(r) = j.reserve(
+        rtsim_jni::wire::obs::MODULES,
+        rtsim_jni::wire::obs::modules::SIZE,
+        0,
+    ) else {
+        panic!("room for MODULES")
+    };
+    let mask = if on { MODULE_INDUSTRY } else { 0 };
+    rtsim_jni::wire::put_u32(r, rtsim_jni::wire::obs::modules::MASK, mask);
+}
+
+/// The industry module switch (C25, U10, replacing W8): off, the engine ignores every industry
+/// record, journaled ones included, as the dragons and ships do; on again, Java announces its
+/// districts as at a session start and the engine learns.
 #[test]
 fn the_module_switch_holds_the_industry_engine() {
     let (_dir, mut j) = mill_engine("ind-switch");
     let _ids = mill(&mut j, 20_000, &[(0.0, true)], false);
+    // The session starts with the module off (SESSION_START carries the mask).
     j.module_mask = 0;
     j.mc_run_until(day(0.8));
-    let (phase, ingested) =
-        j.e.with_industry(|ie, l| (ie.district(MILL).map(|d| d.phase), l.ingested));
-    assert_eq!(phase, Some(Phase::Learning), "no sweeps reached it");
-    // Only the journaled declarations and load states went in.
-    assert!(ingested < 20, "ingested {ingested}");
-    // MODULES with the industry bit: sweeps flow and it learns.
-    {
-        let Some(r) = j.reserve(
-            rtsim_jni::wire::obs::MODULES,
-            rtsim_jni::wire::obs::modules::SIZE,
-            0,
-        ) else {
-            panic!("room for MODULES")
-        };
-        rtsim_jni::wire::put_u32(r, rtsim_jni::wire::obs::modules::MASK, MODULE_INDUSTRY);
-    }
+    let (known, ingested, ignored) =
+        j.e.with_industry(|ie, l| (ie.district(MILL).is_some(), l.ingested, l.ignored));
+    assert!(!known, "not even the declarations went in");
+    assert_eq!(ingested, 0);
+    assert!(ignored > 0, "every industry record was ignored and counted");
+    // MODULES with the industry bit: Java announces the district again, sweeps flow, it learns.
+    switch_industry(&mut j, true);
+    j.mc_tick();
+    j.mc_mut().announce();
     j.mc_run_until(day(1.6));
     let phase = industry(&j.e, |ie| ie.district(MILL).map(|d| d.phase));
     assert_eq!(phase, Some(Phase::Learned));
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// U10: a district replaying when the module is switched off is frozen with it, and catches up
+/// when it is switched on again: the replay covers the time it was off, and the reconcile at the
+/// next load brings it all.
+#[test]
+fn a_switched_off_industry_catches_up_when_on_again() {
+    let (_dir, mut j) = mill_engine("ind-catchup");
+    let ids = mill(
+        &mut j,
+        20_000,
+        &[(0.0, true), (1.0, false), (3.0, true)],
+        false,
+    );
+    j.mc_run_until(day(1.2));
+    assert!(industry(&j.e, |ie| ie.sim_run(MILL).is_some()), "replaying");
+    let loaded_bars = bars(&j, &ids);
+    switch_industry(&mut j, false);
+    j.mc_run_until(day(2.2));
+    let (now, ignored) = j.e.with_industry(|ie, l| (ie.now(), l.ignored));
+    assert!(now < day(1.3), "frozen while off: {now:?}");
+    let _ = ignored;
+    switch_industry(&mut j, true);
+    j.mc_tick();
+    j.mc_mut().announce();
+    j.mc_run_until(day(2.3));
+    let now = industry(&j.e, |ie| ie.now());
+    assert!(now >= day(2.2), "caught up: {now:?}");
+    assert!(
+        industry(&j.e, |ie| ie.sim_run(MILL).is_some()),
+        "replaying on"
+    );
+    j.mc_run_until(day(3.0) + 2_000);
+    // Two days away at 8 per 100 ticks, the day it was off included: 3,840 bars by the replay.
+    let made = bars(&j, &ids);
+    let expect = loaded_bars + 3_840 + 160;
+    assert!(
+        (made - expect).abs() <= 24,
+        "bars {made}, expected about {expect}"
+    );
+    conserves(&j);
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
@@ -709,8 +763,8 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
         days: 10,
         threats: false,
         control: false,
-        mode: Mode::Apply,
         tick_first: true,
+        approach: true,
     };
     let dir = tmpdir("ind-resend");
     let mut j = iron_java(&dir, cfg);
@@ -858,8 +912,8 @@ fn failed_carriage(crash: bool) {
         days: 10,
         threats: false,
         control: false,
-        mode: Mode::Apply,
         tick_first: true,
+        approach: true,
     };
     let dir = tmpdir("ind-failed");
     let mut j = iron_java(&dir, cfg);

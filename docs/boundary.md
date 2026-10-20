@@ -896,8 +896,9 @@ What the bridge must do:
    them; the lair's box decides: a dragon with no spawn type that joins inside a lair's box is a
    structure spawn (choice Z10). In Control's spawner spawns as NATURAL (verified).
 3. **Apply the engine's answer:** the engine adopts a lair's own dragon from world generation as its
-   occupant, adopts spawn-egg and command dragons as wanderers, discards natural and spawner dragons
-   (a rule the pack should no longer have) and a second structure dragon for a lair that has one,
+   occupant, adopts spawn-egg and command dragons as wanderers, leaves natural and spawner dragons alone
+   (R18 as amended by OG-1 and P13: they are In Control's, and are discarded only when the engine's
+   `adopt_natural_dragons` is set) and discards a second structure dragon for a lair that has one,
    and leaves **tamed** dragons alone (A10: a creature a player takes leaves the sim). Dragons
    hatched from eggs are tamed by Ice and Fire (verified, `DragonEggEntity.updateEggCondition`), so
    they are the player's.
