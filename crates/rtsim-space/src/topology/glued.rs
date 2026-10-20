@@ -111,10 +111,11 @@ pub struct Folded {
 }
 
 fn gap2(a: &Rect, b: &Rect) -> i64 {
-    // Doubled units: gaps between cell rectangles' closures.
-    let gx = (b.x0 - a.x1).max(a.x0 - b.x1).max(0) * 2;
-    let gz = (b.z0 - a.z1).max(a.z0 - b.z1).max(0) * 2;
-    gx * gx + gz * gz
+    // Doubled units: gaps between cell rectangles' closures (saturating: a domain unbounded along
+    // one axis, a z-only loop, has tiles astronomically far apart there).
+    let gx = (b.x0 - a.x1).max(a.x0 - b.x1).max(0).saturating_mul(2);
+    let gz = (b.z0 - a.z1).max(a.z0 - b.z1).max(0).saturating_mul(2);
+    gx.saturating_mul(gx).saturating_add(gz.saturating_mul(gz))
 }
 
 impl Glued {
@@ -156,7 +157,10 @@ impl Glued {
         let slides_z = slide(Side::North, Iso::translation(0, h))
             && slide(Side::South, Iso::translation(0, -h));
         // The tiles within the domain's diameter (doubled units), breadth first over the edges.
-        let reach2 = 4 * (w * w + h * h);
+        let reach2 = w
+            .saturating_mul(w)
+            .saturating_add(h.saturating_mul(h))
+            .saturating_mul(4);
         let mut seen: BTreeMap<(i64, i64), Iso> = BTreeMap::new();
         seen.insert((0, 0), Iso::IDENTITY);
         let mut queue = VecDeque::from([(0i64, 0i64)]);
