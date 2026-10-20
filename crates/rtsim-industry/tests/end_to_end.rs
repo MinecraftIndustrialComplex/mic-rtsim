@@ -417,3 +417,27 @@ fn the_ledger_forecasts_the_next_breakpoint() {
     let line = w.engine.drain_commands().into_iter().find_map(|c| match c { Cmd::Ledger(l) => Some(l), _ => None }).unwrap();
     assert_eq!((line.next_kind, line.next_good), (1, Some(ORE)));
 }
+
+/// A district learned in one season freezes at the next season's boundary while unloaded, unless
+/// it has a model for that season (I12).
+#[test]
+fn a_season_change_freezes_a_district_without_that_seasons_model() {
+    use rtsim_industry::obs::Conditions;
+    let mut w = mill(1_000_000, vec![(0.0, true), (0.7, false), (3.0, true)], false, Mode::Apply);
+    // Seasons of 40,000 ticks, starting at 0: season 0 until tick 40,000, then season 1.
+    w.engine.ingest(&Timed {
+        at: w.t,
+        obs: Obs::Conditions(Conditions { season: 0, season_count: 4, season_length: 40_000, season_origin: Tick(0) }),
+    });
+    w.run_until(day(0.7) + 10);
+    assert!(w.engine.sim_run(MILL).is_some(), "replaying in season 0");
+    let before = w.engine.sim_stock(MILL).unwrap().get(BAR);
+    w.run_until(Tick(40_000 + 10));
+    assert!(w.engine.sim_run(MILL).is_none(), "frozen at the boundary: no season 1 model");
+    assert_eq!(w.engine.ledger(MILL, w.t).unwrap().state, LedgerState::OutOfSeason);
+    // What it made in season 0 is kept and reconciled at the next load.
+    w.run_until(day(3.0) + 10);
+    let r = w.engine.district(MILL).unwrap().reports.back().cloned().unwrap();
+    assert!(r.net.get(BAR) >= before, "season 0's bars reconcile: {r:?}");
+    w.conservation().unwrap();
+}
