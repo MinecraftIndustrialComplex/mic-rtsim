@@ -37,9 +37,47 @@ pub struct Grant {
 /// Grants `exportable` to the candidates, best margin first (ties by direction, so the result
 /// never depends on input order). Candidates with a negative margin or no want get zero, and are
 /// still listed so their flows stop.
-pub fn allocate(exportable: Amount, mut cands: Vec<Candidate>) -> Vec<Grant> {
+pub fn allocate(exportable: Amount, cands: Vec<Candidate>) -> Vec<Grant> {
+    allocate_with(exportable, cands, false)
+}
+
+/// As [`allocate`], but with `ration` a shortage is shared in proportion to what each
+/// destination wants instead of best margin first: when two importers compete for one exporter's
+/// spare goods, best-first hands everything to whichever is shorter by the last news, which then
+/// fills and loses it to the other, back and forth (overnight choice E49). Destinations with a
+/// negative margin still get nothing.
+pub fn allocate_with(exportable: Amount, mut cands: Vec<Candidate>, ration: bool) -> Vec<Grant> {
     cands.sort_by(|a, b| b.margin.cmp(&a.margin).then(a.dir.cmp(&b.dir)));
-    let mut left = exportable.max(0);
+    let x = exportable.max(0);
+    let ok = |c: &Candidate| c.margin >= 0 && c.want > 0;
+    let wanted: i128 = cands.iter().filter(|c| ok(c)).map(|c| i128::from(c.want)).sum();
+    if ration && wanted > i128::from(x) {
+        let mut grants: Vec<Grant> = cands
+            .iter()
+            .map(|c| Grant {
+                dir: c.dir,
+                rate: if ok(c) {
+                    (i128::from(x) * i128::from(c.want) / wanted) as Amount
+                } else {
+                    0
+                },
+                quote: c.quote,
+            })
+            .collect();
+        // What floor rounding leaves goes to the one that wants most (the first among equals),
+        // so exactly `x` is granted and holding a total never ratchets it down a thousandth at a
+        // time.
+        let left = x - grants.iter().map(|g| g.rate).sum::<Amount>();
+        if left > 0
+            && let Some(k) = (0..cands.len())
+                .filter(|&k| ok(&cands[k]))
+                .max_by_key(|&k| (cands[k].want, std::cmp::Reverse(k)))
+        {
+            grants[k].rate += left;
+        }
+        return grants;
+    }
+    let mut left = x;
     cands
         .into_iter()
         .map(|c| {
@@ -69,6 +107,15 @@ mod tests {
             want,
             quote: 1,
         }
+    }
+
+    #[test]
+    fn rationing_grants_exactly_what_there_is() {
+        let g = allocate_with(100, vec![c(1, 5, 70), c(2, 9, 70), c(3, 0, 70), c(4, -1, 70)], true);
+        let rate = |e: u32| g.iter().find(|x| x.dir.edge == e).unwrap().rate;
+        assert_eq!(rate(1) + rate(2) + rate(3), 100);
+        assert_eq!(rate(4), 0);
+        assert!((rate(1) - rate(2)).abs() <= 1 && (rate(2) - rate(3)).abs() <= 1);
     }
 
     #[test]

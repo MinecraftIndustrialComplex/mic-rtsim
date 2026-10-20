@@ -25,12 +25,12 @@ use rtsim_trade::build::{MARGIN_SLACK, transport_price};
 use rtsim_trade::line::Level;
 use rtsim_trade::units::mul_div_floor;
 use rtsim_trade::{Amount, GoodId, GoodKind, Market, PRICE_ONE, Price};
-use rtsim_travel::alloc::{Candidate, allocate};
+use rtsim_travel::alloc::{Candidate, allocate_with};
 use rtsim_travel::edge::{DirRef, caravan_period, split_for_raid};
 use rtsim_travel::news::Snapshot;
 use rtsim_travel::pipeline::Pipeline;
 
-use crate::world::{Ev, Node, PacketData, World};
+use crate::world::{Cause, Ev, Node, PacketData, TraceRow, World};
 
 /// A pipeline changed: its destination must wake before the first changed arrival.
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +38,22 @@ pub(crate) struct Change {
     pub dest: usize,
     pub first: u64,
     pub delay: u64,
+    /// For the trace: the good, which pipeline (goods, raid, payment), and the rates before and
+    /// after.
+    pub good: GoodId,
+    pub kind: PipeKind,
+    pub old: Amount,
+    pub new: Amount,
+}
+
+/// Which pipeline of a direction changed (for the trace).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PipeKind {
+    Goods,
+    Raid,
+    Pay,
+    /// Cut by the coverage rule (E20).
+    Cover,
 }
 
 /// A price in `from`'s currency, in `m`'s coins: through `m`'s exchange line when the currencies
@@ -71,6 +87,9 @@ fn step(
     if !m.is_storehouse() {
         return;
     }
+    // Pipelines may be set more than once in a step (an allocation, then the coverage cut);
+    // only what differs at the end is a change the destination must wake for.
+    let before = pipe_states(node, edges);
     // 1. Inflows.
     for d in &node.out {
         let din = &edges[d.edge as usize].dirs[1 - d.dir as usize];
@@ -86,13 +105,33 @@ fn step(
     m.recompute();
     let q = cfg.trade.quantum;
 
-    // 3. Exports.
-    for g in goods.ids() {
+    // 3. Exports, in recipe order: a good before the inputs of its recipe, so an input's
+    // consumption already counts what its outputs' exports make the recipe use. (Round 1 went in
+    // id order, so a bakery exported wheat as if it baked only for itself, then baked for its
+    // bread exports too, fell below target and stopped: a two-quantum cycle.)
+    for g in m.order.clone() {
         if goods.get(g).kind != GoodKind::Item {
             continue;
         }
-        let exportable = m.exportable(g);
-        let mine = m.price(g);
+        if m.goods[g.index()].used_here {
+            m.recompute();
+        }
+        let current: Amount = node
+            .out
+            .iter()
+            .map(|d| {
+                let dir = &edges[d.edge as usize].dirs[d.dir as usize];
+                dir.goods.get(&g).map_or(0, |p| p.current_rate())
+                    + dir.raid.get(&g).map_or(0, |p| p.current_rate())
+            })
+            .sum();
+        let exportable = m.exportable_held(g, current);
+        // The ask: our price, but never above our anchor inside the band (overnight choice E45).
+        let mine = if m.rules.ask_at_anchor {
+            m.price(g).min(m.anchor(g))
+        } else {
+            m.price(g)
+        };
         let mut cands = Vec::with_capacity(node.out.len());
         for d in &node.out {
             let e = &edges[d.edge as usize];
@@ -119,7 +158,7 @@ fn step(
             // Cash we refuse can still buy our goods by barter, if the destination has a
             // surplus of something we need (PLAN.md §8.4: above twice its target a market refuses
             // cash and barters at anchor ratios).
-            let barter = barter_good_for(m, snap, goods).is_some();
+            let barter = m.rules.barter_in_flows && barter_good_for(m, snap, goods).is_some();
             let refused = pay_cur.is_none_or(|c| m.refuses(c)) && !barter;
             let tau = transport_price(goods, &cfg.trade, g, e.d, l_mint);
             // The destination's bid: its price, but never below its anchor. Above its target it
@@ -136,38 +175,80 @@ fn step(
                 (Some(v), false, true) => v - mine - tau + MARGIN_SLACK,
                 _ => -1,
             };
-            let own = snap.inflow_from(node_index, g);
             if margin < 0 && !had {
                 continue;
             }
+            // The price agreed: the destination's bid. Within its band and above it that is its
+            // anchor, so a stock wandering inside the band does not re-price every flow into it
+            // (overnight choice E45).
+            let quote = if m.rules.ask_at_anchor && gn.level >= Level::At {
+                gn.anchor
+            } else {
+                gn.price
+            };
             cands.push(Candidate {
                 dir: *d,
                 margin,
-                want: (own + gn.absorbable).max(0),
-                quote: gn.price,
+                want: snap.want_from(node_index, g, m.rules.split_among_suppliers),
+                quote,
             });
         }
+        let wants: Vec<(DirRef, Amount)> = cands.iter().map(|c| (c.dir, c.want)).collect();
         let mut total = 0;
-        for gr in allocate(exportable, cands) {
+        for gr in allocate_with(exportable, cands, m.rules.ration) {
+            let want = wants.iter().find(|w| w.0 == gr.dir).map_or(0, |w| w.1);
             let e = &mut edges[gr.dir.edge as usize];
             let delay = e.d;
             let dir = &mut e.dirs[gr.dir.dir as usize];
+            // A small move of what we can spare keeps the current rate and quote; what the
+            // destination asked for is followed exactly, so its corrections are never blocked
+            // (overnight choice E48).
+            let was = dir.goods.get(&g).map_or(0, |p| p.current_rate())
+                + dir.raid.get(&g).map_or(0, |p| p.current_rate());
+            // A rate above what we can spare is kept only while we hold a surplus, so stickiness
+            // never drains a store below its target.
+            let surplus = m.line(g).stock >= m.line(g).target;
+            let rate = if m.rules.sticky_goods && gr.rate < want && (was <= gr.rate || surplus) {
+                m.rules.sticky(was, gr.rate)
+            } else {
+                gr.rate
+            };
+            let quote = if rate == was && rate > 0 {
+                dir.goods.get(&g).map_or(gr.quote, |p| p.current_quote())
+            } else {
+                gr.quote
+            };
+            let gr = rtsim_travel::alloc::Grant {
+                dir: gr.dir,
+                rate,
+                quote,
+            };
             let (to_dest, to_raid) = split_for_raid(gr.rate, dir.predation);
             let p = dir.goods.entry(g).or_insert_with(|| Pipeline::new(delay));
+            let old = p.current_rate();
             if p.set(nb, to_dest, gr.quote) {
                 changes.push(Change {
                     dest: dir.to,
                     first: nb,
                     delay,
+                    good: g,
+                    kind: PipeKind::Goods,
+                    old,
+                    new: to_dest,
                 });
             }
             if let Some(pr) = dir.predation {
                 let rp = dir.raid.entry(g).or_insert_with(|| Pipeline::new(pr.delay));
+                let old = rp.current_rate();
                 if rp.set(nb, to_raid, 0) {
                     changes.push(Change {
                         dest: pr.haven,
                         first: nb,
                         delay: pr.delay,
+                        good: g,
+                        kind: PipeKind::Raid,
+                        old,
+                        new: to_raid,
                     });
                 }
             }
@@ -204,11 +285,12 @@ fn step(
         // The exporter refuses that cash: pay in a good it needs and we have to spare, at our
         // anchor ratio (barter at anchor ratios, PLAN.md §8.4).
         // So is cash we do not have: a broke market pays in goods too.
-        let refused = node
-            .news
-            .get(din.from)
-            .is_some_and(|s| s.good(cur).level == Level::Glut)
-            || m.stock(cur) < amount;
+        let refused = m.rules.barter_in_flows
+            && (node
+                .news
+                .get(din.from)
+                .is_some_and(|s| s.good(cur).level == Level::Glut)
+                || m.stock(cur) < amount);
         let (cur, amount) = match node.news.get(din.from).filter(|_| refused) {
             Some(snap) => match barter_good_for_payer(m, snap, goods) {
                 Some(h) if m.anchor(h) > 0 => {
@@ -228,62 +310,70 @@ fn step(
     }
     set_payments(m, node, edges, &pay, nb, changes);
 
-    // 5. Coverage: no step may take out more than there is.
+    // 5. Coverage: no step may take out more than there is. A treasury below its band that pays
+    // out more than comes in pays only what comes in (overnight choice E50): it passes its income
+    // on instead of draining to nothing and flickering between paying in full and being cut.
     for _ in 0..2 {
         let mut cut = false;
         for gi in 0..m.lines.len() {
             let l = m.lines[gi];
-            if l.rates.outflow == 0 || l.next_change().uncovered != Some(1) {
+            let income = l.rates.inflow + l.rates.cap - l.rates.cons;
+            let insolvent = m.rules.exporter_band
+                && m.goods[gi].currency
+                && l.stock < l.target - rtsim_trade::line::band(l.target)
+                && l.rates.outflow > income.max(0);
+            if l.rates.outflow == 0 || !(insolvent || l.next_change().uncovered == Some(1)) {
                 continue;
             }
             cut = true;
             let g = GoodId(gi as u16);
-            let allowed = (l.rates.inflow + l.rates.cap - l.rates.cons).max(0);
+            let allowed = income.max(0).min(l.rates.outflow);
             let total = l.rates.outflow;
-            let mut sum = 0;
+            // Every pipeline of the good leaving here, goods (with their raid share) and
+            // payments, scaled alike; what floor rounding leaves goes to the biggest, so exactly
+            // `allowed` leaves and a cut treasury holds still (overnight choice E50).
+            let mut entries: Vec<(DirRef, bool, Amount)> = Vec::new();
             for d in &node.out {
-                let e = &mut edges[d.edge as usize];
-                let delay = e.d;
-                let dir = &mut e.dirs[d.dir as usize];
-                let to = dir.to;
-                let pred = dir.predation;
-                // Goods to the destination (plus their raid share) and payments, scaled alike.
+                let dir = &edges[d.edge as usize].dirs[d.dir as usize];
                 let raid = dir.raid.get(&g).map_or(0, |r| r.current_rate());
-                if let Some(p) = dir.goods.get_mut(&g) {
-                    let was = p.current_rate() + raid;
-                    let now = mul_div_floor(was, allowed, total.max(1));
-                    let (to_dest, to_raid) = split_for_raid(now, pred);
-                    let quote = p.current_quote();
-                    if p.set(nb, to_dest, quote) {
-                        changes.push(Change {
-                            dest: to,
-                            first: nb,
-                            delay,
-                        });
+                if let Some(p) = dir.goods.get(&g) {
+                    entries.push((*d, false, p.current_rate() + raid));
+                }
+                if let Some(p) = dir.pay.get(&g) {
+                    entries.push((*d, true, p.current_rate()));
+                }
+            }
+            let mut now: Vec<Amount> = entries
+                .iter()
+                .map(|e| mul_div_floor(e.2, allowed, total.max(1)))
+                .collect();
+            let left = allowed - now.iter().sum::<Amount>();
+            if left > 0
+                && let Some(k) = (0..entries.len()).max_by_key(|&k| (entries[k].2, std::cmp::Reverse(k)))
+            {
+                now[k] += left;
+            }
+            let mut sum = 0;
+            for (k, &(d, is_pay, _)) in entries.iter().enumerate() {
+                let dir = &mut edges[d.edge as usize].dirs[d.dir as usize];
+                if is_pay {
+                    if let Some(p) = dir.pay.get_mut(&g) {
+                        p.set(nb, now[k], 0);
                     }
-                    if let Some(pr) = pred
+                } else {
+                    let pred = dir.predation;
+                    let (to_dest, to_raid) = split_for_raid(now[k], pred);
+                    if let Some(p) = dir.goods.get_mut(&g) {
+                        let quote = p.current_quote();
+                        p.set(nb, to_dest, quote);
+                    }
+                    if pred.is_some()
                         && let Some(rp) = dir.raid.get_mut(&g)
-                        && rp.set(nb, to_raid, 0)
                     {
-                        changes.push(Change {
-                            dest: pr.haven,
-                            first: nb,
-                            delay: pr.delay,
-                        });
+                        rp.set(nb, to_raid, 0);
                     }
-                    sum += now;
                 }
-                if let Some(p) = dir.pay.get_mut(&g) {
-                    let now = mul_div_floor(p.current_rate(), allowed, total.max(1));
-                    if p.set(nb, now, 0) {
-                        changes.push(Change {
-                            dest: to,
-                            first: nb,
-                            delay,
-                        });
-                    }
-                    sum += now;
-                }
+                sum += now[k];
             }
             m.lines[gi].rates.outflow = sum;
         }
@@ -292,6 +382,10 @@ fn step(
         }
     }
     m.recompute();
+
+    changes.clear();
+    let after = pipe_states(node, edges);
+    net_changes(&before, &after, edges, nb, changes);
 
     // Caravan lattices follow the volume; old segments are forgotten.
     let slots = cfg.trade.caravan_slots;
@@ -358,6 +452,90 @@ fn barter_good_for_payer(
         })
 }
 
+/// One pipeline leaving a node, as (direction, pipeline, good) with its current (rate, quote).
+type PipeState = ((DirRef, PipeKind, GoodId), (Amount, Price));
+
+/// The current rate and quote of every pipeline leaving `node`, sorted.
+fn pipe_states(node: &Node, edges: &[rtsim_travel::Edge]) -> Vec<PipeState> {
+    let mut v = Vec::new();
+    for d in &node.out {
+        let dir = &edges[d.edge as usize].dirs[d.dir as usize];
+        for (kind, map) in [
+            (PipeKind::Goods, &dir.goods),
+            (PipeKind::Raid, &dir.raid),
+            (PipeKind::Pay, &dir.pay),
+        ] {
+            for (g, p) in map {
+                let r = p.current_rate();
+                // A stopped pipeline's quote does not matter.
+                let q = if r == 0 { 0 } else { p.current_quote() };
+                v.push(((*d, kind, *g), (r, q)));
+            }
+        }
+    }
+    v.sort_unstable_by_key(|x| x.0);
+    v
+}
+
+/// The pipelines whose rate or quote differs between `before` and `after`.
+fn net_changes(
+    before: &[PipeState],
+    after: &[PipeState],
+    edges: &[rtsim_travel::Edge],
+    nb: u64,
+    changes: &mut Vec<Change>,
+) {
+    let old_of = |k: &(DirRef, PipeKind, GoodId)| {
+        before
+            .binary_search_by_key(k, |x| x.0)
+            .map_or((0, 0), |i| before[i].1)
+    };
+    for (k, now) in after {
+        let old = old_of(k);
+        if old == *now {
+            continue;
+        }
+        let (d, kind, g) = *k;
+        let e = &edges[d.edge as usize];
+        let dir = &e.dirs[d.dir as usize];
+        let (dest, delay) = match (kind, dir.predation) {
+            (PipeKind::Raid, Some(pr)) => (pr.haven, pr.delay),
+            _ => (dir.to, e.d),
+        };
+        changes.push(Change {
+            dest,
+            first: nb,
+            delay,
+            good: g,
+            kind,
+            old: old.0,
+            new: now.0,
+        });
+    }
+}
+
+/// Counts, per good, the neighbours that could answer the market's advertisement: those supplying
+/// it now and those whose news says they have it to spare (overnight choice E46).
+fn count_suppliers(s: &mut Snapshot, node: &Node) {
+    let inflows = std::mem::take(&mut s.inflows);
+    for (gi, gn) in s.goods.iter_mut().enumerate() {
+        let g = GoodId(gi as u16);
+        let n = node
+            .neighbours
+            .iter()
+            .filter(|&&j| {
+                inflows.iter().any(|x| x.0 as usize == j && x.1 == g && x.2 > 0)
+                    || node
+                        .news
+                        .get(j)
+                        .is_some_and(|sn| !sn.is_base && sn.good(g).level >= Level::At)
+            })
+            .count();
+        gn.suppliers = n.clamp(1, usize::from(u16::MAX)) as u16;
+    }
+    s.inflows = inflows;
+}
+
 /// What reaches the market at boundary `nb`, per (source, good), sorted.
 fn inflows_by_source(
     node: &Node,
@@ -403,13 +581,18 @@ fn set_payments(
             )
             .collect();
         for cur in curs {
-            let rate = pay.get(&(*d, cur)).copied().unwrap_or(0);
             let p = dir.pay.entry(cur).or_insert_with(|| Pipeline::new(delay));
+            let old = p.current_rate();
+            let rate = m.rules.sticky(old, pay.get(&(*d, cur)).copied().unwrap_or(0));
             if p.set(nb, rate, 0) {
                 changes.push(Change {
                     dest: to,
                     first: nb,
                     delay,
+                    good: cur,
+                    kind: PipeKind::Pay,
+                    old,
+                    new: rate,
                 });
             }
             m.line_mut(cur).rates.outflow += rate;
@@ -419,7 +602,7 @@ fn set_payments(
 
 impl World {
     /// Something reached market `i` at `at`; `breakpoint` when it is one of the market's own.
-    pub(crate) fn market_event(&mut self, i: usize, at: Tick, breakpoint: bool) {
+    pub(crate) fn market_event(&mut self, i: usize, at: Tick, cause: Cause) {
         self.stats.market_events += 1;
         let q = self.cfg.trade.quantum;
         let nb = q.index(at) + 1;
@@ -451,11 +634,21 @@ impl World {
                     nb,
                     &mut changes,
                 );
-                let mut s = Snapshot::of(i, m, at);
+                let mut s = Snapshot::of_after(i, m, at, node.last_sent.as_deref());
                 s.inflows = inflows_by_source(node, edges, nb);
+                count_suppliers(&mut s, node);
                 s
             })
             .expect("every node has a market");
+        let changed = changes.len() as u32;
+        let flows: Vec<(usize, GoodId, PipeKind, Amount, Amount)> = if self.trace.is_some() {
+            changes
+                .iter()
+                .map(|c| (c.dest, c.good, c.kind, c.old, c.new))
+                .collect()
+        } else {
+            Vec::new()
+        };
         for c in changes {
             self.stats.segments += 1;
             self.schedule(q.at(c.first + c.delay - 1), Ev::Wake(c.dest));
@@ -465,7 +658,35 @@ impl World {
             .last_sent
             .as_ref()
             .is_none_or(|l| snap.differs_in_kind(l));
-        if breakpoint || differs {
+        let news = cause.forces_news() || differs;
+        if let Some(trace) = self.trace.as_mut() {
+            let (diffs, cash_changed) = match self.nodes[i].last_sent.as_ref() {
+                Some(l) => (
+                    snap.goods
+                        .iter()
+                        .zip(&l.goods)
+                        .enumerate()
+                        .filter(|(_, (a, b))| a.level != b.level || a.absorbable != b.absorbable)
+                        .map(|(g, (a, b))| {
+                            (GoodId(g as u16), b.level, a.level, b.absorbable, a.absorbable)
+                        })
+                        .collect(),
+                    l.can_pay != snap.can_pay || l.refuses_cash != snap.refuses_cash,
+                ),
+                None => (Vec::new(), true),
+            };
+            trace.push(TraceRow {
+                at,
+                node: i,
+                cause,
+                changed,
+                flows,
+                news,
+                diffs,
+                cash_changed,
+            });
+        }
+        if news {
             self.emit_snapshot(i, at, snap);
         }
         if self.cfg.check_every_event {
@@ -478,8 +699,9 @@ impl World {
     pub(crate) fn emit(&mut self, i: usize, at: Tick, force: bool) {
         let m = self.market_at(i, at);
         let nb = self.cfg.trade.quantum.index(at) + 1;
-        let mut s = Snapshot::of(i, &m, at);
+        let mut s = Snapshot::of_after(i, &m, at, self.nodes[i].last_sent.as_deref());
         s.inflows = inflows_by_source(&self.nodes[i], &self.edges, nb);
+        count_suppliers(&mut s, &self.nodes[i]);
         let snap = Arc::new(s);
         let differs = self.nodes[i]
             .last_sent
@@ -568,7 +790,7 @@ impl World {
         }
         let learned = self.knowledge.deliver(self.nodes[to].actor, &p.reports, at);
         self.flush_gossip();
-        self.market_event(to, at, false);
+        self.market_event(to, at, Cause::Delivery);
         if learned > 0 {
             // Gossip moves on with the next caravans: at the speed of trade.
             self.emit(to, at, false);

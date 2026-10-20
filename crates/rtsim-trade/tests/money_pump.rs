@@ -46,7 +46,7 @@ fn market(anchor: i64, target_items: i64, stock_items: i64, treasury: i64, r: Ra
         ],
         order: vec![GoodId(0), GoodId(1)],
         base_prices: vec![None, None],
-        news_resolution_div: 8,
+        rules: rtsim_trade::tunables::Rules::default(),
     }
 }
 

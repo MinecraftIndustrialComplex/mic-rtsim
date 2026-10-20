@@ -2,3 +2,5 @@
 //! Scenario runners: headless worlds that show what a phase does.
 
 pub mod phase1;
+pub mod quiet;
+pub mod trace;

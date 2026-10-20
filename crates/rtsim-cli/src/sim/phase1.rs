@@ -17,6 +17,8 @@ use rtsim_knowledge::{ActorId, ReportId};
 use rtsim_trade::{GoodId, MILLI, PRICE_ONE};
 use rtsim_world::synth::{self, NAMES, SynthGoods};
 use rtsim_world::{Command, Side, World, WorldConfig};
+
+use super::trace::print_trace;
 use serde::Serialize;
 
 pub struct Options {
@@ -26,6 +28,10 @@ pub struct Options {
     pub check: bool,
     pub out: Option<PathBuf>,
     pub every: u64,
+    /// Days at the end whose market events are broken down by cause (0: none).
+    pub trace_days: u64,
+    /// The markets' decision rules (`Rules::parse`); `None` for the defaults.
+    pub rules: Option<rtsim_trade::Rules>,
 }
 
 #[derive(Serialize)]
@@ -265,7 +271,13 @@ pub fn run(o: Options) -> i32 {
     let mut cfg = WorldConfig::new(o.seed);
     cfg.check_every_event = o.check;
     cfg.genesis = rtsim_trade::build::Genesis::Share(500);
+    if let Some(r) = o.rules {
+        cfg.trade.rules = r;
+    }
     let (mut w, ids) = synth::build(cfg, true);
+    if o.trace_days > 0 {
+        w.enable_trace();
+    }
     let player: ActorId = w.player(0xB0B);
     let mut series = Vec::new();
     let mut script = Vec::new();
@@ -499,7 +511,13 @@ pub fn run(o: Options) -> i32 {
         0.0
     };
     println!("stats: {:?}", w.stats);
-    println!("conservation: {conservation}; events per day over the last 10 days: {last10:.1}");
+    println!(
+        "conservation: {conservation}; events per day over the last 10 days: {last10:.1} ({:.2} per market)",
+        last10 / w.nodes.len() as f64
+    );
+    if o.trace_days > 0 {
+        print_trace(&w, o.trace_days, &|i| NAMES[i].to_string());
+    }
     let report = Report {
         schema: 1,
         seed: o.seed,
@@ -549,3 +567,4 @@ fn write(dir: &Path, r: &Report) -> std::io::Result<PathBuf> {
     writeln!(f)?;
     Ok(path)
 }
+

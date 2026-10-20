@@ -47,11 +47,151 @@ pub struct Tunables {
     /// A foreign currency's holding target, as a share of the home treasury target at mint
     /// parity, in thousandths. PLACEHOLDER (P18).
     pub fx_holding_share_milli: i64,
-    /// News resolution: the absorbable rate a market advertises is rounded down to a step of its
-    /// own need over this divisor (at least one item a day), so a stock drifting by a few
-    /// thousandths is not news. Without it every refill step is a new advertisement and a closed
-    /// world never goes quiet. PLACEHOLDER (overnight choice E17).
+    /// The rules every market keeps a copy of for its own decisions.
+    pub rules: Rules,
+}
+
+/// The parts of the tunables a market decides with, copied into each market.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Rules {
+    /// News resolution: the absorbable rate a market advertises is rounded to a step of its own
+    /// need over this divisor (at least one item a day), so a stock drifting by a few thousandths
+    /// is not news. Without it every refill step is a new advertisement and a closed world never
+    /// goes quiet. PLACEHOLDER (overnight choice E17).
     pub news_resolution_div: i64,
+    /// A goods line's slack above its target, in news steps: a village with plenty eats a little
+    /// more and lets a little spoil, so an oversupply smaller than this leaves the stock at the
+    /// target (overnight choice E43). 0: nothing sinks. PLACEHOLDER.
+    pub goods_slack_steps: i64,
+    /// Coin above twice the treasury target (and foreign coin above twice its holding target) is
+    /// spent on upkeep and leaves the world, ledgered as sunk (overnight choice E43). Off: it
+    /// piles up and the market refuses cash, as round 1 did.
+    pub money_sink: bool,
+    /// A market exports anywhere in its target's band, sending less below the target so it
+    /// refills, instead of nothing until it reaches the target exactly (overnight choice E45).
+    pub exporter_band: bool,
+    /// The advertised rate is rounded up to the news step instead of toward zero, so what is left
+    /// over after rounding is a small oversupply the slack absorbs, not a shortage that creeps
+    /// the stock away from its target (overnight choice E43).
+    pub absorb_round_up: bool,
+    /// An exporter's ask is its price but never above its anchor, the mirror of the destination's
+    /// bid floor (E18), so an exporter a little under its target inside the band still sees a
+    /// margin of zero on a steady flow (overnight choice E45).
+    pub ask_at_anchor: bool,
+    /// Several suppliers answering one advertisement each answer their share: an increase split
+    /// evenly among those who could supply, a cut in proportion to what each sends (overnight
+    /// choice E46). Off: each answers the whole of it, as round 1 did.
+    pub split_among_suppliers: bool,
+    /// The advertised rate never asks to cut more than arrives (overnight choice E47).
+    pub clamp_to_inflow: bool,
+    /// Flows are paid in goods when the payee refuses cash or the payer has none (E21). Off: a
+    /// payer short of cash pays what it can sustain and the coverage rule (E20) cuts the rest
+    /// (overnight choice E48).
+    pub barter_in_flows: bool,
+    /// A flow or payment whose new rate is within one part in this of its current rate keeps its
+    /// current rate (and quote): small moves of stock-dependent terms do not ripple out as
+    /// changes and wakes (overnight choice E48). 0: off. PLACEHOLDER.
+    pub sticky_div: i64,
+    /// The smallest news step, thousandths of an item a day (E17: one item a day). PLACEHOLDER.
+    pub step_floor_milli_per_day: i64,
+    /// A shortage is shared among destinations in proportion to what each wants, not best
+    /// margin first (overnight choice E49).
+    pub ration: bool,
+    /// Stickiness also applies to goods flows a market sends from what it can spare, not only to
+    /// payments.
+    pub sticky_goods: bool,
+    /// Advertised rates and what an exporter can spare hold their last value while the
+    /// unrounded value stays within one news step of it (overnight choice E51).
+    pub hysteresis: bool,
+}
+
+impl Default for Rules {
+    fn default() -> Self {
+        Rules {
+            news_resolution_div: 8,
+            goods_slack_steps: 2,
+            money_sink: true,
+            exporter_band: true,
+            absorb_round_up: false,
+            ask_at_anchor: true,
+            split_among_suppliers: true,
+            clamp_to_inflow: true,
+            barter_in_flows: false,
+            sticky_div: 0,
+            step_floor_milli_per_day: 1_000,
+            ration: true,
+            sticky_goods: false,
+            hysteresis: true,
+        }
+    }
+}
+
+impl Rules {
+    /// The rate a pipeline now at `old` should be set to when the allocation asks for `new`:
+    /// `old` when both flow and they differ by less than one part in `sticky_div`.
+    pub fn sticky(&self, old: crate::Amount, new: crate::Amount) -> crate::Amount {
+        if self.sticky_div > 0
+            && old > 0
+            && new > 0
+            && (i128::from(new) - i128::from(old)).abs() * i128::from(self.sticky_div)
+                < i128::from(old.max(new))
+        {
+            old
+        } else {
+            new
+        }
+    }
+
+    /// Round 1's rules: no sinks, exports only at the target, advertised rates rounded toward
+    /// zero. For comparisons.
+    pub const ROUND1: Rules = Rules {
+        news_resolution_div: 8,
+        goods_slack_steps: 0,
+        money_sink: false,
+        exporter_band: false,
+        absorb_round_up: false,
+        ask_at_anchor: false,
+        split_among_suppliers: false,
+        clamp_to_inflow: false,
+        barter_in_flows: true,
+        sticky_div: 0,
+        step_floor_milli_per_day: 1_000,
+        ration: false,
+        sticky_goods: false,
+        hysteresis: false,
+    };
+
+    /// Sets rules from a comma-separated list of `name=value` (`slack=2,money=1,band=1,up=1,
+    /// ask=1,div=8`), or `round1`. For comparisons on the command line.
+    pub fn parse(spec: &str) -> Result<Rules, String> {
+        let mut r = Rules::default();
+        for part in spec.split(',').filter(|p| !p.is_empty()) {
+            if part == "round1" {
+                r = Rules::ROUND1;
+                continue;
+            }
+            let (k, v) = part.split_once('=').ok_or(format!("{part}: expected name=value"))?;
+            let n: i64 = v.parse().map_err(|_| format!("{part}: not a number"))?;
+            match k {
+                "slack" => r.goods_slack_steps = n,
+                "money" => r.money_sink = n != 0,
+                "band" => r.exporter_band = n != 0,
+                "up" => r.absorb_round_up = n != 0,
+                "ask" => r.ask_at_anchor = n != 0,
+                "split" => r.split_among_suppliers = n != 0,
+                "clamp" => r.clamp_to_inflow = n != 0,
+                "barter" => r.barter_in_flows = n != 0,
+                "sticky" => r.sticky_div = n.max(0),
+                "floor" => r.step_floor_milli_per_day = n.max(0),
+                "ration" => r.ration = n != 0,
+                "stickygoods" => r.sticky_goods = n != 0,
+                "hyst" => r.hysteresis = n != 0,
+                "div" => r.news_resolution_div = n.max(1),
+                _ => return Err(format!("unknown rule {k}")),
+            }
+        }
+        Ok(r)
+    }
 }
 
 impl Default for Tunables {
@@ -65,7 +205,7 @@ impl Default for Tunables {
             caravan_slots: 6,
             craft_share_milli: 100,
             fx_holding_share_milli: 250,
-            news_resolution_div: 8,
+            rules: Rules::default(),
         }
     }
 }

@@ -8,7 +8,8 @@
 //! ```text
 //! pre  = S + inflow - outflow - consumption
 //! prod = clamp(target - pre, 0, capacity)        // the three production regimes in one line
-//! S'   = pre + prod, and if S' < 0 consumption falls short by -S' and S' = 0
+//! sink = clamp(pre - ceiling, 0, slack)          // what is spent or spoils above the ceiling
+//! S'   = pre + prod - sink, and if S' < 0 consumption falls short by -S' and S' = 0
 //! ```
 //!
 //! `prod` is PLAN.md §8.4's three regimes: below the target the market produces at capacity, at
@@ -18,12 +19,21 @@
 //! (overnight choice E6). Outflow is never cut by the law: the market's owner must keep outflow
 //! covered, and [`Line::next_change`] reports the boundary before a step that would not be.
 //!
+//! `sink` is the mirror of production (overnight choice E43): above its ceiling a line loses up
+//! to `slack` a quantum. For goods the ceiling is the target and the slack a small share of the
+//! line's own consumption (a village with plenty eats a little more and lets a little spoil), so a
+//! small oversupply leaves the stock exactly at the target instead of creeping away from it; for
+//! money the ceiling is twice the target and the slack unlimited (coin beyond it is spent on
+//! upkeep), so a surplus village's treasury stops growing. What sinks is ledgered
+//! ([`Book::sunk`]), so conservation stays exact.
+//!
 //! # The closed form
 //!
 //! With constant rates the trajectory is at most a handful of linear pieces (fall to the target,
-//! one step onto it, sit there; or climb at capacity, step onto the target, rise above it; or drain
-//! to zero and sit empty). [`Line::plan`] lists them, so [`Line::advance`] over any number of
-//! quanta and [`Line::next_change`] cost O(1), whatever the elapsed time (A15).
+//! one step onto it, sit there; or climb at capacity, step onto the target, rise to the ceiling,
+//! sit there sinking; or drain to zero and sit empty). [`Line::plan`] lists them, so
+//! [`Line::advance`] over any number of quanta and [`Line::next_change`] cost O(1), whatever the
+//! elapsed time (A15).
 
 use crate::units::Amount;
 
@@ -38,7 +48,13 @@ pub struct Rates {
     pub inflow: Amount,
     /// Departures into pipelines (flows and payments), summed.
     pub outflow: Amount,
+    /// Most the line loses per quantum above its ceiling ([`Line::ceiling`]): spoilage and plenty
+    /// for goods, upkeep for money ([`UNLIMITED`]). Zero: nothing sinks.
+    pub slack: Amount,
 }
+
+/// A slack with no limit: everything above the ceiling sinks at the next boundary.
+pub const UNLIMITED: Amount = 1 << 60;
 
 /// Cumulative accounting, for the conservation ledger.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -55,6 +71,9 @@ pub struct Book {
     pub genesis: i128,
     /// Destroyed (a dragon eats the cargo).
     pub destroyed: i128,
+    /// Lost above the ceiling: spoilage and plenty for goods, upkeep for money (overnight choice
+    /// E43).
+    pub sunk: i128,
     /// Moved in or out by lump transfers the engine makes itself (an individual caravan selling
     /// its cargo, a robbed caravan's stock going to a haven): two-sided, so these net to zero
     /// across the world.
@@ -63,23 +82,46 @@ pub struct Book {
 }
 
 /// What a stock level means to news and decisions.
+///
+/// The levels are bands around the target, not points (overnight choice E44): `At` is the band
+/// `target ± target / BAND_DIV`. A stock wandering a little around its target is not news and
+/// changes no decision; only leaving the band is a breakpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
+    /// Out, or nearly: at most a quarter of the band (overnight choice E44), so a starved store
+    /// flickering between nothing and a few thousandths is not news.
     Empty,
+    /// Below the target's band.
     Below,
+    /// Within the target's band.
     At,
-    /// Above the target, at most twice it.
+    /// Above the band, at most twice the target.
     Above,
     /// More than twice the target: absorbs nothing, and for money, refuses cash.
     Glut,
 }
 
+/// The half-width of the target's band is the target over this. PLACEHOLDER (overnight choice
+/// E44): an eighth, the same share as the news resolution.
+pub const BAND_DIV: Amount = 8;
+
+/// The half-width of `target`'s band.
+pub const fn band(target: Amount) -> Amount {
+    if target <= 0 { 0 } else { target / BAND_DIV }
+}
+
+/// The top of the `Empty` level: a quarter of the band.
+pub const fn empty_edge(target: Amount) -> Amount {
+    band(target) / 4
+}
+
 pub fn level_of(stock: Amount, target: Amount) -> Level {
-    if stock <= 0 {
+    let w = band(target);
+    if stock <= empty_edge(target) {
         Level::Empty
-    } else if stock < target {
+    } else if stock < target - w {
         Level::Below
-    } else if stock == target {
+    } else if stock <= target + w {
         Level::At
     } else if stock <= target.saturating_mul(2) {
         Level::Above
@@ -99,6 +141,8 @@ pub struct Seg {
     pub prod: Amount,
     /// Consumption shortfall per step (the stock is empty).
     pub short: Amount,
+    /// Lost above the ceiling per step.
+    pub sink: Amount,
 }
 
 pub const FOREVER: u64 = u64::MAX;
@@ -107,7 +151,7 @@ pub const FOREVER: u64 = u64::MAX;
 #[derive(Clone, Copy, Debug)]
 pub struct Plan {
     pub start: Amount,
-    segs: [Seg; 8],
+    segs: [Seg; 10],
     n: usize,
 }
 
@@ -130,6 +174,8 @@ pub struct Change {
 pub struct Line {
     pub stock: Amount,
     pub target: Amount,
+    /// Where sinking starts, at least the target (overnight choice E43).
+    pub ceiling: Amount,
     pub rates: Rates,
     pub book: Book,
 }
@@ -144,6 +190,7 @@ impl Line {
         Line {
             stock,
             target,
+            ceiling: target,
             ..Line::default()
         }
     }
@@ -166,47 +213,74 @@ impl Line {
                 delta: 0,
                 prod: 0,
                 short: 0,
-            }; 8],
+                sink: 0,
+            }; 10],
             n: 0,
         };
-        let push = |p: &mut Plan, len: u64, delta: Amount, prod: Amount, short: Amount| {
+        let push = |p: &mut Plan, len: u64, delta: i128, prod: i128, short: i128, sink: i128| {
             assert!(p.n < p.segs.len(), "line plan too long: {self:?}");
+            let to = |x: i128| Amount::try_from(x).expect("line amount overflow");
             p.segs[p.n] = Seg {
                 len,
-                delta,
-                prod,
-                short,
+                delta: to(delta),
+                prod: to(prod),
+                short: to(short),
+                sink: to(sink),
             };
             p.n += 1;
         };
         let t = i128::from(self.target);
+        let hi = i128::from(self.ceiling.max(self.target));
         let cap = i128::from(self.rates.cap.max(0));
+        let slack = i128::from(self.rates.slack.max(0));
         let a = i128::from(self.net_without_production());
         let mut s = i128::from(self.stock.max(0));
-        let to = |x: i128| Amount::try_from(x).expect("line amount overflow");
         let steps = |x: i128| u64::try_from(x).expect("negative step count");
         loop {
             let pre = s + a;
-            if pre >= t {
-                // Above (or onto) the target: nothing is produced.
-                if a >= 0 {
-                    push(&mut plan, FOREVER, to(a), 0, 0);
+            if pre > hi {
+                // Above the ceiling: nothing is produced, and up to the slack sinks.
+                if pre - slack >= hi {
+                    let d = a - slack;
+                    if d >= 0 {
+                        push(&mut plan, FOREVER, d, 0, 0, slack);
+                        break;
+                    }
+                    // Falling with the whole slack sinking: every step that stays at or above the
+                    // ceiling. At least one, since s + d >= hi.
+                    let count = (s - hi) / (-d);
+                    push(&mut plan, steps(count), d, 0, 0, slack);
+                    s += count * d;
+                    continue;
+                }
+                // One step onto the ceiling, sinking just the excess.
+                push(&mut plan, 1, hi - s, 0, 0, pre - hi);
+                s = hi;
+                if a >= 0 && a <= slack {
+                    // The upper fixed point: the sink matches the net gain.
+                    push(&mut plan, FOREVER, 0, 0, 0, a);
                     break;
                 }
-                // Falling: every step whose result stays at or above the target. At least one,
-                // since pre >= t means s - t >= -a.
-                let count = (s - t) / (-a);
-                push(&mut plan, steps(count), to(a), 0, 0);
+                continue;
+            }
+            if pre >= t {
+                // Between the target and the ceiling: nothing is produced or sunk.
+                if a == 0 {
+                    push(&mut plan, FOREVER, 0, 0, 0, 0);
+                    break;
+                }
+                let count = if a > 0 { (hi - s) / a } else { (s - t) / (-a) };
+                push(&mut plan, steps(count), a, 0, 0, 0);
                 s += count * a;
                 continue;
             }
             if pre >= t - cap {
                 // One step onto the target, producing just enough.
-                push(&mut plan, 1, to(t - s), to(t - pre), 0);
+                push(&mut plan, 1, t - s, t - pre, 0, 0);
                 s = t;
                 if a <= 0 && a >= -cap {
                     // The fixed point: production matches the net drain.
-                    push(&mut plan, FOREVER, 0, to(-a), 0);
+                    push(&mut plan, FOREVER, 0, -a, 0, 0);
                     break;
                 }
                 continue;
@@ -216,10 +290,10 @@ impl Line {
             if pre + cap < 0 {
                 // This step empties the store; consumption (and, if it is not enough, outflow)
                 // falls short.
-                push(&mut plan, 1, to(-s), to(cap), to(-(pre + cap)));
+                push(&mut plan, 1, -s, cap, -(pre + cap), 0);
                 s = 0;
                 if d < 0 {
-                    push(&mut plan, FOREVER, 0, to(cap), to(-d));
+                    push(&mut plan, FOREVER, 0, cap, -d, 0);
                     break;
                 }
                 continue;
@@ -227,17 +301,17 @@ impl Line {
             if d > 0 {
                 // Climbing toward the target: every step that stays below the onto-target band.
                 let count = ceil_div(t - cap - a - s, d);
-                push(&mut plan, steps(count), to(d), to(cap), 0);
+                push(&mut plan, steps(count), d, cap, 0, 0);
                 s += count * d;
                 continue;
             }
             if d == 0 {
-                push(&mut plan, FOREVER, 0, to(cap), 0);
+                push(&mut plan, FOREVER, 0, cap, 0, 0);
                 break;
             }
             // Draining at capacity: every step that leaves the stock non-negative.
             let count = s / (-d);
-            push(&mut plan, steps(count), to(d), to(cap), 0);
+            push(&mut plan, steps(count), d, cap, 0, 0);
             s += count * d;
         }
         plan
@@ -257,6 +331,7 @@ impl Line {
             self.stock = Amount::try_from(i128::from(self.stock) + i128::from(seg.delta) * k128)
                 .expect("stock overflow");
             self.book.produced += i128::from(seg.prod) * k128;
+            self.book.sunk += i128::from(seg.sink) * k128;
             self.book.consumed += i128::from(r.cons - seg.short) * k128;
             self.book.arrived += i128::from(r.inflow) * k128;
             self.book.departed += i128::from(r.outflow) * k128;
@@ -306,6 +381,39 @@ impl Line {
     }
 }
 
+impl Line {
+    /// The first step after which whether the stock is above `threshold` differs from now: for a
+    /// currency line, whose only level that changes a decision is twice its target (cash refused,
+    /// overnight choice E47).
+    pub fn next_crossing(&self, threshold: Amount) -> Option<u64> {
+        let plan = self.plan();
+        let above = self.stock > threshold;
+        let (th, mut s) = (i128::from(threshold), i128::from(self.stock));
+        let mut done: u64 = 0;
+        for seg in plan.segs() {
+            let d = i128::from(seg.delta);
+            let j = if above && d < 0 {
+                Some(ceil_div(s - th, -d))
+            } else if !above && d > 0 {
+                Some(ceil_div(th + 1 - s, d))
+            } else {
+                None
+            };
+            if let Some(j) = j.and_then(|j| u64::try_from(j.max(1)).ok())
+                && j <= seg.len
+            {
+                return Some(done.saturating_add(j));
+            }
+            if seg.len == FOREVER {
+                return None;
+            }
+            s += d * i128::from(seg.len);
+            done += seg.len;
+        }
+        None
+    }
+}
+
 /// The first step `j` in `1..=len` at which `level_of(s + j·delta)` differs from `from`.
 fn first_level_change(s: Amount, delta: Amount, len: u64, t: Amount, from: Level) -> Option<u64> {
     if len == 0 {
@@ -319,12 +427,15 @@ fn first_level_change(s: Amount, delta: Amount, len: u64, t: Amount, from: Level
     if delta == 0 {
         return None;
     }
+    let w = i128::from(band(t));
+    let z = i128::from(empty_edge(t));
     let (s, d, t) = (i128::from(s), i128::from(delta), i128::from(t));
-    // Smallest j with s + j·d crossing the threshold that ends `from`'s band in d's direction.
+    // Smallest j with s + j·d crossing the edge that ends `from`'s band in d's direction.
     let j = if d > 0 {
         match from {
-            Level::Empty | Level::At => Some(1),
-            Level::Below => Some(ceil_div(t - s, d)),
+            Level::Empty => Some(ceil_div(z + 1 - s, d)),
+            Level::Below => Some(ceil_div(t - w - s, d)),
+            Level::At => Some(ceil_div(t + w + 1 - s, d)),
             Level::Above => Some(ceil_div(2 * t + 1 - s, d)),
             Level::Glut => None,
         }
@@ -332,9 +443,9 @@ fn first_level_change(s: Amount, delta: Amount, len: u64, t: Amount, from: Level
         let e = -d;
         match from {
             Level::Glut => Some(ceil_div(s - 2 * t, e)),
-            Level::Above => Some(ceil_div(s - t, e)),
-            Level::At => Some(1),
-            Level::Below => Some(ceil_div(s, e)),
+            Level::Above => Some(ceil_div(s - t - w, e)),
+            Level::At => Some((s - t + w).div_euclid(e) + 1),
+            Level::Below => Some(ceil_div(s - z, e)),
             Level::Empty => None,
         }
     }?;
@@ -352,7 +463,9 @@ mod tests {
         let r = l.rates;
         let pre = l.stock + r.inflow - r.outflow - r.cons;
         let prod = (l.target - pre).clamp(0, r.cap.max(0));
-        let mut post = pre + prod;
+        let sink = (pre - l.ceiling.max(l.target)).clamp(0, r.slack.max(0));
+        l.book.sunk += i128::from(sink);
+        let mut post = pre + prod - sink;
         let mut short = 0;
         if post < 0 {
             short = -post;
@@ -370,11 +483,13 @@ mod tests {
         Line {
             stock,
             target,
+            ceiling: target,
             rates: Rates {
                 cap,
                 cons,
                 inflow,
                 outflow,
+                slack: 0,
             },
             book: Book::default(),
         }
@@ -404,13 +519,37 @@ mod tests {
     }
 
     #[test]
+    fn sinks_above_the_ceiling() {
+        // A small oversupply at the target sinks: the stock stays put.
+        let mut l = line(100, 100, 30, 10, 14, 0);
+        l.rates.slack = 5;
+        l.advance(10);
+        assert_eq!(l.stock, 100);
+        assert_eq!(l.book.sunk, 40);
+        // More than the slack: the stock rises by the difference.
+        let mut l = line(100, 100, 30, 10, 20, 0);
+        l.rates.slack = 5;
+        l.advance(4);
+        assert_eq!(l.stock, 120);
+        // Money: unlimited slack above twice the target holds the treasury at the ceiling.
+        let mut m = line(150, 100, 0, 0, 40, 0);
+        m.ceiling = 200;
+        m.rates.slack = UNLIMITED;
+        m.advance(10);
+        assert_eq!(m.stock, 200);
+        assert_eq!(m.book.sunk, 150 + 400 - 200);
+        assert_eq!(m.level(), Level::Above);
+    }
+
+    #[test]
     fn breakpoints() {
         let l = line(0, 100, 30, 10, 0, 0);
         assert_eq!(l.next_change().level, Some(1)); // Empty to Below at once.
         let l = line(20, 100, 30, 10, 0, 0);
         assert_eq!(l.next_change().level, Some(4)); // 40, 60, 80, then 100.
+        // Down into the target's band (88 to 112) at 110.
         let l = line(150, 100, 0, 10, 0, 0);
-        assert_eq!(l.next_change().level, Some(5));
+        assert_eq!(l.next_change().level, Some(4));
         // Outflow bigger than everything coming in: uncovered once the stock is gone.
         let l = line(35, 100, 0, 0, 0, 10);
         let c = l.next_change();
@@ -422,8 +561,10 @@ mod tests {
         /// The closed form matches the step-by-step law exactly, stock and books, for any
         /// number of steps and any split of them.
         #[test]
-        fn closed_form_matches_steps(stock in 0i64..10_000, target in 0i64..5_000, cap in 0i64..500, cons in 0i64..500, inflow in 0i64..500, outflow in 0i64..500, n in 0u64..200, cut in 0u64..200) {
-            let base = line(stock, target, cap, cons, inflow, outflow);
+        fn closed_form_matches_steps(stock in 0i64..10_000, target in 0i64..5_000, cap in 0i64..500, cons in 0i64..500, inflow in 0i64..500, outflow in 0i64..500, n in 0u64..200, cut in 0u64..200, slack in prop_oneof![Just(0i64), 0i64..300, Just(UNLIMITED)], above in prop_oneof![Just(0i64), 0i64..5_000]) {
+            let mut base = line(stock, target, cap, cons, inflow, outflow);
+            base.rates.slack = slack;
+            base.ceiling = target + above;
             let mut stepped = base;
             let mut uncovered_at = None;
             for i in 0..n {

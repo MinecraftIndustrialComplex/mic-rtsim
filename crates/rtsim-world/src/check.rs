@@ -33,7 +33,7 @@ impl World {
                 seen.add(k, i128::from(l.stock));
                 let b = l.book;
                 book.mint(k, b.genesis + b.produced + b.player_in);
-                book.burn(k, b.consumed + b.player_out + b.destroyed);
+                book.burn(k, b.consumed + b.player_out + b.destroyed + b.sunk);
             }
         }
         let b = self.cfg.trade.quantum.index(at);

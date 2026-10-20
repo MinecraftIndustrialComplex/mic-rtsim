@@ -514,7 +514,7 @@ impl World {
             };
             self.replan(c, leg, Stage::Returning);
         }
-        self.market_event(node, at, false);
+        self.market_event(node, at, crate::world::Cause::Arrival);
         if learned > 0 {
             self.emit(node, at, false);
         }

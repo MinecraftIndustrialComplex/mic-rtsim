@@ -25,5 +25,6 @@ pub mod world;
 
 pub use caravans::{Attack, CaravanOutcome};
 pub use config::WorldConfig;
+pub use flows::PipeKind;
 pub use observe::Side;
-pub use world::{CaravanId, Command, NodeData, Outside, Stats, World};
+pub use world::{CaravanId, Cause, Command, NodeData, Outside, Stats, TraceRow, World};

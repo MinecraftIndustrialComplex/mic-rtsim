@@ -102,7 +102,7 @@ impl World {
             self.knowledge.witness(actor, id, at);
             self.flush_gossip();
             // A trade moves the stock, and with it the price: news, even with no breakpoint.
-            self.market_event(i, at, true);
+            self.market_event(i, at, crate::world::Cause::Player);
         }
         result
     }
@@ -135,6 +135,6 @@ impl World {
         self.markets
             .apply(region, at, |m, at| m.record_base_trade(g, price, at))
             .expect("every node has a market");
-        self.market_event(i, at, true);
+        self.market_event(i, at, crate::world::Cause::Player);
     }
 }

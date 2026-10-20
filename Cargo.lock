@@ -312,6 +312,7 @@ dependencies = [
  "libc",
  "rtsim-kernel",
  "rtsim-knowledge",
+ "rtsim-settle",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",

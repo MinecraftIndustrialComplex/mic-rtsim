@@ -396,7 +396,7 @@ pub fn make_market(
             goods: states,
             order,
             base_prices: vec![None; g_n],
-            news_resolution_div: tun.news_resolution_div,
+            rules: tun.rules,
         };
         m.recompute();
         m

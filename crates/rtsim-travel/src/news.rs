@@ -23,6 +23,12 @@ pub struct GoodNews {
     /// asks for less).
     pub absorbable: Amount,
     pub level: Level,
+    /// How many neighbours could answer the advertisement (those supplying the good now and those
+    /// whose news says they have it to spare), at least 1. Each answers its share of an increase,
+    /// so several suppliers do not all fill the same shortage (overnight choice E46).
+    pub suppliers: u16,
+    /// A currency line (the treasury or an exchange line).
+    pub currency: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +51,12 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub fn of(market: usize, m: &Market, at: Tick) -> Snapshot {
+        Self::of_after(market, m, at, None)
+    }
+
+    /// A snapshot whose advertised rates hold those of `prev` (the last one sent) where they
+    /// have not moved by a news step (overnight choice E51).
+    pub fn of_after(market: usize, m: &Market, at: Tick, prev: Option<&Snapshot>) -> Snapshot {
         let goods = (0..m.lines.len())
             .map(|i| {
                 let g = GoodId(i as u16);
@@ -54,8 +66,10 @@ impl Snapshot {
                     anchor: m.anchor(g),
                     stock: l.stock,
                     target: l.target,
-                    absorbable: m.absorbable(g),
+                    absorbable: m.absorbable_held(g, prev.map(|p| p.good(g).absorbable)),
                     level: l.level(),
+                    suppliers: 1,
+                    currency: m.good(g).currency,
                 }
             })
             .collect();
@@ -80,6 +94,40 @@ impl Snapshot {
             .map_or(0, |i| self.inflows[i].2)
     }
 
+    /// Everything reaching the market of `g` when the snapshot was taken.
+    pub fn inflow_total(&self, g: GoodId) -> Amount {
+        self.inflows
+            .iter()
+            .filter(|x| x.1 == g)
+            .map(|x| x.2)
+            .sum()
+    }
+
+    /// What `source` should send of `g` by this news: what it was sending plus its share of the
+    /// advertised change. An increase is split evenly among the possible suppliers; a cut falls
+    /// on the current suppliers in proportion to what each sends (overnight choice E46). With
+    /// `split` off, every supplier answers the whole advertisement, as round 1 did.
+    pub fn want_from(&self, source: usize, g: GoodId, split: bool) -> Amount {
+        let own = self.inflow_from(source, g);
+        let gn = self.good(g);
+        let adv = gn.absorbable;
+        if !split {
+            return (own + adv).max(0);
+        }
+        let change = if adv >= 0 {
+            let n = i64::from(gn.suppliers.max(1));
+            (adv + n - 1) / n
+        } else {
+            let total = self.inflow_total(g);
+            if total > 0 {
+                (i128::from(adv) * i128::from(own) / i128::from(total)) as Amount
+            } else {
+                adv
+            }
+        };
+        (own + change).max(0)
+    }
+
     pub fn good(&self, g: GoodId) -> &GoodNews {
         &self.goods[g.index()]
     }
@@ -87,14 +135,20 @@ impl Snapshot {
     /// Whether the decisions it drives would differ from `other`'s: levels, absorbable rates,
     /// whether it can pay or refuses cash, and which foreign currencies it holds. Price alone,
     /// which moves with every unit of stock, does not count (overnight choice E11).
+    ///
+    /// For a currency line only what a payer decides by counts: whether the market holds any
+    /// (it is paid in its own coin if it does) and whether it refuses it. A treasury drifting
+    /// between levels changes no decision, so it is not news (overnight choice E47).
     pub fn differs_in_kind(&self, other: &Snapshot) -> bool {
         self.can_pay != other.can_pay
             || self.refuses_cash != other.refuses_cash
-            || self
-                .goods
-                .iter()
-                .zip(&other.goods)
-                .any(|(a, b)| a.level != b.level || a.absorbable != b.absorbable)
+            || self.goods.iter().zip(&other.goods).any(|(a, b)| {
+                if a.currency {
+                    (a.stock > 0) != (b.stock > 0) || (a.level == Level::Glut) != (b.level == Level::Glut)
+                } else {
+                    a.level != b.level || a.absorbable != b.absorbable
+                }
+            })
     }
 }
 

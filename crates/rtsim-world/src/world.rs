@@ -95,6 +95,47 @@ pub struct Outside {
     pub destroyed: BTreeMap<GoodId, i128>,
 }
 
+/// Why a market event ran (for the trace and the quiescence diagnostics).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Cause {
+    /// One of the market's own breakpoints.
+    Breakpoint,
+    /// A pipeline's arrivals change.
+    Wake,
+    /// A news packet arrived.
+    Delivery,
+    /// An individual caravan arrived.
+    Arrival,
+    /// A player traded (at a storehouse or a base).
+    Player,
+}
+
+impl Cause {
+    /// Whether the event sends news even when nothing changed in kind.
+    pub fn forces_news(self) -> bool {
+        matches!(self, Cause::Breakpoint | Cause::Player)
+    }
+}
+
+/// One market event, as the trace records it ([`World::trace`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceRow {
+    pub at: Tick,
+    pub node: usize,
+    pub cause: Cause,
+    /// Pipelines whose rate changed.
+    pub changed: u32,
+    /// Which: (destination, good, pipeline, rate before, rate after).
+    pub flows: Vec<(usize, GoodId, crate::flows::PipeKind, Amount, Amount)>,
+    /// Whether a snapshot went out.
+    pub news: bool,
+    /// Goods whose level or advertised rate differs from the last snapshot sent, with the levels
+    /// (last sent, now) and advertised rates (last sent, now).
+    pub diffs: Vec<(GoodId, rtsim_trade::Level, rtsim_trade::Level, Amount, Amount)>,
+    /// Whether `can_pay` or `refuses_cash` changed.
+    pub cash_changed: bool,
+}
+
 /// Counters for the profiler, the bench and the quiescence test.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -141,9 +182,17 @@ pub struct World {
     /// Each culture's mint cost, worker-days per coin.
     pub mint_cost: [f64; 2],
     pub(crate) now: Tick,
+    /// Every market event, when enabled ([`World::enable_trace`]). Diagnostics only: it grows
+    /// with time.
+    pub trace: Option<Vec<TraceRow>>,
 }
 
 impl World {
+    /// Starts recording every market event in [`World::trace`].
+    pub fn enable_trace(&mut self) {
+        self.trace.get_or_insert_with(Vec::new);
+    }
+
     /// Builds a world from its settlements at once: markets, edges by the distance rule, actors
     /// and holders, and a first round of news from every market so trade can start.
     pub fn build(cfg: WorldConfig, goods: Goods, book: RecipeBook, data: Vec<NodeData>) -> World {
@@ -247,6 +296,7 @@ impl World {
             lints: Vec::new(),
             mint_cost,
             now: Tick::ZERO,
+            trace: None,
         }
     }
 
@@ -468,7 +518,7 @@ impl World {
                 self.now = self.now.max(at);
                 let i = self.node_of_region(h);
                 self.stats.breakpoints += 1;
-                self.market_event(i, at, true);
+                self.market_event(i, at, Cause::Breakpoint);
                 continue;
             }
             if tw == Some(limit) {
@@ -512,7 +562,7 @@ impl World {
             Ev::Wake(i) => {
                 self.wakes.remove(&(at, i));
                 self.stats.wakes += 1;
-                self.market_event(i, at, false);
+                self.market_event(i, at, Cause::Wake);
             }
             Ev::Deliver(p) => self.deliver(p, at),
             Ev::Arrive {
