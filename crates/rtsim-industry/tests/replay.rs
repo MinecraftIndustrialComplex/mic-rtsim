@@ -9,7 +9,7 @@ use rtsim_industry::cluster::{Cluster, MemberSpec, PoolKey, ProcSpec, ProcSpecBo
 use rtsim_industry::ids::{ChannelId, DistrictId, Good};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::conserve::Diffuser;
-use rtsim_kernel::lazy::LazyTable;
+use rtsim_kernel::lazy::{LazyModel, LazyTable};
 use rtsim_kernel::rng::SystemId;
 
 const SYS: SystemId = SystemId::named("test.industry.replay");
@@ -43,6 +43,7 @@ fn boxed(
             targets: target.map(|(s, r)| vec![(o, s, r)]).unwrap_or_default(),
             requires: requires.map(|r| (d(r), 0)),
             latency,
+            enabled: true,
         }],
         space: None,
     }
@@ -64,6 +65,7 @@ fn channel_pair() -> Vec<MemberSpec> {
         targets: vec![],
         requires: None,
         latency: 0,
+        enabled: true,
     });
     let b = MemberSpec {
         district: d(2),
@@ -79,6 +81,7 @@ fn channel_pair() -> Vec<MemberSpec> {
             targets: vec![],
             requires: None,
             latency: 0,
+            enabled: true,
         }],
         space: None,
     };
@@ -271,4 +274,43 @@ fn channels_are_shared_stock() {
     assert!(ch <= 500);
     t.apply(h, Tick(100_000), |_, _| ());
     t.get(h).unwrap().cell().model().check_books().unwrap();
+}
+
+/// Removing a district keeps every channel another district still uses (review finding 2: the
+/// old code checked pools by indices that shift as pools are removed).
+#[test]
+fn removing_a_member_keeps_shared_channels() {
+    let link = |id: u16, from: PoolKey, to: PoolKey| ProcSpec {
+        id,
+        body: ProcSpecBody::Link { from, to, flow: Diffuser::per(1, 10), batch: None },
+        targets: vec![],
+        requires: None,
+        latency: 0,
+        enabled: true,
+    };
+    let (c1, c2) = (PoolKey::Channel(ChannelId(1), Good(2)), PoolKey::Channel(ChannelId(2), Good(2)));
+    let s1 = PoolKey::Stock(d(1), Good(2));
+    let s2 = PoolKey::Stock(d(2), Good(2));
+    let mut c = Cluster::new(1);
+    c.add_member(
+        MemberSpec { district: d(1), pools: vec![(s1, 10_000, None), (c1, 0, None), (c2, 0, None)], procs: vec![link(1, s1, c1), link(2, s1, c2)], space: None },
+        Tick(0),
+    );
+    c.add_member(MemberSpec { district: d(2), pools: vec![(s2, 0, None)], procs: vec![link(1, c2, s2)], space: None }, Tick(0));
+    // Settle as the lazy table would: never across a breakpoint.
+    let step = |c: &mut Cluster, from: Tick, to: Tick| {
+        let mut at = from;
+        while at < to {
+            let next = c.next_breakpoint(at).map_or(to, |b| b.min(to));
+            c.settle(at, next);
+            at = next;
+        }
+    };
+    step(&mut c, Tick(0), Tick(1_000));
+    let out = c.remove_member(d(1), Tick(1_000));
+    assert!(out.pools.iter().any(|p| p.key == c1), "channel 1 leaves with its only user");
+    assert!(c.pool(c2).is_some(), "channel 2 stays: district 2 still links it");
+    step(&mut c, Tick(1_000), Tick(5_000));
+    c.check_books().unwrap();
+    assert_eq!(c.run_of(d(2), 1).is_some(), true);
 }

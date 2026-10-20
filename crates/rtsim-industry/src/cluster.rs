@@ -262,6 +262,8 @@ pub struct ProcSpec {
     pub requires: Option<(DistrictId, u16)>,
     /// Restart latency in ticks ([`Proc::latency`]).
     pub latency: u64,
+    /// False starts the process disabled (a jammed line, F20).
+    pub enabled: bool,
 }
 
 /// A district's item space as the engine describes it: (weights by pool, fixed units, cap units).
@@ -317,6 +319,9 @@ pub struct Cluster {
     season_boundary: Option<Tick>,
     restart_min_run: u64,
     events: Vec<ClusterEvent>,
+    /// Link transfers into and out of pools that have left with their district, so the
+    /// remaining books still balance.
+    departed: (i64, i64),
     /// Settles and evaluations so far: the cost the scale contract counts.
     pub settles: u64,
 }
@@ -500,6 +505,7 @@ impl Cluster {
             season_boundary: None,
             restart_min_run,
             events: Vec::new(),
+            departed: (0, 0),
             settles: 0,
         }
     }
@@ -674,8 +680,8 @@ impl Cluster {
                 body,
                 targets,
                 requires: ps.requires,
-                enabled: true,
-                run: Run::Stopped(Stop::Waiting),
+                enabled: ps.enabled,
+                run: Run::Stopped(if ps.enabled { Stop::Waiting } else { Stop::Disabled }),
                 latency: ps.latency,
                 armed: None,
                 ran: false,
@@ -717,23 +723,30 @@ impl Cluster {
                 i += 1;
             }
         }
-        // Channels nobody links to any more are dropped; the engine keeps their level.
-        let used: BTreeSet<u16> = self
+        // Channels nobody links to any more are dropped; the engine keeps their level. Pools are
+        // matched by key: indices shift as pools are removed.
+        let used: BTreeSet<PoolKey> = self
             .procs
             .iter()
             .flat_map(|p| match &p.body {
                 Body::Box { terms } => terms.iter().map(|t| t.pool).collect::<Vec<_>>(),
                 Body::Link { from, to, .. } => vec![*from, *to],
             })
+            .map(|i| self.pools[i as usize].key)
             .collect();
         let mut i = 0;
         while i < self.pools.len() {
-            if !used.contains(&(i as u16)) && matches!(self.pools[i].key, PoolKey::Channel(..)) {
+            let k = self.pools[i].key;
+            if !used.contains(&k) && matches!(k, PoolKey::Channel(..)) {
                 out.push(self.pools.remove(i));
                 self.shift_pool_refs(i as u16 + 1, -1);
             } else {
                 i += 1;
             }
+        }
+        for p in &out {
+            self.departed.0 += p.books.moved_in;
+            self.departed.1 += p.books.moved_out;
         }
         self.evaluate(at);
         MemberOut {
@@ -781,6 +794,8 @@ impl Cluster {
         }
         self.spaces.sort_by_key(|s| s.owner);
         self.events.extend(other.events);
+        self.departed.0 += other.departed.0;
+        self.departed.1 += other.departed.1;
         self.season_boundary = match (self.season_boundary, other.season_boundary) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -1303,6 +1318,7 @@ impl Cluster {
             {
                 keep(n.saturating_add(p.latency), Forecast::Restart);
             }
+            // (The forecast reports when the restart lands, relief plus latency.)
         }
         if let Some(b) = self.season_boundary
             && b > anchor
@@ -1338,7 +1354,7 @@ impl Cluster {
 
     /// Every pool's level comes from its books, exactly; and transfers balance.
     pub fn check_books(&self) -> Result<(), String> {
-        let (mut ins, mut outs) = (0i128, 0i128);
+        let (mut ins, mut outs) = (i128::from(self.departed.0), i128::from(self.departed.1));
         for p in &self.pools {
             let b = p.books;
             let expect = b.initial + b.events + b.minted - b.burned + b.moved_in - b.moved_out;
@@ -1558,6 +1574,7 @@ mod tests {
                 targets: vec![],
                 requires: None,
                 latency: 0,
+                enabled: true,
             }],
             space: None,
         }
@@ -1616,6 +1633,7 @@ mod tests {
                     targets: vec![],
                     requires: Some((d(1), 0)),
                     latency: 0,
+                    enabled: true,
                 }],
                 space: None,
             },
@@ -1776,6 +1794,7 @@ mod persist_impls {
             self.spaces.put(w);
             self.season_boundary.put(w);
             self.restart_min_run.put(w);
+            self.departed.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             Ok(Cluster {
@@ -1785,6 +1804,7 @@ mod persist_impls {
                 season_boundary: Persist::get(r)?,
                 restart_min_run: Persist::get(r)?,
                 events: Vec::new(),
+                departed: Persist::get(r)?,
                 settles: 0,
             })
         }

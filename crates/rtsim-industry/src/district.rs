@@ -396,6 +396,7 @@ impl District {
             targets,
             requires: self.power_source.map(|s| (s, 0)),
             latency: model.learned.latency_ticks,
+            enabled: true,
         }];
         let mut next_id = 1u16;
         for &(k, flow) in &model.links {
@@ -417,6 +418,7 @@ impl District {
                         targets: vec![],
                         requires: None,
                         latency: 0,
+                        enabled: true,
                     });
                     next_id += 1;
                 }
@@ -440,6 +442,7 @@ impl District {
                         targets: vec![],
                         requires: None,
                         latency: 0,
+                        enabled: true,
                     });
                     next_id += 1;
                 }
@@ -472,7 +475,7 @@ impl District {
             }
             let slots: i64 = pool_invs.iter().map(|i| i64::from(i.decl.item_slots)).sum();
             let margin = tun.replay.fragment_margin_slots * produced_items.len() as i64 * pool_invs.len() as i64;
-            let cap = if jammed { 0 } else { (slots - margin).max(0) * SLOT_UNITS };
+            let cap = (slots - margin).max(0) * SLOT_UNITS;
             let mut used: i64 = 0;
             let mut counted: BTreeSet<Good> = produced_items.iter().copied().collect();
             for i in &pool_invs {
@@ -489,10 +492,12 @@ impl District {
                 .map(|&g| (PoolKey::Stock(d, g), weight(goods, g)))
                 .collect();
             let fixed = used - weights.iter().map(|(k, w)| w * base.get(k.good()).max(0)).sum::<i64>();
-            // A jam must stop the box even when the space is empty.
-            let cap = if jammed { fixed.min(used) - 1 } else { cap };
             Some((weights, fixed, cap))
         };
+        // A jammed line does not run at all, whatever its net use of space (F20).
+        if jammed {
+            procs[0].enabled = false;
+        }
         MemberSpec {
             district: d,
             pools,
