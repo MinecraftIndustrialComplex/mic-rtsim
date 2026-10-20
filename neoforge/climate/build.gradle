@@ -1,0 +1,17 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_climate (A1, A19): mic-climate and Serene Seasons for mic-rtsim industry: the season calendar and temperatures (I12). Its own jar and mod id, built around the pack's own jars (never bundled);
+// the shared build logic is ../plugin.gradle.
+ext.packJars = [
+    'mic_climate-1.21.1-0.1.0.jar',
+    'SereneSeasons-neoforge-1.21.1-10.1.0.3.jar',
+    'thermoo-4.8.1-neoforge.jar'
+]
+ext.runtimeJars = ['GlitchCore-neoforge-1.21.1-2.1.0.2.jar',
+    'forgified-fabric-api-0.116.15+2.3.5+1.21.1.jar']
+ext.createLibs = false
+
+apply from: rootProject.file('plugin.gradle')

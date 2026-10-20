@@ -103,6 +103,32 @@ public final class IndustryTestKit {
                 level.getBlockState(abs.below()), FakePlayerFactory.getMinecraft(level)));
     }
 
+    public static int floorY(GameTestHelper helper) {
+        return helper.absolutePos(BlockPos.ZERO).getY() + 1;
+    }
+
+    /** A position {@code dx, dz} into the first whole chunk inside the structure, so blocks near it share a chunk. */
+    public static BlockPos inChunk(GameTestHelper helper, int dx, int dz) {
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        return new BlockPos((((o.getX() >> 4) + 1) << 4) + dx, floorY(helper), (((o.getZ() >> 4) + 1) << 4) + dz);
+    }
+
+    public static net.minecraft.world.level.block.Block block(String id) {
+        return net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(net.minecraft.resources.ResourceLocation.parse(id));
+    }
+
+    public static void set(GameTestHelper helper, BlockPos abs, net.minecraft.world.level.block.state.BlockState state) {
+        helper.getLevel().setBlock(abs, state, 3);
+    }
+
+    /** The goods of a record's Entry16 list at {@code at}, {@code n} entries, by Java's GOOD names. */
+    public static Map<String, Long> entries(ByteBuffer r, int at, int n) {
+        Map<String, Long> out = new java.util.TreeMap<>();
+        for (int i = 0; i < n; i++)
+            out.merge(javaName(r.getInt(at + i * IndRecords.ENTRY16)), r.getLong(at + i * IndRecords.ENTRY16 + 8), Long::sum);
+        return out;
+    }
+
     public static District districtAt(GameTestHelper helper, BlockPos abs) {
         return ind().districtAt(helper.getLevel(), abs);
     }
