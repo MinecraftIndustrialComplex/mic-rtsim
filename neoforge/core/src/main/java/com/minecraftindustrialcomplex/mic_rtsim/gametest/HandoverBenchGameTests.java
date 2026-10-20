@@ -236,6 +236,13 @@ public final class HandoverBenchGameTests {
 
         void close() {
             session.applyCommands(SINK);
+            if (engine.delegate instanceof NativeEngine ne && playerDims.length > 0) {
+                long[] p = ne.phase1Stats();
+                record("handover-bench", name + " phase 1 at the end", "villages " + p[NativeEngine.P1_VILLAGES]
+                        + ", world tick " + p[NativeEngine.P1_WORLD_TICK] + ", spawns sent " + p[NativeEngine.P1_SPAWNS_SENT]
+                        + ", offers sent " + p[NativeEngine.P1_OFFERS_SENT] + ", markets sent " + p[NativeEngine.P1_MARKETS_SENT]
+                        + ", gossip sent " + p[NativeEngine.P1_GOSSIP_SENT] + ", inputs " + p[NativeEngine.P1_INPUTS]);
+            }
             engine.close();
         }
     }
@@ -253,13 +260,14 @@ public final class HandoverBenchGameTests {
 
     /**
      * The native engine with phase 1 running: 64 villages adopted (an 8 x 8 grid, five structures),
-     * the world run 10 days ahead so its flows, news and caravans are going, and four players each
+     * the hand-overs starting 10 days on so its flows, news and caravans are going, and four players each
      * reported with every hand-over (the bridge reports a player every 20 ticks, so this is more),
      * near enough to villages for MARKET snapshots and roads for caravans to materialize.
      */
     private static Rig nativePhase1Rig() {
         Path dir = FMLPaths.GAMEDIR.get().resolve("mic_rtsim-test").resolve("bench-p1-" + UUID.randomUUID());
-        NativeEngine ne = NativeEngine.open(dir, 0, NativeEngine.FLAG_NO_FSYNC | NativeEngine.FLAG_TEST);
+        // Not TEST mode: its received log is drained inside every submit, which is not play's cost.
+        NativeEngine ne = NativeEngine.open(dir, 0, NativeEngine.FLAG_NO_FSYNC);
         Rig r = new Rig("native-p1", ne, 0b1111); // knowledge, settlements, trade, travel
         int dim = r.session.dictId(Obs.DICT_DIMENSION, "minecraft:overworld");
         int human = r.session.dictId(Obs.DICT_CULTURE, "human");
@@ -283,7 +291,8 @@ public final class HandoverBenchGameTests {
             b.putInt(Obs.VillageAdopted.MEET_Z, z);
             r.session.commit(b);
         }
-        ne.phase1Advance(10 * 24_000L);
+        // The first hand-over is ten days on: its step runs the world there (flows, news, caravans).
+        r.time = 10 * 24_000L + 1;
         r.playerDims = new int[] {dim, dim, dim, dim};
         return r;
     }
@@ -383,7 +392,7 @@ public final class HandoverBenchGameTests {
                         "submitToPublish p50 %.1f us p99 %.1f us; submit call p50 %.2f us; handOver p50 %.2f us%s",
                         pct(s.submitToPublish, s.n, 50) / 1000.0, pct(s.submitToPublish, s.n, 99) / 1000.0,
                         pct(s.submitCall, s.n, 50) / 1000.0, pct(s.handOver, s.n, 50) / 1000.0,
-                        s.engine.equals("native") ? String.format(Locale.ROOT, "; step p50 %.1f us", pct(s.step, s.n, 50) / 1000.0) : ""));
+                        s.engine.startsWith("native") ? String.format(Locale.ROOT, "; step p50 %.1f us", pct(s.step, s.n, 50) / 1000.0) : ""));
             }
             json.append("  ]\n}\n");
             Path out = FMLPaths.GAMEDIR.get().resolve("mic_rtsim-bench")
