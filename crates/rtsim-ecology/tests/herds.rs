@@ -568,3 +568,37 @@ fn dragons_eat_from_herds_and_follow_them() {
     // The herds engine came back to the caller with its time advanced.
     assert_eq!(h.now(), Tick::from_days(30));
 }
+
+/// No group outlives a session: at a session start every group is abstract again (no capture
+/// came), the players' legs go, and the next approach brings the same animals back.
+#[test]
+fn a_new_session_makes_groups_abstract_and_the_same_animals_return() {
+    let mut r = Rig::valley(23);
+    let f = flock(&r);
+    let t = Tick::from_days(12);
+    r.run(t, 2_000, None);
+    let p = r.near(f, t);
+    r.run(t + 1_500, 100, Some(p));
+    let first = r.fake.group_of(agent_of(f)).cloned().expect("embodied");
+    let now = r.h.now();
+    let legs_before = r.legs.len();
+    r.fake = FakeHerds::default();
+    r.h.session_start(&mut r.legs, now);
+    assert!(r.h.herd(f).unwrap().embodied.is_none());
+    assert!(
+        r.legs.len() < legs_before,
+        "the session's legs were cancelled"
+    );
+    r.h.check(now).unwrap();
+    let p2 = r.near(f, now + 100);
+    r.run(now + 2_000, 100, Some(p2));
+    let second = r
+        .fake
+        .group_of(agent_of(f))
+        .cloned()
+        .expect("embodied again");
+    assert!(second.epoch > first.epoch);
+    let a: std::collections::BTreeSet<u64> = first.bodies.iter().map(|b| b.spawn.member).collect();
+    let b: std::collections::BTreeSet<u64> = second.bodies.iter().map(|b| b.spawn.member).collect();
+    assert!(a.is_subset(&b) || b.is_subset(&a), "{a:?} vs {b:?}");
+}

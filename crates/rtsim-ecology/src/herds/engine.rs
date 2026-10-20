@@ -947,6 +947,13 @@ impl Herds {
             legs.cancel(s.leg);
         }
         self.players[slot as usize].pos = None;
+        // Its herd legs go too: nothing can meet an area that is gone.
+        let ids: Vec<HerdId> = self.herds.iter().map(|(h, _)| h).collect();
+        for h in ids {
+            if let Some(s) = self.herds.get_mut(h).expect("live").clips.remove(&slot) {
+                legs.cancel(s.leg);
+            }
+        }
         let mine: Vec<HerdId> = self
             .herds
             .iter()
@@ -1251,10 +1258,14 @@ impl Herds {
     }
 
     /// A new session: no group outlives one (docs/boundary.md §2.3). Every embodied group is
-    /// abstract again with what the engine knew.
-    pub fn session_start(&mut self, at: Tick) {
+    /// abstract again with what the engine knew, and every leg booked for a player goes (the
+    /// players report again).
+    pub fn session_start(&mut self, legs: &mut LegIndex, at: Tick) {
         let ids: Vec<HerdId> = self.herds.iter().map(|(h, _)| h).collect();
         for h in ids {
+            for (_, s) in std::mem::take(&mut self.herds.get_mut(h).expect("live").clips) {
+                legs.cancel(s.leg);
+            }
             if let Some(e) = self.herds.get_mut(h).expect("live").embodied.take() {
                 for k in &e.members {
                     if let Some(s) = self.herds.get_mut(h).expect("live").seen.get_mut(k) {
@@ -1264,8 +1275,10 @@ impl Herds {
             }
         }
         for p in &mut self.players {
+            if let Some(s) = p.interest.take() {
+                legs.cancel(s.leg);
+            }
             p.puppets = 0;
-            p.interest = None;
             p.pos = None;
         }
     }
