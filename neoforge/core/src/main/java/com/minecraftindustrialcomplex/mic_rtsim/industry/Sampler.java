@@ -80,7 +80,9 @@ public final class Sampler {
             current.sweepLive = false;
 
         int budget = IndustryConfig.get(IndustryConfig.INVENTORIES_PER_TICK);
-        while (budget > 0) {
+        long slotBudget = IndustryConfig.get(IndustryConfig.SLOTS_PER_TICK);
+        long slotsThisTick = 0;
+        while (budget > 0 && slotsThisTick < slotBudget) {
             if (current == null) {
                 current = queue.poll();
                 if (current == null)
@@ -99,7 +101,7 @@ public final class Sampler {
                 current = null;
                 continue;
             }
-            while (budget > 0 && d.sweepCursor < d.inventories.size()) {
+            while (budget > 0 && slotsThisTick < slotBudget && d.sweepCursor < d.inventories.size()) {
                 District.Inventory inv = d.inventories.get(d.sweepCursor++);
                 if (level.getChunkSource().getChunkNow(inv.pos().getX() >> 4, inv.pos().getZ() >> 4) == null) {
                     d.sweepLive = false; // an inventory in an unloaded chunk: a partial sweep
@@ -107,6 +109,9 @@ public final class Sampler {
                 }
                 read(level, d, inv, now);
                 budget--;
+                // The slot budget bounds a tick's cost by what is read, not by how many inventories:
+                // one 1,620-slot vault costs what 60 chests do.
+                slotsThisTick += Math.max(1, inv.itemSlots());
             }
             if (d.sweepCursor >= d.inventories.size()) {
                 finish(level, d, now);

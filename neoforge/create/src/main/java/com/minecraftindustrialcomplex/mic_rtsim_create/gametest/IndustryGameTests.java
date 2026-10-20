@@ -235,6 +235,7 @@ public final class IndustryGameTests {
         playerPlaced(helper, postPos);
         long[] id = {0};
         int[] liveSweep = {-1};
+        long[] filledAt = {Long.MAX_VALUE};
         helper.startSequence()
                 .thenIdle(2)
                 .thenExecute(() -> {
@@ -243,6 +244,7 @@ public final class IndustryGameTests {
                     ItemHandlerHelper.insertItemStacked(vault, new ItemStack(Items.COBBLESTONE, 64), false);
                     PackagePortBlockEntity post = (PackagePortBlockEntity) helper.getLevel().getBlockEntity(postPos);
                     post.inventory.setStackInSlot(0, PackageItem.containing(List.of(new ItemStack(Items.DIAMOND, 7))));
+                    filledAt[0] = helper.getLevel().getGameTime();
                 })
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, chestPos);
@@ -252,33 +254,41 @@ public final class IndustryGameTests {
                     id[0] = d.id;
                 })
                 .thenWaitUntil(() -> {
-                    // A live sweep that began after the district's inventories were all there.
+                    // A live sweep of the three inventories that began after they were filled.
+                    String last = "no live sweep of the three inventories after they were filled";
                     for (ByteBuffer end : received(IndRecords.IND_SWEEP_END, IndRecords.SweepEnd.DISTRICT, id[0])) {
                         if ((aux(end) & IndRecords.SweepEnd.FLAG_LIVE) == 0 || end.getInt(IndRecords.SweepEnd.INVENTORIES) != 3)
                             continue;
-                        liveSweep[0] = end.getInt(IndRecords.SweepEnd.SWEEP);
+                        int sweep = end.getInt(IndRecords.SweepEnd.SWEEP);
                         int records = end.getInt(IndRecords.SweepEnd.RECORDS);
                         Map<String, Long> totals = new HashMap<>();
                         int got = 0;
+                        boolean afterFill = true;
                         for (ByteBuffer s : received(IndRecords.IND_STOCK_SAMPLE, IndRecords.StockSample.DISTRICT, id[0])) {
-                            if (s.getInt(IndRecords.StockSample.SWEEP) != liveSweep[0])
+                            if (s.getInt(IndRecords.StockSample.SWEEP) != sweep)
                                 continue;
                             got++;
+                            afterFill &= s.getLong(IndRecords.StockSample.GAME_TIME) > filledAt[0];
                             for (int i = 0; i < aux(s); i++) {
                                 int e = IndRecords.StockSample.ENTRIES + i * IndRecords.ENTRY16;
                                 totals.merge(javaName(s.getInt(e)), s.getLong(e + 8), Long::sum);
                             }
                         }
-                        record("aSweepReportsBoundaryStockAndTheLiveFlag", "sweep " + liveSweep[0], "records " + records + ", samples " + got + ", totals " + totals);
-                        check("the record count matches the samples: " + records + " vs " + got, records == got);
-                        check("iron 10", totals.getOrDefault("i/64/minecraft:iron_ingot", 0L) == 10);
-                        check("gold 5", totals.getOrDefault("i/64/minecraft:gold_ingot", 0L) == 5);
-                        check("cobblestone 64 in the vault", totals.getOrDefault("i/64/minecraft:cobblestone", 0L) == 64);
-                        check("the package counted by its contents: 7 diamonds", totals.getOrDefault("i/64/minecraft:diamond", 0L) == 7);
-                        check("no package item as a good", totals.keySet().stream().noneMatch(k -> k.contains("package") || k.contains("cardboard")));
+                        if (!afterFill)
+                            continue;
+                        last = "sweep " + sweep + ": records " + records + ", samples " + got + ", totals " + totals;
+                        if (records != got || totals.getOrDefault("i/64/minecraft:iron_ingot", 0L) != 10
+                                || totals.getOrDefault("i/64/minecraft:gold_ingot", 0L) != 5
+                                || totals.getOrDefault("i/64/minecraft:cobblestone", 0L) != 64
+                                || totals.getOrDefault("i/64/minecraft:diamond", 0L) != 7
+                                || totals.keySet().stream().anyMatch(k -> k.contains("package") || k.contains("cardboard")))
+                            continue;
+                        liveSweep[0] = sweep;
+                        record("aSweepReportsBoundaryStockAndTheLiveFlag", "live sweep", last);
                         return;
                     }
-                    throw new net.minecraft.gametest.framework.GameTestAssertException("no live sweep of the three inventories yet");
+                    throw new net.minecraft.gametest.framework.GameTestAssertException(last
+                            + " (wanted: records = samples, iron 10, gold 5, cobblestone 64 in the vault, 7 diamonds from the package, no package good)");
                 })
                 .thenExecute(() -> {
                     // An unloaded member chunk far away: every later sweep is partial, not live.
@@ -295,6 +305,9 @@ public final class IndustryGameTests {
                     check("the district is partly loaded: load state " + d.loadState(), d.loadState() == IndRecords.LoadState.PARTIAL);
                     check("IND_LOAD_STATE went out for the transition", received(IndRecords.IND_LOAD_STATE, IndRecords.LoadState.DISTRICT, id[0]).stream()
                             .anyMatch(r -> aux(r) == IndRecords.LoadState.PARTIAL));
+                    // No player on a GameTest server: the district is never watched, and says so (F22).
+                    List<ByteBuffer> watched = received(IndRecords.IND_WATCHED, IndRecords.DistrictState.DISTRICT, id[0]);
+                    check("IND_WATCHED went out, not watched", !watched.isEmpty() && watched.stream().allMatch(r -> aux(r) == 0));
                 })
                 .thenSucceed();
     }
@@ -495,8 +508,18 @@ public final class IndustryGameTests {
                     check("district", d != null);
                     id[0] = d.id;
                 })
-                .thenExecute(() -> reconcile(a, id[0], 1, level, cx, cz, plus20, List.of()))
+                .thenExecute(() -> {
+                    // A player's block in the district is an edit (I5); a block set by anything else is not.
+                    BlockPos barrel = chestPos.east(2), stone = chestPos.east(3);
+                    set(helper, barrel, Blocks.BARREL.defaultBlockState());
+                    playerPlaced(helper, barrel);
+                    set(helper, stone, Blocks.STONE.defaultBlockState());
+                    reconcile(a, id[0], 1, level, cx, cz, plus20, List.of());
+                })
                 .thenWaitUntil(() -> {
+                    List<ByteBuffer> edits = received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, id[0]);
+                    check("one IND_EDIT (placed) for the player's barrel, none for the other block: " + edits.size(),
+                            edits.size() == 1 && aux(edits.get(0)) == IndRecords.Edit.PLACED && edits.get(0).getInt(IndRecords.Edit.X) == chestPos.getX() + 2);
                     ByteBuffer r = result(a);
                     check("IND_RECONCILE_RESULT for op a", r != null);
                     check("+20 applied", r.getLong(IndRecords.ReconcileResult.ENTRIES + 16) == 20);
@@ -673,7 +696,8 @@ public final class IndustryGameTests {
                     id[0] = d.id;
                 })
                 .thenExecute(() -> level.setChunkForced(fx, fz, false))
-                .thenWaitUntil(() -> check("the far chunk unloads", level.getChunkSource().getChunkNow(fx, fz) == null))
+                .thenWaitUntil(() -> check("the far chunk unloads (ChunkEvent.Unload, saved)", level.getChunkSource().getChunkNow(fx, fz) == null
+                        && ind().districts().loadedChunks(ind().district(id[0])) == 0))
                 .thenExecute(() -> {
                     heldBefore[0] = ind().reconciler().held();
                     reconcile(op, id[0], 1, level, fx, fz, List.of(new Delta(0, "i/64/minecraft:gold_ingot", chestPos, 7)), List.of());
@@ -692,7 +716,8 @@ public final class IndustryGameTests {
                     check("with epoch 0", loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 0);
                 })
                 .thenExecute(() -> level.setChunkForced(fx, fz, false))
-                .thenWaitUntil(() -> check("unloads again", level.getChunkSource().getChunkNow(fx, fz) == null))
+                .thenWaitUntil(() -> check("unloads again (ChunkEvent.Unload, saved)", level.getChunkSource().getChunkNow(fx, fz) == null
+                        && ind().districts().loadedChunks(ind().district(id[0])) == 0))
                 .thenExecute(() -> {
                     loadsBefore[0] = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]).size();
                     level.setChunkForced(fx, fz, true);

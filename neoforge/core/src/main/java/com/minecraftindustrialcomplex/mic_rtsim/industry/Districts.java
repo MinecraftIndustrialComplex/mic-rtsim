@@ -351,7 +351,7 @@ public final class Districts {
                 }
             }
         }
-        if (w != d.watched || now - d.watchedSentAt >= IndustryConfig.get(IndustryConfig.WATCHED_RESEND)) {
+        if (w != d.watched || d.watchedSentAt == Long.MIN_VALUE || now - d.watchedSentAt >= IndustryConfig.get(IndustryConfig.WATCHED_RESEND)) {
             int at = ind.latest(IndRecords.IND_WATCHED, IndRecords.DistrictState.SIZE, w ? 1 : 0);
             if (at >= 0) {
                 ByteBuffer b = ind.open();
@@ -923,6 +923,39 @@ public final class Districts {
             if (d.dim == dim)
                 for (long c : d.chunks)
                     index.put(c, d);
+        dirty.remove(dim);
+        data.setDirty();
+    }
+
+    /**
+     * GameTests: forgets every district of the level's dimension, the seeds and epochs of their loaded
+     * chunks, and the dimension's pins, exclusions and merge links. The industry tests run one at a
+     * time (one batch each), so each starts from no industry at all.
+     */
+    public void forgetAllForTest(ServerLevel level) {
+        ResourceKey<Level> dim = level.dimension();
+        for (District d : new ArrayList<>(data.districts.values())) {
+            if (d.dim != dim)
+                continue;
+            for (long c : d.chunks) {
+                LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+                if (chunk != null) {
+                    chunk.removeData(IndustryAttachments.SEEDS.get());
+                    chunk.removeData(IndustryAttachments.RECONCILE.get());
+                    chunk.setUnsaved(true);
+                }
+            }
+            data.districts.remove(d.id);
+            loaded.remove(d.id);
+            ByteBuffer r = ind.journal(IndRecords.IND_DISTRICT_REMOVED, IndRecords.DistrictRemoved.SIZE, 0);
+            r.putLong(IndRecords.DistrictRemoved.DISTRICT, d.id);
+            ind.commit(r);
+            ind.sampler.revisionChanged(d);
+        }
+        data.pins(dim).clear();
+        data.excluded(dim).clear();
+        data.mergeLinks(dim).clear();
+        byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>()).clear();
         dirty.remove(dim);
         data.setDirty();
     }

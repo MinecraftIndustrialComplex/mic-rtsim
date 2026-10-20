@@ -21,6 +21,7 @@ public final class IndustryConfig {
 
     public static final String SWEEP_PERIOD = "sweepPeriodTicks";
     public static final String INVENTORIES_PER_TICK = "inventoriesPerTick";
+    public static final String SLOTS_PER_TICK = "slotsPerTick";
     public static final String RECONCILE_OPS_PER_TICK = "reconcileOpsPerTick";
     public static final String RESCAN_INTERVAL = "rescanIntervalTicks";
     public static final String PERIODIC_RESCAN = "periodicRescanTicks";
@@ -31,6 +32,7 @@ public final class IndustryConfig {
     private static final Map<String, Integer> DEFAULTS = Map.of(
             SWEEP_PERIOD, 100,
             INVENTORIES_PER_TICK, 64,
+            SLOTS_PER_TICK, 20_000,
             RECONCILE_OPS_PER_TICK, 512,
             RESCAN_INTERVAL, 20,
             PERIODIC_RESCAN, 6000,
@@ -45,6 +47,9 @@ public final class IndustryConfig {
                 .defineInRange(SWEEP_PERIOD, DEFAULTS.get(SWEEP_PERIOD), 1, 72_000));
         INTS.put(INVENTORIES_PER_TICK, b.comment("Boundary inventories read per tick, across all districts (K, INDUSTRY.md §3.2).")
                 .defineInRange(INVENTORIES_PER_TICK, DEFAULTS.get(INVENTORIES_PER_TICK), 1, 100_000));
+        INTS.put(SLOTS_PER_TICK, b.comment("Item slots read per tick, across all districts (at least one inventory a tick is read whatever its size).",
+                        "Measured 2026-10-20 on the laptop: 23 ns per full slot of a 1,620-slot Create vault, so 20,000 slots is about 0.5 ms.")
+                .defineInRange(SLOTS_PER_TICK, DEFAULTS.get(SLOTS_PER_TICK), 1, 10_000_000));
         INTS.put(RECONCILE_OPS_PER_TICK, b.comment("Reconcile deltas and broken blocks applied per tick (the block quota, I8, I23).")
                 .defineInRange(RECONCILE_OPS_PER_TICK, DEFAULTS.get(RECONCILE_OPS_PER_TICK), 1, 1_000_000));
         INTS.put(RESCAN_INTERVAL, b.comment("Ticks at least between two district detections after edits.")
