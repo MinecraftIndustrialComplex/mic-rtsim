@@ -26,7 +26,7 @@
 //! | 20 | PLACE_HOUSE | u64 opId, u64 village, str dimension, str template, str processors ("" none), i32 x, i32 y, i32 z, u32 rotation, u32 mirror, u32 flags, u32 radius, u64 seed, i32 yOffset |
 //! | 21 | SPAWN_RESIDENT | u64 opId, u64 village, str dimension, str body, str profession ("" none), u32 flags, f64 x, f64 y, f64 z, u64 house |
 //! | 22 | a scripted village: the engine applies none of its observations and sends none of its own commands for it | u64 village |
-//! | 23 | TEST: materialize the phase 1 traveller nearest (x, z) within radius blocks, as this group, at (x, y, z) | u64 agent, u32 epoch, str dimension, f64 x, f64 y, f64 z, u32 radius |
+//! | 23 | TEST: materialize the phase 1 caravan with wares nearest (searchX, searchZ) within radius blocks, as this group, at (x, y, z) | u64 agent, u32 epoch, str dimension, f64 x, f64 y, f64 z, u32 radius, f64 searchX, f64 searchZ |
 //! | 24 | TEST: the phase 1 world runs this many more ticks ahead of game time | u64 ticks |
 
 use crate::wire::{f32_at, f64_at, i32_at, u16_at, u32_at, u64_at};
@@ -199,14 +199,15 @@ pub enum Order {
     SpawnResident(SpawnResidentCmd),
     /// A test scripts this village's phase 1 commands (applied at once, never written).
     ScriptVillage(u64),
-    /// TEST: materialize the phase 1 traveller nearest `pos` (x, z) within `radius` blocks, as
-    /// this group, at `pos` (applied at the next step, never written).
+    /// TEST: materialize the phase 1 caravan with wares nearest `search` (x, z) within `radius`
+    /// blocks, as this group, at `pos` (applied at the next step, never written).
     Phase1SpawnNear {
         agent: u64,
         epoch: u32,
         dimension: String,
         pos: [f64; 3],
         radius: u32,
+        search: [f64; 2],
     },
     /// TEST: the phase 1 world runs this many more ticks ahead of game time.
     Phase1Advance(u64),
@@ -513,6 +514,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 dimension: c.str()?,
                 pos: c.pos()?,
                 radius: c.u32()?,
+                search: [c.f64()?, c.f64()?],
             },
             OP_P1_ADVANCE => Order::Phase1Advance(c.u64()?),
             other => return Err(format!("unknown order opcode {other}")),
@@ -768,6 +770,7 @@ impl Encoder {
                 dimension,
                 pos,
                 radius,
+                search,
             } => {
                 let at = self.begin(OP_P1_SPAWN_NEAR);
                 self.u64(*agent);
@@ -775,6 +778,7 @@ impl Encoder {
                 self.str(dimension);
                 pos.iter().for_each(|v| self.f64(*v));
                 self.u32(*radius);
+                search.iter().for_each(|v| self.f64(*v));
                 self.end(at);
             }
             Order::Phase1Advance(t) => {
@@ -921,6 +925,7 @@ mod tests {
                 dimension: "minecraft:overworld".into(),
                 pos: [1.5, 64.0, 2.5],
                 radius: 500,
+                search: [1_000_000.5, -3.0],
             },
             Order::Phase1Advance(72_000),
         ];

@@ -165,6 +165,7 @@ struct SpawnNear {
     dimension: String,
     pos: [f64; 3],
     radius: u32,
+    search: [f64; 2],
 }
 
 /// The phase 1 state the step keeps (`State::phase1`).
@@ -984,12 +985,14 @@ pub(super) fn directive(st: &mut State, order: Order) {
             dimension,
             pos,
             radius,
+            search,
         } => l.spawn_near.push(SpawnNear {
             agent,
             epoch,
             dimension,
             pos,
             radius,
+            search,
         }),
         _ => {}
     }
@@ -1368,7 +1371,8 @@ fn spawn_band(st: &mut State, band: usize, frame: u16, pos: [f64; 3]) -> bool {
     true
 }
 
-/// A test's P1_SPAWN_NEAR: the caravan nearest (x, z) within the radius, at the given place.
+/// A test's P1_SPAWN_NEAR: the caravan with wares nearest the search point within the radius,
+/// materialized at the given place.
 fn spawn_near(st: &mut State, s: SpawnNear) {
     let Some(frame) = st
         .world
@@ -1383,7 +1387,7 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
         ));
         return;
     };
-    let pos = Pos::new(frame, s.pos[0].floor() as i32, s.pos[2].floor() as i32);
+    let pos = Pos::new(frame, s.search[0].floor() as i32, s.search[1].floor() as i32);
     let visible = st.phase1.world.visible(pos, s.radius);
     let carries = |c: &BTreeMap<GoodId, Amount>| c.values().any(|&a| a >= MILLI);
     for v in visible {
@@ -1422,7 +1426,7 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
     }
     log_warn(&format!(
         "phase 1: P1_SPAWN_NEAR found no caravan with wares within {} blocks of ({}, {})",
-        s.radius, s.pos[0], s.pos[2]
+        s.radius, s.search[0], s.search[1]
     ));
 }
 

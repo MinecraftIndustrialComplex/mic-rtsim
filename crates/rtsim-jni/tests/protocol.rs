@@ -1302,6 +1302,7 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
             dimension: OVERWORLD.into(),
             pos: [10.5, 64.0, 0.5],
             radius: 2_000,
+            search: [10.5, 0.5],
         }])
         .unwrap();
         j.idle();
