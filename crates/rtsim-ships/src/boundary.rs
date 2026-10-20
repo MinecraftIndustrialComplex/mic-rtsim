@@ -327,6 +327,9 @@ pub struct Materialize {
     pub crew: u32,
     pub hull_milli: u32,
     pub times: Times,
+    /// Blocks covered departing and approaching (the slow harbour phases), so the plugin can
+    /// follow the same positions the engine computes.
+    pub harbour_blocks: u32,
     /// The voyage's path (block x, z), from its dock to the next.
     pub waypoints: Vec<(i32, i32)>,
     pub cargo: Vec<Item>,
@@ -342,6 +345,7 @@ pub struct Timetable {
     pub cruise_y: i32,
     pub dock_y: i32,
     pub platform: u8,
+    pub harbour_blocks: u32,
     pub waypoints: Vec<(i32, i32)>,
 }
 
@@ -844,7 +848,8 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.u32(88, m.waypoints.len() as u32);
             w.u32(92, m.cargo.len() as u32);
             w.times(96, &m.times);
-            let mut off = 128;
+            w.u32(128, m.harbour_blocks);
+            let mut off = 136;
             w.points(off, &m.waypoints);
             off += 8 * m.waypoints.len();
             w.items(off, &m.cargo);
@@ -864,6 +869,7 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.i32(64, t.cruise_y);
             w.i32(68, t.dock_y);
             w.u8(72, t.platform);
+            w.u32(76, t.harbour_blocks);
             w.points(80, &t.waypoints);
             w.finish(SHIP_TIMETABLE, t.flags, 80 + 8 * t.waypoints.len());
         }
@@ -913,10 +919,10 @@ pub fn decode_cmd(b: &[u8]) -> Result<(usize, u64, Cmd), CodecError> {
             let nw = r.u32(88)? as usize;
             let nc = r.u32(92)? as usize;
             let nm = aux as usize;
-            if 128 + 8 * nw + 16 * nc + 8 * nm > size {
+            if 136 + 8 * nw + 16 * nc + 8 * nm > size {
                 return Err(CodecError::BadSize);
             }
-            let mut off = 128;
+            let mut off = 136;
             let waypoints = r.points(off, nw)?;
             off += 8 * nw;
             let cargo = r.items(off, nc)?;
@@ -945,6 +951,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(usize, u64, Cmd), CodecError> {
                 crew: r.u32(80)?,
                 hull_milli: r.u32(84)?,
                 times: r.times(96)?,
+                harbour_blocks: r.u32(128)?,
                 waypoints,
                 cargo,
                 members,
@@ -963,6 +970,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(usize, u64, Cmd), CodecError> {
                 cruise_y: r.i32(64)?,
                 dock_y: r.i32(68)?,
                 platform: r.u8(72)?,
+                harbour_blocks: r.u32(76)?,
                 waypoints: r.points(80, n)?,
             })
         }
@@ -1135,6 +1143,7 @@ mod tests {
                 crew: 5,
                 hull_milli: 1000,
                 times: [100, 200, 300, 400],
+                harbour_blocks: 64,
                 waypoints: pts.clone(),
                 cargo: vec![Item { item: 3, count: 64 }; n],
                 members: vec![Member { body: 2, flags: 0 }, Member { body: 5, flags: 1 }],
@@ -1147,6 +1156,7 @@ mod tests {
                 cruise_y: 200,
                 dock_y: 90,
                 platform: 1,
+                harbour_blocks: 32,
                 waypoints: pts,
             }),
             Cmd::Steer(Steer {

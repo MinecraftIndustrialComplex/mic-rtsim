@@ -377,6 +377,9 @@ pub struct Ships {
     pub(crate) players: BTreeMap<ActorId, PlayerView>,
     pub(crate) booked: BTreeMap<(ShipId, u64), Booked>,
     pub(crate) leg_voyage: BTreeMap<LegId, (ShipId, u64)>,
+    /// Voyages that entered a player's view: once per player and voyage (a crossing), whatever
+    /// the area's rebookings; forgotten when the voyage ends.
+    pub(crate) seen_by: BTreeSet<(ShipId, u64, ActorId)>,
     /// Real fights by pairing (the floors of [`crate::fight::resolve`]).
     pub observed: [Vec<Observed>; Pairing::COUNT],
     pub ledger: ShipLedger,
@@ -463,6 +466,7 @@ impl Ships {
             players: BTreeMap::new(),
             booked: BTreeMap::new(),
             leg_voyage: BTreeMap::new(),
+            seen_by: BTreeSet::new(),
             observed: Default::default(),
             ledger: ShipLedger::default(),
             stats: ShipStats::default(),
@@ -1437,6 +1441,14 @@ impl Ships {
     }
 
     fn unbook(&mut self, w: &mut World, id: ShipId, voyage: u64) {
+        let gone: Vec<(ShipId, u64, ActorId)> = self
+            .seen_by
+            .range((id, voyage, ActorId::NULL)..=(id, voyage, ActorId::from_bits(u64::MAX)))
+            .copied()
+            .collect();
+        for k in gone {
+            self.seen_by.remove(&k);
+        }
         if let Some(b) = self.booked.remove(&(id, voyage)) {
             for l in b.legs {
                 self.leg_voyage.remove(&l);
@@ -1632,7 +1644,8 @@ impl Ships {
             && self
                 .ships
                 .get(id)
-                .is_some_and(|x| x.is_active() && !x.embodied);
+                .is_some_and(|x| x.is_active() && !x.embodied)
+            && !self.seen_by.contains(&(id, voyage, player));
         if !ok {
             self.stats.seen_stale += 1;
             return;
@@ -1649,6 +1662,7 @@ impl Ships {
             return;
         }
         self.stats.seen += 1;
+        self.seen_by.insert((id, voyage, player));
         self.materialize_timetabled(w, id, fix, player, at);
         // A merchant seen on a hunted lane: its pirates come with the lane's hazard as the
         // chance (the same share the flow loses unobserved).
@@ -1662,7 +1676,6 @@ impl Ships {
                     t.hunters
                         .iter()
                         .copied()
-                        .filter(|&h| self.ships.get(h).is_some_and(|p| !p.embodied))
                         .max_by(|a, b| {
                             self.strength(*a)
                                 .total_cmp(&self.strength(*b))
@@ -1753,6 +1766,7 @@ impl Ships {
                 fix.times.approach,
                 fix.times.arrive,
             ],
+            harbour_blocks: g.depart_blocks as u32,
             waypoints,
             cargo: Self::items(&cargo),
             members,
@@ -1820,6 +1834,7 @@ impl Ships {
             cruise_y: sv.cruise_y,
             dock_y: td.y,
             platform: g.platform,
+            harbour_blocks: g.depart_blocks as u32,
             waypoints,
         }));
         let next = tick_of(fix.times.arrive).max(at + 1);
@@ -2440,6 +2455,7 @@ impl Ships {
             crew: x.crew,
             hull_milli: x.hull_milli,
             times: [at.0 as i64; 4],
+            harbour_blocks: 0,
             waypoints: vec![pos],
             cargo: Self::items(&x.cargo),
             members,
@@ -2496,11 +2512,24 @@ impl Ships {
             return;
         }
         self.promote(w, victim, at);
-        if self.ships[victim].embodied && !self.ships[p].embodied {
-            // Watched: the pirates come into view beside it, and the plugin plays the fight.
+        if self.ships[victim].embodied {
+            // Watched: the pirates come into view beside it (or, already in view, turn on it),
+            // and the plugin plays the fight.
             self.stats.raids_observed += 1;
             let pos = (fix.x + 48, fix.z + 48);
-            self.materialize_pirate(p, pos, Ship::agent(victim), player, at);
+            if self.ships[p].embodied {
+                let epoch = self.ships[p].epoch;
+                self.outbox.push(Cmd::Steer(boundary::Steer {
+                    agent: Ship::agent(p),
+                    epoch,
+                    flags: boundary::STEER_ATTACK,
+                    speed: self.tun.medium(self.ships[p].medium).speed as f32,
+                    pos: (f64::from(fix.x), f64::from(fix.y), f64::from(fix.z)),
+                    target: Ship::agent(victim),
+                }));
+            } else {
+                self.materialize_pirate(p, pos, Ship::agent(victim), player, at);
+            }
             self.note(
                 at,
                 "raid",

@@ -826,6 +826,12 @@ impl Ships {
             b.legs.iter().for_each(|l| w.u64(l.to_bits()));
             w.u64(b.end.0);
         }
+        put_usize(&mut w, self.seen_by.len());
+        for (s, v, p) in &self.seen_by {
+            w.u64(s.to_bits());
+            w.var_u64(*v);
+            w.u64(p.to_bits());
+        }
         for v in &self.observed {
             put_usize(&mut w, v.len());
             for o in v {
@@ -965,6 +971,10 @@ impl Ships {
             }
             booked.insert((s, v), Booked { legs, end });
         }
+        let mut seen_by = BTreeSet::new();
+        for _ in 0..r.len_prefix(17)? {
+            seen_by.insert((handle(r)?, r.var_u64()?, handle(r)?));
+        }
         let mut observed: [Vec<Observed>; 2] = Default::default();
         for v in &mut observed {
             for _ in 0..r.len_prefix(16)? {
@@ -1010,6 +1020,7 @@ impl Ships {
         s.players = players;
         s.booked = booked;
         s.leg_voyage = leg_voyage;
+        s.seen_by = seen_by;
         s.observed = observed;
         s.ledger = ledger;
         s.stats = stats;
