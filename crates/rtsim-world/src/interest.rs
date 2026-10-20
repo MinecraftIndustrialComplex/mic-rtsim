@@ -17,8 +17,14 @@ use rtsim_travel::legs::{LegId, LegIndex, Owner, Path, Stamp};
 
 use crate::world::{CaravanId, World};
 
-/// The top bit of a leg owner marks a player's interest area (caravans own the rest).
+/// The top bit of a leg owner marks a player's interest area.
 pub const PLAYER_OWNER: u64 = 1 << 63;
+
+/// A caravan row's leg owner is its 48-bit handle; anything above is another module's (a
+/// player's interest area, a dragon's flight: rtsim-ecology tags its legs with bit 62).
+fn caravan_owner(owner: u64) -> Option<CaravanId> {
+    (owner >> 48 == 0).then(|| CaravanId::from_bits(owner))
+}
 
 /// What the engine knows of a player.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,10 +180,9 @@ impl World {
                     let Some(row) = self.legs.get(s.leg) else {
                         continue;
                     };
-                    if row.owner.0 & PLAYER_OWNER != 0 {
+                    let Some(id) = caravan_owner(row.owner.0) else {
                         continue;
-                    }
-                    let id = CaravanId::from_bits(row.owner.0);
+                    };
                     if seen.contains(&id) {
                         continue;
                     }
@@ -260,12 +265,9 @@ impl World {
             .into_iter()
             .filter(|s| s.leg != me.leg)
             .filter_map(|s| {
-                let owner = self.legs.get(s.leg)?.owner.0;
-                if owner & PLAYER_OWNER != 0 {
-                    return None;
-                }
+                let id = caravan_owner(self.legs.get(s.leg)?.owner.0)?;
                 let m = self.legs.meeting(me, s)?;
-                Some((m.at, CaravanId::from_bits(owner)))
+                Some((m.at, id))
             })
             .collect();
         out.sort();

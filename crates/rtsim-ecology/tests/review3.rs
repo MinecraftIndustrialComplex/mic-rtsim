@@ -416,3 +416,51 @@ fn hunger_out_of_range_from_the_plugin_is_clamped() {
     assert!((0..=d.tun.full).contains(&f), "fullness {f}");
     let _ = AttackerKind::Player;
 }
+
+// ---- D8 ----------------------------------------------------------------------------------------
+
+/// The phase 1 world reads every leg owner in the shared index that is not a player's as a
+/// caravan row; a dragon's leg (bit 62 over its handle, R10) crossing a player's area showed up
+/// in `World::encounters` as a caravan that does not exist.
+#[test]
+fn a_dragon_is_never_taken_for_a_caravan() {
+    let (mut w, mut d) = world(25);
+    let a = d.add_lair(
+        &mut w,
+        1,
+        "A",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, -3000, 3000),
+        100,
+        Tick(0),
+    );
+    let b = d.add_lair(
+        &mut w,
+        2,
+        "B",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 3000, 3000),
+        100,
+        Tick(0),
+    );
+    let x = d.add_dragon(&mut w, adult("x", a, 100), Tick(0));
+    d.run_until(&mut w, &mut NoInfrastructure, Tick(1_000));
+    let p = w.player_uuid(PLAYER.0, PLAYER.1);
+    w.set_player_pos(p, Pos::new(0, -2_500, 3_020), Tick(1_000));
+    d.relocate(&mut w, x, b, Tick(1_000));
+    let met = w.encounters(p);
+    assert!(
+        met.iter().all(|(_, c)| w.caravans.get(*c).is_some()),
+        "only caravans that exist: {met:?}"
+    );
+    let near = w.visible(Pos::new(0, -2_500, 3_020), 600);
+    assert!(
+        near.iter().all(|v| match v {
+            rtsim_world::Visible::Caravan { id, .. } => w.caravans.get(*id).is_some(),
+            _ => true,
+        }),
+        "{near:?}"
+    );
+}
