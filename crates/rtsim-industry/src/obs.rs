@@ -230,7 +230,7 @@ pub struct PackageEvent {
 }
 
 /// Which plugin owns a deposit (I11).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum DepositPluginId {
     OreExcavation,
     DieselOil,
