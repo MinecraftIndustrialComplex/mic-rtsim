@@ -95,6 +95,8 @@ public final class RtsimSession {
     final BoundarySession boundary;
     final PuppetRegistry registry = new PuppetRegistry();
     final CommandDispatcher commands;
+    /** Phase 1: villages, markets, gossip, damage, rescues, robbery, bases, growth (PLAN.md §8). */
+    public final Phase1 phase1;
 
     private boolean failed;
     /**
@@ -153,6 +155,31 @@ public final class RtsimSession {
             boundary.dictId(Obs.DICT_BODY, kind.name());
         for (BodyAdapter body : BodyKinds.bodies())
             boundary.dictId(Obs.DICT_BODY, body.name());
+        this.phase1 = new Phase1(this);
+    }
+
+    public MinecraftServer server() {
+        return server;
+    }
+
+    /** The id of a name in Java's dictionary (Obs.DICT_*). */
+    public int dictId(int dictKind, String name) {
+        return boundary.dictId(dictKind, name);
+    }
+
+    /** Journals a COMMAND_RESULT; returns the record (its sequence at Obs.OBS_SEQ). */
+    public ByteBuffer commandResult(long cmdSeq, long opId, int status, long now) {
+        return journalCommandResult(cmdSeq, opId, status, now);
+    }
+
+    /** The chunk carries an applied engine op's COMMAND_RESULT until the engine acknowledges it (B42). */
+    public void carryResultInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
+        carryInChunk(chunk, commandResult);
+    }
+
+    /** An entity carries journal records until the engine acknowledges {@code lastSeq} (B42). */
+    public void carryOnEntity(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        carry(holder, records, lastSeq);
     }
 
     public Engine engine() {
@@ -199,6 +226,7 @@ public final class RtsimSession {
             long t0 = System.nanoTime();
             pass(now);
             discardOrphans();
+            phase1.endOfTick(ticks, now);
             passNanos = System.nanoTime() - t0;
             if (ticks % RtsimConfig.playerInterval() == 0)
                 observePlayers(now);
@@ -260,6 +288,8 @@ public final class RtsimSession {
             for (PuppetGroup.Member m : g.members)
                 if (!m.gone)
                     adapter(g, m).maintain(m.entity, g);
+            if (shadow || phase1.cargoCheckSoon)
+                phase1.cargo.check(g, now);
             if (shadow)
                 shadowGroup(g, now);
         }
@@ -358,6 +388,7 @@ public final class RtsimSession {
 
     private void observePlayers(long now) {
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
+            phase1.observePlayer(p, now);
             int dim = dimId(p.level().dimension());
             int at = boundary.direct(Obs.PLAYER, Obs.Player.SIZE, dim, now);
             if (at < 0)
@@ -434,6 +465,7 @@ public final class RtsimSession {
         }
         for (int i = 0; i < bodies.length; i++)
             kind.slots().get(i).adapter().afterGroupSpawned(bodies[i], group);
+        com.minecraftindustrialcomplex.mic_rtsim.market.CargoWatch.expectAll(group);
 
         ByteBuffer r = boundary.beginJournaled(Obs.MATERIALIZED, Obs.Materialized.SIZE, bodies.length, now);
         r.putLong(Obs.Materialized.AGENT, agent);
@@ -470,6 +502,8 @@ public final class RtsimSession {
      * leashed to a removed trader.
      */
     public void captureGroup(PuppetGroup g, int reason, long now) {
+        if (phase1 != null && reason != Obs.Dematerialized.SESSION_END)
+            phase1.cargo.check(g, now); // a change nobody reported yet is attributed before the capture
         g.removingByBridge = true;
         int captured = 0;
         for (PuppetGroup.Member m : g.members) {
@@ -930,11 +964,11 @@ public final class RtsimSession {
 
     // ---- dictionary -----------------------------------------------------------------------------
 
-    int dimId(ResourceKey<Level> dim) {
+    public int dimId(ResourceKey<Level> dim) {
         return boundary.dictId(Obs.DICT_DIMENSION, dim.location().toString());
     }
 
-    int itemId(Item item) {
+    public int itemId(Item item) {
         return boundary.dictId(Obs.DICT_ITEM, BuiltInRegistries.ITEM.getKey(item).toString());
     }
 

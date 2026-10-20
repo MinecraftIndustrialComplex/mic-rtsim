@@ -167,7 +167,12 @@ public final class Cmd {
         public static final int O_MAX_USES = 24;     // i32, 0 = the bridge's default
         public static final int O_XP = 28;           // i32
         public static final int O_PRICE_MULT = 32;   // f32
-        public static final int O_FLAGS = 36;        // u32, reserved
+        public static final int O_FLAGS = 36;        // u32, below
+
+        /** The merchant sells goods for its currency (TRADE side MERCHANT_SELLS). */
+        public static final int O_FLAG_SELLS = 1;
+        /** The merchant buys goods for its currency (TRADE side MERCHANT_BUYS). */
+        public static final int O_FLAG_BUYS = 2;
     }
 
     /**

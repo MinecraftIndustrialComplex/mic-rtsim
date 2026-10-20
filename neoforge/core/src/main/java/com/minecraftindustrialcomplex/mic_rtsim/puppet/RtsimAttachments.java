@@ -30,6 +30,22 @@ public final class RtsimAttachments {
     public static final Supplier<AttachmentType<PendingRecords>> PENDING = TYPES.register("pending",
             () -> AttachmentType.builder(() -> PendingRecords.EMPTY).serialize(PendingRecords.CODEC, p -> !p.isEmpty()).build());
 
+    /**
+     * {@code mic_rtsim:gossip_ops}: the gossip op ids a villager was written with (C20), so it takes
+     * each at most once. Saved with the villager, on purpose: it is the villager's own record.
+     */
+    public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.village.GossipWriter.GossipOps>> GOSSIP_OPS =
+            TYPES.register("gossip_ops", () -> AttachmentType.builder(() -> com.minecraftindustrialcomplex.mic_rtsim.village.GossipWriter.GossipOps.EMPTY)
+                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.village.GossipWriter.GossipOps.CODEC, g -> !g.isEmpty()).build());
+
+    /**
+     * {@code mic_rtsim:player_blocks}: which blocks of a chunk players placed (per section, a 4096-bit
+     * set). Village growth never builds over them (PLAN.md §8.8). Saved with the chunk.
+     */
+    public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks>> PLAYER_BLOCKS =
+            TYPES.register("player_blocks", () -> AttachmentType.builder(() -> com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks.EMPTY)
+                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks.CODEC, p -> !p.isEmpty()).build());
+
     public static void register(IEventBus modBus) {
         TYPES.register(modBus);
     }

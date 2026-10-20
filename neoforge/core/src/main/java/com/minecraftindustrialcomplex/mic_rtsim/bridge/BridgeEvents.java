@@ -49,6 +49,56 @@ public final class BridgeEvents {
         bus.addListener(BridgeEvents::onChunkLoad);
         bus.addListener(BridgeEvents::onEntityInteract);
         bus.addListener(BridgeEvents::onRegisterCommands);
+        // Phase 1 (PLAN.md §8)
+        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.entity.living.LivingDamageEvent.Post.class, BridgeEvents::onDamage);
+        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.level.BlockEvent.EntityPlaceEvent.class, BridgeEvents::onPlace);
+        bus.addListener(BridgeEvents::onTagsUpdated);
+        bus.addListener(BridgeEvents::onContainerClose);
+    }
+
+    /** Damage really dealt to a puppet or a resident (HURT, PLAN.md §8.7). */
+    private static void onDamage(net.neoforged.neoforge.event.entity.living.LivingDamageEvent.Post event) {
+        if (event.getEntity().level().isClientSide())
+            return;
+        RtsimSession s = RtsimSession.current();
+        if (s != null && !s.failed())
+            s.phase1.onDamage(event.getEntity(), event.getSource().getEntity(), event.getNewDamage());
+    }
+
+    /** A block a player placed: village growth never builds over it (PLAN.md §8.8). */
+    private static void onPlace(net.neoforged.neoforge.event.level.BlockEvent.EntityPlaceEvent event) {
+        if (!(event.getEntity() instanceof net.minecraft.world.entity.player.Player) || !(event.getLevel() instanceof ServerLevel level))
+            return;
+        if (event instanceof net.neoforged.neoforge.event.level.BlockEvent.EntityMultiPlaceEvent multi) {
+            for (net.neoforged.neoforge.common.util.BlockSnapshot snap : multi.getReplacedBlockSnapshots())
+                mark(level, snap.getPos());
+        } else {
+            mark(level, event.getPos());
+        }
+    }
+
+    private static void mark(ServerLevel level, net.minecraft.core.BlockPos pos) {
+        net.minecraft.world.level.chunk.LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        if (chunk != null)
+            com.minecraftindustrialcomplex.mic_rtsim.build.PlayerBlocks.mark(chunk, pos);
+    }
+
+    /** Datapacks reloaded: which structures are villages may have changed. */
+    private static void onTagsUpdated(net.neoforged.neoforge.event.TagsUpdatedEvent event) {
+        if (event.getUpdateCause() != net.neoforged.neoforge.event.TagsUpdatedEvent.UpdateCause.SERVER_DATA_LOAD)
+            return;
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server != null && RtsimSession.current() != null)
+            com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.refresh(server);
+    }
+
+    /** A horse-like inventory closed: something may have taken a puppet's cargo; check every group next pass. */
+    private static void onContainerClose(net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close event) {
+        if (event.getEntity().level().isClientSide() || !(event.getContainer() instanceof net.minecraft.world.inventory.HorseInventoryMenu))
+            return;
+        RtsimSession s = RtsimSession.current();
+        if (s != null)
+            s.phase1.cargoCheckSoon = true;
     }
 
     private static void onServerStarted(ServerStartedEvent event) {
@@ -90,6 +140,8 @@ public final class BridgeEvents {
             return;
         if (chunk.hasData(RtsimAttachments.PENDING))
             LOADED_CHUNKS.add(chunk);
+        // A village start the registry does not know (a world made before the mod): adopted late (C22).
+        com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.loaded(chunk);
     }
 
     private static void onDrops(net.neoforged.neoforge.event.entity.living.LivingDropsEvent event) {
@@ -158,8 +210,11 @@ public final class BridgeEvents {
         if (event.getEntity().level().isClientSide())
             return;
         RtsimSession s = RtsimSession.current();
-        if (s != null)
+        if (s != null) {
             s.onDeath(event.getEntity(), event.getSource().getEntity());
+            if (!s.failed())
+                s.phase1.onDeath(event.getEntity(), event.getSource().getEntity());
+        }
     }
 
     /** Taming takes a creature out of the sim (A10, PLAN.md §6.2). Lowest priority: only a tame that happens. */
@@ -176,11 +231,15 @@ public final class BridgeEvents {
      * check on this tick's pass; the pass's leash-holder check decides whether it was really taken.
      */
     private static void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
-        if (event.getLevel().isClientSide() || !event.getItemStack().is(Items.LEAD))
+        if (event.getLevel().isClientSide())
             return;
         RtsimSession s = RtsimSession.current();
-        if (s != null)
+        if (s == null)
+            return;
+        if (event.getItemStack().is(Items.LEAD))
             s.onLeadInteract(event.getTarget());
+        else if (!s.failed() && event.getTarget() instanceof net.minecraft.world.item.trading.Merchant)
+            s.phase1.beforeTrading(event.getEntity(), event.getTarget()); // reprice before vanilla opens the trade
     }
 
     private static void onRegisterCommands(RegisterCommandsEvent event) {

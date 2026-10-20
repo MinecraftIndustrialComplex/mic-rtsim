@@ -39,6 +39,9 @@ public final class WanderingTraderAdapter implements BodyAdapter {
             return null;
         trader.moveTo(pos.x, pos.y, pos.z, trader.getYRot(), 0f);
         trader.setDespawnDelay(VANILLA_DESPAWN_DELAY);
+        // Its offers come from the caravan's cargo (C21, MERCHANT_OFFERS); never vanilla's random
+        // trades, which sell goods out of nothing. getOffers() rolls them; the bridge drops them.
+        trader.getOffers().clear();
         if (spawn.health() > 0f)
             trader.setHealth(Math.min(spawn.health(), trader.getMaxHealth()));
         return trader;
@@ -52,6 +55,20 @@ public final class WanderingTraderAdapter implements BodyAdapter {
         out.x = trader.getX();
         out.y = trader.getY();
         out.z = trader.getZ();
+    }
+
+    /** The trader trades from its caravan's llama chests (C21): sales come out of them, payments go in. */
+    @Override
+    public com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess tradeCargo(Entity entity, PuppetGroup group) {
+        java.util.List<com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess> parts = new java.util.ArrayList<>();
+        for (PuppetGroup.Member m : group.members) {
+            if (m.gone || m.entity == null || m.entity == entity || m.entity.isRemoved())
+                continue;
+            com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess c = group.kind.slots().get(m.index).adapter().ownCargo(m.entity);
+            if (c != null)
+                parts.add(c);
+        }
+        return parts.isEmpty() ? null : new com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess.Union(parts);
     }
 
     @Override

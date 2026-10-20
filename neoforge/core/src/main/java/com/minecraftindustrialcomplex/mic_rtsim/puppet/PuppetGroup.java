@@ -31,6 +31,10 @@ public final class PuppetGroup {
         public java.util.UUID pendingKiller;
         /** The items it dropped when it died (LivingDropsEvent), which carry its DIED. */
         public java.util.List<net.minecraft.world.entity.item.ItemEntity> pendingDrops;
+        /** Its own cargo as the bridge last left it; anything else that changes it is reported (CARGO_CHANGED). */
+        public java.util.Map<net.minecraft.world.item.Item, Integer> expectedCargo;
+        /** The offers the engine set for this member (MERCHANT_OFFERS), in order; null when none. */
+        public java.util.List<com.minecraftindustrialcomplex.mic_rtsim.market.PuppetOffers.Spec> offers;
 
         Member(int index, UUID uuid, Entity entity) {
             this.index = index;

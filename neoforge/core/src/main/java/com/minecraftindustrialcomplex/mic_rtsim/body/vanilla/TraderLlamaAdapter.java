@@ -132,6 +132,18 @@ public final class TraderLlamaAdapter implements BodyAdapter {
             llama.dropLeash(true, false);
     }
 
+    /** The llama's chest: 3 rows of {@code strength} columns, through {@code getSlot(500 + k)}. */
+    @Override
+    public com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess ownCargo(Entity entity) {
+        TraderLlama llama = (TraderLlama) entity;
+        if (!llama.hasChest())
+            return null;
+        java.util.List<net.minecraft.world.entity.SlotAccess> slots = new java.util.ArrayList<>();
+        for (int k = 0; k < llama.getInventoryColumns() * 3; k++)
+            slots.add(llama.getSlot(SLOT_CARGO + k));
+        return new com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess.Slots(slots);
+    }
+
     @Override
     public int takenBy(Entity entity, PuppetGroup group) {
         TraderLlama llama = (TraderLlama) entity;
