@@ -138,31 +138,88 @@ impl Cmd {
 
 /// The industry engine's op ids: the kernel's engine ids with namespace 0x49 ("I") in bits 56 to
 /// 62, so they never collide with another engine allocator's (overnight choice F4).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// The low 56 bits are **derived from the command's identity** (docs/boundary.md §2.2, overnight
+/// choice W3): a hash of the world seed, the engine's tick when the change was decided, and the
+/// command itself (kind, target, epoch, every delta), never a counter. A counter restored from
+/// the pages hands out again, after a crash, the ids it gave since the last save, to *different*
+/// commands, which the bridge (still holding the first one's COMMAND_RESULT, or a chunk still
+/// carrying its IND_RECONCILE_RESULT) answers DUPLICATE and drops. Re-deriving the *same* decision
+/// gives the same id, so the bridge recognises it. Two identical commands decided in one tick get
+/// the second id from an ordinal, as does a hash that meets another id of the same tick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndustryOps {
-    next: u64,
+    /// The tick of the last id derived.
+    at: Tick,
+    /// The low bits of the ids derived at `at`.
+    issued: Vec<u64>,
 }
 
 const NAMESPACE: u64 = 0x49 << 56;
+const LOW_BITS: u64 = (1 << 56) - 1;
 
 impl IndustryOps {
-    pub fn with_next(next: u64) -> Self {
-        Self { next }
-    }
-
-    pub fn next_value(&self) -> u64 {
-        self.next
-    }
-
-    pub fn allocate(&mut self) -> OpId {
-        let n = self.next;
-        self.next += 1;
-        assert!(n < 1 << 56, "industry op ids exhausted");
-        OpId::engine(NAMESPACE | n)
+    /// The op id of `cmd` (its own op field is ignored), decided at `at` in the world `seed`.
+    pub fn derive(&mut self, seed: u64, at: Tick, cmd: &Cmd) -> OpId {
+        if at != self.at {
+            self.at = at;
+            self.issued.clear();
+        }
+        let mut bytes = Vec::with_capacity(64);
+        bytes.extend_from_slice(&seed.to_le_bytes());
+        bytes.extend_from_slice(&at.0.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        let mut w = rtsim_kernel::codec::Writer::new();
+        crate::persist::Persist::put(&cmd.without_op(), &mut w);
+        bytes.extend_from_slice(&w.into_bytes());
+        for ordinal in 0u64.. {
+            bytes[16..24].copy_from_slice(&ordinal.to_le_bytes());
+            let low = mix(rtsim_kernel::rng::fnv1a64(&bytes)) & LOW_BITS;
+            if low != 0 && !self.issued.contains(&low) {
+                self.issued.push(low);
+                return OpId::engine(NAMESPACE | low);
+            }
+        }
+        unreachable!("an ordinal is always free")
     }
 
     pub fn is_industry(op: OpId) -> bool {
         op.is_engine() && op.0 >> 56 == 0x49
+    }
+}
+
+/// SplitMix64's finalizer: spreads FNV's bits over the 56 kept.
+fn mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+impl Cmd {
+    /// The command with its op id cleared: its identity for [`IndustryOps::derive`].
+    pub fn without_op(&self) -> Cmd {
+        let mut c = self.clone();
+        match &mut c {
+            Cmd::ChunkReconcile(x) => x.op = OpId(0),
+            Cmd::CarriageDelta(x) => x.op = OpId(0),
+            Cmd::ChannelDelta(x) => x.op = OpId(0),
+            Cmd::DepositDelta(x) => x.op = OpId(0),
+            Cmd::WritePackage(x) => x.op = OpId(0),
+            Cmd::Ledger(_) => {}
+        }
+        c
+    }
+
+    /// Sets the command's op id (no-op for a ledger line).
+    pub fn set_op(&mut self, op: OpId) {
+        match self {
+            Cmd::ChunkReconcile(x) => x.op = op,
+            Cmd::CarriageDelta(x) => x.op = op,
+            Cmd::ChannelDelta(x) => x.op = op,
+            Cmd::DepositDelta(x) => x.op = op,
+            Cmd::WritePackage(x) => x.op = op,
+            Cmd::Ledger(_) => {}
+        }
     }
 }
 
@@ -229,7 +286,7 @@ mod persist_impls {
         since,
         goods
     });
-    persist_struct!(IndustryOps { next });
+    persist_struct!(IndustryOps { at, issued });
 
     impl Persist for Cmd {
         fn put(&self, w: &mut Writer) {
@@ -271,5 +328,46 @@ mod persist_impls {
                 _ => return invalid("command tag"),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel(n: i64) -> Cmd {
+        Cmd::ChannelDelta(ChannelDelta {
+            op: OpId(0),
+            channel: ChannelId(7),
+            goods: GoodVec::from_pairs([(Good(1), n)]),
+        })
+    }
+
+    #[test]
+    fn op_ids_come_from_identity_not_a_counter() {
+        let mut a = IndustryOps::default();
+        let x = a.derive(5, Tick(100), &channel(3));
+        assert!(IndustryOps::is_industry(x), "{:#x}", x.0);
+        // Re-deriving the same decision (an engine restored from older pages) gives the same id.
+        let mut b = IndustryOps::default();
+        assert_eq!(b.derive(5, Tick(100), &channel(3)), x);
+        // A different decision at the same tick (what a crash makes of the same game time) does
+        // not, and neither does the same one at another tick or in another world.
+        assert_ne!(b.derive(5, Tick(100), &channel(4)), x);
+        assert_ne!(IndustryOps::default().derive(5, Tick(101), &channel(3)), x);
+        assert_ne!(IndustryOps::default().derive(6, Tick(100), &channel(3)), x);
+        // Two identical decisions in one tick are two transfers with two ids, in a fixed order.
+        let mut c = IndustryOps::default();
+        let first = c.derive(5, Tick(100), &channel(3));
+        let second = c.derive(5, Tick(100), &channel(3));
+        assert_eq!(first, x);
+        assert_ne!(second, first);
+        let mut d = IndustryOps::default();
+        d.derive(5, Tick(100), &channel(3));
+        assert_eq!(d.derive(5, Tick(100), &channel(3)), second);
+        // The command's own op field is not part of its identity.
+        let mut set = channel(3);
+        set.set_op(OpId(99));
+        assert_eq!(IndustryOps::default().derive(5, Tick(100), &set), x);
     }
 }

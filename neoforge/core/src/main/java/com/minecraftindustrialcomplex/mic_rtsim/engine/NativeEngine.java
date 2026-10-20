@@ -357,6 +357,21 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().saveAtNextStep(), "SAVE_AT_NEXT_STEP");
     }
 
+    /** One entry of Java's dictionary that an ordered industry command uses. */
+    public record DictEntry(int kind, int id, String name) {}
+
+    /**
+     * Orders an industry command (docs/industry-boundary.md §4): {@code record} is the whole record,
+     * its cmdSeq ignored, with Java's own dictionary ids (GOOD, NAME, BLOCK_STATE, dimension), and
+     * {@code names} the entries it uses. The engine writes it as its industry engine's own: its
+     * sequence, the DICT records it needs, and, for a carriage, channel, deposit or package command,
+     * its outbox until Java answers. Tests drive the industry module with it; the engine decides its
+     * own commands.
+     */
+    public void industryCommand(List<DictEntry> names, byte[] record) {
+        order(new NativeCodec.Orders().industryCommand(names, record), "INDUSTRY_COMMAND");
+    }
+
     // ---- ScriptedEngine: inspection -------------------------------------------------------------
 
     /** Moves the native received log into the Java list (capped, oldest dropped first). */

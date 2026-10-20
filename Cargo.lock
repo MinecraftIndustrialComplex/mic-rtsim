@@ -474,6 +474,7 @@ dependencies = [
  "jni",
  "mic-native-host",
  "mic-native-rt",
+ "rtsim-industry",
  "rtsim-kernel",
 ]
 

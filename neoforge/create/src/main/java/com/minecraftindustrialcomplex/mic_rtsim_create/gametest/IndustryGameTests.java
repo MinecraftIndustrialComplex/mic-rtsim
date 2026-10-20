@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.Ledgers;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
@@ -934,8 +935,11 @@ public final class IndustryGameTests {
                 })
                 .thenExecute(() -> {
                     ind().ledgers().request(ind().district(id[0]));
-                    ledger(id[0], IndRecords.Ledger.STATE_LEARNED, 0, -1, 0, null, 0,
-                            List.of(new LedgerGood("i/64/minecraft:iron_ingot", 120, 500)));
+                    // The native engine's industry engine answers the request itself (its line for a
+                    // district it is still learning); the stub needs the answer scripted.
+                    if (!nativeEngine())
+                        ledger(id[0], IndRecords.Ledger.STATE_LEARNED, 0, -1, 0, null, 0,
+                                List.of(new LedgerGood("i/64/minecraft:iron_ingot", 120, 500)));
                 })
                 .thenWaitUntil(() -> check("the ledger came", ind().ledgers().latest(id[0]) != null))
                 .thenExecute(() -> {
@@ -954,9 +958,17 @@ public final class IndustryGameTests {
                     record("theLedgerShowsOnADisplay", "sign", all);
                     District d = ind().district(id[0]);
                     check("the sign names the district", all.contains(d.displayName()));
-                    check("and its state", all.contains("running (simulated)"));
-                    check("and the iron per hour", all.contains("+120/h"));
-                    check("and what it would have made", all.contains("would have made 500"));
+                    if (nativeEngine()) {
+                        // The engine's own answer: a district detected this test has not been learned.
+                        var line = ind().ledgers().latest(id[0]);
+                        record("theLedgerShowsOnADisplay", "native ledger state", Ledgers.stateName(line.state()));
+                        check("the engine's own state, " + Ledgers.stateName(line.state()), all.contains(Ledgers.stateName(line.state())));
+                        check("not learned yet", line.state() == IndRecords.Ledger.STATE_LEARNING || line.state() == IndRecords.Ledger.STATE_LIVE);
+                    } else {
+                        check("and its state", all.contains("running (simulated)"));
+                        check("and the iron per hour", all.contains("+120/h"));
+                        check("and what it would have made", all.contains("would have made 500"));
+                    }
                     check("the display asked for the ledger", !received(IndRecords.IND_LEDGER_REQUEST, IndRecords.DistrictState.DISTRICT, id[0]).isEmpty());
                 })
                 .thenSucceed();

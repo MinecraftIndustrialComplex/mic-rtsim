@@ -22,6 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::journal::OpId;
 use rtsim_kernel::lazy::{LazyTable, RegionId};
 use rtsim_kernel::rng::SystemId;
 use serde::Serialize;
@@ -433,6 +434,22 @@ impl Engine {
             Obs::LedgerRequest { district } => {
                 let line = self.ledger_line(*district, at);
                 self.out.push(Cmd::Ledger(line));
+            }
+            Obs::Approach {
+                district,
+                distance,
+                eta_ticks,
+                closing,
+            } => {
+                // Data only (W16): the stale-tick race's policy is not decided.
+                if let Some(dist) = self.districts.get_mut(district) {
+                    dist.approach = Some(crate::district::Approach {
+                        at,
+                        distance: *distance,
+                        eta_ticks: *eta_ticks,
+                        closing: *closing,
+                    });
+                }
             }
             Obs::Watched { district, watched } => {
                 let dist = self.district_mut(*district);
@@ -1088,12 +1105,13 @@ impl Engine {
         if delta == 0 || self.mode != Mode::Apply {
             return;
         }
-        let op = self.ops.allocate();
-        self.out.push(Cmd::ChannelDelta(ChannelDelta {
-            op,
+        let mut c = Cmd::ChannelDelta(ChannelDelta {
+            op: OpId(0),
             channel: ch,
             goods: GoodVec::from_pairs([(g, delta)]),
-        }));
+        });
+        c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+        self.out.push(c);
         self.channels.entry(ch).or_default().known.add(g, delta);
     }
 
@@ -1124,16 +1142,17 @@ impl Engine {
         }
         self.stats.packages_written += count as u64;
         if self.mode == Mode::Apply {
-            let op = self.ops.allocate();
-            self.out.push(Cmd::WritePackage(WritePackage {
-                op,
+            let mut c = Cmd::WritePackage(WritePackage {
+                op: OpId(0),
                 district: d,
                 inventory: inv,
                 pos,
                 address,
                 count: count as u32,
                 goods: GoodVec::from_pairs([(g, batch)]),
-            }));
+            });
+            c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+            self.out.push(c);
         }
     }
 
@@ -1278,14 +1297,15 @@ impl Engine {
                     delta,
                 }),
                 Writeback::Immediate => {
-                    let op = self.ops.allocate();
-                    self.out.push(Cmd::DepositDelta(DepositDelta {
-                        op,
+                    let mut c = Cmd::DepositDelta(DepositDelta {
+                        op: OpId(0),
                         plugin: s.plugin,
                         chunk: s.chunk,
                         good: g,
                         delta,
-                    }));
+                    });
+                    c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+                    self.out.push(c);
                 }
             }
         }
@@ -1299,17 +1319,20 @@ impl Engine {
             report.destroyed += destroy.len() as u32;
             report.deltas += deltas.len() as u32;
             report.chunks += 1;
-            let op = self.ops.allocate();
-            dist.pending_ops.insert(op, chunk);
+            let mut cmd = ChunkReconcile {
+                op: OpId(0),
+                district: d,
+                epoch,
+                chunk,
+                deltas,
+                destroy,
+            };
+            cmd.op = self
+                .ops
+                .derive(self.world_seed, self.now, &Cmd::ChunkReconcile(cmd.clone()));
+            dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
-                cmd: ChunkReconcile {
-                    op,
-                    district: d,
-                    epoch,
-                    chunk,
-                    deltas,
-                    destroy,
-                },
+                cmd,
                 trim: false,
                 sent: false,
             });
@@ -1557,17 +1580,20 @@ impl Engine {
         }
         let _ = at;
         for (chunk, deltas) in by_chunk {
-            let op = self.ops.allocate();
-            dist.pending_ops.insert(op, chunk);
+            let mut cmd = ChunkReconcile {
+                op: OpId(0),
+                district: d,
+                epoch: new_epoch,
+                chunk,
+                deltas,
+                destroy: Vec::new(),
+            };
+            cmd.op = self
+                .ops
+                .derive(self.world_seed, self.now, &Cmd::ChunkReconcile(cmd.clone()));
+            dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
-                cmd: ChunkReconcile {
-                    op,
-                    district: d,
-                    epoch: new_epoch,
-                    chunk,
-                    deltas,
-                    destroy: Vec::new(),
-                },
+                cmd,
                 trim: true,
                 sent: false,
             });
@@ -1736,22 +1762,24 @@ impl Engine {
             );
             self.note(d, at, what);
         }
-        let op = self.ops.allocate();
+        let mut cmd = Cmd::CarriageDelta(CarriageDelta {
+            op: OpId(0),
+            train: c.train,
+            reason: CarriageReason::Exchange,
+            entries: entries.clone(),
+        });
+        let op = self.ops.derive(self.world_seed, self.now, &cmd);
+        cmd.set_op(op);
         self.exchanges.insert(
             op,
             PendingExchange {
                 district: d,
                 train: c.train,
-                entries: entries.clone(),
+                entries,
                 loot: false,
             },
         );
-        self.out.push(Cmd::CarriageDelta(CarriageDelta {
-            op,
-            train: c.train,
-            reason: CarriageReason::Exchange,
-            entries,
-        }));
+        self.out.push(cmd);
     }
 
     fn carriage_result(&mut self, at: Tick, r: &CarriageResult) {
@@ -2254,22 +2282,24 @@ impl Engine {
             self.goods_words(&loot)
         );
         self.note(DistrictId(0), t.at, what);
-        let op = self.ops.allocate();
+        let mut cmd = Cmd::CarriageDelta(CarriageDelta {
+            op: OpId(0),
+            train,
+            reason: CarriageReason::Loot,
+            entries: entries.clone(),
+        });
+        let op = self.ops.derive(self.world_seed, self.now, &cmd);
+        cmd.set_op(op);
         self.exchanges.insert(
             op,
             PendingExchange {
                 district: DistrictId(0),
                 train,
-                entries: entries.clone(),
+                entries,
                 loot: true,
             },
         );
-        self.out.push(Cmd::CarriageDelta(CarriageDelta {
-            op,
-            train,
-            reason: CarriageReason::Loot,
-            entries,
-        }));
+        self.out.push(cmd);
     }
 
     // ---- the ledger (I-A, I18) ------------------------------------------------------------
