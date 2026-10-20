@@ -147,6 +147,9 @@ public final class StubEngine implements ScriptedEngine {
     private long steps;
     private long staleSkipped;
     private long opDuplicates;
+    /** Java op ids of events (TAKEN, DIED, TRADE, CARGO_CHANGED), with how often each arrived unskipped. */
+    private final Map<Long, Integer> eventOps = new HashMap<>();
+    private long eventOpDuplicates;
     private boolean started;
     /** Guarded by {@code worker}. */
     private boolean closed;
@@ -451,6 +454,19 @@ public final class StubEngine implements ScriptedEngine {
                     int status = r.aux();
                     if (status == Obs.CommandResult.APPLIED || status == Obs.CommandResult.DUPLICATE_OP)
                         appliedOps.add(b.getLong(at + Obs.CommandResult.OP_ID));
+                } else {
+                    int opAt = switch (kind) {
+                        case Obs.TAKEN -> Obs.Taken.OP_ID;
+                        case Obs.DIED -> Obs.Died.OP_ID;
+                        case Obs.TRADE -> Obs.Trade.OP_ID;
+                        case Obs.CARGO_CHANGED -> Obs.CargoChanged.OP_ID;
+                        default -> -1;
+                    };
+                    if (opAt > 0 && r.size() >= opAt + 8) {
+                        // An event's op id applies at most once: the engine counts the cargo it moves once.
+                        if (eventOps.merge(b.getLong(at + opAt), 1, Integer::sum) > 1)
+                            eventOpDuplicates++;
+                    }
                 }
             }
         }
@@ -604,6 +620,165 @@ public final class StubEngine implements ScriptedEngine {
         nextCmdSeq = next;
     }
 
+    // ---- phase 1 scripting ----------------------------------------------------------------------
+
+    /** One good of a scripted MARKET, in rtsim-trade units (thousandths; millionths of a coin per item). */
+    public record GoodSpec(String item, long stock, long target, long anchor, int rNum, int rDen) {}
+
+    public void market(long village, long asOfObsSeq, String currency, long treasury, long treasuryTarget, int worstNum, int worstDen,
+                       List<GoodSpec> goods) {
+        script(out -> {
+            int cur = out.dict(Obs.DICT_ITEM, currency);
+            int[] ids = new int[goods.size()];
+            for (int i = 0; i < ids.length; i++)
+                ids[i] = out.dict(Obs.DICT_ITEM, goods.get(i).item());
+            int at = out.reserve(Cmd.MARKET, Cmd.Market.size(goods.size()), goods.size());
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.Market.VILLAGE, village);
+            b.putLong(at + Cmd.Market.AS_OF_OBS_SEQ, asOfObsSeq);
+            b.putInt(at + Cmd.Market.CURRENCY, cur);
+            b.putLong(at + Cmd.Market.TREASURY, treasury);
+            b.putLong(at + Cmd.Market.TREASURY_TARGET, treasuryTarget);
+            b.putInt(at + Cmd.Market.WORST_NUM, worstNum);
+            b.putInt(at + Cmd.Market.WORST_DEN, worstDen);
+            for (int i = 0; i < ids.length; i++) {
+                GoodSpec g = goods.get(i);
+                int o = at + Cmd.Market.GOODS + i * Cmd.Market.GOOD;
+                b.putInt(o + Cmd.Market.G_ITEM, ids[i]);
+                b.putLong(o + Cmd.Market.G_STOCK, g.stock());
+                b.putLong(o + Cmd.Market.G_TARGET, g.target());
+                b.putLong(o + Cmd.Market.G_ANCHOR, g.anchor());
+                b.putInt(o + Cmd.Market.G_R_NUM, g.rNum());
+                b.putInt(o + Cmd.Market.G_R_DEN, g.rDen());
+            }
+        });
+    }
+
+    /** One offer of a scripted MERCHANT_OFFERS; costB null for none. */
+    public record OfferSpec(String costA, int costACount, String costB, int costBCount, String result, int resultCount,
+                            int maxUses, int flags) {}
+
+    public void merchantOffers(long agent, int epoch, int member, List<OfferSpec> offers) {
+        script(out -> {
+            int[][] ids = new int[offers.size()][3];
+            for (int i = 0; i < offers.size(); i++) {
+                OfferSpec o = offers.get(i);
+                ids[i][0] = out.dict(Obs.DICT_ITEM, o.costA());
+                ids[i][1] = o.costB() == null ? 0 : out.dict(Obs.DICT_ITEM, o.costB());
+                ids[i][2] = out.dict(Obs.DICT_ITEM, o.result());
+            }
+            int at = out.reserve(Cmd.MERCHANT_OFFERS, Cmd.MerchantOffers.size(offers.size()), offers.size());
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.MerchantOffers.AGENT, agent);
+            b.putInt(at + Cmd.MerchantOffers.EPOCH, epoch);
+            b.putInt(at + Cmd.MerchantOffers.MEMBER, member);
+            for (int i = 0; i < offers.size(); i++) {
+                OfferSpec o = offers.get(i);
+                int p = at + Cmd.MerchantOffers.OFFERS + i * Cmd.MerchantOffers.OFFER;
+                b.putInt(p + Cmd.MerchantOffers.O_COST_A_ITEM, ids[i][0]);
+                b.putInt(p + Cmd.MerchantOffers.O_COST_A_COUNT, o.costACount());
+                b.putInt(p + Cmd.MerchantOffers.O_COST_B_ITEM, ids[i][1]);
+                b.putInt(p + Cmd.MerchantOffers.O_COST_B_COUNT, o.costBCount());
+                b.putInt(p + Cmd.MerchantOffers.O_RESULT_ITEM, ids[i][2]);
+                b.putInt(p + Cmd.MerchantOffers.O_RESULT_COUNT, o.resultCount());
+                b.putInt(p + Cmd.MerchantOffers.O_MAX_USES, o.maxUses());
+                b.putFloat(p + Cmd.MerchantOffers.O_PRICE_MULT, 0.05f);
+                b.putInt(p + Cmd.MerchantOffers.O_FLAGS, o.flags());
+            }
+        });
+    }
+
+    public void writeGossip(long opId, long village, java.util.UUID player, int gossipType, int amount, int report, int flags) {
+        script(out -> {
+            int at = out.reserve(Cmd.WRITE_GOSSIP, Cmd.WriteGossip.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.WriteGossip.OP_ID, opId);
+            b.putLong(at + Cmd.WriteGossip.VILLAGE, village);
+            b.putLong(at + Cmd.WriteGossip.PLAYER_MOST, player.getMostSignificantBits());
+            b.putLong(at + Cmd.WriteGossip.PLAYER_LEAST, player.getLeastSignificantBits());
+            b.putInt(at + Cmd.WriteGossip.GOSSIP, gossipType);
+            b.putInt(at + Cmd.WriteGossip.AMOUNT, amount);
+            b.putInt(at + Cmd.WriteGossip.REPORT, report);
+            b.putInt(at + Cmd.WriteGossip.FLAGS, flags);
+        });
+    }
+
+    public void sentiment(long holder, int dislike, int friend, boolean replace, Map<java.util.UUID, Integer> entries) {
+        List<Map.Entry<java.util.UUID, Integer>> list = new ArrayList<>(entries.entrySet());
+        script(out -> {
+            int at = out.reserve(Cmd.SENTIMENT, Cmd.Sentiment.size(list.size()), list.size());
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.Sentiment.HOLDER, holder);
+            b.putInt(at + Cmd.Sentiment.DISLIKE, dislike);
+            b.putInt(at + Cmd.Sentiment.FRIEND, friend);
+            b.putInt(at + Cmd.Sentiment.FLAGS, replace ? Cmd.Sentiment.FLAG_REPLACE : 0);
+            for (int i = 0; i < list.size(); i++) {
+                int e = at + Cmd.Sentiment.ENTRIES + i * Cmd.Sentiment.ENTRY;
+                b.putLong(e, list.get(i).getKey().getMostSignificantBits());
+                b.putLong(e + 8, list.get(i).getKey().getLeastSignificantBits());
+                b.putInt(e + 16, list.get(i).getValue());
+            }
+        });
+    }
+
+    public void placeHouse(long opId, long village, String dimension, String template, String processors, int x, int y, int z,
+                           int rotation, int mirror, int flags, int radius, long seed, int yOffset) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int t = out.dict(Obs.DICT_TEMPLATE, template);
+            int p = processors == null ? 0 : out.dict(Obs.DICT_PROCESSORS, processors);
+            int at = out.reserve(Cmd.PLACE_HOUSE, Cmd.PlaceHouse.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.PlaceHouse.OP_ID, opId);
+            b.putLong(at + Cmd.PlaceHouse.VILLAGE, village);
+            b.putInt(at + Cmd.PlaceHouse.DIM, dim);
+            b.putInt(at + Cmd.PlaceHouse.TEMPLATE, t);
+            b.putInt(at + Cmd.PlaceHouse.PROCESSORS, p);
+            b.putInt(at + Cmd.PlaceHouse.X, x);
+            b.putInt(at + Cmd.PlaceHouse.Y, y);
+            b.putInt(at + Cmd.PlaceHouse.Z, z);
+            b.put(at + Cmd.PlaceHouse.ROTATION, (byte) rotation);
+            b.put(at + Cmd.PlaceHouse.MIRROR, (byte) mirror);
+            b.putShort(at + Cmd.PlaceHouse.FLAGS, (short) flags);
+            b.putInt(at + Cmd.PlaceHouse.RADIUS, radius);
+            b.putLong(at + Cmd.PlaceHouse.SEED, seed);
+            b.putInt(at + Cmd.PlaceHouse.Y_OFFSET, yOffset);
+        });
+    }
+
+    public void spawnResident(long opId, long village, String dimension, String body, String profession, int flags,
+                              double x, double y, double z, long house) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int bd = out.dict(Obs.DICT_BODY, body);
+            int pr = profession == null ? 0 : out.dict(Obs.DICT_PROFESSION, profession);
+            int at = out.reserve(Cmd.SPAWN_RESIDENT, Cmd.SpawnResident.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + Cmd.SpawnResident.OP_ID, opId);
+            b.putLong(at + Cmd.SpawnResident.VILLAGE, village);
+            b.putInt(at + Cmd.SpawnResident.DIM, dim);
+            b.putInt(at + Cmd.SpawnResident.BODY, bd);
+            b.putInt(at + Cmd.SpawnResident.PROFESSION, pr);
+            b.putInt(at + Cmd.SpawnResident.FLAGS, flags);
+            b.putDouble(at + Cmd.SpawnResident.X, x);
+            b.putDouble(at + Cmd.SpawnResident.Y, y);
+            b.putDouble(at + Cmd.SpawnResident.Z, z);
+            b.putLong(at + Cmd.SpawnResident.HOUSE, house);
+        });
+    }
+
     // ---- inspection -----------------------------------------------------------------------------
 
     /** The last saved pages: what survives a crash. */
@@ -650,6 +825,17 @@ public final class StubEngine implements ScriptedEngine {
         return opDuplicates;
     }
 
+    /** How many times an event op id (TAKEN, DIED, TRADE, CARGO_CHANGED) arrived unskipped; the engine applies it once. */
+    @Override
+    public synchronized int eventOpCount(long opId) {
+        return eventOps.getOrDefault(opId, 0);
+    }
+
+    public synchronized long eventOpDuplicates() {
+        return eventOpDuplicates;
+    }
+
+    @Override
     public synchronized String javaDictName(int id) {
         return javaDict.get(id);
     }

@@ -42,7 +42,7 @@ public final class PuppetSaveGameTests {
 
     /** Stores every loaded entity chunk (vanilla's autosave) and reads the given chunks back from storage. */
     @SuppressWarnings("unchecked")
-    private static CompletableFuture<List<Entity>> saveAndReadBack(ServerLevel level, ChunkPos... chunks) {
+    static CompletableFuture<List<Entity>> saveAndReadBack(ServerLevel level, ChunkPos... chunks) {
         var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();
         manager.autoSave();
         EntityPersistentStorage<Entity> storage =

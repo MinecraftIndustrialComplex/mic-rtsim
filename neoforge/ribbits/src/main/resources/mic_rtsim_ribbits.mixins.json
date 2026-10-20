@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.minecraftindustrialcomplex.mic_rtsim_ribbits.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "RibbitApplyBuffGoalMixin",
+    "RibbitEntityAccessor",
+    "RibbitEntityMixin",
+    "RibbitPlayMusicGoalMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

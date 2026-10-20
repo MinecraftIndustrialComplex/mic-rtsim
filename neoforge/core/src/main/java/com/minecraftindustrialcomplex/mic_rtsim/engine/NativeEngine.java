@@ -330,6 +330,24 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     @Override
+    public synchronized String javaDictName(int id) {
+        drain();
+        String name = null;
+        for (Received r : received) {
+            if (r.kind() != com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.DICT)
+                continue;
+            java.nio.ByteBuffer b = r.view();
+            if (b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.ID) != id)
+                continue;
+            int len = b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME_LEN);
+            byte[] bytes = new byte[len];
+            b.get(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME, bytes, 0, len);
+            name = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return name;
+    }
+
+    @Override
     public void failForTest() {
         order(new NativeCodec.Orders().fail(), "FAIL");
     }

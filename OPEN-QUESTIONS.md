@@ -66,6 +66,15 @@ code.
   villages, because nothing but players removes money. This makes P9 concrete. The round 2 agent picks
   the smallest fix that lets a closed world settle and logs it (E43 and up in
   docs/overnight-choices-phase1.md). Review that choice; the r, T and k values stay yours.
+- **G31: vanilla's reputation discount on sim prices.** The plan says vanilla's discount still applies
+  on top of sim prices. The phase 1 Java agent trims it at the market's current price, so a buy and a
+  sale can't loop into money, but the trim leaves the price change across one bundle. Alternatives: no
+  vanilla discount in adopted villages; apply it inside the sim's quote. See
+  docs/overnight-choices-phase1mc.md.
+- **One source of truth for prices.** The Java side copies the market price math from rtsim-trade
+  (`PriceCurve`, `Market::offer`) so offers can be shown at once. Two copies can drift apart.
+  Recommended: the engine sends ready-made bundles and Java only shows them; keep the Java copy only as
+  a test oracle. Alternative: keep both, with a shared test vector file that both sides must pass.
 - **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 batches
   flows into caravans with a dock wait and a departure period per road. Review the batching rule.
 

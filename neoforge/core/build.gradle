@@ -43,6 +43,8 @@ def buildMicNative = tasks.register('buildMicNative', Exec) {
     }
 }
 def micNativeFiles = files(micNativeJar) { builtBy buildMicNative }
+// The plugins' GameTest servers load mic_native too: the core requires it.
+ext.micNativeFiles = micNativeFiles
 
 repositories {
     maven { url = 'https://maven.neoforged.net/releases' }

@@ -83,6 +83,32 @@ public interface ScriptedEngine extends Engine {
      */
     void failForTest();
 
+    /** The name behind an id of Java's dictionary, as the engine received it (null if never). */
+    String javaDictName(int id);
+
+    /**
+     * How many times an event's op id (TAKEN, DIED, TRADE, CARGO_CHANGED) arrived not skipped by
+     * sequence: the engine applies it once, so a count above 1 is a resend the op id caught. From the
+     * received log (the last 10,000 records).
+     */
+    default int eventOpCount(long opId) {
+        int n = 0;
+        for (Received r : received()) {
+            if (r.skipped())
+                continue;
+            int at = switch (r.kind()) {
+                case com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TAKEN -> com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Taken.OP_ID;
+                case com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.DIED -> com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Died.OP_ID;
+                case com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TRADE -> com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Trade.OP_ID;
+                case com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.CARGO_CHANGED -> com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.CargoChanged.OP_ID;
+                default -> -1;
+            };
+            if (at > 0 && r.bytes().length >= at + 8 && r.view().getLong(at) == opId)
+                n++;
+        }
+        return n;
+    }
+
     /** The received log, oldest first. */
     List<Received> received();
 

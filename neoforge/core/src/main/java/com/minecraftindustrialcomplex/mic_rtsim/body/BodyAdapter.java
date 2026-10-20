@@ -64,4 +64,20 @@ public interface BodyAdapter {
     default int takenBy(Entity entity, PuppetGroup group) {
         return 0;
     }
+
+    /**
+     * The cargo this body itself carries (C21): a trader llama's chest, a ribbit merchant's pack. Null
+     * when it carries none. The bridge watches it for robbery (CARGO_CHANGED).
+     */
+    default com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess ownCargo(Entity entity) {
+        return null;
+    }
+
+    /**
+     * The cargo this body trades from when it is a merchant: what its sales come out of and its
+     * payments go into. A wandering trader trades from its group's llama chests. Default: its own.
+     */
+    default com.minecraftindustrialcomplex.mic_rtsim.market.CargoAccess tradeCargo(Entity entity, PuppetGroup group) {
+        return ownCargo(entity);
+    }
 }

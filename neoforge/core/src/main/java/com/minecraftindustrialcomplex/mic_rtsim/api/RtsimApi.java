@@ -45,4 +45,69 @@ public final class RtsimApi {
         RtsimSession s = RtsimSession.current();
         return s != null && s.takeEntity(entity, reason.code, player == null ? null : player.getUUID());
     }
+
+    // ---- phase 1 (PLAN.md §8) -------------------------------------------------------------------
+
+    /**
+     * Declares the structures of a culture's villages (C22): they are adopted when their start
+     * generates. {@code residentPool} names the template pool whose jigsaw block marks where a house's
+     * resident stands (Ribbits: {@code ribbits:ribbits}), or null. Call during mod construction.
+     */
+    public static void registerCulture(java.util.function.Predicate<net.minecraft.core.Holder<net.minecraft.world.level.levelgen.structure.Structure>> structures,
+                                       String culture, String residentPool) {
+        com.minecraftindustrialcomplex.mic_rtsim.village.Cultures.register(
+                new com.minecraftindustrialcomplex.mic_rtsim.village.Cultures.Rule(structures, culture, residentPool));
+    }
+
+    /** Declares a village resident type (C2: residents stay ordinary entities; the census counts them). */
+    public static void registerResident(net.minecraft.world.entity.EntityType<?> type, com.minecraftindustrialcomplex.mic_rtsim.village.Residents.Kind kind) {
+        com.minecraftindustrialcomplex.mic_rtsim.village.Residents.register(type, kind);
+    }
+
+    /** How SPAWN_RESIDENT makes a resident of body kind {@code body} (village growth, C7). */
+    public static void registerResidentFactory(String body, com.minecraftindustrialcomplex.mic_rtsim.village.Residents.Factory factory) {
+        com.minecraftindustrialcomplex.mic_rtsim.village.Residents.registerFactory(body, factory);
+    }
+
+    /** The adopted village an entity belongs to (by its home, else where it stands), or null. */
+    public static com.minecraftindustrialcomplex.mic_rtsim.village.Village villageOf(Entity entity) {
+        RtsimSession s = RtsimSession.current();
+        if (s == null)
+            return null;
+        com.minecraftindustrialcomplex.mic_rtsim.village.Village v =
+                com.minecraftindustrialcomplex.mic_rtsim.village.Residents.villageOf(s.phase1.villages, entity);
+        return v != null ? v : s.phase1.villages.at(entity.level().dimension(), entity.blockPosition());
+    }
+
+    /** A holder's (a village's) sentiment snapshot from the engine, or null when it sent none. */
+    public static com.minecraftindustrialcomplex.mic_rtsim.knowledge.Sentiments.Snapshot sentiment(long holder) {
+        RtsimSession s = RtsimSession.current();
+        return s == null ? null : s.phase1.sentiments.get(holder);
+    }
+
+    /**
+     * A restock just reset an offer's uses: in an adopted village with a market they follow the
+     * treasury rule instead (C14, C23). For plugins' restock mixins ({@code RibbitEntity.restock}).
+     */
+    public static void afterResetUses(Entity merchant, net.minecraft.world.item.trading.MerchantOffer offer) {
+        RtsimSession s = RtsimSession.current();
+        if (s != null && !s.failed())
+            s.phase1.afterResetUses(merchant, offer);
+    }
+
+    /**
+     * True when the sim prices this offer, so vanilla's demand must leave it alone: for plugins'
+     * {@code updateDemand} mixins ({@code RibbitEntity.updateDemand}).
+     */
+    public static boolean pricesOffer(Entity merchant, net.minecraft.world.item.trading.MerchantOffer offer) {
+        RtsimSession s = RtsimSession.current();
+        return s != null && !s.failed() && s.phase1.pricesOffer(merchant, offer);
+    }
+
+    /** The live puppet group an entity is a member of, or null. */
+    public static com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup group(Entity entity) {
+        RtsimSession s = RtsimSession.current();
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag tag = RtsimAttachments.tag(entity);
+        return s == null || tag == null ? null : s.registry().live(tag, entity.getUUID());
+    }
 }
