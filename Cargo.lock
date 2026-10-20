@@ -565,6 +565,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsim-space"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
+]
+
+[[package]]
 name = "rtsim-trade"
 version = "0.0.1"
 dependencies = [
