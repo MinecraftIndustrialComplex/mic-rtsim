@@ -14,7 +14,6 @@
 
 use std::collections::BTreeMap;
 
-use rtsim_industry::engine::Mode;
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{BlockFlags, InvKind};
@@ -93,7 +92,7 @@ pub fn refinery(seed: u64, visits: Vec<Visit>) -> FakeWorld {
     // items and a block, an archer 4 items), which their threats carry (choice C2-1, K2-13's
     // recommendation), so the refinery keeps the industry defaults.
     let tun = Tunables::default();
-    let mut w = FakeWorld::new(seed, tun, Mode::Apply);
+    let mut w = FakeWorld::new(seed, tun);
     w.good(IRON.0, GoodInfo::item("minecraft:iron_ingot", 64));
     w.good(BREAD.0, GoodInfo::item("minecraft:bread", 64));
     w.good(GASOLINE.0, GoodInfo::item("destroy:gasoline_bucket", 16));

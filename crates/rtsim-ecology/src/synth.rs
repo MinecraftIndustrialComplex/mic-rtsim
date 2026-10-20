@@ -15,7 +15,6 @@
 
 use std::collections::BTreeMap;
 
-use rtsim_industry::engine::Mode;
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::{BlockFlags, InvKind};
@@ -404,7 +403,7 @@ pub fn farm(seed: u64, turrets: [f32; 4], visits: Vec<Visit>) -> FakeWorld {
     // dragon one (docs/overnight-choices-dragons.md). The scenario lets a dragon carry off 32 items a pass, so it eats
     // meat and hoards gold. TUNABLE, PLACEHOLDER.
     tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
-    let mut w = FakeWorld::new(seed, tun, Mode::Apply);
+    let mut w = FakeWorld::new(seed, tun);
     w.good(WHEAT.0, GoodInfo::item("minecraft:wheat", 64));
     w.good(BEEF.0, GoodInfo::item("minecraft:beef", 64));
     w.good(GOLD_ITEM.0, GoodInfo::item("minecraft:gold_ingot", 64));

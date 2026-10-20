@@ -40,6 +40,7 @@ pub mod culture;
 pub mod engine;
 pub mod grievance;
 mod persist;
+pub mod presence;
 pub mod scenario;
 pub mod synth;
 pub mod tunables;

@@ -17,7 +17,6 @@
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
-use crate::engine::Mode;
 use crate::fake::{
     FCarriage, FDistrict, FInventory, FStation, FTrain, FakeWorld, Recipe, TrainState, Visit,
     exposed, survey,
@@ -45,10 +44,13 @@ pub struct IronLine {
     pub threats: bool,
     /// Every district chunk-loaded all the time.
     pub control: bool,
-    pub mode: Mode,
     /// Machines tick once on stale stock before a reconcile lands (INDUSTRY.md §19 risk 3), and
     /// reconciles land a tick late, as the real protocol does. Off: an ideal, race-free Java side.
     pub tick_first: bool,
+    /// The Java side sends IND_APPROACH before the player's chunks load, and applies a reconcile
+    /// it holds at the chunk's load, before any machine ticks (the stale-tick answer, Ben's
+    /// "reconcile ahead of arrival"). Off: the old protocol, reconciles only after the load.
+    pub approach: bool,
 }
 
 /// A Create item vault of `blocks` blocks: 20 slots each (`vaultCapacity`, verified).
@@ -106,10 +108,11 @@ pub fn iron_line(cfg: IronLine, tun: Tunables) -> FakeWorld {
 /// The iron line's world before anything is declared to an engine: for a remote world
 /// ([`FakeWorld::into_remote`]), which declares it to its own engine.
 pub fn iron_line_world(cfg: IronLine, tun: Tunables) -> FakeWorld {
-    let mut w = FakeWorld::new(cfg.seed, tun, cfg.mode);
+    let mut w = FakeWorld::new(cfg.seed, tun);
     w.control = cfg.control;
     w.machines_tick_first = cfg.tick_first;
     w.apply_on_load = !cfg.tick_first;
+    w.approach_signal = cfg.approach;
     w.good(ORE.0, GoodInfo::item("create:crushed_raw_iron", 64));
     w.good(INGOT.0, GoodInfo::item("minecraft:iron_ingot", 64));
     w.good(COAL.0, GoodInfo::item("minecraft:coal", 64));
@@ -357,13 +360,19 @@ pub fn iron_line_world(cfg: IronLine, tun: Tunables) -> FakeWorld {
 /// Runs the iron line to its end and lets the final loads settle.
 pub fn run_iron_line(w: &mut FakeWorld, cfg: &IronLine) {
     let end = Tick(cfg.days * TICKS_PER_DAY);
-    let mut repaired = false;
-    while w.t < end + 2_000 {
+    run_iron_line_until(w, cfg, end + 2_000);
+}
+
+/// Runs the iron line to `until`, the player's repair included, so a run cut anywhere and
+/// resumed with [`run_iron_line`] is the run that never stopped.
+pub fn run_iron_line_until(w: &mut FakeWorld, cfg: &IronLine, until: Tick) {
+    let end = Tick(cfg.days * TICKS_PER_DAY);
+    while w.t < until {
         w.tick();
         // The player repairs the coast when there (an edit: it goes stale and relearns).
-        if !repaired && w.t >= day(8.6) && w.t < end && w.districts[ORE_COAST].loaded {
+        if !w.repaired && w.t >= day(8.6) && w.t < end && w.districts[ORE_COAST].loaded {
             w.repair_all(ORE_COAST);
-            repaired = true;
+            w.repaired = true;
         }
     }
 }

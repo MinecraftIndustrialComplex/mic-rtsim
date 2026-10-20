@@ -7,7 +7,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::OpId;
 use serde::Serialize;
 
-use crate::ids::{BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodVec, TrainId};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, TrainId};
 use crate::obs::DepositPluginId;
 
 /// One boundary inventory's change for one good.
@@ -61,16 +61,6 @@ pub struct CarriageDelta {
     pub entries: Vec<(u32, Good, i64)>,
 }
 
-/// A change to an Ender Transmission channel buffer (`MatterWorldSavedData`), applied at once: no
-/// chunk is needed (I13).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ChannelDelta {
-    #[serde(skip)]
-    pub op: OpId,
-    pub channel: ChannelId,
-    pub goods: GoodVec,
-}
-
 /// A change to a deposit that lives in level SavedData (Diesel's `OilChunksSavedData`), applied
 /// at once. Chunk-bound deposits (Ore Excavation, Destroy crude) travel in [`ChunkReconcile`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -117,7 +107,6 @@ pub struct LedgerLine {
 pub enum Cmd {
     ChunkReconcile(ChunkReconcile),
     CarriageDelta(CarriageDelta),
-    ChannelDelta(ChannelDelta),
     DepositDelta(DepositDelta),
     WritePackage(WritePackage),
     Ledger(LedgerLine),
@@ -128,7 +117,6 @@ impl Cmd {
         match self {
             Cmd::ChunkReconcile(c) => Some(c.op),
             Cmd::CarriageDelta(c) => Some(c.op),
-            Cmd::ChannelDelta(c) => Some(c.op),
             Cmd::DepositDelta(c) => Some(c.op),
             Cmd::WritePackage(c) => Some(c.op),
             Cmd::Ledger(_) => None,
@@ -203,7 +191,6 @@ impl Cmd {
         match &mut c {
             Cmd::ChunkReconcile(x) => x.op = OpId(0),
             Cmd::CarriageDelta(x) => x.op = OpId(0),
-            Cmd::ChannelDelta(x) => x.op = OpId(0),
             Cmd::DepositDelta(x) => x.op = OpId(0),
             Cmd::WritePackage(x) => x.op = OpId(0),
             Cmd::Ledger(_) => {}
@@ -216,7 +203,6 @@ impl Cmd {
         match self {
             Cmd::ChunkReconcile(x) => x.op = op,
             Cmd::CarriageDelta(x) => x.op = op,
-            Cmd::ChannelDelta(x) => x.op = op,
             Cmd::DepositDelta(x) => x.op = op,
             Cmd::WritePackage(x) => x.op = op,
             Cmd::Ledger(_) => {}
@@ -260,7 +246,6 @@ mod persist_impls {
         reason,
         entries
     });
-    persist_struct!(ChannelDelta { op, channel, goods });
     persist_struct!(DepositDelta {
         op,
         plugin,
@@ -300,10 +285,6 @@ mod persist_impls {
                     w.u8(1);
                     c.put(w);
                 }
-                Cmd::ChannelDelta(c) => {
-                    w.u8(2);
-                    c.put(w);
-                }
                 Cmd::DepositDelta(c) => {
                     w.u8(3);
                     c.put(w);
@@ -322,7 +303,6 @@ mod persist_impls {
             Ok(match r.u8()? {
                 0 => Cmd::ChunkReconcile(Persist::get(r)?),
                 1 => Cmd::CarriageDelta(Persist::get(r)?),
-                2 => Cmd::ChannelDelta(Persist::get(r)?),
                 3 => Cmd::DepositDelta(Persist::get(r)?),
                 4 => Cmd::WritePackage(Persist::get(r)?),
                 5 => Cmd::Ledger(Persist::get(r)?),
@@ -337,10 +317,12 @@ mod tests {
     use super::*;
 
     fn channel(n: i64) -> Cmd {
-        Cmd::ChannelDelta(ChannelDelta {
+        Cmd::DepositDelta(DepositDelta {
             op: OpId(0),
-            channel: ChannelId(7),
-            goods: GoodVec::from_pairs([(Good(1), n)]),
+            plugin: crate::obs::DepositPluginId::DieselOil,
+            chunk: ChunkPos { dim: 0, x: 7, z: 0 },
+            good: Good(1),
+            delta: n,
         })
     }
 
