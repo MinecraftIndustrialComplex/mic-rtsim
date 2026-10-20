@@ -95,6 +95,8 @@ pub struct IndustryStats {
     pub queued: u64,
     /// Threats handed to the engine.
     pub threats: u64,
+    /// Industry records ignored while the module was switched off (U10).
+    pub ignored: u64,
 }
 
 /// The industry side of one session.
@@ -115,7 +117,8 @@ pub(super) struct Link {
     /// Latest-wins industry records of this hand-over not handed to the engine yet: they go in
     /// game-time order with the journaled ones, journaled first on a tie (W9).
     deferred: VecDeque<Timed>,
-    /// The bridge's industry module switch (C25): off, the engine neither runs nor sends.
+    /// The bridge's industry module switch (C25, U10): off, the engine applies no record, runs
+    /// nothing and sends nothing; on again, it catches up.
     enabled: bool,
     /// SESSION_START's game time, until the engine's own session start runs: after the replayed
     /// journal, before this session's first record (W19).
@@ -318,6 +321,8 @@ impl Link {
             if self.enabled {
                 self.begin_session();
                 self.ingest(&t);
+            } else {
+                self.stats.ignored += 1;
             }
         }
     }
@@ -414,7 +419,25 @@ fn decode_link(b: &[u8]) -> rtsim_kernel::codec::Result<LinkPage> {
 pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
     let l = &mut st.industry;
     l.enabled = module_mask & MODULE_INDUSTRY != 0;
+    // Switched off, the engine's own session start waits for the switch (U10): run now, it would
+    // advance the engine while it is meant to be frozen.
     l.session_start_at = Some(tick(game_time));
+}
+
+/// The switch changed in a session (MODULES, U10). Off: the engine is frozen where it stands (its
+/// queue and outbox wait, its pages stay what they are, every record is ignored). On: its own
+/// session start runs at once, at this game time, so it catches up to now (every breakpoint and
+/// wake of the time it was off fires) and takes every district as unloaded until Java reports
+/// them again; Java announces its districts and load states again when the module turns on, as
+/// at a session start.
+fn set_enabled(st: &mut State, on: bool) {
+    let gt = tick(st.game_time);
+    let l = &mut st.industry;
+    let was = l.enabled;
+    l.enabled = on;
+    if on && !was {
+        l.session_start_at = Some(gt.max(l.engine.now()));
+    }
 }
 
 /// A record that is not journaled: Java's DICT entries, MODULES, and the latest-wins industry
@@ -438,10 +461,12 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             java_name(l, kind, id, name);
         }
         obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            l.enabled = wire::u32_at(b, obs::modules::MASK) & MODULE_INDUSTRY != 0;
+            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_INDUSTRY != 0;
+            set_enabled(st, on);
         }
         k if LATEST.contains(&k) => {
             if !l.enabled {
+                l.stats.ignored += 1;
                 return;
             }
             if let Some(t) = l.decode(rec) {
@@ -492,11 +517,17 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A journaled record `Replay` admitted (see [`claims`]). Applied whether or not the module is on:
-/// it says what happened in the world (W8).
+/// A journaled record `Replay` admitted (see [`claims`]). Switched off, the industry ignores it,
+/// as the dragons and ships do (U10, replacing W8's "journaled records are still applied"): it is
+/// admitted for its sequence and op id, counted, and dropped; a COMMAND_RESULT too, so a kept
+/// command stays in the outbox and goes again once the module is on.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let this_session = wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first;
     let l = &mut st.industry;
+    if !l.enabled {
+        l.stats.ignored += 1;
+        return;
+    }
     if this_session {
         l.begin_session();
     }

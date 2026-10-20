@@ -486,11 +486,22 @@ impl FakeWorld {
 
     /// Declares everything to the engine and records the starting totals.
     pub fn declare(&mut self) {
-        for di in 0..self.districts.len() {
-            let d = &mut self.districts[di];
+        for d in &mut self.districts {
             d.revision += 1;
             d.threshold_on = vec![true; d.recipes.len()];
             d.last_ran = vec![Tick::ZERO; d.recipes.len()];
+        }
+        self.announce();
+        self.initial = self.totals();
+    }
+
+    /// Tells the engine every district (its chunks, inventories and survey), power link and
+    /// station as they are now, and each district's loaded chunks and load state: what the Java
+    /// side does at a session start, and when the industry module is switched on again (U10: a
+    /// switched-off engine ignored everything meanwhile).
+    pub fn announce(&mut self) {
+        for di in 0..self.districts.len() {
+            let d = &self.districts[di];
             let (id, rev, dim, n) = (d.id, d.revision, d.dim, d.inventories.len() as u32);
             let chunks: Vec<(i32, i32)> = d.chunks().iter().map(|c| (c.x, c.z)).collect();
             let invs = d.inventories.clone();
@@ -548,7 +559,41 @@ impl FakeWorld {
                 name: s.id.0 as u32,
             }));
         }
-        self.initial = self.totals();
+        for di in 0..self.districts.len() {
+            let loaded: Vec<ChunkPos> = self
+                .loaded_chunks
+                .get(&di)
+                .map(|c| c.iter().copied().collect())
+                .unwrap_or_default();
+            if loaded.is_empty() {
+                continue;
+            }
+            let id = self.districts[di].id;
+            let total = self.districts[di].chunks().len() as u32;
+            for c in &loaded {
+                let e = self.districts[di].epochs.get(c).copied().unwrap_or(0);
+                self.send(Obs::ChunkLoaded {
+                    district: id,
+                    chunk: *c,
+                    applied_epoch: e,
+                });
+            }
+            let state = if loaded.len() as u32 == total {
+                LoadState::Live
+            } else {
+                LoadState::Partial
+            };
+            self.send(Obs::LoadState {
+                district: id,
+                state,
+                ticking_chunks: loaded.len() as u32,
+                total_chunks: total,
+            });
+            self.send(Obs::Watched {
+                district: id,
+                watched: true,
+            });
+        }
     }
 
     /// Everything physical: inventories, carriages, deposits, dropped items.

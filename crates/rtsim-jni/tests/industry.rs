@@ -673,33 +673,83 @@ fn a_failed_carriage_delta_is_taken_back() {
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
-/// The industry module switch (C25, W8): off, the engine takes no latest-wins industry records and
-/// sends nothing; on again, it learns.
+/// MODULES with or without the industry bit, as the bridge sends it mid-session.
+fn switch_industry(j: &mut Java, on: bool) {
+    let Some(r) = j.reserve(
+        rtsim_jni::wire::obs::MODULES,
+        rtsim_jni::wire::obs::modules::SIZE,
+        0,
+    ) else {
+        panic!("room for MODULES")
+    };
+    let mask = if on { MODULE_INDUSTRY } else { 0 };
+    rtsim_jni::wire::put_u32(r, rtsim_jni::wire::obs::modules::MASK, mask);
+}
+
+/// The industry module switch (C25, U10, replacing W8): off, the engine ignores every industry
+/// record, journaled ones included, as the dragons and ships do; on again, Java announces its
+/// districts as at a session start and the engine learns.
 #[test]
 fn the_module_switch_holds_the_industry_engine() {
     let (_dir, mut j) = mill_engine("ind-switch");
     let _ids = mill(&mut j, 20_000, &[(0.0, true)], false);
+    // The session starts with the module off (SESSION_START carries the mask).
     j.module_mask = 0;
     j.mc_run_until(day(0.8));
-    let (phase, ingested) =
-        j.e.with_industry(|ie, l| (ie.district(MILL).map(|d| d.phase), l.ingested));
-    assert_eq!(phase, Some(Phase::Learning), "no sweeps reached it");
-    // Only the journaled declarations and load states went in.
-    assert!(ingested < 20, "ingested {ingested}");
-    // MODULES with the industry bit: sweeps flow and it learns.
-    {
-        let Some(r) = j.reserve(
-            rtsim_jni::wire::obs::MODULES,
-            rtsim_jni::wire::obs::modules::SIZE,
-            0,
-        ) else {
-            panic!("room for MODULES")
-        };
-        rtsim_jni::wire::put_u32(r, rtsim_jni::wire::obs::modules::MASK, MODULE_INDUSTRY);
-    }
+    let (known, ingested, ignored) =
+        j.e.with_industry(|ie, l| (ie.district(MILL).is_some(), l.ingested, l.ignored));
+    assert!(!known, "not even the declarations went in");
+    assert_eq!(ingested, 0);
+    assert!(ignored > 0, "every industry record was ignored and counted");
+    // MODULES with the industry bit: Java announces the district again, sweeps flow, it learns.
+    switch_industry(&mut j, true);
+    j.mc_tick();
+    j.mc_mut().announce();
     j.mc_run_until(day(1.6));
     let phase = industry(&j.e, |ie| ie.district(MILL).map(|d| d.phase));
     assert_eq!(phase, Some(Phase::Learned));
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// U10: a district replaying when the module is switched off is frozen with it, and catches up
+/// when it is switched on again: the replay covers the time it was off, and the reconcile at the
+/// next load brings it all.
+#[test]
+fn a_switched_off_industry_catches_up_when_on_again() {
+    let (_dir, mut j) = mill_engine("ind-catchup");
+    let ids = mill(
+        &mut j,
+        20_000,
+        &[(0.0, true), (1.0, false), (3.0, true)],
+        false,
+    );
+    j.mc_run_until(day(1.2));
+    assert!(industry(&j.e, |ie| ie.sim_run(MILL).is_some()), "replaying");
+    let loaded_bars = bars(&j, &ids);
+    switch_industry(&mut j, false);
+    j.mc_run_until(day(2.2));
+    let (now, ignored) = j.e.with_industry(|ie, l| (ie.now(), l.ignored));
+    assert!(now < day(1.3), "frozen while off: {now:?}");
+    let _ = ignored;
+    switch_industry(&mut j, true);
+    j.mc_tick();
+    j.mc_mut().announce();
+    j.mc_run_until(day(2.3));
+    let now = industry(&j.e, |ie| ie.now());
+    assert!(now >= day(2.2), "caught up: {now:?}");
+    assert!(
+        industry(&j.e, |ie| ie.sim_run(MILL).is_some()),
+        "replaying on"
+    );
+    j.mc_run_until(day(3.0) + 2_000);
+    // Two days away at 8 per 100 ticks, the day it was off included: 3,840 bars by the replay.
+    let made = bars(&j, &ids);
+    let expect = loaded_bars + 3_840 + 160;
+    assert!(
+        (made - expect).abs() <= 24,
+        "bars {made}, expected about {expect}"
+    );
+    conserves(&j);
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 

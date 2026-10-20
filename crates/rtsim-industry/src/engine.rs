@@ -536,7 +536,13 @@ impl Engine {
             }
             Obs::Inventory(decl) => {
                 let dist = self.district_mut(decl.district);
-                if dist.revision == decl.revision {
+                // The same declaration again (a session start, the module switched on, U10) keeps
+                // what the engine knows of the inventory, its pending and held deltas included.
+                let same = dist
+                    .inventories
+                    .get(&decl.index)
+                    .is_some_and(|i| i.decl == *decl);
+                if dist.revision == decl.revision && !same {
                     let dim = dist.dim;
                     dist.inventories.insert(
                         decl.index,
