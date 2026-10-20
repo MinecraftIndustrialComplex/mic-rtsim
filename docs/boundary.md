@@ -575,13 +575,17 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      there is a dragon or a lair the phase 1 link snapshots at every save, in the same commit. A
      dragons page without the phase 1 world it was saved with, or one this build cannot read, is
      dropped loudly and the dragons start afresh.
-   - **Not wired yet:** the plugin itself (below), and the dragons' raids reach the industry engine
-     only while the industry module runs.
+   - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
+     Java's species and dimension ids as the dragons' own: the Ice and Fire plugin's GameTests drive
+     MATERIALIZE, STEER, DEPART, ADOPT and DISCARD with it on the native engine (choice Z2).
+   - **Not wired yet:** the dragons' raids reach the industry engine only while the industry module
+     runs.
 
 ## 6. Phase 2: dragons (PLAN.md §9; the Ice and Fire plugin)
 
 Written 2026-10-20 overnight with the engine side, `crates/rtsim-ecology` (`boundary.rs` is the
-reference codec, with round-trip tests); the plugin, `mic_rtsim_iceandfire`, is not written. The
+reference codec, with round-trip tests); the plugin, `mic_rtsim_iceandfire` (`neoforge/iceandfire`,
+choices Z1 to Z21 in `docs/overnight-choices-iceandfire.md`), was written the same night. The
 native engine routes these records since 2026-10-20 (§5 item 11); the Rust fake Java side in
 `crates/rtsim-jni/tests/common` (`Java::dragon_obs`, `dragon_command`) plays the plugin for the
 protocol test and is the plugin's executable reference: what it answers to each command is what
@@ -645,8 +649,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   ice, `copper_pile` for lightning, verified) or took items from a container, inside a known lair's
   box. Summed per (player, lair) per tick. The engine takes what its abstract hoard holds of each
   item (the rest was the structure's own treasure, never in its ledger) and the lair and its
-  dragons witness a robbery report. Hoard piles are blocks: how many items a broken pile counts as
-  is the plugin's (UNVERIFIED: the pile's layer count).
+  dragons witness a robbery report. Hoard piles are blocks: a broken pile counts what its loot table
+  drops for that player (verified: 2 nuggets a layer, layers 1 to 8; the plugin's hoard blocks are the
+  tag `#mic_rtsim_iceandfire:hoard`, Z16).
 - **DRAGON_UNTAGGED**: an Ice and Fire dragon joined the level without the plugin's tag (§6.5).
 
 ### 6.4 Commands
@@ -669,10 +674,11 @@ Write its NBT before it ticks (verified keys and types, `DragonBaseEntity.addAdd
   lair dragons spawn with aging disabled anyway, verified).
 - `Hunger` (int, 0 to 100, higher is fuller) = hunger.
 - `Gender` (bool, true is male) = gender == 1.
-- `Variant` (string): Ice and Fire picks an egg's colour as `DRAGON_COLOR.byId(random(4) +
-  getStartMetaForType())`, offsets 0, 4 and 8 for fire, ice and lightning (verified), so the
-  variant index maps to `DRAGON_COLOR.byId(variant + offset)` and its registry name.
-  UNVERIFIED: that the NBT string is exactly that registry name.
+- `Variant` (string): the colour's plain name, `DragonColor.getName()` (`red`, not a namespaced id;
+  verified in `addAdditionalSaveData`, `finalizeSpawn` and both lair pieces). The variant index is the
+  position in the species' `DragonType.colors()` list, in `IafDragonColors`' construction order: fire
+  red, green, bronze, gray; ice blue, white, sapphire, silver; lightning electric, amethyst, copper,
+  black (verified), which is also `DRAGON_COLOR.byId(variant + offset)` with offsets 0, 4 and 8.
 - With flag 2: `HomeAreaX/Y/Z` (int), `HomeDimension` (string), `HasHomePosition` (bool) = true.
   **Trap** (verified): on read the home is dropped if any coordinate is exactly 0; the plugin nudges a
   0 to 1.
@@ -715,14 +721,16 @@ What the bridge must do:
    `config/incontrol/spawn.json` whose mob list holds `minecraft:blaze` and `iceandfire:fire_dragon`
    (allowed in `c:is_desert`, denied elsewhere when In Control caused the join), all verified in the
    pack config. Remove the spawner entry and take `iceandfire:fire_dragon` out of both rules' mob
-   lists (the blaze rules stay). This is a pack change (outward-facing: Ben's to apply).
+   lists (the blaze rules stay). This is a pack change (outward-facing: Ben's to apply); the edited
+   files are ready in `neoforge/iceandfire/pack-proposal/config/incontrol/` (not applied, Z21).
 2. **Report every untagged dragon** that joins a level (`EntityJoinLevelEvent`) as DRAGON_UNTAGGED,
    with its spawn kind from `FinalizeSpawnEvent.getSpawnType()` where one fired first (STRUCTURE,
    NATURAL, SPAWNER, SPAWN_EGG, COMMAND, BREEDING mapped to the codes above), its NBT fields, and the
-   lair whose box holds it. UNVERIFIED: whether Ice and Fire's lair pieces spawn their dragon through
-   `finalizeSpawn` (the jar shows lair pieces set hunger 50 themselves) and so whether a
-   STRUCTURE spawn type is seen; the lair's box is the fallback: a dragon that joins inside a known
-   lair's box while the chunk generates counts as a structure spawn.
+   lair whose box holds it. Ice and Fire's lair pieces do **not** spawn their dragon through
+   `finalizeSpawn` (verified: `DragonRoostPiece.spawnDragon` and `DragonCavePiece.createDragon` call
+   `EntityType.create` and `WorldGenLevel.addFreshEntity`), so no STRUCTURE spawn type is ever seen for
+   them; the lair's box decides: a dragon with no spawn type that joins inside a lair's box is a
+   structure spawn (choice Z10). In Control's spawner spawns as NATURAL (verified).
 3. **Apply the engine's answer:** the engine adopts a lair's own dragon from world generation as its
    occupant, adopts spawn-egg and command dragons as wanderers, discards natural and spawner dragons
    (a rule the pack should no longer have) and a second structure dragon for a lair that has one,

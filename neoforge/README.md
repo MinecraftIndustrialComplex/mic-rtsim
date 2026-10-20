@@ -10,6 +10,7 @@ per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.2
 | `ribbits` | `mic_rtsim_ribbits` | Ribbits 4.1.6 (with YUNG's API 5.1.9, GeckoLib 4.9.3) | ribbit villages and residents, merchant caravans, touring bands, sorcerers who remember, growth from YUNG's houses (C7, C23) |
 | `carryon` | `mic_rtsim_carryon` | Carry On 2.2.6.13 | a creature picked up leaves the sim (A10) |
 | `create` | `mic_rtsim_create` | Create 6.0.10 (its jar-in-jar Ponder, Flywheel and Registrate for compiling) | the industry plugin (INDUSTRY.md §12 layer 2): kinetic, belt, pipe and chain merging, vault and tank controllers, packager targets, postboxes counted by package contents, station names, train arrivals and departures, carriage deltas through `TrainCargoManager`, the "District ledger" display source; and every industry GameTest |
+| `iceandfire` | `mic_rtsim_iceandfire` | Ice and Fire CE 2.1-beta.1 (with Uranus 2.4.1, Jupiter 2.3.7, GeckoLib 4.9.3; Architectury 13.0.11 at runtime) | phase 2's dragons (PLAN.md §9, docs/boundary.md §6): the dragon body adapter (materialize with the engine's state, steer, depart, capture), wounds, deaths, meals, lairs and robbed hoards, and every other dragon reported untagged for the engine to adopt or discard (P13); no mixin. Choices Z1 to Z21 in `docs/overnight-choices-iceandfire.md` |
 
 The plugins compile against the pack's own jars, read from `packMods` in `gradle.properties` (the MIC
 smoke server's mods folder next to this repository; `-PpackMods=...` to point elsewhere), and their
@@ -145,6 +146,19 @@ The plugins' GameTests (`mic_rtsim_ribbits`, `mic_rtsim_carryon` namespaces):
 | `ribbitmerchantstradeandrestockthroughthetreasury` | C23: a ribbit merchant repriced from its village market; a disliked player brings twice the slime for a shard; a restock keeps the treasury's uses |
 | `acarryonpickuptakesthecreatureoutofthesim` | Carry On's `EntityPickupEvent`: TAKEN(PICKUP) with the cargo; `Entity.save` works on the llama afterwards |
 
+The Ice and Fire GameTests (`mic_rtsim_iceandfire` namespace; Ice and Fire CE 2.1-beta.1's own jar and the
+pack's `iaf-common.json`; either engine: the tests script the dragons' commands, on the native engine as
+DRAGON_COMMAND orders, and the native engine answers untagged dragons itself; each in its own batch):
+
+| Test | What it shows |
+|---|---|
+| `adragonmaterializeswiththeenginesstateandsteerstoitstarget` | the engine's AgeTicks (aging disabled), Hunger, Gender, Variant (`bronze`), health and home on a tagged, persistence-required dragon; it flies to its first target and turns on DRAGON_STEER; DRAGON_STATE; DRAGON_DEPART captures it with health, hunger, age and position |
+| `aplayershitishurtandakillisdiedwiththekiller` | two hits in a tick are one DRAGON_HURT with the player; a kill is DRAGON_DIED naming the killer, after the lethal blow's HURT; the corpse stays tagged until the engine's save has the death |
+| `untaggeddragonsareadoptedordiscarded` | a spawn-egg dragon and a NATURAL one (In Control's spawn type) reported DRAGON_UNTAGGED; the first adopted, the second discarded |
+| `alairsdragonisadoptedanditshoardrobbed` | a dragon with no spawn type in a lair's box is that lair's STRUCTURE dragon (after LAIR_FOUND), adopted with the lair's home; a gold pile broken and ingots taken from a lair chest are one HOARD_ROBBED |
+| `apuppetdragonisneversavedandacopyneverjoins` | vanilla's entity-chunk save leaves the dragon out; copies built from its NBT (new UUID, older epoch) never join |
+| `adragonsmealinavillageisreported` | a kill of a village's cow is DRAGON_ATE for the village; a cow carried at departure is eaten with the capture (C25) |
+
 The industry GameTests (`mic_rtsim_create` namespace; Create 6.0.10's own jar; always the stub engine,
 which scripts the engine's industry commands; each in its own batch):
 
@@ -200,3 +214,6 @@ which scripts the engine's industry commands; each in its own batch):
   with a real player near and the simulation-distance rule are not covered by a GameTest (no real
   player); a real assembled train on a schedule is not tested (the station hooks run on synthetic
   trains).
+- **Ice and Fire** (docs/overnight-choices-iceandfire.md): the pack's In Control edits P13 needs are a
+  proposal in `iceandfire/pack-proposal/` (not applied); a real lair structure, taming, settling and the
+  unload, not-ticking and session-end captures are not covered by a GameTest.

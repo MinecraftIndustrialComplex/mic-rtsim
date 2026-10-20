@@ -21,9 +21,10 @@
 //!   dragons share the phase 1 world, so while there is any dragon or lair the phase 1 link takes a
 //!   snapshot at every save (S4), and both are written in one commit.
 //!
-//! **The Ice and Fire plugin** (`mic_rtsim_iceandfire`, docs/boundary.md §6.5 and §6.6) is not
-//! written yet: nothing in the Java bridge sends these records today. The Rust fake Java side in
-//! `tests/common` plays it for the protocol test.
+//! **The Ice and Fire plugin** (`mic_rtsim_iceandfire`, `neoforge/iceandfire`, docs/boundary.md
+//! §6.5 and §6.6) sends these records and applies these commands; its GameTests order dragon
+//! commands through [`order_command`] (TEST mode). The Rust fake Java side in `tests/common` plays
+//! it for the protocol test.
 
 use std::collections::{BTreeSet, VecDeque};
 
