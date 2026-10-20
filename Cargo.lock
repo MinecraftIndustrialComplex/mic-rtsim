@@ -310,9 +310,11 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "rtsim-ecology",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
+ "rtsim-settle",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",

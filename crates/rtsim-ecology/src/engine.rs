@@ -62,7 +62,7 @@ use crate::dragon::{
 use crate::flight::{self, dragon_owner, owner_dragon, owner_player, player_owner};
 use crate::homes::Homes;
 use crate::index::PreyIndex;
-use crate::infra::{DistrictIndex, Infrastructure};
+use crate::infra::Infrastructure;
 use crate::prey::{Item, PreyClass, PreyLedger};
 use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
@@ -121,6 +121,8 @@ enum Ev {
     Depart {
         d: DragonId,
         plan: u32,
+        /// 1 bored, 2 hungry, 3 wounded, 4 passing through.
+        reason: u32,
     },
     Breed {
         d: DragonId,
@@ -235,7 +237,6 @@ pub struct Dragons {
     outbox: Vec<Cmd>,
     players: BTreeMap<ActorId, PlayerView>,
     index: PreyIndex,
-    pub districts: DistrictIndex,
     by_entity: BTreeMap<Uuid, DragonId>,
     /// Item dictionary ids the plugin uses (HOARD_ROBBED), mapped to ledger items.
     items: BTreeMap<u32, Item>,
@@ -278,7 +279,6 @@ impl Dragons {
             outbox: Vec::new(),
             players: BTreeMap::new(),
             index: PreyIndex::default(),
-            districts: DistrictIndex::default(),
             by_entity: BTreeMap::new(),
             items: BTreeMap::new(),
             next_seed: 0,
@@ -445,6 +445,7 @@ impl Dragons {
             victims: Vec::new(),
             fruitless: 0,
             bout: 0,
+            last_grudge: None,
             rest: n.at,
         };
         let d = self.dragons.insert(row);
@@ -550,7 +551,7 @@ impl Dragons {
     }
 
     /// A stay the caller knows in one piece (a scripted player): one interest area from `from` to
-    /// `until`, and the time at home counted.
+    /// `until`. The home counter still learns from [`Dragons::observe_player`] as time passes.
     pub fn player_stays(
         &mut self,
         w: &mut World,
@@ -560,7 +561,6 @@ impl Dragons {
         until: Tick,
     ) -> ActorId {
         let p = self.player(w, uuid);
-        self.homes.add_stay(p, pos, from, until);
         let path = flight::stay(pos, from, until, self.tun.view_radius);
         self.book_interest(w, p, path);
         p
@@ -655,13 +655,9 @@ impl Dragons {
                 }
             }
             Ev::Seen { d, player, meeting } => self.seen(w, d, player, meeting, at),
-            Ev::Depart { d, plan } => {
+            Ev::Depart { d, plan, reason } => {
                 if self.live(d, plan) {
-                    let harass = matches!(
-                        self.dragons[d].state,
-                        State::Embodied { harass: true, .. }
-                    );
-                    self.depart(d, if harass { 1 } else { 4 }, at);
+                    self.depart(d, reason, at);
                 }
             }
             Ev::Breed { d } => self.breed(w, d, at),
@@ -837,6 +833,19 @@ impl Dragons {
         self.schedule(t, Ev::Hungry { d, plan });
     }
 
+    /// Sends `d` to lair `l` to claim it (a migration ordered from outside: an admin command, a
+    /// test), from `at`, which the caller has run the engine to. Ignored for an embodied dragon,
+    /// which the plugin is flying.
+    pub fn relocate(&mut self, w: &mut World, d: DragonId, l: LairId, at: Tick) {
+        if !self.dragons.contains(d) || self.dragons[d].is_embodied() || l as usize >= self.lairs.len() {
+            return;
+        }
+        self.leave_lair(w, d, at);
+        self.lairs[l as usize].plan += 1;
+        self.lairs[l as usize].vacant_since = None;
+        self.fly(w, d, Purpose::Claim(l), at);
+    }
+
     // ---- choosing prey -----------------------------------------------------------------------------
 
     /// Picks the best prey and flies to it. `chain` counts hunts already made in this bout.
@@ -855,7 +864,11 @@ impl Dragons {
         }
         match self.choose(w, d, at) {
             Some((t, kind, u)) => {
-                self.dragons.get_mut(d).expect("live").bout = chain + 1;
+                let x = self.dragons.get_mut(d).expect("live");
+                x.bout = chain + 1;
+                if kind == PreyKind::Grudge {
+                    x.last_grudge = Some(at);
+                }
                 let name = self.target_name(w, t);
                 self.note(
                     at,
@@ -913,8 +926,18 @@ impl Dragons {
         };
         let mut all: Vec<(Target, PreyKind, f64)> = Vec::new();
         let mut offer = |t: Target, k: PreyKind, u: f64| all.push((t, k, u));
-        // Grudges: the player it hates, at their home (P26).
-        for (target, v) in w.knowledge.sentiment_snapshot(x.actor, at) {
+        // Grudges: the player it hates, at their home (P26). A starving dragon eats first, and
+        // one that just went after a grudge hunts for food for a while.
+        let starving = x.fullness_at(&self.tun, at) <= self.tun.starving;
+        let cooling = x
+            .last_grudge
+            .is_some_and(|t| at.0 < t.0 + self.tun.grudge_cooldown_ticks);
+        let grudges = if starving || cooling {
+            Vec::new()
+        } else {
+            w.knowledge.sentiment_snapshot(x.actor, at)
+        };
+        for (target, v) in grudges {
             if v > self.tun.grudge_below || !w.knowledge.actors().is_player(target) {
                 continue;
             }
@@ -1502,10 +1525,21 @@ impl Dragons {
         }
         self.stats.seen += 1;
         let grudge = w.knowledge.sentiment(self.dragons[d].actor, player, at) <= self.tun.grudge_below;
+        // It harasses when it hunts here: at its prey, or flying to prey near the player.
+        let near = |t: Target| {
+            let tp = self.target_pos(w, t);
+            self.homes.last_seen(player).is_some_and(|(p, _)| {
+                flight::dist(
+                    (i64::from(p.x), i64::from(p.z)),
+                    (i64::from(tp.x), i64::from(tp.z)),
+                ) <= f64::from(2 * self.tun.view_radius)
+            })
+        };
         let harass = grudge
             || match self.dragons[d].state {
                 State::Hunting { .. } => true,
                 State::Flying(Purpose::Hunt(Target::Home { player: p, .. })) => p == player,
+                State::Flying(Purpose::Hunt(t)) => near(t),
                 _ => false,
             };
         self.materialize(w, d, player, harass, None, at);
@@ -1534,8 +1568,12 @@ impl Dragons {
         let home = matches!(x.state, State::Roosting);
         let grudge = w.knowledge.sentiment(x.actor, player, at) <= self.tun.grudge_below;
         let temper = x.temperament();
+        let starving = x.fullness_at(&self.tun, at) <= self.tun.starving;
         let depart_at = if home {
             Tick(u64::MAX)
+        } else if harass && starving {
+            // Hunger brings the departure forward (C24): a starving dragon only looks in.
+            at + (sp.visit_ticks / 10).max(1)
         } else if harass {
             at + temper.weight(Trait::Aggressive, sp.visit_ticks.min(i32::MAX as u64) as i32).max(1) as u64
         } else {
@@ -1593,6 +1631,9 @@ impl Dragons {
                 harass,
             };
             x.rest = Some((pos, y));
+            if grudge {
+                x.last_grudge = Some(at);
+            }
         }
         self.cancel_leg(w, d);
         let what = format!(
@@ -1609,7 +1650,14 @@ impl Dragons {
         );
         self.note(at, "materialize", Some(d), what);
         if depart_at.0 != u64::MAX {
-            self.schedule(depart_at, Ev::Depart { d, plan });
+            let reason = if harass && starving {
+                2
+            } else if harass {
+                1
+            } else {
+                4
+            };
+            self.schedule(depart_at, Ev::Depart { d, plan, reason });
         }
     }
 
@@ -1826,7 +1874,7 @@ impl Dragons {
             purpose,
             harass,
         };
-        self.schedule(new, Ev::Depart { d, plan });
+        self.schedule(new, Ev::Depart { d, plan, reason: 3 });
     }
 
     /// A dragon died. Killed by a player: its kin and lair witness the killing (their grudge), and
@@ -1857,6 +1905,7 @@ impl Dragons {
             for k in &kin {
                 w.knowledge.witness(*k, id, at);
             }
+            let mut thanks = Vec::new();
             for v in &x.victims {
                 let rid = w.knowledge.record(Report {
                     who: p,
@@ -1868,16 +1917,18 @@ impl Dragons {
                     place: place(at_pos.0, at_pos.1),
                 });
                 w.knowledge.witness(*v, rid, at);
+                let ext = w.knowledge.actors().external(*v).unwrap_or(0);
+                thanks.push(format!("village {ext} {:+}", w.knowledge.sentiment(*v, p, at)));
             }
             self.note(
                 at,
                 "death",
                 Some(d),
                 format!(
-                    "killed by player {}: {} kin and its lair remember; {} settlement(s) it preyed on think better of the slayer",
+                    "killed by player {}: {} kin and its lair remember; the settlements it preyed on think better of the slayer ({})",
                     p.to_bits(),
                     kin.len().saturating_sub(x.lair.is_some() as usize),
-                    x.victims.len()
+                    thanks.join(", ")
                 ),
             );
         } else {
@@ -2091,7 +2142,7 @@ impl Dragons {
         let gender = if rng.below(2) == 0 { Gender::Female } else { Gender::Male };
         let variant = rng.below(4) as u8;
         let cruise = self.tun.species(species).cruise_y;
-        let name = format!("a young {} dragon for {}", species.name(), lair.name);
+        let name = format!("{} newcomer", lair.name);
         let d = self.add_dragon(
             w,
             NewDragon {
@@ -2231,7 +2282,24 @@ impl Dragons {
             w.knowledge.witness(a, id, at);
         }
         let name = lair.name.clone();
-        self.note(at, "robbed", None, format!("player {} robs the hoard of {name} ({count} items)", p.to_bits()));
+        let feelings: Vec<String> = lair
+            .occupants
+            .iter()
+            .map(|o| {
+                let x = &self.dragons[*o];
+                format!("{} {}", x.name, w.knowledge.sentiment(x.actor, p, at))
+            })
+            .collect();
+        self.note(
+            at,
+            "robbed",
+            None,
+            format!(
+                "player {} robs the hoard of {name} ({count} items); its dragons' feelings: {}",
+                p.to_bits(),
+                feelings.join(", ")
+            ),
+        );
     }
 
     // ---- checks ----------------------------------------------------------------------------------

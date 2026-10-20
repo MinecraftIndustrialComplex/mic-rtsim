@@ -32,7 +32,12 @@ usage:
       Runs the phase 1 scenario (PLAN.md §8) on the synthetic world: prices, stocks, flows,
       treasuries, exchange rates and news spread, with a scripted player (dump, rob, rescue).
       Writes JSON to DIR (default scenario/results). --check verifies conservation after every
-      event (slow).";
+      event (slow).
+  rtsim-cli sim dragons [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      Phase 2's dragons (PLAN.md §9) from autumn into winter on the synthetic world, with a
+      scripted player and a farm district: grudges, heirs, bored departures, raids, prey by
+      season. Writes JSON to FILE (default scenario/results/sim-dragons.json). Exits 1 if a
+      check fails.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -168,6 +173,7 @@ fn main() -> ExitCode {
             }
             ExitCode::from(sim::phase1::run(o) as u8)
         }
+        ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS

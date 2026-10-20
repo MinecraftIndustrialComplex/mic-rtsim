@@ -77,6 +77,10 @@ pub struct DragonTunables {
     pub grudge_below: i8,
     /// A grudge's pull, in fullness points, scaled by how deep the grudge is. PLACEHOLDER 60.
     pub grudge_weight: i32,
+    /// After going for a grudge (a raid, or a visit to a watched home), a dragon hunts for food
+    /// for this long before the grudge pulls again; a starving dragon always eats first. TUNABLE,
+    /// PLACEHOLDER 3 days.
+    pub grudge_cooldown_ticks: u64,
     /// Districts one grudge raid attacks at most. PLACEHOLDER 2.
     pub raid_districts: usize,
     /// A wound's share of max health that doubles a report's severity (rtsim-knowledge's unit).
@@ -140,6 +144,7 @@ impl Default for DragonTunables {
             village_risk: 8,
             grudge_below: -40,
             grudge_weight: 60,
+            grudge_cooldown_ticks: 3 * TICKS_PER_DAY,
             raid_districts: 2,
             wound_unit_milli: 250,
             wound_shortens_milli: 3_000,

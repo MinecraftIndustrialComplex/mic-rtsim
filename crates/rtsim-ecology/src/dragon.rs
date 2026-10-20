@@ -152,6 +152,8 @@ pub struct Dragon {
     pub fruitless: u8,
     /// Hunts in the current bout (since it last left its lair).
     pub bout: u8,
+    /// When it last went after a grudge (a raid or a visit), for the grudge cooldown.
+    pub last_grudge: Option<Tick>,
     /// Where it last was when it stopped flying (a captured position).
     pub rest: Option<(Pos, i32)>,
 }
@@ -282,6 +284,7 @@ mod tests {
             victims: vec![],
             fruitless: 0,
             bout: 0,
+            last_grudge: None,
             rest: None,
         }
     }

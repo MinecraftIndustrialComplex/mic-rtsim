@@ -423,7 +423,8 @@ impl FakeIaf {
         }
     }
 
-    fn push(&mut self, at: Tick, o: Obs) {
+    /// Queues an observation the scripted world makes (a hoard robbed, a dragon untagged).
+    pub fn push(&mut self, at: Tick, o: Obs) {
         self.seq += 1;
         self.queue.push((at, self.seq, o));
     }
