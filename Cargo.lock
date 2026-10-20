@@ -310,12 +310,23 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rtsim-industry"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
  "serde",
  "serde_json",
 ]

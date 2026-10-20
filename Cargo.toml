@@ -12,6 +12,7 @@ repository = "https://github.com/MinecraftIndustrialComplex/mic-rtsim"
 
 [workspace.dependencies]
 rtsim-kernel = { path = "crates/rtsim-kernel" }
+rtsim-industry = { path = "crates/rtsim-industry" }
 # Phase 1 generic modules (PLAN.md §5.1, §8) and their composition.
 rtsim-settle = { path = "crates/rtsim-settle" }
 rtsim-trade = { path = "crates/rtsim-trade" }
