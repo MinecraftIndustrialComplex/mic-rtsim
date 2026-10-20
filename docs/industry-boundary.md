@@ -28,7 +28,7 @@ ranges.**
 |---|---|---|---|
 | district | u64 | Java's district index (SavedData) | stable for the world; never reused (F3) |
 | inventory | u32 | Java, per district revision | index into the district's `IND_INVENTORY` list |
-| station, train, channel | u64 | Java | stable for the world (a hash of Create's UUID is fine) |
+| station, train | u64 | Java | stable for the world (a hash of Create's UUID is fine) |
 | epoch | u32 | engine, per district | reconcile rounds, 1, 2, 3, ...; a chunk attachment holds the last applied |
 | op id | u64 | both | the kernel's `journal::OpId` convention; industry engine ids carry namespace 0x49 in bits 56 to 62 (F4) over 56 bits derived from the command's identity (W3, §7) |
 
@@ -73,8 +73,8 @@ Offsets from the record start; the 8-byte header is `u16 kind, u16 size, u32 aux
 | 0x0040 | IND_STOCK_SAMPLE | n entries | 8 i64 gameTime, 16 u64 district, 24 u32 inventory, 28 u32 sweep, 32 n × Entry16 | 32 + 16n |
 | 0x0041 | IND_SWEEP_END | flags: 1 live, 2 creative block, 4 overstressed | 8 i64 gameTime, 16 u64 district, 24 u32 sweep, 28 u32 records, 32 u32 inventories, 36 u32 reserved | 40 |
 | 0x0042 | IND_DEPOSIT_SAMPLE | plugin: 1 Ore Excavation, 2 Diesel oil, 3 Destroy crude | 8 i64 gameTime, 16 u64 district, 24 u32 good, 28 u32 sweep, 32 i64 remaining, 40 u32 dim, 44 i32 chunkX, 48 i32 chunkZ, 52 u32 flags (1 infinite) | 56 |
-| 0x0043 | IND_CHANNEL_SAMPLE | n entries | 8 i64 gameTime, 16 u64 channel, 24 i64 capacity, 32 n × Entry16 | 32 + 16n |
-| 0x0044 | IND_LEDGER_REQUEST | 0 | 8 i64 gameTime, 16 u64 district | 24 |
+| 0x0043 | (retired: IND_CHANNEL_SAMPLE) | | read as an unknown kind (I13 as corrected, IR13) | |
+| 0x0044 | IND_LEDGER_REQUEST | 0 | 8 i64 gameTime, 16 u64 district; **retired by I18**: the engine reads and ignores it, and answers nothing (IR14) | 24 |
 | 0x0045 | IND_WATCHED | 1 a player is near enough to fight for real, 0 not | 8 i64 gameTime, 16 u64 district | 24 |
 
 **Sweeps.** The sampler reads a district's boundary inventories round-robin, K per tick (INDUSTRY.md
@@ -103,6 +103,7 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 | 0x0405 | IND_DISCARD | 1 unattributed session, 2 creative block, 3 overstressed, 4 progressive contraption, 5 other | 24 u64 district | 32 |
 | 0x0406 | IND_LOAD_STATE | 0 unloaded, 1 partial, 2 live | 24 u64 district, 32 u32 tickingChunks, 36 u32 totalChunks | 40 |
 | 0x0407 | IND_CHUNK_LOADED | 0 | 24 u64 district, 32 u32 dim, 36 i32 x, 40 i32 z, 44 u32 appliedEpoch | 48 |
+| 0x040A | IND_CHUNK_UNLOADED | 0 | 24 u64 district, 32 u32 dim, 36 i32 x, 40 i32 z, 44 u32 reserved (0); at `ChunkEvent.Unload` (I7, IR6) | 48 |
 | 0x0408 | IND_CONDITIONS | 0 | 24 u32 season, 28 u32 seasonCount, 32 i64 seasonLength, 40 i64 seasonOrigin | 48 |
 | 0x0409 | IND_POWER_LINK | 0 | 24 u64 sink, 32 u64 source (0: none, the coupling ends) | 40 |
 | 0x0410 | IND_PORT | n entries | 24 u64 district, 32 u32 portKind, 36 u32 inventory (0xFFFFFFFF none), 40 u64 counterpart, 48 u64 opId (0 none), 56 n × Entry16 (amount: + into the district) | 56 + 16n |
@@ -127,7 +128,7 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 
 **Codes:**
 - **Port kinds:** 1 train cargo, 2 package, 3 player container session, 4 player toss, 5 player pickup,
-  6 stock block broken by a player, 7 Ender Transmission channel (counterpart: channel), 8 reserved
+  6 stock block broken by a player, 7 retired (was an Ender Transmission channel; I13 as corrected), 8 reserved
   for engine commands applied (IND_RECONCILE_RESULT already counts as the port, so Java does not
   send an IND_PORT for a reconcile), 9 other.
 - **Not-learnable reasons** (INDUSTRY.md §6): 1 rotation crosses the boundary, 2 electric line crosses
@@ -147,20 +148,29 @@ district Stale (I5: stale freezes) and discards the open window. IND_DISCARD dis
 only. Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3).
 
 **Load states.** IND_LOAD_STATE is sent when the count of block-ticking chunks crosses 0 or the total.
-- **Unloaded:** a learned, fresh district starts its replay from its latest stock.
-- **Partial** or **Live:** the replay catches up to now and stops; the district is Suspended (I7)
-  or Live, and the engine computes the reconcile deltas for every chunk.
+- **Live:** the replay catches up to now and stops, and the engine reconciles everything it did
+  (a full round).
+- **Partial** or **Unloaded:** the replay covers the chunks that are not loaded (I7, Ben's "simulate
+  the rest", IR5 to IR8). A process of the district's model runs in the replay only while every good
+  it touches lives in unloaded chunks; one that reaches a loaded chunk runs nowhere in the sim (it
+  may run for real; never in both places).
 
-**Chunk loads.** IND_CHUNK_LOADED is sent at `ChunkEvent.Load` for a chunk of a district, carrying
-the epoch in the chunk's `mic_rtsim:reconcile` attachment (0 if none). The engine answers with every
-pending IND_CHUNK_RECONCILE for that chunk above that epoch.
+**Chunk loads and unloads (I7).** IND_CHUNK_LOADED is sent at `ChunkEvent.Load` for a chunk of a
+district, carrying the epoch in the chunk's `mic_rtsim:reconcile` attachment (0 if none), and
+IND_CHUNK_UNLOADED at `ChunkEvent.Unload`. Once a tick's records are in, the engine brings the
+replay's coverage up to date: chunks that loaded leave it in a partial reconcile round (their
+deltas only, each chunk on its own epoch; the rest of the change stays held per inventory and rides
+on in the replay of the chunks still unloaded), chunks that unloaded join it. The engine answers a
+load with every pending IND_CHUNK_RECONCILE for that chunk above its epoch. A Java side that never
+sends IND_CHUNK_UNLOADED is read the old way: when no chunk ticks, every chunk counts as unloaded.
 
 **Ports** (INDUSTRY.md §3.3). Everything that crosses the boundary while loaded:
 - train cargo diffs at `Train.arriveAt` and `leaveStation`;
 - train mail at postboxes, as IND_PACKAGE;
 - player container sessions (`PlayerContainerEvent.Open` to `Close`, the session's diff);
-- tosses, pickups, and stock blocks broken by players;
-- channel transfers.
+- tosses, pickups, and stock blocks broken by players.
+
+Ender Transmission channels are not ports: their endpoints are one district's (I13 as corrected).
 
 Learning subtracts ports from stock change (`N = S - S0 - P`), so they are never production. Every
 applied IND_CHUNK_RECONCILE is reported as an IND_RECONCILE_RESULT, which the engine also treats as a
@@ -204,7 +214,7 @@ op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `doc
 |---|---|---|---|---|
 | 0x8400 | IND_CHUNK_RECONCILE | n deltas | 16 u64 opId, 24 u64 district, 32 u32 epoch, 36 u32 dim, 40 i32 chunkX, 44 i32 chunkZ, 48 u32 destroyCount, 52 u32 reserved, 56 n × Delta32, then destroyCount × Destroy16 | 56 + 32n + 16m |
 | 0x8401 | IND_CARRIAGE_DELTA | n entries | 16 u64 opId, 24 u64 train, 32 u32 reason (1 exchange, 2 loot), 36 u32 reserved, 40 n × (u32 carriage, u32 good, i64 delta into the carriage) | 40 + 16n |
-| 0x8402 | IND_CHANNEL_DELTA | n entries | 16 u64 opId, 24 u64 channel, 32 n × Entry16 (delta) | 32 + 16n |
+| 0x8402 | (retired: IND_CHANNEL_DELTA) | | never written; read as an unknown kind (IR13) | |
 | 0x8403 | IND_DEPOSIT_DELTA | plugin | 16 u64 opId, 24 u32 dim, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 good, 40 i64 delta | 48 |
 | 0x8404 | IND_WRITE_PACKAGE | n entries | 16 u64 opId, 24 u64 district, 32 u32 inventory, 36 i32 x, 40 i32 y, 44 i32 z, 48 u32 address (NAME), 52 u32 count, 56 n × Entry16 (one package's contents) | 56 + 16n |
 | 0x8405 | IND_LEDGER | n goods | 16 u64 district, 24 u32 state, 28 u32 freeze, 32 i64 nextBreakpoint (-1 none), 40 u32 nextKind, 44 u32 nextGood (0 none), 48 i64 since, 56 n × (u32 good, u32 reserved, i64 perHour, i64 sinceStart) | 56 + 24n |
@@ -251,10 +261,13 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
   `changeDetected` resets the idle-cargo counter), wherever the train now is. Java journals
   IND_CARRIAGE_RESULT with what it applied.
 - **IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE:** these stores are level SavedData, so Java applies them at
-  once, loaded or not. Each is answered with the bridge's COMMAND_RESULT.
-- **IND_CHANNEL_DELTA:** answered FAILED since I13's correction (2026-10-20): an Ender Transmission
-  channel joins its endpoints into one district and is no shared stock, so nothing applies it.
-- **IND_LEDGER:** a reply to IND_LEDGER_REQUEST, for the "District ledger" Display Source (I18).
+  once, loaded or not. Each is answered with the bridge's COMMAND_RESULT. The engine routes a deposit
+  delta by good first (IR11): Destroy's level-wide pollution (greenhouse, ozone depletion, acid rain)
+  goes as IND_DEPOSIT_DELTA every `live_pollution_ticks` while its district replays (I14: "level-wide
+  types apply live while unloaded"), the rest at the reconcile; chunk types ride the chunk's reconcile.
+- **IND_LEDGER:** retired by I18 (players see only what their own built readouts measure): the
+  engine never writes it any more. The codec stays until the Java display source and chat ledger go
+  (the Java pointers in docs/choices-indrework.md).
   - **States:** 0 live, 1 learning, 2 learned (running abstractly), 3 stale, 4 not learnable,
     5 suspended, 6 damaged, 7 frozen out of season.
   - **Freeze:** the not-learnable code, or 0.
@@ -295,17 +308,20 @@ record below against wire.rs fixtures).
   attributed pollution (Q3, Q9); a BLOCK_STATE name is `BlockStateParser.serialize(state)`, which a destroy
   entry is compared with; station and train ids are SplitMix64 of Create's UUIDs (H19); the counterpart
   of a player port is the player's UUID halves XORed.
-- **Not sent:** temperature (IND_CONDITIONS has no field for it; proposal IND_CLIMATE, Q20);
-  IND_CHANNEL_SAMPLE and channel ports (IND_PORT kind 7): I13 as corrected makes an Ender Transmission
-  channel's endpoints one district (plugin links), its buffer machinery inside it (Q7). The records stay
-  in wire.rs for the engine's owner to retire.
+- **Not sent:** temperature (IND_CONDITIONS has no field for it; proposal IND_CLIMATE, Q20, not built);
+  IND_CHUNK_UNLOADED (I7: defined in IndRecords and the contract test, not sent yet). The channel
+  records (IND_CHANNEL_SAMPLE, IND_CHANNEL_DELTA, port kind 7) are retired from wire.rs, IndRecords and
+  the fixtures (I13 as corrected: an Ender Transmission channel's endpoints are one district, Q7).
 
-### 6.1 Proposal: IND_APPROACH (H23)
+### 6.1 IND_APPROACH (H23): reconcile ahead of arrival
 
-A latest-wins record in the reserved range, not yet in wire.rs, so the engine skips it as an unknown
-kind. It is the engine-agnostic half of the stale-tick race's option (d) (`docs/overnight-choices-industry.md`,
-finding 2): the engine could send a district's reconciles ahead when a player heads its way. What to do
-with it is not decided.
+Ben chose "reconcile ahead of arrival" for the stale-tick race. A latest-wins record (H23); the engine
+acts on it since this rework (IR9, IR10): a **closing** record within `approach_distance_blocks`
+stops the district's replay and sends every chunk's reconcile at once (`Round::Ahead`). Java holds each
+until its chunk loads and **applies it at the chunk's `ChunkEvent.Load`, before any machine there
+ticks**, journaling its IND_RECONCILE_RESULT before the chunk's IND_CHUNK_LOADED (which then carries the
+epoch now applied). The replay stays stopped while closing records keep coming and goes on from the
+reconciled state `approach_hold_ticks` after the last one (the player turned away).
 
 | Kind | Name | aux | Fields | Size |
 |---|---|---|---|---|
@@ -314,8 +330,10 @@ with it is not decided.
 Sent every 20 ticks for each unloaded district within `approachRadiusBlocks` (256, PLACEHOLDER) of a
 player; `approachSignal = false` stops it.
 
-Since W16 `wire.rs` reads it (`Obs::Approach`) and the engine keeps the latest on the district
-(`District::approach`), data only: nothing acts on it.
+`wire.rs` reads it (`Obs::Approach`, W16) and the engine keeps the latest on the district
+(`District::approach`). Java should send it for partly loaded districts too (a player walking toward
+the unloaded part), and apply held reconciles at `ChunkEvent.Load` (today it applies them at the next
+server tick): the Java pointers in docs/choices-indrework.md.
 
 ## 7. The engine side: rtsim-jni
 
@@ -337,20 +355,23 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   by name, as for every command.
 - **Op ids** are derived from the command's identity (W3): the same decision made again after a
   crash carries the same id, and a different one never takes an id an earlier one had.
-- **Answers.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are
+- **Answers.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are
   kept from the moment they are written until their answer (IND_CARRIAGE_RESULT, or COMMAND_RESULT
   applied, duplicate or failed) is admitted, and written again first after a restart with their
   original sequences and op ids (W4). IND_CHUNK_RECONCILE is resent at the chunk's next
   IND_CHUNK_LOADED instead (F27). A failed IND_CARRIAGE_DELTA counts as nothing applied, taken back
-  from the engine's exchange record; a failed channel, deposit or package command is logged and the
+  from the engine's exchange record; a failed deposit or package command is logged and the
   engine keeps its books as if applied (W10). A command waits a while for a dictionary name Java
   has not sent yet (W21).
-- **The switch.** With `Module.INDUSTRY` off the engine neither runs nor sends, and drops
-  latest-wins industry records; journaled ones are still applied (W8).
-- **Mode.** The native engine applies (phase I-B); read-only (phase I-A, F25) is an `nOpen` flag the
-  bridge does not pass yet (W2).
+- **The switch (U10, replacing W8).** With `Module.INDUSTRY` off the engine ignores every industry
+  record, journaled ones included (counted), runs nothing and writes nothing; its queue, outbox and
+  pages wait as they are. Switched on in a session, its own session start runs at that game time, so it
+  catches up over the time it was off; Java then announces its districts and load states again, as at
+  a session start (IR15).
+- **Mode.** The native engine applies. Read-only (phase I-A, F25) is retired with the ledger (I18,
+  IR14): the `nOpen` flag is read and ignored with a warning.
 - **Threats** from other systems arrive as an order (`IndustryThreat`, W12) until those systems run
   in the engine.
 - **Tests** can order an industry command (`INDUSTRY_COMMAND`, W17): a record with Java's own ids,
   written as the industry engine's own, so the industry GameTests run on either engine.
-- **IND_APPROACH** is kept on the district as data (W16).
+- **IND_APPROACH** reconciles ahead of arrival (§6.1).

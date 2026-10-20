@@ -143,7 +143,7 @@ fn works(min_episodes: u32) -> FakeWorld {
         w.tick();
         let t = w.t.0;
         if t + 300 < leave {
-            if t % 6_000 == 0 {
+            if t.is_multiple_of(6_000) {
                 w.import(0, 0, ORE, 300);
             }
             if t % 6_000 == 3_000 {

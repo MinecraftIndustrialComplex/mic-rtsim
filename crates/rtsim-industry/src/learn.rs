@@ -1027,9 +1027,11 @@ mod tests {
 
     #[test]
     fn starvation_evidence_splits_independent_lines() {
-        let mut c = Coupling::default();
         // Ore ran out twice and planks kept coming; wood ran out twice and ingots kept coming.
-        c.evidence = vec![(ORE, ev(2, &[WOOD, PLANK])), (WOOD, ev(2, &[ORE, INGOT]))];
+        let mut c = Coupling {
+            evidence: vec![(ORE, ev(2, &[WOOD, PLANK])), (WOOD, ev(2, &[ORE, INGOT]))],
+            ..Coupling::default()
+        };
         assert_eq!(
             c.partition(&two_lines(), &[], 2),
             vec![vec![ORE, INGOT], vec![WOOD, PLANK]]
@@ -1049,18 +1051,22 @@ mod tests {
         let coal = Good(5);
         let mut goods = two_lines();
         goods.push((coal, -2));
-        let mut c = Coupling::default();
-        c.evidence = vec![
-            (ORE, ev(3, &[WOOD, PLANK, coal])),
-            (WOOD, ev(3, &[ORE, INGOT, coal])),
-        ];
+        let c = Coupling {
+            evidence: vec![
+                (ORE, ev(3, &[WOOD, PLANK, coal])),
+                (WOOD, ev(3, &[ORE, INGOT, coal])),
+            ],
+            ..Coupling::default()
+        };
         assert_eq!(c.partition(&goods, &[], 2).len(), 1);
     }
 
     #[test]
     fn targets_and_inputless_outputs_stay_together() {
-        let mut c = Coupling::default();
-        c.evidence = vec![(ORE, ev(2, &[PLANK])), (WOOD, ev(2, &[INGOT]))];
+        let c = Coupling {
+            evidence: vec![(ORE, ev(2, &[PLANK])), (WOOD, ev(2, &[INGOT]))],
+            ..Coupling::default()
+        };
         // A threshold switch stopped everything at once when it was learned: one process.
         assert_eq!(c.partition(&two_lines(), &[PLANK], 2).len(), 1);
         // Two outputs with no input (a mob farm's drops) are never shown apart.
