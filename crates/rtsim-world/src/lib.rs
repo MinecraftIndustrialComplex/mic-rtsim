@@ -30,6 +30,7 @@ pub mod memory;
 pub mod observe;
 pub mod persist;
 pub mod prey;
+pub mod raids;
 pub mod ribbits;
 pub mod synth;
 pub mod world;

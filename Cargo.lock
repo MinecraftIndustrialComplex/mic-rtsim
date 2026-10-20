@@ -460,6 +460,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsim-conflict"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rtsim-ecology"
 version = "0.0.1"
 dependencies = [

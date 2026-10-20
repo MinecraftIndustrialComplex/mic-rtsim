@@ -297,7 +297,8 @@ impl World {
 ///
 /// **Leg owners** (the index treats them as opaque; this is the registry): bit 63 a player's
 /// area ([`PLAYER_OWNER`] over the player's actor), bit 62 a dragon's flight (rtsim-ecology),
-/// bit 61 a ship's voyage or pirate leg (rtsim-ships), bit 60 reserved for rtsim-ecology's herds;
+/// bit 61 a ship's voyage or pirate leg (rtsim-ships), bit 60 reserved for rtsim-ecology's herds,
+/// bit 59 a conflict party's march or wait (rtsim-conflict);
 /// none of them, a caravan row's 48-bit handle (this crate's own: [`World::encounters`] answers for
 /// those, and [`World::route_area`] hands them back).
 pub trait Viewer {
