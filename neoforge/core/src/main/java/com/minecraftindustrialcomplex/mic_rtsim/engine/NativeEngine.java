@@ -212,6 +212,9 @@ public final class NativeEngine implements ScriptedEngine {
     private volatile long handle;
     private final ByteBuffer[] buffers = new ByteBuffer[4];
     private final ArrayDeque<Received> received = new ArrayDeque<>();
+    /** Every DICT name received, by Java id: kept apart from the capped log, whose oldest records (the
+     *  session's first DICT entries) a busy suite drops. */
+    private final java.util.Map<Integer, String> javaDict = new java.util.HashMap<>();
     private final long[] stats = new long[STATS];
     private long submits;
 
@@ -438,19 +441,7 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public synchronized String javaDictName(int id) {
         drain();
-        String name = null;
-        for (Received r : received) {
-            if (r.kind() != com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.DICT)
-                continue;
-            java.nio.ByteBuffer b = r.view();
-            if (b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.ID) != id)
-                continue;
-            int len = b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME_LEN);
-            byte[] bytes = new byte[len];
-            b.get(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME, bytes, 0, len);
-            name = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-        }
-        return name;
+        return javaDict.get(id);
     }
 
     @Override
@@ -536,6 +527,13 @@ public final class NativeEngine implements ScriptedEngine {
         List<Received> fresh = new ArrayList<>();
         NativeCodec.decodeReceived(log, fresh);
         for (Received r : fresh) {
+            if (r.kind() == com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.DICT) {
+                java.nio.ByteBuffer b = r.view();
+                int len = b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME_LEN);
+                byte[] bytes = new byte[len];
+                b.get(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.NAME, bytes, 0, len);
+                javaDict.put(b.getInt(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Dict.ID), new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+            }
             if (received.size() >= RECEIVED_CAP)
                 received.removeFirst();
             received.addLast(r);
