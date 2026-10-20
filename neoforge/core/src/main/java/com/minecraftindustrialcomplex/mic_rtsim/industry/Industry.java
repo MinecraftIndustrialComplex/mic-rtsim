@@ -42,6 +42,7 @@ public final class Industry {
         IndustryAttachments.register(modBus);
         IndustryConfig.register(container);
         IndustryEvents.register();
+        ThreatConfig.register(container);
         ThreatEvents.register();
     }
 

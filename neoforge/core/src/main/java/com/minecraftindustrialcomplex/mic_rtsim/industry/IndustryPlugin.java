@@ -44,6 +44,15 @@ public interface IndustryPlugin {
         void add(BlockPos pos, int extraKind);
     }
 
+    /**
+     * The shape of a store this plugin declared with {@code KIND_PLUGIN} (a PowerGrid battery):
+     * {@code {extra kind bits, item slots, fluid capacity, energy capacity}}, or null when it is not this
+     * plugin's. Without one the core reads the shape from the capabilities.
+     */
+    default long[] describe(ServerLevel level, BlockPos pos) {
+        return null;
+    }
+
     /** Boundary inventories this block entity adds beyond tagged storage (I3): packager targets, postboxes. */
     default void inventories(BlockEntity be, InventorySink out) {}
 
