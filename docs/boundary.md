@@ -757,3 +757,124 @@ What the bridge must do:
   boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
   P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
   best comparable observed fight, with capped damage applied on load (C18).
+
+## 7. Ships (PLAN.md §10.1; a future ships plugin)
+
+Written 2026-10-20 overnight with the engine side, `crates/rtsim-ships` (`boundary.rs` is the
+reference codec, with round-trip tests). **No plugin exists**, and none is chosen: which mod gives
+the bodies (Small Ships, Create Aeronautics Structures, the Seven Seas add-on) and how ports and
+havens are provided are P8 (Ben). So every record names **abstract body kinds**, and the plugin
+maps them to a mod's entities (P15's body-kind data). The executable reference for what a plugin
+answers is the fake in `crates/rtsim-ships/src/synth.rs` (`FakeShips`), which the tests and
+`rtsim-cli sim ships` drive through this codec. The native engine does not route these records
+yet (§5 has no ships module). Choices are numbered T# in `docs/overnight-choices-ships.md`. Nothing
+below about a body mod is verified; it is the contract a plugin would have to meet.
+
+### 7.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x0070 to 0x007F | Java to engine | ship latest-wins observations |
+| 0x0600 to 0x06FF | Java to engine | ship journaled observations (the 24-byte prefix of §2.3) |
+| 0x8600 to 0x86FF | engine to Java | ship commands (`cmdSeq` at 8) |
+
+The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1) and the dragons' (§6.1)
+ranges stay as they are; these three are next to the dragons'.
+
+### 7.2 Ids and dictionaries
+
+- **Agents.** A ship's agent id is `0x53 << 56 | handle` (namespace byte 0x53, "S"), the engine
+  row's 48-bit handle, as dragons use 0x44 (R13). The ship and its crew are one group (C25): one
+  agent, one epoch, members listed in the materialize record. Epochs as §2.2: new for every
+  materialization.
+- **Body kinds** (dictionary kind 3), abstract until P8: `mic_rtsim:ship/sea_merchant`,
+  `ship/sea_pirate`, `ship/sea_navy`, `ship/sky_merchant`, `ship/sky_pirate`, `ship/sky_navy`, and
+  crews `mic_rtsim:crew/sailor`, `crew/pirate`, `crew/marine`, `crew/aeronaut`, `crew/sky_pirate`
+  (`ShipTunables`). D7 rules out player-like crews: the plugin's body data picks mob-like bodies.
+- **Items** (dictionary kind 2) for cargo. **Structures** (kind 4) name the structure a port or
+  haven was found in, 0 for none.
+- **Ports and havens** are keyed by their village's (or haven's) key, packed as §4's villages are.
+- **Op ids**: the plugin's (top bit set, §2.2) on CARGO_LOOTED, SHIP_SUNK and SHIP_CAPTURED; the
+  engine's SHIP_CARGO would use allocator 0x53 in bits 56 to 62 (not yet emitted).
+
+### 7.3 Observations
+
+| Kind | Name | aux | Fields (offset type name) | Size |
+|---|---|---|---|---|
+| 0x0070 | SHIP_STATE (latest-wins) | flags: 1 ticking, 2 a player aboard, 4 in combat | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 hull (thousandths), 28 u32 crew, 32 f64 x, 40 f64 y, 48 f64 z. Every 100 ticks per embodied ship (PLACEHOLDER) | 56 |
+| 0x0600 | SHIP_MATERIALIZED | 0 | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast (the ship entity) | 56 |
+| 0x0601 | SHIP_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
+| 0x0602 | SHIP_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 hull, 44 u32 crew, 48 f64 x, 56 f64 y, 64 f64 z | 72 |
+| 0x0603 | SHIP_DAMAGED | by: 0 none, 1 player, 2 ship, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 hull after, 40 u32 crew lost, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 attacker agent (by ship) | 72 |
+| 0x0604 | SHIP_SUNK | by (as DAMAGED) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 playerMost, 48 u64 playerLeast, 56 u64 killer agent, 64 u64 opId, 72 f64 x, 80 f64 y, 88 f64 z | 96 |
+| 0x0605 | SHIP_BOARDED | by: 1 player, 2 ship | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast, 56 u64 boarder agent | 64 |
+| 0x0606 | SHIP_CAPTURED | by: 1 player, 2 ship | 24 u64 agent, 32 u32 epoch, 36 u32 crew taken (M2's crew conversion; 0 for a player), 40 u64 playerMost, 48 u64 playerLeast, 56 u64 captor agent, 64 u64 opId | 72 |
+| 0x0607 | CARGO_LOOTED | n | 24 u64 agent (whose hold), 32 u32 epoch, 36 u32 by (1 player, 2 ship), 40 u64 playerMost, 48 u64 playerLeast, 56 u64 looter agent, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x0608 | SHIP_FIGHT | outcome: 1 the attacker won, 2 the defender won, 3 broke off | 24 u64 attacker agent, 32 u64 defender agent, 40 u32 attacker crew before, 44 after, 48 u32 defender crew before, 52 after, 56 u32 attacker hull after, 60 defender hull after | 64 |
+| 0x0609 | PORT_FOUND | medium: 1 sea, 2 sky | 24 u64 village, 32 u32 dimension, 36 u32 structure (dictionary 4, 0 none), 40 i32 dockX, 44 dockY, 48 dockZ, 52 u32 berths | 56 |
+| 0x060A | HAVEN_FOUND | media: 1 sea pirates, 2 sky pirates (a mask) | 24 u64 haven, 32 u32 dimension, 36 u32 structure, 40 i32 dockX, 44 dockY, 48 dockZ, 52 reserved | 56 |
+
+All of 0x0600 to 0x060A are journaled. CARGO_LOOTED, SHIP_SUNK and SHIP_CAPTURED carry the
+plugin's op id: the engine applies each once (§2.3's idempotent events).
+
+### 7.4 Commands
+
+| Kind | Name | aux | Fields | Size | Answered by |
+|---|---|---|---|---|---|
+| 0x8600 | SHIP_MATERIALIZE | members m (the ship first, then its crew) | 16 u64 agent, 24 u32 epoch, 28 u32 body (dictionary 3), 32 u32 dimension, 36 u32 flags (1 clamp above the surface, 2 hostile, 4 docked), 40 f64 x, 48 f64 y, 56 f64 z, 64 u8 medium (1 sea, 2 sky), 65 u8 role (1 merchant, 2 pirate, 3 navy), 66 u8 phase (0 dock, 1 depart, 2 cruise, 3 approach, 4 hunting, 5 sailing), 67 u8 platform, 68 i32 cruiseY, 72 u64 target agent (a pirate's prey, 0 none), 80 u32 crew, 84 u32 hull, 88 u32 waypoints w, 92 u32 cargo c, 96 i64 departTick, 104 i64 cruiseTick, 112 i64 approachTick, 120 i64 arriveTick, 128 u32 harbourBlocks, 132 reserved, 136 w × (i32 x, i32 z), then c × (u32 item, i32 count, u64 reserved), then m × (u32 body, u32 flags: 1 captain) | 136 + 8w + 16c + 8m | SHIP_MATERIALIZED or SHIP_SPAWN_REJECTED |
+| 0x8601 | SHIP_TIMETABLE | flags: 1 dock at the end | 16 u64 agent, 24 u32 epoch, 28 u32 waypoints w, 32 i64 departTick, 40 cruiseTick, 48 approachTick, 56 arriveTick, 64 i32 cruiseY, 68 i32 dockY, 72 u8 platform, 73 reserved, 76 u32 harbourBlocks, 80 w × (i32 x, i32 z) | 80 + 8w | |
+| 0x8602 | SHIP_STEER | flags: 1 attack the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed (blocks a tick), 32 f64 x, 40 f64 y, 48 f64 z, 56 u64 target agent | 64 | |
+| 0x8603 | SHIP_DEPART | reason: 1 bored, 2 hold full, 3 damaged, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | SHIP_DEMATERIALIZED |
+| 0x8604 | SHIP_CARGO | n | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 u64 opId, 40 n × (u32 item, i32 count, u64 reserved): the hold, exactly | 40 + 16n | (COMMAND_RESULT, once emitted) |
+| 0x8605 | SHIP_DESPAWN | reason: 1 lost, 2 recalled | 16 u64 agent, 24 u32 epoch | 32 | SHIP_DEMATERIALIZED |
+
+### 7.5 How Java would apply them
+
+**Materialize** spawns the role's ship body and its crew as one group at (x, y, z), raised above
+the surface with flag 1 (the engine flies sky ships at a forced cruise height while unloaded, as
+Veloren's airships, so one never appears underground; sea ships come at sea level, 63). It tags
+every member with the agent and epoch, as the bridge tags puppets, and suppresses vanilla saving
+(P3). The hold gets the cargo. A merchant or navy ship then **follows its timetable**: docked at
+waypoint 0 until `departTick`; departing over the first `harbourBlocks` of the path until
+`cruiseTick` (a sky ship climbing from its dock's height to `cruiseY`); cruising until
+`approachTick`; approaching over the last `harbourBlocks` until `arriveTick` (descending to the
+next dock's height), at the platform given. The engine's positions are these same pieces of the
+path at constant speed each, so the body and the engine agree without physics; a body that falls
+behind (blocked) catches up or reports where it is, and the engine's timetable stays as it is. Each
+time it reaches a dock while embodied, a SHIP_TIMETABLE gives the next voyage. A hostile pirate
+(flag 2) attacks its target agent; a pirate without a target holds its position (hunting) or sails
+where SHIP_STEER says.
+
+**Fights** are the plugin's to play with real entities while a player watches. When one ends it
+reports SHIP_FIGHT (the real outcome the engine's abstract fights are floored by: never better for
+the defender than what was seen), and what changed hands: CARGO_LOOTED (by a ship or a player),
+SHIP_CAPTURED, SHIP_SUNK, SHIP_DAMAGED.
+
+**Leaving.** A ship that stops entity-ticking for every player is captured and despawned with
+SHIP_DEMATERIALIZED (hull and crew: wounds persist as numbers; holes in hulls are not kept, PLAN.md
+§10.1's UNVERIFIED sub-level templates). SHIP_DEPART steers a pirate away and despawns it once out of
+view or after the timeout.
+
+**Ports and havens** are reported once, when found (PORT_FOUND, HAVEN_FOUND). How a plugin finds
+them is P8: a structure (a harbour piece, an airship tower), a marker block, or a village feature.
+
+### 7.6 What the engine side does with them (rtsim-ships)
+
+- **Lanes are world edges** (`World::add_lane`): merchant ships carry the ports' flows exactly as
+  caravans carry roads' (A13), capped by their holds; sea lanes follow a water mask's paths, sky
+  lanes are straight. Routes are closed loops after Veloren's (the lane graph made Eulerian and
+  split into loops); each loop is sailed both ways.
+- **Timetables**: a ship's position is a closed form of the clock and its saved clock offset, so a
+  restart moves no ship. Unobserved ships cost nothing: no event, no booking.
+- **Enters view** (A15): a player's interest area books the voyages it could see into the shared
+  leg index and asks it for every ship leg it shares cells with; each voyage enters a player's view
+  once (a crossing) and materializes the ship and its crew as one group.
+- **Pirates** at havens hunt lanes as a hazard (a share of each consignment sails to the haven's
+  market, C24), get bored on a scheduled event brought forward by damage or a full hold, and raid
+  a merchant a player sees with the lane's hazard as the chance; a raid nobody watches is
+  Lanchester's square law floored by SHIP_FIGHT outcomes. A hunt may start with a raid on a coastal
+  player district or a booked player leg through the industry threat interface (C16 to C18).
+- **Navies** (M2's recommendation) sail patrol services whose presence lowers the lanes' hazard;
+  players' escorts add to it (`Ships::set_escort`, for a future plugin).
+- **Losses come back**: a lost merchant or navy ship relaunches at its home dock in its own slot; a
+  haven rebuilds a pirate ship when its crew pool can man one; captured crews join the pool.

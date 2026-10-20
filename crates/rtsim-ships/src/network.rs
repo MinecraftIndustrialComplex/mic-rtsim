@@ -130,7 +130,12 @@ pub fn candidate_lanes(
 ) -> Vec<Candidate> {
     let pts: Vec<(i64, i64)> = group
         .iter()
-        .map(|&d| (i64::from(docks[d as usize].x), i64::from(docks[d as usize].z)))
+        .map(|&d| {
+            (
+                i64::from(docks[d as usize].x),
+                i64::from(docks[d as usize].z),
+            )
+        })
         .collect();
     let mt = |d: u32| tun.medium(docks[d as usize].medium);
     let mut out = Vec::new();
@@ -452,7 +457,11 @@ mod tests {
         for j in 0..n {
             let h = l.hops[j];
             let ln = &all[h.lane as usize];
-            let (from, to) = if h.forward { (ln.a, ln.b) } else { (ln.b, ln.a) };
+            let (from, to) = if h.forward {
+                (ln.a, ln.b)
+            } else {
+                (ln.b, ln.a)
+            };
             assert_eq!(from, l.stops[j], "hop {j} of {l:?}");
             assert_eq!(to, l.stops[(j + 1) % n], "hop {j} of {l:?}");
         }

@@ -380,6 +380,10 @@ pub struct Ships {
     /// Voyages that entered a player's view: once per player and voyage (a crossing), whatever
     /// the area's rebookings; forgotten when the voyage ends.
     pub(crate) seen_by: BTreeSet<(ShipId, u64, ActorId)>,
+    /// The plugin's op ids already applied (CARGO_LOOTED, SHIP_SUNK, SHIP_CAPTURED), oldest first,
+    /// so a replayed record applies once (§2.3's idempotent events). Bounded: PLACEHOLDER 4,096.
+    pub(crate) applied_ops: std::collections::VecDeque<u64>,
+    pub(crate) applied_set: BTreeSet<u64>,
     /// Real fights by pairing (the floors of [`crate::fight::resolve`]).
     pub observed: [Vec<Observed>; Pairing::COUNT],
     pub ledger: ShipLedger,
@@ -467,6 +471,8 @@ impl Ships {
             booked: BTreeMap::new(),
             leg_voyage: BTreeMap::new(),
             seen_by: BTreeSet::new(),
+            applied_ops: std::collections::VecDeque::new(),
+            applied_set: BTreeSet::new(),
             observed: Default::default(),
             ledger: ShipLedger::default(),
             stats: ShipStats::default(),
@@ -522,11 +528,7 @@ impl Ships {
         };
         let m = x.medium.name();
         match x.role {
-            Role::Merchant => format!(
-                "{m} merchant {}.{}",
-                x.service.unwrap_or(u32::MAX),
-                x.slot
-            ),
+            Role::Merchant => format!("{m} merchant {}.{}", x.service.unwrap_or(u32::MAX), x.slot),
             Role::Pirate { haven } => format!("{m} pirate {haven}.{}", x.slot),
             Role::Navy { navy } => format!("{m} navy {navy}.{}", x.slot),
         }
@@ -560,17 +562,14 @@ impl Ships {
         if let Some(&d) = self.dock_of.get(&(node, medium)) {
             return Some(d);
         }
-        if node >= w.nodes.len() || !w.nodes[node].kind.is_storehouse() || medium == Medium::Road
-        {
+        if node >= w.nodes.len() || !w.nodes[node].kind.is_storehouse() || medium == Medium::Road {
             return None;
         }
         let frame = w.nodes[node].pos.frame;
         let (mut x, mut y, mut z) = dock;
         if medium == Medium::Sea {
             let Some(c) = water::snap_to_water(mask, frame, x, z, self.tun.port_snap_cells) else {
-                self.lints
-                    .docks_not_on_water
-                    .push(self.docks.len() as u32);
+                self.lints.docks_not_on_water.push(self.docks.len() as u32);
                 return None;
             };
             (x, z) = water::centre(mask, c);
@@ -656,10 +655,8 @@ impl Ships {
         let slot = hv.ships.len() as u32;
         let node = hv.node;
         let frame = hv.frame;
-        let seed = StreamKey::new(self.seed, SYS_PIRATE, u64::from(h)).block(
-            u64::from(slot),
-            self.stats.rebuilds,
-        )[0];
+        let seed = StreamKey::new(self.seed, SYS_PIRATE, u64::from(h))
+            .block(u64::from(slot), self.stats.rebuilds)[0];
         let haven_actor = w.nodes[node].actor;
         let captain = w.knowledge.create_notable(
             seed,
@@ -715,7 +712,10 @@ impl Ships {
         self.built = true;
         let mut groups: BTreeMap<(u16, Medium), Vec<u32>> = BTreeMap::new();
         for (i, d) in self.docks.iter().enumerate() {
-            groups.entry((d.frame, d.medium)).or_default().push(i as u32);
+            groups
+                .entry((d.frame, d.medium))
+                .or_default()
+                .push(i as u32);
         }
         let mut loops_all: Vec<Loop> = Vec::new();
         for (_, group) in groups {
@@ -840,11 +840,9 @@ impl Ships {
             sail = sail.max(g.sail());
             let n = u64::from(sv.ships.max(1));
             gap[dir] = gap[dir].min(sv.period.div_ceil(n));
-            slot_milli_per_quantum[dir] += (i128::from(sv.ships)
-                * i128::from(mt.hold_slots)
-                * 1000
-                * i128::from(q.len())
-                / i128::from(sv.period.max(1))) as i64;
+            slot_milli_per_quantum[dir] +=
+                (i128::from(sv.ships) * i128::from(mt.hold_slots) * 1000 * i128::from(q.len())
+                    / i128::from(sv.period.max(1))) as i64;
         }
         let wait = gap
             .iter()
@@ -978,7 +976,13 @@ impl Ships {
 
     /// A navy based at node `node` patrols the lanes of `medium` within the patrol hops of its
     /// dock (M2's recommendation: a patrol is a flow that lowers the lanes' hazard).
-    pub fn add_navy(&mut self, w: &mut World, node: usize, medium: Medium, at: Tick) -> Option<u32> {
+    pub fn add_navy(
+        &mut self,
+        w: &mut World,
+        node: usize,
+        medium: Medium,
+        at: Tick,
+    ) -> Option<u32> {
         let dock = self.dock_of_node(node, medium)?;
         let lanes: Vec<u32> = (0..self.lanes.len() as u32)
             .filter(|&l| self.lanes[l as usize].medium == medium)
@@ -1187,7 +1191,13 @@ impl Ships {
     /// Where a player is (PLAYER, every 20 ticks). The interest area is kept while the player
     /// stays within a quarter of the view radius and it still covers the next window; otherwise a
     /// new one is booked for two windows, and the ships it can see are found.
-    pub fn observe_player(&mut self, w: &mut World, uuid: Uuid, pos: rtsim_settle::Pos, at: Tick) -> ActorId {
+    pub fn observe_player(
+        &mut self,
+        w: &mut World,
+        uuid: Uuid,
+        pos: rtsim_settle::Pos,
+        at: Tick,
+    ) -> ActorId {
         let p = self.player(w, uuid);
         let window = w.legs.window_ticks();
         let keep = self.players.get(&p).and_then(|v| v.interest).and_then(|s| {
@@ -1261,8 +1271,14 @@ impl Ships {
         // Book the voyages this area could see: lanes in the regions it covers, widened by the
         // radius, and on them the voyages overlapping its window.
         let r = i64::from(path.radius) + i64::from(self.tun.body_radius);
-        let (x0, z0) = (i64::from(path.x0.min(path.x1)) - r, i64::from(path.z0.min(path.z1)) - r);
-        let (x1, z1) = (i64::from(path.x0.max(path.x1)) + r, i64::from(path.z0.max(path.z1)) + r);
+        let (x0, z0) = (
+            i64::from(path.x0.min(path.x1)) - r,
+            i64::from(path.z0.min(path.z1)) - r,
+        );
+        let (x1, z1) = (
+            i64::from(path.x0.max(path.x1)) + r,
+            i64::from(path.z0.max(path.z1)) + r,
+        );
         let (ra, rb) = (LegIndex::region_of(x0, z0), LegIndex::region_of(x1, z1));
         let mut lanes = BTreeSet::new();
         for rx in ra.0..=rb.0 {
@@ -1669,19 +1685,13 @@ impl Ships {
         if matches!(self.ships[id].role, Role::Merchant) && fix.phase != Phase::Dock {
             let lane = self.services[s as usize].legs[fix.leg].hop.lane;
             let share = self.threats.get(&lane).map_or(0, |t| t.share);
-            let hunter = self
-                .threats
-                .get(&lane)
-                .and_then(|t| {
-                    t.hunters
-                        .iter()
-                        .copied()
-                        .max_by(|a, b| {
-                            self.strength(*a)
-                                .total_cmp(&self.strength(*b))
-                                .then(b.cmp(a))
-                        })
-                });
+            let hunter = self.threats.get(&lane).and_then(|t| {
+                t.hunters.iter().copied().max_by(|a, b| {
+                    self.strength(*a)
+                        .total_cmp(&self.strength(*b))
+                        .then(b.cmp(a))
+                })
+            });
             if let Some(p) = hunter
                 && share > 0
             {
@@ -2021,7 +2031,9 @@ impl Ships {
         let old = self.ships[s].pirate.as_ref().and_then(|p| p.leg);
         let stamp = match old.and_then(|l| w.legs.replan(l.leg, path)) {
             Some(st) => st,
-            None => w.legs.book(path, Owner(SHIP_OWNER | (s.to_bits() & MASK48))),
+            None => w
+                .legs
+                .book(path, Owner(SHIP_OWNER | (s.to_bits() & MASK48))),
         };
         self.stats.legs_booked += 1;
         if let Some(p) = self.ships[s].pirate.as_mut() {
@@ -2188,7 +2200,12 @@ impl Ships {
         if let Some(p) = self.ships[s].pirate.as_mut() {
             p.captain = c;
         }
-        self.note(at, "captain", Some(s), "a new captain takes the ship".into());
+        self.note(
+            at,
+            "captain",
+            Some(s),
+            "a new captain takes the ship".into(),
+        );
     }
 
     fn reach_lane(&mut self, w: &mut World, infra: &mut dyn Infrastructure, s: ShipId, at: Tick) {
@@ -2204,11 +2221,14 @@ impl Ships {
         // them off (C24: threats get bored).
         let base = tm.bend(Trait::Bold, 1000, 50) as f64 / 1000.0;
         let hull = f64::from(self.ships[s].hull_milli) / 1000.0;
-        let len = (self.tun.pirate_hunt_ticks as f64 * base * hull * surv.max(0.25)).max(1.0) as u64;
+        let len =
+            (self.tun.pirate_hunt_ticks as f64 * base * hull * surv.max(0.25)).max(1.0) as u64;
         let until = at + len;
         let plan = self.ships[s].plan;
         let t = self.threats.entry(lane).or_default();
-        if t.haven.is_none_or(|o| o == h || (t.hunters.is_empty() && t.share == 0)) {
+        if t.haven
+            .is_none_or(|o| o == h || (t.hunters.is_empty() && t.share == 0))
+        {
             t.haven = Some(h);
         }
         t.hunters.insert(s);
@@ -2313,7 +2333,11 @@ impl Ships {
                 return;
             };
             (o.stolen, format!("district {}", site.id.0))
-        } else if let Some(tr) = infra.trains_crossed(frame, &regions, at, until).first().copied() {
+        } else if let Some(tr) = infra
+            .trains_crossed(frame, &regions, at, until)
+            .first()
+            .copied()
+        {
             let t = Threat {
                 id,
                 source: ThreatSource::Bandit,
@@ -2333,7 +2357,9 @@ impl Ships {
         self.stats.coast_raids += 1;
         let mut got = 0i64;
         for (g, n) in loot.iter() {
-            let name = infra.good_name(g).unwrap_or_else(|| format!("good {}", g.0));
+            let name = infra
+                .good_name(g)
+                .unwrap_or_else(|| format!("good {}", g.0));
             match w.goods.find(&name) {
                 Some(wg) => {
                     let a = n.saturating_mul(MILLI);
@@ -2563,7 +2589,8 @@ impl Ships {
         let Some(vs) = self.ships[victim].service else {
             return;
         };
-        let fix = self.services[vs as usize].fix(&self.lanes, &self.docks, self.ships[victim].offset, at);
+        let fix =
+            self.services[vs as usize].fix(&self.lanes, &self.docks, self.ships[victim].offset, at);
         if fix.voyage != voyage || fix.phase == Phase::Dock {
             self.stats.stale += 1;
             return;
@@ -2609,7 +2636,12 @@ impl Ships {
         {
             d += t.escorts.values().sum::<i64>() as f64 / 1000.0;
         }
-        let out = fight::resolve(a, d, &self.observed[Pairing::PirateMerchant as usize], &self.tun);
+        let out = fight::resolve(
+            a,
+            d,
+            &self.observed[Pairing::PirateMerchant as usize],
+            &self.tun,
+        );
         self.after_fight(w, p, victim, out.survived, out.defender_survived, at);
         self.note(
             at,
@@ -2622,7 +2654,10 @@ impl Ships {
                 out.lanchester * 100.0,
                 match out.floor {
                     Some(f) if f > out.lanchester => {
-                        format!(", raised by a real fight where pirates kept {:.0}%", f * 100.0)
+                        format!(
+                            ", raised by a real fight where pirates kept {:.0}%",
+                            f * 100.0
+                        )
                     }
                     Some(f) => format!(", a real fight at {:.0}% does not bind", f * 100.0),
                     None => String::new(),
@@ -2653,9 +2688,8 @@ impl Ships {
         let pcrew = (f64::from(pc) * survived).ceil() as u32;
         let vcrew = (f64::from(vc) * defender_survived).ceil() as u32;
         self.ships[p].crew = pcrew;
-        self.ships[p].hull_milli = (f64::from(self.ships[p].hull_milli)
-            * (0.5 + 0.5 * survived))
-            .round() as u32;
+        self.ships[p].hull_milli =
+            (f64::from(self.ships[p].hull_milli) * (0.5 + 0.5 * survived)).round() as u32;
         self.ships[victim].crew = vcrew;
         if pcrew == 0 {
             self.lose_pirate(w, p, None, at);
@@ -2697,7 +2731,10 @@ impl Ships {
                 at,
                 "capture",
                 Some(p),
-                format!("captures {}; {joined} of its crew join haven {h}", self.ship_name(victim)),
+                format!(
+                    "captures {}; {joined} of its crew join haven {h}",
+                    self.ship_name(victim)
+                ),
             );
         }
         self.check_hold(w, p, at);
@@ -2843,15 +2880,19 @@ impl Ships {
         x.crew = crew;
         x.hull_milli = 1000;
         self.stats.respawns += 1;
-        self.note(at, "relaunch", Some(s), "a new ship takes the slot at its home dock".into());
+        self.note(
+            at,
+            "relaunch",
+            Some(s),
+            "a new ship takes the slot at its home dock".into(),
+        );
     }
 
     fn lose_pirate(&mut self, w: &mut World, s: ShipId, killer: Option<ActorId>, at: Tick) {
         let Some(h) = self.haven_of(s) else {
             return;
         };
-        if let Some(PState::Hunting { lane, .. }) = self.ships[s].pirate.as_ref().map(|p| p.state)
-        {
+        if let Some(PState::Hunting { lane, .. }) = self.ships[s].pirate.as_ref().map(|p| p.state) {
             if let Some(t) = self.threats.get_mut(&lane) {
                 t.hunters.remove(&s);
             }
@@ -2903,8 +2944,16 @@ impl Ships {
         x.plan = x.plan.wrapping_add(1);
         self.stats.sinkings += 1;
         let medium = self.ships[s].medium;
-        self.schedule(at + self.tun.haven_rebuild_ticks, Ev::Rebuild { haven: h, medium });
-        self.note(at, "sunk", Some(s), format!("is sunk; haven {h} will rebuild"));
+        self.schedule(
+            at + self.tun.haven_rebuild_ticks,
+            Ev::Rebuild { haven: h, medium },
+        );
+        self.note(
+            at,
+            "sunk",
+            Some(s),
+            format!("is sunk; haven {h} will rebuild"),
+        );
     }
 
     /// A haven replaces a lost pirate ship when its crew pool can man one: the lost row comes
@@ -2920,7 +2969,10 @@ impl Ships {
             return;
         };
         if self.havens[h as usize].crew_pool < need {
-            self.schedule(at + self.tun.haven_rebuild_ticks, Ev::Rebuild { haven: h, medium });
+            self.schedule(
+                at + self.tun.haven_rebuild_ticks,
+                Ev::Rebuild { haven: h, medium },
+            );
             return;
         }
         self.havens[h as usize].crew_pool -= need;
@@ -2948,8 +3000,16 @@ impl Ships {
             leg: None,
             district_loot: BTreeMap::new(),
         });
-        self.schedule(at + self.tun.pirate_rest_ticks, Ev::Decide { ship: s, plan });
-        self.note(at, "rebuilt", Some(s), format!("haven {h} launches a new ship"));
+        self.schedule(
+            at + self.tun.pirate_rest_ticks,
+            Ev::Decide { ship: s, plan },
+        );
+        self.note(
+            at,
+            "rebuilt",
+            Some(s),
+            format!("haven {h} launches a new ship"),
+        );
     }
 
     // ---- observations --------------------------------------------------------------------------
@@ -2960,9 +3020,35 @@ impl Ships {
         (x.epoch == epoch).then_some(s)
     }
 
+    /// Whether a plugin op id was applied already; remembers it if not.
+    fn first_time(&mut self, op: u64) -> bool {
+        if op == 0 {
+            return true;
+        }
+        if !self.applied_set.insert(op) {
+            return false;
+        }
+        self.applied_ops.push_back(op);
+        if self.applied_ops.len() > 4_096
+            && let Some(old) = self.applied_ops.pop_front()
+        {
+            self.applied_set.remove(&old);
+        }
+        true
+    }
+
     /// What the plugin reported (docs/boundary.md §7.3). Applied at `at`, after the world and the
-    /// ships have run to it.
+    /// ships have run to it. A record whose op id was applied before is skipped.
     pub fn ingest(&mut self, w: &mut World, o: &Obs, mask: &dyn WaterMask, at: Tick) {
+        let op = match o {
+            Obs::Sunk(k) => k.op,
+            Obs::Captured(c) => c.op,
+            Obs::CargoLooted(c) => c.op,
+            _ => 0,
+        };
+        if !self.first_time(op) {
+            return;
+        }
         match o {
             Obs::State(_) | Obs::Materialized(_) => {}
             Obs::SpawnRejected(r) => {
@@ -3064,7 +3150,8 @@ impl Ships {
                         }
                     }
                     By::Ship => {
-                        let Some(p) = Ship::id_of_agent(c.ship).filter(|&p| self.haven_of(p).is_some())
+                        let Some(p) =
+                            Ship::id_of_agent(c.ship).filter(|&p| self.haven_of(p).is_some())
                         else {
                             return;
                         };
@@ -3135,7 +3222,8 @@ impl Ships {
                         }
                     }
                     By::Ship => {
-                        let Some(p) = Ship::id_of_agent(c.ship).filter(|&p| self.haven_of(p).is_some())
+                        let Some(p) =
+                            Ship::id_of_agent(c.ship).filter(|&p| self.haven_of(p).is_some())
                         else {
                             // Nobody of ours took it: back into the hold.
                             for (g, a) in taken {
@@ -3159,7 +3247,8 @@ impl Ships {
             }
             Obs::Fight(f) => {
                 self.stats.fights_observed += 1;
-                let (Some(a), Some(d)) = (Ship::id_of_agent(f.attacker), Ship::id_of_agent(f.defender))
+                let (Some(a), Some(d)) =
+                    (Ship::id_of_agent(f.attacker), Ship::id_of_agent(f.defender))
                 else {
                     return;
                 };
@@ -3187,7 +3276,10 @@ impl Ships {
                     x.hull_milli = f.defender_hull_milli.min(1000);
                 }
                 // The fight is over: the pirates leave with what they took.
-                if self.ships.get(a).is_some_and(|x| x.is_active() && x.crew > 0)
+                if self
+                    .ships
+                    .get(a)
+                    .is_some_and(|x| x.is_active() && x.crew > 0)
                     && self.haven_of(a).is_some()
                 {
                     let plan = self.bump(a);
@@ -3233,7 +3325,9 @@ impl Ships {
         let mut world = w.outside.held.clone();
         world.retain(|_, v| *v != 0);
         if held != world {
-            return Err(format!("ships hold {held:?}, the world counts {world:?} as held"));
+            return Err(format!(
+                "ships hold {held:?}, the world counts {world:?} as held"
+            ));
         }
         Ok(())
     }
@@ -3263,11 +3357,31 @@ impl Ships {
 
     pub fn heap_bytes(&self) -> usize {
         self.ships.heap_bytes()
-            + self.ships.iter().map(|(_, x)| x.cargo.len() * 48).sum::<usize>()
-            + self.lanes.iter().map(|l| l.path.heap_bytes() + 64).sum::<usize>()
-            + self.services.iter().map(|s| s.heap_bytes() + 64).sum::<usize>()
-            + self.lane_hops.iter().map(|v| v.capacity() * 8 + 24).sum::<usize>()
-            + self.service_ships.iter().map(|v| v.capacity() * 8 + 24).sum::<usize>()
+            + self
+                .ships
+                .iter()
+                .map(|(_, x)| x.cargo.len() * 48)
+                .sum::<usize>()
+            + self
+                .lanes
+                .iter()
+                .map(|l| l.path.heap_bytes() + 64)
+                .sum::<usize>()
+            + self
+                .services
+                .iter()
+                .map(|s| s.heap_bytes() + 64)
+                .sum::<usize>()
+            + self
+                .lane_hops
+                .iter()
+                .map(|v| v.capacity() * 8 + 24)
+                .sum::<usize>()
+            + self
+                .service_ships
+                .iter()
+                .map(|v| v.capacity() * 8 + 24)
+                .sum::<usize>()
             + self.lane_cells.len() * 64
             + self.wheel.heap_bytes()
             + self.booked.len() * 96
@@ -3289,7 +3403,11 @@ impl Ships {
                 let t = sv.times(x.offset, voyage);
                 let j = (voyage % sv.legs.len() as u64) as usize;
                 if t.depart >= from.0 as i64 {
-                    v.push((j, self.docks[sv.legs[j].from_dock as usize].node, t.depart as u64));
+                    v.push((
+                        j,
+                        self.docks[sv.legs[j].from_dock as usize].node,
+                        t.depart as u64,
+                    ));
                 }
                 voyage += 1;
             }

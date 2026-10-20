@@ -492,8 +492,7 @@ pub fn main(o: Options) -> i32 {
                 w.goods.get(g).name.clone(),
                 a.stock as f64 / 1000.0,
                 b.stock as f64 / 1000.0,
-                (b.book.arrived + b.book.lump_in - a.book.arrived - a.book.lump_in) as f64
-                    / 1000.0,
+                (b.book.arrived + b.book.lump_in - a.book.arrived - a.book.lump_in) as f64 / 1000.0,
             )
         })
         .filter(|r| r.3 != 0.0 || r.1 != r.2)
@@ -630,7 +629,14 @@ fn print_report(r: &Results, s: &Ships) {
     for l in &r.lanes {
         println!(
             "  {:>2} {:<4} {:<12} -> {:<12} {:>5} blocks, {} corners, edge {}, hold capacity {:.0} slots/day",
-            l.id, l.medium, l.from, l.to, l.blocks, l.corners, l.world_edge, l.capacity_slots_per_day
+            l.id,
+            l.medium,
+            l.from,
+            l.to,
+            l.blocks,
+            l.corners,
+            l.world_edge,
+            l.capacity_slots_per_day
         );
     }
     println!("\nservices (closed loops; each ship's position is a function of the clock):");
@@ -648,7 +654,11 @@ fn print_report(r: &Results, s: &Ships) {
     }
     println!("  lints: {}", r.lints);
     println!("\ntimetables at the end (saved clock offsets; next departures, day):");
-    for t in r.timetables.iter().filter(|t| t.service < 2 || t.service == 4) {
+    for t in r
+        .timetables
+        .iter()
+        .filter(|t| t.service < 2 || t.service == 4)
+    {
         let deps: Vec<String> = t
             .departures
             .iter()
@@ -703,10 +713,7 @@ fn print_report(r: &Results, s: &Ships) {
     println!("  lost with sunk ships: {:?}", r.sunk);
     println!("  the haven's market (good, stock start, stock end, received):");
     for h in &r.haven_market {
-        println!(
-            "    {:<14} {:>8.1} {:>8.1} {:>8.1}",
-            h.0, h.1, h.2, h.3
-        );
+        println!("    {:<14} {:>8.1} {:>8.1} {:>8.1}", h.0, h.1, h.2, h.3);
     }
     let pirates: Vec<String> = s
         .havens

@@ -211,7 +211,9 @@ impl Baseline {
                 ships_per_service: value,
                 side: SHIP_GRID_SIDE,
                 warmup_days: 2,
-                days: self.days,
+                // A few pirate events a day are all there is to time: five times the baseline's
+                // days, so each point times enough of them to be read above noise.
+                days: self.days * 5,
                 seed: self.seed,
             });
         }

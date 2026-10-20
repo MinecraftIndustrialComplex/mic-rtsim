@@ -269,7 +269,11 @@ impl Service {
                 lerp_i(self.cruise_y, td.y, f),
             )
         };
-        let s_ab = if g.hop.forward { along } else { len - along.min(len) };
+        let s_ab = if g.hop.forward {
+            along
+        } else {
+            len - along.min(len)
+        };
         let (x, z) = lane.path.at(s_ab);
         let y = match (self.medium, phase) {
             (Medium::Sky, Phase::Dock) => fd.y,

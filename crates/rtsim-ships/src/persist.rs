@@ -826,6 +826,8 @@ impl Ships {
             b.legs.iter().for_each(|l| w.u64(l.to_bits()));
             w.u64(b.end.0);
         }
+        put_usize(&mut w, self.applied_ops.len());
+        self.applied_ops.iter().for_each(|o| w.u64(*o));
         put_usize(&mut w, self.seen_by.len());
         for (s, v, p) in &self.seen_by {
             w.u64(s.to_bits());
@@ -882,7 +884,11 @@ impl Ships {
         let mut service_ships = Vec::with_capacity(services.len());
         for _ in 0..services.len() {
             let n = r.len_prefix(8)?;
-            service_ships.push((0..n).map(|_| handle(r)).collect::<codec::Result<Vec<_>>>()?);
+            service_ships.push(
+                (0..n)
+                    .map(|_| handle(r))
+                    .collect::<codec::Result<Vec<_>>>()?,
+            );
         }
         let mut havens = Vec::new();
         for _ in 0..r.len_prefix(6)? {
@@ -892,9 +898,13 @@ impl Ships {
             let media = get_u32(r)?;
             let crew_pool = get_u32(r)?;
             let n = r.len_prefix(8)?;
-            let hs = (0..n).map(|_| handle(r)).collect::<codec::Result<Vec<_>>>()?;
+            let hs = (0..n)
+                .map(|_| handle(r))
+                .collect::<codec::Result<Vec<_>>>()?;
             let n = r.len_prefix(1)?;
-            let hl = (0..n).map(|_| get_u32(r)).collect::<codec::Result<Vec<_>>>()?;
+            let hl = (0..n)
+                .map(|_| get_u32(r))
+                .collect::<codec::Result<Vec<_>>>()?;
             havens.push(Haven {
                 node,
                 frame,
@@ -912,7 +922,9 @@ impl Ships {
             let medium = get_medium(r)?;
             let service = get_u32(r)?;
             let n = r.len_prefix(8)?;
-            let ns = (0..n).map(|_| handle(r)).collect::<codec::Result<Vec<_>>>()?;
+            let ns = (0..n)
+                .map(|_| handle(r))
+                .collect::<codec::Result<Vec<_>>>()?;
             navies.push(Navy {
                 node,
                 dock,
@@ -964,12 +976,18 @@ impl Ships {
             let s = handle(r)?;
             let v = r.var_u64()?;
             let n = r.len_prefix(8)?;
-            let legs = (0..n).map(|_| handle(r)).collect::<codec::Result<Vec<_>>>()?;
+            let legs = (0..n)
+                .map(|_| handle(r))
+                .collect::<codec::Result<Vec<_>>>()?;
             let end = Tick(r.u64()?);
             for &l in &legs {
                 leg_voyage.insert(l, (s, v));
             }
             booked.insert((s, v), Booked { legs, end });
+        }
+        let mut applied_ops = std::collections::VecDeque::new();
+        for _ in 0..r.len_prefix(8)? {
+            applied_ops.push_back(r.u64()?);
         }
         let mut seen_by = BTreeSet::new();
         for _ in 0..r.len_prefix(17)? {
@@ -1021,6 +1039,8 @@ impl Ships {
         s.booked = booked;
         s.leg_voyage = leg_voyage;
         s.seen_by = seen_by;
+        s.applied_set = applied_ops.iter().copied().collect();
+        s.applied_ops = applied_ops;
         s.observed = observed;
         s.ledger = ledger;
         s.stats = stats;

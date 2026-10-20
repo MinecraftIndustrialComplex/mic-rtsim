@@ -1,7 +1,7 @@
 {
   "seed": 7,
   "days": 12,
-  "wall_ms": 52.59211,
+  "wall_ms": 51.109546,
   "docks": [
     {
       "id": 0,
@@ -2353,100 +2353,128 @@
     {
       "tick": 177093,
       "day": 7.378875,
-      "kind": "raid",
+      "kind": "capture",
       "ship": "sea pirate 0.0",
-      "what": "attacks sea merchant 1.1 in view"
+      "what": "captures sea merchant 1.1; 1 of its crew join haven 0"
     },
     {
-      "tick": 177300,
-      "day": 7.3875,
+      "tick": 177093,
+      "day": 7.378875,
+      "kind": "fight",
+      "ship": "sea pirate 0.0",
+      "what": "fights sea merchant 1.1 unobserved: pirates keep 92% (Lanchester 92%, a real fight at 80% does not bind)"
+    },
+    {
+      "tick": 182900,
+      "day": 7.620833333333334,
+      "kind": "seen",
+      "ship": "sea pirate 0.0",
+      "what": "pirates in view of player 5a11 at (-1296, 0)"
+    },
+    {
+      "tick": 183427,
+      "day": 7.642791666666667,
+      "kind": "seen",
+      "ship": "sea merchant 1.0",
+      "what": "enters the view of player 5a11: Cruise at (-1113, 63, 7), 4 items aboard"
+    },
+    {
+      "tick": 183940,
+      "day": 7.664166666666667,
+      "kind": "seen",
+      "ship": "sea merchant 0.3",
+      "what": "enters the view of player 5a11: Cruise at (-1479, 63, -7), 1 items aboard"
+    },
+    {
+      "tick": 185814,
+      "day": 7.74225,
+      "kind": "seen",
+      "ship": "sea merchant 0.0",
+      "what": "enters the view of player 5a11: Cruise at (-1140, 63, 96), 0 items aboard"
+    },
+    {
+      "tick": 188180,
+      "day": 7.840833333333333,
+      "kind": "seen",
+      "ship": "sea merchant 1.2",
+      "what": "enters the view of player 5a11: Cruise at (-1468, 63, 64), 0 items aboard"
+    },
+    {
+      "tick": 189211,
+      "day": 7.883791666666666,
+      "kind": "seen",
+      "ship": "sea navy 0.1",
+      "what": "enters the view of player 5a11: Cruise at (-1141, 63, 96), 0 items aboard"
+    },
+    {
+      "tick": 189960,
+      "day": 7.915,
+      "kind": "seen",
+      "ship": "sea merchant 1.5",
+      "what": "enters the view of player 5a11: Cruise at (-1113, 63, 7), 3 items aboard"
+    },
+    {
+      "tick": 190473,
+      "day": 7.936375,
+      "kind": "seen",
+      "ship": "sea merchant 0.2",
+      "what": "enters the view of player 5a11: Cruise at (-1480, 63, -7), 1 items aboard"
+    },
+    {
+      "tick": 192347,
+      "day": 8.014458333333334,
+      "kind": "seen",
+      "ship": "sea merchant 0.5",
+      "what": "enters the view of player 5a11: Cruise at (-1140, 63, 96), 0 items aboard"
+    },
+    {
+      "tick": 196080,
+      "day": 8.17,
+      "kind": "seen",
+      "ship": "sea navy 0.1",
+      "what": "enters the view of player 5a11: Cruise at (-1469, 63, 64), 0 items aboard"
+    },
+    {
+      "tick": 196493,
+      "day": 8.187208333333333,
+      "kind": "seen",
+      "ship": "sea merchant 1.4",
+      "what": "enters the view of player 5a11: Cruise at (-1112, 63, 7), 2 items aboard"
+    },
+    {
+      "tick": 197009,
+      "day": 8.208708333333334,
+      "kind": "seen",
+      "ship": "sea merchant 0.1",
+      "what": "enters the view of player 5a11: Cruise at (-1479, 63, -7), 1 items aboard"
+    },
+    {
+      "tick": 197209,
+      "day": 8.217041666666667,
+      "kind": "raid",
+      "ship": "sea pirate 0.0",
+      "what": "attacks sea merchant 0.1 in view"
+    },
+    {
+      "tick": 197450,
+      "day": 8.227083333333333,
       "kind": "hazard",
       "ship": null,
       "what": "lane 2 (sea): pirates of haven 0 now take 0‰ (patrols and escorts 0.0)"
     },
     {
-      "tick": 177300,
-      "day": 7.3875,
+      "tick": 197450,
+      "day": 8.227083333333333,
       "kind": "leave",
       "ship": "sea pirate 0.0",
       "what": "leaves lane 2 (bored) for haven 0"
     },
     {
-      "tick": 177406,
-      "day": 7.391916666666667,
-      "kind": "seen",
-      "ship": "sea merchant 0.4",
-      "what": "enters the view of player 5a11: Cruise at (-1479, 63, -7), 1 items aboard"
-    },
-    {
-      "tick": 178000,
-      "day": 7.416666666666667,
+      "tick": 197900,
+      "day": 8.245833333333334,
       "kind": "seen",
       "ship": "sky pirate 0.1",
       "what": "pirates in view of player 5a11 at (630, -980)"
-    },
-    {
-      "tick": 180186,
-      "day": 7.50775,
-      "kind": "seen",
-      "ship": "sky merchant 6.3",
-      "what": "enters the view of player 5a11: Cruise at (530, 232, -827), 5 items aboard"
-    },
-    {
-      "tick": 180475,
-      "day": 7.519791666666666,
-      "kind": "seen",
-      "ship": "sky merchant 7.0",
-      "what": "enters the view of player 5a11: Cruise at (730, 248, -1133), 0 items aboard"
-    },
-    {
-      "tick": 184757,
-      "day": 7.6982083333333335,
-      "kind": "seen",
-      "ship": "sky merchant 6.2",
-      "what": "enters the view of player 5a11: Cruise at (530, 232, -826), 4 items aboard"
-    },
-    {
-      "tick": 185047,
-      "day": 7.7102916666666665,
-      "kind": "seen",
-      "ship": "sky merchant 7.3",
-      "what": "enters the view of player 5a11: Cruise at (730, 248, -1134), 0 items aboard"
-    },
-    {
-      "tick": 187795,
-      "day": 7.824791666666667,
-      "kind": "landed",
-      "ship": "sea pirate 0.0",
-      "what": "lands 1 items of loot at haven 0's market"
-    },
-    {
-      "tick": 189330,
-      "day": 7.88875,
-      "kind": "seen",
-      "ship": "sky merchant 6.1",
-      "what": "enters the view of player 5a11: Cruise at (530, 232, -826), 5 items aboard"
-    },
-    {
-      "tick": 189619,
-      "day": 7.900791666666667,
-      "kind": "seen",
-      "ship": "sky merchant 7.2",
-      "what": "enters the view of player 5a11: Cruise at (730, 248, -1134), 0 items aboard"
-    },
-    {
-      "tick": 193902,
-      "day": 8.07925,
-      "kind": "seen",
-      "ship": "sky merchant 6.0",
-      "what": "enters the view of player 5a11: Cruise at (530, 232, -826), 4 items aboard"
-    },
-    {
-      "tick": 194193,
-      "day": 8.091375,
-      "kind": "seen",
-      "ship": "sky merchant 7.1",
-      "what": "enters the view of player 5a11: Cruise at (730, 248, -1133), 0 items aboard"
     },
     {
       "tick": 198215,
@@ -2463,36 +2491,22 @@
       "what": "leaves lane 12 (bored) for haven 0"
     },
     {
-      "tick": 198476,
-      "day": 8.269833333333333,
+      "tick": 198475,
+      "day": 8.269791666666666,
       "kind": "seen",
       "ship": "sky merchant 6.3",
-      "what": "enters the view of player 5a11: Cruise at (530, 232, -827), 4 items aboard"
+      "what": "enters the view of player 5a11: Cruise at (530, 232, -826), 4 items aboard"
     },
     {
-      "tick": 198765,
-      "day": 8.281875,
+      "tick": 198764,
+      "day": 8.281833333333333,
       "kind": "seen",
       "ship": "sky merchant 7.0",
-      "what": "enters the view of player 5a11: Cruise at (730, 248, -1133), 0 items aboard"
+      "what": "enters the view of player 5a11: Cruise at (730, 248, -1134), 0 items aboard"
     },
     {
-      "tick": 199000,
-      "day": 8.291666666666666,
-      "kind": "seen",
-      "ship": "sea merchant 0.1",
-      "what": "enters the view of player 5a11: Cruise at (-683, 63, 22), 1 items aboard"
-    },
-    {
-      "tick": 200731,
-      "day": 8.363791666666666,
-      "kind": "sail",
-      "ship": "sea pirate 0.0",
-      "what": "sails from haven 0 to hunt lane 7"
-    },
-    {
-      "tick": 200867,
-      "day": 8.369458333333334,
+      "tick": 200868,
+      "day": 8.3695,
       "kind": "seen",
       "ship": "sea merchant 3.5",
       "what": "enters the view of player 5a11: Cruise at (-818, 63, -155), 0 items aboard"
@@ -2505,8 +2519,8 @@
       "what": "enters the view of player 5a11: Cruise at (-523, 63, 28), 3 items aboard"
     },
     {
-      "tick": 201839,
-      "day": 8.409958333333334,
+      "tick": 201840,
+      "day": 8.41,
       "kind": "seen",
       "ship": "sea merchant 3.4",
       "what": "enters the view of player 5a11: Cruise at (-464, 63, -61), 0 items aboard"
@@ -2519,15 +2533,15 @@
       "what": "enters the view of player 5a11: Cruise at (-819, 63, -151), 0 items aboard"
     },
     {
-      "tick": 203479,
-      "day": 8.478291666666667,
+      "tick": 203480,
+      "day": 8.478333333333333,
       "kind": "seen",
       "ship": "sea merchant 2.5",
       "what": "enters the view of player 5a11: Cruise at (-462, 63, -69), 0 items aboard"
     },
     {
-      "tick": 205319,
-      "day": 8.554958333333333,
+      "tick": 205320,
+      "day": 8.555,
       "kind": "seen",
       "ship": "sea merchant 0.0",
       "what": "enters the view of player 5a11: Cruise at (-768, 63, 19), 1 items aboard"
@@ -2547,102 +2561,116 @@
       "what": "enters the view of player 5a11: Cruise at (-818, 63, -155), 0 items aboard"
     },
     {
-      "tick": 207226,
-      "day": 8.634416666666667,
-      "kind": "hazard",
-      "ship": null,
-      "what": "lane 7 (sea): pirates of haven 0 now take 80‰ (patrols and escorts 0.0)"
-    },
-    {
-      "tick": 207226,
-      "day": 8.634416666666667,
-      "kind": "hunt",
-      "ship": "sea pirate 0.0",
-      "what": "hunts lane 7 until day 12.99; the lane loses 80‰"
-    },
-    {
-      "tick": 207708,
-      "day": 8.6545,
+      "tick": 207707,
+      "day": 8.654458333333332,
       "kind": "seen",
       "ship": "sea merchant 3.3",
       "what": "enters the view of player 5a11: Cruise at (-464, 63, -61), 0 items aboard"
     },
     {
-      "tick": 208000,
-      "day": 8.666666666666666,
-      "kind": "seen",
+      "tick": 207945,
+      "day": 8.664375,
+      "kind": "landed",
       "ship": "sea pirate 0.0",
-      "what": "pirates in view of player 5a11 at (2228, 210)"
+      "what": "lands 3 items of loot at haven 0's market"
     },
     {
-      "tick": 210715,
-      "day": 8.779791666666666,
+      "tick": 208084,
+      "day": 8.670166666666667,
       "kind": "seen",
-      "ship": "sea merchant 2.2",
-      "what": "enters the view of player 5a11: Cruise at (2405, 63, 162), 0 items aboard"
+      "ship": "sea merchant 1.2",
+      "what": "enters the view of player 5a11: Cruise at (-522, 63, 28), 3 items aboard"
     },
     {
-      "tick": 211230,
-      "day": 8.80125,
-      "kind": "seen",
-      "ship": "sea merchant 3.5",
-      "what": "enters the view of player 5a11: Cruise at (2051, 63, 258), 5 items aboard"
-    },
-    {
-      "tick": 212187,
-      "day": 8.841125,
-      "kind": "seen",
-      "ship": "sea merchant 3.1",
-      "what": "enters the view of player 5a11: Cruise at (2394, 63, 287), 0 items aboard"
-    },
-    {
-      "tick": 215718,
-      "day": 8.98825,
+      "tick": 208374,
+      "day": 8.68225,
       "kind": "seen",
       "ship": "sea merchant 2.5",
-      "what": "enters the view of player 5a11: Cruise at (2064, 63, 291), 0 items aboard"
+      "what": "enters the view of player 5a11: Cruise at (-819, 63, -151), 0 items aboard"
     },
     {
-      "tick": 216000,
-      "day": 9.0,
-      "kind": "hazard",
-      "ship": null,
-      "what": "lane 7 (sea): pirates of haven 0 now take 0‰ (patrols and escorts 0.0)"
-    },
-    {
-      "tick": 216000,
-      "day": 9.0,
-      "kind": "sunk",
-      "ship": "sea pirate 0.0",
-      "what": "is sunk; haven 0 will rebuild"
-    },
-    {
-      "tick": 216000,
-      "day": 9.0,
+      "tick": 209346,
+      "day": 8.72275,
       "kind": "seen",
-      "ship": "sea merchant 2.3",
-      "what": "enters the view of player 5a11: Cruise at (-767, 63, -143), 0 items aboard"
+      "ship": "sea merchant 2.4",
+      "what": "enters the view of player 5a11: Cruise at (-462, 63, -69), 0 items aboard"
     },
     {
-      "tick": 216000,
-      "day": 9.0,
+      "tick": 210194,
+      "day": 8.758083333333333,
       "kind": "seen",
-      "ship": "sea navy 0.1",
-      "what": "enters the view of player 5a11: Cruise at (-806, 63, -148), 0 items aboard"
+      "ship": "sea navy 0.0",
+      "what": "enters the view of player 5a11: Cruise at (-818, 63, -155), 0 items aboard"
     },
     {
-      "tick": 218387,
-      "day": 9.099458333333333,
+      "tick": 211853,
+      "day": 8.827208333333333,
       "kind": "seen",
-      "ship": "sea merchant 0.4",
+      "ship": "sea merchant 0.5",
       "what": "enters the view of player 5a11: Cruise at (-768, 63, 19), 1 items aboard"
     },
     {
-      "tick": 218470,
-      "day": 9.102916666666667,
+      "tick": 212268,
+      "day": 8.8445,
+      "kind": "seen",
+      "ship": "sea navy 0.1",
+      "what": "enters the view of player 5a11: Cruise at (-462, 63, -69), 0 items aboard"
+    },
+    {
+      "tick": 212603,
+      "day": 8.858458333333333,
+      "kind": "seen",
+      "ship": "sea merchant 3.3",
+      "what": "enters the view of player 5a11: Cruise at (-818, 63, -155), 0 items aboard"
+    },
+    {
+      "tick": 213574,
+      "day": 8.898916666666667,
+      "kind": "seen",
+      "ship": "sea merchant 3.2",
+      "what": "enters the view of player 5a11: Cruise at (-464, 63, -61), 0 items aboard"
+    },
+    {
+      "tick": 214240,
+      "day": 8.926666666666666,
+      "kind": "seen",
+      "ship": "sea merchant 2.4",
+      "what": "enters the view of player 5a11: Cruise at (-819, 63, -151), 0 items aboard"
+    },
+    {
+      "tick": 215215,
+      "day": 8.967291666666666,
+      "kind": "seen",
+      "ship": "sea merchant 2.3",
+      "what": "enters the view of player 5a11: Cruise at (-462, 63, -69), 0 items aboard"
+    },
+    {
+      "tick": 215964,
+      "day": 8.9985,
+      "kind": "seen",
+      "ship": "sea navy 0.1",
+      "what": "enters the view of player 5a11: Cruise at (-819, 63, -151), 0 items aboard"
+    },
+    {
+      "tick": 218386,
+      "day": 9.099416666666666,
+      "kind": "seen",
+      "ship": "sea merchant 0.4",
+      "what": "enters the view of player 5a11: Cruise at (-769, 63, 19), 0 items aboard"
+    },
+    {
+      "tick": 218469,
+      "day": 9.102875,
       "kind": "seen",
       "ship": "sea merchant 3.2",
       "what": "enters the view of player 5a11: Cruise at (-818, 63, -155), 0 items aboard"
+    },
+    {
+      "tick": 219443,
+      "day": 9.143458333333333,
+      "kind": "seen",
+      "ship": "sea merchant 3.1",
+      "what": "enters the view of player 5a11: Cruise at (-464, 63, -61), 0 items aboard"
     },
     {
       "tick": 220109,
@@ -2652,8 +2680,15 @@
       "what": "enters the view of player 5a11: Cruise at (-819, 63, -151), 0 items aboard"
     },
     {
-      "tick": 221080,
-      "day": 9.211666666666666,
+      "tick": 220881,
+      "day": 9.203375,
+      "kind": "sail",
+      "ship": "sea pirate 0.0",
+      "what": "sails from haven 0 to hunt lane 7"
+    },
+    {
+      "tick": 221081,
+      "day": 9.211708333333334,
       "kind": "seen",
       "ship": "sea merchant 2.2",
       "what": "enters the view of player 5a11: Cruise at (-462, 63, -69), 0 items aboard"
@@ -2673,15 +2708,15 @@
       "what": "enters the view of player 5a11: Cruise at (-818, 63, -155), 0 items aboard"
     },
     {
-      "tick": 224921,
-      "day": 9.371708333333334,
+      "tick": 224923,
+      "day": 9.371791666666667,
       "kind": "seen",
       "ship": "sea merchant 0.3",
-      "what": "enters the view of player 5a11: Cruise at (-768, 63, 19), 1 items aboard"
+      "what": "enters the view of player 5a11: Cruise at (-767, 63, 19), 1 items aboard"
     },
     {
-      "tick": 225310,
-      "day": 9.387916666666667,
+      "tick": 225309,
+      "day": 9.387875,
       "kind": "seen",
       "ship": "sea merchant 3.0",
       "what": "enters the view of player 5a11: Cruise at (-464, 63, -61), 0 items aboard"
@@ -2694,18 +2729,39 @@
       "what": "enters the view of player 5a11: Cruise at (-819, 63, -151), 0 items aboard"
     },
     {
-      "tick": 226949,
-      "day": 9.456208333333333,
+      "tick": 226948,
+      "day": 9.456166666666666,
       "kind": "seen",
       "ship": "sea merchant 2.1",
       "what": "enters the view of player 5a11: Cruise at (-462, 63, -69), 0 items aboard"
     },
     {
-      "tick": 227686,
-      "day": 9.486916666666668,
+      "tick": 227376,
+      "day": 9.474,
+      "kind": "hazard",
+      "ship": null,
+      "what": "lane 7 (sea): pirates of haven 0 now take 77‰ (patrols and escorts 0.0)"
+    },
+    {
+      "tick": 227376,
+      "day": 9.474,
+      "kind": "hunt",
+      "ship": "sea pirate 0.0",
+      "what": "hunts lane 7 until day 13.65; the lane loses 77‰"
+    },
+    {
+      "tick": 227687,
+      "day": 9.486958333333334,
       "kind": "seen",
       "ship": "sea merchant 1.5",
       "what": "enters the view of player 5a11: Cruise at (-523, 63, 28), 3 items aboard"
+    },
+    {
+      "tick": 227900,
+      "day": 9.495833333333334,
+      "kind": "seen",
+      "ship": "sea pirate 0.0",
+      "what": "pirates in view of player 5a11 at (2228, 210)"
     },
     {
       "tick": 228208,
@@ -2713,6 +2769,34 @@
       "kind": "sail",
       "ship": "sky pirate 0.1",
       "what": "sails from haven 0 to hunt lane 11"
+    },
+    {
+      "tick": 228319,
+      "day": 9.513291666666667,
+      "kind": "seen",
+      "ship": "sea merchant 2.5",
+      "what": "enters the view of player 5a11: Cruise at (2405, 63, 162), 0 items aboard"
+    },
+    {
+      "tick": 228832,
+      "day": 9.534666666666666,
+      "kind": "seen",
+      "ship": "sea merchant 3.2",
+      "what": "enters the view of player 5a11: Cruise at (2051, 63, 258), 4 items aboard"
+    },
+    {
+      "tick": 228900,
+      "day": 9.5375,
+      "kind": "hazard",
+      "ship": null,
+      "what": "lane 7 (sea): pirates of haven 0 now take 0‰ (patrols and escorts 0.0)"
+    },
+    {
+      "tick": 228900,
+      "day": 9.5375,
+      "kind": "sunk",
+      "ship": "sea pirate 0.0",
+      "what": "is sunk; haven 0 will rebuild"
     },
     {
       "tick": 230204,
@@ -2736,8 +2820,8 @@
       "what": "hunts lane 11 until day 12.78; the lane loses 80‰"
     },
     {
-      "tick": 231000,
-      "day": 9.625,
+      "tick": 230900,
+      "day": 9.620833333333334,
       "kind": "seen",
       "ship": "sky pirate 0.1",
       "what": "pirates in view of player 5a11 at (905, 920)"
@@ -2839,6 +2923,13 @@
       "kind": "seen",
       "ship": "sky merchant 5.1",
       "what": "enters the view of player 5a11: Cruise at (783, 216, 784), 0 items aboard"
+    },
+    {
+      "tick": 259200,
+      "day": 10.8,
+      "kind": "relaunch",
+      "ship": "sea merchant 1.1",
+      "what": "a new ship takes the slot at its home dock"
     },
     {
       "tick": 260048,
@@ -2956,46 +3047,54 @@
   "plugin_log": [
     "tick 71750: fight: pirates beat 4 against 6 crew",
     "tick 88900: fight: pirates beat 3 against 5 crew",
-    "tick 177300: fight: pirates beat 4 against 5 crew"
+    "tick 197450: fight: pirates beat 4 against 5 crew"
   ],
   "stats": {
-    "events": 1268,
+    "events": 1278,
     "stale": 3,
-    "interest_bookings": 147,
-    "voyages_booked": 633,
-    "legs_booked": 2862,
-    "seen": 212,
-    "seen_stale": 181,
-    "seen_pirates": 6,
-    "materialized": 218,
-    "promotions": 4,
+    "interest_bookings": 145,
+    "voyages_booked": 622,
+    "legs_booked": 2819,
+    "seen": 221,
+    "seen_stale": 180,
+    "seen_pirates": 7,
+    "materialized": 228,
+    "promotions": 5,
     "landings": 4,
     "hunts": 6,
     "fruitless": 0,
     "hazard_changes": 13,
     "raids_observed": 3,
-    "raids_abstract": 0,
+    "raids_abstract": 1,
     "fights_observed": 3,
-    "captures": 0,
+    "captures": 1,
     "sinkings": 1,
     "loot_events": 3,
     "coast_raids": 0,
-    "respawns": 0,
+    "respawns": 1,
     "rebuilds": 0,
     "captains_died": 0,
     "bored": 4
   },
   "looted_by_pirates": {
-    "wheat": 2.0
+    "emerald": 0.192,
+    "leather": 0.006,
+    "wheat": 3.856,
+    "wool": 0.378
   },
   "landed_at_havens": {
-    "wheat": 2.0
+    "emerald": 0.192,
+    "leather": 0.006,
+    "wheat": 3.856,
+    "wool": 0.378
   },
   "landed_at_ports": {
-    "emerald": 0.443,
-    "leather": 0.006,
-    "wheat": 7.693,
-    "wool": 0.91
+    "clay_ball": 0.784,
+    "emerald": 0.405,
+    "iron_ingot": 0.147,
+    "slime_ball": 0.497,
+    "wheat": 5.837,
+    "wool": 0.532
   },
   "taken_by_players": {
     "wheat": 2.0
@@ -3005,54 +3104,54 @@
     [
       "wheat",
       369.0,
-      324.486,
-      167.163
+      326.313,
+      169.185
     ],
     [
       "bread",
       123.0,
-      122.144,
+      122.209,
       14.985
     ],
     [
       "leather",
       6.068,
       0.599,
-      5.042
+      5.048
     ],
     [
       "iron_ingot",
       3.608,
       0.0,
-      0.274
+      0.296
     ],
     [
       "wool",
       6.068,
-      4.352,
-      8.94
+      4.834,
+      9.422
     ],
     [
       "slime_ball",
       2.46,
       0.0,
-      0.374
+      0.469
     ],
     [
       "clay_ball",
       3.608,
       0.0,
-      0.494
+      0.625
     ],
     [
       "emerald",
       42.0,
-      36.717,
-      0.0
+      36.745,
+      0.192
     ]
   ],
   "plugin_commands": {
-    "0x8600": 218,
+    "0x8600": 228,
     "0x8602": 3,
     "0x8603": 4
   },
@@ -3065,17 +3164,22 @@
     {
       "name": "a ship entered the player's view",
       "ok": true,
-      "detail": "212 entered view, 218 materialized"
+      "detail": "221 entered view, 228 materialized"
     },
     {
       "name": "a raid in view",
       "ok": true,
-      "detail": "3 raids in view, 0 unobserved, 3 fights the plugin played"
+      "detail": "3 raids in view, 1 unobserved, 3 fights the plugin played"
+    },
+    {
+      "name": "an unobserved fight resolved by Lanchester",
+      "ok": true,
+      "detail": "1 raids resolved with nobody watching (the player logged off before one, after day 7)"
     },
     {
       "name": "stolen goods reached the haven's market",
       "ok": true,
-      "detail": "197.3 items received by the haven's market"
+      "detail": "200.2 items received by the haven's market"
     },
     {
       "name": "a patrol lowers a lane's hazard",
@@ -3085,7 +3189,7 @@
     {
       "name": "a restart in the middle continues exactly",
       "ok": true,
-      "detail": "restored at day 6 and run to day 12: ships 8f26f52bf65cfb5a, world f3de2ece5abc78ef"
+      "detail": "restored at day 6 and run to day 12: ships aea90483ac7d8549, world d787611606b71b35"
     }
   ]
 }

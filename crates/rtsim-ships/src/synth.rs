@@ -267,7 +267,15 @@ pub fn coastal(seed: u64, tun: ShipTunables) -> Coastal {
             );
         }
         if s.sky {
-            ships.add_port(&mut w, i, Medium::Sky, (s.x + 30, 120, s.z), 4, &mask, Tick::ZERO);
+            ships.add_port(
+                &mut w,
+                i,
+                Medium::Sky,
+                (s.x + 30, 120, s.z),
+                4,
+                &mask,
+                Tick::ZERO,
+            );
         }
     }
     let hi = ss.iter().position(|s| s.haven).expect("a haven");
@@ -307,7 +315,11 @@ pub fn ocean_grid(side: usize, seed: u64, tun: ShipTunables) -> (World, Ships, A
         data.push(NodeData {
             key: 1_000 + i as u64,
             kind: NodeKind::Village(Culture::Human),
-            pos: Pos::new(0, gx * 1_200 + (i as i32 * 37) % 200, gz * 1_200 + (i as i32 * 53) % 200),
+            pos: Pos::new(
+                0,
+                gx * 1_200 + (i as i32 * 37) % 200,
+                gz * 1_200 + (i as i32 * 53) % 200,
+            ),
             pop: 12,
             resources: [(r, 40 * MILLI), (r2, 4 * MILLI)].into_iter().collect(),
         });
@@ -502,7 +514,11 @@ impl FakeShips {
                     }
                 }
                 Cmd::Despawn(d) => {
-                    if self.bodies.get(&d.agent).is_some_and(|b| b.epoch == d.epoch) {
+                    if self
+                        .bodies
+                        .get(&d.agent)
+                        .is_some_and(|b| b.epoch == d.epoch)
+                    {
                         self.bodies.remove(&d.agent);
                     }
                 }

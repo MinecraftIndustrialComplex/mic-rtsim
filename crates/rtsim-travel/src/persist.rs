@@ -253,7 +253,8 @@ impl Decode for Edge {
         let n = r.len_prefix(1)?;
         let stops = (0..n).map(|_| get_usize(r)).collect::<codec::Result<_>>()?;
         let m = r.u8()?;
-        let medium = Medium::from_u8(m).ok_or_else(|| CodecError::Invalid(format!("medium {m}")))?;
+        let medium =
+            Medium::from_u8(m).ok_or_else(|| CodecError::Invalid(format!("medium {m}")))?;
         let cap_slot_milli = r.var_i64()?;
         Ok(Edge {
             a,

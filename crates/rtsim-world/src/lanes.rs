@@ -204,9 +204,8 @@ impl World {
                 take.push((g, t));
             }
         }
-        let payee = paid_to.filter(|&j| {
-            j != i && j < self.nodes.len() && self.nodes[j].kind.is_storehouse()
-        });
+        let payee = paid_to
+            .filter(|&j| j != i && j < self.nodes.len() && self.nodes[j].kind.is_storehouse());
         let region = self.nodes[i].region;
         let gd = &self.goods;
         let mut paid: Option<(GoodId, Amount)> = None;
@@ -265,7 +264,10 @@ impl World {
     }
 
     /// Held goods a player took (looted from a ship's hold): they leave the world to the player.
-    pub fn held_to_players(&mut self, goods: &BTreeMap<GoodId, Amount>) -> BTreeMap<GoodId, Amount> {
+    pub fn held_to_players(
+        &mut self,
+        goods: &BTreeMap<GoodId, Amount>,
+    ) -> BTreeMap<GoodId, Amount> {
         let mut out = BTreeMap::new();
         for (&g, &a) in goods {
             let t = self.take_held(g, a);

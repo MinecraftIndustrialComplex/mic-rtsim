@@ -1,56 +1,62 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! The coast builds a network of both media, its lanes are world edges with hold caps, and a
+//! month with nobody watching stays conserved with the lanes carrying trade.
+
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::Tick;
 use rtsim_ships::{ShipTunables, synth};
+use rtsim_travel::Medium;
 
 #[test]
-fn the_coast_builds_and_runs_a_quiet_week() {
+fn the_coast_builds_and_runs_a_quiet_month() {
     let mut c = synth::coastal(7, ShipTunables::default());
     let s = &c.ships;
-    eprintln!(
-        "docks {} lanes {} services {} ships {} lints {:?} over_berths {:?}",
-        s.docks.len(),
-        s.lanes.len(),
-        s.services.len(),
-        s.ships.len(),
-        s.lints,
-        s.over_berths
+    assert!(s.lanes.iter().any(|l| l.medium == Medium::Sea));
+    assert!(s.lanes.iter().any(|l| l.medium == Medium::Sky));
+    assert!(
+        s.lanes.iter().any(|l| l.path.pts.len() > 2),
+        "some sea lane bends round land"
     );
-    for (i, sv) in s.services.iter().enumerate() {
-        eprintln!(
-            "service {i}: {:?} {:?} period {} ships {} stops {:?}",
-            sv.kind,
-            sv.medium,
-            sv.period,
-            sv.ships,
-            sv.legs.iter().map(|g| g.from_dock).collect::<Vec<_>>()
+    assert!(s.over_berths.is_empty(), "{:?}", s.over_berths);
+    for l in &s.lanes {
+        let e = &c.world.edges[l.edge as usize];
+        assert_eq!(e.medium, l.medium);
+        assert!(e.cap_slot_milli > 0);
+        let mid = l.path.at(l.path.length() / 2);
+        let near = c
+            .world
+            .roads
+            .near(l.frame, i64::from(mid.0), i64::from(mid.1), 64);
+        assert!(
+            !near.contains(&l.edge),
+            "a lane is not a road: no caravans sampled on it"
         );
     }
-    for (i, l) in s.lanes.iter().enumerate() {
-        eprintln!(
-            "lane {i}: {:?} {} -> {} len {} pts {} edge {}",
-            l.medium,
-            l.a,
-            l.b,
-            l.path.length(),
-            l.path.pts.len(),
-            l.edge
-        );
-    }
-    c.ships.log_enabled = true;
     c.ships
         .run_until(&mut c.world, &mut NoInfrastructure, Tick::from_days(30));
-    for l in &c.ships.log {
-        eprintln!("{:.2} {} {:?} {}", l.day, l.kind, l.ship, l.what);
-    }
-    eprintln!("{:?}", c.ships.stats);
-    eprintln!("{:?}", c.ships.pending_by_kind());
     c.ships.check(&c.world).expect("conserved");
-    for (e, edge) in c.world.edges.iter().enumerate() {
-        {
-            let v0 = edge.dirs[0].volume_slot_milli(&c.world.goods);
-            let v1 = edge.dirs[1].volume_slot_milli(&c.world.goods);
-            eprintln!("edge {e} {}-{} {:?} cap {} vol {v0} {v1} hazard {:?} {:?}", edge.a, edge.b, edge.medium, edge.cap_slot_milli, c.world.lane_hazard(e as u32, 0), c.world.lane_hazard(e as u32, 1));
-        }
-    }
+    let lanes: i64 = c
+        .world
+        .edges
+        .iter()
+        .filter(|e| e.medium != Medium::Road)
+        .map(|e| {
+            e.dirs[0].volume_slot_milli(&c.world.goods)
+                + e.dirs[1].volume_slot_milli(&c.world.goods)
+        })
+        .sum();
+    let roads: i64 = c
+        .world
+        .edges
+        .iter()
+        .filter(|e| e.medium == Medium::Road)
+        .map(|e| {
+            e.dirs[0].volume_slot_milli(&c.world.goods)
+                + e.dirs[1].volume_slot_milli(&c.world.goods)
+        })
+        .sum();
+    assert!(
+        lanes > roads,
+        "ships take the coast's trade from slow roads: {lanes} against {roads}"
+    );
 }

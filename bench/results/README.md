@@ -170,3 +170,25 @@ materialized. Laptop, other agents' builds running alongside (load about 6).
   to 16 us as the world's working set leaves the caches, as the market sweep's note says; switching
   rtsim-knowledge's next-death query to the wheel's lower bound changed nothing, so it is not an
   algorithmic term.
+
+## 2026-10-20 17:04 UTC, the ship sweep (`scale-2026-10-20-1704-ships`)
+
+`--only ships --check`, three repeats, median kept, on branch `overnight/ships` (`rtsim-ships`,
+choices T1 onward in `docs/overnight-choices-ships.md`). A fixed ocean grid of 100 ports
+(`rtsim_ships::synth::ocean_grid`: sea docks, Delaunay lanes as world edges, loops sailed both ways)
+with one haven and one sea pirate, nobody watching; the swept value is the cap on merchant ships per
+service (headways as short as platform spacing allows). 2 days of warm-up, then 50 measured. The
+figure the contract reads is the ships engine's own CPU per sim day: the bench steps the world to
+each ship event on its own and times only the ships' handlers (the pirates' decisions, legs and
+hazard changes, and the market events those cause). Every run conserved every good with the ships'
+holds (`Ships::check`), no voyage was booked and no ship materialized, and only pirate events were
+pending. Laptop, other agents' builds running alongside (load about 6).
+
+**Numbers:**
+- Merchant ships 56 to 814 (1 to 16 a service): 16.9 to 19.0 us per sim day (slope 0.032, max/min
+  1.12, contract flat), the same 32 events in 50 days at every point: the pirate's. Per merchant ship
+  that is 302 ns a day at 56 ships and 23 ns at 814, falling as one over the count: an unobserved
+  merchant ship has no cost of its own.
+- Live heap 2.6 to 4.0 MiB (slope 0.152): the 100-port world dominates; the ships engine's own rows,
+  services, lanes and indexes are 129 KB at 56 ships and 381 KB at 814 (`engine_heap_bytes`), about
+  310 bytes a ship.

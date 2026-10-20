@@ -72,7 +72,11 @@ impl WaterMask for SynthCoast {
         self.cell
     }
     fn is_water(&self, frame: u16, cx: i32, cz: i32) -> bool {
-        frame == 0 && self.water_at(cx * self.cell + self.cell / 2, cz * self.cell + self.cell / 2)
+        frame == 0
+            && self.water_at(
+                cx * self.cell + self.cell / 2,
+                cz * self.cell + self.cell / 2,
+            )
     }
 }
 
@@ -272,7 +276,11 @@ mod tests {
         }
         // Not through land straight across.
         assert!(!line_of_water(&m, 0, a, b));
-        assert_eq!(p, water_path(&m, 0, a, b, 100_000).unwrap(), "deterministic");
+        assert_eq!(
+            p,
+            water_path(&m, 0, a, b, 100_000).unwrap(),
+            "deterministic"
+        );
     }
 
     #[test]

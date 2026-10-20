@@ -176,7 +176,8 @@ impl Polyline {
             return b;
         }
         let f = (s - s0) as f64 / (s1 - s0) as f64;
-        let lerp = |p: i32, q: i32| (f64::from(p) + (f64::from(q) - f64::from(p)) * f).round() as i32;
+        let lerp =
+            |p: i32, q: i32| (f64::from(p) + (f64::from(q) - f64::from(p)) * f).round() as i32;
         (lerp(a.0, b.0), lerp(a.1, b.1))
     }
 
@@ -239,7 +240,9 @@ mod tests {
         let mut x = 7u64;
         for i in 0..6 {
             for j in 0..6 {
-                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let jx = (x >> 40) as i64 % 200 - 100;
                 let jz = (x >> 20) as i64 % 200 - 100;
                 pts.push((i * 1000 + jx, j * 1000 + jz));
@@ -247,7 +250,11 @@ mod tests {
         }
         let e = delaunay_edges(&pts);
         let n = pts.len();
-        assert!(e.len() <= 3 * n - 6 && e.len() >= 2 * n, "{} edges", e.len());
+        assert!(
+            e.len() <= 3 * n - 6 && e.len() >= 2 * n,
+            "{} edges",
+            e.len()
+        );
         // Every point is connected.
         let mut deg = vec![0; n];
         for (a, b) in &e {

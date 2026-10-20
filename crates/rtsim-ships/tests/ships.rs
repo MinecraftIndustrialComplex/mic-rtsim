@@ -50,13 +50,21 @@ fn timetables_are_closed_forms_and_a_restart_moves_no_ship() {
     c.ships
         .run_until(&mut c.world, &mut NoInfrastructure, Tick::from_days(2));
     let (w2, s2) = restart(&c.world, &c.ships, seed);
-    assert_eq!(s2.state_hash(), c.ships.state_hash(), "the save reads back exactly");
+    assert_eq!(
+        s2.state_hash(),
+        c.ships.state_hash(),
+        "the save reads back exactly"
+    );
     assert_eq!(s2.save(), c.ships.save(), "and writes the same bytes again");
     assert_eq!(w2.state_hash(), c.world.state_hash());
     // Positions are a function of the clock and the saved offsets: the same for the restored
     // engine at every moment, read in any order.
-    for t in [2 * TICKS_PER_DAY, 2 * TICKS_PER_DAY + 777, 5 * TICKS_PER_DAY + 3, 40 * TICKS_PER_DAY]
-    {
+    for t in [
+        2 * TICKS_PER_DAY,
+        2 * TICKS_PER_DAY + 777,
+        5 * TICKS_PER_DAY + 3,
+        40 * TICKS_PER_DAY,
+    ] {
         assert_eq!(positions(&c.ships, Tick(t)), positions(&s2, Tick(t)));
     }
     let later = positions(&c.ships, Tick(9 * TICKS_PER_DAY));
@@ -134,7 +142,10 @@ fn nobody_watching_costs_no_ship_events() {
         .edges
         .iter()
         .filter(|e| e.medium != Medium::Road)
-        .map(|e| e.dirs[0].volume_slot_milli(&c.world.goods) + e.dirs[1].volume_slot_milli(&c.world.goods))
+        .map(|e| {
+            e.dirs[0].volume_slot_milli(&c.world.goods)
+                + e.dirs[1].volume_slot_milli(&c.world.goods)
+        })
         .sum();
     assert!(lanes > 20, "lanes carry trade: {lanes}");
 }
@@ -156,8 +167,7 @@ fn a_ship_crossing_a_players_view_enters_it_once() {
     let mut c = coast(6);
     let (lane, mid) = straight_lane_mid(&c.ships);
     let (t0, t1) = (Tick::from_days(1), Tick::from_days(3));
-    c.ships
-        .run_until(&mut c.world, &mut NoInfrastructure, t0);
+    c.ships.run_until(&mut c.world, &mut NoInfrastructure, t0);
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     fake.set_player(PLAYER, f64::from(mid.0), f64::from(mid.1));
     let pos = Pos::new(0, mid.0, mid.1);
@@ -232,7 +242,12 @@ fn raids_in_view_send_loot_to_the_haven_and_conserve_every_good() {
     let end = Tick::from_days(16);
     while t < end {
         // Follow the first hunted lane the pirates pick, standing at its middle.
-        let hunted = c.ships.threats.iter().find(|(_, th)| !th.hunters.is_empty()).map(|(l, _)| *l);
+        let hunted = c
+            .ships
+            .threats
+            .iter()
+            .find(|(_, th)| !th.hunters.is_empty())
+            .map(|(l, _)| *l);
         if let Some(l) = hunted {
             let ln = &c.ships.lanes[l as usize];
             let mid = ln.path.at(ln.path.length() / 2);
@@ -250,7 +265,9 @@ fn raids_in_view_send_loot_to_the_haven_and_conserve_every_good() {
             50,
         );
         t += 1_000;
-        c.ships.check(&c.world).unwrap_or_else(|e| panic!("at {t:?}: {e}"));
+        c.ships
+            .check(&c.world)
+            .unwrap_or_else(|e| panic!("at {t:?}: {e}"));
         raided = c.ships.stats.raids_observed + c.ships.stats.raids_abstract;
     }
     let st = c.ships.stats;
@@ -269,11 +286,18 @@ fn raids_in_view_send_loot_to_the_haven_and_conserve_every_good() {
         .sum();
     let sunk: i128 = c.ships.ledger.sunk.values().sum();
     assert!(looted > 0, "pirates took cargo: {st:?}");
-    assert!(landed + aboard + sunk >= looted - 1, "{landed} + {aboard} + {sunk} vs {looted}");
+    assert!(
+        landed + aboard + sunk >= looted - 1,
+        "{landed} + {aboard} + {sunk} vs {looted}"
+    );
     // The flow's raided share reached the haven's market too.
     let haven = c.ships.havens[c.haven as usize].node;
     let m = c.world.market(haven);
-    let book_in: i64 = m.lines.iter().map(|l| l.book.arrived + l.book.lump_in).sum();
+    let book_in: i64 = m
+        .lines
+        .iter()
+        .map(|l| l.book.arrived + l.book.lump_in)
+        .sum();
     assert!(book_in > 0, "the haven's market received stolen goods");
 }
 
@@ -289,7 +313,10 @@ fn patrols_and_escorts_lower_a_lanes_hazard() {
         .collect();
     assert!(!patrolled.is_empty());
     for &l in &patrolled {
-        assert!(c.ships.threats[&l].patrol_milli > 0, "lane {l} has a patrol");
+        assert!(
+            c.ships.threats[&l].patrol_milli > 0,
+            "lane {l} has a patrol"
+        );
     }
     // Put a pirate on a patrolled lane by hand and compare.
     let l = *patrolled.iter().next().unwrap();
@@ -305,8 +332,7 @@ fn patrols_and_escorts_lower_a_lanes_hazard() {
     assert!(with < without, "patrolled {with} < open {without}");
     // An escort lowers it further.
     let before = c.ships.lane_share(l);
-    c.ships
-        .set_escort(&mut c.world, l, 42, 20.0, Tick::ZERO);
+    c.ships.set_escort(&mut c.world, l, 42, 20.0, Tick::ZERO);
     assert!(c.ships.lane_share(l) < before || before == 0);
     c.ships.threats.get_mut(&l).unwrap().hunters.remove(&p);
 }
@@ -324,7 +350,11 @@ fn the_same_inputs_give_the_same_world_and_steps_compose() {
     };
     let a = run(&[12]);
     assert_eq!(a, run(&[12]), "deterministic");
-    assert_eq!(a, run(&[1, 5, 5, 9, 12]), "running to 12 in pieces is running to 12");
+    assert_eq!(
+        a,
+        run(&[1, 5, 5, 9, 12]),
+        "running to 12 in pieces is running to 12"
+    );
 }
 
 /// A restored engine continues exactly as one that never stopped, with a player watching and the
@@ -395,7 +425,15 @@ fn lost_ships_come_back_in_their_own_slot() {
     while t < Tick::from_days(3) && sunk.is_none() {
         c.ships
             .observe_player(&mut c.world, PLAYER, Pos::new(0, mid.0, mid.1), t);
-        synth::drive(&mut c.world, &mut c.ships, &mut fake, &mut NoInfrastructure, &c.mask, t + 100, 50);
+        synth::drive(
+            &mut c.world,
+            &mut c.ships,
+            &mut fake,
+            &mut NoInfrastructure,
+            &c.mask,
+            t + 100,
+            50,
+        );
         t += 100;
         let target = fake
             .bodies
@@ -417,7 +455,11 @@ fn lost_ships_come_back_in_their_own_slot() {
         .run_until(&mut c.world, &mut NoInfrastructure, t + 6 * TICKS_PER_DAY);
     let x = c.ships.ship(s).unwrap();
     assert!(x.is_active(), "relaunched");
-    assert_eq!((x.offset, x.slot, x.service), (offset, slot, service), "in its own slot");
+    assert_eq!(
+        (x.offset, x.slot, x.service),
+        (offset, slot, service),
+        "in its own slot"
+    );
     assert_eq!(c.ships.stats.respawns, 1);
 }
 
@@ -525,14 +567,23 @@ impl rtsim_ecology::infra::Infrastructure for Coastline {
         })
     }
     fn good_name(&self, g: rtsim_industry::ids::Good) -> Option<String> {
-        Some(if g.0 == 1 { "iron_ingot" } else { "copper_ingot" }.into())
+        Some(
+            if g.0 == 1 {
+                "iron_ingot"
+            } else {
+                "copper_ingot"
+            }
+            .into(),
+        )
     }
 }
 
 #[test]
 fn pirates_raid_coastal_districts_through_the_threat_interface() {
-    let mut t = ShipTunables::default();
-    t.coast_raid_milli = 2_000;
+    let t = ShipTunables {
+        coast_raid_milli: 2_000,
+        ..ShipTunables::default()
+    };
     let mut c = synth::coastal(61, t);
     let mut infra = Coastline { raids: 0 };
     c.ships
@@ -547,7 +598,13 @@ fn pirates_raid_coastal_districts_through_the_threat_interface() {
         i64::from(infra.raids) * 5
     );
     // What came home is in the haven's market, booked as players' goods coming in.
-    let landed = c.ships.ledger.districts_landed.get(&iron).copied().unwrap_or(0);
+    let landed = c
+        .ships
+        .ledger
+        .districts_landed
+        .get(&iron)
+        .copied()
+        .unwrap_or(0);
     let aboard: i128 = c
         .ships
         .havens
@@ -559,4 +616,46 @@ fn pirates_raid_coastal_districts_through_the_threat_interface() {
     assert_eq!(landed + aboard, from);
     assert!(landed > 0, "a raid's loot reached the haven");
     c.ships.check(&c.world).expect("conserved");
+}
+
+#[test]
+fn a_replayed_loot_applies_once() {
+    let mut c = coast(71);
+    let mut fake = FakeShips::new(160.0);
+    let (_, mid) = straight_lane_mid(&c.ships);
+    fake.set_player(PLAYER, f64::from(mid.0), f64::from(mid.1));
+    let mut t = Tick::ZERO;
+    let mut done = false;
+    while t < Tick::from_days(6) && !done {
+        c.ships
+            .observe_player(&mut c.world, PLAYER, Pos::new(0, mid.0, mid.1), t);
+        synth::drive(
+            &mut c.world,
+            &mut c.ships,
+            &mut fake,
+            &mut NoInfrastructure,
+            &c.mask,
+            t + 100,
+            50,
+        );
+        t += 100;
+        let target = fake
+            .bodies
+            .iter()
+            .find(|(_, b)| b.role == rtsim_ships::boundary::Role::Merchant && !b.cargo.is_empty())
+            .map(|(a, _)| *a);
+        if let Some(a) = target
+            && let Some(o) = fake.player_loots(a, PLAYER, 1.0)
+        {
+            c.ships.ingest(&mut c.world, &o, &c.mask, t);
+            let once: i128 = c.ships.ledger.taken_by_players.values().sum();
+            assert!(once > 0);
+            c.ships.ingest(&mut c.world, &o, &c.mask, t);
+            let twice: i128 = c.ships.ledger.taken_by_players.values().sum();
+            assert_eq!(once, twice, "the same op id applies once");
+            c.ships.check(&c.world).expect("conserved");
+            done = true;
+        }
+    }
+    assert!(done, "a merchant with cargo came into view");
 }
