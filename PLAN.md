@@ -1,1333 +1,1318 @@
 # mic-rtsim: a simulated world for MIC
 
-> **Baseline, 2026-10-19.** This is the plan as first written. Ben has since redirected it, and those
-> decisions in DECISIONS.md take precedence where they differ: caravans first, no bespoke entities, no
-> dependence on pack mods in the core, Ribbits first-class, Cobblemon out, scale planning first. A
-> restructured plan replaces this one in the following commits.
+**Status:** design for Ben's review, 2026-10-19. Nothing is built. This replaces the baseline plan of the
+same day.
 
-**Status:** design only, 2026-10-19. Nothing is built. Written for Ben.
+**Read it with:**
+- `DECISIONS.md`. It is authoritative. Every D, A, C and X entry there is final, and this plan cites
+  them by number.
+- `SCALE.md`. It holds the scale architecture: the detail ladder, flows, lazy regions, paging,
+  compaction, complexity contracts and galactic planets. This plan points to it and does not repeat it.
+- `research/economy-2026-10-19.md`: the phase 1 economy (C13).
+- `research/veloren-rtsim-2026-10-19.md`: what Veloren's rtsim really does, read from its source.
 
-**What it is:** a world simulation in the spirit of Veloren's rtsim, built as a core engine plus content
-mods. It runs the whole map whether or not anyone is there. That covers herds of tens of thousands
-migrating with the seasons, villages that trade, grow and remember who wronged them, tribes that raid
-the player because their refinery is choking the forest, dragons that hunt herds and burn barns,
-merchant ships and pirates at sea, the player's own distant factories while they are unloaded, and
-later whole planets.
+**Rules this document follows:**
+- Anything not in DECISIONS.md is a **Proposal Pn (Ben)**, with a recommended option and its
+  alternatives. §17 lists them all. No work depends on a proposal until Ben answers it (D2).
+- Every number is a verified fact (Appendix A), a recipe or tick value, physics, arithmetic from those,
+  or a value labelled TUNABLE, PLACEHOLDER or ESTIMATE. Anything unverified says UNVERIFIED.
 
-**Ben's decisions (2026-10-19):**
-- **Split:** a core library plus content mods, in one monorepo. Each mod is its own jar and mod id.
-- **Licence:** AGPL-3.0; it is a MIC mod. Anything shared with Deep Time goes into a common library
-  that we negotiate with Deep Time. Deep Time may later run on top of the core engine.
-- **World:** a finite map. History (nations, evolution) should end up integrated with Deep Time.
-- **Core language: Rust.** Ben asked for the comparison to be judged *only* on late-stage runtime
-  performance ("buttery smooth even on a potato PC"); distribution and writing effort do not count.
-  That comparison is §2, and Ben chose its recommendation. Phase 0 measurements can still reopen it.
-- **Pack-wide optimization:** Ben plans to have agents optimize every mod in the pack: merging mods,
-  more shared libraries, and rewriting mods and parts of Minecraft in Rust. The rtsim must fit that
-  effort and help it. §1a says how.
-- **One native host for the whole pack:** `mic_native` (§1a.1) hosts every native mod in the pack,
-  including the optimization effort's rewrites.
-- **Licence of the host and shared crates: MPL-2.0** (§8). The rtsim engine and content stay AGPL.
+**What changed from the baseline:**
+- Content goes through plugins, one per mod; the core needs no pack mod (D4). Cobblemon is gone. No
+  bespoke entities (D3): the goblin, the custom humanoid and the dialogue screen are gone.
+- Phase 1 is caravans and markets between vanilla and Ribbits villages (C6 to C14). Dragons are phase 2
+  (C3). The rest comes later, in a proposed order (P11).
+- §2 matches A6 to A8 and X1 to X3. The adversarial review of 2026-10-19 is applied (list under P10).
+- Veloren claims are corrected against the source-level research. A Veloren economy quote in the
+  baseline was found in no source and is removed.
 
-**Choices I made (all reversible before release):**
-1. **Names:** the working name is `mic-rtsim`. Mod ids are `mic_rtsim` (core bridge) and
-   `mic_rtsim_<module>`.
-2. **Potato reference profile** (used by every performance gate):
-   - x86-64 baseline natives (no AVX2).
-   - The integrated server: client and server in one JVM.
-   - One sim worker thread at the lowest OS priority.
-   - The laptop pinned to 2 cores with `taskset`.
-3. **Calendar:** the sim calendar is the Serene Seasons calendar. The pack ships no SS config, so the
-   defaults apply: an 8-day sub-season and a 96-day year. In Deep Time worlds it is mic-climate's
-   `YearClock`.
-4. **The engine owns the truth.** A Minecraft entity that stands for a sim agent is a **puppet**.
-   Vanilla never saves puppets; the engine captures their state when they leave.
-5. **Bodies:**
-   - Civilians are Cobblemon `NPCEntity` puppets (dialogue, MoLang variables).
-   - Fighters (bandits, marines, pirates, guards) use one custom humanoid entity.
-   - Goblins are a custom GeckoLib entity.
-6. **Raids:** we write our own raid director rather than steering vanilla `Raid`.
-7. **Dragons:** the dragons module switches off the existing In Control desert fire-dragon spawner, so
-   the sim owns the dragon population.
-8. **Factories:** the unit the sim abstracts is a Create 6 logistics network (stock links plus factory
-   gauges). Remote cargo moves as Create packages.
-9. **Storage:** agents live in `bevy_ecs` behind our own facade, used for storage and queries only.
-   Its own executor and task pools stay off, because the rtsim owns no threads (§1a). Fields and
-   networks live in custom grids and graphs. A phase-0 benchmark confirms or replaces this.
-10. **Map output:** Surveyor landmarks, which the pack's Antique Atlas already draws.
-11. **When history runs:** at world creation, after Deep Time's bake when one is present.
-12. **This file:** it lives here until the monorepo exists, then moves to `mods/mic-rtsim/PLAN.md`.
-13. **No private native runtime.** The rtsim loads as a plugin of `mic_native`, which owns native
-    loading, the worker pools, profiling and memory accounting (§1a). It starts from a copy of Deep
-    Time's natives tooling; Deep Time switches to it after its P1-19 gate (agreed, §8).
-14. **A patch ledger and contract tests from day one.** Every mixin, and every reach into another
-    mod's internals, is listed with the GameTests that pin it, so optimization agents can rewrite those
-    mods safely (§1a.3).
+## 0. What the sim is
 
----
+- **Backend infrastructure for emergent gameplay** (D3). It adds no entities, blocks or items unless
+  absolutely necessary. Bodies, structures and items come from vanilla and from other mods.
+- **The core depends on no pack mod** (D4). A plugin is built around one mod. With no plugin installed,
+  the core still runs on vanilla content. Cobblemon is out entirely.
+- **Bodies are mapped by data** (§1.4): an abstract body kind maps to whatever entity types are
+  installed, with vanilla fallbacks. Bodies look and feel like Minecraft mobs, not players (D7).
+- **Ribbits has extra high priority** (D5). It is in phase 1 with four behaviours (C7).
+- **Choices are judged only on late-stage performance on a weak PC** (D1), never on writing effort.
+- **Scale comes first** (D6). The sim's cost grows with what players observe, how many things happen,
+  and how many coarse cells exist. It never grows with how many things exist (SCALE.md §0).
 
-## 0. Summary
+| Phase | Content | Basis |
+|---|---|---|
+| 0 | Spikes: the host, the potato harness, the scale bench, the puppet and journal GameTests, the storage bench | A6, A9, A11, A16, P4 |
+| 1 | Caravans and markets between vanilla and Ribbits villages; slights remembered; four Ribbits behaviours | C6 to C9, C11 to C14 |
+| 2 | Dragons on Ice and Fire: slights remembered, migrations on scheduled legs, preying on caravans and herds | C3, A15 |
+| Later | Ships, herds, conflict, industry, kaiju, space, history, civilians | order is P11 |
 
-| Module (mod id) | Simulates | What the player sees | Pack mods it drives |
+## 1. Layers
+
+### 1.1 The shape
+
+```
+ Minecraft server thread (Java)                 rtsim engine (Rust cdylib on mic_native's pools)
+ ┌──────────────────────────────────┐           ┌──────────────────────────────────────────┐
+ │ mic_rtsim: core bridge, NeoForge │  obs      │ kernel: clock, timing wheel, lazy        │
+ │ only. Observers, puppet registry,│ ────────► │   regions, storage, pages, journal       │
+ │ journal SavedData, quotas,       │           │   replay, counter RNG                    │
+ │ vanilla body adapters            │ ◄──────── │ generic modules: knowledge, settlements, │
+ ├──────────────────────────────────┤  cmds     │   trade, travel, ecology, conflict,      │
+ │ plugins mic_rtsim_<mod> (P1):    │           │   ships, industry, cosmos                │
+ │ adapters and data for one mod    │           │ data: body kinds, goods, cultures ...    │
+ └──────────────────────────────────┘           └──────────────────────────────────────────┘
+        four reused buffers (two per direction), one hand-over per tick, never per entity
+```
+
+- **The engine** knows nothing about Minecraft or any mod. It owns every simulated thing.
+- **The core bridge `mic_rtsim`** depends on NeoForge only. It is the only Java that talks to the engine.
+  It holds the vanilla adapters, because vanilla is built in.
+- **A generic module** is Rust rules plus the schemas of the data it loads. It names no mod.
+- **A plugin** carries Java adapters and data for one mod, and no Rust of its own. A rule that no
+  generic module has becomes a new generic module, so the engine stays mod-free (part of P1).
+- **The engine owns no threads.** It is a plugin of the pack-wide native host (§2).
+
+### 1.2 Generic modules
+
+| Module (crate) | Rules | Data it loads | First phase |
 |---|---|---|---|
-| Native host (`mic_native`, pack-wide, §1a) | nothing; it loads, schedules, profiles and accounts for every native mod | `/micperf` | Deep Time, the rtsim, future Rust rewrites |
-| Core (`mic_rtsim`) | clock, scheduler, storage, saves, LOD tiers, puppets, reports and sentiment | nothing directly; `/rtsim` commands, atlas markers | NeoForge, Surveyor + Antique Atlas |
-| Ecology (`mic_rtsim_ecology`) | forage fields, herds with age cohorts, migration routes, predation | herds that move with the seasons; fewer animals where you over-hunt or pollute | vanilla animals, Cobblemon `PokemonEntity` |
-| Civ (`mic_rtsim_civ`) | cultures, factions, settlements, notable people, memory, growth, history | villages with named people who remember you, grow, wall up, or become ruins | Cobblemon `NPCEntity` + dialogue, vanilla villages, Lootr |
-| Trade (`mic_rtsim_trade`) | goods, markets, prices, caravans, treaties | prices that move, caravans on roads, NPC shops, NPC towns buying your train cargo | Numismatics, Create 6 table cloth shops, Create trains + packages |
-| Conflict (`mic_rtsim_conflict`) | grievance, escalation, war bands, battles | envoys with demands, war-band markers on the atlas, night raids, sieges | Destroy pollution, TaCZ, L2 Hostility levels |
-| Dragons (`mic_rtsim_dragons`) | dragon life, hunger, territory, raids, hoards, grudges | dragons that hunt herds, raid barns in winter, come back for you | Ice and Fire CE |
-| Naval (`mic_rtsim_naval`) | sea lanes, merchant, pirate and navy ships, encounters | ships on radar, pirate attacks, escorts, privateering | Sable + Create Aeronautics, Create Big Cannons, Create Radars, TaCZ |
-| Industry (`mic_rtsim_industry`) | remote factories as production processes, cargo at unloaded stations | distant outposts that keep producing while you are away | Create 6 logistics, trains, packages, PowerGrid, Destroy |
-| Space (`mic_rtsim_space`) | bodies, orbits, interplanetary routes, megaprojects | later: a swarm eating Mercury, power beamed home | needs a space mod (none in the pack) |
+| knowledge (`rtsim-knowledge`) | reports, witnesses, sentiment, gossip carried by travellers | report kinds, slight weights | 1 |
+| settlements (`rtsim-settle`) | adopting villages, households as cohorts, plots, growth | cultures, house template lists | 1 |
+| trade (`rtsim-trade`) | storehouse markets, currencies, exchange, news (C13) | goods, recipes, currencies | 1 |
+| travel (`rtsim-travel`) | edges, legs, flows, sampled travellers, the encounter index | edge rules | 1 |
+| ecology (`rtsim-ecology`) | hunger, forage, herds, migration, predation | species | 2 (dragon hunger), later (herds) |
+| conflict (`rtsim-conflict`) | grievance, war bands, Lanchester resolution | unit types | later |
+| ships (`rtsim-ships`) | lanes, timetables, ship classes | ship classes, routes | later |
+| industry (`rtsim-industry`) | districts as processes between breakpoints | goods | later |
+| cosmos (`rtsim-cosmos`) | bodies, orbits, megaprojects | bodies | later |
 
----
+### 1.3 Plugins and their hooks
 
-## 1. The shape
+Mod ids follow P1. Every hook below is verified unless marked (Appendix A).
 
-```
- Minecraft server thread (Java)                  rtsim engine (native, its own threads)
- ┌────────────────────────────────────┐          ┌─────────────────────────────────────────┐
- │ mic_rtsim bridge                   │  obs     │ kernel: sim clock, cadence scheduler,   │
- │   observers (players, chunks,      │ ───────► │   event wheel, storage, saves, RNG,     │
- │   damage, pollution, Create state) │          │   profiler                              │
- │   materializer / puppet registry   │ ◄─────── │ modules: ecology civ trade conflict     │
- │   content adapters (IaF, Sable...) │  cmds    │   dragons naval industry space          │
- │   KubeJS events, datapack loading  │          │ knowledge: reports, sentiment, gossip   │
- └────────────────────────────────────┘          └─────────────────────────────────────────┘
-          one hand-over per tick through two reused shared buffers, never per entity
-```
+| Plugin | Mod (version) | Hooks | Phase |
+|---|---|---|---|
+| built in (core) | vanilla 1.21.1 | `WanderingTrader`, `TraderLlama`, `Merchant.getOffers/overrideOffers/notifyTrade`, `Villager.getGossips()` (`GossipContainer.add/remove`), village structures by `StructureTags.VILLAGE`, gamerule `doTraderSpawning`, `ServerLevel.isPositionEntityTicking`, `EntityJoinLevelEvent`, `AnimalTameEvent` | 1 |
+| `mic_rtsim_ribbits` | Ribbits 4.1.6 | `RibbitEntity` (`Merchant`: `getOffers`, `overrideOffers`, `restock`; `getHomePosition`; `setRibbitData(RibbitData(profession, umbrellaType, instrument))`); a mixin on `RibbitApplyBuffGoal`; `RibbitPlayMusicGoal` around a `masterRibbit`; structure `ribbits:ribbit_village`; the 14 templates under `data/ribbits/structure/houses` | 1 |
+| `mic_rtsim_carryon` | Carry On 2.2.6.13 | `tschipp.carryon.events.EntityPickupEvent(ServerPlayer, Entity)`, cancellable, posted on `NeoForge.EVENT_BUS` | 1 (A10) |
+| `mic_rtsim_iceandfire` | Ice and Fire CE 2.1-beta.1 | `iceandfire:fire_dragon`, `ice_dragon`, `lightning_dragon`; `DragonBaseEntity` NBT (`AgeTicks`, `Hunger`, `Gender`, `Variant`, `HomeAreaX/Y/Z`); `IafDragonFlightManager.setFlightTarget(Vec3)`; tag `dragon_targets`; roost and cave structures | 2 |
+| `mic_rtsim_surveyor` | Surveyor 1.2.4, through Sinytra Connector | `WorldLandmarks.of(Level).put(...)`, `Landmark.global(id, builder)` with `POS`, `NAME`, `LORE`, `COLOR`, `TIME`. A Fabric jar with intermediary names (§7) | first phase that shows map markers |
+| `mic_rtsim_numismatics` | Numismatics 1.1.0 | `GlobalBankManager.BANK`, `BankAccount` by UUID; coins worth 1, 8, 16, 64, 512 and 4,096 spurs; no coin recipe | later (P9 mint rule) |
+| `mic_rtsim_aeronautics` | Sable 2.0.5 + Create Aeronautics 1.3.2 | the spawn recipe in §7; `SubLevelHoldingChunkMap` freezes unloaded ships; `SubLevelLoadingTicketType` | later (ships) |
+| `mic_rtsim_create` | Create 6.0.10 | `GlobalRailwayManager`, `RailwaySavedData` (`create_tracks`), `GlobalPackagePort.offlineBuffer`, `FactoryPanelBehaviour`, `LogisticsNetworkSavedData` (`create_logistics`), `TableClothBlockEntity`, `BlockStressValues` | later (industry) |
+| `mic_rtsim_destroy` | Destroy (MIC fork) | `PollutionHelper`, `PollutionEvents`: smog and radioactivity per chunk; greenhouse, ozone depletion and acid rain per level | later |
+| `mic_rtsim_deeptime` | Deep Time (not in the pack yet) | `WorldData`, `Rivers`, `DeepTimeClimate` (API_VERSION 4), `DeepTimeSites`; event log writer 2; Deep Time files read natively | with Deep Time |
+| `mic_rtsim_nuclear` | mic_nuclear, Create Nuclear 1.3.2-beta.3 | the kaiju trigger (P27); hooks UNVERIFIED | later |
+| `mic_rtsim_kaiju` (name P1) | the kaiju body mod (P8) | UNVERIFIED | later |
 
-- **The engine** knows nothing about Minecraft. It owns every simulated thing and runs on its own
-  threads.
-- **The bridge** is the only Java that runs on the server thread. It writes what happened this tick
-  (observations) and applies what the engine decided (commands), under a fixed per-tick quota.
-- **Content mods** have two halves:
-  - a Rust crate of rules compiled into the engine;
-  - a Java half that adapts the engine's commands to real entities and blocks (an IaF dragon, a Sable
-    ship, a Cobblemon NPC), plus datapack definitions.
-- **The engine owns no threads.** It runs as a plugin of the pack-wide native host (§1a).
+Later candidates that would also become plugins: TaCZ (`IGunOperator` on every `LivingEntity`), L2
+Hostility (`l2hostility:level`), Create Big Cannons, Create Radars (a mixin on `IRadar.getTracks`),
+CC: Tweaked (`PeripheralCapability`), Lootr.
 
----
+### 1.4 Body kinds, mapped by data
 
-## 1a. Fitting the pack-wide optimization effort
+- **A body kind is an abstract role:** merchant, pack animal, musician, dragon, raider, ship. Each kind
+  lists candidates in order: an entity type, the mod it needs, an NBT or data template, and its adapter.
+  The first installed candidate wins; the last is vanilla where vanilla has one.
+- **A kind with no installed candidate stays abstract.** It acts only through consequences (losses,
+  prices, news) and never appears (part of P15). Every candidate must look like a mob (D7).
+- **The adapter interface is spawn, capture and steer.** No `Entity` appears in the engine.
 
-Ben plans to have agents optimize the whole pack: merging mods, adding shared libraries, and
-rewriting mods and parts of Minecraft in Rust. Deep Time is already native, and the rtsim will be
-the first native mod designed with that effort in mind. If every native mod brings its own runtime,
-the pack ends up with islands that fight over the same cores. Six rules prevent that.
+| Kind | Phase 1 and 2 bodies (C11) | Fallback |
+|---|---|---|
+| human merchant | `minecraft:wandering_trader` | vanilla |
+| pack animal | `minecraft:trader_llama`, leashed to the trader | vanilla |
+| ribbit merchant | `ribbits:ribbit` with `RibbitData` profession merchant | none needed: without Ribbits, no ribbit villages generate |
+| ribbit musician | `ribbits:ribbit` with an instrument in its `RibbitData` | as above |
+| dragon | `iceandfire:fire_dragon`, `ice_dragon`, `lightning_dragon` | abstract (P15) |
+| raider (later) | P8 candidates | `minecraft:pillager` |
 
-### 1a.1 One native host for every native mod in the pack
+The file format is **Proposal P15 (Ben)**.
 
-**The problem.** A native mod that brings its own thread pool sizes it to the core count. On a 4-core
-PC, Deep Time's rayon pool, the rtsim's pool and a future native lighting or pathfinding rewrite
-would each start about 4 threads. Those threads would fight each other, the render thread, and the
-threads the pack already runs: C2ME's chunk workers and Distant Horizons' builders. Each native mod
-would also bring its own loader, its own CPU detection and its own profiler.
+## 2. The pack-wide native host `mic_native`
 
-**The fix.** The pack gets one host mod, `mic_native` (repo `mods/mic-native`). It owns:
+**The problem.** Native mods that each bring a pool sized to the core count fight each other, the
+render thread, C2ME and Distant Horizons, and each brings its own loader, CPU probe and profiler.
+
+**The fix.** One host mod, `mic_native` (repo `mods/mic-native`), hosts every native mod in the pack,
+including the optimization effort's rewrites (A6). Its licence is MPL-2.0 (A7).
 
 | Part | What it does |
 |---|---|
-| Loader | Finds, checks and loads every native library, with one `natives.json` scheme (Deep Time's schema 2). `cpuprobe` picks the CPU variant once for all of them. The host starts from a copy of Deep Time's `tools/natives/` pipeline (§8). |
-| Foreground pool | Normal OS priority. For native work that someone waits on:<br>• a game thread, e.g. a rewritten pathfinder or lighting engine called from the server tick;<br>• a player on a loading screen: Deep Time's world-creation bake, a dedicated server's first-start bake (no player can join until it ends), and the rtsim's history generation.<br>During play the governor caps it at cores − 2 (minimum 1). On a loading screen it may use every core. |
-| Background pool | The lowest *normal* OS priority: nice 19 on Linux, `THREAD_PRIORITY_LOWEST` on Windows, utility QoS on macOS. For work nobody waits on: the rtsim during play, prefetching, previews. Sized to cores − 2, minimum 1, so one thread on the potato profile. It is deliberately not idle-class (`SCHED_IDLE`): there, a browser or Discord would win too, and an idle thread holding a lock could stall a game thread for as long as no core is free (Deep Time session, 2026-10-19). |
-| Governor | CPU and memory accounting per plugin. Tells background plugins when they are over budget, so they stretch their cadence (§3.5). It replaces or feeds a plugin's own memory cap (Deep Time has one per session) and never runs alongside it. |
+| Loader | Finds, checks and loads every native library with one `natives.json` scheme (Deep Time's schema 2). `cpuprobe` picks the CPU variant once for all of them. |
+| Foreground pool | Normal OS priority, for anything a player waits on: a game thread calling a native rewrite, a loading screen. Deep Time's world-creation and first-start bakes run here (X1), and so does the rtsim's history generation. Sizing is a PLACEHOLDER (P24). |
+| Background pool | The lowest *normal* OS priority: nice 19 on Linux, `THREAD_PRIORITY_LOWEST` on Windows, utility QoS on macOS. For work nobody waits on: the rtsim during play, prefetch, previews. Not idle-class (`SCHED_IDLE`): there a browser or Discord would win too, and an idle thread holding a lock could stall a game thread while no core is free. Sizing is a PLACEHOLDER (P24). |
+| IO lane | Page writes, page reads, prefetch and the rtsim's saves. It never runs compute, so a slow disk never holds a compute thread. |
+| Governor | CPU and memory accounting per plugin. It tells background plugins when they are over budget, so they stretch (§4.6). It replaces or feeds a plugin's own memory cap, such as Deep Time's (X3), and never runs alongside it. |
 | Profiler | Named zones from every plugin. Tracy in dev builds, plus a ring buffer that `/micperf` reads in game. |
-| Service registry | Native plugins publish versioned C-ABI services by name and look up each other's. Native code then calls native code without going through Java. |
+| Service registry | Native plugins publish versioned C-ABI services by name and call each other without Java. |
 | GPU device (later) | One wgpu device per process, shared by plugins that compute on the GPU (Deep Time's climate path does today). |
 
 **Rules for every plugin:**
-- **No threads or pools of its own.** Each plugin submits its work to the host's two pools.
-- **Synchronous calls run on the caller's thread.** Some JNI calls are made directly from worldgen or
-  render-support threads, for example Deep Time's play-time terrain columns on C2ME's workers and its
-  far-terrain sections on Distant Horizons' threads. They stay on those threads and are never queued
-  into a pool, because chunk loading waits on them.
-- **Per-job context hooks.** The pools run enter and exit hooks registered by a plugin around each of
-  its jobs. That keeps per-session thread-locals working. Today Deep Time sets its compute mode, log
-  ring and allocator block cache with rayon's start and exit handlers.
-- **No priority inversion.**
-  - Foreground work never waits on background work.
-  - Background work never holds a lock that a game thread takes. The allocator uses per-thread
-    caches, background threads take no Java monitors, and only one writer appends to an event log at a
-    time.
-- **Plugins talk only through the C ABI.** Rust's own ABI is not stable between libraries built
-  separately. So each plugin is its own cdylib and links a small `mic-native-rt` crate that wraps the
-  host's function table.
-- **Each mod still works alone.** Without the host (Deep Time used outside MIC), `mic-native-rt` falls
-  back to a private pool with the same priorities.
+- **No threads or pools of its own.** It submits work to the host.
+- **Synchronous calls stay on the caller's thread.** Deep Time's terrain columns on C2ME's workers and
+  its Distant Horizons sections stay direct calls, because chunk loading waits on them (X1).
+- **Per-job enter and exit hooks** keep per-session thread-locals working (X3). Deep Time sets its
+  compute mode, log ring and allocator block cache this way today, through rayon's handlers.
+- **No priority inversion.** Foreground work never waits on background work, and background work never
+  holds a lock a game thread takes.
+- **Pool threads never call into Java** (§3.2).
+- **Snapshots, not locks.** A service that foreground code may call publishes an immutable snapshot (an
+  `Arc` swapped atomically). Readers take no lock.
 
-**Why separate libraries instead of one big one:** each mod keeps its own release cycle, licence and
-build. The cost is an indirect call at coarse boundaries, which is negligible at the rates in §3.
+**C ABI rules:**
+- **Each plugin is its own cdylib** linking a small `mic-native-rt` crate that wraps the host's function
+  table. Rust's own ABI is not stable between libraries built separately.
+- **Every export is wrapped in `catch_unwind`** and returns an error code; a panic never crosses.
+- **Memory is freed only by the library that allocated it;** every allocating export has a free export.
+- **`mic-native-rt` installs a counting allocator** in each plugin. It feeds the governor.
+- **No private-pool fallback.** A plugin needs the host; Deep Time may require `mic_native` (A8).
 
-**What this means on a 2-core potato.**
-- In singleplayer the render thread and the server thread already occupy both cores.
-- **When the sim thread runs:**
-  - Mostly when one of the game threads sleeps. The server thread sleeps between ticks whenever a tick
-    takes less than 50 ms. The render thread waits for the GPU or vsync.
-  - When there is no sleep, Linux still gives a nice-19 thread a small share of a contended core:
-    weight 15 against 1,024 for a normal thread, in the kernel's weight table.
-  - On Windows it runs only when no higher-priority thread is ready, apart from the scheduler's
-    anti-starvation boosts.
-- **The sim lives in that slack.** When there is none, it falls behind its schedule (§3.5) and never
-  takes a frame.
+**Deep Time and the move (A8, X1 to X3):**
+- After Deep Time's P1-19 gate closes and its PGO and allocator work lands, `NativeLoader`, `cpuprobe`
+  and `tools/natives` move into `mic_native`. No copy stays in Deep Time.
+- Deep Time's per-session thread-locals and its six small private sim-stage pools move onto the
+  per-job hooks. That is real work on Deep Time's side.
+- Deep Time's results are identical at any pool size (its tests check 1, 3 and 8 threads), so the host
+  may choose the size.
 
-### 1a.2 Native code can feed the sim directly
+### 2.1 What a 2-core potato really gives the sim
 
-- **Observations are Rust traits** in `rtsim-space` and `rtsim-knowledge` (§5.2). Today a single
-  implementation decodes the Java bridge's buffer.
-- **Rewrites can feed the engine natively.** When an optimization agent moves part of Minecraft or a
-  mod into Rust (chunk storage, entity tracking, Create's railway graph), it can publish a host service
-  that the engine reads directly. Nothing crosses into Java.
-- **It works the other way too.** The rtsim's coarse pathfinding and region index are host services
-  that other native code may use.
+- In singleplayer, the render thread and the server thread already occupy both cores.
+- **Normal-priority threads use any slack first:** C2ME's chunk workers, Distant Horizons' builders,
+  Sodium's meshing, the GC, the JIT compilers, and the host's own foreground pool. The background pool
+  gets what is left.
+- **With uncapped FPS, the render thread may never sleep.** The pack ships `enableVsync:true` and
+  `maxFps:120` in `options.txt`, but players change these.
+- **Linux** still gives a nice-19 thread a small share of a contended core: weight 15 against 1,024 for
+  a normal thread, in the kernel's weight table.
+- **Windows** runs a `THREAD_PRIORITY_LOWEST` thread only when nothing higher is ready. Its
+  anti-starvation boosts do exist, and briefly raise a starved thread.
+- **So on a busy 2-core machine the sim can get very little CPU.** It then falls behind (§4.6), and
+  `/micperf` shows the lag. The pack's minimum spec must leave some slack (risk R10).
 
-### 1a.3 Everything the rtsim touches in other mods is listed
+**The potato profile (A11)**, defined once at pack level and used by every perf gate:
+- the laptop pinned to 2 **physical** cores. `taskset` picks logical CPUs, and two SMT siblings share
+  one core, so the harness picks two CPUs on different cores;
+- C2ME and Distant Horizons on;
+- FPS capped and FPS uncapped, as two scenarios;
+- x86-64 baseline natives (no `x86-64-v3`);
+- the integrated server (client and server in one JVM);
+- plus runs on a Windows PC.
 
-Optimization agents will merge and rewrite the very mods the rtsim adapts to. Three things make that
-safe:
-- **A patch ledger.** Each target mod gets one adapter class that holds every mixin and every access to
-  that mod's internals. All of them are listed in `mods/mic-rtsim/PATCHES.md`, with the target mod,
-  the version range, the class and member, and the reason.
-  - Proposal: every MIC mod keeps one, and the optimization effort reads them all before touching a
-    mod.
-  - Two mods patching the same method at different mixin priorities is a trap we have already hit (the
-    mic_nuclear reviews).
-- **Contract tests.** Each adapter has GameTests that pin the behaviour it needs. Examples: a puppet is
-  never saved; a package delivered to an unloaded station reaches the offline buffer; a dragon accepts a
-  flight target. An agent rewriting Create runs them.
-- **Adapters target behaviour, not classes.**
-  - The puppet interface is spawn, capture and steer. No `Entity` appears in the engine.
-  - A body can therefore later become something cheaper, such as a client-only ambient animal with no
-    server AI, if the optimization effort builds one (§3.7).
+### 2.2 Native code can feed the sim directly
 
-### 1a.4 Few, cheap hooks into Minecraft
+Observations are Rust traits; today one implementation decodes the bridge's buffer. A native rewrite
+(chunk storage, entity tracking, Create's railway graph) can publish a host service the engine reads
+directly. The rtsim's coarse pathfinding and region index are host services in turn.
 
-- **One listener per hot event for the whole rtsim**, in the core bridge. Hot events are damage, block
-  break and place, and chunk load and unload.
-  - The listener rejects most events with a lookup in a primitive set before any module sees them.
-  - Modules subscribe inside the engine, not on the NeoForge bus.
-- **Mixins only where no event exists.** There are two so far: `Entity.shouldBeSaved` and
-  `IRadar.getTracks`.
-- **The split into mod ids costs almost nothing at runtime.** Each content mod's Java side is a handful
-  of adapters. If the optimization effort finds per-mod overhead that matters, bundling them is a build
-  change (jar-in-jar or one combined jar), not a code change.
+### 2.3 Everything the rtsim touches in other mods is listed (P7)
 
-### 1a.5 Shared crates, not copies
+- **A patch ledger.** Each target mod gets one adapter class holding every mixin and internal access.
+  `mods/mic-rtsim/PATCHES.md` lists them (mod, version range, class and member, reason), including the
+  puppet fixes (§6.1), taking a creature (§6.2), Surveyor's intermediary names (§7) and the villager
+  patches (§8.5). Two mods patching one method at different priorities is a trap already hit in the
+  mic_nuclear reviews.
+- **Contract tests.** Each adapter has GameTests that pin what it needs (a puppet is never saved, a
+  dragon accepts a flight target). An agent rewriting a mod runs them.
 
-Building blocks that the rtsim needs, and that any rewrite will also need, go in the host's shared
-workspace instead of in the rtsim:
-- generational arenas;
-- counter-based RNG;
-- the timing wheel;
-- the region-keyed spatial index;
-- the LZ4 + CRC32 page codec (from Deep Time's tile packs);
-- the bench harness.
+### 2.4 Few, cheap hooks into Minecraft
 
-Their licence is a question for Ben (§11).
+- **One listener per hot event for the whole rtsim**, in the core: damage, deaths, block break and
+  place, chunk load and unload, entity join. It rejects most events with a lookup in a primitive set
+  before any module sees them. Modules subscribe inside the engine, not on the NeoForge bus.
+- **Mixins only where no event exists.** Core: `Entity.shouldBeSaved`, `Entity.saveAsPassenger`, and
+  villager restock (§8.5). Ribbits plugin: `RibbitApplyBuffGoal`. Later: `IRadar.getTracks`.
+- **Separate mod ids cost almost nothing;** bundling them later is a build change (jar-in-jar).
 
-### 1a.6 One performance harness for the whole pack
+### 2.5 Shared crates and one harness
 
-- **The potato profile is defined once, at pack level** (choice 2), not separately per mod.
-- **One scenario runner measures the whole pack:**
-  - a fixed world and seed, and a scripted route;
-  - server tick time (MSPT) at p99;
-  - frame time at p99;
-  - GC pause count and total, from JFR;
-  - native zone times, from the host.
-  The candidate runner is mc-runtime-test, which runs the real client headlessly.
-- **The rtsim's perf gates (§3.1) are scenarios in that harness.** Each mod's server-thread cost is
-  tracked separately, and the rtsim's 1 ms is its share.
-- **Every optimization change is measured the same way.** A rewrite that speeds itself up by eating
-  another system's slack then shows up.
+- **Shared crates** (MPL-2.0, A7): generational arenas, counter RNG, the timing wheel, the region index,
+  the LZ4 + CRC32 page codec (from Deep Time's tile packs), the bench harness.
+- **One scenario runner for the whole pack:** fixed world, seed and route; MSPT and frame time at p99;
+  GC pauses from JFR; native zone times. The candidate is mc-runtime-test (real client, headless). The
+  rtsim's gates are scenarios in it, so a rewrite that eats another system's slack shows up.
 
----
+## 3. Core language: Rust (A4), and why
 
-## 2. Core language, judged only on late-stage performance
+A4 is decided. This section keeps the reasoning, corrected by the review, in case phase 0 numbers ever
+reopen it.
 
-### 2.1 What makes a modpack feel bad on a weak PC
+### 3.1 What makes a modpack feel bad on a weak PC
 
-In singleplayer the server and the client are one JVM process. They share one heap, one garbage
-collector and the same 2-4 cores. Raw throughput is not what players notice. These three things are:
+In singleplayer the server and client are one JVM sharing one heap, one GC and 2 to 4 cores. Players
+notice work on the server thread (TPS drops), GC pauses (they stop the render thread too), and threads
+that delay the game threads, by taking their core or by delaying safepoints.
 
-1. **Work on the server thread.** TPS drops and rubber-banding.
-2. **GC pauses.** A stop-the-world pause stops the render thread too, because it is the same process.
-   The more live objects and garbage the process has, the more often and the longer it pauses.
-3. **Background threads taking the render thread's core.** On 2-4 cores, a busy worker at normal
-   priority competes with rendering and with C2ME/chunk building.
+### 3.2 The comparison, corrected
 
-A simulation of a million things must cost (1) nothing beyond a fixed boundary, (2) nothing at all,
-and (3) only what the OS can spare. All three options run the simulation off the server thread, so
-they tie on (1). They differ on (2), (3) and on how much work each simulated thing costs.
+| Criterion | Java core | Rust core |
+|---|---|---|
+| Server-thread cost | boundary only | boundary only |
+| GC impact | Sim state lives on the shared heap. Sparse data (memories, relations, caches), every addon in ordinary Java, and every temporary object become traced graphs or garbage. GC frequency rises for the whole process. | Proportional to events applied, bounded by the quotas. The sim's own state never touches the heap. |
+| Heap pressure | Counts against `-Xmx`, which the pack already mostly fills. | Native memory counts against RAM, not `-Xmx`. |
+| OS thread priority | **Possible:** JNA 5.14.0 ships with Minecraft, so Java can call `setpriority` or `SetThreadPriority`. | Set by the host on every platform. |
+| Safepoints | **The real cost.** A Java thread at low priority that is preempted while running Java code delays every stop-the-world safepoint, so the render thread waits for it. | A native thread in native state does not hold up a safepoint. Hence the rule: pool threads never call into Java. |
+| Work per simulated thing | C2 auto-vectorizes simple loops. The Vector API is incubating through JDK 25 and needs a launch flag a mod cannot add. Java 21 has no value types (Valhalla's JEP 401 targets a JDK 28 preview). | Ahead-of-time LLVM, structs by value, arenas, SIMD picked per CPU at load (`cpuprobe`). |
+| Warm-up | Interpreted, then C1, then C2, while about 190 mods JIT on the same cores. | Full speed from the first call. |
+| Parallel safety | A race is a silent desync, found late. | Our own executor runs on the chosen storage (P4). Declared read and write access is checked when the schedule is built. The executor is the one unsafe module. Reductions run in fixed chunk order, so results do not depend on thread timing. |
+| Shared with Deep Time and rewrites | Outside the host's pools and governor. | Joins the host (§2). |
+| Visible in Spark | yes | no; `/micperf` and Tracy replace it |
+| Failure mode on a potato | Frame stutter that grows over a long save. | The sim falls behind its schedule (§4.6). |
 
-### 2.2 The options
+**Consequences of "pool threads never call into Java":**
+- On-demand climate reads go through the buffers (the bridge samples mic-climate on the server thread
+  and writes the values), or the engine reads Deep Time's files natively.
+- The engine never upcalls. Everything it needs from Minecraft arrives as an observation.
 
-- **A. Java core.** Data-oriented Java: primitive column arrays, no Minecraft imports, addon rules in
-  Java.
-- **B. Rust core.** A native engine owns all simulation state and every per-thing loop. Java is only
-  the Minecraft boundary.
-- **C. Java now, Rust kernels later.** Java core first, and proven hot kernels move to Rust behind the
-  same API.
+**Cadence, not language, decides the bulk cost.** A million things updated once per in-game day is
+1,000,000 / 24,000 ticks, about 42 rows per tick. The gap is GC, safepoints and warm-up, which Java
+cannot fix by working harder. Phase 0 measures the JNI hand-over and the storage bench (P4) on the
+potato profile; a contradicting number reopens this section, and Ben is told.
 
-### 2.3 Criterion by criterion
+## 4. How it stays cheap
 
-| Criterion | A. Java core | B. Rust core | C. Java + Rust kernels |
-|---|---|---|---|
-| Server-thread cost | boundary only | boundary only | boundary only |
-| GC impact on frame pacing | **Sim state lives on the shared heap.** Primitive arrays are cheap for the GC (no references to trace; big ones are never copied). Sparse data (memories, relations, path caches, inventories), every addon written in ordinary Java, and every temporary object either become traced object graphs or garbage. The sim raises GC frequency for the whole process, client included. It stays near zero only if every line, addons included, stays allocation-free forever. | **None.** No sim objects on the heap. The GC sees two reused boundary buffers. | Same as A for everything not yet moved. Data shared with a kernel must live off-heap from day one, or be copied every step. |
-| Heap pressure | Everything counts against `-Xmx`, which on an 8 GB PC the pack already mostly fills. A fuller heap means more frequent GC. | Native memory counts against RAM but not against `-Xmx`, so it does not make GC more frequent. Rows are exactly the size of their fields. | Mixed. |
-| Thread priority (render thread first) | `Thread.setPriority` maps to OS priority on Windows. HotSpot ignores it on Linux by default. | The lowest normal OS priority on every platform: nice 19 on Linux, `THREAD_PRIORITY_LOWEST` on Windows, utility QoS on macOS. The OS gives the render thread its core first. | As A. |
-| Work per simulated thing | C2 JIT targets the running CPU and auto-vectorizes simple loops. Explicit SIMD (Vector API) is incubating through JDK 25 and needs `--add-modules jdk.incubator.vector` at JVM launch, which a mod cannot add. Java 21 has no value types (Valhalla's JEP 401 targets a JDK 28 preview), so every record is either an object (header plus pointer chase) or split by hand into parallel arrays. Bounds checks are hoisted only in simple loops. | Ahead-of-time LLVM, structs and tagged enums by value, arenas. SIMD picked per CPU at load: Deep Time already ships baseline and `x86-64-v3` builds and picks one with `deeptime_cpuprobe`. | As A until moved, then as B. |
-| Warm-up | Interpreted, then C1, then C2. The first minutes after world load, and the history fast-forward at world creation, run partly on cold code, while 190 mods JIT on the same cores. | Full speed from the first call. | As A. |
-| Boundary cost | none | One or two JNI calls per tick handing over shared buffers. The cost grows with the number of *events* (spawns, deaths, trades), not with the number of simulated things. Per-entity JNI calls are forbidden by design. | Every kernel call crosses JNI with data. If state is on the Java heap it is copied each step. This is where C loses most. |
-| Extension cost | An addon's Java rule runs inside the hot loop at JIT speed, and brings its own garbage and its own slow paths into it. | Addons extend through data (definitions compiled into engine tables), Rust rule crates compiled into the engine, and Java hooks on events (low frequency). Nobody can put per-entity Java into the hot loop, so the worst an addon can do is react slowly to an event. | As A. |
-| Parallel safety at scale | Any race is a silent desync, found late. To be safe, fewer systems run in parallel. | Ownership rules make data races between parallel systems a compile error, so more of the sim can run in parallel safely. | As A. |
-| Shared with Deep Time and future Rust rewrites | JVM sim threads sit outside the native host's pools and governor (§1a), so they compete with Deep Time and with every native rewrite instead of being scheduled with them. Native rewrites can reach the sim only through JNI. | Joins the pack-wide native host (§1a): one loader, one pair of pools and one profiler, shared with Deep Time and every native rewrite. On 2-4 cores that stops pools fighting. Native rewrites of Minecraft or mods can feed the engine without crossing into Java. Deep Time can even become an engine module, which Ben said he is open to. | As A, plus copying. |
-| Visible in Spark | yes | No. The engine needs its own profiler (`/rtsim perf`, Tracy in dev builds). | partly |
-| Failure mode on a potato | **Frame stutter.** GC pauses grow as memories, histories and caches grow over a long save. It is worst after hours of play, which is exactly when the sim is biggest. | **The sim falls behind its schedule.** Far things update less often, but frame pacing and TPS are untouched. | Both, plus copying. |
+### 4.1 Budgets
 
-### 2.4 What the numbers say, and what still has to be measured
+These are PLACEHOLDER targets until Ben sets them from phase 0 data (P24).
 
-- **Cadence, not language, decides most of the cost** (§3.3). A million things updated once per
-  in-game day is 1,000,000 / 24,000 ticks ≈ 42 rows per tick. Either language does that for free. So
-  the gap between A and B is not about the bulk tiers.
-- **The gap is the three potato threats.** GC, priority and warm-up all favour B, and none of them can
-  be fixed in A by working harder.
-- **Evidence on Java's ECS speed** (vendor benchmark, M1 Pro, JDK 17, one thread): Dominion reads one
-  component over 10 M entities at about 0.7 ms per million. That is fine, but it is a best case on a
-  fast core with no GC pressure from anything else.
-- **Phase 0 measures, on the potato profile:**
-  - the JNI hand-over;
-  - the same herd kernel in both languages;
-  - GC pause counts and lengths of a Java prototype after a long simulated run.
-  If a measurement contradicts this section, the section changes.
-
-### 2.5 Why C is the worst of the three
-
-The expensive part of "move to Rust later" is moving the *state*, not the kernel. A kernel only wins
-if the data already lives where it runs. C therefore either copies across JNI every step or keeps
-state off-heap from day one. Keeping state off-heap is option B with the logic written in Java.
-
-### 2.6 Recommendation
-
-**B, a Rust core.** My first recommendation (Java) weighed addon ease and writing effort, which Ben has
-now ruled out. On pure late-stage smoothness, B wins every criterion that a player on a weak PC can
-feel. It loses only on Spark visibility, which our own profiler replaces.
-
-Ben's plan to move more of the pack into Rust adds one more reason. A native sim shares one host, one
-pair of pools and one profiler with the rest of the pack's native code, and it can exchange data with
-that code directly (§1a). A Java sim would be the one large background system outside that
-scheduling.
-
-### 2.7 What Java would have changed (kept in case phase 0 reopens the choice)
-
-These parts of the plan would change:
-- The crates become Gradle modules with the same boundaries.
-- Every hot table becomes primitive arrays or a fastutil map. Minecraft already ships fastutil.
-- An allocation budget of zero bytes per tick in steady state, checked in CI with JFR allocation
-  profiling, becomes a hard gate.
-- Rules may be Java.
-
-These parts stay the same: the module split, the tiers, the puppet protocol, the bridge, and every
-content design in §7.
-
----
-
-## 3. How it stays cheap: the performance architecture
-
-The goal is that a player on a weak PC cannot tell the sim is running, even with a million simulated
-animals and decades of history.
-
-### 3.1 Budgets (targets we test against, on the potato profile)
-
-| Budget | Target | Where it comes from |
+| Budget | Placeholder | Basis |
 |---|---|---|
 | Server-thread cost of the bridge | ≤ 1 ms per tick at p99 | 2% of the 50 ms tick |
-| Sim objects on the Java heap | none beyond two fixed boundary buffers | §2.1 |
-| Sim threads | none of its own; it runs on the host's background pool at lowest OS priority: 1 thread on the potato profile, cores − 2 (minimum 1) elsewhere | §1a.1, §2.1 |
-| Spawns and despawns per tick | a fixed quota (config); the rest wait in a queue | spreads materialization bursts |
-| Blocks placed per tick (construction, ruins, damage) | a fixed quota (config) | as above |
-| Materialized entities per player | a cap per module (config) | client frame time, server entity ticking |
-| Save hitch | one copy of dirty pages at a tick boundary; compression and IO on a writer thread | §3.6 |
+| Sim objects on the Java heap | none beyond the four buffers | §3.2 |
+| Sim threads | none of its own; the host's background pool | §2 |
+| Spawns and despawns per tick | a fixed quota (TUNABLE); the rest queue | spreads bursts |
+| Blocks placed per tick (growth, later damage) | a fixed quota (TUNABLE) | as above |
+| Puppets per player | a cap per body kind (TUNABLE) | client frame time, entity ticking |
+| Save hitch | a signal only; copy and IO on the host's IO lane | §4.9 |
 
-### 3.2 Five fidelity tiers
+### 4.2 Relevance bands and the detail ladder
 
-Every simulated thing lives in exactly one tier at a time. The tier decides how much detail exists and
-how often it is touched.
+SCALE.md §2 defines the detail ladder: individual, group, field, flow, aggregate, strategic. On top of
+it, every individual sits in one relevance band, which decides scheduling order:
 
-| Tier | Who is in it | How it moves | When it decides | Cost grows with |
-|---|---|---|---|---|
-| **E: Embodied** | agents with a puppet in loaded, entity-ticking chunks | Minecraft moves the puppet; the engine shadows it | Minecraft AI, steered by engine intent (a goal: go here, attack that) | puppets × change events |
-| **N: Near** | agents inside a player's interest radius but not in loaded chunks, or about to enter | path legs at block resolution | at decision points | legs |
-| **F: Far** | every other individual agent: caravans, ships, dragons, war bands, herds as groups, notable people | legs on coarse graphs (roads, sea lanes, flight corridors, migration routes) with closed-form position | at decision points | legs and events |
-| **A: Aggregate** | populations: herd members, settlement households, garrisons, factory processes, forage | counts and rates on grid cells, sites and processes; piecewise-linear between events | on a cadence (hourly, daily) | cells ÷ cadence |
-| **S: Strategic** | factions, markets, nations, planets | n/a | monthly or seasonally | factions |
+| Band | Who | How it moves | Ladder level |
+|---|---|---|---|
+| **E: Embodied** | agents with a ticking puppet near a player | Minecraft moves the puppet; the engine shadows it | individual |
+| **N: Near** | agents in a player's interest area but not embodied, or about to be | legs at block resolution | individual |
+| **F: Far** | notable individuals elsewhere: a robbed caravan, a dragon, a ship | scheduled legs on coarse graphs, closed-form position | individual or group |
+| **Abstract** | unobserved traffic and populations | flows on edges (A13), lazy regions (A15) | flow, field, aggregate, strategic |
 
-**Moving between tiers:**
-- **Promotion** (A to F to N to E) happens when relevance rises: a player approaches, an event
-  involves the thing, or it becomes notable.
-- **Demotion** happens when relevance falls, after a delay so that edge-walking does not thrash.
-- **Quantities are conserved across moves.** Demoting folds an individual back into its aggregate
-  (count, mean hunger, wounds). Promoting draws an individual consistent with the aggregate. A herd
-  of 20,000 that the player sees part of is still 20,000 after they leave, minus what they killed.
-- **Entry and exit rates must match** (Sunshine-Hill and Badler, §12). Otherwise a player finds a full
-  area on arrival that then empties, or a suspiciously constant headcount.
+- **Promotion** happens when relevance rises: a player approaches, an event involves the thing, or it
+  becomes notable. **Demotion** waits a little, so edge-walking does not thrash.
+- **Quantities are conserved** across moves (`fold` and `sample`, SCALE.md §2).
+- **Entry and exit rates must match** (Sunshine-Hill and Badler 2010). Otherwise a road looks full on
+  arrival and then empties.
 
-### 3.3 Time: events and closed forms, not ticks
+### 4.3 Time: events, closed forms and scheduled encounters
 
-- **Travelling things are not ticked.** A caravan on a road leg has a start time, a path and a speed.
-  Its position at any time is a formula. The only cost is the **event** at the end of the leg
-  (arrival), plus any encounter scheduled on the way.
-- **Encounters are scheduled, not searched for.** When an agent starts a leg, the engine looks up the
-  other agents booked on the same graph edges or cells in the same time window. It schedules a
-  meeting event at the computed time. That replaces an all-pairs check per tick (the line-of-sight
-  trap that killed Dwarf Fortress frame rates) with a lookup per leg start.
-- **Periodic work is staggered.** A system with cadence C touches each row once every C ticks, chosen
-  by a hash of the row id. Each tick does 1/C of the work and nothing ever spikes. Veloren
-  (`(seed+tick)%10`), MCA and Dwarf Fortress all do this.
-- **Logic is independent of the timestep.** Chances are hazard rates, `1-(1-p)^dt`, so a far agent
-  stepped once an hour gets the same odds as a near one stepped every tick. Rates integrate in closed
-  form between events. This is the Veloren `ctx.chance` idiom, and Unloaded Activity's catch-up.
-- **Time jumps are normal.** `serversleep` skipping the night is just a large dt, handled the same way.
-- **Timed events** (arrival, a birth, a harvest, a process running out of input) sit on a hierarchical
-  timing wheel: constant time to schedule and to pop.
+- **Travelling things are not ticked.** A leg has a start time, a path and a speed, so position is a
+  formula. The cost is the event at the end of the leg.
+- **Regions nobody reads are lazy** (A15, SCALE.md §4). They catch up in closed form when read or at
+  breakpoints.
+- **Encounters are scheduled, not searched for** (A15):
+  - Every leg is rasterized into **one shared region-and-time index**, widened by the detection radius
+    of whatever travels it. Dragons, caravans and player interest areas all use the same index.
+  - A meeting is booked as an event stamped with **both legs' generations.** When it fires, a stale
+    generation on either side cancels it.
+  - **When a plan changes, its bookings are cancelled in cascade:** the leg's own bookings, then the
+    meetings that depended on them.
+- **Periodic work is staggered** by a hash of the row id, so nothing spikes. Veloren thinks for unloaded
+  NPCs every 10th tick, staggered by seed (`npc_ai/mod.rs:93-97`).
+- **Logic is independent of the timestep.** Chances are hazard rates, `1 - (1 - p)^dt`. Veloren converts
+  per-second chances for large dt the same way (`ai/mod.rs:89-110`).
+- **Timed events** sit on a hierarchical timing wheel: constant time to schedule and to pop.
 
-### 3.4 Lazy individuals: the sheep's hunger
+### 4.4 Lazy individuals and derived identity
 
-Ben's example, how hungry one sheep is, shows the rule:
+- **A group row holds counts per cohort** and each cohort's mean and spread. Members are latent: no row.
+- **A member is derived when it must exist:** identity and looks from `hash(group seed, member index)`
+  plus the cohort statistics. Walk away and back, and the same animal or trader comes back.
+- **Deaths are handled so identity stays honest:**
+  - The group keeps a **monotonic next index** for births, so a new member never reuses an old identity.
+  - It keeps a **small dead-index set**, only for members a player has seen.
+  - **Cohort deaths are drawn from unseen indices.** A member you saw never quietly dies off-screen and
+    comes back.
+- **A member becomes notable** and gets its own row only when something makes it matter: a player names,
+  tames, breeds, robs or hurts it. Promotion runs under a budget; demotion is by importance.
 
-- A herd row holds counts per age cohort and the cohort's mean and spread of body condition. Members
-  are **latent**: they have no row at all.
-- When a member must exist (it is about to be materialized near a player), it is **derived**. Its
-  identity, colour and hunger come from `hash(herd seed, member index)` plus the cohort statistics. If
-  the player walks away and back, the same sheep with the same markings comes back.
-- A member becomes **notable** and gets its own row only when something makes it matter: a player
-  names it, tames it, breeds it or hurts it. Every other change folds back into the cohort.
-- People work the same way. A settlement's households are cohorts. Only notable people (merchants,
-  leaders, anyone a player has dealt with, historical figures) are rows. Unimportant rows are culled
-  on a cadence, the way Dwarf Fortress culls unimportant historical figures and RimWorld collects
-  unreferenced world pawns.
-- **The question "how hungry is that sheep" costs nothing until someone looks.**
-
-### 3.5 Threads and the tick boundary
+### 4.5 Threads and the tick boundary
 
 ```
- tick t   server thread: [ Minecraft tick ......... ][ bridge: apply cmds(<t), write obs(t), signal ]
-          sim threads:                                                     [ step to t: ingest obs(t),
-                                                                             run due systems + events,
-                                                                             write cmds ]
+ tick t   server thread: [ Minecraft tick ......... ][ bridge: apply cmds(<t), write obs(t), submit ]
+          host background pool:                                          [ step to t: E and N first,
+                                                                           then due events, write cmds ]
  tick t+1 server thread: [ Minecraft tick ......... ][ bridge: apply cmds(t) ... ]
 ```
 
-- **Two shared buffers per direction, reused forever.** They are fixed binary records with no format
-  version before release. The engine allocates them; Java sees them as direct `ByteBuffer`s.
-- **Hand-over:** sequence numbers are written with release and read with acquire ordering. There is
-  one JNI call per tick to wake the sim thread.
-- **The bridge never waits.** If the sim has not finished, the bridge applies nothing new that tick.
-  Commands are at least one tick late, which is invisible for everything the sim decides (a raid, a
-  spawn, a price).
-- **Where immediacy matters, Java answers from cached state and reports afterwards.** Examples: a
-  puppet's dialogue line, or a shop price shown in a tooltip.
-- **Falling behind degrades far fidelity only.** The engine has a CPU budget per wall-clock second. When
-  it is over budget, it stretches the cadence of S, A and F work, lowest relevance first. Closed forms
-  keep stretched work exact, so nothing drifts; it just happens later. E and N work is never stretched.
-- **Systems run in parallel by declared data access** (read and write sets), in fixed order where
-  order matters. They run on the host's background pool (§1a.1); `bevy_ecs`'s own executor is not
-  used. This is the CK3 and DSP pattern: parallel phases that do not depend on order, then a serial
-  apply.
-- **The governor's over-budget signal** comes from the host, so the sim also backs off when Deep Time
-  or another background plugin needs the pool.
+- **Four buffers in all, two per direction,** reused forever. While Java writes one observation buffer,
+  the engine reads the other; the same holds for commands. The engine allocates them; Java sees them as
+  direct `ByteBuffer`s. Records are fixed binary layouts with no format version before release.
+- **Sizing.** Each buffer is sized from the per-player puppet caps and the per-tick quotas, so a normal
+  tick always fits.
+- **Merging.** Records are merged per agent within a tick (the latest state wins), except deaths, which
+  are always kept.
+- **Overflow.** A tick that still does not fit spills into an engine-allocated overflow ring. Nothing is
+  dropped.
+- **Hand-over.** Sequence numbers are read and written through
+  `MethodHandles.byteBufferViewVarHandle`, with `getAcquire` and `setRelease` on aligned offsets. One
+  JNI call per tick submits the step job.
+- **The bridge never waits.** If the step has not finished, the bridge applies nothing new that tick.
+  Commands are at least one tick late.
+- **Where immediacy matters, Java answers from cached state and reports afterwards.** A trade offer's
+  price is computed on the server thread from the market snapshot the engine last sent (§8.5).
 
-### 3.6 Memory and saves
+### 4.6 Falling behind
 
-- **Layout:** columns in arenas, with generational ids (index plus generation) everywhere. Any id may
-  be dead, so every lookup checks (the Veloren rule).
-- **What a row costs.** These are layout budgets we design to, worked as arithmetic:
+- **The governor's budget** is per wall-clock second. When the sim is over it, or when Deep Time or
+  another background plugin needs the pool, the engine stretches abstract work, lowest relevance first.
+- **Each step runs E and N work first,** so they are the last to fall behind. Under starvation they are
+  late too. Puppets then hold their last intent (keep walking to the same waypoint) until new commands
+  arrive.
+- **Stretched work stays exact where it is closed-form.** It just happens later. Decisions that depend
+  on when they ran can differ (§4.7).
 
-| Thing | Row budget | Example count | Memory |
+### 4.7 Determinism
+
+- **RNG is counter-based,** keyed by (world seed, system, entity, slot). Random processes commit only at
+  fixed slot boundaries (SCALE.md §4).
+- **Parallel steps are bulk-synchronous.** Cross-region effects are messages applied next step in a
+  fixed order. Results are identical at any thread count.
+- **The governor's stretch decisions depend on wall-clock load.** So the flight recorder logs each
+  step's stretch decisions as inputs, beside the observations. A replay feeds them back.
+- **What stays exact without the log:** independent closed-form processes. **What can differ:** a
+  decision that ran late under load, such as a caravan departing one step later.
+- **The determinism gate:** after N sim days, replaying the same observations and stretch log with 1
+  worker and with 8 workers gives the same state hash.
+
+### 4.8 Memory
+
+Row layouts follow SCALE.md §9. Budgets below are layout budgets, with arithmetic.
+
+| Thing | Row | Example count | Memory |
 |---|---|---|---|
-| Herd (group agent) | 64 B | 10,000 herds | 640 KB |
-| Latent herd member | 0 B | any | 0 |
-| Notable person, with 16 memory slots of 8 B | 96 B + 128 B | 100,000 | 22.4 MB |
-| Report (an event someone knows about) | 32 B | 1,000,000 | 32 MB |
-| Forage cell, 64-block cells, Deep Time 16k planet (13,312 × 6,656 blocks → 208 × 104) | 8 B | 21,632 | 173 KB |
-| Same at chunk resolution (832 × 416) | 8 B | 346,112 | 2.8 MB |
+| Report | 32 B | 1,000,000 | 32 MB |
+| Sentiment entry | 8 B (6-byte handle, i8, 1 spare) | | |
+| Memory slot | 8 B (6-byte handle, u8 salience, 1 spare) | | |
+| Notable person | 96 B + 16 memory slots × 8 B + 16 sentiment entries × 8 B = 352 B | 100,000 | 35.2 MB |
+| Herd (group row) | 64 B | 10,000 | 640 KB |
+| Latent member | 0 B | any | 0 |
+| Market | about 1 KB (ESTIMATE, economy research) | | |
+| Active edge-good | about 100 B (ESTIMATE, economy research) | | |
+| Forage cell, 64 blocks, Deep Time 16k planet (13,312 × 6,656 blocks → 208 × 104) | 8 B | 21,632 | 173 KB |
 
-- **Every memory structure has a cap and an eviction rule.** Examples: reports per person, sentiments
-  per person and per faction (Veloren caps these at 128 and 1,024), historical figures, and path
-  caches. Unbounded history is the second trap in §12.
-- **Saves** go to `<world>/rtsim/`:
-  - A manifest is written last, the same crash-safe order Deep Time uses.
-  - Global tables (factions, settlements, notables, relations, reports) are separate from per-region
-    pages (fields, local agents).
-  - Each page is LZ4-compressed with a CRC32. That codec already exists in Deep Time's tile packs, so
-    it is a shared-library candidate.
-- **Save sequence:** at Minecraft's save event the engine copies only the dirty pages at a tick
-  boundary (a memcpy), and a writer thread compresses and writes them. Veloren clones all of its Data
-  on the tick thread every 60 s; that is the thing to avoid.
-- **Reboot rules:**
-  - Only state and small deltas persist. Names, looks and latent members derive from seeds.
-  - AI plans restart on reboot, as Veloren's brains do.
-  - Before release, a format change is just a version bump that wipes the save. There is no migration
-    (standing rule for unreleased MIC mods).
+- **Every table has a cap** and an eviction rule by importance: player involvement, then recency, then
+  magnitude (SCALE.md §6). Caps are sized from the memory budget (A16).
+- **Avoid Veloren's inverted cleanup:** its cap drains a max-heap of absolute values, so it deletes the
+  strongest sentiments first (`sentiment.rs:78-96`).
 
-### 3.7 Client cost
+### 4.9 Saves and the journal (A9)
 
-- **Clients only ever see puppets** (vanilla entity sync) and **map landmarks**. No simulation state
-  is streamed to clients.
-- **Puppets are capped per player, per module.** A herd of 20,000 near a player shows as a density of
-  animals in loaded chunks under the cap, with the rest just over the hill. That matches how Assassin's
-  Creed Unity shows 10,000-person crowds with 40 full AIs.
-- **Later, a potato-friendly option:** draw far herds, armies and fleets as Distant Horizons custom
-  render groups (`IDhApiCustomRenderObjectFactory`). These are boxes in the LOD view, not entities.
-  Whether this looks good is unverified (phase 7+).
-- **Later, if the optimization effort builds one:** a client-only ambient body. These would be
-  animals drawn and animated on the client from a compact packet, with no server entity, AI or
-  collision. Puppet adapters are not tied to `Entity` (§1a.3), so herds could switch to it without any
-  engine change.
+**Engine pages:**
+- Pages go to `<world>/rtsim/`. A manifest is written last. Global tables are separate from region
+  pages. Each page is LZ4 with a CRC32, using the shared codec. Saves are incremental per page (SCALE.md
+  §8).
+- At Minecraft's save event, the engine snapshots dirty pages at a step boundary (copy on write). The
+  host's IO lane compresses and writes them. Veloren clones its whole `Data` on the tick thread every
+  60 s (`tick.rs:540-547`); that is what we avoid.
 
-### 3.8 Measuring it
+**The journal keeps the sim and Minecraft consistent:**
+- The bridge keeps a SavedData named `mic_rtsim:journal` inside Minecraft's level save. (On disk the
+  file name needs no colon, which Windows forbids, for example `data/mic_rtsim_journal.dat`.)
+- It holds the **last applied command sequence** and **every observation the engine has not yet
+  acknowledged.**
+- **Engine pages record the observation sequence they include.** On load, the engine replays the
+  journal past that point.
+- **Every cross-store transfer carries an operation id:** loot dropped from a caravan, coins, packages,
+  vault deltas, trades. A replay of the same operation is a no-op.
+- **The server thread never waits.** Appending is O(1) in memory. Vanilla writes the SavedData at its
+  own save. The engine acknowledges an observation once a page that includes it is on disk, and the
+  bridge trims the journal up to that point.
+- **What to do when a crash leaves the engine's pages ahead of the world save** is **Proposal P29
+  (Ben)**.
 
-- **The potato profile** (choice 2) is the reference for every perf gate. It is defined at pack level
-  and shared with the optimization effort's harness (§1a.6). `/rtsim perf` is the rtsim's page of
-  `/micperf`.
-- **The headless CLI** (`rtsim-cli`):
-  - `run` fast-forwards a world;
-  - `bench` runs fixed scenarios (a million latent sheep, 10,000 herds, 100,000 notables) and reports
-    µs per system per sim day;
-  - `history` generates a world's history;
-  - `replay` re-runs a recorded session.
-- **Flight recorder:** the bridge can log every observation buffer to a file. `rtsim-cli replay`
-  re-runs a real play session deterministically, so perf and logic bugs found in game reproduce
-  outside it.
-- **Determinism gate:** after N sim days, the state hash with 1 worker must equal the hash with
-  8 workers. RNG is counter-based and keyed by (world seed, system, entity, tick), so results never
-  depend on thread timing.
-- **Per-rule cost is measured continuously** (`/rtsim perf`, CI bench deltas). In CK3, one scripted
-  check ran 850,000 times a month before anyone noticed.
+**Reboots:** AI plans restart, as Veloren's brains do. Leg schedules, cargo, ship clocks and route
+assignments are saved state; Veloren resets its airship timetable on every boot (`migrate.rs:121-187`).
+Before release, a format change wipes the save, with no migration (standing rule for unreleased MIC
+mods).
 
----
+### 4.10 Client cost
 
-## 4. The engine
+- **Clients only see puppets** (vanilla entity sync) and, when a phase uses them, map landmarks. No sim
+  state is streamed. Puppets are capped per player and per body kind.
+- **Later:** a client-only ambient body, if the optimization effort builds one (adapters are not tied
+  to `Entity`); far herds and fleets as Distant Horizons render groups
+  (`IDhApiCustomRenderObjectFactory`), looks UNVERIFIED.
 
-### 4.1 Crates (a Cargo workspace, mirroring Deep Time's layout)
+### 4.11 Measuring it
+
+- `/rtsim perf` is the rtsim's page of `/micperf`. Per-rule cost is tracked there and in CI bench deltas.
+- `rtsim-cli`: `run` fast-forwards, `bench scale` is SCALE.md §10's bench, `replay` re-runs a recording,
+  `inspect` describes one thing.
+- **The flight recorder** logs observations and stretch decisions (§4.7), so game bugs reproduce outside.
+
+## 5. The engine
+
+### 5.1 Crates
 
 | Crate | Role |
 |---|---|
-| `rtsim-kernel` | sim clock, cadence scheduler, timing wheel, storage facade (`bevy_ecs` for agents), arenas, saves, counter RNG, profiler. No Minecraft, no JNI. |
-| `rtsim-space` | address space and spatial indexes, world-model provider trait (Deep Time reader, sampled vanilla), coarse graphs, hierarchical pathfinding |
-| `rtsim-knowledge` | reports, witnesses, gossip, sentiment, settlement noticeboards |
-| `rtsim-ecology`, `rtsim-civ`, `rtsim-trade`, `rtsim-conflict`, `rtsim-dragons`, `rtsim-naval`, `rtsim-industry`, `rtsim-cosmos` | content rules; each one is a module (§4.4) |
-| `rtsim-jni` | the cdylib, loaded by the `mic_native` host as a plugin; the only crate that uses `jni` (Deep Time pins `jni =0.22.4`); links `mic-native-rt` for pools, profiler and services |
+| `rtsim-kernel` | clock, timing wheel, lazy regions, storage facade (P4), pages, journal replay, counter RNG, profiler zones. No Minecraft, no JNI. |
+| `rtsim-space` | frames, spatial indexes, world-model provider trait (sampled vanilla, Deep Time reader), coarse graphs, hierarchical paths |
+| `rtsim-knowledge`, `rtsim-settle`, `rtsim-trade`, `rtsim-travel`, `rtsim-ecology`, `rtsim-conflict`, `rtsim-ships`, `rtsim-industry`, `rtsim-cosmos` | the generic modules (§1.2) |
+| `rtsim-jni` | the cdylib loaded by `mic_native`; the only crate that uses `jni`; links `mic-native-rt` |
 | `rtsim-cli` | run, bench, history, replay, inspect |
-| `rtsim-viewer` | HTML maps of histories, herds and trade, in the same style as Deep Time's viewer |
+| `rtsim-viewer` | HTML maps of markets, flows and histories, in the style of Deep Time's viewer |
 
-The Java side is a Gradle multi-project:
-- `neoforge/core` builds `mic_rtsim`.
-- `neoforge/<module>` builds `mic_rtsim_<module>`.
+- The Java side is a Gradle multi-project: `neoforge/core` builds `mic_rtsim`, and `neoforge/<mod>`
+  builds `mic_rtsim_<mod>` (names P1). It lives in the private repo
+  `MinecraftIndustrialComplex/mic-rtsim` (A12), one monorepo of Gradle subprojects (A1).
+- Generic building blocks come from the host's shared crates (§2.5).
 
-The generic building blocks (arenas, counter RNG, timing wheel, region index, page codec, bench
-harness) come from the host's shared workspace (§1a.5), not from these crates.
+### 5.2 Address space, built for planets from day one
 
-### 4.2 Address space (built for planets from day one)
+- **Frames:** universe → star system → body → dimension (one Minecraft `Level`) → province → region
+  (512 × 512 blocks, as Minecraft's region files) → chunk → block. Positions are (frame id, local
+  coordinates). How many regions make a province is **Proposal P25 (Ben)**.
+- **Bodies carry orbital elements.** Travel times between bodies come from orbital mechanics.
+- **The strategic tier is multi-body even while only the overworld exists.** Retrofitting it later is
+  the classic failure.
 
-- **Frames:** universe → star system → body (planet, moon, station) → dimension (one Minecraft
-  `Level`) → region (512 × 512 blocks, the same as a Minecraft region file) → chunk → block.
-- **Positions** are (frame id, local coordinates).
-- **Interest and paging both work per region.** That matches Minecraft's own loading unit.
-- **Bodies carry orbital elements.** Travel times between bodies come from orbital mechanics, not
-  tables (§7.8).
-- **Retrofitting this later is the classic failure,** so the strategic tier is multi-body even while
-  only the overworld exists.
+### 5.3 Ids that Minecraft sees
 
-### 4.3 Ids that Minecraft sees
+- Inside the engine, handles are a 32-bit index plus a 16-bit generation (SCALE.md §9). 64-bit ids exist
+  only at the boundary.
+- Anything that needs a UUID derives a stable one from (world seed, engine id), for example a later
+  Numismatics `BankAccount`.
 
-- Engine ids are 64-bit (index plus generation).
-- Anything that needs a UUID derives a stable UUID from (world seed, engine id): Numismatics
-  `BankAccount`, the table cloth `owner`, and Cobblemon NPCs.
+### 5.4 The module API
 
-### 4.4 The module API (how content plugs in)
+Each generic module registers its tables, its systems (each with read and write sets), its event
+handlers, its **data schemas** (datapack JSON compiled into engine tables), and the **body kinds** it
+needs. Veloren's rules bind handlers to typed events (`Rule::start`), and the handlers run
+synchronously when an event is emitted (`lib.rs:305`). Ours queue events and declare access, so the
+scheduler can run modules in parallel.
 
-Each module registers:
-- components and tables;
-- systems, each with a cadence and its read and write sets;
-- event handlers;
-- **definition schemas**: what its datapack JSON looks like, compiled into engine tables;
-- **body kinds**: which puppet adapters the Java side must provide.
+**Ways to extend, most common first:** datapack data (goods, cultures, body kinds, species, ship
+classes); behaviour as data (utility curves and action plans compiled into flat tables, no script
+interpreter in the hot loop); Rust generic modules, dormant until data or a plugin uses them; and Java
+hooks on batched, low-frequency NeoForge events (caravan robbed, village grew, dragon killed). KubeJS
+can listen to NeoForge events natively (UNVERIFIED for KubeJS 2101), so no KubeJS plugin is needed.
 
-This is Veloren's `Rule` binding typed events, with the host deciding what data each event may
-touch. Ours adds declared access, so the scheduler can run modules in parallel.
+### 5.5 Agent AI
 
-**The four ways to extend, from most to least common:**
-1. **Datapack definitions.** Species, cultures, goods, building templates, unit types, ship classes and
-   dragon kinds. They are reloadable. Most content, including third-party content, is data.
-2. **Behaviour as data.** Utility curves (input to score) and action plans (legs, waits, trades,
-   fights). These are compiled into flat tables that the engine scores in batches across all agents
-   due that tick. There is no general-purpose script interpreter in the hot loop.
-3. **Rust rule crates** compiled into the engine. First-party MIC modules work this way. All of them
-   are statically linked into one native library. A system stays dormant until its Java mod
-   registers.
-4. **Java and KubeJS hooks on events.** The engine emits batched, low-frequency events (raid
-   declared, settlement founded, dragon killed) to `RtsimEvents` in Java and KubeJS. Scripts can
-   answer with commands. Nothing per-entity, nothing per-tick.
+- **Decisions happen at decision points:** a leg ends, an interrupt fires, a schedule fires. Never per
+  tick.
+- **At a decision point** the agent scores a short list of plans with data-defined utility curves,
+  commits to the best, and the plan's first leg schedules the next event.
+- **Veloren's brain library is worth copying** (`ai/mod.rs`): actions that return Continue or Break; the
+  combinators `then`, `repeat`, `stop_if`, `interrupt_with`, `when_cancelled`; and `choose` at three
+  priorities (urgent 100, important 50, casual 0). Only a strictly higher priority replaces the running
+  action, which then gets `on_cancel`.
+- **Fights nobody watches** use Lanchester laws (square for ranged, linear for melee). **Abstract results
+  must never beat observed ones** (X4 community lesson, UNVERIFIED): abstract resolution is tuned
+  slightly worse for the stronger side, and checked against real fights in GameTests.
 
-### 4.5 Agent AI
+### 5.6 Knowledge: reports, sentiment and gossip
 
-- **Decisions happen at decision points** (a leg ends, something interrupts, a schedule fires), never
-  per tick.
-- **At a decision point:**
-  1. The agent scores a short list of candidate plans with data-defined utility curves. Inputs include
-     hunger, wealth, threat, sentiment, distance and orders from the faction.
-  2. It commits to the best plan.
-  3. The plan's first leg schedules the next event.
-- **Priorities are Veloren's `choose` levels** (urgent, important, casual). Only a strictly higher
-  priority interrupts, and the interrupted plan gets a cancel hook.
-- **Combat:**
-  - Fights nobody watches are resolved with Lanchester laws: square law for ranged, linear for melee,
-    with unit stats from data and a morale break point.
-  - Fights near a player are real Minecraft combat between puppets. Casualties are reported back.
-  - **Rule: abstract results must never beat observed results.** X4's abstract combat is stronger than
-    its real combat, so players learned to fight from another sector. We tune abstract resolution to be
-    slightly worse for whoever has the stronger side, and test it against real fights in GameTests.
+- **A report is a fact:** who did what to whom, where, when, how severe. Never an opinion. It expires by
+  kind. Veloren keeps only Death and Theft reports, with lifetimes of 15 in-game days (murder), 5 (other
+  deaths) and 1.5 (theft) (`data/report.rs:32-47`).
+- **Witnesses** are bodies within a data-defined radius, plus a settlement's own awareness of events
+  inside it.
+- **Sentiment** is bounded, and decays faster for weak feelings than strong ones, as in Veloren
+  (`sentiment.rs:53-75`). Settlements and caravan owners keep sentiment per actor. Players are actors.
+- **Gossip moves physically.** Reports travel with caravans, bands and later ships. A village nobody
+  trades with learns nothing. Veloren pushes reports into inboxes and syncs every tick; we gossip only
+  what changed, and only when a carrier arrives.
+- **Caps** follow §4.8. Veloren has no cap on reports at all; we do.
 
-### 4.6 Knowledge: reports, gossip and memory
+## 6. The Minecraft bridge
 
-- **A report** is a fact: who did what to whom, where, when, and how severe. It expires by kind.
-  Following Veloren, reports hold facts, never opinions.
-- **Witnesses** are puppets within a data-defined radius, plus the settlement's own awareness when the
-  event happens inside it.
-- **Memory:**
-  - Each notable person has fixed memory slots (report id, salience) and a sparse sentiment map
-    (target to i8).
-  - Settlements and factions keep aggregate sentiment per actor. Players are actors.
-  - Caps follow §3.6. Decay is stochastic and slower for strong feelings, as in Veloren.
-- **Gossip carries news physically:**
-  - At home, people merge reports with the settlement noticeboard (Veloren's site `known_reports`).
-  - Between settlements, news travels with caravans, ships and travellers, so word of what you did
-    spreads at the speed of trade.
-  - A town nobody trades with learns nothing.
+### 6.1 Puppets without duplication
 
----
+**The engine owns the truth, and Minecraft entities are puppets** (P3). The protocol:
 
-## 5. The Minecraft bridge (Java)
+1. **Tagging.** A puppet carries the attachment `mic_rtsim:agent`: engine id and materialization epoch.
+2. **A live puppet registry.** The bridge keeps the (id, epoch) of every puppet it spawned this session.
+   On `EntityJoinLevelEvent` (cancellable; it reports `loadedFromDisk`), a tagged entity whose
+   (id, epoch) is not in the registry is discarded. That catches copies from any path: another mod's
+   save, a structure template, a crash.
+3. **Puppets are never saved by vanilla.**
+   - A mixin on `Entity.shouldBeSaved` returns false for tagged entities.
+   - A mixin on `Entity.saveAsPassenger` returns false too. Passengers are saved through their
+     vehicle's `saveWithoutId`, which calls `saveAsPassenger` and never asks `shouldBeSaved` (verified
+     in the 1.21.1 source).
+4. **Handoff keys on ticking, not on loaded chunks** (the Veloren lesson).
+   - A puppet appears only where `ServerLevel.isPositionEntityTicking` holds and a player is interested,
+     and stays embodied only while it is actually ticking and a player is interested.
+   - A chunk kept ticking by a chunk loader, a forced ticket or the spawn chunks (`spawnChunkRadius`
+     default 2) keeps no puppet once no player is interested. A puppet in a loaded chunk that has
+     stopped ticking is frozen, so the engine takes it back.
+5. **Capture before removal.** The body adapter captures what the engine cares about (health, cargo,
+   leash state) and sends `Dematerialized(id, epoch, state)`. Veloren re-rolls merchant wares on every
+   load (`tick.rs:40-141`); we capture through a per-body adapter instead.
+6. **Persistence while embodied.** Vanilla despawns non-persistent mobs beyond 128 blocks, and the pack's
+   IaF config has `canDespawn: true`, so every puppet is persistence-required while embodied.
+   - **Trap:** a wandering trader's `despawnDelay` of 0 stops its own countdown, but its trader llamas
+     copy the trader's delay minus 1 and discard themselves at 0 or below (`TraderLlama.maybeDespawn`).
+     The bridge keeps a positive delay on the trader and refreshes it.
+7. **Crash safety comes free.** Puppets never reach disk; the journal covers the rest (§4.9).
 
-### 5.1 Puppets without duplication
+**Where puppets appear.** At the edge of the entity-ticking area, out of sight. The pack's singleplayer
+`options.txt` sets `simulationDistance:12`; a dedicated server defaults to 10. Wandering traders,
+trader llamas and villagers have `clientTrackingRange(10)` (chunks). So in singleplayer the edge is
+beyond the client's tracking range. On a server at simulation distance 10 the two coincide, and a
+puppet may be seen appearing (UNVERIFIED geometry; a GameTest checks it, risk R1).
 
-This is the protocol that makes "the engine is the truth" safe:
+### 6.2 Taking a creature: it leaves the sim (A10)
 
-1. **Tagging.** A puppet carries the attachment `mic_rtsim:agent`, holding the engine id and a
-   materialization epoch.
-2. **Puppets are never saved by vanilla.** A mixin on `Entity.shouldBeSaved` returns false for tagged
-   entities. Our own entities simply override it.
-3. **Capture before removal.** When a puppet's chunk unloads, or the puppet is removed, its adapter
-   captures the state the engine cares about: health, wounds, carried items, sheared, tamed, cargo.
-   It sends the state back as a `Dematerialized(id, epoch, state)` record. Veloren loses inventory and
-   mid-action state on this round trip; we capture through a per-body adapter so nothing that matters
-   is lost.
-4. **A stale puppet is discarded on sight.** One with an old epoch (for example, saved by another mod)
-   never wins.
-5. **Crash safety comes free.** Puppets never reach disk, and the engine's last save is consistent with
-   itself.
+| How it is taken | Hook | What the sim does |
+|---|---|---|
+| A lead | `PlayerInteractEvent.EntityInteract` with a lead on a tagged mob, plus a leash-holder check on each puppet pass (NeoForge 21.1 has no leash event) | the creature leaves the sim; if it belonged to a caravan, a **theft** report |
+| Taming | `AnimalTameEvent` | leaves the sim |
+| A Carry On pickup | `EntityPickupEvent` (Carry On's blacklist is per entity type, so the event is the hook) | leaves the sim; theft if it belonged to a caravan |
+| Capture by another mod | the puppet leaves the level while ticking, not dead, and not removed by the bridge (`EntityLeaveLevelEvent`) | leaves the sim, logged as "removed by another mod" |
 
-**Adapters.** Each body kind has one Java adapter with three operations:
-- `spawn(record) → Entity`;
-- `capture(Entity) → record`;
-- `steer(Entity, intent)`: sets a move target or an attack target.
+- **Leaving the sim** means: the tag is removed, the entity becomes ordinary and is saved by vanilla
+  from then on, and the engine removes the agent. Its slot is removed from the flow, so totals stay
+  exact (SCALE.md §3).
+- A leashed trader llama no longer despawns in vanilla (`canDespawn` checks the leash holder), so the
+  stolen llama simply stays.
+- **The cargo a stolen llama carries** leaves with it, as a cross-store transfer with an operation id.
+- All four hooks go in PATCHES.md.
 
-**Persistence while materialized.** Vanilla despawns non-persistent mobs beyond 128 blocks, and IaF
-dragons have `canDespawn = true` in the pack config. So every puppet is marked persistence-required
-for as long as it is materialized.
-
-### 5.2 What the bridge observes (and how often)
-
-There is one NeoForge listener per event for the whole rtsim (§1a.4). Each observation below is
-also a Rust trait, so a native rewrite of its source can feed the engine directly (§1a.2).
+### 6.3 What the bridge observes
 
 | Observation | Source | Cadence |
 |---|---|---|
 | Players: position, dimension | server player list | every 20 ticks |
-| Chunks loaded and unloaded, forced tickets | `ChunkEvent.Load/Unload`, ticket controllers (mic-grid-loader, create-power-loader) | on event |
-| Damage and deaths involving puppets or tracked animals | `LivingIncomingDamageEvent`, `LivingDeathEvent` | on event |
-| Blocks broken or placed inside tracked areas (territory, plots) | `BlockEvent.BreakEvent`, `EntityPlaceEvent`, filtered by area first | on event |
-| Destroy pollution | `PollutionHelper`: per chunk (smog, radioactivity) and per level (greenhouse, ozone depletion, acid rain) | per loaded chunk in tracked areas, staggered |
-| Create trains | `RailwaySavedData` (`create_tracks`): positions, `ScheduleRuntime` state | every 20 ticks |
-| Create logistics networks in districts | `LogisticsNetworkSavedData`, `FactoryPanelBehaviour` | while loaded, staggered |
-| Climate | mic-climate `Climate.celsius(Level, BlockPos)`, `YearClock`; Deep Time `DeepTimeClimate.at(pos)` | on demand for cells |
+| Chunks loaded and unloaded, forced tickets | `ChunkEvent.Load/Unload`, ticket controllers | on event |
+| Puppet ticking state | `isPositionEntityTicking` per puppet | each puppet pass |
+| Damage and deaths of puppets and village residents | `LivingIncomingDamageEvent`, `LivingDeathEvent` | on event |
+| Trades | `Merchant.notifyTrade(MerchantOffer)` on adopted villagers, sim traders and ribbit merchants | on event |
+| Taking a creature | §6.2 | on event |
+| Village census while loaded: villagers by profession, ribbits by profession, beds, workstations | entity and POI queries, filtered by village bounds | staggered, while loaded |
+| Vanilla gossip from villager hurt or killed | `Villager.getGossips()` read on census | staggered |
+| Recipes | `RecipeManager`, exported once per server start and datapack reload | on load |
+| Climate (later) | the bridge samples mic-climate or Serene Seasons on the server thread and writes values into the buffer | per cell, staggered |
 
-### 5.3 What the bridge does on command
+### 6.4 What the bridge does on command
 
-- Spawn, despawn and steer puppets, through adapters, under the per-tick quota.
-- Place structures and build steps progressively, under the block quota. It never overwrites
-  player-placed blocks (§7.2).
-- Write Surveyor landmarks: `WorldLandmarks.of(level).put(Landmark.global(...))`. Antique Atlas 3.1.2
-  draws them.
-- Write Numismatics balances: `GlobalBankManager.BANK`, accounts keyed by UUID.
-- Fill and drain Create package offline buffers: `GlobalPackagePort.offlineBuffer`.
-- Fire KubeJS events.
+- Spawn, despawn and steer puppets through adapters, under the per-tick quota.
+- Write trade offers and uses for adopted villagers and sim merchants (§8.5).
+- Write gossip into villagers, if P19 says so.
+- Place structure templates under the block quota, never over player-placed blocks (§8.8).
+- Later: Surveyor landmarks, Numismatics balances, Create package offline buffers.
 
-### 5.4 Commands for Ben
+### 6.5 Commands for Ben
 
-- `/rtsim perf` shows each system's µs per tick and the tier counts.
-- `/rtsim inspect <agent|settlement|herd>` describes one thing.
-- `/rtsim near` lists what is simulated around you.
-- `/rtsim jump <days>` fast-forwards time.
-- `/rtsim record start|stop` drives the flight recorder.
+`/rtsim perf` (µs per system, band counts, lag), `/rtsim inspect <agent|village|market|edge>` (with
+prices and news age), `/rtsim near`, `/rtsim jump <days>`, `/rtsim record start|stop`.
 
----
+## 7. Reuse table: need, mod, verified hook
 
-## 6. Reuse table (need → pack mod → verified hook)
+Verified means seen in the pinned jar or source (Appendix A). The rest is marked.
 
-Verified means a research agent saw the class, method, config or doc in the pinned jar or source on
-2026-10-19 (Appendix A). Anything else is marked.
-
-| Need | Pack mod (version) | Hook |
+| Need | Mod (version) | Verified hook |
 |---|---|---|
-| Talking civilians with memory | Cobblemon 1.8.1 | `entity.npc.NPCEntity`, datapack `NPCClass` (names, variations, `config` MoLang variables, behaviours, `canDespawn`), `api.dialogue.Dialogue` / `DialoguePredicate` |
-| Herd bodies | vanilla animals; Cobblemon | `PokemonProperties.createEntity(Level)`. Cobblemon herds cap at 9 per leader group, so the engine does grouping. |
-| Dragons | Ice and Fire CE 2.1-beta.1 | `iceandfire:fire_dragon` / `ice_dragon` / `lightning_dragon`; `DragonBaseEntity` NBT (`AgeTicks`, `Hunger`, `Gender`, `Variant`, `HomeAreaX/Y/Z`, ...); `IafDragonFlightManager.setFlightTarget(Vec3)`; roost and cave structures (enabled in `structurify.json`) |
-| Guns for NPCs | TaCZ | every `LivingEntity` is an `IGunOperator` (mixin), with `LivingEntityShoot` and `LivingEntityAmmoCheck`. No mob AI goal exists, so we write one. |
-| Troop scaling | L2 Hostility | NBT `l2hostility:level` |
-| Ships | Sable 2.0.5 + Create Aeronautics 1.3.2 | `SchematicLoader.loadSchematic` → `container.allocateNewSubLevel(Pose3d)` → `plot.newEmptyChunk` → `template.placeInWorld(plot.getEmbeddedLevelAccessor(), ...)` → `updateLastPose()`. Ships freeze when unloaded (`SubLevelHoldingChunkMap`). |
-| Ship guns | Create Big Cannons | `PitchOrientedContraptionEntity.tryFiringShot` on an assembled, loaded cannon |
-| Radar contacts | Create Radars | `RadarScanningBlockBehavior` already tracks loaded entities and ships. Far sim ships need a mixin on `IRadar.getTracks` (no public API). |
-| Money | Numismatics 1.1.0 | `Coin` worth 1, 8, 16, 64, 512 and 4,096 spurs; `GlobalBankManager.BANK` of `BankAccount` by UUID |
-| NPC shops | Create 6.0.10 | `TableClothBlockEntity` (`owner` UUID, `priceTag` filter; any item, so coins work). A non-player owner is untraced. |
-| Trains while unloaded | Create 6.0.10 | `GlobalRailwayManager` ticks every overworld train every tick with no chunk check; `RailwaySavedData` `create_tracks`. Not in other dimensions (early return). |
-| Cargo at unloaded stations | Create 6.0.10 | only mail: `GlobalStation.runMailTransfer` → `GlobalPackagePort.offlineBuffer` |
-| Declared production | Create 6.0.10 | `FactoryPanelBehaviour` (inputs with amounts, `recipeOutput`, address, promises); `LogisticsNetworkSavedData` `create_logistics`. Valid only while loaded, so we snapshot it. |
-| Machine power estimate | Create 6.0.10 | `BlockStressValues.getImpact/getCapacity` × RPM; no per-network saved total |
-| Industrial footprint | Destroy (MIC fork) | `PollutionHelper`, `PollutionEvents`. Smog and radioactivity per chunk; greenhouse, ozone depletion and acid rain per level. It only changes in loaded chunks. |
-| Temperature and season | mic-climate, Serene Seasons | `Climate.celsius`, `YearClock.now`, `SeasonHelper` |
-| World data (Deep Time worlds) | Deep Time (not in pack yet) | `WorldData.open/raster/height/waterLevel`, `Rivers`; API `DeepTimeClimate.at(pos)` (monthly °C, Köppen), `DeepTimeSites` (resource deposits) |
-| Map markers | Surveyor 1.2.4 + Antique Atlas 3.1.2 | `WorldLandmarks.of(Level).put(...)`, `Landmark.global(id, builder)` with `POS`, `NAME`, `LORE`, `COLOR`, `TIME` |
-| Remote full-fidelity bases | mic-grid-loader, create-power-loader | NeoForge `TicketController`, power-gated |
-| Computer access | CC: Tweaked 1.120.2 | `PeripheralCapability` through `RegisterCapabilitiesEvent`, for a sim peripheral (market prices, news) |
-| Ruins loot | Lootr | per-player chests in ruin structures |
-| Radio warnings (later) | Simple Radio 4.5.7.9 | `SimpleRadioApi` frequencies and sources; the audio format is unverified |
-| Existing raid code | pack KubeJS `zombies.js` | per-player zombie raid (`/startraid`). It becomes the undead faction, or is retired. |
+| Caravan merchant body | vanilla `WanderingTrader` | `Merchant.overrideOffers(MerchantOffers)`, `notifyTrade`; `setDespawnDelay`; `wander_target` NBT |
+| Caravan pack animals | vanilla `TraderLlama` | leashed to the trader by `setLeashedTo(trader, true)`; strength 1 to 5; chest inventory 3 rows × strength columns (`getInventoryColumns`) |
+| Owning all traders (C8) | vanilla | gamerule `doTraderSpawning` (`GameRules.RULE_DO_TRADER_SPAWNING`), read by `WanderingTraderSpawner` |
+| Villager trades through the treasury (C14) | vanilla `Villager` | `getOffers`, `overrideOffers`, `notifyTrade`; `restock` needs a mixin; `MerchantOffer` uses and max uses |
+| Reputation, prices and golems | vanilla gossip | `GossipContainer.add(UUID, GossipType, int)`; `GossipType` weights; `updateSpecialPrices(Player)` lowers or raises prices by reputation; `DefendVillageTargetGoal` targets a player with reputation ≤ −100 |
+| Ribbit merchants, bands, sorcerers | Ribbits 4.1.6 (LGPLv3, by YUNG; needs YUNG's API and GeckoLib) | `RibbitEntity extends AgeableMob implements GeoEntity, Merchant`; `setRibbitData`; goals GoHome, Stroll, Fish, WaterCrops, PlayMusic, ApplyBuff |
+| Ribbit village growth | Ribbits 4.1.6 | 14 house templates under `data/ribbits/structure/houses`; vanilla `StructureTemplateManager` and `StructureTemplate.placeInWorld`. Jigsaw blocks inside the templates must be replaced on placement (UNVERIFIED for these templates) |
+| Ribbit village positions | Ribbits 4.1.6 | structure set spacing 25 chunks, separation 8; swamp biomes only; kept 6 chunks from other village sets |
+| Vanilla village positions | vanilla | structure set spacing 34 chunks, separation 8 |
+| Taking a creature | NeoForge 21.1, Carry On 2.2.6.13 | `AnimalTameEvent`, `PlayerInteractEvent.EntityInteract`, `EntityLeaveLevelEvent`; Carry On `EntityPickupEvent` |
+| Puppet safety | vanilla, NeoForge | `Entity.shouldBeSaved`, `Entity.saveAsPassenger`, `EntityJoinLevelEvent` (cancellable), `ServerLevel.isPositionEntityTicking` |
+| Dragons | Ice and Fire CE 2.1-beta.1 | entity types, NBT keys, `setFlightTarget(Vec3)`, roost and cave structures |
+| Map markers | Surveyor 1.2.4 + Antique Atlas 3.1.2 (listed as "Antique Atlas 4" in the pack) | `WorldLandmarks.of(Level).put(...)`, `Landmark.global`. Surveyor is a Fabric jar loaded through Sinytra Connector 2.0.0-beta.17 (its `neoforge.mods.toml` is a Connector placeholder). Its API uses intermediary names, so the plugin compiles against a remapped copy; recorded in PATCHES.md |
+| Ships (later) | Sable 2.0.5 + Create Aeronautics 1.3.2 | `SchematicLoader.loadSchematic` → `container.allocateNewSubLevel(Pose3d)` → `plot.newEmptyChunk` → `template.placeInWorld(plot.getEmbeddedLevelAccessor(), ...)` → `updateLastPose()` |
 
-**No mod in the pack covers these** (verified against the full mod list): goblins, orcs, bandits or
-pirates as factions; a dragon behaviour that raids villages; a mob AI that fires TaCZ guns; settlement
-growth; herds beyond 9 per group; any simulation of unloaded areas; space.
+Later-phase hooks (Numismatics, Create trains and packages, Destroy, Deep Time) are in §1.3 and
+Appendix A. mic-grid-loader and create-power-loader stay the option for a base that must really run.
 
----
+**No mod in the pack covers:** a simulation of unloaded areas, caravans with real cargo between
+villages, markets that remember stock, or news that travels.
 
-## 7. Content modules
+## 8. Phase 1: caravans and markets between vanilla and Ribbits villages
 
-Each module lists its model, its Minecraft side, and a walkthrough of what a player actually does and
-sees.
+Decided: C6 to C9, C11 to C14. Ribbits has extra high priority (D5).
 
-### 7.1 Ecology (`mic_rtsim_ecology`)
+### 8.1 What the player gets
 
-**Model.**
-- **Species** (datapack `data/<ns>/rtsim/species/*.json`):
-  - body (an entity type, or a Cobblemon species plus aspects);
-  - diet, comfort band in °C, preferred Köppen classes (biome tags as the fallback);
-  - herd size range, travel speed;
-  - breeding sub-seasons, litter, lifespan, predators.
-- **The forage field** is a grid over the map. It regrows from monthly temperature and precipitation:
-  Deep Time's L1/L2 climate in Deep Time worlds, otherwise biome climate plus Serene Seasons. It is
-  lowered by grazing, Destroy acid rain and smog, and player land use seen while loaded. A grid kernel
-  updates it once per in-game day, staggered.
-- **A herd** is one F-tier agent: cohort counts (young, adult, old), body condition per cohort, a
-  route and a memory of traditional routes. History generation builds those routes (§8).
-- **Migration:**
-  - Each sub-season the herd picks its next target from a flow field of forage within its comfort
-    band.
-  - Legs are closed-form. Births and deaths are hazard rates applied at events.
-  - When a herd's puppets keep failing to pass a place (a wall the player built, a river of acid),
-    the bridge reports the obstacle. The route edge's cost rises and the herd detours.
-- **Predation:** the player, wolves, dragons and NPC hunters all subtract through reports.
+- Wandering traders with trader llamas, and ribbit merchants, travel between real villages with real
+  goods and the news of what they saw.
+- Every adopted village runs a storehouse market: prices follow its stock, labour costs and local
+  resources. Humans pay in emeralds, ribbits in amethyst, and exchange rates form at border markets.
+- Villager trades draw from and pay into the village treasury, so a poor village cannot pay much.
+- Villages and caravan owners remember robbery, killing and leash theft. Fair trade helps.
+- Ribbit sorcerers buff friends and leave out those who slighted their village. Touring bands play
+  between ribbit villages. Ribbit villages grow from YUNG's own house templates.
 
-**Minecraft side.**
-- When a herd's footprint overlaps loaded chunks near a player, the bridge spawns representative
-  animals there. The number is the count times the fraction of the footprint that is loaded, capped
-  per player.
-- Each animal is a derived member (§3.4), so the same ewe with the same colour comes back.
-- Puppets run vanilla grazing AI and get a steer goal toward the herd's next waypoint.
+### 8.2 Villages in the sim
 
-**Walkthrough.**
-1. It is Late Spring (Serene Seasons). Your Antique Atlas shows a marker, *Greywool flock*, labelled
-   with its current count and drifting north-east along the valley.
-2. You ride up the valley. As the flock's footprint enters your loaded chunks, sheep and lambs appear
-   at the far edge and graze their way past, all moving the same way.
-3. You kill six and shear ten. The flock's count drops by six. "Sheared" folds into the adult cohort
-   and regrows over time.
-4. You go home. The puppets dematerialize, and the flock keeps walking: one event per leg, no ticks.
-5. You fence off the pass with a wall. In autumn the returning flock's puppets fail to get through. The
-   route cost rises and next year the flock takes the long way round.
-6. You build a Destroy plant upstream. Acid rain lowers the meadow's forage. The flock's body condition
-   drops, lambing fails that spring, and the count on the marker falls. The wolves and the dragon that
-   follow it go hungry too.
+- **Adoption.** The sim adopts each vanilla village (`StructureTags.VILLAGE`) and each
+  `ribbits:ribbit_village` as a market. When a village joins is **Proposal P22 (Ben)**.
+- **Where they are.** Vanilla village candidates sit one per 34 × 34-chunk cell (544 blocks), Ribbits
+  candidates one per 25 × 25-chunk cell (400 blocks), swamp only, kept 6 chunks from other village
+  sets. A candidate can fail its biome check, so real neighbours are often further apart. How many ribbit
+  villages a Terralith and Tectonic world has is unmeasured (phase 0 census, risk R6).
+- **Terralith's fortified villages are disabled** in `structurify.json`; vanilla villages remain.
+- **Residents stay vanilla entities.** Villagers and village ribbits are saved by vanilla as always (C2:
+  no civilian bodies). The sim observes them in the census and nudges them through offers, gossip and
+  goals. Only travellers are puppets.
+- **Edges.** Each market links to nearby markets as flow edges. The starting rule is **Proposal P18
+  (Ben)**.
 
-### 7.2 Civ (`mic_rtsim_civ`)
+### 8.3 Bodies (C8, C11, C12)
 
-**Model.**
-- **Entities:**
-  - **cultures** (data: building style, tolerances, values, tech level);
-  - **factions** (tribe, nation, bandit clan, city league), each with a leader, territory and
-    relations;
-  - **settlements** with tier (camp → hamlet → village → town → city), household cohorts, stocks,
-    plots and buildings;
-  - **notable people** (rows);
-  - **roads** (a graph).
-- **Settlements in today's pack.** The world is Terralith/Tectonic, and `structurify.json` disables
-  Terralith's villages. The module adopts each vanilla village as a settlement the first time its
-  structure start is seen (`StructureTags.VILLAGE`, `StructureManager.getStructureWithPieceAt`). Its
-  history is generated locally from its surroundings.
-- **Settlements in finite-map worlds.** The engine decides where settlements are before chunks
-  generate. Worldgen places them through our own structure placement (§8).
-- **Growth.**
-  - Population follows food, which is fields, herds and trade, through a logistic curve with a
-    carrying capacity.
-  - Wealth funds building projects from the culture's templates (structure NBT per tier).
-  - Threat funds walls. Trade with an industrial player unlocks better materials, up to a town that
-    builds its own Create windmill.
-  - A settlement that is sacked or starved becomes a **ruin**: the same structure, damaged, with Lootr
-    chests.
-- **Building without griefing the player.**
-  - Settlements own **plots**. Construction only happens on plots.
-  - If player-placed blocks are found in a plot, construction waits, and the settlement records
-    encroachment as a grievance.
-  - Unloaded settlements complete projects in sim time. On the next load, the bridge places finished
-    buildings under the block quota, in chunks no player has modified inside the plot.
-  - Loaded settlements build progressively: builder puppets walk to the site while blocks appear a few
-    per tick.
+- **Human caravans:** one wandering trader with two trader llamas, as vanilla spawns them
+  (`WanderingTraderSpawner` spawns two llamas within 4 blocks). No guards (C12).
+- **Ribbit caravans:** ribbit merchants (`RibbitData` profession merchant). Ribbits have no pack
+  animals, so a ribbit caravan's capacity is a TUNABLE (P18).
+- **The sim owns every wandering trader** (C8). The bridge sets `doTraderSpawning` to false when the sim
+  starts. Removing the sim leaves the gamerule false until someone resets it.
+- **No mods are added for phase 1** (C11).
 
-**Minecraft side.**
-- Civilians are Cobblemon `NPCEntity` puppets. NPC classes are per culture and role (baker, guard,
-  merchant, elder).
-- At materialization the bridge writes the person's sentiment toward each nearby player, and the top
-  known reports, into the NPC's MoLang variables. Cobblemon `DialoguePredicate`s pick lines from them.
-- What still needs checking: whether mods can register new Cobblemon `BehaviourConfig` types (§11).
+### 8.4 The economy (C13)
 
-**Walkthrough: you slight someone.**
-1. Brindle is a vanilla village the sim adopted. Marta the baker stands at her stall: a Cobblemon NPC
-   with a generated name and her own look.
-2. You punch Marta. The bridge sees `LivingIncomingDamageEvent` on a puppet and sends a report:
-   *Assault*, you → Marta, severity from the damage.
-3. Marta's sentiment toward you drops. The two villagers within the witness radius get the report too.
-4. Talk to her and the dialogue opens cold. The predicate reads the sentiment variable the bridge set.
-5. At dusk Marta goes home. The report merges onto Brindle's noticeboard, Brindle's opinion of you
-   drops, and guard puppets now watch you when you are in town.
-6. Two days later a caravan leaves for Oakford carrying the report. Oakford only learns about it when
-   the caravan arrives.
-7. Weeks later the feeling has faded a little. Strong feelings fade slowly. A gift of bread, or paying
-   the fine the elder asks for, repairs it faster.
+The model is the storehouse market from the economy research. Summary, with its equations:
 
-### 7.3 Trade (`mic_rtsim_trade`)
+**State** (integers): per market a currency, stock `S[g]`, treasury `M`, a production regime per good,
+error-diffusion remainders, cached `L[g]`, `Sbar[g]` and `Mbar`, a news ring and its flows. Per edge
+and good: a rate, a quoted price, travel time `d`, and goods and money in transit.
 
-**Model.**
-- **Goods** are groups of item tags.
-- **Production** comes from each settlement's land and culture. In Deep Time worlds it also comes from
-  `DeepTimeSites` resource deposits.
-- **Markets:** each settlement has stocks, demand and a price per good. Every price and stock is
-  clamped: Veloren's economy needed hand clamps because it "isn't economying", so ours are designed in.
-- **Caravans and merchant ships** run arbitrage along roads and sea lanes, paying tolls to the factions
-  they cross.
-- **Treaties** raise sentiment and lower tolls. War brings embargo.
-- **News** rides with every caravan (§4.6).
-- **Money:**
-  - Numismatics. NPCs and settlements have `BankAccount`s keyed by derived UUIDs.
-  - Prices are quoted in spurs. The coins are worth 1, 8, 16, 64, 512 and 4,096 spurs.
+**Labour cost and anchors:**
+- `L_g = min over recipes r of (l_r + Σ a_ri L_i) / y_r`, with `y_r` capped by the local resource flow
+  `F_r`. Cycles are solved once as `L = (I − Aᵀ)⁻¹ l`, linted by Hawkins-Simon. Recipes come from the
+  server's `RecipeManager` (§6.3), so modded recipes count and there are no price tables.
+- Local resources enter only through `F_r`: crops on observed farmland, trees, fish, ore, geodes,
+  depletion. The anchor is `p*_g = L_g / L_mint`, labour cost relative to mining one coin.
 
-**Minecraft side.**
-- **NPC stalls** are Create 6 table cloth shops whose `owner` is the merchant's UUID, with the price in
-  Numismatics coins. Whether a non-player owner works end to end is untraced; the fallback is selling
-  through Cobblemon dialogue.
-- **Per-player prices** (a settlement that dislikes you charges you more) go through the merchant's
-  dialogue offer, because a table cloth has one price for everyone.
-- **Towns that trade by train** get a Create station in their town plan. They also get a postbox
-  addressed by the town's name.
+**Price is a pure function of stock:** `p(S) = p* (1 + r (1 − S / Sbar))` on `[0, 2 Sbar]`, with target
+`Sbar = T × max(c, y)` and consumption `c = pop × need`. Nothing integrates, so nothing drifts.
+Production runs at capacity below `Sbar`, matches outflow at `Sbar`, and stops above it.
 
-**Walkthrough: selling iron to a town by train.**
-1. Oakford, a town, has a station and its market buys iron and coal.
-2. You give your freight train a schedule to Oakford with a package postbox carriage. Your Stock Keeper
-   sends packages of iron ingots addressed `Oakford Market`.
-3. The train runs to Oakford while you sit at home. Create ticks trains whether or not their chunks
-   are loaded. At the station, Create's own mail transfer drops your packages into Oakford's postbox
-   offline buffer.
-4. The engine's market reads the buffer and prices the iron. It pays your Numismatics account and puts
-   packages of the grain you ordered, addressed to you, into the same buffer.
-5. The train comes home with grain. Your bank balance has changed. Oakford, with steady iron, starts a
-   smithy project, and a year later its skyline has one.
+**Money:**
+- **Emeralds for humans, amethyst for ribbits** (C9). Emerald ore spawns only in mountain biomes
+  (vanilla; pack worldgen unchecked), so most human villages import money. Budding amethyst regrows
+  clusters (economy research), so ribbits near geodes mint their own.
+- A market mines while `M < Mbar = k × pop / L_mint`. Above `2 Mbar` it refuses cash and barters at
+  anchor ratios.
+- **Exchange rates form at border markets.** A border market is one with an edge to a market of the
+  other culture. Foreign currency anchors at mint parity `L_mint(foreign) / L_mint(home)` and floats
+  within plus or minus its transport cost (the gold points).
 
-### 7.4 Conflict (`mic_rtsim_conflict`)
+**Flows** (A13): on an event, a market allocates its exportable rate to edges whose news margin
+`p_j − p_i − τ_ij` is positive, best first, up to the destination's advertised absorbable rate.
+`τ_ij = upkeep × d_ij / capacity`. A change reaches `j` after `d_ij`. Money flows back at the quoted
+price.
 
-**Grievance.**
-- Each faction keeps a ledger per player (or team) per signal kind. Its culture's tolerances turn
-  signals into grievance.
-- **Signals the bridge can actually see:**
-  - Destroy smog and radioactivity in chunks inside the faction's territory;
-  - level greenhouse, ozone depletion and acid rain;
-  - logs broken inside territory (`BlockEvent.BreakEvent`, `#minecraft:logs`);
-  - ore veins drained by Create Ore Excavation drills inside territory (`OreDataAttachment` per
-    chunk);
-  - members killed (reports);
-  - player blocks on their plots;
-  - emissions from the player's abstract districts (§7.7).
-  The last one closes the gap where Destroy pollution only accumulates in loaded chunks.
-- **Escalation:** notice → envoy with a demand → scouts and sabotage → raid → invasion → siege.
-- **De-escalation:** pay the tribute, cut the emissions (a Destroy catalytic converter lowers smog),
-  gifts and trade, or kill the war chief.
+**Caravan capacity:** a human caravan carries 2 llamas × 3 rows × strength columns: 6 slots at strength
+1 and 30 at strength 5. Caravans per day = goods rate ÷ capacity. Travel time `d` = path length ÷
+caravan speed. The speed is measured in a phase 0 GameTest of a real caravan walking, not guessed.
 
-**Armies.**
-- A war band is an F-tier agent with unit stacks.
-- It musters at a settlement or camp, marches on the road graph, and shows on the Antique Atlas while
-  scouted.
-- **Raids on player bases only resolve while a player of that base is online.** Otherwise the band
-  camps near the base, visible on the map, and waits (config). Raids on NPC settlements resolve
-  abstractly.
-- **Raid director:**
-  - picks a spawn arc at the edge of the loaded area on the band's side;
-  - spawns waves under the spawn quota, with troops scaled through `l2hostility:level`;
-  - sends survivors home when morale breaks;
-  - reports casualties to the band.
+**Prices travel only as news.** Each breakpoint emits one delayed news event per incident edge. Markets
+relay their freshest snapshots at their own breakpoints. There is never a global price board (Gintis:
+a live global board destabilizes, stale private news stabilizes).
 
-**Bodies.**
-- **Goblins** are a custom GeckoLib entity with melee, bows and torches. Chieftains carry a TaCZ gun.
-- **Bandits** use the custom humanoid with TaCZ guns.
-- Both need our TaCZ-firing AI goal, which calls `IGunOperator`.
-- Existing mobs can join as allies or monsters, for example Born in Chaos's `MissionaryRaiderEntity`
-  as cultists.
+**Breakpoints and catch-up.** Each good is linear in time within a regime. Breakpoints are `S` or `M`
+crossing 0, the target or twice the target; input or deposit exhaustion; scheduled arrivals. Catch-up
+walks the breakpoints, so its cost does not grow with elapsed time (A15).
 
-**Walkthrough: the Ashfang goblins and your refinery.**
-1. You build a Destroy refinery on the river below the Ashfang forest. Its vats and open-ended pipes
-   put smog into the chunk.
-2. The Ashfang culture is intolerant of smog and of logging. Their grievance against you rises with the
-   smog the bridge samples in their territory.
-3. *Notice:* goblin scouts appear at the forest edge. They watch and flee when approached.
-4. *Envoy:* a goblin envoy walks to your base. Its dialogue demands a monthly tribute in Numismatics
-   coins, or that the smoke stops. Pay, and grievance pauses. Put catalytic converters on the line,
-   and smog falls and grievance decays.
-5. Ignore it, and a war band musters at the Ashfang camp. An atlas marker shows it marching down the
-   forest trail over the next days.
-6. You are online when it arrives. At night, waves spawn at the edge of your loaded area. You hold
-   them with TaCZ rifles and a Create Big Cannons battery. The chieftain has a shotgun.
-7. Outcome: the band breaks and the survivors go home. Ashfang's grievance becomes fear. The human town
-   downriver, which hates the goblins, thinks better of you, and its next caravan brings a gift.
-8. Had you been offline, you would have found the band camped below your walls when you logged in.
+**Conservation.** Per good: Σ stock + in transit + individual cargo = genesis + produced − consumed +
+player in − player out; per currency likewise with mined and burned. Asserted per event in debug.
 
-### 7.5 Dragons (`mic_rtsim_dragons`)
+**Stability rule** (derived): `T ≥ 2 × max d` over active edges, so the band between `Sbar` and
+`2 Sbar` absorbs the news lag. The tunables `r`, `T` and `k` are **P9 (Ben)**.
 
-**Model.**
-- A dragon is an F-tier agent with species (fire, ice, lightning), age, hunger, a lair, a territory, a
-  hoard, and sentiment toward players.
-- **Lairs** are Ice and Fire's roost and cave structures. They are enabled in the pack, and the engine
-  finds them by structure lookup.
-- **Hunger** drives hunting trips into the dragon's territory:
-  - first herds (ecology);
-  - then settlement livestock when the herds have migrated away (winter);
-  - then a player's farm if it holds a grudge.
-- **Ice dragons shift range with the cold.**
+### 8.5 Trades through the treasury (C14)
 
-**Minecraft side.**
+**Villagers in adopted villages:**
+- The sim never adds or removes a villager's offers. It keeps the list vanilla and MoreJS made, and only
+  reprices it and sets its uses. The pack's `disable_villager_trading.js` removes only armorer,
+  librarian, toolsmith and weaponsmith trades, through MoreJS, so farmers, fishermen, shepherds,
+  fletchers, butchers, leatherworkers, masons, cartographers and clerics still trade.
+- **Price.** Each offer is the integer bundle closest to the market's price, computed on the server
+  thread from the last market snapshot: cost `C = ∫ p dS` in closed form, the buyer pays the ceiling and
+  the seller gets the floor. No loop of trades makes money.
+- **Uses.** An offer where the village sells goods has uses up to its stock. An offer where the village
+  pays emeralds has uses up to its treasury. When uses run out, vanilla shows the trade crossed out.
+- **Restock.** Vanilla restocks at the workstation. For adopted villages a mixin on `Villager.restock`
+  hands uses to the treasury rule instead (PATCHES.md).
+- **Report.** Each trade (`notifyTrade`) becomes an observation with an operation id. The bridge updates
+  its cached stock and treasury at once, and the engine applies the trade at the next step.
+- **Reputation.** Vanilla's own price change from reputation (`updateSpecialPrices`) still applies on
+  top. Whether the sim writes into vanilla gossip is **Proposal P19 (Ben)**.
+
+**Ribbit merchants in ribbit villages:** whether their trades go through the ribbit treasury in the same
+way (`overrideOffers`, `restock`) is **Proposal P23 (Ben)**.
+
+**Sim caravans:**
+- A trader's offers come from its cargo when it materializes: it sells cargo goods and buys what its
+  home market lacks, up to the cash it carries.
+- Its prices are its destination market's prices, as of the freshest news the caravan carries.
+- Whether traders at border markets also exchange emeralds and amethyst for players is **Proposal P21
+  (Ben)**.
+
+### 8.6 Caravans
+
+- **Unobserved, a caravan is part of a flow** (A13). No row, no ticks.
+- **Near a player,** travellers on the visible stretch are sampled from (edge seed, departure slot):
+  identity, cargo from the flow's goods mix, position from departure time and speed. They appear at the
+  edge of the entity-ticking area, out of sight (§6.1), and walk the leg with vanilla pathfinding toward
+  engine waypoints.
+- **At a market,** a caravan stays for a stay window (TUNABLE, P18) near the village's meeting point,
+  trades, and leaves.
+- **A caravan becomes an individual row** when something must persist: it is robbed, attacked, has a
+  llama stolen, or trades with a player. Its departure slot is removed from the flow, so totals stay
+  exact.
+- **Whether cargo rides physically in the llamas' chests** is **Proposal P20 (Ben)**.
+
+### 8.7 Slights and memory
+
+**What counts, and who remembers:**
+
+| Act | Seen by | Report |
+|---|---|---|
+| Hurting a trader, llama or ribbit merchant | the caravan and witnesses | assault |
+| Killing one | the caravan's owner (its home market) once news arrives; witnesses | killing |
+| Taking cargo (robbery) | the caravan's owner | robbery |
+| Leashing or picking up a caravan's llama (§6.2) | the caravan's owner | theft |
+| Hurting or killing a villager or ribbit resident | the village; vanilla records villager hurt and killed as gossip already | assault, killing |
+| A fair trade | the village or caravan traded with | trade (positive) |
+
+- **Whom players wrong in multiplayer** is per acting player for all of these. Signals with no owner,
+  such as pollution later, are **Proposal P14 (Ben)**.
+- **News spreads at the speed of trade.** A village learns of a robbery elsewhere only when a caravan or
+  band arrives from a village that knows.
+- **Starting values** (deltas, decay, lifetimes) are **Proposal P18 (Ben)**.
+
+**Consequences, not refusals:**
+- **Prices rise** for a disliked player: through vanilla gossip for villagers (P19), and through the
+  sim's own quote for traders and ribbit merchants.
+- **Iron golems** turn on a player whose vanilla reputation reaches −100 or lower, if P19 writes gossip.
+- **Sorcerers leave the player out** of their buffs (§8.8). **Fair trade raises sentiment;** vanilla
+  adds trading gossip on each trade.
+
+### 8.8 Ribbits: four behaviours (C7)
+
+**1. Merchant caravans.**
+- Ribbit merchants travel between ribbit villages, and to human villages at border markets.
+- They price in amethyst. Their offers are set with `overrideOffers` from their cargo.
+
+**2. Touring bands.**
+- A band is a small group of ribbits with instruments in their `RibbitData`, one of them the master.
+- It tours a circuit of ribbit villages as a flow. When it stops, it plays through
+  `RibbitPlayMusicGoal` around its `masterRibbit`. How the goal picks its master is UNVERIFIED, so the
+  plugin may need to steer it.
+- What a band does in the sim is **Proposal P16 (Ben)**.
+
+**3. Sorcerers who remember.**
+- A village's sorcerer ribbits run `RibbitApplyBuffGoal`. It finds players near the sorcerer through
+  `Level.getNearbyPlayers` and gives them a random effect from a fixed list (regeneration, resistance,
+  strength, jump boost, haste and health boost appear in the bytecode).
+- The plugin's mixin filters that player list by the village's sentiment snapshot. A player the village
+  dislikes is left out. A friend is included. The thresholds are TUNABLE (P18).
+
+**4. Village growth from YUNG's own templates.**
+- Growth places one of the 14 house templates under `data/ribbits/structure/houses` on a free plot at
+  the village edge, through vanilla's `StructureTemplate.placeInWorld`, under the block quota, never over
+  player-placed blocks.
+- New residents are ribbits spawned with `setRibbitData` and homed to the new house. A home-position
+  setter is UNVERIFIED (only `getHomePosition` is checked).
+- The economy research holds population fixed in phase 1. What drives growth, and when the house
+  appears, is **Proposal P17 (Ben)**.
+
+### 8.9 Walkthroughs
+
+Village names here are for the reader. Phase 1 shows no names in game.
+
+**A. A caravan arrives.**
+1. You live in Brindle, a vanilla village. No wandering trader ever spawns near you at random.
+2. A wandering trader walks in from the east with two trader llamas. It came from Oakford, and it
+   appeared out of sight at the edge of your simulation distance.
+3. Its offers are what Oakford had too much of, such as wheat and leather. Brindle is short of wheat, so
+   the wheat is dear. The trader also buys the iron Oakford lacks.
+4. It stays near the bell for its stay window, then walks west toward Mirewater, a ribbit village. Once
+   you stop watching, it is part of the Oakford to Mirewater flow again and costs nothing.
+
+**B. Selling to a farmer through the treasury.**
+1. Brindle's farmer buys wheat for emeralds. You sell a stack, and the offer pays a little less, because
+   Brindle's wheat stock rose.
+2. You keep selling. Each emerald comes out of Brindle's treasury. When it is empty, the offer shows
+   crossed out.
+3. Later an Oakford caravan buys Brindle's surplus wheat and pays in emeralds. The treasury refills and
+   the offer reopens, paying more again because the stock fell. Your dumping drained one village, and
+   the flows carried the glut outward.
+
+**C. Money from the swamp.**
+1. Mirewater's ribbit merchant prices everything in amethyst shards. Mirewater sits near a geode, so its
+   ribbits are rich in amethyst and short of bread.
+2. Brindle borders Mirewater, so Brindle is a border market. Its stock holds some amethyst from past
+   caravans, and its rate between emeralds and amethyst follows both villages' labour costs, within the
+   cost of carrying coins between them.
+3. A ribbit caravan arrives in Brindle with amethyst and swamp goods, and leaves with bread.
+
+**D. You rob a caravan.**
+1. You kill a trader llama on the road. It drops its chest and cargo (P20).
+2. The caravan becomes an individual row. Its slot leaves the flow. The loot is a transfer with an
+   operation id, so a crash and replay never pays out twice.
+3. The trader carries on and goes home to Oakford with the robbery report.
+4. Later you visit Oakford. Its prices for you are higher, and if P19 writes gossip and your reputation
+   is −100 or lower, its iron golem comes for you. Mirewater has not heard yet; it learns only when a
+   caravan from a village that knows arrives there.
+5. You trade fairly in Oakford for a while. Its opinion of you recovers slowly.
+
+**E. You steal a llama.**
+1. A caravan rests at Brindle's bell. You put a lead on one of its llamas.
+2. The llama leaves the sim and becomes your ordinary llama (A10). Its cargo goes with it.
+3. The caravan reports a theft. Its owner, Oakford, remembers it like a robbery.
+
+**F. A sorcerer remembers.**
+1. You visit Mirewater after trading fairly with ribbit caravans. Its sorcerer gives you regeneration.
+2. Your friend robbed a ribbit caravan last week, and the news has reached Mirewater. The sorcerer casts
+   right next to them and leaves them out.
+3. Your friend trades fairly at Mirewater for a while. The sorcerer starts including them again.
+
+**G. A band comes to town.** A few ribbits with instruments walk into Mirewater on their circuit of
+the swamp, gather around their master and play. They bring the news from their last stop (P16).
+
+**H. Mirewater grows.** Mirewater trades well all season. You come back after a long trip, and a new
+ribbit house from YUNG's templates stands at the edge of the village, with a new ribbit in it (P17).
+
+### 8.10 Phase 1 exit tests, in game
+
+1. With the sim on, no wandering trader spawns at random; caravans arrive from real neighbouring
+   villages, with offers that match their origin's surplus.
+2. Walkthroughs A to H work on a test world with at least two vanilla villages and one ribbit village.
+3. Selling to one villager drains its treasury, and the offer recovers after a caravan visits.
+4. A robbery reaches a second village only after a caravan carries it there (timed in a GameTest).
+5. A save and reload mid-caravan, and a kill -9 mid-caravan, give no duplicate trader or llama and lose
+   no cargo (puppet and journal GameTests).
+6. Conservation holds: goods and money totals match after a soak with scripted players.
+7. Perf gates (P24) are green on the potato profile, capped and uncapped, and on the Windows PC.
+8. The 1-worker and 8-worker replays of the same flight recording give the same hash.
+
+## 9. Phase 2: dragons on Ice and Fire (C3)
+
+**Model:**
+- **A dragon is a notable individual** (a row): species (fire, ice, lightning), age, hunger, lair,
+  territory, and sentiment toward players.
+- **Lairs** are Ice and Fire's roost and cave structures, found by structure lookup.
+- **Hunger** drives hunting legs (ecology module). The pack config sets `hungerTickRate` 3000,
+  `targetSearchLength` 128 and `wanderFromHomeDistance` 40.
+- **Migrations run on scheduled legs** (A15). A leg is booked into the region-and-time index at its
+  start. A player entering a region looks up the legs booked there, so a world-spanning migration still
+  crosses your house as a scheduled event, with no scans.
+- **Prey.** Over an edge, a dragon is a hazard rate on the caravan flow: losses = rate × hazard,
+  integrated in closed form (SCALE.md §3). What else dragons prey on in phase 2 is **Proposal P12
+  (Ben)**.
+- **Memory.** A dragon remembers a player who hurt it, and its next hungry season targets that player's
+  home. What "home" means is **Proposal P26 (Ben)**.
+
+**Minecraft side** (`mic_rtsim_iceandfire`):
 - The dragon materializes as an IaF entity whose NBT comes from engine state (`AgeTicks`, `Hunger`,
   `Variant`, `Gender`, `HomeAreaX/Y/Z`). It is persistence-required.
-- `IafDragonFlightManager.setFlightTarget(Vec3)` steers it.
-- A custom goal picks livestock targets using IaF's `dragon_targets` tag. Whether IaF dragons carry
-  prey off is untraced.
-- The pack has dragon griefing off. Fire damage during a raid is therefore placed by the engine,
-  bounded per raid, and recorded in settlement state.
-- **Ownership:** the module disables `config/incontrol/spawner.json`'s desert fire-dragon spawner, so
-  the sim owns the dragon population and a killed dragon is not silently replaced.
+- `IafDragonFlightManager.setFlightTarget(Vec3)` steers it. A goal picks targets using IaF's
+  `dragon_targets` tag. Whether IaF dragons carry prey off is UNVERIFIED.
+- The pack has dragon griefing off (`griefing: false`). What happens to buildings is **Proposal P28
+  (Ben)**.
+- **The pack's In Control spawner** spawns `iceandfire:fire_dragon` in the overworld (`persecond` 0.1,
+  `maxthis` 200), with no biome condition. The baseline called it a desert spawner; that was wrong.
+  Whether phase 2 removes it is **Proposal P13 (Ben)**.
 
-**Walkthrough.**
-1. Winter. The Greywool flock went south. Cinderjaw, a fire dragon at stage 3 in the roost east of
-   Brindle, is hungry.
-2. The engine picks Brindle's livestock.
-   - If nobody is there, the raid resolves abstractly: Brindle loses animals and a barn, and a report
-     goes out. Brindle's elder posts a bounty in Numismatics coins. You hear it in dialogue in any town
-     the news has reached.
-   - If you are in Brindle, Cinderjaw materializes beyond render distance and flies in. It seizes
-     sheep and sets two roofs alight.
-3. You drive it off wounded. Its health is captured when it leaves. It remembers you, and next hungry
-   season your farm is on its list.
-4. You kill it. Its hoard sits in the roost, and Brindle pays the bounty. No replacement dragon spawns
-   from thin air; a young dragon may claim the roost years later.
+**Walkthrough:**
+1. Winter. Cinderjaw, a fire dragon in a roost east of Brindle, is hungry. Its migration leg south
+   crosses the Oakford to Brindle road.
+2. Nobody watches the road. The caravan flow loses llamas and cargo at the hazard rate. Oakford's
+   prices for leather and wool rise as fewer caravans arrive, and the news spreads with the survivors.
+3. You are on that road when the leg crosses it. Cinderjaw appears at the edge of the entity-ticking
+   area, out of sight, and flies at the caravan in front of you.
+4. You drive it off wounded. Its health is captured when it leaves. It remembers you, and next hungry
+   season it hunts near your home.
+5. You kill it. Brindle and Oakford, whose caravans it preyed on, think better of you (a positive report
+   carried by caravans).
 
-### 7.6 Naval (`mic_rtsim_naval`)
+**Phase 2 exit tests:** the walkthrough works; a migration leg booked across the player's region fires
+on time with no scan; a dragon's health and memory survive dematerialization and a restart; a killed
+dragon is not silently replaced (if P13 removes the spawner rule).
 
-**Model.**
-- **Sea lanes:** a graph built from coast and ocean data (Deep Time water and elevation rasters, or
-  sampled ocean biome tags), with ports at coastal settlements.
-- **Ship classes** (datapack): schematic, speed, cargo, crew, guns.
-- **Ships:**
-  - merchants follow trade (§7.3);
-  - pirates hunt lanes from cove bases, using encounter scheduling;
-  - navies patrol, escort, and hunt pirates by following reports.
-- **Fights nobody watches:** pursuit by speed, then Lanchester resolution by guns and crew (§4.5).
+## 10. Later content, in a proposed order (P11)
 
-**Minecraft side.**
-- Near a player, a ship materializes as a Sable sub-level from its schematic (the five-call recipe in
-  §6). Its crew are humanoid puppets with TaCZ guns. Its CBC cannon is fired by our crew AI through
-  `tryFiringShot`.
-- **Damage persists.** On dematerialize, the adapter snapshots the ship's plot blocks back into a
-  template, so a holed hull stays holed. Saving a sub-level plot to a template is unverified (§11).
-- **Radar:** materialized ships show on Create Radars for free. Far sim ships need the `getTracks`
-  mixin.
-- Sable freezes unloaded ships, so the engine owns every NPC voyage.
+Each module below is sketched with its hooks and a short walkthrough. Bodies and structures for each are
+**P8 (Ben)**.
 
-**Walkthrough.**
-1. You are sailing a Create Aeronautics vessel along the coast. Your Create Radar shows a contact well
-   beyond view: a sim ship through the mixin.
-2. It closes. At materialization range a pirate sloop appears, built from its schematic, with crew on
-   deck and a cannon that fires.
-3. You sink it, or board it and take the cargo. The pirate faction's sentiment toward you crashes. The
-   coastal nation's navy offers you a letter of marque through a harbour master's dialogue.
-4. Had you fled after holing it, the sloop would have limped back to its cove with the hole in its
-   hull, and been patched over the following days.
+### 10.1 Ships (C5)
 
-### 7.7 Industry (`mic_rtsim_industry`)
+- **Sky ships are timetabled as in Veloren:** position is a function of the clock, so unloaded and loaded
+  ships agree without physics. Each ship's clock offset and route assignment are saved, unlike Veloren,
+  which resets them on every boot. While unloaded, cruise altitude is forced (Veloren `!5091`: ships that
+  were flying low got stuck on load).
+- **Sky pirates** hunt sky lanes; **sea ships** run between port villages. Pirates are hazard rates on
+  lanes until observed (SCALE.md §3).
+- **Body candidates** (P8): Small Ships, Create Aeronautics Structures, the Seven Seas add-on (not yet
+  surveyed). **How ports are provided** is also P8.
+- **Hooks:** Sable's five-call spawn recipe; `SubLevelHoldingChunkMap` freezes unloaded ships, so the
+  engine owns every NPC voyage. Saving a sub-level plot back to a template is UNVERIFIED; without it, hull
+  damage persists as a number instead of holes.
+- **Walkthrough:** a sky ship from Brindle's dock to a mountain village passes over your base at the hour
+  its timetable says. You board it at the dock and ride. A pirate ship appears on a lane you are
+  crossing; you fight it with real Create cannons, or flee. The lane's hazard rises in the news, and
+  fewer caravans take it.
 
-**Unit: a district.** A district is one Create 6 logistics network (`create_logistics`): the vaults
-behind its stock links are its stock, and its factory gauges declare its production. This is Create's
-own idiom; nothing new to place.
+### 10.2 Ecology and herds
 
-**While loaded:**
-- the engine snapshots the gauge graph (inputs with amounts, outputs, targets, addresses);
-- measures each gauge's real throughput over time;
-- estimates kinetic demand from `BlockStressValues` impact × RPM (PowerGrid separately);
-- records emission rates from Destroy's chunk pollution.
+- Species as data; forage fields regrowing from climate; herds as group rows with cohorts; migration on
+  scheduled legs; predation by players, wolves and dragons (SCALE.md §2, §4). The calendar is **P2
+  (Ben)**. Naturalist is a body candidate (P8); vanilla animals are the fallback.
+- **Walkthrough:** a flock drifts north-east up your valley in late spring. As its footprint enters your
+  loaded chunks, sheep and lambs appear at the far edge, all moving the same way. You kill six; the count
+  drops by six. You wall off the pass; next autumn the flock's puppets fail to pass, the route cost rises,
+  and the year after it takes the long way round. The dragon that follows it goes hungry and turns to
+  caravans.
 
-**While unloaded:**
-- Each gauge is a process with its measured rate. Rates are limited by inputs in the stock snapshot,
-  and a process stops at its target stock, which is Create's own semantics.
-- Integration is piecewise-linear between events (an input runs out, a target is reached). It is
-  exact and cheap.
-- Trains keep running, because Create already does that.
-- At district stations, packages move through the postbox offline buffers, which the engine fills from
-  and empties into the abstract stock.
-- Plain item transfer at stations does not happen while unloaded (belts and funnels need loaded
-  chunks), so remote districts trade in packages.
-- Emissions keep feeding grievance (§7.4), and are written into Destroy's chunk attachments when the
-  chunks load.
+### 10.3 Conflict, goblins and raiders
 
-**On reload:**
-- The engine reconciles stock deltas into the linked vaults under the per-tick quota, capped by
-  capacity.
-- Create then takes over. Items on belts are never touched.
+- Grievance per player per signal; escalation from notice to raid; war bands as rows on the road graph;
+  a raid director that spawns waves at the edge of the entity-ticking area. Raids on player bases resolve
+  only while a player of that base is online (TUNABLE behaviour).
+- Body candidates (P8): Goblin's Tyranny, Illager Invasion. The fallback raider is `minecraft:pillager`.
+  Pollution signals come from `mic_rtsim_destroy`; attribution is **P14 (Ben)**.
+- **Walkthrough:** your Destroy refinery smogs the forest a goblin camp claims. Scouts appear at the
+  forest edge. Ignore them, and a war band musters and marches down the trail over days. You are online
+  when it arrives; waves come at the edge of your loaded area at night. You break it, and the human
+  village downriver, which hates the goblins, sends its next caravan with better prices.
 
-**Other dimensions:** Create does not tick trains outside the overworld (`GlobalRailwayManager.tick`
-returns early). Districts in other dimensions therefore need engine-run trains or a Create mixin.
-Decided later.
+### 10.4 Industry, on the Create plugin
 
-**Full fidelity:** mic-grid-loader stays the option for a base that must really run.
+- **Unit:** one Create 6 logistics network (`create_logistics`), **P5 (Ben)**. While loaded, the engine
+  snapshots factory gauges and measures their rates. While unloaded, each gauge is a process between
+  breakpoints. Trains keep running, because Create ticks overworld trains with no chunk check. Remote
+  cargo moves as packages through `GlobalPackagePort.offlineBuffer`.
+- **Walkthrough: selling iron to a town by train.**
+  1. A village with a Create station buys iron at its market (it needs a station; how villages get one is
+     P8).
+  2. Your train runs there while you sit at home. Create's mail transfer drops your iron packages into
+     the station's offline buffer.
+  3. The engine's market reads the buffer at its next step, prices the iron, and puts packages of the
+     grain you ordered into the same buffer.
+  4. **The engine's reply is at least one tick late,** so the grain rides the next train. Or your
+     schedule waits at the station on a cargo condition until the grain is aboard (Create's item cargo
+     condition; class name UNVERIFIED).
+  5. Your account or your next train's cargo shows the trade. The village, with steady iron, grows.
 
-**Walkthrough.**
-1. Your iron outpost on the far coast has crushers, washers, blaze-burner smelting and factory gauges
-   keeping a target of ingots in stock. Its stock links put three vaults on the network *Iron Coast*.
-2. While you are there, the engine learns the gauge graph and measures each gauge's rate.
-3. You go home and the outpost unloads. The engine turns ore into ingots at the measured rates until
-   the ingot target is met or the ore runs out. The outpost's smog keeps counting against the Ashfang
-   goblins.
-4. Your freight train calls. Create moves it. At the outpost's station, the offline buffer receives the
-   engine's packages of ingots addressed to your base.
-5. Weeks later you return. As the chunks load, the vaults hold less ore and more ingots, and the
-   machines pick up where the numbers left off.
+### 10.5 Kaiju (C10)
 
-### 7.8 Space and megaprojects (`mic_rtsim_space`, later)
+- Late-game bosses that start appearing once players have nukes. The trigger comes from `mic_nuclear`
+  and Create Nuclear, **P27 (Ben)**. The body candidate is the Alex's Caves port (P8).
+- A kaiju is a notable individual on scheduled legs, like a dragon, with hazard rates on everything it
+  crosses.
+- **Walkthrough:** the first detonation in the world is observed. Weeks later, news arrives with a
+  caravan that something huge has risen in the far ocean. Its leg crosses a sea lane; ships stop
+  arriving at a port village, and prices there climb. Later its leg is booked across your region.
 
-The pack has no space mod; adding one is Ben's decision when the time comes. The engine is ready
-anyway (§4.2):
+### 10.6 Space and planets (SCALE.md §12, A14, A17)
 
-- **Bodies** have mass, orbit and composition. Transfer times between bodies come from orbital
-  mechanics (Hohmann transfers).
-- **Body economies and interplanetary factions** are the strategic tier: a few rows, decided monthly.
-- **A megaproject is a strategic-tier process on a body,** for example a self-replicating swarm
-  turning Mercury into collectors:
-  - **Its state:** replicator mass, mined mass and collector area.
-  - **Growth** is limited by three things:
-    - mass: Mercury is 3.30 × 10²³ kg;
-    - energy: the solar constant of 1,361 W/m² at 1 AU, divided by 0.387², gives about 9,090 W/m² at
-      Mercury's orbit, times collector area and efficiency;
-    - the replication time of the design the player researched.
-  - **Output:** collector power beamed to a receiver block on a PowerGrid network at home.
-  - Every number comes from physics or from the player's design.
-- **Districts on other bodies** use the same process model as §7.7. The connections between them are
-  interplanetary routes instead of rails.
+- The pack has no space mod; choosing one is Ben's decision when the time comes.
+- **Planets:** an unvisited planet runs a cheap coarse Deep Time history that is authoritative; a visit
+  runs only the refinement (A14). A planet is baked in the background only when free RAM allows, peaking
+  at 3.2 to 4.2 GB; otherwise it stays "still forming" (A17). A background bake takes 30 to 45 min on a
+  player's machine. A full world is about 100 MB of terrain data per 16k planet with the timelapse
+  dropped.
+- **A megaproject is a strategic process,** for example a self-replicating swarm turning Mercury into
+  collectors. Its growth is limited by:
+  - mass: Mercury is 3.30 × 10²³ kg;
+  - energy: 1,361 W/m² at 1 AU ÷ 0.387² = 9,087 W/m² at Mercury's semi-major axis. With eccentricity
+    0.2056 the flux runs from 6,249 W/m² at aphelion to 14,394 W/m² at perihelion (figures from the
+    2026-10-19 review, with a = 0.3871 AU). Averaged over the orbit, S ÷ (a² √(1 − e²)) gives about
+    9,286 W/m². Output = flux × collector area × the design's efficiency;
+  - the replication time of the design the player researched.
+- **Walkthrough:** you launch the first replicator. The strategic row grows in closed form; nothing ticks.
+  Months later, power beamed home arrives at a receiver on your grid. It rises and falls between the
+  aphelion and perihelion figures above, on whatever orbital period the space mod gives Mercury.
 
----
+### 10.7 History generation (P6)
 
-## 8. History generation and Deep Time
+- At world creation, after Deep Time's bake when one is present, the abstract levels of every module
+  run with large steps over N years. The world the player walks into is in the state those rules produce.
+- History runs on the host's foreground pool, because the player is waiting (X1).
+- It writes to Deep Time's event log as writer 2 (`civ:history`), with negative years before world
+  creation (X2). History and refinement stay separable, and the history grid resolution stays a preset
+  parameter (A14).
+- **Walkthrough:** you open `rtsim-viewer` on a new world and see which villages traded, which caravan
+  routes were robbed, and which roosts held dragons. In game, the villages' first prices and opinions
+  already carry that history.
 
-**History is the same engine run fast.** At world creation the S and A tiers of every module run with
-large time steps over N years. Individual tiers are off, and only notable people exist. This is how
-Dwarf Fortress builds its history, a year every couple of seconds with about 20,000 people. Because
-it is the same rules, the world the player walks into is in the state those rules produce, not in a
-separate generator's idea of it.
+### 10.8 Civilians and villagers (C2)
 
-**Inputs: a world-model provider.**
-- **Deep Time worlds:**
-  - terrain, water and rivers (`WorldData`, `Rivers`);
-  - monthly temperature and precipitation, and Köppen (L1/L2);
-  - resource deposits (`DeepTimeSites`).
-  The world is finite: 13,312 × 6,656 blocks at 16k Petroff-Guyou.
-- **Other worlds:** the area inside the world border, sampled on a coarse grid from the biome source
-  and the generator's base height.
+Not now. Residents stay vanilla entities. Any future civilian body must look like a mob (D7).
 
-**Outputs:** settlements, factions and borders, roads, ruins, dragon lairs, herd routes, notable
-figures, and a chronicle.
+## 11. Deep Time
 
-**Worldgen reads the outputs.**
-- A custom `StructurePlacement` puts sim settlements and ruins where the sim says.
-- A per-chunk road feature paves the road segments that cross that chunk. This is deterministic and
-  chunk-local.
-- Lairs reuse IaF structures where possible.
+- **The plugin** `mic_rtsim_deeptime` provides the world model in Deep Time worlds: terrain, water and
+  rivers (`WorldData`, `Rivers`), monthly climate and Köppen, resource deposits (`DeepTimeSites`). Pool
+  threads read Deep Time's files natively (§3.2).
+- **The world is finite** (A3): 13,312 × 6,656 blocks at 16k Petroff-Guyou, or 26,112 × 13,056 at 32k.
+- **The event log:** writer 2 (`civ:history`), `t` in years relative to world creation, negative before
+  it (X2). Deep Time's viewer and timelapse then show the chronicle.
+- **The format** `deeptime-format` (world tiles, event log, LZ4 + CRC32 codec) is LGPL and already
+  exists. The rtsim reads it and appends to it.
+- **Natives** move into `mic_native` (§2). Deep Time and the rtsim share threads, not one library;
+  Deep Time can still become an engine module later (A2). **Evolution, later** (A3), uses the ecology
+  module's species format.
+- **Bake timing** (SCALE.md §12): a 16k planet over 1,000 Myr takes 826 to 955 s on the laptop with 8
+  threads and 1,290 s on the quiet VM; Deep Time's target is 900 s on an average gaming rig. History adds
+  to that wait.
 
-**Deep Time integration, already planned on Deep Time's side.**
-- Deep Time's event log reserves writer ids 2 to 65535 for later writers, e.g. `civ:history`. Its plan
-  §4.2 names a future `deeptime-civ` crate that reads sites and appends segments.
-- The rtsim history writes there, so the chronicle shows in Deep Time's own viewer and timelapse.
-- **Time convention (agreed with the Deep Time session, 2026-10-19).**
-  - `t` is in years relative to world creation (`deeptime-format/src/events.rs`). Its sign means
-    before or after creation; it does not separate geology from civ.
-  - Pre-play civ history gets negative years on the same axis. In-play civ events are positive.
-  - Writer id 2 and the `civ:` kind namespace keep civ events apart from geology. No consumer reads the
-    sign as that distinction.
-  - Deep Time is fixing two passages that say otherwise: a doc comment and its plan §5.
-- **Evolution, later.** Ben wants histories that include evolution. A coarse evolution model across
-  Deep Time's geologic keyframes would generate species definitions adapted to each climate zone.
-  Each species maps to a Minecraft body by tags. The species format (§7.1) is designed now so that
-  generated species fit it.
+## 12. Licence
 
-**History runs on the foreground pool** (§1a.1). The player is waiting on the Create World screen,
-or the dedicated server admits nobody until it finishes. Deep Time's own target for its bake there is
-900 s for a full 16k planet on an average gaming rig (its P1-19 gate). History time adds to that same
-wait, so phase 6 gates it.
+- **The rtsim engine and content are AGPL-3.0** (A2). AGPL's network clause means a server that runs a
+  modified rtsim must offer its players the source of that modification.
+- **The host and the shared crates are MPL-2.0** (A7). Optimized forks of other people's mods link the
+  host. MPL's copyleft is per file, so those forks keep their own licence (Create is MIT), and
+  GPL-2.0-only code is not blocked. It also works with Rust's static linking, where LGPL's relinking
+  terms are awkward.
+- MPL-2.0 crates can link into Deep Time's LGPL-3.0-or-later cdylib once Deep Time's `cargo deny`
+  allowlist adds MPL-2.0. Ben owns both, so any choice works between those two.
+- Ribbits is LGPLv3 and Surveyor LGPL-3.0-or-later. The plugins ship none of their code.
 
-**The shared library (agreed with the Deep Time session, 2026-10-19).**
-- **Format.** `deeptime-format` covers world tiles, the event log and the LZ4 + CRC32 codec. It is
-  LGPL and already exists. The rtsim reads it and appends to it.
-- **Natives: copy now, share later.**
-  - The pack-wide host, `mods/mic-native` (§1a.1), starts from a copy of Deep Time's native
-    toolchain. That toolchain is the 8 platforms via cargo-zigbuild and cargo-xwin, the `x86-64-v3`
-    variants with `cpuprobe`, `natives.json` schema 2, and the Java `NativeLoader`.
-  - To that copy the host adds the two pools, the governor, the profiler and the service registry.
-  - Deep Time is changing that pipeline right now (PGO and a shipped allocator). It switches to
-    depending on the host after its P1-19 timing gate closes.
-  - Deep Time also ships outside MIC, so its jar keeps a fallback loader and probe. "Sharing" means
-    depending on the host as a library (jar-in-jar plus a crate), not deleting Deep Time's copy.
-- **Sharing threads.**
-  - Deep Time and the rtsim share threads through the host's pools rather than by becoming one
-    library. Deep Time keeps its own release cycle and licence. It can still become an rtsim module
-    later, as Ben suggested.
-  - **Deep Time's side needs a refactor.** Its pools carry per-session thread-locals, and six sim
-    stages build small private pools. Moving them onto the host's per-job hooks (§1a.1) takes real work
-    on Deep Time's side.
-  - **Thread count needs no change.** Deep Time's results are identical at any pool size (its tests
-    check 1, 3 and 8 threads), so the host may choose the size.
-- **Licence:**
-  - The rtsim engine and content are AGPL, and Deep Time is LGPL.
-  - The host and the shared crates are what optimized forks of other people's mods will link. An AGPL
-    host would make every such fork AGPL. That blocks GPL-2.0-only code. It also blocks giving
-    optimizations back upstream under the upstream licence (Create is MIT).
-  - Ben's decision (2026-10-19): MPL-2.0 for the host and shared crates. Its copyleft is per file,
-    so it works with Rust's static linking, where LGPL's relinking terms are awkward. The rtsim engine
-    and content stay AGPL.
-  - MPL-2.0 crates can be linked into Deep Time's LGPL-3.0-or-later cdylib. Deep Time's `cargo deny`
-    licence allowlist needs MPL-2.0 added.
-  - Ben owns both Deep Time and the rtsim, so any choice works for those two.
-
----
-
-## 9. Custom-roll ledger
+## 13. Custom-roll ledger
 
 Sizes are relative: S < M < L < XL.
 
 | Item | Size | What it is |
 |---|---|---|
-| Pack-wide native host (`mic_native`) | L | loader, `cpuprobe` and natives tooling copied from Deep Time; foreground and background pools at OS priorities; governor; profiler and `/micperf`; service registry; `mic-native-rt` with a standalone fallback |
-| Patch ledger + contract tests | S | `PATCHES.md`, plus one GameTest set per adapter (§1a.3) |
-| Engine kernel | XL | clock, scheduler, timing wheel, storage facade, saves, RNG, profiler, determinism tests |
-| Space and pathfinding | L | frames, world-model providers, coarse graphs (roads, lanes, routes), hierarchical paths |
-| Knowledge | M | reports, witnesses, noticeboards, gossip by carrier, sentiment with caps and decay |
-| JNI boundary and bridge core | L | buffers, hand-over, observers, quotas, puppet protocol, `shouldBeSaved` mixin, commands |
+| `mic_native` host | L | loader and natives moved from Deep Time, two pools, IO lane, governor, counting allocator, profiler and `/micperf`, service registry, `mic-native-rt` with C ABI rules |
+| Patch ledger + contract tests | S | PATCHES.md and one GameTest set per adapter (P7) |
+| Engine kernel | XL | clock, timing wheel, lazy regions, storage facade, pages, counter RNG, determinism tests, scale bench |
+| Journal | M | `mic_rtsim:journal` SavedData, operation ids, engine replay, acknowledgement and trimming |
+| JNI boundary and core bridge | L | four buffers, overflow ring, VarHandle hand-over, quotas, puppet registry, the two save mixins, taking-a-creature hooks |
+| Body-kind mapping | S | data loader, candidate resolution, the vanilla adapters |
+| Travel and flows | L | edges, legs, sampled travellers, the shared encounter index, cascade cancellation |
+| Knowledge | M | reports, witnesses, sentiment with caps and decay, gossip by carrier |
+| Settlements | M | adoption, census, plots, growth |
+| Economy | L | labour-cost solver from recipes, storehouse markets, currencies, exchange, flows, news, conservation asserts |
+| Treasury adapter | M | offer repricing, uses, restock mixin, gossip writer (if P19) |
+| `mic_rtsim_ribbits` | M | merchant and band adapters, the buff-goal mixin, house placement |
+| `mic_rtsim_carryon` | S | one event listener |
+| `mic_rtsim_iceandfire` + dragon rules | M | dragon adapter, flight steering, hunting legs, migration bookings |
+| `mic_rtsim_surveyor` | S | landmark writer against a remapped Surveyor |
 | CLI, bench, replay, viewer | M | headless runs, potato benches, flight recorder, HTML maps |
-| Ecology | L | species data, forage kernel, herds, migration, materialized members |
-| Civ | XL | cultures, factions, settlements, notables, plots, growth, ruins, Cobblemon adapters and dialogue |
-| Trade | L | goods, markets with clamps, caravans, treaties, Numismatics and table cloth adapters, postbox market |
-| Conflict | L | grievance ledger, escalation, war bands, raid director, Lanchester resolution |
-| Goblin entity + custom humanoid + TaCZ goal | L | GeckoLib models and animations, AI goals; the art is the bulk |
-| Dragons | M | dragon agent, hunting, IaF adapter and goals, bounded fire, In Control config |
-| Naval | L | lanes, ship classes and schematics, Sable adapter, crew AI with CBC, hull snapshot, radar mixin |
-| Industry | L | gauge snapshot, rate measurement, process sim, offline-buffer exchange, vault reconciliation |
-| History generation + worldgen placement + road feature | XL | fast-forward driver, structure placement, templates per culture |
-| Deep Time provider + event-log writer | M | after the shared library is agreed |
-| Space | XL | after a space mod is chosen |
+| Later: ecology L, conflict L, ships L, industry on `mic_rtsim_create` L, `mic_rtsim_destroy` S, `mic_rtsim_numismatics` S, history XL, `mic_rtsim_deeptime` M, cosmos XL, kaiju M | | |
 
-**Art and data** are the hidden bulk: building templates per culture and tier, ship schematics,
-goblin models, Cobblemon NPC classes and dialogue, and species definitions.
+**Removed from the baseline:** the goblin entity, the custom humanoid and its TaCZ body work, the
+dialogue screen, the Cobblemon adapters. **Data is the hidden bulk:** goods from item tags, cultures,
+body-kind files, later ship schematics and species.
 
----
+## 14. Phases
 
-## 10. Phases
-
-Each phase ends with something Ben can see in game, and with the perf gates from §3.1 green on the
-potato profile.
+Each phase ends with something Ben can see in game and with the perf gates (P24) green on the potato
+profile.
 
 | Phase | Builds | Exit test |
 |---|---|---|
-| **0. Spikes** | JNI hand-over bench; `bevy_ecs` vs plain columns at 10⁵ and 10⁶ rows; the same herd kernel in Java and Rust on the potato profile; a GameTest of the puppet protocol (no duplicates across save, reload and crash); a shared-library agreement with Deep Time; the first `mic_native` host built from a copy of Deep Time's natives pipeline; the pack-level potato harness with one baseline scenario | numbers written into this plan; the Rust choice holds up against them (or §2 is reopened); a baseline of the whole pack recorded before any sim exists |
-| **1. Kernel + ecology slice** | kernel, bridge, saves, `/rtsim` commands, Surveyor markers, herds of vanilla sheep migrating with the seasons | a herd of tens of thousands crosses the map over a season; walking in and out shows consistent animals; the 1-worker and N-worker state hashes match; bridge p99 ≤ 1 ms |
-| **2. Civ core** | settlements adopted from vanilla villages, Cobblemon civilians, reports, sentiment, noticeboards, dialogue that reflects memory | the §7.2 walkthrough works in game |
-| **3. Trade** | goods, markets, caravans carrying news, Numismatics accounts, table cloth stalls, the postbox market | the §7.3 walkthrough works |
-| **4. Conflict** | grievance from Destroy pollution and logging, envoys, war bands, raid director, goblins, bandits, TaCZ goal | the §7.4 walkthrough works |
-| **5. Dragons** | dragon agents, IaF adapter, hunting herds and livestock, bounties | the §7.5 walkthrough works |
-| **6. History + growth** | history fast-forward, sim-placed settlements, roads, ruins, building projects and plots | a new world starts with a generated history, browsable in `rtsim-viewer`; villages visibly grow over a play week |
-| **7. Naval** | lanes, ship classes, Sable adapter, crew, cannons, radar mixin | the §7.6 walkthrough works |
-| **8. Industry** | districts, gauge snapshots, process sim, offline-buffer cargo, reconciliation | the §7.7 walkthrough works |
-| **9. Deep Time** | Deep Time provider, event-log writer, shared natives, one native library | a Deep Time planet's history appears in Deep Time's viewer |
-| **10. Space** | after a space mod is chosen | |
-| **11. Evolution** | with Deep Time | |
+| **0. Spikes** | the first `mic_native` (pools, IO lane, governor, C ABI rules); the potato harness with a whole-pack baseline before any sim exists; `rtsim-cli bench scale` (SCALE.md §10); puppet GameTests (no duplicates across save, reload, crash, passengers and other mods' saves); journal GameTests (crash at each point of the save order); the storage bench, `bevy_ecs` against our own columns (P4); a caravan speed GameTest; a ribbit-village census on the pack's worldgen | numbers written into this plan and brought to Ben; the Rust choice holds against them, or §3 is reopened |
+| **1. Caravans and markets** | kernel, core bridge, journal, body kinds, knowledge, settlements, trade, travel, the treasury adapter, `mic_rtsim_ribbits`, `mic_rtsim_carryon` | §8.10 |
+| **2. Dragons** | ecology (hunger), `mic_rtsim_iceandfire`, migration bookings, flow hazards | §9 exit tests |
+| **Later** | in the order P11 settles: ships, herds, conflict, industry, kaiju, space, history | each module's walkthrough works in game |
+| **With Deep Time** | `mic_rtsim_deeptime`, the event-log writer, the natives move (§2) | a Deep Time planet's history appears in Deep Time's viewer |
 
-**Tests at every phase:**
-- `cargo test`, with property tests that check counts, goods and money are conserved across tier
-  moves;
-- deterministic replay;
-- GameTests for adapters;
-- one smoke test on the real pack server in the style of mic-climate's `smoke/`.
+**Tests at every phase:** `cargo test` with property tests for conservation, `fold` after `sample`, and
+the composition rule; deterministic replay with the stretch log; GameTests for every adapter; one smoke
+test on the real pack server. Builds and tests run on the laptop, niced, one heavy job at a time.
 
-Builds and tests run on the laptop, niced, one heavy job at a time.
+## 15. Risks
 
----
+1. **Puppet bookkeeping.** Duplicates or losses at chunk edges, crashes, passengers or another mod's
+   saves; puppets seen appearing on servers at simulation distance 10. Phase 0 writes the GameTests
+   first.
+2. **Journal edge cases** (P29). Phase 0 crashes the server at each point of the save order.
+3. **Economy drift** (Veloren: `MINIMUM_PRICE` is hit for almost every good, `replenish` creates stock,
+   `check_money` is commented out, and towns grew without bound in issue #2034). Ours anchors prices to
+   labour cost, conserves exactly, and tests for leaks, pumps and cobwebs (economy research §2).
+4. **Abstract and observed results diverge.** Tuned against real fights in GameTests.
+5. **Other mods' internals are not APIs.** Villager restock, Ribbits goals, Create fields and Surveyor's
+   intermediary names can change. Adapters stay small, version-checked and in PATCHES.md.
+6. **Too few ribbit villages** in Terralith and Tectonic swamps. The phase 0 census measures it.
+7. **Deep Time's format is pre-release** and exact-match. The provider sits behind a trait.
+8. **History time on a weak PC** adds to world creation. Benched before history ships.
+9. **Optimization agents change the mods adapters depend on.** PATCHES.md and contract tests catch it.
+10. **No slack on the weakest PCs** (§2.1). The sim falls further behind; `/micperf` shows it. The pack's
+    minimum spec must leave some slack.
 
-## 11. Risks and open questions
+## 16. What the prior art taught
 
-**Risks:**
-1. **Puppet bookkeeping.** Duplicates or losses at chunk edges, crashes or mod interference. Phase 0
-   writes the GameTest first.
-2. **Abstract and observed results diverge** (X4). Abstract resolution is tuned against real fights in
-   GameTests (§4.5).
-3. **Economy drift** (Veloren). Clamps everywhere, and property tests.
-4. **Cobblemon NPCs may not accept new behaviour types from mods.** If not, civilians use the custom
-   humanoid with our own dialogue screen.
-5. **Create internals are not an API.** `FactoryPanelBehaviour` fields, the offline buffer and the
-   table cloth owner can change with Create versions. The adapters are kept small and version-checked.
-6. **Sable sub-level to template capture** is unverified. If it fails, ship damage persists as a
-   hull-integrity number instead of holes.
-7. **Deep Time's format is exact-match and pre-release.** The provider breaks whenever Deep Time
-   changes. It sits behind the provider trait.
-8. **History generation time on a weak PC.** Deep Time's full 16k bake already takes about 21 minutes
-   on a 32-vCPU VM. History adds to world creation. The history bench belongs in phase 6's gates.
-9. **Optimization agents change the mods the adapters depend on.** The patch ledger and contract
-   tests (§1a.3) catch this.
-10. **No slack on the weakest PCs.** At the lowest priority, a PC whose two cores are always busy gives
-    the sim only a small share, so it falls further and further behind. `/micperf` shows the lag. The
-    pack's minimum spec must leave some slack.
+Veloren lessons come from the source-level research. Lessons marked "baseline" come from the first
+research pass and were not re-read; their numbers have been dropped.
 
-**Answered by Ben (2026-10-19):** Rust core; `mic_native` as the pack-wide host; MPL-2.0 for the
-host and shared crates.
-
-**Agreed with the Deep Time session (2026-10-19):**
-- bakes go on the foreground pool;
-- the host starts from a copy of Deep Time's natives, and Deep Time switches after its P1-19 gate;
-- pre-play history uses negative years (§8).
-
-**Still open:** which space mod to use, when phase 10 comes.
-
----
-
-## 12. What the prior art taught (research 2026-10-19)
-
-Sources were read where possible; community claims are marked in the research notes.
-
-| Lesson | Source | Where this plan applies it |
+| Lesson | Source | Where applied |
 |---|---|---|
-| Persist ids and small deltas; derive identity from a seed | Veloren `actor.rs`, MCA `FamilyTree` | §3.4, §3.6 |
-| Flat tables with generational ids; any id can vanish | Veloren `lib.rs` | §3.6 |
-| Rule plugins bind typed events; the host chooses each event's data access | Veloren `rule/mod.rs`, `event.rs` | §4.4 |
-| Stagger per-entity work by hash; never tick a whole population | Veloren, MCA `Village`, Dwarf Fortress | §3.3 |
-| Make logic dt-independent with hazard rates and closed-form catch-up | Veloren `ai/mod.rs`, Unloaded Activity | §3.3 |
-| Entities are projections of sim state; keep the sim object alive across unload | Veloren `tick.rs`, Create `Train` / `Carriage` | §5.1 |
-| Sleep and wake with deterministic merged wake lists; idle with intent plus prediction | Factorio FFF-67/364/421 | §3.3 timing wheel, §7.7 |
-| Parallel phases that do not depend on order, then a serial apply | CK3 dev diary, Dyson Sphere Program dev log | §3.5 |
-| Cap and prune every memory structure; drop unreferenced agents | Veloren `sentiment.rs`, DF cull, RimWorld | §3.6, §4.6 |
-| Teleport abstract flows; make them physical only when observed | Dwarf Fortress world activities | tiers, §3.2 |
-| Generate detail lazily but consistently; match entry and exit rates | Sunshine-Hill and Badler 2010 | §3.2, §3.4 |
-| Abstract results must never beat observed ones; clamp every runaway loop | X4 community, Veloren economy | §4.5, §7.3 |
+| Flat id-keyed tables; binary save with field names and defaults; atomic writes off the tick thread; names from seeds | Veloren `data/mod.rs`, `actor.rs:531-539` | §4.9, §4.4 |
+| Action combinators with priority `choose`; unloaded brains staggered by seed; parallel brains on a frozen snapshot | Veloren `ai/mod.rs`, `npc_ai/mod.rs` | §5.5, §4.3 |
+| Timetabled airships, but save the clock offset and route; force cruise altitude while unloaded | Veloren `airship_travel.rs`, `migrate.rs`, `simulate_npcs.rs` | §10.1 |
+| Bounded, decaying sentiment and reports with lifetimes, but capped, and never deleting the strongest feelings first; refill populations after a delay | Veloren `sentiment.rs`, `report.rs`, `architect.rs` | §5.6, §4.8 |
+| Handoff by ticking, not loaded chunks; persist cargo; carry real goods | what Veloren lacks | §6.1, §8.6 |
+| Prices from stock against cost anchors; conserve money; no global price board | economy research (Doran and Parberry, bazaarBot #17, Veloren economy, Gintis) | §8.4 |
+| Sleep and wake with merged wake lists | Factorio Friday Facts (baseline) | §4.3 |
+| Parallel phases that do not depend on order, then a serial apply | CK3 dev diary, Dyson Sphere Program dev log (baseline) | §4.7 |
+| Abstract flows, physical only when observed | Dwarf Fortress world activities (baseline) | §4.2 |
+| Generate detail lazily but consistently; match entry and exit rates | Sunshine-Hill and Badler 2010 (baseline) | §4.2 |
+| A pop is a group by design | Victoria 3 (SCALE.md §2); Stellaris pop groups UNVERIFIED | §4.4 |
 
-**Traps that killed similar projects, and our answer:**
-- **Whole-population scans per tick** (Veloren rules, DF line of sight, Bannerlord hourly ticks). We
-  use events, staggering and scheduled encounters.
-- **Unbounded history** (DF figures, RimWorld pawns). We cap everything and cull.
-- **Lossy handoff** (Veloren loses inventories). We use per-body capture adapters.
-- **Village life tied to loaded chunks** (MineColonies and Millénaire freeze and break at chunk
-  edges). Our engine does not care what is loaded.
-- **Drifting economies.** Clamps and conservation tests.
-- **Unmeasured per-rule cost** (CK3's 850,000 checks a month). `/rtsim perf` and CI bench deltas.
+**Traps that hurt similar projects:** whole-population scans every tick (Veloren's `sync_npcs`,
+`cleanup`, AI selection, `simulate_npcs` and load check); unbounded history (Dwarf Fortress figures,
+RimWorld pawns; baseline); lossy handoff (Veloren re-rolls merchant wares); village life tied to loaded
+chunks (MineColonies, Millénaire; baseline); unmeasured per-rule cost (CK3; baseline, number dropped).
+Our answers: events and scheduled encounters, caps and compaction, per-body capture, an engine that
+ignores what is loaded, and `/rtsim perf` with CI bench deltas.
 
-**Veloren's numbers, for scale:**
-- Veloren has no official rtsim benchmark.
-- Its simulated brains run every 10th tick. Its handoff and several rules scan every actor every tick,
-  and it clones all of its data for each save on the tick thread.
-- One third-party fork measured about 0.2 ms of rtsim per 1,000 NPCs. That is a single, noisy
-  measurement.
-- Our design avoids each of those per-tick whole-population costs.
+**Veloren's performance numbers:** none upstream. One fork reports about 0.2 ms per 1,000 simulated
+NPCs (second-hand, UNVERIFIED).
 
----
+## 17. Proposals waiting for Ben
 
-## Appendix A. Verified facts this plan relies on (2026-10-19)
+P1 to P10 are already in DECISIONS.md; they are restated briefly with what this plan adds. P11 onward
+are new. Each has a recommended option first.
 
-All were checked against the pinned jars (`mods/deep-time/smoke/mic/server/mods/`, the Prism
-instance), Create's `mc1.21.1/dev` source, or the local source trees. Everything else in the plan is
-marked unverified where it is used.
+| # | Proposal | Recommended | Alternatives | Needed by |
+|---|---|---|---|---|
+| P1 | Names and the split | `mic-rtsim`; mod ids `mic_rtsim` and `mic_rtsim_<mod>`; plugins carry Java and data only, rules live in generic modules | other names; plugins that may carry their own Rust rule crates | phase 0 |
+| P2 | Sim calendar | Serene Seasons' calendar (8-day sub-season by default), or mic-climate's `YearClock` in Deep Time worlds | the vanilla day count only | herds, growth |
+| P3 | The engine owns the truth; puppets never saved by vanilla | yes, as §6.1 (A9 and A10 already assume it) | vanilla saves entities and the engine reconciles | phase 0 |
+| P4 | Agent storage | settled by the phase 0 storage bench: `bevy_ecs` behind a facade with our own executor, or our own columns | | phase 0 |
+| P5 | Factory unit | one Create 6 logistics network; remote cargo as packages | per-machine or per-chunk units | industry |
+| P6 | History timing | at world creation, after Deep Time's bake when present | lazily, per region on first visit | history |
+| P7 | Patch ledger and contract tests | yes, for every reach into another mod; every MIC mod keeps one | rtsim only | phase 0 |
+| P8 | Bodies, structures and ports for later phases | candidates: Small Ships, Create Aeronautics Structures, the Seven Seas add-on (ships, ports); the Alex's Caves port (kaiju); Goblin's Tyranny (goblins); Illager Invasion (raiders); Naturalist (herds) | vanilla bodies only; abstract only | each later phase |
+| P9 | Economy tunables | `r`, `T` above its bound `2 × max d`, `k`; a Numismatics mint rule later | | phase 1 design gate |
+| P10 | The design-changing review fixes | approve the list below as applied | item by item | phase 0 |
+| P11 | Order of later phases | ships, ecology and herds, conflict, industry, history, kaiju, space; civilians only when Ben asks (C2) | herds first (they feed dragons and conflict), then ships; industry first | after phase 2 |
+| P12 | What dragons prey on in phase 2 | caravan flows, plus village livestock counted as market stock; wild herds wait for ecology | a minimal wild-herd model in phase 2; caravans only | phase 2 |
+| P13 | In Control fire-dragon rule | remove it in phase 2 so the sim owns every dragon | keep it and adopt each spawned dragon into the sim on join; keep it and leave untagged dragons alone | phase 2 |
+| P14 | Multiplayer attribution of unowned signals | direct acts per acting player; unowned signals such as pollution go to one shared "settlers" actor | add a claims or teams mod and attribute to the team; attribute each chunk to the player with most time or blocks there | conflict |
+| P15 | Body-kind format | datapack JSON at `data/<ns>/mic_rtsim/body_kind/<kind>.json`: ordered candidates (entity type, required mod, NBT template, adapter); first installed wins; vanilla last; no candidate means the kind stays abstract | server config TOML; fixed in each plugin's code | phase 1 |
+| P16 | Touring bands | bands tour ribbit villages as a flow, carry news like caravans, and play at each stop | also tour border human villages; also raise the host village's sentiment toward the band's home village | phase 1 |
+| P17 | Ribbit village growth | a market breakpoint: when stock and treasury stay above target for a TUNABLE time, the village books one house; it is placed when its chunk next loads, under the block quota, never over player blocks (at worst it appears at the edge of view distance); population steps up at that breakpoint, so markets stay piecewise-linear | houses only, population fixed in phase 1; defer growth to a later phase | phase 1 |
+| P18 | Phase 1 starting values | sentiment on vanilla's gossip scale (`GossipType` weights; villager hurt +25 minor negative, killed +25 major negative, trade +2), shared by ribbit villages and caravan owners; report lifetimes from Veloren (15, 5 and 1.5 in-game days); caravans of 1 trader and 2 llamas (vanilla); edges from Veloren's rule (4 nearest within 400 chunks); the rest TUNABLE and set from a soak at the design gate: ribbit caravan capacity, stay window, buff thresholds, growth threshold, path inefficiency, labour per recipe | Ben sets each by hand; plain placeholders | phase 1 design gate |
+| P19 | Sim sentiment and vanilla gossip | the bridge writes village sentiment into nearby villagers' gossip, so vanilla prices and iron golems carry it; vanilla gossip is read back | the sim applies per-player prices itself and leaves gossip and golems alone; read gossip, never write it | phase 1 |
+| P20 | Cargo in llama chests | a materialized caravan's llamas carry its sampled cargo in chests (3 × strength slots each); killing a llama drops it; robbery is a transfer with an operation id | cargo stays abstract and a killed trader drops a loot table scaled by cargo; cargo shown only as offers | phase 1 |
+| P21 | Currency exchange for players | traders and ribbit merchants at border markets offer emerald and amethyst trades at that market's rate | no player exchange in phase 1; exchange through Numismatics later | phase 1 |
+| P22 | When a village joins the sim | when its structure start is generated; caravans run between generated villages | precompute every village inside the world border at world creation, as `/locate` does, so caravans come from unexplored places; only villages a player has visited | phase 1 |
+| P23 | Ribbit merchant trades | through the ribbit treasury, like C14 | leave Ribbits' own trades and restock alone | phase 1 |
+| P24 | Performance and scale targets | keep §4.1's placeholders (bridge ≤ 1 ms p99; no heap objects beyond the buffers); pool sizes cores − 2, minimum 1; scale bench ranges by orders of magnitude (SCALE.md §10); Ben sets final numbers from phase 0 data | Ben sets them now; relative targets only (no measurable MSPT change against the no-sim baseline) | phase 0 |
+| P25 | Regions per province | chosen from the phase 0 bench among 4 × 4, 8 × 8 and 16 × 16 regions | Ben picks now | phase 0 |
+| P26 | A player's home, for targeting | the region where the player spent the most time recently (a decaying counter from position observations) | the respawn point; a claims mod | phase 2 |
+| P27 | Kaiju trigger | the first nuclear detonation observed in the world | the first device crafted; the first reactor reaching criticality (hooks UNVERIFIED) | kaiju |
+| P28 | Dragon damage with griefing off | no block damage; consequences through stock, prices and caravans | bounded engine-placed fire per raid; turn IaF griefing on | phase 2 |
+| P29 | Engine pages ahead of the world after a crash | keep the previous page generation until Minecraft's save completes; on load use the newest generation not ahead of the journal | write engine pages only after Minecraft's save completes; accept rare loss | phase 0 |
 
-- **Create 6.0.10**
-  - `GlobalRailwayManager.tick(level)` returns at once for any dimension other than the overworld. It
-    then ticks every train with no chunk check.
-  - A train stalls (`carriageWaitingForChunks`) only when a player rides it and the 16-block lookahead
-    is not entity-ticking.
-  - `CarriageEntityHandler` discards carriage entities in non-ticking chunks; `Carriage` and
-    `Train.storage` stay.
-  - Station arrival is graph-side. `StationUnloadedCondition` exists.
-  - `GlobalStation.runMailTransfer` writes to `GlobalPackagePort.offlineBuffer` when the postbox chunk
-    is unloaded.
-  - `RailwaySavedData` is `create_tracks`. `LogisticsNetworkSavedData` is `create_logistics`.
-  - `LogisticallyLinkedBehaviour.isValidLink` requires a loaded block entity.
-  - `FactoryPanelBehaviour` holds `targetedBy` (inputs with amounts), `recipeOutput`, `recipeAddress`,
-    `restockerPromises` and `network`. The target-stock field name is unchecked.
-  - `TableClothBlockEntity` has `owner: UUID` and a `priceTag` filter.
-  - `KineticNetwork` is runtime-only. `BlockStressValues.getImpact/getCapacity` exist.
-- **Sable 2.0.5 / Aeronautics 1.3.2**
-  - A ship is a `ServerSubLevel` in the same `Level`.
-  - The spawn sequence comes from `SableSpawnCommands.executeSpawnSchematicCommand`.
-  - `SubLevelHoldingChunkMap` freezes unloaded ships. `SubLevelLoadingTicketType` exists.
-- **Ice and Fire CE 2.1-beta.1**
-  - Entity classes, NBT keys and `IafDragonFlightManager.setFlightTarget(Vec3)` as listed in §6.
-  - Pack config `iaf-common.json`: dragon griefing off, `canDespawn` true, `targetSearchLength` 128,
-    `wanderFromHomeDistance` 40, `hungerTickRate` 3000.
-  - In Control already spawns desert fire dragons.
-- **Cobblemon 1.8.1**
-  - `NPCEntity` with `VariableStruct` data. `NPCClass` fields as listed in §6. The dialogue API
-    classes.
-  - Herd leader groups cap at 9.
-- **TaCZ:** a `LivingEntity` mixin makes every living entity an `IGunOperator`. There is no mob
-  shooting goal.
-- **Numismatics 1.1.0:** coin values 1, 8, 16, 64, 512 and 4,096 spurs. `GlobalBankManager.BANK` and
-  `BankAccount` by UUID.
-- **Surveyor 1.2.4:** `WorldLandmarks.of(Level)`, `Landmark.global`, `LandmarkComponentTypes`. Antique
-  Atlas 3.1.2 draws landmarks.
-- **Destroy (MIC fork, source):**
-  - Pollution is stored as NeoForge attachments.
-  - Per level: greenhouse, ozone depletion, acid rain. Per chunk: smog, radioactivity.
-  - It spreads and decays only in loaded chunks.
-  - PowerGrid has no emission signal.
-- **Deep Time:**
-  - finite Petroff-Guyou worlds, 13,312 × 6,656 (16k) or 26,112 × 13,056 (32k);
-  - pure-Java mmap reader `WorldData`;
-  - public API `DeepTimeClimate` (API_VERSION 4) and `DeepTimeSites`;
-  - event log writer ids 2+ reserved for civ;
-  - JNI via `jni =0.22.4` and rayon;
-  - 8 platform builds plus `x86-64-v3` variants picked by `cpuprobe`;
-  - not in the MIC pack (kept on a pack branch by decision of 2026-09-28).
+**P10: the review fixes applied in this plan (2026-10-19).** Already decided: the journal with
+operation ids (A9, §4.9), taking a creature leaves the sim (A10, §6.2), and the potato profile (A11,
+§2.1). Waiting for Ben: the live puppet registry and the `saveAsPassenger` mixin, ticking-based handoff
+and the "edge of the entity-ticking area" wording (§6.1); E and N run first rather than "never
+stretched" (§4.6); the corrected 2-core slack argument (§2.1); stretch decisions in the flight recorder
+(§4.7); the IO lane in place of a writer thread, four buffers, and no "one native library" phase (§2,
+§4.5, §14); buffer sizing, merging, overflow ring and VarHandles (§4.5); encounter generations, one
+shared index and cascade cancellation (§4.3); identity after deaths (§4.4); row budgets (§4.8);
+attribution as P14; train cargo on the next train (§10.4); Surveyor through Connector (§7); Mercury's
+flux (§10.6); the licence notes (§12); unsourced prior-art numbers dropped (§16); and the language
+corrections (§3.2).
+
+## Appendix A. Verified facts this plan relies on
+
+Checked on 2026-10-19 against the pinned jars (`mods/deep-time/smoke/mic/server/mods/`), the mapped
+NeoForge 1.21.1 source in the Gradle cache, Create's `mc1.21.1/dev` source, the pack files, or the local
+source trees. Facts from the 2026-10-19 review or another session say so.
+
+- **Vanilla 1.21.1** (mapped source):
+  - Gamerule `doTraderSpawning` (`GameRules.RULE_DO_TRADER_SPAWNING`, default true) gates
+    `WanderingTraderSpawner`. It checks every 1,200 ticks, tries every 24,000 ticks at 25% chance rising
+    by 25 to 75%, spawns two trader llamas within 4 blocks leashed to the trader, and sets
+    `setDespawnDelay(48000)`.
+  - `TraderLlama.maybeDespawn` copies its trader's despawn delay minus 1 and discards itself at 0 or
+    below; it never despawns when tamed, leashed to anything but a trader, or ridden by one player.
+    `Llama` strength is 1 to 5; `getInventoryColumns()` is the strength when chested.
+  - `Merchant` declares `getOffers`, `overrideOffers(MerchantOffers)` and `notifyTrade(MerchantOffer)`;
+    `AbstractVillager` implements them.
+  - `Villager.updateSpecialPrices(Player)` shifts each offer by reputation × price multiplier; Hero of
+    the Village lowers prices further. `Villager.getGossips()` is public; `GossipContainer` has
+    `add(UUID, GossipType, int)`, `remove` and `getReputation`.
+  - `GossipType` (weight, max, decay per day, decay per transfer): major_negative (−5, 100, 10, 10),
+    minor_negative (−1, 200, 20, 20), minor_positive (1, 25, 1, 5), major_positive (5, 20, 0, 20),
+    trading (1, 25, 2, 20). Villager hurt adds minor_negative 25, killed adds major_negative 25, a trade
+    adds trading 2. `DefendVillageTargetGoal` targets a player whose reputation with a nearby villager
+    is ≤ −100.
+  - `Entity.saveAsPassenger` writes the id and calls `saveWithoutId` without checking `shouldBeSaved`.
+  - `ServerLevel.isPositionEntityTicking(BlockPos)` exists; gamerule `spawnChunkRadius` defaults to 2;
+    wandering traders, trader llamas and villagers have `clientTrackingRange(10)`.
+  - Village structure set: spacing 34 chunks, separation 8.
+- **NeoForge 21.1:** `EntityJoinLevelEvent` is cancellable and reports `loadedFromDisk`;
+  `EntityLeaveLevelEvent`, `AnimalTameEvent`, `PlayerInteractEvent`, `ChunkEvent`,
+  `LivingIncomingDamageEvent` and `LivingDeathEvent` exist. There is no leash event.
+- **Carry On 2.2.6.13:** `tschipp.carryon.events.EntityPickupEvent(ServerPlayer player, Entity target)`,
+  cancellable, posted on `NeoForge.EVENT_BUS` before an entity pickup. Its blacklist is per entity type
+  (review).
+- **Ribbits 4.1.6** (NeoForge 1.21.1, LGPLv3, by YUNG; needs YUNG's API and GeckoLib):
+  - `RibbitEntity extends AgeableMob implements GeoEntity, Merchant`, with `getOffers()`,
+    `overrideOffers(MerchantOffers)`, `restock()`, `getHomePosition()`, and
+    `RibbitData(profession, umbrellaType, instrument)` through `setRibbitData`.
+  - Professions: nitwit, gardener, sorcerer, fisherman, merchant. Trades priced in amethyst:
+    `AmethystForItems`, `ItemsForAmethysts`, `ItemsAndAmethystsToItems`, `EnchantedItemForAmethyst`.
+  - Goals: GoHome, Stroll, Fish, WaterCrops, PlayMusic (a band around a `masterRibbit`), ApplyBuff.
+    `RibbitApplyBuffGoal` finds players with `Level.getNearbyPlayers` and applies a random effect with
+    `Player.addEffect`, with a buff cooldown.
+  - `ribbits:ribbit_village`: 14 house templates under `data/ribbits/structure/houses`; structure set
+    spacing 25 chunks, separation 8; swamp biomes only; kept 6 chunks from other village sets.
 - **Pack:**
-  - `structurify.json` disables Terralith villages (vanilla villages remain);
-  - `disable_villager_trading.js` removes villager trades;
-  - Serene Seasons ships no config (8-day sub-season default);
-  - ServerCore activation range is off;
-  - `rctmod-server.toml` caps trainers at 60.
-- **JVM:**
-  - FFM is final in Java 22 and preview in 21.
-  - The Vector API is incubating through JDK 25 and needs a launch flag.
-  - Valhalla value classes target a JDK 28 preview.
+  - `options.txt`: `simulationDistance:12`, `renderDistance:12`, `maxFps:120`, `enableVsync:true`.
+    Dedicated servers default to simulation distance 10.
+  - `disable_villager_trading.js` removes only armorer, librarian, toolsmith and weaponsmith trades,
+    through MoreJS 0.16.0. Other professions and wandering traders are untouched.
+  - `structurify.json` disables `terralith:fortified_village` and `terralith:fortified_desert_village`;
+    vanilla villages remain.
+  - `config/incontrol/spawner.json` spawns `iceandfire:fire_dragon` in the overworld (`persecond` 0.1,
+    `maxthis` 200) with no biome condition.
+  - `config/iceandfire/iaf-common.json`: dragon `griefing` false, `canDespawn` true,
+    `targetSearchLength` 128, `wanderFromHomeDistance` 40, `hungerTickRate` 3000.
+  - Mods: Carry On 2.2.6.13, Sinytra Connector 2.0.0-beta.17, Numismatics 1.1.0, Surveyor 1.2.4, Antique
+    Atlas 3.1.2, C2ME, Distant Horizons 3.3.1, Sodium, Lithium, ModernFix, FerriteCore, ServerCore,
+    Create Nuclear 1.3.2-beta.3, Ribbits 4.1.6, YUNG's API 5.1.9, GeckoLib 4.9.3, Ice and Fire CE
+    2.1-beta.1, In Control 10.3.0, Serene Seasons, Create 6.0.10, Sable 2.0.5, Create Aeronautics 1.3.2.
+  - Serene Seasons ships no config (8-day sub-season default). ServerCore activation range is off.
+- **Surveyor 1.2.4:** a Fabric jar whose `neoforge.mods.toml` is a Connector placeholder requiring
+  `connector`; LGPL-3.0-or-later. `WorldLandmarks.of(Level)`, `Landmark.global`,
+  `LandmarkComponentTypes`. Antique Atlas 3.1.2 draws landmarks.
+- **Create 6.0.10:** `GlobalRailwayManager.tick(level)` returns at once outside the overworld, then
+  ticks every train with no chunk check; a train stalls only when a player rides it and its lookahead is
+  not entity-ticking. `CarriageEntityHandler` discards carriage entities in non-ticking chunks while
+  `Carriage` and `Train.storage` stay; station arrival is graph-side; `StationUnloadedCondition` exists.
+  `GlobalStation.runMailTransfer` writes to `GlobalPackagePort.offlineBuffer` when the postbox chunk is
+  unloaded. `RailwaySavedData` is `create_tracks`, `LogisticsNetworkSavedData` is `create_logistics`.
+  `FactoryPanelBehaviour` holds `targetedBy`, `recipeOutput`, `recipeAddress`, `restockerPromises` and
+  `network` (target-stock field unchecked). `TableClothBlockEntity` has `owner: UUID` and a `priceTag`.
+  `BlockStressValues.getImpact/getCapacity` exist; `KineticNetwork` is runtime-only.
+- **Sable 2.0.5 / Create Aeronautics 1.3.2:** a ship is a `ServerSubLevel` in the same `Level`; the spawn
+  sequence comes from `SableSpawnCommands.executeSpawnSchematicCommand`; `SubLevelHoldingChunkMap`
+  freezes unloaded ships; `SubLevelLoadingTicketType` exists.
+- **Ice and Fire CE 2.1-beta.1:** entity classes, NBT keys and `IafDragonFlightManager.setFlightTarget`
+  as in §1.3.
+- **Numismatics 1.1.0:** coins worth 1, 8, 16, 64, 512 and 4,096 spurs; `GlobalBankManager.BANK` and
+  `BankAccount` by UUID; no coin recipe in the jar.
+- **TaCZ:** a `LivingEntity` mixin makes every living entity an `IGunOperator`; no mob shooting goal.
+- **Destroy (MIC fork, source):** pollution is NeoForge attachments; greenhouse, ozone depletion and acid
+  rain per level; smog and radioactivity per chunk; it spreads and decays only in loaded chunks.
+- **Deep Time** (Deep Time session and source): finite Petroff-Guyou worlds, 13,312 × 6,656 (16k) or
+  26,112 × 13,056 (32k); pure-Java mmap reader `WorldData`; API `DeepTimeClimate` (API_VERSION 4) and
+  `DeepTimeSites`; event log writer ids 2 and up reserved, with pre-play civ history in negative years as
+  writer 2 (X2); JNI via `jni =0.22.4` and rayon; 8 platform builds plus `x86-64-v3` variants picked by
+  `cpuprobe`; about 100 MB of terrain data per 16k planet with the timelapse dropped; a background bake
+  takes 30 to 45 min on a player's machine and peaks at 3.2 to 4.2 GB; not in the MIC pack yet.
+- **JVM:** JNA 5.14.0 ships with Minecraft (review). FFM is final in Java 22 and preview in 21. The
+  Vector API is incubating through JDK 25 and needs a launch flag. Valhalla value classes target a JDK 28
+  preview.
+- **Economy inputs** (economy research): emerald ore spawns only in mountain biomes in vanilla; budding
+  amethyst regrows clusters; trader llama movement attribute 0.175.
