@@ -52,7 +52,7 @@ fn changes(s: u64) -> Vec<(u64, Option<Vec<u8>>)> {
             .collect();
         out.push((key, Some(bytes)));
     }
-    if s % 4 == 0 {
+    if s.is_multiple_of(4) {
         out.push((mix(s ^ 0xdead) % KEYS, None));
     }
     out
@@ -99,16 +99,16 @@ fn saver(dir: &Path) -> ! {
     let mut s = store.save_seq();
     loop {
         s += 1;
-        if s % 3 == 0 {
+        if s.is_multiple_of(3) {
             store.commit_pending(batch(s), s).expect("pending save");
             // Leave some pending generations unconfirmed for a while.
-            if s % 9 != 0 {
+            if !s.is_multiple_of(9) {
                 store.confirm(s).expect("confirm");
             }
         } else {
             store.commit(batch(s), s).expect("save");
         }
-        if s % 25 == 0 {
+        if s.is_multiple_of(25) {
             store.checkpoint_now().expect("checkpoint");
         }
     }

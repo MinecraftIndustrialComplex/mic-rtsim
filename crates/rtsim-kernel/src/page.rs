@@ -1,22 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The incremental page store (SCALE.md §8, PLAN.md §4.9): pages are LZ4 with a CRC32, saves write
-//! only dirty pages, and the index of where each page lives is itself written incrementally.
+//! only dirty pages, and the index of where each page lives is itself paged and written
+//! incrementally, so neither a save's cost nor the store's memory grows with the world.
 //!
 //! # Layout of `<world>/rtsim/`
 //!
-//! - `seg-<n>.rts`: segments. Each save writes one, holding every page it wrote, back to back. A
-//!   segment is written once and never modified.
-//! - `manifest.rtm`: a **checkpoint** of the index: the generations, the segments, and for every
-//!   live page the segment, offset, lengths and CRC32 where it lives.
+//! - `seg-<n>.rts`: segments, written once and never modified. A **page segment** holds the pages
+//!   one save wrote, back to back. An **index segment** holds index blocks.
+//! - **Index blocks**: the location (segment, offset, lengths, CRC32) of each of
+//!   [`INDEX_BLOCK_PAGES`] consecutive page keys, stored like pages (LZ4 and CRC32). Only
+//!   [`DEFAULT_INDEX_CACHE_BLOCKS`] decoded blocks stay in memory, least recently used first out.
+//! - `manifest.rtm`: the **root**, written at each checkpoint: the generations, the segments with
+//!   their reference counts, where each index block lives, and the previous generation's entries
+//!   (P29). Its size is the number of blocks and segments, a few hundred bytes per million regions.
 //! - `mlog-<checkpoint>.rtl`: the **log** since that checkpoint, one CRC-framed record per save
-//!   (the pages it changed), per confirmation and per rollback.
+//!   (each page it changed, with where the page was and where it is now), per confirmation and
+//!   per rollback.
 //!
-//! A save appends one record whose size is the number of pages it changed, so its cost follows
-//! the dirty pages, not the world. When the log has grown as big as the checkpoint (and at least
-//! [`LOG_MIN_BYTES`]), the next save folds it into a new checkpoint: each checkpoint costs the
-//! whole index but comes after as many logged bytes, so the cost per save stays proportional to
-//! what it changed, amortized. (DECISIONS.md O9 recorded the old whole-manifest rewrite as a known
-//! limit; this replaces it.)
+//! A save appends one record whose size is the number of pages it changed. Changes since the last
+//! checkpoint stay in memory as an overlay over the blocks; when the overlay reaches
+//! [`OVERLAY_MAX_PAGES`] entries or the log [`LOG_MAX_BYTES`], the next save folds them in: it
+//! rewrites only the blocks they touch into a new index segment and writes a new root. A fold
+//! costs the blocks the overlay touched, never the whole index, so save cost follows the dirty
+//! pages and resident memory is the overlay plus the block cache, whatever the world's size.
+//! (DECISIONS.md O9 recorded the old whole-manifest rewrite as a known limit; this replaces it.)
 //!
 //! # Two generations (P29)
 //!
@@ -25,33 +32,37 @@
 //! between the two, [`PageStore::open_for_journal`] opens whichever generation is not ahead of the
 //! journal in Minecraft's save: the new one if Minecraft's save got the journal that far, the
 //! confirmed one otherwise ([`PageStore::rollback`]). [`PageStore::commit`] is a save that is
-//! confirmed at once, as before.
+//! confirmed at once, as before. The previous generation's entries are resident: they are the
+//! pages changed since the last confirmation, bounded by what happened, not by the world.
 //!
 //! # Crash safety, in Deep Time's order (deeptime-format `fsutil.rs`)
 //!
 //! - A segment is written to `<name>.tmp`, fsynced, renamed, and its folder fsynced, before any
-//!   record names it.
+//!   record or root names it.
 //! - A record is appended to the log and the log fsynced; that append is the moment the save
 //!   happens. A crash inside the append leaves a torn last record, which the next open cuts off
 //!   (the save did not happen). A record that fails its CRC with more records after it is
 //!   corruption, not a torn write, and the open stops with an error.
-//! - Superseded segments are deleted only after the record that stops naming them is durable.
-//! - A checkpoint is written like a segment (tmp, fsync, rename, fsync folder), and only then is
-//!   the log it replaces deleted.
+//! - A page segment is deleted only after the record that stops naming it is durable; an index
+//!   segment only after the root that stops naming it is durable. (A block on disk may still name
+//!   a deleted page segment, but the log's overlay names that page's newer place, and a lookup
+//!   reads the overlay first.)
+//! - A root is written like a segment, and only then is the log it replaces deleted.
 //! - On open, files the index does not name (a crashed save's segment, an old log, `.tmp` files)
 //!   are removed.
 //!
 //! **Why segments rather than a file per page:** an incremental save cannot overwrite a page file
 //! the current index still names, and one fsync per page would make a save of a thousand dirty
 //! regions a thousand fsyncs. A save costs two fsyncs (segment, log) whatever the page count.
-//! Segments whose current pages fall under half of their bytes are compacted: those pages are
-//! copied, still compressed and CRC-checked, into the next save's segment.
+//! Segments whose current pages fall under half of their bytes are compacted: those pages (or
+//! blocks) are copied, still compressed and CRC-checked, into the next segment.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::codec::{Reader, Writer};
 
@@ -66,16 +77,27 @@ const LOG_HEADER: u64 = 16;
 /// key u64, raw length u32, stored length u32, CRC32 u32.
 const RECORD_HEADER: u64 = 20;
 const MANIFEST_NAME: &str = "manifest.rtm";
+/// A segment's kind, in its header's flags.
+const SEG_PAGES: u16 = 0;
+const SEG_INDEX: u16 = 1;
 /// A segment under this size counts as small. PLACEHOLDER tunable.
 const SMALL_SEGMENT_BYTES: u64 = 1 << 20;
-/// More small segments than this, and the next save merges them all. PLACEHOLDER tunable. Bounds
-/// the file count when long-lived pages each sit in the small segment of the save that wrote them;
-/// each merge makes one bigger segment, so a page is copied about log(saves) times, as in an LSM
-/// tree's tiering.
+/// More small page segments than this, and the next save merges them all. PLACEHOLDER tunable.
+/// Bounds the file count when long-lived pages each sit in the small segment of the save that
+/// wrote them; each merge makes one bigger segment, so a page is copied about log(saves) times, as
+/// in an LSM tree's tiering.
 const MAX_SMALL_SEGMENTS: usize = 8;
-/// The log is folded into a new checkpoint once it holds this many bytes and at least as many as
-/// the checkpoint. PLACEHOLDER tunable.
-pub const LOG_MIN_BYTES: u64 = 256 << 10;
+const BLOCK_BITS: u32 = 9;
+/// Page keys per index block. PLACEHOLDER tunable: 512 locations of 24 bytes, 12 KiB decoded.
+pub const INDEX_BLOCK_PAGES: u64 = 1 << BLOCK_BITS;
+/// Decoded index blocks kept in memory unless [`PageStore::set_index_cache_blocks`] says
+/// otherwise: 1.5 MiB. PLACEHOLDER, part of the memory budget (A16).
+pub const DEFAULT_INDEX_CACHE_BLOCKS: usize = 128;
+/// Pages changed since the last checkpoint at which the next save folds them into the blocks.
+/// PLACEHOLDER tunable: about 0.8 MiB of overlay.
+pub const OVERLAY_MAX_PAGES: usize = 16_384;
+/// Log bytes at which the next save folds the log, whatever the overlay holds. PLACEHOLDER.
+pub const LOG_MAX_BYTES: u64 = 4 << 20;
 
 /// A page's identity. The engine packs (table, region) into it; the store only orders by it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -261,7 +283,8 @@ impl SaveBatch {
     }
 }
 
-/// Where a page lives. 24 bytes, so the index costs 32 bytes per page with its key.
+/// Where a page (or an index block) lives: 24 bytes. Segment 0 is never used, so a location with
+/// segment 0 marks an empty slot in an index block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PageLoc {
     /// Offset of the stored bytes in the segment file.
@@ -272,22 +295,123 @@ struct PageLoc {
     crc: u32,
 }
 
+const ABSENT: PageLoc = PageLoc {
+    offset: 0,
+    segment: 0,
+    raw_len: 0,
+    stored_len: 0,
+    crc: 0,
+};
+const LOC_BYTES: usize = 24;
+const BLOCK_MASK: u64 = INDEX_BLOCK_PAGES - 1;
+
+fn present(l: PageLoc) -> Option<PageLoc> {
+    (l.segment != 0).then_some(l)
+}
+
+fn encode_block(locs: &[PageLoc]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(locs.len() * LOC_BYTES);
+    for l in locs {
+        out.extend_from_slice(&l.offset.to_le_bytes());
+        out.extend_from_slice(&l.segment.to_le_bytes());
+        out.extend_from_slice(&l.raw_len.to_le_bytes());
+        out.extend_from_slice(&l.stored_len.to_le_bytes());
+        out.extend_from_slice(&l.crc.to_le_bytes());
+    }
+    out
+}
+
+fn decode_block(raw: &[u8]) -> Option<Box<[PageLoc]>> {
+    if raw.len() != INDEX_BLOCK_PAGES as usize * LOC_BYTES {
+        return None;
+    }
+    let u32_at =
+        |b: &[u8; LOC_BYTES], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().expect("4"));
+    Some(
+        raw.as_chunks::<LOC_BYTES>()
+            .0
+            .iter()
+            .map(|b| PageLoc {
+                offset: u64::from_le_bytes(b[0..8].try_into().expect("8")),
+                segment: u32_at(b, 8),
+                raw_len: u32_at(b, 12),
+                stored_len: u32_at(b, 16),
+                crc: u32_at(b, 20),
+            })
+            .collect(),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct SegmentInfo {
+    /// [`SEG_PAGES`] or [`SEG_INDEX`].
+    kind: u16,
     file_bytes: u64,
-    /// Pages of the current generation in this segment, and their record bytes.
+    /// Current pages (or index blocks) in this segment, and their record bytes.
     cur_pages: u64,
     cur_bytes: u64,
-    /// Every page that needs this segment: the current generation's, and those only the
-    /// confirmed generation still needs (P29). At zero the segment is dead.
+    /// Everything that needs this segment: current pages or blocks, and pages only the confirmed
+    /// generation still needs (P29). At zero the segment is dead.
     refs: u64,
+}
+
+/// Decoded index blocks, least recently used out.
+struct BlockCache {
+    blocks: HashMap<u64, (Box<[PageLoc]>, u64)>,
+    clock: u64,
+    cap: usize,
+}
+
+impl BlockCache {
+    fn get(&mut self, b: u64) -> Option<&[PageLoc]> {
+        self.clock += 1;
+        let clock = self.clock;
+        self.blocks.get_mut(&b).map(|e| {
+            e.1 = clock;
+            &*e.0
+        })
+    }
+
+    fn insert(&mut self, b: u64, data: Box<[PageLoc]>) {
+        if self.cap == 0 {
+            return;
+        }
+        if !self.blocks.contains_key(&b) && self.blocks.len() >= self.cap {
+            // A linear scan for the oldest: the cache holds a few hundred blocks at most, and a
+            // miss already costs a read and a decompression.
+            if let Some(&old) = self
+                .blocks
+                .iter()
+                .min_by_key(|(_, (_, stamp))| *stamp)
+                .map(|(k, _)| k)
+            {
+                self.blocks.remove(&old);
+            }
+        }
+        self.clock += 1;
+        self.blocks.insert(b, (data, self.clock));
+    }
+
+    fn remove(&mut self, b: u64) {
+        self.blocks.remove(&b);
+    }
+
+    fn heap_bytes(&self) -> usize {
+        self.blocks.capacity() * (std::mem::size_of::<(u64, (Box<[PageLoc]>, u64))>() + 1)
+            + self.blocks.len() * INDEX_BLOCK_PAGES as usize * std::mem::size_of::<PageLoc>()
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// What a commit did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommitStats {
     pub segment_bytes: u64,
-    /// Index bytes this save wrote: its log record plus a checkpoint if it wrote one.
+    /// Index bytes this save wrote: its log record, plus the blocks and root of a fold if it did
+    /// one.
     pub manifest_bytes: u64,
     pub pages_written: u64,
     pub pages_deleted: u64,
@@ -295,8 +419,10 @@ pub struct CommitStats {
     pub segments_removed: u64,
     /// The log record's bytes.
     pub log_bytes: u64,
-    /// A checkpoint's bytes, when this save folded the log into one; else 0.
+    /// When this save folded the log: the index segment's and the root's bytes; else 0.
     pub checkpoint_bytes: u64,
+    /// When this save folded the log: index blocks written.
+    pub index_blocks: u64,
 }
 
 /// Where a commit stops, for crash tests. Each is a point of the save order (module docs).
@@ -310,9 +436,9 @@ pub enum Fault {
     MidSegment,
     /// Half the log record is written and synced: a torn record.
     TornLog,
-    /// A checkpoint's temporary file is written but not renamed.
+    /// A fold's index segment is durable and the root's temporary file written, not renamed.
     MidCheckpoint,
-    /// The checkpoint is in place; the log it replaced was never deleted.
+    /// The new root is in place; the log it replaced and dead index segments were never deleted.
     AfterCheckpoint,
 }
 
@@ -323,7 +449,16 @@ pub struct Generation {
     pub obs_seq: u64,
 }
 
-/// One log record.
+/// One page's move: where it was before the record and where it is after (`None`: absent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Change {
+    key: PageKey,
+    old: Option<PageLoc>,
+    new: Option<PageLoc>,
+}
+
+/// One log record. Changes carry where pages were as well as where they go, so replaying a log
+/// never needs to read an index block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Rec {
     Commit {
@@ -334,12 +469,15 @@ enum Rec {
         /// The segment this save wrote, with its size.
         segment: Option<(u32, u64)>,
         /// In key order.
-        changes: Vec<(PageKey, Option<PageLoc>)>,
+        changes: Vec<Change>,
     },
     Confirm {
         save_seq: u64,
     },
-    Rollback,
+    /// Every page changed since the confirmed generation, back to where it was then.
+    Rollback {
+        changes: Vec<Change>,
+    },
 }
 
 const REC_COMMIT: u8 = 1;
@@ -369,6 +507,48 @@ fn get_loc(r: &mut Reader<'_>) -> crate::codec::Result<PageLoc> {
     })
 }
 
+fn put_changes(w: &mut Writer, changes: &[Change]) {
+    w.var_u64(changes.len() as u64);
+    let mut prev = 0u64;
+    for c in changes {
+        w.var_u64(c.key.0 - prev);
+        prev = c.key.0;
+        w.u8(u8::from(c.old.is_some()) | u8::from(c.new.is_some()) << 1);
+        if let Some(l) = &c.old {
+            put_loc(w, l);
+        }
+        if let Some(l) = &c.new {
+            put_loc(w, l);
+        }
+    }
+}
+
+fn get_changes(r: &mut Reader<'_>) -> crate::codec::Result<Vec<Change>> {
+    let n = r.var_u64()?;
+    let mut changes = Vec::with_capacity(n.min(1 << 20) as usize);
+    let mut key = 0u64;
+    for _ in 0..n {
+        key += r.var_u64()?;
+        let flags = r.u8()?;
+        let old = if flags & 1 != 0 {
+            Some(get_loc(r)?)
+        } else {
+            None
+        };
+        let new = if flags & 2 != 0 {
+            Some(get_loc(r)?)
+        } else {
+            None
+        };
+        changes.push(Change {
+            key: PageKey(key),
+            old,
+            new,
+        });
+    }
+    Ok(changes)
+}
+
 impl Rec {
     fn encode(&self) -> Vec<u8> {
         let mut w = Writer::with_capacity(64);
@@ -387,25 +567,16 @@ impl Rec {
                 let (seg, bytes) = segment.map_or((0, 0), |(s, b)| (u64::from(s) + 1, b));
                 w.var_u64(seg);
                 w.var_u64(bytes);
-                w.var_u64(changes.len() as u64);
-                let mut prev = 0u64;
-                for (k, l) in changes {
-                    w.var_u64(k.0 - prev);
-                    prev = k.0;
-                    match l {
-                        Some(l) => {
-                            w.u8(1);
-                            put_loc(&mut w, l);
-                        }
-                        None => w.u8(0),
-                    }
-                }
+                put_changes(&mut w, changes);
             }
             Rec::Confirm { save_seq } => {
                 w.u8(REC_CONFIRM);
                 w.var_u64(*save_seq);
             }
-            Rec::Rollback => w.u8(REC_ROLLBACK),
+            Rec::Rollback { changes } => {
+                w.u8(REC_ROLLBACK);
+                put_changes(&mut w, changes);
+            }
         }
         w.into_bytes()
     }
@@ -428,29 +599,20 @@ impl Rec {
                         bytes,
                     )),
                 };
-                let n = r.var_u64()?;
-                let mut changes = Vec::with_capacity(n.min(1 << 20) as usize);
-                let mut key = 0u64;
-                for _ in 0..n {
-                    key += r.var_u64()?;
-                    let l = match r.u8()? {
-                        0 => None,
-                        _ => Some(get_loc(&mut r)?),
-                    };
-                    changes.push((PageKey(key), l));
-                }
                 Rec::Commit {
                     save_seq,
                     obs_seq,
                     pending,
                     segment,
-                    changes,
+                    changes: get_changes(&mut r)?,
                 }
             }
             REC_CONFIRM => Rec::Confirm {
                 save_seq: r.var_u64()?,
             },
-            REC_ROLLBACK => Rec::Rollback,
+            REC_ROLLBACK => Rec::Rollback {
+                changes: get_changes(&mut r)?,
+            },
             k => {
                 return Err(crate::codec::CodecError::Invalid(format!(
                     "log record kind {k}"
@@ -474,18 +636,25 @@ pub struct PageStore {
     /// The highest save number ever used: a rolled-back number is never reused.
     last_seq: u64,
     next_segment: u32,
-    pages: HashMap<PageKey, PageLoc>,
+    /// Live pages in the current generation.
+    npages: u64,
+    /// Pages changed since the last checkpoint: where they are now (`None`: deleted). Read before
+    /// the blocks.
+    overlay: HashMap<PageKey, Option<PageLoc>>,
     /// For each page changed since the confirmed generation: where it lived then (`None`: it did
     /// not exist). Empty when nothing is pending.
     prev: HashMap<PageKey, Option<PageLoc>>,
+    /// Where each index block lives, as of the last checkpoint.
+    blocks: BTreeMap<u64, PageLoc>,
+    cache: Mutex<BlockCache>,
     segments: BTreeMap<u32, SegmentInfo>,
-    /// The checkpoint's number (0: none yet) and size; the log file is named after it.
+    /// The checkpoint's number (0: none yet) and the root's size; the log file is named after it.
     ckpt_id: u64,
     ckpt_bytes: u64,
     /// Bytes in the log file, header included; 0 when there is no log file.
     log_bytes: u64,
     log: Option<File>,
-    files: HashMap<u32, File>,
+    files: Mutex<HashMap<u32, File>>,
     poisoned: bool,
     fault: Option<Fault>,
 }
@@ -504,22 +673,29 @@ impl PageStore {
             confirmed: Generation::default(),
             last_seq: 0,
             next_segment: 1,
-            pages: HashMap::new(),
+            npages: 0,
+            overlay: HashMap::new(),
             prev: HashMap::new(),
+            blocks: BTreeMap::new(),
+            cache: Mutex::new(BlockCache {
+                blocks: HashMap::new(),
+                clock: 0,
+                cap: DEFAULT_INDEX_CACHE_BLOCKS,
+            }),
             segments: BTreeMap::new(),
             ckpt_id: 0,
             ckpt_bytes: 0,
             log_bytes: 0,
             log: None,
-            files: HashMap::new(),
+            files: Mutex::new(HashMap::new()),
             poisoned: false,
             fault: None,
         };
-        // Only a checkpoint that is certainly absent means "start from empty". Any other failure
-        // to read it must stop here: treating it as absent would make every segment a stray.
+        // Only a root that is certainly absent means "start from empty". Any other failure to
+        // read it must stop here: treating it as absent would make every segment a stray.
         let manifest = store.dir.join(MANIFEST_NAME);
         match fs::read(&manifest) {
-            Ok(bytes) => store.parse_checkpoint(&manifest, &bytes)?,
+            Ok(bytes) => store.parse_root(&manifest, &bytes)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
                 return Err(PageError::Io {
@@ -596,22 +772,55 @@ impl PageStore {
     }
 
     pub fn len(&self) -> usize {
-        self.pages.len()
+        self.npages as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pages.is_empty()
+        self.npages == 0
     }
 
+    /// Whether the store holds the page. May read an index block; an IO error reads as absent
+    /// (a [`PageStore::get`] of the page reports it).
     pub fn contains(&self, key: PageKey) -> bool {
-        self.pages.contains_key(&key)
+        matches!(self.lookup(key), Ok(Some(_)))
     }
 
+    /// Every page key, in order. Reads every index block (it costs the whole index, for whole-world
+    /// passes and tools). Panics on an IO error; [`PageStore::try_keys`] returns it.
     pub fn keys(&self) -> impl Iterator<Item = PageKey> + '_ {
-        self.pages.keys().copied()
+        self.try_keys()
+            .unwrap_or_else(|e| panic!("reading the page index: {e}"))
+            .into_iter()
     }
 
-    /// Bytes on disk: every live segment, the checkpoint and the log.
+    /// Every page key, in order, reading every index block without disturbing the cache.
+    pub fn try_keys(&self) -> Result<Vec<PageKey>> {
+        let mut keys = std::collections::BTreeSet::new();
+        for (&b, &bloc) in &self.blocks {
+            let cached = lock(&self.cache)
+                .get(b)
+                .map(|d| d.to_vec().into_boxed_slice());
+            let data = match cached {
+                Some(d) => d,
+                None => self.read_block(bloc)?,
+            };
+            for (i, l) in data.iter().enumerate() {
+                if l.segment != 0 {
+                    keys.insert(PageKey(b << BLOCK_BITS | i as u64));
+                }
+            }
+        }
+        for (k, v) in &self.overlay {
+            if v.is_some() {
+                keys.insert(*k);
+            } else {
+                keys.remove(k);
+            }
+        }
+        Ok(keys.into_iter().collect())
+    }
+
+    /// Bytes on disk: every live segment, the root and the log.
     pub fn disk_bytes(&self) -> u64 {
         self.segments.values().map(|s| s.file_bytes).sum::<u64>() + self.ckpt_bytes + self.log_bytes
     }
@@ -620,17 +829,42 @@ impl PageStore {
         self.segments.len()
     }
 
-    /// Bytes the in-memory index holds: it is resident always (SCALE.md §8), one entry per page.
+    /// Bytes the store holds in memory: the overlay, the previous generation's entries, the
+    /// block directory, the block cache and the segment table. None of it grows with the number
+    /// of pages; the overlay and the previous generation grow with what changed.
     pub fn heap_bytes(&self) -> usize {
-        let entry = std::mem::size_of::<(PageKey, PageLoc)>() + 1;
-        self.pages.capacity() * entry
-            + self.prev.capacity() * (std::mem::size_of::<(PageKey, Option<PageLoc>)>() + 1)
+        let entry = std::mem::size_of::<(PageKey, Option<PageLoc>)>() + 1;
+        self.overlay.capacity() * entry
+            + self.prev.capacity() * entry
+            + self.blocks.len() * (std::mem::size_of::<(u64, PageLoc)>() + 16)
+            + lock(&self.cache).heap_bytes()
             + self.segments.len() * (std::mem::size_of::<(u32, SegmentInfo)>() + 16)
     }
 
-    /// Bytes in the log since the last checkpoint, and the checkpoint's size.
+    /// Bytes in the log since the last checkpoint, and the root's size.
     pub fn index_file_bytes(&self) -> (u64, u64) {
         (self.log_bytes, self.ckpt_bytes)
+    }
+
+    /// Index blocks on disk, and how many are decoded in memory.
+    pub fn index_blocks(&self) -> (usize, usize) {
+        (self.blocks.len(), lock(&self.cache).blocks.len())
+    }
+
+    /// How many decoded index blocks to keep in memory (0 keeps none: every lookup outside the
+    /// overlay reads its block).
+    pub fn set_index_cache_blocks(&mut self, blocks: usize) {
+        let mut c = lock(&self.cache);
+        c.cap = blocks;
+        while c.blocks.len() > blocks {
+            let oldest = c
+                .blocks
+                .iter()
+                .min_by_key(|(_, (_, s))| *s)
+                .map(|(k, _)| *k)
+                .expect("non-empty");
+            c.blocks.remove(&oldest);
+        }
     }
 
     #[doc(hidden)]
@@ -641,12 +875,12 @@ impl PageStore {
     /// Where the page lives on disk now, for a read on another thread (the host's IO lane):
     /// [`PageLocation::read`] needs no access to the store. A location stays readable until a
     /// later commit drops its segment; a read that loses that race fails and is simply retried
-    /// through [`PageStore::get`].
+    /// through [`PageStore::get`]. May read an index block; `None` on an IO error.
     pub fn locate(&self, key: PageKey) -> Option<PageLocation> {
         if self.poisoned {
             return None;
         }
-        let loc = *self.pages.get(&key)?;
+        let loc = self.lookup(key).ok()??;
         Some(PageLocation {
             path: self.segment_path(loc.segment),
             segment: u64::from(loc.segment),
@@ -670,22 +904,44 @@ impl PageStore {
         self.dir.join(format!("mlog-{id:016x}.rtl"))
     }
 
-    fn file(&mut self, seq: u32) -> Result<&mut File> {
-        if !self.files.contains_key(&seq) {
-            let path = self.segment_path(seq);
-            let f = File::open(&path).map_err(io(&path))?;
-            self.files.insert(seq, f);
-        }
-        Ok(self.files.get_mut(&seq).expect("inserted above"))
-    }
-
-    fn read_stored(&mut self, loc: PageLoc) -> Result<Vec<u8>> {
+    fn read_stored(&self, loc: PageLoc) -> Result<Vec<u8>> {
         let path = self.segment_path(loc.segment);
-        let f = self.file(loc.segment)?;
+        let mut files = lock(&self.files);
+        let f = match files.entry(loc.segment) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(File::open(&path).map_err(io(&path))?)
+            }
+        };
         f.seek(SeekFrom::Start(loc.offset)).map_err(io(&path))?;
         let mut buf = vec![0; loc.stored_len as usize];
         f.read_exact(&mut buf).map_err(io(&path))?;
         Ok(buf)
+    }
+
+    fn read_block(&self, bloc: PageLoc) -> Result<Box<[PageLoc]>> {
+        let stored = self.read_stored(bloc)?;
+        let raw = decode_stored(&stored, bloc.raw_len, bloc.crc, "index block")?;
+        decode_block(&raw).ok_or_else(|| PageError::Format("index block size".into()))
+    }
+
+    /// Where a page of the current generation lives: the overlay, else its index block.
+    fn lookup(&self, key: PageKey) -> Result<Option<PageLoc>> {
+        if let Some(v) = self.overlay.get(&key) {
+            return Ok(*v);
+        }
+        let b = key.0 >> BLOCK_BITS;
+        let Some(&bloc) = self.blocks.get(&b) else {
+            return Ok(None);
+        };
+        let i = (key.0 & BLOCK_MASK) as usize;
+        if let Some(data) = lock(&self.cache).get(b) {
+            return Ok(present(data[i]));
+        }
+        let data = self.read_block(bloc)?;
+        let r = present(data[i]);
+        lock(&self.cache).insert(b, data);
+        Ok(r)
     }
 
     /// The page's bytes, CRC-checked and decompressed, or `None` if the store has no such page.
@@ -693,7 +949,7 @@ impl PageStore {
         if self.poisoned {
             return Err(PageError::Poisoned);
         }
-        let Some(&loc) = self.pages.get(&key) else {
+        let Some(loc) = self.lookup(key)? else {
             return Ok(None);
         };
         let stored = self.read_stored(loc)?;
@@ -734,17 +990,27 @@ impl PageStore {
         if self.confirmed == self.current() {
             return Ok(false);
         }
-        self.log_and_apply(Rec::Rollback).map(|_| true)
+        let mut keys: Vec<PageKey> = self.prev.keys().copied().collect();
+        keys.sort_unstable();
+        let mut changes = Vec::with_capacity(keys.len());
+        for key in keys {
+            changes.push(Change {
+                key,
+                old: self.lookup(key)?,
+                new: self.prev[&key],
+            });
+        }
+        self.log_and_apply(Rec::Rollback { changes }).map(|_| true)
     }
 
-    /// Folds the log into a new checkpoint now (a clean shutdown can call it so the next open
-    /// replays nothing). Returns the checkpoint's bytes.
+    /// Folds the log into the index blocks and a new root now (a clean shutdown can call it so
+    /// the next open replays nothing). Returns the bytes it wrote.
     pub fn checkpoint_now(&mut self) -> Result<u64> {
         if self.poisoned {
             return Err(PageError::Poisoned);
         }
         self.poisoned = true;
-        let n = self.checkpoint()?;
+        let (n, _) = self.checkpoint()?;
         self.poisoned = false;
         Ok(n)
     }
@@ -759,7 +1025,9 @@ impl PageStore {
         }
         stats.segments_removed = self.delete_segments(dead)?;
         if self.checkpoint_due() {
-            stats.checkpoint_bytes = self.checkpoint()?;
+            let (bytes, blocks) = self.checkpoint()?;
+            stats.checkpoint_bytes = bytes;
+            stats.index_blocks = blocks;
         }
         stats.manifest_bytes = stats.log_bytes + stats.checkpoint_bytes;
         self.poisoned = false;
@@ -779,20 +1047,21 @@ impl PageStore {
         let seg_seq = self.next_segment;
         let mut stats = CommitStats::default();
 
-        // Compaction candidates: segments whose current pages fill under half of them, and every
-        // small segment once there are too many. Their current pages are found from the segments'
-        // own record headers, so nothing here walks the whole index.
+        // Compaction candidates: page segments whose current pages fill under half of them, and
+        // every small page segment once there are too many. Their current pages are found from
+        // the segments' own record headers, so nothing here walks the whole index.
         let small = self
             .segments
             .values()
-            .filter(|s| s.file_bytes < SMALL_SEGMENT_BYTES)
+            .filter(|s| s.kind == SEG_PAGES && s.file_bytes < SMALL_SEGMENT_BYTES)
             .count();
         let merge_small = small > MAX_SMALL_SEGMENTS;
         let compact: Vec<u32> = self
             .segments
             .iter()
             .filter(|(_, s)| {
-                s.cur_pages > 0
+                s.kind == SEG_PAGES
+                    && s.cur_pages > 0
                     && (s.cur_bytes * 2 < s.file_bytes - SEGMENT_HEADER
                         || (merge_small && s.file_bytes < SMALL_SEGMENT_BYTES))
             })
@@ -803,9 +1072,9 @@ impl PageStore {
         let mut seg = Writer::with_capacity(4096);
         seg.raw(&SEGMENT_MAGIC);
         seg.u16(FORMAT_VERSION);
-        seg.u16(0);
+        seg.u16(SEG_PAGES);
         seg.u64(u64::from(seg_seq));
-        let mut changes: BTreeMap<PageKey, Option<PageLoc>> = BTreeMap::new();
+        let mut changes: BTreeMap<PageKey, Change> = BTreeMap::new();
         let push = |seg: &mut Writer, key: PageKey, raw_len: u32, crc: u32, stored: &[u8]| {
             seg.u64(key.0);
             seg.u32(raw_len);
@@ -822,26 +1091,41 @@ impl PageStore {
             }
         };
         for (key, change) in &batch.changes {
+            let old = self.lookup(*key)?;
             match change {
                 Some(p) => {
-                    let loc = push(&mut seg, *key, p.raw_len, p.crc, &p.stored);
-                    changes.insert(*key, Some(loc));
+                    let new = push(&mut seg, *key, p.raw_len, p.crc, &p.stored);
+                    changes.insert(
+                        *key,
+                        Change {
+                            key: *key,
+                            old,
+                            new: Some(new),
+                        },
+                    );
                     stats.pages_written += 1;
                 }
                 None => {
-                    if self.pages.contains_key(key) {
-                        changes.insert(*key, None);
+                    if old.is_some() {
+                        changes.insert(
+                            *key,
+                            Change {
+                                key: *key,
+                                old,
+                                new: None,
+                            },
+                        );
                         stats.pages_deleted += 1;
                     }
                 }
             }
         }
-        let mut moved: Vec<(PageKey, u32, u32, Vec<u8>)> = Vec::new();
+        let mut moved: Vec<(PageKey, PageLoc, Vec<u8>)> = Vec::new();
         for &c in &compact {
             let path = self.segment_path(c);
             let bytes = fs::read(&path).map_err(io(&path))?;
             for (key, loc, stored) in segment_records(&path, c, &bytes)? {
-                if self.pages.get(&key) == Some(&loc) && !batch.changes.contains_key(&key) {
+                if !batch.changes.contains_key(&key) && self.lookup(key)? == Some(loc) {
                     let actual = crc32fast::hash(stored);
                     if actual != loc.crc {
                         return Err(PageError::Crc {
@@ -850,14 +1134,21 @@ impl PageStore {
                             actual,
                         });
                     }
-                    moved.push((key, loc.raw_len, loc.crc, stored.to_vec()));
+                    moved.push((key, loc, stored.to_vec()));
                 }
             }
         }
         moved.sort_by_key(|m| m.0);
-        for (key, raw_len, crc, stored) in moved {
-            let loc = push(&mut seg, key, raw_len, crc, &stored);
-            changes.insert(key, Some(loc));
+        for (key, old, stored) in moved {
+            let new = push(&mut seg, key, old.raw_len, old.crc, &stored);
+            changes.insert(
+                key,
+                Change {
+                    key,
+                    old: Some(old),
+                    new: Some(new),
+                },
+            );
             stats.pages_compacted += 1;
         }
         let wrote_segment = stats.pages_written + stats.pages_compacted > 0;
@@ -881,17 +1172,18 @@ impl PageStore {
             return Err(PageError::Injected);
         }
 
-        // 2. The log record, then the index in memory; 3. cleanup; 4. maybe a checkpoint.
+        // 2. The log record, then the index in memory; 3. cleanup; 4. maybe a fold.
         let rec = Rec::Commit {
             save_seq,
             obs_seq,
             pending,
             segment: wrote_segment.then_some((seg_seq, seg.len() as u64)),
-            changes: changes.into_iter().collect(),
+            changes: changes.into_values().collect(),
         };
         let s = self.log_and_apply(rec)?;
         stats.log_bytes = s.log_bytes;
         stats.checkpoint_bytes = s.checkpoint_bytes;
+        stats.index_blocks = s.index_blocks;
         stats.manifest_bytes = s.manifest_bytes;
         stats.segments_removed = s.segments_removed;
         Ok(stats)
@@ -901,7 +1193,7 @@ impl PageStore {
         let s = self
             .segments
             .get_mut(&l.segment)
-            .expect("a page names a known segment");
+            .expect("a location names a known segment");
         s.refs += 1;
         if cur {
             s.cur_pages += 1;
@@ -913,7 +1205,7 @@ impl PageStore {
         let s = self
             .segments
             .get_mut(&l.segment)
-            .expect("a page names a known segment");
+            .expect("a location names a known segment");
         s.refs -= 1;
         if cur {
             s.cur_pages -= 1;
@@ -946,17 +1238,16 @@ impl PageStore {
                     self.segments.insert(
                         seq,
                         SegmentInfo {
+                            kind: SEG_PAGES,
                             file_bytes: bytes,
                             ..SegmentInfo::default()
                         },
                     );
                     self.next_segment = self.next_segment.max(seq + 1);
                 }
-                for &(key, new) in changes {
-                    let old = match new {
-                        Some(l) => self.pages.insert(key, l),
-                        None => self.pages.remove(&key),
-                    };
+                for &Change { key, old, new } in changes {
+                    self.overlay.insert(key, new);
+                    self.npages = self.npages + u64::from(new.is_some()) - u64::from(old.is_some());
                     if let Some(n) = new {
                         self.addref(n, true);
                     }
@@ -984,30 +1275,38 @@ impl PageStore {
                     self.confirmed = self.current();
                 }
             }
-            Rec::Rollback => {
-                for (key, old) in std::mem::take(&mut self.prev) {
-                    if let Some(c) = self.pages.remove(&key) {
+            Rec::Rollback { changes } => {
+                for &Change { key, old, new } in changes {
+                    self.overlay.insert(key, new);
+                    self.npages = self.npages + u64::from(new.is_some()) - u64::from(old.is_some());
+                    if let Some(c) = old {
                         self.unref(c, true, &mut touched);
                     }
-                    if let Some(o) = old {
-                        self.unref(o, false, &mut touched);
-                        self.pages.insert(key, o);
-                        self.addref(o, true);
+                    if let Some(r) = new {
+                        // The confirmed generation's entry becomes the current one.
+                        self.unref(r, false, &mut touched);
+                        self.addref(r, true);
                     }
                 }
+                self.prev.clear();
                 self.save_seq = self.confirmed.save_seq;
                 self.obs_seq = self.confirmed.obs_seq;
             }
         }
+        self.collect_dead(touched)
+    }
+
+    fn collect_dead(&mut self, mut touched: Vec<u32>) -> Vec<u32> {
         touched.sort_unstable();
         touched.dedup();
         let dead: Vec<u32> = touched
             .into_iter()
             .filter(|s| self.segments.get(s).is_some_and(|i| i.refs == 0))
             .collect();
+        let mut files = lock(&self.files);
         for s in &dead {
             self.segments.remove(s);
-            self.files.remove(s);
+            files.remove(s);
         }
         dead
     }
@@ -1074,23 +1373,139 @@ impl PageStore {
     }
 
     fn checkpoint_due(&self) -> bool {
-        self.ckpt_id == 0 || self.log_bytes >= self.ckpt_bytes.max(LOG_MIN_BYTES)
+        self.ckpt_id == 0
+            || self.overlay.len() >= OVERLAY_MAX_PAGES
+            || self.log_bytes >= LOG_MAX_BYTES
     }
 
-    /// Writes a checkpoint of the whole index, then deletes the log it replaces.
-    fn checkpoint(&mut self) -> Result<u64> {
+    /// Folds the overlay into the index blocks it touches (written into a new index segment,
+    /// with the live blocks of index segments under half used), writes a new root, then deletes
+    /// the old log and dead index segments. Returns (bytes written, blocks written).
+    fn checkpoint(&mut self) -> Result<(u64, u64)> {
         let id = self.ckpt_id + 1;
-        let bytes = self.encode_checkpoint(id);
+        let mut touched: BTreeMap<u64, Vec<(usize, Option<PageLoc>)>> = BTreeMap::new();
+        for (k, v) in &self.overlay {
+            touched
+                .entry(k.0 >> BLOCK_BITS)
+                .or_default()
+                .push(((k.0 & BLOCK_MASK) as usize, *v));
+        }
+        // Index segments to empty into this one: those under half used, and every small one once
+        // there are too many (as for page segments), so their number stays bounded.
+        let small = self
+            .segments
+            .values()
+            .filter(|s| s.kind == SEG_INDEX && s.file_bytes < SMALL_SEGMENT_BYTES)
+            .count();
+        let merge_small = small > MAX_SMALL_SEGMENTS;
+        let sparse: Vec<u32> = self
+            .segments
+            .iter()
+            .filter(|(_, s)| {
+                s.kind == SEG_INDEX
+                    && (s.cur_bytes * 2 < s.file_bytes - SEGMENT_HEADER
+                        || (merge_small && s.file_bytes < SMALL_SEGMENT_BYTES))
+            })
+            .map(|(&k, _)| k)
+            .collect();
+        if !sparse.is_empty() {
+            for (&b, l) in &self.blocks {
+                if sparse.contains(&l.segment) {
+                    touched.entry(b).or_default();
+                }
+            }
+        }
+
+        let seg_seq = self.next_segment;
+        let mut seg = Writer::with_capacity(4096);
+        seg.raw(&SEGMENT_MAGIC);
+        seg.u16(FORMAT_VERSION);
+        seg.u16(SEG_INDEX);
+        seg.u64(u64::from(seg_seq));
+        let mut rewritten: Vec<(u64, Option<PageLoc>, Box<[PageLoc]>)> = Vec::new();
+        for (b, entries) in touched {
+            let cached = lock(&self.cache)
+                .get(b)
+                .map(|d| d.to_vec().into_boxed_slice());
+            let mut data = match (cached, self.blocks.get(&b)) {
+                (Some(d), _) => d,
+                (None, Some(&bloc)) => self.read_block(bloc)?,
+                (None, None) => vec![ABSENT; INDEX_BLOCK_PAGES as usize].into_boxed_slice(),
+            };
+            for (i, v) in entries {
+                data[i] = v.unwrap_or(ABSENT);
+            }
+            if data.iter().all(|l| l.segment == 0) {
+                rewritten.push((b, None, data));
+                continue;
+            }
+            let enc = EncodedPage::encode(&encode_block(&data));
+            seg.u64(b);
+            seg.u32(enc.raw_len);
+            seg.u32(enc.stored.len() as u32);
+            seg.u32(enc.crc);
+            let offset = seg.len() as u64;
+            seg.raw(&enc.stored);
+            let loc = PageLoc {
+                offset,
+                segment: seg_seq,
+                raw_len: enc.raw_len,
+                stored_len: enc.stored.len() as u32,
+                crc: enc.crc,
+            };
+            rewritten.push((b, Some(loc), data));
+        }
+        let blocks_written = rewritten.iter().filter(|r| r.1.is_some()).count() as u64;
+        let mut written = 0u64;
+        // 1. The index segment, durable before the root names it.
+        if blocks_written > 0 {
+            write_atomic(&self.segment_path(seg_seq), seg.as_bytes(), self.durability)?;
+            written += seg.len() as u64;
+            self.segments.insert(
+                seg_seq,
+                SegmentInfo {
+                    kind: SEG_INDEX,
+                    file_bytes: seg.len() as u64,
+                    ..SegmentInfo::default()
+                },
+            );
+            self.next_segment = seg_seq + 1;
+        }
+        // 2. The index in memory: blocks, their references, the cache; the overlay is folded.
+        let mut gone = Vec::new();
+        for (b, loc, data) in rewritten {
+            if let Some(old) = self.blocks.remove(&b) {
+                self.unref(old, true, &mut gone);
+            }
+            match loc {
+                Some(l) => {
+                    self.blocks.insert(b, l);
+                    self.addref(l, true);
+                    lock(&self.cache).insert(b, data);
+                }
+                None => lock(&self.cache).remove(b),
+            }
+        }
+        self.overlay.clear();
+        if self.overlay.capacity() > 2 * OVERLAY_MAX_PAGES {
+            self.overlay.shrink_to(OVERLAY_MAX_PAGES);
+        }
+        let dead = self.collect_dead(gone);
+
+        // 3. The root, last.
+        let root = self.encode_root(id);
         let path = self.dir.join(MANIFEST_NAME);
         if self.fault == Some(Fault::MidCheckpoint) {
             let tmp = self.dir.join(format!("{MANIFEST_NAME}.tmp"));
-            fs::write(&tmp, &bytes).map_err(io(&tmp))?;
+            fs::write(&tmp, &root).map_err(io(&tmp))?;
             return Err(PageError::Injected);
         }
-        write_atomic(&path, &bytes, self.durability)?;
+        write_atomic(&path, &root, self.durability)?;
+        written += root.len() as u64;
         if self.fault == Some(Fault::AfterCheckpoint) {
             return Err(PageError::Injected);
         }
+        // 4. What the root no longer names: the old log and dead index segments.
         let old = self.log_path(self.ckpt_id);
         self.log = None;
         match fs::remove_file(&old) {
@@ -1104,13 +1519,16 @@ impl PageStore {
             }
         }
         self.ckpt_id = id;
-        self.ckpt_bytes = bytes.len() as u64;
+        self.ckpt_bytes = root.len() as u64;
         self.log_bytes = 0;
-        Ok(self.ckpt_bytes)
+        self.delete_segments(dead)?;
+        Ok((written, blocks_written))
     }
 
-    fn encode_checkpoint(&self, id: u64) -> Vec<u8> {
-        let mut body = Writer::with_capacity(64 + self.pages.len() * 14);
+    fn encode_root(&self, id: u64) -> Vec<u8> {
+        let mut body = Writer::with_capacity(
+            128 + self.segments.len() * 16 + self.blocks.len() * 14 + self.prev.len() * 14,
+        );
         body.var_u64(id);
         body.var_u64(self.save_seq);
         body.var_u64(self.obs_seq);
@@ -1118,18 +1536,21 @@ impl PageStore {
         body.var_u64(self.confirmed.obs_seq);
         body.var_u64(self.last_seq);
         body.var_u64(u64::from(self.next_segment));
+        body.var_u64(self.npages);
         body.var_u64(self.segments.len() as u64);
         for (&seq, s) in &self.segments {
             body.var_u64(u64::from(seq));
+            body.u16(s.kind);
             body.var_u64(s.file_bytes);
+            body.var_u64(s.cur_pages);
+            body.var_u64(s.cur_bytes);
+            body.var_u64(s.refs);
         }
-        let mut pages: Vec<(&PageKey, &PageLoc)> = self.pages.iter().collect();
-        pages.sort_unstable_by_key(|(k, _)| **k);
-        body.var_u64(pages.len() as u64);
+        body.var_u64(self.blocks.len() as u64);
         let mut prev = 0u64;
-        for (k, l) in pages {
-            body.var_u64(k.0 - prev);
-            prev = k.0;
+        for (&b, l) in &self.blocks {
+            body.var_u64(b - prev);
+            prev = b;
             put_loc(&mut body, l);
         }
         let mut old: Vec<(&PageKey, &Option<PageLoc>)> = self.prev.iter().collect();
@@ -1153,14 +1574,14 @@ impl PageStore {
         out.raw(&MANIFEST_MAGIC);
         out.u16(FORMAT_VERSION);
         out.u16(0);
-        out.u32(u32::try_from(body.len()).expect("checkpoint over 4 GiB"));
+        out.u32(u32::try_from(body.len()).expect("root over 4 GiB"));
         out.u32(stored.len() as u32);
         out.u32(crc32fast::hash(&stored));
         out.raw(&stored);
         out.into_bytes()
     }
 
-    fn parse_checkpoint(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
+    fn parse_root(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
         let bad =
             |e: crate::codec::CodecError| PageError::Format(format!("{}: {e}", path.display()));
         let mut r = Reader::new(bytes);
@@ -1195,36 +1616,36 @@ impl PageStore {
         };
         self.last_seq = r.var_u64().map_err(bad)?;
         self.next_segment = get_u32(&mut r).map_err(bad)?;
+        self.npages = r.var_u64().map_err(bad)?;
         let nseg = r.var_u64().map_err(bad)?;
         for _ in 0..nseg {
             let seq = get_u32(&mut r).map_err(bad)?;
-            let file_bytes = r.var_u64().map_err(bad)?;
-            self.segments.insert(
-                seq,
-                SegmentInfo {
-                    file_bytes,
-                    ..SegmentInfo::default()
-                },
-            );
+            let info = SegmentInfo {
+                kind: r.u16().map_err(bad)?,
+                file_bytes: r.var_u64().map_err(bad)?,
+                cur_pages: r.var_u64().map_err(bad)?,
+                cur_bytes: r.var_u64().map_err(bad)?,
+                refs: r.var_u64().map_err(bad)?,
+            };
+            self.segments.insert(seq, info);
         }
-        let known = |segments: &BTreeMap<u32, SegmentInfo>, key: u64, l: &PageLoc| {
+        let known = |segments: &BTreeMap<u32, SegmentInfo>, what: &str, l: &PageLoc| {
             if segments.contains_key(&l.segment) {
                 Ok(())
             } else {
                 Err(PageError::Format(format!(
-                    "page {key:#x} names unknown segment {}",
+                    "{what} names unknown segment {}",
                     l.segment
                 )))
             }
         };
-        let npages = r.var_u64().map_err(bad)?;
-        let mut key = 0u64;
-        for _ in 0..npages {
-            key += r.var_u64().map_err(bad)?;
+        let nblocks = r.var_u64().map_err(bad)?;
+        let mut b = 0u64;
+        for _ in 0..nblocks {
+            b += r.var_u64().map_err(bad)?;
             let loc = get_loc(&mut r).map_err(bad)?;
-            known(&self.segments, key, &loc)?;
-            self.addref(loc, true);
-            self.pages.insert(PageKey(key), loc);
+            known(&self.segments, &format!("index block {b}"), &loc)?;
+            self.blocks.insert(b, loc);
         }
         let nprev = r.var_u64().map_err(bad)?;
         let mut key = 0u64;
@@ -1234,8 +1655,7 @@ impl PageStore {
                 0 => None,
                 _ => {
                     let loc = get_loc(&mut r).map_err(bad)?;
-                    known(&self.segments, key, &loc)?;
-                    self.addref(loc, false);
+                    known(&self.segments, &format!("page {key:#x}"), &loc)?;
                     Some(loc)
                 }
             };
@@ -1509,8 +1929,15 @@ mod tests {
         assert_eq!(s.get(PageKey(1)).unwrap().unwrap(), b"old");
         assert_eq!(s.get(PageKey(2)).unwrap(), None);
         // The crashed save's segment was removed as a stray: the first save's segment and the
-        // checkpoint it wrote remain.
-        assert_eq!(names(&dir), ["manifest.rtm", "seg-0000000000000001.rts"]);
+        // checkpoint it wrote (an index segment and the root) remain.
+        assert_eq!(
+            names(&dir),
+            [
+                "manifest.rtm",
+                "seg-0000000000000001.rts",
+                "seg-0000000000000002.rts"
+            ]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1531,13 +1958,14 @@ mod tests {
         assert_eq!(s.get(PageKey(1)).unwrap().unwrap(), b"new");
         // The superseded segment outlived the crash, but the index does not name it, so opening
         // removed it as a stray.
-        assert_eq!(s.segment_count(), 1);
+        assert_eq!(s.segment_count(), 2);
         assert_eq!(
             names(&dir),
             [
                 "manifest.rtm",
                 "mlog-0000000000000001.rtl",
-                "seg-0000000000000002.rts"
+                "seg-0000000000000002.rts",
+                "seg-0000000000000003.rts"
             ]
         );
         fs::remove_dir_all(&dir).unwrap();
@@ -1667,50 +2095,136 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A save's index bytes follow the pages it changed, not the pages the store holds.
+    /// Pages that do not compress, so segments have real size.
+    fn noise(k: u64) -> Vec<u8> {
+        let mut x = k.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..100)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    /// A save's index bytes follow the pages it changed, not the pages the store holds, and so
+    /// does the store's memory: the index is paged.
     #[test]
     fn the_index_grows_with_the_save_not_the_store() {
-        let dir = tmpdir("incremental");
+        let mut heaps = Vec::new();
+        for total in [10_000u64, 100_000] {
+            let dir = tmpdir(&format!("incremental-{total}"));
+            let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+            s.set_index_cache_blocks(4);
+            // Chunks of 10,000 pages make segments over the small-segment size, so the rounds
+            // below do not merge them.
+            for chunk in 0..total / 10_000 {
+                let mut b = SaveBatch::new();
+                for k in chunk * 10_000..(chunk + 1) * 10_000 {
+                    b.put(PageKey(k), &noise(k));
+                }
+                s.commit(b, 1).unwrap();
+                s.checkpoint_now().unwrap();
+            }
+            for round in 0..20u64 {
+                let mut b = SaveBatch::new();
+                for k in 0..10 {
+                    b.put(
+                        PageKey((round * 977 + k * 131) % total),
+                        &noise(round + 90_000),
+                    );
+                }
+                let st = s.commit(b, round + 2).unwrap();
+                assert_eq!(st.checkpoint_bytes, 0);
+                // Each changed page logs where it was and where it is, about 25 bytes,
+                // compaction moves included, whatever the store holds.
+                let changed = st.pages_written + st.pages_compacted + st.pages_deleted;
+                assert!(
+                    st.log_bytes <= 32 + 28 * changed,
+                    "round {round}: {} bytes for {changed} changes",
+                    st.log_bytes
+                );
+                assert!(changed < 200, "round {round}: {changed} changes");
+            }
+            let (_, root) = s.index_file_bytes();
+            let (blocks, cached) = s.index_blocks();
+            assert_eq!(blocks as u64, total.div_ceil(INDEX_BLOCK_PAGES));
+            assert!(cached <= 4);
+            // The root lists blocks and segments, not pages.
+            assert!(
+                root < 200 + 40 * blocks as u64,
+                "root {root} bytes, {blocks} blocks"
+            );
+            for k in (0..total).step_by(97) {
+                assert!(s.get(PageKey(k)).unwrap().is_some());
+            }
+            heaps.push(s.heap_bytes());
+            assert_eq!(s.keys().count(), total as usize);
+            assert_eq!(s.len(), total as usize);
+            drop(s);
+            fs::remove_dir_all(&dir).unwrap();
+        }
+        // Ten times the pages, nearly the same memory: the block directory grows by about 50
+        // bytes per 512 pages; the rest is the overlay and the cache, both bounded.
+        assert!(
+            (heaps[1] as f64) < heaps[0] as f64 * 1.05,
+            "store memory at 10,000 and 100,000 pages: {heaps:?}"
+        );
+    }
+
+    /// Folds rewrite only the blocks they touch, and index segments left mostly dead are
+    /// compacted, so their number stays bounded however many folds there are.
+    #[test]
+    fn folds_rewrite_touched_blocks_and_compact_index_segments() {
+        let dir = tmpdir("folds");
         let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
-        // Pages that do not compress, so the first segment is not a small one.
-        let noise = |k: u64| -> Vec<u8> {
-            let mut x = k.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-            (0..100)
-                .map(|_| {
-                    x ^= x << 13;
-                    x ^= x >> 7;
-                    x ^= x << 17;
-                    x as u8
-                })
-                .collect()
-        };
+        s.set_index_cache_blocks(2);
         let mut b = SaveBatch::new();
         for k in 0..20_000u64 {
             b.put(PageKey(k), &noise(k));
         }
-        s.commit(b, 1).unwrap();
-        for round in 0..20u64 {
+        // The first save folds at once: every block.
+        let first = s.commit(b, 0).unwrap().checkpoint_bytes;
+        assert!(first > 0);
+        let mut model: BTreeMap<u64, Vec<u8>> = (0..20_000u64).map(|k| (k, noise(k))).collect();
+        let mut folds = Vec::new();
+        for round in 0..60u64 {
             let mut b = SaveBatch::new();
-            for k in 0..10 {
-                b.put(PageKey(round * 97 + k), &noise(round + 50_000));
+            // One block's worth of keys each round, and a delete.
+            let base = (round * 3 % 39) * INDEX_BLOCK_PAGES;
+            for k in base..base + 5 {
+                b.put(PageKey(k), &noise(k + 1_000_000 * round));
+                model.insert(k, noise(k + 1_000_000 * round));
             }
-            let st = s.commit(b, round + 2).unwrap();
-            assert_eq!(st.checkpoint_bytes, 0);
-            // About sixteen bytes per changed page (compaction moves count as changes), whatever
-            // the 20,000 pages the store holds.
-            let changed = st.pages_written + st.pages_compacted + st.pages_deleted;
+            b.delete(PageKey(base + 7));
+            model.remove(&(base + 7));
+            s.commit(b, round + 1).unwrap();
+            folds.push(s.checkpoint_now().unwrap());
+            // At most the small page segments and the small index segments before a merge, plus
+            // the big first ones of each kind.
             assert!(
-                st.log_bytes <= 32 + 16 * changed,
-                "round {round}: {} bytes for {changed} changes",
-                st.log_bytes
+                s.segment_count() <= 2 * (MAX_SMALL_SEGMENTS + 1) + 2,
+                "{}",
+                s.segment_count()
             );
-            assert!(changed < 200, "round {round}: {changed} changes");
         }
-        let (_, ckpt) = s.index_file_bytes();
+        // A fold writes the blocks it touched; now and then one also merges the small index
+        // segments (tiering), which rewrites more, never more than the whole index.
+        folds.sort_unstable();
+        assert!(folds[folds.len() / 2] < first / 10, "{folds:?} vs {first}");
         assert!(
-            ckpt > 50_000,
-            "the checkpoint holds the whole index: {ckpt}"
+            *folds.last().unwrap() < first + first / 10,
+            "{folds:?} vs {first}"
         );
+        drop(s);
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        assert_eq!(s.len(), model.len());
+        for (k, v) in model.iter().step_by(13) {
+            assert_eq!(s.get(PageKey(*k)).unwrap().as_ref(), Some(v));
+        }
+        let segs = names(&dir).iter().filter(|n| n.ends_with(".rts")).count();
+        assert_eq!(segs, s.segment_count());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1738,7 +2252,8 @@ mod tests {
                     .is_some_and(|x| x == "rts")
             })
             .count();
-        assert_eq!(segments, 1);
+        // The page segment and the first fold's index segment.
+        assert_eq!(segments, 2);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1807,7 +2322,7 @@ mod tests {
             b.put(PageKey(round % 8), &page(round + 100, 2000));
             s.commit(b, round + 1).unwrap();
             assert!(
-                s.segment_count() <= MAX_SMALL_SEGMENTS + 1,
+                s.segment_count() <= MAX_SMALL_SEGMENTS + 2,
                 "{} segments after save {round}",
                 s.segment_count()
             );
@@ -1821,9 +2336,9 @@ mod tests {
             assert_eq!(s.get(PageKey(k)).unwrap().unwrap(), want);
         }
         drop(s);
-        // Segments, the checkpoint and the log.
+        // Page segments, the first fold's index segment, the root and the log.
         let files = fs::read_dir(&dir).unwrap().count();
-        assert!(files <= MAX_SMALL_SEGMENTS + 3, "{files} files");
+        assert!(files <= MAX_SMALL_SEGMENTS + 4, "{files} files");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1861,6 +2376,9 @@ mod tests {
         fn matches_a_model(ops in prop::collection::vec(op(), 1..80)) {
             let dir = tmpdir("model");
             let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+            s.set_index_cache_blocks(2);
+            // Keys 32 apart in units of 300 cross about 19 index blocks.
+            let key = |k: u8| u64::from(k) * 300;
             let mut current: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
             let mut confirmed: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
             let mut generation = (0u64, 0u64);
@@ -1872,12 +2390,12 @@ mod tests {
                 match op {
                     Op::Put(k, n) => {
                         let p = page(u64::from(n), n as usize);
-                        batch.put(PageKey(u64::from(k)), &p);
-                        pending.insert(u64::from(k), Some(p));
+                        batch.put(PageKey(key(k)), &p);
+                        pending.insert(key(k), Some(p));
                     }
                     Op::Delete(k) => {
-                        batch.delete(PageKey(u64::from(k)));
-                        pending.insert(u64::from(k), None);
+                        batch.delete(PageKey(key(k)));
+                        pending.insert(key(k), None);
                     }
                     Op::Commit | Op::Pending => {
                         obs += 1;
@@ -1917,12 +2435,14 @@ mod tests {
                     Op::Reopen => {
                         drop(s);
                         s = PageStore::open(&dir, Durability::NoSync).unwrap();
+                        s.set_index_cache_blocks(2);
                         batch = SaveBatch::new();
                         pending.clear();
                     }
                 }
                 prop_assert_eq!(s.obs_seq(), generation.1);
                 prop_assert_eq!(s.len(), current.len());
+                prop_assert_eq!(s.keys().count(), current.len());
                 for (k, v) in &current {
                     let got = s.get(PageKey(*k)).unwrap();
                     prop_assert_eq!(got.as_ref(), Some(v));

@@ -866,6 +866,9 @@ pub struct Report {
     pub build_profile: String,
     pub machine: sys::Machine,
     pub nice: Option<i32>,
+    /// Logical CPUs this process may run on (a `taskset` shows here).
+    #[serde(default)]
+    pub allowed_cpus: Option<String>,
     pub loadavg_before: Option<String>,
     pub loadavg_after: Option<String>,
     pub baseline: Baseline,
@@ -934,14 +937,14 @@ pub struct Options {
     pub only: Vec<String>,
 }
 
-fn command_line(cmd: &str, args: &[&str]) -> Option<String> {
+pub(crate) fn command_line(cmd: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(cmd).args(args).output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn nice_level() -> Option<i32> {
+pub(crate) fn nice_level() -> Option<i32> {
     // The 19th field of /proc/self/stat is the nice value.
     let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
     let after = stat.rsplit_once(')')?.1;
@@ -961,7 +964,7 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-fn now_utc() -> (String, String) {
+pub(crate) fn now_utc() -> (String, String) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
@@ -1100,6 +1103,7 @@ pub fn run(opts: Options) -> i32 {
         .into(),
         machine: sys::Machine::probe(),
         nice: nice_level(),
+        allowed_cpus: sys::allowed_cpus(),
         loadavg_before,
         loadavg_after: sys::loadavg(),
         baseline: base,
