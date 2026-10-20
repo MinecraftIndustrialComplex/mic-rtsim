@@ -23,7 +23,7 @@ pub mod observe;
 pub mod synth;
 pub mod world;
 
-pub use caravans::CaravanOutcome;
+pub use caravans::{Attack, CaravanOutcome};
 pub use config::WorldConfig;
 pub use observe::Side;
 pub use world::{CaravanId, Command, NodeData, Outside, Stats, World};

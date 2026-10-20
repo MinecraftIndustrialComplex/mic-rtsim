@@ -14,6 +14,16 @@ use rtsim_travel::legs::{Owner, Path};
 
 use crate::world::{CaravanId, Ev, World};
 
+/// The result of an attack on an individual caravan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attack {
+    /// What the player took, thousandths.
+    pub taken: BTreeMap<GoodId, Amount>,
+    pub outcome: CaravanOutcome,
+    /// The report the caravan (and any settlement in sight) now carries.
+    pub report: rtsim_knowledge::ReportId,
+}
+
 /// What happened to an individual caravan, for the caller's log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaravanOutcome {
@@ -134,12 +144,11 @@ impl World {
                 quotes.insert(*g, p.quote_at(dep));
             }
         }
-        // The destination's arrivals change where the hole starts and ends.
+        // The destination's arrivals change where the hole starts and ends. The start can be the
+        // very next boundary, in which case the destination must re-read its inflows now.
         for first in [lo, dep + 1] {
-            let wake = q.at(first + ed - 1);
-            if wake > at {
-                self.schedule(wake, Ev::Wake(to));
-            }
+            let wake = q.at(first + ed - 1).max(at);
+            self.schedule(wake, Ev::Wake(to));
         }
         self.stats.promotions += 1;
         let seed = key.seed(self.cfg.seed, edge_seed);
@@ -244,7 +253,7 @@ impl World {
         c: CaravanId,
         player: ActorId,
         share_milli: i64,
-    ) -> Option<(BTreeMap<GoodId, Amount>, CaravanOutcome)> {
+    ) -> Option<Attack> {
         let at = self.now;
         let cargo = self.caravans.get(c)?.cargo();
         let mut taken = BTreeMap::new();
@@ -256,22 +265,25 @@ impl World {
                 *self.outside.player_out.entry(g).or_default() += i128::from(got);
             }
         }
-        self.report(player, c, ReportKind::Robbery, at)?;
+        let report = self.report(player, c, ReportKind::Robbery, at)?;
         let outcome = self.decide_after_attack(c, at);
-        Some((taken, outcome))
+        Some(Attack {
+            taken,
+            outcome,
+            report,
+        })
     }
 
     /// A player kills mobs attacking a caravan (C24: rescues count). The caravan carries the
     /// rescue home as a positive report.
-    pub fn rescue(&mut self, c: CaravanId, player: ActorId) -> Option<()> {
+    pub fn rescue(&mut self, c: CaravanId, player: ActorId) -> Option<rtsim_knowledge::ReportId> {
         let at = self.now;
-        self.report(player, c, ReportKind::Rescue, at)?;
-        Some(())
+        self.report(player, c, ReportKind::Rescue, at)
     }
 
     /// A player leashes or picks up a member (A10): it leaves the sim with what it carries, and
     /// the caravan reports a theft. The rest of the group carries on as one unit (C25).
-    pub fn take_member(&mut self, c: CaravanId, member: usize, player: ActorId) -> Option<CaravanOutcome> {
+    pub fn take_member(&mut self, c: CaravanId, member: usize, player: ActorId) -> Option<Attack> {
         let at = self.now;
         let car = self.caravans.get_mut(c)?;
         let m = car.members.get_mut(member)?;
@@ -279,17 +291,23 @@ impl World {
             return None;
         }
         m.present = false;
+        let mut taken = BTreeMap::new();
         for (g, a) in std::mem::take(&mut m.cargo) {
             *self.outside.player_out.entry(g).or_default() += i128::from(a);
+            taken.insert(g, a);
         }
-        self.report(player, c, ReportKind::Theft, at)?;
-        Some(self.decide_after_attack(c, at))
+        let report = self.report(player, c, ReportKind::Theft, at)?;
+        Some(Attack {
+            taken,
+            outcome: self.decide_after_attack(c, at),
+            report,
+        })
     }
 
     /// A player kills a member. Its cargo drops (C21) and leaves the sim. If it was the leader
     /// the trader's grudge passes to its home market (C24: heirs inherit grudges), and the group
     /// breaks up.
-    pub fn kill_member(&mut self, c: CaravanId, member: usize, player: ActorId) -> Option<CaravanOutcome> {
+    pub fn kill_member(&mut self, c: CaravanId, member: usize, player: ActorId) -> Option<Attack> {
         let at = self.now;
         let car = self.caravans.get_mut(c)?;
         let m = car.members.get_mut(member)?;
@@ -302,17 +320,23 @@ impl World {
             m.body,
             rtsim_travel::Body::Trader | rtsim_travel::Body::RibbitMerchant
         );
+        let mut taken = BTreeMap::new();
         for (g, a) in std::mem::take(&mut m.cargo) {
             *self.outside.player_out.entry(g).or_default() += i128::from(a);
+            taken.insert(g, a);
         }
-        self.report(player, c, ReportKind::Killing, at)?;
+        let report = self.report(player, c, ReportKind::Killing, at)?;
         if leader {
             if let Some(n) = self.caravans.get(c).and_then(|x| x.notable) {
                 self.knowledge.die(n, at);
             }
             self.flush_gossip();
         }
-        Some(self.decide_after_attack(c, at))
+        Some(Attack {
+            taken,
+            outcome: self.decide_after_attack(c, at),
+            report,
+        })
     }
 
     /// After an attack: with no leader the group breaks up (what is left leaves the sim with the
