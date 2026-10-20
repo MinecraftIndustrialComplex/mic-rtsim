@@ -111,6 +111,7 @@
             "running": false,
             "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -282,6 +283,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 3,
@@ -779,12 +781,13 @@
             "made_since": [
               [
                 1,
-                2081
+                2103
               ]
             ],
             "running": false,
-            "stop": "stopped: power source 4 stopped",
+            "stop": "stopped: frozen",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -923,6 +926,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 2,
@@ -1098,7 +1102,7 @@
               "net": [
                 [
                   1,
-                  4425
+                  4447
                 ],
                 [
                   2,
@@ -1313,6 +1317,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -1327,6 +1332,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -1415,6 +1421,7 @@
             "running": false,
             "stop": "stopped: no minecraft:coal",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -1434,6 +1441,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -1534,12 +1542,12 @@
         {
           "tick": 36000,
           "district": 4,
-          "what": "replay starts"
+          "what": "running"
         },
         {
           "tick": 36000,
           "district": 4,
-          "what": "running"
+          "what": "replay starts"
         },
         {
           "tick": 36400,
@@ -2202,14 +2210,9 @@
           "what": "station exchange with train 1: -224 create:crushed_raw_iron"
         },
         {
-          "tick": 166172,
-          "district": 0,
-          "what": "train 1 ambushed (Siege x6): looted +22 create:crushed_raw_iron"
-        },
-        {
           "tick": 166600,
           "district": 2,
-          "what": "station exchange with train 1: +202 create:crushed_raw_iron"
+          "what": "station exchange with train 1: +224 create:crushed_raw_iron"
         },
         {
           "tick": 168000,
@@ -2274,7 +2277,7 @@
         {
           "tick": 192000,
           "district": 2,
-          "what": "reconcile epoch 1: +4425 create:crushed_raw_iron, -56 minecraft:iron_ingot, -864 minecraft:coal in 2 chunk(s), 5 deltas, 3 blocks to destroy"
+          "what": "reconcile epoch 1: +4447 create:crushed_raw_iron, -56 minecraft:iron_ingot, -864 minecraft:coal in 2 chunk(s), 5 deltas, 3 blocks to destroy"
         },
         {
           "tick": 192000,
@@ -2308,18 +2311,8 @@
         },
         {
           "tick": 204000,
-          "district": 2,
-          "what": "running"
-        },
-        {
-          "tick": 204000,
           "district": 4,
           "what": "replay starts"
-        },
-        {
-          "tick": 204000,
-          "district": 2,
-          "what": "breakpoint: stopped: power source 4 stopped"
         },
         {
           "tick": 204001,
@@ -2545,7 +2538,7 @@
         }
       ],
       "totals": {
-        "create:crushed_raw_iron": 4164,
+        "create:crushed_raw_iron": 4186,
         "minecraft:coal": 13,
         "minecraft:iron_ingot": 9266
       },
@@ -2577,7 +2570,7 @@
         "stolen": [
           [
             1,
-            556
+            534
           ],
           [
             2,
@@ -2591,7 +2584,7 @@
         "dropped": [
           [
             1,
-            801
+            823
           ],
           [
             2,
@@ -2644,7 +2637,7 @@
         "dropped": [
           [
             1,
-            801
+            823
           ],
           [
             2,
@@ -2656,7 +2649,7 @@
       "conservation": "ok",
       "cluster_books": "ok",
       "stats": {
-        "observations": 9544,
+        "observations": 9543,
         "models_adopted": 15,
         "sims_started": 8,
         "reconciles": 6,
@@ -2664,14 +2657,14 @@
         "duplicate_results": 0,
         "trims": 1,
         "exchanges": 122,
-        "attacks": 16,
-        "attacks_skipped": 2,
+        "attacks": 15,
+        "attacks_skipped": 5,
         "packages_written": 0,
         "breakpoints": 8,
         "cluster_settles": 359
       },
-      "wire_bytes": 471088,
-      "wall_ms": 13.942861
+      "wire_bytes": 471016,
+      "wall_ms": 15.510856
     },
     {
       "name": "simulated",
@@ -2734,6 +2727,7 @@
             "running": false,
             "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -2905,6 +2899,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -3375,6 +3370,7 @@
             "running": false,
             "stop": "stopped: power source 4 stopped",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -3402,6 +3398,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -3491,6 +3488,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -3505,6 +3503,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -3593,6 +3592,7 @@
             "running": false,
             "stop": "stopped: no minecraft:coal",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -3612,6 +3612,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -3712,12 +3713,12 @@
         {
           "tick": 36000,
           "district": 4,
-          "what": "replay starts"
+          "what": "running"
         },
         {
           "tick": 36000,
           "district": 4,
-          "what": "running"
+          "what": "replay starts"
         },
         {
           "tick": 36400,
@@ -4381,13 +4382,13 @@
         },
         {
           "tick": 204000,
-          "district": 4,
-          "what": "replay starts"
+          "district": 2,
+          "what": "breakpoint: stopped: power source 4 stopped"
         },
         {
           "tick": 204000,
-          "district": 2,
-          "what": "breakpoint: stopped: power source 4 stopped"
+          "district": 4,
+          "what": "replay starts"
         },
         {
           "tick": 204001,
@@ -4598,7 +4599,7 @@
         "cluster_settles": 331
       },
       "wire_bytes": 474912,
-      "wall_ms": 10.882401999999999
+      "wall_ms": 11.053291999999999
     },
     {
       "name": "simulated, no race",
@@ -4661,6 +4662,7 @@
             "running": false,
             "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -4832,6 +4834,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -5282,6 +5285,7 @@
             "running": false,
             "stop": "stopped: power source 4 stopped",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -5309,6 +5313,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -5398,6 +5403,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -5412,6 +5418,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -5462,6 +5469,7 @@
             "running": false,
             "stop": "stopped: no minecraft:coal",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -5481,6 +5489,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 1,
@@ -5571,12 +5580,12 @@
         {
           "tick": 36000,
           "district": 4,
-          "what": "replay starts"
+          "what": "running"
         },
         {
           "tick": 36000,
           "district": 4,
-          "what": "running"
+          "what": "replay starts"
         },
         {
           "tick": 36400,
@@ -6235,13 +6244,13 @@
         },
         {
           "tick": 204000,
-          "district": 4,
-          "what": "replay starts"
+          "district": 2,
+          "what": "breakpoint: stopped: power source 4 stopped"
         },
         {
           "tick": 204000,
-          "district": 2,
-          "what": "breakpoint: stopped: power source 4 stopped"
+          "district": 4,
+          "what": "replay starts"
         },
         {
           "tick": 216000,
@@ -6428,7 +6437,7 @@
         "cluster_settles": 330
       },
       "wire_bytes": 473616,
-      "wall_ms": 11.05698
+      "wall_ms": 10.703023
     },
     {
       "name": "control",
@@ -6482,6 +6491,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6505,6 +6515,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6540,6 +6551,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6554,6 +6566,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6589,6 +6602,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6603,6 +6617,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6638,6 +6653,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6652,6 +6668,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -6774,7 +6791,7 @@
         "cluster_settles": 0
       },
       "wire_bytes": 1242304,
-      "wall_ms": 18.521906
+      "wall_ms": 17.602791
     },
     {
       "name": "read-only",
@@ -6837,6 +6854,7 @@
             "running": false,
             "stop": "stopped: deposit exhausted (createoreexcavation:iron_vein)",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": [
@@ -6945,6 +6963,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 0,
@@ -7270,6 +7289,7 @@
             "running": false,
             "stop": "stopped: no create:crushed_raw_iron",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -7297,6 +7317,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 0,
@@ -7413,6 +7434,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -7427,6 +7449,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 0,
@@ -7515,6 +7538,7 @@
             "running": false,
             "stop": "stopped: no minecraft:coal",
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": null,
             "attacks": []
@@ -7534,6 +7558,7 @@
             "running": null,
             "stop": null,
             "next_breakpoint": null,
+            "next": null,
             "learning_ticks_to_go": null,
             "last_reconcile": {
               "epoch": 0,
@@ -7643,12 +7668,12 @@
         {
           "tick": 36000,
           "district": 4,
-          "what": "replay starts"
+          "what": "running"
         },
         {
           "tick": 36000,
           "district": 4,
-          "what": "running"
+          "what": "replay starts"
         },
         {
           "tick": 37899,
@@ -7733,12 +7758,12 @@
         {
           "tick": 204000,
           "district": 4,
-          "what": "replay starts"
+          "what": "running"
         },
         {
           "tick": 204000,
           "district": 4,
-          "what": "running"
+          "what": "replay starts"
         },
         {
           "tick": 205800,
@@ -7880,30 +7905,8 @@
         "minecraft:iron_ingot": 2688
       },
       "engine_books": {
-        "minted": [
-          [
-            1,
-            13055
-          ],
-          [
-            2,
-            2887
-          ]
-        ],
-        "burned": [
-          [
-            1,
-            2889
-          ],
-          [
-            3,
-            664
-          ],
-          [
-            4,
-            13057
-          ]
-        ],
+        "minted": [],
+        "burned": [],
         "stolen": [],
         "dropped": [],
         "untracked": [],
@@ -7956,7 +7959,7 @@
         "cluster_settles": 295
       },
       "wire_bytes": 457840,
-      "wall_ms": 12.510174000000001
+      "wall_ms": 10.796258
     }
   ],
   "comparison": [

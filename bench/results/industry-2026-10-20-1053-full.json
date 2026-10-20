@@ -5,7 +5,7 @@
     "cpu": "AMD RYZEN AI MAX PRO 390 w/ Radeon 8050S",
     "hostname": "nixUltra",
     "kernel": "7.2.10",
-    "loadavg": "9.80 11.78 9.71 8/4286 1599335",
+    "loadavg": "8.54 8.23 8.42 12/4344 1736986",
     "logical_cpus": 24,
     "mem_total_bytes": 50268049408,
     "os": "linux"
@@ -22,52 +22,52 @@
       "points": [
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 12708.0,
+          "cpu_ns_per_day": 13492.8,
           "cpu_ns_per_read": null,
-          "heap_bytes": 146334,
+          "heap_bytes": 148958,
           "n": 10,
           "settles": 1190,
-          "setup_ms": 0.050124
+          "setup_ms": 0.16598200000000002
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 12680.566666666668,
+          "cpu_ns_per_day": 13013.533333333333,
           "cpu_ns_per_read": null,
-          "heap_bytes": 677862,
+          "heap_bytes": 689942,
           "n": 100,
           "settles": 1190,
-          "setup_ms": 0.331616
+          "setup_ms": 0.2657
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 12925.4,
+          "cpu_ns_per_day": 13409.333333333334,
           "cpu_ns_per_read": null,
-          "heap_bytes": 5937582,
+          "heap_bytes": 6042670,
           "n": 1000,
           "settles": 1190,
-          "setup_ms": 2.806113
+          "setup_ms": 2.974535
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 13616.033333333333,
+          "cpu_ns_per_day": 13622.0,
           "cpu_ns_per_read": null,
-          "heap_bytes": 59689038,
+          "heap_bytes": 60831886,
           "n": 10000,
           "settles": 1190,
-          "setup_ms": 33.689912
+          "setup_ms": 36.498927
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 14159.733333333334,
+          "cpu_ns_per_day": 13762.966666666667,
           "cpu_ns_per_read": null,
-          "heap_bytes": 594944582,
+          "heap_bytes": 605841910,
           "n": 100000,
           "settles": 1190,
-          "setup_ms": 374.24576199999996
+          "setup_ms": 374.38726
         }
       ],
-      "ratio": 1.1166483096181294,
-      "slope": 0.012486768092562528
+      "ratio": 1.0575887665660877,
+      "slope": 0.003706559721721181
     },
     {
       "declared": 1.0,
@@ -78,52 +78,52 @@
       "points": [
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 12708.0,
+          "cpu_ns_per_day": 13492.8,
           "cpu_ns_per_read": null,
-          "heap_bytes": 146334,
+          "heap_bytes": 148958,
           "n": 10,
           "settles": 1190,
-          "setup_ms": 0.050124
+          "setup_ms": 0.16598200000000002
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 12680.566666666668,
+          "cpu_ns_per_day": 13013.533333333333,
           "cpu_ns_per_read": null,
-          "heap_bytes": 677862,
+          "heap_bytes": 689942,
           "n": 100,
           "settles": 1190,
-          "setup_ms": 0.331616
+          "setup_ms": 0.2657
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 12925.4,
+          "cpu_ns_per_day": 13409.333333333334,
           "cpu_ns_per_read": null,
-          "heap_bytes": 5937582,
+          "heap_bytes": 6042670,
           "n": 1000,
           "settles": 1190,
-          "setup_ms": 2.806113
+          "setup_ms": 2.974535
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 13616.033333333333,
+          "cpu_ns_per_day": 13622.0,
           "cpu_ns_per_read": null,
-          "heap_bytes": 59689038,
+          "heap_bytes": 60831886,
           "n": 10000,
           "settles": 1190,
-          "setup_ms": 33.689912
+          "setup_ms": 36.498927
         },
         {
           "breakpoints": 590,
-          "cpu_ns_per_day": 14159.733333333334,
+          "cpu_ns_per_day": 13762.966666666667,
           "cpu_ns_per_read": null,
-          "heap_bytes": 594944582,
+          "heap_bytes": 605841910,
           "n": 100000,
           "settles": 1190,
-          "setup_ms": 374.24576199999996
+          "setup_ms": 374.38726
         }
       ],
-      "ratio": 4065.6619924282804,
-      "slope": 0.9163015830426182
+      "ratio": 4067.199546180803,
+      "slope": 0.9163909658851344
     },
     {
       "declared": 1.0,
@@ -134,52 +134,52 @@
       "points": [
         {
           "breakpoints": 190,
-          "cpu_ns_per_day": 12014.6,
+          "cpu_ns_per_day": 11858.4,
           "cpu_ns_per_read": null,
           "heap_bytes": null,
           "n": 10,
           "settles": 390,
-          "setup_ms": 0.025428000000000003
+          "setup_ms": 0.022702
         },
         {
           "breakpoints": 1900,
-          "cpu_ns_per_day": 120159.7,
+          "cpu_ns_per_day": 118184.9,
           "cpu_ns_per_read": null,
           "heap_bytes": null,
           "n": 100,
           "settles": 3900,
-          "setup_ms": 0.301418
+          "setup_ms": 0.22822900000000002
         },
         {
           "breakpoints": 19000,
-          "cpu_ns_per_day": 1270183.2,
+          "cpu_ns_per_day": 1246782.9,
           "cpu_ns_per_read": null,
           "heap_bytes": null,
           "n": 1000,
           "settles": 39000,
-          "setup_ms": 2.503202
+          "setup_ms": 2.838069
         },
         {
           "breakpoints": 190000,
-          "cpu_ns_per_day": 16399420.6,
+          "cpu_ns_per_day": 15882283.5,
           "cpu_ns_per_read": null,
           "heap_bytes": null,
           "n": 10000,
           "settles": 390000,
-          "setup_ms": 33.361602
+          "setup_ms": 35.750569000000006
         },
         {
           "breakpoints": 1900000,
-          "cpu_ns_per_day": 236874568.8,
+          "cpu_ns_per_day": 228382244.4,
           "cpu_ns_per_read": null,
           "heap_bytes": null,
           "n": 100000,
           "settles": 3900000,
-          "setup_ms": 377.05873
+          "setup_ms": 368.22470000000004
         }
       ],
-      "ratio": 19715.56013516888,
-      "slope": 1.0724687909593178
+      "ratio": 19259.1112123052,
+      "slope": 1.0697623433916055
     },
     {
       "declared": 0.0,
@@ -191,7 +191,7 @@
         {
           "breakpoints": 0,
           "cpu_ns_per_day": null,
-          "cpu_ns_per_read": 371.0,
+          "cpu_ns_per_read": 571.0,
           "heap_bytes": null,
           "n": 1,
           "settles": 0,
@@ -200,7 +200,7 @@
         {
           "breakpoints": 0,
           "cpu_ns_per_day": null,
-          "cpu_ns_per_read": 251.0,
+          "cpu_ns_per_read": 461.0,
           "heap_bytes": null,
           "n": 10,
           "settles": 0,
@@ -209,7 +209,7 @@
         {
           "breakpoints": 0,
           "cpu_ns_per_day": null,
-          "cpu_ns_per_read": 331.0,
+          "cpu_ns_per_read": 431.0,
           "heap_bytes": null,
           "n": 100,
           "settles": 0,
@@ -218,7 +218,7 @@
         {
           "breakpoints": 0,
           "cpu_ns_per_day": null,
-          "cpu_ns_per_read": 260.0,
+          "cpu_ns_per_read": 421.0,
           "heap_bytes": null,
           "n": 1000,
           "settles": 0,
@@ -227,7 +227,7 @@
         {
           "breakpoints": 0,
           "cpu_ns_per_day": null,
-          "cpu_ns_per_read": 251.0,
+          "cpu_ns_per_read": 451.0,
           "heap_bytes": null,
           "n": 10000,
           "settles": 0,
@@ -236,7 +236,7 @@
         {
           "breakpoints": 0,
           "cpu_ns_per_day": null,
-          "cpu_ns_per_read": 260.0,
+          "cpu_ns_per_read": 441.0,
           "heap_bytes": null,
           "n": 100000,
           "settles": 0,
@@ -245,16 +245,16 @@
         {
           "breakpoints": 0,
           "cpu_ns_per_day": null,
-          "cpu_ns_per_read": 261.0,
+          "cpu_ns_per_read": 431.0,
           "heap_bytes": null,
           "n": 1000000,
           "settles": 0,
           "setup_ms": 0.0
         }
       ],
-      "ratio": 1.4780876494023905,
-      "slope": -0.01956268664805061
+      "ratio": 1.3562945368171022,
+      "slope": -0.013760782656490706
     }
   ],
-  "when": "2026-10-20T10:23:28Z"
+  "when": "2026-10-20T10:53:48Z"
 }
