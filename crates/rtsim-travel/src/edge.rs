@@ -14,6 +14,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_knowledge::BoardCursor;
 use rtsim_trade::{Amount, GoodId, Goods, MILLI};
 
+
 use crate::lattice::Lattice;
 use crate::pipeline::Pipeline;
 
@@ -64,13 +65,17 @@ impl Dir {
 
     /// Volume per quantum in chest slots (thousandths of a slot), from the current rates: what
     /// sets how often caravans leave.
+    /// Any flow at all counts as at least one thousandth of a slot: a caravan carrying only
+    /// payments is still a caravan, and news rides it.
     pub fn volume_slot_milli(&self, goods: &Goods) -> i64 {
         let mut v: i128 = 0;
+        let mut any = false;
         for (g, p) in self.goods.iter().chain(self.pay.iter()) {
-            let stack = i128::from(goods.get(*g).stack.max(1));
-            v += i128::from(p.current_rate()) * i128::from(MILLI) / (stack * i128::from(MILLI));
+            let r = p.current_rate();
+            any |= r > 0;
+            v += i128::from(r) / i128::from(goods.get(*g).stack.max(1));
         }
-        v as i64
+        if any { (v as i64).max(1) } else { 0 }
     }
 
     /// Every pipeline of the direction (goods, payments and raids), for sums and trims.

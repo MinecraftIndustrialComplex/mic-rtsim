@@ -120,15 +120,15 @@ pub fn nodes() -> Vec<NodeData> {
         resources: res(r),
     };
     vec![
-        v(1, 0, 0, 20, &[(FARMLAND, 60)]),
+        v(1, 0, 0, 20, &[(FARMLAND, 120)]),
         v(2, 600, 0, 18, &[(CATTLE, 6), (IRON_ORE, 4)]),
         v(3, 1200, -300, 12, &[(EMERALD_ORE, 2), (SHEEP, 8)]),
-        v(4, 600, 650, 15, &[(FARMLAND, 40), (SHEEP, 6)]),
-        v(5, -600, 300, 14, &[(FARMLAND, 20), (CATTLE, 4)]),
+        v(4, 600, 650, 15, &[(FARMLAND, 80), (SHEEP, 6)]),
+        v(5, -600, 300, 14, &[(FARMLAND, 40), (CATTLE, 4)]),
         v(6, 1300, 500, 10, &[(IRON_ORE, 3)]),
         rb(7, -500, -600, 12, &[(GEODE, 6), (SWAMP, 4)]),
         rb(8, -1000, -400, 10, &[(SWAMP, 6)]),
-        rb(9, -800, -1050, 10, &[(SWAMP, 5), (FARMLAND, 10)]),
+        rb(9, -800, -1050, 10, &[(SWAMP, 5), (FARMLAND, 30)]),
         NodeData {
             key: 10,
             kind: NodeKind::Haven(Culture::Human),

@@ -15,9 +15,12 @@ use rtsim_trade::{Amount, GoodId, Market, Price};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GoodNews {
     pub price: Price,
+    /// `p*`, the price at the target.
+    pub anchor: Price,
     pub stock: Amount,
     pub target: Amount,
-    /// Thousandths per quantum the market said it could take in.
+    /// Thousandths per quantum the market asked for on top of what reaches it now (negative: it
+    /// asks for less).
     pub absorbable: Amount,
     pub level: Level,
 }
@@ -34,6 +37,10 @@ pub struct Snapshot {
     pub can_pay: bool,
     pub refuses_cash: bool,
     pub goods: Vec<GoodNews>,
+    /// What reached the market per (source market, good) when the snapshot was taken, sorted. An
+    /// exporter adds its own share to the advertised change to know what to send, since the
+    /// advertisement is net of everything arriving, its own flow included.
+    pub inflows: Vec<(u32, GoodId, Amount)>,
 }
 
 impl Snapshot {
@@ -44,6 +51,7 @@ impl Snapshot {
                 let l = m.line(g);
                 GoodNews {
                     price: m.price(g),
+                    anchor: m.anchor(g),
                     stock: l.stock,
                     target: l.target,
                     absorbable: m.absorbable(g),
@@ -61,7 +69,15 @@ impl Snapshot {
             can_pay: m.can_pay(),
             refuses_cash: m.cash_refused(),
             goods,
+            inflows: Vec::new(),
         }
+    }
+
+    /// What `source` was landing here of `g` when the snapshot was taken.
+    pub fn inflow_from(&self, source: usize, g: GoodId) -> Amount {
+        self.inflows
+            .binary_search_by_key(&(source as u32, g), |x| (x.0, x.1))
+            .map_or(0, |i| self.inflows[i].2)
     }
 
     pub fn good(&self, g: GoodId) -> &GoodNews {

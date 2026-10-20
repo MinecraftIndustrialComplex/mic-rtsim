@@ -47,6 +47,11 @@ pub struct Tunables {
     /// A foreign currency's holding target, as a share of the home treasury target at mint
     /// parity, in thousandths. PLACEHOLDER (P18).
     pub fx_holding_share_milli: i64,
+    /// News resolution: the absorbable rate a market advertises is rounded down to a step of its
+    /// own need over this divisor (at least one item a day), so a stock drifting by a few
+    /// thousandths is not news. Without it every refill step is a new advertisement and a closed
+    /// world never goes quiet. PLACEHOLDER (overnight choice E17).
+    pub news_resolution_div: i64,
 }
 
 impl Default for Tunables {
@@ -60,6 +65,7 @@ impl Default for Tunables {
             caravan_slots: 6,
             craft_share_milli: 100,
             fx_holding_share_milli: 250,
+            news_resolution_div: 8,
         }
     }
 }

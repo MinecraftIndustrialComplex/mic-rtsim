@@ -53,6 +53,7 @@ pub(crate) fn to_home(m: &Market, from: Option<GoodId>, price: Price) -> Option<
 #[allow(clippy::too_many_arguments)]
 fn step(
     m: &mut Market,
+    node_index: usize,
     node: &Node,
     nodes_currency: &[Option<GoodId>],
     edges: &mut [rtsim_travel::Edge],
@@ -116,21 +117,23 @@ fn step(
             };
             let refused = pay_cur.is_none_or(|c| m.refuses(c));
             let tau = transport_price(goods, &cfg.trade, g, e.d, l_mint);
-            let margin = match (to_home(m, snap.currency, gn.price), refused, snap.can_pay) {
+            // The destination's bid: its price, but never below its anchor. Above its target it
+            // asks for less through its advertised rate, so the flow eases off instead of
+            // stopping at a margin cliff and starting again when it drains (the bang-bang limit
+            // cycle the two-market test measured; overnight choice E18).
+            let bid = gn.price.max(gn.anchor);
+            let margin = match (to_home(m, snap.currency, bid), refused, snap.can_pay) {
                 (Some(v), false, true) => v - mine - tau + MARGIN_SLACK,
                 _ => -1,
             };
-            let own = dir
-                .goods
-                .get(&g)
-                .map_or(0, |p| p.arrival_at(q.index(snap.at) + 1));
+            let own = snap.inflow_from(node_index, g);
             if margin < 0 && !had {
                 continue;
             }
             cands.push(Candidate {
                 dir: *d,
                 margin,
-                want: own + gn.absorbable,
+                want: (own + gn.absorbable).max(0),
                 quote: gn.price,
             });
         }
@@ -286,6 +289,22 @@ fn step(
     }
 }
 
+/// What reaches the market at boundary `nb`, per (source, good), sorted.
+fn inflows_by_source(node: &Node, edges: &[rtsim_travel::Edge], nb: u64) -> Vec<(u32, GoodId, Amount)> {
+    let mut v = Vec::new();
+    for d in &node.out {
+        let din = &edges[d.edge as usize].dirs[1 - d.dir as usize];
+        for (g, p) in &din.goods {
+            let a = p.arrival_at(nb);
+            if a != 0 {
+                v.push((din.from as u32, *g, a));
+            }
+        }
+    }
+    v.sort_unstable();
+    v
+}
+
 /// Sets every payment pipeline leaving the market from the totals per (direction, currency):
 /// those not in `pay` stop. The market's currency lines take the sums as outflow.
 fn set_payments(
@@ -349,8 +368,10 @@ impl World {
         let node = &nodes[i];
         let snap = markets
             .apply(node.region, at, |m, at| {
-                step(m, node, &currencies, edges, goods, cfg, l_mint, nb, &mut changes);
-                Snapshot::of(i, m, at)
+                step(m, i, node, &currencies, edges, goods, cfg, l_mint, nb, &mut changes);
+                let mut s = Snapshot::of(i, m, at);
+                s.inflows = inflows_by_source(node, edges, nb);
+                s
             })
             .expect("every node has a market");
         for c in changes {
@@ -374,7 +395,10 @@ impl World {
     /// nothing changed in kind (at build, on joining).
     pub(crate) fn emit(&mut self, i: usize, at: Tick, force: bool) {
         let m = self.market_at(i, at);
-        let snap = Arc::new(Snapshot::of(i, &m, at));
+        let nb = self.cfg.trade.quantum.index(at) + 1;
+        let mut s = Snapshot::of(i, &m, at);
+        s.inflows = inflows_by_source(&self.nodes[i], &self.edges, nb);
+        let snap = Arc::new(s);
         let differs = self.nodes[i]
             .last_sent
             .as_ref()

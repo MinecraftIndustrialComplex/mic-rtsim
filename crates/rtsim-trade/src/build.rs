@@ -381,6 +381,7 @@ pub fn make_market(
                 nominal_cap: cap,
                 inputs: std::mem::take(&mut inputs[gi]),
                 used_here: used_here[gi],
+                currency: def.kind != GoodKind::Item,
             });
         }
         let order = recipe_order(&states);
@@ -395,6 +396,7 @@ pub fn make_market(
             goods: states,
             order,
             base_prices: vec![None; g_n],
+            news_resolution_div: tun.news_resolution_div,
         };
         m.recompute();
         m

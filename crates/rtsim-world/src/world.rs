@@ -126,6 +126,8 @@ pub struct World {
     pub knowledge: Knowledge,
     pub(crate) wheel: TimingWheel<Ev>,
     pub(crate) packets: BTreeMap<u32, PacketData>,
+    /// Wakes already booked, so two pipeline changes landing at one boundary wake a market once.
+    pub(crate) wakes: std::collections::BTreeSet<(Tick, usize)>,
     pub(crate) next_packet: u32,
     pub caravans: Arena<Caravan>,
     pub legs: LegIndex,
@@ -226,6 +228,7 @@ impl World {
             edges: Vec::new(),
             knowledge,
             packets: BTreeMap::new(),
+            wakes: std::collections::BTreeSet::new(),
             next_packet: 1,
             caravans: Arena::new(),
             legs: LegIndex::new(window),
@@ -409,6 +412,11 @@ impl World {
 
     pub(crate) fn schedule(&mut self, at: Tick, ev: Ev) {
         let at = at.max(self.wheel.now());
+        if let Ev::Wake(i) = ev
+            && !self.wakes.insert((at, i))
+        {
+            return;
+        }
         self.wheel.schedule(at, ev);
     }
 
@@ -473,6 +481,7 @@ impl World {
     fn handle(&mut self, at: Tick, ev: Ev) {
         match ev {
             Ev::Wake(i) => {
+                self.wakes.remove(&(at, i));
                 self.stats.wakes += 1;
                 self.market_event(i, at, false);
             }

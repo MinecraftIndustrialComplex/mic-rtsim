@@ -65,6 +65,9 @@ pub struct GoodState {
     /// Whether another of this market's recipes uses this good, so a change in its production
     /// changes their consumption: such lines also break at production changes.
     pub used_here: bool,
+    /// A currency line (the treasury or an exchange line): never exported or advertised as a
+    /// good; money moves only as payment.
+    pub currency: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -85,6 +88,8 @@ pub struct Market {
     /// For a player base: the last price players traded each good at, and when (C26: the base's
     /// prices are the prices players trade at there).
     pub base_prices: Vec<Option<(Price, Tick)>>,
+    /// The divisor of the news resolution ([`crate::Tunables::news_resolution_div`]).
+    pub news_resolution_div: i64,
 }
 
 /// Why a player trade is refused.
@@ -257,7 +262,7 @@ impl Market {
             return 0;
         }
         let l = &self.lines[g.index()];
-        if l.stock < l.target {
+        if l.stock < l.target || self.goods[g.index()].currency {
             return 0;
         }
         let r = l.rates;
@@ -265,23 +270,29 @@ impl Market {
         base + (l.stock - l.target) / self.t_quanta as i64
     }
 
-    /// What the market advertises it can take in per quantum: need minus inbound, where need is
-    /// consumption plus outflow minus own capacity plus a refill of the gap to the target over
-    /// `T` (negative above the target). Integer division gives a dead band of `T` thousandths
-    /// around the target, which is what lets a closed world go quiet. Nothing above twice the
-    /// target, and nothing while the market can pay for nothing (overnight choice E8).
+    /// What the market advertises it can take in per quantum, signed: need minus inbound, where
+    /// need is consumption plus outflow minus own capacity plus a refill of the gap to the target
+    /// over `T` (negative above the target, so a glut asks its suppliers for less). Rounded toward
+    /// zero to the news resolution, which is the dead band that lets a closed world go quiet.
+    /// Nothing above twice the target or while the market can pay for nothing: then it asks for
+    /// everything it receives to stop (overnight choice E8).
     pub fn absorbable(&self, g: GoodId) -> Amount {
-        if !self.is_storehouse() {
+        if !self.is_storehouse() || self.goods[g.index()].currency {
             return 0;
         }
         let l = &self.lines[g.index()];
-        if l.level() == Level::Glut || !self.can_pay() {
-            return 0;
-        }
         let r = l.rates;
+        if l.level() == Level::Glut || !self.can_pay() {
+            return -r.inflow;
+        }
         let refill = (l.target - l.stock) / self.t_quanta as i64;
         let need = r.cons + r.outflow - r.cap + refill;
-        (need - r.inflow).max(0)
+        let raw = need - r.inflow;
+        // A step of the line's own consumption over the divisor, at least an item a day.
+        let step = (r.cons / self.news_resolution_div.max(1))
+            .max(self.quantum.per_day(MILLI))
+            .max(1);
+        raw / step * step
     }
 
     // ---- Player trades through the treasury (C14, C23) ----
@@ -608,6 +619,7 @@ mod tests {
                     nominal_cap: t.quantum.per_day(30 * MILLI),
                     inputs: vec![],
                     used_here: false,
+                    currency: false,
                 },
                 GoodState {
                     curve: PriceCurve::flat(PRICE_ONE),
@@ -615,10 +627,12 @@ mod tests {
                     nominal_cap: 0,
                     inputs: vec![],
                     used_here: false,
+                    currency: true,
                 },
             ],
             order: vec![GoodId(0), GoodId(1)],
             base_prices: vec![None, None],
+            news_resolution_div: 8,
         }
     }
 
