@@ -36,3 +36,15 @@ potato profile (A11), and a bench that shows where O5 matters.
 | K12 | Two generations, as P29 recommends: `commit_pending` writes a save but keeps the last confirmed generation's pages until `confirm(save)`; `open_for_journal(dir, durability, world_obs_seq)` opens the newest generation whose observation sequence is not past the world's, rolling back otherwise; `rollback` is durable. `commit` stays a save confirmed at once, so existing callers see no change. Only the current and the last confirmed generations are kept, and only the current one can be confirmed. A rolled-back save number is never reused. **P29 itself stays Ben's: this builds its recommended option, it does not decide it.** | "Ahead of the journal" is read as: the generation includes observations the world's save does not have. Keeping just two generations is what P29 asks; an intermediate unconfirmed generation has no snapshot to return to. |
 | K13 | Compaction finds a segment's current pages from the segment's own record headers instead of walking the whole index, and a page's location is packed into 24 bytes (segment numbers are 32-bit), so the resident index costs 32 bytes per page plus the hash map's overhead. | The old commit walked every page to find what to move, an O(all pages) part beside the manifest. The index is resident by design (SCALE.md §8), so its size per page matters for the budget. |
 | K14 | The crash test (`tests/crash_kill.rs`) runs the test binary as a child that saves forever with fsync on, kills it with SIGKILL at 32 pseudo-random moments (16 directories, two lives each), and checks that the store opens at a complete save whose every page matches a model, that no temporary file or unnamed segment survives, and that a pending generation rolls back exactly (on a copy). Fault-injection tests stop a save at each of six points of the save order. | A real kill exercises the code paths between the injected points. It covers process crashes, not power loss: the page cache survives a kill. The fsync order is what covers power loss, and it is unchanged in kind from O9. |
+
+## Notes for the engine from the bridge contract
+
+- **Repeated events are no-ops.** TAKEN, DIED and COMMAND_RESULT may arrive more than once
+  (docs/boundary.md, "Idempotent events", §3.1). The engine must apply each at most once: by op id
+  while `Replay` still remembers it, and by state after that (a member already gone, an operation
+  already done). Nothing in the kernel enforces the second half; the modules that handle these
+  records must.
+- **Java op ids are random.** `OpId::bridge` wraps 63 random bits chosen by the bridge, not the
+  observation's sequence (a rolled-back journal reissues sequences). Its doc comment said
+  otherwise and is corrected. An engine that re-derives a transfer after a crash must give it the
+  same op id it had, or the bridge cannot recognise the duplicate.
