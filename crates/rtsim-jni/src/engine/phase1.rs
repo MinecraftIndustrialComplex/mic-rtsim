@@ -30,6 +30,8 @@ mod cmds;
 mod log;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Reader, Writer};
@@ -94,8 +96,12 @@ const STEER_SPEED: f32 = 0.6;
 /// Game ticks between market passes; a village this close to a player gets MARKET snapshots.
 const MARKET_TICKS: i64 = 100;
 const MARKET_RADIUS: f64 = 192.0;
+/// The market pass's cell edge, blocks.
+const MARKET_CELL: i64 = 256;
 /// A player not reported for this many game ticks is gone.
 const PLAYER_STALE: i64 = 200;
+/// Epochs skipped at every start: more than a session hands out between two saves.
+const EPOCH_STRIDE: u32 = 1 << 20;
 /// World ticks before a group whose spawn was rejected is tried again.
 const BACKOFF_TICKS: u64 = 6_000;
 /// Vanilla drops a gossip entry below 2 (boundary.md §4.3): smaller amounts are sent as 2.
@@ -175,11 +181,15 @@ pub(super) struct Link {
     cat: catalog::Catalog,
     /// Java's village and base ids to world nodes.
     nodes: BTreeMap<u64, usize>,
+    /// Village and base ids by (frame, cell) of `MARKET_CELL` blocks: the market pass looks up
+    /// the cells around players, never every village (SCALE.md §0).
+    cells: BTreeMap<(u16, i64, i64), Vec<u64>>,
     /// Villages a test scripts (saved: their adoption may replay in a later session).
     scripted: BTreeSet<u64>,
     log: Vec<Logged>,
-    /// Log chunks below this are in pages a snapshot already took and never change.
-    clean_chunks: usize,
+    /// Log chunks below this are in pages on disk and never change. Only a commit that succeeded
+    /// moves it ([`Saved::done`]): a save whose pages never reached the disk must not count.
+    clean_chunks: Arc<AtomicUsize>,
     /// World ticks ahead of game time (a test's P1_ADVANCE).
     offset: u64,
     /// Commands the bridge answers by op id, kept until it does: (sequence, op, command).
@@ -187,6 +197,11 @@ pub(super) struct Link {
     resend: VecDeque<(u64, u64, P1Cmd)>,
     queue: VecDeque<P1Cmd>,
     puppets: BTreeMap<u64, Puppet>,
+    /// Which caravan row each phase 1 agent is (agent to the row's handle bits), saved with the
+    /// pages: a record about a puppet can arrive in a later session (replayed from the journal
+    /// after a crash, or carried by a chunk, docs/boundary.md §3.1), when `puppets` no longer has
+    /// it. Rows that are gone are dropped at each save.
+    agents: BTreeMap<u64, u64>,
     backoff: BTreeMap<u64, u64>,
     next_epoch: u32,
     players: BTreeMap<Uuid, Seen>,
@@ -219,14 +234,16 @@ impl Link {
             world,
             cat,
             nodes: BTreeMap::new(),
+            cells: BTreeMap::new(),
             scripted: BTreeSet::new(),
             log: Vec::new(),
-            clean_chunks: 0,
+            clean_chunks: Arc::new(AtomicUsize::new(0)),
             offset: 0,
             outbox: Vec::new(),
             resend: VecDeque::new(),
             queue: VecDeque::new(),
             puppets: BTreeMap::new(),
+            agents: BTreeMap::new(),
             backoff: BTreeMap::new(),
             next_epoch: 1,
             players: BTreeMap::new(),
@@ -297,12 +314,32 @@ impl Link {
             link.world.caravans.len(),
             link.world.state_hash()
         ));
-        link.clean_chunks = log.len() / CHUNK;
+        link.clean_chunks
+            .store(log.len() / CHUNK, Ordering::Release);
+        // Villages whose first census is in the log (choice V9: later ones only raise).
+        link.censused = log
+            .iter()
+            .filter_map(|l| match l.input {
+                Input::Population { key, .. } => Some(key),
+                _ => None,
+            })
+            .collect();
         link.log = log;
+        let keys: Vec<u64> = link.nodes.keys().copied().collect();
+        for key in keys {
+            link.index_node(key);
+        }
         link.offset = m.offset;
-        link.next_epoch = m.next_epoch.max(1);
+        // Epochs handed out after the save were lost with the crash, and a record of that
+        // session may still be replayed: start well past them (choice V26).
+        link.next_epoch = m.next_epoch.max(1).wrapping_add(EPOCH_STRIDE).max(1);
         link.scripted = m.scripted;
         link.outbox = m.outbox;
+        link.agents = m.agents;
+        // Kept commands decided before the save but not yet written: the replay above decided
+        // them again and threw them away, so they go out from here (their op ids are their
+        // identity: one Java already applied is answered DUPLICATE).
+        link.queue = m.queued.into();
         link.stats[stat::INPUTS] = link.log.len() as u64;
         Ok(link)
     }
@@ -324,9 +361,30 @@ impl Link {
     fn input(&mut self, input: Input, at: u64) -> log::Applied {
         let at = at.max(self.world.now().0);
         let out = log::apply(&mut self.world, &mut self.nodes, &input, at);
+        if let (Input::Join { key, .. } | Input::MarkBase { key, .. }, Some(_)) = (&input, out.node)
+        {
+            self.index_node(*key);
+        }
         self.log.push(Logged { at, input });
         self.stats[stat::INPUTS] = self.log.len() as u64;
         out
+    }
+
+    /// Puts a village or base into the market pass's cells (once).
+    fn index_node(&mut self, key: u64) {
+        let Some(&i) = self.nodes.get(&key) else {
+            return;
+        };
+        let p = self.world.nodes[i].pos;
+        let cell = (
+            p.frame,
+            i64::from(p.x).div_euclid(MARKET_CELL),
+            i64::from(p.z).div_euclid(MARKET_CELL),
+        );
+        let v = self.cells.entry(cell).or_default();
+        if !v.contains(&key) {
+            v.push(key);
+        }
     }
 
     fn java_dim(st_world: &crate::world::World, frame: u16) -> Option<String> {
@@ -353,6 +411,8 @@ struct Meta {
     log_len: usize,
     scripted: BTreeSet<u64>,
     outbox: Vec<(u64, u64, P1Cmd)>,
+    agents: BTreeMap<u64, u64>,
+    queued: Vec<P1Cmd>,
 }
 
 fn encode_meta(l: &Link) -> Vec<u8> {
@@ -370,6 +430,17 @@ fn encode_meta(l: &Link) -> Vec<u8> {
     for (seq, op, c) in &l.outbox {
         w.u64(*seq);
         w.u64(*op);
+        cmds::encode_kept(&mut w, c);
+    }
+    // Added by review 3 at the end, so a meta page written before reads as having none.
+    w.var_u64(l.agents.len() as u64);
+    for (a, bits) in &l.agents {
+        w.u64(*a);
+        w.u64(*bits);
+    }
+    let queued: Vec<&P1Cmd> = l.queue.iter().filter(|c| c.kept_op().is_some()).collect();
+    w.var_u64(queued.len() as u64);
+    for c in queued {
         cmds::encode_kept(&mut w, c);
     }
     w.into_bytes()
@@ -401,6 +472,17 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
         let op = r.u64()?;
         outbox.push((seq, op, cmds::decode_kept(&mut r)?));
     }
+    let mut agents = BTreeMap::new();
+    let mut queued = Vec::new();
+    if !r.is_empty() {
+        for _ in 0..r.var_u64()? {
+            let a = r.u64()?;
+            agents.insert(a, r.u64()?);
+        }
+        for _ in 0..r.var_u64()? {
+            queued.push(cmds::decode_kept(&mut r)?);
+        }
+    }
     r.finish()?;
     Ok(Meta {
         now,
@@ -410,23 +492,45 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
         log_len,
         scripted,
         outbox,
+        agents,
+        queued,
     })
 }
 
-/// The pages a save writes: the meta page, and every log chunk that changed since the last.
-pub(super) fn snapshot(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
+/// What a commit that wrote a phase 1 snapshot reports when it succeeded.
+pub(super) struct Saved {
+    clean: Arc<AtomicUsize>,
+    chunks: usize,
+}
+
+impl Saved {
+    /// The snapshot's pages are on disk: its full log chunks never need writing again.
+    pub(super) fn done(&self) {
+        self.clean.fetch_max(self.chunks, Ordering::AcqRel);
+    }
+}
+
+/// The pages a save writes: the meta page, and every log chunk not yet on disk in full. The
+/// commit calls [`Saved::done`] once they are.
+pub(super) fn snapshot(st: &mut State) -> (Vec<(PageKey, Vec<u8>)>, Saved) {
     let l = &mut st.phase1;
+    let caravans = &l.world.caravans;
+    l.agents
+        .retain(|_, bits| caravans.get(Handle::from_bits(*bits)).is_some());
     let mut out = vec![(KEY_META, encode_meta(l))];
     let chunks = l.log.len().div_ceil(CHUNK);
-    for k in l.clean_chunks..chunks {
+    for k in l.clean_chunks.load(Ordering::Acquire)..chunks {
         let mut w = Writer::with_capacity(CHUNK * 24);
         for e in &l.log[k * CHUNK..((k + 1) * CHUNK).min(l.log.len())] {
             e.encode(&mut w);
         }
         out.push((chunk_key(k), w.into_bytes()));
     }
-    l.clean_chunks = l.log.len() / CHUNK;
-    out
+    let saved = Saved {
+        clean: Arc::clone(&l.clean_chunks),
+        chunks: l.log.len() / CHUNK,
+    };
+    (out, saved)
 }
 
 // ---- hooks: session and latest-wins records -------------------------------------------------------
@@ -503,8 +607,10 @@ fn census(st: &mut State, key: u64, residents: u32) {
         return;
     };
     let pop = l.world.nodes[i].local.pop;
+    // The first census is logged even when it changes nothing: the log is what tells a later
+    // session which villages had theirs.
     let first = l.censused.insert(key);
-    if (first && residents != pop) || residents > pop {
+    if first || residents > pop {
         let at = l.wt(st.game_time);
         l.input(
             Input::Population {
@@ -624,10 +730,13 @@ fn adopted(st: &mut State, rec: &Rec<'_>, at: u64) {
     take_world_commands(st);
 }
 
+/// The caravan row a phase 1 agent is: this session's puppet, else what the pages remember (a
+/// record replayed or carried into a later session).
 fn caravan_of(l: &Link, agent: u64) -> Option<u64> {
-    match l.puppets.get(&agent)?.of {
-        PuppetOf::Caravan(bits) => Some(bits),
-        PuppetOf::Band(_) => None,
+    match l.puppets.get(&agent).map(|p| p.of) {
+        Some(PuppetOf::Caravan(bits)) => Some(bits),
+        Some(PuppetOf::Band(_)) => None,
+        None => l.agents.get(&agent).copied(),
     }
 }
 
@@ -914,10 +1023,11 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
                 )
             };
             let l = &mut st.phase1;
-            let Some(p) = l.puppets.get(&agent).filter(|p| p.epoch == epoch) else {
-                return;
-            };
-            let PuppetOf::Caravan(bits) = p.of else {
+            // Any epoch: a member taken or killed in an earlier materialization (a record
+            // replayed after a crash, or carried by a dropped item) was still this caravan's. A
+            // repeat is a no-op by op id, then by state (the member is already gone).
+            let _ = epoch;
+            let Some(bits) = caravan_of(l, agent) else {
                 return;
             };
             let at = l.world.now().0;
@@ -1056,7 +1166,15 @@ fn take_world_commands(st: &mut State) {
         let cmd = match c {
             Command::VanillaGossip(g) => {
                 let l = &st.phase1;
-                let Some(i) = l.world.node_of_actor(g.village) else {
+                // A village's actor is registered under its key: a lookup, not a scan.
+                let Some(i) = l
+                    .world
+                    .knowledge
+                    .actors()
+                    .external(g.village)
+                    .and_then(|k| l.nodes.get(&k).copied())
+                    .filter(|&i| l.world.nodes[i].actor == g.village)
+                else {
                     continue;
                 };
                 let village = l.world.nodes[i].key;
@@ -1279,6 +1397,7 @@ fn spawn_caravan(
         member: 0,
         offers,
     }));
+    l.agents.insert(agent, id.to_bits());
     l.puppets.insert(
         agent,
         Puppet {
@@ -1608,7 +1727,23 @@ fn markets(st: &mut State) {
     let l = &mut st.phase1;
     let worst = l.world.cfg.markup_worst;
     let mut out = Vec::new();
-    for (&key, &i) in &l.nodes {
+    // The villages just traded at, and those in the cells around a player.
+    let mut candidates: BTreeSet<u64> = l.market_dirty.clone();
+    let r = MARKET_RADIUS.ceil() as i64;
+    for s in l.players.values() {
+        let (x, z) = (s.pos[0].floor() as i64, s.pos[2].floor() as i64);
+        for cx in (x - r).div_euclid(MARKET_CELL)..=(x + r).div_euclid(MARKET_CELL) {
+            for cz in (z - r).div_euclid(MARKET_CELL)..=(z + r).div_euclid(MARKET_CELL) {
+                if let Some(v) = l.cells.get(&(s.frame, cx, cz)) {
+                    candidates.extend(v.iter().copied());
+                }
+            }
+        }
+    }
+    for key in candidates {
+        let Some(&i) = l.nodes.get(&key) else {
+            continue;
+        };
         if l.scripted.contains(&key) {
             continue;
         }
@@ -1820,6 +1955,7 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
             // Phase 1 is off: nothing new materializes and no snapshot goes out; kept commands
             // and captures still do.
             st.phase1.queue.pop_front();
+            forget_unsent_spawn(st, &c);
             continue;
         }
         match write_one(st, w, &c, None) {
@@ -1833,6 +1969,7 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
             One::Full => return (highest, true),
             One::Never => {
                 st.phase1.queue.pop_front();
+                forget_unsent_spawn(st, &c);
                 super::log_error(&format!(
                     "a phase 1 {} can never fit a command buffer; dropped",
                     c.kind_name()
@@ -1841,6 +1978,20 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         }
     }
     (highest, false)
+}
+
+/// A SPAWN_GROUP dropped unwritten: its puppet would wait as spawning for the whole session (no
+/// answer ever comes), blocking that group and taking a place under the cap.
+fn forget_unsent_spawn(st: &mut State, c: &P1Cmd) {
+    if let P1Cmd::Spawn { agent, epoch, .. } = c
+        && st
+            .phase1
+            .puppets
+            .get(agent)
+            .is_some_and(|p| p.epoch == *epoch && p.state == PState::Spawning)
+    {
+        st.phase1.puppets.remove(agent);
+    }
 }
 
 /// A test's scripted phase 1 order as a command.
@@ -1905,4 +2056,233 @@ pub(super) fn sentiments(st: &State) -> BTreeMap<u64, Vec<(u64, u64, i8)>> {
 /// The villages and bases the phase 1 world knows (TEST mode's inspection).
 pub(super) fn villages(st: &State) -> BTreeSet<u64> {
     st.phase1.nodes.keys().copied().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rtsim_kernel::page::{Durability, SaveBatch};
+
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "rtsim-p1-unit-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    /// Saves `l`'s meta page and loads it back as a restarted engine would.
+    fn reload(l: &Link, tag: &str) -> Link {
+        let dir = tmpdir(tag);
+        let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        let mut b = SaveBatch::new();
+        b.put(KEY_META, &encode_meta(l));
+        store.commit(b, 1).unwrap();
+        let back = Link::load(&mut store).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        back
+    }
+
+    /// Review 3, P1: a save is taken at a step boundary, after `simulate` queued this step's
+    /// decisions and before `write_commands` wrote them. A kept command (WRITE_GOSSIP,
+    /// PLACE_HOUSE, SPAWN_RESIDENT) still in the queue was in neither the saved outbox nor, after a
+    /// crash, anywhere else: the replay re-decides it and throws it away. It must come back.
+    #[test]
+    fn a_kept_command_still_queued_at_a_save_comes_back_after_a_crash() {
+        let mut l = Link::empty();
+        l.push(P1Cmd::Gossip(GossipCmd {
+            op: 0x77,
+            village: 1,
+            player: (2, 3),
+            gossip: 2,
+            amount: 2,
+            report: 3,
+            flags: 0,
+        }));
+        // A latest-wins command is decided again after a restart: it need not come back.
+        l.push(P1Cmd::Despawn {
+            agent: 9,
+            epoch: 1,
+            reason: 1,
+        });
+        let mut back = reload(&l, "queued");
+        back.resume(0);
+        let ops: Vec<u64> = back
+            .queue
+            .iter()
+            .filter_map(P1Cmd::kept_op)
+            .chain(back.resend.iter().map(|r| r.1))
+            .collect();
+        assert_eq!(
+            ops,
+            vec![0x77],
+            "the queued WRITE_GOSSIP survives the restart"
+        );
+        assert!(
+            back.queue.iter().all(|c| c.kept_op().is_some()),
+            "only kept commands come back"
+        );
+    }
+
+    fn state() -> State {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        State::new(rx, None)
+    }
+
+    fn commit(store: &mut PageStore, (pages, saved): (Vec<(PageKey, Vec<u8>)>, Saved)) {
+        let mut b = SaveBatch::new();
+        for (k, v) in &pages {
+            b.put(*k, v);
+        }
+        let at = store.obs_seq() + 1;
+        store.commit(b, at).unwrap();
+        saved.done();
+    }
+
+    /// Review 3, P4: the first census sets a village's population and later ones only raise it
+    /// (choice V9), because growth books residents before they exist and a part-loaded village
+    /// counts low. Which villages had their first census was forgotten at every restart, so the
+    /// first census after one lowered the population again.
+    #[test]
+    fn a_census_after_a_restart_never_lowers_a_population() {
+        let mut st = state();
+        st.phase1.input(
+            Input::Join {
+                key: 5,
+                culture: 0,
+                frame: 0,
+                x: 0,
+                z: 0,
+                pop: 30,
+                resources: Vec::new(),
+            },
+            0,
+        );
+        census(&mut st, 5, 25);
+        census(&mut st, 5, 28);
+        let i = st.phase1.nodes[&5];
+        assert_eq!(st.phase1.world.nodes[i].local.pop, 28);
+        let dir = tmpdir("census");
+        let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        commit(&mut store, snapshot(&mut st));
+        let mut st2 = state();
+        st2.phase1 = Link::load(&mut store).unwrap();
+        census(&mut st2, 5, 20);
+        assert_eq!(
+            st2.phase1.world.nodes[i].local.pop, 28,
+            "a low census after the restart left the population alone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review 3, P5: a save whose pages never reached the disk (the IO lane's commit failed) must
+    /// not count its log chunks as written, or the next save leaves a chunk stale and every later
+    /// start fails ("the phase 1 log holds ... inputs, its meta page says ...").
+    #[test]
+    fn a_failed_save_never_leaves_a_gap_in_the_log() {
+        let mut st = state();
+        let push = |st: &mut State, n: usize| {
+            for _ in 0..n {
+                st.phase1.log.push(Logged {
+                    at: 0,
+                    input: Input::Population { key: 1, pop: 5 },
+                });
+            }
+        };
+        let dir = tmpdir("gap");
+        let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        push(&mut st, 1_500);
+        commit(&mut store, snapshot(&mut st));
+        push(&mut st, 700);
+        let _lost = snapshot(&mut st); // the IO lane failed to write these
+        push(&mut st, 100);
+        commit(&mut store, snapshot(&mut st));
+        let back = Link::load(&mut store).expect("the pages load");
+        assert_eq!(back.log.len(), 2_300);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review 3, P7: with phase 1 switched off, a queued SPAWN_GROUP is dropped unwritten; its
+    /// puppet must go with it, or it waits as spawning for the whole session, blocking that
+    /// caravan and taking a place under the cap.
+    #[test]
+    fn a_spawn_dropped_while_phase1_is_off_leaves_no_puppet() {
+        let mut st = state();
+        st.phase1.enabled = false;
+        st.phase1.push(P1Cmd::Spawn {
+            agent: 0xA,
+            epoch: 1,
+            group_kind: "x".into(),
+            dimension: "minecraft:overworld".into(),
+            pos: [0.0; 3],
+            flags: 0,
+            members: Vec::new(),
+        });
+        st.phase1.puppets.insert(
+            0xA,
+            Puppet {
+                epoch: 1,
+                of: PuppetOf::Caravan(7),
+                state: PState::Spawning,
+                frame: 1,
+                pos: [0.0; 3],
+                pinned: false,
+                leg_end: 0,
+                last_steer: i64::MIN,
+            },
+        );
+        let mut buf = vec![0u8; 4096];
+        let mut w = RecordWriter::new(&mut buf);
+        write_queue(&mut st, &mut w);
+        assert!(st.phase1.queue.is_empty());
+        assert!(
+            !st.phase1.puppets.contains_key(&0xA),
+            "no puppet waits for a spawn never sent"
+        );
+    }
+
+    /// Review 3, P6: epochs are new for every materialization, across sessions too (choice V26).
+    /// The counter in the pages is the save's; epochs handed out after it came again after a
+    /// crash, so a record of the lost session could match a new puppet.
+    #[test]
+    fn epochs_after_a_restart_are_new() {
+        let mut l = Link::empty();
+        l.next_epoch = 5;
+        let saved = encode_meta(&l);
+        // Epochs 5 to 8 go out after the save, then the server dies.
+        let dir = tmpdir("epochs");
+        let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        commit(
+            &mut store,
+            (
+                vec![(KEY_META, saved)],
+                Saved {
+                    clean: Arc::new(AtomicUsize::new(0)),
+                    chunks: 0,
+                },
+            ),
+        );
+        let back = Link::load(&mut store).unwrap();
+        assert!(
+            back.next_epoch > 8,
+            "the restart hands out new epochs: next {}",
+            back.next_epoch
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review 3, P2: which caravan a phase 1 agent is outlives the session, so a record about it
+    /// replayed after a restart (a robbery, a trade, a member killed) still finds the caravan.
+    #[test]
+    fn a_puppets_caravan_is_known_after_a_restart() {
+        let mut l = Link::empty();
+        l.agents.insert(0xCA4A, 0x0000_0003_0000_0007);
+        let back = reload(&l, "agents");
+        assert_eq!(caravan_of(&back, 0xCA4A), Some(0x0000_0003_0000_0007));
+    }
 }

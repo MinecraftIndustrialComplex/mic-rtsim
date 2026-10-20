@@ -873,3 +873,122 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
     assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
     e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+/// Three villages, a player in the first, and days on until P1_SPAWN_NEAR materializes a caravan
+/// with wares as `agent` (epoch 1). Returns its SPAWN_GROUP's cargo as (member, item, count).
+fn phase1_caravan(e: &std::sync::Arc<Engine>, j: &mut Java, agent: u64) -> Vec<(u32, String, i32)> {
+    j.module_mask = 0b1111;
+    j.adopt(1, "minecraft:village_plains", "human", 90, 0, 0);
+    j.adopt(2, "minecraft:village_taiga", "human", 90, 400, 0);
+    j.adopt(3, "minecraft:village_desert", "human", 90, 0, 400);
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    j.players = vec![(PLAYER, dim, [10.0, 64.0, 0.0])];
+    j.idle();
+    let spawned = |j: &Java| {
+        j.p1_of(cmd::SPAWN_GROUP)
+            .iter()
+            .any(|s| wire::u64_at(s, cmd::spawn_group::AGENT) == agent)
+    };
+    let mut quanta = 0;
+    while !spawned(j) {
+        assert!(
+            quanta < 240,
+            "no caravan with wares: {:?}",
+            e.phase1_stats()
+        );
+        e.order(vec![Order::Phase1Advance(3_000)]).unwrap();
+        j.idle();
+        quanta += 1;
+        e.order(vec![Order::Phase1SpawnNear {
+            agent,
+            epoch: 1,
+            dimension: OVERWORLD.into(),
+            pos: [10.5, 64.0, 0.5],
+            radius: 2_000,
+            search: [10.5, 0.5],
+        }])
+        .unwrap();
+        j.idle();
+    }
+    j.idle();
+    let spawn = j
+        .p1_of(cmd::SPAWN_GROUP)
+        .into_iter()
+        .find(|s| wire::u64_at(s, cmd::spawn_group::AGENT) == agent)
+        .unwrap();
+    let mut cargo = Vec::new();
+    let mut at = cmd::spawn_group::MEMBERS;
+    for _ in 0..wire::u32_at(&spawn, wire::R_AUX) {
+        use cmd::spawn_group::member as mb;
+        let idx = wire::u32_at(&spawn, at + mb::INDEX);
+        let n = wire::u32_at(&spawn, at + mb::ITEM_COUNT) as usize;
+        for i in 0..n {
+            let ia = at + mb::ITEMS + i * obs::item::SIZE;
+            cargo.push((
+                idx,
+                j.cmd_name(wire::DICT_ITEM, wire::u32_at(&spawn, ia + obs::item::ITEM)),
+                wire::i32_at(&spawn, ia + obs::item::COUNT),
+            ));
+        }
+        at += mb::size(n);
+    }
+    cargo
+}
+
+/// Review 3, P2: a puppet's robbery the pages do not include yet stays in Java's journal and is
+/// replayed after a crash, into a session where the puppet no longer exists. It must still be
+/// booked to the caravan: the player has the goods, and a caravan that keeps them too has
+/// created them. Before the fix the engine looked the caravan up in this session's puppets only.
+#[test]
+fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
+    let dir = tmpdir("p1replay");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    let agent = 0xCA4B_u64;
+    let cargo = phase1_caravan(&e, &mut j, agent);
+    assert!(!cargo.is_empty());
+    // Pages with the caravan in them.
+    e.order(vec![Order::SaveAtNextStep]).unwrap();
+    j.idle();
+    while e.durable_obs_seq() < e.stats_array()[4] {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // A robbery after that save, booked live.
+    let (member, item, n) = cargo
+        .iter()
+        .find(|(_, i, _)| i != EMERALD)
+        .cloned()
+        .unwrap_or_else(|| cargo[0].clone());
+    j.robbed(
+        agent,
+        1,
+        member,
+        &[(&item, n.min(3))],
+        wire::JAVA_OP_BIT | 0x7b01,
+    );
+    j.idle();
+    assert_eq!(p1_stat(&e, 5), 1, "the robbery booked live");
+    // The world saves (its journal holds the robbery: the pages do not include it), then the
+    // server dies.
+    let saved = j.world_save();
+    assert!(
+        saved
+            .journal
+            .iter()
+            .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == obs::CARGO_CHANGED),
+        "the journal still holds the robbery"
+    );
+    let _ = j.crash();
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), saved);
+    j.module_mask = 0b1111;
+    j.idle();
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, 5),
+        1,
+        "the replayed robbery is booked to the caravan the puppet was"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}

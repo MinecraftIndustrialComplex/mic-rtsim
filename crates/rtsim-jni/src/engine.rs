@@ -1238,7 +1238,7 @@ impl Engine {
         meta: Vec<u8>,
         world: Vec<u8>,
         industry: Vec<(PageKey, Vec<u8>)>,
-        extra: Vec<(PageKey, Vec<u8>)>,
+        (extra, p1_saved): (Vec<(PageKey, Vec<u8>)>, phase1::Saved),
         obs_seq: u64,
     ) {
         let _z = rt::zone!("rtsim.save");
@@ -1261,6 +1261,7 @@ impl Engine {
         }
         match store.commit(batch, obs_seq) {
             Ok(_) => {
+                p1_saved.done();
                 self.durable.fetch_max(obs_seq, Ordering::AcqRel);
                 self.stats.saves_done.fetch_add(1, Ordering::AcqRel);
             }
