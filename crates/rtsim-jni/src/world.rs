@@ -158,6 +158,9 @@ pub struct World {
     pub module_mask: u32,
     pub game_time: i64,
     captured: Vec<Captured>,
+    /// The captures of the last journaled event, after it applied: what a member held when it
+    /// was taken or died, for phase 1 to book exactly that (Review P3), whatever the epoch.
+    last_captured: Vec<Captured>,
     pub counters: WorldCounters,
 }
 
@@ -247,7 +250,8 @@ impl World {
         if rec.kind != obs::MEMBER_STATE {
             // A capture is always followed by the event that made it; anything else ends it.
             let captured = std::mem::take(&mut self.captured);
-            self.apply_event(rec, replayed, captured);
+            self.apply_event(rec, replayed, &captured);
+            self.last_captured = captured;
             return;
         }
         if rec.size() < obs::member_state::ITEMS {
@@ -311,7 +315,16 @@ impl World {
         }
     }
 
-    fn apply_event(&mut self, rec: &wire::Rec<'_>, replayed: bool, captured: Vec<Captured>) {
+    /// The items member `member` of `agent` held in the MEMBER_STATE that came right before the
+    /// last journaled event (TAKEN, DIED, DEMATERIALIZED), any epoch; `None` when none came.
+    pub fn captured_items(&self, agent: u64, member: u32) -> Option<&[Item]> {
+        self.last_captured
+            .iter()
+            .find(|c| c.agent == agent && c.member.index == member)
+            .map(|c| c.member.items.as_slice())
+    }
+
+    fn apply_event(&mut self, rec: &wire::Rec<'_>, replayed: bool, captured: &[Captured]) {
         let b = rec.bytes;
         let need = match rec.kind {
             obs::MATERIALIZED => obs::materialized::SIZE,
@@ -365,7 +378,7 @@ impl World {
                 let epoch = wire::u32_at(b, obs::dematerialized::EPOCH);
                 match self.agents.get_mut(&id) {
                     Some(a) if a.epoch == epoch => {
-                        Self::store_captured(a, &captured, None);
+                        Self::store_captured(a, captured, None);
                         if let Some(c) = captured
                             .iter()
                             .find(|c| c.agent == id && c.member.index == 0)
@@ -414,7 +427,7 @@ impl World {
                     return;
                 }
                 if a.epoch == epoch {
-                    Self::store_captured(a, &captured, Some(index));
+                    Self::store_captured(a, captured, Some(index));
                 }
                 a.member_mut(index).gone = Some(gone);
             }

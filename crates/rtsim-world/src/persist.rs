@@ -194,6 +194,12 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             put_usize(w, node);
             w.u32(stamp);
         }
+        Ev::BandPlays { band, stop, stamp } => {
+            w.u8(4);
+            w.u32(band);
+            w.u32(stop);
+            w.u32(stamp);
+        }
     }
 }
 
@@ -207,6 +213,11 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
         },
         3 => Ev::Grow {
             node: get_usize(r)?,
+            stamp: r.u32()?,
+        },
+        4 => Ev::BandPlays {
+            band: r.u32()?,
+            stop: r.u32()?,
             stamp: r.u32()?,
         },
         t => return bad(format!("world event {t}")),
@@ -404,6 +415,7 @@ fn put_band(w: &mut Writer, b: &Band) {
     b.pending.iter().for_each(|p| put_opt_pending(w, *p));
     put_usize(w, b.relayed.len());
     b.relayed.iter().for_each(|t| w.u64(t.0));
+    w.u32(b.stamp);
 }
 
 fn get_band(r: &mut Reader<'_>) -> codec::Result<Band> {
@@ -427,6 +439,7 @@ fn get_band(r: &mut Reader<'_>) -> codec::Result<Band> {
     let relayed = (0..n)
         .map(|_| r.u64().map(Tick))
         .collect::<codec::Result<_>>()?;
+    let stamp = r.u32()?;
     Ok(Band {
         home,
         seed,
@@ -438,6 +451,7 @@ fn get_band(r: &mut Reader<'_>) -> codec::Result<Band> {
         cursors,
         pending,
         relayed,
+        stamp,
     })
 }
 
@@ -511,6 +525,7 @@ impl World {
             s.player_trades,
             s.houses,
             s.band_packets,
+            s.band_plays,
         ] {
             w.var_u64(v);
         }
@@ -638,6 +653,7 @@ impl World {
             player_trades: r.var_u64()?,
             houses: r.var_u64()?,
             band_packets: r.var_u64()?,
+            band_plays: r.var_u64()?,
         };
         let n = r.len_prefix(2)?;
         let outbox = (0..n)
@@ -781,7 +797,14 @@ impl World {
             }
         }
         for b in &self.bands {
-            if !node_ok(b.home) || !b.route.iter().all(|&x| node_ok(x)) {
+            let n = b.route.len();
+            if !node_ok(b.home)
+                || !b.route.iter().all(|&x| node_ok(x))
+                || b.walks.len() != n
+                || b.cursors.len() != n
+                || b.pending.len() != n
+                || b.relayed.len() != n
+            {
                 return bad("a band refers past the world's nodes".into());
             }
         }
@@ -806,6 +829,7 @@ impl World {
             let ok = match *e {
                 Ev::Wake(n) | Ev::Grow { node: n, .. } => node_ok(n),
                 Ev::Deliver(_) | Ev::Arrive { .. } => true,
+                Ev::BandPlays { band, .. } => (band as usize) < self.bands.len(),
             };
             if !ok {
                 return bad("a world event refers past the world's nodes".into());

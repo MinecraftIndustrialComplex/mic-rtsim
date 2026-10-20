@@ -99,8 +99,15 @@ fn world_parts() -> (
 }
 
 /// Java's module bits (`config/Module.java` ordinals) phase 1 runs under: knowledge,
-/// settlements, trade and travel. With all four off it decides nothing.
+/// settlements, trade and travel. Phase 1 runs only with all four on: its world composes them, and
+/// trade or travel off restores vanilla's wandering traders (C25), which the sim's caravans must
+/// not double (choice PR13).
 pub const MODULES_PHASE1: u32 = 0b1111;
+
+/// Whether a module mask runs phase 1.
+pub fn phase1_on(mask: u32) -> bool {
+    mask & MODULES_PHASE1 == MODULES_PHASE1
+}
 
 /// The phase 1 world's seed. PLACEHOLDER (V5): the bridge does not send the Minecraft world's.
 pub const WORLD_SEED: u64 = 0x6d69_635f_7031;
@@ -137,6 +144,18 @@ const EPOCH_STRIDE: u32 = 1 << 20;
 const BACKOFF_TICKS: u64 = 6_000;
 /// Vanilla drops a gossip entry below 2 (boundary.md §4.3): smaller amounts are sent as 2.
 const GOSSIP_MIN: i32 = 2;
+/// Price levels a MARKET carries besides the fair one (G31, Ben: "Inside the sim quote"): a
+/// player whose standing with the village (vanilla's reputation with that villager, or a ribbit
+/// village's sentiment) is at or below a threshold pays that level's markup (rtsim-trade
+/// `markup_for` at the threshold). Never better than fair (E7). TUNABLE, PLACEHOLDER: -25 to
+/// -100 by 25 (vanilla's iron golems turn on a player at -100).
+pub const PRICE_LEVELS: [i32; 4] = [-25, -50, -75, -100];
+/// Bundles per MARKET ladder: trades a player can make in a row (a shift-click) before the next
+/// MARKET. PLACEHOLDER: 8.
+pub const LADDER_DEPTH: usize = 8;
+/// A caravan this close to an end of its road (blocks) stands at that market: at a border market
+/// it exchanges coin there (P21, choice PR11).
+const AT_MARKET_RADIUS: f64 = 96.0;
 
 /// `nPhase1Stats` indexes (NativeEngine's P1_* constants).
 pub mod stat {
@@ -186,6 +205,8 @@ struct Puppet {
     /// turns back), the puppet is captured back.
     leg_end: u64,
     last_steer: i64,
+    /// The market its offers were made at (P21: a border market adds coin exchange).
+    offers_at: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -255,7 +276,12 @@ pub(super) struct Link {
     last_interest: i64,
     last_market: i64,
     spawn_near: Vec<SpawnNear>,
+    /// U10 (Ben: "Ignore everything"): with phase 1 switched off, its records are admitted by
+    /// `Replay` and then ignored, its world does not run, nothing new is decided or materialized,
+    /// and on again it catches up at once ([`set_enabled`]).
     enabled: bool,
+    /// Records ignored while phase 1 was switched off (U10).
+    pub(super) ignored: u64,
     pub(super) stats: [u64; STATS],
     /// Captured cargo that did not match the sim's row at a despawn (logged, not reconciled).
     pub(super) capture_mismatches: u64,
@@ -326,6 +352,7 @@ impl Link {
             last_market: i64::MIN,
             spawn_near: Vec::new(),
             enabled: true,
+            ignored: 0,
             stats: [0; STATS],
             capture_mismatches: 0,
             replay_diverged: None,
@@ -827,16 +854,58 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     l.markets_sent.clear();
     l.spawn_near.clear();
     l.queue.retain(|c| c.kept_op().is_some());
-    l.enabled = module_mask & MODULES_PHASE1 != 0;
+    l.enabled = phase1_on(module_mask);
     l.last_interest = i64::MIN;
     l.last_market = i64::MIN;
+}
+
+/// The switch changed (MODULES; U10, Ben: "Ignore everything"). **Off:** every phase 1 puppet is
+/// captured back, one last write, so no caravan trades or is robbed in game while the sim ignores
+/// it; what was queued for this session (MARKET, MERCHANT_OFFERS, SENTIMENT, spawns, steering)
+/// is dropped. Commands the bridge answers by op id (gossip, houses, residents) decided before the
+/// switch wait unsequenced until it is on again ([`write_queue_off`]); resends of ones already
+/// written still go out with their sequences, and answers are still taken: that is the protocol
+/// finishing, not the module running (choice PR13). **On:** the world runs to now at the next
+/// simulate (its missed events at once) and materializes again.
+fn set_enabled(st: &mut State, on: bool) {
+    let l = &mut st.phase1;
+    let was = l.enabled;
+    l.enabled = on;
+    if was && !on {
+        l.queue
+            .retain(|c| c.kept_op().is_some() || matches!(c, P1Cmd::Despawn { .. }));
+        let mut despawn = Vec::new();
+        for (&agent, p) in l.puppets.iter_mut() {
+            match p.state {
+                PState::Embodied | PState::Spawning => {
+                    p.state = PState::Despawning;
+                    despawn.push((agent, p.epoch));
+                }
+                PState::Despawning => {}
+            }
+        }
+        for (agent, epoch) in despawn {
+            l.push(P1Cmd::Despawn {
+                agent,
+                epoch,
+                reason: obs::dematerialized::COMMAND,
+            });
+        }
+        l.spawn_near.clear();
+        l.market_dirty.clear();
+    }
+    if on && !was {
+        l.last_interest = i64::MIN;
+        l.last_market = i64::MIN;
+        l.markets_sent.clear();
+    }
 }
 
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
         obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            st.phase1.enabled = wire::u32_at(b, obs::modules::MASK) & MODULES_PHASE1 != 0;
+            set_enabled(st, phase1_on(wire::u32_at(b, obs::modules::MASK)));
         }
         obs::PLAYER if rec.size() >= obs::player::SIZE => {
             let key = (
@@ -869,6 +938,10 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             }
         }
         obs::VILLAGE_CENSUS if rec.size() >= obs::village_census::ENTRIES => {
+            if !st.phase1.enabled {
+                st.phase1.ignored += 1;
+                return;
+            }
             let key = wire::u64_at(b, obs::village_census::VILLAGE);
             let residents = wire::u32_at(b, obs::village_census::RESIDENTS);
             census(st, key, residents);
@@ -934,10 +1007,20 @@ fn item_name(st: &State, id: u32) -> Option<String> {
     st.world.java_dict.get(&(wire::DICT_ITEM, id)).cloned()
 }
 
-/// A phase 1 record `Replay` admitted.
+/// A phase 1 record `Replay` admitted. Switched off, phase 1 ignores it (U10), except HOUSE_PLACED:
+/// the answer to a house it booked while on, taken at its frozen clock (the world does not run) so
+/// the house's resident comes once it is on again (choice PR13).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
+    if !st.phase1.enabled && rec.kind != obs::HOUSE_PLACED {
+        st.phase1.ignored += 1;
+        return;
+    }
     let b = rec.bytes;
-    let at = st.phase1.wt(wire::i64_at(b, obs::GAME_TIME));
+    let at = if st.phase1.enabled {
+        st.phase1.wt(wire::i64_at(b, obs::GAME_TIME))
+    } else {
+        st.phase1.world.now().0
+    };
     match rec.kind {
         obs::VILLAGE_ADOPTED if rec.size() >= obs::village_adopted::SIZE => adopted(st, rec, at),
         obs::TRADE if rec.size() >= obs::trade::SIZE => trade(st, rec, at),
@@ -1283,6 +1366,15 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             }
         }
         obs::TAKEN | obs::DIED => {
+            if !st.phase1.enabled {
+                // U10: ignored, as every phase 1 record is while it is off.
+                if rec.size() >= obs::taken::SIZE.min(obs::died::SIZE)
+                    && caravan_of(&st.phase1, wire::u64_at(b, obs::taken::AGENT)).is_some()
+                {
+                    st.phase1.ignored += 1;
+                }
+                return;
+            }
             let (agent, epoch, member, player, killed) = if rec.kind == obs::TAKEN {
                 if rec.size() < obs::taken::SIZE {
                     return;
@@ -1314,13 +1406,25 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             let Some(bits) = caravan_of(l, agent) else {
                 return;
             };
+            // Review P3: exactly what its chest or pack held (the MEMBER_STATE right before this
+            // record) leaves the sim, never its planned cargo. Items the sim does not trade were
+            // never in its books.
+            let mut held: BTreeMap<u16, Amount> = BTreeMap::new();
+            for it in st.world.captured_items(agent, member).unwrap_or(&[]) {
+                if let Some(g) = l.cat.good(&it.item)
+                    && it.count > 0
+                {
+                    *held.entry(g.0).or_default() += i64::from(it.count) * MILLI;
+                }
+            }
             let at = l.world.now().0;
             l.input(
-                Input::Member {
+                Input::MemberHeld {
                     caravan: bits,
                     member,
                     player,
                     killed,
+                    held: held.into_iter().collect(),
                 },
                 at,
             );
@@ -1411,6 +1515,13 @@ pub(super) fn directive(st: &mut State, order: Order) {
 /// Runs the world to the hand-over's game time, then materializes, steers and despawns puppets
 /// and refreshes the markets near players.
 pub(super) fn simulate(st: &mut State) {
+    if !st.phase1.enabled {
+        // U10: switched off, it runs nothing. (The dragons, ships, herds and conflict live in
+        // its world and run its clock while they run; its own link decides nothing.)
+        st.phase1.spawn_near.clear();
+        st.phase1.stats[stat::WORLD_TICK] = st.phase1.world.now().0;
+        return;
+    }
     let target = st.phase1.wt(st.game_time);
     if target > st.phase1.world.now().0 {
         st.phase1.world.run_until(Tick(target));
@@ -1667,7 +1778,8 @@ fn spawn_caravan(
     }
     let leg_end = car.leg.end.0;
     let home_actor = l.world.nodes[car.home].actor;
-    let offers = offers_of(l, id, home_actor);
+    let at_market = market_at(l, id, frame, pos);
+    let offers = offers_of(l, id, home_actor, at_market);
     l.push(P1Cmd::Spawn {
         agent,
         epoch,
@@ -1695,16 +1807,32 @@ fn spawn_caravan(
             pinned,
             leg_end,
             last_steer: i64::MIN,
+            offers_at: at_market,
         },
     );
     true
 }
 
+/// The end of caravan `id`'s road its puppet stands at (within `AT_MARKET_RADIUS`), if any.
+fn market_at(l: &Link, id: CaravanId, frame: u16, pos: [f64; 3]) -> Option<usize> {
+    let car = l.world.caravans.get(id)?;
+    [car.leg.to, car.leg.from].into_iter().find(|&n| {
+        let p = l.world.nodes[n].pos;
+        p.frame == frame && dist2(pos, f64::from(p.x), f64::from(p.z)) <= AT_MARKET_RADIUS.powi(2)
+    })
+}
+
 /// A caravan's offers as MERCHANT_OFFERS (PLAN.md §8.5): priced fair (MERCHANT_OFFERS is not
-/// per player; choice V10), uses as the sim allows.
-fn offers_of(l: &Link, id: CaravanId, as_actor: rtsim_knowledge::ActorId) -> Vec<OfferCmd> {
+/// per player; choice V10), uses as the sim allows; standing at a border market, its coin
+/// exchange too (P21).
+fn offers_of(
+    l: &Link,
+    id: CaravanId,
+    as_actor: rtsim_knowledge::ActorId,
+    at: Option<usize>,
+) -> Vec<OfferCmd> {
     let mut out = Vec::new();
-    for o in l.world.caravan_offers(CaravanRef::Row(id), as_actor) {
+    for o in l.world.caravan_offers_at(CaravanRef::Row(id), as_actor, at) {
         let (good, cur) = (l.cat.item(o.good), l.cat.item(o.currency));
         let (gs, cs) = (
             i64::from(l.cat.stack(o.good)),
@@ -1783,6 +1911,7 @@ fn spawn_band(st: &mut State, band: usize, frame: u16, pos: [f64; 3]) -> bool {
             pinned: false,
             leg_end: u64::MAX,
             last_steer: i64::MIN,
+            offers_at: None,
         },
     );
     true
@@ -1924,6 +2053,37 @@ fn interest(st: &mut State) {
                 speed: STEER_SPEED,
                 pos,
             });
+        }
+        // A caravan that walked into or out of a market's reach gets its offers again: at a
+        // border market they include coin exchange (P21).
+        let mut reoffer: Vec<(u64, u32, CaravanId, Option<usize>)> = Vec::new();
+        for (&agent, p) in &l.puppets {
+            if p.state != PState::Embodied {
+                continue;
+            }
+            if let PuppetOf::Caravan(bits) = p.of {
+                let id: CaravanId = Handle::from_bits(bits);
+                let now_at = market_at(l, id, p.frame, p.pos);
+                if now_at != p.offers_at {
+                    reoffer.push((agent, p.epoch, id, now_at));
+                }
+            }
+        }
+        for (agent, epoch, id, at) in reoffer {
+            let Some(car) = l.world.caravans.get(id) else {
+                continue;
+            };
+            let home_actor = l.world.nodes[car.home].actor;
+            let offers = offers_of(l, id, home_actor, at);
+            if let Some(p) = l.puppets.get_mut(&agent) {
+                p.offers_at = at;
+            }
+            l.push(P1Cmd::Offers(OffersCmd {
+                agent,
+                epoch,
+                member: 0,
+                offers,
+            }));
         }
     }
 
@@ -2235,15 +2395,11 @@ pub(super) fn write_resends(
 
 /// Writes the queue while it fits; kept commands join the outbox under the sequence they got.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    if !st.phase1.enabled {
+        return write_queue_off(st, w);
+    }
     let mut highest = 0;
     while let Some(c) = st.phase1.queue.front().cloned() {
-        if !st.phase1.enabled && c.kept_op().is_none() && !matches!(c, P1Cmd::Despawn { .. }) {
-            // Phase 1 is off: nothing new materializes and no snapshot goes out; kept commands
-            // and captures still do.
-            st.phase1.queue.pop_front();
-            forget_unsent_spawn(st, &c);
-            continue;
-        }
         match write_one(st, w, &c, None) {
             One::Written(seq) => {
                 highest = highest.max(seq);
@@ -2263,6 +2419,37 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
             }
         }
     }
+    (highest, false)
+}
+
+/// The queue with phase 1 switched off (U10, choice PR13): only the captures go out. Commands the
+/// bridge answers by op id wait, unsequenced, until it is on again (a sequence is taken only when
+/// written, so holding them never puts one below what Java already applied); the rest of this
+/// session's commands are dropped.
+fn write_queue_off(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    let mut highest = 0;
+    let mut kept = VecDeque::new();
+    while let Some(c) = st.phase1.queue.pop_front() {
+        if c.kept_op().is_some() {
+            kept.push_back(c);
+            continue;
+        }
+        if !matches!(c, P1Cmd::Despawn { .. }) {
+            forget_unsent_spawn(st, &c);
+            continue;
+        }
+        match write_one(st, w, &c, None) {
+            One::Written(seq) => highest = highest.max(seq),
+            One::Full => {
+                st.phase1.queue.push_front(c);
+                kept.extend(st.phase1.queue.drain(..));
+                st.phase1.queue = kept;
+                return (highest, true);
+            }
+            One::Never => {}
+        }
+    }
+    st.phase1.queue = kept;
     (highest, false)
 }
 
@@ -2537,6 +2724,7 @@ mod tests {
                 pinned: false,
                 leg_end: 0,
                 last_steer: i64::MIN,
+                offers_at: None,
             },
         );
         let mut buf = vec![0u8; 4096];
@@ -2612,6 +2800,382 @@ mod tests {
             st.phase1.queue.iter().all(|c| c.kept_op() != Some(0x99)),
             "the answered command is not sent again"
         );
+    }
+
+    fn record(kind: u16, size: usize, aux: u32, fill: impl FnOnce(&mut [u8])) -> Vec<u8> {
+        let mut b = vec![0u8; size];
+        wire::put_u16(&mut b, 0, kind);
+        wire::put_u16(&mut b, 2, size as u16);
+        wire::put_u32(&mut b, 4, aux);
+        fill(&mut b);
+        b
+    }
+
+    fn modules(st: &mut State, mask: u32) {
+        let b = record(obs::MODULES, obs::modules::SIZE, 0, |b| {
+            wire::put_u32(b, obs::modules::MASK, mask)
+        });
+        observe_state(
+            st,
+            &Rec {
+                kind: obs::MODULES,
+                aux: 0,
+                bytes: &b,
+            },
+        );
+    }
+
+    /// U10 (Ben: "Ignore everything"): switched off, phase 1 captures its puppets back, ignores
+    /// its records (a village adopted, a census), and its world does not run; on again it runs
+    /// to now at once. Phase 1 runs only with all four of its modules on (choice PR13).
+    #[test]
+    fn a_switched_off_phase1_ignores_everything_and_catches_up() {
+        let mut st = state();
+        st.world
+            .java_dict
+            .insert((wire::DICT_CULTURE, 1), "human".into());
+        st.world
+            .java_dict
+            .insert((wire::DICT_STRUCTURE, 1), "minecraft:village_plains".into());
+        let adopt = |key: u64, game_time: i64| {
+            record(obs::VILLAGE_ADOPTED, obs::village_adopted::SIZE, 0, |b| {
+                wire::put_u64(b, obs::OBS_SEQ, 1);
+                wire::put_i64(b, obs::GAME_TIME, game_time);
+                wire::put_u64(b, obs::village_adopted::VILLAGE, key);
+                wire::put_u32(b, obs::village_adopted::DIM, 1);
+                wire::put_u32(b, obs::village_adopted::STRUCTURE, 1);
+                wire::put_u32(b, obs::village_adopted::CULTURE, 1);
+                wire::put_u32(b, obs::village_adopted::PIECES, 30);
+                wire::put_i32(b, obs::village_adopted::MEET_X, (key as i32) * 300);
+            })
+        };
+        fn rec(b: &[u8]) -> Rec<'_> {
+            Rec {
+                kind: obs::VILLAGE_ADOPTED,
+                aux: 0,
+                bytes: b,
+            }
+        }
+        let first = adopt(1, 100);
+        journaled(&mut st, &rec(&first));
+        assert_eq!(st.phase1.nodes.len(), 1);
+        st.game_time = 1_000;
+        simulate(&mut st);
+        assert_eq!(st.phase1.world.now().0, 1_000);
+        st.phase1.puppets.insert(
+            0xA,
+            Puppet {
+                epoch: 3,
+                of: PuppetOf::Caravan(7),
+                state: PState::Embodied,
+                frame: 1,
+                pos: [0.0; 3],
+                pinned: false,
+                leg_end: 0,
+                last_steer: i64::MIN,
+                offers_at: None,
+            },
+        );
+        st.phase1.push(P1Cmd::Steer {
+            agent: 0xA,
+            epoch: 3,
+            speed: 1.0,
+            pos: [0.0; 3],
+        });
+        // Travel off: phase 1 is off.
+        modules(&mut st, 0b0111);
+        assert!(!st.phase1.enabled);
+        assert!(
+            st.phase1.queue.iter().all(|c| matches!(
+                c,
+                P1Cmd::Despawn {
+                    agent: 0xA,
+                    epoch: 3,
+                    ..
+                }
+            )),
+            "the puppet is captured back and nothing else of this session goes out"
+        );
+        assert_eq!(st.phase1.queue.len(), 1);
+        // A command the bridge answers by op id, decided before the switch, waits unsequenced;
+        // only the capture goes out.
+        let gossip = P1Cmd::Gossip(GossipCmd {
+            op: 0x77,
+            village: 1,
+            player: (2, 3),
+            gossip: 2,
+            amount: 2,
+            report: 3,
+            flags: 0,
+        });
+        st.phase1.push(gossip.clone());
+        let mut buf = vec![0u8; 4096];
+        {
+            let mut w = RecordWriter::new(&mut buf);
+            write_queue(&mut st, &mut w);
+            assert_eq!(w.count(), 1, "only the capture is written");
+        }
+        assert_eq!(st.phase1.queue.len(), 1);
+        assert!(st.phase1.outbox.is_empty());
+        let second = adopt(2, 2_000);
+        journaled(&mut st, &rec(&second));
+        assert_eq!(st.phase1.nodes.len(), 1, "a record while off is ignored");
+        assert_eq!(st.phase1.ignored, 1);
+        st.game_time = 50_000;
+        simulate(&mut st);
+        assert_eq!(st.phase1.world.now().0, 1_000, "its world does not run");
+        // On again: it runs to now at once.
+        modules(&mut st, 0b1111);
+        assert!(st.phase1.enabled);
+        simulate(&mut st);
+        assert_eq!(st.phase1.world.now().0, 50_000);
+        let mut w = RecordWriter::new(&mut buf);
+        write_queue(&mut st, &mut w);
+        assert!(
+            st.phase1.outbox.iter().any(|(_, op, _)| *op == 0x77),
+            "the held command goes out once phase 1 is on"
+        );
+    }
+
+    /// Review P3 (Ben: "Book what was really there"): a caravan member killed books exactly the
+    /// items its MEMBER_STATE reported, not its planned cargo; the rest stays with the caravan.
+    #[test]
+    fn a_killed_member_books_what_its_member_state_held() {
+        let mut st = state();
+        let human = |key: u64, x: i32| Input::Join {
+            key,
+            culture: 0,
+            frame: 1,
+            x,
+            z: 0,
+            pop: 20,
+            resources: catalog::resources("minecraft:village_plains", Culture::Human)
+                .into_iter()
+                .map(|(r, a)| (r.0, a))
+                .collect(),
+        };
+        st.phase1.input(human(1, 0), 0);
+        st.phase1.input(
+            Input::Join {
+                key: 2,
+                culture: 0,
+                frame: 1,
+                x: 700,
+                z: 0,
+                pop: 18,
+                resources: catalog::resources("minecraft:village_snowy", Culture::Human)
+                    .into_iter()
+                    .map(|(r, a)| (r.0, a))
+                    .collect(),
+            },
+            0,
+        );
+        // A caravan with goods in a llama, promoted.
+        let mut t = 0u64;
+        let (id, member, g) = loop {
+            t += 1_000;
+            assert!(t < 200 * 24_000, "no loaded caravan");
+            st.phase1.world.run_until(Tick(t));
+            let w = &st.phase1.world;
+            let key = (0..w.edges.len() as u32)
+                .flat_map(|e| (0..2u8).map(move |d| (e, d)))
+                .flat_map(|(e, d)| w.travellers(e, d))
+                .find(|tr| {
+                    tr.cargo
+                        .iter()
+                        .any(|(g, a)| !w.goods.is_currency(*g) && *a >= 2 * MILLI)
+                })
+                .map(|tr| tr.key);
+            let Some(k) = key else { continue };
+            let out = st.phase1.input(
+                Input::Promote {
+                    edge: k.edge,
+                    dir: k.dir,
+                    departure: k.departure,
+                },
+                t,
+            );
+            let id = out.caravan.expect("promoted");
+            let car = st.phase1.world.caravans.get(id).unwrap();
+            let found = car.members.iter().enumerate().find_map(|(i, m)| {
+                m.cargo
+                    .iter()
+                    .find(|(g, a)| !st.phase1.world.goods.is_currency(**g) && **a >= MILLI)
+                    .map(|(g, _)| (i, *g))
+            });
+            if let Some((m, g)) = found {
+                break (id, m, g);
+            }
+        };
+        let agent = AGENT_P1 | 0xBEEF;
+        st.phase1.agents.insert(agent, id.to_bits());
+        st.world
+            .java_dict
+            .insert((wire::DICT_ITEM, 5), st.phase1.cat.item(g).to_string());
+        let before = st.phase1.world.caravans.get(id).unwrap().holdings();
+        let out_before = st.phase1.world.outside.player_out.get(&g).copied();
+        // Its chest held one of the good (its plan held more, or spread it over two llamas).
+        let ms = record(
+            obs::MEMBER_STATE,
+            obs::member_state::size(1),
+            member as u32,
+            |b| {
+                wire::put_u64(b, obs::OBS_SEQ, 7);
+                wire::put_u64(b, obs::member_state::AGENT, agent);
+                wire::put_u32(b, obs::member_state::EPOCH, 9);
+                wire::put_u32(b, obs::member_state::ITEM_COUNT, 1);
+                wire::put_u32(b, obs::member_state::ITEMS + obs::item::ITEM, 5);
+                wire::put_i32(b, obs::member_state::ITEMS + obs::item::COUNT, 1);
+            },
+        );
+        let died = record(obs::DIED, obs::died::SIZE, member as u32, |b| {
+            wire::put_u64(b, obs::OBS_SEQ, 8);
+            wire::put_u64(b, obs::died::AGENT, agent);
+            wire::put_u32(b, obs::died::EPOCH, 9);
+            wire::put_u64(b, obs::died::KILLER_MOST, 0x77);
+            wire::put_u64(b, obs::died::KILLER_LEAST, 0x88);
+            wire::put_u64(b, obs::died::OP_ID, 1 << 63 | 5);
+        });
+        let ms_rec = Rec {
+            kind: obs::MEMBER_STATE,
+            aux: member as u32,
+            bytes: &ms,
+        };
+        let died_rec = Rec {
+            kind: obs::DIED,
+            aux: member as u32,
+            bytes: &died,
+        };
+        st.world.apply_journaled(&ms_rec, false);
+        st.world.apply_journaled(&died_rec, false);
+        after_core(&mut st, &died_rec);
+        let w = &st.phase1.world;
+        assert_eq!(
+            w.outside.player_out.get(&g).copied().unwrap_or(0) - out_before.unwrap_or(0),
+            i128::from(MILLI),
+            "exactly the one item its chest held left the sim"
+        );
+        if let Some(car) = w.caravans.get(id) {
+            let after = car.holdings();
+            let want = before.get(&g).copied().unwrap_or(0) - MILLI;
+            assert_eq!(after.get(&g).copied().unwrap_or(0), want);
+        }
+        assert!(matches!(
+            st.phase1.log.last().map(|l| &l.input),
+            Some(Input::MemberHeld { held, killed: true, .. }) if held == &vec![(g.0, MILLI)]
+        ));
+        w.check_conserved(w.now()).unwrap();
+    }
+
+    /// P21 (Ben: "At border markets"): a caravan standing at a border market its road touches gets
+    /// coin exchange in its MERCHANT_OFFERS, emeralds for amethyst and back; away from it, none.
+    #[test]
+    fn a_caravan_at_a_border_market_offers_coin_exchange() {
+        let mut st = state();
+        let join = |key: u64, ribbit: bool, x: i32| Input::Join {
+            key,
+            culture: u8::from(ribbit),
+            frame: 1,
+            x,
+            z: 0,
+            pop: 16,
+            resources: catalog::resources(
+                "minecraft:village_plains",
+                if ribbit {
+                    Culture::Ribbit
+                } else {
+                    Culture::Human
+                },
+            )
+            .into_iter()
+            .map(|(r, a)| (r.0, a))
+            .collect(),
+        };
+        st.phase1.input(join(1, false, 0), 0);
+        st.phase1.input(join(2, true, 600), 0);
+        let (human, ribbit) = (st.phase1.nodes[&1], st.phase1.nodes[&2]);
+        // A caravan on the border road, promoted.
+        let mut t = 0u64;
+        let id = loop {
+            t += 1_000;
+            assert!(t < 100 * 24_000, "no caravan on the border road");
+            st.phase1.world.run_until(Tick(t));
+            let w = &st.phase1.world;
+            let k = w.nodes[human]
+                .out
+                .iter()
+                .flat_map(|d| w.travellers(d.edge, d.dir))
+                .map(|tr| tr.key)
+                .next();
+            let Some(k) = k else { continue };
+            if let Some(id) = st
+                .phase1
+                .input(
+                    Input::Promote {
+                        edge: k.edge,
+                        dir: k.dir,
+                        departure: k.departure,
+                    },
+                    t,
+                )
+                .caravan
+            {
+                break id;
+            }
+        };
+        let (emerald, amethyst) = (
+            st.phase1.cat.good("minecraft:emerald").unwrap(),
+            st.phase1.cat.good("minecraft:amethyst_shard").unwrap(),
+        );
+        // It carries both coins (as after trading both ways).
+        {
+            let car = st.phase1.world.caravans.get_mut(id).unwrap();
+            car.give_purse(emerald, 10 * MILLI);
+            car.give_purse(amethyst, 100 * MILLI);
+        }
+        let home = st.phase1.world.nodes[human].actor;
+        let p = st.phase1.world.nodes[human].pos;
+        let at_human = market_at(
+            &st.phase1,
+            id,
+            p.frame,
+            [f64::from(p.x) + 10.0, 64.0, f64::from(p.z)],
+        );
+        assert_eq!(at_human, Some(human));
+        let offers = offers_of(&st.phase1, id, home, at_human);
+        let exchange: Vec<&OfferCmd> = offers
+            .iter()
+            .filter(|o| {
+                [o.cost_a.as_str(), o.result.as_str()]
+                    .iter()
+                    .all(|n| *n == "minecraft:emerald" || *n == "minecraft:amethyst_shard")
+            })
+            .collect();
+        assert_eq!(exchange.len(), 2, "both ways: {offers:?}");
+        assert!(
+            exchange
+                .iter()
+                .any(|o| o.result == "minecraft:amethyst_shard"
+                    && o.flags == cmd::merchant_offers::O_FLAG_SELLS)
+        );
+        assert!(
+            exchange
+                .iter()
+                .any(|o| o.cost_a == "minecraft:amethyst_shard"
+                    && o.flags == cmd::merchant_offers::O_FLAG_BUYS)
+        );
+        // Far from both ends: no exchange.
+        let far = market_at(
+            &st.phase1,
+            id,
+            p.frame,
+            [f64::from(p.x) + 300.0, 64.0, 900.0],
+        );
+        assert_eq!(far, None);
+        let _ = ribbit;
+        assert!(offers_of(&st.phase1, id, home, None).iter().all(|o| {
+            !(o.cost_a == "minecraft:emerald" && o.result == "minecraft:amethyst_shard")
+        }));
     }
 
     /// Review 3, P2: which caravan a phase 1 agent is outlives the session, so a record about it

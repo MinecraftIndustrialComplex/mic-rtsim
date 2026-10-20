@@ -67,7 +67,8 @@ pub struct Node {
 /// How a news packet travels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Via {
-    /// With the next caravan (or scout) on this road.
+    /// On this edge: with its next messenger (a road, overnight choice PR6), or its next ship (a
+    /// ships' lane, which has no messengers).
     Road(DirRef),
     /// With a touring band, leaving this stop of its circuit (P16).
     Band { band: u32, stop: u32 },
@@ -97,6 +98,8 @@ pub(crate) enum Ev {
     Arrive { caravan: CaravanId, generation: u32 },
     /// A ribbit village's growth clock runs out (P17).
     Grow { node: usize, stamp: u32 },
+    /// A touring band begins its stay at a stop of its circuit (P16).
+    BandPlays { band: u32, stop: u32, stamp: u32 },
 }
 
 /// Conserved quantities outside markets and pipelines: what left the world to players or was
@@ -186,6 +189,8 @@ pub struct Stats {
     pub houses: u64,
     /// News packets touring bands carried (P16).
     pub band_packets: u64,
+    /// Stays at which a touring band played for its host (P16).
+    pub band_plays: u64,
 }
 
 /// What the engine asks Minecraft to do (the bridge's command buffer, later).
@@ -429,8 +434,18 @@ impl World {
             .quantum
             .days(self.cfg.scout_days)
             .min(dock.max(1));
-        self.edges
-            .push(Edge::new(a, b, length, d, dock, seed, border, idle));
+        let mut edge = Edge::new(a, b, length, d, dock, seed, border, idle);
+        // Messengers carry news on their own schedule, at their own pace (PR6).
+        let msg_speed = self.cfg.caravan_blocks_per_tick
+            * f64::from(self.cfg.messenger_speed_milli.max(1))
+            / 1000.0;
+        let walk = self
+            .cfg
+            .trade
+            .quantum
+            .covering((length as f64 / msg_speed).ceil() as u64);
+        edge.set_messengers(self.cfg.messenger_quanta, walk);
+        self.edges.push(edge);
         let (pa, pb) = (self.nodes[a].pos, self.nodes[b].pos);
         if pa.frame == pb.frame {
             self.roads.add(
@@ -720,6 +735,9 @@ impl World {
                 generation,
             } => self.caravan_arrives(caravan, generation, at),
             Ev::Grow { node, stamp } => self.grow(node, stamp, at),
+            Ev::BandPlays { band, stop, stamp } => {
+                self.band_plays(band as usize, stop as usize, stamp, at)
+            }
         }
     }
 

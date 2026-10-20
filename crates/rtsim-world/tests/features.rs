@@ -157,10 +157,12 @@ fn bands_tour_ribbit_villages_and_carry_news() {
     assert!(!w.bands.is_empty(), "ribbit villages have bands");
     for (b, band) in w.bands.iter().enumerate() {
         assert!(band.route.len() >= 2);
+        // Ribbit villages and border human villages (P16); no base is marked here.
         for &s in &band.route {
+            assert!(w.band_may_visit(band.home, s, w.now()));
             assert!(matches!(
                 w.nodes[s].kind,
-                rtsim_settle::NodeKind::Village(rtsim_settle::Culture::Ribbit)
+                rtsim_settle::NodeKind::Village(_)
             ));
         }
         // The circuit is a closed form: at its start it stays home; a stay later it walks.
