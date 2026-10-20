@@ -66,6 +66,10 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `aleadtakesacreatureoutofthesim` | a lead held by a player takes a llama on the next pass |
 | `amemberremovedbyanothermodleavestherestasonegroup` | risk 11: a member another mod removes leaves as TAKEN(removed by other); the rest stays one unit |
 | `deathsarejournaledandthereststaysonegroup` | DIED after each member's state at death (cargo included); the llamas of a dead trader stay one group and are not "taken" by the dead trader's leash |
+| `despawnofanagentthatisnotembodiedisanswered` | DESPAWN_GROUP for an agent with no puppet gets DEMATERIALIZED(not embodied), so the engine never waits on it |
+| `acapturedcopycomesbackonceasanordinaryentity` | a copy a capture mod serialized while the member was a puppet joins once, untagged; a second copy is stale |
+| `acancelleddeathkeepsthemember` | a death another mod cancels after the bridge saw it journals nothing and keeps the member |
+| `atakenllamadoesnotdespawn` | a taken llama lets go of its trader and its despawn timer is out of reach |
 | `rtsimcommandsrun` | `/rtsim perf` and `/rtsim stub caravan` through the server's command dispatcher |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 

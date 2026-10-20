@@ -185,11 +185,11 @@ public final class TakingGameTests {
     public static void aMemberRemovedByAnotherModLeavesTheRestAsOneGroup(GameTestHelper helper) {
         long agent = RtsimTests.newAgent();
         CaravanGameTests.spawnCaravan(helper, agent, 1);
-        long before = RtsimTests.session().removedByOther();
         helper.startSequence()
                 .thenWaitUntil(() -> RtsimTests.embodied(agent))
                 .thenExecute(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
+                    long before = RtsimTests.session().removedByOther(); // read here: other tests count too
                     RtsimTests.member(g, 2).discard(); // what another mod's removal looks like
                     check("the removal was counted", RtsimTests.session().removedByOther() == before + 1);
                     check("the rest stays one group", RtsimTests.group(agent) == g && g.liveMembers() == 2);
