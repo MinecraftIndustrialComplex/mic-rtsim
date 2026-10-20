@@ -593,7 +593,14 @@ impl Java {
     }
 
     /// A CARGO_CHANGED: `items` taken out of member `member`'s cargo by the player.
-    fn robbed(&mut self, agent: u64, epoch: u32, member: u32, items: &[(&str, i32)], op: u64) -> u64 {
+    fn robbed(
+        &mut self,
+        agent: u64,
+        epoch: u32,
+        member: u32,
+        items: &[(&str, i32)],
+        op: u64,
+    ) -> u64 {
         let ids: Vec<u32> = items
             .iter()
             .map(|(n, _)| self.dict_id(wire::DICT_ITEM, n))
@@ -632,7 +639,11 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
     let e = engine(&dir, 256 * 1024);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     j.module_mask = 0b1111; // knowledge, settlements, trade, travel
-    let (a, b, c) = (0x0001_0000_0000_0001u64, 0x0001_0000_0000_0002, 0x0001_0000_0000_0003);
+    let (a, b, c) = (
+        0x0001_0000_0000_0001u64,
+        0x0001_0000_0000_0002,
+        0x0001_0000_0000_0003,
+    );
     j.adopt(a, "minecraft:village_plains", "human", 90, 0, 0);
     j.adopt(b, "minecraft:village_taiga", "human", 90, 400, 0);
     j.adopt(c, "minecraft:village_desert", "human", 90, 0, 400);
@@ -695,10 +706,13 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
     let spawn = j
         .p1_of(cmd::SPAWN_GROUP)
         .into_iter()
-        .find(|s| wire::u64_at(&s, cmd::spawn_group::AGENT) == agent)
+        .find(|s| wire::u64_at(s, cmd::spawn_group::AGENT) == agent)
         .unwrap();
     assert_eq!(
-        j.cmd_name(wire::DICT_BODY, wire::u32_at(&spawn, cmd::spawn_group::GROUP_KIND)),
+        j.cmd_name(
+            wire::DICT_BODY,
+            wire::u32_at(&spawn, cmd::spawn_group::GROUP_KIND)
+        ),
         CARAVAN
     );
     // Its cargo, chest by chest (C21): (member, item, count).
@@ -767,11 +781,20 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
         break;
     }
     let (robbed_item, robbed_n) = {
-        let (_, item, n) = cargo.iter().find(|(_, i, _)| i != EMERALD).unwrap_or(&cargo[0]);
+        let (_, item, n) = cargo
+            .iter()
+            .find(|(_, i, _)| i != EMERALD)
+            .unwrap_or(&cargo[0]);
         (item.clone(), (*n).min(5))
     };
     let member = cargo.iter().find(|(_, i, _)| *i == robbed_item).unwrap().0;
-    j.robbed(agent, 1, member, &[(&robbed_item, robbed_n)], wire::JAVA_OP_BIT | 0x7a12);
+    j.robbed(
+        agent,
+        1,
+        member,
+        &[(&robbed_item, robbed_n)],
+        wire::JAVA_OP_BIT | 0x7a12,
+    );
     j.idle();
     assert_eq!(p1_stat(&e, 3), trades, "the caravan trade booked once");
     assert_eq!(p1_stat(&e, 5), 1, "one robbery");
@@ -839,7 +862,10 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
     let t0 = Instant::now();
     let mut j = Java::open(e.clone(), saved);
     j.module_mask = 0b1111;
-    eprintln!("start with a phase 1 replay of {inputs} inputs: {:?}", t0.elapsed());
+    eprintln!(
+        "start with a phase 1 replay of {inputs} inputs: {:?}",
+        t0.elapsed()
+    );
     let (_, replay_ok, _) = e.phase1_state();
     assert!(replay_ok, "the replayed world is the saved one");
     j.idle();

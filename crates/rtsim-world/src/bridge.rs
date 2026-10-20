@@ -33,6 +33,7 @@ impl World {
     /// `coins` whole coins of the market's currency, the other way. The player bought (`Buy`) or
     /// sold (`Sell`). A fair trade is a report the market witnesses, and news (as
     /// [`World::trade`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn trade_exact(
         &mut self,
         i: usize,

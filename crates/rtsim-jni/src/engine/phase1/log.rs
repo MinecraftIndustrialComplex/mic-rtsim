@@ -166,10 +166,7 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
                     kind: NodeKind::Village(c),
                     pos: Pos::new(*frame, *x, *z),
                     pop: *pop,
-                    resources: resources
-                        .iter()
-                        .map(|&(r, a)| (ResourceId(r), a))
-                        .collect(),
+                    resources: resources.iter().map(|&(r, a)| (ResourceId(r), a)).collect(),
                 },
                 at,
             );

@@ -31,8 +31,7 @@ use rtsim_kernel::page::Durability;
 
 use crate::engine::{
     Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, PHASE1_STATS,
-    STATS_LEN, last_error,
-    set_last_error,
+    STATS_LEN, last_error, set_last_error,
 };
 use crate::orders;
 
@@ -416,8 +415,10 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     env.with_env(|_env| -> Result<jint, JniError> {
         // SAFETY: Java's contract on handles.
         let e = unsafe { engine(handle) }?;
-        Ok(e.phase1_sentiment(village as u64, (most as u64, least as u64))
-            .unwrap_or(jint::MIN))
+        Ok(
+            e.phase1_sentiment(village as u64, (most as u64, least as u64))
+                .unwrap_or(jint::MIN),
+        )
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }

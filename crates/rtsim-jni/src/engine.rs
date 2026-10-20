@@ -766,7 +766,10 @@ impl Engine {
     pub fn order(&self, unit: Vec<Order>) -> Result<(), String> {
         let mut unit = unit;
         if !self.cfg.test && unit.iter().any(Order::test_only) {
-            return Err("a FAIL, P1_SPAWN_NEAR or P1_ADVANCE order needs an engine opened in TEST mode".into());
+            return Err(
+                "a FAIL, P1_SPAWN_NEAR or P1_ADVANCE order needs an engine opened in TEST mode"
+                    .into(),
+            );
         }
         if unit.iter().any(|o| matches!(o, Order::SaveAtNextStep)) {
             self.save_at_step_end.store(true, Ordering::Release);
@@ -827,7 +830,8 @@ impl Engine {
                 )
             };
             let this = Arc::clone(self);
-            result = self.run_io_waiting(move || this.commit(meta, world, industry, extra, obs_seq));
+            result =
+                self.run_io_waiting(move || this.commit(meta, world, industry, extra, obs_seq));
         } else {
             self.dead.store(true, Ordering::Release);
             let _ = self.run_io_waiting(|| {});

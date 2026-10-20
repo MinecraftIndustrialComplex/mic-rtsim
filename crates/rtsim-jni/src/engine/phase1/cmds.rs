@@ -87,7 +87,10 @@ impl P1Cmd {
                     item(out, &f.result);
                 }
             }
-            P1Cmd::Gossip(_) | P1Cmd::Sentiment(_) | P1Cmd::Despawn { .. } | P1Cmd::Steer { .. } => {}
+            P1Cmd::Gossip(_)
+            | P1Cmd::Sentiment(_)
+            | P1Cmd::Despawn { .. }
+            | P1Cmd::Steer { .. } => {}
             P1Cmd::PlaceHouse(h) => {
                 out.push((wire::DICT_DIMENSION, h.dimension.clone()));
                 out.push((wire::DICT_TEMPLATE, h.template.clone()));

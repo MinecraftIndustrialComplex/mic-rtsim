@@ -92,7 +92,7 @@ the fixes did not change the hand-over's cost.
 
 ## 2026-10-20 13:33 and 13:35 UTC, with phase 1 running (`handover-2026-10-20-1333-gametest.json`, `-1335-`)
 
-**Conditions.** Code of commit `102ee01` (phase 1 on the native engine, branch
+**Conditions.** Code of commit `102ee01` (the 1333 run from the working tree just before it, without the end-of-run counters; phase 1 on the native engine, branch
 `overnight/phase1-jni`), same machine and settings as above, 1-minute load 4.7 to 6.6 (other
 sessions). A third rig joins the bench, **`native-p1`**: the native engine with its phase 1 world
 running. 64 villages are adopted (an 8 x 8 grid 500 blocks apart, five structures, 45 pieces each),

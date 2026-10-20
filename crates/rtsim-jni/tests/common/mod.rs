@@ -580,15 +580,10 @@ impl Java {
                         } else {
                             if rec.kind == cmd::PLACE_HOUSE {
                                 let village = wire::u64_at(rec.bytes, cmd::place_house::VILLAGE);
-                                self.journal(
-                                    obs::HOUSE_PLACED,
-                                    obs::house_placed::SIZE,
-                                    0,
-                                    |r| {
-                                        wire::put_u64(r, obs::house_placed::OP_ID, op);
-                                        wire::put_u64(r, obs::house_placed::VILLAGE, village);
-                                    },
-                                );
+                                self.journal(obs::HOUSE_PLACED, obs::house_placed::SIZE, 0, |r| {
+                                    wire::put_u64(r, obs::house_placed::OP_ID, op);
+                                    wire::put_u64(r, obs::house_placed::VILLAGE, village);
+                                });
                             }
                             obs::command_result::APPLIED
                         };

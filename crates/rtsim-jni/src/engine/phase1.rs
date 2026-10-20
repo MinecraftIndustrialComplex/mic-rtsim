@@ -506,7 +506,13 @@ fn census(st: &mut State, key: u64, residents: u32) {
     let first = l.censused.insert(key);
     if (first && residents != pop) || residents > pop {
         let at = l.wt(st.game_time);
-        l.input(Input::Population { key, pop: residents }, at);
+        l.input(
+            Input::Population {
+                key,
+                pop: residents,
+            },
+            at,
+        );
     }
 }
 
@@ -873,7 +879,12 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
         obs::DEMATERIALIZED if rec.size() >= obs::dematerialized::SIZE => {
             let agent = wire::u64_at(b, obs::dematerialized::AGENT);
             let epoch = wire::u32_at(b, obs::dematerialized::EPOCH);
-            if st.phase1.puppets.get(&agent).is_some_and(|p| p.epoch == epoch) {
+            if st
+                .phase1
+                .puppets
+                .get(&agent)
+                .is_some_and(|p| p.epoch == epoch)
+            {
                 let p = st.phase1.puppets.remove(&agent).expect("checked");
                 check_capture(st, agent, &p);
             }
@@ -1388,7 +1399,11 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
         ));
         return;
     };
-    let pos = Pos::new(frame, s.search[0].floor() as i32, s.search[1].floor() as i32);
+    let pos = Pos::new(
+        frame,
+        s.search[0].floor() as i32,
+        s.search[1].floor() as i32,
+    );
     let visible = st.phase1.world.visible(pos, s.radius);
     let carries = |c: &BTreeMap<GoodId, Amount>| c.values().any(|&a| a >= MILLI);
     for v in visible {
@@ -1414,7 +1429,13 @@ fn spawn_near(st: &mut State, s: SpawnNear) {
                 }
             }
             Visible::Caravan { id, .. } => {
-                if !st.phase1.world.caravans.get(id).is_some_and(|c| carries(&c.cargo())) {
+                if !st
+                    .phase1
+                    .world
+                    .caravans
+                    .get(id)
+                    .is_some_and(|c| carries(&c.cargo()))
+                {
                     continue;
                 }
                 id
@@ -1477,7 +1498,11 @@ fn interest(st: &mut State) {
                 && (p.last_steer == i64::MIN || gt - p.last_steer >= STEER_TICKS)
             {
                 p.last_steer = gt;
-                steer.push((agent, p.epoch, [f64::from(x) + 0.5, p.pos[1], f64::from(z) + 0.5]));
+                steer.push((
+                    agent,
+                    p.epoch,
+                    [f64::from(x) + 0.5, p.pos[1], f64::from(z) + 0.5],
+                ));
             }
         }
         for (agent, epoch) in despawn {
@@ -1511,7 +1536,10 @@ fn interest(st: &mut State) {
             .phase1
             .puppets
             .values()
-            .filter(|p| p.frame == s.frame && dist2(s.pos, p.pos[0], p.pos[2]) <= f64::from(SPAWN_RADIUS).powi(2))
+            .filter(|p| {
+                p.frame == s.frame
+                    && dist2(s.pos, p.pos[0], p.pos[2]) <= f64::from(SPAWN_RADIUS).powi(2)
+            })
             .count();
         if near_mine >= MAX_PER_PLAYER {
             continue;
@@ -1551,14 +1579,14 @@ fn interest(st: &mut State) {
                     }
                 }
                 Visible::Caravan { id, .. } => spawn_caravan(
-                        st,
-                        id,
-                        s.frame,
-                        at,
-                        cmd::spawn_group::FLAG_SURFACE,
-                        None,
-                        false,
-                    ),
+                    st,
+                    id,
+                    s.frame,
+                    at,
+                    cmd::spawn_group::FLAG_SURFACE,
+                    None,
+                    false,
+                ),
                 Visible::Band { band, .. } => {
                     let seed = st.phase1.world.bands[band].seed;
                     if st.phase1.backoff.contains_key(&band_agent(seed)) {
@@ -1840,7 +1868,11 @@ pub(super) fn scripted_names(order: &Order, out: &mut Vec<(u32, String)>) {
 }
 
 /// Writes a scripted phase 1 order (its unit was checked to fit). Kept ones join the outbox.
-pub(super) fn write_scripted(st: &mut State, w: &mut RecordWriter<'_>, order: &Order) -> Option<u64> {
+pub(super) fn write_scripted(
+    st: &mut State,
+    w: &mut RecordWriter<'_>,
+    order: &Order,
+) -> Option<u64> {
     let c = scripted(order)?;
     match write_one(st, w, &c, None) {
         One::Written(seq) => {
