@@ -221,9 +221,17 @@ pub struct Engine {
     /// Keep [`Engine::log`]: off by default (formatting lines costs every breakpoint); the fake
     /// world and the CLI turn it on.
     pub log_enabled: bool,
+    /// Every frame's topology (docs/choices-topology.md TP16): districts are local, so only a
+    /// train leg's booking reads it, going the short way across a seam. Not saved.
+    pub topo: rtsim_space::SharedTopologies,
 }
 
 impl Engine {
+    /// Hands the engine every frame's topology (TP6).
+    pub fn set_topologies(&mut self, t: rtsim_space::SharedTopologies) {
+        self.topo = t;
+    }
+
     pub fn new(world_seed: u64, tun: Tunables, mode: Mode, now: Tick) -> Self {
         Self {
             tun,
@@ -255,6 +263,7 @@ impl Engine {
             books: Books::default(),
             log: std::collections::VecDeque::new(),
             log_enabled: false,
+            topo: rtsim_space::topology::all_flat(),
         }
     }
 
@@ -1904,7 +1913,9 @@ impl Engine {
             .map(|s| s.decl.clone());
         if let Some(from) = from {
             let to_pos = to.as_ref().map_or(from.pos, |t| t.pos);
-            self.legs.book(
+            let topo = self.topo.clone();
+            self.legs.book_on(
+                topo.of(from.dim as u16),
                 Leg {
                     train: dep.train,
                     from: dep.station,

@@ -136,4 +136,5 @@ pub(super) fn sync(st: &mut State) {
     st.ships.index.set_topologies(t.clone());
     st.conflict.engine.set_topologies(t.clone());
     st.conflict.index.set_topologies(t.clone());
+    st.industry.engine.set_topologies(t.clone());
 }
