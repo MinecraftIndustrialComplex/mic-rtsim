@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rtsim-kernel.workspace = true
+rtsim-industry.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 
