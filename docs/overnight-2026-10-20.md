@@ -19,6 +19,7 @@ What was built while Ben slept, what it measured, and what needs him first.
 | Dragons (phase 2) | `crates/rtsim-ecology` (engine), `neoforge/iceandfire` (plugin `mic_rtsim_iceandfire`) | Lairs, hunger, scheduled legs, grudges, heirs, boredom, predation, raids on districts and trains, save and restore |
 | Industry | `crates/rtsim-industry` (engine), `neoforge/core` industry module and the `create` plugin | Districts learned at the boundary, replay between breakpoints, exactly-once reconcile on load, threats, train ports, a ledger on a Create display |
 | Ships | `crates/rtsim-ships` (engine only; no plugin yet) | Sea and sky lanes, Veloren-style loop routes, timetabled ships that survive restarts, merchant flows in holds, pirates with havens, navy patrols lowering lane hazard, Lanchester raids never better than observed |
+| Herds | `crates/rtsim-ecology` herds module (engine; native wiring and vanilla adapter in progress) | Migrating herds of tens of thousands with latent members, identity derived from seeds, dyadic deaths, forage, obstacle detours, dragons hunting and following herds |
 | Persistence | phase 1, industry and dragons | Snapshot plus short log tail; restore gives the identical state hash |
 
 ## Numbers measured overnight
@@ -53,6 +54,8 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 | Replay accuracy | 99.7% of a fully chunk-loaded control, never more |
 
 **Dragons:** 10 to 14 µs per dragon per sim day, flat from 8 to 512 dragons.
+
+**Herds:** six herds of 33,000 animals in total over two sim years in 0.8 s; cost per sim day flat from 100 to 1,000,000 animals per herd (slope −0.012), and a read after 10,000 unread days costs 0.02 to 0.04 µs.
 
 **Ships:** the engine's own cost stays flat at 17 to 19 µs per sim day from 56 to 814 merchant ships; unobserved merchant ships cost nothing.
 
@@ -90,6 +93,6 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 - **Kernel follow-ups:** paging under a memory budget, two save generations (P29), the parallel step and the P4 storage bench. They are on branch `overnight/kernel2`, not yet merged.
 - **Industry plugins:** PowerGrid, Destroy, Ore Excavation, Diesel Generators, Ender Transmission and threat sampling. Interrupted once by the API rate limit and resumed.
 - **Done since:** ships run through the native link; one interest area per player is shared by phase 1, dragons and ships; module switches exist for dragons and ships; traders price pirate hazard on lanes (368 Rust tests pass).
-- **In progress:** migrating herds (engine) and conflict factions (engine).
+- **In progress:** herds through the native link plus the vanilla animal adapter; conflict factions (engine).
 - **Not started:** plugins for ships and conflict (body mods are open, P8), kaiju, space and history generation.
 - **API rate limits interrupted several agents once.** Every interrupted branch was saved as a WIP commit and pushed before resuming.
