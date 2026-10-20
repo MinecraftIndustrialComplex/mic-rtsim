@@ -15,7 +15,7 @@ research/caravan-balance-2026-10-20.md ("Not now"); industry, dragons, herds and
 | # | Choice | Why |
 |---|---|---|
 | PR1 | **Reputation picks a price level inside the engine's quote.** MARKET carries a fair level and four markup levels at standings -25, -50, -75 and -100 (TUNABLE, PLACEHOLDER; `phase1::PRICE_LEVELS`), each `markup_for(threshold, worst)`. A player's standing is vanilla's own reputation with that villager (`Villager.getPlayerReputation`: its gossip, which the sim also writes, C20) or, for ribbits, the village's SENTIMENT; the bridge looks up the deepest level whose threshold the standing is at or below. Vanilla's `updateSpecialPrices` discount is taken off again on sim-priced offers (`VillagerReputationMixin` now folds instead of trimming). Positive reputation and Hero of the Village give the fair price, never better (E7). Supersedes G31's trim and G20's "vanilla villagers get no markup". | Ben chose "Inside the sim quote": one formula. A discount on both sides of a market that buys and sells the same good is a money pump (G31's review), so a good standing earns the fair price, a bad one pays the markup. Vanilla's scale is the sim's (P18: "vanilla's gossip scale"), so the thresholds are on both; -100 is where vanilla's golems turn. |
-| PR2 | **The engine sends ladders of bundles.** Per good and side, per level, the bundles of up to 8 successive trades (PLACEHOLDER, `phase1::LADDER_DEPTH`), each priced at the market the trades before left (`rtsim_trade::market::ladder`; `Market::offer` now calls the same `bundle_at`). The bridge walks a ladder by its own trades since the MARKET and shows the step there; a stock the ladder does not reach (a sale and a purchase of one good mixed) shows the offer crossed out until the next MARKET, which the engine sends right after a trade. About 4.7 KiB per MARKET for the catalogue's seven goods. Scripted MARKET orders still carry curves: the native engine prices them with rtsim-trade, the stub with the Java copy, so the same GameTest checks both. `PriceCurve` and the new `PriceOracle` (the old `MarketBook.offer` math) stay in the core only as the test oracle and the stub's pricing. Supersedes G4. | Ben chose "Engine sends bundles". One bundle alone would let a shift-click trade at a stale price, or trade once and wait for the engine; a ladder covers a run of trades exactly, and its steps are the engine's, so nothing drifts. |
+| PR2 | **The engine sends ladders of bundles.** Per good and side, per level, the bundles of up to 8 successive trades (PLACEHOLDER, `phase1::LADDER_DEPTH`), each priced at the market the trades before left (`rtsim_trade::market::ladder`; `Market::offer` now calls the same `bundle_at`). The bridge walks a ladder by its own trades since the MARKET and shows the step there; a stock the ladder does not reach (a sale and a purchase of one good mixed) shows the offer crossed out until the next MARKET, which the engine sends right after a trade. About 4.7 KiB per MARKET for the catalogue's seven goods. An offer's uses are now at most the ladder's depth (8) until the next MARKET, where they used to follow the whole stock. Scripted MARKET orders still carry curves: the native engine prices them with rtsim-trade, the stub with the Java copy, so the same GameTest checks both. `PriceCurve` and the new `PriceOracle` (the old `MarketBook.offer` math) stay in the core only as the test oracle and the stub's pricing. Supersedes G4. | Ben chose "Engine sends bundles". One bundle alone would let a shift-click trade at a stale price, or trade once and wait for the engine; a ladder covers a run of trades exactly, and its steps are the engine's, so nothing drifts. |
 
 ## Caravans (Review P3, P21)
 
@@ -47,3 +47,22 @@ research/caravan-balance-2026-10-20.md ("Not now"); industry, dragons, herds and
 | # | Choice | Why |
 |---|---|---|
 | PR12 | The round 2 money sink (E43) stands, with a TODO pointer to E-sink on `Rules::money_sink`. | Ben: surplus coin is to buy something real (village upgrades, buildings, tribute), which needs a design he approves first. |
+
+## Results
+
+- **Rust:** `cargo test --workspace` passes (58 test binaries, no failure; new: rtsim-world
+  `tests/morning.rs` 7 tests, rtsim-trade `a_ladder_is_the_offers_of_successive_trades`, rtsim-travel
+  `messengers_leave_on_their_own_schedule`, rtsim-jni `a_switched_off_phase1_ignores_everything_and_catches_up`,
+  `a_killed_member_books_what_its_member_state_held`, `a_caravan_at_a_border_market_offers_coin_exchange`,
+  `market_ladders_are_rtsim_trades`, and the log codec's `MemberHeld`); `cargo clippy --workspace
+  --all-targets -- -D warnings` and `cargo fmt --all --check` clean. The quiet tests hold: the
+  scenario world silent over days 500 to 700, the grid of 16 at 0.004 events per market per day.
+- **GameTests,** stub and native engine, each on a fresh GameTest world: core 48 of 48, ribbits 5 of
+  5, carryon 2 of 2. The scripted MARKET prices the same on both engines (the stub's Java oracle and
+  rtsim-trade): wheat per emerald 21, 22, 23, then 18 after the refill; slime per shard 11 fair and
+  18 for a player the ribbits hate. The live caravan's robbery reached two villages' gossip after 10
+  asks on the native engine.
+- **`sim phase1`** (120 days, seed 42): conservation ok, 0.02 market events per market per day over
+  the last 10 days, state hash 6d41ee745999da50 (scenario/results/phase1-seed42-120d.json rewritten).
+  Bands now tour Brindle and Fernwick (the border) and played 436 times. `--days 60 --check`:
+  conservation ok after every event.

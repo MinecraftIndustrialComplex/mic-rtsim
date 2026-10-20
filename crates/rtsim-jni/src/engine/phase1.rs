@@ -3067,6 +3067,117 @@ mod tests {
         w.check_conserved(w.now()).unwrap();
     }
 
+    /// P21 (Ben: "At border markets"): a caravan standing at a border market its road touches gets
+    /// coin exchange in its MERCHANT_OFFERS, emeralds for amethyst and back; away from it, none.
+    #[test]
+    fn a_caravan_at_a_border_market_offers_coin_exchange() {
+        let mut st = state();
+        let join = |key: u64, ribbit: bool, x: i32| Input::Join {
+            key,
+            culture: u8::from(ribbit),
+            frame: 1,
+            x,
+            z: 0,
+            pop: 16,
+            resources: catalog::resources(
+                "minecraft:village_plains",
+                if ribbit {
+                    Culture::Ribbit
+                } else {
+                    Culture::Human
+                },
+            )
+            .into_iter()
+            .map(|(r, a)| (r.0, a))
+            .collect(),
+        };
+        st.phase1.input(join(1, false, 0), 0);
+        st.phase1.input(join(2, true, 600), 0);
+        let (human, ribbit) = (st.phase1.nodes[&1], st.phase1.nodes[&2]);
+        // A caravan on the border road, promoted.
+        let mut t = 0u64;
+        let id = loop {
+            t += 1_000;
+            assert!(t < 100 * 24_000, "no caravan on the border road");
+            st.phase1.world.run_until(Tick(t));
+            let w = &st.phase1.world;
+            let k = w.nodes[human]
+                .out
+                .iter()
+                .flat_map(|d| w.travellers(d.edge, d.dir))
+                .map(|tr| tr.key)
+                .next();
+            let Some(k) = k else { continue };
+            if let Some(id) = st
+                .phase1
+                .input(
+                    Input::Promote {
+                        edge: k.edge,
+                        dir: k.dir,
+                        departure: k.departure,
+                    },
+                    t,
+                )
+                .caravan
+            {
+                break id;
+            }
+        };
+        let (emerald, amethyst) = (
+            st.phase1.cat.good("minecraft:emerald").unwrap(),
+            st.phase1.cat.good("minecraft:amethyst_shard").unwrap(),
+        );
+        // It carries both coins (as after trading both ways).
+        {
+            let car = st.phase1.world.caravans.get_mut(id).unwrap();
+            car.give_purse(emerald, 10 * MILLI);
+            car.give_purse(amethyst, 100 * MILLI);
+        }
+        let home = st.phase1.world.nodes[human].actor;
+        let p = st.phase1.world.nodes[human].pos;
+        let at_human = market_at(
+            &st.phase1,
+            id,
+            p.frame,
+            [f64::from(p.x) + 10.0, 64.0, f64::from(p.z)],
+        );
+        assert_eq!(at_human, Some(human));
+        let offers = offers_of(&st.phase1, id, home, at_human);
+        let exchange: Vec<&OfferCmd> = offers
+            .iter()
+            .filter(|o| {
+                [o.cost_a.as_str(), o.result.as_str()]
+                    .iter()
+                    .all(|n| *n == "minecraft:emerald" || *n == "minecraft:amethyst_shard")
+            })
+            .collect();
+        assert_eq!(exchange.len(), 2, "both ways: {offers:?}");
+        assert!(
+            exchange
+                .iter()
+                .any(|o| o.result == "minecraft:amethyst_shard"
+                    && o.flags == cmd::merchant_offers::O_FLAG_SELLS)
+        );
+        assert!(
+            exchange
+                .iter()
+                .any(|o| o.cost_a == "minecraft:amethyst_shard"
+                    && o.flags == cmd::merchant_offers::O_FLAG_BUYS)
+        );
+        // Far from both ends: no exchange.
+        let far = market_at(
+            &st.phase1,
+            id,
+            p.frame,
+            [f64::from(p.x) + 300.0, 64.0, 900.0],
+        );
+        assert_eq!(far, None);
+        let _ = ribbit;
+        assert!(offers_of(&st.phase1, id, home, None).iter().all(|o| {
+            !(o.cost_a == "minecraft:emerald" && o.result == "minecraft:amethyst_shard")
+        }));
+    }
+
     /// Review 3, P2: which caravan a phase 1 agent is outlives the session, so a record about it
     /// replayed after a restart (a robbery, a trade, a member killed) still finds the caravan.
     #[test]
