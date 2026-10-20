@@ -67,6 +67,8 @@ public final class Threats {
         int darkRing = -1;
         long[] lastSurvey;
         int lastExposed;
+        int surveyCount;
+        String around;
         // natural spawns (I20)
         boolean observing;
         long observedTicks;
@@ -95,10 +97,20 @@ public final class Threats {
         return states.computeIfAbsent(d.id, k -> new State());
     }
 
-    /** The last survey of a district, {perimeterColumns, perimeterGaps, darkSpawnable, machines, roofed, killAtGaps, guards[0..3], turret[0..3] x 1000, revision, exposed}; null if none. */
+    /**
+     * The last survey of a district, or null: {perimeterColumns, perimeterGaps, darkSpawnable, machines,
+     * roofed, killAtGaps, guards[0..3], turret[0..3] x 1000, revision, exposed blocks, dark in the ring,
+     * cut computed (1), this district's survey count, ground level}.
+     */
     public long[] lastSurvey(long district) {
         State s = states.get(district);
         return s == null || s.lastSurvey == null ? null : s.lastSurvey.clone();
+    }
+
+    /** The standing heights around the first machine of the district's last survey (debugging). */
+    public String lastAround(long district) {
+        State s = states.get(district);
+        return s == null ? null : s.around;
     }
 
     /** Asks for a survey of the district at the next opportunity (commands, GameTests). */
@@ -106,6 +118,8 @@ public final class Threats {
         State s = state(d);
         s.dirty = true;
         s.surveyedAt = Long.MIN_VALUE / 2;
+        if (job != null && job.district.id == d.id)
+            job = null; // what it read may be older than the reason for asking: start again
     }
 
     public long surveys() {
@@ -445,8 +459,13 @@ public final class Threats {
         for (long c : walk.wallColumns()) {
             if (exposed.size() >= cap)
                 break;
-            BlockPos p = new BlockPos(SurveyJob.colX(c), j.top.get(c), SurveyJob.colZ(c));
+            // The wall block a walker meets: at the ground level, else the one above it.
+            BlockPos p = new BlockPos(SurveyJob.colX(c), j.ground(), SurveyJob.colZ(c));
             net.minecraft.world.level.block.state.BlockState st = j.level.getBlockState(p);
+            if (st.isAir()) {
+                p = p.above();
+                st = j.level.getBlockState(p);
+            }
             if (!st.isAir())
                 exposed.add(new SurveyJob.Exposed(p, st, IndRecords.SurveyBlocks.FLAG_PERIMETER, IndRecords.NO_INVENTORY));
         }
@@ -479,6 +498,10 @@ public final class Threats {
                 break;
         }
 
+        if (!j.machineBlocks.isEmpty()) {
+            BlockPos m = j.machineBlocks.get(0).pos();
+            s.around = j.describeAround(m.getX(), m.getZ(), 3);
+        }
         s.surveyedRevision = j.revision;
         s.surveyedAt = now;
         s.darkDistrict = j.darkDistrict;
@@ -487,7 +510,7 @@ public final class Threats {
         s.lastSurvey = new long[] {walk.perimeterColumns(), walk.perimeterGaps(), j.darkDistrict, j.machines, j.roofed, walk.killAtGaps(),
                 guards[0], guards[1], guards[2], guards[3],
                 Math.round(j.turretStrength[0] * 1000), Math.round(j.turretStrength[1] * 1000), Math.round(j.turretStrength[2] * 1000),
-                Math.round(j.turretStrength[3] * 1000), j.revision, exposed.size(), j.darkRing, walk.cutComputed() ? 1 : 0};
+                Math.round(j.turretStrength[3] * 1000), j.revision, exposed.size(), j.darkRing, walk.cutComputed() ? 1 : 0, ++s.surveyCount, j.ground()};
         surveys++;
         lastSurveyNanos = System.nanoTime() - t0;
         if (!walk.cutComputed())

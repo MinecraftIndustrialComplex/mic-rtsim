@@ -37,7 +37,13 @@ public final class ThreatGameTests {
 
     private static final String YARD = "industry_yard";
 
-    /** Waits for a survey of the district newer than {@code after} surveys, returns it. */
+    /** How many surveys of the district finished this session. */
+    private static int surveyCount(long district) {
+        long[] s = ind().threats().lastSurvey(district);
+        return s == null ? 0 : (int) s[18];
+    }
+
+    /** The district's last survey. */
     private static long[] survey(long district) {
         return ind().threats().lastSurvey(district);
     }
@@ -45,7 +51,7 @@ public final class ThreatGameTests {
     /**
      * I21's survey on a flat yard: a furnace (a machine) in a district seeded by a chest. In the open the
      * smallest set of columns that seals the furnace is its four neighbours (gaps 4, perimeter 4); a closed
-     * cobblestone ring two blocks high seals it (gaps 0); a one-column doorway in the ring is one gap; a stone
+     * cobblestone ring two blocks above the floor seals it (gaps 0); a one-column doorway is one gap; a stone
      * block over the furnace roofs it; the dark spawnable count is measured (block light 0) and falls when
      * torches light the yard. IND_SURVEY carries each, and IND_SURVEY_BLOCKS lists the wall faces, the
      * machine and the chest.
@@ -72,50 +78,54 @@ public final class ThreatGameTests {
                     District d = districtAt(helper, furnace);
                     check("the district", d != null && d.chunks.contains(chunk(chest)));
                     id[0] = d.id;
-                    ind().threats().surveySoon(d);
-                    n[0] = (int) ind().threats().surveys();
+                })
+                .thenExecute(() -> {
+                    n[0] = surveyCount(id[0]);
+                    ind().threats().surveySoon(ind().district(id[0]));
                 })
                 .thenWaitUntil(() -> {
-                    check("a survey", ind().threats().surveys() > n[0] && survey(id[0]) != null);
+                    check("a survey", surveyCount(id[0]) > n[0]);
                     long[] s = survey(id[0]);
                     record("theDefenceSurveyMeasuresWallsRoofsAndDark", "open (" + engineName() + ")", java.util.Arrays.toString(s));
                     check("one machine, not roofed", s[3] == 1 && s[4] == 0);
                     check("open: 4 gaps of a 4-column perimeter, got " + s[1] + " of " + s[0], s[1] == 4 && s[0] == 4);
                     check("dark spawnable blocks measured: " + s[2], s[2] > 0);
                     open[0] = s[2];
-                    // A closed ring of cobblestone, two high, at Chebyshev distance 2 around the furnace.
+                    // A closed ring of cobblestone at Chebyshev distance 2 around the furnace, two blocks above
+                    // the yard's floor (the yard's floor is the layer the blocks are placed in, y 0).
                     for (int dx = -2; dx <= 2; dx++)
                         for (int dz = -2; dz <= 2; dz++)
                             if (Math.max(Math.abs(dx), Math.abs(dz)) == 2)
-                                for (int y = 0; y < 2; y++)
+                                for (int y = 0; y <= 2; y++)
                                     set(helper, furnace.offset(dx, y, dz), Blocks.COBBLESTONE.defaultBlockState());
+                    n[0] = surveyCount(id[0]);
                     ind().threats().surveySoon(ind().district(id[0]));
-                    n[0] = (int) ind().threats().surveys();
                 })
                 .thenWaitUntil(() -> {
-                    check("a second survey", ind().threats().surveys() > n[0]);
+                    check("a second survey", surveyCount(id[0]) > n[0]);
                     long[] s = survey(id[0]);
-                    record("theDefenceSurveyMeasuresWallsRoofsAndDark", "closed ring", java.util.Arrays.toString(s));
+                    record("theDefenceSurveyMeasuresWallsRoofsAndDark", "closed ring", java.util.Arrays.toString(s) + " around " + ind().threats().lastAround(id[0])
+                            + ", block east+2 " + helper.getLevel().getBlockState(furnace.offset(2, 0, 0)));
                     check("a closed ring: 0 gaps, got " + s[1], s[1] == 0);
                     check("the perimeter a wall needs is still 4", s[0] == 4);
                     closed[0] = s[1];
-                    set(helper, furnace.offset(2, 0, 0), Blocks.AIR.defaultBlockState());
                     set(helper, furnace.offset(2, 1, 0), Blocks.AIR.defaultBlockState());
+                    set(helper, furnace.offset(2, 2, 0), Blocks.AIR.defaultBlockState());
+                    n[0] = surveyCount(id[0]);
                     ind().threats().surveySoon(ind().district(id[0]));
-                    n[0] = (int) ind().threats().surveys();
                 })
                 .thenWaitUntil(() -> {
-                    check("a third survey", ind().threats().surveys() > n[0]);
+                    check("a third survey", surveyCount(id[0]) > n[0]);
                     long[] s = survey(id[0]);
                     record("theDefenceSurveyMeasuresWallsRoofsAndDark", "doorway", java.util.Arrays.toString(s));
                     check("a one-column doorway: 1 gap, got " + s[1], s[1] == 1);
                     door[0] = s[1];
-                    set(helper, furnace.above(2), Blocks.STONE.defaultBlockState());
+                    set(helper, furnace.above(3), Blocks.STONE.defaultBlockState());
+                    n[0] = surveyCount(id[0]);
                     ind().threats().surveySoon(ind().district(id[0]));
-                    n[0] = (int) ind().threats().surveys();
                 })
                 .thenWaitUntil(() -> {
-                    check("a fourth survey", ind().threats().surveys() > n[0]);
+                    check("a fourth survey", surveyCount(id[0]) > n[0]);
                     long[] s = survey(id[0]);
                     check("the furnace is roofed", s[4] == 1);
                     roofed[0] = s[4];
@@ -123,11 +133,11 @@ public final class ThreatGameTests {
                         for (int z = 0; z < 16; z += 4)
                             if (Math.abs(x - 8) > 3 || Math.abs(z - 8) > 3)
                                 set(helper, inChunk(helper, x, z), Blocks.TORCH.defaultBlockState());
+                    n[0] = surveyCount(id[0]);
                     ind().threats().surveySoon(ind().district(id[0]));
-                    n[0] = (int) ind().threats().surveys();
                 })
                 .thenWaitUntil(() -> {
-                    check("a fifth survey", ind().threats().surveys() > n[0]);
+                    check("a fifth survey", surveyCount(id[0]) > n[0]);
                     long[] s = survey(id[0]);
                     record("theDefenceSurveyMeasuresWallsRoofsAndDark", "lit", java.util.Arrays.toString(s));
                     check("torches leave fewer dark blocks: " + s[2] + " < " + open[0], s[2] < open[0]);
@@ -187,8 +197,8 @@ public final class ThreatGameTests {
                     District d = districtAt(helper, chest);
                     check("the district", d != null);
                     id[0] = d.id;
-                    ind().threats().surveySoon(d);
                 })
+                .thenExecute(() -> ind().threats().surveySoon(ind().district(id[0])))
                 .thenWaitUntil(() -> {
                     long[] s = survey(id[0]);
                     check("a survey with the ring", s != null);

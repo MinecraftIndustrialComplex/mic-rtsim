@@ -44,7 +44,7 @@ import java.util.Map;
  *       the dimension's {@code monster_spawn_block_light_limit}; the district's own, and the ring's
  *       ({@code spawnRingChunks}) for the spawn samples.</li>
  *   <li><b>Machines</b> are the district's industrial block entities that are not boundary stock;
- *       roofed when a motion-blocking block is above them.</li>
+ *       roofed when the block above them cannot see the sky ({@code canSeeSky}: full sky light).</li>
  * </ul>
  */
 final class SurveyJob {
@@ -116,13 +116,23 @@ final class SurveyJob {
     }
 
     boolean done() {
-        return aborted || cursor >= chunks.size();
+        return aborted || cursor >= chunks.size() + districtChunks.size();
     }
 
-    /** Reads up to {@code budget} chunks. A district chunk that is not loaded aborts the survey. */
+    /** The ground level walkers move at: the median height of the district's industrial blocks (Q14). */
+    private int ground = Integer.MIN_VALUE;
+    private final it.unimi.dsi.fastutil.ints.IntArrayList heights = new it.unimi.dsi.fastutil.ints.IntArrayList();
+
+    /**
+     * Reads up to {@code budget} chunks: first the district's block entities (the machines, and the ground
+     * level), then the columns of the district and its ring. A district chunk that is not loaded aborts.
+     */
     void step(Industry ind, int budget) {
-        while (budget-- > 0 && cursor < chunks.size()) {
-            long c = chunks.getLong(cursor++);
+        int nd = districtChunks.size();
+        while (budget-- > 0 && cursor < chunks.size() + nd) {
+            int i = cursor++;
+            boolean bePass = i < nd;
+            long c = chunks.getLong(bePass ? i : i - nd);
             boolean inDistrict = districtChunks.contains(c);
             LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
             if (chunk == null) {
@@ -132,11 +142,43 @@ final class SurveyJob {
                 }
                 continue;
             }
-            boolean countRing = !inDistrict && withinRing(c);
-            readColumns(chunk, inDistrict, countRing);
-            if (inDistrict)
+            if (bePass) {
                 readBlockEntities(ind, chunk);
+                continue;
+            }
+            if (ground == Integer.MIN_VALUE)
+                ground = groundLevel(chunk);
+            readColumns(chunk, inDistrict, !inDistrict && withinRing(c));
         }
+    }
+
+    /** The standing heights in a square around a column, row by row (debugging and GameTests). */
+    String describeAround(int cx, int cz, int r) {
+        StringBuilder sb = new StringBuilder("ground " + ground + ":");
+        for (int dz = -r; dz <= r; dz++) {
+            sb.append(" |");
+            for (int dx = -r; dx <= r; dx++) {
+                long c = col(cx + dx, cz + dz);
+                int w = walk.getOrDefault(c, Integer.MIN_VALUE);
+                sb.append(' ').append(machineCols.contains(c) ? "M" : barrier.contains(c) ? "B" : w == NO_FOOTING ? "X"
+                        : w == Integer.MIN_VALUE ? "?" : Integer.toString(w - ground));
+            }
+        }
+        return sb.toString();
+    }
+
+    /** The ground level the walk used. */
+    int ground() {
+        return ground;
+    }
+
+    private int groundLevel(LevelChunk any) {
+        if (!heights.isEmpty()) {
+            int[] h = heights.toIntArray();
+            java.util.Arrays.sort(h);
+            return h[h.length / 2];
+        }
+        return any.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, 8, 8) + 1;
     }
 
     private boolean withinRing(long c) {
@@ -159,9 +201,7 @@ final class SurveyJob {
                 int t = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, lx, lz);
                 long key = col(x, z);
                 top.put(key, t);
-                BlockState ts = chunk.getBlockState(p.set(x, t, z));
-                if (ts.is(BlockTags.FENCES) || ts.is(BlockTags.WALLS) || ts.is(BlockTags.FENCE_GATES))
-                    barrier.add(key);
+                walk.put(key, walkSurface(chunk, x, z, p, key));
                 if (inDistrict)
                     districtCols.add(key);
                 if (inDistrict || countRing) {
@@ -179,6 +219,47 @@ final class SurveyJob {
                 }
             }
         }
+    }
+
+    /** Per column, the height a walker stands at near the ground level, or {@link #NO_FOOTING}. */
+    final Long2IntOpenHashMap walk = new Long2IntOpenHashMap();
+    static final int NO_FOOTING = Integer.MAX_VALUE / 2;
+    static final int WINDOW = 4; // blocks above and below the ground level searched for footing (PLACEHOLDER)
+
+    /**
+     * The standing height nearest the ground level within {@link #WINDOW}: a position with a solid top
+     * below it and room for a two-high mob, so a roof above does not hide the floor under it (Q14). A
+     * fence, wall or fence gate within a block of that height makes the column a barrier.
+     */
+    private int walkSurface(LevelChunk chunk, int x, int z, BlockPos.MutableBlockPos p, long key) {
+        int best = NO_FOOTING;
+        for (int d = 0; d <= WINDOW && best == NO_FOOTING; d++) {
+            for (int sgn = 0; sgn < (d == 0 ? 1 : 2) && best == NO_FOOTING; sgn++) {
+                int y = ground + (sgn == 0 ? d : -d);
+                if (standable(chunk, x, y, z, p))
+                    best = y;
+            }
+        }
+        int ref = best == NO_FOOTING ? ground : best;
+        for (int y = ref - 1; y <= ref + 1; y++) {
+            BlockState st = chunk.getBlockState(p.set(x, y, z));
+            if (st.is(BlockTags.FENCES) || st.is(BlockTags.WALLS) || st.is(BlockTags.FENCE_GATES)) {
+                barrier.add(key);
+                break;
+            }
+        }
+        return best;
+    }
+
+    private boolean standable(LevelChunk chunk, int x, int y, int z, BlockPos.MutableBlockPos p) {
+        BlockState below = chunk.getBlockState(p.set(x, y - 1, z));
+        if (below.getCollisionShape(level, p).isEmpty())
+            return false;
+        BlockState feet = chunk.getBlockState(p.set(x, y, z));
+        if (!feet.getCollisionShape(level, p).isEmpty())
+            return false;
+        BlockState head = chunk.getBlockState(p.set(x, y + 1, z));
+        return head.getCollisionShape(level, p).isEmpty();
     }
 
     private void readBlockEntities(Industry ind, LevelChunk chunk) {
@@ -205,8 +286,10 @@ final class SurveyJob {
             }
             if (!ind.districts.industrial(level, be, cache))
                 continue;
-            int topHere = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING, pos.getX() & 15, pos.getZ() & 15);
-            boolean isRoofed = topHere > pos.getY();
+            heights.add(pos.getY());
+            // INDUSTRY.md §13.5: roofed is "without sky access (canSeeSky)", from the block above the machine,
+            // so a glass roof, which lets the sky's light through, is no roof against flyers.
+            boolean isRoofed = !level.canSeeSky(pos.above());
             District.Inventory inv = district.inventoryAt(pos);
             int flags = isRoofed ? 0 : IndRecords.SurveyBlocks.FLAG_ROOFLESS;
             if (inv != null) {
@@ -229,10 +312,11 @@ final class SurveyJob {
     private static final int[] DX = {1, -1, 0, 0};
     private static final int[] DZ = {0, 0, 1, -1};
 
-    private int topOf(long c, long fallbackFrom) {
-        if (top.containsKey(c))
-            return top.get(c);
-        return top.getOrDefault(fallbackFrom, 0);
+    /** A column's standing height; an unread column (an unloaded ring chunk) stands like its neighbour. */
+    private int walkOf(long c, long fallbackFrom) {
+        if (walk.containsKey(c))
+            return walk.get(c);
+        return walk.getOrDefault(fallbackFrom, ground);
     }
 
     private boolean canEnter(long from, long to) {
@@ -240,7 +324,10 @@ final class SurveyJob {
             return false;
         if (machineCols.contains(to))
             return true;
-        return topOf(to, from) - topOf(from, to) <= 1;
+        int a = walkOf(from, to), b = walkOf(to, from);
+        if (a >= NO_FOOTING)
+            return false;
+        return b < NO_FOOTING && b - a <= 1;
     }
 
     /** The walk from outside, the kill machines it meets, the wall faces, and the two minimum cuts. */
