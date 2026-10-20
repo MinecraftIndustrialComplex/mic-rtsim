@@ -22,6 +22,8 @@ rtsim-settle.workspace = true
 rtsim-trade.workspace = true
 rtsim-travel.workspace = true
 rtsim-knowledge.workspace = true
+# Phase 2's dragons (docs/boundary.md §6).
+rtsim-ecology.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 

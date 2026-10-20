@@ -264,6 +264,8 @@ pub(super) struct Link {
     pub(super) replay_diverged: Option<(u64, u64)>,
     /// The last load dropped pages it could not read ([`when_pages_unreadable`]).
     pub(super) dropped_pages: bool,
+    /// The world came back from pages (rather than starting fresh).
+    restored: bool,
 }
 
 fn fresh_world() -> (World, catalog::Catalog) {
@@ -328,6 +330,7 @@ impl Link {
             capture_mismatches: 0,
             replay_diverged: None,
             dropped_pages: false,
+            restored: false,
         }
     }
 
@@ -355,6 +358,7 @@ impl Link {
             return Ok(link);
         };
         let m = decode_meta(&meta).map_err(|e| format!("the phase 1 meta page: {e}"))?;
+        link.restored = true;
         let t0 = std::time::Instant::now();
         if m.snap_pieces > 0 {
             let mut blob = Vec::with_capacity(m.snap_len);
@@ -465,6 +469,12 @@ impl Link {
         link.stats[stat::INPUTS] = link.base_inputs + link.log.len() as u64;
         link.stats[stat::VILLAGES] = link.nodes.len() as u64;
         Ok(link)
+    }
+
+    /// Whether the world came back from its pages: the dragons' page is only good with the world
+    /// it was saved with.
+    pub(super) fn world_restored(&self) -> bool {
+        self.restored && !self.dropped_pages
     }
 
     /// The world changed outside the input log (the dragons, which share it): the next save takes
@@ -789,6 +799,17 @@ pub(super) fn snapshot(st: &mut State) -> (Vec<(PageKey, Vec<u8>)>, Saved) {
         live,
     };
     (out, saved)
+}
+
+/// The phase 1 world's tick for a game time (the test offset added): the clock the dragons,
+/// who share the world, run on too.
+pub(super) fn world_tick(st: &State, game_time: i64) -> u64 {
+    st.phase1.wt(game_time)
+}
+
+/// The phase 1 world's good for a Minecraft item id, if the catalogue trades it.
+pub(super) fn catalog_good(st: &State, item: &str) -> Option<GoodId> {
+    st.phase1.cat.good(item)
 }
 
 // ---- hooks: session and latest-wins records -------------------------------------------------------

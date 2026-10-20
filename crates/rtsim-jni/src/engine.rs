@@ -41,6 +41,10 @@ pub use industry::{IndustryStats, KEY_LINK as KEY_INDUSTRY_LINK, MODULE_INDUSTRY
 /// observations, commands and pages (docs/boundary.md §4, §5).
 mod phase1;
 pub use phase1::{STATS as PHASE1_STATS, TABLE as PHASE1_TABLE};
+/// Phase 2's dragons behind the boundary: `rtsim-ecology` fed by the Ice and Fire plugin's
+/// records, in the phase 1 world (docs/boundary.md §6).
+mod dragons;
+pub use dragons::{MODULE_ECOLOGY, TABLE as DRAGONS_TABLE};
 
 /// Record bytes per buffer when Java asks for the default. PLACEHOLDER (the stub's 256 KiB): the
 /// engine is to size buffers from the per-player puppet caps and per-tick quotas (PLAN.md §4.5).
@@ -250,6 +254,8 @@ struct State {
     industry: industry::Link,
     /// The phase 1 world and its commands (`phase1.rs`).
     phase1: phase1::Link,
+    /// The dragons and their commands (`dragons.rs`).
+    dragons: dragons::Link,
 }
 
 impl State {
@@ -274,6 +280,7 @@ impl State {
             op_counter: 0,
             industry: industry::Link::empty(),
             phase1: phase1::Link::empty(),
+            dragons: dragons::Link::empty(),
         }
     }
 
@@ -680,6 +687,7 @@ impl Engine {
             link.fresh = false;
         }
         let p1link = phase1::Link::load(&mut store)?;
+        let dlink = dragons::Link::load(&mut store, p1link.world_restored())?;
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(
@@ -702,6 +710,7 @@ impl Engine {
         st.industry.resume(last_applied_cmd);
         st.phase1 = p1link;
         st.phase1.resume(last_applied_cmd);
+        st.dragons = dlink;
         st.pages_obs_seq = pages_obs;
         st.session_first = pages_obs + 1;
         let next_cmd = st.outbox.next_seq();
@@ -821,10 +830,15 @@ impl Engine {
         if save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
             let (meta, world, industry, extra, obs_seq) = {
                 let mut st = lock(&self.state);
+                // The dragons' page rides with the industry engine's (both whole pages, deleted
+                // by table when gone).
+                let dragons = dragons::snapshot(&mut st);
+                let mut industry = industry::snapshot(&st);
+                industry.extend(dragons);
                 (
                     encode_meta(&st.replay, &st.outbox),
                     st.world.to_bytes(),
-                    industry::snapshot(&st),
+                    industry,
                     phase1::snapshot(&mut st),
                     st.replay.applied_through().0,
                 )
@@ -953,6 +967,7 @@ impl Engine {
         // 2. Simulate: the industry engine and the phase 1 world run to the hand-over's game time
         // and decide; orders stand in for the other decisions. 3. A save due at this boundary.
         industry::simulate(&mut st);
+        dragons::simulate(&mut st);
         phase1::simulate(&mut st);
         let req = self.save_through.load(Ordering::Acquire);
         if self.save_at_step_end.swap(false, Ordering::AcqRel) {
@@ -1103,6 +1118,7 @@ impl Engine {
                 industry::session_start(st, game_time, mask);
                 let mask = st.world.module_mask;
                 phase1::session_start(st, mask);
+                dragons::session_start(st, mask);
                 if last_applied > st.last_applied_cmd {
                     st.last_applied_cmd = last_applied;
                 }
@@ -1144,6 +1160,7 @@ impl Engine {
                 st.world.observe_state(rec);
                 industry::observe_state(st, rec);
                 phase1::observe_state(st, rec);
+                dragons::observe_state(st, rec);
                 Self::log_received(st, h, rec, 0, false);
             }
         }
@@ -1186,7 +1203,11 @@ impl Engine {
         Self::log_received(st, h, rec, seq, skipped);
         match verdict {
             Verdict::Apply if industry::claims(rec) => industry::journaled(st, rec),
-            Verdict::Apply if phase1::claims(rec) => phase1::journaled(st, rec),
+            Verdict::Apply if dragons::claims(rec) => dragons::journaled(st, rec),
+            Verdict::Apply if phase1::claims(rec) => {
+                dragons::catch_up(st, rec);
+                phase1::journaled(st, rec)
+            }
             Verdict::Apply => {
                 let replayed = seq < st.session_first;
                 if rec.kind == obs::COMMAND_RESULT && rec.size() >= obs::command_result::SIZE {
@@ -1227,7 +1248,10 @@ impl Engine {
         let obs_seq = st.replay.applied_through().0;
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
-        let industry = industry::snapshot(st);
+        // The dragons' page rides with the industry engine's (both whole pages, deleted by table
+        // when gone).
+        let mut industry = industry::snapshot(st);
+        industry.extend(dragons::snapshot(st));
         let extra = phase1::snapshot(st);
         let this = Arc::clone(self);
         self.spawn_io(move || this.commit(meta, world, industry, extra, obs_seq));
@@ -1251,6 +1275,9 @@ impl Engine {
         batch.put(KEY_META, &meta);
         batch.put(KEY_WORLD, &world);
         for k in industry::deletions(store, &industry) {
+            batch.delete(k);
+        }
+        for k in dragons::deletions(store, &industry) {
             batch.delete(k);
         }
         for k in phase1::deletions(store, &p1_saved) {
@@ -1363,6 +1390,11 @@ impl Engine {
             return (highest, true);
         }
         let (h, more) = phase1::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = dragons::write_queue(st, w);
         (highest.max(h), more)
     }
 }
@@ -1389,9 +1421,9 @@ fn op_of(rec: &Rec<'_>) -> Option<OpId> {
         {
             wire::u64_at(b, obs::command_result::OP_ID)
         }
-        _ => match industry::op_of(rec) {
-            0 => phase1::op_of(rec),
-            op => op,
+        _ => match (industry::op_of(rec), dragons::op_of(rec)) {
+            (0, 0) => phase1::op_of(rec),
+            (0, op) | (op, _) => op,
         },
     };
     (raw != 0).then_some(OpId(raw))
