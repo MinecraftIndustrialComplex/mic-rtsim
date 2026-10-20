@@ -72,6 +72,14 @@ pub enum Target {
         x: i32,
         z: i32,
     },
+    /// A wild herd (`herds`), where it will be when the dragon arrives: `herd` is the herd's row
+    /// handle bits.
+    Herd {
+        herd: u64,
+        frame: u16,
+        x: i32,
+        z: i32,
+    },
 }
 
 /// Why a dragon is flying.

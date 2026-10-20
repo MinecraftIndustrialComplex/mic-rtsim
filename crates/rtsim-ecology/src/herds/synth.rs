@@ -3,9 +3,9 @@
 //! the bench. **Scaffolding**, like the other synthetic worlds: delete it once real worlds and the
 //! vanilla adapter exist. Every number here is a scenario choice, not a game fact.
 //!
-//! **The valley** ([`Valley`]): north is −z and colder (0.4 °C a cell, ±10 °C over the year);
-//! forage grows where it is wet, which is the north in summer and the south in winter, so herds
-//! go north in spring and south in autumn. An east-west ridge two cells deep crosses the middle
+//! **The valley** ([`Valley`]): north is −z and colder (0.5 °C a cell, ±10 °C over the year);
+//! forage grows and stands where it is wet, which is the north from spring into summer and the
+//! south from autumn into winter, so herds go north in spring and south in autumn. An east-west ridge two cells deep crosses the middle
 //! with one pass a cell wide; going round its ends is a long detour. Outside the map is
 //! impassable.
 //!
@@ -48,7 +48,7 @@ impl Default for Valley {
             half_x: 48,
             half_z: 64,
             ridge: (-4, -3),
-            ridge_half: 14,
+            ridge_half: 30,
             pass: 0,
             seed: 7,
         }
@@ -67,34 +67,43 @@ impl Valley {
         cz >= self.ridge.0 && cz <= self.ridge.1 && cx.abs() <= self.ridge_half && cx != self.pass
     }
 
+    /// Warmth: 1 at the height of summer (between mid and late summer), −1 at winter's.
     fn season(sub: u32) -> f64 {
         (std::f64::consts::TAU * (f64::from(sub) - 4.5) / 12.0).cos()
+    }
+
+    /// Wetness of the north against the south: the north's rains peak in late spring, the
+    /// south's in late autumn, two sub-seasons ahead of the warmth, so herds that follow the
+    /// green-up are north for summer and south for winter.
+    fn rains(sub: u32) -> f64 {
+        (std::f64::consts::TAU * (f64::from(sub) - 2.5) / 12.0).cos()
     }
 }
 
 impl Climate for Valley {
     fn forage(&self, _: u16, cx: i32, cz: i32, sub: u32) -> ForageRates {
-        let s = Self::season(sub);
+        let s = Self::rains(sub);
         let north = (-f64::from(cz) / 40.0).clamp(-1.0, 1.0);
         let wet = (s * north + 1.0) / 2.0;
         let temp = f64::from(self.temperature(0, cx, cz, sub));
-        let cap = 4_000.0 * (0.75 + 0.5 * self.noise(cx, cz));
+        // Standing forage follows the wet season: a dry or frozen cell holds little.
+        let cap = 4_000.0 * (0.75 + 0.5 * self.noise(cx, cz)) * (0.1 + 0.9 * wet * wet);
         if temp < 2.0 {
             return ForageRates {
                 growth_per_day: 0.0,
                 capacity: cap,
-                decay_per_day: 0.02,
+                decay_per_day: 0.03,
             };
         }
         ForageRates {
-            growth_per_day: 0.02 + 0.12 * wet,
+            growth_per_day: 0.03 + 0.12 * wet,
             capacity: cap,
             decay_per_day: if wet < 0.3 { 0.01 } else { 0.0 },
         }
     }
 
     fn temperature(&self, _: u16, _: i32, cz: i32, sub: u32) -> f32 {
-        (10.0 + 0.4 * f64::from(cz) + 10.0 * Self::season(sub)) as f32
+        (8.0 + 0.5 * f64::from(cz) + 10.0 * Self::season(sub)) as f32
     }
 
     fn terrain(&self, _: u16, cx: i32, cz: i32) -> f32 {

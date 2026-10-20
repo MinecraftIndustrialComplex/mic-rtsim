@@ -180,14 +180,14 @@ impl HerdSpeciesData {
             lifespan_days: 10 * YEAR_DAYS,
             annual_mortality: [0.25, 0.06, 0.25],
             fertility: 0.55,
-            area_per_animal: 40.0,
-            starve_hazard: 0.3,
+            area_per_animal: 150.0,
+            starve_hazard: 0.2,
             predation_weight: [3, 1, 2],
         };
         match s {
             HerdSpecies::Sheep => base,
             HerdSpecies::Cow => HerdSpeciesData {
-                intake_per_day: 6.0,
+                intake_per_day: 4.0,
                 comfort: (-8.0, 26.0),
                 herd_size: (200, 6_000),
                 speed_blocks_per_day: 300.0,
@@ -196,7 +196,7 @@ impl HerdSpeciesData {
                 lifespan_days: 15 * YEAR_DAYS,
                 annual_mortality: [0.18, 0.04, 0.2],
                 fertility: 0.4,
-                area_per_animal: 120.0,
+                area_per_animal: 700.0,
                 ..base
             },
             HerdSpecies::Pig => HerdSpeciesData {
@@ -209,11 +209,11 @@ impl HerdSpeciesData {
                 lifespan_days: 12 * YEAR_DAYS,
                 annual_mortality: [0.35, 0.08, 0.3],
                 fertility: 1.2,
-                area_per_animal: 60.0,
+                area_per_animal: 200.0,
                 ..base
             },
             HerdSpecies::Horse => HerdSpeciesData {
-                intake_per_day: 7.0,
+                intake_per_day: 5.0,
                 comfort: (-10.0, 28.0),
                 herd_size: (50, 3_000),
                 speed_blocks_per_day: 900.0,
@@ -222,7 +222,7 @@ impl HerdSpeciesData {
                 lifespan_days: 25 * YEAR_DAYS,
                 annual_mortality: [0.15, 0.03, 0.15],
                 fertility: 0.3,
-                area_per_animal: 200.0,
+                area_per_animal: 900.0,
                 ..base
             },
             HerdSpecies::Goat => HerdSpeciesData {
@@ -235,7 +235,7 @@ impl HerdSpeciesData {
                 lifespan_days: 12 * YEAR_DAYS,
                 annual_mortality: [0.25, 0.06, 0.25],
                 fertility: 0.7,
-                area_per_animal: 40.0,
+                area_per_animal: 150.0,
                 ..base
             },
         }
@@ -273,7 +273,7 @@ impl HerdSpeciesData {
     /// The radius of the ground a herd of `count` covers, blocks (PLACEHOLDER clamps).
     pub fn footprint_radius(&self, count: u64) -> u32 {
         let r = (count as f64 * self.area_per_animal / std::f64::consts::PI).sqrt();
-        r.clamp(16.0, 1_024.0) as u32
+        r.clamp(16.0, 1_536.0) as u32
     }
 
     pub fn breeds_in(&self, sub_in_year: u32) -> bool {

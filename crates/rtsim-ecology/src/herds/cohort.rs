@@ -114,12 +114,15 @@ impl Class {
         let mut n = u64::from(self.alive);
         let mut acc = 0u64;
         let mut d = self.anchor_day;
-        while d < day && n > 0 {
+        while n > 0 && d <= day {
             let Some(c) = self.cohort_on(sp, d) else {
-                // Past the lifespan: every survivor died on the day it was reached.
+                // The lifespan is reached on day d: every survivor dies that day.
                 acc += n;
                 break;
             };
+            if d == day {
+                break;
+            }
             let seg_end = self.birth_day + sp.cohort_end_days(c);
             let len = seg_end - d;
             let tree = self.tree(herd_seed, c, len);
@@ -130,7 +133,7 @@ impl Class {
             let upto = (day.min(seg_end) - d) as u64;
             let k = tree.prefix(total, Split::Hazard(p), upto);
             acc += k;
-            if day <= seg_end {
+            if day < seg_end {
                 break;
             }
             n -= k;
@@ -194,9 +197,8 @@ mod tests {
     }
 
     proptest! {
-        /// Reading a class at d1 then d2, or re-anchoring at d1 and reading at d2, never changes
-        /// what is alive at d2 compared with... the same re-anchor done at d1 (events are fixed),
-        /// and pure reads never change anything. Counts never rise.
+        /// Pure reads never change a class, counts never rise with time, and nobody outlives the
+        /// lifespan.
         #[test]
         fn reads_are_pure_and_monotone(seed in any::<u64>(), n in 0u32..20_000, birth in -2000i64..0, d1 in 0i64..2000, d2 in 0i64..2000) {
             let sp = sheep();
@@ -210,7 +212,8 @@ mod tests {
             let _ = c.alive_on(&sp, 96, seed, a);
             prop_assert_eq!(&before, &c);
             // Past the lifespan nobody is left.
-            prop_assert_eq!(c.alive_on(&sp, 96, seed, birth + i64::from(sp.lifespan_days)), 0);
+            let end = (birth + i64::from(sp.lifespan_days)).max(1);
+            prop_assert_eq!(c.alive_on(&sp, 96, seed, end), 0);
         }
 
         /// Committing at an event and reading on gives counts no greater than the start and

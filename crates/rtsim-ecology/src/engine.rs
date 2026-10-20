@@ -60,6 +60,7 @@ use crate::dragon::{
     dragon_of,
 };
 use crate::flight::{self, dragon_owner, owner_dragon, owner_player, player_owner};
+use crate::herds::{HerdId, Herds};
 use crate::homes::Homes;
 use crate::index::PreyIndex;
 use crate::infra::Infrastructure;
@@ -186,6 +187,8 @@ pub struct DragonStats {
     pub adopted: u64,
     pub discarded: u64,
     pub hoards_robbed: u64,
+    /// Hunts that took animals from a wild herd.
+    pub herd_hunts: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -273,6 +276,9 @@ pub struct Dragons {
     pub(crate) herd_bodies: BTreeMap<u32, GoodId>,
     pub(crate) next_seed: u64,
     pub(crate) now: Tick,
+    /// The herds, lent for the length of [`Dragons::run_until_with_herds`] (not saved: the
+    /// caller owns and saves them).
+    pub(crate) wild: Option<Herds>,
 }
 
 fn day_of(t: Tick) -> f64 {
@@ -323,6 +329,7 @@ impl Dragons {
             herd_bodies: BTreeMap::new(),
             next_seed: 0,
             now,
+            wild: None,
         }
     }
 
@@ -749,6 +756,40 @@ impl Dragons {
         self.now = self.now.max(to);
     }
 
+    /// As [`Dragons::run_until`], with wild herds as prey (PLAN.md §10.2): the herds' events and
+    /// the dragons' run in one time order (a herd event at the same tick as a dragon's runs first),
+    /// and hungry dragons weigh and hunt the herds through the herds' prey interface
+    /// (`Herds::prey_near`, `Herds::predate`). The herds share the world's leg index.
+    pub fn run_until_with_herds(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        herds: &mut Herds,
+        to: Tick,
+    ) {
+        self.wild = Some(std::mem::replace(herds, Herds::empty()));
+        self.index.refresh(w);
+        loop {
+            let next = self.wheel.next_due().filter(|t| *t <= to).unwrap_or(to);
+            if let Some(h) = self.wild.as_mut() {
+                h.run_until(&mut w.legs, next);
+            }
+            let Some((at, ev)) = self.wheel.pop_until(next) else {
+                break;
+            };
+            w.run_until(at);
+            self.now = self.now.max(at);
+            self.stats.events += 1;
+            self.handle(w, infra, at, ev);
+        }
+        if let Some(h) = self.wild.as_mut() {
+            h.run_until(&mut w.legs, to);
+        }
+        w.run_until(to);
+        self.now = self.now.max(to);
+        *herds = self.wild.take().expect("lent");
+    }
+
     fn handle(&mut self, w: &mut World, infra: &mut dyn Infrastructure, at: Tick, ev: Ev) {
         match ev {
             Ev::Hungry { d, plan } => {
@@ -913,6 +954,7 @@ impl Dragons {
             }
             Target::Village { node } => w.nodes[node as usize].pos,
             Target::Home { frame, x, z, .. } => Pos::new(frame, x, z),
+            Target::Herd { frame, x, z, .. } => Pos::new(frame, x, z),
         }
     }
 
@@ -1362,6 +1404,32 @@ impl Dragons {
                 food * w_road - cost(pt),
             );
         }
+        // Wild herds (PLAN.md §10.2): where each will be when the dragon arrives, and the
+        // animals it could take there. A herd it ate from lately it follows farther.
+        if let Some(hd) = &self.wild {
+            let w_herd = f64::from(self.tun.season_weight(season, PreyKind::Herd)) / 100.0;
+            let (px, pz) = (i64::from(pos.x), i64::from(pos.z));
+            for o in hd.prey_near(origin.frame, ox, oz, range, at, d.to_bits()) {
+                let fly = flight::dist((px, pz), (i64::from(o.pos.0), i64::from(o.pos.1)));
+                let arrive = at + flight::flight_ticks(fly, sp.speed);
+                let (hx, hz) = hd.position(o.herd, arrive);
+                let food = (o.available as f64 * f64::from(o.food_each)).min(need);
+                if food <= 0.0 {
+                    continue;
+                }
+                let pt = Pos::new(origin.frame, hx as i32, hz as i32);
+                offer(
+                    Target::Herd {
+                        herd: o.herd.to_bits(),
+                        frame: origin.frame,
+                        x: pt.x,
+                        z: pt.z,
+                    },
+                    PreyKind::Herd,
+                    food * w_herd - f64::from(self.tun.herd_risk) - cost(pt),
+                );
+            }
+        }
         all
     }
 
@@ -1426,6 +1494,11 @@ impl Dragons {
             Target::Road { edge, .. } => self.road_name(w, edge),
             Target::Village { node } => format!("village {}", w.nodes[node as usize].key),
             Target::Home { player, .. } => format!("the home of player {}", player.to_bits()),
+            Target::Herd { herd, .. } => self
+                .wild
+                .as_ref()
+                .and_then(|h| h.herd(HerdId::from_bits(herd)))
+                .map_or_else(|| format!("herd {herd:#x}"), |x| x.name.clone()),
         }
     }
 
@@ -1546,6 +1619,31 @@ impl Dragons {
                 (f, t, v, PreyKind::Village)
             }
             Target::Home { .. } => (0, Vec::new(), Vec::new(), PreyKind::Grudge),
+            Target::Herd { herd, x, z, .. } => {
+                let need = {
+                    let x = &self.dragons[d];
+                    let sp = self.tun.species(x.species);
+                    (self.tun.full - x.fullness_at(&self.tun, at)).min(sp.appetite)
+                };
+                let p = self.wild.as_mut().map_or_else(Default::default, |h| {
+                    h.predate(
+                        HerdId::from_bits(herd),
+                        i64::from(x),
+                        i64::from(z),
+                        at,
+                        need,
+                        d.to_bits(),
+                    )
+                });
+                let taken = match p.species {
+                    Some(s) if p.animals > 0 => {
+                        self.stats.herd_hunts += 1;
+                        vec![(s.entity_id().to_string(), p.animals as i64)]
+                    }
+                    _ => Vec::new(),
+                };
+                (p.food, taken, Vec::new(), PreyKind::Herd)
+            }
         };
         self.feed(d, at, food, &victims);
         let name = self.target_name(w, target);

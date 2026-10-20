@@ -58,7 +58,12 @@ usage:
       Ships (PLAN.md §10.1) on a synthetic coast: sea and sky lanes, timetables, merchant
       flows, a pirate haven, a navy patrol, and a scripted player who watches ships pass, sees
       a raid, loots a hold and sinks a pirate; a restart in the middle. Writes JSON to FILE
-      (default scenario/results/sim-ships.json). Exits 1 if a check fails.";
+      (default scenario/results/sim-ships.json). Exits 1 if a check fails.
+  rtsim-cli sim herds [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      Migrating herds (PLAN.md §10.2) in a synthetic valley for N days (default 200, two sim
+      years): about 33,000 animals in six herds, a player who hunts, walks away and back, and
+      fences a pass; dragons that hunt and follow herds; a restart in the middle. Writes JSON to
+      FILE (default scenario/results/sim-herds.json). Exits 1 if a check fails.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -207,6 +212,7 @@ fn main() -> ExitCode {
         }
         ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
         ["sim", "ships", rest @ ..] => sim::ships::cli(rest),
+        ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
             let mut o = sim::quiet::Options {

@@ -16,8 +16,11 @@ pub struct HerdTunables {
     pub calendar: Calendar,
     /// Share of a sub-season a herd may spend walking to its next target. PLACEHOLDER 0.6.
     pub travel_share: f64,
-    /// A decision's flow field reaches at most this many cells from the herd. PLACEHOLDER 16
-    /// (2,048 blocks): bounds a decision's cost.
+    /// The flow field looks this many sub-seasons of walking ahead; the herd walks one
+    /// sub-season's share toward the target it finds. PLACEHOLDER 2.5.
+    pub horizon: f64,
+    /// A decision's flow field reaches at most this many cells from the herd. PLACEHOLDER 40
+    /// (5,120 blocks): bounds a decision's cost.
     pub max_reach_cells: i32,
     /// Score lost per °C outside the comfort band. PLACEHOLDER 0.15.
     pub comfort_per_degree: f64,
@@ -25,13 +28,16 @@ pub struct HerdTunables {
     pub travel_per_kblock: f64,
     /// Score lost near a cell another herd settled on this sub-season. PLACEHOLDER 0.4.
     pub claim_penalty: f64,
-    /// Forage over demand saturates at this in a cell's score. PLACEHOLDER 1.5.
+    /// Forage over demand saturates at this in a cell's score. PLACEHOLDER 1.0.
     pub food_cap: f64,
+    /// Score of the richest forage in reach, in proportion below it: herds follow the green-up.
+    /// PLACEHOLDER 1.0.
+    pub richness: f64,
     /// Share of the forage above the floor a herd can eat in its footprint in one sub-season.
     /// PLACEHOLDER 0.8.
     pub graze_share: f64,
     /// Below this share of demand met, a herd starves (deaths at the species' starve hazard,
-    /// scaled by the shortfall). PLACEHOLDER 0.6.
+    /// scaled by the shortfall). PLACEHOLDER 0.5.
     pub starve_below: f64,
     /// Body condition moves this share of the way toward what grazing met, each sub-season.
     /// PLACEHOLDER 0.5.
@@ -58,7 +64,8 @@ pub struct HerdTunables {
     /// Seen members a herd remembers at most; the least recently seen are forgotten first.
     /// PLACEHOLDER 1,024.
     pub seen_cap: usize,
-    /// Extra cost of entering a cell per obstacle report at full failure. PLACEHOLDER 25.
+    /// Extra cost of entering a cell per obstacle report at full failure. PLACEHOLDER 100 (a
+    /// fenced pass a cell wide then costs more than a detour of several kilometres).
     pub obstacle_step: f64,
     /// The most extra cost a cell can carry. PLACEHOLDER 400.
     pub obstacle_max: f64,
@@ -87,13 +94,15 @@ impl Default for HerdTunables {
             species: HerdSpecies::ALL.map(HerdSpeciesData::of),
             calendar: Calendar::default(),
             travel_share: 0.6,
-            max_reach_cells: 16,
+            horizon: 2.5,
+            max_reach_cells: 40,
             comfort_per_degree: 0.15,
             travel_per_kblock: 0.08,
             claim_penalty: 0.4,
-            food_cap: 1.5,
+            food_cap: 1.0,
+            richness: 1.0,
             graze_share: 0.8,
-            starve_below: 0.6,
+            starve_below: 0.5,
             condition_rate: 0.5,
             stagger_ticks: TICKS_PER_DAY / 4,
             view_radius: 160,
@@ -103,7 +112,7 @@ impl Default for HerdTunables {
             player_cap: 48,
             check_ticks: 600,
             seen_cap: 1_024,
-            obstacle_step: 25.0,
+            obstacle_step: 100.0,
             obstacle_max: 400.0,
             obstacle_half_life_ticks: 192 * TICKS_PER_DAY,
             sheared_ticks: 2_400,
@@ -124,11 +133,13 @@ impl HerdTunables {
     pub fn weights(&self) -> Weights {
         Weights {
             travel_share: self.travel_share,
+            horizon: self.horizon,
             max_reach_cells: self.max_reach_cells,
             comfort_per_degree: self.comfort_per_degree,
             travel_per_kblock: self.travel_per_kblock,
             claim_penalty: self.claim_penalty,
             food_cap: self.food_cap,
+            richness: self.richness,
             obstacle_half_life: self.obstacle_half_life_ticks,
         }
     }

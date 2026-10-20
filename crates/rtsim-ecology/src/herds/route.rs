@@ -73,6 +73,9 @@ impl Obstacles {
 pub struct Weights {
     /// Share of the sub-season a herd may spend walking.
     pub travel_share: f64,
+    /// The flow field looks this many sub-seasons of walking ahead; the herd walks one
+    /// sub-season's share toward the target it finds there, and decides again next time.
+    pub horizon: f64,
     /// Reach cap, cells.
     pub max_reach_cells: i32,
     /// Score lost per °C outside the comfort band.
@@ -83,6 +86,9 @@ pub struct Weights {
     pub claim_penalty: f64,
     /// Score is forage over demand, saturating at this.
     pub food_cap: f64,
+    /// Score for the richest forage in reach (1 at the best cell, in proportion below it): herds
+    /// follow the green-up even where every cell would feed them.
+    pub richness: f64,
     pub obstacle_half_life: u64,
 }
 
@@ -131,14 +137,14 @@ fn passable(t: f32) -> bool {
 
 /// Plans a herd's next sub-season (the flow field and its best target).
 pub fn plan(q: &Ask<'_>) -> Choice {
-    let sub = Subs::in_year(q.subs.index(q.at));
     let start = cell_of(q.from.0, q.from.1);
     let days = (q.until.0.saturating_sub(q.at.0)) as f64 / TICKS_PER_DAY as f64;
     let walk = q.sp.speed_blocks_per_day * days * q.w.travel_share;
-    let reach = ((walk / f64::from(CELL_BLOCKS)).ceil() as i32).clamp(1, q.w.max_reach_cells);
+    let horizon = walk * q.w.horizon.max(1.0);
+    let reach = ((horizon / f64::from(CELL_BLOCKS)).ceil() as i32).clamp(1, q.w.max_reach_cells);
     let terrain = |c: (i32, i32)| q.climate.terrain(q.frame, c.0, c.1);
-    // Dijkstra over cells within `reach` (Chebyshev), costs scaled to integers so the order is
-    // exact and ties break by cell.
+    // Dijkstra over cells within `reach` (Chebyshev) and `horizon` blocks of walking, costs
+    // scaled to integers so the order is exact and ties break by cell.
     let mut best: BTreeMap<(i32, i32), (u64, f64, (i32, i32))> = BTreeMap::new();
     let mut heap = BinaryHeap::new();
     best.insert(start, (0, 0.0, start));
@@ -177,7 +183,7 @@ pub fn plan(q: &Ask<'_>) -> Choice {
                     } else {
                         f64::from(CELL_BLOCKS)
                     };
-                if nl > walk + f64::from(CELL_BLOCKS) {
+                if nl > horizon + f64::from(CELL_BLOCKS) {
                     continue;
                 }
                 if best.get(&n).is_none_or(|b| nc < b.0) {
@@ -187,19 +193,33 @@ pub fn plan(q: &Ask<'_>) -> Choice {
             }
         }
     }
-    // Score every reached cell.
+    // Score the reached cells: every cell within this sub-season's walk, and every other cell
+    // on a stride of two beyond it (a quarter of the forage reads, the same field).
     let r = q.sp.footprint_radius(q.count);
     let cells = (std::f64::consts::PI * f64::from(r) * f64::from(r)
         / f64::from(CELL_BLOCKS * CELL_BLOCKS))
     .max(1.0);
     let demand_cell = q.sp.intake_per_day * q.count as f64 * days.max(1.0) / cells;
     let (lo, hi) = q.sp.comfort;
+    let near = (walk / f64::from(CELL_BLOCKS)).ceil() as i32;
+    let scored: Vec<((i32, i32), u64, f64, Tick, f64)> = settled
+        .iter()
+        .filter(|&&(c, _, _)| {
+            ((c.0 - start.0).abs() <= near && (c.1 - start.1).abs() <= near)
+                || (c.0.rem_euclid(2) == 0 && c.1.rem_euclid(2) == 0)
+        })
+        .map(|&(c, cost, len)| {
+            let travel = (len / q.sp.speed_blocks_per_day.max(1.0) * TICKS_PER_DAY as f64) as u64;
+            let arrive = Tick(q.at.0 + travel).max(q.at);
+            let f = q.forage.at(q.climate, q.subs, (q.frame, c.0, c.1), arrive);
+            (c, cost, len, arrive, f)
+        })
+        .collect();
+    let best_f = scored.iter().map(|x| x.4).fold(1e-9, f64::max);
     let mut pick: Option<(f64, u64, (i32, i32), f64, f32)> = None;
-    for &(c, cost, len) in &settled {
-        let travel = (len / q.sp.speed_blocks_per_day.max(1.0) * TICKS_PER_DAY as f64) as u64;
-        let arrive = Tick(q.at.0 + travel).min(q.until);
-        let f = q.forage.at(q.climate, q.subs, (q.frame, c.0, c.1), arrive);
-        let food = (f / demand_cell.max(1e-9)).min(q.w.food_cap);
+    for &(c, cost, _, arrive, f) in &scored {
+        let food = (f / demand_cell.max(1e-9)).min(q.w.food_cap) + q.w.richness * f / best_f;
+        let sub = Subs::in_year(q.subs.index(arrive));
         let temp = q.climate.temperature(q.frame, c.0, c.1, sub);
         let outside = f64::from((lo - temp).max(temp - hi).max(0.0));
         let mut claim = 0.0;
@@ -225,9 +245,15 @@ pub fn plan(q: &Ask<'_>) -> Choice {
             pick = Some((score, cost, c, f, temp));
         }
     }
-    let (score, _, target, forage, temperature) =
-        pick.unwrap_or((0.0, 0, start, 0.0, q.climate.temperature(q.frame, start.0, start.1, sub)));
-    // Read the route back along the parents.
+    let sub0 = Subs::in_year(q.subs.index(q.at));
+    let (score, _, target, forage, temperature) = pick.unwrap_or((
+        0.0,
+        0,
+        start,
+        0.0,
+        q.climate.temperature(q.frame, start.0, start.1, sub0),
+    ));
+    // Read the route back along the parents, then walk only this sub-season's share of it.
     let mut cells_back = vec![target];
     let mut c = target;
     while c != start {
@@ -239,6 +265,24 @@ pub fn plan(q: &Ask<'_>) -> Choice {
     for c in cells_back.iter().skip(1) {
         points.push(centre_of(*c));
     }
+    let mut walked = 0.0;
+    let mut cut = Vec::with_capacity(points.len());
+    cut.push(points[0]);
+    for w in points.windows(2) {
+        let d = (f64::from(w[1].0 - w[0].0).powi(2) + f64::from(w[1].1 - w[0].1).powi(2)).sqrt();
+        if walked + d <= walk {
+            cut.push(w[1]);
+            walked += d;
+            continue;
+        }
+        let f = ((walk - walked) / d.max(1e-9)).clamp(0.0, 1.0);
+        cut.push((
+            w[0].0 + (f64::from(w[1].0 - w[0].0) * f).round() as i32,
+            w[0].1 + (f64::from(w[1].1 - w[0].1) * f).round() as i32,
+        ));
+        break;
+    }
+    let points = cut;
     // Drop points on a straight line (a cheaper polyline, the same closed form).
     let mut slim: Vec<(i32, i32)> = Vec::with_capacity(points.len());
     for p in points {
@@ -329,11 +373,13 @@ mod tests {
             until: Tick::from_days(8),
             w: Weights {
                 travel_share: 0.6,
-                max_reach_cells: 16,
+                horizon: 2.5,
+                max_reach_cells: 40,
                 comfort_per_degree: 0.2,
                 travel_per_kblock: 0.05,
                 claim_penalty: 0.5,
                 food_cap: 1.5,
+                richness: 1.0,
                 obstacle_half_life: Tick::from_days(192).0,
             },
         }

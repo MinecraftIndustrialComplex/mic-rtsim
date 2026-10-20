@@ -2,6 +2,7 @@
 //! Scenario runners: headless worlds that show what a phase does.
 
 pub mod dragons;
+pub mod herds;
 pub mod industry;
 pub mod memory;
 pub mod phase1;
