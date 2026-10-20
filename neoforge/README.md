@@ -4,8 +4,11 @@ The Java half of mic-rtsim (PLAN.md §1, §6): the core bridge mod **`mic_rtsim`
 project per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.249,
 ModDevGradle 2.0.74, Parchment 2024.11.17, Java 21: the same pins as `mods/mic-climate`.
 
-The core depends on NeoForge only (D4). Until rtsim-jni exists, its engine is `StubEngine`, a
-pure-Java stand-in that speaks the boundary protocol exactly and simulates nothing.
+The core depends on no pack mod (D4): only NeoForge and `mic_native`, MIC's own native host, whose
+plugin the engine is. The engine is `NativeEngine`, the Rust engine (crates/rtsim-jni) through JNI,
+picked by the server config `engine.implementation = "native"`. `"stub"` picks `StubEngine`, a
+pure-Java stand-in that speaks the boundary protocol exactly and simulates nothing, for tests. If the
+native engine does not load there is no session (no fallback, A8): the log and `/rtsim perf` say why.
 
 ## Build and test
 
@@ -20,8 +23,22 @@ flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix shell nixpkgs#jdk21 -c ./g
 flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix shell nixpkgs#jdk21 -c ./gradlew --max-workers=4 :core:test
 
 # unit tests, then the GameTests on a headless server; exits non-zero on any failure
-./gametest.sh
+./gametest.sh                                  # the server's engine: native (builds rtsim-jni with cargo)
+./gametest.sh -PskipJni -PrtsimEngine=stub     # the same tests on the stub, no Rust needed
 ```
+
+- **mic_native** comes from its own jar, by default the sibling checkout's
+  `../../mic-native/neoforge/build/libs/mic_native-1.21.1-0.1.0.jar` (`-PmicNativeDir`,
+  `-PmicNativeJar` to point elsewhere): compiled against, and a mod in the runs (`localRuntime`).
+  `buildMicNative` runs mic-native's own build when the jar is missing.
+- **The engine's library** is packed as a mic_native plugin: `cargoBuildJni` (cargo, so the
+  repository flake's dev shell) and `jniNatives` stage `natives/mic_rtsim/natives.json` and
+  `natives/mic_rtsim/<platform>/baseline/librtsim_jni.so`. `-PskipJni` packs none, so the Java side
+  builds before the Rust crate does (the native engine then cannot load); `-Prelease` packs
+  `../target/natives-dist-jni/` (every platform) instead.
+- `-PrtsimEngine=stub|native` picks the GameTest server's engine (`-Dmic_rtsim.engine`, honoured
+  only with `-Dmic_rtsim.gametest=true`). Tests that run their own sessions get an engine of the same
+  kind (`RtsimTests.freshEngine`); the native one keeps its pages under `run-gametest/mic_rtsim-test/`.
 
 `gametest.sh` runs `:core:test` and `:core:runGameTestServer` under the same lock, using the
 repository flake's dev shell when there is one (`../flake.nix`) and `nixpkgs#jdk21` otherwise. It
@@ -40,14 +57,14 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 |---|---|
 | `boundary` | the engine interface and the binary layout (`Layout`, `Obs`, `Cmd`), the hand-over state machine (`Handover`), one session of it (`BoundarySession`). Pure Java. Described for the Rust side in `docs/boundary.md`. |
 | `journal` | the journal (`Journal`, pure Java) and its SavedData `mic_rtsim:journal` (`data/mic_rtsim_journal.dat`). |
-| `engine` | `StubEngine`: the four buffers, a worker thread, pages that survive a simulated crash, a script API for tests. |
+| `engine` | `NativeEngine` (the JNI natives of rtsim-jni, loaded through `MicNative.loadPlugin`), `StubEngine` (the four buffers, a worker thread, pages that survive a simulated crash), and `ScriptedEngine`, the test and debug surface both implement: orders, the received log, inspection, `crashAndReopen`. `NativeCodec` encodes the orders and decodes the received log. |
 | `bridge` | the server session (`RtsimSession`): puppet pass, spawn, capture, taking, observations; `CommandDispatcher`; the NeoForge hooks (`BridgeEvents`); the `doTraderSpawning` switch (`TraderSpawning`). |
 | `puppet` | the `mic_rtsim:agent` attachment (engine id, epoch), groups and the live registry. |
 | `body` | the adapter interface (spawn, capture, steer), group kinds, and the vanilla adapters for `minecraft:wandering_trader` and `minecraft:trader_llama`, plus the human caravan group. |
 | `config` | the server config: one switch per module, PLACEHOLDER budgets. |
 | `mixin` | `EntitySaveMixin` (`shouldBeSaved`, `saveAsPassenger`), `LlamaInvoker` (`setStrength`), two accessors for the save GameTests. |
 | `api` | `RtsimApi` for plugins: register bodies and groups, `takeFromSim` (the hook point for Carry On's `EntityPickupEvent`). |
-| `command` | `/rtsim perf`, `/rtsim stub caravan`. |
+| `command` | `/rtsim perf`, `/rtsim stub caravan` (orders either engine to spawn a caravan). |
 | `gametest` | the GameTests, in the `mic_rtsim` namespace. |
 
 ## The GameTests
@@ -78,7 +95,8 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 
 ## Not done yet
 
-- **The engine.** rtsim-jni and the Rust step do not exist; `StubEngine` stands in.
+- **The engine's other platforms.** Dev builds pack the host's baseline build only; the x86-64-v3
+  build and the all-platform release set (`target/natives-dist-jni/`) need a natives build script.
 - **Observations** beyond players, puppets, taking, deaths and transfers: chunk loads and tickets,
   damage, rescues, trades, villages, census, recipes (PLAN.md §6.3).
 - **Commands** beyond spawn, despawn, steer and container transfers: trade offers, gossip, structure

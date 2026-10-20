@@ -5,8 +5,8 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.neoforge.common.ModConfigSpec;
 
+import java.util.Arrays;
 import java.util.EnumMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -70,7 +70,8 @@ public final class RtsimConfig {
                         "          bridge does not start (no fallback) and /rtsim perf says why.",
                         "  stub:   a pure-Java stand-in that speaks the boundary protocol but simulates nothing.",
                         "          It exists for tests; a world played on it has no simulated world.")
-                .defineInList("implementation", ENGINE_NATIVE, List.of(ENGINE_NATIVE, ENGINE_STUB));
+                // Arrays.asList, not List.of: the spec tests a missing value with contains(null).
+                .defineInList("implementation", ENGINE_NATIVE, Arrays.asList(ENGINE_NATIVE, ENGINE_STUB));
         b.pop();
         SPEC = b.build();
     }

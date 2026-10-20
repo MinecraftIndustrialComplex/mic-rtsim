@@ -203,7 +203,7 @@ def jniNatives = tasks.register('jniNatives') {
     description = 'Stages the host build of librtsim_jni with its natives.json under build/jni-natives/natives/mic_rtsim/ (baseline only).'
     onlyIf { !skipJni }
     dependsOn cargoBuildJni
-    inputs.file(builtJniLib).optional()
+    inputs.file builtJniLib
     inputs.property 'version', mod_version
     inputs.property 'formatVersion', mic_native_abi
     outputs.dir jniNativesDir
