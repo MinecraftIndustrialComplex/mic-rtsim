@@ -35,6 +35,89 @@ fn quiet_goblins() -> Cultures {
     Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
 }
 
+/// P14 as Ben changed it: a signal with no direct actor goes to the player who has spent the most
+/// time in its chunk. The refinery's smog is the settlers' while nobody has stood there, becomes
+/// the player's who works there, and moves to another player who then out-stays them; the
+/// grievance moves with it, from feud to feud, with nothing left behind. A district's source
+/// counts the time in all its chunks.
+#[test]
+fn p14_pollution_goes_to_the_player_who_spends_the_most_time_in_its_chunk() {
+    use rtsim_conflict::presence::chunk_of;
+    let (mut w, mut c, f) = setup(2);
+    let s = c.settlers(&mut w);
+    let smog = SignalKind::Smog.index();
+    c.set_emission(
+        &mut w,
+        1,
+        SignalKind::Smog,
+        synth::REFINERY_POS,
+        Some(synth::REFINERY),
+        30.0,
+        Tick(10),
+    );
+    assert!(
+        c.feuds[&(f, s)].g.rate[smog] > 0.0,
+        "nobody there: the settlers'"
+    );
+    // The player works at the refinery for two hours, reported every minute.
+    let mut t = 20u64;
+    while t <= 20 + 144_000 {
+        c.observe_presence(&mut w, synth::PLAYER, synth::REFINERY_POS, Tick(t));
+        t += 1_200;
+    }
+    let p = c.player(&mut w, synth::PLAYER);
+    assert_eq!(
+        c.sources[&(1, SignalKind::Smog)].actor,
+        p,
+        "the player's now"
+    );
+    assert!(c.feuds[&(f, p)].g.rate[smog] > 0.0);
+    assert_eq!(
+        c.feuds[&(f, s)].g.rate[smog],
+        0.0,
+        "the settlers' feud lost it"
+    );
+    assert_eq!(c.stats.reattributed, 1);
+    // Another player out-stays the first (who has left) over the next days.
+    let q_uuid = (9, 9);
+    while t <= 20 + 144_000 + 600_000 {
+        c.observe_presence(&mut w, q_uuid, synth::REFINERY_POS, Tick(t));
+        t += 1_200;
+    }
+    let q = c.player(&mut w, q_uuid);
+    assert_eq!(c.sources[&(1, SignalKind::Smog)].actor, q);
+    assert!(c.feuds[&(f, q)].g.rate[smog] > 0.0);
+    assert_eq!(c.feuds[&(f, p)].g.rate[smog], 0.0);
+    // A district's source spans its chunks: time anywhere in them counts.
+    let far = Pos::new(0, synth::REFINERY_POS.x + 64, synth::REFINERY_POS.z);
+    let chunks = [chunk_of(synth::REFINERY_POS), chunk_of(far)];
+    let r = (5, 5);
+    let mut u = t;
+    while u <= t + 1_200_000 {
+        c.observe_presence(&mut w, r, far, Tick(u));
+        u += 1_200;
+    }
+    c.set_emission_in(
+        &mut w,
+        2,
+        SignalKind::Smog,
+        synth::REFINERY_POS,
+        None,
+        &chunks,
+        10.0,
+        Tick(u),
+    );
+    let rr = c.player(&mut w, r);
+    assert_eq!(
+        c.sources[&(2, SignalKind::Smog)].actor,
+        rr,
+        "time in the district's other chunk"
+    );
+    // A save keeps who owns what and who spent time where.
+    let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &c.save()).unwrap();
+    assert_eq!(back.state_hash(), c.state_hash());
+}
+
 #[test]
 fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
     let (mut w, mut c, f) = setup(1);

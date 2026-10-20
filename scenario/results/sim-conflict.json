@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 25.395965999999998,
+      "wall_ms": 730.827005,
       "checks": [
         {
           "name": "conservation",
@@ -21,7 +21,7 @@
         {
           "name": "notice, envoy and demand, scouts, a war band",
           "ok": true,
-          "detail": "the settlers' rungs: [None, Notice, Envoy, Scouts, Raid, Invasion, Scouts, Raid, Envoy]"
+          "detail": "player b0b's rungs (the smog's owner): [None, Notice, Envoy, Scouts, Raid, Invasion, Scouts, Raid, Envoy]"
         },
         {
           "name": "a raid while the player is offline, resolved abstractly",
@@ -42,82 +42,47 @@
       "rungs": [
         {
           "day": 0.5,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "none"
         },
         {
           "day": 0.78525,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "notice"
         },
         {
           "day": 1.3854583333333332,
-          "actor": "the settlers",
-          "step": "envoy"
-        },
-        {
-          "day": 1.5,
-          "actor": "player b0b",
-          "step": "none"
-        },
-        {
-          "day": 1.5000416666666667,
-          "actor": "player b0b",
-          "step": "notice"
-        },
-        {
-          "day": 3.5000416666666667,
           "actor": "player b0b",
           "step": "envoy"
         },
         {
           "day": 4.385458333333333,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "scouts"
         },
         {
           "day": 7.187541666666666,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "raid"
         },
         {
           "day": 13.489625,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "invasion"
         },
         {
-          "day": 14.836833333333333,
-          "actor": "player b0b",
-          "step": "notice"
-        },
-        {
-          "day": 15.800041666666667,
-          "actor": "player b0b",
-          "step": "envoy"
-        },
-        {
           "day": 15.800875,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "scouts"
         },
         {
-          "day": 18.800041666666665,
-          "actor": "player b0b",
-          "step": "notice"
-        },
-        {
           "day": 21.387458333333335,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "raid"
         },
         {
-          "day": 23.697875,
-          "actor": "player b0b",
-          "step": "envoy"
-        },
-        {
           "day": 23.698708333333332,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "envoy"
         }
       ],
@@ -126,26 +91,11 @@
           "faction": 3232825345,
           "actor": 4294967307,
           "step": "envoy",
-          "grievance": 45.255228501717674,
+          "grievance": 337.6460253122448,
           "by_kind": {
-            "killing": 42.98422823765667,
-            "logging": 2.271000264061003
-          },
-          "demand": [
-            "killing",
-            25,
-            0,
-            640749
-          ],
-          "party": "envoy"
-        },
-        {
-          "faction": 3232825345,
-          "actor": 4294967308,
-          "step": "envoy",
-          "grievance": 209.2307762840095,
-          "by_kind": {
-            "smog": 209.2307762840095
+            "killing": 123.87324850011326,
+            "logging": 4.402859876702868,
+            "smog": 209.36991693542862
           },
           "demand": null,
           "party": null
@@ -257,28 +207,28 @@
         "wool": 3.658
       },
       "stats": {
-        "events": 403,
-        "feud_wakes": 13,
-        "stale": 17,
+        "events": 298,
+        "feud_wakes": 6,
+        "stale": 10,
         "signals": 8,
         "emissions": 1,
         "escalations": [
           0,
-          2,
-          4,
+          1,
+          1,
           1,
           2,
           1,
           0
         ],
-        "calmed": 1,
-        "demands": 4,
+        "calmed": 0,
+        "demands": 1,
         "tributes": 0,
-        "cuts": 1,
-        "expired": 2,
+        "cuts": 0,
+        "expired": 1,
         "gifts": 0,
         "parties": [
-          4,
+          1,
           1,
           2,
           1,
@@ -292,17 +242,18 @@
         "ambushes": 0,
         "casualties": 18,
         "routs": 2,
-        "bored": 1,
+        "bored": 0,
         "chiefs_killed": 2,
         "successions": 2,
-        "seen": 7,
-        "materialized": 9,
+        "seen": 5,
+        "materialized": 7,
         "waves": 6,
-        "recalls": 6,
+        "recalls": 5,
         "items_from_districts": 18,
         "items_from_villages": 22,
         "blocks_destroyed": 2,
-        "feuds_forgotten": 0
+        "feuds_forgotten": 0,
+        "reattributed": 0
       },
       "log": [
         {
@@ -317,7 +268,7 @@
           "day": 0.78525,
           "faction": "goblin camp 3232825345",
           "kind": "notice",
-          "what": "grievance against the settlers at 7.3 (smog first): the tribe takes notice"
+          "what": "grievance against player b0b at 7.3 (smog first): the tribe takes notice"
         },
         {
           "tick": 33251,
@@ -331,21 +282,14 @@
           "day": 1.3854583333333332,
           "faction": "goblin camp 3232825345",
           "kind": "demand",
-          "what": "an envoy sets out for the settlers: stop the smog or pay 17 emerald by day 4.4"
+          "what": "an envoy sets out for player b0b: stop the smog or pay 17 emerald by day 4.4"
         },
         {
           "tick": 33251,
           "day": 1.3854583333333332,
           "faction": "goblin camp 3232825345",
           "kind": "envoy",
-          "what": "grievance against the settlers at 21.9 (smog first): an envoy with a demand"
-        },
-        {
-          "tick": 36000,
-          "day": 1.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "notice",
-          "what": "grievance against player b0b at 9.6 (logging first): the tribe takes notice"
+          "what": "grievance against player b0b at 21.9 (smog first): an envoy with a demand"
         },
         {
           "tick": 39336,
@@ -362,39 +306,11 @@
           "what": "the envoy waits at (700, 780)"
         },
         {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "muster",
-          "what": "envoy of 3 members for (880, 900), leaving day 3.50"
-        },
-        {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "demand",
-          "what": "an envoy sets out for player b0b: stop the logging or pay 19 emerald by day 6.5"
-        },
-        {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "grievance against player b0b at 25.8 (logging first): an envoy with a demand"
-        },
-        {
-          "tick": 89100,
-          "day": 3.7125,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "the envoy waits at (880, 900)"
-        },
-        {
           "tick": 105251,
           "day": 4.385458333333333,
           "faction": "goblin camp 3232825345",
           "kind": "refused",
-          "what": "the demand on the settlers goes unmet (grievance 81.4)"
+          "what": "the demand on player b0b goes unmet (grievance 104.7)"
         },
         {
           "tick": 105251,
@@ -408,7 +324,7 @@
           "day": 4.385458333333333,
           "faction": "goblin camp 3232825345",
           "kind": "scouts",
-          "what": "grievance against the settlers at 81.4 (smog first): scouts go out"
+          "what": "grievance against player b0b at 104.7 (smog first): scouts go out"
         },
         {
           "tick": 111336,
@@ -432,20 +348,6 @@
           "what": "scouts watch (700, 780) from the edge"
         },
         {
-          "tick": 156000,
-          "day": 6.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "refused",
-          "what": "the demand on player b0b goes unmet (grievance 34.4)"
-        },
-        {
-          "tick": 157944,
-          "day": 6.581,
-          "faction": "goblin camp 3232825345",
-          "kind": "home",
-          "what": "envoy home with 3 left and 0 items for the haven"
-        },
-        {
           "tick": 172501,
           "day": 7.187541666666666,
           "faction": "goblin camp 3232825345",
@@ -457,7 +359,7 @@
           "day": 7.187541666666666,
           "faction": "goblin camp 3232825345",
           "kind": "raid",
-          "what": "grievance against the settlers at 121.1 (smog first): a war band musters"
+          "what": "grievance against player b0b at 152.9 (smog first): a war band musters"
         },
         {
           "tick": 179751,
@@ -492,7 +394,7 @@
           "day": 13.489625,
           "faction": "goblin camp 3232825345",
           "kind": "invasion",
-          "what": "grievance against the settlers at 171.6 (smog first): an invasion musters"
+          "what": "grievance against player b0b at 186.9 (smog first): an invasion musters"
         },
         {
           "tick": 353859,
@@ -502,39 +404,11 @@
           "what": "invasion seen by a player"
         },
         {
-          "tick": 356084,
-          "day": 14.836833333333333,
-          "faction": "goblin camp 3232825345",
-          "kind": "calm",
-          "what": "grievance against player b0b falls to 13.1: back to notice"
-        },
-        {
           "tick": 379001,
           "day": 15.791708333333334,
           "faction": "goblin camp 3232825345",
           "kind": "director",
           "what": "invasion arrives where a player watches: waves on an arc 112 blocks out at -128 degrees"
-        },
-        {
-          "tick": 379201,
-          "day": 15.800041666666667,
-          "faction": "goblin camp 3232825345",
-          "kind": "muster",
-          "what": "envoy of 3 members for (700, 780), leaving day 15.80"
-        },
-        {
-          "tick": 379201,
-          "day": 15.800041666666667,
-          "faction": "goblin camp 3232825345",
-          "kind": "demand",
-          "what": "an envoy sets out for player b0b: stop the killing or pay 44 emerald by day 18.8"
-        },
-        {
-          "tick": 379201,
-          "day": 15.800041666666667,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "grievance against player b0b at 59.7 (killing first): an envoy with a demand"
         },
         {
           "tick": 379221,
@@ -565,20 +439,6 @@
           "what": "the war chief falls: the band routs; cowed for 5.6 days"
         },
         {
-          "tick": 385279,
-          "day": 16.053291666666667,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
-        },
-        {
-          "tick": 410451,
-          "day": 17.102125,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "the envoy waits at (700, 780)"
-        },
-        {
           "tick": 410471,
           "day": 17.102958333333333,
           "faction": "goblin camp 3232825345",
@@ -586,25 +446,11 @@
           "what": "invasion home with 20 left and 0 items for the haven"
         },
         {
-          "tick": 451201,
-          "day": 18.800041666666665,
-          "faction": "goblin camp 3232825345",
-          "kind": "settled",
-          "what": "player b0b meets the demand (the signal stopped): back to notice, grievance 22.0"
-        },
-        {
           "tick": 458980,
           "day": 19.124166666666667,
           "faction": "goblin camp 3232825345",
           "kind": "muster",
           "what": "plunder of 8 warriors for (600, 650), leaving day 20.12"
-        },
-        {
-          "tick": 482451,
-          "day": 20.102125,
-          "faction": "goblin camp 3232825345",
-          "kind": "home",
-          "what": "envoy home with 3 left and 0 items for the haven"
         },
         {
           "tick": 489086,
@@ -632,7 +478,7 @@
           "day": 21.387458333333335,
           "faction": "goblin camp 3232825345",
           "kind": "raid",
-          "what": "grievance against the settlers at 203.6 (smog first): a war band musters"
+          "what": "grievance against player b0b at 255.6 (smog first): a war band musters"
         },
         {
           "tick": 529078,
@@ -654,27 +500,6 @@
           "faction": "goblin camp 3232825345",
           "kind": "director",
           "what": "raid arrives where a player watches: waves on an arc 112 blocks out at -128 degrees"
-        },
-        {
-          "tick": 568749,
-          "day": 23.697875,
-          "faction": "goblin camp 3232825345",
-          "kind": "muster",
-          "what": "envoy of 3 members for (700, 780), leaving day 23.70"
-        },
-        {
-          "tick": 568749,
-          "day": 23.697875,
-          "faction": "goblin camp 3232825345",
-          "kind": "demand",
-          "what": "an envoy sets out for player b0b: stop the killing or pay 25 emerald by day 26.7"
-        },
-        {
-          "tick": 568749,
-          "day": 23.697875,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "grievance against player b0b at 36.5 (killing first): an envoy with a demand"
         },
         {
           "tick": 568769,
@@ -703,13 +528,6 @@
           "faction": "goblin camp 3232825345",
           "kind": "chief",
           "what": "the war chief falls: the band routs; cowed for 6.5 days"
-        },
-        {
-          "tick": 574877,
-          "day": 23.953208333333333,
-          "faction": "goblin camp 3232825345",
-          "kind": "seen",
-          "what": "envoy seen by a player"
         }
       ],
       "plugin_commands": [
@@ -720,10 +538,6 @@
         [
           0.78525,
           "FACTION_NOTICE: notice, signal 0, grievance 7.3"
-        ],
-        [
-          1.5000416666666667,
-          "FACTION_NOTICE: notice, signal 2, grievance 9.6"
         ],
         [
           1.639,
@@ -739,122 +553,90 @@
         ],
         [
           4.385458333333333,
-          "DEMAND_SETTLED: demand of c0b10001 settled, outcome 3"
+          "BAND_RECALL: recall 4300000100000000, reason 3"
         ],
         [
           4.385458333333333,
-          "BAND_RECALL: recall 4300000100000000, reason 6"
-        ],
-        [
-          4.639,
-          "BAND_MATERIALIZE: band 4300000100000002 wave 0 purpose 2: 2 members, arc 0 blocks at 0 degrees"
-        ],
-        [
-          4.639,
-          "BAND_STEER: steer 4300000100000002 to (600, 650)"
-        ],
-        [
-          5.345833333333333,
-          "BAND_STEER: steer 4300000100000002 to (700, 780)"
-        ],
-        [
-          6.187541666666666,
-          "BAND_RECALL: recall 4300000100000002, reason 3"
-        ],
-        [
-          6.5,
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 3"
         ],
         [
-          14.744125,
-          "BAND_MATERIALIZE: band 4300000300000001 wave 0 purpose 4: 16 members, arc 0 blocks at 0 degrees"
+          4.639,
+          "BAND_MATERIALIZE: band 4300000100000001 wave 0 purpose 2: 2 members, arc 0 blocks at 0 degrees"
+        ],
+        [
+          4.639,
+          "BAND_STEER: steer 4300000100000001 to (600, 650)"
+        ],
+        [
+          5.345833333333333,
+          "BAND_STEER: steer 4300000100000001 to (700, 780)"
+        ],
+        [
+          6.187541666666666,
+          "BAND_RECALL: recall 4300000100000001, reason 3"
         ],
         [
           14.744125,
-          "BAND_STEER: steer 4300000300000001 to (600, 650)"
+          "BAND_MATERIALIZE: band 4300000300000000 wave 0 purpose 4: 16 members, arc 0 blocks at 0 degrees"
+        ],
+        [
+          14.744125,
+          "BAND_STEER: steer 4300000300000000 to (600, 650)"
         ],
         [
           15.45,
-          "BAND_STEER: steer 4300000300000001 to (700, 780)"
+          "BAND_STEER: steer 4300000300000000 to (700, 780)"
         ],
         [
           15.791708333333334,
-          "BAND_MATERIALIZE: band 4300000300000001 wave 0 purpose 4: 16 members, arc 112 blocks at -128 degrees"
+          "BAND_MATERIALIZE: band 4300000300000000 wave 0 purpose 4: 16 members, arc 112 blocks at -128 degrees"
         ],
         [
           15.800875,
-          "BAND_RECALL: recall 4300000300000001, reason 2"
-        ],
-        [
-          16.053291666666667,
-          "ENVOY_MATERIALIZE: envoy 4300000200000002: demand 44 of item 8 or stop signal 4"
-        ],
-        [
-          16.053291666666667,
-          "BAND_STEER: steer 4300000200000002 to (600, 650)"
-        ],
-        [
-          16.760416666666668,
-          "BAND_STEER: steer 4300000200000002 to (700, 780)"
-        ],
-        [
-          18.800041666666665,
-          "DEMAND_SETTLED: demand of c0b10001 settled, outcome 2"
-        ],
-        [
-          18.800041666666665,
-          "BAND_RECALL: recall 4300000200000002, reason 6"
+          "BAND_RECALL: recall 4300000300000000, reason 2"
         ],
         [
           20.378583333333335,
-          "BAND_MATERIALIZE: band 4300000400000001 wave 0 purpose 6: 8 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000400000000 wave 0 purpose 6: 8 members, arc 0 blocks at 0 degrees"
         ],
         [
           20.378583333333335,
-          "BAND_STEER: steer 4300000400000001 to (600, 650)"
+          "BAND_STEER: steer 4300000400000000 to (600, 650)"
         ],
         [
           21.084541666666667,
-          "BAND_RECALL: recall 4300000400000001, reason 4"
+          "BAND_RECALL: recall 4300000400000000, reason 4"
         ],
         [
           22.642,
-          "BAND_MATERIALIZE: band 4300000300000002 wave 0 purpose 3: 12 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000200000001 wave 0 purpose 3: 12 members, arc 0 blocks at 0 degrees"
         ],
         [
           22.642,
-          "BAND_STEER: steer 4300000300000002 to (600, 650)"
+          "BAND_STEER: steer 4300000200000001 to (600, 650)"
         ],
         [
           23.347833333333334,
-          "BAND_STEER: steer 4300000300000002 to (700, 780)"
+          "BAND_STEER: steer 4300000200000001 to (700, 780)"
         ],
         [
           23.689541666666667,
-          "BAND_MATERIALIZE: band 4300000300000002 wave 0 purpose 3: 12 members, arc 112 blocks at -128 degrees"
+          "BAND_MATERIALIZE: band 4300000200000001 wave 0 purpose 3: 12 members, arc 112 blocks at -128 degrees"
         ],
         [
           23.698708333333332,
-          "BAND_RECALL: recall 4300000300000002, reason 2"
-        ],
-        [
-          23.953208333333333,
-          "ENVOY_MATERIALIZE: envoy 4300000500000001: demand 25 of item 8 or stop signal 4"
-        ],
-        [
-          23.953208333333333,
-          "BAND_STEER: steer 4300000500000001 to (600, 650)"
+          "BAND_RECALL: recall 4300000200000001, reason 2"
         ]
       ],
-      "wire_bytes": 3696,
+      "wire_bytes": 2888,
       "state_hashes": [
-        "5a2baf0df31169c0",
-        "32e1c161c5587214"
+        "91a4c5a91302e727",
+        "8002cbf7ae24cb38"
       ]
     },
     {
       "variant": "tribute",
-      "wall_ms": 22.961157,
+      "wall_ms": 659.3041109999999,
       "checks": [
         {
           "name": "conservation",
@@ -869,78 +651,58 @@
         {
           "name": "tribute de-escalates",
           "ok": true,
-          "detail": "4 tribute(s) paid, no war band; the settlers' rungs: [None, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice]"
+          "detail": "4 tribute(s) paid, no war band; player b0b's rungs (the smog's owner): [None, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice]"
         }
       ],
       "rungs": [
         {
           "day": 0.5,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "none"
         },
         {
           "day": 0.78525,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "notice"
         },
         {
           "day": 1.3854583333333332,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "envoy"
-        },
-        {
-          "day": 1.5,
-          "actor": "player b0b",
-          "step": "none"
-        },
-        {
-          "day": 1.5000416666666667,
-          "actor": "player b0b",
-          "step": "notice"
         },
         {
           "day": 1.6473333333333333,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "notice"
         },
         {
-          "day": 3.5000416666666667,
-          "actor": "player b0b",
-          "step": "envoy"
-        },
-        {
           "day": 7.647333333333333,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "envoy"
         },
         {
           "day": 7.910083333333334,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "notice"
         },
         {
           "day": 13.910083333333333,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "envoy"
         },
         {
           "day": 14.1735,
-          "actor": "the settlers",
-          "step": "notice"
-        },
-        {
-          "day": 14.836833333333333,
           "actor": "player b0b",
           "step": "notice"
         },
         {
           "day": 20.1735,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "envoy"
         },
         {
           "day": 20.436916666666665,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "notice"
         }
       ],
@@ -949,19 +711,9 @@
           "faction": 3232825345,
           "actor": 4294967307,
           "step": "notice",
-          "grievance": 4.542000528122006,
+          "grievance": 103.29827371254395,
           "by_kind": {
-            "logging": 4.542000528122006
-          },
-          "demand": null,
-          "party": null
-        },
-        {
-          "faction": 3232825345,
-          "actor": 4294967308,
-          "step": "notice",
-          "grievance": 103.18908641519259,
-          "by_kind": {
+            "logging": 0.10918729735135897,
             "smog": 103.18908641519259
           },
           "demand": null,
@@ -991,7 +743,7 @@
         },
         "players_goods_landed_at_haven": {},
         "tribute": {
-          "emerald": 297.0
+          "emerald": 320.0
         }
       },
       "unmapped_industry_goods": {},
@@ -1003,28 +755,28 @@
         "wool": 3.658
       },
       "stats": {
-        "events": 80,
-        "feud_wakes": 9,
-        "stale": 16,
+        "events": 73,
+        "feud_wakes": 5,
+        "stale": 17,
         "signals": 5,
         "emissions": 1,
         "escalations": [
           0,
-          2,
-          5,
+          1,
+          4,
           0,
           0,
           0,
           0
         ],
-        "calmed": 1,
-        "demands": 5,
+        "calmed": 0,
+        "demands": 4,
         "tributes": 4,
         "cuts": 0,
-        "expired": 1,
+        "expired": 0,
         "gifts": 0,
         "parties": [
-          5,
+          4,
           0,
           0,
           0,
@@ -1038,7 +790,7 @@
         "ambushes": 0,
         "casualties": 4,
         "routs": 0,
-        "bored": 1,
+        "bored": 0,
         "chiefs_killed": 0,
         "successions": 0,
         "seen": 5,
@@ -1048,7 +800,8 @@
         "items_from_districts": 0,
         "items_from_villages": 22,
         "blocks_destroyed": 0,
-        "feuds_forgotten": 0
+        "feuds_forgotten": 0,
+        "reattributed": 0
       },
       "log": [
         {
@@ -1063,7 +816,7 @@
           "day": 0.78525,
           "faction": "goblin camp 3232825345",
           "kind": "notice",
-          "what": "grievance against the settlers at 7.3 (smog first): the tribe takes notice"
+          "what": "grievance against player b0b at 7.3 (smog first): the tribe takes notice"
         },
         {
           "tick": 33251,
@@ -1077,21 +830,14 @@
           "day": 1.3854583333333332,
           "faction": "goblin camp 3232825345",
           "kind": "demand",
-          "what": "an envoy sets out for the settlers: stop the smog or pay 17 emerald by day 4.4"
+          "what": "an envoy sets out for player b0b: stop the smog or pay 17 emerald by day 4.4"
         },
         {
           "tick": 33251,
           "day": 1.3854583333333332,
           "faction": "goblin camp 3232825345",
           "kind": "envoy",
-          "what": "grievance against the settlers at 21.9 (smog first): an envoy with a demand"
-        },
-        {
-          "tick": 36000,
-          "day": 1.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "notice",
-          "what": "grievance against player b0b at 9.6 (logging first): the tribe takes notice"
+          "what": "grievance against player b0b at 21.9 (smog first): an envoy with a demand"
         },
         {
           "tick": 39336,
@@ -1105,53 +851,11 @@
           "day": 1.6473333333333333,
           "faction": "goblin camp 3232825345",
           "kind": "settled",
-          "what": "the settlers meets the demand (tribute paid): back to notice, grievance 8.4"
+          "what": "player b0b meets the demand (tribute paid): back to notice, grievance 11.2"
         },
         {
           "tick": 45849,
           "day": 1.910375,
-          "faction": "goblin camp 3232825345",
-          "kind": "home",
-          "what": "envoy home with 3 left and 0 items for the haven"
-        },
-        {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "muster",
-          "what": "envoy of 3 members for (880, 900), leaving day 3.50"
-        },
-        {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "demand",
-          "what": "an envoy sets out for player b0b: stop the logging or pay 19 emerald by day 6.5"
-        },
-        {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "grievance against player b0b at 25.8 (logging first): an envoy with a demand"
-        },
-        {
-          "tick": 89100,
-          "day": 3.7125,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "the envoy waits at (880, 900)"
-        },
-        {
-          "tick": 156000,
-          "day": 6.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "refused",
-          "what": "the demand on player b0b goes unmet (grievance 34.4)"
-        },
-        {
-          "tick": 157944,
-          "day": 6.581,
           "faction": "goblin camp 3232825345",
           "kind": "home",
           "what": "envoy home with 3 left and 0 items for the haven"
@@ -1168,14 +872,14 @@
           "day": 7.647333333333333,
           "faction": "goblin camp 3232825345",
           "kind": "demand",
-          "what": "an envoy sets out for the settlers: stop the smog or pay 86 emerald by day 10.6"
+          "what": "an envoy sets out for player b0b: stop the smog or pay 106 emerald by day 10.6"
         },
         {
           "tick": 183536,
           "day": 7.647333333333333,
           "faction": "goblin camp 3232825345",
           "kind": "envoy",
-          "what": "grievance against the settlers at 116.7 (smog first): an envoy with a demand"
+          "what": "grievance against player b0b at 143.5 (smog first): an envoy with a demand"
         },
         {
           "tick": 189642,
@@ -1189,7 +893,7 @@
           "day": 7.910083333333334,
           "faction": "goblin camp 3232825345",
           "kind": "settled",
-          "what": "the settlers meets the demand (tribute paid): back to notice, grievance 36.0"
+          "what": "player b0b meets the demand (tribute paid): back to notice, grievance 43.8"
         },
         {
           "tick": 196188,
@@ -1210,14 +914,14 @@
           "day": 13.910083333333333,
           "faction": "goblin camp 3232825345",
           "kind": "demand",
-          "what": "an envoy sets out for the settlers: stop the smog or pay 96 emerald by day 16.9"
+          "what": "an envoy sets out for player b0b: stop the smog or pay 99 emerald by day 16.9"
         },
         {
           "tick": 333842,
           "day": 13.910083333333333,
           "faction": "goblin camp 3232825345",
           "kind": "envoy",
-          "what": "grievance against the settlers at 130.5 (smog first): an envoy with a demand"
+          "what": "grievance against player b0b at 134.4 (smog first): an envoy with a demand"
         },
         {
           "tick": 339964,
@@ -1231,7 +935,7 @@
           "day": 14.1735,
           "faction": "goblin camp 3232825345",
           "kind": "settled",
-          "what": "the settlers meets the demand (tribute paid): back to notice, grievance 40.0"
+          "what": "player b0b meets the demand (tribute paid): back to notice, grievance 41.1"
         },
         {
           "tick": 346510,
@@ -1239,13 +943,6 @@
           "faction": "goblin camp 3232825345",
           "kind": "home",
           "what": "envoy home with 3 left and 0 items for the haven"
-        },
-        {
-          "tick": 356084,
-          "day": 14.836833333333333,
-          "faction": "goblin camp 3232825345",
-          "kind": "calm",
-          "what": "grievance against player b0b falls to 13.1: back to notice"
         },
         {
           "tick": 458980,
@@ -1266,14 +963,14 @@
           "day": 20.1735,
           "faction": "goblin camp 3232825345",
           "kind": "demand",
-          "what": "an envoy sets out for the settlers: stop the smog or pay 98 emerald by day 23.2"
+          "what": "an envoy sets out for player b0b: stop the smog or pay 98 emerald by day 23.2"
         },
         {
           "tick": 484164,
           "day": 20.1735,
           "faction": "goblin camp 3232825345",
           "kind": "envoy",
-          "what": "grievance against the settlers at 132.5 (smog first): an envoy with a demand"
+          "what": "grievance against player b0b at 133.1 (smog first): an envoy with a demand"
         },
         {
           "tick": 489086,
@@ -1294,7 +991,7 @@
           "day": 20.436916666666665,
           "faction": "goblin camp 3232825345",
           "kind": "settled",
-          "what": "the settlers meets the demand (tribute paid): back to notice, grievance 40.6"
+          "what": "player b0b meets the demand (tribute paid): back to notice, grievance 40.8"
         },
         {
           "tick": 496832,
@@ -1328,10 +1025,6 @@
           "FACTION_NOTICE: notice, signal 0, grievance 7.3"
         ],
         [
-          1.5000416666666667,
-          "FACTION_NOTICE: notice, signal 2, grievance 9.6"
-        ],
-        [
           1.639,
           "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 17 of item 8 or stop signal 0"
         ],
@@ -1348,48 +1041,44 @@
           "BAND_RECALL: recall 4300000100000000, reason 6"
         ],
         [
-          6.5,
-          "DEMAND_SETTLED: demand of c0b10001 settled, outcome 3"
+          7.90175,
+          "ENVOY_MATERIALIZE: envoy 4300000200000000: demand 106 of item 8 or stop signal 0"
         ],
         [
           7.90175,
-          "ENVOY_MATERIALIZE: envoy 4300000300000000: demand 86 of item 8 or stop signal 0"
+          "BAND_STEER: steer 4300000200000000 to (600, 650)"
         ],
         [
-          7.90175,
+          7.910083333333334,
+          "DEMAND_SETTLED: demand of c0b10001 settled, outcome 1"
+        ],
+        [
+          7.910083333333334,
+          "BAND_RECALL: recall 4300000200000000, reason 6"
+        ],
+        [
+          14.165166666666666,
+          "ENVOY_MATERIALIZE: envoy 4300000300000000: demand 99 of item 8 or stop signal 0"
+        ],
+        [
+          14.165166666666666,
           "BAND_STEER: steer 4300000300000000 to (600, 650)"
         ],
         [
-          7.910083333333334,
+          14.1735,
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 1"
         ],
         [
-          7.910083333333334,
+          14.1735,
           "BAND_RECALL: recall 4300000300000000, reason 6"
         ],
         [
-          14.165166666666666,
-          "ENVOY_MATERIALIZE: envoy 4300000400000000: demand 96 of item 8 or stop signal 0"
+          20.378583333333335,
+          "BAND_MATERIALIZE: band 4300000400000000 wave 0 purpose 6: 8 members, arc 0 blocks at 0 degrees"
         ],
         [
-          14.165166666666666,
+          20.378583333333335,
           "BAND_STEER: steer 4300000400000000 to (600, 650)"
-        ],
-        [
-          14.1735,
-          "DEMAND_SETTLED: demand of c0b10001 settled, outcome 1"
-        ],
-        [
-          14.1735,
-          "BAND_RECALL: recall 4300000400000000, reason 6"
-        ],
-        [
-          20.378583333333335,
-          "BAND_MATERIALIZE: band 4300000500000000 wave 0 purpose 6: 8 members, arc 0 blocks at 0 degrees"
-        ],
-        [
-          20.378583333333335,
-          "BAND_STEER: steer 4300000500000000 to (600, 650)"
         ],
         [
           20.428583333333332,
@@ -1409,18 +1098,18 @@
         ],
         [
           21.084541666666667,
-          "BAND_RECALL: recall 4300000500000000, reason 4"
+          "BAND_RECALL: recall 4300000400000000, reason 4"
         ]
       ],
-      "wire_bytes": 2520,
+      "wire_bytes": 2400,
       "state_hashes": [
-        "05e052c7b4acdd20",
-        "a29466e6d980c09f"
+        "fffac45338ec8c07",
+        "30e7a028145611c3"
       ]
     },
     {
       "variant": "converter",
-      "wall_ms": 22.639123,
+      "wall_ms": 635.69758,
       "checks": [
         {
           "name": "conservation",
@@ -1435,52 +1124,37 @@
         {
           "name": "a catalytic converter de-escalates",
           "ok": true,
-          "detail": "the demand met by cutting the signal on day 1.89; the settlers' rungs: [None, Notice, Envoy, Notice, None]"
+          "detail": "the demand met by cutting the signal on day 1.89; player b0b's rungs (the smog's owner): [None, Notice, Envoy, Notice, Envoy, Notice]"
         }
       ],
       "rungs": [
         {
           "day": 0.5,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "none"
         },
         {
           "day": 0.78525,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "notice"
         },
         {
           "day": 1.3854583333333332,
-          "actor": "the settlers",
-          "step": "envoy"
-        },
-        {
-          "day": 1.5,
-          "actor": "player b0b",
-          "step": "none"
-        },
-        {
-          "day": 1.5000416666666667,
-          "actor": "player b0b",
-          "step": "notice"
-        },
-        {
-          "day": 3.5000416666666667,
           "actor": "player b0b",
           "step": "envoy"
         },
         {
           "day": 4.385458333333333,
-          "actor": "the settlers",
+          "actor": "player b0b",
           "step": "notice"
         },
         {
-          "day": 13.448458333333333,
-          "actor": "the settlers",
-          "step": "none"
+          "day": 4.885458333333333,
+          "actor": "player b0b",
+          "step": "envoy"
         },
         {
-          "day": 14.836833333333333,
+          "day": 15.0,
           "actor": "player b0b",
           "step": "notice"
         }
@@ -1490,20 +1164,10 @@
           "faction": 3232825345,
           "actor": 4294967307,
           "step": "notice",
-          "grievance": 4.542000528122006,
+          "grievance": 4.628410605534669,
           "by_kind": {
-            "logging": 4.542000528122006
-          },
-          "demand": null,
-          "party": null
-        },
-        {
-          "faction": 3232825345,
-          "actor": 4294967308,
-          "step": "none",
-          "grievance": 1.2896362148660327,
-          "by_kind": {
-            "smog": 1.2896362148660327
+            "logging": 3.338774390668637,
+            "smog": 1.2896362148660323
           },
           "demand": null,
           "party": null
@@ -1542,21 +1206,21 @@
         "wool": 5.048
       },
       "stats": {
-        "events": 140,
-        "feud_wakes": 8,
-        "stale": 8,
+        "events": 202,
+        "feud_wakes": 6,
+        "stale": 9,
         "signals": 5,
         "emissions": 2,
         "escalations": [
           0,
-          2,
+          1,
           2,
           0,
           0,
           0,
           0
         ],
-        "calmed": 2,
+        "calmed": 1,
         "demands": 2,
         "tributes": 0,
         "cuts": 1,
@@ -1577,17 +1241,18 @@
         "ambushes": 0,
         "casualties": 4,
         "routs": 0,
-        "bored": 1,
+        "bored": 0,
         "chiefs_killed": 0,
         "successions": 0,
-        "seen": 2,
-        "materialized": 2,
+        "seen": 3,
+        "materialized": 3,
         "waves": 1,
-        "recalls": 2,
+        "recalls": 3,
         "items_from_districts": 0,
         "items_from_villages": 22,
         "blocks_destroyed": 0,
-        "feuds_forgotten": 0
+        "feuds_forgotten": 0,
+        "reattributed": 0
       },
       "log": [
         {
@@ -1602,7 +1267,7 @@
           "day": 0.78525,
           "faction": "goblin camp 3232825345",
           "kind": "notice",
-          "what": "grievance against the settlers at 7.3 (smog first): the tribe takes notice"
+          "what": "grievance against player b0b at 7.3 (smog first): the tribe takes notice"
         },
         {
           "tick": 33251,
@@ -1616,21 +1281,14 @@
           "day": 1.3854583333333332,
           "faction": "goblin camp 3232825345",
           "kind": "demand",
-          "what": "an envoy sets out for the settlers: stop the smog or pay 17 emerald by day 4.4"
+          "what": "an envoy sets out for player b0b: stop the smog or pay 17 emerald by day 4.4"
         },
         {
           "tick": 33251,
           "day": 1.3854583333333332,
           "faction": "goblin camp 3232825345",
           "kind": "envoy",
-          "what": "grievance against the settlers at 21.9 (smog first): an envoy with a demand"
-        },
-        {
-          "tick": 36000,
-          "day": 1.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "notice",
-          "what": "grievance against player b0b at 9.6 (logging first): the tribe takes notice"
+          "what": "grievance against player b0b at 21.9 (smog first): an envoy with a demand"
         },
         {
           "tick": 39336,
@@ -1647,39 +1305,39 @@
           "what": "the envoy waits at (700, 780)"
         },
         {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "muster",
-          "what": "envoy of 3 members for (880, 900), leaving day 3.50"
-        },
-        {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "demand",
-          "what": "an envoy sets out for player b0b: stop the logging or pay 19 emerald by day 6.5"
-        },
-        {
-          "tick": 84000,
-          "day": 3.5,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "grievance against player b0b at 25.8 (logging first): an envoy with a demand"
-        },
-        {
-          "tick": 89100,
-          "day": 3.7125,
-          "faction": "goblin camp 3232825345",
-          "kind": "envoy",
-          "what": "the envoy waits at (880, 900)"
-        },
-        {
           "tick": 105251,
           "day": 4.385458333333333,
           "faction": "goblin camp 3232825345",
           "kind": "settled",
-          "what": "the settlers meets the demand (the signal stopped): back to notice, grievance 12.5"
+          "what": "player b0b meets the demand (the signal stopped): back to notice, grievance 24.1"
+        },
+        {
+          "tick": 117251,
+          "day": 4.885458333333333,
+          "faction": "goblin camp 3232825345",
+          "kind": "muster",
+          "what": "envoy of 3 members for (700, 780), leaving day 4.89"
+        },
+        {
+          "tick": 117251,
+          "day": 4.885458333333333,
+          "faction": "goblin camp 3232825345",
+          "kind": "demand",
+          "what": "an envoy sets out for player b0b: stop the logging or pay 24 emerald by day 7.9"
+        },
+        {
+          "tick": 117251,
+          "day": 4.885458333333333,
+          "faction": "goblin camp 3232825345",
+          "kind": "envoy",
+          "what": "grievance against player b0b at 31.9 (logging first): an envoy with a demand"
+        },
+        {
+          "tick": 123336,
+          "day": 5.139,
+          "faction": "goblin camp 3232825345",
+          "kind": "seen",
+          "what": "envoy seen by a player"
         },
         {
           "tick": 136501,
@@ -1689,29 +1347,29 @@
           "what": "envoy home with 3 left and 0 items for the haven"
         },
         {
-          "tick": 156000,
-          "day": 6.5,
+          "tick": 148501,
+          "day": 6.187541666666666,
           "faction": "goblin camp 3232825345",
-          "kind": "refused",
-          "what": "the demand on player b0b goes unmet (grievance 34.4)"
+          "kind": "envoy",
+          "what": "the envoy waits at (700, 780)"
         },
         {
-          "tick": 157944,
-          "day": 6.581,
+          "tick": 189251,
+          "day": 7.885458333333333,
+          "faction": "goblin camp 3232825345",
+          "kind": "refused",
+          "what": "the demand on player b0b goes unmet (grievance 29.9)"
+        },
+        {
+          "tick": 220501,
+          "day": 9.187541666666666,
           "faction": "goblin camp 3232825345",
           "kind": "home",
           "what": "envoy home with 3 left and 0 items for the haven"
         },
         {
-          "tick": 322763,
-          "day": 13.448458333333333,
-          "faction": "goblin camp 3232825345",
-          "kind": "calm",
-          "what": "grievance against the settlers falls to 4.4: back to none"
-        },
-        {
-          "tick": 356084,
-          "day": 14.836833333333333,
+          "tick": 360000,
+          "day": 15.0,
           "faction": "goblin camp 3232825345",
           "kind": "calm",
           "what": "grievance against player b0b falls to 13.1: back to notice"
@@ -1755,10 +1413,6 @@
           "FACTION_NOTICE: notice, signal 0, grievance 7.3"
         ],
         [
-          1.5000416666666667,
-          "FACTION_NOTICE: notice, signal 2, grievance 9.6"
-        ],
-        [
           1.639,
           "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 17 of item 8 or stop signal 0"
         ],
@@ -1772,15 +1426,31 @@
         ],
         [
           4.385458333333333,
-          "DEMAND_SETTLED: demand of c0b10001 settled, outcome 2"
+          "BAND_RECALL: recall 4300000100000000, reason 3"
         ],
         [
           4.385458333333333,
-          "BAND_RECALL: recall 4300000100000000, reason 6"
+          "DEMAND_SETTLED: demand of c0b10001 settled, outcome 2"
         ],
         [
-          6.5,
+          5.139,
+          "ENVOY_MATERIALIZE: envoy 4300000100000001: demand 24 of item 8 or stop signal 2"
+        ],
+        [
+          5.139,
+          "BAND_STEER: steer 4300000100000001 to (600, 650)"
+        ],
+        [
+          5.845833333333333,
+          "BAND_STEER: steer 4300000100000001 to (700, 780)"
+        ],
+        [
+          7.885458333333333,
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 3"
+        ],
+        [
+          7.885458333333333,
+          "BAND_RECALL: recall 4300000100000001, reason 6"
         ],
         [
           20.378583333333335,
@@ -1795,16 +1465,16 @@
           "BAND_RECALL: recall 4300000200000001, reason 4"
         ]
       ],
-      "wire_bytes": 1056,
+      "wire_bytes": 1392,
       "state_hashes": [
-        "f60f9dfd4a8cf902",
-        "a0433538243135e7"
+        "91eba6c65cfaf2d5",
+        "139bdf3bd0dbaadf"
       ]
     }
   ],
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 5a2baf0df31169c0, world 32e1c161c5587214 (uninterrupted 5a2baf0df31169c0, 32e1c161c5587214)"
+    "detail": "saved and loaded on day 9.3: conflict 91a4c5a91302e727, world 8002cbf7ae24cb38 (uninterrupted 91a4c5a91302e727, 8002cbf7ae24cb38)"
   }
 }

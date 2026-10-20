@@ -3,7 +3,8 @@
 //!
 //! **The world** is the phase 1 synthetic world with a goblin camp, Gloomhollow, joined as a
 //! haven in the Thornwood. **The player** builds a refinery at the forest's edge (an industry
-//! district in `rtsim-industry`'s fake world; its smog is the settlers', P14) and logs the forest
+//! district in `rtsim-industry`'s fake world; its smog counts against the player who runs it, P14
+//! as changed) and logs the forest
 //! for five days (the player's own act). It is at the refinery until day 8, offline until day 13,
 //! then back. **The plugin** is `rtsim_conflict::synth::FakeConflict`: every record goes through
 //! the boundary codec (docs/boundary.md §9). At home the player defends the refinery against the
@@ -146,10 +147,12 @@ fn checks_for(o: &Outcome, v: Variant) -> Vec<Check> {
         fw.err()
             .unwrap_or_else(|| "the refinery's physical totals match the engine's books".into()),
     );
+    // The feud the refinery's smog feeds: the player who runs it (P14, changed).
+    let owner = o.smog_owner.clone();
     let settlers: Vec<Step> = o
         .rungs
         .iter()
-        .filter(|r| r.actor == "the settlers")
+        .filter(|r| r.actor == owner)
         .map(|r| r.step)
         .collect();
     let st = &c.stats;
@@ -163,7 +166,7 @@ fn checks_for(o: &Outcome, v: Variant) -> Vec<Check> {
             check(
                 "notice, envoy and demand, scouts, a war band",
                 ladder && st.demands > 0 && st.expired > 0,
-                format!("the settlers' rungs: {settlers:?}"),
+                format!("{owner}'s rungs (the smog's owner): {settlers:?}"),
             );
             let offline: Vec<&AttackReport> = o
                 .attacks
@@ -215,7 +218,7 @@ fn checks_for(o: &Outcome, v: Variant) -> Vec<Check> {
                     && st.parties[PartyKind::Invasion.index()] == 0
                     && settlers.iter().all(|s| *s <= Step::Envoy),
                 format!(
-                    "{} tribute(s) paid, no war band; the settlers' rungs: {settlers:?}",
+                    "{} tribute(s) paid, no war band; {owner}'s rungs (the smog's owner): {settlers:?}",
                     st.tributes
                 ),
             );
@@ -223,11 +226,14 @@ fn checks_for(o: &Outcome, v: Variant) -> Vec<Check> {
         Variant::Converter => {
             check(
                 "a catalytic converter de-escalates",
+                // P14 (changed): the smog is the refinery player's, whose own logging (a direct
+                // act) shares the feud, so it ends at notice, not at nothing; no band marches.
                 st.cuts > 0
                     && st.parties[PartyKind::Raid.index()] == 0
-                    && settlers.last() == Some(&Step::None),
+                    && st.parties[PartyKind::Scouts.index()] == 0
+                    && settlers.last().is_some_and(|s| *s <= Step::Notice),
                 format!(
-                    "the demand met by cutting the signal on day {:.2}; the settlers' rungs: {settlers:?}",
+                    "the demand met by cutting the signal on day {:.2}; {owner}'s rungs (the smog's owner): {settlers:?}",
                     o.converter_day.unwrap_or(0.0)
                 ),
             );
