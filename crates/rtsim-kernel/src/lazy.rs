@@ -109,6 +109,11 @@ impl<M: LazyModel> Lazy<M> {
         (self.model, self.anchor)
     }
 
+    /// The stored state, mutably, for the paged table's event path (which settles first).
+    pub(crate) fn model_mut(&mut self) -> &mut M {
+        &mut self.model
+    }
+
     /// Commits every slot that ends at or before `to`; returns how many. Never moves the anchor
     /// to `to` itself unless `to` is a boundary.
     pub fn catch_up(&mut self, to: Tick, key: StreamKey) -> u64 {
@@ -156,7 +161,9 @@ impl<M: LazyModel> Lazy<M> {
         f(&mut self.model, at)
     }
 
-    fn settle_to(&mut self, at: Tick) {
+    /// Settles the stored state to `at` and re-anchors there. Only for event and breakpoint
+    /// times (module docs); `at` must not be before the anchor.
+    pub(crate) fn settle_to(&mut self, at: Tick) {
         debug_assert!(
             at >= self.anchor,
             "event at {at:?} before the anchor {:?}",

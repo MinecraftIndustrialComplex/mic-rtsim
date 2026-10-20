@@ -13,7 +13,7 @@ hold the industry design and the research behind them.
 | Path | What |
 |---|---|
 | `crates/rtsim-kernel` | The engine kernel: no Minecraft, no JNI, no threads of its own (PLAN.md §5.1). |
-| `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10 (now with market and edge sweeps); `rtsim-cli sim phase1`, the phase 1 scenario; `sim quiet`, does a closed world settle; `sim memory`, where a world's memory goes; `bench industry` and `sim industry`; `sim dragons`, phase 2's dragons from autumn into winter (and the dragon sweep of `bench scale`); `sim ships`, ships, pirates and a navy on a synthetic coast (and the ship sweep); `sim herds`, migrating herds of tens of thousands of animals in a synthetic valley over two sim years (and the herd and members sweeps); `bench restore`, the phase 1 world's snapshot against replaying its whole input log (`bench/results/restore.md`). |
+| `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10 (now with market and edge sweeps); `rtsim-cli sim phase1`, the phase 1 scenario; `sim quiet`, does a closed world settle; `sim memory`, where a world's memory goes; `bench industry` and `sim industry`; `sim dragons`, phase 2's dragons from autumn into winter (and the dragon sweep of `bench scale`); `sim ships`, ships, pirates and a navy on a synthetic coast (and the ship sweep); `sim herds`, migrating herds of tens of thousands of animals in a synthetic valley over two sim years (and the herd and members sweeps); `bench restore`, the phase 1 world's snapshot against replaying its whole input log (`bench/results/restore.md`); `bench bsp`, the parallel step and its determinism gate, and `bench o5`, slot commits against dyadic counts (kernel follow-ups, `docs/overnight-choices-kernel2.md`). |
 | `crates/rtsim-industry` | The industry engine (INDUSTRY.md, C15 to C19), headless: learning, replay, reconciliation, links, deposits, threats, the ledger. Wire records in `docs/industry-boundary.md`; choices in `docs/overnight-choices-industry.md`. |
 | `crates/rtsim-settle` | Settlements as rows: two cultures, villages, player bases and havens as market nodes, edges by P18's recommended rule (PLAN.md §8.2). |
 | `crates/rtsim-trade` | Storehouse markets (C13): labour costs with Hawkins-Simon, anchors, price as a function of stock, the exact player trade integral, the line law in closed form (production below the target, a sink above the ceiling), money, exchange lines, offers through the treasury (C14, C23), and the decision rules that let a closed world settle (`Rules`). |
@@ -47,7 +47,9 @@ The kernel's modules:
 | `lazy` | Lazy regions: catch-up on read, slot commits, breakpoints on the wheel | SCALE §4, A15 |
 | `conserve` | Totals, ledger, two-sided transfers, fixed-point error diffusion | SCALE §9, C13 |
 | `dyadic` | Random counts over any interval in O(log horizon), the same for every reader (a prototype for O5) | O17 |
-| `codec`, `page` | Page encoding; incremental page store (LZ4 + CRC32, manifest last, crash-safe); exact save codecs for arenas, wheels and lazy tables (`encode_with`, `decode_with`) | SCALE §8, PLAN §4.9 |
+| `codec`, `page` | Page encoding; incremental page store (LZ4 + CRC32, crash-safe): a log record per save, a paged location index, two save generations; exact save codecs for arenas, wheels and lazy tables (`encode_with`, `decode_with`) | SCALE §8, PLAN §4.9, P29 |
+| `paging` | Lazy regions paged to the store under a memory budget: LRU eviction, load on read, prefetch from the wheel, read-ahead hooks | A16, SCALE §8 |
+| `exec`, `bsp` | The executor the caller hands in (the engine owns no threads), and the bulk-synchronous parallel step: same state at any worker count | SCALE §5, PLAN §4.7 |
 | `journal` | Observation sequences, operation ids, idempotent replay, command outbox | A9 |
 | `profile` | Named zones, microseconds per system | |
 | `store` | Agent storage facade (`RowStore`) over plain columns; P4 stays open | P4 |
@@ -73,8 +75,9 @@ The industry engine's modules (`crates/rtsim-industry`):
 
 The native host `mic_native` lives in its own repository (`mods/mic-native`, A18); rtsim-jni
 depends on its runtime crate by git (docs/overnight-choices-jni.md J1). Not built yet: the module
-registry the phase 1 crates will register with (PLAN.md §5.4), paging with a residency budget
-(A16), and the parallel step.
+registry the phase 1 crates will register with (PLAN.md §5.4). Paging under a residency budget
+(A16), incremental two-generation saves and the parallel step are in the kernel (`paging`, `page`,
+`bsp`), not yet used by the modules; their open ends are in `docs/overnight-choices-kernel2.md`.
 
 ## Build and test
 
@@ -118,7 +121,15 @@ nix develop -c flock /tmp/mic-rtsim-heavy.lock nice -n 10 tools/ci/scale-check.s
 
 It varies one count at a time (latent individuals, regions, events per day, elapsed time between
 reads, world age), runs each point in its own process, and measures CPU per sim day, heap and RSS,
-full and incremental save bytes, and catch-up latency. It fits log-log growth slopes and compares each
-with the slope its sweep declares; `--check` exits 1 when one is exceeded. Options: `--repeats N`,
-`--only latent,regions,events,elapsed,age`, `--out DIR`, `--no-write`. `bench/results/README.md`
-explains the committed results.
+full and incremental save bytes, and catch-up latency. The `paged` sweeps run the same world on
+paged regions at a fixed memory budget. It fits log-log growth slopes and compares each with the
+slope its sweep declares; `--check` exits 1 when one is exceeded. Options: `--repeats N`,
+`--only latent,regions,events,elapsed,age,paged`, `--out DIR`, `--no-write`, `--tag NAME`.
+`bench/results/README.md` explains the committed results.
+
+```sh
+flock /tmp/mic-rtsim-heavy.lock nice -n 10 ./target/release/rtsim-cli bench bsp --check   # the determinism gate, 1 to 16 workers
+flock /tmp/mic-rtsim-heavy.lock nice -n 10 ./target/release/rtsim-cli bench o5            # O5: slots against dyadic counts
+# The potato profile (A11): two physical cores (not SMT siblings; see lscpu -e), nice 10
+flock /tmp/mic-rtsim-heavy.lock nice -n 10 taskset -c 2,4 ./target/release/rtsim-cli bench scale --tag potato
+```

@@ -1,0 +1,7 @@
+# Loop headers on 64-byte boundaries, for every crate in this bench's build (both backends alike).
+# Without it, loops with identical machine code ran up to 50% apart between builds that differed
+# only in unrelated code (code layout). With it, repeat builds with a perturbed layout agreed within
+# a few percent. Cargo reads this file only when run from this directory, so run the bench from here
+# (see Cargo.toml); the results file records the flags in effect.
+[build]
+rustflags = ["-C", "llvm-args=-align-loops=64"]

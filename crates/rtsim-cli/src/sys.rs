@@ -84,6 +84,48 @@ pub fn thread_cpu_ns() -> Option<u64> {
     None
 }
 
+/// CPU time of the whole process (every thread), in nanoseconds.
+#[cfg(unix)]
+pub fn process_cpu_ns() -> Option<u64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable timespec.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    (rc == 0).then(|| ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
+}
+
+#[cfg(not(unix))]
+pub fn process_cpu_ns() -> Option<u64> {
+    None
+}
+
+/// Hands freed heap memory back to the OS (glibc's `malloc_trim`), so the resident size shows what
+/// is live, not what a build phase left in the allocator's free lists. A no-op elsewhere.
+pub fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only releases free memory; it has no preconditions.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+/// Resets the peak resident size (`VmHWM`) to the current one (Linux 4.0 and later), so the peak
+/// covers only what follows. Returns whether it worked.
+pub fn reset_rss_peak() -> bool {
+    std::fs::write("/proc/self/clear_refs", "5").is_ok()
+}
+
+/// The logical CPUs this process may run on, as Linux lists them (`taskset` shows here).
+pub fn allowed_cpus() -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|l| {
+        l.strip_prefix("Cpus_allowed_list:")
+            .map(|r| r.trim().to_string())
+    })
+}
+
 /// (current, peak) resident set size in bytes, from /proc on Linux.
 pub fn rss() -> (Option<u64>, Option<u64>) {
     let Ok(status) = std::fs::read_to_string("/proc/self/status") else {

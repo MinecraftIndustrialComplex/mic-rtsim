@@ -1,0 +1,1174 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-20T10:27:55Z",
+  "mode": "full",
+  "git_commit": "241d78b3c418",
+  "git_dirty": true,
+  "build_profile": "release",
+  "machine": {
+    "cpu": "AMD RYZEN AI MAX PRO 390 w/ Radeon 8050S",
+    "logical_cpus": 24,
+    "mem_total_bytes": 50268049408,
+    "os": "linux",
+    "kernel": "7.2.10",
+    "hostname": "nixUltra",
+    "loadavg": "8.76 9.69 9.30 4/4319 1612855"
+  },
+  "allowed_cpus": "0-23",
+  "tag": null,
+  "nice": 10,
+  "loadavg_before": "8.00 8.30 7.89 6/4273 1576840",
+  "loadavg_after": "8.76 9.69 9.30 4/4319 1612855",
+  "points": [
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 1,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 392436057.5,
+        "process_cpu_ns_per_day": 295488214.1666667,
+        "step_wall_ns_per_day": 130234220.83333331,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 3.9825,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187676160,
+        "rss_peak_bytes": 207806464,
+        "state_hash": 3809254145,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        150939933.5,
+        129754802.83333331,
+        130234220.83333331
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 2,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 388944167.3333333,
+        "process_cpu_ns_per_day": 332163092.1666667,
+        "step_wall_ns_per_day": 120534093.0,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187676573,
+        "rss_peak_bytes": 210792448,
+        "state_hash": 3809254145,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        120534093.0,
+        130309476.66666669,
+        117331802.5
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 4,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 377042338.3333333,
+        "process_cpu_ns_per_day": 368225470.1666667,
+        "step_wall_ns_per_day": 115292425.33333331,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187676871,
+        "rss_peak_bytes": 209350656,
+        "state_hash": 3809254145,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        120990158.16666669,
+        113662481.33333331,
+        115292425.33333331
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 8,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 398027034.5,
+        "process_cpu_ns_per_day": 424911049.3333333,
+        "step_wall_ns_per_day": 131543356.5,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187677467,
+        "rss_peak_bytes": 210182144,
+        "state_hash": 3809254145,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        118537932.16666669,
+        131543356.5,
+        168018337.66666666
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 16,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 563259568.0,
+        "process_cpu_ns_per_day": 644325748.8333334,
+        "step_wall_ns_per_day": 250637021.16666663,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187679856,
+        "rss_peak_bytes": 210337792,
+        "state_hash": 3809254145,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        211510425.83333337,
+        250637021.16666663,
+        309358909.8333333
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 1,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 521694154.6666667,
+        "process_cpu_ns_per_day": 394914090.6666667,
+        "step_wall_ns_per_day": 193123697.0,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 3.9825,
+        "loads": 71839,
+        "evictions": 95508,
+        "heap_live_bytes": 165960911,
+        "rss_peak_bytes": 210907136,
+        "state_hash": 3809254145,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        209705601.83333337,
+        193047893.0,
+        193123697.0
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 16,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 689124757.1666666,
+        "process_cpu_ns_per_day": 758950980.6666666,
+        "step_wall_ns_per_day": 322774014.8333333,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 71839,
+        "evictions": 95508,
+        "heap_live_bytes": 165964607,
+        "rss_peak_bytes": 211779584,
+        "state_hash": 3809254145,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        305755649.8333333,
+        325357934.3333333,
+        322774014.8333333
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 1,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 409826075.8333333,
+        "process_cpu_ns_per_day": 283093159.1666667,
+        "step_wall_ns_per_day": 118061904.0,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 4.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202042881,
+        "rss_peak_bytes": 223072256,
+        "state_hash": 3809254145,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        118061904.0,
+        124808757.5,
+        113386308.0
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 2,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 339062768.8333333,
+        "process_cpu_ns_per_day": 295609920.3333333,
+        "step_wall_ns_per_day": 93116625.33333331,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 8.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202043294,
+        "rss_peak_bytes": 223109120,
+        "state_hash": 3809254145,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        93116625.33333331,
+        92211675.5,
+        95265809.5
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 4,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 354471534.1666667,
+        "process_cpu_ns_per_day": 351687559.0,
+        "step_wall_ns_per_day": 91553970.0,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 16.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202043784,
+        "rss_peak_bytes": 223051776,
+        "state_hash": 3809254145,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        91553970.0,
+        96134065.83333331,
+        89431289.16666667
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 8,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 446753605.5,
+        "process_cpu_ns_per_day": 893945186.5,
+        "step_wall_ns_per_day": 188450981.16666663,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 32.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202044764,
+        "rss_peak_bytes": 223383552,
+        "state_hash": 3809254145,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        188450981.16666663,
+        200528727.83333337,
+        169097406.5
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 16,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 517253038.3333333,
+        "process_cpu_ns_per_day": 2166761280.5,
+        "step_wall_ns_per_day": 245628864.16666663,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 63.525,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202047921,
+        "rss_peak_bytes": 234786816,
+        "state_hash": 3809254145,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        251258821.33333337,
+        235740170.5,
+        245628864.16666663
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 1,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 517198238.5,
+        "process_cpu_ns_per_day": 388276860.6666667,
+        "step_wall_ns_per_day": 174133738.16666666,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 4.0,
+        "loads": 58791,
+        "evictions": 86889,
+        "heap_live_bytes": 180327632,
+        "rss_peak_bytes": 225681408,
+        "state_hash": 3809254145,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        180466673.66666663,
+        174133738.16666666,
+        160551614.16666666
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 16,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 0
+      },
+      "measured": {
+        "wall_ns_per_day": 642298790.6666666,
+        "process_cpu_ns_per_day": 2092765213.5,
+        "step_wall_ns_per_day": 283612150.1666667,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 63.525,
+        "loads": 58791,
+        "evictions": 86889,
+        "heap_live_bytes": 180332672,
+        "rss_peak_bytes": 227340288,
+        "state_hash": 3809254145,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        280882852.6666667,
+        287531830.6666667,
+        283612150.1666667
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 1,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 3141953850.0,
+        "process_cpu_ns_per_day": 3024599619.8333335,
+        "step_wall_ns_per_day": 2864338102.0,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 3.9825,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187676163,
+        "rss_peak_bytes": 208584704,
+        "state_hash": 531041201,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        2825247569.0,
+        3065688201.3333335,
+        2864338102.0
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 2,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 2529893161.1666665,
+        "process_cpu_ns_per_day": 3782029428.6666665,
+        "step_wall_ns_per_day": 1906733009.8333333,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187676576,
+        "rss_peak_bytes": 209899520,
+        "state_hash": 531041201,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        1787803444.6666667,
+        2301370442.5,
+        1906733009.8333333
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 4,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 2048783606.0,
+        "process_cpu_ns_per_day": 3925082779.5,
+        "step_wall_ns_per_day": 1329146415.8333333,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187676874,
+        "rss_peak_bytes": 210255872,
+        "state_hash": 531041201,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        1329146415.8333333,
+        1273495366.5,
+        1653759420.1666667
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 8,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 1489103181.6666667,
+        "process_cpu_ns_per_day": 3839871898.3333335,
+        "step_wall_ns_per_day": 966719059.5,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187677470,
+        "rss_peak_bytes": 211046400,
+        "state_hash": 531041201,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        969918576.3333334,
+        966719059.5,
+        874153812.6666666
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 16,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 1278723168.1666667,
+        "process_cpu_ns_per_day": 3475973650.0,
+        "step_wall_ns_per_day": 863850343.3333334,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 187679859,
+        "rss_peak_bytes": 220303360,
+        "state_hash": 531041201,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        819979151.8333334,
+        930286908.3333334,
+        863850343.3333334
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 1,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 3349225451.5,
+        "process_cpu_ns_per_day": 3209170434.1666665,
+        "step_wall_ns_per_day": 3009738082.6666665,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 3.9825,
+        "loads": 71839,
+        "evictions": 95508,
+        "heap_live_bytes": 165960914,
+        "rss_peak_bytes": 208375808,
+        "state_hash": 531041201,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        3139803494.8333335,
+        2903466564.3333335,
+        3009738082.6666665
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 20,
+        "workers": 16,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 1257525053.6666667,
+        "process_cpu_ns_per_day": 3480382767.0,
+        "step_wall_ns_per_day": 914094779.5,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165282.16666666666,
+        "regions_per_step": 205.86194444444445,
+        "jobs_per_step": 4.882083333333333,
+        "loads": 71839,
+        "evictions": 95508,
+        "heap_live_bytes": 165964610,
+        "rss_peak_bytes": 205291520,
+        "state_hash": 531041201,
+        "mail_hash": 206543791,
+        "conservation": "ok"
+      },
+      "repeats": [
+        947362220.3333334,
+        914094779.5,
+        898990341.8333334
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 1,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 3204688871.0,
+        "process_cpu_ns_per_day": 2971433990.3333335,
+        "step_wall_ns_per_day": 2813581907.6666665,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 4.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202042884,
+        "rss_peak_bytes": 224034816,
+        "state_hash": 2933407057,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        3005571510.6666665,
+        2813581907.6666665,
+        2802659518.5
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 2,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 1908962371.8333333,
+        "process_cpu_ns_per_day": 3179423634.5,
+        "step_wall_ns_per_day": 1517758199.5,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 8.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202043297,
+        "rss_peak_bytes": 225148928,
+        "state_hash": 2933407057,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        1473027664.5,
+        1635194113.0,
+        1517758199.5
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 4,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 1133009253.1666667,
+        "process_cpu_ns_per_day": 3131188986.1666665,
+        "step_wall_ns_per_day": 788982524.5,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 16.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202043787,
+        "rss_peak_bytes": 223920128,
+        "state_hash": 2933407057,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        817032741.8333334,
+        754618623.1666666,
+        788982524.5
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 8,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 769145221.6666666,
+        "process_cpu_ns_per_day": 3174360133.1666665,
+        "step_wall_ns_per_day": 463685340.6666667,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 32.0,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202044767,
+        "rss_peak_bytes": 223444992,
+        "state_hash": 2933407057,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        469685530.1666667,
+        463685340.6666667,
+        463492702.1666667
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 16,
+        "budget_bytes": null,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 600988944.5,
+        "process_cpu_ns_per_day": 3493414047.6666665,
+        "step_wall_ns_per_day": 304733242.5,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 63.525,
+        "loads": 0,
+        "evictions": 0,
+        "heap_live_bytes": 202047924,
+        "rss_peak_bytes": 234131456,
+        "state_hash": 2933407057,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        304733242.5,
+        306580143.0,
+        301268355.3333333
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 1,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 3222530581.6666665,
+        "process_cpu_ns_per_day": 3111223343.5,
+        "step_wall_ns_per_day": 2909598345.6666665,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 4.0,
+        "loads": 58791,
+        "evictions": 86889,
+        "heap_live_bytes": 180327635,
+        "rss_peak_bytes": 218550272,
+        "state_hash": 2933407057,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        2998538304.8333335,
+        2861608194.3333335,
+        2909598345.6666665
+      ]
+    },
+    {
+      "spec": {
+        "regions": 200000,
+        "warmup_days": 1,
+        "days": 6,
+        "step": 600,
+        "workers": 16,
+        "budget_bytes": 7200000,
+        "regions_per_page": 64,
+        "seed": 190775297,
+        "work": 1500
+      },
+      "measured": {
+        "wall_ns_per_day": 721840778.1666666,
+        "process_cpu_ns_per_day": 3966741182.6666665,
+        "step_wall_ns_per_day": 404766423.1666667,
+        "wakes_per_day": 81865.0,
+        "messages_per_day": 165369.66666666666,
+        "regions_per_step": 6094.641666666666,
+        "jobs_per_step": 63.525,
+        "loads": 58791,
+        "evictions": 86889,
+        "heap_live_bytes": 180332675,
+        "rss_peak_bytes": 237326336,
+        "state_hash": 2933407057,
+        "mail_hash": 2076215742,
+        "conservation": "ok"
+      },
+      "repeats": [
+        396409571.3333333,
+        404766423.1666667,
+        427031882.5
+      ]
+    }
+  ],
+  "gates": [
+    {
+      "step": 20,
+      "work": 0,
+      "hashes": [
+        [
+          1,
+          null,
+          3809254145,
+          206543791
+        ],
+        [
+          2,
+          null,
+          3809254145,
+          206543791
+        ],
+        [
+          4,
+          null,
+          3809254145,
+          206543791
+        ],
+        [
+          8,
+          null,
+          3809254145,
+          206543791
+        ],
+        [
+          16,
+          null,
+          3809254145,
+          206543791
+        ],
+        [
+          1,
+          7200000,
+          3809254145,
+          206543791
+        ],
+        [
+          16,
+          7200000,
+          3809254145,
+          206543791
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "step": 600,
+      "work": 0,
+      "hashes": [
+        [
+          1,
+          null,
+          3809254145,
+          2076215742
+        ],
+        [
+          2,
+          null,
+          3809254145,
+          2076215742
+        ],
+        [
+          4,
+          null,
+          3809254145,
+          2076215742
+        ],
+        [
+          8,
+          null,
+          3809254145,
+          2076215742
+        ],
+        [
+          16,
+          null,
+          3809254145,
+          2076215742
+        ],
+        [
+          1,
+          7200000,
+          3809254145,
+          2076215742
+        ],
+        [
+          16,
+          7200000,
+          3809254145,
+          2076215742
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "step": 20,
+      "work": 1500,
+      "hashes": [
+        [
+          1,
+          null,
+          531041201,
+          206543791
+        ],
+        [
+          2,
+          null,
+          531041201,
+          206543791
+        ],
+        [
+          4,
+          null,
+          531041201,
+          206543791
+        ],
+        [
+          8,
+          null,
+          531041201,
+          206543791
+        ],
+        [
+          16,
+          null,
+          531041201,
+          206543791
+        ],
+        [
+          1,
+          7200000,
+          531041201,
+          206543791
+        ],
+        [
+          16,
+          7200000,
+          531041201,
+          206543791
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "step": 600,
+      "work": 1500,
+      "hashes": [
+        [
+          1,
+          null,
+          2933407057,
+          2076215742
+        ],
+        [
+          2,
+          null,
+          2933407057,
+          2076215742
+        ],
+        [
+          4,
+          null,
+          2933407057,
+          2076215742
+        ],
+        [
+          8,
+          null,
+          2933407057,
+          2076215742
+        ],
+        [
+          16,
+          null,
+          2933407057,
+          2076215742
+        ],
+        [
+          1,
+          7200000,
+          2933407057,
+          2076215742
+        ],
+        [
+          16,
+          7200000,
+          2933407057,
+          2076215742
+        ]
+      ],
+      "pass": true
+    }
+  ]
+}

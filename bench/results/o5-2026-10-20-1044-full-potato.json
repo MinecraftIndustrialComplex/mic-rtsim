@@ -1,0 +1,419 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-20T10:44:23Z",
+  "mode": "full",
+  "git_commit": "241d78b3c418",
+  "build_profile": "release",
+  "machine": {
+    "cpu": "AMD RYZEN AI MAX PRO 390 w/ Radeon 8050S",
+    "logical_cpus": 2,
+    "mem_total_bytes": 50268049408,
+    "os": "linux",
+    "kernel": "7.2.10",
+    "hostname": "nixUltra",
+    "loadavg": "9.11 8.24 8.44 5/4586 1687640"
+  },
+  "allowed_cpus": "2,4",
+  "tag": "potato",
+  "nice": 10,
+  "loadavg_before": "6.22 7.63 8.27 4/4357 1684065",
+  "loadavg_after": "9.11 8.24 8.44 3/4586 1687640",
+  "points": [
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 1,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 335.2534013671875,
+        "wall_ns_per_region_day": 336.1111533203125,
+        "reads": 1024000,
+        "slot_commits": 1024000,
+        "ns_per_read": 335.2534013671875
+      },
+      "repeats": [
+        338.74262109375,
+        327.5178349609375,
+        335.2534013671875
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 2,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 340.61855859375,
+        "wall_ns_per_region_day": 341.27355859375,
+        "reads": 512000,
+        "slot_commits": 1024000,
+        "ns_per_read": 681.2371171875
+      },
+      "repeats": [
+        330.1826669921875,
+        340.61855859375,
+        340.7449443359375
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 4,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 331.8357216796875,
+        "wall_ns_per_region_day": 332.74869140625,
+        "reads": 256000,
+        "slot_commits": 1024000,
+        "ns_per_read": 1327.34288671875
+      },
+      "repeats": [
+        326.9217060546875,
+        334.0975185546875,
+        331.8357216796875
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 8,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 327.760974609375,
+        "wall_ns_per_region_day": 328.6411455078125,
+        "reads": 128000,
+        "slot_commits": 1024000,
+        "ns_per_read": 2622.087796875
+      },
+      "repeats": [
+        327.760974609375,
+        324.3127783203125,
+        330.8493447265625
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 16,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 334.5940439453125,
+        "wall_ns_per_region_day": 335.396111328125,
+        "reads": 64000,
+        "slot_commits": 1024000,
+        "ns_per_read": 5353.504703125
+      },
+      "repeats": [
+        330.8606884765625,
+        337.1703505859375,
+        334.5940439453125
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 32,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 329.6738955078125,
+        "wall_ns_per_region_day": 330.4042177734375,
+        "reads": 32000,
+        "slot_commits": 1024000,
+        "ns_per_read": 10549.56465625
+      },
+      "repeats": [
+        325.2264677734375,
+        332.175912109375,
+        329.6738955078125
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 64,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 333.985740234375,
+        "wall_ns_per_region_day": 334.7528466796875,
+        "reads": 16000,
+        "slot_commits": 1024000,
+        "ns_per_read": 21375.087375
+      },
+      "repeats": [
+        333.985740234375,
+        326.8483623046875,
+        501.714041015625
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 256,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 348.5254189453125,
+        "wall_ns_per_region_day": 349.4502431640625,
+        "reads": 4000,
+        "slot_commits": 1024000,
+        "ns_per_read": 89222.50725
+      },
+      "repeats": [
+        446.6154052734375,
+        348.5254189453125,
+        325.88187109375
+      ]
+    },
+    {
+      "spec": {
+        "model": "herd",
+        "regions": 1000,
+        "cadence_days": 1024,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 316.9287265625,
+        "wall_ns_per_region_day": 317.6125244140625,
+        "reads": 1000,
+        "slot_commits": 1024000,
+        "ns_per_read": 324535.016
+      },
+      "repeats": [
+        316.9287265625,
+        311.9899453125,
+        320.7365458984375
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 1,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 6097.6282236328125,
+        "wall_ns_per_region_day": 6132.823420898438,
+        "reads": 1024000,
+        "slot_commits": 0,
+        "ns_per_read": 6097.6282236328125
+      },
+      "repeats": [
+        6097.6282236328125,
+        6372.892684570313,
+        5247.50619140625
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 2,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 2872.1234873046874,
+        "wall_ns_per_region_day": 2901.69003125,
+        "reads": 512000,
+        "slot_commits": 0,
+        "ns_per_read": 5744.246974609375
+      },
+      "repeats": [
+        2745.2234892578126,
+        2872.1234873046874,
+        3394.7647041015625
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 4,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 1506.80369140625,
+        "wall_ns_per_region_day": 1523.9096904296875,
+        "reads": 256000,
+        "slot_commits": 0,
+        "ns_per_read": 6027.214765625
+      },
+      "repeats": [
+        1620.231466796875,
+        1506.80369140625,
+        1491.282439453125
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 8,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 644.47712890625,
+        "wall_ns_per_region_day": 646.2094501953125,
+        "reads": 128000,
+        "slot_commits": 0,
+        "ns_per_read": 5155.81703125
+      },
+      "repeats": [
+        644.47712890625,
+        640.55028125,
+        655.493275390625
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 16,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 314.0992275390625,
+        "wall_ns_per_region_day": 320.8898818359375,
+        "reads": 64000,
+        "slot_commits": 0,
+        "ns_per_read": 5025.587640625
+      },
+      "repeats": [
+        322.7920419921875,
+        314.0992275390625,
+        306.8847529296875
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 32,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 156.975935546875,
+        "wall_ns_per_region_day": 157.3197685546875,
+        "reads": 32000,
+        "slot_commits": 0,
+        "ns_per_read": 5023.2299375
+      },
+      "repeats": [
+        156.7141123046875,
+        158.641990234375,
+        156.975935546875
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 64,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 92.2824091796875,
+        "wall_ns_per_region_day": 94.5524306640625,
+        "reads": 16000,
+        "slot_commits": 0,
+        "ns_per_read": 5906.0741875
+      },
+      "repeats": [
+        92.2824091796875,
+        93.102888671875,
+        79.13778515625
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 256,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 18.80250390625,
+        "wall_ns_per_region_day": 18.841890625,
+        "reads": 4000,
+        "slot_commits": 0,
+        "ns_per_read": 4813.441
+      },
+      "repeats": [
+        18.92877734375,
+        18.2696376953125,
+        18.80250390625
+      ]
+    },
+    {
+      "spec": {
+        "model": "dyadic",
+        "regions": 1000,
+        "cadence_days": 1024,
+        "days": 1024,
+        "latent_per_region": 1000,
+        "seed": 327685
+      },
+      "measured": {
+        "cpu_ns_per_region_day": 3.8012822265625,
+        "wall_ns_per_region_day": 3.8080810546875,
+        "reads": 1000,
+        "slot_commits": 0,
+        "ns_per_read": 3892.513
+      },
+      "repeats": [
+        3.8012822265625,
+        3.817671875,
+        3.7791005859375
+      ]
+    }
+  ]
+}
