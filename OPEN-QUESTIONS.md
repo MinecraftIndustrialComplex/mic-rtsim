@@ -219,6 +219,13 @@ Phases are INDUSTRY.md §16 (I-A to I-H).
   precision, threats, rebuild. Alternatives: threats first; trains before replay. Blocks: the start of
   industry work.
 
+## Cross-module
+
+- **U10: what a switched-off module does.** Dragons and ships, switched off, ignore their records and
+  run nothing; switched on again they catch up. Industry, switched off, still applies its journaled
+  records (W8). Recommended: one rule for all, the industry one, so nothing a player did while a module
+  was off is lost. Alternative: ignore everything while off, as dragons and ships do now.
+
 ## Later
 
 - **P2. Sim calendar.** Recommended: Serene Seasons' calendar, or mic-climate's `YearClock` in Deep Time

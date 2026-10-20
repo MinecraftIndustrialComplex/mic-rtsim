@@ -89,6 +89,7 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 
 - **Kernel follow-ups:** paging under a memory budget, two save generations (P29), the parallel step and the P4 storage bench. They are on branch `overnight/kernel2`, not yet merged.
 - **Industry plugins:** PowerGrid, Destroy, Ore Excavation, Diesel Generators, Ender Transmission and threat sampling. Interrupted once by the API rate limit and resumed.
-- **In progress:** migrating herds (engine), and integration (ships through the native link, one interest area per player across modules, module switches, lane hazard in prices).
-- **Not started:** a ships plugin (body mods are open, P8), conflict factions, kaiju, space and history generation.
+- **Done since:** ships run through the native link; one interest area per player is shared by phase 1, dragons and ships; module switches exist for dragons and ships; traders price pirate hazard on lanes (368 Rust tests pass).
+- **In progress:** migrating herds (engine) and conflict factions (engine).
+- **Not started:** plugins for ships and conflict (body mods are open, P8), kaiju, space and history generation.
 - **API rate limits interrupted several agents once.** Every interrupted branch was saved as a WIP commit and pushed before resuming.
