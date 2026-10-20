@@ -475,6 +475,17 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().industryCommand(names, record), "INDUSTRY_COMMAND");
     }
 
+    /**
+     * Orders a dragon command (docs/boundary.md §6.4): {@code record} is the whole record, its cmdSeq
+     * ignored, with Java's own species ids (body dictionary) and dimension id, and {@code names} the
+     * species entries it uses. The engine writes it as the dragons' own: their sequence and the DICT
+     * records it needs. TEST mode only: the Ice and Fire plugin's GameTests drive the plugin with it;
+     * the dragons decide their own commands.
+     */
+    public void dragonCommand(List<DictEntry> names, byte[] record) {
+        order(new NativeCodec.Orders().dragonCommand(names, record), "DRAGON_COMMAND");
+    }
+
     // ---- ScriptedEngine: inspection -------------------------------------------------------------
 
     /** Moves the native received log into the Java list (capped, oldest dropped first). */

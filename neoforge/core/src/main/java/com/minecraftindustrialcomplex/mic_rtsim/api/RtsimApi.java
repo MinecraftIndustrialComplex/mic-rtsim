@@ -25,6 +25,14 @@ public final class RtsimApi {
         BodyKinds.registerGroup(kind);
     }
 
+    /**
+     * Registers a plugin with records and puppets of its own (a command kind range, an agent namespace,
+     * the session's lifecycle; the Ice and Fire plugin's dragons). Call during mod construction.
+     */
+    public static void registerPlugin(SessionPlugin plugin) {
+        SessionPlugins.register(plugin);
+    }
+
     /** True when the entity is a puppet: tagged with {@code mic_rtsim:agent}. */
     public static boolean isPuppet(Entity entity) {
         return RtsimAttachments.isTagged(entity);
