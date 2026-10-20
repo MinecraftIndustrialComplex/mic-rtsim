@@ -486,6 +486,7 @@ dependencies = [
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",
@@ -518,6 +519,7 @@ dependencies = [
  "rtsim-knowledge",
  "rtsim-settle",
  "rtsim-ships",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",
@@ -558,11 +560,20 @@ dependencies = [
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rtsim-space"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rtsim-kernel",
 ]
 
 [[package]]

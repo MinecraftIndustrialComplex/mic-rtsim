@@ -23,6 +23,8 @@ rtsim-world = { path = "crates/rtsim-world" }
 rtsim-ecology = { path = "crates/rtsim-ecology" }
 # Ships, pirates and navies (PLAN.md §10.1).
 rtsim-ships = { path = "crates/rtsim-ships" }
+# The world model: the provider trait and the vanilla habitat sampler's cells (PLAN.md §5.1).
+rtsim-space = { path = "crates/rtsim-space" }
 # Conflict: factions, grievance, war bands and raids (PLAN.md §10.3).
 rtsim-conflict = { path = "crates/rtsim-conflict" }
 # The page codec, matching Deep Time's tile packs (crates/deeptime-format). MIT.

@@ -30,8 +30,8 @@ use mic_native_rt::abi;
 use rtsim_kernel::page::Durability;
 
 use crate::engine::{
-    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, HERD_INFO,
-    PHASE1_STATS, STATS_LEN, last_error, set_last_error,
+    Config, Engine, Exec, FLAG_INDUSTRY_READ_ONLY, FLAG_NO_FSYNC, FLAG_TEST, HABITAT_INFO,
+    HERD_INFO, PHASE1_STATS, STATS_LEN, last_error, set_last_error,
 };
 use crate::orders;
 
@@ -421,6 +421,33 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         let vals: Vec<jlong> = info[..n].iter().map(|v| *v as jlong).collect();
         out.set_region(env, 0, &vals)?;
         Ok(true)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native void nHabitatInfo(long handle, int dim, int x, int z, long[] out)`: the world
+/// model at block (x, z) of Java's dimension `dim` (`Engine::habitat_info`, `HABITAT_INFO`
+/// values: the cell's masks, the counts, the region's founded herd). Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nHabitatInfo<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    dim: jint,
+    x: jint,
+    z: jint,
+    out: JLongArray<'l>,
+) {
+    env.with_env(|env| -> Result<(), JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let info = e.habitat_info(dim as u32, x, z);
+        let n = out.len(env)?.min(HABITAT_INFO);
+        let vals: Vec<jlong> = info[..n].to_vec();
+        out.set_region(env, 0, &vals)?;
+        Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
