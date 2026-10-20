@@ -1,9 +1,11 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.chunk.LevelChunk;
 
 import java.util.function.Consumer;
 
@@ -98,5 +100,68 @@ public interface IndustryPlugin {
      */
     default StockAccess access(ServerLevel level, District.Inventory inventory) {
         return null;
+    }
+
+    // ---- deposits (I11, F15; docs/overnight-choices-indplugins.md) ------------------------------
+
+    /** Where {@link #deposits} reports a finite deposit: a good of class {@code d}. */
+    interface DepositSink {
+        /**
+         * {@code plugin}: an {@code IndRecords.DepositPlugin} code. {@code good}: the deposit's GOOD name,
+         * unique to this deposit (the engine keys a district's deposits by good, so two chunks' veins are two
+         * goods). {@code remaining} is in the plugin's own unit; {@code infinite} deposits are never stock.
+         */
+        void add(int plugin, String good, long remaining, boolean infinite);
+    }
+
+    /** The deposits of one loaded member chunk of a district, read once per sweep (IND_DEPOSIT_SAMPLE). */
+    default void deposits(ServerLevel level, District district, LevelChunk chunk, DepositSink out) {}
+
+    /**
+     * Applies {@code delta} to the deposit named {@code good} (class {@code d}) in chunk (chunkX, chunkZ):
+     * from a reconcile, with the chunk loaded and its epoch written in the same tick, or from
+     * IND_DEPOSIT_DELTA, for a store in level SavedData that may have no chunk loaded. Returns the amount
+     * applied, with the sign of {@code delta}, or null when the good is not this plugin's.
+     */
+    default Long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta) {
+        return null;
+    }
+
+    // ---- the defence survey (I21) ---------------------------------------------------------------
+
+    /** True for a machine that hurts mobs that walk into it (Create saws, drills, crushing wheels). */
+    default boolean killMachine(BlockEntity be) {
+        return false;
+    }
+
+    /** Where {@link #turret} reports an auto-firing turret. */
+    interface TurretSink {
+        /**
+         * One turret: its strength against each threat class ({@code IndRecords.ThreatClass}, in the
+         * engine's attacker units), the GOOD name of the ammunition it holds (null: needs none or unknown)
+         * and how much of it is loaded.
+         */
+        void add(BlockPos pos, float[] strength, String ammoGood, long ammo);
+    }
+
+    /** Auto-firing turrets this block entity is (Create Radars, Create Big Cannons). */
+    default void turret(BlockEntity be, TurretSink out) {}
+
+    // ---- conditions (I12) -----------------------------------------------------------------------
+
+    /**
+     * The world's season calendar, {@code {season, seasonCount, seasonLength (ticks), seasonOrigin (the
+     * game time season 0 last began)}}, or null when this plugin knows none (IND_CONDITIONS).
+     */
+    default long[] season(MinecraftServer server) {
+        return null;
+    }
+
+    /**
+     * The temperature at a position in degrees Celsius, or NaN when this plugin knows none
+     * (mic-climate, Thermoo). Vanilla's biome temperature is the core's fallback.
+     */
+    default float temperature(ServerLevel level, BlockPos pos) {
+        return Float.NaN;
     }
 }

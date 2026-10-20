@@ -42,6 +42,7 @@ public final class Industry {
         IndustryAttachments.register(modBus);
         IndustryConfig.register(container);
         IndustryEvents.register();
+        ThreatEvents.register();
     }
 
     final RtsimSession session;
@@ -54,6 +55,8 @@ public final class Industry {
     final Reconciler reconciler;
     final PlayerPorts ports;
     final Ledgers ledgers;
+    final Conditions conditions;
+    final Threats threats;
     private final Map<String, Integer> goodIds = new HashMap<>();
     private long ticks;
     private boolean started;
@@ -73,6 +76,8 @@ public final class Industry {
         this.reconciler = new Reconciler(this);
         this.ports = new PlayerPorts(this);
         this.ledgers = new Ledgers(this);
+        this.conditions = new Conditions(this);
+        this.threats = new Threats(this);
     }
 
     /** The industry module switch (C25): off restores vanilla, nothing is observed or applied. */
@@ -112,6 +117,8 @@ public final class Industry {
         reconciler.tick(now);
         sampler.tick(now);
         ledgers.tick(now);
+        conditions.tick(now);
+        threats.tick(now, ticks);
         for (IndustryPlugin p : IndustryApi.PLUGINS) {
             try {
                 p.tick(this, now);
@@ -138,6 +145,10 @@ public final class Industry {
             }
             case IndRecords.IND_LEDGER -> {
                 ledgers.accept(b, at, size, aux);
+                return true;
+            }
+            case IndRecords.IND_DEPOSIT_DELTA -> {
+                depositDelta(b, at, size, aux, cmdSeq);
                 return true;
             }
             default -> {
@@ -234,6 +245,134 @@ public final class Industry {
                 return;
         }
         out.add(goods.name(stack), count);
+    }
+
+    // ---- deposits and level-store commands (overnight agent 14) ---------------------------------
+
+    /**
+     * Applies a deposit delta through the plugin that owns the good (I11). Returns what was applied (the
+     * sign of {@code delta}); 0 when no plugin owns it, so the engine keeps it owed.
+     */
+    public long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta) {
+        if (good == null || delta == 0)
+            return 0;
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            try {
+                Long applied = p.applyDeposit(level, chunkX, chunkZ, good, delta);
+                if (applied != null)
+                    return applied;
+            } catch (RuntimeException e) {
+                fail("applying " + delta + " of deposit " + good + " in " + chunkX + ", " + chunkZ, e);
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * IND_DEPOSIT_DELTA (docs/industry-boundary.md §4.3): a deposit in level SavedData (Diesel's
+     * {@code OilChunksSavedData}), applied at once, loaded or not. The store and the journal reach disk at
+     * the same save, so the journal's applied set is the dedup (as H17 for train cargo). Answered APPLIED
+     * when a plugin owns the good, FAILED when none does.
+     */
+    private void depositDelta(ByteBuffer b, int at, int size, int plugin, long cmdSeq) {
+        if (size < IndRecords.DepositDelta.SIZE) {
+            if (size >= 24)
+                commandResult(cmdSeq, b.getLong(at + IndRecords.DepositDelta.OP_ID), Obs.CommandResult.FAILED);
+            return;
+        }
+        long opId = b.getLong(at + IndRecords.DepositDelta.OP_ID);
+        if (opApplied(opId)) {
+            commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            return;
+        }
+        ServerLevel level = engineLevel(b.getInt(at + IndRecords.DepositDelta.DIM));
+        String good = engineName(IndRecords.DICT_GOOD, b.getInt(at + IndRecords.DepositDelta.GOOD));
+        long delta = b.getLong(at + IndRecords.DepositDelta.DELTA);
+        int cx = b.getInt(at + IndRecords.DepositDelta.CHUNK_X), cz = b.getInt(at + IndRecords.DepositDelta.CHUNK_Z);
+        Long applied = null;
+        if (level != null && good != null) {
+            for (IndustryPlugin p : IndustryApi.PLUGINS) {
+                try {
+                    applied = p.applyDeposit(level, cx, cz, good, delta);
+                } catch (RuntimeException e) {
+                    fail("IND_DEPOSIT_DELTA " + delta + " of " + good, e);
+                    applied = null;
+                    break;
+                }
+                if (applied != null)
+                    break;
+            }
+        }
+        depositDeltas++;
+        if (applied == null) {
+            commandsFailed++;
+            commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
+        } else {
+            lastDepositApplied = applied;
+            commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        }
+    }
+
+    long depositDeltas;
+    long lastDepositApplied;
+
+    public long lastDepositApplied() {
+        return lastDepositApplied;
+    }
+
+    /**
+     * Journals a COMMAND_RESULT and carries it in {@code chunk} (the {@code mic_rtsim:pending} record of
+     * docs/boundary.md §3.1) until the engine acknowledges it: for a command applied into a block entity,
+     * whose chunk can reach disk before the journal does. A later session journals it again at the chunk's
+     * load, and {@link #chunkCarriesOp} refuses the same op id meanwhile.
+     */
+    public void commandResultInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, long cmdSeq, long opId, int status) {
+        ByteBuffer r = boundary.beginJournaled(Obs.COMMAND_RESULT, Obs.CommandResult.SIZE, status, gameTime());
+        r.putLong(Obs.CommandResult.CMD_SEQ, cmdSeq);
+        r.putLong(Obs.CommandResult.OP_ID, opId);
+        if (status == Obs.CommandResult.APPLIED)
+            commandsApplied++;
+        long seq = boundary.commit(r);
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old =
+                chunk.getData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
+        chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, old.plus(java.util.List.of(r.array().clone())));
+        chunk.setUnsaved(true);
+        ResourceKey<Level> dim = chunk.getLevel().dimension();
+        ChunkPos pos = chunk.getPos();
+        whenAcked(seq, () -> {
+            ServerLevel level = server.getLevel(dim);
+            net.minecraft.world.level.chunk.LevelChunk c = level == null ? null : level.getChunkSource().getChunkNow(pos.x, pos.z);
+            if (c == null)
+                return; // journaled again when it loads
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p =
+                    c.getExistingDataOrNull(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
+            if (p == null)
+                return;
+            java.util.List<byte[]> keep = new java.util.ArrayList<>();
+            for (byte[] rec : p.records())
+                if (ByteBuffer.wrap(rec).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) != opId)
+                    keep.add(rec);
+            if (keep.isEmpty())
+                c.removeData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
+            else
+                c.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING,
+                        new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+            c.setUnsaved(true);
+        });
+    }
+
+    /** True when {@code chunk} still carries the COMMAND_RESULT of this op id (applied into it, not yet acknowledged). */
+    public boolean chunkCarriesOp(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
+        return RtsimSession.chunkCarriesOp(chunk, opId);
+    }
+
+    public Conditions conditions() {
+        return conditions;
+    }
+
+    public Threats threats() {
+        return threats;
     }
 
     // ---- lookups --------------------------------------------------------------------------------
