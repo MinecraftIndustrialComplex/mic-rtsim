@@ -224,10 +224,16 @@ fn reconcile_is_idempotent_through_op_ids() {
         .cloned()
         .unwrap();
     assert_eq!(report.epoch, 1);
+    // The op the world applied for epoch 1 in the bar vault's chunk.
+    let chunk = ChunkPos { dim: 0, x: 2, z: 0 };
+    let op = w
+        .reconciled
+        .iter()
+        .find(|r| r.1 == MILL && r.2 == 1 && r.3 == chunk)
+        .expect("epoch 1 applied in the bar vault's chunk")
+        .0;
     let dup = Obs::ReconcileResult(ReconcileResult {
-        op: rtsim_industry::cmd::IndustryOps::default()
-            .clone()
-            .allocate(),
+        op,
         district: MILL,
         epoch: 1,
         chunk: ChunkPos { dim: 0, x: 2, z: 0 },
