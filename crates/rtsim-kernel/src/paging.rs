@@ -234,8 +234,10 @@ pub(crate) struct Page<M> {
     pub(crate) dirty: bool,
     /// Changed by catch-up only: may be evicted and recomputed.
     pub(crate) caught_up: bool,
-    /// In a save whose commit is not yet durable: may not be evicted.
-    pub(crate) saving: bool,
+    /// The number of the latest snapshot that holds the page and whose ticket has not come back
+    /// (0: none). The page may not be evicted until that save is durable. Only the latest
+    /// snapshot's ticket unpins it: an earlier save holds older bytes (two saves in flight).
+    pub(crate) saving: u64,
     /// Loaded by prefetch and not used yet.
     pub(crate) prefetched: bool,
     /// The models' own heap bytes.
@@ -254,7 +256,7 @@ impl<M: PagedModel> Page<M> {
             present: 0,
             dirty: false,
             caught_up: false,
-            saving: false,
+            saving: 0,
             prefetched: false,
             heap: 0,
         }
@@ -329,6 +331,8 @@ struct Link {
 #[derive(Debug, Default)]
 #[must_use = "pages stay pinned until the ticket comes back through saved or save_failed"]
 pub struct SaveTicket {
+    /// The snapshot's number, from 1: a ticket unpins only the pages it was the last to take.
+    seq: u64,
     pages: Vec<u64>,
 }
 
@@ -369,6 +373,8 @@ pub struct PagedTable<M: PagedModel> {
     due_at: Tick,
     prefetch: TimingWheel<u64>,
     hints: Vec<u64>,
+    /// The last snapshot's number ([`SaveTicket`]).
+    snapshots: u64,
     pub(crate) stats: PagingStats,
     pub(crate) lazy: LazyStats,
 }
@@ -395,6 +401,7 @@ impl<M: PagedModel> PagedTable<M> {
             due_at: now,
             prefetch: TimingWheel::new(now),
             hints: Vec::new(),
+            snapshots: 0,
             stats: PagingStats::default(),
             lazy: LazyStats::default(),
         }
@@ -550,7 +557,7 @@ impl<M: PagedModel> PagedTable<M> {
 
     fn evictable(&self, i: u32) -> bool {
         let page = self.slab[i as usize].as_ref().expect("resident page");
-        !page.dirty && !page.saving
+        !page.dirty && page.saving == 0
     }
 
     /// Puts the page in the LRU list if it may be evicted, takes it out if not. Call after any
@@ -981,7 +988,11 @@ impl<M: PagedModel> PagedTable<M> {
     /// [`PagedTable::save_failed`].
     #[allow(clippy::type_complexity)]
     pub fn snapshot_dirty(&mut self) -> (Vec<(PageKey, Option<Vec<u8>>)>, SaveTicket) {
-        let mut ticket = SaveTicket::default();
+        self.snapshots += 1;
+        let mut ticket = SaveTicket {
+            seq: self.snapshots,
+            pages: Vec::new(),
+        };
         let mut out = Vec::new();
         let table = self.cfg.table;
         for i in 0..self.slab.len() as u32 {
@@ -1001,7 +1012,7 @@ impl<M: PagedModel> PagedTable<M> {
             }
             page.dirty = false;
             page.caught_up = false;
-            page.saving = true;
+            page.saving = ticket.seq;
             ticket.pages.push(page.id);
             self.sync(i);
         }
@@ -1026,25 +1037,29 @@ impl<M: PagedModel> PagedTable<M> {
         batch.put(PageKey::new(self.cfg.meta_table, 0), w.as_bytes());
     }
 
-    /// The commit holding `ticket`'s pages is durable: they may be evicted again.
+    /// The commit holding `ticket`'s pages is durable: they may be evicted again, unless a later
+    /// snapshot (a second save in flight) holds them too; its own ticket unpins them.
     pub fn saved(&mut self, ticket: SaveTicket) {
         for p in ticket.pages {
             if let Some(&i) = self.index.get(&p) {
-                self.slab[i as usize]
-                    .as_mut()
-                    .expect("resident page")
-                    .saving = false;
+                let page = self.slab[i as usize].as_mut().expect("resident page");
+                if page.saving == ticket.seq {
+                    page.saving = 0;
+                }
                 self.sync(i);
             }
         }
     }
 
-    /// The commit failed: the pages are dirty again.
+    /// The commit failed: the pages are dirty again, so the next save writes them. A page a later
+    /// snapshot holds stays pinned by that snapshot too.
     pub fn save_failed(&mut self, ticket: SaveTicket) {
         for p in ticket.pages {
             if let Some(&i) = self.index.get(&p) {
                 let page = self.slab[i as usize].as_mut().expect("resident page");
-                page.saving = false;
+                if page.saving == ticket.seq {
+                    page.saving = 0;
+                }
                 page.dirty = true;
                 self.sync(i);
             }
@@ -1360,6 +1375,64 @@ mod tests {
         assert_eq!(
             t.read(&mut store, 5, Tick::ZERO).unwrap().unwrap().grain,
             11
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two saves in flight (the review's finding): the first ticket back must not unpin a page a
+    /// later snapshot still holds, or the page is evicted and the later save's failure loses its
+    /// change.
+    #[test]
+    fn two_saves_in_flight_keep_the_later_change() {
+        let dir = tmpdir("two-saves");
+        let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        let mut t = build(&mut store, 64, usize::MAX, |_| i64::MAX);
+        t.set_budget(1);
+        t.apply(&mut store, 5, Tick::ZERO, |m, _| m.stock.amount += 1)
+            .unwrap();
+        let mut b1 = SaveBatch::new();
+        let t1 = t.save_dirty(&mut b1);
+        // Changed again while the first save is still in flight, and snapshotted again.
+        t.apply(&mut store, 5, Tick::ZERO, |m, _| m.stock.amount += 1)
+            .unwrap();
+        let mut b2 = SaveBatch::new();
+        let t2 = t.save_dirty(&mut b2);
+        assert_eq!((t1.pages(), t2.pages()), (1, 1));
+        store.commit(b1, 1).unwrap();
+        t.saved(t1);
+        t.enforce_budget();
+        assert!(
+            t.is_resident(5),
+            "the second save still holds the page: it may not be evicted"
+        );
+        // The second save fails: its page is dirty again and the next save writes it.
+        drop(b2);
+        t.save_failed(t2);
+        assert_eq!(t.enforce_budget(), 0, "a failed save's page is dirty");
+        save(&mut t, &mut store);
+        assert!(!t.is_resident(5));
+        assert_eq!(
+            t.read(&mut store, 5, Tick::ZERO).unwrap().unwrap().grain,
+            12
+        );
+        // The same with the tickets back in the other order: still nothing lost.
+        t.apply(&mut store, 5, Tick::ZERO, |m, _| m.stock.amount += 1)
+            .unwrap();
+        let mut b1 = SaveBatch::new();
+        let t1 = t.save_dirty(&mut b1);
+        t.apply(&mut store, 5, Tick::ZERO, |m, _| m.stock.amount += 1)
+            .unwrap();
+        let mut b2 = SaveBatch::new();
+        let t2 = t.save_dirty(&mut b2);
+        t.save_failed(t2);
+        store.commit(b1, 2).unwrap();
+        t.saved(t1);
+        assert_eq!(t.enforce_budget(), 0, "the failed save's change is unsaved");
+        save(&mut t, &mut store);
+        assert!(!t.is_resident(5));
+        assert_eq!(
+            t.read(&mut store, 5, Tick::ZERO).unwrap().unwrap().grain,
+            14
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
