@@ -66,6 +66,10 @@ Every decision about mic-rtsim, newest at the bottom.
 | C17 | 2026-10-19 | On dedicated servers, attacks also hit bases whose owners are logged off. Threats follow the world, not the owner, and the defences built decide the outcome. | Ben | chose "Yes, offline too" |
 | C18 | 2026-10-19 | Attacks on unwatched infrastructure are resolved abstractly. Real changes are applied the next time the chunks load: stock stolen from boundary inventories, and machines and blocks destroyed, bounded per attack. | Ben | chose "Real, applied on load" |
 | C19 | 2026-10-19 | Distant factories are a black box by default: items, fluids and energy crossing the district boundary are measured while loaded, replayed while unloaded, and reconciled into boundary inventories on load. Per-mod plugins (Create factory gauges, PowerGrid) add precision. | Ben | chose "Black box + plugins" |
+| C20 | 2026-10-20 | The sim writes slights and fair trades into vanilla villager gossip, so vanilla's own price changes and iron golems (at reputation -100 or lower) carry the consequence (P19). | Ben | chose "Write into gossip" |
+| C21 | 2026-10-20 | Caravan cargo rides physically in the trader llamas' chests. Killing a llama drops it, and the loot is a journaled transfer (P20). | Ben | chose "In the chests" |
+| C22 | 2026-10-20 | For now a village joins the sim when its structure start generates. Later, the existence of villages and much of structure generation will probably move into the sim (P22). | Ben | "For now when generated, eventually we will probably move the existence of villages, and much of structure generation into our system." |
+| C23 | 2026-10-20 | Ribbit merchants' trades and restocks go through the ribbit village's treasury and stock, as villagers' do under C14 (P23). | Ben | chose "Through the treasury" |
 
 ## Agreed with the Deep Time session
 
