@@ -630,6 +630,61 @@ fn iron_run_to_end(j: &mut Java, cfg: &IronLine) {
     }
 }
 
+/// A world whose bridge answers every IND_CARRIAGE_DELTA failed (W10): nothing moved, so the engine
+/// gives each district back what the exchange took or gave, and the books still close.
+#[test]
+fn a_failed_carriage_delta_is_taken_back() {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        mode: Mode::Apply,
+        tick_first: true,
+    };
+    let dir = tmpdir("ind-failcar");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_mut().fail_carriage_deltas = true;
+    iron_run_to_end(&mut j, &cfg);
+    let (stats, link) = j.e.with_industry(|ie, l| (ie.stats, *l));
+    eprintln!("engine {stats:?}; link {link:?}");
+    assert!(stats.exchanges > 0);
+    assert!(link.results_failed > 0, "Java failed the carriage deltas");
+    assert_eq!(link.outbox, 0, "a failed command is answered");
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// The industry module switch (C25, W8): off, the engine takes no latest-wins industry records and
+/// sends nothing; on again, it learns.
+#[test]
+fn the_module_switch_holds_the_industry_engine() {
+    let (_dir, mut j) = mill_engine("ind-switch");
+    let _ids = mill(&mut j, 20_000, &[(0.0, true)], false);
+    j.module_mask = 0;
+    j.mc_run_until(day(0.8));
+    let (phase, ingested) =
+        j.e.with_industry(|ie, l| (ie.district(MILL).map(|d| d.phase), l.ingested));
+    assert_eq!(phase, Some(Phase::Learning), "no sweeps reached it");
+    // Only the journaled declarations and load states went in.
+    assert!(ingested < 20, "ingested {ingested}");
+    // MODULES with the industry bit: sweeps flow and it learns.
+    {
+        let Some(r) = j.reserve(
+            rtsim_jni::wire::obs::MODULES,
+            rtsim_jni::wire::obs::modules::SIZE,
+            0,
+        ) else {
+            panic!("room for MODULES")
+        };
+        rtsim_jni::wire::put_u32(r, rtsim_jni::wire::obs::modules::MASK, MODULE_INDUSTRY);
+    }
+    j.mc_run_until(day(1.6));
+    let phase = industry(&j.e, |ie| ie.district(MILL).map(|d| d.phase));
+    assert_eq!(phase, Some(Phase::Learned));
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// A kept command (IND_CARRIAGE_DELTA) written, saved in the pages' outbox and never applied by a
 /// world save that a crash then loses, is written again first after the restart, with its own
 /// sequence and op id, and applied once.

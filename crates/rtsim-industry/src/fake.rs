@@ -242,6 +242,9 @@ pub struct FakeWorld {
     /// real protocol is at least one tick late (docs/boundary.md §1.2); this removes the race to
     /// measure the replay alone.
     pub apply_on_load: bool,
+    /// Every IND_CARRIAGE_DELTA is answered FAILED and changes nothing (a remote world's test of
+    /// the engine's correction).
+    pub fail_carriage_deltas: bool,
     pub threats: Option<Box<dyn ThreatFeed>>,
     pub books: WorldBooks,
     pub log: Vec<Event>,
@@ -292,6 +295,7 @@ impl FakeWorld {
             log: Vec::new(),
             wire_bytes: 0,
             remote: false,
+            fail_carriage_deltas: false,
             outgoing: Vec::new(),
             threats_out: Vec::new(),
             ledgers: Vec::new(),
@@ -1064,6 +1068,10 @@ impl FakeWorld {
                 }
             }
             Cmd::CarriageDelta(cd) => {
+                if self.fail_carriage_deltas {
+                    self.answer(cd.op, RESULT_FAILED);
+                    return;
+                }
                 if !self.applied.insert(cd.op) {
                     self.answer(cd.op, RESULT_DUPLICATE);
                     return;
