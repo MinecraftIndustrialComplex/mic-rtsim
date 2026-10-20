@@ -180,6 +180,13 @@ fn put_target(w: &mut Writer, t: &Target) {
             w.var_i64(i64::from(x));
             w.var_i64(i64::from(z));
         }
+        Target::Herd { herd, frame, x, z } => {
+            w.u8(3);
+            w.u64(herd);
+            w.u16(frame);
+            w.var_i64(i64::from(x));
+            w.var_i64(i64::from(z));
+        }
     }
 }
 
@@ -196,6 +203,12 @@ fn get_target(r: &mut Reader<'_>) -> codec::Result<Target> {
         },
         2 => Target::Home {
             player: h(r)?,
+            frame: r.u16()?,
+            x: i32_of(r.var_i64()?)?,
+            z: i32_of(r.var_i64()?)?,
+        },
+        3 => Target::Herd {
+            herd: r.u64()?,
             frame: r.u16()?,
             x: i32_of(r.var_i64()?)?,
             z: i32_of(r.var_i64()?)?,
@@ -673,7 +686,7 @@ fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     Ok(m)
 }
 
-const STATS: usize = 26;
+const STATS: usize = 27;
 
 fn stats_array(s: &DragonStats) -> [u64; STATS] {
     [
@@ -703,6 +716,7 @@ fn stats_array(s: &DragonStats) -> [u64; STATS] {
         s.adopted,
         s.discarded,
         s.hoards_robbed,
+        s.herd_hunts,
     ]
 }
 
@@ -734,6 +748,7 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
         adopted: v[23],
         discarded: v[24],
         hoards_robbed: v[25],
+        herd_hunts: v[26],
     }
 }
 

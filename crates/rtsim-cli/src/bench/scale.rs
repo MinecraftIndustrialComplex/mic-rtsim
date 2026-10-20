@@ -43,6 +43,8 @@ pub enum Spec {
     Dragons(super::dragons::DragonConfig),
     /// Merchant ships over a fixed ocean grid of ports, nobody watching (`bench::ships`).
     Ships(super::ships::ShipsConfig),
+    /// Migrating herds in the synthetic valley, nobody watching (`bench::herds`).
+    Herds(super::herds::HerdsConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -109,6 +111,10 @@ pub enum Vary {
     Dragons,
     /// Merchant ships per service over a fixed ocean grid (PLAN.md §10.1).
     Ships,
+    /// Herds in the valley, members per herd fixed (PLAN.md §10.2).
+    Herds,
+    /// Members per herd, herd count fixed (PLAN.md §10.2).
+    Members,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +212,18 @@ impl Baseline {
     }
 
     fn spec(&self, sweep: &Sweep, value: u64) -> Spec {
+        if matches!(sweep.vary, Vary::Herds | Vary::Members) {
+            let members = sweep.vary == Vary::Members;
+            return Spec::Herds(super::herds::HerdsConfig {
+                herds: if members { HERD_BASE } else { value },
+                members: if members { value } else { MEMBER_BASE },
+                warmup_days: 8,
+                // A decision per herd per sub-season (8 days): three sub-seasons' worth per point.
+                days: self.days.max(3) * 8,
+                gap_days: 10_000,
+                seed: self.seed,
+            });
+        }
         if sweep.vary == Vary::Ships {
             return Spec::Ships(super::ships::ShipsConfig {
                 ships_per_service: value,
@@ -267,7 +285,13 @@ impl Baseline {
             Vary::Regions => c.regions = value,
             Vary::Events => c.events_per_day = value,
             Vary::Age => c.warmup_days = value,
-            Vary::Elapsed | Vary::Markets | Vary::Edges | Vary::Dragons | Vary::Ships => {
+            Vary::Elapsed
+            | Vary::Markets
+            | Vary::Edges
+            | Vary::Dragons
+            | Vary::Ships
+            | Vary::Herds
+            | Vary::Members => {
                 unreachable!()
             }
         }
@@ -597,8 +621,67 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 ),
             ],
         },
+        // Herds (rtsim-ecology's herds), nobody watching: herd count at 5,000 members each.
+        Sweep {
+            name: "herds".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Herds,
+            regions: None,
+            values: pick(&[4, 16, 64, 256], &[4, 64, 256]),
+            contracts: vec![
+                contract(
+                    Metric::CpuPerUnit,
+                    flat,
+                    0.0,
+                    "a flat cost per herd-day: one decision per sub-season (a flow field bounded by its reach cap), births one draw a year, deaths dyadic counts read on demand; nothing per member or per day. Herds of different species are mixed evenly, so per-herd costs average over speeds (reach) and footprints",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "herds are resident rows with their grazed forage cells (paging, A16, is not built yet)",
+                ),
+            ],
+        },
+        // Members per herd, 16 herds: the latent members' contract.
+        Sweep {
+            name: "members".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Members,
+            regions: None,
+            values: pick(
+                &[100, 1_000, 10_000, 100_000, 1_000_000],
+                &[100, 10_000, 1_000_000],
+            ),
+            contracts: vec![
+                contract(
+                    Metric::Cpu,
+                    flat,
+                    0.0,
+                    "members are latent: deaths are dyadic counts (O5), births one binomial a year, so a decision costs the same for a hundred animals or a million. The grazing footprint grows with members up to its cap (1,536 blocks), a bounded term",
+                ),
+                contract(
+                    Metric::Heap,
+                    0.3,
+                    0.0,
+                    "a latent member costs zero bytes (year-classes, not rows); what grows is the forage field's grazed cells, a row per cell a footprint grazed since the last yearly fold, and footprints grow with members up to their cap (1,536 blocks): bounded by the cap, not flat below it",
+                ),
+                contract(
+                    Metric::CatchUp,
+                    flat,
+                    0.0,
+                    "a read after 10,000 unread days walks at most three dyadic trees per year-class, whatever the members",
+                ),
+            ],
+        },
     ]
 }
+
+/// Members per herd held fixed while the herd sweep varies herds. PLACEHOLDER 5,000.
+const MEMBER_BASE: u64 = 5_000;
+
+/// Herds held fixed while the members sweep varies members per herd. PLACEHOLDER 16.
+const HERD_BASE: u64 = 16;
 
 /// Ports on a side of the ship sweep's ocean grid. PLACEHOLDER 10: 100 ports, from about 70
 /// merchant ships at one a service to about a thousand at sixteen.
@@ -641,6 +724,7 @@ pub fn run_one(spec: &Spec) -> Measured {
         Spec::Market(c) => super::market::run(c),
         Spec::Dragons(c) => super::dragons::run(c),
         Spec::Ships(c) => super::ships::run(c),
+        Spec::Herds(c) => super::herds::run(c),
     }
 }
 
@@ -1124,6 +1208,7 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
             Spec::Market(c) => c.days as f64,
             Spec::Dragons(c) => c.days as f64,
             Spec::Ships(c) => c.days as f64,
+            Spec::Herds(c) => c.days as f64,
             Spec::CatchUp(_) => f64::NAN,
         };
         println!(
