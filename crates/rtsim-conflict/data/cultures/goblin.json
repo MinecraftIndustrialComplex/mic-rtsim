@@ -23,10 +23,10 @@
   "gift_relief_per_coin": 1.0,
   "vengeance_per_item": 0.2,
   "units": [
-    { "name": "warrior", "body": "mic_rtsim:conflict/goblin/warrior", "class": "ground_melee", "strength": 1.0, "carry": 8 },
-    { "name": "archer", "body": "mic_rtsim:conflict/goblin/archer", "class": "ground_ranged", "strength": 0.8, "carry": 4 },
-    { "name": "brute", "body": "mic_rtsim:conflict/goblin/brute", "class": "siege", "strength": 4.0, "carry": 16 },
-    { "name": "emissary", "body": "mic_rtsim:conflict/goblin/emissary", "class": "ground_melee", "strength": 0.5, "carry": 0 }
+    { "name": "warrior", "body": "mic_rtsim:conflict/goblin/warrior", "class": "ground_melee", "strength": 1.0, "carry": 8, "breaks": 1 },
+    { "name": "archer", "body": "mic_rtsim:conflict/goblin/archer", "class": "ground_ranged", "strength": 0.8, "carry": 4, "breaks": 0 },
+    { "name": "brute", "body": "mic_rtsim:conflict/goblin/brute", "class": "siege", "strength": 4.0, "carry": 16, "breaks": 1 },
+    { "name": "emissary", "body": "mic_rtsim:conflict/goblin/emissary", "class": "ground_melee", "strength": 0.5, "carry": 0, "breaks": 0 }
   ],
   "parties": {
     "envoy": [["emissary", 1], ["warrior", 2]],

@@ -34,6 +34,7 @@
 //! | 26 | TEST: a ship command (docs/boundary.md §7.4), as if the ships had decided it: a future ships plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the body kinds and items the record uses); then the record exactly as `rtsim_ships::boundary` encodes it (cmdSeq ignored), its body and item ids Java's own (body and item dictionaries) and its dimension Java's id (the ships' frame); a SHIP_CARGO with op id 0 gets one from its identity |
 //! | 27 | TEST: a herd command (docs/boundary.md §8.4), as if the herds had decided it: the vanilla herd adapter's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the species entries the record uses); then the record exactly as `rtsim_ecology::herds::boundary` encodes it (cmdSeq ignored), its species ids Java's own (body dictionary) and its dimension Java's id (the herds' frame) |
 //! | 28 | TEST: found a herd (nothing in the game founds one yet: no habitat provider), applied when the engine takes the unit | str name, str species (`minecraft:sheep` and the rest), u32 dimension (Java's id: the herds' frame), i32 x, i32 z, u64 count, u64 seed (0: the herds' own) |
+//! | 29 | TEST: a conflict command (docs/boundary.md §9.4), as if the conflict had decided it: a future conflict plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the body kinds and items the record uses); then the record exactly as `rtsim_conflict::boundary` encodes it (cmdSeq ignored), its body and item ids Java's own (body and item dictionaries), its dimension Java's id (the conflict's frame) and its ticks game time |
 
 use rtsim_industry::ids::{DistrictId, TrainId};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
@@ -71,6 +72,7 @@ pub const OP_DRAGON_COMMAND: u16 = 25;
 pub const OP_SHIP_COMMAND: u16 = 26;
 pub const OP_HERD_COMMAND: u16 = 27;
 pub const OP_HERD_FOUND: u16 = 28;
+pub const OP_CONFLICT_COMMAND: u16 = 29;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,6 +280,13 @@ pub enum Order {
         /// 0: drawn from the herds' own seed.
         seed: u64,
     },
+    /// TEST: a conflict command record (Java's body, item and dimension ids, game time), queued
+    /// as the conflict's own: its sequences and DICT records (a future conflict plugin's
+    /// GameTests). `names` are the Java dictionary entries it uses: (kind, Java's id, name).
+    ConflictCommand {
+        names: Vec<(u32, u32, String)>,
+        record: Vec<u8>,
+    },
 }
 
 impl Order {
@@ -304,6 +313,7 @@ impl Order {
                 | Order::ShipCommand { .. }
                 | Order::HerdCommand { .. }
                 | Order::HerdFound { .. }
+                | Order::ConflictCommand { .. }
         )
     }
 }
@@ -641,6 +651,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                     count,
                     strength,
                     target,
+                    loads: None,
                     at,
                 })
             }
@@ -749,6 +760,24 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                     count,
                     seed,
                 }
+            }
+            OP_CONFLICT_COMMAND => {
+                let n = c.u32()? as usize;
+                if n > 1024 {
+                    return Err(format!("a conflict command with {n} names"));
+                }
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let kind = c.u32()?;
+                    let id = c.u32()?;
+                    names.push((kind, id, c.str()?));
+                }
+                let record = body[c.at..].to_vec();
+                c.at = body.len();
+                if rtsim_conflict::boundary::decode_cmd(&record).is_err() {
+                    return Err("a conflict command order holds no conflict command".into());
+                }
+                Order::ConflictCommand { names, record }
             }
             other => return Err(format!("unknown order opcode {other}")),
         };
@@ -1047,6 +1076,17 @@ impl Encoder {
                 self.buf.extend_from_slice(record);
                 self.end(at);
             }
+            Order::ConflictCommand { names, record } => {
+                let at = self.begin(OP_CONFLICT_COMMAND);
+                self.u32(names.len() as u32);
+                for (kind, id, name) in names {
+                    self.u32(*kind);
+                    self.u32(*id);
+                    self.str(name);
+                }
+                self.buf.extend_from_slice(record);
+                self.end(at);
+            }
             Order::HerdCommand { names, record } => {
                 let at = self.begin(OP_HERD_COMMAND);
                 self.u32(names.len() as u32);
@@ -1248,6 +1288,7 @@ mod tests {
                 count: 9,
                 strength: 9.5,
                 target: ThreatTarget::District(DistrictId(3)),
+                loads: None,
                 at: Tick(24_000),
             }),
             Order::IndustryCommand {
@@ -1321,6 +1362,26 @@ mod tests {
                 z: 300,
                 count: 12,
                 seed: 77,
+            },
+            Order::ConflictCommand {
+                names: vec![(3, 6, "mic_rtsim:conflict/goblin/warrior".into())],
+                record: {
+                    let mut r = Vec::new();
+                    rtsim_conflict::boundary::encode_cmd(
+                        0,
+                        &rtsim_conflict::boundary::Cmd::Recall(
+                            rtsim_conflict::boundary::BandRecall {
+                                agent: 0x43 << 56 | 5,
+                                epoch: 2,
+                                reason: 1,
+                                timeout_ticks: 1_200,
+                                toward: (10.0, -40.0),
+                            },
+                        ),
+                        &mut r,
+                    );
+                    r
+                },
             },
             Order::ShipCommand {
                 names: vec![(2, 4, "minecraft:wheat".into())],

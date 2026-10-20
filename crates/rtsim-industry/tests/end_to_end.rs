@@ -848,6 +848,7 @@ fn a_loaded_unwatched_district_is_raided_at_once() {
         count: 3,
         strength: 3.0,
         target: ThreatTarget::District(MILL),
+        loads: None,
         at: w.t,
     });
     // Three bandits carry a stack each, split over the goods in proportion to their caps.
@@ -876,6 +877,7 @@ fn a_loaded_unwatched_district_is_raided_at_once() {
         count: 3,
         strength: 3.0,
         target: ThreatTarget::District(MILL),
+        loads: None,
         at: w.t + 30_000,
     });
     assert_eq!(w.engine.books.stolen.get(ORE), stolen);

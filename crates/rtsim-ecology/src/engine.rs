@@ -1091,6 +1091,7 @@ impl Dragons {
             count: passes,
             strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
             target: ThreatTarget::Train(train),
+            loads: None,
             at,
         };
         let Some(loot) = infra.raid_train(&threat) else {
@@ -1985,6 +1986,7 @@ impl Dragons {
                 count: passes,
                 strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
                 target: ThreatTarget::District(site.id),
+                loads: None,
                 at,
             };
             let Some(o) = infra.raid(&threat) else {

@@ -23,9 +23,9 @@
   "gift_relief_per_coin": 0.5,
   "vengeance_per_item": 0.1,
   "units": [
-    { "name": "thug", "body": "mic_rtsim:conflict/bandit/thug", "class": "ground_melee", "strength": 1.2, "carry": 12 },
-    { "name": "crossbowman", "body": "mic_rtsim:conflict/bandit/crossbowman", "class": "ground_ranged", "strength": 1.0, "carry": 8 },
-    { "name": "messenger", "body": "mic_rtsim:conflict/bandit/messenger", "class": "ground_melee", "strength": 0.6, "carry": 0 }
+    { "name": "thug", "body": "mic_rtsim:conflict/bandit/thug", "class": "ground_melee", "strength": 1.2, "carry": 12, "breaks": 1 },
+    { "name": "crossbowman", "body": "mic_rtsim:conflict/bandit/crossbowman", "class": "ground_ranged", "strength": 1.0, "carry": 8, "breaks": 0 },
+    { "name": "messenger", "body": "mic_rtsim:conflict/bandit/messenger", "class": "ground_melee", "strength": 0.6, "carry": 0, "breaks": 0 }
   ],
   "parties": {
     "envoy": [["messenger", 1], ["thug", 1]],

@@ -67,7 +67,9 @@ marked PLACEHOLDER is not measured. No Java.
 
 - **No composition runs conflict**: rtsim-jni has no conflict module (no page table, no routing of
   0x08xx records, no Java dictionary for kind 0x20), and nothing feeds it from the industry engine's
-  learned pollution rates (K2-9). Wiring it is the shape of `engine/ships.rs`.
+  learned pollution rates (K2-9). Wiring it is the shape of `engine/ships.rs`. **Since wired**
+  (`engine/conflict.rs`, the industry engine's learned pollution, K2-13's recommendation applied:
+  choices C2-1 to C2-17 in docs/overnight-choices-conflictjni.md).
 - **No Java**: no conflict plugin exists (P8). The fake plugin in `synth.rs` is the executable
   reference.
 - **Supply-line ambushes** are implemented (a war band's segment crossing a booked train leg) but
