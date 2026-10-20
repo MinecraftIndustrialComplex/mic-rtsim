@@ -241,16 +241,16 @@ public final class Phase1 {
 
     /**
      * Vanilla just set a villager's reputation prices ({@code Villager.updateSpecialPrices}, the
-     * reputation mixin): on offers the sim prices, a discount may not turn a village's buying price above
-     * its selling price for the same good (no loop of trades makes money, C13).
+     * reputation mixin): on offers the sim prices, the reputation is already inside the engine's bundle
+     * (the price level its standing picked), so vanilla's own change is taken off (G31).
      */
     public void afterSpecialPrices(Entity merchant) {
-        guard("reputation clamp", () -> {
+        guard("reputation", () -> {
             if (RtsimAttachments.isTagged(merchant) || Residents.kind(merchant) == null)
                 return;
             Village v = Residents.villageOf(villages, merchant);
             if (v != null)
-                markets.clampReputation(merchant, v);
+                markets.foldReputation(merchant, v);
         });
     }
 
@@ -317,9 +317,8 @@ public final class Phase1 {
     // ---- commands -------------------------------------------------------------------------------
 
     void market(long village, long asOf, net.minecraft.world.item.Item currency, long treasury, long treasuryTarget,
-                int worstNum, int worstDen, java.util.Map<net.minecraft.world.item.Item, MarketBook.Good> goods) {
-        markets.book(village).snapshot(asOf, currency, treasury, treasuryTarget,
-                new com.minecraftindustrialcomplex.mic_rtsim.market.Ratio(Math.max(worstNum, 0), Math.max(worstDen, 1)), goods);
+                int[] thresholds, java.util.Map<net.minecraft.world.item.Item, MarketBook.Good> goods) {
+        markets.book(village).snapshot(asOf, currency, treasury, treasuryTarget, thresholds, goods);
         marketCommands++;
     }
 

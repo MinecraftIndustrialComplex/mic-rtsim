@@ -7,6 +7,7 @@ import java.util.Random;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.market.PriceCurve.MILLI;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -58,17 +59,36 @@ class MarketBookTest {
         }
     }
 
-    private static MarketBook<String> tiny(long stock, long treasury) {
-        MarketBook<String> m = new MarketBook<>(1);
-        m.snapshot(0, "emerald", treasury, 20 * MILLI, new Ratio(1, 2),
-                Map.of("wheat", new MarketBook.Good(stock, new PriceCurve(50_000, 3, 4, 40 * MILLI))));
+    /** A good's line as MARKET carries it: the oracle's ladders, flattened as the dispatcher does. */
+    static MarketBook.Good good(long stock, PriceCurve curve, long treasury, long treasuryTarget, Ratio worst) {
+        java.util.List<PriceOracle.Bundle>[][] l = PriceOracle.ladders(curve, stock, treasury, treasuryTarget, worst);
+        long[][][] out = new long[2][l[0].length][];
+        for (int side = 0; side < 2; side++)
+            for (int k = 0; k < l[side].length; k++) {
+                out[side][k] = new long[2 * l[side][k].size()];
+                for (int j = 0; j < l[side][k].size(); j++) {
+                    out[side][k][2 * j] = l[side][k].get(j).items();
+                    out[side][k][2 * j + 1] = l[side][k].get(j).coins();
+                }
+            }
+        return new MarketBook.Good(stock, out);
+    }
+
+    private static MarketBook<String> book(long village, long asOf, long stock, PriceCurve curve, long treasury) {
+        MarketBook<String> m = new MarketBook<>(village);
+        m.snapshot(asOf, "emerald", treasury, 20 * MILLI, PriceOracle.thresholds(),
+                Map.of("wheat", good(stock, curve, treasury, 20 * MILLI, new Ratio(1, 2))));
         return m;
+    }
+
+    private static MarketBook<String> tiny(long stock, long treasury) {
+        return book(1, 0, stock, new PriceCurve(50_000, 3, 4, 40 * MILLI), treasury);
     }
 
     /** rtsim-trade market.rs {@code treasury_limits_what_the_market_pays}: the offer half. */
     @Test
     void treasuryLimitsWhatTheMarketPays() {
-        MarketBook.Offer o = tiny(40 * MILLI, 2 * MILLI).offer("wheat", MarketBook.Side.MARKET_BUYS, Ratio.FAIR);
+        MarketBook.Offer o = tiny(40 * MILLI, 2 * MILLI).offer("wheat", MarketBook.Side.MARKET_BUYS, 0);
         assertNotNull(o);
         assertEquals(1, o.coins());
         assertEquals(2, o.uses());
@@ -79,7 +99,7 @@ class MarketBookTest {
     void cashRefusedAboveTwiceTarget() {
         MarketBook<String> m = tiny(40 * MILLI, 41 * MILLI);
         assertTrue(m.cashRefused());
-        assertNull(m.offer("wheat", MarketBook.Side.MARKET_SELLS, Ratio.FAIR));
+        assertNull(m.offer("wheat", MarketBook.Side.MARKET_SELLS, 0));
     }
 
     /** rtsim-trade market.rs {@code markup_is_never_better_than_fair}. */
@@ -94,51 +114,124 @@ class MarketBookTest {
     }
 
     /**
+     * G31: a player's standing picks the MARKET's price level, the deepest whose threshold it is at
+     * or below; a disliked player brings more and is paid less, a liked one gets the fair price.
+     */
+    @Test
+    void standingPicksThePriceLevel() {
+        MarketBook<String> m = tiny(40 * MILLI, 9 * MILLI);
+        assertEquals(PriceOracle.PRICE_LEVELS.length + 1, m.levels());
+        assertEquals(0, m.levelOf(500));
+        assertEquals(0, m.levelOf(0));
+        assertEquals(0, m.levelOf(-24));
+        assertEquals(1, m.levelOf(-25));
+        assertEquals(2, m.levelOf(-60));
+        assertEquals(m.levels() - 1, m.levelOf(-700));
+        MarketBook.Offer fair = m.offer("wheat", MarketBook.Side.MARKET_BUYS, 0);
+        MarketBook.Offer hated = m.offer("wheat", MarketBook.Side.MARKET_BUYS, m.levelOf(-700));
+        assertTrue(hated.items() > fair.items(), fair + " " + hated);
+        MarketBook.Offer fairSale = m.offer("wheat", MarketBook.Side.MARKET_SELLS, 0);
+        MarketBook.Offer hatedSale = m.offer("wheat", MarketBook.Side.MARKET_SELLS, m.levelOf(-700));
+        assertTrue(hatedSale.items() < fairSale.items() || hatedSale.coins() > fairSale.coins(), fairSale + " " + hatedSale);
+    }
+
+    /**
+     * Prices: the bridge shows the engine's ladder step by step as its own trades move the stock, and
+     * each step is what the oracle (rtsim-trade's math) prices at the stock the trades before left. A
+     * stock the ladder does not reach (a sale after a purchase) shows crossed out until the next MARKET.
+     */
+    @Test
+    void localTradesWalkTheLadder() {
+        PriceCurve c = new PriceCurve(50_000, 3, 4, 40 * MILLI);
+        MarketBook<String> m = book(4, 0, 40 * MILLI, c, 3 * MILLI);
+        long seq = 0, stock = 40 * MILLI, treasury = 3 * MILLI;
+        for (int i = 0; i < PriceOracle.LADDER_DEPTH; i++) {
+            MarketBook.Offer o = m.offer("wheat", MarketBook.Side.MARKET_SELLS, 0);
+            boolean refused = PriceOracle.glut(treasury, 20 * MILLI);
+            PriceOracle.Bundle want = PriceOracle.bundleAt(c, stock, 40 * MILLI, refused, MarketBook.Side.MARKET_SELLS, Ratio.FAIR);
+            if (want == null) {
+                assertNull(o);
+                break;
+            }
+            assertNotNull(o, "step " + i);
+            assertEquals(want.items(), o.items());
+            assertEquals(want.coins(), o.coins());
+            m.local(++seq, "wheat", MarketBook.Side.MARKET_SELLS, o.items(), o.coins());
+            stock -= o.items() * MILLI;
+            treasury += o.coins() * MILLI;
+        }
+        // A sale back moves the stock off the purchases' ladder: crossed out until the next MARKET.
+        MarketBook<String> n = book(5, 0, 40 * MILLI, c, 3 * MILLI);
+        MarketBook.Offer first = n.offer("wheat", MarketBook.Side.MARKET_SELLS, 0);
+        n.local(1, "wheat", MarketBook.Side.MARKET_SELLS, first.items(), first.coins());
+        n.local(2, "wheat", MarketBook.Side.MARKET_BUYS, 1, 0);
+        assertNull(n.offer("wheat", MarketBook.Side.MARKET_SELLS, 0));
+    }
+
+    /**
      * Walkthrough B: each sale drains the treasury at once, and once it cannot pay for one bundle the
-     * offer is gone (vanilla shows it crossed out). A snapshot computed before the sales does not give
+     * offer is gone (vanilla shows it crossed out). A MARKET computed before the sales does not give
      * the money back; one that includes them replaces them.
      */
     @Test
     void localSalesDrainTheTreasuryUntilASnapshotIncludesThem() {
         PriceCurve big = new PriceCurve(50_000, 3, 4, 400 * MILLI);
-        MarketBook<String> m = new MarketBook<>(3);
-        m.snapshot(10, "emerald", 3 * MILLI, 20 * MILLI, new Ratio(1, 2), Map.of("wheat", new MarketBook.Good(400 * MILLI, big)));
+        MarketBook<String> m = book(3, 10, 400 * MILLI, big, 3 * MILLI);
         long seq = 10;
         int sales = 0;
         MarketBook.Offer o;
-        while ((o = m.offer("wheat", MarketBook.Side.MARKET_BUYS, Ratio.FAIR)) != null) {
+        while ((o = m.offer("wheat", MarketBook.Side.MARKET_BUYS, 0)) != null) {
             m.local(++seq, "wheat", MarketBook.Side.MARKET_BUYS, o.items(), o.coins());
             sales++;
             assertTrue(sales < 100);
         }
         assertEquals(3, sales);
         assertEquals(0, m.treasury());
-        // A late snapshot (as of before the sales) keeps them.
-        m.snapshot(10, "emerald", 3 * MILLI, 20 * MILLI, new Ratio(1, 2),
-                Map.of("wheat", new MarketBook.Good(400 * MILLI, big)));
+        // A late MARKET (as of before the sales) keeps them.
+        m.snapshot(10, "emerald", 3 * MILLI, 20 * MILLI, PriceOracle.thresholds(),
+                Map.of("wheat", good(400 * MILLI, big, 3 * MILLI, 20 * MILLI, new Ratio(1, 2))));
         assertEquals(0, m.treasury());
-        assertNull(m.offer("wheat", MarketBook.Side.MARKET_BUYS, Ratio.FAIR));
-        // A caravan bought the surplus: a snapshot that includes the sales and a refill reopens it.
-        m.snapshot(seq, "emerald", 5 * MILLI, 20 * MILLI, new Ratio(1, 2),
-                Map.of("wheat", new MarketBook.Good(300 * MILLI, big)));
+        assertNull(m.offer("wheat", MarketBook.Side.MARKET_BUYS, 0));
+        // A caravan bought the surplus: a MARKET that includes the sales and a refill reopens it.
+        m.snapshot(seq, "emerald", 5 * MILLI, 20 * MILLI, PriceOracle.thresholds(),
+                Map.of("wheat", good(300 * MILLI, big, 5 * MILLI, 20 * MILLI, new Ratio(1, 2))));
         assertEquals(0, m.pendingLocals());
-        assertNotNull(m.offer("wheat", MarketBook.Side.MARKET_BUYS, Ratio.FAIR));
+        MarketBook.Offer back = m.offer("wheat", MarketBook.Side.MARKET_BUYS, 0);
+        assertNotNull(back);
+        assertEquals(5, back.uses());
     }
 
     /** The market sells cheap goods by the bundle for one coin, dear goods singly for whole coins. */
     @Test
     void bundles() {
         MarketBook<String> m = tiny(40 * MILLI, 10 * MILLI);
-        MarketBook.Offer cheap = m.offer("wheat", MarketBook.Side.MARKET_SELLS, Ratio.FAIR);
+        MarketBook.Offer cheap = m.offer("wheat", MarketBook.Side.MARKET_SELLS, 0);
         assertNotNull(cheap);
         assertEquals(1, cheap.coins());
         assertTrue(cheap.items() > 1);
-        MarketBook<String> dear = new MarketBook<>(2);
-        dear.snapshot(0, "emerald", 10 * MILLI, 0, new Ratio(0, 1),
-                Map.of("iron", new MarketBook.Good(10 * MILLI, new PriceCurve(3_000_000, 3, 4, 10 * MILLI))));
-        MarketBook.Offer iron = dear.offer("iron", MarketBook.Side.MARKET_SELLS, Ratio.FAIR);
+        PriceOracle.Bundle iron = PriceOracle.bundleAt(new PriceCurve(3_000_000, 3, 4, 10 * MILLI), 10 * MILLI, 10 * MILLI,
+                false, MarketBook.Side.MARKET_SELLS, Ratio.FAIR);
         assertNotNull(iron);
         assertEquals(1, iron.items());
         assertTrue(iron.coins() >= 3);
+    }
+
+    /**
+     * The oracle and rtsim-trade agree on one vector the Rust test checks too
+     * ({@code market::tests::a_ladder_is_the_offers_of_successive_trades}, stock 40, treasury 9, fair):
+     * every step of the ladder of the market's sales.
+     */
+    @Test
+    void theOracleLadderIsTheRustLadder() {
+        PriceCurve c = new PriceCurve(50_000, 3, 4, 40 * MILLI);
+        java.util.List<PriceOracle.Bundle> l = PriceOracle.ladder(c, 40 * MILLI, 40 * MILLI, 9 * MILLI, 20 * MILLI,
+                MarketBook.Side.MARKET_SELLS, Ratio.FAIR, 12);
+        assertFalse(l.isEmpty());
+        long s = 40 * MILLI;
+        for (PriceOracle.Bundle b : l) {
+            // Each bundle costs at least the integral of the price over what it takes.
+            assertTrue(c.buyValue(s, b.items() * MILLI).coinsCeil() <= b.coins());
+            s -= b.items() * MILLI;
+        }
     }
 }

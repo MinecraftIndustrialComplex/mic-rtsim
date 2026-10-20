@@ -14,7 +14,8 @@ pub const SEVERITY_UNIT: u8 = 100;
 /// Everything tunable, so a scenario or a test can override one value without forking the code.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tunables {
-    /// Report lifetimes in ticks, by kind (indexed by [`ReportKind::index`]).
+    /// Report lifetimes in ticks, by kind (indexed by [`ReportKind::index`]). TUNABLE (P18:
+    /// set from a soak).
     pub lifetime: [u64; ReportKind::COUNT],
     /// Sentiment change toward `who` for a first-hand report of severity [`SEVERITY_UNIT`].
     pub delta: [i16; ReportKind::COUNT],
@@ -53,16 +54,21 @@ impl Default for Tunables {
         let mut lifetime = [0u64; ReportKind::COUNT];
         let mut delta = [0i16; ReportKind::COUNT];
         for k in ReportKind::ALL {
+            // Lifetimes (P18, Ben: "Vanilla + Veloren + soak"; lengthened now that news travels
+            // separately from cargo, overnight choice PR7). Veloren's were murder 15 in-game days
+            // and theft 1.5 (`data/report.rs:32-47`): with messengers a report crosses a hop in
+            // about half a day, so 1.5 days reached only the nearest villages. Every lifetime is
+            // TUNABLE, to be set from a soak; these are starting values: Veloren's doubled, theft
+            // and robbery four times (a robbery should reach its victim's home and the villages
+            // around it).
             let (life, d) = match k {
-                // P18 recommends Veloren's lifetimes (`data/report.rs:32-47`): murder 15 in-game
-                // days, theft 1.5. A killing of a resident is a murder too.
-                ReportKind::Killing | ReportKind::ResidentKilling => (15 * day, -125),
-                ReportKind::Robbery | ReportKind::Theft => (day * 3 / 2, -50),
-                // PLACEHOLDER lifetimes: Veloren keeps no assault, trade or rescue reports. 5 days
-                // is Veloren's "other deaths", borrowed as a middle value.
-                ReportKind::Assault | ReportKind::ResidentAssault => (5 * day, -25),
-                ReportKind::Trade => (day * 3 / 2, 2),
-                ReportKind::Rescue => (5 * day, 25),
+                ReportKind::Killing | ReportKind::ResidentKilling => (30 * day, -125),
+                ReportKind::Robbery | ReportKind::Theft => (6 * day, -50),
+                // Veloren keeps no assault, trade or rescue reports: 10 days is twice Veloren's
+                // "other deaths", borrowed as a middle value; a trade lives 3.
+                ReportKind::Assault | ReportKind::ResidentAssault => (10 * day, -25),
+                ReportKind::Trade => (3 * day, 2),
+                ReportKind::Rescue => (10 * day, 25),
             };
             lifetime[k.index()] = life;
             delta[k.index()] = d;

@@ -31,10 +31,16 @@ import java.util.UUID;
  * other a plain good the market trades. Anything else (two costs, enchanted or otherwise
  * component-bearing results) is left exactly as its mod made it.
  *
- * <p><b>When.</b> Before a player starts trading (the interaction event, before vanilla's
- * {@code updateSpecialPrices}, so reputation still applies on top), after every trade (the market
- * moved: the counts change and the trading player is sent the new offers), and at every restock
- * (the restock mixins), which only sets uses.
+ * <p><b>The engine's bundles, shown.</b> Every count comes from the MARKET's ladders ({@link MarketBook});
+ * the bridge computes no price (Ben's morning review, "Prices"). <b>Reputation is inside the quote</b>
+ * (G31, Ben: "Inside the sim quote"): the player's standing picks the MARKET's price level, from
+ * vanilla's own reputation with that villager (its gossip, which the sim also writes, C20) or a ribbit
+ * village's sentiment; vanilla's {@code updateSpecialPrices} discount is then taken off again on the
+ * offers the sim prices ({@link #foldReputation}), so one formula sets the price (choice PR1).
+ *
+ * <p><b>When.</b> Before a player starts trading (the interaction event), after every trade (the market
+ * moved: the counts change and the trading player is sent the new offers), and at every restock (the
+ * restock mixins), which only sets uses.
  */
 public final class ResidentMarkets {
 
@@ -88,33 +94,38 @@ public final class ResidentMarkets {
         return null;
     }
 
-    /** The buy markup and sell markdown for a player at this merchant (C20 for villagers, §8.7 otherwise). */
-    Ratio[] markup(Entity merchant, Village v, MarketBook<Item> book, Player player) {
+    /**
+     * The player's standing at this merchant (G31): vanilla's reputation with this villager for a
+     * resident with vanilla gossip, else the village's sentiment snapshot (ribbits, PLAN.md §8.7); 0
+     * with no player.
+     */
+    int standing(Entity merchant, Village v, Player player) {
         Residents.Kind kind = Residents.kind(merchant);
-        if (player == null || kind == null || kind.vanillaGossip())
-            return new Ratio[] {Ratio.FAIR, Ratio.FAIR};
+        if (player == null || kind == null)
+            return 0;
+        if (kind.vanillaGossip() && merchant instanceof Villager villager)
+            return villager.getPlayerReputation(player);
         Sentiments.Snapshot s = sentiments.get(v.id);
-        return Ratio.markupFor(s == null ? 0 : s.of(player.getUUID()), book.worst());
+        return s == null ? 0 : s.of(player.getUUID());
     }
 
     /**
-     * Reprices every market-shaped offer of a resident: new counts from the market (the integer
-     * bundle rtsim-trade's {@code Market::offer} gives) and uses from its stock or treasury. Offers are
-     * replaced in place, one for one, so the list keeps its length and order. Returns false when the
-     * village has no market snapshot yet.
+     * Reprices every market-shaped offer of a resident: the engine's bundle at the player's price level
+     * and uses from the ladder (MARKET). Offers are replaced in place, one for one, so the list keeps its
+     * length and order. Returns false when the village has no MARKET yet.
      */
     public boolean reprice(Entity merchant, Village v, Player player) {
         MarketBook<Item> book = known(v.id);
         if (book == null || !(merchant instanceof Merchant m))
             return false;
-        Ratio[] mk = markup(merchant, v, book, player);
+        int level = book.levelOf(standing(merchant, v, player));
         MerchantOffers offers = m.getOffers();
         for (int i = 0; i < offers.size(); i++) {
             MerchantOffer o = offers.get(i);
             Shape s = shape(o, book);
             if (s == null)
                 continue;
-            MarketBook.Offer q = book.offer(s.good(), s.side(), s.side() == MarketBook.Side.MARKET_SELLS ? mk[0] : mk[1]);
+            MarketBook.Offer q = book.offer(s.good(), s.side(), level);
             offers.set(i, rebuilt(o, s, q, book.currency()));
             repriced++;
         }
@@ -123,51 +134,29 @@ public final class ResidentMarkets {
             if (!list.contains(merchant))
                 list.add(merchant);
         }
-        clampReputation(merchant, v);
+        foldReputation(merchant, v);
         return true;
     }
 
     /**
-     * Keeps vanilla's reputation discount (C20) from turning a loop of trades into money (C13): on an
-     * offer the sim prices, the player never pays less per item than the market's marginal price
-     * {@code p(S)} and is never paid more. The market's own bundles already respect it (a buyer pays the
-     * integral from below the stock, a seller is paid the integral from above it), so this only trims a
-     * discount that went past it. Called after vanilla's {@code updateSpecialPrices} (the reputation
-     * mixin) and after every repricing.
+     * G31: vanilla's reputation (and Hero of the Village) price change is folded into the sim's quote,
+     * the price level the standing picked, so on an offer the sim prices vanilla's own
+     * {@code specialPriceDiff} is taken off again. Called after vanilla's {@code updateSpecialPrices}
+     * (the reputation mixin) and after every repricing.
      */
-    public void clampReputation(Entity merchant, Village v) {
+    public void foldReputation(Entity merchant, Village v) {
         MarketBook<Item> book = known(v.id);
         if (book == null || !(merchant instanceof Merchant m))
             return;
         for (MerchantOffer o : m.getOffers()) {
-            Shape s = shape(o, book);
-            if (s == null)
-                continue;
-            long p = book.priceNow(s.good());
-            if (p <= 0)
-                continue;
-            int cost = o.getCostA().getCount();
-            long min;
-            if (s.side() == MarketBook.Side.MARKET_SELLS) // pays cost coins for result items
-                min = ceilDiv((long) o.getResult().getCount() * p, PriceCurve.PRICE_ONE);
-            else // gives cost items for result coins
-                min = ceilDiv((long) o.getResult().getCount() * PriceCurve.PRICE_ONE, p);
-            if (cost >= min)
-                continue;
-            if (min > o.getCostA().getMaxStackSize()) {
-                Uses.set(o, o.getMaxUses()); // no bundle fits one stack at this price: crossed out
-                continue;
+            if (shape(o, book) != null && o.getSpecialPriceDiff() != 0) {
+                o.setSpecialPriceDiff(0);
+                folded++;
             }
-            o.setSpecialPriceDiff(o.getSpecialPriceDiff() + (int) (min - cost));
-            clamped++;
         }
     }
 
-    long clamped;
-
-    private static long ceilDiv(long a, long b) {
-        return (a + b - 1) / b;
-    }
+    long folded;
 
     /**
      * The repriced copy of an offer. Counts must fit one stack; a bundle that does not is clamped only
@@ -177,9 +166,7 @@ public final class ResidentMarkets {
         int max = o.getMaxUses();
         if (q == null) {
             // Refused (no stock, no money, a glut): the counts stay as they were, and it shows crossed out.
-            MerchantOffer n = new MerchantOffer(o.getItemCostA(), o.getItemCostB(), o.getResult().copy(), max, max, o.getXp(), o.getPriceMultiplier(), 0);
-            n.setSpecialPriceDiff(o.getSpecialPriceDiff());
-            return n;
+            return new MerchantOffer(o.getItemCostA(), o.getItemCostB(), o.getResult().copy(), max, max, o.getXp(), o.getPriceMultiplier(), 0);
         }
         long items = q == null ? 1 : q.items(), coins = q == null ? 1 : q.coins();
         long left = q == null ? 0 : q.uses();
@@ -209,14 +196,14 @@ public final class ResidentMarkets {
             result = new ItemStack(currency, (int) coins);
         }
         int uses = max - (int) Math.min(max, left);
-        MerchantOffer n = new MerchantOffer(costA, Optional.empty(), result, uses, max, o.getXp(), o.getPriceMultiplier(), 0);
-        n.setSpecialPriceDiff(o.getSpecialPriceDiff());
-        return n;
+        // The price is the engine's bundle at the player's level (G31): no vanilla discount on top.
+        return new MerchantOffer(costA, Optional.empty(), result, uses, max, o.getXp(), o.getPriceMultiplier(), 0);
     }
 
     /**
      * Sets one offer's uses from the market without changing its counts (a restock; the counts were
-     * set when trading began). Does nothing for an offer that is not market-shaped.
+     * set when trading began): the uses the MARKET's ladder has left for exactly these counts. Does
+     * nothing for an offer that is not market-shaped.
      */
     public void capUses(Village v, MerchantOffer o) {
         MarketBook<Item> book = known(v.id);
@@ -225,15 +212,9 @@ public final class ResidentMarkets {
         Shape s = shape(o, book);
         if (s == null)
             return;
-        long left;
-        if (s.side() == MarketBook.Side.MARKET_SELLS) {
-            int items = o.getResult().getCount();
-            left = book.cashRefused() ? 0 : book.stock(s.good()) / (Math.max(items, 1) * PriceCurve.MILLI);
-        } else {
-            int coins = o.getResult().getCount();
-            MarketBook.Offer q = book.offer(s.good(), s.side(), Ratio.FAIR);
-            left = q == null ? 0 : Math.max(0, book.treasury()) / (Math.max(coins, 1) * PriceCurve.MILLI);
-        }
+        long items = s.side() == MarketBook.Side.MARKET_SELLS ? o.getResult().getCount() : o.getCostA().getCount();
+        long coins = s.side() == MarketBook.Side.MARKET_SELLS ? o.getCostA().getCount() : o.getResult().getCount();
+        long left = book.usesFor(s.good(), s.side(), items, coins);
         Uses.set(o, o.getMaxUses() - (int) Math.min(o.getMaxUses(), left));
         Uses.noDemand(o);
         capped++;

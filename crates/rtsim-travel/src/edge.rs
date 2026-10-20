@@ -43,7 +43,9 @@ pub struct Dir {
     pub board_cursor: BoardCursor,
     /// News relayed on this direction so far: snapshots the origin received after this.
     pub relayed_through: Tick,
-    /// The packet waiting for the next caravan: (departure boundary, packet index in the world).
+    /// The news packet waiting for the next messenger on this direction (a road), or the next
+    /// caravan or ship (a lane without messengers): (departure boundary, packet index in the
+    /// world).
     pub pending: Option<(u64, u32)>,
 }
 
@@ -179,6 +181,12 @@ pub struct Edge {
     /// holds over their timetable, `rtsim-ships`); 0 is no limit (roads: a caravan grows with
     /// its load).
     pub cap_slot_milli: i64,
+    /// Messengers (news travels separately from cargo; Ben's morning review, "News"): one leaves
+    /// each end every `msg_period` quanta, on a phase from the edge's seed, carrying only news,
+    /// and walks the edge in `msg_walk` quanta. 0 is no messengers: news waits for the next
+    /// caravan or ship (a ships' lane).
+    pub msg_period: u64,
+    pub msg_walk: u64,
 }
 
 impl Edge {
@@ -205,6 +213,39 @@ impl Edge {
             stops: Vec::new(),
             medium: Medium::Road,
             cap_slot_milli: 0,
+            msg_period: 0,
+            msg_walk: d.max(1),
+        }
+    }
+
+    /// Gives the edge messengers: one leaves each end every `period` quanta and walks it in
+    /// `walk` quanta. A period of 0 takes them away.
+    pub fn set_messengers(&mut self, period: u64, walk: u64) {
+        self.msg_period = period;
+        self.msg_walk = walk.max(1);
+    }
+
+    /// The first boundary at or after `b` at which news leaves on direction `dir`: the next
+    /// messenger where the edge has them, else the next caravan or ship. News no longer waits
+    /// for a caravan's dock to fill (overnight choice PR6).
+    pub fn news_departure(&self, dir: usize, b: u64) -> u64 {
+        let p = self.msg_period;
+        if p == 0 {
+            return self.dirs[dir].lattice.next_departure(b);
+        }
+        // Each end on its own phase, both from the edge's seed, so a world's messengers do not
+        // all leave on the same boundary.
+        let phase = ((self.seed >> (32 * dir)) & 0xFFFF_FFFF) % p;
+        b + (phase + p - b % p) % p
+    }
+
+    /// Quanta news takes from departure to arrival: a messenger's walk, or the caravan's or
+    /// ship's.
+    pub fn news_walk(&self) -> u64 {
+        if self.msg_period == 0 {
+            self.d
+        } else {
+            self.msg_walk
         }
     }
 
@@ -259,6 +300,27 @@ pub fn split_for_raid(rate: Amount, predation: Option<Predation>) -> (Amount, Am
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messengers_leave_on_their_own_schedule() {
+        let mut e = Edge::new(0, 1, 1000, 10, 48, 0x0000_0005_0000_0003, false, 24);
+        // No messengers: news waits for the lattice (a caravan every 24 quanta when idle).
+        assert_eq!(e.news_walk(), 10);
+        e.set_messengers(6, 4);
+        assert_eq!(e.news_walk(), 4);
+        // Direction 0 leaves at boundaries 3, 9, 15 ...; direction 1 at 5, 11, 17 ...
+        assert_eq!(e.news_departure(0, 0), 3);
+        assert_eq!(e.news_departure(0, 3), 3);
+        assert_eq!(e.news_departure(0, 4), 9);
+        assert_eq!(e.news_departure(1, 6), 11);
+        // Never more than a period away, whatever the dock wait.
+        for b in 0..100 {
+            for d in 0..2 {
+                let n = e.news_departure(d, b);
+                assert!(n >= b && n < b + 6, "{b} -> {n}");
+            }
+        }
+    }
 
     #[test]
     fn periods() {

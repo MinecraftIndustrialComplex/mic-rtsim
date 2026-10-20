@@ -482,6 +482,11 @@ holds the stock at the cycle's lowest level, never above reality. Factory gauges
 their target as R (§2.7). A clock-driven redstone controller is a periodic edge (§4.2). This replaces
 the trickle restarts of the black box (`restart_min_run_ticks`, F10, overnight finding 4).
 
+**Changed by Ben (G-B8, 2026-10-20):** threshold switches and gauges are simulated as on/off cycles,
+not bounds. Strictly periodic cycles use G-B9's closed forms (§4.2), so their cost does not grow with
+elapsed time. The bound above remains the check: a simulated cycle never averages above it. The build
+works out the cycle model.
+
 ### 4.4 Latency and restarts
 
 - **Path latency** is computed, not learned (replacing F23): belt length / speed, chute height / item
@@ -562,7 +567,16 @@ the trickle restarts of the black box (`restart_min_run_ticks`, F10, overnight f
 - Live stores follow the sampler, simulated ones their pools and pending deltas (I8). When the cut
   closes (all loaded, or all unloaded) the district re-solves as one.
 
+**Changed by Ben (G-B6, 2026-10-20):** flow across the loaded/unloaded edge is modelled, not zero. The
+zero-flow text above is the rejected design. The build works out how cut edges carry flow without making
+more than a fully loaded factory would (G-B2's ceiling still holds).
+
 ### 6.2 Mob farms (I9)
+
+**Changed by Ben (G-B17, 2026-10-20):** mob farms model vanilla's spawning rules for their spawn spaces
+(light, block, mob cap, distance and pack size rules), not learned sources. The learned-source text below
+is the rejected design, kept as the check a modelled farm is measured against. C32 adds farms of thousands
+of player-owned animals (a sheep airship), which must cost little while unloaded.
 
 - Spawning and killing are not compiled. A mob farm is a **Source** node whose drop rates are measured
   while loaded (`LivingDropsEvent` inside the district, entering the collection system's first modelled
@@ -736,7 +750,11 @@ forecasts.
    is the ship's vault slots. Each call moves `min(learned exchange, available stock, room on the ship)`.
 3. **While unloaded** it is a periodic edge between the two ports' graphs (§4.2): exact closed forms,
    O(1) per catch-up however many voyages passed. The vehicle's own machines compile like any district.
-4. **Position.** A ship only ever materializes at a dock (G-B7). On a port's load, a ship due there is
+4. **Position. Changed by Ben (G-B7, 2026-10-20):** a simulated ship, a player sailbot included, may
+   materialize anywhere a player can see it, not only at docks. The rest of this item is the rejected
+   design. C32: a factory can itself be a moving Sable ship, compiled in the ship's own frame, and
+   ship-to-ship ferries with both ends moving belong to the voyage plugin (C30).
+   Rejected: a ship only ever materializes at a dock. On a port's load, a ship due there is
    moved to the dock pose with Sable's `PhysicsPipeline.teleport(body, position, rotation)` (jar). If a
    player loads the ship's last pose while it is at sea in the sim, it is moved to the next dock on its
    route at once; its cargo still follows the timetable. Whether `teleport` works on a sub-level whose
@@ -877,7 +895,9 @@ No new blocks, items or entities (D3).
 
 ## 12. Proposals for Ben
 
-Each lists the recommended option first. All are open until Ben decides.
+Each lists the recommended option first. **Ben decided all of them on 2026-10-20** (DECISIONS.md, G-B1
+to G-B19): the recommendation everywhere except G-B6, G-B7, G-B8 and G-B17, which he changed (see §4.3,
+§6.1, §6.2 and §8).
 
 | # | Question | Recommended | Alternatives |
 |---|---|---|---|
