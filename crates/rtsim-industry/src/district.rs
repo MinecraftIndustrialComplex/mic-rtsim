@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use crate::cluster::{MemberSpec, PoolKey, ProcSpec, ProcSpecBody};
 use crate::cmd::{BlockDestroy, ChunkReconcile};
-use crate::ids::{ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId};
+use crate::ids::{ChannelId, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap};
 use crate::learn::{Learned, LearnedTarget, Learner, LinkKey};
 use crate::obs::{DepositSample, InvKind, InventoryDecl, NotLearnable};
 use crate::reconcile::{GoodLookup, InvState};
@@ -212,16 +212,16 @@ pub struct District {
     pub name: u32,
     pub not_learnable: Option<NotLearnable>,
     pub chunks: BTreeSet<(i32, i32)>,
-    pub inventories: BTreeMap<u32, Inventory>,
+    pub inventories: VecMap<u32, Inventory>,
     pub presence: Presence,
     pub phase: Phase,
     pub learner: Learner,
-    pub models: BTreeMap<u32, Model>,
+    pub models: VecMap<u32, Model>,
     /// Cumulative port imports, any origin (learning uses differences).
     pub ports: GoodVec,
     pub links: BTreeMap<LinkKey, i64>,
     pub sweep: Option<SweepBuf>,
-    pub deposits: BTreeMap<Good, DepositSample>,
+    pub deposits: VecMap<Good, DepositSample>,
     pub sim: Option<SimSpan>,
     pub epoch: u32,
     pub pending: BTreeMap<ChunkPos, Vec<PendingChunk>>,
@@ -249,8 +249,8 @@ pub struct District {
     pub batches: BTreeMap<(u32, u32), GoodVec>,
     /// What the replay made (positive) and used (negative) over all spans.
     pub made_total: GoodVec,
-    /// The last time the run state changed, and to what, for the ledger.
-    pub last_run: Option<(Tick, String)>,
+    /// The last time the box's run state changed, and why it stopped (`None`: it started).
+    pub last_run: Option<(Tick, Option<crate::cluster::Stop>)>,
 }
 
 impl District {
@@ -262,15 +262,15 @@ impl District {
             name: 0,
             not_learnable: None,
             chunks: BTreeSet::new(),
-            inventories: BTreeMap::new(),
+            inventories: VecMap::new(),
             presence: Presence::Unloaded,
             phase: Phase::Learning,
             learner: Learner::new(),
-            models: BTreeMap::new(),
+            models: VecMap::new(),
             ports: GoodVec::new(),
             links: BTreeMap::new(),
             sweep: None,
-            deposits: BTreeMap::new(),
+            deposits: VecMap::new(),
             sim: None,
             epoch: 0,
             pending: BTreeMap::new(),

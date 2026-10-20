@@ -19,6 +19,7 @@ fn d(n: u64) -> DistrictId {
 }
 
 /// A smelter-like box: `inputs` consumed, one output produced, with an optional target and cap.
+#[allow(clippy::too_many_arguments)]
 fn boxed(
     id: u64,
     stock: i64,

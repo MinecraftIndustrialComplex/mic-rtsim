@@ -215,8 +215,10 @@ impl GoodLookup for FakeWorld {
 
 impl FakeWorld {
     pub fn new(seed: u64, tun: Tunables, mode: Mode) -> Self {
+        let mut engine = Engine::new(seed, tun, mode, Tick::ZERO);
+        engine.log_enabled = true;
         Self {
-            engine: Engine::new(seed, tun, mode, Tick::ZERO),
+            engine,
             t: Tick::ZERO,
             goods: BTreeMap::new(),
             districts: Vec::new(),

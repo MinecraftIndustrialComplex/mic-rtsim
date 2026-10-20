@@ -239,6 +239,9 @@ pub struct ProcSpec {
     pub latency: u64,
 }
 
+/// A district's item space as the engine describes it: (weights by pool, fixed units, cap units).
+pub type SpaceSpec = (Vec<(PoolKey, i64)>, i64, i64);
+
 /// Everything a district brings into a cluster.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberSpec {
@@ -247,8 +250,7 @@ pub struct MemberSpec {
     /// given here is used only when the pool is new.
     pub pools: Vec<(PoolKey, i64, Option<i64>)>,
     pub procs: Vec<ProcSpec>,
-    /// (weights by pool, fixed units, cap units).
-    pub space: Option<(Vec<(PoolKey, i64)>, i64, i64)>,
+    pub space: Option<SpaceSpec>,
 }
 
 /// What a district takes out of a cluster: its pools and their books.
@@ -1209,10 +1211,13 @@ impl Cluster {
             {
                 keep(t.since(anchor).max(1));
             }
-            if p.enabled && p.run != Run::Running && p.armed.is_none() && self.requirement_met(i, &running) {
-                if let Some(n) = self.restart_time(i, &cons) {
-                    keep(n.saturating_add(p.latency));
-                }
+            if p.enabled
+                && p.run != Run::Running
+                && p.armed.is_none()
+                && self.requirement_met(i, &running)
+                && let Some(n) = self.restart_time(i, &cons)
+            {
+                keep(n.saturating_add(p.latency));
             }
             if p.run == Run::Running && matches!(p.body, Body::Link { batch: Some(_), .. }) {
                 let (v0, bound) = self.con_terms(Con::Batch(i), &running, &mut ts);

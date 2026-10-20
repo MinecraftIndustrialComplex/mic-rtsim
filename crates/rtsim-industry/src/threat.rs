@@ -145,7 +145,7 @@ pub fn next_pressure_attack(
     mean_per_day: f64,
     after_day: u64,
 ) -> Option<(u64, u32)> {
-    if !(mean_per_day > 0.0) || !mean_per_day.is_finite() {
+    if mean_per_day.is_nan() || mean_per_day <= 0.0 || !mean_per_day.is_finite() {
         return None;
     }
     let p = -(-mean_per_day).exp_m1(); // P(K >= 1) for K ~ Poisson(mean)
@@ -765,7 +765,7 @@ mod tests {
             day = d + 1;
         }
         let rate = attacks as f64 / 200_000.0;
-        let want = -(-m as f64).exp_m1();
+        let want = -(-m).exp_m1();
         assert!((rate - want).abs() < 0.01, "rate {rate}, want {want}");
     }
 

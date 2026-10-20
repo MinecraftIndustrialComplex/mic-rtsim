@@ -321,7 +321,7 @@ impl Window {
         gap
     }
 
-    fn evaluate(&self, from: u64, tun: &LearnTunables) -> Option<(Vec<(Good, f64)>, Vec<(LinkKey, f64)>, f64)> {
+    fn evaluate(&self, from: u64, tun: &LearnTunables) -> Option<Fit> {
         let end = self.points.last()?.t;
         let from = from.max(self.start);
         let mid = from + (end - from) / 2;
@@ -363,6 +363,9 @@ impl Window {
         Some((rates, links, (1.0 - worst).clamp(0.0, 1.0)))
     }
 }
+
+/// A steady window's rates, link rates and confidence.
+type Fit = (Vec<(Good, f64)>, Vec<(LinkKey, f64)>, f64);
 
 /// What one sweep tells the learner.
 pub struct Sample<'a> {

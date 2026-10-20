@@ -33,7 +33,7 @@ use crate::cmd::{
 };
 use crate::deposit::{self, Writeback};
 use crate::district::{
-    AttackReport, DEPOSIT_INVENTORY, District, ExchangeRule, Inventory, Model, PendingChunk,
+    AttackReport, DEPOSIT_INVENTORY, District, Inventory, Model, PendingChunk,
     Phase, Presence, ReconcileReport, SimSpan, SweepBuf,
 };
 use crate::ids::{
@@ -211,6 +211,9 @@ pub struct Engine {
     pub stats: Stats,
     pub books: Books,
     pub log: std::collections::VecDeque<EngineEvent>,
+    /// Keep [`Engine::log`]: off by default (formatting lines costs every breakpoint); the fake
+    /// world and the CLI turn it on.
+    pub log_enabled: bool,
 }
 
 impl Engine {
@@ -243,10 +246,14 @@ impl Engine {
             stats: Stats::default(),
             books: Books::default(),
             log: std::collections::VecDeque::new(),
+            log_enabled: false,
         }
     }
 
     fn note(&mut self, d: DistrictId, at: Tick, what: String) {
+        if !self.log_enabled {
+            return;
+        }
         if self.log.len() >= LOG_CAP {
             self.log.pop_front();
         }
@@ -889,20 +896,22 @@ impl Engine {
         let mut season_change = false;
         for e in events {
             match e {
-                ClusterEvent::Stopped { at, owner, id, why } if id == 0 => {
-                    let words = stop_words(why, &self.goods);
+                ClusterEvent::Stopped { at, owner, id: 0, why } => {
                     if let Some(dist) = self.districts.get_mut(&owner) {
-                        dist.last_run = Some((at, words.clone()));
+                        dist.last_run = Some((at, Some(why)));
                     }
-                    if why != Stop::Disabled {
+                    if self.log_enabled && why != Stop::Disabled {
+                        let words = stop_words(why, &self.goods);
                         self.note(owner, at, format!("breakpoint: {words}"));
                     }
                 }
-                ClusterEvent::Started { at, owner, id } if id == 0 => {
+                ClusterEvent::Started { at, owner, id: 0 } => {
                     if let Some(dist) = self.districts.get_mut(&owner) {
-                        dist.last_run = Some((at, "running".to_string()));
+                        dist.last_run = Some((at, None));
                     }
-                    self.note(owner, at, "running".to_string());
+                    if self.log_enabled {
+                        self.note(owner, at, "running".to_string());
+                    }
                 }
                 ClusterEvent::PackagesReady {
                     at,
@@ -1483,12 +1492,14 @@ impl Engine {
             // I-A: the exchange is the ledger's estimate only; the train keeps its cargo.
             return;
         }
-        let mut moved = GoodVec::new();
-        for &(_, g, n) in &entries {
-            moved.add(g, -n);
+        if self.log_enabled {
+            let mut moved = GoodVec::new();
+            for &(_, g, n) in &entries {
+                moved.add(g, -n);
+            }
+            let what = format!("station exchange with train {}: {}", c.train.0, self.goods_words(&moved));
+            self.note(d, at, what);
         }
-        let what = format!("station exchange with train {}: {}", c.train.0, self.goods_words(&moved));
-        self.note(d, at, what);
         let op = self.ops.allocate();
         self.exchanges.insert(
             op,
@@ -1555,7 +1566,7 @@ impl Engine {
                     .district_mut(dep.district)
                     .exchange
                     .entry(dep.station)
-                    .or_insert_with(ExchangeRule::default);
+                    .or_default();
                 for (g, n) in diff.iter() {
                     if n > 0 {
                         rule.unload.insert(g);

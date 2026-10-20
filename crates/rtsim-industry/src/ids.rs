@@ -309,3 +309,85 @@ mod tests {
         assert_eq!(w.as_slice(), &[(Good(1), 2)]);
     }
 }
+
+/// A small map as a sorted `Vec`: what a district has a handful of (inventories, season models).
+/// A `BTreeMap` with one entry allocates a node for eleven, which made a district cost 8.5 KB.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VecMap<K, V>(Vec<(K, V)>);
+
+impl<K, V> Default for VecMap<K, V> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<K: Ord + Copy, V> VecMap<K, V> {
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn find(&self, k: &K) -> Result<usize, usize> {
+        self.0.binary_search_by(|e| e.0.cmp(k))
+    }
+
+    pub fn get(&self, k: &K) -> Option<&V> {
+        self.find(k).ok().map(|i| &self.0[i].1)
+    }
+
+    pub fn get_mut(&mut self, k: &K) -> Option<&mut V> {
+        self.find(k).ok().map(|i| &mut self.0[i].1)
+    }
+
+    pub fn contains_key(&self, k: &K) -> bool {
+        self.find(k).is_ok()
+    }
+
+    pub fn insert(&mut self, k: K, v: V) -> Option<V> {
+        match self.find(&k) {
+            Ok(i) => Some(std::mem::replace(&mut self.0[i].1, v)),
+            Err(i) => {
+                self.0.insert(i, (k, v));
+                None
+            }
+        }
+    }
+
+    pub fn remove(&mut self, k: &K) -> Option<V> {
+        self.find(k).ok().map(|i| self.0.remove(i).1)
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> {
+        self.0.iter().map(|e| (&e.0, &e.1))
+    }
+
+    pub fn keys(&self) -> impl DoubleEndedIterator<Item = &K> {
+        self.0.iter().map(|e| &e.0)
+    }
+
+    pub fn values(&self) -> impl DoubleEndedIterator<Item = &V> {
+        self.0.iter().map(|e| &e.1)
+    }
+
+    pub fn values_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut V> {
+        self.0.iter_mut().map(|e| &mut e.1)
+    }
+}
+
+impl<K: Ord + Copy, V> std::ops::Index<&K> for VecMap<K, V> {
+    type Output = V;
+    fn index(&self, k: &K) -> &V {
+        self.get(k).expect("no such key")
+    }
+}
