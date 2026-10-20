@@ -1,0 +1,5 @@
+# rtsim-jni depends on mic-native-rt from the private repository
+# MinecraftIndustrialComplex/mic-native over SSH. Cargo's built-in git client does not use the
+# SSH agent the way the git command does, so fetch through the git CLI (choice J1).
+[net]
+git-fetch-with-cli = true
