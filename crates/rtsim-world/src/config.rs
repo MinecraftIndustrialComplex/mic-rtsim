@@ -43,6 +43,10 @@ pub struct WorldConfig {
     /// default simulation distance of 10 chunks (PLAN.md §6.1: travellers appear at the edge of
     /// the entity-ticking area).
     pub view_blocks: u32,
+    /// A ships' lane that pirates hunt is priced as an expected loss in the trade allocation:
+    /// its margin falls by the raided share of what the destination pays (overnight choice U9).
+    /// Default on; off restores the allocation that ignored hazard (roads ignore it either way).
+    pub price_lane_hazard: bool,
     /// Sorcerers leave out a player at or below this sentiment (PLAN.md §8.8). PLACEHOLDER (P18):
     /// -25, one assault or a robbery heard as news.
     pub sorcerer_dislike_at_or_below: i8,
@@ -89,6 +93,7 @@ impl WorldConfig {
             check_every_event: cfg!(debug_assertions),
             keep_history: false,
             view_blocks: 160,
+            price_lane_hazard: true,
             sorcerer_dislike_at_or_below: -25,
             sorcerer_friend_at_or_above: 25,
             growth: true,

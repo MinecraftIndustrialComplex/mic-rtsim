@@ -37,7 +37,7 @@ pub mod world;
 pub use caravans::{Attack, CaravanOutcome};
 pub use config::WorldConfig;
 pub use flows::PipeKind;
-pub use interest::{PlayerState, Visible};
+pub use interest::{PlayerState, Viewer, Visible};
 pub use lanes::{Cut, LaneSpec};
 pub use observe::Side;
 pub use ribbits::{BandView, PlaceHouse, SentimentSnapshot, SpawnResident, identity_op};

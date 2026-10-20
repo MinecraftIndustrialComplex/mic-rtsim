@@ -237,6 +237,11 @@ fn raids_in_view_send_loot_to_the_haven_and_conserve_every_good() {
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     // Make the pirates bold and the raids certain enough to see in a short run.
     c.ships.tun.share_per_strength_milli = 60;
+    // At that hazard (the 400 per mille cap) traders who price it leave the lane at once
+    // (overnight choice U9; `a_hunted_lane_is_priced_as_an_expected_loss`), and no merchant in
+    // view would carry anything to loot. This test is about raids in view, so its traders keep
+    // the rule that ignores hazard.
+    c.world.cfg.price_lane_hazard = false;
     let mut raided = 0;
     let mut t = Tick::ZERO;
     let end = Tick::from_days(16);
@@ -658,4 +663,59 @@ fn a_replayed_loot_applies_once() {
         }
     }
     assert!(done, "a merchant with cargo came into view");
+}
+
+/// Goods allocated to a lane now, both directions, the raided share included (thousandths a
+/// quantum): what its origins' traders choose to send on it.
+fn allocated(w: &World, edge: u32) -> i64 {
+    w.edges[edge as usize]
+        .dirs
+        .iter()
+        .map(|d| {
+            d.goods.values().map(|p| p.current_rate()).sum::<i64>()
+                + d.raid.values().map(|p| p.current_rate()).sum::<i64>()
+        })
+        .sum()
+}
+
+/// Overnight choice U9: a lane that pirates hunt is priced as an expected loss in the trade
+/// allocation (its margin falls by the raided share of what the destination pays), so traders
+/// send less on it than traders who ignore the hazard, and every good stays conserved.
+#[test]
+fn a_hunted_lane_is_priced_as_an_expected_loss() {
+    let run = |priced: bool| -> (i64, i64) {
+        let mut c = coast(5);
+        c.world.cfg.price_lane_hazard = priced;
+        // Only the world runs: no pirate sets a hazard but the one below.
+        let warm = Tick::from_days(4);
+        c.world.run_until(warm);
+        let lane = (0..c.ships.lanes.len())
+            .max_by_key(|&l| {
+                (
+                    allocated(&c.world, c.ships.lanes[l].edge),
+                    std::cmp::Reverse(l),
+                )
+            })
+            .expect("a lane");
+        let edge = c.ships.lanes[lane].edge;
+        let before = allocated(&c.world, edge);
+        let haven = c.ships.havens[c.haven as usize].node;
+        for dir in 0..2 {
+            assert!(c.world.set_lane_hazard(edge, dir, haven, 300, 4, warm));
+        }
+        let end = Tick::from_days(10);
+        c.world.run_until(end);
+        c.world.check_conserved(end).expect("conserved");
+        (before, allocated(&c.world, edge))
+    };
+    let (before, ignored) = run(false);
+    let (before_priced, priced) = run(true);
+    eprintln!("U9: {before} before the hazard; after 6 days, {ignored} ignored, {priced} priced");
+    assert_eq!(before, before_priced, "the same world until the hazard");
+    assert!(before > 0, "the busiest lane carries trade");
+    assert!(ignored > 0, "traders who ignore the hazard keep sending");
+    assert!(
+        priced < ignored,
+        "a hunted lane is avoided: {priced} sent priced, {ignored} ignored, {before} before"
+    );
 }

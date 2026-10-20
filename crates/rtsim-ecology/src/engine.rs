@@ -637,22 +637,42 @@ impl Dragons {
         if let Some(v) = self.players.get_mut(&p) {
             v.interest = Some(stamp);
         }
+        let mut found = Vec::new();
         for other in w.legs.sharing(stamp) {
-            let Some(d) = w.legs.get(other.leg).and_then(|r| owner_dragon(r.owner)) else {
+            if w.legs
+                .get(other.leg)
+                .and_then(|r| owner_dragon(r.owner))
+                .is_none()
+            {
                 continue;
-            };
+            }
             if let Some(m) = w.legs.meeting(other, stamp) {
-                self.schedule(
-                    m.at,
-                    Ev::Seen {
-                        d,
-                        player: p,
-                        meeting: m,
-                    },
-                );
+                found.push(m);
             }
         }
-        // Dragons at rest in a lair the area covers.
+        self.seen_legs(w, p, &found);
+        self.seen_at_lairs(p, stamp, path);
+    }
+
+    /// Dragon legs crossing a player's area: one `Seen` per meeting (`a` the dragon's leg).
+    fn seen_legs(&mut self, w: &World, p: ActorId, found: &[Meeting]) {
+        for m in found {
+            let Some(d) = w.legs.get(m.a.leg).and_then(|r| owner_dragon(r.owner)) else {
+                continue;
+            };
+            self.schedule(
+                m.at,
+                Ev::Seen {
+                    d,
+                    player: p,
+                    meeting: *m,
+                },
+            );
+        }
+    }
+
+    /// Dragons at rest in a lair the area covers at its start: they book no leg.
+    fn seen_at_lairs(&mut self, p: ActorId, stamp: Stamp, path: Path) {
         let r = i64::from(path.radius);
         let (x0, z0) = (
             i64::from(path.x0.min(path.x1)) - r,
@@ -697,6 +717,15 @@ impl Dragons {
                 );
             }
         }
+    }
+
+    /// A player's position for the home counter (P26) only, when the player's interest area is
+    /// the engine's shared one (`rtsim_world::interest::Viewer`, routed by
+    /// `World::route_area`) instead of this engine's own ([`Dragons::observe_player`]).
+    pub fn observe_home(&mut self, w: &mut World, uuid: Uuid, pos: Pos, at: Tick) -> ActorId {
+        let p = self.player(w, uuid);
+        self.homes.observe(p, pos, at);
+        p
     }
 
     /// A dragon settling at its lair: any player whose interest area covers the lair now sees it.
@@ -3062,6 +3091,33 @@ impl Dragons {
                 .map(|s| s.id)
                 .collect(),
             None => Vec::new(),
+        }
+    }
+}
+
+/// The dragons as a viewer of the engine's shared interest areas (one per player across every
+/// module; overnight choices U2 to U6). Through it the dragons see exactly what their own areas
+/// ([`Dragons::observe_player`]) showed them: the dragon legs a player's area crosses, and the
+/// dragons at rest in a lair it covers. The home counter is fed apart, by
+/// [`Dragons::observe_home`]. A player's view here keeps no area of its own (`interest` stays
+/// `None`), so [`Dragons::player_left`] never cancels the shared one.
+impl rtsim_world::interest::Viewer for Dragons {
+    fn owns(&self, owner: rtsim_travel::legs::Owner) -> bool {
+        owner_dragon(owner).is_some()
+    }
+
+    fn area_booked(&mut self, w: &mut World, player: ActorId, uuid: (u64, u64), area: Stamp) {
+        let _ = (w, area);
+        self.players.entry(player).or_insert(PlayerView {
+            uuid,
+            interest: None,
+        });
+    }
+
+    fn crossings(&mut self, w: &mut World, player: ActorId, area: Stamp, found: &[Meeting]) {
+        self.seen_legs(w, player, found);
+        if let Some(path) = w.legs.get(area.leg).map(|r| r.path) {
+            self.seen_at_lairs(player, area, path);
         }
     }
 }

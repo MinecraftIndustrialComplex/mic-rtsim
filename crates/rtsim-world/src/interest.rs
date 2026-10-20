@@ -13,7 +13,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_knowledge::{ActorId, ActorKind};
 use rtsim_settle::Pos;
 use rtsim_travel::caravan::{CaravanKey, Traveller};
-use rtsim_travel::legs::{LegId, LegIndex, Owner, Path, Stamp};
+use rtsim_travel::legs::{LegId, LegIndex, Meeting, Owner, Path, Stamp};
 
 use crate::world::{CaravanId, World};
 
@@ -280,5 +280,158 @@ impl World {
         self.travellers(key.edge, key.dir)
             .into_iter()
             .find(|t| t.key == key)
+    }
+}
+
+// ---- one interest area per player, shared by every module (overnight choices U2 to U6) --------
+
+/// A module whose travellers players can see (the dragons, the ships; next, rtsim-ecology's
+/// herds): it owns the legs whose owner it claims, and hears of each player's **shared** interest
+/// area whenever that area is booked or replanned ([`World::route_area`]).
+///
+/// One area per player serves every module: the player's position goes in once
+/// ([`World::observe_area`]), each module's travellers are booked against the same area, and
+/// each crossing found in the cells the area covers goes to the module that owns the traveller.
+/// A module's own travellers look the area up the same way when they are booked (a dragon's
+/// flight, a pirate's leg: `LegIndex::sharing` finds the one area, so one meeting).
+///
+/// **Leg owners** (the index treats them as opaque; this is the registry): bit 63 a player's
+/// area ([`PLAYER_OWNER`] over the player's actor), bit 62 a dragon's flight (rtsim-ecology),
+/// bit 61 a ship's voyage or pirate leg (rtsim-ships), bit 60 reserved for rtsim-ecology's herds;
+/// none of them, a caravan row's 48-bit handle (this crate's own: [`World::encounters`] answers for
+/// those, and [`World::route_area`] hands them back).
+pub trait Viewer {
+    /// Whether a leg with this owner is one of this module's travellers.
+    fn owns(&self, owner: Owner) -> bool;
+
+    /// A player's area was booked or replanned (`area` is the new stamp). Book here what only an
+    /// area makes worth booking (the ships book the voyages it could see), before the crossings
+    /// are looked up.
+    fn area_booked(&mut self, w: &mut World, player: ActorId, uuid: (u64, u64), area: Stamp);
+
+    /// This module's legs that share a cell with the area, each with its first meeting (`a` the
+    /// traveller's leg, `b` the area), in the order of the travellers' stamps. Also where a
+    /// module sees what has no leg (a dragon at rest in its lair).
+    fn crossings(&mut self, w: &mut World, player: ActorId, area: Stamp, found: &[Meeting]);
+
+    /// The player left (or a session ended): its area is gone.
+    fn player_left(&mut self, w: &mut World, player: ActorId) {
+        let _ = (w, player);
+    }
+}
+
+impl World {
+    /// Where a player is, for the shared interest area of every module (one PLAYER record per
+    /// hand-over goes in here once). The player is registered by UUID; its area, a circle of
+    /// `radius` blocks, is kept while the player stays within a quarter of the radius and it still
+    /// covers the next window, otherwise booked anew for two windows (the rule the dragons' and
+    /// the ships' own areas follow, R11 and T17). Returns the player's actor and the area's new
+    /// stamp when it was booked or replanned (route it with [`World::route_area`]), `None` when
+    /// it was kept.
+    ///
+    /// The area is the world's own interest leg ([`PlayerState`], saved with the world), so
+    /// [`World::encounters`] and [`World::visible_to`] read it too. Use this or
+    /// [`World::set_player_pos`] for a player, not both: they replan the same leg.
+    pub fn observe_area(
+        &mut self,
+        uuid: (u64, u64),
+        pos: Pos,
+        at: Tick,
+        radius: u32,
+    ) -> (ActorId, Option<Stamp>) {
+        let player = self.player_uuid(uuid.0, uuid.1);
+        let window = self.legs.window_ticks();
+        let leg = self.players.get(&player).and_then(|p| p.interest);
+        let keep = leg.and_then(|l| self.legs.get(l)).is_some_and(|row| {
+            let (dx, dz) = (
+                i64::from(row.path.x0) - i64::from(pos.x),
+                i64::from(row.path.z0) - i64::from(pos.z),
+            );
+            let quarter = i64::from(radius / 4).pow(2);
+            row.path.frame == pos.frame
+                && row.path.radius == radius
+                && dx * dx + dz * dz <= quarter
+                && row.path.t1.0 >= at.0 + window
+        });
+        if let Some(st) = self.players.get_mut(&player) {
+            st.pos = Some((pos, at));
+        }
+        if keep {
+            return (player, None);
+        }
+        let path = Path {
+            frame: pos.frame,
+            x0: pos.x,
+            z0: pos.z,
+            x1: pos.x,
+            z1: pos.z,
+            t0: at,
+            t1: Tick(at.0 + 2 * window),
+            radius,
+        };
+        let stamp = match leg.and_then(|l| self.legs.replan(l, path)) {
+            Some(s) => s,
+            None => self.legs.book(path, Owner(PLAYER_OWNER | player.to_bits())),
+        };
+        if let Some(st) = self.players.get_mut(&player) {
+            st.interest = Some(stamp.leg);
+        }
+        (player, Some(stamp))
+    }
+
+    /// The player's shared interest area as it stands, if it has one.
+    pub fn interest_area(&self, player: ActorId) -> Option<Stamp> {
+        let leg = self.players.get(&player)?.interest?;
+        self.legs.stamp(leg)
+    }
+
+    /// Routes a player's newly booked area to the modules (A15): each viewer books what the area
+    /// needs first ([`Viewer::area_booked`]), then the legs sharing its cells are looked up once
+    /// and each crossing goes to the viewer that owns the traveller ([`Viewer::crossings`], every
+    /// viewer called, in the order given). Returns the crossings no viewer claimed (caravan rows,
+    /// a module not passed in), in stamp order. A stale `area` routes nothing.
+    pub fn route_area(
+        &mut self,
+        player: ActorId,
+        area: Stamp,
+        viewers: &mut [&mut dyn Viewer],
+    ) -> Vec<Meeting> {
+        if !self.legs.is_live(area) {
+            return Vec::new();
+        }
+        let uuid = self.players.get(&player).map_or((0, 0), |p| p.uuid);
+        for v in viewers.iter_mut() {
+            v.area_booked(self, player, uuid, area);
+        }
+        let mut found: Vec<Vec<Meeting>> = vec![Vec::new(); viewers.len()];
+        let mut rest = Vec::new();
+        for other in self.legs.sharing(area) {
+            let Some(owner) = self.legs.get(other.leg).map(|r| r.owner) else {
+                continue;
+            };
+            if owner.0 & PLAYER_OWNER != 0 {
+                continue; // another player's area
+            }
+            let Some(m) = self.legs.meeting(other, area) else {
+                continue;
+            };
+            match viewers.iter().position(|v| v.owns(owner)) {
+                Some(k) => found[k].push(m),
+                None => rest.push(m),
+            }
+        }
+        for (v, f) in viewers.iter_mut().zip(&found) {
+            v.crossings(self, player, area, f);
+        }
+        rest
+    }
+
+    /// A player left (logged out, stale, a session ended): its shared area goes, with every
+    /// meeting booked against it, and each viewer hears of it.
+    pub fn leave_area(&mut self, player: ActorId, viewers: &mut [&mut dyn Viewer]) {
+        self.forget_player_pos(player);
+        for v in viewers.iter_mut() {
+            v.player_left(self, player);
+        }
     }
 }

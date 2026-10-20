@@ -67,6 +67,25 @@ pub(crate) fn to_home(m: &Market, from: Option<GoodId>, price: Price) -> Option<
     (rate > 0).then(|| mul_div_floor(price, rate, PRICE_ONE))
 }
 
+/// What a trader expects to lose per whole item sent on a ships' lane that pirates hunt: the
+/// raided share of the destination's bid `v` (the destination pays only for what arrives), so a
+/// hunted lane's margin falls and the trade goes another way or not at all (PLAN.md §10.1, "fewer
+/// caravans take it"; overnight choice U9). Roads are left as they were: phase 1's raided roads
+/// keep their own rule. Off with [`crate::WorldConfig::price_lane_hazard`].
+fn lane_loss(
+    e: &rtsim_travel::Edge,
+    dir: &rtsim_travel::edge::Dir,
+    v: Price,
+    cfg: &crate::config::WorldConfig,
+) -> Price {
+    match dir.predation {
+        Some(p) if cfg.price_lane_hazard && e.medium != rtsim_travel::Medium::Road && v > 0 => {
+            mul_div_floor(v, p.share_milli.clamp(0, 1000), 1000)
+        }
+        _ => 0,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn step(
     m: &mut Market,
@@ -182,7 +201,7 @@ fn step(
                 refused,
                 snap.can_pay || barter,
             ) {
-                (Some(v), false, true) => v - mine - tau + MARGIN_SLACK,
+                (Some(v), false, true) => v - lane_loss(e, dir, v, cfg) - mine - tau + MARGIN_SLACK,
                 _ => -1,
             };
             if margin < 0 && !had {
