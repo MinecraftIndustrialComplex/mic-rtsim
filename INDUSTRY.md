@@ -256,7 +256,8 @@ edge on belts, which C19 forbids; (c) Force-load the remainder, which is chunk-l
   delta with an epoch above the chunk's is applied, removals first. A crash anywhere replays correctly,
   because an older chunk also carries an older epoch.
 - **Shortfall:** a machine that ticked first may have taken an input. The missing amount then trims the
-  outputs it funded, by the model's ratios. The ledger shows it, and conservation holds.
+  outputs it funded, by the model's ratios. The reconcile record shows it to the operator (§10), and
+  conservation holds.
 - **Fit with the rest of the plan:** this is PLAN §4.9's operation ids for vault deltas, and it answers
   P29 for them.
 
@@ -268,7 +269,7 @@ Rewrite NBT in `ChunkDataEvent.Load`, which depends on every mod's NBT layout.
 ## 6. The hard cases
 
 **Box:** the black box handles it unchanged. **Plugin:** it needs a plugin. **Out:** not simulated; the
-district freezes while unloaded, and the ledger gives the reason.
+district freezes while unloaded, and the engine records the reason for the operator (§10).
 
 | # | Case | Treatment | How, and what the player sees |
 |---|---|---|---|
@@ -372,7 +373,8 @@ exchange.
 (§0). Players will hit this first.
 
 **Proposal I16 (Ben): warn first, then make simulated links count.** Recommended.
-- **In the train phase,** the ledger warns: "network Iron spans Home and Iron Coast; Home's gauges wait
+- **In the train phase,** the server log and the operator's `/rtsim district info` warn (players are told
+  nothing, §10): "network Iron spans Home and Iron Coast; Home's gauges wait
   while Iron Coast is unloaded".
 - **In the Create precision phase,** mixins on `GlobalLogisticsManager.getUnloadedLinkCount` and
   `LogisticsManager.getSummaryOfNetwork` count a simulated district's links as present, with its stock
@@ -404,8 +406,8 @@ Not learnable.
 
 ### 8.7 Ships (I17)
 
-**Proposal I17 (Ben): player ships stay frozen while unloaded, as today.** Recommended. The ledger
-shows where each ship is: "Skylark frozen at x, z".
+**Proposal I17 (Ben): player ships stay frozen while unloaded, as today.** Recommended. Nothing tells
+players about them (§10); a ship is where it was left.
 
 **Alternative:** (b) A Sable plugin books an unloaded voyage as a leg and moves the sub-level on arrival.
 Its feasibility is unverified, and it belongs with the naval phase.
@@ -415,8 +417,8 @@ Its feasibility is unverified, and it belongs with the naval phase.
 - **SCALE.md §3 flows are traffic the sim owns.** Player trains are Create's, so they are observed,
   not flowed.
 - **The district network** (SCALE.md §7) has **line edges** (station to station, from observed trips:
-  cargo per trip per good, trips per day) and **link edges** (§8.6). Line edges feed the ledger's
-  forecasts and the threat layer's hazard bookings. They never move goods; only real arrivals do.
+  cargo per trip per good, trips per day) and **link edges** (§8.6). Line edges feed the engine's
+  forecasts (seen by the operator only) and the threat layer's hazard bookings. They never move goods; only real arrivals do.
 
 ---
 
@@ -425,7 +427,7 @@ Its feasibility is unverified, and it belongs with the naval phase.
 - **A chunk-loaded district is Live,** and gives the best data: long windows, no player interference.
 - **When a power-gated loader loses power** (create_power_loader needs rotation; mic-grid-loader draws
   100 W per chunk loaded), the district switches to its learned model with no gap.
-- **A partly loaded district is Suspended** (I7). The ledger names the chunks the loader misses.
+- **A partly loaded district is Suspended** (I7). The operator's debug output names the chunks the loader misses.
 - **Under I9, a farm makes the same whether it is chunk-loaded or simulated.** Chunk-loading never
   makes a factory worse. It is worth its cost only where real-time behaviour matters: real defence
   fights (§13.1), or ships.
@@ -434,18 +436,30 @@ Its feasibility is unverified, and it belongs with the naval phase.
 
 ## 10. What the player sees (I18)
 
-**Proposal I18 (Ben): Create's own displays, the atlas, and a chat ledger.** Recommended.
-- **A Display Source, "District ledger",** registered in Create's `display_source` registry and bound
-  through `DisplaySource.BY_BLOCK.add` to `create:stock_link` and `create:track_station`. A Display Link
-  on either block shows any district (chosen in the link's options) on a Display Board or Nixie tubes:
-  its state (§2.3), top goods per hour, next breakpoint ("iron ore runs out in H h M min"), last attack
-  and defence rating.
-- **Antique Atlas markers** (Surveyor plugin): districts by state colour, attack sites, frozen ships.
-- **`/rtsim district ledger <name>`:** the model, the last reconcile (deltas and any trim), attack
-  reports, and what froze it. Later, a CC: Tweaked peripheral.
+**Decided (Ben, DECISIONS.md I18): players do not see what distant factories are doing unless they build
+that themselves**, with electricity, ComputerCraft or redstone. There is no chat ledger, no atlas markers
+and no "would have made" display. In-world readouts may only show real state that player-built systems
+measure. The earlier proposal (a Create Display Source "District ledger" on stock links and stations,
+Antique Atlas markers, a chat ledger) was rejected and is gone from the code.
 
-**Alternatives:** (b) Chat only; (c) A custom screen or item. D3 allows that only if necessary, and it is
-not.
+- **No player-facing output.** Nothing in the mod sends a player text about a district: no chat on return
+  or after a reconcile, no action bar, no tooltip, no display source, no map marker. The mod registers no
+  Display Source. What a simulated district made is not announced; the player finds the vaults changed
+  (§5) and the machines running.
+- **Players build their own readouts from real state.** A vault's count on a Display Link, a threshold
+  switch, a CC: Tweaked computer or a redstone comparator measures what is really in the world. A
+  player-built readout cannot show anything the sim only believes: a rate, a state, a forecast.
+- **Operator debug command.** `/rtsim district debug [name]` (permission level 2, like the whole
+  `/rtsim district` node) asks the engine for the district's ledger line (IND_LEDGER_REQUEST, answered by
+  IND_LEDGER) and prints it when it arrives: the model's state, goods per hour, the next breakpoint, what
+  froze it, the last reconcile (deltas and any trim) and plugin warnings.
+  `/rtsim district info [name]` prints what is already known without asking. These are diagnostics for
+  operators and developers debugging the sim, not a feature. The wire records and the engine side are
+  unchanged by I18.
+- **Plugin warnings.** `DistrictDiagnostics.warn(district, key, text)` is how plugins flag a district
+  (I16: a Create logistics network spanning districts; an Ender Transmission channel reaching another
+  dimension). A warning goes to the server log once when it is set or its text changes and once when it
+  clears, and to the operator's `info` and `debug` output. Never to a player.
 
 ---
 
@@ -469,9 +483,9 @@ not.
 
 **Recommended layering.** C19 fixes layers 1 and 2; the rest is covered by the I proposals.
 1. **Core, mod-agnostic:** districts, capability sampling, ports through vanilla and NeoForge events,
-   the box, reconciliation, the ledger. No pack mod (D4).
-2. **Create plugin** (`mic_rtsim_create`): station hooks, cargo emulation, postbox buffers, Display
-   Sources, belt and kinetic merging, gauge processes, the I16 mixins.
+   the box, reconciliation, the operator diagnostics (§10). No pack mod (D4).
+2. **Create plugin** (`mic_rtsim_create`): station hooks, cargo emulation, postbox buffers,
+   belt and kinetic merging, gauge processes, the I16 mixins.
 3. **One plugin per mod:** PowerGrid (batteries, lines), Destroy (pollution, crude oil), Ore Excavation
    and Diesel Generators (deposits), Ender Transmission (channels), Create Nuclear (heat), Create Radars
    and Create Big Cannons (the defence survey).
@@ -638,7 +652,7 @@ which works against C17.
   and sends it to the district's postbox as a package. Printed with "replace: empty only", it fills
   exactly the holes. Its size grows with damage, not with the district.
 - (b) **Full district snapshots** each time a district is learned. These are large files.
-- (c) **None.** Players use the Schematic and Quill, and the ledger lists the destroyed positions.
+- (c) **None.** Players use the Schematic and Quill; the operator's debug output lists the destroyed positions.
 
 ---
 
@@ -649,14 +663,16 @@ which works against C17.
 1. **You build the outpost** on the far coast: crushers, washers and blaze-burner smelting. Ore arrives
    by train through Portable Storage Interfaces, ingots fill two vaults, and a threshold switch stops
    the smelters at a full vault. The station is *Iron Coast*.
-2. **It learns.** A Display Link on your home station shows "Iron Coast: learning, N min more". Your
-   train calls every T minutes, so the window spans several calls.
-3. **It is learned:** "+N ingots/h, -M crushed ore/h, target: vault full".
+2. **It learns.** Nothing tells you (I18). Your train calls every T minutes, so the window spans several
+   calls. If you want a readout you build one: a Display Link on the ingot vault shows its real count.
+3. **It is learned.** Nothing changes for you; an operator can read the rates with
+   `/rtsim district debug`.
 4. **You ride home and the outpost unloads.** Create keeps running your train. At Iron Coast the sim
    unloads the ore and loads ingots, as the interfaces did (I15), and the schedule's "cargo idle"
    condition fires as it would at a loaded station.
-5. **The ore runs out.** The board reads "Stopped: no crushed ore". The next train's ore restarts it.
-6. **You return a week later.** On the first tick the vaults change by the ledger's deltas. The belts
+5. **The ore runs out.** The smelters stop, as they would have. A readout you built (a Display Link on the
+   ore vault, a threshold switch) shows the empty vault. The next train's ore restarts it.
+6. **You return a week later.** On the first tick the vaults change by the reconcile's deltas. The belts
    held the same half-crushed ore all along, and the machines carry on.
 
 ### 14.2 The dragon and the roofless smelters
@@ -665,7 +681,8 @@ which works against C17.
    crosses Iron Coast's region, so an encounter is scheduled. Iron Coast has no roof and no turrets.
 2. **The resolution.** You have no real dragon fight there, so the untested weight applies. Roofless
    blocks are destroyed up to the cap, including a blaze burner, and the district stops: Damaged.
-3. **You log in.** The board says "Iron Coast: fire dragon, N blocks destroyed, stopped".
+3. **You log in.** Nothing announces it (I18). You find out by what you built: a stopped power readout, a
+   computer that no longer hears the smelters, or the roofless blocks themselves once you ride out.
 4. **You ride out.** The blocks break as the chunks load, and their contents drop. If I1 picks (a), a
    repair schematic waits in the postbox, and your Schematicannon, fed from a vault, prints the holes
    back.
@@ -677,7 +694,8 @@ which works against C17.
 ### 14.3 The gauge network that froze
 
 1. Your home gauges order crushed ore from network *Iron*, whose stock links are at Iron Coast.
-2. You leave, and Create freezes your home gauges (`waitingForNetwork`). The ledger says why.
+2. You leave, and Create freezes your home gauges (`waitingForNetwork`). Nothing tells you; the server log
+   and the operator's `/rtsim district info` carry the I16 warning.
 3. Before the Create precision phase, you split the network or ship by train.
 4. After it (I16), your gauges stay live: their orders become packages in Iron Coast's postbox buffer,
    and a fetch-packages train brings them home.
@@ -708,7 +726,7 @@ boundary list, pending deltas and defence vector, all paged with its region (A16
 
 | Phase | Builds | Ben sees |
 |---|---|---|
-| **I-A Ledger, read only** | detection, sampling, ports, learning (I2, I3, I5), Display Source, `/rtsim district` | A Create line's rates appear on a Display Board. Walk away and come back, and the ledger says what the sim *would* have made, with the vaults untouched. |
+| **I-A Detection and diagnostics, read only** | detection, sampling, ports, learning (I2, I3, I5), `/rtsim district` (operator only) | An operator runs `/rtsim district debug` on a Create line and reads its learned rates and state, with the vaults untouched. Players see nothing (I18). |
 | **I-B Replay** | the box (I6), breakpoints, reconcile (I7, I8), I4, I9, I10, items only | A GameTest runs two identical factories, one chunk-loaded, one simulated. After N ticks, the simulated vaults are at or below the control and within a TUNABLE tolerance. Conservation and composition property tests pass. |
 | **I-C Fluids and energy** | fluids, FE, PowerGrid (I13), Destroy pollution (I14), deposits (I11), seasons (I12) | a refinery and a power plant that run while you are away |
 | **I-D Trains** | station hooks, cargo emulation (I15), postbox buffers, Ender Transmission, I16 warnings, line edges | walkthrough 14.1 |
@@ -734,7 +752,7 @@ boundary list, pending deltas and defence vector, all paged with its region (A16
 | Network stock | Create 6.0.10 | `LogisticsManager.getSummaryOfNetwork`, `LogisticsNetwork.totalLinks/loadedLinks`, `GlobalLogisticsManager.getUnloadedLinkCount` | verified |
 | Gauges | Create 6.0.10 | `FactoryPanelBehaviour.targetedBy/recipeOutput/recipeAddress/network/restockerPromises`; `factoryGaugeTimer` | verified; the count and `upTo` fields sit in its filtering superclass (UNVERIFIED) |
 | Stress | Create 6.0.10 | `BlockStressValues.getImpact/getCapacity` | verified |
-| Displays | Create 6.0.10 | `DisplaySource.BY_BLOCK`, `CreateRegistries.DISPLAY_SOURCE`, `AllBlocks.STOCK_LINK` | verified |
+| Displays | Create 6.0.10 | `DisplaySource.BY_BLOCK`, `CreateRegistries.DISPLAY_SOURCE`, `AllBlocks.STOCK_LINK` | verified; unused since I18 as decided |
 | Rebuild | Create 6.0.10 | `SchematicExport.saveSchematic`, `SchematicItem.create`, `CreatePaths.UPLOADED_SCHEMATICS_DIR` | verified |
 | Kill machines | Create 6.0.10 | `SawBlock`, `DrillBlock`, `CrushingWheelControllerBlockEntity` | verified |
 | Turrets | Create Radars 0.4.9.4 | `TargetingConfig`, `FireControllerBlockEntity`, `AutoYaw/AutoPitchControllerBlockEntity` | verified (javap) |
@@ -744,7 +762,7 @@ boundary list, pending deltas and defence vector, all paged with its region (A16
 | Channels | Ender Transmission 2.1.1 | `MatterWorldSavedData` | inventory |
 | Dragon rules | Ice and Fire CE 2.1-beta.1 | `iaf-common.json` dragon `griefing`, `stealItems` | verified |
 | Loaders | create_power_loader 2.0.5, mic-grid-loader 1.0.0 | `ChunkLoadManager`, `forceChunk(..., true)` | verified |
-| Map | Surveyor 1.2.4 | `WorldLandmarks.of(level).put` | PLAN §1.3 |
+| Map | Surveyor 1.2.4 | `WorldLandmarks.of(level).put` | PLAN §1.3; not used by industry (I18) |
 
 ---
 
@@ -759,7 +777,7 @@ No new blocks, items or entities (D3).
 | Rate learner | Rust | M | slopes, windows, steady test, flags, season models |
 | Box replay | Rust | M | rationals, breakpoints, error diffusion, property tests |
 | Reconciler | Java + Rust | M | per-inventory deltas, epoch attachment, shortfall trim |
-| Ledger and Display Source | Java | S | one source, two bindings, chat ledger |
+| Operator diagnostics | Java | S | `DistrictDiagnostics`, `/rtsim district debug`, log lines for plugin warnings; no player output (I18) |
 | Create plugin | Java | L | stations, cargo emulation, postbox writes, merges, gauges, three I16 mixins |
 | PowerGrid, Destroy, deposit and Ender Transmission plugins | Java | S each | batteries and lines; one `changePollution` wrap; Ore Excavation and Diesel; channels |
 | Defence surveyor | Java | M | flood fill, light, roof, radar networks, guards |
@@ -803,7 +821,7 @@ capabilities or public fields.
 
 | # | Question | Recommended | Alternatives |
 |---|---|---|---|
-| I1 | Rebuild schematics (Ben: decide later) | (a) repair schematics of destroyed blocks only | (b) full snapshots; (c) none, ledger lists positions |
+| I1 | Rebuild schematics (Ben: decide later) | (a) repair schematics of destroyed blocks only | (b) full snapshots; (c) none |
 | I2 | What a district is | automatic, closed under belts, pipes, shafts and wires; named after its station; command edits; retire P5 | (b) player-designated; (c) one logistics network (P5); (d) loader footprint |
 | I3 | Boundary stock | tagged storage + packager inventories + postboxes + plugin buffers; machines never | (b) all inventories counted, tagged written; (c) stock links only |
 | I4 | When time passes | game ticks only; nothing while the server is stopped | (b) wall-clock catch-up with a cap |
@@ -819,8 +837,8 @@ capabilities or public fields.
 | I14 | Destroy pollution | attribute `changePollution` by position; level types live, chunk types on load | (b) grievance only; (c) level types only |
 | I15 | Station cargo | emulate the observed exchange through `TrainCargoManager` | (b) packages only; (c) none |
 | I16 | Gauge networks across districts | warn first, then mixins count simulated links and fulfil into offline buffers | (b) warn only; (c) fulfilment only |
-| I17 | Player ships | frozen, shown on the ledger | (b) Sable voyage plugin later |
-| I18 | Visibility | Display Source on stock links and stations, atlas, chat ledger | (b) chat only; (c) custom screen |
+| I17 | Player ships | frozen as today | (b) Sable voyage plugin later |
+| I18 | Visibility (decided by Ben, DECISIONS.md) | nothing for players; they build readouts from real state; operator `/rtsim district debug`; plugin warnings in the log | rejected: Display Source, atlas markers, chat ledger |
 | I19 | Threat order | natural mobs, dragons, bandits, then bosses with kaiju | (b) dragons first; (c) bandits first |
 | I20 | Natural mob pressure | measured spawns per dark block; vanilla griefing rules | (b) none; (c) TUNABLE per biome |
 | I21 | Defence survey | perimeter, dark area, roof, radar turrets with ammo, kill machines, guards, observed fights | (b) observed only; (c) declared |
@@ -828,7 +846,7 @@ capabilities or public fields.
 | I23 | Damage | theft to carry and cap; exposed blocks to cap, with drops; machine loss stops it; no fire | (b) proportional loss; (c) theft only; (d) no drops |
 | I24 | Trains attacked | loot carriage cargo; never cut track unwatched | (b) derail; (c) delay only |
 | I25 | Pacing | per-attack caps, per-class cooldown, no shields | (b) shields; (c) tie to online time |
-| I26 | Phases | I-A read-only ledger, then replay, fluids and energy, trains, Create precision, threats, rebuild | (b) threats first; (c) trains before replay |
+| I26 | Phases | I-A read-only detection and diagnostics, then replay, fluids and energy, trains, Create precision, threats, rebuild | (b) threats first; (c) trains before replay |
 
 ---
 

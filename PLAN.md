@@ -1344,7 +1344,7 @@ and when it starts is open.
 | **0. Spikes** | the first `mic_native` (pools, IO lane, governor, C ABI rules); the potato harness with a whole-pack baseline before any sim exists; `rtsim-cli bench scale` (SCALE.md §10); puppet GameTests (no duplicates across save, reload, crash, passengers and other mods' saves), with a caravan group as one unit (C25); journal GameTests (crash at each point of the save order); the storage bench, `bevy_ecs` against our own columns (P4); a caravan speed GameTest; a ribbit-village census on the pack's worldgen; a check that the bridge sees village structure starts as they generate (C22) | numbers written into this plan and brought to Ben; the Rust choice holds against them, or §3 is reopened |
 | **1. Caravans and markets** | kernel, core bridge, journal, body kinds and groups, knowledge (gossip writer, rescues, heirs), settlements (villages and player bases), trade, travel, the treasury adapter, `mic_rtsim_ribbits`, `mic_rtsim_carryon`, module switches | §8.10 |
 | **2. Dragons** | ecology (hunger), `mic_rtsim_iceandfire`, migration bookings, flow hazards, bored departures, dragon threats to districts with industry phase I-G | §9 exit tests |
-| **Industry, in parallel** (C15) | INDUSTRY.md §16: phases I-A (read-only ledger) to I-H (rebuild), order I26 | INDUSTRY.md §16 |
+| **Industry, in parallel** (C15) | INDUSTRY.md §16: phases I-A (read-only detection and diagnostics) to I-H (rebuild), order I26 | INDUSTRY.md §16 |
 | **Later** | in the order P11 settles: ships, herds, conflict, kaiju, space, history | each module's walkthrough works in game |
 | **With Deep Time** | `mic_rtsim_deeptime`, the event-log writer, the natives move (§2) | a Deep Time planet's history appears in Deep Time's viewer |
 
