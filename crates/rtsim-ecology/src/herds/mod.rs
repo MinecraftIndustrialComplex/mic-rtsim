@@ -31,6 +31,7 @@ pub mod climate;
 pub mod cohort;
 pub mod engine;
 pub mod forage;
+pub mod habitat;
 pub mod herd;
 pub mod members;
 mod persist;
