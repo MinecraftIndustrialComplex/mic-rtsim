@@ -127,6 +127,17 @@ code.
   giving C24's heirs; taking an IaF egg is a theft they remember (hooks UNVERIFIED). Alternatives: no
   breeding, the lair is the heir; breeding with no egg slight. Blocks: dragon heirs.
 
+- **Dragons built overnight on recommendations** (docs/overnight-choices-dragons.md, R1 to R31). The
+  engine took P12, P13, P26, P28 and **M1 (dragons breed in their lair)** at their recommendations.
+  Review M1 especially. Not yet independently reviewed: the review hit the rate limit.
+- **Pack change waiting for you (P13):** remove the fire-dragon entry from In Control's `spawner.json`
+  and take the fire dragon out of `spawn.json`'s two rules, so the sim owns every dragon
+  (docs/boundary.md §6.6). Nothing in the pack was changed overnight.
+- **Plan facts the jar contradicts** (found by the dragons agent): `stealItems` is a pixie setting, not a
+  dragon one (PLAN.md, INDUSTRY.md and the industry engine's zero carry for flyers cite it as a dragon
+  setting); In Control's fire dragon is desert-only in effect through `spawn.json`; dragons do carry
+  prey off from stage 2. The docs still need correcting.
+
 ## Industry
 
 - **The stale-tick race** (found overnight by the industry engine). Commands land at least one tick
