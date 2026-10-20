@@ -18,7 +18,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::clock::TICKS_PER_DAY;
 use rtsim_settle::Culture;
 
 use crate::goods::{GoodId, GoodKind, Goods};
@@ -182,10 +182,74 @@ pub fn build_markets(
         };
     }
 
-    let qn = tun.quantum;
     let mut markets = Vec::with_capacity(n);
     for (i, nd) in nodes.iter().enumerate() {
-        let cost = &costs[i];
+        let border = adj[i]
+            .iter()
+            .filter(|&&(j, _)| nodes[j].culture.is_some() && nodes[j].culture != nd.culture)
+            .map(|&(_, d)| d)
+            .min();
+        markets.push(make_market(
+            goods, book, tun, nd, &costs[i], mint_cost, max_d[i], border, genesis,
+        ));
+    }
+
+    let needs: Vec<bool> = goods
+        .iter()
+        .map(|(_, d)| d.need_per_pop_day > 0)
+        .collect();
+    let locals: Vec<&Local> = nodes.iter().map(|n| &n.local).collect();
+    let lints = lint_world(goods, book, &locals, &needs);
+    Built {
+        markets,
+        costs,
+        mint_cost,
+        lints,
+    }
+}
+
+/// Costs for a market joining an existing network (C22: villages join as their structure starts
+/// generate): its own recipes, with imports priced from its new neighbours' costs plus transport.
+/// The neighbours keep their cached costs; a newcomer never reprices the world (overnight choice
+/// E15).
+pub fn costs_for_newcomer(
+    goods: &Goods,
+    book: &RecipeBook,
+    tun: &Tunables,
+    local: &Local,
+    neighbours: &[(&Costs, u64)],
+) -> Costs {
+    let mut imported = vec![f64::INFINITY; goods.len()];
+    for g in goods.ids() {
+        for &(c, d) in neighbours {
+            let via = c.labour[g.index()] + transport_labour(goods, tun, g, d);
+            if via < imported[g.index()] {
+                imported[g.index()] = via;
+            }
+        }
+    }
+    book.solve(goods, local, &imported, tun.craft_share_milli)
+}
+
+/// One market from its costs: anchors, targets, lines and the recipe coupling. `max_d` is its
+/// longest edge (for `T`'s bound) and `border_d` its shortest edge to another culture, if any (for
+/// the exchange band).
+#[allow(clippy::too_many_arguments)]
+pub fn make_market(
+    goods: &Goods,
+    book: &RecipeBook,
+    tun: &Tunables,
+    nd: &NodeSpec,
+    costs: &Costs,
+    mint_cost: [f64; 2],
+    max_d: u64,
+    border_d: Option<u64>,
+    genesis: Genesis,
+) -> Market {
+    let qn = tun.quantum;
+    let g_n = goods.len();
+    {
+        let cost = costs;
         let currency = nd.culture.and_then(|c| goods.currency(c));
         let l_mint = match (nd.culture, currency) {
             (Some(c), Some(cur)) => {
@@ -194,7 +258,7 @@ pub fn build_markets(
             }
             _ => f64::INFINITY,
         };
-        let t_quanta = tun.target_quanta(max_d[i]);
+        let t_quanta = tun.target_quanta(max_d);
         let pop = i64::from(nd.local.pop);
         // Inputs of the chosen recipes, own output netted out of the yield.
         let mut inputs: Vec<Vec<Input>> = vec![Vec::new(); g_n];
@@ -241,11 +305,6 @@ pub fn build_markets(
         } else {
             0
         };
-        let border: Vec<u64> = adj[i]
-            .iter()
-            .filter(|&&(j, _)| nodes[j].culture.is_some() && nodes[j].culture != nd.culture)
-            .map(|&(_, d)| d)
-            .collect();
         let mut lines = Vec::with_capacity(g_n);
         let mut states = Vec::with_capacity(g_n);
         for g in goods.ids() {
@@ -272,8 +331,8 @@ pub fn build_markets(
                     };
                     let anchor = (parity * PRICE_ONE as f64).round().clamp(0.0, MAX_ANCHOR as f64)
                         as i64;
-                    match border.iter().min() {
-                        Some(&d) if anchor > 0 => {
+                    match border_d {
+                        Some(d) if anchor > 0 => {
                             let tau = transport_labour(goods, tun, g, d) / l_mint;
                             let band = ((tau / parity) * 1024.0).round().clamp(0.0, 1023.0) as i64;
                             let target = (i128::from(mbar) * i128::from(tun.fx_holding_share_milli)
@@ -328,21 +387,7 @@ pub fn build_markets(
             base_prices: vec![None; g_n],
         };
         m.recompute();
-        markets.push(m);
-    }
-
-    let needs: Vec<bool> = goods
-        .iter()
-        .map(|(_, d)| d.need_per_pop_day > 0)
-        .collect();
-    let locals: Vec<&Local> = nodes.iter().map(|n| &n.local).collect();
-    let lints = lint_world(goods, book, &locals, &needs);
-    let _ = Tick::ZERO;
-    Built {
-        markets,
-        costs,
-        mint_cost,
-        lints,
+        m
     }
 }
 
