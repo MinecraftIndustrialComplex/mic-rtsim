@@ -173,7 +173,7 @@ fn reconcile_is_idempotent_through_op_ids() {
         epoch: 1,
         chunk: ChunkPos { dim: 0, x: 2, z: 0 },
         entries: vec![rtsim_industry::obs::ResultEntry { inventory: 1, good: BAR, requested: 3_840, applied: 3_840 }],
-        blocks_destroyed: 0,
+        destroyed: vec![],
         blocks_skipped: 0,
     });
     w.engine.ingest(&Timed { at: w.t, obs: dup.clone() });

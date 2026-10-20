@@ -287,7 +287,8 @@ pub struct ReconcileResult {
     pub epoch: u32,
     pub chunk: ChunkPos,
     pub entries: Vec<ResultEntry>,
-    pub blocks_destroyed: u32,
+    /// The blocks actually broken, so the engine knows which doomed inventories are gone.
+    pub destroyed: Vec<BlockPos>,
     /// Blocks whose state no longer matched, so they were skipped (I23).
     pub blocks_skipped: u32,
 }

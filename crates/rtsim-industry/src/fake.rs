@@ -849,7 +849,7 @@ impl FakeWorld {
                         });
                     }
                 }
-                let (mut destroyed, mut skipped) = (0, 0);
+                let (mut destroyed, mut skipped) = (Vec::new(), 0);
                 for b in &rc.destroy {
                     let d = &mut self.districts[di];
                     let present = d
@@ -861,7 +861,7 @@ impl FakeWorld {
                         skipped += 1;
                         continue;
                     }
-                    destroyed += 1;
+                    destroyed.push(b.pos);
                     d.broken.insert(b.pos);
                     if let Some(fi) = d.inventories.iter_mut().find(|i| i.pos == b.pos && !i.destroyed) {
                         fi.destroyed = true;
@@ -878,12 +878,12 @@ impl FakeWorld {
                     epoch: rc.epoch,
                     chunk: rc.chunk,
                     entries,
-                    blocks_destroyed: destroyed,
+                    destroyed: destroyed.clone(),
                     blocks_skipped: skipped,
                 }));
-                if destroyed > 0 {
+                if !destroyed.is_empty() {
                     let name = self.districts[di].name.clone();
-                    self.note(format!("{name}: {destroyed} blocks destroyed on load"));
+                    self.note(format!("{name}: {} blocks destroyed on load", destroyed.len()));
                 }
             }
             Cmd::CarriageDelta(cd) => {

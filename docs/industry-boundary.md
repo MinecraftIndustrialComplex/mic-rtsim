@@ -110,7 +110,7 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 | 0x0412 | IND_TRAIN_DEPARTED | n carriages | 24 u64 train, 32 u64 station, 40 u64 district, 48 u64 destination (0 none), 56 i64 etaTicks, 64 carriage blocks | 64 + blocks |
 | 0x0413 | IND_STATION | 0 | 24 u64 station, 32 u64 district (0 none), 40 u32 dim, 44 i32 x, 48 i32 y, 52 i32 z, 56 u32 name (NAME), 60 u32 reserved | 64 |
 | 0x0414 | IND_PACKAGE | n entries | 24 u64 district, 32 u32 inventory, 36 u32 direction (1 in, 2 out), 40 u32 address (NAME), 44 u32 packages, 48 u64 opId (0 none), 56 n × Entry16 | 56 + 16n |
-| 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24 | 64 + 24n |
+| 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
 | 0x0431 | IND_FIGHT | class 0 to 3 | 24 u64 district, 32 u32 attackers, 36 f32 attackerStrength, 40 u32 attackersKilled, 44 u32 blocksDestroyed, 48 u32 machinesDestroyed, 52 u32 guardsLost, 56 i64 itemsStolen, 64 i64 durationTicks | 72 |
@@ -121,6 +121,7 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 - **Carriage block:** `0 u32 index, 4 u32 itemSlots, 8 i64 fluidCapacity, 16 u32 entryCount,
   20 u32 reserved, 24 entryCount × Entry16`; 24 + 16n bytes.
 - **Result24:** `0 u32 inventory (or carriage), 4 u32 good, 8 i64 requested, 16 i64 applied`.
+- **Pos16:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 reserved`.
 - **Block24:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 state (BLOCK_STATE), 16 u32 flags (1 perimeter,
   2 roofless, 4 machine, 8 boundary inventory), 20 u32 inventory (0xFFFFFFFF none)`.
 
@@ -226,8 +227,8 @@ op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `doc
    true)`, so its contents drop; skip the others. Never place fire.
 5. Set the attachment's epoch for this district to `epoch`, in the same tick, so the contents and the
    epoch reach disk together in the chunk's NBT (`neoforge:attachments`).
-6. Journal IND_RECONCILE_RESULT with every entry's requested and applied amount, and the destroyed and
-   skipped counts.
+6. Journal IND_RECONCILE_RESULT with every entry's requested and applied amount, the positions of
+   the blocks broken, and the count skipped.
 
 A chunk that loads with several pending epochs gets them in order. A crash at any point replays
 correctly: a chunk saved before step 5 still has the older epoch and its older contents.

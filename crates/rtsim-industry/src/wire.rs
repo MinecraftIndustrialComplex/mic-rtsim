@@ -714,10 +714,14 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u32(r.chunk.dim);
             w.put_i32(r.chunk.x);
             w.put_i32(r.chunk.z);
-            w.put_u32(r.blocks_destroyed);
+            w.put_u32(n32(r.destroyed.len()));
             w.put_u32(r.blocks_skipped);
             for e in &r.entries {
                 w.result(e.inventory, e.good, e.requested, e.applied);
+            }
+            for p in &r.destroyed {
+                w.pos3(*p);
+                w.put_u32(0);
             }
             w.finish()
         }
@@ -1033,7 +1037,12 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             })
         }
         IND_RECONCILE_RESULT => {
-            check(kind, size, sized(64, n, 24))?;
+            if size < 64 {
+                return Err(WireError::BadSize { kind, size });
+            }
+            let m = r.get_u32(56) as usize;
+            check(kind, size, sized(sized(64, n, 24), m, 16))?;
+            let blocks = 64 + 24 * n;
             Obs::ReconcileResult(ReconcileResult {
                 op: OpId(r.get_u64(24)),
                 district: r.district(32),
@@ -1043,7 +1052,7 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                     x: r.get_i32(48),
                     z: r.get_i32(52),
                 },
-                blocks_destroyed: r.get_u32(56),
+                destroyed: (0..m).map(|i| r.pos3(blocks + 16 * i)).collect(),
                 blocks_skipped: r.get_u32(60),
                 entries: (0..n)
                     .map(|i| {
@@ -1685,7 +1694,7 @@ mod tests {
                         applied: 100,
                     },
                 ],
-                blocks_destroyed: 4,
+                destroyed: vec![BlockPos::new(1, 2, 3), BlockPos::new(-4, 70, 9)],
                 blocks_skipped: 1,
             }),
             Obs::CarriageResult(CarriageResult {
@@ -2012,7 +2021,7 @@ mod tests {
             Obs::TrainDeparted(c) => 64 + carriage_bytes(&c.carriages),
             Obs::Station(_) => 64,
             Obs::Package(p) => 56 + 16 * p.goods.len(),
-            Obs::ReconcileResult(r) => 64 + 24 * r.entries.len(),
+            Obs::ReconcileResult(r) => 64 + 24 * r.entries.len() + 16 * r.destroyed.len(),
             Obs::CarriageResult(r) => 40 + 24 * r.entries.len(),
             Obs::SpawnSample(_) => 64,
             Obs::Fight(_) => 72,

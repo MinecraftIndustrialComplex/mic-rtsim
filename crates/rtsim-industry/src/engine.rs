@@ -1258,10 +1258,11 @@ impl Engine {
             }
         }
         dist.owed.merge(&unfit);
-        // Blocks broke: doomed inventories in this chunk are gone, and what they held dropped.
-        if r.blocks_destroyed > 0 {
+        // Blocks broke: the doomed inventories at those positions are gone, and what they held
+        // dropped. A block skipped (changed since) keeps its inventory (review finding 7).
+        if !r.destroyed.is_empty() {
             for inv in dist.inventories.values_mut() {
-                if inv.doomed && inv.chunk == r.chunk {
+                if inv.doomed && r.destroyed.contains(&inv.decl.pos) {
                     inv.doomed = false;
                     inv.destroyed = true;
                     let spill = inv.effective();
@@ -1270,6 +1271,16 @@ impl Engine {
                     inv.known = GoodVec::new();
                     inv.pending = GoodVec::new();
                 }
+            }
+            // The district changed under the learner: that window is not a steady one.
+            dist.learner.discard();
+        }
+        // Doomed blocks this command skipped are not doomed any more.
+        for b in &done.cmd.destroy {
+            if !r.destroyed.contains(&b.pos)
+                && let Some(inv) = dist.inventories.values_mut().find(|i| i.doomed && i.decl.pos == b.pos)
+            {
+                inv.doomed = false;
             }
         }
         if done.trim {
