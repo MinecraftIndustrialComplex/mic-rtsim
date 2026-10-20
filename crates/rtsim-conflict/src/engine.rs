@@ -178,6 +178,8 @@ pub struct Party {
     pub units: Vec<(u8, u32)>,
     /// In Minecraft now, by unit index.
     pub spawned: Vec<(u8, u32)>,
+    /// In Minecraft when the engine recalled it, until the plugin counts the survivors.
+    pub recalled: Vec<(u8, u32)>,
     pub start_units: u32,
     pub target: Target,
     pub frame: u16,
@@ -1247,6 +1249,7 @@ impl Conflict {
         } else {
             c.def.cut_relief
         };
+        let respite = days_to_ticks(c.def.respite_days);
         let feud = self.feuds.get_mut(&(f, a)).expect("exists");
         let Some(d) = feud.demand.take() else {
             return;
@@ -1255,6 +1258,10 @@ impl Conflict {
         feud.step = Step::Notice;
         feud.since = at;
         feud.party = None;
+        if outcome == boundary::SETTLED_PAID {
+            // A paid tribute buys a respite: the ladder holds at notice for a while.
+            feud.wait_until = at + respite;
+        }
         let g = feud.g.level_sum();
         if outcome == boundary::SETTLED_PAID {
             self.stats.tributes += 1;
@@ -1302,6 +1309,7 @@ impl Conflict {
         w: &mut World,
         faction: u64,
         payer: ActorId,
+        envoy: Option<u64>,
         goods: &BTreeMap<GoodId, Amount>,
         at: Tick,
     ) -> bool {
@@ -1314,8 +1322,16 @@ impl Conflict {
             add(&mut self.ledger.tribute, g, a);
         }
         let settlers = self.settlers(w);
-        let who = [payer, settlers]
+        // The envoy it was paid to names the demand; at the camp, the payer's own, then the
+        // settlers'.
+        let by_envoy = envoy
+            .and_then(Party::of_agent)
+            .and_then(|p| self.parties.get(p))
+            .filter(|x| x.faction == f)
+            .and_then(|x| x.feud);
+        let who = by_envoy
             .into_iter()
+            .chain([payer, settlers])
             .find(|a| self.feuds.get(&(f, *a)).is_some_and(|x| x.demand.is_some()));
         let Some(a) = who else {
             // No demand open: a tribute is a gift.
@@ -1475,7 +1491,7 @@ impl Conflict {
                 }
             }
         }
-        if out.last() != Some(&(to.x, to.z)) {
+        if out.last() != Some(&(to.x, to.z)) || out.len() < 2 {
             out.push((to.x, to.z));
         }
         out
@@ -1552,6 +1568,7 @@ impl Conflict {
             feud,
             units,
             spawned: Vec::new(),
+            recalled: Vec::new(),
             start_units,
             target,
             frame: self.factions[f as usize].pos.frame,
@@ -1735,6 +1752,7 @@ impl Conflict {
                 pos: (f64::from(b.0), 64.0, f64::from(b.1)),
                 arrive: t1.0 as i64,
             }));
+            self.book_unseen(w, p, at);
         }
         // Supply lines (C16, I24): a war band on its way out may fall on a train leg it crosses.
         if phase == Phase::Out && matches!(kind, PartyKind::Raid | PartyKind::Invasion | PartyKind::Siege) {
@@ -1764,6 +1782,60 @@ impl Conflict {
                     );
                 }
             }
+        }
+    }
+
+    /// When a party walking its current segment leaves a circle of `radius` around `c`: `None`
+    /// when it is still inside at the segment's end; `at` when it is not inside now.
+    fn exit_time(&self, p: Handle<Party>, c: (i32, i32), radius: u32, at: Tick) -> Option<Tick> {
+        let x = &self.parties[p];
+        let s = (x.seg as usize).min(x.route.len().saturating_sub(2));
+        let (a, b) = (x.route[s], x.route[s + 1]);
+        let (t0, t1) = (x.times[s], x.times[s + 1]);
+        let now = self.party_pos(p, at);
+        let r = f64::from(radius);
+        let inside = |q: (i32, i32)| {
+            let (dx, dz) = (f64::from(q.0 - c.0), f64::from(q.1 - c.1));
+            dx * dx + dz * dz <= r * r
+        };
+        if !inside(now) {
+            return Some(at);
+        }
+        if inside(b) || t1 <= t0 {
+            return None;
+        }
+        // |A + D f - C| = r, the larger root: where the walk leaves the circle.
+        let (ax, az) = (f64::from(a.0 - c.0), f64::from(a.1 - c.1));
+        let (dx, dz) = (f64::from(b.0 - a.0), f64::from(b.1 - a.1));
+        let qa = dx * dx + dz * dz;
+        let qb = 2.0 * (ax * dx + az * dz);
+        let qc = ax * ax + az * az - r * r;
+        let disc = (qb * qb - 4.0 * qa * qc).max(0.0);
+        let f = ((-qb + disc.sqrt()) / (2.0 * qa)).clamp(0.0, 1.0);
+        Some(Tick(t0.0 + ((t1.0 - t0.0) as f64 * f).floor() as u64).max(at))
+    }
+
+    /// Books the time an embodied party walks out of its watcher's view.
+    fn book_unseen(&mut self, w: &World, p: Handle<Party>, at: Tick) {
+        let x = &self.parties[p];
+        if !x.embodied || x.phase != Phase::Out {
+            return;
+        }
+        let Some(player) = x.seen_by else {
+            return;
+        };
+        let epoch = x.epoch;
+        let c = w
+            .players
+            .get(&player)
+            .and_then(|s| s.pos)
+            .map(|e| (e.0.x, e.0.z));
+        let leave = match c {
+            Some(c) => self.exit_time(p, c, self.tun.view_radius + self.tun.party_radius + 16, at),
+            None => Some(at),
+        };
+        if let Some(t) = leave {
+            self.schedule(t, Ev::Unseen { party: p, epoch });
         }
     }
 
@@ -1868,6 +1940,10 @@ impl Conflict {
                 if let Some(player) = self.watcher(w, tpos, at) {
                     self.start_fight(w, p, player, at);
                 } else {
+                    if self.parties[p].embodied {
+                        let epoch = self.parties[p].epoch;
+                        self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
+                    }
                     self.resolve(w, infra, p, at);
                     let alive = self.parties[p].alive();
                     if kind == PartyKind::Siege && alive > 0 && at < self.parties[p].bored_at {
@@ -1920,14 +1996,15 @@ impl Conflict {
         self.go_home(w, p, reason, at);
     }
 
-    /// A player near enough to watch `pos` (reported within the last 400 ticks, PLACEHOLDER).
+    /// A player near enough to watch `pos` (reported recently enough).
     fn watcher(&self, w: &World, pos: Pos, at: Tick) -> Option<ActorId> {
         let r = f64::from(self.tun.view_radius);
+        let stale = self.tun.player_stale_ticks;
         w.players
             .iter()
             .filter_map(|(a, s)| {
                 let (pp, t) = s.pos?;
-                (pp.frame == pos.frame && at.0.saturating_sub(t.0) <= 400)
+                (pp.frame == pos.frame && at.0.saturating_sub(t.0) <= stale)
                     .then(|| (dist(pxz(pp), pxz(pos)), *a))
             })
             .filter(|(d, _)| *d <= r)
@@ -2011,7 +2088,10 @@ impl Conflict {
                 continue;
             }
             self.stats.raids_district += 1;
-            let lost = count - ((f64::from(count) * o.survived).round() as u32).min(count);
+            // Those held at the walls are not all dead: a share of the ones that did not make it
+            // fall (choice K2-12).
+            let missing = f64::from(count) * (1.0 - o.survived);
+            let lost = ((missing * self.tun.abstract_loss_share).round() as u32).min(count);
             self.lose_units(p, |c| c.threat() == class, lost);
             let got = self.take_industry_loot(w, infra, p, &o.stolen);
             stolen_items += got;
@@ -2172,8 +2252,22 @@ impl Conflict {
         }
     }
 
+    /// Despawns the party's bodies. From here the engine's counts are the truth; the survivors the
+    /// plugin reports can only lower them (those that died in Minecraft on the way out).
     fn recall(&mut self, p: Handle<Party>, epoch: u32, reason: u32, toward: (i32, i32)) {
         self.stats.recalls += 1;
+        let x = &mut self.parties[p];
+        if x.embodied && x.epoch == epoch {
+            let s = std::mem::take(&mut x.spawned);
+            for (u, n) in s {
+                match x.recalled.iter_mut().find(|e| e.0 == u) {
+                    Some(e) => e.1 += n,
+                    None => x.recalled.push((u, n)),
+                }
+            }
+            x.embodied = false;
+            x.seen_by = None;
+        }
         self.outbox.push(Cmd::Recall(boundary::BandRecall {
             agent: Party::agent(p),
             epoch,
@@ -2554,10 +2648,9 @@ impl Conflict {
                 pos: (f64::from(next.0), 64.0, f64::from(next.1)),
                 arrive: arrive.0 as i64,
             }));
-            // Passing through: it leaves view after crossing it, unless it stops here.
-            let cross = (2.0 * f64::from(self.tun.view_radius) / speed).ceil() as u64;
-            self.schedule(at + cross, Ev::Unseen { party: p, epoch });
         }
+        // Passing through: it leaves view where its walk leaves the area, unless it stops here.
+        self.book_unseen(w, p, at);
         let kind = self.parties[p].kind;
         self.note(at, Some(f), "seen", format!("{} seen by a player", kind.name()));
     }
@@ -2612,9 +2705,6 @@ impl Conflict {
         let next = x.route[(x.seg as usize + 1).min(x.route.len() - 1)];
         self.recall(p, epoch, boundary::RECALL_PASSING, next);
         let _ = at;
-        let x = &mut self.parties[p];
-        x.embodied = false;
-        x.seen_by = None;
     }
 
     // ---- the run loop -----------------------------------------------------------------------
@@ -2820,24 +2910,39 @@ impl Conflict {
                 };
                 let f = self.parties[p].faction;
                 let c = self.culture(f).clone();
-                let x = &mut self.parties[p];
-                // Alive = those never spawned plus the survivors the plugin counts.
-                for e in x.units.iter_mut() {
-                    let spawned = x.spawned.iter().find(|s| s.0 == e.0).map_or(0, |s| s.1);
-                    let body = body_id(&self.cultures, &c.unit(e.0).body);
-                    let back: u32 = d
-                        .survivors
+                let back_of = |u: u8, dict: &BTreeMap<(u8, u32), String>, cultures: &Cultures| -> u32 {
+                    let body = &c.unit(u).body;
+                    let id = body_id(cultures, body);
+                    d.survivors
                         .iter()
-                        .filter(|s| {
-                            self.java_dict.get(&(3, s.0)).is_some_and(|n| *n == c.unit(e.0).body) || s.0 == body
-                        })
+                        .filter(|s| dict.get(&(3, s.0)).is_some_and(|n| n == body) || s.0 == id)
                         .map(|s| s.1)
-                        .sum();
-                    e.1 = e.1.saturating_sub(spawned) + back.min(spawned);
+                        .sum()
+                };
+                let units: Vec<u8> = self.parties[p].units.iter().map(|e| e.0).collect();
+                let backs: Vec<u32> = units
+                    .iter()
+                    .map(|&u| back_of(u, &self.java_dict, &self.cultures))
+                    .collect();
+                let x = &mut self.parties[p];
+                if x.embodied {
+                    // The plugin despawned it (its chunks unloaded): alive are those never
+                    // spawned plus the survivors it counts.
+                    for (k, e) in x.units.iter_mut().enumerate() {
+                        let spawned = x.spawned.iter().find(|s| s.0 == e.0).map_or(0, |s| s.1);
+                        e.1 = e.1.saturating_sub(spawned) + backs[k].min(spawned);
+                    }
+                    x.spawned.clear();
+                    x.embodied = false;
+                    x.seen_by = None;
+                } else {
+                    // After the engine's recall: only those that died on the way out go.
+                    for (k, e) in x.units.iter_mut().enumerate() {
+                        let r = x.recalled.iter().find(|s| s.0 == e.0).map_or(0, |s| s.1);
+                        e.1 = e.1.saturating_sub(r.saturating_sub(backs[k]));
+                    }
                 }
-                x.spawned.clear();
-                x.embodied = false;
-                x.seen_by = None;
+                x.recalled.clear();
             }
             Obs::Casualties(cs) => self.casualties(w, cs, at),
             Obs::ChiefKilled(ck) => {
@@ -2877,7 +2982,8 @@ impl Conflict {
             Obs::TributePaid(t) => {
                 let goods = self.goods_of(w, &t.items);
                 let payer = self.actor_of_uuid(w, t.player);
-                self.pay_tribute(w, t.faction, payer, &goods, at);
+                let envoy = (t.agent != 0).then_some(t.agent);
+                self.pay_tribute(w, t.faction, payer, envoy, &goods, at);
             }
             Obs::GiftGiven(g) => {
                 let goods = self.goods_of(w, &g.items);
@@ -2912,6 +3018,10 @@ impl Conflict {
         let Some(p) = self.party_of(cs.agent, cs.epoch) else {
             return;
         };
+        if !self.parties[p].embodied {
+            // After its DEMATERIALIZED the survivors were counted: a straggler is not a death.
+            return;
+        }
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let name = self.java_dict.get(&(3, cs.body)).cloned();
@@ -2933,13 +3043,18 @@ impl Conflict {
         if let Some(k) = killer {
             self.parties[p].breaker = Some(k);
             // Killing members is a direct act against the faction (P14: the killer).
+            let (x, z) = self.party_pos(p, at);
+            let district = match self.parties[p].target {
+                Target::District(d, _) => Some(d),
+                _ => None,
+            };
             let sig = Signal {
                 faction: Some(self.factions[f as usize].key),
                 kind: SignalKind::Killing,
                 amount: f64::from(t),
                 actor: k,
-                pos: self.factions[f as usize].pos,
-                district: None,
+                pos: Pos::new(self.parties[p].frame, x, z),
+                district,
             };
             self.signal(w, sig, at);
         }
@@ -3184,8 +3299,6 @@ impl Viewer for Conflict {
             let epoch = self.parties[p].epoch;
             self.recall(p, epoch, boundary::RECALL_PLAYER_LEFT, (camp.x, camp.z));
             let x = &mut self.parties[p];
-            x.embodied = false;
-            x.seen_by = None;
             // A watched fight with nobody watching goes on abstractly at its next event.
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;

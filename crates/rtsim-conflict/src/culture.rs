@@ -266,6 +266,8 @@ pub struct CultureDef {
     pub demand_days: f64,
     /// Tribute asked per point of grievance, in whole coins of the tribute good.
     pub tribute_per_grievance: f64,
+    /// Days after a tribute paid in full before the feud may climb again.
+    pub respite_days: f64,
     /// Share of grievance a tribute paid in full takes away.
     pub tribute_relief: f64,
     /// Share of grievance taken away when the demanded signal stops by the deadline.

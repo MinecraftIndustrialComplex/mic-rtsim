@@ -28,7 +28,7 @@ pub struct ConflictTunables {
     /// A watched raid's waves stop after this long and the survivors withdraw. PLACEHOLDER 6,000.
     pub watched_fight_ticks: u64,
     /// A village's defence per resident, in fight strength (the golems and guards a census
-    /// implies). PLACEHOLDER 0.4.
+    /// implies). PLACEHOLDER 0.25.
     pub village_defence_per_pop: f64,
     /// A haven's defence per resident. PLACEHOLDER 1.0.
     pub haven_defence_per_pop: f64,
@@ -66,6 +66,12 @@ pub struct ConflictTunables {
     pub cell_blocks: i32,
     /// Ticks a recalled band has to leave before the plugin despawns it. PLACEHOLDER 1,200.
     pub recall_timeout_ticks: u32,
+    /// A player position older than this does not count as watching. PLACEHOLDER 2,400 (PLAYER
+    /// records come every 20 ticks; scripted players report every 1,200).
+    pub player_stale_ticks: u64,
+    /// Of the attackers an unwatched district raid did not leave standing (walls, defenders), the
+    /// share that falls; the rest straggle home. PLACEHOLDER 0.5.
+    pub abstract_loss_share: f64,
 }
 
 impl Default for ConflictTunables {
@@ -78,7 +84,7 @@ impl Default for ConflictTunables {
             spawn_quota: 16,
             wave_interval_ticks: 1_200,
             watched_fight_ticks: 6_000,
-            village_defence_per_pop: 0.4,
+            village_defence_per_pop: 0.25,
             haven_defence_per_pop: 1.0,
             comparable_strength_factor: 2.0,
             block_value_items: 4.0,
@@ -99,6 +105,8 @@ impl Default for ConflictTunables {
             ],
             cell_blocks: 1_024,
             recall_timeout_ticks: 1_200,
+            player_stale_ticks: 2_400,
+            abstract_loss_share: 0.5,
         }
     }
 }

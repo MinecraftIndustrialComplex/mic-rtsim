@@ -17,6 +17,7 @@
   "dwell_days": [0.0, 0.5, 0.5, 0.5, 3.0, 5.0, 8.0],
   "demand_days": 2.0,
   "tribute_per_grievance": 1.0,
+  "respite_days": 5.0,
   "tribute_relief": 0.8,
   "cut_relief": 0.3,
   "gift_relief_per_coin": 0.5,
