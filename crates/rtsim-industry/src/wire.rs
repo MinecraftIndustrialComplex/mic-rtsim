@@ -2494,7 +2494,7 @@ mod tests {
     fn unknown_kinds_are_skipped_not_errors() {
         let mut rec = vec![0u8; 16];
         for kind in [
-            0x0001u16, 0x0045, 0x005F, 0x0060, 0x0409, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
+            0x0001u16, 0x0045, 0x005F, 0x0060, 0x040A, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
         ] {
             rec[0..2].copy_from_slice(&kind.to_le_bytes());
             rec[2..4].copy_from_slice(&16u16.to_le_bytes());
