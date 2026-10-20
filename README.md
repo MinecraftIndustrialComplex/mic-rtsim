@@ -14,9 +14,11 @@ hold the industry design and the research behind them.
 |---|---|
 | `crates/rtsim-kernel` | The engine kernel: no Minecraft, no JNI, no threads of its own (PLAN.md §5.1). |
 | `crates/rtsim-cli` | `rtsim-cli bench scale`, the scale bench of SCALE.md §10. |
+| `crates/rtsim-jni` | The native link: a `mic_native` plugin (cdylib) that owns the four boundary buffers, runs the engine step on the host's background pool and writes pages on its IO lane; a minimal world of puppet agents for now. The only crate that uses `jni`. |
+| `tools/natives/build-natives.sh` | rtsim-jni for the eight platforms plus x86-64-v3, in mic-native's dev shell (`nix develop ../mic-native -c bash tools/natives/build-natives.sh`). |
 | `tools/ci/scale-check.sh` | The CI-style scale check: fails when a growth slope exceeds its contract. |
 | `bench/results/` | Committed bench results, with the machine and conditions. |
-| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies) with a pure-Java stub engine; GameTests. See `neoforge/README.md`. |
+| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies), its `NativeEngine` over rtsim-jni and a pure-Java stub engine for tests; GameTests. See `neoforge/README.md`. |
 | `docs/boundary.md` | The binary contract between the bridge and the engine: four buffers, the hand-over, every record. |
 
 The kernel's modules:
@@ -37,8 +39,10 @@ The kernel's modules:
 | `store` | Agent storage facade (`RowStore`) over plain columns; P4 stays open | P4 |
 | `synth` | Synthetic kinds for tests and the bench. Scaffolding, to be deleted | |
 
-Not built yet: the native host `mic_native`, the JNI crate (rtsim-jni), the generic modules
-(markets, flows, caravans, knowledge), paging with a residency budget (A16), and the parallel step.
+The native host `mic_native` lives in its own repository (`mods/mic-native`, A18); rtsim-jni
+depends on its runtime crate by git (docs/overnight-choices-jni.md J1). Not built yet: the generic
+modules (markets, flows, caravans, knowledge), paging with a residency budget (A16), and the
+parallel step.
 
 ## Build and test
 

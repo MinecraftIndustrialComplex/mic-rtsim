@@ -1,10 +1,11 @@
 # The Java/engine boundary
 
-**Status:** the contract between the core bridge `mic_rtsim` (Java) and the engine (Rust, behind
-rtsim-jni, not written yet). Written 2026-10-20 with the Java side and its pure-Java stand-in,
-`StubEngine`. The Java constants are the source of truth until the Rust side exists:
+**Status:** the contract between the core bridge `mic_rtsim` (Java) and the engine (Rust,
+`crates/rtsim-jni`, a mic_native plugin). Written 2026-10-20 with the Java side and its pure-Java
+stand-in, `StubEngine`; the Rust side followed the same night (§4). Both sides mirror the layout:
 `neoforge/core/src/main/java/com/minecraftindustrialcomplex/mic_rtsim/boundary/Layout.java`,
-`Obs.java` and `Cmd.java`. This page and those three files change together.
+`Obs.java` and `Cmd.java` in Java, `crates/rtsim-jni/src/wire.rs` in Rust. This page and those four
+files change together.
 
 **Rules it follows** (PLAN.md §4.5, §4.9):
 - Four buffers in all, two per direction, allocated by the engine and reused forever.
@@ -239,7 +240,10 @@ of a clean shutdown come later, as journal replay.
 
 ### 2.4 Commands (the engine to Java)
 
-Every command has a `cmdSeq` at offset 8: per world, increasing. Java skips any command except DICT
+Every command has a `cmdSeq` at offset 8: per world, increasing. A DICT's `cmdSeq` means nothing,
+and the native engine writes 0: Java never skips a DICT, but it does record a DICT's sequence as
+applied, so a DICT numbered above a command that follows it (a transfer resent after a restart, with
+its original sequence) would make Java skip that command. Java skips any command except DICT
 at or below the journal's `lastAppliedCmdSeq` (sent back in every observation header as `wordA`, which is the
 kernel's `Outbox::ack_through`). After a restart the engine resends its outbox (`Outbox::after`)
 with the commands' original sequences; Java applies those above `lastAppliedCmdSeq` and skips any
@@ -317,15 +321,28 @@ its record into a player's inventory, where nothing carries it.
 journal write that fails (`SavedData.save` logs the IOException and the IO chain goes on, so
 WORLD_SAVED still reports it).
 
-## 4. What the Rust side needs to build (rtsim-jni)
+## 4. The engine side: rtsim-jni
 
-1. Allocate four buffers, 64-aligned, write `capacity`, hand them to Java as direct buffers.
-2. `start`: load pages, return `(pagesObsSeq, nextCmdSeq)` with `nextCmdSeq > lastAppliedCmdSeq`.
-3. `submit(h)`: queue step h on the host's background pool and return. The step follows §1.2.
-4. Run every journaled observation through `Replay::admit`; feed COMMAND_RESULT(applied or
-   duplicate) to the outbox; call `forget_ops_through` on WORLD_SAVED; call `reconcile` with the
-   SESSION_START fields.
-5. Acknowledge (`ackedObsSeq`) only what pages on disk include.
-6. Treat every embodied agent as abstract at SESSION_START; never re-embody an agent from a
-   replayed MATERIALIZED.
-7. Mind the op-id bit: Java ids set it, engine ids never do.
+`crates/rtsim-jni` is a mic_native plugin (a cdylib linking `mic-native-rt`) and the only crate that
+uses `jni`; the bridge's `engine/NativeEngine.java` loads it through `MicNative.loadPlugin` and binds
+its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (J1 to J28).
+
+1. **Buffers** (`buffers.rs`): four engine allocations, 64-aligned, `capacity` in the header, handed
+   to Java with `NewDirectByteBuffer`. Rust touches `published` and `consumed` only as `AtomicU64`
+   (acquire loads, release stores); every other byte belongs to one side at a time, handed over by
+   those words.
+2. **`start`** (`engine.rs`): opens the page store in `<world>/rtsim/`, loads `Replay`, the
+   `Outbox` and the world, zeroes the four buffers' words and returns `(pagesObsSeq, nextCmdSeq)`,
+   `nextCmdSeq = max(the outbox's next, lastAppliedCmdSeq + 1)`.
+3. **`submit(h)`** queues step h on mic_native's background pool and returns. The step follows
+   §1.2; its release store of `published` is its last act on the buffers.
+4. **Journaled observations** go through `Replay::admit` (TRANSFER, TAKEN, DIED and
+   COMMAND_RESULT applied or duplicate with their op ids); a gap is logged and skipped
+   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every agent abstract;
+   WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
+5. **Saves**: the pages are snapshotted at a step boundary (before the first journaled record past
+   the requested `through`) and written on the IO lane; `ackedObsSeq` names only pages on disk.
+6. **Commands**: transfers go through the `Outbox` and are resent after a restart with their
+   original sequences and op ids, before anything new; puppet commands are per session. DICT
+   records come before their first use in the same buffer. What does not fit waits (`MORE`).
+7. **Op ids**: Java's have the top bit set; the engine's leave it clear and start at 1.
