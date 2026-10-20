@@ -719,3 +719,57 @@ fn a_hunted_lane_is_priced_as_an_expected_loss() {
         "a hunted lane is avoided: {priced} sent priced, {ignored} ignored, {before} before"
     );
 }
+
+/// Overnight choice U18: a merchant that stays embodied across a docking gets its next voyage's
+/// hold (SHIP_CARGO), so the body never keeps goods the flow already landed; its op id comes from
+/// what it is (allocator 0x53; the same when the run is derived again; never another command's).
+#[test]
+fn a_ship_embodied_across_a_docking_gets_its_next_hold() {
+    use rtsim_ships::boundary::Cmd;
+    let run = || -> Vec<(u64, u32, u64, usize)> {
+        let mut c = coast(3);
+        let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
+        // The player waits at a dock: merchants arrive in view, stay docked, and leave again.
+        let (x, z) = (c.ships.docks[0].x, c.ships.docks[0].z);
+        fake.set_player(PLAYER, f64::from(x), f64::from(z));
+        let mut sets = Vec::new();
+        let mut t = Tick::ZERO;
+        while t < Tick::from_days(3) {
+            if t.0 % 1_000 == 0 {
+                c.ships
+                    .observe_player(&mut c.world, PLAYER, Pos::new(0, x, z), t);
+            }
+            t += 50;
+            c.ships.run_until(&mut c.world, &mut NoInfrastructure, t);
+            let cmds = c.ships.take_commands();
+            let mut obs = fake.apply(&cmds, t);
+            for cmd in &cmds {
+                if let Cmd::SetCargo(s) = cmd {
+                    sets.push((s.agent, s.epoch, s.op, s.items.len()));
+                    let body = fake.bodies.get(&s.agent).expect("sent to an embodied ship");
+                    assert_eq!(body.epoch, s.epoch, "to its current body");
+                    assert_eq!(body.cargo, s.items, "the body holds what the voyage holds");
+                }
+            }
+            obs.extend(fake.step(t));
+            for o in obs {
+                c.ships.ingest(&mut c.world, &o, &c.mask, t);
+            }
+        }
+        c.ships.check(&c.world).expect("conserved");
+        sets
+    };
+    let sets = run();
+    assert!(
+        !sets.is_empty(),
+        "a merchant stayed in view across a docking"
+    );
+    assert!(
+        sets.iter().all(|s| s.2 >> 56 == 0x53),
+        "the ships' allocator"
+    );
+    let ops: BTreeSet<u64> = sets.iter().map(|s| s.2).collect();
+    assert_eq!(ops.len(), sets.len(), "one op id per command");
+    assert_eq!(run(), sets, "derived again, the same commands and op ids");
+    eprintln!("U18: {} SHIP_CARGO in 3 days at a dock", sets.len());
+}

@@ -67,6 +67,10 @@ pub const SYS_SHIP: SystemId = SystemId::named("ships.ship");
 const SYS_PIRATE: SystemId = SystemId::named("ships.pirate");
 const SYS_RAID: SystemId = SystemId::named("ships.raid");
 const SYS_SERVICE: SystemId = SystemId::named("ships.service");
+const SYS_CARGO: SystemId = SystemId::named("ships.cargo");
+
+/// The engine's op ids (SHIP_CARGO): allocator 0x53 in bits 56 to 62 (docs/boundary.md §2.2).
+pub const OP_ALLOCATOR: u64 = boundary::AGENT_NAMESPACE << 56;
 
 /// Leg owners: a ship's legs carry this bit over its 48-bit handle (players' interest areas use
 /// the top bit, dragons the next, `rtsim-world`'s caravans none).
@@ -1564,7 +1568,7 @@ impl Ships {
                 self.materialize_pirate(ship, (pos.0 as i32, pos.1 as i32), 0, player, at);
             }
             Ev::Unbook { ship, voyage } => self.unbook(w, ship, voyage),
-            Ev::NextLeg { ship, epoch } => self.next_leg(ship, epoch, at),
+            Ev::NextLeg { ship, epoch } => self.next_leg(w, ship, epoch, at),
             Ev::Arrive { ship, voyage } => self.arrive(w, ship, voyage, at),
             Ev::Raid {
                 pirate,
@@ -1843,9 +1847,21 @@ impl Ships {
         self.schedule(arrive.max(at + 1), Ev::NextLeg { ship: id, epoch });
     }
 
+    /// The op id of the SHIP_CARGO that sets an embodiment's hold for a voyage: from what it is
+    /// (the ship, the epoch, the voyage), so the same command derived again after a crash has the
+    /// same id and no other command ever has it (docs/boundary.md §2.2; overnight choice U18).
+    pub fn cargo_op(&self, id: ShipId, epoch: u32, voyage: u64) -> u64 {
+        let seed = self.ships.get(id).map_or(id.to_bits(), |x| x.seed);
+        let low = StreamKey::new(self.seed, SYS_CARGO, seed).block(u64::from(epoch), voyage)[0]
+            & ((1 << 56) - 1);
+        OP_ALLOCATOR | low.max(1)
+    }
+
     /// An embodied timetabled ship reached its next dock: its next voyage's timetable goes to the
-    /// plugin, and so on while it stays embodied (observed, so these events are allowed).
-    fn next_leg(&mut self, id: ShipId, epoch: u32, at: Tick) {
+    /// plugin, and so on while it stays embodied (observed, so these events are allowed). A
+    /// merchant's hold becomes the next voyage's (SHIP_CARGO, U18): what it carried was landed by
+    /// the flow, and a body that kept it would hold goods the sim no longer has.
+    fn next_leg(&mut self, w: &World, id: ShipId, epoch: u32, at: Tick) {
         let Some(x) = self.ships.get(id) else {
             return;
         };
@@ -1885,6 +1901,16 @@ impl Ships {
             harbour_blocks: g.depart_blocks as u32,
             waypoints,
         }));
+        if matches!(self.ships[id].role, Role::Merchant) {
+            let cargo = self.cargo_of(w, id, fix.voyage);
+            let op = self.cargo_op(id, epoch, fix.voyage);
+            self.outbox.push(Cmd::SetCargo(boundary::SetCargo {
+                agent: Ship::agent(id),
+                epoch,
+                op,
+                items: Self::items(&cargo),
+            }));
+        }
         let next = tick_of(fix.times.arrive).max(at + 1);
         self.schedule(next, Ev::NextLeg { ship: id, epoch });
     }

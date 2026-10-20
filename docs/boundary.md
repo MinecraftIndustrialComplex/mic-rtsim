@@ -585,7 +585,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **Not wired yet:** the dragons' raids reach the industry engine only while the industry module
      runs.
 
-12. **Ships** (`engine/ships.rs`, §7, choices U1 to U16 in docs/overnight-choices-integrate2.md):
+12. **Ships** (`engine/ships.rs`, §7, choices U1 to U18 in docs/overnight-choices-integrate2.md):
    rtsim-ships' engine runs inside the step, in the phase 1 world (lanes are its edges, voyages
    its legs, captains its notables) on the phase 1 world's clock, beside the dragons.
    - **Observations.** The journaled kinds 0x0600 to 0x06FF go through `Replay` (CARGO_LOOTED,
@@ -600,8 +600,8 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **Commands.** SHIP_MATERIALIZE, TIMETABLE, STEER, DEPART, CARGO and DESPAWN take sequences
      from the core's counter after every other module's; all are per session (U4), so none is
      kept or resent. Body kinds, the dimension and cargo items go through the engine's dictionary.
-     An engine SHIP_CARGO's op id comes from its identity (allocator 0x53, U5); the engine does not
-     emit one yet.
+     A merchant embodied across a docking gets its next voyage's hold (SHIP_CARGO, U18), its op id
+     from the ship, epoch and voyage (allocator 0x53).
    - **Pages.** Table 0x5300: one page, `Ships::save` with its state hash (checked on load). While
      there are ships, docks or havens the phase 1 link snapshots at every save, in the same commit.
      A ships page without the phase 1 world it was saved with, or one this build cannot read, is
@@ -841,7 +841,7 @@ ranges stay as they are; these three are next to the dragons'.
 - **Ports and havens** are keyed by their village's (or haven's) key, packed as §4's villages are.
 - **Op ids**: the plugin's (top bit set, §2.2) on CARGO_LOOTED, SHIP_SUNK and SHIP_CAPTURED; the
   engine's SHIP_CARGO uses allocator 0x53 in bits 56 to 62 over 56 bits derived from the ship, its
-  epoch and the hold it sets (U5; not yet emitted).
+  epoch and the voyage (U18).
 
 ### 7.3 Observations
 
@@ -871,7 +871,7 @@ plugin's op id: the engine applies each once (§2.3's idempotent events).
 | 0x8601 | SHIP_TIMETABLE | flags: 1 dock at the end | 16 u64 agent, 24 u32 epoch, 28 u32 waypoints w, 32 i64 departTick, 40 cruiseTick, 48 approachTick, 56 arriveTick, 64 i32 cruiseY, 68 i32 dockY, 72 u8 platform, 73 reserved, 76 u32 harbourBlocks, 80 w × (i32 x, i32 z) | 80 + 8w | |
 | 0x8602 | SHIP_STEER | flags: 1 attack the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed (blocks a tick), 32 f64 x, 40 f64 y, 48 f64 z, 56 u64 target agent | 64 | |
 | 0x8603 | SHIP_DEPART | reason: 1 bored, 2 hold full, 3 damaged, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | SHIP_DEMATERIALIZED |
-| 0x8604 | SHIP_CARGO | n | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 u64 opId, 40 n × (u32 item, i32 count, u64 reserved): the hold, exactly | 40 + 16n | (COMMAND_RESULT, once emitted) |
+| 0x8604 | SHIP_CARGO | n | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 u64 opId, 40 n × (u32 item, i32 count, u64 reserved): the hold, exactly | 40 + 16n | COMMAND_RESULT |
 | 0x8605 | SHIP_DESPAWN | reason: 1 lost, 2 recalled | 16 u64 agent, 24 u32 epoch | 32 | SHIP_DEMATERIALIZED |
 
 ### 7.5 How Java would apply them
@@ -887,7 +887,9 @@ waypoint 0 until `departTick`; departing over the first `harbourBlocks` of the p
 next dock's height), at the platform given. The engine's positions are these same pieces of the
 path at constant speed each, so the body and the engine agree without physics; a body that falls
 behind (blocked) catches up or reports where it is, and the engine's timetable stays as it is. Each
-time it reaches a dock while embodied, a SHIP_TIMETABLE gives the next voyage. A hostile pirate
+time it reaches a dock while embodied, a SHIP_TIMETABLE gives the next voyage and, for a merchant,
+a SHIP_CARGO its hold: the plugin replaces the hold exactly (what it carried was landed by the
+flow) and answers COMMAND_RESULT, applied, or duplicate for an op id it already applied (U18). A hostile pirate
 (flag 2) attacks its target agent; a pirate without a target holds its position (hunting) or sails
 where SHIP_STEER says.
 

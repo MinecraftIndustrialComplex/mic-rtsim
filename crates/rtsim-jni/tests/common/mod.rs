@@ -1045,6 +1045,22 @@ impl Java {
                 for it in &mut sc.items {
                     it.item = self.java_of_engine(wire::DICT_ITEM, it.item);
                 }
+                // The hold is set exactly, once per op id (docs/boundary.md §7.5).
+                let op = sc.op;
+                let status = if self.applied_cmd_ops.contains(&op) {
+                    obs::command_result::DUPLICATE_OP
+                } else {
+                    obs::command_result::APPLIED
+                };
+                self.journal(
+                    obs::COMMAND_RESULT,
+                    obs::command_result::SIZE,
+                    status,
+                    |r| {
+                        wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                        wire::put_u64(r, obs::command_result::OP_ID, op);
+                    },
+                );
             }
             S::Despawn(d) => {
                 let (agent, epoch) = (d.agent, d.epoch);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The ships behind the boundary (docs/boundary.md §7; choices U1 to U16 in
+//! The ships behind the boundary (docs/boundary.md §7; choices U1 to U18 in
 //! docs/overnight-choices-integrate2.md): `rtsim-ships`' engine fed by a ships plugin's records,
 //! its commands written into the command buffers, its pages in the store. No plugin exists yet
 //! (P8): the Rust fake Java side in `tests/common` (`Java::ship_obs`, `ship_command`) plays one,
@@ -22,7 +22,8 @@
 //!   DESPAWN, with sequences from the core's counter after every other module's: all per session
 //!   (U4, as the dragons' S11), so nothing is kept or resent, and they always follow the resends
 //!   in sequence order. Body kinds, the dimension and cargo items go through the engine's
-//!   dictionary. A SHIP_CARGO's op id comes from its identity (allocator 0x53, U5).
+//!   dictionary. A SHIP_CARGO's op id comes from its identity: the engine's own from the ship,
+//!   epoch and voyage (U18), a test order's from the ship, epoch and hold (U5); allocator 0x53.
 //! - **Pages** ([`Link::load`], [`snapshot`]): table 0x5300, one page with `Ships::save` and its
 //!   state hash. The ships live in the phase 1 world (lanes are its edges, voyages its legs), so
 //!   while they are active the phase 1 link snapshots at every save, in the same commit.
@@ -517,7 +518,8 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
     }
 }
 
-/// The op id of an engine SHIP_CARGO, from what it is (U5): the ship's agent and epoch and the
+/// The op id of a test's SHIP_CARGO ordered with op 0, from what it is (U5; the engine's own carry
+/// theirs, `Ships::cargo_op`, U18): the ship's agent and epoch and the
 /// hold it sets, so the same command derived again after a crash has the same id and another
 /// command never has an id an earlier one had.
 fn cargo_op(agent: u64, epoch: u32, items: &[Item]) -> u64 {
