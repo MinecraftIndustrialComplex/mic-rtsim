@@ -176,7 +176,7 @@ public final class TrainWatch {
      * The station's mail transfer moved these goods out of the train into postboxes (negative: from
      * postboxes into the train), {@link MailWatch}. Taken out of the train's cargo port at departure.
      */
-    static void mailMoved(Train train, Industry.GoodsCounter intoPostboxes) {
+    public static void mailMoved(Train train, Industry.GoodsCounter intoPostboxes) {
         Industry ind = IndustryApi.current();
         if (ind == null)
             return;
