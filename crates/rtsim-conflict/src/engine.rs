@@ -1349,7 +1349,6 @@ impl Conflict {
     }
 
     fn demand_due(&mut self, w: &mut World, f: u32, a: ActorId, at: Tick) {
-        let lambda = self.culture(f).lambda;
         let feud = self.feuds.get(&(f, a)).expect("exists");
         let Some(d) = feud.demand else {
             return;
@@ -1360,8 +1359,19 @@ impl Conflict {
         } else if cut {
             self.settle(w, f, a, boundary::SETTLED_CUT, at);
         } else {
+            self.demand_unmet(w, f, a, d, boundary::SETTLED_EXPIRED, at);
+        }
+    }
+
+    /// A demand that went unmet: expired at its deadline, or refused (ENVOY_ANSWER), which is
+    /// never a signal cut even when no impulse came since (choice C2-12 in
+    /// docs/overnight-choices-conflictjni.md). Scouts if grievance is at their threshold, else the
+    /// feud stays at envoy above the hysteresis or falls back to notice.
+    fn demand_unmet(&mut self, w: &mut World, f: u32, a: ActorId, d: Demand, outcome: u32, at: Tick) {
+        let lambda = self.culture(f).lambda;
+        {
             self.stats.expired += 1;
-            self.settle_outbox(w, f, a, d, boundary::SETTLED_EXPIRED);
+            self.settle_outbox(w, f, a, d, outcome);
             self.envoy_home(w, d.envoy, at);
             let g = self.feuds[&(f, a)].g.total_at(at, lambda);
             let feud = self.feuds.get_mut(&(f, a)).expect("exists");
@@ -3365,12 +3375,19 @@ impl Conflict {
         }
     }
 
+    /// The player refused the demand or attacked the envoy: unmet now (DEMAND_SETTLED refused),
+    /// unless it was paid in full already.
     fn refuse(&mut self, w: &mut World, f: u32, a: ActorId, at: Tick, _insult: f64) {
         if let Some(feud) = self.feuds.get_mut(&(f, a))
             && let Some(d) = feud.demand.as_mut()
         {
             d.deadline = at;
-            self.demand_due(w, f, a, at);
+            let d = *d;
+            if d.paid >= d.tribute {
+                self.settle(w, f, a, boundary::SETTLED_PAID, at);
+            } else {
+                self.demand_unmet(w, f, a, d, boundary::SETTLED_REFUSED, at);
+            }
             self.plan_feud(f, a, at, false);
         }
     }

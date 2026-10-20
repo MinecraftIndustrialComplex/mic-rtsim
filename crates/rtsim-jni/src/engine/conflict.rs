@@ -926,6 +926,14 @@ impl super::Engine {
         f(&st.conflict.engine, &st.phase1.world)
     }
 
+    /// Keeps (or stops keeping) the conflict's log of what it decided, in memory and unsaved
+    /// (tests and `/rtsim`); returns the lines kept so far, oldest first, and clears them.
+    pub fn conflict_log(&self, keep: bool) -> Vec<rtsim_conflict::engine::LogEntry> {
+        let mut st = super::lock(&self.state);
+        st.conflict.engine.log_enabled = keep;
+        std::mem::take(&mut st.conflict.engine.log)
+    }
+
     /// Whether the last start read the conflict back to the state hash it was saved with
     /// (`None`), or (saved, read); and whether it dropped its pages.
     pub fn conflict_restore_check(&self) -> (Option<(u64, u64)>, bool) {
