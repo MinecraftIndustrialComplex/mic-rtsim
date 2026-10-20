@@ -26,6 +26,7 @@ pub mod legs;
 pub mod news;
 pub mod pipeline;
 pub mod roads;
+pub mod vecmap;
 
 pub use caravan::{Body, Caravan, CaravanKey, GroupKind, Leg, Member, Stage, Traveller};
 pub use edge::{Dir, DirRef, Edge, Predation};
@@ -34,3 +35,4 @@ pub use legs::{LegIndex, Meeting, Path, Stamp};
 pub use news::{NewsRing, Snapshot};
 pub use pipeline::Pipeline;
 pub use roads::RoadIndex;
+pub use vecmap::VecMap;

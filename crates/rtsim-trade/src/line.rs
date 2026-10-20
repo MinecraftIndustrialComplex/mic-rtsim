@@ -56,29 +56,34 @@ pub struct Rates {
 /// A slack with no limit: everything above the ceiling sinks at the next boundary.
 pub const UNLIMITED: Amount = 1 << 60;
 
+/// A cumulative count in thousandths. An `i64` holds 9.2 × 10^15 whole items: a market moving a
+/// million items a day takes 25,000 years to reach it, so the books are half the size they were as
+/// `i128` (overnight choice E58); the ledger still sums them in `i128`.
+pub type Count = i64;
+
 /// Cumulative accounting, for the conservation ledger.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Book {
-    pub produced: i128,
-    pub consumed: i128,
-    pub arrived: i128,
-    pub departed: i128,
+    pub produced: Count,
+    pub consumed: Count,
+    pub arrived: Count,
+    pub departed: Count,
     /// From players (sales to the market, deposits).
-    pub player_in: i128,
+    pub player_in: Count,
     /// To players (purchases from the market, loot).
-    pub player_out: i128,
+    pub player_out: Count,
     /// Put into the world at its creation (genesis endowment), ledgered.
-    pub genesis: i128,
+    pub genesis: Count,
     /// Destroyed (a dragon eats the cargo).
-    pub destroyed: i128,
+    pub destroyed: Count,
     /// Lost above the ceiling: spoilage and plenty for goods, upkeep for money (overnight choice
     /// E43).
-    pub sunk: i128,
+    pub sunk: Count,
     /// Moved in or out by lump transfers the engine makes itself (an individual caravan selling
     /// its cargo, a robbed caravan's stock going to a haven): two-sided, so these net to zero
     /// across the world.
-    pub lump_in: i128,
-    pub lump_out: i128,
+    pub lump_in: Count,
+    pub lump_out: Count,
 }
 
 /// What a stock level means to news and decisions.
@@ -330,11 +335,13 @@ impl Line {
             let k128 = i128::from(k);
             self.stock = Amount::try_from(i128::from(self.stock) + i128::from(seg.delta) * k128)
                 .expect("stock overflow");
-            self.book.produced += i128::from(seg.prod) * k128;
-            self.book.sunk += i128::from(seg.sink) * k128;
-            self.book.consumed += i128::from(r.cons - seg.short) * k128;
-            self.book.arrived += i128::from(r.inflow) * k128;
-            self.book.departed += i128::from(r.outflow) * k128;
+            let count =
+                |rate: Amount| Count::try_from(i128::from(rate) * k128).expect("book overflow");
+            self.book.produced += count(seg.prod);
+            self.book.sunk += count(seg.sink);
+            self.book.consumed += count(r.cons - seg.short);
+            self.book.arrived += count(r.inflow);
+            self.book.departed += count(r.outflow);
             left -= k;
             if left == 0 {
                 break;
@@ -464,17 +471,17 @@ mod tests {
         let pre = l.stock + r.inflow - r.outflow - r.cons;
         let prod = (l.target - pre).clamp(0, r.cap.max(0));
         let sink = (pre - l.ceiling.max(l.target)).clamp(0, r.slack.max(0));
-        l.book.sunk += i128::from(sink);
+        l.book.sunk += sink;
         let mut post = pre + prod - sink;
         let mut short = 0;
         if post < 0 {
             short = -post;
             post = 0;
         }
-        l.book.produced += i128::from(prod);
-        l.book.consumed += i128::from(r.cons - short);
-        l.book.arrived += i128::from(r.inflow);
-        l.book.departed += i128::from(r.outflow);
+        l.book.produced += prod;
+        l.book.consumed += r.cons - short;
+        l.book.arrived += r.inflow;
+        l.book.departed += r.outflow;
         l.stock = post;
         short
     }

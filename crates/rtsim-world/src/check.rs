@@ -32,8 +32,12 @@ impl World {
                 let k = kind(GoodId(gi as u16));
                 seen.add(k, i128::from(l.stock));
                 let b = l.book;
-                book.mint(k, b.genesis + b.produced + b.player_in);
-                book.burn(k, b.consumed + b.player_out + b.destroyed + b.sunk);
+                let w = i128::from;
+                book.mint(k, w(b.genesis) + w(b.produced) + w(b.player_in));
+                book.burn(
+                    k,
+                    w(b.consumed) + w(b.player_out) + w(b.destroyed) + w(b.sunk),
+                );
             }
         }
         let b = self.cfg.trade.quantum.index(at);
@@ -102,8 +106,9 @@ impl World {
                     dep.get(&g).copied().unwrap_or(0),
                     arr.get(&g).copied().unwrap_or(0),
                 );
-                if pd != l.book.departed || pa != l.book.arrived {
-                    out.push((i, g, l.book.departed, pd, l.book.arrived, pa));
+                let (bd, ba) = (i128::from(l.book.departed), i128::from(l.book.arrived));
+                if pd != bd || pa != ba {
+                    out.push((i, g, bd, pd, ba, pa));
                 }
             }
         }

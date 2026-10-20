@@ -16,6 +16,7 @@ use rtsim_trade::{Amount, GoodId, Goods, MILLI};
 
 use crate::lattice::Lattice;
 use crate::pipeline::Pipeline;
+use crate::vecmap::VecMap;
 
 /// Raiders on a road (C24): `share` thousandths of every consignment are taken and carried to the
 /// haven's market, arriving after `delay` quanta.
@@ -31,11 +32,11 @@ pub struct Dir {
     pub from: usize,
     pub to: usize,
     /// Goods from `from` to `to`.
-    pub goods: BTreeMap<GoodId, Pipeline>,
+    pub goods: VecMap<GoodId, Pipeline>,
     /// Payments from `from` to `to`, per currency, for goods flowing the other way.
-    pub pay: BTreeMap<GoodId, Pipeline>,
+    pub pay: VecMap<GoodId, Pipeline>,
     /// What raiders take from this direction's goods, on its way to the haven.
-    pub raid: BTreeMap<GoodId, Pipeline>,
+    pub raid: VecMap<GoodId, Pipeline>,
     pub predation: Option<Predation>,
     pub lattice: Lattice,
     /// Where the origin's noticeboard was last read for this direction's packets.
@@ -51,9 +52,9 @@ impl Dir {
         Dir {
             from,
             to,
-            goods: BTreeMap::new(),
-            pay: BTreeMap::new(),
-            raid: BTreeMap::new(),
+            goods: VecMap::new(),
+            pay: VecMap::new(),
+            raid: VecMap::new(),
             predation: None,
             lattice: Lattice::new(0, idle_period),
             board_cursor: BoardCursor::default(),
@@ -95,10 +96,11 @@ impl Dir {
     }
 
     pub fn heap_bytes(&self) -> usize {
-        self.pipelines()
-            .map(|(_, p)| p.heap_bytes() + 48)
-            .sum::<usize>()
-            + 128
+        self.pipelines().map(|(_, p)| p.heap_bytes()).sum::<usize>()
+            + self.goods.heap_bytes()
+            + self.pay.heap_bytes()
+            + self.raid.heap_bytes()
+            + self.lattice.heap_bytes()
     }
 }
 

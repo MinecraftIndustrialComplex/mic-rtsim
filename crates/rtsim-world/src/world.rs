@@ -199,7 +199,7 @@ pub struct World {
     pub edges: Vec<Edge>,
     pub knowledge: Knowledge,
     pub(crate) wheel: TimingWheel<Ev>,
-    pub(crate) packets: BTreeMap<u32, PacketData>,
+    pub packets: BTreeMap<u32, PacketData>,
     /// Wakes already booked, so two pipeline changes landing at one boundary wake a market once.
     pub(crate) wakes: std::collections::BTreeSet<(Tick, usize)>,
     pub(crate) next_packet: u32,
@@ -311,6 +311,13 @@ impl World {
         }
         for i in 0..w.nodes.len() {
             w.emit(i, Tick::ZERO, true);
+        }
+        // The tables are built: no slack from doubling (overnight choice E58).
+        w.edges.shrink_to_fit();
+        w.nodes.shrink_to_fit();
+        for n in &mut w.nodes {
+            n.out.shrink_to_fit();
+            n.neighbours.shrink_to_fit();
         }
         w
     }
@@ -596,6 +603,12 @@ impl World {
 
     pub fn now(&self) -> Tick {
         self.now
+    }
+
+    /// Entries in the world's own wheel (deliveries, wakes, arrivals, growth checks), for
+    /// diagnostics.
+    pub fn world_wheel_len(&self) -> usize {
+        self.wheel.len()
     }
 
     pub fn node_of_key(&self, key: u64) -> Option<usize> {

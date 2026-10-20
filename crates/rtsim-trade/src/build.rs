@@ -348,7 +348,7 @@ pub fn make_market(
             };
             let mut line = Line::new(stock, target);
             line.rates.cap = cap;
-            line.book.genesis = i128::from(stock);
+            line.book.genesis = stock;
             if nd.kind == MarketKind::Base {
                 line = Line::default();
             }

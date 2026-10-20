@@ -21,6 +21,7 @@ pub mod check;
 pub mod config;
 pub mod flows;
 pub mod interest;
+pub mod memory;
 pub mod observe;
 pub mod ribbits;
 pub mod synth;

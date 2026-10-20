@@ -477,7 +477,7 @@ impl World {
                     if m.is_storehouse() {
                         let l = m.line_mut(g);
                         l.stock += a;
-                        l.book.lump_in += i128::from(a);
+                        l.book.lump_in += a;
                         sold.insert(g, a);
                     }
                     continue;
@@ -496,13 +496,13 @@ impl World {
                 if sell > 0 {
                     let l = m.line_mut(g);
                     l.stock += sell;
-                    l.book.lump_in += i128::from(sell);
+                    l.book.lump_in += sell;
                     sold.insert(g, sell);
                 }
                 if pay > 0 {
                     let t = m.line_mut(cur);
                     t.stock -= pay;
-                    t.book.lump_out += i128::from(pay);
+                    t.book.lump_out += pay;
                     *paid.entry(cur).or_default() += pay;
                 }
             }

@@ -441,6 +441,11 @@ fn step(
         {
             p.trim(b);
         }
+        // A pipeline with nothing on the road and nothing coming is forgotten: most of a settled
+        // world's pipelines are (overnight choice E58). It comes back empty when a flow does.
+        dir.goods.retain(|_, p| !p.is_idle(b));
+        dir.pay.retain(|_, p| !p.is_idle(b));
+        dir.raid.retain(|_, p| !p.is_idle(b));
         dir.lattice.trim(b.saturating_sub(2 * ed + idle));
     }
 }

@@ -517,10 +517,10 @@ impl Market {
         let l = &mut self.lines[g.index()];
         assert!(l.stock >= a, "player bought more than the stock");
         l.stock -= a;
-        l.book.player_out += i128::from(a);
+        l.book.player_out += a;
         let m = &mut self.lines[cur.index()];
         m.stock += c;
-        m.book.player_in += i128::from(c);
+        m.book.player_in += c;
     }
 
     /// Applies a player's sale that [`Market::quote_sell`] priced.
@@ -530,10 +530,10 @@ impl Market {
         let m = &mut self.lines[cur.index()];
         assert!(m.stock >= c, "the treasury paid more than it held");
         m.stock -= c;
-        m.book.player_out += i128::from(c);
+        m.book.player_out += c;
         let l = &mut self.lines[g.index()];
         l.stock += a;
-        l.book.player_in += i128::from(a);
+        l.book.player_in += a;
     }
 
     /// Barter at anchor ratios, for a market that refuses cash: how many whole `want` the market
@@ -554,10 +554,10 @@ impl Market {
         let w = &mut self.lines[want.index()];
         assert!(w.stock >= b);
         w.stock -= b;
-        w.book.player_out += i128::from(b);
+        w.book.player_out += b;
         let gl = &mut self.lines[give.index()];
         gl.stock += a;
-        gl.book.player_in += i128::from(a);
+        gl.book.player_in += a;
     }
 
     /// The integer bundle closest to the market's price (PLAN.md §8.5): one item for whole coins

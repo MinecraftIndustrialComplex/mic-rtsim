@@ -164,3 +164,62 @@ fn robbery_spread() {
         println!("day +{day}: knows {knows:?}; Oakford's roads: {pend:?}");
     }
 }
+
+#[test]
+#[ignore]
+fn sizes() {
+    use std::mem::size_of;
+    println!("Market {}", size_of::<rtsim_trade::Market>());
+    println!("Line {}", size_of::<rtsim_trade::Line>());
+    println!("Book {}", size_of::<rtsim_trade::line::Book>());
+    println!("GoodState {}", size_of::<rtsim_trade::market::GoodState>());
+    println!("Edge {}", size_of::<rtsim_travel::Edge>());
+    println!("Dir {}", size_of::<rtsim_travel::Dir>());
+    println!("Pipeline {}", size_of::<rtsim_travel::Pipeline>());
+    println!("Node {}", size_of::<rtsim_world::world::Node>());
+    println!("Snapshot {}", size_of::<rtsim_travel::Snapshot>());
+    println!("GoodNews {}", size_of::<rtsim_travel::news::GoodNews>());
+    println!(
+        "Region<Market> {}",
+        size_of::<rtsim_kernel::lazy::Region<rtsim_trade::Market>>()
+    );
+    println!("PacketData {}", size_of::<rtsim_world::world::PacketData>());
+    let mut cfg = WorldConfig::new(42);
+    cfg.check_every_event = false;
+    cfg.genesis = Genesis::Share(500);
+    let (goods, ids) = synth::goods();
+    let book = synth::recipes(&ids);
+    let mut w = rtsim_world::World::build(cfg, goods, book, synth::grid(1024, 42));
+    w.run_until(Tick::from_days(20));
+    println!(
+        "markets heap {} (table), edges cap {} len {}, nodes cap {} len {}",
+        w.markets.heap_bytes(),
+        w.edges.capacity(),
+        w.edges.len(),
+        w.nodes.capacity(),
+        w.nodes.len()
+    );
+    let mut idle = 0;
+    let mut total = 0;
+    let b = w.cfg.trade.quantum.index(w.now());
+    for e in &w.edges {
+        for d in &e.dirs {
+            for (_, p) in d.pipelines() {
+                total += 1;
+                if p.is_idle(b) {
+                    idle += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "pipelines {total}, idle {idle}; packets {}",
+        w.packets.len()
+    );
+    println!(
+        "table wakes pending {} heap {}; world wheel {}",
+        w.markets.pending_wakes(),
+        w.markets.heap_bytes(),
+        w.world_wheel_len()
+    );
+}

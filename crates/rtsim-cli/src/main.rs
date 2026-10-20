@@ -40,7 +40,10 @@ usage:
                      [--trace D] [--grow] [--no-growth] [--no-bands]
       Runs a closed world with no player (the phase 1 world, or a grid of N villages) and prints
       market events per market per day for each E-day window: does it go quiet? --grow builds
-      the phase 1 world by joining its villages one a day (C22).";
+      the phase 1 world by joining its villages one a day (C22).
+  rtsim-cli sim memory [--markets N] [--days D]
+      Builds a grid of N villages (default 1,024), runs D days (default 20) and prints where the
+      memory goes, per market, by component, next to the counting allocator's total.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -240,6 +243,25 @@ fn main() -> ExitCode {
                 }
             }
             ExitCode::from(sim::quiet::run(o) as u8)
+        }
+        ["sim", "memory", rest @ ..] => {
+            let (mut markets, mut days) = (1_024u64, 20u64);
+            let mut it = rest.iter();
+            while let Some(&a) = it.next() {
+                let num = |v: Option<&&str>| v.and_then(|n| n.parse::<u64>().ok());
+                match a {
+                    "--markets" => match num(it.next()) {
+                        Some(n) if n > 0 => markets = n,
+                        _ => return usage("--markets needs a positive number"),
+                    },
+                    "--days" => match num(it.next()) {
+                        Some(n) => days = n,
+                        None => return usage("--days needs a number"),
+                    },
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            ExitCode::from(sim::memory::run(markets, days) as u8)
         }
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
