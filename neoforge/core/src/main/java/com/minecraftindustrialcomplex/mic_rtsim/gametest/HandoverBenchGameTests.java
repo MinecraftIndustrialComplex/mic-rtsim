@@ -69,6 +69,7 @@ public final class HandoverBenchGameTests {
     /** The gap before each cadence hand-over: one server tick. */
     private static final long GAP_MS = 50;
     private static final int[] PAYLOADS = {0, 30, 1000};
+    private static final String[] ENGINES = {"native", "native-p1", "stub"};
 
     /** Times the submit call and remembers when it started. */
     private static final class TimedEngine implements Engine {
@@ -166,14 +167,32 @@ public final class HandoverBenchGameTests {
         final TimedEngine engine;
         final BoundarySession session;
         long time = 1;
+        /** Phase 1 runs (the native-p1 rig): players reported with every hand-over. */
+        int[] playerDims = new int[0];
 
         Rig(String name, Engine engine) {
+            this(name, engine, 0);
+        }
+
+        Rig(String name, Engine engine, int moduleMask) {
             this.name = name;
             this.engine = new TimedEngine(engine);
-            this.session = new BoundarySession(this.engine, new Journal(), 0, time);
+            this.session = new BoundarySession(this.engine, new Journal(), moduleMask, time);
         }
 
         void payload(int records) {
+            for (int p = 0; p < playerDims.length; p++) {
+                int at = session.direct(Obs.PLAYER, Obs.Player.SIZE, playerDims[p], time);
+                if (at < 0)
+                    break;
+                ByteBuffer b = session.openBuffer();
+                b.putLong(at + Obs.Player.UUID_MOST, 0x5EED_0000L + p);
+                b.putLong(at + Obs.Player.UUID_LEAST, 0x5EED_1111L + p);
+                // Each player stands 30 blocks off a village of the grid (P1_VILLAGE_GRID).
+                b.putDouble(at + Obs.Player.X, (p % 2) * 4 * P1_VILLAGE_SPACING + 30);
+                b.putDouble(at + Obs.Player.Y, 64);
+                b.putDouble(at + Obs.Player.Z, (p / 2) * 4 * P1_VILLAGE_SPACING + 30);
+            }
             for (int i = 0; i < records; i++) {
                 int at = session.direct(Obs.PUPPET_STATE, Obs.PuppetState.SIZE, i % 3, time);
                 if (at < 0)
@@ -226,6 +245,49 @@ public final class HandoverBenchGameTests {
         return new Rig("native", NativeEngine.open(dir, 0, NativeEngine.FLAG_NO_FSYNC));
     }
 
+    /** The phase 1 rig's world: villages on a grid this many blocks apart, this many a side. */
+    private static final int P1_VILLAGE_SPACING = 500;
+    private static final int P1_VILLAGE_GRID = 8;
+    private static final String[] P1_STRUCTURES = {"minecraft:village_plains", "minecraft:village_taiga",
+            "minecraft:village_desert", "minecraft:village_savanna", "minecraft:village_snowy"};
+
+    /**
+     * The native engine with phase 1 running: 64 villages adopted (an 8 x 8 grid, five structures),
+     * the world run 10 days ahead so its flows, news and caravans are going, and four players each
+     * reported with every hand-over (the bridge reports a player every 20 ticks, so this is more),
+     * near enough to villages for MARKET snapshots and roads for caravans to materialize.
+     */
+    private static Rig nativePhase1Rig() {
+        Path dir = FMLPaths.GAMEDIR.get().resolve("mic_rtsim-test").resolve("bench-p1-" + UUID.randomUUID());
+        NativeEngine ne = NativeEngine.open(dir, 0, NativeEngine.FLAG_NO_FSYNC | NativeEngine.FLAG_TEST);
+        Rig r = new Rig("native-p1", ne, 0b1111); // knowledge, settlements, trade, travel
+        int dim = r.session.dictId(Obs.DICT_DIMENSION, "minecraft:overworld");
+        int human = r.session.dictId(Obs.DICT_CULTURE, "human");
+        for (int i = 0; i < P1_VILLAGE_GRID * P1_VILLAGE_GRID; i++) {
+            int x = (i % P1_VILLAGE_GRID) * P1_VILLAGE_SPACING, z = (i / P1_VILLAGE_GRID) * P1_VILLAGE_SPACING;
+            int structure = r.session.dictId(Obs.DICT_STRUCTURE, P1_STRUCTURES[(i * 7 + i / P1_VILLAGE_GRID) % P1_STRUCTURES.length]);
+            ByteBuffer b = r.session.beginJournaled(Obs.VILLAGE_ADOPTED, Obs.VillageAdopted.SIZE, 0, r.time);
+            b.putLong(Obs.VillageAdopted.VILLAGE, Obs.villageId(dim, x >> 4, z >> 4));
+            b.putInt(Obs.VillageAdopted.DIM, dim);
+            b.putInt(Obs.VillageAdopted.STRUCTURE, structure);
+            b.putInt(Obs.VillageAdopted.CULTURE, human);
+            b.putInt(Obs.VillageAdopted.PIECES, 45);
+            b.putInt(Obs.VillageAdopted.MIN_X, x - 30);
+            b.putInt(Obs.VillageAdopted.MIN_Y, 60);
+            b.putInt(Obs.VillageAdopted.MIN_Z, z - 30);
+            b.putInt(Obs.VillageAdopted.MAX_X, x + 30);
+            b.putInt(Obs.VillageAdopted.MAX_Y, 80);
+            b.putInt(Obs.VillageAdopted.MAX_Z, z + 30);
+            b.putInt(Obs.VillageAdopted.MEET_X, x);
+            b.putInt(Obs.VillageAdopted.MEET_Y, 64);
+            b.putInt(Obs.VillageAdopted.MEET_Z, z);
+            r.session.commit(b);
+        }
+        ne.phase1Advance(10 * 24_000L);
+        r.playerDims = new int[] {dim, dim, dim, dim};
+        return r;
+    }
+
     private static Rig stubRig() {
         return new Rig("stub", new StubEngine(StubEngine.Pages.EMPTY, null, StubEngine.DEFAULT_CAPACITY));
     }
@@ -243,18 +305,23 @@ public final class HandoverBenchGameTests {
         void tick() {
             if (finished)
                 return;
-            // Phases: for each engine (native, stub) and payload, a burst then a cadence run.
+            // Phases: for each engine (native, native with phase 1 running, stub) and payload, a burst
+            // then a cadence run.
             int perEngine = PAYLOADS.length * 2;
-            if (phase >= 2 * perEngine) {
+            if (phase >= ENGINES.length * perEngine) {
                 finish();
                 return;
             }
-            String engineName = phase < perEngine ? "native" : "stub";
+            String engineName = ENGINES[phase / perEngine];
             int within = phase % perEngine;
             int payload = PAYLOADS[within / 2];
             boolean burst = within % 2 == 0;
             if (rig == null)
-                rig = engineName.equals("native") ? nativeRig() : stubRig();
+                rig = switch (engineName) {
+                    case "native" -> nativeRig();
+                    case "native-p1" -> nativePhase1Rig();
+                    default -> stubRig();
+                };
             if (burst) {
                 Series s = new Series(engineName, "burst", payload, BURST);
                 // Warm-up: the JIT and the pool, not counted.
@@ -353,7 +420,7 @@ public final class HandoverBenchGameTests {
         }
     }
 
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "mic_rtsim_bench")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 4800, batch = "mic_rtsim_bench")
     public static void handOverCostPerTick(GameTestHelper helper) {
         if (!ENABLED) {
             record("handover-bench", "skipped", "run with -PrtsimBench (-Dmic_rtsim.bench=true)");
