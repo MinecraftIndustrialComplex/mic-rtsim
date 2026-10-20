@@ -1,0 +1,365 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Migration: each sub-season a herd picks its next target from a forage flow field within its
+//! comfort band (PLAN.md §10.2).
+//!
+//! **The flow field** is local and built per decision: a shortest-path tree over the forage cells
+//! within the herd's reach (Dijkstra on the 8-neighbour grid), with step costs from the ground
+//! (the climate's terrain multiplier) and from obstacle reports. Every reached cell is scored:
+//! forage there on arrival, against the herd's demand per cell; the temperature this sub-season
+//! against the species' comfort band; the cost of getting there; and a penalty where another herd
+//! already settled this sub-season. The best cell is the target, and the tree's parent pointers,
+//! read back from it, are the route: the field's flow lines.
+//!
+//! **Cost:** O(cells in reach × log) per decision, each forage read O(sub-seasons a year). Reach
+//! is capped (PLACEHOLDER 16 cells), so a decision's cost does not depend on herd size, world size
+//! or elapsed time.
+//!
+//! **Obstacles** (`Obstacles`): when a herd's puppets keep failing to pass a place, the plugin
+//! reports it, and entering that cell costs more from then on. A fence across a pass therefore
+//! closes every edge into the pass cell it blocks; the herd tries a neighbouring cell next, and
+//! once those are reported too it takes the long way round. The extra cost halves every
+//! half-life (PLACEHOLDER two sim years), so a fence taken down is forgotten in time.
+
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
+
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+
+use super::climate::{Climate, Subs};
+use super::forage::{CELL_BLOCKS, CellKey, Forage, cell_of, centre_of};
+use super::herd::Route;
+use super::species::HerdSpeciesData;
+
+/// Extra cost of entering a cell, from obstacle reports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Obstacle {
+    /// Multiplier above 1 at `at`.
+    pub extra: f64,
+    pub at: Tick,
+    pub reports: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Obstacles {
+    pub cells: BTreeMap<CellKey, Obstacle>,
+}
+
+impl Obstacles {
+    /// The extra multiplier of entering `k` at `t`.
+    pub fn extra(&self, k: CellKey, t: Tick, half_life: u64) -> f64 {
+        self.cells.get(&k).map_or(0.0, |o| {
+            let age = t.0.saturating_sub(o.at.0) as f64 / half_life.max(1) as f64;
+            o.extra * 0.5f64.powf(age)
+        })
+    }
+
+    /// A report: entering `k` costs `step` more (decayed to `t` first), up to `max`.
+    pub fn report(&mut self, k: CellKey, t: Tick, step: f64, max: f64, half_life: u64) {
+        let now = self.extra(k, t, half_life);
+        let reports = self.cells.get(&k).map_or(0, |o| o.reports) + 1;
+        self.cells.insert(
+            k,
+            Obstacle {
+                extra: (now + step).min(max),
+                at: t,
+                reports,
+            },
+        );
+    }
+}
+
+/// Everything a decision weighs, apart from the herd itself. All PLACEHOLDERS (HerdTunables).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weights {
+    /// Share of the sub-season a herd may spend walking.
+    pub travel_share: f64,
+    /// Reach cap, cells.
+    pub max_reach_cells: i32,
+    /// Score lost per °C outside the comfort band.
+    pub comfort_per_degree: f64,
+    /// Score lost per 1,000 block-equivalents of route cost.
+    pub travel_per_kblock: f64,
+    /// Score lost where another herd settled this sub-season (within 2 cells).
+    pub claim_penalty: f64,
+    /// Score is forage over demand, saturating at this.
+    pub food_cap: f64,
+    pub obstacle_half_life: u64,
+}
+
+/// One decision's inputs.
+pub struct Ask<'a> {
+    pub climate: &'a dyn Climate,
+    pub subs: &'a Subs,
+    pub forage: &'a Forage,
+    pub obstacles: &'a Obstacles,
+    /// Cells other herds settled on this sub-season.
+    pub claims: &'a BTreeMap<CellKey, u64>,
+    pub me: u64,
+    pub sp: &'a HerdSpeciesData,
+    pub frame: u16,
+    pub from: (i64, i64),
+    pub count: u64,
+    pub at: Tick,
+    /// When the next decision comes (the stay ends).
+    pub until: Tick,
+    pub w: Weights,
+}
+
+/// What a decision chose, for the CLI and tests.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub route: Route,
+    pub target: (i32, i32),
+    pub score: f64,
+    pub forage: f64,
+    pub temperature: f32,
+    pub cells_reached: u32,
+}
+
+fn step_cost(a: f64, b: f64, diagonal: bool) -> f64 {
+    let d = if diagonal {
+        f64::from(CELL_BLOCKS) * std::f64::consts::SQRT_2
+    } else {
+        f64::from(CELL_BLOCKS)
+    };
+    d * (a + b) / 2.0
+}
+
+fn passable(t: f32) -> bool {
+    t.is_finite() && t > 0.0
+}
+
+/// Plans a herd's next sub-season (the flow field and its best target).
+pub fn plan(q: &Ask<'_>) -> Choice {
+    let sub = Subs::in_year(q.subs.index(q.at));
+    let start = cell_of(q.from.0, q.from.1);
+    let days = (q.until.0.saturating_sub(q.at.0)) as f64 / TICKS_PER_DAY as f64;
+    let walk = q.sp.speed_blocks_per_day * days * q.w.travel_share;
+    let reach = ((walk / f64::from(CELL_BLOCKS)).ceil() as i32).clamp(1, q.w.max_reach_cells);
+    let terrain = |c: (i32, i32)| q.climate.terrain(q.frame, c.0, c.1);
+    // Dijkstra over cells within `reach` (Chebyshev), costs scaled to integers so the order is
+    // exact and ties break by cell.
+    let mut best: BTreeMap<(i32, i32), (u64, f64, (i32, i32))> = BTreeMap::new();
+    let mut heap = BinaryHeap::new();
+    best.insert(start, (0, 0.0, start));
+    heap.push(Reverse((0u64, start)));
+    let mut settled: Vec<((i32, i32), u64, f64)> = Vec::new();
+    let mut done = std::collections::BTreeSet::new();
+    while let Some(Reverse((cost, c))) = heap.pop() {
+        if !done.insert(c) {
+            continue;
+        }
+        let len = best[&c].1;
+        settled.push((c, cost, len));
+        let tc = f64::from(terrain(c)).max(1.0);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if dx == 0 && dz == 0 {
+                    continue;
+                }
+                let n = (c.0 + dx, c.1 + dz);
+                if (n.0 - start.0).abs() > reach || (n.1 - start.1).abs() > reach {
+                    continue;
+                }
+                let tn = terrain(n);
+                if !passable(tn) || done.contains(&n) {
+                    continue;
+                }
+                let diag = dx != 0 && dz != 0;
+                let extra = q
+                    .obstacles
+                    .extra((q.frame, n.0, n.1), q.at, q.w.obstacle_half_life);
+                let step = step_cost(tc, f64::from(tn).max(1.0), diag) * (1.0 + extra);
+                let nc = cost + (step * 1000.0).round() as u64;
+                let nl = len
+                    + if diag {
+                        f64::from(CELL_BLOCKS) * std::f64::consts::SQRT_2
+                    } else {
+                        f64::from(CELL_BLOCKS)
+                    };
+                if nl > walk + f64::from(CELL_BLOCKS) {
+                    continue;
+                }
+                if best.get(&n).is_none_or(|b| nc < b.0) {
+                    best.insert(n, (nc, nl, c));
+                    heap.push(Reverse((nc, n)));
+                }
+            }
+        }
+    }
+    // Score every reached cell.
+    let r = q.sp.footprint_radius(q.count);
+    let cells = (std::f64::consts::PI * f64::from(r) * f64::from(r)
+        / f64::from(CELL_BLOCKS * CELL_BLOCKS))
+    .max(1.0);
+    let demand_cell = q.sp.intake_per_day * q.count as f64 * days.max(1.0) / cells;
+    let (lo, hi) = q.sp.comfort;
+    let mut pick: Option<(f64, u64, (i32, i32), f64, f32)> = None;
+    for &(c, cost, len) in &settled {
+        let travel = (len / q.sp.speed_blocks_per_day.max(1.0) * TICKS_PER_DAY as f64) as u64;
+        let arrive = Tick(q.at.0 + travel).min(q.until);
+        let f = q.forage.at(q.climate, q.subs, (q.frame, c.0, c.1), arrive);
+        let food = (f / demand_cell.max(1e-9)).min(q.w.food_cap);
+        let temp = q.climate.temperature(q.frame, c.0, c.1, sub);
+        let outside = f64::from((lo - temp).max(temp - hi).max(0.0));
+        let mut claim = 0.0;
+        'near: for dx in -2..=2 {
+            for dz in -2..=2 {
+                if let Some(&o) = q.claims.get(&(q.frame, c.0 + dx, c.1 + dz))
+                    && o != q.me
+                {
+                    claim = q.w.claim_penalty;
+                    break 'near;
+                }
+            }
+        }
+        let score = food
+            - outside * q.w.comfort_per_degree
+            - cost as f64 / 1e6 * q.w.travel_per_kblock
+            - claim;
+        let better = match pick {
+            None => true,
+            Some((s, k, cc, _, _)) => score > s || (score == s && (cost, c) < (k, cc)),
+        };
+        if better {
+            pick = Some((score, cost, c, f, temp));
+        }
+    }
+    let (score, _, target, forage, temperature) =
+        pick.unwrap_or((0.0, 0, start, 0.0, q.climate.temperature(q.frame, start.0, start.1, sub)));
+    // Read the route back along the parents.
+    let mut cells_back = vec![target];
+    let mut c = target;
+    while c != start {
+        c = best[&c].2;
+        cells_back.push(c);
+    }
+    cells_back.reverse();
+    let mut points = vec![(q.from.0 as i32, q.from.1 as i32)];
+    for c in cells_back.iter().skip(1) {
+        points.push(centre_of(*c));
+    }
+    // Drop points on a straight line (a cheaper polyline, the same closed form).
+    let mut slim: Vec<(i32, i32)> = Vec::with_capacity(points.len());
+    for p in points {
+        while slim.len() >= 2 {
+            let (a, b) = (slim[slim.len() - 2], slim[slim.len() - 1]);
+            let cross = i64::from(b.0 - a.0) * i64::from(p.1 - b.1)
+                - i64::from(b.1 - a.1) * i64::from(p.0 - b.0);
+            if cross == 0 {
+                slim.pop();
+            } else {
+                break;
+            }
+        }
+        slim.push(p);
+    }
+    let mut times = Vec::with_capacity(slim.len());
+    let mut t = q.at.0;
+    times.push(q.at);
+    for w in slim.windows(2) {
+        let d = (f64::from(w[1].0 - w[0].0).powi(2) + f64::from(w[1].1 - w[0].1).powi(2)).sqrt();
+        t += ((d / q.sp.speed_blocks_per_day.max(1.0)) * TICKS_PER_DAY as f64).ceil() as u64;
+        times.push(Tick(t.min(q.until.0)));
+    }
+    Choice {
+        route: Route {
+            points: slim,
+            times,
+            until: q.until,
+        },
+        target: centre_of(target),
+        score,
+        forage,
+        temperature,
+        cells_reached: settled.len() as u32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calendar::Calendar;
+    use crate::herds::climate::ForageRates;
+    use crate::herds::species::HerdSpecies;
+
+    /// Warm in the south (+z, 10 °C a cell), a wall at cz = 0 with a gap at cx = 0: the comfort
+    /// band holds only the gap and the two rows south of it.
+    struct Valley;
+    impl Climate for Valley {
+        fn forage(&self, _: u16, _: i32, _: i32, _: u32) -> ForageRates {
+            ForageRates {
+                growth_per_day: 0.1,
+                capacity: 3_000.0,
+                decay_per_day: 0.0,
+            }
+        }
+        fn temperature(&self, _: u16, _: i32, cz: i32, _: u32) -> f32 {
+            10.0 * cz as f32
+        }
+        fn terrain(&self, _: u16, cx: i32, cz: i32) -> f32 {
+            if cz == 0 && cx != 0 {
+                f32::INFINITY
+            } else {
+                1.0
+            }
+        }
+    }
+
+    fn ask<'a>(
+        forage: &'a Forage,
+        obstacles: &'a Obstacles,
+        claims: &'a BTreeMap<CellKey, u64>,
+        sp: &'a HerdSpeciesData,
+        subs: &'a Subs,
+        from: (i64, i64),
+    ) -> Ask<'a> {
+        Ask {
+            climate: &Valley,
+            subs,
+            forage,
+            obstacles,
+            claims,
+            me: 1,
+            sp,
+            frame: 0,
+            from,
+            count: 500,
+            at: Tick(0),
+            until: Tick::from_days(8),
+            w: Weights {
+                travel_share: 0.6,
+                max_reach_cells: 16,
+                comfort_per_degree: 0.2,
+                travel_per_kblock: 0.05,
+                claim_penalty: 0.5,
+                food_cap: 1.5,
+                obstacle_half_life: Tick::from_days(192).0,
+            },
+        }
+    }
+
+    #[test]
+    fn a_cold_herd_walks_south_through_the_gap_until_fenced() {
+        let sp = HerdSpeciesData::of(HerdSpecies::Sheep);
+        let subs = Subs::of(&Calendar::default());
+        let forage = Forage::new();
+        let claims = BTreeMap::new();
+        let mut obstacles = Obstacles::default();
+        let from = (64, -6 * 128 + 64);
+        let c = plan(&ask(&forage, &obstacles, &claims, &sp, &subs, from));
+        assert!(c.target.1 > 0, "it crosses to the warm side: {:?}", c.target);
+        assert!(
+            c.route.points.iter().any(|p| cell_of(i64::from(p.0), i64::from(p.1)) == (0, 0)),
+            "through the gap: {:?}",
+            c.route.points
+        );
+        // Fence the gap: the herd stays on its side (no other way within reach).
+        for _ in 0..20 {
+            obstacles.report((0, 0, 0), Tick(0), 50.0, 1_000.0, 1_000_000);
+        }
+        let d = plan(&ask(&forage, &obstacles, &claims, &sp, &subs, from));
+        assert!(d.target.1 < 0, "fenced: {:?}", d.target);
+        assert!((d.route.until.0) == Tick::from_days(8).0);
+    }
+}
