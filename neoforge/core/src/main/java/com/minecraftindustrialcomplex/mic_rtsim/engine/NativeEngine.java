@@ -387,6 +387,11 @@ public final class NativeEngine implements ScriptedEngine {
         return stat(STAT_PAGES_OBS_SEQ);
     }
 
+    /** Nanoseconds the last step took on its pool thread (from its start to its publish). */
+    public long lastStepNanos() {
+        return stat(STAT_LAST_STEP_NANOS);
+    }
+
     @Override
     public int scriptedPending() {
         return (int) stat(STAT_ORDERS_PENDING);

@@ -75,6 +75,8 @@ neoForge {
             systemProperty 'mic_rtsim.gametest', 'true'
             // The engine the server's session runs: native (default) or stub (-PrtsimEngine=stub).
             systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            // The hand-over bench (HandoverBenchGameTests) runs only with -PrtsimBench.
+            systemProperty 'mic_rtsim.bench', project.hasProperty('rtsimBench').toString()
             jvmArgument '-Xmx3G'
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
