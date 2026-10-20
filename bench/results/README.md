@@ -95,3 +95,24 @@ the BTRS bound is computed differently (same distribution where it was already e
 - World age, 1 to 1,000 days, 100,000 regions: closed 0.78 to 0.48 ms per day; dyadic 1.01 to 0.95
   ms; herd 2.45 to 13.61 ms, with slot commits per day rising from 10,424 to 99,809.
 - Events, 10 to 100,000 a day (herd): 0.50 to 13.82 ms per day (slope 0.368).
+
+## 2026-10-20 10:13 UTC, the phase 1 market sweeps (`scale-2026-10-20-1013-markets-edges`)
+
+Only the two sweeps added with the phase 1 engine modules (`--only markets,edges`, three repeats,
+median kept), on branch `overnight/phase1`. Each point builds a grid of human and ribbit villages
+(`rtsim_world::synth::grid`, every number a PLACEHOLDER), trades for 10 days, then measures 10 days.
+Every run conserved every good and currency. Not a `--check` run of the whole bench: the kernel
+sweeps were not rerun here.
+
+**Numbers** (from the run's table):
+- Markets, 16 to 4,096 (edge rule: 4 nearest): 1.45 to 984 ms per sim day, slope 1.165 (declared
+  1.3); live heap 0.5 to 120.6 MiB, slope 0.978. Events per market per day are flat (15 to 20, from
+  `bench scale-one`), so the work is linear in markets; the cost per event rises from about 7 µs to
+  about 15 µs as the working set leaves the caches. Heap is about 30 KB per market against the
+  economy research's 1 KB ESTIMATE: market books are 16-byte integers per counter, snapshots are
+  dense over goods, and every pipeline is a B-tree entry. A hot/cold layout is the fix when it
+  matters.
+- Edges, nearest-k 1 to 16 at 512 markets: 13.0 to 719.7 ms per sim day, slope 1.431 against k
+  (declared 2.1: a market event costs O(degree × goods), and news reaches every neighbour, so
+  events also grow with degree).
+- A world at rest costs nothing: the two-market test in `rtsim-world` reaches zero events.
