@@ -59,7 +59,7 @@ has rtsim installed and is running. Ben is on his laptop.
    Travel, Dragons, Herds, Ships, Conflict, Industry, Players.
 4. **Zoomed out** (a whole continent on screen): villages as dots sized by population and coloured by
    culture; roads as lines whose width is the goods in transit, tinted red where the raid hazard is
-   high; districts as squares coloured by their ledger state; lairs; herds as soft discs labelled with
+   high; districts as squares coloured by their state (running, learning, stale, damaged); lairs; herds as soft discs labelled with
    their head count; faction territories as circles. Where more than the budget would land on screen
    (2,000 marks, TUNABLE), the server returns clusters with counts instead.
 5. **Zoom in on a road.** Caravans appear and move. Most are the flow's sampled travellers (A13),
@@ -78,8 +78,10 @@ has rtsim installed and is running. Ben is on his laptop.
    coarse as the archive keeps them (§10).
 8. **Back to Live; open the district.** The district is drawn as the box of its chunks with its
    stations and postboxes; train lines run to other districts with trips, cargo per trip and travel
-   time. Its card is the same ledger as `/rtsim district ledger`: state (running, learning, stale,
-   damaged), rates per hour, made since it unloaded, next breakpoint, last reconcile, attacks. Once the
+   time. Its card is the engine's own inspection of the district (`Engine::inspect`, what
+   `/rtsim district ledger` reports to an op): state and why, learned rates per hour, what the replay
+   made and used since it unloaded, whether it is running or what stopped it, the last reconcile, the
+   attacks. Once the
    glass box exists (GLASSBOX.md G1), a deep zoom draws its compiled graph: stores, machines and movers
    at their block positions, edges with rates.
 9. **Close the tab.** The page's event stream closes, the sidecar stops renewing the lease, and the
@@ -165,7 +167,7 @@ Sizes compare with the code that exists: worldmap.js is 597 lines, http.rs 777, 
 | API types: world, layer descriptor, marks, card, events, histogram | mic-viewer | S (about 400) | §4 |
 | Checks: node syntax and pure-function tests of the map core; a fixture page screenshot | mic-viewer | S | §16 |
 | `PageStore::open_read_only` with retry | rtsim-kernel | S (about 150) | §5.3 |
-| Peeks: `LazyTable::peek`, `PagedTable::peek`, industry `ledger_peek` and `stock_peek` on `&self` | rtsim | S to M | §5.3 |
+| Peeks: `LazyTable::peek`, `PagedTable::peek`, industry `inspect_peek` and `stock_peek` on `&self` | rtsim | S to M | §5.3 |
 | `rtsim-view` crate: `ViewSource` trait, parts, region summaries, binning and the mark budget | rtsim | M (about 800) | §4, §6 |
 | Layers and cards for phase 1, dragons, herds, ships, conflict, industry, HABITAT, players | rtsim | L (about 2,400 in all) | §7 |
 | Messenger positions (`messengers_on(edge, at)`); a district's box and centre kept at detection | rtsim | S | §7 |
@@ -255,7 +257,7 @@ Deep Time's coordinator leans towards a sidecar. Ben has not been asked. The hon
 | Nobody watching | the sidecar is not running; the engine makes one integer comparison per step and stats one file every 10 s (§5.2) | no listener, no thread if started on demand; an atomic flag per step | nothing at all |
 | Someone watching | the step tail encodes parts under a budget (250 µs a step, TUNABLE); the IO lane writes them; the sidecar's own process does all HTTP, aggregation and tiles at nice 19 | the step tail publishes parts into a `SnapshotCell`; HTTP, aggregation and tile rendering run inside the server process | the sidecar alone |
 | Freshness | the tap period, 2 s (TUNABLE); moving things animate between publications from their legs | sub-second | the last Minecraft save: autosave every 6,000 ticks, 300 s at 20 TPS (`MinecraftServer.AUTOSAVE_INTERVAL`, 1.21.1 sources) |
-| Cards of heavy things (a district's ledger) | summary live; full ledger from the last save's pages, projected to now on the sidecar's copy (whether one district projects without loading the whole industry engine is UNVERIFIED; if not, the ledger as of the save) | on demand from engine state, answered in the step tail | as of the last save |
+| Cards of heavy things (a district's inspection) | summary live; the full inspection from the last save's pages, projected to now on the sidecar's copy (whether one district projects without loading the whole industry engine is UNVERIFIED; if not, the inspection as of the save) | on demand from engine state, answered in the step tail | as of the last save |
 | Base maps | Surveyor, HABITAT, Deep Time tiles, all in the sidecar | HABITAT cheaply; Surveyor parsing and Deep Time tiles (about 60 MiB per open map at 16k) would sit in the server process | as A |
 | Threads | none in the server | a listener thread in the server process: **mic_native's contract says a plugin owns no threads**, so the host would need a new facility (a change to mic-native) | none in the server |
 | Isolation | a crash, a leak or a slow request cannot touch the server | panics are caught at the boundary; an abort, an out-of-memory or a stuck socket thread is the server's | as A |
@@ -346,7 +348,7 @@ pub trait ViewReader {
     /// Marks of one layer in canonical rectangles, at a ladder level, within a mark budget.
     fn marks(&self, part: &Part, layer: LayerId, rects: &[Rect], level: Level, budget: usize,
              out: &mut MarkWriter);
-    /// A card, from the part's rows; a heavy thing (a district's ledger) may also read the sim's
+    /// A card, from the part's rows; a heavy thing (a district's inspection) may also read the sim's
     /// saved pages through `pages`, read only.
     fn card(&self, part: &Part, layer: LayerId, id: u64, at: Tick, pages: &SavedPages)
         -> Option<Card>;
@@ -385,9 +387,10 @@ Viewing never advances or alters the simulation, and it never makes the engine d
 what it writes:
 - **No `&mut`.** Every `ViewSource` method takes `&self`. Where a module's reader takes `&mut self`
   today, the viewer gets a `&self` twin. `LazyTable::read` commits elapsed slots and moves `touched`
-  (the eviction order); industry's `ledger` and `sim_stock` take `&mut self`.
+  (the eviction order); industry's `inspect` and `sim_stock` take `&mut self`.
 - **Never past now.** A read is clamped to the engine's time and never fires what is due (industry's
-  review finding 12: "A read reports as of the engine's time: it never fires what is due").
+  `inspect`: "it projects the replay without committing anything (the kernel's read rule) and never
+  fires what is due").
 - **Never a page load the sim did not ask for.** In the live source the tap encodes only resident
   state; what the engine has evicted, the sidecar reads from the sim pages on disk (§5.2, item 5).
 - **Never an observer.** A viewer is not an interest area: looking at a road samples its travellers
@@ -451,8 +454,8 @@ the slowest layer is. Encode speed is UNVERIFIED; §16's exit test measures it.
   caught up, so the cost is the elapsed slots (O5); above a cap (64 slots, TUNABLE) the peek answers
   as of the anchor and the card says "as of game day d". Phase 1 markets already read this way
   (`World::market` uses `view_without_catch_up`).
-- **Industry** gets `ledger_peek(&self, d, at)` and `stock_peek(&self, d)`, the current functions
-  minus their commits.
+- **Industry** gets `inspect_peek(&self, d, at)` and `stock_peek(&self, d)`, the current `inspect`
+  and `sim_stock` (on main since the industry rework) minus their `&mut` reads.
 - **`PageStore::open_read_only(dir)`**: today's `open` creates the folder, truncates a torn log tail
   and deletes files the index does not name (`remove_strays`). A viewer must do none of that while the
   engine is writing. The read-only open reads the root and the log up to the last whole record and
@@ -517,7 +520,7 @@ count a bench has run, where one exists.
 | **Herds** (rtsim-ecology) | `Herd{species, classes, route, ...}`; latent members cost nothing | an area (`footprint`) with `count`; the route as a path; sampled animals below 4 bpp | species, count, cohorts, condition, ledger (born, died, eaten, taken) | 1,000,000 animals per herd (bench) |
 | **Ships** (rtsim-ships) | `Dock`, `Lane{path}`, `Service` timetables, `Ship{role, cargo, hull}`, `Haven`, `Navy`, `LaneThreat` | docks; lanes as paths tinted by threat; ships as points (`Service::fix`, `pirate_pos`) | role, service, phase, cargo, crew, hull | 814 merchant ships (bench) |
 | **Conflict** (rtsim-conflict) | `Faction{pos, radius, pool}`, `Feud{grievance, step, demand, party}`, `Party{kind, route, times, phase, loot}` | faction areas; feuds as edges coloured by step (Notice to Siege); parties as legs and paths | faction, warriors now (`pool_at`), feuds with grievance by kind (`feud_view`), demands, parties | |
-| **Industry** (rtsim-industry) | `District{chunks, dim, presence, phase, ports, stations, reports, attacks}`; `lines()` (`LineEdge`: trips, cargo, travel ticks); train `legs()` | districts as boxes of their chunks (a box and centre kept at detection: new, small); stations; train lines as edges; trains as legs | the ledger (`ledger_peek`): state, rates per hour, made since, next breakpoint, last reconcile, attacks; later the glass-box graph | 100,000 districts (bench) |
+| **Industry** (rtsim-industry) | `District{chunks, dim, presence, phase, ports, stations, reports, attacks}`; `lines()` (`LineEdge`: trips, cargo, travel ticks); train `legs()` | districts as boxes of their chunks (a box and centre kept at detection: new, small); stations; train lines as edges; trains as legs | the inspection (`inspect_peek`, `Inspection`): state and reason, rates per hour, made since, running or stopped, learning ticks to go, last reconcile, attacks; later the glass-box graph | 100,000 districts (bench) |
 | **World model** (rtsim-space) | HABITAT cells (64 blocks: water, ice, biome, tags, heights, temperatures, creatures) | the base map under everything (§9) | biome, heights, year-round degrees, creatures | about 6 KB per sampled region (overnight) |
 | **Players** (shared interest areas) | `PlayerState{uuid, pos}`, live only | points (ops only; live source only) | UUID; the name from the server's `usercache.json` when the sidecar is given the server folder | |
 
@@ -838,7 +841,7 @@ For Deep Time's coordinator to review.
 | **V3 Archive and timeline** | the archive writer, tiers, compaction, rollback cut; the timeline strip | R (rows per game day) measured for every `rtsim-cli sim` scenario and written here; a 10,000 game day soak stays under the budget; a crash between page commits cuts the right chunks |
 | **V4 Live tap** | lease, tap, view store, live source, SSE notices | the determinism test of §5.4 over 100 game days; with no lease, step time unchanged within noise; with a lease, the tap's step time at or under its budget; the server thread's hand-over unchanged |
 | **V5 Surveyor base map** | reader spike against the MICTest save, then the renderer | the MICTest save's explored area draws at 1 block per pixel; a world without Surveyor falls back to HABITAT |
-| **V6 Glass-box view** | after GLASSBOX G1: the compiled graph layer | the 12-factory corpus draws with rates matching the ledger |
+| **V6 Glass-box view** | after GLASSBOX G1: the compiled graph layer | the 12-factory corpus draws with rates matching the district's inspection |
 
 ---
 
