@@ -62,7 +62,7 @@ public final class GlassRecords {
                 SINK = 8, BLACK_BOX = 9, CONTROLLER = 10, PORT = 11, BOILER = 12;
 
         // Flags.
-        public static final int BOUNDED = 1, ANY_OUTPUT_BLOCKS = 2, STOCHASTIC = 4, FLUID = 8, CALIBRATED = 16, FRAME = 32;
+        public static final int BOUNDED = 1, ANY_OUTPUT_BLOCKS = 2, STOCHASTIC = 4, FLUID = 8, CALIBRATED = 16, FRAME = 32, PASS_THROUGH = 64;
 
         // Rate flags.
         public static final int RATE_SHARED = 1, RATE_FIRST_CYCLE = 2;
@@ -144,7 +144,8 @@ public final class GlassRecords {
 
     /** IND_GRAPH_END, aux = flags. */
     public static final class End {
-        // 24 u32 compile, 28 reserved
+        // 24 u32 compile
+        public static final int WINDOW = 28;         // u32: checksum window ticks (0: the engine's default)
         public static final int RECORDS = 32;        // u32
         public static final int NODES = 36;          // u32
         public static final int EDGES = 40;          // u32

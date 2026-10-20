@@ -331,6 +331,7 @@ pub fn fixtures() -> String {
             frame: f.u64("frame", g.u64()),
             revision: f.u32("revision", g.u32()),
             compile_ticks: f.u32("compile_ticks", g.u32()),
+            window: f.u32("window", g.u32()),
         });
         glass_obs(&mut out, name, gc::IND_GRAPH_END, 0, at, o, &f);
     }

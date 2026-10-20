@@ -302,6 +302,7 @@ class GlassWireContractTest {
         b.putLong(GlassRecords.End.FRAME, f.u64("frame"));
         b.putInt(GlassRecords.End.REVISION, (int) f.u32("revision"));
         b.putInt(GlassRecords.End.COMPILE_TICKS, (int) f.u32("compile_ticks"));
+        b.putInt(GlassRecords.End.WINDOW, (int) f.u32("window"));
         same("IND_GRAPH_END", b, f.bytes());
     }
 

@@ -113,6 +113,10 @@ pub mod node_flags {
     pub const CALIBRATED: u32 = 16;
     /// The node lives on a moving frame (a Sable sub-level, C32): its position is in the frame.
     pub const FRAME: u32 = 32;
+    /// A machine working in place on a line (a press over a belt, a fan zone, a deployer over a
+    /// depot or belt): goods no recipe of it matches pass through unchanged, sharing its capacity
+    /// only as the line's own.
+    pub const PASS_THROUGH: u32 = 64;
 }
 
 /// Edge flags (IND_GRAPH_EDGE at 44).
@@ -402,6 +406,9 @@ pub struct GraphEnd {
     pub compile: u32,
     /// [`end_flags`].
     pub flags: u32,
+    /// The checksum window in ticks, from Java's `glass.checksumWindowTicks`; 0 means the engine's
+    /// own `glass.checksumWindowMin` (tests shorten it).
+    pub window: u32,
     pub records: u32,
     pub nodes: u32,
     pub edges: u32,

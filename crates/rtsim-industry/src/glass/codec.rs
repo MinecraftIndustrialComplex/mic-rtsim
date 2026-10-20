@@ -251,7 +251,7 @@ pub fn encode_obs(
             let mut w = W::obs(out, IND_GRAPH_END, e.flags, None, at);
             w.put_u64(e.district.0);
             w.put_u32(e.compile);
-            w.zero(4);
+            w.put_u32(e.window);
             w.put_u32(e.records);
             w.put_u32(e.nodes);
             w.put_u32(e.edges);
@@ -436,6 +436,7 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
                 district: r.district(16),
                 compile: r.get_u32(24),
                 flags: aux,
+                window: r.get_u32(28),
                 records: r.get_u32(32),
                 nodes: r.get_u32(36),
                 edges: r.get_u32(40),
@@ -622,6 +623,7 @@ mod tests {
             district: DistrictId(7),
             compile: 3,
             flags: 1,
+            window: 2_400,
             records: 4,
             nodes: 1,
             edges: 1,
