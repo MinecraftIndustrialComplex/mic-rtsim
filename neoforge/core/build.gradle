@@ -1,0 +1,98 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    mavenCentral()
+}
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        server {
+            server()
+            programArgument '--nogui'
+        }
+
+        // `./gradlew :core:runGameTestServer` (or ../gametest.sh): a headless dedicated server that
+        // runs every @GameTest in the mic_rtsim namespace and exits with the number of failed
+        // required tests (0 when they all pass). The core depends on NeoForge only (D4), so the run
+        // needs no other mod. mic_rtsim.mixins.json is defaultRequire 1, so a mixin that no longer
+        // matches its target fails the launch: booting at all is the suite's first assertion.
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'mic_rtsim'
+            // Unlocks RtsimConfig's test overrides; nothing else sets this property.
+            systemProperty 'mic_rtsim.gametest', 'true'
+            jvmArgument '-Xmx3G'
+            if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
+            gameDirectory = file('run-gametest')
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+dependencies {
+    // Pure-Java unit tests: the boundary protocol, the journal and the stub engine. They touch no
+    // Minecraft class, so they need no game on the classpath.
+    testImplementation(platform("org.junit:junit-bom:${junit_version}"))
+    testImplementation('org.junit.jupiter:junit-jupiter')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}

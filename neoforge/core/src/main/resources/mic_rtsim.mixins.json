@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.minecraftindustrialcomplex.mic_rtsim.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "EntitySaveMixin",
+    "EntitySectionManagerAccessor",
+    "LlamaInvoker",
+    "ServerLevelAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
