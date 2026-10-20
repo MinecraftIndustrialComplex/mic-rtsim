@@ -12,6 +12,14 @@ engine's choices are F# (`docs/overnight-choices-industry.md`), the earlier Java
 come from (a GameTest on this laptop, AMD Ryzen AI MAX PRO 390, on the stub engine unless it says
 otherwise).
 
+**Results** (after merging main with the world model, 2026-10-20 afternoon; `./gametest.sh` on fresh
+worlds). Stub engine: every suite passes (core 52 of 52, create 18, ribbits 5, carryon 2, iceandfire 7,
+oreexcavation 1, dieselgenerators 1, endertransmission 1, powergrid 2, destroy 1, climate 1, radar 1).
+Native engine: every plugin suite passes; core passed 49 of 49 before the world model merge, and after it
+50 to 51 of 52 in three runs, a different phase 1 or herd test timing out each run (the habitat herd, the
+engine's own herd, the live caravan, the llama capture) under a load average of 10 to 13 from other
+sessions; never an industry or threat test. The wire contract test passes (53 tests).
+
 ## Proposals relied on (recommended options)
 
 | Proposal | What the code does |
