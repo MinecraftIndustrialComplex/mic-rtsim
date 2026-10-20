@@ -237,6 +237,11 @@ fn raids_in_view_send_loot_to_the_haven_and_conserve_every_good() {
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     // Make the pirates bold and the raids certain enough to see in a short run.
     c.ships.tun.share_per_strength_milli = 60;
+    // At that hazard (the 400 per mille cap) traders who price it leave the lane at once
+    // (overnight choice U9; `a_hunted_lane_is_priced_as_an_expected_loss`), and no merchant in
+    // view would carry anything to loot. This test is about raids in view, so its traders keep
+    // the rule that ignores hazard.
+    c.world.cfg.price_lane_hazard = false;
     let mut raided = 0;
     let mut t = Tick::ZERO;
     let end = Tick::from_days(16);
@@ -658,4 +663,113 @@ fn a_replayed_loot_applies_once() {
         }
     }
     assert!(done, "a merchant with cargo came into view");
+}
+
+/// Goods allocated to a lane now, both directions, the raided share included (thousandths a
+/// quantum): what its origins' traders choose to send on it.
+fn allocated(w: &World, edge: u32) -> i64 {
+    w.edges[edge as usize]
+        .dirs
+        .iter()
+        .map(|d| {
+            d.goods.values().map(|p| p.current_rate()).sum::<i64>()
+                + d.raid.values().map(|p| p.current_rate()).sum::<i64>()
+        })
+        .sum()
+}
+
+/// Overnight choice U9: a lane that pirates hunt is priced as an expected loss in the trade
+/// allocation (its margin falls by the raided share of what the destination pays), so traders
+/// send less on it than traders who ignore the hazard, and every good stays conserved.
+#[test]
+fn a_hunted_lane_is_priced_as_an_expected_loss() {
+    let run = |priced: bool| -> (i64, i64) {
+        let mut c = coast(5);
+        c.world.cfg.price_lane_hazard = priced;
+        // Only the world runs: no pirate sets a hazard but the one below.
+        let warm = Tick::from_days(4);
+        c.world.run_until(warm);
+        let lane = (0..c.ships.lanes.len())
+            .max_by_key(|&l| {
+                (
+                    allocated(&c.world, c.ships.lanes[l].edge),
+                    std::cmp::Reverse(l),
+                )
+            })
+            .expect("a lane");
+        let edge = c.ships.lanes[lane].edge;
+        let before = allocated(&c.world, edge);
+        let haven = c.ships.havens[c.haven as usize].node;
+        for dir in 0..2 {
+            assert!(c.world.set_lane_hazard(edge, dir, haven, 300, 4, warm));
+        }
+        let end = Tick::from_days(10);
+        c.world.run_until(end);
+        c.world.check_conserved(end).expect("conserved");
+        (before, allocated(&c.world, edge))
+    };
+    let (before, ignored) = run(false);
+    let (before_priced, priced) = run(true);
+    eprintln!("U9: {before} before the hazard; after 6 days, {ignored} ignored, {priced} priced");
+    assert_eq!(before, before_priced, "the same world until the hazard");
+    assert!(before > 0, "the busiest lane carries trade");
+    assert!(ignored > 0, "traders who ignore the hazard keep sending");
+    assert!(
+        priced < ignored,
+        "a hunted lane is avoided: {priced} sent priced, {ignored} ignored, {before} before"
+    );
+}
+
+/// Overnight choice U18: a merchant that stays embodied across a docking gets its next voyage's
+/// hold (SHIP_CARGO), so the body never keeps goods the flow already landed; its op id comes from
+/// what it is (allocator 0x53; the same when the run is derived again; never another command's).
+#[test]
+fn a_ship_embodied_across_a_docking_gets_its_next_hold() {
+    use rtsim_ships::boundary::Cmd;
+    let run = || -> Vec<(u64, u32, u64, usize)> {
+        let mut c = coast(3);
+        let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
+        // The player waits at a dock: merchants arrive in view, stay docked, and leave again.
+        let (x, z) = (c.ships.docks[0].x, c.ships.docks[0].z);
+        fake.set_player(PLAYER, f64::from(x), f64::from(z));
+        let mut sets = Vec::new();
+        let mut t = Tick::ZERO;
+        while t < Tick::from_days(3) {
+            if t.0.is_multiple_of(1_000) {
+                c.ships
+                    .observe_player(&mut c.world, PLAYER, Pos::new(0, x, z), t);
+            }
+            t += 50;
+            c.ships.run_until(&mut c.world, &mut NoInfrastructure, t);
+            let cmds = c.ships.take_commands();
+            let mut obs = fake.apply(&cmds, t);
+            for cmd in &cmds {
+                if let Cmd::SetCargo(s) = cmd {
+                    sets.push((s.agent, s.epoch, s.op, s.items.len()));
+                    let body = fake.bodies.get(&s.agent).expect("sent to an embodied ship");
+                    assert_eq!(body.epoch, s.epoch, "to its current body");
+                    assert_eq!(body.cargo, s.items, "the body holds what the voyage holds");
+                }
+            }
+            obs.extend(fake.step(t));
+            for o in obs {
+                c.ships.ingest(&mut c.world, &o, &c.mask, t);
+            }
+        }
+        c.ships.check(&c.world).expect("conserved");
+        sets
+    };
+    let sets = run();
+    assert!(
+        !sets.is_empty(),
+        "a merchant stayed in view across a docking"
+    );
+    assert!(
+        sets.iter().all(|s| s.2 >> 56 == 0x53),
+        "the ships' allocator"
+    );
+    let ops: BTreeSet<u64> = sets.iter().map(|s| s.2).collect();
+    assert_eq!(ops.len(), sets.len(), "one op id per command");
+    assert_eq!(run(), sets, "derived again, the same commands and op ids");
+    eprintln!("U18: {} SHIP_CARGO in 3 days at a dock", sets.len());
 }

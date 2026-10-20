@@ -18,6 +18,7 @@ What was built while Ben slept, what it measured, and what needs him first.
 | Phase 1 Minecraft side | `neoforge/core` and the `ribbits` and `carryon` plugins | Village adoption, treasury trades, gossip writes, llama-chest cargo, rescues, robbery, houses from YUNG's templates |
 | Dragons (phase 2) | `crates/rtsim-ecology` (engine), `neoforge/iceandfire` (plugin `mic_rtsim_iceandfire`) | Lairs, hunger, scheduled legs, grudges, heirs, boredom, predation, raids on districts and trains, save and restore |
 | Industry | `crates/rtsim-industry` (engine), `neoforge/core` industry module and the `create` plugin | Districts learned at the boundary, replay between breakpoints, exactly-once reconcile on load, threats, train ports, a ledger on a Create display |
+| Ships | `crates/rtsim-ships` (engine only; no plugin yet) | Sea and sky lanes, Veloren-style loop routes, timetabled ships that survive restarts, merchant flows in holds, pirates with havens, navy patrols lowering lane hazard, Lanchester raids never better than observed |
 | Persistence | phase 1, industry and dragons | Snapshot plus short log tail; restore gives the identical state hash |
 
 ## Numbers measured overnight
@@ -53,6 +54,8 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 
 **Dragons:** 10 to 14 µs per dragon per sim day, flat from 8 to 512 dragons.
 
+**Ships:** the engine's own cost stays flat at 17 to 19 µs per sim day from 56 to 814 merchant ships; unobserved merchant ships cost nothing.
+
 **Economy:** a closed 11-village world goes fully quiet, from 36.5 to 0.00 events per market per day, after the round 2 fixes.
 
 ## Tests
@@ -79,11 +82,14 @@ Measured on this laptop (Ryzen AI MAX PRO 390, shared with other sessions), not 
 4. **The industry stale-tick race:** four options.
 5. **G31:** how vanilla's reputation discount stacks on sim prices. Also whether Java should keep its own copy of the price math.
 6. **Dragons: M1 (breeding) was taken at its recommendation.** The In Control spawner change is a pack edit that waits for Ben; the edits are ready, disabled, in `neoforge/iceandfire/pack-proposal/config/incontrol/`.
-7. **Plan facts the jars contradict:** `stealItems` is a pixie setting; the fire dragon is desert-only in effect; dragons do carry prey.
+7. **Ships T5:** where a road and a sea lane join the same two markets, the two now share the destination's demand (best margin first). This changes phase 1 behaviour only in such worlds.
+8. **Plan facts the jars contradict:** `stealItems` is a pixie setting; the fire dragon is desert-only in effect; dragons do carry prey.
 
 ## Not done, or still running at the time of writing
 
 - **Kernel follow-ups:** paging under a memory budget, two save generations (P29), the parallel step and the P4 storage bench. They are on branch `overnight/kernel2`, not yet merged.
 - **Industry plugins:** PowerGrid, Destroy, Ore Excavation, Diesel Generators, Ender Transmission and threat sampling. Interrupted once by the API rate limit and resumed.
-- **Not started:** ships, herds, conflict factions, kaiju, space and history generation.
+- **Done since:** ships run through the native link; one interest area per player is shared by phase 1, dragons and ships; module switches exist for dragons and ships; traders price pirate hazard on lanes (368 Rust tests pass).
+- **In progress:** migrating herds (engine) and conflict factions (engine).
+- **Not started:** plugins for ships and conflict (body mods are open, P8), kaiju, space and history generation.
 - **API rate limits interrupted several agents once.** Every interrupted branch was saved as a WIP commit and pushed before resuming.

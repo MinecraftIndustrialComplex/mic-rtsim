@@ -24,6 +24,8 @@ rtsim-travel.workspace = true
 rtsim-knowledge.workspace = true
 # Phase 2's dragons (docs/boundary.md §6).
 rtsim-ecology.workspace = true
+# Ships, pirates and navies (docs/boundary.md §7).
+rtsim-ships.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 

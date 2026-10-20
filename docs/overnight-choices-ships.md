@@ -82,6 +82,10 @@ Veloren's own numbers, not Minecraft's).
 
 ## Incomplete
 
+Since then, on `overnight/integrate2` (docs/overnight-choices-integrate2.md): the route through the
+native engine (U1), one interest area per player (U2), the server switch (U10), hazard in prices
+(U9) and SHIP_CARGO (U18) are done; the rest of this list stands.
+
 - **No plugin, no route through the native engine.** `rtsim-jni` does not carry the ship records;
   there is no Java. The fake in `synth.rs` is the reference.
 - **Op ids** of CARGO_LOOTED, SHIP_SUNK and SHIP_CAPTURED are applied once (the last 4,096 kept,

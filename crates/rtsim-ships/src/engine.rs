@@ -67,6 +67,10 @@ pub const SYS_SHIP: SystemId = SystemId::named("ships.ship");
 const SYS_PIRATE: SystemId = SystemId::named("ships.pirate");
 const SYS_RAID: SystemId = SystemId::named("ships.raid");
 const SYS_SERVICE: SystemId = SystemId::named("ships.service");
+const SYS_CARGO: SystemId = SystemId::named("ships.cargo");
+
+/// The engine's op ids (SHIP_CARGO): allocator 0x53 in bits 56 to 62 (docs/boundary.md §2.2).
+pub const OP_ALLOCATOR: u64 = boundary::AGENT_NAMESPACE << 56;
 
 /// Leg owners: a ship's legs carry this bit over its 48-bit handle (players' interest areas use
 /// the top bit, dragons the next, `rtsim-world`'s caravans none).
@@ -1259,7 +1263,6 @@ impl Ships {
     }
 
     fn book_interest(&mut self, w: &mut World, p: ActorId, path: Path) {
-        self.stats.interest_bookings += 1;
         let old = self.players.get(&p).and_then(|v| v.interest);
         let stamp = match old.and_then(|s| w.legs.replan(s.leg, path)) {
             Some(s) => s,
@@ -1268,8 +1271,26 @@ impl Ships {
         if let Some(v) = self.players.get_mut(&p) {
             v.interest = Some(stamp);
         }
-        // Book the voyages this area could see: lanes in the regions it covers, widened by the
-        // radius, and on them the voyages overlapping its window.
+        self.book_voyages_in_view(w, path);
+        let mut found = Vec::new();
+        for other in w.legs.sharing(stamp) {
+            let Some(row) = w.legs.get(other.leg) else {
+                continue;
+            };
+            if !owns_leg(row.owner) {
+                continue;
+            }
+            if let Some(m) = w.legs.meeting(other, stamp) {
+                found.push(m);
+            }
+        }
+        self.seen_ships(w, p, &found);
+    }
+
+    /// Books the voyages an interest area could see: lanes in the regions it covers, widened by
+    /// the radius, and on them the voyages overlapping its window. Counts one interest booking.
+    fn book_voyages_in_view(&mut self, w: &mut World, path: Path) {
+        self.stats.interest_bookings += 1;
         let r = i64::from(path.radius) + i64::from(self.tun.body_radius);
         let (x0, z0) = (
             i64::from(path.x0.min(path.x1)) - r,
@@ -1310,21 +1331,21 @@ impl Ships {
         for (id, v) in want {
             self.book_voyage(w, id, v);
         }
-        // Every ship leg sharing a cell with the area: one meeting per ship voyage (or pirate
-        // plan), the earliest.
+    }
+
+    /// Ship legs crossing a player's area (`a` the ship's leg): one meeting per ship voyage (or
+    /// pirate plan), the earliest, each a `Seen` (or `SeenPirate`) event.
+    fn seen_ships(&mut self, w: &World, p: ActorId, found: &[Meeting]) {
         let mut first: BTreeMap<(ShipId, u64), Meeting> = BTreeMap::new();
         let mut pirates: BTreeMap<ShipId, Meeting> = BTreeMap::new();
-        for other in w.legs.sharing(stamp) {
-            let Some(row) = w.legs.get(other.leg) else {
+        for &m in found {
+            let Some(row) = w.legs.get(m.a.leg) else {
                 continue;
             };
-            if row.owner.0 & (PLAYER_OWNER | SHIP_OWNER) != SHIP_OWNER {
+            if !owns_leg(row.owner) {
                 continue;
             }
-            let Some(m) = w.legs.meeting(other, stamp) else {
-                continue;
-            };
-            if let Some(&(id, v)) = self.leg_voyage.get(&other.leg) {
+            if let Some(&(id, v)) = self.leg_voyage.get(&m.a.leg) {
                 let e = first.entry((id, v)).or_insert(m);
                 if m.at < e.at {
                     *e = m;
@@ -1362,6 +1383,22 @@ impl Ships {
                 },
             );
         }
+    }
+
+    /// A session started (docs/boundary.md §2.3: puppets never outlive a session): every ship
+    /// the engine thought embodied is abstract again with the last state it knew, and every
+    /// voyage may enter a player's view again (its body is gone). For the native link; the
+    /// engine's own runs have no sessions.
+    pub fn session_start(&mut self) {
+        for (_, x) in self.ships.iter_mut() {
+            x.embodied = false;
+        }
+        self.seen_by.clear();
+    }
+
+    /// Whether [`Ships::build`] has made the network (ports added later get shuttles).
+    pub fn is_built(&self) -> bool {
+        self.built
     }
 
     /// The legs of one voyage, booked in the shared index: its dock stay, then every straight
@@ -1531,7 +1568,7 @@ impl Ships {
                 self.materialize_pirate(ship, (pos.0 as i32, pos.1 as i32), 0, player, at);
             }
             Ev::Unbook { ship, voyage } => self.unbook(w, ship, voyage),
-            Ev::NextLeg { ship, epoch } => self.next_leg(ship, epoch, at),
+            Ev::NextLeg { ship, epoch } => self.next_leg(w, ship, epoch, at),
             Ev::Arrive { ship, voyage } => self.arrive(w, ship, voyage, at),
             Ev::Raid {
                 pirate,
@@ -1810,9 +1847,21 @@ impl Ships {
         self.schedule(arrive.max(at + 1), Ev::NextLeg { ship: id, epoch });
     }
 
+    /// The op id of the SHIP_CARGO that sets an embodiment's hold for a voyage: from what it is
+    /// (the ship, the epoch, the voyage), so the same command derived again after a crash has the
+    /// same id and no other command ever has it (docs/boundary.md §2.2; overnight choice U18).
+    pub fn cargo_op(&self, id: ShipId, epoch: u32, voyage: u64) -> u64 {
+        let seed = self.ships.get(id).map_or(id.to_bits(), |x| x.seed);
+        let low = StreamKey::new(self.seed, SYS_CARGO, seed).block(u64::from(epoch), voyage)[0]
+            & ((1 << 56) - 1);
+        OP_ALLOCATOR | low.max(1)
+    }
+
     /// An embodied timetabled ship reached its next dock: its next voyage's timetable goes to the
-    /// plugin, and so on while it stays embodied (observed, so these events are allowed).
-    fn next_leg(&mut self, id: ShipId, epoch: u32, at: Tick) {
+    /// plugin, and so on while it stays embodied (observed, so these events are allowed). A
+    /// merchant's hold becomes the next voyage's (SHIP_CARGO, U18): what it carried was landed by
+    /// the flow, and a body that kept it would hold goods the sim no longer has.
+    fn next_leg(&mut self, w: &World, id: ShipId, epoch: u32, at: Tick) {
         let Some(x) = self.ships.get(id) else {
             return;
         };
@@ -1852,6 +1901,16 @@ impl Ships {
             harbour_blocks: g.depart_blocks as u32,
             waypoints,
         }));
+        if matches!(self.ships[id].role, Role::Merchant) {
+            let cargo = self.cargo_of(w, id, fix.voyage);
+            let op = self.cargo_op(id, epoch, fix.voyage);
+            self.outbox.push(Cmd::SetCargo(boundary::SetCargo {
+                agent: Ship::agent(id),
+                epoch,
+                op,
+                items: Self::items(&cargo),
+            }));
+        }
         let next = tick_of(fix.times.arrive).max(at + 1);
         self.schedule(next, Ev::NextLeg { ship: id, epoch });
     }
@@ -3020,6 +3079,16 @@ impl Ships {
         (x.epoch == epoch).then_some(s)
     }
 
+    /// The ship an op-carrying record (CARGO_LOOTED, SHIP_SUNK, SHIP_CAPTURED) is about, whatever
+    /// the epoch: what the plugin moved or destroyed really left, even when the record arrives in
+    /// a later session (replayed from the journal after a crash, when the pages predate the
+    /// materialization; or carried by a chunk) for a body this engine no longer knows. The op id
+    /// applies it once (overnight choice U14, as phase 1's review 3 P2).
+    fn ship_of_op(&self, agent: u64) -> Option<ShipId> {
+        let s = Ship::id_of_agent(agent)?;
+        self.ships.get(s).map(|_| s)
+    }
+
     /// Whether a plugin op id was applied already; remembers it if not.
     fn first_time(&mut self, op: u64) -> bool {
         if op == 0 {
@@ -3098,7 +3167,11 @@ impl Ships {
                 }
             }
             Obs::Sunk(k) => {
-                let Some(s) = self.ship_of(k.agent, k.epoch) else {
+                // A ship already lost is lost once (repeats are no-ops by state).
+                let Some(s) = self
+                    .ship_of_op(k.agent)
+                    .filter(|&s| self.ships[s].is_active())
+                else {
                     return;
                 };
                 let killer = (k.by == By::Player).then(|| self.player(w, k.player));
@@ -3130,7 +3203,10 @@ impl Ships {
             }
             Obs::Boarded(_) => {}
             Obs::Captured(c) => {
-                let Some(s) = self.ship_of(c.agent, c.epoch) else {
+                let Some(s) = self
+                    .ship_of_op(c.agent)
+                    .filter(|&s| self.ships[s].is_active())
+                else {
                     return;
                 };
                 match c.by {
@@ -3171,7 +3247,7 @@ impl Ships {
                 }
             }
             Obs::CargoLooted(c) => {
-                let Some(s) = self.ship_of(c.agent, c.epoch) else {
+                let Some(s) = self.ship_of_op(c.agent) else {
                     return;
                 };
                 if matches!(self.ships[s].role, Role::Merchant) {
@@ -3422,6 +3498,37 @@ impl Ships {
 
     pub fn lane_hops(&self, l: u32) -> &[(u32, u32)] {
         &self.lane_hops[l as usize]
+    }
+}
+
+/// Whether a leg's owner is a ship's (a voyage or a pirate's leg), not a player's area.
+fn owns_leg(owner: Owner) -> bool {
+    owner.0 & (PLAYER_OWNER | SHIP_OWNER) == SHIP_OWNER
+}
+
+/// The ships as a viewer of the engine's shared interest areas (one per player across every
+/// module; overnight choices U2 to U6): an area books the voyages it could see, then the ship
+/// legs it crosses enter the player's view, exactly as the ships' own areas
+/// ([`Ships::observe_player`]) do. A player's view here keeps no area of its own (`interest`
+/// stays `None`), so [`Ships::player_left`] never cancels the shared one.
+impl rtsim_world::interest::Viewer for Ships {
+    fn owns(&self, owner: Owner) -> bool {
+        owns_leg(owner)
+    }
+
+    fn area_booked(&mut self, w: &mut World, player: ActorId, uuid: Uuid, area: Stamp) {
+        self.players.entry(player).or_insert(PlayerView {
+            uuid,
+            interest: None,
+        });
+        if let Some(path) = w.legs.get(area.leg).map(|r| r.path) {
+            self.book_voyages_in_view(w, path);
+        }
+    }
+
+    fn crossings(&mut self, w: &mut World, player: ActorId, area: Stamp, found: &[Meeting]) {
+        let _ = area;
+        self.seen_ships(w, player, found);
     }
 }
 

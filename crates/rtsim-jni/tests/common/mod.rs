@@ -110,6 +110,9 @@ pub struct Java {
     pub hold_commands: bool,
     /// The op ids of transfers read while holding.
     pub held_ops: Vec<u64>,
+    /// Leave acknowledgements unapplied (the journal untrimmed): the world save a test takes next
+    /// is one the bridge wrote before it read the acknowledgement.
+    pub hold_acks: bool,
     /// The FAILED flag was seen on a command buffer.
     pub failed_seen: bool,
     /// SESSION_START's module mask (the bridge's `Module` bits).
@@ -134,6 +137,9 @@ pub struct Java {
     /// Dragon commands applied, as the Ice and Fire plugin would (docs/boundary.md §6.5):
     /// (cmdSeq, command decoded with the reference codec, its dimension in Java's dictionary).
     pub iaf: Vec<(u64, rtsim_ecology::boundary::Cmd)>,
+    /// Ship commands applied, as a ships plugin would (docs/boundary.md §7.5): (cmdSeq, command
+    /// decoded with the reference codec, its body, item and dimension ids in Java's dictionary).
+    pub ships: Vec<(u64, rtsim_ships::boundary::Cmd)>,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -210,6 +216,7 @@ impl Java {
             stale_commands: 0,
             hold_commands: false,
             held_ops: Vec::new(),
+            hold_acks: false,
             failed_seen: false,
             module_mask: 0,
             p1: Vec::new(),
@@ -221,6 +228,7 @@ impl Java {
             fail_next_carriage: false,
             failed_carriage: None,
             iaf: Vec::new(),
+            ships: Vec::new(),
         }
     }
 
@@ -370,6 +378,16 @@ impl Java {
             }
         }
         true
+    }
+
+    /// The server config's module switches changed (C25): a MODULES record in the open buffer,
+    /// and the mask a later session start sends.
+    pub fn modules(&mut self, mask: u32) {
+        self.module_mask = mask;
+        let r = self
+            .reserve(obs::MODULES, obs::modules::SIZE, 0)
+            .expect("room for MODULES");
+        wire::put_u32(r, obs::modules::MASK, mask);
     }
 
     /// The end of a server tick: apply finished commands, hand over, submit if allowed.
@@ -565,6 +583,7 @@ impl Java {
                     }
                     k if (0x8400..=0x84FF).contains(&k) => self.industry_command(k, seq, rec.bytes),
                     k if (0x8500..=0x85FF).contains(&k) => self.dragon_command(seq, rec.bytes),
+                    k if (0x8600..=0x86FF).contains(&k) => self.ship_command(seq, rec.bytes),
                     cmd::DESPAWN_GROUP => {
                         let b = rec.bytes;
                         let agent = wire::u64_at(b, cmd::despawn_group::AGENT);
@@ -612,7 +631,7 @@ impl Java {
                 "wordC is the highest cmdSeq in the buffer"
             );
             c.consumed().store(k, Ordering::Release);
-            if self.pending_ack > 0 {
+            if self.pending_ack > 0 && !self.hold_acks {
                 let a = self.pending_ack;
                 while self.journal.front().is_some_and(|(s, _)| *s <= a) {
                     self.journal.pop_front();
@@ -963,5 +982,112 @@ impl Java {
             D::Steer(_) | D::Depart(_) => {}
         }
         self.iaf.push((seq, c));
+    }
+
+    // ---- a ships plugin (docs/boundary.md §7; none exists yet, P8) ------------------------------
+
+    /// Journals a ship observation (a kind of 0x0600 to 0x06FF), encoded with the reference codec;
+    /// its ids are Java's dictionary's. Also the record of what a real plugin would send.
+    pub fn ship_obs(&mut self, o: &rtsim_ships::boundary::Obs) -> u64 {
+        let mut b = Vec::new();
+        rtsim_ships::boundary::encode_obs(0, self.game_time, o, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        assert!(obs::is_journaled(kind), "a journaled ship kind");
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// The Java id of a name the engine sent in its dictionary (defined in Java's on first use,
+    /// as a plugin maps an engine name to its registry and the registry to Java's own id).
+    fn java_of_engine(&mut self, kind: u32, engine_id: u32) -> u32 {
+        let name = self
+            .cmd_dict
+            .get(&(kind, engine_id))
+            .unwrap_or_else(|| panic!("a DICT ({kind}, {engine_id}) comes before its first use"))
+            .clone();
+        self.dict_id(kind, &name)
+    }
+
+    /// One ship command, as a plugin applies it: a materialization answers SHIP_MATERIALIZED (the
+    /// ship and its crew are there), a despawn SHIP_DEMATERIALIZED; the rest are recorded (the
+    /// test plays fights, loot and captures itself). Ids are translated to Java's.
+    fn ship_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_ships::boundary::{self as sb, Cmd as S};
+        let (_, s, mut c) = sb::decode_cmd(bytes).expect("a ship command decodes");
+        assert_eq!(s, seq);
+        match &mut c {
+            S::Materialize(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                m.body = self.java_of_engine(wire::DICT_BODY, m.body);
+                for mb in &mut m.members {
+                    mb.body = self.java_of_engine(wire::DICT_BODY, mb.body);
+                }
+                for it in &mut m.cargo {
+                    it.item = self.java_of_engine(wire::DICT_ITEM, it.item);
+                }
+                let (agent, epoch, dimension) = (m.agent, m.epoch, m.dimension);
+                self.ship_obs(&sb::Obs::Materialized(sb::Materialized {
+                    agent,
+                    epoch,
+                    dimension,
+                    entity: (0x5A5A, agent),
+                }));
+            }
+            S::SetCargo(sc) => {
+                assert_eq!(
+                    sc.op >> 56,
+                    0x53,
+                    "an engine SHIP_CARGO op id (allocator 0x53)"
+                );
+                for it in &mut sc.items {
+                    it.item = self.java_of_engine(wire::DICT_ITEM, it.item);
+                }
+                // The hold is set exactly, once per op id (docs/boundary.md §7.5).
+                let op = sc.op;
+                let status = if self.applied_cmd_ops.contains(&op) {
+                    obs::command_result::DUPLICATE_OP
+                } else {
+                    obs::command_result::APPLIED
+                };
+                self.journal(
+                    obs::COMMAND_RESULT,
+                    obs::command_result::SIZE,
+                    status,
+                    |r| {
+                        wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                        wire::put_u64(r, obs::command_result::OP_ID, op);
+                    },
+                );
+            }
+            S::Despawn(d) => {
+                let (agent, epoch) = (d.agent, d.epoch);
+                // The body as it was materialized (the test reports wounds itself).
+                let (crew, hull) = self
+                    .ships
+                    .iter()
+                    .rev()
+                    .find_map(|(_, c)| match c {
+                        S::Materialize(m) if m.agent == agent && m.epoch == epoch => {
+                            Some((m.crew, m.hull_milli))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or((0, 0));
+                self.ship_obs(&sb::Obs::Dematerialized(sb::Dematerialized {
+                    agent,
+                    epoch,
+                    reason: 1,
+                    dimension: 0,
+                    hull_milli: hull,
+                    crew,
+                    pos: (0.0, 63.0, 0.0),
+                }));
+            }
+            S::Timetable(_) | S::Steer(_) | S::Depart(_) => {}
+        }
+        self.ships.push((seq, c));
     }
 }

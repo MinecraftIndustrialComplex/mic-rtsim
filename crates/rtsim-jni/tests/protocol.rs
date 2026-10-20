@@ -160,14 +160,21 @@ fn transfers_apply_exactly_once_across_crashes_in_both_directions() {
         0,
         "this session's Minecraft never applied it again"
     );
-    // A save that includes everything, then a crash before the acknowledgement trims the journal.
+    // A save that includes everything, then a crash before the acknowledgement trims the journal
+    // (held: the save's own step may already carry it when its commit is quick).
     j.idle();
+    j.hold_acks = true;
     e.order(vec![Order::SaveAtNextStep]).unwrap();
     j.run_until("pages on disk", |j| j.e.durable_obs_seq() > 0);
     let saved = j.world_save();
     assert!(
         !saved.journal.is_empty(),
-        "the journal still holds the transfer"
+        "the journal still holds the transfer (acks {:?}, durable {}, next obs {}, sent {}, pages at start {})",
+        j.acks,
+        e.durable_obs_seq(),
+        j.next_obs,
+        j.sent_obs,
+        j.pages_obs
     );
     let _ = j.crash();
 
@@ -1267,6 +1274,605 @@ mod dragons {
         assert_eq!(e.dragons_restore_check(), (None, false));
         assert_eq!(summary(&e).0, after.0);
         assert_eq!(summary(&e).2, after.2);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// C25 (U10): with the ecology module switched off mid-session the dragons ignore their
+    /// records (a hoard robbery), decide nothing (a player at the lair sees no dragon) and keep
+    /// the page they had at the switch; switched on again they run on and the player sees the
+    /// dragon.
+    #[test]
+    fn switched_off_dragons_ignore_their_records_and_keep_their_page() {
+        use rtsim_jni::engine::DRAGONS_TABLE;
+        use rtsim_kernel::page::{PageKey, PageStore};
+        let page = |dir: &std::path::PathBuf| {
+            let mut store =
+                PageStore::open(dir, rtsim_kernel::page::Durability::NoSync).expect("open");
+            store.get(PageKey::new(DRAGONS_TABLE, 0)).expect("read")
+        };
+        let dir = tmpdir("dragons-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        // A well-fed dragon: it stays at rest in its lair for days (R7), so a player there sees
+        // it whenever the dragons run.
+        let mut fed = untagged((0xD2, 0x1), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        let mut back = captured(a.agent, a.epoch, dim, 400.0);
+        if let O::Dematerialized(d) = &mut back {
+            d.hunger = 100;
+        }
+        j.dragon_obs(&back);
+        j.idle();
+
+        // Off: a robbery is ignored, a player at the lair sees nothing.
+        j.modules(0b1111);
+        j.idle();
+        let item = j.dict_id(wire::DICT_ITEM, EMERALD);
+        j.dragon_obs(&O::HoardRobbed(db::HoardRobbed {
+            lair: LAIR,
+            op: wire::JAVA_OP_BIT | 0xD0FF,
+            player: PLAYER,
+            items: vec![(item, 3)],
+        }));
+        j.players = vec![(PLAYER, dim, [3010.0, 70.0, 3005.0])];
+        let commands = j.iaf.len();
+        for _ in 0..600 {
+            j.tick();
+        }
+        j.idle();
+        assert!(e.dragons_ignored() >= 1, "the robbery was ignored");
+        assert_eq!(e.dragon_stats().0.hoards_robbed, 0);
+        assert_eq!(
+            j.iaf.len(),
+            commands,
+            "no dragon command while switched off"
+        );
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let at_switch = page(&dir).expect("a dragons page");
+
+        // A session that starts with it off keeps that page exactly.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = 0b1111;
+        j.players = vec![(PLAYER, dim, [3010.0, 70.0, 3005.0])];
+        for _ in 0..300 {
+            j.tick();
+        }
+        j.idle();
+        assert!(j.iaf.is_empty());
+
+        // On again, mid-session: the player at the lair sees the dragon.
+        j.modules(MODULES);
+        j.run_until("a materialization after the switch", |j| {
+            j.iaf
+                .iter()
+                .any(|(_, c)| matches!(c, D::Materialize(m) if m.agent == a.agent))
+        });
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let saved = j.world_save();
+        let _ = j.crash();
+        assert_eq!(
+            page(&dir),
+            Some(at_switch.clone()),
+            "the page kept while switched off"
+        );
+        let e = engine(&dir, 256 * 1024);
+        let _j = Java::open(e.clone(), saved);
+        assert_eq!(e.dragons_restore_check(), (None, false));
+        e.close(false, Duration::from_secs(5)).unwrap();
+    }
+}
+
+// ---- ships (docs/boundary.md §7) ------------------------------------------------------------------
+
+mod ships {
+    use super::*;
+    use rtsim_jni::engine::{MODULE_SHIPS, SHIPS_TABLE};
+    use rtsim_kernel::page::{PageKey, PageStore};
+    use rtsim_ships::boundary::{self as sb, By, Cmd as S, Obs as O};
+    use rtsim_ships::engine::Ship;
+
+    /// Knowledge, settlements, trade, travel and ships.
+    const MODULES: u32 = 0b1111 | MODULE_SHIPS;
+    const HAVEN: u64 = 0x0000_0000_0000_0042;
+    const VILLAGES: [(u64, &str, i32, i32); 3] = [
+        (0x0001_0000_0000_0011, "minecraft:village_plains", 0, 0),
+        (0x0001_0000_0000_0012, "minecraft:village_taiga", 400, 0),
+        (0x0001_0000_0000_0013, "minecraft:village_desert", 0, 400),
+    ];
+
+    /// Three villages with sea ports and a haven between them, reported by the plugin; the
+    /// network is built at the next simulate point.
+    fn coast(j: &mut Java) {
+        for (v, structure, x, z) in VILLAGES {
+            j.adopt(v, structure, "human", 90, x, z);
+        }
+        j.idle();
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        for (v, _, x, z) in VILLAGES {
+            j.ship_obs(&O::PortFound(sb::PortFound {
+                village: v,
+                medium: rtsim_travel::Medium::Sea,
+                dimension: dim,
+                structure: 0,
+                dock: (x + 8, 63, z + 8),
+                berths: 4,
+            }));
+        }
+        j.ship_obs(&O::HavenFound(sb::HavenFound {
+            haven: HAVEN,
+            media: 1,
+            dimension: dim,
+            structure: 0,
+            dock: (200, 63, 200),
+        }));
+        j.idle();
+        j.idle();
+    }
+
+    /// The materializations the plugin applied: (cmdSeq, record).
+    fn materializations(j: &Java) -> Vec<sb::Materialize> {
+        j.ships
+            .iter()
+            .filter_map(|(_, c)| match c {
+                S::Materialize(m) => Some(m.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Goods a lane's origins send on it now, both directions (thousandths a quantum).
+    fn lane_flow(e: &Engine, l: usize) -> i64 {
+        e.with_ships(|s, w| {
+            w.edges[s.lanes[l].edge as usize]
+                .dirs
+                .iter()
+                .map(|d| d.goods.values().map(|p| p.current_rate()).sum::<i64>())
+                .sum()
+        })
+    }
+
+    /// What must be the same after a crash and the journal's replay: the network, what players
+    /// took, the counters, and every ship's crew, hull and hold (embodiment and epochs are per
+    /// session).
+    #[allow(clippy::type_complexity)]
+    fn summary(e: &Engine) -> (usize, usize, i128, u64, u64, Vec<(u64, u32, u32, i64)>) {
+        e.with_ships(|s, _| {
+            let mut rows: Vec<(u64, u32, u32, i64)> = s
+                .ships
+                .iter()
+                .map(|(id, x)| {
+                    (
+                        Ship::agent(id),
+                        x.crew,
+                        x.hull_milli,
+                        x.cargo.values().sum::<i64>(),
+                    )
+                })
+                .collect();
+            rows.sort();
+            (
+                s.docks.len(),
+                s.lanes.len(),
+                s.ledger.taken_by_players.values().sum(),
+                s.stats.loot_events,
+                s.stats.fights_observed,
+                rows,
+            )
+        })
+    }
+
+    fn page(dir: &std::path::PathBuf) -> Option<Vec<u8>> {
+        let mut store = PageStore::open(dir, rtsim_kernel::page::Durability::NoSync).expect("open");
+        store.get(PageKey::new(SHIPS_TABLE, 0)).expect("read")
+    }
+
+    fn save(e: &Engine, j: &mut Java) {
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The ships through the native engine and a fake ships plugin: ports and a haven reported,
+    /// the network built, a merchant entering a player's view materialized with its crew and hold
+    /// (DICT records first, Java's names), a fight reported and booked, a save; then the player
+    /// loots the hold (applied once, the same op id again changes nothing) and the server dies.
+    /// The pages read back to their saved state hash, and the journal's replay books the loot
+    /// once, leaving every ship as before the crash.
+    #[test]
+    fn ships_materialize_fight_are_looted_once_and_replay_across_a_crash() {
+        let dir = tmpdir("ships");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        coast(&mut j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (docks, lanes, services, havens) = e.with_ships(|s, _| {
+            (
+                s.docks.len(),
+                s.lanes.len(),
+                s.services.len(),
+                s.havens.len(),
+            )
+        });
+        assert_eq!((docks, havens), (3, 1), "three ports and a haven");
+        assert!(
+            lanes >= 2 && services >= 1,
+            "a network: {lanes} lanes, {services} services"
+        );
+
+        // Days on, until a lane carries goods.
+        let mut rounds = 0;
+        let lane = loop {
+            if let Some(l) = (0..lanes).find(|&l| lane_flow(&e, l) > 0) {
+                break l;
+            }
+            assert!(rounds < 400, "no goods on any lane: {:?}", e.ship_stats());
+            e.order(vec![Order::Phase1Advance(3_000)]).unwrap();
+            j.idle();
+            rounds += 1;
+        };
+        // A save: what follows reaches the next session only through the journal.
+        save(&e, &mut j);
+
+        // The player stands at the lane's middle. A merchant with goods in its hold enters the
+        // view, with most of its voyage still ahead.
+        let mid = e.with_ships(|s, _| {
+            let p = &s.lanes[lane].path;
+            p.at(p.length() / 2)
+        });
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, [f64::from(mid.0), 64.0, f64::from(mid.1)])];
+        let laden = |j: &Java, e: &Engine| {
+            let now = e.with_ships(|_, w| w.now().0 as i64);
+            materializations(j).into_iter().find(|m| {
+                m.role == sb::Role::Merchant && !m.cargo.is_empty() && m.times[3] > now + 400
+            })
+        };
+        let mut ticks = 0;
+        j.run_until("a merchant with a hold in view", |j| {
+            ticks += 1;
+            laden(j, &j.e.clone()).is_some()
+        });
+        let m = laden(&j, &e).expect("found");
+        assert_eq!(m.agent >> 56, 0x53, "a ship's agent id");
+        assert_eq!(m.dimension, dim, "the dimension in Java's dictionary");
+        // The members: the ship first, then its crew (docs/boundary.md §7.4).
+        let names: Vec<&str> = m
+            .members
+            .iter()
+            .map(|x| j.dict[x.body as usize - 1].1.as_str())
+            .collect();
+        assert_eq!(j.dict[m.body as usize - 1].1, "mic_rtsim:ship/sea_merchant");
+        assert_eq!(names[0], "mic_rtsim:ship/sea_merchant");
+        assert!(
+            names[1..].iter().all(|n| *n == "mic_rtsim:crew/sailor"),
+            "the crew: {names:?}"
+        );
+        assert_eq!(
+            m.members.len() as u32,
+            m.crew + 1,
+            "the ship and its crew, one group"
+        );
+        let (shared, seen) = (e.ship_stats().0.interest_bookings, e.ship_stats().0.seen);
+        assert!(shared > 0 && seen > 0, "the player's shared area saw it");
+
+        // At once (the hold is the voyage's): the plugin reports a fight it played (the pirates
+        // broke off; both sides' wounds are the engine's) and the player loots the hold.
+        let pirate = e.with_ships(|s, _| Ship::agent(s.havens[0].ships[0]));
+        j.ship_obs(&O::Fight(sb::Fight {
+            attacker: pirate,
+            defender: m.agent,
+            outcome: 3,
+            attacker_crew: (8, 6),
+            defender_crew: (m.crew, m.crew - 1),
+            attacker_hull_milli: 700,
+            defender_hull_milli: 850,
+        }));
+        let items: Vec<sb::Item> = m
+            .cargo
+            .iter()
+            .map(|it| sb::Item {
+                item: it.item,
+                count: (it.count / 2).max(1),
+            })
+            .collect();
+        let loot = O::CargoLooted(sb::CargoLooted {
+            agent: m.agent,
+            epoch: m.epoch,
+            by: By::Player,
+            player: PLAYER,
+            ship: 0,
+            op: wire::JAVA_OP_BIT | 0x5A11,
+            items,
+        });
+        j.ship_obs(&loot);
+        j.idle();
+        let row = |e: &Engine, agent: u64| {
+            e.with_ships(|s, _| {
+                let x = s.ship(Ship::id_of_agent(agent).unwrap()).unwrap();
+                (x.crew, x.hull_milli)
+            })
+        };
+        assert_eq!(e.ship_stats().0.fights_observed, 1);
+        assert_eq!(row(&e, m.agent), (m.crew - 1, 850), "the merchant's wounds");
+        assert_eq!(row(&e, pirate), (6, 700), "the pirates' wounds");
+        let before = summary(&e);
+        eprintln!(
+            "ships exchange: {rounds} advances of 3,000 ticks, then {ticks} ticks to a laden merchant; \
+             {} docks, {} lanes, taken {} thousandths, stats {:?}",
+            before.0,
+            before.1,
+            before.2,
+            e.ship_stats()
+        );
+        assert_eq!(
+            before.3,
+            1,
+            "one loot: {:?}; materialized phase {} times {:?} cargo {:?}; now {:?}",
+            e.ship_stats(),
+            m.phase,
+            m.times,
+            m.cargo,
+            e.with_ships(|s, w| {
+                let x = s.ship(Ship::id_of_agent(m.agent).unwrap()).unwrap();
+                (w.now(), x.epoch, x.promoted, x.cargo.clone())
+            })
+        );
+        assert!(before.2 > 0, "the player took goods from the hold");
+        // The same loot again under its op id (a chunk-carried resend): nothing more.
+        j.ship_obs(&loot);
+        j.idle();
+        assert_eq!(summary(&e), before, "a loot's op id is applied once");
+        let saved = j.world_save();
+        assert!(
+            saved
+                .journal
+                .iter()
+                .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == sb::CARGO_LOOTED),
+            "the journal holds what the pages lack"
+        );
+        let _ = j.crash();
+
+        // The restart: the pages read back to their saved state, and the replay brings the rest
+        // once.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            e.ships_restore_check(),
+            (None, false),
+            "the ships read back to their saved state hash"
+        );
+        let (_, replay_ok, _) = e.phase1_state();
+        assert!(replay_ok, "the world they live in too");
+        assert_eq!(summary(&e).3, 0, "the pages predate the loot");
+        j.idle();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            summary(&e),
+            before,
+            "the loot booked once, every ship as before the crash"
+        );
+        j.ship_obs(&loot);
+        j.idle();
+        assert_eq!(summary(&e), before, "and its op id still applies once");
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A clean restart reads them back again.
+        let e = engine(&dir, 256 * 1024);
+        let _j = Java::open(e.clone(), saved);
+        assert_eq!(e.ships_restore_check(), (None, false));
+        assert_eq!(summary(&e), before);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// C25 (U10): with the ships module switched off they ignore their records, write nothing
+    /// and keep the page they had; switched on again they run on.
+    #[test]
+    fn switched_off_ships_ignore_their_records_and_keep_their_page() {
+        let dir = tmpdir("ships-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        coast(&mut j);
+        assert_eq!(e.with_ships(|s, _| s.docks.len()), 3);
+        save(&e, &mut j);
+        j.modules(0b1111);
+        j.idle();
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let at_switch = page(&dir).expect("a ships page");
+
+        // Off from the start of a session: a new port is ignored, a player by a lane sees no
+        // ship, and the page stays as it was.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = 0b1111;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.adopt(
+            0x0001_0000_0000_0014,
+            "minecraft:village_savanna",
+            "human",
+            90,
+            400,
+            400,
+        );
+        j.idle();
+        j.ship_obs(&O::PortFound(sb::PortFound {
+            village: 0x0001_0000_0000_0014,
+            medium: rtsim_travel::Medium::Sea,
+            dimension: dim,
+            structure: 0,
+            dock: (408, 63, 408),
+            berths: 4,
+        }));
+        let mid = e.with_ships(|s, _| {
+            let p = &s.lanes[0].path;
+            p.at(p.length() / 2)
+        });
+        j.players = vec![(PLAYER, dim, [f64::from(mid.0), 64.0, f64::from(mid.1)])];
+        for _ in 0..3_000 {
+            j.tick();
+        }
+        j.idle();
+        let (stats, _, ignored, written) = e.ship_stats();
+        assert!(ignored >= 1, "the port was ignored ({ignored})");
+        assert_eq!(e.with_ships(|s, _| s.docks.len()), 3, "no fourth dock");
+        assert_eq!(
+            (written, stats.interest_bookings),
+            (0, 0),
+            "nothing seen, nothing written"
+        );
+        assert!(j.ships.is_empty(), "no ship command reached Java");
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            page(&dir),
+            Some(at_switch.clone()),
+            "the page kept as it was"
+        );
+
+        // On again: they run, and the player by the lane sees ships.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.players = vec![(PLAYER, dim, [f64::from(mid.0), 64.0, f64::from(mid.1)])];
+        assert_eq!(e.ships_restore_check(), (None, false));
+        j.run_until("the ships seeing the player again", |j| {
+            j.e.ship_stats().0.interest_bookings > 0
+        });
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_ne!(
+            page(&dir),
+            Some(at_switch),
+            "running again, the page moves on"
+        );
+    }
+
+    /// One interest area per player across the modules (U2): with a dragon at rest by the lane
+    /// and the ships sailing it, the player reported every 20 ticks has one leg in the shared
+    /// index, and both the dragon and a ship enter the player's view through it.
+    #[test]
+    fn dragons_and_ships_see_a_player_through_one_area() {
+        use rtsim_ecology::boundary::{self as db, Cmd as D, Obs as DO, SpawnKind};
+        use rtsim_ecology::dragon::LairKind;
+        use rtsim_ecology::species::{Gender, Species};
+        let dir = tmpdir("shared-area");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES | rtsim_jni::engine::MODULE_ECOLOGY;
+        coast(&mut j);
+        let mid = e.with_ships(|s, _| {
+            let p = &s.lanes[0].path;
+            p.at(p.length() / 2)
+        });
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let lair: u64 = 0x0000_0000_0000_0D0D;
+        let home = (mid.0 + 40, 90, mid.1 + 40);
+        j.dragon_obs(&DO::LairFound(db::LairFound {
+            lair,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (home.0 - 30, 60, home.2 - 30),
+            max: (home.0 + 30, 140, home.2 + 30),
+            home,
+        }));
+        j.dragon_obs(&DO::Untagged(db::Untagged {
+            entity: (0xD3, 0x1),
+            spawn: SpawnKind::Structure,
+            species: Species::Fire,
+            dimension: dim,
+            flags: db::UNTAGGED_HAS_HOME,
+            age_ticks: 110 * 24_000,
+            hunger: 90,
+            gender: Gender::Female,
+            variant: 0,
+            home,
+            lair,
+            pos: (f64::from(home.0), f64::from(home.1), f64::from(home.2)),
+        }));
+        j.idle();
+        j.idle();
+        let adopted = j
+            .iaf
+            .iter()
+            .find_map(|(_, c)| match c {
+                D::Adopt(a) => Some(*a),
+                _ => None,
+            })
+            .expect("the lair's dragon adopted");
+        j.dragon_obs(&DO::Dematerialized(db::Dematerialized {
+            agent: adopted.agent,
+            epoch: adopted.epoch,
+            reason: 3,
+            dimension: dim,
+            health: 400.0,
+            max_health: 500.0,
+            hunger: 90,
+            age_ticks: 110 * 24_000,
+            pos: (f64::from(home.0), f64::from(home.1), f64::from(home.2)),
+        }));
+        j.idle();
+        let player_legs = |e: &Engine| {
+            e.with_ships(|_, w| {
+                w.legs
+                    .iter()
+                    .filter(|(_, r)| r.owner.0 & rtsim_world::interest::PLAYER_OWNER != 0)
+                    .count()
+            })
+        };
+        j.players = vec![(PLAYER, dim, [f64::from(mid.0), 64.0, f64::from(mid.1)])];
+        let dragon_seen = |j: &Java| {
+            j.iaf
+                .iter()
+                .any(|(_, c)| matches!(c, D::Materialize(m) if m.agent == adopted.agent))
+        };
+        let ship_seen = |j: &Java| !materializations(j).is_empty();
+        let mut ticks = 0;
+        j.run_until("the dragon and a ship in view", |j| {
+            ticks += 1;
+            if ticks % 100 == 0 {
+                assert!(player_legs(&j.e) <= 1, "one area for the player");
+            }
+            dragon_seen(j) && ship_seen(j)
+        });
+        j.idle();
+        assert_eq!(player_legs(&e), 1, "one area for the player");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (d, _, _) = e.dragon_stats();
+        assert_eq!(d.seen, 1, "the dragon seen through one meeting: {d:?}");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 }
