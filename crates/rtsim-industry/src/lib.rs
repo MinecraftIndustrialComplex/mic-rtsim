@@ -6,6 +6,7 @@ pub mod cmd;
 pub mod ids;
 pub mod learn;
 pub mod obs;
+pub mod reconcile;
 pub(crate) mod ser;
 pub mod threat;
 pub mod tunables;
