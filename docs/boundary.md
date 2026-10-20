@@ -563,10 +563,11 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    rtsim-ecology's engine runs inside the step, in the phase 1 world (its knowledge holds the
    dragons' memories and grudges, its leg index their flights) on the phase 1 world's clock.
    - **Observations.** The journaled kinds 0x0500 to 0x05FF go through `Replay` (HOARD_ROBBED by its
-     op id too) into `Dragons::ingest`; DRAGON_STATE and PLAYER (once there is a dragon or a lair)
-     are latest state. Java's dictionary names species (kind 3), lairs (kind 4), dimensions and
-     hoard items. The dragons run before the phase 1 world each step, and a phase 1 input runs them
-     to its time first, so a dragon event never meets a world that ran past it.
+     op id too) into `Dragons::ingest`; DRAGON_STATE is latest state. Players' positions reach the
+     dragons through the shared interest areas (item 13). Java's dictionary names species (kind
+     3), lairs (kind 4), dimensions and hoard items. The dragons run before the phase 1 world each
+     step, interleaved with the ships on one clock (item 13), and a phase 1 input or a record runs
+     them to its time first, so a dragon event never meets a world that ran past it.
    - **Commands.** DRAGON_MATERIALIZE, STEER, DEPART, ADOPT and DISCARD take sequences from the
      core's counter, after the core's, the industry's and phase 1's; all are per session (a lost
      adoption or discard is decided again when Java reports the body again). The species and the
@@ -575,11 +576,52 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      there is a dragon or a lair the phase 1 link snapshots at every save, in the same commit. A
      dragons page without the phase 1 world it was saved with, or one this build cannot read, is
      dropped loudly and the dragons start afresh.
+   - **The switch** (C25, `Module.ECOLOGY`, bit 4; choice U10 in
+     docs/overnight-choices-integrate2.md): off, the dragons ignore their records, run and write
+     nothing and keep the page they had; on again, their bodies of before are gone and they run on.
    - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
      Java's species and dimension ids as the dragons' own: the Ice and Fire plugin's GameTests drive
      MATERIALIZE, STEER, DEPART, ADOPT and DISCARD with it on the native engine (choice Z2).
    - **Not wired yet:** the dragons' raids reach the industry engine only while the industry module
      runs.
+
+12. **Ships** (`engine/ships.rs`, §7, choices U1 to U16 in docs/overnight-choices-integrate2.md):
+   rtsim-ships' engine runs inside the step, in the phase 1 world (lanes are its edges, voyages
+   its legs, captains its notables) on the phase 1 world's clock, beside the dragons.
+   - **Observations.** The journaled kinds 0x0600 to 0x06FF go through `Replay` (CARGO_LOOTED,
+     SHIP_SUNK and SHIP_CAPTURED by their op ids too) into `Ships::ingest`, at their own time with
+     the dragons and the world run to it first; those three book against the agent whatever the
+     epoch (a replay can name a body the pages never saw, U14). SHIP_STATE is latest state. Item
+     ids are Java's and map to the phase 1 catalogue's goods by name; dimensions are Java's ids
+     (the ships' frames). PORT_FOUND names an adopted village (a port of a village the world
+     lacks is ignored); HAVEN_FOUND joins its haven to the world as a haven node (U13). The
+     network is built at the first simulate point where two docks share a medium and a dimension;
+     later ports get shuttles (U12). No water mask is provided yet: every cell is water (U11).
+   - **Commands.** SHIP_MATERIALIZE, TIMETABLE, STEER, DEPART, CARGO and DESPAWN take sequences
+     from the core's counter after every other module's; all are per session (U4), so none is
+     kept or resent. Body kinds, the dimension and cargo items go through the engine's dictionary.
+     An engine SHIP_CARGO's op id comes from its identity (allocator 0x53, U5); the engine does not
+     emit one yet.
+   - **Pages.** Table 0x5300: one page, `Ships::save` with its state hash (checked on load). While
+     there are ships, docks or havens the phase 1 link snapshots at every save, in the same commit.
+     A ships page without the phase 1 world it was saved with, or one this build cannot read, is
+     dropped loudly and the ships start afresh.
+   - **The switch** (C25, `Module.SHIPS`, bit 6; U10): as the dragons'.
+   - **Tests.** Order 26 (`SHIP_COMMAND`, TEST mode only) queues a ship command record with Java's
+     body, item and dimension ids as the ships' own (U15), for a future plugin's GameTests. The
+     Rust fake Java side (`tests/common`, `Java::ship_obs`, `ship_command`) plays the plugin in the
+     protocol test.
+
+13. **What the modules in the phase 1 world share** (`engine/shared.rs`, U2 to U8): **one interest
+   area per player** and **one clock**. PLAYER records go in once per hand-over (the latest per
+   player); at the simulate point each player's area is kept or booked anew in the phase 1 world's
+   leg index (`World::observe_area`: kept while the player stays within a quarter of the radius
+   and it covers the next window) and routed to the modules that run (`World::route_area`, the
+   `rtsim_world::interest::Viewer` trait): each books what the area needs, the legs sharing its
+   cells are looked up once, and each crossing goes to the module that owns the traveller (leg
+   owner bits: 63 players, 62 dragons, 61 ships, 60 reserved for herds). A player not reported
+   for 200 game ticks leaves; a session start clears every area; with no such module running no
+   area is booked. The dragons' and the ships' events run interleaved in time (`shared::run_to`).
 
 ## 6. Phase 2: dragons (PLAN.md §9; the Ice and Fire plugin)
 
@@ -747,7 +789,8 @@ What the bridge must do:
 ### 6.7 What the engine side does with them (rtsim-ecology)
 
 - Player positions (PLAYER, §2.3) feed a decaying home counter per player (P26's recommendation)
-  and book each player's interest area into the shared leg index; a dragon's leg that crosses one
+  and book each player's interest area into the shared leg index (on the native engine, the one
+  area per player every module shares, §5 item 13); a dragon's leg that crosses one
   books exactly one meeting, which materializes it at the edge of the area if both legs are still
   as booked when it fires (A15).
 - Every dragon is a knowledge notable; its death of age is one booked event (C24), its heir is its
@@ -766,9 +809,11 @@ the bodies (Small Ships, Create Aeronautics Structures, the Seven Seas add-on) a
 havens are provided are P8 (Ben). So every record names **abstract body kinds**, and the plugin
 maps them to a mod's entities (P15's body-kind data). The executable reference for what a plugin
 answers is the fake in `crates/rtsim-ships/src/synth.rs` (`FakeShips`), which the tests and
-`rtsim-cli sim ships` drive through this codec. The native engine does not route these records
-yet (§5 has no ships module). Choices are numbered T# in `docs/overnight-choices-ships.md`. Nothing
-below about a body mod is verified; it is the contract a plugin would have to meet.
+`rtsim-cli sim ships` drive through this codec. The native engine routes these records since
+2026-10-20 (§5 item 12, choices U# in `docs/overnight-choices-integrate2.md`); the Rust fake Java
+side in `crates/rtsim-jni/tests/common` (`Java::ship_obs`, `ship_command`) plays a plugin for the
+protocol test. Choices are numbered T# in `docs/overnight-choices-ships.md`. Nothing below about a
+body mod is verified; it is the contract a plugin would have to meet.
 
 ### 7.1 Kind ranges (reserved)
 
@@ -795,7 +840,8 @@ ranges stay as they are; these three are next to the dragons'.
   haven was found in, 0 for none.
 - **Ports and havens** are keyed by their village's (or haven's) key, packed as §4's villages are.
 - **Op ids**: the plugin's (top bit set, §2.2) on CARGO_LOOTED, SHIP_SUNK and SHIP_CAPTURED; the
-  engine's SHIP_CARGO would use allocator 0x53 in bits 56 to 62 (not yet emitted).
+  engine's SHIP_CARGO uses allocator 0x53 in bits 56 to 62 over 56 bits derived from the ship, its
+  epoch and the hold it sets (U5; not yet emitted).
 
 ### 7.3 Observations
 
@@ -866,11 +912,12 @@ them is P8: a structure (a harbour piece, an airship tower), a marker block, or 
   split into loops); each loop is sailed both ways.
 - **Timetables**: a ship's position is a closed form of the clock and its saved clock offset, so a
   restart moves no ship. Unobserved ships cost nothing: no event, no booking.
-- **Enters view** (A15): a player's interest area books the voyages it could see into the shared
-  leg index and asks it for every ship leg it shares cells with; each voyage enters a player's view
-  once (a crossing) and materializes the ship and its crew as one group.
+- **Enters view** (A15): a player's interest area (on the native engine, the player's one shared
+  area, §5 item 13) books the voyages it could see into the shared leg index and asks it for every
+  ship leg it shares cells with; each voyage enters a player's view once (a crossing) and
+  materializes the ship and its crew as one group.
 - **Pirates** at havens hunt lanes as a hazard (a share of each consignment sails to the haven's
-  market, C24), get bored on a scheduled event brought forward by damage or a full hold, and raid
+  market, C24; traders price it as an expected loss and send less on a hunted lane, U9), get bored on a scheduled event brought forward by damage or a full hold, and raid
   a merchant a player sees with the lane's hazard as the chance; a raid nobody watches is
   Lanchester's square law floored by SHIP_FIGHT outcomes. A hunt may start with a raid on a coastal
   player district or a booked player leg through the industry threat interface (C16 to C18).
