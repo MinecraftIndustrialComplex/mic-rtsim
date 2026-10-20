@@ -30,7 +30,7 @@ ranges.**
 | inventory | u32 | Java, per district revision | index into the district's `IND_INVENTORY` list |
 | station, train, channel | u64 | Java | stable for the world (a hash of Create's UUID is fine) |
 | epoch | u32 | engine, per district | reconcile rounds, 1, 2, 3, ...; a chunk attachment holds the last applied |
-| op id | u64 | both | the kernel's `journal::OpId` convention; industry engine ids carry namespace 0x49 in bits 56 to 62 (F4) |
+| op id | u64 | both | the kernel's `journal::OpId` convention; industry engine ids carry namespace 0x49 in bits 56 to 62 (F4) over 56 bits derived from the command's identity (W3, §6) |
 
 **Op-id bit.** Java's ids have the top bit set (`Obs.JAVA_OP_BIT`, `OpId::bridge`) and the
 engine's have it clear (`OpId::engine`), as DECISIONS.md O10 and `docs/boundary.md` §2.2 now agree.
@@ -267,3 +267,35 @@ correctly: a chunk saved before step 5 still has the older epoch and its older c
 - Count a player's transfer as anything but a port.
 - Send a learning sweep (`live`) while any chunk of the district is not block-ticking.
 - Apply a reconcile without writing the epoch in the same tick.
+
+## 6. The engine side: rtsim-jni
+
+Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to W15 in
+`docs/overnight-choices-industryjni.md`). What the native engine does with these records:
+
+- **Reading.** Every industry record decodes through `rtsim_industry::wire`. Journaled ones pass the
+  kernel's `Replay` first: IND_PORT and IND_PACKAGE under Java's op id, IND_RECONCILE_RESULT and
+  IND_CARRIAGE_RESULT under the engine's, so a result journaled again from a chunk (the Java side's
+  pending-record pattern) is applied once. Latest-wins records are handed to the engine in game-time
+  order with the journaled ones, journaled first on a tie (W9): a hand-over carries its latest-wins
+  records first, but within a tick a load, a port or a result happens before the stock is sampled.
+  Kinds this build does not read are counted and skipped.
+- **Dictionaries.** The engine's GOOD, NAME and BLOCK_STATE ids are Java's own; it writes the DICT
+  (kind, Java's id, Java's name) before the first command that uses it in a session. Dimension ids
+  in commands are the engine's own dimension dictionary (the one its other commands use): read them
+  by name, as for every command.
+- **Op ids** are derived from the command's identity (W3): the same decision made again after a
+  crash carries the same id, and a different one never takes an id an earlier one had.
+- **Answers.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA and IND_WRITE_PACKAGE are
+  kept from the moment they are written until their answer (IND_CARRIAGE_RESULT, or COMMAND_RESULT
+  applied, duplicate or failed) is admitted, and written again first after a restart with their
+  original sequences and op ids (W4). IND_CHUNK_RECONCILE is resent at the chunk's next
+  IND_CHUNK_LOADED instead (F27). A failed IND_CARRIAGE_DELTA counts as nothing applied; a failed
+  channel, deposit or package command is logged and the engine keeps its books as if applied (W10).
+- **The switch.** With `Module.INDUSTRY` off the engine neither runs nor sends, and drops
+  latest-wins industry records; journaled ones are still applied (W8).
+- **Mode.** The native engine applies (phase I-B); read-only (phase I-A, F25) is an `nOpen` flag the
+  bridge does not pass yet (W2).
+- **Threats** from other systems arrive as an order (`IndustryThreat`, W12) until those systems run
+  in the engine.
+

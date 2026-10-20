@@ -523,6 +523,11 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    random bits (§2.2); the sim's own transfers will derive theirs from their identity.
 8. **Failure**: a panic or protocol error in a step makes every later command buffer empty and
    flagged `FAILED` (§1.1).
+9. **Industry** (`engine/industry.rs`, docs/industry-boundary.md §6, choices W1 to W15): the industry
+   engine runs inside the step. Its records (0x0040 to 0x005F, 0x0400 to 0x04FF, 0x8400 to 0x84FF)
+   and dictionaries (0x10 to 0x12) are its own; its kept commands share the transfers' resend rules
+   (their sequences from the same counter, resent merged in sequence order); its pages are tables
+   0x4900 to 0x4902 and page 1:0x49.
 
 **Still to build: phase 1 (§4).** The native engine reads every phase 1 record safely (journaled
 kinds go through `Replay`; unknown kinds are skipped) but does nothing with them yet, and sends none
