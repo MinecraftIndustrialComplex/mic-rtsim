@@ -45,3 +45,4 @@ PLACEHOLDER are not measured.
 | B37 | The GameTest world is reused between runs, as in mic-climate; the journal and the stub's pages carry over, so each run starts with a real replay. | Free coverage of the restart path. |
 | B38 | SESSION_START also carries the journal's first sequence and the world save's own next sequence. | They are the inputs of the kernel's `Replay::reconcile`, which detects an engine ahead of the world (P29). |
 | B39 | WORLD_SAVED (a new latest-wins record) reports when a world save is on disk, through a marker chained after the journal's write on NeoForge's SavedData IO chain. | The kernel's `Replay::forget_ops_through` needs "a world save past this sequence is durable", and the chain makes that exact. |
+| B40 | A taken creature keeps the persistenceRequired flag the bridge set while it was embodied. | A creature a player took should not despawn; vanilla already keeps a leashed or tamed trader llama. |

@@ -63,6 +63,7 @@ logs what it compared. About 40 seconds on the laptop, nearly all of it server s
 | `journalreplayappliesexactlyonceafteracrash` | two simulated crashes; transfers in both directions applied exactly once, one op id sent twice |
 | `tamingtakesacreatureoutofthesim` | taming (vanilla's tame line) takes a llama out of the sim; TAKEN with its cargo; the rest stays one group |
 | `aleadtakesacreatureoutofthesim` | a lead held by a player takes a llama on the next pass |
+| `deathsarejournaledandthereststaysonegroup` | DIED after each member's state at death (cargo included); the llamas of a dead trader stay one group and are not "taken" by the dead trader's leash |
 | `dotraderspawningfollowsthetradeandtravelswitches` | the gamerule follows the trade and travel switches, and the engine hears the module mask |
 
 ## Not done yet
