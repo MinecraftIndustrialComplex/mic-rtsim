@@ -41,6 +41,20 @@ release build) unless marked PLACEHOLDER.
 - **The mill** (`a_mill_learns_replays_and_reconciles_through_the_native_engine`): 74,000 ticks in
   0.12 s alone, 0.7 s with the other tests running beside it.
 
+## Tests
+
+- **rtsim-jni `tests/industry.rs`** (the fake Java side of `tests/common` with rtsim-industry's
+  fake world in remote mode, on the real host): a mill learns, replays, answers the ledger and
+  reconciles; a reconcile applies once across three crashes (the world save holds its result; the
+  world and the pages before the load, where the same op ids are re-derived; a chunk saved ahead of
+  the journal); a raid while away lands at the next load; industry commands keep the bridge's
+  sequence and op-id rules; the iron line equals the in-process run; a kept carriage delta is resent
+  after a crash with its sequence and op id; every carriage delta failed is taken back; the module
+  switch holds the engine. 10 tests.
+- **GameTests on the native engine** (2026-10-20, this laptop): core 36 of 36; create (the industry
+  GameTests) 14 of 14, and 14 of 14 again with `-PrtsimEngine=stub`. On the native engine the ledger
+  display shows the industry engine's own answer ("live" for a district detected in the test).
+
 ## Findings for Ben
 
 1. **Within a hand-over, latest-wins records come before journaled ones** (W9). The link now merges
