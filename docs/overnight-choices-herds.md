@@ -81,7 +81,7 @@ choice.
   obstacle and its replan, dragons eating from and following a herd, a new session. Unit tests in the module
   (18): vanilla food points and colour odds, cohorts, the forage closed form against an ODE
   stepper and its composition, grazing's floor and fold, year-class reads and re-anchors, catch-up
-  work, the route through a gap and the fenced gap, route closed forms, the codec. Workspace: 388
+  work, the route through a gap and the fenced gap, route closed forms, the codec. Workspace: 389
   passed, 0 failed; clippy `-D warnings` and fmt clean.
 - **`sim herds`** and **the sweeps**: see the reply that merged this branch and
   `bench/results/README.md` (2026-10-20, the herd sweeps).
