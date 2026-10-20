@@ -40,6 +40,8 @@ marked PLACEHOLDER is not measured; UNVERIFIED marks what no test has confirmed.
 
 | # | Choice | Why |
 |---|---|---|
+| GB80 | **The stub engine's runs are checked offline by the native code**: `NativeEngine.glassOffline(records, district)` feeds the stub's received records (whole, in arrival order) to a fresh Rust industry engine and returns the same report the native engine gives (`rtsim-jni` `glass_offline`). With `-PskipJni` there are no natives, and the exit test logs that it cannot judge. | The stub simulates nothing; a second, Java solver would be a second model to keep in step. The engine is deterministic, so one code judges both runs. |
+| GB81 | **The report reaches Java as a flat `double[]`** (`Report::to_f64s`, decoded by `GlassReport`), through `nGlassReport(handle, district)`, between steps. | One array per call, like the other inspection natives; f64 holds every count exactly and every rate as the engine computed it. |
 
 ## For Ben
 
