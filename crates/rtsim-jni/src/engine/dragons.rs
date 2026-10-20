@@ -423,11 +423,21 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
                 match st.world.java_dict.get(&(wire::DICT_DIMENSION, m.dimension)) {
                     Some(n) => Some(n.clone()),
                     None => {
+                        // Never written: the dragon must not wait for a body that never comes,
+                        // so the engine hears what Java would have answered (unknown dimension).
                         log_error(&format!(
-                            "a dragon materialization in dimension {} that Java never named; dropped",
+                            "a dragon materialization in dimension {} that Java never named; rejected",
                             m.dimension
                         ));
                         st.dragons.queue.pop_front();
+                        let rejected = Obs::SpawnRejected(boundary::SpawnRejected {
+                            agent: m.agent,
+                            epoch: m.epoch,
+                            reason: 3,
+                            cmd_seq: 0,
+                        });
+                        let gt = st.game_time;
+                        ingest(st, &rejected, gt);
                         continue;
                     }
                 }

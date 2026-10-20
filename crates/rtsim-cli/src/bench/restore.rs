@@ -89,7 +89,11 @@ fn cfg() -> WorldConfig {
     cfg
 }
 
-fn parts() -> (WorldConfig, rtsim_trade::Goods, rtsim_trade::labour::RecipeBook) {
+fn parts() -> (
+    WorldConfig,
+    rtsim_trade::Goods,
+    rtsim_trade::labour::RecipeBook,
+) {
     let (goods, ids) = synth::goods();
     (cfg(), goods, synth::recipes(&ids))
 }
