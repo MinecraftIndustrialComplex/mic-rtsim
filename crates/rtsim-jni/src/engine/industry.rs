@@ -524,8 +524,11 @@ enum One {
     Never,
 }
 
+/// A command's dimension: (its offset in the record, Java's dimension id).
+type DimAt = Option<(usize, u32)>;
+
 /// The dictionary entries a command uses: (kind, Java's id), and where its dimension is.
-fn names_of(c: &Cmd) -> (Option<(usize, u32)>, Vec<(u32, u32)>) {
+fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
     let mut names = Vec::new();
     let goods = |g: Good, names: &mut Vec<(u32, u32)>| names.push((DICT_GOOD, g.0));
     let dim = match c {
