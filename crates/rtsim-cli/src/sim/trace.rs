@@ -45,7 +45,10 @@ pub fn print_trace(w: &World, days: u64, name: &dyn Fn(usize) -> String) {
     }
     let from = Tick(w.now().0.saturating_sub(days * TICKS_PER_DAY));
     let rows: Vec<_> = trace.iter().filter(|r| r.at > from).collect();
-    println!("\n== trace: {} market events in the last {days} days ==", rows.len());
+    println!(
+        "\n== trace: {} market events in the last {days} days ==",
+        rows.len()
+    );
     let mut by: BTreeMap<(usize, String), u64> = BTreeMap::new();
     let mut diffs: BTreeMap<(usize, String, String), u64> = BTreeMap::new();
     for r in &rows {
@@ -77,7 +80,12 @@ pub fn print_trace(w: &World, days: u64, name: &dyn Fn(usize) -> String) {
     for r in &rows {
         for f in &r.flows {
             let e = pipes
-                .entry((r.node, f.0, w.goods.get(f.1).name.clone(), format!("{:?}", f.2)))
+                .entry((
+                    r.node,
+                    f.0,
+                    w.goods.get(f.1).name.clone(),
+                    format!("{:?}", f.2),
+                ))
                 .or_default();
             e.0 += 1;
             e.1 += (f.4 - f.3).abs();
@@ -87,7 +95,11 @@ pub fn print_trace(w: &World, days: u64, name: &dyn Fn(usize) -> String) {
     ptop.sort_by(|a, b| b.1.0.cmp(&a.1.0));
     println!("  most frequent pipeline changes (count, sum of |change|):");
     for ((i, j, g, k), (n, d)) in ptop.into_iter().take(20) {
-        println!("    {n:>5} {d:>8}  {:<14} -> {:<14} {g:<14} {k}", name(i), name(j));
+        println!(
+            "    {n:>5} {d:>8}  {:<14} -> {:<14} {g:<14} {k}",
+            name(i),
+            name(j)
+        );
     }
     let mut top: Vec<_> = diffs.into_iter().collect();
     top.sort_by(|a, b| b.1.cmp(&a.1));

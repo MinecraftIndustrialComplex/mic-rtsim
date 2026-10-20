@@ -38,9 +38,17 @@ pub struct Tunables {
     /// trader's time. Transport cost `τ = upkeep × d / capacity`. PLACEHOLDER (P18).
     pub upkeep_worker_days_per_day: f64,
     /// Trader llama chest slots per caravan: 2 llamas × 3 × strength (PLAN.md §8.4), at strength 1
-    /// (6) until the census reports real strengths. Ribbit caravan capacity is P18; the same
-    /// PLACEHOLDER is used for it.
+    /// (6) until the census reports real strengths. Also the capacity transport cost is reckoned
+    /// with.
     pub caravan_slots: u32,
+    /// Slots a ribbit caravan carries: its merchant carries the cargo itself (P31's
+    /// recommendation). PLACEHOLDER (P18): a human caravan's 6 (overnight choice E53).
+    pub ribbit_caravan_slots: u32,
+    /// The longest goods wait at a dock for their caravan, in quanta: a caravan leaves when it
+    /// is full or when its oldest cargo has waited this long (overnight choice E53). Every flow's
+    /// delay is the travel time plus this, so a caravan's whole load is on the road from the
+    /// moment it leaves until it arrives. PLACEHOLDER: two days.
+    pub dock_wait_quanta: u64,
     /// Share of a village's working days one craft recipe may use, in thousandths, which caps a
     /// recipe with no resource of its own. PLACEHOLDER (P18).
     pub craft_share_milli: i64,
@@ -181,7 +189,9 @@ impl Rules {
                 r = Rules::ROUND1;
                 continue;
             }
-            let (k, v) = part.split_once('=').ok_or(format!("{part}: expected name=value"))?;
+            let (k, v) = part
+                .split_once('=')
+                .ok_or(format!("{part}: expected name=value"))?;
             let n: i64 = v.parse().map_err(|_| format!("{part}: not a number"))?;
             match k {
                 "slack" => r.goods_slack_steps = n,
@@ -216,6 +226,8 @@ impl Default for Tunables {
             k_days: 7,
             upkeep_worker_days_per_day: 1.0,
             caravan_slots: 6,
+            ribbit_caravan_slots: 6,
+            dock_wait_quanta: 48,
             craft_share_milli: 100,
             fx_holding_share_milli: 250,
             rules: Rules::default(),
@@ -224,12 +236,16 @@ impl Default for Tunables {
 }
 
 impl Tunables {
-    /// `T` in quanta for a market whose longest incident edge takes `max_d` quanta: the
-    /// placeholder or the derived bound `2 × max d`, whichever is larger. The bound is what lets
+    /// `T` in quanta for a market whose longest incident edge takes `max_d` quanta to walk: the
+    /// placeholder or the derived bound `2 × (max d + dock wait)`, whichever is larger. The bound is what lets
     /// the band between target and twice the target absorb the news lag (PLAN.md §8.4); it is
     /// taken per market, over its own edges (overnight choice E5).
     pub fn target_quanta(&self, max_d: u64) -> u64 {
-        self.quantum.days(self.t_days).max(2 * max_d).max(1)
+        // The news lag is the walk plus the wait at the dock (overnight choice E53).
+        self.quantum
+            .days(self.t_days)
+            .max(2 * (max_d + self.dock_wait_quanta))
+            .max(1)
     }
 
     /// Target stock `T × max(c, y)` from per-quantum consumption and production capacity.

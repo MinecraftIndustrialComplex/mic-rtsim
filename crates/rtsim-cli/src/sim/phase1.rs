@@ -101,6 +101,73 @@ struct Report {
     conservation: String,
     state_hash: String,
     final_events_per_day: f64,
+    caravan_sizes: SizeStats,
+}
+
+/// The cargo of every traveller on the road, sampled once a day after day 20 (so the first fill
+/// is past), in chest slots (items over stack size; coin counts too). Scouts (travellers with no
+/// cargo, carrying only news) are counted apart.
+#[derive(Serialize, Default)]
+struct SizeStats {
+    samples: usize,
+    scouts: usize,
+    p10_slots: f64,
+    p50_slots: f64,
+    p90_slots: f64,
+    max_slots: f64,
+    /// Share of caravans carrying less than one slot.
+    under_one_slot: f64,
+    /// Share of caravans carrying less than one item of anything.
+    under_one_item: f64,
+    /// Median of the biggest single good a caravan carries, in items.
+    p50_largest_items: f64,
+}
+
+fn sizes(w: &World, out: &mut Vec<(f64, f64)>) {
+    for (k, e) in w.edges.iter().enumerate() {
+        for dir in 0..2u8 {
+            let _ = e;
+            for t in w.travellers(k as u32, dir) {
+                let slots: f64 = t
+                    .cargo
+                    .iter()
+                    .map(|(g, a)| {
+                        *a as f64 / MILLI as f64 / f64::from(w.goods.get(*g).stack.max(1))
+                    })
+                    .sum();
+                let largest = t.cargo.values().copied().max().unwrap_or(0) as f64 / MILLI as f64;
+                out.push((slots, largest));
+            }
+        }
+    }
+}
+
+fn size_stats(v: Vec<(f64, f64)>) -> SizeStats {
+    let scouts = v.iter().filter(|x| x.0 <= 0.0).count();
+    let mut v: Vec<(f64, f64)> = v.into_iter().filter(|x| x.0 > 0.0).collect();
+    if v.is_empty() {
+        return SizeStats {
+            scouts,
+            ..SizeStats::default()
+        };
+    }
+    let n = v.len();
+    let pick = |s: &Vec<f64>, q: f64| s[((s.len() - 1) as f64 * q).round() as usize];
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let slots: Vec<f64> = v.iter().map(|x| x.0).collect();
+    let mut largest: Vec<f64> = v.iter().map(|x| x.1).collect();
+    largest.sort_by(|a, b| a.total_cmp(b));
+    SizeStats {
+        samples: n,
+        scouts,
+        p10_slots: pick(&slots, 0.1),
+        p50_slots: pick(&slots, 0.5),
+        p90_slots: pick(&slots, 0.9),
+        max_slots: slots[n - 1],
+        under_one_slot: slots.iter().filter(|&&s| s < 1.0).count() as f64 / n as f64,
+        under_one_item: largest.iter().filter(|&&s| s < 1.0).count() as f64 / n as f64,
+        p50_largest_items: pick(&largest, 0.5),
+    }
 }
 
 fn coins(a: i64) -> f64 {
@@ -284,6 +351,7 @@ pub fn run(o: Options) -> i32 {
     let mut tracked: Vec<Tracked> = Vec::new();
     let mut gossip = Vec::new();
     let mut prev_events = 0;
+    let mut caravans: Vec<(f64, f64)> = Vec::new();
     println!(
         "phase 1 scenario: {} nodes, {} edges, {} goods, seed {}, {} days{}",
         w.nodes.len(),
@@ -460,6 +528,9 @@ pub fn run(o: Options) -> i32 {
                 }
             }
         }
+        if day > 20 {
+            sizes(&w, &mut caravans);
+        }
         let row = snapshot(&w, day);
         if day % o.every == 0 || day == o.days {
             print_day(&w, &ids, &row, prev_events);
@@ -515,11 +586,24 @@ pub fn run(o: Options) -> i32 {
         "conservation: {conservation}; events per day over the last 10 days: {last10:.1} ({:.2} per market)",
         last10 / w.nodes.len() as f64
     );
+    let caravan_sizes = size_stats(caravans);
+    println!(
+        "caravans on the road (daily samples after day 20): {} with cargo, {} scouts; slots p10 {:.3}, median {:.3}, p90 {:.3}, max {:.2}; under one slot {:.0}%, nothing over one item {:.0}%; median biggest good {:.2} items",
+        caravan_sizes.samples,
+        caravan_sizes.scouts,
+        caravan_sizes.p10_slots,
+        caravan_sizes.p50_slots,
+        caravan_sizes.p90_slots,
+        caravan_sizes.max_slots,
+        caravan_sizes.under_one_slot * 100.0,
+        caravan_sizes.under_one_item * 100.0,
+        caravan_sizes.p50_largest_items
+    );
     if o.trace_days > 0 {
         print_trace(&w, o.trace_days, &|i| NAMES[i].to_string());
     }
     let report = Report {
-        schema: 1,
+        schema: 2,
         seed: o.seed,
         days: o.days,
         quantum_ticks: w.cfg.trade.quantum.len(),
@@ -545,6 +629,7 @@ pub fn run(o: Options) -> i32 {
         conservation: conservation.clone(),
         state_hash: format!("{:016x}", w.state_hash()),
         final_events_per_day: last10,
+        caravan_sizes,
     };
     println!("state hash {}", report.state_hash);
     if let Some(dir) = &o.out {
@@ -567,4 +652,3 @@ fn write(dir: &Path, r: &Report) -> std::io::Result<PathBuf> {
     writeln!(f)?;
     Ok(path)
 }
-

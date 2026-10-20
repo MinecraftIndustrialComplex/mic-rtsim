@@ -131,7 +131,13 @@ pub struct TraceRow {
     pub news: bool,
     /// Goods whose level or advertised rate differs from the last snapshot sent, with the levels
     /// (last sent, now) and advertised rates (last sent, now).
-    pub diffs: Vec<(GoodId, rtsim_trade::Level, rtsim_trade::Level, Amount, Amount)>,
+    pub diffs: Vec<(
+        GoodId,
+        rtsim_trade::Level,
+        rtsim_trade::Level,
+        Amount,
+        Amount,
+    )>,
     /// Whether `can_pay` or `refuses_cash` changed.
     pub cash_changed: bool,
 }
@@ -340,9 +346,16 @@ impl World {
             self.nodes[a].key.min(self.nodes[b].key),
             self.nodes[a].key.max(self.nodes[b].key),
         )[0];
-        let idle = self.cfg.trade.quantum.days(self.cfg.scout_days);
+        let dock = self.cfg.trade.dock_wait_quanta;
+        // Scouts never wait longer at a dock than goods do.
+        let idle = self
+            .cfg
+            .trade
+            .quantum
+            .days(self.cfg.scout_days)
+            .min(dock.max(1));
         self.edges
-            .push(Edge::new(a, b, length, d, seed, border, idle));
+            .push(Edge::new(a, b, length, d, dock, seed, border, idle));
         self.nodes[a].out.push(DirRef { edge: e, dir: 0 });
         self.nodes[b].out.push(DirRef { edge: e, dir: 1 });
         self.nodes[a].neighbours.push(b);

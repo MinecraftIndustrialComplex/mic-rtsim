@@ -43,7 +43,11 @@ impl World {
         let b = q.index(self.now);
         let e = &self.edges[edge as usize];
         let d = &e.dirs[dir as usize];
+        // On the road: left within the walk's length. Its load is its whole window: every
+        // consignment of it stays in transit until the caravan arrives, since a flow's delay is
+        // the longest dock wait plus the walk (overnight choice E53).
         let lo = (b + 1).saturating_sub(e.d);
+        let in_transit_from = (b + 1).saturating_sub(e.lag());
         let group = GroupKind::of(self.nodes[d.from].kind.culture());
         d.lattice
             .departures(lo, b)
@@ -55,7 +59,7 @@ impl World {
                     departure: dep,
                 };
                 let (w0, _) = d.lattice.window(dep);
-                let from = w0.max(lo);
+                let from = w0.max(in_transit_from);
                 let mut cargo = BTreeMap::new();
                 for (g, p) in d.goods.iter().chain(d.pay.iter()) {
                     let a = p.departed_between(from, dep);
@@ -126,6 +130,7 @@ impl World {
         let b = q.index(at);
         let e = self.edges.get(key.edge as usize)?;
         let ed = e.d;
+        let lag = e.lag();
         let edge_seed = e.seed;
         let d = &e.dirs[key.dir as usize];
         let dep = key.departure;
@@ -134,7 +139,7 @@ impl World {
         }
         let (from, to) = (d.from, d.to);
         let (w0, _) = d.lattice.window(dep);
-        let lo = w0.max((b + 1).saturating_sub(ed));
+        let lo = w0.max((b + 1).saturating_sub(lag));
         let dir = &mut self.edges[key.edge as usize].dirs[key.dir as usize];
         let mut cargo: BTreeMap<GoodId, Amount> = BTreeMap::new();
         let mut quotes = BTreeMap::new();
@@ -148,7 +153,7 @@ impl World {
         // The destination's arrivals change where the hole starts and ends. The start can be the
         // very next boundary, in which case the destination must re-read its inflows now.
         for first in [lo, dep + 1] {
-            let wake = q.at(first + ed - 1).max(at);
+            let wake = q.at(first + lag - 1).max(at);
             self.schedule(wake, Ev::Wake(to));
         }
         self.stats.promotions += 1;
@@ -160,12 +165,11 @@ impl World {
             .filter(|b| GroupKind::carries(**b))
             .count()
             .max(1) as u32;
-        let members = load(
-            group,
-            &cargo,
-            &self.goods,
-            self.cfg.trade.caravan_slots / carriers,
-        );
+        let slots = match group {
+            GroupKind::RibbitCaravan => self.cfg.trade.ribbit_caravan_slots,
+            GroupKind::HumanCaravan => self.cfg.trade.caravan_slots,
+        };
+        let members = load(group, &cargo, &self.goods, slots / carriers);
         let holder = self.knowledge.actors_mut().register(ActorKind::Group, seed);
         self.knowledge.add_holder(holder, HolderKind::Caravan);
         let leg = Leg {

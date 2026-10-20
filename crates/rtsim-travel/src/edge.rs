@@ -109,6 +109,9 @@ pub struct Edge {
     pub length_blocks: u64,
     /// Travel time in quanta, at least 1.
     pub d: u64,
+    /// The longest a consignment waits at the dock for its caravan, in quanta (overnight choice
+    /// E53). Every pipeline's delay is [`Edge::lag`]: the wait plus the walk.
+    pub dock: u64,
     /// Keys the travellers sampled on it.
     pub seed: u64,
     /// The ends keep different currencies.
@@ -118,11 +121,13 @@ pub struct Edge {
 }
 
 impl Edge {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         a: usize,
         b: usize,
         length_blocks: u64,
         d: u64,
+        dock: u64,
         seed: u64,
         border: bool,
         idle_period: u64,
@@ -132,10 +137,18 @@ impl Edge {
             b,
             length_blocks,
             d: d.max(1),
+            dock,
             seed,
             border,
             dirs: [Dir::new(a, b, idle_period), Dir::new(b, a, idle_period)],
         }
+    }
+
+    /// A pipeline's delay: the longest dock wait plus the walk. A consignment that left at `q`
+    /// rides the caravan that leaves at most `dock` later and is counted in transit until
+    /// `q + lag`, so the caravan's whole load stays on the road while it walks.
+    pub fn lag(&self) -> u64 {
+        self.d + self.dock
     }
 
     /// The direction leaving `from`.
@@ -155,14 +168,16 @@ pub struct DirRef {
     pub dir: u8,
 }
 
-/// The caravan period for a volume: slots a caravan carries over the volume per quantum, at least
-/// 1 and at most the travel time; `idle` when nothing moves.
-pub fn caravan_period(volume_slot_milli: i64, slots: u32, d: u64, idle: u64) -> u64 {
+/// The caravan period for a volume: the quanta it takes the dock to fill a caravan (its slots
+/// over the volume per quantum, rounded up), at least 1 and at most `max_wait`, the longest
+/// goods wait at a dock (overnight choice E53); `idle` when nothing moves.
+pub fn caravan_period(volume_slot_milli: i64, slots: u32, max_wait: u64, idle: u64) -> u64 {
     if volume_slot_milli <= 0 {
         return idle.max(1);
     }
-    let p = i64::from(slots) * MILLI / volume_slot_milli;
-    (p.max(1) as u64).min(d.max(1))
+    let full = i64::from(slots) * MILLI;
+    let p = (full + volume_slot_milli - 1) / volume_slot_milli;
+    (p.max(1) as u64).min(max_wait.max(1))
 }
 
 /// Splits a rate between the destination and raiders: (to the destination, to the haven).
@@ -183,13 +198,15 @@ mod tests {
 
     #[test]
     fn periods() {
-        // 6 slots a caravan, 1.5 slots a quantum: one caravan every 4 quanta.
-        assert_eq!(caravan_period(1_500, 6, 10, 24), 4);
+        // 6 slots a caravan, 1.5 slots a quantum: one caravan every 4 quanta, full.
+        assert_eq!(caravan_period(1_500, 6, 24, 24), 4);
+        // 1.4 slots a quantum: the fifth quantum fills it.
+        assert_eq!(caravan_period(1_400, 6, 24, 24), 5);
         // More than a caravan's worth a quantum: one every quantum (a bigger caravan).
-        assert_eq!(caravan_period(60_000, 6, 10, 24), 1);
-        // A trickle: never more than the travel time apart.
-        assert_eq!(caravan_period(1, 6, 10, 24), 10);
-        assert_eq!(caravan_period(0, 6, 10, 24), 24);
+        assert_eq!(caravan_period(60_000, 6, 24, 24), 1);
+        // A trickle: never more than the longest dock wait apart.
+        assert_eq!(caravan_period(1, 6, 24, 48), 24);
+        assert_eq!(caravan_period(0, 6, 24, 48), 48);
         assert_eq!(
             split_for_raid(
                 1000,

@@ -50,7 +50,11 @@ pub fn allocate_with(exportable: Amount, mut cands: Vec<Candidate>, ration: bool
     cands.sort_by(|a, b| b.margin.cmp(&a.margin).then(a.dir.cmp(&b.dir)));
     let x = exportable.max(0);
     let ok = |c: &Candidate| c.margin >= 0 && c.want > 0;
-    let wanted: i128 = cands.iter().filter(|c| ok(c)).map(|c| i128::from(c.want)).sum();
+    let wanted: i128 = cands
+        .iter()
+        .filter(|c| ok(c))
+        .map(|c| i128::from(c.want))
+        .sum();
     if ration && wanted > i128::from(x) {
         let mut grants: Vec<Grant> = cands
             .iter()
@@ -111,7 +115,11 @@ mod tests {
 
     #[test]
     fn rationing_grants_exactly_what_there_is() {
-        let g = allocate_with(100, vec![c(1, 5, 70), c(2, 9, 70), c(3, 0, 70), c(4, -1, 70)], true);
+        let g = allocate_with(
+            100,
+            vec![c(1, 5, 70), c(2, 9, 70), c(3, 0, 70), c(4, -1, 70)],
+            true,
+        );
         let rate = |e: u32| g.iter().find(|x| x.dir.edge == e).unwrap().rate;
         assert_eq!(rate(1) + rate(2) + rate(3), 100);
         assert_eq!(rate(4), 0);

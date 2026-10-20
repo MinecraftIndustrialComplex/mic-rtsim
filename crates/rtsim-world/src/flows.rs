@@ -198,7 +198,7 @@ fn step(
         for gr in allocate_with(exportable, cands, m.rules.ration) {
             let want = wants.iter().find(|w| w.0 == gr.dir).map_or(0, |w| w.1);
             let e = &mut edges[gr.dir.edge as usize];
-            let delay = e.d;
+            let delay = e.lag();
             let dir = &mut e.dirs[gr.dir.dir as usize];
             // A small move of what we can spare keeps the current rate and quote; what the
             // destination asked for is followed exactly, so its corrections are never blocked
@@ -333,7 +333,9 @@ fn step(
                 l.rates.outflow > income.max(0)
             };
             let below = l.stock < l.target - rtsim_trade::line::band(l.target)
-                || (m.rules.hysteresis && m.cut && Some(GoodId(gi as u16)) == m.currency
+                || (m.rules.hysteresis
+                    && m.cut
+                    && Some(GoodId(gi as u16)) == m.currency
                     && l.stock < l.target);
             let insolvent = m.rules.exporter_band && m.goods[gi].currency && below && over;
             if l.rates.outflow == 0 || !(insolvent || l.next_change().uncovered == Some(1)) {
@@ -397,22 +399,25 @@ fn step(
         }
     }
     m.recompute();
-    m.cut = m
-        .currency
-        .is_some_and(|c| m.line(c).rates.outflow < m.owed);
+    m.cut = m.currency.is_some_and(|c| m.line(c).rates.outflow < m.owed);
 
     changes.clear();
     let after = pipe_states(node, edges);
     net_changes(&before, &after, edges, nb, changes);
 
-    // Caravan lattices follow the volume; old segments are forgotten.
-    let slots = cfg.trade.caravan_slots;
-    let idle = q.days(cfg.scout_days);
+    // Caravan lattices follow the volume: a caravan leaves when the dock has filled it or its
+    // oldest load has waited the longest wait (overnight choice E53). Old segments are forgotten.
+    let slots = match node.kind.culture() {
+        Some(rtsim_settle::Culture::Ribbit) => cfg.trade.ribbit_caravan_slots,
+        _ => cfg.trade.caravan_slots,
+    };
     for d in &node.out {
         let e = &mut edges[d.edge as usize];
-        let ed = e.d;
+        let ed = e.lag();
+        let dock = e.dock.max(1);
+        let idle = q.days(cfg.scout_days).min(dock);
         let dir = &mut e.dirs[d.dir as usize];
-        let period = caravan_period(dir.volume_slot_milli(goods), slots, ed, idle);
+        let period = caravan_period(dir.volume_slot_milli(goods), slots, dock, idle);
         dir.lattice.set(nb, period);
         if cfg.keep_history {
             continue;
@@ -522,7 +527,7 @@ fn net_changes(
         let dir = &e.dirs[d.dir as usize];
         let (dest, delay) = match (kind, dir.predation) {
             (PipeKind::Raid, Some(pr)) => (pr.haven, pr.delay),
-            _ => (dir.to, e.d),
+            _ => (dir.to, e.lag()),
         };
         changes.push(Change {
             dest,
@@ -546,7 +551,9 @@ fn count_suppliers(s: &mut Snapshot, node: &Node) {
             .neighbours
             .iter()
             .filter(|&&j| {
-                inflows.iter().any(|x| x.0 as usize == j && x.1 == g && x.2 > 0)
+                inflows
+                    .iter()
+                    .any(|x| x.0 as usize == j && x.1 == g && x.2 > 0)
                     || node
                         .news
                         .get(j)
@@ -590,7 +597,7 @@ fn set_payments(
 ) {
     for d in &node.out {
         let e = &mut edges[d.edge as usize];
-        let delay = e.d;
+        let delay = e.lag();
         let dir = &mut e.dirs[d.dir as usize];
         let to = dir.to;
         let curs: std::collections::BTreeSet<GoodId> = dir
@@ -605,7 +612,9 @@ fn set_payments(
         for cur in curs {
             let p = dir.pay.entry(cur).or_insert_with(|| Pipeline::new(delay));
             let old = p.current_rate();
-            let rate = m.rules.sticky(old, pay.get(&(*d, cur)).copied().unwrap_or(0));
+            let rate = m
+                .rules
+                .sticky(old, pay.get(&(*d, cur)).copied().unwrap_or(0));
             if p.set(nb, rate, 0) {
                 changes.push(Change {
                     dest: to,
@@ -690,7 +699,13 @@ impl World {
                         .enumerate()
                         .filter(|(_, (a, b))| a.level != b.level || a.absorbable != b.absorbable)
                         .map(|(g, (a, b))| {
-                            (GoodId(g as u16), b.level, a.level, b.absorbable, a.absorbable)
+                            (
+                                GoodId(g as u16),
+                                b.level,
+                                a.level,
+                                b.absorbable,
+                                a.absorbable,
+                            )
                         })
                         .collect(),
                     l.can_pay != snap.can_pay || l.refuses_cash != snap.refuses_cash,

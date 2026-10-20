@@ -66,10 +66,8 @@ impl Snapshot {
                     anchor: m.anchor(g),
                     stock: l.stock,
                     target: l.target,
-                    absorbable: m.absorbable_held(
-                        g,
-                        prev.map(|p| p.good(g).absorbable + p.inflow_total(g)),
-                    ),
+                    absorbable: m
+                        .absorbable_held(g, prev.map(|p| p.good(g).absorbable + p.inflow_total(g))),
                     level: l.level(),
                     suppliers: 1,
                     currency: m.good(g).currency,
@@ -99,11 +97,7 @@ impl Snapshot {
 
     /// Everything reaching the market of `g` when the snapshot was taken.
     pub fn inflow_total(&self, g: GoodId) -> Amount {
-        self.inflows
-            .iter()
-            .filter(|x| x.1 == g)
-            .map(|x| x.2)
-            .sum()
+        self.inflows.iter().filter(|x| x.1 == g).map(|x| x.2).sum()
     }
 
     /// What `source` should send of `g` by this news: what it was sending plus its share of the
@@ -147,7 +141,8 @@ impl Snapshot {
             || self.refuses_cash != other.refuses_cash
             || self.goods.iter().zip(&other.goods).any(|(a, b)| {
                 if a.currency {
-                    (a.stock > 0) != (b.stock > 0) || (a.level == Level::Glut) != (b.level == Level::Glut)
+                    (a.stock > 0) != (b.stock > 0)
+                        || (a.level == Level::Glut) != (b.level == Level::Glut)
                 } else {
                     a.level != b.level || a.absorbable != b.absorbable
                 }

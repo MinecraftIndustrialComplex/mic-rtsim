@@ -23,12 +23,8 @@ pub struct Options {
     pub trace_days: u64,
 }
 
-/// Builds the world and returns events per market per day for each window.
-pub fn series(o: &Options) -> (Vec<f64>, Result<(), String>) {
-    let (s, c, _) = series_world(o);
-    (s, c)
-}
-
+/// Builds the world and returns events per market per day for each window, the conservation
+/// check, and the world.
 fn series_world(o: &Options) -> (Vec<f64>, Result<(), String>, World) {
     let mut cfg = WorldConfig::new(o.seed);
     cfg.check_every_event = false;
@@ -90,7 +86,16 @@ pub fn run(o: Options) -> i32 {
         super::trace::print_trace(&w, o.trace_days, &|i| {
             names.get(i).cloned().unwrap_or_else(|| {
                 let n = &w.nodes[i];
-                format!("{}#{i}@{},{}", if n.kind.culture() == Some(rtsim_settle::Culture::Ribbit) { "R" } else { "H" }, n.pos.x, n.pos.z)
+                format!(
+                    "{}#{i}@{},{}",
+                    if n.kind.culture() == Some(rtsim_settle::Culture::Ribbit) {
+                        "R"
+                    } else {
+                        "H"
+                    },
+                    n.pos.x,
+                    n.pos.z
+                )
             })
         });
     }

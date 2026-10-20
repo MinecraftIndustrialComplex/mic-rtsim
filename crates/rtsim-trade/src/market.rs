@@ -436,7 +436,11 @@ impl Market {
             raw / step * step
         };
         let a = if self.insolvent() { a.min(0) } else { a };
-        if self.rules.clamp_to_inflow { a.max(-r.inflow) } else { a }
+        if self.rules.clamp_to_inflow {
+            a.max(-r.inflow)
+        } else {
+            a
+        }
     }
 
     /// What flows may take with hysteresis (overnight choice E51): a market sending `current`

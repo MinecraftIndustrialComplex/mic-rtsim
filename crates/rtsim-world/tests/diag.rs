@@ -3,36 +3,57 @@
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_trade::build::Genesis;
-use rtsim_world::synth;
 use rtsim_world::WorldConfig;
+use rtsim_world::synth;
 
 #[test]
 #[ignore]
 fn node_detail() {
-    let node: usize = std::env::var("NODE").ok().and_then(|s| s.parse().ok()).unwrap_or(9);
-    let from_day: u64 = std::env::var("FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(110);
+    let node: usize = std::env::var("NODE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(9);
+    let from_day: u64 = std::env::var("FROM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(110);
     let mut cfg = WorldConfig::new(42);
     cfg.check_every_event = false;
     cfg.genesis = Genesis::Share(
-        std::env::var("GENESIS").ok().and_then(|s| s.parse().ok()).unwrap_or(500),
+        std::env::var("GENESIS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(500),
     );
     if let Ok(r) = std::env::var("RULES") {
         cfg.trade.rules = rtsim_trade::Rules::parse(&r).unwrap();
     }
-    let markets: usize = std::env::var("MARKETS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let markets: usize = std::env::var("MARKETS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let (mut w, ids) = if markets == 0 {
         synth::build(cfg, true)
     } else {
         let (goods, ids) = synth::goods();
         let book = synth::recipes(&ids);
-        (rtsim_world::World::build(cfg, goods, book, synth::grid(markets, 42)), ids)
+        (
+            rtsim_world::World::build(cfg, goods, book, synth::grid(markets, 42)),
+            ids,
+        )
     };
     w.run_until(Tick::from_days(from_day));
     w.enable_trace();
     let names = std::env::var("GOODS").unwrap_or("wheat,bread,emerald,amethyst_shard".into());
-    let goods: Vec<_> = names.split(',').map(|n| w.goods.find(n).expect("good")).collect();
+    let goods: Vec<_> = names
+        .split(',')
+        .map(|n| w.goods.find(n).expect("good"))
+        .collect();
     let _ = ids;
-    let span: u64 = std::env::var("SPAN").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    let span: u64 = std::env::var("SPAN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
     let mut t = Tick::from_days(from_day).0;
     let mut seen = 0;
     while t < Tick::from_days(from_day + span).0 {
@@ -76,11 +97,15 @@ fn node_detail() {
                 for d in &w.nodes[node].out {
                     let e = &w.edges[d.edge as usize];
                     let din = &e.dirs[1 - d.dir as usize];
-                    if let Some(p) = din.goods.get(&g) && p.current_rate() > 0 {
+                    if let Some(p) = din.goods.get(&g)
+                        && p.current_rate() > 0
+                    {
                         line += &format!(" [from {} {}]", din.from, p.current_rate());
                     }
                     let dout = &e.dirs[d.dir as usize];
-                    if let Some(p) = dout.goods.get(&g) && p.current_rate() > 0 {
+                    if let Some(p) = dout.goods.get(&g)
+                        && p.current_rate() > 0
+                    {
                         line += &format!(" [to {} {}]", dout.to, p.current_rate());
                     }
                 }

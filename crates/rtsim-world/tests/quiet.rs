@@ -50,7 +50,10 @@ fn round_one_rules_never_settle() {
     let mut w = scenario(r, 500);
     let busy = rate(&mut w, 200, 240);
     eprintln!("round 1 rules: {busy:.2} events per market per day at days 200-240");
-    assert!(busy > 10.0, "round 1's rules were expected to stay busy: {busy}");
+    assert!(
+        busy > 10.0,
+        "round 1's rules were expected to stay busy: {busy}"
+    );
     w.check_conserved(w.now()).unwrap();
 }
 
