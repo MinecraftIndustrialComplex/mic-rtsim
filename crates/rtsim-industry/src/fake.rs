@@ -1311,15 +1311,7 @@ impl FakeWorld {
                 self.answer(cd.op, RESULT_APPLIED);
             }
             // Level SavedData, applied at once (docs/industry-boundary.md §4.3). The fake world
-            // has no channels, Diesel deposits or postbox buffers: they are taken as applied.
-            Cmd::ChannelDelta(c) => {
-                let status = if self.applied.insert(c.op) {
-                    RESULT_APPLIED
-                } else {
-                    RESULT_DUPLICATE
-                };
-                self.answer(c.op, status);
-            }
+            // has no Diesel deposits or postbox buffers: they are taken as applied.
             Cmd::DepositDelta(c) => {
                 let status = if self.applied.insert(c.op) {
                     RESULT_APPLIED

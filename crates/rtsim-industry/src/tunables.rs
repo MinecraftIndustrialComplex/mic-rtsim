@@ -134,9 +134,12 @@ pub struct ThreatTunables {
     /// Observed fights count as "comparable" when the attacker strength is within this factor
     /// (I22). TUNABLE, PLACEHOLDER 2.0.
     pub comparable_strength_factor: f64,
-    /// Items one surviving attacker carries away (I23). TUNABLE, PLACEHOLDER: 0 for classes that
-    /// do not steal. Natural mobs do not take from containers (vanilla) and the pack sets dragon
-    /// `stealItems` false (verified, iaf-common.json), so only siege (bandit) carries anything.
+    /// Items one surviving attacker carries away (I23), when the threat brings no loads of its own.
+    /// TUNABLE, PLACEHOLDER: 0 for every class but siege. This is only the class fallback: an
+    /// attacking unit's own carry comes with its threat (K2-13's per-threat loads, `Threat::loads`),
+    /// so a flying attacker that carries (a dragon raid, say) says so itself. Natural mobs do not
+    /// take from containers (vanilla). (Ice and Fire's `stealItems` is a pixie setting; its dragons
+    /// have none.)
     pub carry_per_attacker: PerClass<i64>,
     /// The most one attack may steal, as parts per million of each good's boundary stock (I23).
     /// TUNABLE, PLACEHOLDER 100,000 (10%).

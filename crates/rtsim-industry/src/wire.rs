@@ -16,10 +16,10 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::OpId;
 
 use crate::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChannelDelta, ChunkReconcile, Cmd, DepositDelta,
-    InvDelta, LedgerLine, WritePackage,
+    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
+    LedgerLine, WritePackage,
 };
-use crate::ids::{BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use crate::obs::{
     BlockFlags, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
     DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl, EditKind, ExposedBlock,
@@ -36,7 +36,8 @@ pub const MAX_RECORD: usize = 65_528;
 pub const IND_STOCK_SAMPLE: u16 = 0x0040;
 pub const IND_SWEEP_END: u16 = 0x0041;
 pub const IND_DEPOSIT_SAMPLE: u16 = 0x0042;
-pub const IND_CHANNEL_SAMPLE: u16 = 0x0043;
+// 0x0043 was IND_CHANNEL_SAMPLE: retired with Ender Transmission channels as shared stock (I13 as
+// corrected), and read as an unknown kind.
 pub const IND_LEDGER_REQUEST: u16 = 0x0044;
 pub const IND_WATCHED: u16 = 0x0045;
 /// The Java side's proposal H23 (docs/industry-boundary.md §6.1), read as data (W16).
@@ -71,16 +72,15 @@ pub const IND_SURVEY_BLOCKS: u16 = 0x0433;
 // Commands, engine to Java.
 pub const IND_CHUNK_RECONCILE: u16 = 0x8400;
 pub const IND_CARRIAGE_DELTA: u16 = 0x8401;
-pub const IND_CHANNEL_DELTA: u16 = 0x8402;
+// 0x8402 was IND_CHANNEL_DELTA: retired with IND_CHANNEL_SAMPLE.
 pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 pub const IND_LEDGER: u16 = 0x8405;
 
-const OBS_KINDS: [u16; 29] = [
+const OBS_KINDS: [u16; 28] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
-    IND_CHANNEL_SAMPLE,
     IND_LEDGER_REQUEST,
     IND_WATCHED,
     IND_APPROACH,
@@ -108,10 +108,9 @@ const OBS_KINDS: [u16; 29] = [
     IND_SURVEY_BLOCKS,
 ];
 
-const CMD_KINDS: [u16; 6] = [
+const CMD_KINDS: [u16; 5] = [
     IND_CHUNK_RECONCILE,
     IND_CARRIAGE_DELTA,
-    IND_CHANNEL_DELTA,
     IND_DEPOSIT_DELTA,
     IND_WRITE_PACKAGE,
     IND_LEDGER,
@@ -206,7 +205,6 @@ codes!(port_code, port_from, PortKind, "port_kind",
     4 => PortKind::PlayerToss,
     5 => PortKind::PlayerPickup,
     6 => PortKind::StockBroken,
-    7 => PortKind::Channel,
     8 => PortKind::Reconcile,
     9 => PortKind::Other);
 
@@ -541,17 +539,6 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u32(u32::from(d.infinite));
             w.finish()
         }
-        Obs::ChannelSample {
-            channel,
-            capacity,
-            goods,
-        } => {
-            let mut w = W::obs(out, IND_CHANNEL_SAMPLE, n32(goods.len()), seq, at);
-            w.put_u64(channel.0);
-            w.put_i64(*capacity);
-            w.goods(goods);
-            w.finish()
-        }
         Obs::LedgerRequest { district } => {
             let mut w = W::obs(out, IND_LEDGER_REQUEST, 0, seq, at);
             w.put_u64(district.0);
@@ -878,14 +865,6 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 infinite: r.get_u32(52) & 1 != 0,
                 sweep: r.get_u32(28),
             })
-        }
-        IND_CHANNEL_SAMPLE => {
-            check(kind, size, sized(32, n, 16))?;
-            Obs::ChannelSample {
-                channel: ChannelId(r.get_u64(16)),
-                capacity: r.get_i64(24),
-                goods: r.goods(32, n),
-            }
         }
         IND_LEDGER_REQUEST => {
             check(kind, size, 24)?;
@@ -1257,13 +1236,6 @@ pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), Wire
             }
             w.finish()
         }
-        Cmd::ChannelDelta(c) => {
-            let mut w = W::cmd(out, IND_CHANNEL_DELTA, n32(c.goods.len()), cmd_seq);
-            w.put_u64(c.op.0);
-            w.put_u64(c.channel.0);
-            w.goods(&c.goods);
-            w.finish()
-        }
         Cmd::DepositDelta(d) => {
             let mut w = W::cmd(out, IND_DEPOSIT_DELTA, plugin_code(d.plugin), cmd_seq);
             w.put_u64(d.op.0);
@@ -1381,14 +1353,6 @@ pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
                         (r.get_u32(e), Good(r.get_u32(e + 4)), r.get_i64(e + 8))
                     })
                     .collect(),
-            })
-        }
-        IND_CHANNEL_DELTA => {
-            check(kind, size, sized(32, n, 16))?;
-            Cmd::ChannelDelta(ChannelDelta {
-                op: OpId(r.get_u64(16)),
-                channel: ChannelId(r.get_u64(24)),
-                goods: r.goods(32, n),
             })
         }
         IND_DEPOSIT_DELTA => {
@@ -1568,11 +1532,6 @@ mod tests {
                 creative: true,
                 overstressed: false,
             }),
-            Obs::ChannelSample {
-                channel: ChannelId(u64::MAX - 3),
-                capacity: -1,
-                goods: goods3(),
-            },
             Obs::LedgerRequest { district: d },
             Obs::Watched {
                 district: d,
@@ -1682,7 +1641,7 @@ mod tests {
             }),
             Obs::Port(PortTransfer {
                 district: d,
-                kind: PortKind::Channel,
+                kind: PortKind::Other,
                 inventory: None,
                 counterpart: 99,
                 op: None,
@@ -2003,11 +1962,6 @@ mod tests {
                     expected_state: 9,
                 }],
             }),
-            Cmd::ChannelDelta(ChannelDelta {
-                op: ENGINE_OP,
-                channel: ChannelId(0x7777),
-                goods: goods3(),
-            }),
             Cmd::WritePackage(WritePackage {
                 op: ENGINE_OP,
                 district: d,
@@ -2082,7 +2036,6 @@ mod tests {
             Obs::StockSample { goods, .. } => 32 + 16 * goods.len(),
             Obs::SweepEnd(_) => 40,
             Obs::DepositSample(_) => 56,
-            Obs::ChannelSample { goods, .. } => 32 + 16 * goods.len(),
             Obs::LedgerRequest { .. } => 24,
             Obs::Watched { .. } => 24,
             Obs::Approach { .. } => 32,
@@ -2116,7 +2069,6 @@ mod tests {
             Obs::StockSample { .. } => 0x0040,
             Obs::SweepEnd(_) => 0x0041,
             Obs::DepositSample(_) => 0x0042,
-            Obs::ChannelSample { .. } => 0x0043,
             Obs::LedgerRequest { .. } => 0x0044,
             Obs::Watched { .. } => 0x0045,
             Obs::Approach { .. } => 0x0046,
@@ -2150,7 +2102,6 @@ mod tests {
         match c {
             Cmd::ChunkReconcile(c) => 56 + 32 * c.deltas.len() + 16 * c.destroy.len(),
             Cmd::CarriageDelta(c) => 40 + 16 * c.entries.len(),
-            Cmd::ChannelDelta(c) => 32 + 16 * c.goods.len(),
             Cmd::DepositDelta(_) => 48,
             Cmd::WritePackage(c) => 56 + 16 * c.goods.len(),
             Cmd::Ledger(c) => 56 + 24 * c.goods.len(),
@@ -2161,7 +2112,6 @@ mod tests {
         match c {
             Cmd::ChunkReconcile(_) => 0x8400,
             Cmd::CarriageDelta(_) => 0x8401,
-            Cmd::ChannelDelta(_) => 0x8402,
             Cmd::DepositDelta(_) => 0x8403,
             Cmd::WritePackage(_) => 0x8404,
             Cmd::Ledger(_) => 0x8405,
@@ -2261,7 +2211,7 @@ mod tests {
             (IND_STOCK_SAMPLE, 0x0040),
             (IND_SWEEP_END, 0x0041),
             (IND_DEPOSIT_SAMPLE, 0x0042),
-            (IND_CHANNEL_SAMPLE, 0x0043),
+            (IND_CHUNK_UNLOADED, 0x040A),
             (IND_LEDGER_REQUEST, 0x0044),
             (IND_WATCHED, 0x0045),
             (IND_DISTRICT, 0x0400),
@@ -2291,7 +2241,6 @@ mod tests {
         }
         assert_eq!(IND_CHUNK_RECONCILE, 0x8400);
         assert_eq!(IND_CARRIAGE_DELTA, 0x8401);
-        assert_eq!(IND_CHANNEL_DELTA, 0x8402);
         assert_eq!(IND_DEPOSIT_DELTA, 0x8403);
         assert_eq!(IND_WRITE_PACKAGE, 0x8404);
         assert_eq!(IND_LEDGER, 0x8405);
@@ -2492,12 +2441,11 @@ mod tests {
                 PortKind::PlayerToss,
                 PortKind::PlayerPickup,
                 PortKind::StockBroken,
-                PortKind::Channel,
                 PortKind::Reconcile,
                 PortKind::Other,
             ]
             .map(port_code),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9]
+            [1, 2, 3, 4, 5, 6, 8, 9]
         );
         assert_eq!([Direction::In, Direction::Out].map(direction_code), [1, 2]);
         assert_eq!(ThreatClass::ALL.map(class_code), [0, 1, 2, 3]);
@@ -2622,7 +2570,8 @@ mod tests {
     fn unknown_kinds_are_skipped_not_errors() {
         let mut rec = vec![0u8; 16];
         for kind in [
-            0x0001u16, 0x0047, 0x005F, 0x0060, 0x040B, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
+            0x0001u16, 0x0043, 0x0047, 0x005F, 0x0060, 0x040B, 0x04FF, 0x0500, 0x8001, 0x8402,
+            0x8406, 0x84FF,
         ] {
             rec[0..2].copy_from_slice(&kind.to_le_bytes());
             rec[2..4].copy_from_slice(&16u16.to_le_bytes());
@@ -2916,16 +2865,20 @@ mod tests {
         );
 
         // Commands too.
-        let cmd = Cmd::ChannelDelta(ChannelDelta {
+        let cmd = Cmd::WritePackage(WritePackage {
             op: ENGINE_OP,
-            channel: ChannelId(1),
-            goods: (1..=5_000).map(|g| (Good(g), -1)).collect(),
+            district: DistrictId(1),
+            inventory: 0,
+            pos: BlockPos::new(0, 0, 0),
+            address: 1,
+            count: 1,
+            goods: (1..=5_000).map(|g| (Good(g), 1)).collect(),
         });
         let mut out = vec![9];
         assert!(matches!(
             encode_cmd(SEQ, &cmd, &mut out),
             Err(WireError::TooBig {
-                kind: IND_CHANNEL_DELTA,
+                kind: IND_WRITE_PACKAGE,
                 ..
             })
         ));

@@ -1297,14 +1297,13 @@ mod tests {
                     let mut r = Vec::new();
                     rtsim_industry::wire::encode_cmd(
                         0,
-                        &rtsim_industry::cmd::Cmd::ChannelDelta(
-                            rtsim_industry::cmd::ChannelDelta {
+                        &rtsim_industry::cmd::Cmd::DepositDelta(
+                            rtsim_industry::cmd::DepositDelta {
                                 op: rtsim_kernel::journal::OpId((0x49 << 56) | 3),
-                                channel: rtsim_industry::ids::ChannelId(4),
-                                goods: rtsim_industry::ids::GoodVec::from_pairs([(
-                                    rtsim_industry::ids::Good(2),
-                                    -9,
-                                )]),
+                                plugin: rtsim_industry::obs::DepositPluginId::DieselOil,
+                                chunk: rtsim_industry::ids::ChunkPos { dim: 1, x: 4, z: 0 },
+                                good: rtsim_industry::ids::Good(2),
+                                delta: -9,
                             },
                         ),
                         &mut r,

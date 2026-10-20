@@ -156,7 +156,7 @@ fn new_seed() -> u64 {
 fn kept(c: &Cmd) -> bool {
     matches!(
         c,
-        Cmd::CarriageDelta(_) | Cmd::ChannelDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_)
+        Cmd::CarriageDelta(_) | Cmd::DepositDelta(_) | Cmd::WritePackage(_)
     )
 }
 
@@ -612,7 +612,7 @@ fn districts_fit(o: &Obs) -> bool {
         Obs::PowerLink { sink, source } => {
             return sink.0 < DISTRICT_ID_LIMIT && source.is_none_or(|s| s.0 < DISTRICT_ID_LIMIT);
         }
-        Obs::ChannelSample { .. } | Obs::Conditions(_) | Obs::CarriageResult(_) => {
+        Obs::Conditions(_) | Obs::CarriageResult(_) => {
             return true;
         }
     };
@@ -623,7 +623,6 @@ fn kind_name(c: &Cmd) -> &'static str {
     match c {
         Cmd::ChunkReconcile(_) => "IND_CHUNK_RECONCILE",
         Cmd::CarriageDelta(_) => "IND_CARRIAGE_DELTA",
-        Cmd::ChannelDelta(_) => "IND_CHANNEL_DELTA",
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
         Cmd::Ledger(_) => "IND_LEDGER",
@@ -689,10 +688,6 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
         }
         Cmd::CarriageDelta(d) => {
             d.entries.iter().for_each(|e| goods(e.1, &mut names));
-            None
-        }
-        Cmd::ChannelDelta(d) => {
-            d.goods.goods().for_each(|g| goods(g, &mut names));
             None
         }
         Cmd::DepositDelta(d) => {
@@ -921,16 +916,23 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtsim_industry::cmd::{CarriageDelta, CarriageReason, ChannelDelta};
-    use rtsim_industry::ids::{ChannelId, GoodVec, TrainId};
+    use rtsim_industry::cmd::{CarriageDelta, CarriageReason, DepositDelta};
+    use rtsim_industry::ids::{ChunkPos, TrainId};
+    use rtsim_industry::obs::DepositPluginId;
 
     #[test]
     fn the_link_page_round_trips() {
         let mut l = Link::empty();
-        l.queue.push_back(Cmd::ChannelDelta(ChannelDelta {
+        l.queue.push_back(Cmd::DepositDelta(DepositDelta {
             op: OpId((0x49 << 56) | 5),
-            channel: ChannelId(3),
-            goods: GoodVec::from_pairs([(Good(2), -7)]),
+            plugin: DepositPluginId::DieselOil,
+            chunk: ChunkPos {
+                dim: 1,
+                x: 3,
+                z: -2,
+            },
+            good: Good(2),
+            delta: -7,
         }));
         l.outbox.push_back((
             41,

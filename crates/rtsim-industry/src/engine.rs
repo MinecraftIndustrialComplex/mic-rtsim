@@ -141,7 +141,7 @@ pub struct Stats {
     pub cluster_settles: u64,
     /// Reconciles sent ahead of arrival (IND_APPROACH, the stale-tick answer).
     pub reconciles_ahead: u64,
-    /// Records the engine reads and ignores: IND_LEDGER_REQUEST (I18) and IND_CHANNEL_SAMPLE (I13).
+    /// Records the engine reads and ignores: IND_LEDGER_REQUEST (I18).
     pub retired_records: u64,
 }
 
@@ -448,9 +448,9 @@ impl Engine {
                 buf.deposits.push(s.clone());
             }
             Obs::SweepEnd(e) => self.sweep_end(at, e),
-            // Retired: a channel is internal plumbing of one district (I13), and no player sees
-            // simulated state (I18). Read so an older Java side's records are harmless.
-            Obs::ChannelSample { .. } | Obs::LedgerRequest { .. } => {
+            // Retired: no player sees simulated state (I18). Read so the Java side's display
+            // source, until it is removed, costs nothing.
+            Obs::LedgerRequest { .. } => {
                 self.stats.retired_records += 1;
             }
             Obs::Approach {
@@ -1773,9 +1773,8 @@ impl Engine {
 
     // ---- ports, trains, packages ----------------------------------------------------------
 
-    /// Goods that crossed the boundary while loaded (§3.3). An Ender Transmission transfer (port
-    /// kind 7) is an ordinary port: if Java ever reports one, its other endpoint is outside the
-    /// district, and the goods crossed like any other (I13: channels are never shared stock).
+    /// Goods that crossed the boundary while loaded (§3.3). Ender Transmission channels cross no
+    /// boundary: their endpoints are one district's (I13 as corrected), so they have no port kind.
     fn port(&mut self, _at: Tick, p: &crate::obs::PortTransfer) {
         let dist = self.district_mut(p.district);
         dist.ports.merge(&p.goods);
@@ -1903,7 +1902,7 @@ impl Engine {
 
     /// Java answered an industry command failed (COMMAND_RESULT failed, docs/industry-boundary.md
     /// §4.3): a station exchange or a train's loot moved nothing, so it is taken back as a result
-    /// with nothing applied. Returns whether the engine was waiting on the op. Channel, deposit and
+    /// with nothing applied. Returns whether the engine was waiting on the op. Deposit and
     /// package commands have no correction yet.
     pub fn command_failed(&mut self, at: Tick, op: rtsim_kernel::journal::OpId) -> bool {
         let Some(ex) = self.exchanges.get(&op) else {

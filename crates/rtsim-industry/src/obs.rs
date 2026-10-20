@@ -9,7 +9,7 @@
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::OpId;
 
-use crate::ids::{BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use crate::threat::ThreatClass;
 
 /// Why a district cannot be learned (INDUSTRY.md §6). The ledger shows the reason in words.
@@ -152,8 +152,8 @@ pub enum PortKind {
     PlayerPickup,
     /// A player broke a stock block; its contents left.
     StockBroken,
-    /// An Ender Transmission transmitter or receiver (I13); the counterpart is the channel.
-    Channel,
+    // Code 7 was an Ender Transmission channel: retired (I13 as corrected, a channel joins its
+    // endpoints into one district, so nothing crosses a boundary through it).
     /// The engine's own reconcile or damage, applied: never production.
     Reconcile,
     Other,
@@ -395,11 +395,6 @@ pub enum Obs {
     },
     SweepEnd(SweepEnd),
     DepositSample(DepositSample),
-    ChannelSample {
-        channel: ChannelId,
-        capacity: i64,
-        goods: GoodVec,
-    },
     LedgerRequest {
         district: DistrictId,
     },
@@ -500,7 +495,6 @@ impl Obs {
             Obs::StockSample { .. }
                 | Obs::SweepEnd(_)
                 | Obs::DepositSample(_)
-                | Obs::ChannelSample { .. }
                 | Obs::LedgerRequest { .. }
                 | Obs::Watched { .. }
                 | Obs::Approach { .. }
