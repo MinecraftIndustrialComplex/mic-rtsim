@@ -706,3 +706,104 @@ fn untagged_dragons_are_adopted_or_discarded() {
         "it lives on in the sim"
     );
 }
+
+// ---- trains (INDUSTRY.md §13.3, I24) -------------------------------------------------------------
+
+/// A hungry dragon whose flight crosses a booked train leg meets the train while both are under
+/// way: the industry engine loots the carriages within its caps, and the books agree with the
+/// dragons' ledger. A fed dragon flies on.
+#[test]
+fn a_hungry_dragon_raids_a_train_it_crosses() {
+    use rtsim_industry::engine::{Engine, Mode};
+    use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StationId, TrainId};
+    use rtsim_industry::obs::{Carriage, StationDecl, TrainDeparture};
+    for (fullness, raids) in [(40, 1), (100, 0)] {
+        let (mut w, mut d) = world(19);
+        let mut tun = rtsim_industry::tunables::Tunables::default();
+        tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
+        let mut e = Engine::new(19, tun, Mode::Apply, Tick::ZERO);
+        let (beef, gold) = (Good(2), Good(3));
+        e.define_good(beef, GoodInfo::item("minecraft:beef", 64));
+        e.define_good(gold, GoodInfo::item("minecraft:gold_ingot", 64));
+        let station = |id: u64, x: i32| {
+            IndObs::Station(StationDecl {
+                station: StationId(id),
+                district: None,
+                dim: 0,
+                pos: BlockPos::new(x, 64, 6_000),
+                name: id as u32,
+            })
+        };
+        e.ingest(&Timed {
+            at: Tick(1),
+            obs: station(1, -2_000),
+        });
+        e.ingest(&Timed {
+            at: Tick(1),
+            obs: station(2, 2_000),
+        });
+        e.ingest(&Timed {
+            at: Tick(1_000),
+            obs: IndObs::TrainDeparted(TrainDeparture {
+                train: TrainId(7),
+                station: StationId(1),
+                district: DistrictId(0),
+                destination: Some(StationId(2)),
+                eta_ticks: 20_000,
+                carriages: vec![Carriage {
+                    index: 0,
+                    item_slots: 27,
+                    fluid_capacity: 0,
+                    goods: GoodVec::from_pairs([(beef, 640), (gold, 64)]),
+                }],
+            }),
+        });
+        let a = d.add_lair(
+            &mut w,
+            1,
+            "A",
+            Species::Fire,
+            LairKind::Roost,
+            Pos::new(0, 0, 3_000),
+            100,
+            Tick(0),
+        );
+        let b = d.add_lair(
+            &mut w,
+            2,
+            "B",
+            Species::Fire,
+            LairKind::Roost,
+            Pos::new(0, 0, 9_000),
+            100,
+            Tick(0),
+        );
+        let x = d.add_dragon(&mut w, adult("x", a, fullness, Gender::Female), Tick(0));
+        let mut index = DistrictIndex::default();
+        let t0 = Tick(1_500);
+        {
+            let mut link = IndustryLink {
+                engine: &mut e,
+                index: &mut index,
+            };
+            d.run_until(&mut w, &mut link, t0);
+        }
+        d.relocate(&mut w, x, b, t0);
+        let mut link = IndustryLink {
+            engine: &mut e,
+            index: &mut index,
+        };
+        d.run_until(&mut w, &mut link, Tick(30_000));
+        assert_eq!(d.stats.train_raids, raids, "fullness {fullness}");
+        if raids > 0 {
+            let stolen = &e.books.stolen;
+            // I23's per-good cap: a tenth of the carriage, whatever the carry.
+            assert!(stolen.get(beef) > 0 && stolen.get(beef) <= 64);
+            assert!(stolen.get(gold) <= 6);
+            d.check(&w, Some(stolen)).unwrap();
+            assert!(d.dragon(x).unwrap().fullness_at(&d.tun, Tick(30_000)) > 0);
+        } else {
+            assert!(e.books.stolen.is_empty());
+        }
+    }
+}

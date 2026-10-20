@@ -691,7 +691,7 @@ fn print_report(o: &Out, _w: &World) {
     println!("\n== prey by season (hunts that fed, and fullness gained) ==");
     for s in &o.seasons {
         println!(
-            "{:<7} road {:>3} ({:>4}), village {:>3} ({:>4}), grudge {:>3} ({:>4}); villages {:.0}% of hunts",
+            "{:<7} road {:>3} ({:>4}), village {:>3} ({:>4}), grudge {:>3} ({:>4}), train {:>3} ({:>4}); villages {:.0}% of hunts",
             s.season.name(),
             s.hunts["road"],
             s.fullness["road"],
@@ -699,6 +699,8 @@ fn print_report(o: &Out, _w: &World) {
             s.fullness["village"],
             s.hunts["grudge"],
             s.fullness["grudge"],
+            s.hunts["train"],
+            s.fullness["train"],
             s.village_share * 100.0
         );
     }

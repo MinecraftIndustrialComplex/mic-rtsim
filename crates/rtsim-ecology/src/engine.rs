@@ -125,6 +125,17 @@ enum Ev {
         interest: Stamp,
         lair: LairId,
     },
+    /// A hungry dragon's new leg looks for booked train legs along it.
+    TrainScan {
+        d: DragonId,
+        plan: u32,
+    },
+    /// It meets a train it crosses.
+    TrainRaid {
+        d: DragonId,
+        plan: u32,
+        train: rtsim_industry::ids::TrainId,
+    },
     Depart {
         d: DragonId,
         plan: u32,
@@ -159,6 +170,7 @@ pub struct DragonStats {
     pub caravans_attacked: u64,
     pub village_raids: u64,
     pub district_raids: u64,
+    pub train_raids: u64,
     pub seen: u64,
     pub seen_stale: u64,
     pub materialized: u64,
@@ -782,6 +794,16 @@ impl Dragons {
                 }
             }
             Ev::Seen { d, player, meeting } => self.seen(w, d, player, meeting, at),
+            Ev::TrainScan { d, plan } => {
+                if self.live(d, plan) {
+                    self.train_scan(infra, d);
+                }
+            }
+            Ev::TrainRaid { d, plan, train } => {
+                if self.live(d, plan) {
+                    self.train_raid(infra, d, train, at);
+                }
+            }
             Ev::SeenAtLair {
                 d,
                 player,
@@ -917,6 +939,109 @@ impl Dragons {
         self.book_leg(w, d, path, sp.cruise_y);
         self.schedule(path.t1, Ev::LegEnd { d, plan });
         self.book_crossings(w, d, path, purpose, plan);
+        if self.dragons[d].fullness_at(&self.tun, path.t1) < self.tun.hunt_below {
+            self.schedule(at, Ev::TrainScan { d, plan });
+        }
+    }
+
+    /// The booked train legs a hungry dragon's leg crosses: one lookup per region it passes; it
+    /// meets the first in the middle of the window both are under way in.
+    fn train_scan(&mut self, infra: &mut dyn Infrastructure, d: DragonId) {
+        let Some(l) = self.dragons[d].leg else {
+            return;
+        };
+        let p = l.path;
+        let (a, b) = (
+            (i64::from(p.x0), i64::from(p.z0)),
+            (i64::from(p.x1), i64::from(p.z1)),
+        );
+        let steps = (flight::dist(a, b) / 256.0).ceil().max(1.0) as u32;
+        let mut regions: Vec<(i32, i32)> = (0..=steps)
+            .map(|k| {
+                let (x, z) = flight::lerp(a, b, k * 1000 / steps);
+                let r = rtsim_travel::legs::LegIndex::region_of(x, z);
+                (r.0 as i32, r.1 as i32)
+            })
+            .collect();
+        regions.dedup();
+        let plan = self.dragons[d].plan;
+        if let Some(s) = infra
+            .trains_crossed(p.frame, &regions, p.t0, p.t1)
+            .into_iter()
+            .find(|s| s.to >= s.from)
+        {
+            let at = Tick(s.from.0 + (s.to.0 - s.from.0) / 2);
+            self.schedule(
+                at,
+                Ev::TrainRaid {
+                    d,
+                    plan,
+                    train: s.train,
+                },
+            );
+        }
+    }
+
+    /// A dragon falls on a train under way (I24): the industry engine takes the loot from its
+    /// carriages, bounded per attack; the ledger splits it.
+    fn train_raid(
+        &mut self,
+        infra: &mut dyn Infrastructure,
+        d: DragonId,
+        train: rtsim_industry::ids::TrainId,
+        at: Tick,
+    ) {
+        let x = &self.dragons[d];
+        if !matches!(x.state, State::Flying(_))
+            || x.fullness_at(&self.tun, at) >= self.tun.hunt_below
+        {
+            return;
+        }
+        let sp = self.tun.species(x.species).clone();
+        let stage = x.stage(&sp, at);
+        let passes = sp.passes[stage.index()].max(1);
+        let threat = Threat {
+            id: fnv1a64(
+                &[
+                    x.seed.to_le_bytes(),
+                    at.0.to_le_bytes(),
+                    train.0.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+            source: ThreatSource::Dragon,
+            class: ThreatClass::Flying,
+            count: passes,
+            strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
+            target: ThreatTarget::Train(train),
+            at,
+        };
+        let Some(loot) = infra.raid_train(&threat) else {
+            return;
+        };
+        self.stats.train_raids += 1;
+        let mut food = 0;
+        let mut taken = Vec::new();
+        for (g, n) in loot.iter() {
+            let name = infra
+                .good_name(g)
+                .unwrap_or_else(|| format!("good {}", g.0));
+            let class = self.tun.prey.class(&name, false);
+            food += self.ledger.take(Item::Industry(g), n, class);
+            if matches!(class, PreyClass::Valuable) {
+                self.hoard(d, Item::Industry(g), n);
+            }
+            taken.push((name, n));
+        }
+        self.feed(d, at, food, &[]);
+        self.record_hunt(
+            at,
+            d,
+            PreyKind::Train,
+            format!("train {}", train.0),
+            food,
+            taken,
+        );
     }
 
     fn book_crossings(

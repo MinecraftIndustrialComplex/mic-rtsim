@@ -14,8 +14,9 @@ use std::collections::BTreeMap;
 
 use rtsim_industry::district::Presence;
 use rtsim_industry::engine::Engine;
-use rtsim_industry::ids::{DistrictId, Good, GoodVec};
+use rtsim_industry::ids::{DistrictId, Good, GoodVec, TrainId};
 use rtsim_industry::threat::{Threat, ThreatTarget};
+use rtsim_kernel::clock::Tick;
 use rtsim_settle::Pos;
 
 /// A district as a target: where it is and whether a player is near enough to fight for real.
@@ -42,6 +43,14 @@ pub struct RaidOutcome {
     pub skipped: Option<&'static str>,
 }
 
+/// A booked train leg a dragon's leg can meet: the train, and the window both are under way in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrainSighting {
+    pub train: TrainId,
+    pub from: Tick,
+    pub to: Tick,
+}
+
 /// What the dragon module needs from the infrastructure side.
 pub trait Infrastructure {
     /// Districts whose centre is within `r` blocks of (x, z).
@@ -50,6 +59,21 @@ pub trait Infrastructure {
     fn raid(&mut self, t: &Threat) -> Option<RaidOutcome>;
     /// An industry good's item name, for the prey table.
     fn good_name(&self, g: Good) -> Option<String>;
+    /// Booked train legs in `regions` that overlap `[from, to]` (INDUSTRY.md §13.3: one lookup
+    /// per region, never a scan).
+    fn trains_crossed(
+        &mut self,
+        _frame: u16,
+        _regions: &[(i32, i32)],
+        _from: Tick,
+        _to: Tick,
+    ) -> Vec<TrainSighting> {
+        Vec::new()
+    }
+    /// A raid on a train under way (I24): the cargo it lost, if any. Track is never cut.
+    fn raid_train(&mut self, _t: &Threat) -> Option<GoodVec> {
+        None
+    }
 }
 
 /// No infrastructure at all (a world with no industry module).
@@ -162,5 +186,38 @@ impl Infrastructure for IndustryLink<'_> {
 
     fn good_name(&self, g: Good) -> Option<String> {
         self.engine.goods().get(&g).map(|i| i.name.clone())
+    }
+
+    fn trains_crossed(
+        &mut self,
+        frame: u16,
+        regions: &[(i32, i32)],
+        from: Tick,
+        to: Tick,
+    ) -> Vec<TrainSighting> {
+        let legs = self.engine.legs();
+        let mut out: Vec<TrainSighting> = Vec::new();
+        for &r in regions {
+            for id in legs.in_region(u32::from(frame), r, from, to) {
+                if let Some(l) = legs.get(id)
+                    && !out.iter().any(|s| s.train == l.train)
+                {
+                    out.push(TrainSighting {
+                        train: l.train,
+                        from: l.depart.max(from),
+                        to: l.eta.min(to),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    fn raid_train(&mut self, t: &Threat) -> Option<GoodVec> {
+        // The engine books loot as stolen: what this attack added is its loot.
+        let before = self.engine.books.stolen.clone();
+        self.engine.threat(t);
+        let loot = self.engine.books.stolen.minus(&before);
+        (!loot.is_empty()).then_some(loot)
     }
 }

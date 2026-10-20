@@ -20,11 +20,18 @@ pub enum PreyKind {
     /// A player's home, only when a grudge sends it there: districts there are raided through
     /// the industry threat interface (C16 to C18).
     Grudge,
+    /// A booked train leg a hungry dragon's flight crosses (INDUSTRY.md §13.3, I24).
+    Train,
 }
 
 impl PreyKind {
-    pub const ALL: [PreyKind; 3] = [PreyKind::Road, PreyKind::Village, PreyKind::Grudge];
-    pub const COUNT: usize = 3;
+    pub const ALL: [PreyKind; 4] = [
+        PreyKind::Road,
+        PreyKind::Village,
+        PreyKind::Grudge,
+        PreyKind::Train,
+    ];
+    pub const COUNT: usize = 4;
 
     pub const fn index(self) -> usize {
         self as usize
@@ -35,6 +42,7 @@ impl PreyKind {
             PreyKind::Road => "road",
             PreyKind::Village => "village",
             PreyKind::Grudge => "grudge",
+            PreyKind::Train => "train",
         }
     }
 }
@@ -119,7 +127,7 @@ pub struct DragonTunables {
 
 impl Default for DragonTunables {
     fn default() -> Self {
-        let pct = |road: i32, village: i32| [road, village, 100];
+        let pct = |road: i32, village: i32| [road, village, 100, 100];
         let mut season_percent = [[100; PreyKind::COUNT]; 4];
         season_percent[Season::Spring.index()] = pct(100, 80);
         season_percent[Season::Summer.index()] = pct(140, 50);

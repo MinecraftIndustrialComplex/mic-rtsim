@@ -2,7 +2,7 @@
   "seed": 7,
   "days": 48,
   "starts_in": "Autumn",
-  "wall_ms": 111.58686,
+  "wall_ms": 118.17264399999999,
   "checks": [
     {
       "name": "conservation with predation",
@@ -51,11 +51,13 @@
       "hunts": {
         "grudge": 2,
         "road": 8,
+        "train": 0,
         "village": 13
       },
       "fullness": {
         "grudge": 66,
         "road": 279,
+        "train": 0,
         "village": 485
       },
       "village_share": 0.6190476190476191
@@ -65,11 +67,13 @@
       "hunts": {
         "grudge": 0,
         "road": 0,
+        "train": 0,
         "village": 26
       },
       "fullness": {
         "grudge": 0,
         "road": 0,
+        "train": 0,
         "village": 986
       },
       "village_share": 1.0
@@ -358,7 +362,7 @@
     }
   },
   "stats": {
-    "events": 423,
+    "events": 487,
     "stale": 29,
     "legs": 222,
     "decisions": 103,
@@ -368,6 +372,7 @@
     "caravans_attacked": 13,
     "village_raids": 39,
     "district_raids": 2,
+    "train_raids": 0,
     "seen": 13,
     "seen_stale": 1,
     "materialized": 13,
@@ -3498,21 +3503,25 @@
       [
         100,
         80,
+        100,
         100
       ],
       [
         140,
         50,
+        100,
         100
       ],
       [
         130,
         60,
+        100,
         100
       ],
       [
         50,
         180,
+        100,
         100
       ]
     ],
