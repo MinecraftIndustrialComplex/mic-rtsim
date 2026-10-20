@@ -19,7 +19,7 @@ usage:
       (default bench/results). --check exits 1 when a slope exceeds its declared contract.
       --repeats runs each point N times and keeps the median (default 3, quick 1).
       --only picks sweeps by name: latent, regions, events, elapsed, age, markets, edges,
-      dragons, ships, herds, members.
+      dragons, ships, herds, members, factions.
   rtsim-cli bench scale-one --spec JSON
       Runs one configuration and prints its measurements as JSON (used by bench scale).
   rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]
@@ -63,7 +63,13 @@ usage:
       Migrating herds (PLAN.md §10.2) in a synthetic valley for N days (default 200, two sim
       years): about 33,000 animals in six herds, a player who hunts, walks away and back, and
       fences a pass; dragons that hunt and follow herds; a restart in the middle. Writes JSON to
-      FILE (default scenario/results/sim-herds.json). Exits 1 if a check fails.";
+      FILE (default scenario/results/sim-herds.json). Exits 1 if a check fails.
+  rtsim-cli sim conflict [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      Conflict (PLAN.md §10.3): a goblin tribe, a player's polluting refinery and a logged
+      forest. Runs ignore (notice, envoy and demand, scouts, a war band that raids while the
+      player is offline, applied on load), tribute and converter (de-escalation), and a save and
+      restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
+      Exits 1 if a check fails.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -213,6 +219,7 @@ fn main() -> ExitCode {
         ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
         ["sim", "ships", rest @ ..] => sim::ships::cli(rest),
         ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
+        ["sim", "conflict", rest @ ..] => sim::conflict::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
             let mut o = sim::quiet::Options {

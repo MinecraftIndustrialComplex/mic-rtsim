@@ -45,6 +45,8 @@ pub enum Spec {
     Ships(super::ships::ShipsConfig),
     /// Migrating herds in the synthetic valley, nobody watching (`bench::herds`).
     Herds(super::herds::HerdsConfig),
+    /// Conflict factions, one village per camp, nobody watching (`bench::conflict`).
+    Factions(super::conflict::FactionConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -115,6 +117,8 @@ pub enum Vary {
     Herds,
     /// Members per herd, herd count fixed (PLAN.md §10.2).
     Members,
+    /// Conflict factions, one village per camp (PLAN.md §10.3).
+    Factions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +134,10 @@ pub enum Metric {
     CatchUp,
     /// CPU per sim day per unit of the swept count (`Measured::cpu_ns_per_unit_day`).
     CpuPerUnit,
+    /// Events handled per unit of the swept count over the window (`events / reads`; the
+    /// faction sweep sets `reads` to the faction count): the algorithmic part of a per-unit cost,
+    /// free of cache effects.
+    EventsPerUnit,
 }
 
 impl Metric {
@@ -140,6 +148,7 @@ impl Metric {
             Metric::Save => m.save_full_bytes.map(|b| b as f64),
             Metric::CatchUp => m.catch_up_cpu_ns_per_read,
             Metric::CpuPerUnit => m.cpu_ns_per_unit_day,
+            Metric::EventsPerUnit => (m.reads > 0).then(|| m.events as f64 / m.reads as f64),
         }
     }
 }
@@ -212,6 +221,17 @@ impl Baseline {
     }
 
     fn spec(&self, sweep: &Sweep, value: u64) -> Spec {
+        if sweep.vary == Vary::Factions {
+            return Spec::Factions(super::conflict::FactionConfig {
+                factions: value,
+                // One village per camp: the sweep measures cost per faction at a fixed density.
+                villages: value.max(FACTION_VILLAGES_MIN),
+                warmup_days: 2,
+                // A faction's events are days apart: four times the baseline's days.
+                days: self.days * 4,
+                seed: self.seed,
+            });
+        }
         if matches!(sweep.vary, Vary::Herds | Vary::Members) {
             let members = sweep.vary == Vary::Members;
             return Spec::Herds(super::herds::HerdsConfig {
@@ -291,7 +311,8 @@ impl Baseline {
             | Vary::Dragons
             | Vary::Ships
             | Vary::Herds
-            | Vary::Members => {
+            | Vary::Members
+            | Vary::Factions => {
                 unreachable!()
             }
         }
@@ -674,8 +695,43 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 ),
             ],
         },
+        // Conflict (rtsim-conflict), nobody watching. The model kind is a label only; the value is
+        // the faction count, with one village per camp.
+        Sweep {
+            name: "factions".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Factions,
+            regions: None,
+            values: pick(&[16, 64, 256, 1024], &[16, 256, 1024]),
+            contracts: vec![
+                contract(
+                    Metric::EventsPerUnit,
+                    flat,
+                    0.0,
+                    "a flat number of events per faction: a feud books one event per rung (its next threshold's closed-form crossing, its fall, its deadline) and a plunder is a muster, a march as legs, a raid and a homecoming; nothing is ticked. Measured about 1.04 a faction-day at every point",
+                ),
+                contract(
+                    Metric::CpuPerUnit,
+                    0.2,
+                    0.0,
+                    "the conflict engine's own CPU (the world stepped apart) per faction-day, one village per camp (a fixed density): flat events (above) at a cost per event that rises from about 5.4 to 9.1 us as the world grows 64 times (1,024 camps and villages, 80 MiB of heap): cache misses and log factors, not scans (a signal, an emission, a route or a plunder target looks up the cells around it, never every faction or node). Declared 0.2 from the 2026-10-20 runs (measured 0.09 to 0.155); 0.24 before routes and plunder targets used cells",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "factions, feuds and parties are resident rows (paging, A16, is not built yet)",
+                ),
+            ],
+        },
     ]
 }
+
+/// The faction sweep grows the village grid with the camps (one village per camp, a camp in each
+/// village cell), so it measures the cost per faction at a fixed density; at a fixed world,
+/// denser camps feel more of each other's smog and plunder each other more (behaviour). At least
+/// this many villages. PLACEHOLDER 16.
+const FACTION_VILLAGES_MIN: u64 = 16;
 
 /// Members per herd held fixed while the herd sweep varies herds. PLACEHOLDER 5,000.
 const MEMBER_BASE: u64 = 5_000;
@@ -725,6 +781,7 @@ pub fn run_one(spec: &Spec) -> Measured {
         Spec::Dragons(c) => super::dragons::run(c),
         Spec::Ships(c) => super::ships::run(c),
         Spec::Herds(c) => super::herds::run(c),
+        Spec::Factions(c) => super::conflict::run(c),
     }
 }
 
@@ -1209,6 +1266,7 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
             Spec::Dragons(c) => c.days as f64,
             Spec::Ships(c) => c.days as f64,
             Spec::Herds(c) => c.days as f64,
+            Spec::Factions(c) => c.days as f64,
             Spec::CatchUp(_) => f64::NAN,
         };
         println!(

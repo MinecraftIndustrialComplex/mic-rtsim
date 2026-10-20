@@ -22,6 +22,7 @@ rtsim-knowledge.workspace = true
 rtsim-world.workspace = true
 rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
+rtsim-conflict.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # State hashes over pages. MIT OR Apache-2.0.

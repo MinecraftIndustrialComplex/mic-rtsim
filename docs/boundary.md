@@ -619,8 +619,8 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    and it covers the next window) and routed to the modules that run (`World::route_area`, the
    `rtsim_world::interest::Viewer` trait): each books what the area needs, the legs sharing its
    cells are looked up once, and each crossing goes to the module that owns the traveller (leg
-   owner bits: 63 players, 62 dragons, 61 ships, 60 herds). A player not reported for 200 game
-   ticks leaves; a session start clears every area; with no such module running no area is booked.
+   owner bits: 63 players, 62 dragons, 61 ships, 60 herds, 59 conflict parties: §9, not routed
+   yet). A player not reported for 200 game ticks leaves; a session start clears every area; with no such module running no area is booked.
    The dragons', the ships' and the herds' events run interleaved in time (`shared::run_to`); a
    module that starts running in the middle of a session (the herds' first herd) hears of the areas
    already booked (`shared::introduce_herds`, Y1).
@@ -1118,3 +1118,163 @@ should (as the dragons adopt lair dragons, §6.6) is open (H2-28; the recommenda
 - **Predators**: dragons weigh herds near their lair (and farther for a herd they follow) and take
   latent animals by cohort weight (`Herds::predate`); an embodied group's animals are the
   plugin's, lost only in a real fight (HERD_KILLED, by 2).
+## 9. Conflict (PLAN.md §10.3; a future conflict plugin)
+
+Written 2026-10-20 overnight with the engine side, `crates/rtsim-conflict` (`boundary.rs` is the
+reference codec, with round-trip tests). **No plugin exists**, and none is chosen: which mods give
+the bodies (Goblin's Tyranny for goblins, Illager Invasion for raiders, `minecraft:pillager` as the
+fallback) and which structures are camps and havens are P8 (Ben). So every record names **abstract
+body kinds**, and the plugin maps them to a mod's entities (P15's body-kind data); D7: mob-like
+bodies only. The executable reference for what a plugin answers is the fake in
+`crates/rtsim-conflict/src/synth.rs` (`FakeConflict`), which the tests and `rtsim-cli sim conflict`
+drive through this codec. The native engine does not route these records yet (§5 has no conflict
+module). Choices are numbered K2-# in `docs/overnight-choices-conflict.md`. Nothing below about a
+body mod is verified: it is the contract a plugin would have to meet.
+
+### 9.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x0090 to 0x009F | Java to engine | conflict latest-wins observations |
+| 0x0800 to 0x08FF | Java to engine | conflict journaled observations (the 24-byte prefix of §2.3) |
+| 0x8800 to 0x88FF | engine to Java | conflict commands (`cmdSeq` at 8) |
+
+The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1), the
+ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
+stay as they are; these three are next to the herds'. **Dictionary kind 0x20** (each direction, as
+§2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12 are untouched.
+**Pages** (when the native engine routes conflict): table 0x4300 ('C'), one page with
+`Conflict::save` and its state hash, as the ships' 0x5300.
+
+### 9.2 Ids and dictionaries
+
+- **Agents.** A party's agent id is `0x43 << 56 | handle` (namespace byte 0x43, "C"), the engine
+  row's 48-bit handle, as dragons use 0x44, ships 0x53 and herds 0x48. A party (an envoy and its
+  guards, scouts, a war band, plunderers) is one group (C25): one agent, one epoch per
+  materialization, its members listed by body kind and count. Waves of one watched raid share the
+  agent and the epoch (`wave` counts them).
+- **Factions** are keyed by their camp's key (u64), packed as §4's villages are: the plugin reports
+  the camp (FACTION_FOUND) and the engine joins it to the world as a haven node (C24).
+- **Body kinds** (dictionary kind 3), abstract until P8, from the culture data
+  (`crates/rtsim-conflict/data/cultures/*.json`): `mic_rtsim:conflict/goblin/warrior`, `.../archer`,
+  `.../brute`, `.../emissary`; `mic_rtsim:conflict/bandit/thug`, `.../crossbowman`,
+  `.../messenger`; `mic_rtsim:conflict/raider/vindicator`, `.../pillager`, `.../ravager`,
+  `.../herald`.
+- **Structures** (kind 4): a culture's camps, from its data (`goblinstyranny:goblin_camp`,
+  `minecraft:pillager_outpost`, `illagerinvasion:illager_fort`, `mic_rtsim:conflict/bandit_camp`;
+  the mod ids are UNVERIFIED).
+- **Items** (kind 2): tribute, gifts and loot, mapped to the phase 1 catalogue's goods by name.
+- **Players** are UUIDs (most, least); **(0, 0) means the settlers** (P14's recommendation: one
+  shared actor for unowned signals and acts). **Op ids** are the plugin's (top bit set, §2.2) on
+  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN and BAND_LOOTED; the engine applies each once. The engine's
+  commands move no items, so they carry no op ids.
+
+### 9.3 Observations
+
+| Kind | Name | aux | Fields (offset type name) | Size |
+|---|---|---|---|---|
+| 0x0090 | BAND_STATE (latest-wins) | flags: 1 ticking, 2 fighting | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 members present, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z. Every 100 ticks per embodied party (PLACEHOLDER) | 56 |
+| 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 reserved | 56 |
+| 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
+| 0x0802 | POLLUTION | 0 | 24 u64 source (the district's id, or 0 and the engine keys the chunk), 32 u32 dimension, 36 u32 type (dictionary 0x20), 40 i32 x, 44 i32 z, 48 i64 amount over the window (Destroy's units; 0: the source stopped), 56 u32 windowTicks, 60 reserved | 64 |
+| 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 reserved | 48 |
+| 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq | 48 |
+| 0x0805 | BAND_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × (u32 body, u32 survivors) | 40 + 8n |
+| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast | 64 |
+| 0x0807 | CHIEF_KILLED | killer kind (as CASUALTIES) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
+| 0x0808 | ENVOY_ANSWER | 1 accepted, 2 refused, 3 attacked | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast | 56 |
+| 0x0809 | TRIBUTE_PAID | n | 24 u64 faction, 32 u64 agent (the envoy; 0 at the camp), 40 u32 epoch, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x080A | GIFT_GIVEN | n | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u64 opId, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
+| 0x080B | BAND_LOOTED | n | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 opId, 48 n × (u32 item, i32 count, u64 reserved) | 48 + 16n |
+
+All of 0x0800 to 0x080B are journaled.
+
+- **TERRITORY_SIGNAL** is what the plugin counts inside a territory the engine told it about
+  (TERRITORY): logs broken (2), ore broken (3), blocks placed on the faction's plots (5), members
+  killed outside a party's group (4), each by the acting player, or (0, 0) for an act with no player
+  (a Create drill, a deployer: P14 gives it to the settlers). It may batch a player's acts of one
+  kind over a few seconds into one record. Ore drained by an unloaded district reaches the engine
+  from the industry engine's deposits, not from here.
+- **POLLUTION** is the Destroy plugin's attribution by position (I14) aggregated per source and
+  window: the engine sets the source's rate to amount ÷ window (a continuous signal, so the
+  culture's tolerated rate applies). While a district is unloaded, the composition sets the same
+  source's rate from the industry engine's learned rate of the pollution good (choice K2-9).
+- **BAND_DEMATERIALIZED** after the engine's BAND_RECALL can only lower the counts: those that died
+  on the way out go; a despawn the plugin decided (chunks unloaded) sets them.
+- **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
+  that player (P14). CHIEF_KILLED routs the band (§9.5).
+
+### 9.4 Commands
+
+| Kind | Name | aux | Fields | Size | Answered by |
+|---|---|---|---|---|---|
+| 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
+| 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 reserved | 64 | |
+| 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
+| 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 the demand was settled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
+| 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
+
+Every conflict command is per session: puppets never outlive one (the dragons' S11 and the ships'
+U4), so none is kept or resent; TERRITORY is sent again for every faction at a session start (the
+native engine's job when it routes conflict).
+
+### 9.5 How Java would apply them
+
+**Territory.** The plugin keeps each faction's circle and counts, inside it, the signals its mask
+names (TERRITORY_SIGNAL). It needs no body mod for this: block break and place events and a mixin
+or event for kills are vanilla and NeoForge.
+
+**A notice** is the faction showing it has noticed: the plugin may place a sign (a banner, a totem
+from the body mod) at the place, or show nothing; it changes nothing the engine keeps.
+
+**An envoy** is spawned as one group at (x, y, z) (SURFACE), peaceful, and walks to or waits at the
+target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
+of the item before `deadlineTick`. Paying is a TRIBUTE_PAID with the envoy's agent (the items leave
+the player's inventory; an op id); refusing or attacking is an ENVOY_ANSWER. An envoy that is
+killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3).
+
+**The raid director.** A war band that arrives where a player watches materializes in **waves**:
+each BAND_MATERIALIZE with an `arcRadius` spawns its members on the arc of that radius around
+(arcX, arcZ), the watching player's position, within `half width` degrees of `bearing`: the side
+the band came from, at the edge of the entity-ticking area (PLACEHOLDER 112 blocks). A wave is never
+more than the spawn quota of members in Minecraft at once (PLACEHOLDER 16); the engine sends the
+next wave as casualties free room, a wave interval apart. Hostile members attack the target
+position and players. Every death is a BAND_CASUALTIES with the killer; the war chief's is a
+CHIEF_KILLED (op id). When the engine recalls the band (bored, routed, done) the survivors walk
+toward (towardX, towardZ) and the plugin despawns them once out of view or after the timeout, and
+reports BAND_DEMATERIALIZED with who is left. Items a body really carried off from a container are
+BAND_LOOTED (op id). The fight itself, and any block a body breaks, is vanilla's and the body mod's;
+the industry plugin observes it as a fight at the district (IND_FIGHT, I21), which floors later
+abstract raids there.
+
+**A band seen on the march** (its leg crosses a player's interest area) is materialized at its
+place (`arcRadius` 0) and steered along its road (BAND_STEER, one per waypoint, with the tick it
+should get there); it is recalled (reason 4) where its walk leaves the view. Bands on their way home
+are not materialized.
+
+### 9.6 What the engine side does with them (rtsim-conflict)
+
+- **Factions** come from FACTION_FOUND (or the composition's own data): a culture from the
+  structure, a camp joined to the world as a haven node (C24: what they steal is stocked and sold
+  there), a territory, a chief and an heir (knowledge notables: temperament from the seed bends
+  thresholds, tribute, patience and forgiveness, C25; the heir inherits the chief's strongest
+  grudges, C24), and a warrior pool recruited back in closed form.
+- **Grievance** per (faction, actor) is a closed form between events (exponential forgiveness plus
+  the continuous signals over their tolerance), so catch-up is flat in elapsed time; impulses jump it.
+  Its next rung is the time the curve crosses that rung's threshold: one booked event per feud.
+- **The ladder**: notice (FACTION_NOTICE), an envoy with a demand (ENVOY_MATERIALIZE when seen),
+  scouts, a raid, an invasion, a siege. De-escalation: tribute paid in full (back to notice, a share
+  of the grievance gone, a respite), the signal cut by the deadline, gifts and trade at the haven,
+  the war chief killed (the band routs, the faction is cowed, the feud drops rungs, the heir holds
+  the grudge), and plain forgiveness falling under a rung (hysteresis).
+- **War bands** muster from the pool, march the road graph as legs in the world's leg index (owner
+  bit 59), may ambush a booked train leg on the way (I24), get bored at the target on a booked
+  departure brought forward by losses (C24), and go home with their loot. **Unwatched**, a raid on a
+  player district goes through the industry threat interface (never better than observed, capped,
+  applied on load even with the owner offline: C16 to C18), and a raid on a village or a rival
+  haven moves stock between the world's markets (taken into the band's hold, stocked at the haven
+  on its return: conservation exact). **Watched**, the director above.
+- **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
+  and remember the raids on them (a robbery report against the faction).
