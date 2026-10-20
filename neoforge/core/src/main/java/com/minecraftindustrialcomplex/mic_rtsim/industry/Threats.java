@@ -186,6 +186,16 @@ public final class Threats {
         }
     }
 
+    /**
+     * GameTests (a GameTest server has no real player): the district is observed, as if a player stood in
+     * it at night, for {@code ticks} more ticks.
+     */
+    public void observeForTest(District d, long ticks) {
+        State s = state(d);
+        s.observing = true;
+        s.observedTicks += ticks;
+    }
+
     /** Test helper: what a district's open spawn sample holds, {observedTicks, spawns[0..3]}. */
     public long[] openSample(long district) {
         State s = states.get(district);

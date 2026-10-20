@@ -70,8 +70,14 @@ public final class Conditions {
         return last == null ? null : last.clone();
     }
 
-    /** Sends the calendar again at the next tick (GameTests, after a plugin's season changed). */
+    /** Checks the calendar at the next tick (GameTests, after a plugin's season changed). */
     public void checkSoon() {
+        nextCheck = Long.MIN_VALUE;
+    }
+
+    /** Sends the calendar at the next tick whether it changed or not (GameTests). */
+    public void resend() {
+        last = null;
         nextCheck = Long.MIN_VALUE;
     }
 
