@@ -20,16 +20,21 @@ use std::fmt::{Display, Write as _};
 
 use rtsim_industry::cluster::{Forecast, PoolKey};
 use rtsim_industry::cmd::{
-    BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, InvDelta, LedgerLine,
+    BlockDestroy, CarriageDelta, CarriageReason, ChannelDelta, ChunkReconcile, Cmd, DepositDelta,
+    InvDelta, LedgerLine, WritePackage,
 };
 use rtsim_industry::engine::LedgerState;
-use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
-use rtsim_industry::obs::{
-    Carriage, CarriageResult, CarriageResultEntry, DiscardReason, DistrictDecl, Direction,
-    EditKind, InvKind, InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind,
-    PortTransfer, ReconcileResult, ResultEntry, StationDecl, SweepEnd, Timed, TrainCall,
-    TrainDeparture,
+use rtsim_industry::ids::{
+    BlockPos, ChannelId, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId,
 };
+use rtsim_industry::obs::{
+    BlockFlags, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
+    DepositPluginId, DepositSample, DiscardReason, DistrictDecl, Direction, EditKind, ExposedBlock,
+    FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind,
+    PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, SweepEnd, Timed,
+    TrainCall, TrainDeparture,
+};
+use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::wire;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::{JAVA_OP_BIT, OpId};
@@ -107,6 +112,12 @@ impl Gen {
         i64::from_le_bytes(self.bytes::<8>(sign))
     }
 
+    /// A float that prints and parses exactly: a whole number of eighths, not zero.
+    fn f32(&mut self) -> f32 {
+        let n = (self.next() % 1_000_000) as f32 + 1.0;
+        n / 8.0
+    }
+
     /// An op id the engine made: the top bit clear.
     fn engine_op(&mut self) -> OpId {
         OpId::engine(self.u64() & !JAVA_OP_BIT)
@@ -150,6 +161,11 @@ impl Fields {
     }
 
     fn i64(&mut self, name: &str, v: i64) -> i64 {
+        self.num(name, v);
+        v
+    }
+
+    fn f32(&mut self, name: &str, v: f32) -> f32 {
         self.num(name, v);
         v
     }
@@ -490,6 +506,79 @@ fn code_tables(out: &mut String) {
     .map(|(name, fc)| (name.to_string(), fc.code().0))
     .collect();
     table(out, "next_kind", &rows);
+
+    // IND_DEPOSIT_SAMPLE aux (also IND_DEPOSIT_DELTA's).
+    let rows: Vec<_> = [
+        DepositPluginId::OreExcavation,
+        DepositPluginId::DieselOil,
+        DepositPluginId::DestroyCrude,
+    ]
+    .into_iter()
+    .map(|plugin| {
+        let b = obs_bytes(Obs::DepositSample(DepositSample {
+            district: d,
+            good: Good(1),
+            plugin,
+            chunk: ChunkPos { dim: 1, x: 2, z: 3 },
+            remaining: 4,
+            infinite: false,
+            sweep: 5,
+        }));
+        (format!("{plugin:?}"), u32_at(&b, 4))
+    })
+    .collect();
+    table(out, "deposit_plugin", &rows);
+
+    // IND_FIGHT aux.
+    let rows: Vec<_> = ThreatClass::ALL
+        .into_iter()
+        .map(|class| {
+            let b = obs_bytes(Obs::Fight(FightObserved {
+                district: d,
+                class,
+                attackers: 1,
+                attacker_strength: 1.0,
+                attackers_killed: 0,
+                blocks_destroyed: 0,
+                machines_destroyed: 0,
+                guards_lost: 0,
+                items_stolen: 0,
+                duration_ticks: 1,
+            }));
+            (format!("{class:?}"), u32_at(&b, 4))
+        })
+        .collect();
+    table(out, "threat_class", &rows);
+
+    // IND_SURVEY_BLOCKS flag bits.
+    let rows = vec![
+        ("PERIMETER".to_string(), BlockFlags::PERIMETER),
+        ("ROOFLESS".to_string(), BlockFlags::ROOFLESS),
+        ("MACHINE".to_string(), BlockFlags::MACHINE),
+        ("INVENTORY".to_string(), BlockFlags::INVENTORY),
+    ];
+    table(out, "block_flags", &rows);
+
+    // IND_SURVEY aux: mobGriefing.
+    let survey = |mob_griefing| {
+        obs_bytes(Obs::Survey(DefenceSurvey {
+            district: d,
+            revision: 1,
+            mob_griefing,
+            perimeter_columns: 0,
+            perimeter_gaps: 0,
+            dark_spawnable: 0,
+            machine_blocks: 0,
+            roofed_machines: 0,
+            kill_machines_at_gaps: 0,
+            turret_strength: [0.0; 4],
+            guards: [0; 4],
+            ammo_good: None,
+            ammo_per_engagement: 0,
+        }))
+    };
+    let rows = vec![("mob_griefing".to_string(), u32_at(&survey(true), 4) & !u32_at(&survey(false), 4))];
+    table(out, "survey_flag", &rows);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -578,6 +667,49 @@ fn main() {
             closing: true,
         };
         obs(&mut out, name, wire::IND_APPROACH, 0, Timed { at, obs: o }, &f);
+    }
+
+
+    {
+        let name = "IND_DEPOSIT_SAMPLE";
+        let (mut g, mut f) = begin(name);
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let good = Good(f.u32("good", g.u32()));
+        let sweep = f.u32("sweep", g.u32());
+        let remaining = f.i64("remaining", g.i64(Sign::Pos));
+        let dim = f.u32("dim", g.u32());
+        let x = f.i32("chunk_x", g.i32(Sign::Neg));
+        let z = f.i32("chunk_z", g.i32(Sign::Pos));
+        let plugin = DepositPluginId::DieselOil;
+        f.sym("plugin", format!("{plugin:?}"));
+        f.sym("infinite", true);
+        let o = Obs::DepositSample(DepositSample {
+            district,
+            good,
+            plugin,
+            chunk: ChunkPos { dim, x, z },
+            remaining,
+            infinite: true,
+            sweep,
+        });
+        obs(&mut out, name, wire::IND_DEPOSIT_SAMPLE, 0, Timed { at, obs: o }, &f);
+    }
+
+    {
+        let name = "IND_CHANNEL_SAMPLE";
+        let (mut g, mut f) = begin(name);
+        let at = game_time(&mut f, &mut g);
+        let channel = ChannelId(f.u64("channel", g.u64()));
+        let capacity = f.i64("capacity", g.i64(Sign::Pos));
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let o = Obs::ChannelSample {
+            channel,
+            capacity,
+            goods,
+        };
+        obs(&mut out, name, wire::IND_CHANNEL_SAMPLE, 0, Timed { at, obs: o }, &f);
     }
 
     // ---- journaled observations ----
@@ -907,6 +1039,194 @@ fn main() {
         obs(&mut out, name, wire::IND_CARRIAGE_RESULT, seq, Timed { at, obs: o }, &f);
     }
 
+
+    {
+        let name = "IND_CONDITIONS";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let season = f.u32("season", g.u32());
+        let season_count = f.u32("season_count", g.u32());
+        let season_length = f.i64("season_length", g.i64(Sign::Pos));
+        let season_origin = f.i64("season_origin", g.i64(Sign::Pos));
+        let o = Obs::Conditions(Conditions {
+            season,
+            season_count,
+            season_length: season_length as u64,
+            season_origin: Tick(season_origin as u64),
+        });
+        obs(&mut out, name, wire::IND_CONDITIONS, seq, Timed { at, obs: o }, &f);
+    }
+
+    {
+        let name = "IND_POWER_LINK";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let sink = DistrictId(f.u64("sink", g.u64()));
+        let source = DistrictId(f.u64("source", g.u64()));
+        let o = Obs::PowerLink {
+            sink,
+            source: Some(source),
+        };
+        obs(&mut out, name, wire::IND_POWER_LINK, seq, Timed { at, obs: o }, &f);
+    }
+
+    {
+        let name = "IND_PACKAGE";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let inventory = f.u32("inventory", g.u32());
+        let direction = Direction::Out;
+        f.sym("direction", format!("{direction:?}"));
+        let address = f.u32("address", g.u32());
+        let packages = f.u32("packages", g.u32());
+        let op = g.bridge_op();
+        f.num("op", op.0);
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let o = Obs::Package(PackageEvent {
+            district,
+            inventory,
+            direction,
+            address,
+            packages,
+            op: Some(op),
+            goods,
+        });
+        obs(&mut out, name, wire::IND_PACKAGE, seq, Timed { at, obs: o }, &f);
+    }
+
+    {
+        let name = "IND_SPAWN_SAMPLE";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let observed_ticks = f.i64("observed_ticks", g.i64(Sign::Pos));
+        let dark_blocks = f.i64("dark_blocks", g.i64(Sign::Pos));
+        let spawns: [u32; 4] = std::array::from_fn(|i| f.u32(&format!("spawns{i}"), g.u32()));
+        let o = Obs::SpawnSample(SpawnSample {
+            district,
+            observed_ticks: observed_ticks as u64,
+            dark_blocks: dark_blocks as u64,
+            spawns,
+        });
+        obs(&mut out, name, wire::IND_SPAWN_SAMPLE, seq, Timed { at, obs: o }, &f);
+    }
+
+    {
+        let name = "IND_FIGHT";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let class = ThreatClass::Flying;
+        f.sym("class", format!("{class:?}"));
+        let attackers = f.u32("attackers", g.u32());
+        let attacker_strength = f.f32("attacker_strength", g.f32());
+        let attackers_killed = f.u32("attackers_killed", g.u32());
+        let blocks_destroyed = f.u32("blocks_destroyed", g.u32());
+        let machines_destroyed = f.u32("machines_destroyed", g.u32());
+        let guards_lost = f.u32("guards_lost", g.u32());
+        let items_stolen = f.i64("items_stolen", g.i64(Sign::Pos));
+        let duration_ticks = f.i64("duration_ticks", g.i64(Sign::Pos));
+        let o = Obs::Fight(FightObserved {
+            district,
+            class,
+            attackers,
+            attacker_strength,
+            attackers_killed,
+            blocks_destroyed,
+            machines_destroyed,
+            guards_lost,
+            items_stolen,
+            duration_ticks: duration_ticks as u64,
+        });
+        obs(&mut out, name, wire::IND_FIGHT, seq, Timed { at, obs: o }, &f);
+    }
+
+    {
+        let name = "IND_SURVEY";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let revision = f.u32("revision", g.u32());
+        f.sym("mob_griefing", true);
+        let perimeter_columns = f.u32("perimeter_columns", g.u32());
+        let perimeter_gaps = f.u32("perimeter_gaps", g.u32());
+        let dark_spawnable = f.u32("dark_spawnable", g.u32());
+        let machine_blocks = f.u32("machine_blocks", g.u32());
+        let roofed_machines = f.u32("roofed_machines", g.u32());
+        let kill_machines_at_gaps = f.u32("kill_machines_at_gaps", g.u32());
+        let ammo = Good(f.u32("ammo_good", g.u32()));
+        let turret_strength: [f32; 4] = std::array::from_fn(|i| f.f32(&format!("turret{i}"), g.f32()));
+        let guards: [u32; 4] = std::array::from_fn(|i| f.u32(&format!("guards{i}"), g.u32()));
+        let ammo_per_engagement = f.u32("ammo_per_engagement", g.u32());
+        let o = Obs::Survey(DefenceSurvey {
+            district,
+            revision,
+            mob_griefing: true,
+            perimeter_columns,
+            perimeter_gaps,
+            dark_spawnable,
+            machine_blocks,
+            roofed_machines,
+            kill_machines_at_gaps,
+            turret_strength,
+            guards,
+            ammo_good: Some(ammo),
+            ammo_per_engagement,
+        });
+        obs(&mut out, name, wire::IND_SURVEY, seq, Timed { at, obs: o }, &f);
+    }
+
+    {
+        let name = "IND_SURVEY_BLOCKS";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let district = district(&mut f, &mut g);
+        let revision = f.u32("revision", g.u32());
+        let part = f.u32("part", g.u32());
+        f.sym("n_blocks", 2);
+        let blocks: Vec<ExposedBlock> = (0..2)
+            .map(|i| {
+                let p = pos(&mut f, &mut g, &format!("block{i}."));
+                let state = f.u32(&format!("block{i}.state"), g.u32());
+                // Flag bits are small and may repeat across blocks: symbols, not numbers.
+                let flags = if i == 0 {
+                    BlockFlags::PERIMETER | BlockFlags::ROOFLESS
+                } else {
+                    BlockFlags::MACHINE | BlockFlags::INVENTORY
+                };
+                f.sym(&format!("block{i}.flags"), flags);
+                let inventory = if i == 0 {
+                    f.sym(&format!("block{i}.inventory"), "none");
+                    None
+                } else {
+                    Some(f.u32(&format!("block{i}.inventory"), g.u32() & 0x7FFF_FFFF))
+                };
+                ExposedBlock {
+                    pos: p,
+                    state,
+                    flags: BlockFlags(flags),
+                    inventory,
+                }
+            })
+            .collect();
+        let o = Obs::SurveyBlocks {
+            district,
+            revision,
+            part,
+            blocks,
+        };
+        obs(&mut out, name, wire::IND_SURVEY_BLOCKS, seq, Timed { at, obs: o }, &f);
+    }
+
     // ---- commands ----
 
     {
@@ -1052,6 +1372,68 @@ fn main() {
             goods: line_goods,
         });
         cmd(&mut out, name, wire::IND_LEDGER, seq, c, &f);
+    }
+
+
+    {
+        let name = "IND_CHANNEL_DELTA";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let op = g.engine_op();
+        f.num("op", op.0);
+        let channel = ChannelId(f.u64("channel", g.u64()));
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let c = Cmd::ChannelDelta(ChannelDelta { op, channel, goods });
+        cmd(&mut out, name, wire::IND_CHANNEL_DELTA, seq, c, &f);
+    }
+
+    {
+        let name = "IND_DEPOSIT_DELTA";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let op = g.engine_op();
+        f.num("op", op.0);
+        let plugin = DepositPluginId::OreExcavation;
+        f.sym("plugin", format!("{plugin:?}"));
+        let dim = f.u32("dim", g.u32());
+        let x = f.i32("chunk_x", g.i32(Sign::Pos));
+        let z = f.i32("chunk_z", g.i32(Sign::Neg));
+        let good = Good(f.u32("good", g.u32()));
+        let delta = f.i64("delta", g.i64(Sign::Neg));
+        let c = Cmd::DepositDelta(DepositDelta {
+            op,
+            plugin,
+            chunk: ChunkPos { dim, x, z },
+            good,
+            delta,
+        });
+        cmd(&mut out, name, wire::IND_DEPOSIT_DELTA, seq, c, &f);
+    }
+
+    {
+        let name = "IND_WRITE_PACKAGE";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let op = g.engine_op();
+        f.num("op", op.0);
+        let district = district(&mut f, &mut g);
+        let inventory = f.u32("inventory", g.u32());
+        let p = pos(&mut f, &mut g, "");
+        let address = f.u32("address", g.u32());
+        let count = f.u32("count", g.u32());
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let c = Cmd::WritePackage(WritePackage {
+            op,
+            district,
+            inventory,
+            pos: p,
+            address,
+            count,
+            goods,
+        });
+        cmd(&mut out, name, wire::IND_WRITE_PACKAGE, seq, c, &f);
     }
 
     code_tables(&mut out);

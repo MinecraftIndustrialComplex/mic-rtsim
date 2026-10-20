@@ -38,7 +38,26 @@ public final class Ledgers {
     private final Map<Long, Reconcile> reconciles = new HashMap<>();
     private final Map<Long, Long> requestedAt = new HashMap<>();
     private final List<Waiter> waiters = new ArrayList<>();
+    /** Warnings plugins attach to a district's ledger, by key (I16: a gauge network that spans districts). */
+    private final Map<Long, Map<String, String>> warnings = new HashMap<>();
     long received;
+
+    /** Sets (or, with null text, clears) a warning on a district's ledger. */
+    public void warn(long district, String key, String text) {
+        if (text == null) {
+            Map<String, String> m = warnings.get(district);
+            if (m != null && m.remove(key) != null && m.isEmpty())
+                warnings.remove(district);
+            return;
+        }
+        warnings.computeIfAbsent(district, k -> new java.util.TreeMap<>()).put(key, text);
+    }
+
+    /** The warnings on a district's ledger, by key order. */
+    public List<String> warnings(long district) {
+        Map<String, String> m = warnings.get(district);
+        return m == null ? List.of() : List.copyOf(m.values());
+    }
 
     Ledgers(Industry ind) {
         this.ind = ind;
@@ -188,6 +207,9 @@ public final class Ledgers {
         Line l = latest.get(d.id);
         if (l == null) {
             out.add(Component.literal(d.displayName() + ": no ledger yet"));
+            for (String w : warnings(d.id))
+                if (out.size() < maxLines)
+                    out.add(Component.literal(w));
             return out;
         }
         String head = d.displayName() + ": " + stateName(l.state);
@@ -207,6 +229,9 @@ public final class Ledgers {
         }
         if (l.nextKind != 0 && out.size() < maxLines)
             out.add(nextLine(l));
+        for (String w : warnings(d.id))
+            if (out.size() < maxLines)
+                out.add(Component.literal(w));
         return out;
     }
 
@@ -240,6 +265,8 @@ public final class Ledgers {
             if (l.nextKind != 0)
                 out.add(Component.literal("  next: ").append(nextLine(l)));
         }
+        for (String w : warnings(d.id))
+            out.add(Component.literal("  warning: " + w));
         Reconcile r = reconciles.get(d.id);
         if (r != null)
             out.add(Component.literal("  last reconcile at tick " + r.at + ": " + r.entries + " deltas, " + r.applied + " of " + r.requested
