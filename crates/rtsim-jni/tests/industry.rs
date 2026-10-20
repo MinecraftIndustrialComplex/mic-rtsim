@@ -170,25 +170,6 @@ fn conserves(j: &Java) {
     });
 }
 
-/// Asks for the district's ledger as the Display Source did (IND_LEDGER_REQUEST): under I18 no
-/// player sees simulated state, so the engine reads the record and answers nothing.
-fn ledger_is_retired(j: &mut Java, d: DistrictId) {
-    let before = j.mc().ledgers.len();
-    let t = j.mc().t;
-    j.industry_obs(&Timed {
-        at: t,
-        obs: Obs::LedgerRequest { district: d },
-    });
-    for _ in 0..4 {
-        j.mc_tick();
-    }
-    assert_eq!(
-        j.mc().ledgers.len(),
-        before,
-        "no IND_LEDGER comes back (I18)"
-    );
-}
-
 fn reconciles(j: &Java) -> Vec<(u64, u32, ChunkPos)> {
     j.mc()
         .reconciled
@@ -256,7 +237,6 @@ fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
         industry(&j.e, |ie| ie.sim_run(MILL).is_some()),
         "the player turned away: the replay goes on"
     );
-    ledger_is_retired(&mut j, MILL);
     // Reload: the reconcile lands one tick or two after the chunks report their epochs.
     j.mc_run_until(day(3.0) + 2_000);
     let r = reconciles(&j);

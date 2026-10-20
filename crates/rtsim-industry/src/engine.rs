@@ -80,8 +80,8 @@ pub enum DistrictState {
 
 /// A district as the engine holds it, for tests, the CLI and an operator's log ([`Engine::inspect`]).
 /// **Never sent to a player** (I18, Ben's correction: players see only what their own built
-/// readouts measure). It replaces the "District ledger" query (IND_LEDGER_REQUEST and
-/// IND_LEDGER), which the engine no longer answers.
+/// readouts measure). The "District ledger" query (IND_LEDGER_REQUEST and IND_LEDGER)
+/// is gone from the wire.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Inspection {
     pub district: DistrictId,
@@ -153,8 +153,6 @@ pub struct Stats {
     pub reconciles_ahead: u64,
     /// Level-wide pollution pushed to the level while its district was unloaded (I14).
     pub pollution_pushes: u64,
-    /// Records the engine reads and ignores: IND_LEDGER_REQUEST (I18).
-    pub retired_records: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -473,11 +471,6 @@ impl Engine {
                 buf.deposits.push(s.clone());
             }
             Obs::SweepEnd(e) => self.sweep_end(at, e),
-            // Retired: no player sees simulated state (I18). Read so the Java side's display
-            // source, until it is removed, costs nothing.
-            Obs::LedgerRequest { .. } => {
-                self.stats.retired_records += 1;
-            }
             Obs::Approach {
                 district,
                 distance,
@@ -2897,7 +2890,6 @@ mod persist_impls {
         cluster_settles,
         reconciles_ahead,
         pollution_pushes,
-        retired_records,
     });
     persist_struct!(Books {
         minted,

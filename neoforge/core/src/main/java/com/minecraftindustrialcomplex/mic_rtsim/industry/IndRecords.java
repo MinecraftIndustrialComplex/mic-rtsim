@@ -54,7 +54,7 @@ public final class IndRecords {
     public static final int IND_SWEEP_END = 0x0041;
     public static final int IND_DEPOSIT_SAMPLE = 0x0042;
     // 0x0043 was IND_CHANNEL_SAMPLE: retired (I13 as corrected, a channel joins one district).
-    public static final int IND_LEDGER_REQUEST = 0x0044;
+    // 0x0044 was IND_LEDGER_REQUEST: retired with the ledger (I18 as decided); the engine reads it as unknown.
     public static final int IND_WATCHED = 0x0045;
     /**
      * Java-side proposal (choice H23): a player approaches an unloaded district. wire.rs reads it, and
@@ -93,7 +93,7 @@ public final class IndRecords {
     // 0x8402 was IND_CHANNEL_DELTA: retired with IND_CHANNEL_SAMPLE; the engine reads it as unknown.
     public static final int IND_DEPOSIT_DELTA = 0x8403;
     public static final int IND_WRITE_PACKAGE = 0x8404;
-    public static final int IND_LEDGER = 0x8405;
+    // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
 
     // ---- latest-wins layouts ----------------------------------------------------------------------
 
@@ -127,7 +127,7 @@ public final class IndRecords {
         public static final int FLAG_OVERSTRESSED = 4;
     }
 
-    /** IND_LEDGER_REQUEST and IND_WATCHED (aux 1 watched, 0 not). */
+    /** IND_WATCHED (aux 1 watched, 0 not). */
     public static final class DistrictState {
         public static final int GAME_TIME = 8; // i64
         public static final int DISTRICT = 16; // u64
@@ -240,8 +240,7 @@ public final class IndRecords {
 
     /**
      * IND_CHUNK_UNLOADED (0x040A, journaled; I7): a chunk of a district unloaded, sent at ChunkEvent.Unload.
-     * The engine's replay of the district's unloaded part takes the chunk back. Not sent yet (the Java side
-     * that sends it is the next Java agent's; docs/choices-indrework.md, Java pointers).
+     * The engine's replay of the district's unloaded part takes the chunk back.
      */
     public static final class ChunkUnloaded {
         public static final int DISTRICT = 24;      // u64
@@ -457,43 +456,6 @@ public final class IndRecords {
         }
     }
 
-    /** IND_LEDGER, aux = n goods of (u32 good, u32 reserved, i64 perHour, i64 sinceStart). */
-    public static final class Ledger {
-        public static final int DISTRICT = 16;         // u64
-        public static final int STATE = 24;            // u32
-        public static final int FREEZE = 28;           // u32
-        public static final int NEXT_BREAKPOINT = 32;  // i64, -1 none
-        public static final int NEXT_KIND = 40;        // u32
-        public static final int NEXT_GOOD = 44;        // u32, 0 none
-        public static final int SINCE = 48;           // i64
-        public static final int GOODS = 56;
-        public static final int G_GOOD = 0;
-        public static final int G_PER_HOUR = 8;
-        public static final int G_SINCE_START = 16;
-        public static final int GOOD = 24;
-
-        public static int size(int n) {
-            return GOODS + n * GOOD;
-        }
-
-        public static final int STATE_LIVE = 0;
-        public static final int STATE_LEARNING = 1;
-        public static final int STATE_LEARNED = 2;
-        public static final int STATE_STALE = 3;
-        public static final int STATE_NOT_LEARNABLE = 4;
-        public static final int STATE_SUSPENDED = 5;
-        public static final int STATE_DAMAGED = 6;
-        public static final int STATE_OUT_OF_SEASON = 7;
-
-        public static final int NEXT_NONE = 0;
-        public static final int NEXT_INPUT_EMPTIES = 1;
-        public static final int NEXT_OUTPUT_FULL = 2;
-        public static final int NEXT_TARGET = 3;
-        public static final int NEXT_DEPOSIT_EXHAUSTED = 4;
-        public static final int NEXT_SOURCE_STOPPED = 5;
-        public static final int NEXT_RESTART = 6;
-    }
-
     // ---- plugin and threat layouts (overnight agent 14, docs/overnight-choices-indplugins.md) ------
 
     /** IND_DEPOSIT_SAMPLE (latest-wins), aux = plugin ({@link DepositPlugin}). */
@@ -622,8 +584,18 @@ public final class IndRecords {
         public static final int MIXTURE_NOT_STEADY = 3;
         public static final int FINITE_DEPOSIT_UNKNOWN = 4;
         public static final int MOVING_CONTRAPTION = 5;
+        /** Reserved, never sent (I9): the engine learns a farm's output from what it measures; see {@link #sent}. */
         public static final int SPAWN_FED_FARM = 6;
         /** Java-side code (choice H7): a belt, chute, pipe or conveyor crosses the boundary. */
         public static final int CONVEYOR_CROSSES = 7;
+
+        /**
+         * The code IND_DISTRICT carries for a district (I9): 6 is not sent. Java never detected it, the engine
+         * reads it as "not learnable" no longer, and a 6 that reached here (an old save, a plugin) goes out
+         * as learnable.
+         */
+        public static int sent(int code) {
+            return code == SPAWN_FED_FARM ? 0 : code;
+        }
     }
 }
