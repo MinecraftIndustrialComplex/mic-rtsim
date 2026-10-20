@@ -49,8 +49,10 @@ impl OpId {
         OpId(n)
     }
 
-    /// An id made on the Java side, from the bridge's own number for it (the bridge uses the
-    /// observation's sequence). `n` must leave the top bit clear.
+    /// An id made on the Java side, from its low 63 bits. The bridge draws them at random, not
+    /// from the observation's sequence: a crash can roll the journal back while a chunk saved on
+    /// unload keeps a record from the lost stretch, and the lost sequences are then handed out
+    /// again (docs/boundary.md §2.2). `n` must leave the top bit clear.
     pub const fn bridge(n: u64) -> OpId {
         assert!(n & JAVA_OP_BIT == 0, "bridge op id number uses the top bit");
         OpId(JAVA_OP_BIT | n)

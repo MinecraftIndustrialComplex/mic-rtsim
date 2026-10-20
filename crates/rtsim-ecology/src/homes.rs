@@ -16,16 +16,16 @@ use rtsim_travel::legs::REGION_BLOCKS;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-struct Entry {
-    frame: u16,
-    rx: i64,
-    rz: i64,
+pub(crate) struct Entry {
+    pub(crate) frame: u16,
+    pub(crate) rx: i64,
+    pub(crate) rz: i64,
     /// Ticks spent, decayed to `at`.
-    v: f64,
-    sx: f64,
-    sz: f64,
+    pub(crate) v: f64,
+    pub(crate) sx: f64,
+    pub(crate) sz: f64,
     #[serde(skip)]
-    at: Tick,
+    pub(crate) at: Tick,
 }
 
 impl Entry {
@@ -37,9 +37,9 @@ impl Entry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-struct PlayerHome {
-    last: Option<(Pos, Tick)>,
-    regions: Vec<Entry>,
+pub(crate) struct PlayerHome {
+    pub(crate) last: Option<(Pos, Tick)>,
+    pub(crate) regions: Vec<Entry>,
 }
 
 /// A home: where, and how many (decayed) ticks the player spent in its region.
@@ -51,9 +51,9 @@ pub struct Home {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Homes {
-    players: BTreeMap<ActorId, PlayerHome>,
-    half_life: u64,
-    cap: usize,
+    pub(crate) players: BTreeMap<ActorId, PlayerHome>,
+    pub(crate) half_life: u64,
+    pub(crate) cap: usize,
     /// The most a single gap between two observations counts (a player who logged off is not at
     /// home). PLACEHOLDER: 1,200 ticks, a minute.
     pub max_gap: u64,

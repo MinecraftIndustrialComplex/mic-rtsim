@@ -112,6 +112,18 @@ impl Writer {
     pub fn raw(&mut self, b: &[u8]) {
         self.buf.extend_from_slice(b);
     }
+
+    pub fn bool(&mut self, v: bool) {
+        self.buf.push(u8::from(v));
+    }
+
+    pub fn f32(&mut self, v: f32) {
+        self.u32(v.to_bits());
+    }
+
+    pub fn i128(&mut self, v: i128) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -197,6 +209,36 @@ impl<'a> Reader<'a> {
         let n = self.var_u64()?;
         let n = usize::try_from(n).map_err(|_| CodecError::Invalid("length".into()))?;
         self.take(n)
+    }
+
+    pub fn bool(&mut self) -> Result<bool> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            v => Err(CodecError::Invalid(format!("{v} is not a bool"))),
+        }
+    }
+
+    pub fn f32(&mut self) -> Result<f32> {
+        self.u32().map(f32::from_bits)
+    }
+
+    pub fn i128(&mut self) -> Result<i128> {
+        self.array().map(i128::from_le_bytes)
+    }
+
+    /// A length prefix (LEB128), bounded by the bytes left: each element takes at least
+    /// `min_bytes`, so a corrupt length fails here instead of allocating without bound.
+    pub fn len_prefix(&mut self, min_bytes: usize) -> Result<usize> {
+        let n = self.var_u64()?;
+        let n = usize::try_from(n).map_err(|_| CodecError::Invalid(format!("length {n}")))?;
+        if n.saturating_mul(min_bytes.max(1)) > self.buf.len() {
+            return Err(CodecError::Invalid(format!(
+                "length {n} with only {} bytes left",
+                self.buf.len()
+            )));
+        }
+        Ok(n)
     }
 
     /// Fails unless everything was read: a page with trailing bytes was written by other code.

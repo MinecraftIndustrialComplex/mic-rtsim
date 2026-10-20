@@ -15,16 +15,32 @@ static ALLOC: sys::Counting = sys::Counting;
 const USAGE: &str = "\
 usage:
   rtsim-cli bench scale [--quick] [--check] [--repeats N] [--out DIR | --no-write] [--only NAME,...]
+                        [--tag NAME]
       Runs SCALE.md §10's sweeps, prints the table and slopes, writes JSON to DIR
       (default bench/results). --check exits 1 when a slope exceeds its declared contract.
+      --tag names the run in its file name and record (e.g. potato).
       --repeats runs each point N times and keeps the median (default 3, quick 1).
       --only picks sweeps by name: latent, regions, events, elapsed, age, markets, edges,
-      dragons.
+      dragons, ships, herds, members, factions, paged.
   rtsim-cli bench scale-one --spec JSON
       Runs one configuration and prints its measurements as JSON (used by bench scale).
+  rtsim-cli bench bsp [--quick] [--check] [--repeats N] [--workers 1,2,4] [--regions N]
+                      [--out DIR | --no-write] [--tag NAME]
+      The parallel step at several worker counts, resident and paged, and the determinism
+      gate: every run of a world must end in the same state hash. --check exits 1 when not.
+  rtsim-cli bench bsp-one --spec JSON
+      Runs one parallel-step configuration (used by bench bsp).
+  rtsim-cli bench o5 [--quick] [--repeats N] [--out DIR | --no-write] [--tag NAME]
+      Slot commits against dyadic counts at read cadences from 1 to 1,024 days (DECISIONS O5).
+  rtsim-cli bench o5-one --spec JSON
+      Runs one cadence point (used by bench o5).
   rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]
       The industry engine's cost sweeps (quiet and busy district counts, elapsed time) against
       their declared slopes; JSON to DIR (default bench/results). --check exits 1 on a breach.
+  rtsim-cli bench restore [--markets N] [--days D] [--repeats R] [--out DIR | --no-write]
+      The phase 1 world's snapshot against its whole input log: a grid of N villages (default
+      1,024) joined one by one and run D days (default 100), then save, restore (in memory and
+      through a page store) and one more day; JSON to DIR (default bench/results).
   rtsim-cli sim industry [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
       The iron line (rtsim-industry's synthetic scenario) for N days (at least 10): learning,
       replay, reconciles, threats, and simulated against control. Writes JSON to FILE
@@ -49,7 +65,23 @@ usage:
       Phase 2's dragons (PLAN.md §9) from autumn into winter on the synthetic world, with a
       scripted player and a farm district: grudges, heirs, bored departures, raids, prey by
       season. Writes JSON to FILE (default scenario/results/sim-dragons.json). Exits 1 if a
-      check fails.";
+      check fails.
+  rtsim-cli sim ships [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      Ships (PLAN.md §10.1) on a synthetic coast: sea and sky lanes, timetables, merchant
+      flows, a pirate haven, a navy patrol, and a scripted player who watches ships pass, sees
+      a raid, loots a hold and sinks a pirate; a restart in the middle. Writes JSON to FILE
+      (default scenario/results/sim-ships.json). Exits 1 if a check fails.
+  rtsim-cli sim herds [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      Migrating herds (PLAN.md §10.2) in a synthetic valley for N days (default 200, two sim
+      years): about 33,000 animals in six herds, a player who hunts, walks away and back, and
+      fences a pass; dragons that hunt and follow herds; a restart in the middle. Writes JSON to
+      FILE (default scenario/results/sim-herds.json). Exits 1 if a check fails.
+  rtsim-cli sim conflict [--days N] [--seed S] [--out FILE | --no-write] [--quiet]
+      Conflict (PLAN.md §10.3): a goblin tribe, a player's polluting refinery and a logged
+      forest. Runs ignore (notice, envoy and demand, scouts, a war band that raids while the
+      player is offline, applied on load), tribute and converter (de-escalation), and a save and
+      restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
+      Exits 1 if a check fails.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -62,6 +94,7 @@ fn main() -> ExitCode {
                 repeats: 0,
                 out: Some(PathBuf::from("bench/results")),
                 only: Vec::new(),
+                tag: None,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -80,6 +113,10 @@ fn main() -> ExitCode {
                     "--only" => match it.next() {
                         Some(list) => opts.only = list.split(',').map(str::to_string).collect(),
                         None => return usage("--only needs sweep names"),
+                    },
+                    "--tag" => match it.next() {
+                        Some(t) => opts.tag = Some(t.to_string()),
+                        None => return usage("--tag needs a name"),
                     },
                     other => return usage(&format!("unknown option {other}")),
                 }
@@ -197,6 +234,10 @@ fn main() -> ExitCode {
             ExitCode::from(sim::phase1::run(o) as u8)
         }
         ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
+        ["sim", "ships", rest @ ..] => sim::ships::cli(rest),
+        ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
+        ["sim", "conflict", rest @ ..] => sim::conflict::cli(rest),
+        ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
             let mut o = sim::quiet::Options {
                 markets: 0,
@@ -269,6 +310,104 @@ fn main() -> ExitCode {
                 }
             }
             ExitCode::from(sim::memory::run(markets, days) as u8)
+        }
+        ["bench", "bsp", rest @ ..] => {
+            let mut opts = bench::bsp::Options {
+                quick: false,
+                check: false,
+                repeats: 0,
+                out: Some(PathBuf::from("bench/results")),
+                workers: Vec::new(),
+                regions: None,
+                tag: None,
+            };
+            let mut it = rest.iter();
+            while let Some(&a) = it.next() {
+                match a {
+                    "--quick" => opts.quick = true,
+                    "--check" => opts.check = true,
+                    "--no-write" => opts.out = None,
+                    "--repeats" => match it.next().and_then(|n| n.parse().ok()) {
+                        Some(n) => opts.repeats = n,
+                        None => return usage("--repeats needs a number"),
+                    },
+                    "--regions" => match it.next().and_then(|n| n.parse().ok()) {
+                        Some(n) => opts.regions = Some(n),
+                        None => return usage("--regions needs a number"),
+                    },
+                    "--workers" => match it.next().map(|l| {
+                        l.split(',')
+                            .map(str::parse)
+                            .collect::<Result<Vec<usize>, _>>()
+                    }) {
+                        Some(Ok(w)) if !w.is_empty() => opts.workers = w,
+                        _ => return usage("--workers needs a list of numbers"),
+                    },
+                    "--out" => match it.next() {
+                        Some(d) => opts.out = Some(PathBuf::from(d)),
+                        None => return usage("--out needs a folder"),
+                    },
+                    "--tag" => match it.next() {
+                        Some(t) => opts.tag = Some(t.to_string()),
+                        None => return usage("--tag needs a name"),
+                    },
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            if opts.repeats == 0 {
+                opts.repeats = if opts.quick { 1 } else { 3 };
+            }
+            ExitCode::from(bench::bsp::run(opts) as u8)
+        }
+        ["bench", "bsp-one", "--spec", json] => {
+            let spec: bench::bsp::BspSpec = match serde_json::from_str(json) {
+                Ok(s) => s,
+                Err(e) => return usage(&format!("bad --spec: {e}")),
+            };
+            let m = bench::bsp::run_one(&spec);
+            println!("{}", serde_json::to_string(&m).expect("serialize"));
+            ExitCode::SUCCESS
+        }
+        ["bench", "o5", rest @ ..] => {
+            let mut opts = bench::o5::Options {
+                quick: false,
+                repeats: 0,
+                out: Some(PathBuf::from("bench/results")),
+                tag: None,
+            };
+            let mut it = rest.iter();
+            while let Some(&a) = it.next() {
+                match a {
+                    "--quick" => opts.quick = true,
+                    "--no-write" => opts.out = None,
+                    "--repeats" => match it.next().and_then(|n| n.parse().ok()) {
+                        Some(n) => opts.repeats = n,
+                        None => return usage("--repeats needs a number"),
+                    },
+                    "--out" => match it.next() {
+                        Some(d) => opts.out = Some(PathBuf::from(d)),
+                        None => return usage("--out needs a folder"),
+                    },
+                    "--tag" => match it.next() {
+                        Some(t) => opts.tag = Some(t.to_string()),
+                        None => return usage("--tag needs a name"),
+                    },
+                    other => return usage(&format!("unknown option {other}")),
+                }
+            }
+            if opts.repeats == 0 {
+                opts.repeats = if opts.quick { 1 } else { 3 };
+            }
+            ExitCode::from(bench::o5::run(opts) as u8)
+        }
+        ["bench", "o5-one", "--spec", json] => {
+            let spec: bench::o5::O5Spec = match serde_json::from_str(json) {
+                Ok(s) => s,
+                Err(e) => return usage(&format!("bad --spec: {e}")),
+            };
+            let m = bench::o5::run_one(&spec);
+            println!("{}", serde_json::to_string(&m).expect("serialize"));
+            ExitCode::SUCCESS
         }
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");

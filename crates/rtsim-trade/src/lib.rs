@@ -30,6 +30,7 @@ pub mod goods;
 pub mod labour;
 pub mod line;
 pub mod market;
+pub mod persist;
 pub mod price;
 pub mod tunables;
 pub mod units;

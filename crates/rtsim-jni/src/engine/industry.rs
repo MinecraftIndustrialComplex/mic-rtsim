@@ -170,6 +170,11 @@ fn kept(c: &Cmd) -> bool {
 
 impl Link {
     /// A link with an empty engine (the core's `State::new`; [`Link::load`] replaces it at start).
+    /// Whether the industry module runs (MODULES): the dragons raid districts only then.
+    pub(super) fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub(super) fn empty() -> Link {
         Link {
             engine: Industry::new(0, Tunables::default(), Mode::Apply, Tick::ZERO),
@@ -808,6 +813,12 @@ fn write_one(st: &mut State, w: &mut RecordWriter<'_>, c: &Cmd, seq: Option<u64>
     st.industry.stats.commands_written += 1;
     st.industry.name_waits = 0;
     One::Written(seq)
+}
+
+/// The sequence of the next kept command to resend, if any (the step merges every resend queue in
+/// sequence order).
+pub(super) fn next_resend(st: &State) -> Option<u64> {
+    st.industry.resend.front().map(|r| r.0)
 }
 
 /// Writes the resend queue's commands whose sequences are below `before` (the core's next resend,

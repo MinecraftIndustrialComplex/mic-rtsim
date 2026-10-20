@@ -39,13 +39,18 @@ code.
   `dyadic` counts (catch-up cost flat in elapsed time) for processes whose randomness does not depend
   on state, such as arrivals and deaths at fixed rates. Alternatives: slots everywhere and accept the
   cost; require closed-form distributions for every random process. Blocks: herds and anything random
-  in lazy regions.
+  in lazy regions. Measured since: slots cost 320 to 390 ns per region-day at any read cadence; dyadic
+  costs about 5 µs per read, so it wins for regions read less often than about every 16 days (67x
+  cheaper at 1,024 days). Herds already use dyadic counts on this recommendation.
 - **P3. The engine owns the truth.** Recommended: yes; Minecraft entities are puppets vanilla never saves
   (PLAN §6.1, and A9 and A10 assume it). Alternative: vanilla saves entities and the engine reconciles.
   Blocks: the bridge and the puppet GameTests.
-- **P4. Agent storage.** Recommended: let the phase 0 storage bench decide, `bevy_ecs` behind a facade
-  against our own columns, with the numbers brought to you. Alternative: pick one now. Blocks: the
-  kernel's storage facade.
+- **P4. Agent storage.** The bench is in (bench/results/p4-storage.md, 1e6 rows). Our columns beat
+  bevy_ecs 0.20 on one-field streams (0.022 vs 0.055 ns/row), churn (1.6 vs 8.0), tag changes (9.7 vs
+  468 ns) and memory (36.7 vs 110 to 114 bytes per row). bevy wins random lookups (1.45 to 1.6x) and
+  iterating rare tagged subsets (70 to 120x); our two-field loss goes away with a two-column borrow.
+  Recommended: keep our columns, add a two-column borrow and an index for rare tags. Alternative:
+  bevy_ecs behind the facade.
 - **P7. Patch ledger and contract tests.** Recommended: PATCHES.md plus GameTests for every reach into
   another mod, in every MIC mod. Alternative: the rtsim only. Blocks: the first adapter.
 - **P10. The design-changing review fixes.** Recommended: approve the 2026-10-19 list as applied (PLAN
@@ -77,6 +82,15 @@ code.
   (`PriceCurve`, `Market::offer`) so offers can be shown at once. Two copies can drift apart.
   Recommended: the engine sends ready-made bundles and Java only shows them; keep the Java copy only as
   a test oracle. Alternative: keep both, with a shared test vector file that both sides must pass.
+- **P3 (review 3): coins duplicated through a llama's chest.** When a caravan llama dies or is taken,
+  the sim books its planned cargo, not what its chest really held. A player who pays coins, kills the
+  llama holding them and picks them up leaves the sim's caravan still owning the coins. Recommended:
+  book exactly the items the bridge reports for that member. Alternative: keep V13 (log the difference,
+  don't correct). See docs/review3-2026-10-20.md.
+- **Phase 1 save pages a build can't read.** Today the whole engine refuses to start. Industry drops its
+  pages and starts fresh instead (W23). Recommended before release: the same as industry (drop and
+  start fresh, with a loud log), since nothing is released (your no-backcompat rule). Alternative:
+  refuse to start, as now.
 - **Caravan size.** Small flows made tiny caravans: a robbed one carried 0.53 wheat. Round 2 makes a
   caravan wait at the dock until full (6 slots) or two days. Busy roads now send full caravans; small
   flows still make caravans under one slot, and news now waits for caravans, so a robbery report with
@@ -209,6 +223,18 @@ Phases are INDUSTRY.md §16 (I-A to I-H).
 - **I26. Industry phase order.** Recommended: read-only ledger, replay, fluids and energy, trains, Create
   precision, threats, rebuild. Alternatives: threats first; trains before replay. Blocks: the start of
   industry work.
+
+## Cross-module
+
+- **U10: what a switched-off module does.** Dragons and ships, switched off, ignore their records and
+  run nothing; switched on again they catch up. Industry, switched off, still applies its journaled
+  records (W8). Recommended: one rule for all, the industry one, so nothing a player did while a module
+  was off is lost. Alternative: ignore everything while off, as dragons and ships do now.
+
+- **Herds overnight (docs/overnight-choices-herdsmc.md):** three additions to keep or undo: dragons
+  hunt herds (Y7); herds share the dragons' `ECOLOGY` module switch (Y2); a new `SessionPlugin.take`
+  hook. Also Y4, founding herds in real worlds: being built overnight as a HABITAT boundary record
+  (biome and surface samples per cell), which is a boundary addition for your review.
 
 ## Later
 

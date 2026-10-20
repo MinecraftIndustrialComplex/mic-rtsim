@@ -16,9 +16,23 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rtsim-kernel.workspace = true
 rtsim-industry.workspace = true
+# Phase 1 (docs/boundary.md §4): the world and the modules whose types it speaks.
+rtsim-world.workspace = true
+rtsim-settle.workspace = true
+rtsim-trade.workspace = true
+rtsim-travel.workspace = true
+rtsim-knowledge.workspace = true
+# Phase 2's dragons (docs/boundary.md §6).
+rtsim-ecology.workspace = true
+# Ships, pirates and navies (docs/boundary.md §7).
+rtsim-ships.workspace = true
+# Factions, grievance and war bands (docs/boundary.md §9).
+rtsim-conflict.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 
 [dev-dependencies]
+# Property tests: the phase 1 world restored at any point of an input script (S6).
+proptest.workspace = true
 # The host, started in the test process: the protocol test runs steps on its real pools.
 mic-native-host.workspace = true

@@ -62,6 +62,13 @@ pub const fn align8(n: usize) -> usize {
 pub const DICT_DIMENSION: u32 = 1;
 pub const DICT_ITEM: u32 = 2;
 pub const DICT_BODY: u32 = 3;
+/// Phase 1 dictionary kinds (docs/boundary.md §2.2, §4): structures, cultures, professions,
+/// structure templates and processor lists.
+pub const DICT_STRUCTURE: u32 = 4;
+pub const DICT_CULTURE: u32 = 5;
+pub const DICT_PROFESSION: u32 = 6;
+pub const DICT_TEMPLATE: u32 = 7;
+pub const DICT_PROCESSORS: u32 = 8;
 
 /// Observation records (Java to the engine). Kinds below 0x8000.
 pub mod obs {
@@ -235,6 +242,183 @@ pub mod obs {
         pub const APPLIED: u32 = 1;
         pub const DUPLICATE_OP: u32 = 2;
         pub const FAILED: u32 = 3;
+        /// PLACE_HOUSE found no free plot.
+        pub const NOT_FREE: u32 = 4;
+        /// WRITE_GOSSIP refused: vanilla records that act first-hand itself.
+        pub const VANILLA_KNOWS: u32 = 5;
+    }
+
+    // ---- phase 1 (docs/boundary.md §4.1) ----------------------------------------------------------
+
+    pub const VILLAGE_CENSUS: u16 = 0x0020;
+    pub const VILLAGE_GOSSIP: u16 = 0x0021;
+    pub const VILLAGE_ADOPTED: u16 = 0x0120;
+    pub const TRADE: u16 = 0x0121;
+    pub const HURT: u16 = 0x0122;
+    pub const RESCUE: u16 = 0x0123;
+    pub const CARGO_CHANGED: u16 = 0x0124;
+    pub const BASE: u16 = 0x0125;
+    pub const HOUSE_PLACED: u16 = 0x0126;
+
+    /// Latest-wins: a loaded village counted.
+    pub mod village_census {
+        pub const VILLAGE: usize = 8;
+        pub const DIM: usize = 16;
+        pub const FLAGS: usize = 20;
+        pub const MEET_X: usize = 24;
+        pub const MEET_Y: usize = 28;
+        pub const MEET_Z: usize = 32;
+        pub const RESIDENTS: usize = 36;
+        pub const BEDS: usize = 40;
+        pub const WORKSTATIONS: usize = 44;
+        pub const GOLEMS: usize = 48;
+        pub const PROFESSIONS: usize = 52;
+        pub const ENTRIES: usize = 56;
+        pub const ENTRY: usize = 8;
+        pub const FLAG_MEETING_POI: u32 = 1;
+    }
+
+    /// Latest-wins: vanilla's own gossip about players, summed over a village's residents.
+    pub mod village_gossip {
+        pub const VILLAGE: usize = 8;
+        pub const ENTRIES: usize = 16;
+        pub const RESIDENTS: usize = 20;
+        pub const FIRST: usize = 24;
+        pub const ENTRY: usize = 40;
+    }
+
+    pub mod village_adopted {
+        pub const VILLAGE: usize = 24;
+        pub const DIM: usize = 32;
+        pub const STRUCTURE: usize = 36;
+        pub const CULTURE: usize = 40;
+        pub const PIECES: usize = 44;
+        pub const MIN_X: usize = 48;
+        pub const MIN_Y: usize = 52;
+        pub const MIN_Z: usize = 56;
+        pub const MAX_X: usize = 60;
+        pub const MAX_Y: usize = 64;
+        pub const MAX_Z: usize = 68;
+        pub const MEET_X: usize = 72;
+        pub const MEET_Y: usize = 76;
+        pub const MEET_Z: usize = 80;
+        pub const SIZE: usize = 88;
+        pub const FLAG_LATE: u32 = 1;
+    }
+
+    pub mod trade {
+        pub const OP_ID: usize = 24;
+        pub const NODE: usize = 32;
+        pub const AGENT: usize = 40;
+        pub const EPOCH: usize = 48;
+        pub const MEMBER: usize = 52;
+        pub const PLAYER_MOST: usize = 56;
+        pub const PLAYER_LEAST: usize = 64;
+        pub const MERCHANT_MOST: usize = 72;
+        pub const MERCHANT_LEAST: usize = 80;
+        pub const COST_A_ITEM: usize = 88;
+        pub const COST_A_COUNT: usize = 92;
+        pub const COST_B_ITEM: usize = 96;
+        pub const COST_B_COUNT: usize = 100;
+        pub const RESULT_ITEM: usize = 104;
+        pub const RESULT_COUNT: usize = 108;
+        pub const MERCHANT_BODY: usize = 112;
+        pub const PROFESSION: usize = 116;
+        pub const SIZE: usize = 120;
+        /// aux: the merchant sold goods for its currency (the player bought).
+        pub const MERCHANT_SELLS: u32 = 1;
+        /// aux: the merchant bought goods.
+        pub const MERCHANT_BUYS: u32 = 2;
+        pub const OTHER: u32 = 3;
+    }
+
+    pub mod hurt {
+        pub const AGENT: usize = 24;
+        pub const EPOCH: usize = 32;
+        pub const MEMBER: usize = 36;
+        pub const VICTIM_MOST: usize = 40;
+        pub const VICTIM_LEAST: usize = 48;
+        pub const ATTACKER_MOST: usize = 56;
+        pub const ATTACKER_LEAST: usize = 64;
+        pub const ATTACKER_KIND: usize = 72;
+        pub const AMOUNT: usize = 76;
+        pub const NODE: usize = 80;
+        pub const VICTIM_BODY: usize = 88;
+        pub const FLAGS: usize = 92;
+        pub const HITS: usize = 96;
+        pub const PROFESSION: usize = 100;
+        pub const SIZE: usize = 104;
+        pub const PUPPET_HURT: u32 = 1;
+        pub const RESIDENT_HURT: u32 = 2;
+        pub const RESIDENT_KILLED: u32 = 3;
+        pub const ATTACKER_PLAYER: u32 = 1;
+        pub const FLAG_VANILLA_GOSSIP: u32 = 1;
+        pub const FLAG_LETHAL: u32 = 2;
+    }
+
+    pub mod rescue {
+        pub const AGENT: usize = 24;
+        pub const EPOCH: usize = 32;
+        pub const MEMBER: usize = 36;
+        pub const RESCUER_MOST: usize = 40;
+        pub const RESCUER_LEAST: usize = 48;
+        pub const VICTIM_MOST: usize = 56;
+        pub const VICTIM_LEAST: usize = 64;
+        pub const THREAT: usize = 72;
+        pub const NODE: usize = 80;
+        pub const SIZE: usize = 88;
+        pub const PUPPET: u32 = 1;
+        pub const RESIDENT: u32 = 2;
+    }
+
+    pub mod cargo_changed {
+        pub const OP_ID: usize = 24;
+        pub const AGENT: usize = 32;
+        pub const EPOCH: usize = 40;
+        pub const FLAGS: usize = 44;
+        pub const PLAYER_MOST: usize = 48;
+        pub const PLAYER_LEAST: usize = 56;
+        pub const ITEM_COUNT: usize = 64;
+        pub const ITEMS: usize = 72;
+
+        pub const fn size(items: usize) -> usize {
+            ITEMS + items * super::item::SIZE
+        }
+
+        pub const FLAG_BY_PROXIMITY: u32 = 1;
+    }
+
+    pub mod base {
+        pub const BASE: usize = 24;
+        pub const DIM: usize = 32;
+        pub const X: usize = 40;
+        pub const Y: usize = 48;
+        pub const Z: usize = 56;
+        pub const PLAYER_MOST: usize = 64;
+        pub const PLAYER_LEAST: usize = 72;
+        pub const DWELL: usize = 80;
+        pub const SIZE: usize = 88;
+        pub const MARKED: u32 = 1;
+        pub const UNMARKED: u32 = 2;
+    }
+
+    pub mod house_placed {
+        pub const OP_ID: usize = 24;
+        pub const VILLAGE: usize = 32;
+        pub const DIM: usize = 40;
+        pub const TEMPLATE: usize = 44;
+        pub const MIN_X: usize = 48;
+        pub const MIN_Y: usize = 52;
+        pub const MIN_Z: usize = 56;
+        pub const MAX_X: usize = 60;
+        pub const MAX_Y: usize = 64;
+        pub const MAX_Z: usize = 68;
+        pub const SLOT_X: usize = 72;
+        pub const SLOT_Y: usize = 76;
+        pub const SLOT_Z: usize = 80;
+        pub const ROTATION: usize = 84;
+        pub const MIRROR: usize = 85;
+        pub const SIZE: usize = 88;
     }
 }
 
@@ -269,6 +453,9 @@ pub mod cmd {
         pub const Y: usize = 48;
         pub const Z: usize = 56;
         pub const MEMBERS: usize = 64;
+        /// Flag: y is the surface, each member standing on the highest motion-blocking, non-leaf
+        /// block at its own x, z (the engine knows no terrain).
+        pub const FLAG_SURFACE: u32 = 1;
 
         pub mod member {
             pub const INDEX: usize = 0;
@@ -310,6 +497,124 @@ pub mod cmd {
         pub const Z: usize = 40;
         pub const COUNT: usize = 44;
         pub const SIZE: usize = 48;
+    }
+
+    // ---- phase 1 (docs/boundary.md §4.2) ----------------------------------------------------------
+
+    pub const MARKET: u16 = 0x8010;
+    pub const MERCHANT_OFFERS: u16 = 0x8011;
+    pub const WRITE_GOSSIP: u16 = 0x8012;
+    pub const SENTIMENT: u16 = 0x8013;
+    pub const PLACE_HOUSE: u16 = 0x8014;
+    pub const SPAWN_RESIDENT: u16 = 0x8015;
+
+    pub mod market {
+        pub const VILLAGE: usize = 16;
+        pub const AS_OF_OBS_SEQ: usize = 24;
+        pub const CURRENCY: usize = 32;
+        pub const FLAGS: usize = 36;
+        pub const TREASURY: usize = 40;
+        pub const TREASURY_TARGET: usize = 48;
+        pub const WORST_NUM: usize = 56;
+        pub const WORST_DEN: usize = 60;
+        pub const GOODS: usize = 64;
+        pub const GOOD: usize = 40;
+        pub const G_ITEM: usize = 0;
+        pub const G_STOCK: usize = 8;
+        pub const G_TARGET: usize = 16;
+        pub const G_ANCHOR: usize = 24;
+        pub const G_R_NUM: usize = 32;
+        pub const G_R_DEN: usize = 36;
+
+        pub const fn size(goods: usize) -> usize {
+            GOODS + goods * GOOD
+        }
+    }
+
+    pub mod merchant_offers {
+        pub const AGENT: usize = 16;
+        pub const EPOCH: usize = 24;
+        pub const MEMBER: usize = 28;
+        pub const OFFERS: usize = 32;
+        pub const OFFER: usize = 40;
+        pub const O_COST_A_ITEM: usize = 0;
+        pub const O_COST_A_COUNT: usize = 4;
+        pub const O_COST_B_ITEM: usize = 8;
+        pub const O_COST_B_COUNT: usize = 12;
+        pub const O_RESULT_ITEM: usize = 16;
+        pub const O_RESULT_COUNT: usize = 20;
+        pub const O_MAX_USES: usize = 24;
+        pub const O_XP: usize = 28;
+        pub const O_PRICE_MULT: usize = 32;
+        pub const O_FLAGS: usize = 36;
+        pub const O_FLAG_SELLS: u32 = 1;
+        pub const O_FLAG_BUYS: u32 = 2;
+
+        pub const fn size(offers: usize) -> usize {
+            OFFERS + offers * OFFER
+        }
+    }
+
+    pub mod write_gossip {
+        pub const OP_ID: usize = 16;
+        pub const VILLAGE: usize = 24;
+        pub const PLAYER_MOST: usize = 32;
+        pub const PLAYER_LEAST: usize = 40;
+        pub const GOSSIP: usize = 48;
+        pub const AMOUNT: usize = 52;
+        pub const REPORT: usize = 56;
+        pub const FLAGS: usize = 60;
+        pub const SIZE: usize = 64;
+        pub const FLAG_FIRST_HAND: u32 = 1;
+    }
+
+    pub mod sentiment {
+        pub const HOLDER: usize = 16;
+        pub const DISLIKE: usize = 24;
+        pub const FRIEND: usize = 28;
+        pub const FLAGS: usize = 32;
+        pub const ENTRIES: usize = 40;
+        pub const ENTRY: usize = 24;
+        pub const FLAG_REPLACE: u32 = 1;
+
+        pub const fn size(entries: usize) -> usize {
+            ENTRIES + entries * ENTRY
+        }
+    }
+
+    pub mod place_house {
+        pub const OP_ID: usize = 16;
+        pub const VILLAGE: usize = 24;
+        pub const DIM: usize = 32;
+        pub const TEMPLATE: usize = 36;
+        pub const PROCESSORS: usize = 40;
+        pub const X: usize = 44;
+        pub const Y: usize = 48;
+        pub const Z: usize = 52;
+        pub const ROTATION: usize = 56;
+        pub const MIRROR: usize = 57;
+        pub const FLAGS: usize = 58;
+        pub const RADIUS: usize = 60;
+        pub const SEED: usize = 64;
+        pub const Y_OFFSET: usize = 72;
+        pub const SIZE: usize = 80;
+        pub const FLAG_SEARCH: u16 = 1;
+        pub const FLAG_Y_FROM_VILLAGE: u16 = 2;
+    }
+
+    pub mod spawn_resident {
+        pub const OP_ID: usize = 16;
+        pub const VILLAGE: usize = 24;
+        pub const DIM: usize = 32;
+        pub const BODY: usize = 36;
+        pub const PROFESSION: usize = 40;
+        pub const FLAGS: usize = 44;
+        pub const X: usize = 48;
+        pub const Y: usize = 56;
+        pub const Z: usize = 64;
+        pub const HOUSE: usize = 72;
+        pub const SIZE: usize = 80;
+        pub const FLAG_AT_HOUSE: u32 = 1;
     }
 }
 

@@ -21,6 +21,10 @@ rtsim-knowledge = { path = "crates/rtsim-knowledge" }
 rtsim-world = { path = "crates/rtsim-world" }
 # Phase 2: hunger, prey and dragons (PLAN.md §1.2, §9).
 rtsim-ecology = { path = "crates/rtsim-ecology" }
+# Ships, pirates and navies (PLAN.md §10.1).
+rtsim-ships = { path = "crates/rtsim-ships" }
+# Conflict: factions, grievance, war bands and raids (PLAN.md §10.3).
+rtsim-conflict = { path = "crates/rtsim-conflict" }
 # The page codec, matching Deep Time's tile packs (crates/deeptime-format). MIT.
 lz4_flex = "0.14.0"
 # MIT OR Apache-2.0.

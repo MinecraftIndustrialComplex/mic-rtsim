@@ -47,6 +47,7 @@
 //! save.
 
 use crate::clock::{SlotPeriod, Tick};
+use crate::codec::{self, CodecError, Reader, Writer};
 use crate::handle::{Arena, Handle};
 use crate::ladder::{Answers, Query};
 use crate::rng::{SlotRng, StreamKey, SystemId};
@@ -108,6 +109,11 @@ impl<M: LazyModel> Lazy<M> {
         (self.model, self.anchor)
     }
 
+    /// The stored state, mutably, for the paged table's event path (which settles first).
+    pub(crate) fn model_mut(&mut self) -> &mut M {
+        &mut self.model
+    }
+
     /// Commits every slot that ends at or before `to`; returns how many. Never moves the anchor
     /// to `to` itself unless `to` is a boundary.
     pub fn catch_up(&mut self, to: Tick, key: StreamKey) -> u64 {
@@ -155,7 +161,9 @@ impl<M: LazyModel> Lazy<M> {
         f(&mut self.model, at)
     }
 
-    fn settle_to(&mut self, at: Tick) {
+    /// Settles the stored state to `at` and re-anchors there. Only for event and breakpoint
+    /// times (module docs); `at` must not be before the anchor.
+    pub(crate) fn settle_to(&mut self, at: Tick) {
         debug_assert!(
             at >= self.anchor,
             "event at {at:?} before the anchor {:?}",
@@ -423,5 +431,89 @@ impl<M: LazyModel> LazyTable<M> {
 
     pub fn heap_bytes(&self) -> usize {
         self.rows.heap_bytes() + self.wheel.heap_bytes()
+    }
+
+    /// Writes the whole table: every region (key, stamp, booked wake, touched, anchor and the
+    /// model through `f`), the arena's free slots, and the wake wheel in pop order, stale wakes
+    /// included. [`LazyTable::decode_with`] gives back a table that continues exactly as this one
+    /// would: the same handles, the same wakes in the same order (wakes are state: module docs).
+    pub fn encode_with(&self, w: &mut Writer, mut f: impl FnMut(&M, &mut Writer)) {
+        w.u64(self.world_seed);
+        w.u64(self.system.0);
+        self.rows.encode_with(w, |row, w| {
+            w.u64(row.key);
+            w.u32(row.stamp);
+            match row.wake {
+                Some(t) => {
+                    w.u8(1);
+                    w.u64(t.0);
+                }
+                None => w.u8(0),
+            }
+            w.u64(row.touched.0);
+            w.u64(row.cell.anchor.0);
+            f(&row.cell.model, w);
+        });
+        self.wheel.encode_with(w, |wake, w| {
+            w.u64(wake.region.to_bits());
+            w.u32(wake.stamp);
+        });
+        let s = &self.stats;
+        for v in [
+            s.reads,
+            s.events,
+            s.slot_commits,
+            s.breakpoints,
+            s.stale_wakes,
+        ] {
+            w.var_u64(v);
+        }
+    }
+
+    pub fn decode_with(
+        r: &mut Reader<'_>,
+        mut f: impl FnMut(&mut Reader<'_>) -> codec::Result<M>,
+    ) -> codec::Result<Self> {
+        let world_seed = r.u64()?;
+        let system = SystemId(r.u64()?);
+        let rows = Arena::decode_with(r, |r| {
+            let key = r.u64()?;
+            let stamp = r.u32()?;
+            let wake = match r.u8()? {
+                0 => None,
+                1 => Some(Tick(r.u64()?)),
+                t => return Err(CodecError::Invalid(format!("wake tag {t}"))),
+            };
+            let touched = Tick(r.u64()?);
+            let anchor = Tick(r.u64()?);
+            let model = f(r)?;
+            Ok(Region {
+                cell: Lazy { model, anchor },
+                key,
+                stamp,
+                wake,
+                touched,
+            })
+        })?;
+        let wheel = TimingWheel::decode_with(r, |r| {
+            Ok(Wake {
+                region: Handle::from_bits(r.u64()?),
+                stamp: r.u32()?,
+            })
+        })?;
+        let stats = LazyStats {
+            reads: r.var_u64()?,
+            events: r.var_u64()?,
+            slot_commits: r.var_u64()?,
+            breakpoints: r.var_u64()?,
+            stale_wakes: r.var_u64()?,
+        };
+        Ok(LazyTable {
+            rows,
+            wheel,
+            world_seed,
+            system,
+            stats,
+        })
     }
 }

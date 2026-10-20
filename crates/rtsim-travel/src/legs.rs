@@ -84,12 +84,12 @@ pub struct Meeting {
 type Cell = (u64, u16, i64, i64);
 
 pub struct LegIndex {
-    legs: Arena<LegRow>,
-    cells: BTreeMap<Cell, Vec<Stamp>>,
+    pub(crate) legs: Arena<LegRow>,
+    pub(crate) cells: BTreeMap<Cell, Vec<Stamp>>,
     /// Ticks per time window. PLACEHOLDER (overnight choice E13): one in-game hour, the accrual
     /// quantum.
-    window: u64,
-    stats: LegStats,
+    pub(crate) window: u64,
+    pub(crate) stats: LegStats,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -122,6 +122,12 @@ impl LegIndex {
 
     pub fn get(&self, id: LegId) -> Option<&LegRow> {
         self.legs.get(id)
+    }
+
+    /// Every live leg, in handle order (tests and diagnostics: the index is never scanned on a
+    /// hot path).
+    pub fn iter(&self) -> impl Iterator<Item = (LegId, &LegRow)> + '_ {
+        self.legs.iter()
     }
 
     pub fn is_live(&self, s: Stamp) -> bool {

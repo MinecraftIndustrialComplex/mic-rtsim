@@ -13,6 +13,8 @@
 //!   codec.
 //! - [`engine`]: [`engine::Dragons`], every dragon's life as events on one timing wheel.
 //! - [`synth`]: a synthetic world for tests, the CLI and the bench. Scaffolding.
+//! - [`herds`]: migrating herds of vanilla animals (PLAN.md §10.2): forage, migration, latent
+//!   members with derived identity, materialization, and the prey dragons and players hunt.
 //!
 //! # Composition
 //!
@@ -27,9 +29,11 @@ pub mod calendar;
 pub mod dragon;
 pub mod engine;
 pub mod flight;
+pub mod herds;
 pub mod homes;
 pub mod index;
 pub mod infra;
+mod persist;
 pub mod prey;
 pub mod species;
 pub mod synth;

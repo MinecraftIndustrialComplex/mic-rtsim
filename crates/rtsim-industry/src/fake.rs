@@ -60,7 +60,9 @@ pub struct Recipe {
     pub period: u64,
     /// A threshold switch: stop when the inventory holds `stop` of the good, resume at `restart`.
     pub target: Option<(Good, u32, i64, i64)>,
-    /// Consumes this much of the district's deposit per batch.
+    /// Consumes this much of the district's deposit per batch; a negative amount adds to it (a
+    /// deposit good that rises while the district runs: the Destroy plugin's attributed pollution,
+    /// I14).
     pub deposit_per_batch: i64,
     /// Runs only while this (district index, recipe index) ran within its own period (PowerGrid).
     pub power_from: Option<(usize, usize)>,
@@ -770,6 +772,12 @@ impl FakeWorld {
         {
             *left -= r.deposit_per_batch;
             self.books.burned.add(*g, r.deposit_per_batch);
+        }
+        if r.deposit_per_batch < 0
+            && let Some((g, left)) = d.deposit.as_mut()
+        {
+            *left -= r.deposit_per_batch;
+            self.books.minted.add(*g, -r.deposit_per_batch);
         }
         for &(g, inv, n) in &r.outputs {
             d.inv(inv).contents.add(g, n);

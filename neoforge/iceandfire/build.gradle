@@ -1,0 +1,111 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_iceandfire (A19): the Ice and Fire plugin of phase 2 (PLAN.md §9, docs/boundary.md §6). Its
+// own jar and mod id. It compiles against the core and the pack's Ice and Fire CE 2.1-beta.1 jar (with the
+// libraries its classes name: Uranus, Jupiter, GeckoLib), which it never bundles; the GameTest server
+// loads those jars and Architectury (Uranus's dependency), with the pack's own Ice and Fire config
+// (dragon griefing off, canDespawn true) copied into its config folder before each run.
+evaluationDependsOn(':core')
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    mavenCentral()
+}
+
+def packMods = rootProject.file(project.findProperty('packMods') ?: rootProject.packMods).absolutePath
+def iafJars = files([iaf_jar, iaf_uranus_jar, iaf_jupiter_jar, iaf_geckolib_jar].collect { "${packMods}/${it}" })
+def iafRuntime = files(["${packMods}/${iaf_architectury_jar}"])
+def iafConfig = file("${packMods}/${iaf_config}")
+
+// The GameTest server runs with the pack's Ice and Fire config (Jupiter reads config/iceandfire/), not the
+// defaults Ice and Fire would write (dragon griefing on).
+def packIafConfig = tasks.register('packIafConfig', Copy) {
+    description = "Copies the pack's Ice and Fire config into the GameTest server's config folder."
+    from iafConfig
+    into file('run-gametest/config/iceandfire')
+    onlyIf { iafConfig.isFile() }
+}
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        // `./gradlew :iceandfire:runGameTestServer`: the core, this plugin and Ice and Fire on a headless
+        // dedicated server, running every @GameTest in this plugin's namespace against the session's engine
+        // (native unless -PrtsimEngine=stub; the dragon commands the tests script go to the native engine as
+        // DRAGON_COMMAND orders).
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            jvmArgument '-Xmx4G'
+            if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
+            gameDirectory = file('run-gametest')
+        }
+    }
+
+    mods {
+        "mic_rtsim" {
+            sourceSet(project(':core').sourceSets.main)
+        }
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn packIafConfig }
+
+dependencies {
+    implementation project(':core')
+    // mic_native, the native host the core requires (the stub engine runs inside it too).
+    runtimeOnly project(':core').micNativeFiles
+    compileOnly iafJars
+    runtimeOnly iafJars
+    runtimeOnly iafRuntime
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}

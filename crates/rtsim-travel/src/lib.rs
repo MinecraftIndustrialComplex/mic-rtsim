@@ -24,12 +24,13 @@ pub mod edge;
 pub mod lattice;
 pub mod legs;
 pub mod news;
+pub mod persist;
 pub mod pipeline;
 pub mod roads;
 pub mod vecmap;
 
 pub use caravan::{Body, Caravan, CaravanKey, GroupKind, Leg, Member, Stage, Traveller};
-pub use edge::{Dir, DirRef, Edge, Predation};
+pub use edge::{Dir, DirRef, Edge, Medium, Predation};
 pub use lattice::Lattice;
 pub use legs::{LegIndex, Meeting, Path, Stamp};
 pub use news::{NewsRing, Snapshot};

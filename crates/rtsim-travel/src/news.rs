@@ -155,9 +155,9 @@ impl Snapshot {
 /// (`pinned`).
 #[derive(Clone, Debug, Default)]
 pub struct NewsRing {
-    cap: usize,
+    pub(crate) cap: usize,
     /// Source market to (snapshot, when it arrived here).
-    entries: BTreeMap<usize, (Arc<Snapshot>, Tick)>,
+    pub(crate) entries: BTreeMap<usize, (Arc<Snapshot>, Tick)>,
 }
 
 impl NewsRing {

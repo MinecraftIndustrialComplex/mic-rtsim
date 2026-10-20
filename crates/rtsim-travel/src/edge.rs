@@ -78,6 +78,25 @@ impl Dir {
         if any { (v as i64).max(1) } else { 0 }
     }
 
+    /// Room left under a capacity of `cap` thousandths of a slot per quantum for good `g`, in
+    /// thousandths of `g` per quantum: the cap less what the direction's other goods (and their
+    /// raided shares) carry now. Payments ride free (coins are small). `None` when `cap` is 0
+    /// (no limit).
+    pub fn room_for(&self, goods: &Goods, g: GoodId, cap: i64) -> Option<Amount> {
+        if cap <= 0 {
+            return None;
+        }
+        let mut used: i128 = 0;
+        for (h, p) in self.goods.iter().chain(self.raid.iter()) {
+            if *h == g {
+                continue;
+            }
+            used += i128::from(p.current_rate()) / i128::from(goods.get(*h).stack.max(1));
+        }
+        let room = (i128::from(cap) - used).max(0);
+        Some((room * i128::from(goods.get(g).stack.max(1))).min(i128::from(i64::MAX)) as Amount)
+    }
+
     /// Every pipeline of the direction (goods, payments and raids), for sums and trims.
     pub fn pipelines(&self) -> impl Iterator<Item = (GoodId, &Pipeline)> {
         self.goods
@@ -104,6 +123,37 @@ impl Dir {
     }
 }
 
+/// What travels an edge (overnight choice T3): caravans on a road, or timetabled ships on a lane
+/// (`rtsim-ships`). Only roads are in the [`crate::RoadIndex`], so travellers are sampled from roads
+/// only; ships are the ships engine's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(u8)]
+pub enum Medium {
+    #[default]
+    Road = 0,
+    Sea = 1,
+    Sky = 2,
+}
+
+impl Medium {
+    pub fn from_u8(v: u8) -> Option<Medium> {
+        Some(match v {
+            0 => Medium::Road,
+            1 => Medium::Sea,
+            2 => Medium::Sky,
+            _ => return None,
+        })
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Medium::Road => "road",
+            Medium::Sea => "sea",
+            Medium::Sky => "sky",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Edge {
     pub a: usize,
@@ -123,6 +173,12 @@ pub struct Edge {
     /// Player bases near the road that its caravans stop at (C26, P30's recommendation), as node
     /// indices.
     pub stops: Vec<usize>,
+    /// Road, or a ships engine's lane.
+    pub medium: Medium,
+    /// The most goods a direction carries per quantum, in thousandths of a chest slot (the ships'
+    /// holds over their timetable, `rtsim-ships`); 0 is no limit (roads: a caravan grows with
+    /// its load).
+    pub cap_slot_milli: i64,
 }
 
 impl Edge {
@@ -147,6 +203,8 @@ impl Edge {
             border,
             dirs: [Dir::new(a, b, idle_period), Dir::new(b, a, idle_period)],
             stops: Vec::new(),
+            medium: Medium::Road,
+            cap_slot_milli: 0,
         }
     }
 

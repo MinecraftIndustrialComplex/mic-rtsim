@@ -173,6 +173,21 @@ final class CommandDispatcher implements Handover.CommandSink {
                 // Industry commands (0x8400 to 0x84FF, docs/industry-boundary.md §4) go to the module.
                 if (com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.isIndustryCommand(kind) && session.industry != null)
                     return session.industry.accept(b, at, kind, size, aux, this::engineName);
+                // A plugin's own range (the dragons' 0x8500 to 0x85FF, docs/boundary.md §6.4).
+                com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin plugin =
+                        com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.forCommand(kind);
+                if (plugin != null) {
+                    try {
+                        boolean done = plugin.accept(session, b, at, kind, size, aux, this::engineName);
+                        if (done)
+                            applied++;
+                        return done;
+                    } catch (RuntimeException ex) {
+                        malformed++;
+                        MicRtsim.LOGGER.error("[mic_rtsim] plugin {} failed on command 0x{}; skipped", plugin.name(), Integer.toHexString(kind), ex);
+                        return true;
+                    }
+                }
                 unknown++;
                 return true;
             }
@@ -242,7 +257,8 @@ final class CommandDispatcher implements Handover.CommandSink {
             m0 += Cmd.SpawnGroup.Member.size(items);
         }
         Vec3 anchor = new Vec3(b.getDouble(at + Cmd.SpawnGroup.X), b.getDouble(at + Cmd.SpawnGroup.Y), b.getDouble(at + Cmd.SpawnGroup.Z));
-        int result = session.spawnGroup(agent, epoch, kind, level, anchor, spawns, now);
+        int flags = b.getInt(at + Cmd.SpawnGroup.FLAGS);
+        int result = session.spawnGroup(agent, epoch, kind, level, anchor, spawns, flags, now);
         if (result != 0) {
             session.journalRejected(agent, epoch, cmdSeq, result, now);
             return true;

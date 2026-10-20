@@ -67,12 +67,12 @@ public final class WorldGameTests {
         return java.util.concurrent.ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE; // an engine op: top bit clear
     }
 
-    private static StubEngine.Received result(ScriptedEngine stub, long op) {
-        List<StubEngine.Received> rs = RtsimTests.recordsWith(stub, Obs.COMMAND_RESULT, Obs.CommandResult.OP_ID, op);
+    private static ScriptedEngine.Received result(ScriptedEngine stub, long op) {
+        List<ScriptedEngine.Received> rs = RtsimTests.recordsWith(stub, Obs.COMMAND_RESULT, Obs.CommandResult.OP_ID, op);
         return rs.isEmpty() ? null : rs.get(rs.size() - 1);
     }
 
-    private static List<StubEngine.Received> results(ScriptedEngine stub, long op) {
+    private static List<ScriptedEngine.Received> results(ScriptedEngine stub, long op) {
         return RtsimTests.recordsWith(stub, Obs.COMMAND_RESULT, Obs.CommandResult.OP_ID, op);
     }
 
@@ -103,7 +103,7 @@ public final class WorldGameTests {
                 .thenWaitUntil(() -> check("VILLAGE_ADOPTED reached the engine",
                         !RtsimTests.recordsWith(stub, Obs.VILLAGE_ADOPTED, Obs.VillageAdopted.VILLAGE, id).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received r = RtsimTests.recordsWith(stub, Obs.VILLAGE_ADOPTED, Obs.VillageAdopted.VILLAGE, id).get(0);
+                    ScriptedEngine.Received r = RtsimTests.recordsWith(stub, Obs.VILLAGE_ADOPTED, Obs.VillageAdopted.VILLAGE, id).get(0);
                     check("as it generated, not late", r.aux() == 0);
                     check("culture human", Cultures.HUMAN.equals(stub.javaDictName(r.view().getInt(Obs.VillageAdopted.CULTURE))));
                     check("structure village_plains", "minecraft:village_plains".equals(stub.javaDictName(r.view().getInt(Obs.VillageAdopted.STRUCTURE))));
@@ -128,9 +128,7 @@ public final class WorldGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_gossip")
     public static void gossipIsWrittenOnce(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, Cultures.HUMAN);
-        StubEngine stub = RtsimTests.stubOrSkip(helper);
-        if (stub == null)
-            return;
+        ScriptedEngine stub = RtsimTests.engine();
         Villager first = helper.spawn(EntityType.VILLAGER, new Vec3(3.5, 2, 3.5));
         first.setNoAi(true);
         UUID robber = UUID.randomUUID();
@@ -213,9 +211,7 @@ public final class WorldGameTests {
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_gossip_many")
     public static void moreGossipThanTheOpRingIsStillWrittenOnce(GameTestHelper helper) {
         Village v = RtsimTests.adoptArena(helper, Cultures.HUMAN);
-        StubEngine stub = RtsimTests.stubOrSkip(helper);
-        if (stub == null)
-            return;
+        ScriptedEngine stub = RtsimTests.engine();
         Villager first = helper.spawn(EntityType.VILLAGER, new Vec3(3.5, 2, 3.5));
         first.setNoAi(true);
         UUID player = UUID.randomUUID();
@@ -279,9 +275,7 @@ public final class WorldGameTests {
             testCulture = true;
         }
         Village v = RtsimTests.adoptArena(helper, "mic_rtsim_test");
-        StubEngine stub = RtsimTests.stubOrSkip(helper);
-        if (stub == null)
-            return;
+        ScriptedEngine stub = RtsimTests.engine();
         ServerLevel level = helper.getLevel();
         String dim = RtsimTests.dimension(helper);
         // Plot A: a block a player placed. A snow layer: replaceable, so only the player's mark stops the house.
@@ -311,7 +305,7 @@ public final class WorldGameTests {
                     check("its walls", level.getBlockState(b.above()).is(Blocks.COBBLESTONE));
                     check("its jigsaw became its final state", level.getBlockState(b.offset(1, 0, 1)).is(Blocks.OAK_PLANKS));
                     check("its middle is air", level.getBlockState(b.offset(1, 1, 1)).isAir());
-                    List<StubEngine.Received> hp = RtsimTests.recordsWith(stub, Obs.HOUSE_PLACED, Obs.HousePlaced.OP_ID, opB);
+                    List<ScriptedEngine.Received> hp = RtsimTests.recordsWith(stub, Obs.HOUSE_PLACED, Obs.HousePlaced.OP_ID, opB);
                     check("HOUSE_PLACED came before the result", hp.size() == 1 && hp.get(0).obsSeq() < result(stub, opB).obsSeq());
                     BlockPos slot = new BlockPos(hp.get(0).view().getInt(Obs.HousePlaced.SLOT_X), hp.get(0).view().getInt(Obs.HousePlaced.SLOT_Y),
                             hp.get(0).view().getInt(Obs.HousePlaced.SLOT_Z));
@@ -354,7 +348,7 @@ public final class WorldGameTests {
                 })
                 .thenWaitUntil(() -> check("RESCUE reached the engine", !RtsimTests.recordsFor(stub, Obs.RESCUE, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received r = RtsimTests.recordsFor(stub, Obs.RESCUE, agent).get(0);
+                    ScriptedEngine.Received r = RtsimTests.recordsFor(stub, Obs.RESCUE, agent).get(0);
                     check("a puppet was rescued", r.aux() == Obs.Rescue.PUPPET && r.view().getInt(Obs.Rescue.MEMBER) == 0);
                     UUID by = new UUID(r.view().getLong(Obs.Rescue.RESCUER_MOST), r.view().getLong(Obs.Rescue.RESCUER_LEAST));
                     check("by the player", by.equals(player.getUUID()));
@@ -390,16 +384,16 @@ public final class WorldGameTests {
                         .anyMatch(r -> r.view().getLong(Obs.Hurt.ATTACKER_MOST) == player.getUUID().getMostSignificantBits())))
                 .thenIdle(30)
                 .thenExecute(() -> {
-                    List<StubEngine.Received> hurts = new ArrayList<>();
+                    List<ScriptedEngine.Received> hurts = new ArrayList<>();
                     List<String> seen = new ArrayList<>();
-                    for (StubEngine.Received r : RtsimTests.recordsFor(stub, Obs.HURT, agent))
+                    for (ScriptedEngine.Received r : RtsimTests.recordsFor(stub, Obs.HURT, agent))
                         if (r.view().getLong(Obs.Hurt.ATTACKER_MOST) == player.getUUID().getMostSignificantBits())
                             hurts.add(r);
-                    for (StubEngine.Received r : RtsimTests.recordsFor(stub, Obs.HURT, agent))
+                    for (ScriptedEngine.Received r : RtsimTests.recordsFor(stub, Obs.HURT, agent))
                         seen.add("member " + r.view().getInt(Obs.Hurt.MEMBER) + " kind " + r.view().getInt(Obs.Hurt.ATTACKER_KIND)
                                 + " hits " + r.view().getInt(Obs.Hurt.HITS) + " amount " + r.view().getFloat(Obs.Hurt.AMOUNT) + " t " + RtsimTests.gameTimeOf(r));
                     check("one report for the player's fight: " + seen, hurts.size() == 1);
-                    StubEngine.Received h = hurts.get(0);
+                    ScriptedEngine.Received h = hurts.get(0);
                     check("a puppet hurt, member 2", h.aux() == Obs.Hurt.PUPPET_HURT && h.view().getInt(Obs.Hurt.MEMBER) == 2);
                     check("three hits", h.view().getInt(Obs.Hurt.HITS) == 3);
                     check("by a player", h.view().getInt(Obs.Hurt.ATTACKER_KIND) == Obs.Hurt.ATTACKER_PLAYER
@@ -426,7 +420,7 @@ public final class WorldGameTests {
                 .thenWaitUntil(() -> check("CARGO_CHANGED reached the engine",
                         !RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received r = RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent).get(0);
+                    ScriptedEngine.Received r = RtsimTests.recordsWith(stub, Obs.CARGO_CHANGED, Obs.CargoChanged.AGENT, agent).get(0);
                     check("member 1", r.aux() == 1);
                     check("one item changed", r.view().getInt(Obs.CargoChanged.ITEM_COUNT) == 1);
                     int at = Obs.CargoChanged.ITEMS;
@@ -455,7 +449,7 @@ public final class WorldGameTests {
                 .thenWaitUntil(() -> check("BASE reached the engine",
                         !RtsimTests.recordsWith(stub, Obs.BASE, Obs.Base.PLAYER_MOST, player.getMostSignificantBits()).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received r = RtsimTests.recordsWith(stub, Obs.BASE, Obs.Base.PLAYER_MOST, player.getMostSignificantBits()).get(0);
+                    ScriptedEngine.Received r = RtsimTests.recordsWith(stub, Obs.BASE, Obs.Base.PLAYER_MOST, player.getMostSignificantBits()).get(0);
                     check("marked", r.aux() == Obs.Base.MARKED);
                     long id = r.view().getLong(Obs.Base.BASE);
                     check("a base id (bit 62)", (id & (1L << 62)) != 0);
@@ -494,7 +488,7 @@ public final class WorldGameTests {
                 })
                 .thenWaitUntil(() -> check("DIED reached the engine", !RtsimTests.recordsFor(stub, Obs.DIED, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received died = RtsimTests.recordsFor(stub, Obs.DIED, agent).get(0);
+                    ScriptedEngine.Received died = RtsimTests.recordsFor(stub, Obs.DIED, agent).get(0);
                     op[0] = died.view().getLong(Obs.Died.OP_ID);
                     check("killed by the player", new UUID(died.view().getLong(Obs.Died.KILLER_MOST), died.view().getLong(Obs.Died.KILLER_LEAST))
                             .equals(player.getUUID()));
@@ -529,8 +523,8 @@ public final class WorldGameTests {
                 })
                 .thenWaitUntil(() -> check("the reloaded drops journaled the DIED again", stub.eventOpCount(op[0]) >= 2))
                 .thenExecute(() -> {
-                    List<StubEngine.Received> died = RtsimTests.recordsFor(stub, Obs.DIED, agent);
-                    for (StubEngine.Received d : died)
+                    List<ScriptedEngine.Received> died = RtsimTests.recordsFor(stub, Obs.DIED, agent);
+                    for (ScriptedEngine.Received d : died)
                         check("every DIED has the same op id", d.view().getLong(Obs.Died.OP_ID) == op[0]);
                     check("the cargo is in the world exactly once: 30 wheat", RtsimTests.itemsAround(helper, Items.WHEAT, 10) == 30);
                     check("and 12 emeralds", RtsimTests.itemsAround(helper, Items.EMERALD, 10) == 12);

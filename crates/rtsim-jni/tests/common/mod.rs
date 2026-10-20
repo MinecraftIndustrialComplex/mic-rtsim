@@ -110,10 +110,17 @@ pub struct Java {
     pub hold_commands: bool,
     /// The op ids of transfers read while holding.
     pub held_ops: Vec<u64>,
+    /// Leave acknowledgements unapplied (the journal untrimmed): the world save a test takes next
+    /// is one the bridge wrote before it read the acknowledgement.
+    pub hold_acks: bool,
     /// The FAILED flag was seen on a command buffer.
     pub failed_seen: bool,
     /// SESSION_START's module mask (the bridge's `Module` bits).
     pub module_mask: u32,
+    /// Phase 1 commands applied, in order: (kind, record bytes).
+    pub p1: Vec<(u16, Vec<u8>)>,
+    /// Players reported every tick: (UUID, dimension id, position).
+    pub players: Vec<((u64, u64), u32, [f64; 3])>,
     /// The industry world this Java plays (rtsim-industry's fake world in remote mode), if any.
     pub mc: Option<FakeWorld>,
     /// The cmdSeq of the industry command that carried each engine op id (for COMMAND_RESULT).
@@ -127,6 +134,25 @@ pub struct Java {
     /// stop right before that answer; then `failed_carriage` is (cmdSeq, op id, through).
     pub fail_next_carriage: bool,
     pub failed_carriage: Option<(u64, u64, u64)>,
+    /// Dragon commands applied, as the Ice and Fire plugin would (docs/boundary.md §6.5):
+    /// (cmdSeq, command decoded with the reference codec, its dimension in Java's dictionary).
+    pub iaf: Vec<(u64, rtsim_ecology::boundary::Cmd)>,
+    /// Ship commands applied, as a ships plugin would (docs/boundary.md §7.5): (cmdSeq, command
+    /// decoded with the reference codec, its body, item and dimension ids in Java's dictionary).
+    pub ships: Vec<(u64, rtsim_ships::boundary::Cmd)>,
+    /// Herd commands applied, as the core's vanilla herd adapter would (docs/boundary.md §8.5):
+    /// (cmdSeq, command decoded with the reference codec, its dimension in Java's dictionary).
+    pub herds: Vec<(u64, rtsim_ecology::herds::boundary::Cmd)>,
+    /// The vanilla herd adapter this Java plays: rtsim-ecology's fake plugin
+    /// (`herds::synth::FakeHerds`), which answers the commands and plays kills, shearing, leads.
+    pub herd_plugin: rtsim_ecology::herds::synth::FakeHerds,
+    /// Conflict commands applied, as a conflict plugin would (docs/boundary.md §9.5): (cmdSeq,
+    /// command decoded with the reference codec, its body, item and dimension ids in Java's
+    /// dictionary).
+    pub conflict: Vec<(u64, rtsim_conflict::boundary::Cmd)>,
+    /// The conflict plugin this Java plays: rtsim-conflict's fake plugin (`synth::FakeConflict`),
+    /// which answers envoys and fights bands as its script says.
+    pub conflict_plugin: rtsim_conflict::synth::FakeConflict,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -203,14 +229,23 @@ impl Java {
             stale_commands: 0,
             hold_commands: false,
             held_ops: Vec::new(),
+            hold_acks: false,
             failed_seen: false,
             module_mask: 0,
+            p1: Vec::new(),
+            players: Vec::new(),
             mc: None,
             ind_cmd_seq: HashMap::new(),
             ind_commands: Vec::new(),
             held_ind: Vec::new(),
             fail_next_carriage: false,
             failed_carriage: None,
+            iaf: Vec::new(),
+            ships: Vec::new(),
+            herds: Vec::new(),
+            herd_plugin: rtsim_ecology::herds::synth::FakeHerds::default(),
+            conflict: Vec::new(),
+            conflict_plugin: rtsim_conflict::synth::FakeConflict::new((0, 0)),
         }
     }
 
@@ -348,8 +383,28 @@ impl Java {
             };
             wire::put_i64(r, obs::tick::GAME_TIME, gt);
             self.tick_marked = gt;
+            for (uuid, dim, pos) in self.players.clone() {
+                let Some(r) = self.reserve(obs::PLAYER, obs::player::SIZE, dim) else {
+                    return false;
+                };
+                wire::put_u64(r, obs::player::UUID_MOST, uuid.0);
+                wire::put_u64(r, obs::player::UUID_LEAST, uuid.1);
+                wire::put_f64(r, obs::player::X, pos[0]);
+                wire::put_f64(r, obs::player::Y, pos[1]);
+                wire::put_f64(r, obs::player::Z, pos[2]);
+            }
         }
         true
+    }
+
+    /// The server config's module switches changed (C25): a MODULES record in the open buffer,
+    /// and the mask a later session start sends.
+    pub fn modules(&mut self, mask: u32) {
+        self.module_mask = mask;
+        let r = self
+            .reserve(obs::MODULES, obs::modules::SIZE, 0)
+            .expect("room for MODULES");
+        wire::put_u32(r, obs::modules::MASK, mask);
     }
 
     /// The end of a server tick: apply finished commands, hand over, submit if allowed.
@@ -477,11 +532,22 @@ impl Java {
                     self.stale_commands += 1;
                     continue;
                 }
-                let op = if rec.kind == cmd::TRANSFER_TO_CONTAINER {
-                    wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID)
-                } else {
-                    0
+                let op = match rec.kind {
+                    cmd::TRANSFER_TO_CONTAINER => {
+                        wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID)
+                    }
+                    cmd::WRITE_GOSSIP => wire::u64_at(rec.bytes, cmd::write_gossip::OP_ID),
+                    cmd::PLACE_HOUSE => wire::u64_at(rec.bytes, cmd::place_house::OP_ID),
+                    cmd::SPAWN_RESIDENT => wire::u64_at(rec.bytes, cmd::spawn_resident::OP_ID),
+                    _ => 0,
                 };
+                if (cmd::MARKET..=cmd::SPAWN_RESIDENT).contains(&rec.kind)
+                    || rec.kind == cmd::SPAWN_GROUP
+                    || rec.kind == cmd::DESPAWN_GROUP
+                    || rec.kind == cmd::STEER_GROUP
+                {
+                    self.p1.push((rec.kind, rec.bytes.to_vec()));
+                }
                 self.commands.push((k, rec.kind, op));
                 match rec.kind {
                     cmd::TRANSFER_TO_CONTAINER => {
@@ -533,6 +599,47 @@ impl Java {
                         });
                     }
                     k if (0x8400..=0x84FF).contains(&k) => self.industry_command(k, seq, rec.bytes),
+                    k if (0x8500..=0x85FF).contains(&k) => self.dragon_command(seq, rec.bytes),
+                    k if (0x8600..=0x86FF).contains(&k) => self.ship_command(seq, rec.bytes),
+                    k if (0x8700..=0x87FF).contains(&k) => self.herd_command(seq, rec.bytes),
+                    k if (0x8800..=0x88FF).contains(&k) => self.conflict_command(seq, rec.bytes),
+                    cmd::DESPAWN_GROUP => {
+                        let b = rec.bytes;
+                        let agent = wire::u64_at(b, cmd::despawn_group::AGENT);
+                        let epoch = wire::u32_at(b, cmd::despawn_group::EPOCH);
+                        self.journal(
+                            obs::DEMATERIALIZED,
+                            obs::dematerialized::SIZE,
+                            obs::dematerialized::COMMAND,
+                            |r| {
+                                wire::put_u64(r, obs::dematerialized::AGENT, agent);
+                                wire::put_u32(r, obs::dematerialized::EPOCH, epoch);
+                            },
+                        );
+                    }
+                    cmd::WRITE_GOSSIP | cmd::PLACE_HOUSE | cmd::SPAWN_RESIDENT => {
+                        let status = if self.applied_cmd_ops.contains(&op) {
+                            obs::command_result::DUPLICATE_OP
+                        } else {
+                            if rec.kind == cmd::PLACE_HOUSE {
+                                let village = wire::u64_at(rec.bytes, cmd::place_house::VILLAGE);
+                                self.journal(obs::HOUSE_PLACED, obs::house_placed::SIZE, 0, |r| {
+                                    wire::put_u64(r, obs::house_placed::OP_ID, op);
+                                    wire::put_u64(r, obs::house_placed::VILLAGE, village);
+                                });
+                            }
+                            obs::command_result::APPLIED
+                        };
+                        self.journal(
+                            obs::COMMAND_RESULT,
+                            obs::command_result::SIZE,
+                            status,
+                            |r| {
+                                wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                                wire::put_u64(r, obs::command_result::OP_ID, op);
+                            },
+                        );
+                    }
                     _ => {}
                 }
                 self.last_applied_cmd = seq;
@@ -543,7 +650,7 @@ impl Java {
                 "wordC is the highest cmdSeq in the buffer"
             );
             c.consumed().store(k, Ordering::Release);
-            if self.pending_ack > 0 {
+            if self.pending_ack > 0 && !self.hold_acks {
                 let a = self.pending_ack;
                 while self.journal.front().is_some_and(|(s, _)| *s <= a) {
                     self.journal.pop_front();
@@ -801,5 +908,316 @@ impl Java {
         let save = self.world_save();
         self.e.close(false, Duration::from_secs(5)).expect("close");
         save
+    }
+
+    // ---- the Ice and Fire plugin (docs/boundary.md §6) -----------------------------------------
+
+    /// The species and lair structures as Java's dictionary numbers them (defined on first use).
+    pub fn java_species(&mut self) -> rtsim_ecology::boundary::SpeciesDict {
+        use rtsim_ecology::boundary::SpeciesDict;
+        use rtsim_ecology::dragon::LairKind;
+        use rtsim_ecology::species::Species;
+        let mut d = SpeciesDict {
+            body: [0; 3],
+            structure: [[0; 2]; 3],
+        };
+        for (i, s) in Species::ALL.iter().enumerate() {
+            d.body[i] = self.dict_id(wire::DICT_BODY, s.entity_id());
+            for (k, kind) in [LairKind::Roost, LairKind::Cave].iter().enumerate() {
+                d.structure[i][k] = self.dict_id(
+                    wire::DICT_STRUCTURE,
+                    &SpeciesDict::structure_name(*s, *kind),
+                );
+            }
+        }
+        d
+    }
+
+    /// Journals a dragon observation (a kind of 0x0500 to 0x05FF), encoded with the reference
+    /// codec in Java's dictionary.
+    pub fn dragon_obs(&mut self, o: &rtsim_ecology::boundary::Obs) -> u64 {
+        let dict = self.java_species();
+        let mut b = Vec::new();
+        rtsim_ecology::boundary::encode_obs(0, self.game_time, o, &dict, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        assert!(obs::is_journaled(kind), "a journaled dragon kind");
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// One dragon command, as the plugin applies it: a materialization or an adoption answers
+    /// DRAGON_MATERIALIZED (the body is there), a discard COMMAND_RESULT; steering and departures
+    /// are recorded (the test captures a departing dragon itself, with DRAGON_DEMATERIALIZED).
+    fn dragon_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_ecology::boundary::{self as db, Cmd as D, SpeciesDict};
+        use rtsim_ecology::species::Species;
+        let mut dict = SpeciesDict {
+            body: [0; 3],
+            structure: [[0; 2]; 3],
+        };
+        for (i, s) in Species::ALL.iter().enumerate() {
+            for (&(kind, id), name) in &self.cmd_dict {
+                if kind == wire::DICT_BODY && name == s.entity_id() {
+                    dict.body[i] = id;
+                }
+            }
+        }
+        let (_, s, mut c) = db::decode_cmd(bytes, &dict).expect("a dragon command decodes");
+        assert_eq!(s, seq);
+        let overworld = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        match &mut c {
+            D::Materialize(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                let (agent, epoch, dimension) = (m.agent, m.epoch, m.dimension);
+                self.dragon_obs(&db::Obs::Materialized(db::Materialized {
+                    agent,
+                    epoch,
+                    dimension,
+                    entity: (0xD0D0, agent),
+                }));
+            }
+            D::Adopt(a) => {
+                let (agent, epoch, entity) = (a.agent, a.epoch, a.entity);
+                self.dragon_obs(&db::Obs::Materialized(db::Materialized {
+                    agent,
+                    epoch,
+                    dimension: overworld,
+                    entity,
+                }));
+            }
+            D::Discard(_) => {
+                self.journal(
+                    obs::COMMAND_RESULT,
+                    obs::command_result::SIZE,
+                    obs::command_result::APPLIED,
+                    |r| {
+                        wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                    },
+                );
+            }
+            D::Steer(_) | D::Depart(_) => {}
+        }
+        self.iaf.push((seq, c));
+    }
+
+    // ---- a ships plugin (docs/boundary.md §7; none exists yet, P8) ------------------------------
+
+    /// Journals a ship observation (a kind of 0x0600 to 0x06FF), encoded with the reference codec;
+    /// its ids are Java's dictionary's. Also the record of what a real plugin would send.
+    pub fn ship_obs(&mut self, o: &rtsim_ships::boundary::Obs) -> u64 {
+        let mut b = Vec::new();
+        rtsim_ships::boundary::encode_obs(0, self.game_time, o, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        assert!(obs::is_journaled(kind), "a journaled ship kind");
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// The Java id of a name the engine sent in its dictionary (defined in Java's on first use,
+    /// as a plugin maps an engine name to its registry and the registry to Java's own id).
+    fn java_of_engine(&mut self, kind: u32, engine_id: u32) -> u32 {
+        let name = self
+            .cmd_dict
+            .get(&(kind, engine_id))
+            .unwrap_or_else(|| panic!("a DICT ({kind}, {engine_id}) comes before its first use"))
+            .clone();
+        self.dict_id(kind, &name)
+    }
+
+    /// One ship command, as a plugin applies it: a materialization answers SHIP_MATERIALIZED (the
+    /// ship and its crew are there), a despawn SHIP_DEMATERIALIZED; the rest are recorded (the
+    /// test plays fights, loot and captures itself). Ids are translated to Java's.
+    fn ship_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_ships::boundary::{self as sb, Cmd as S};
+        let (_, s, mut c) = sb::decode_cmd(bytes).expect("a ship command decodes");
+        assert_eq!(s, seq);
+        match &mut c {
+            S::Materialize(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                m.body = self.java_of_engine(wire::DICT_BODY, m.body);
+                for mb in &mut m.members {
+                    mb.body = self.java_of_engine(wire::DICT_BODY, mb.body);
+                }
+                for it in &mut m.cargo {
+                    it.item = self.java_of_engine(wire::DICT_ITEM, it.item);
+                }
+                let (agent, epoch, dimension) = (m.agent, m.epoch, m.dimension);
+                self.ship_obs(&sb::Obs::Materialized(sb::Materialized {
+                    agent,
+                    epoch,
+                    dimension,
+                    entity: (0x5A5A, agent),
+                }));
+            }
+            S::SetCargo(sc) => {
+                assert_eq!(
+                    sc.op >> 56,
+                    0x53,
+                    "an engine SHIP_CARGO op id (allocator 0x53)"
+                );
+                for it in &mut sc.items {
+                    it.item = self.java_of_engine(wire::DICT_ITEM, it.item);
+                }
+                // The hold is set exactly, once per op id (docs/boundary.md §7.5).
+                let op = sc.op;
+                let status = if self.applied_cmd_ops.contains(&op) {
+                    obs::command_result::DUPLICATE_OP
+                } else {
+                    obs::command_result::APPLIED
+                };
+                self.journal(
+                    obs::COMMAND_RESULT,
+                    obs::command_result::SIZE,
+                    status,
+                    |r| {
+                        wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                        wire::put_u64(r, obs::command_result::OP_ID, op);
+                    },
+                );
+            }
+            S::Despawn(d) => {
+                let (agent, epoch) = (d.agent, d.epoch);
+                // The body as it was materialized (the test reports wounds itself).
+                let (crew, hull) = self
+                    .ships
+                    .iter()
+                    .rev()
+                    .find_map(|(_, c)| match c {
+                        S::Materialize(m) if m.agent == agent && m.epoch == epoch => {
+                            Some((m.crew, m.hull_milli))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or((0, 0));
+                self.ship_obs(&sb::Obs::Dematerialized(sb::Dematerialized {
+                    agent,
+                    epoch,
+                    reason: 1,
+                    dimension: 0,
+                    hull_milli: hull,
+                    crew,
+                    pos: (0.0, 63.0, 0.0),
+                }));
+            }
+            S::Timetable(_) | S::Steer(_) | S::Depart(_) => {}
+        }
+        self.ships.push((seq, c));
+    }
+
+    // ---- the vanilla herd adapter (docs/boundary.md §8) ------------------------------------------
+
+    /// Journals a herd observation (a kind of 0x0700 to 0x07FF), encoded with the reference codec.
+    pub fn herd_obs(&mut self, o: &rtsim_ecology::herds::boundary::Obs) -> u64 {
+        let mut b = Vec::new();
+        rtsim_ecology::herds::boundary::encode_obs(0, self.game_time, o, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        assert!(obs::is_journaled(kind), "a journaled herd kind");
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// Journals everything the fake herd plugin has to say (its answers, and the kills, shearing
+    /// and leads a test played on it).
+    pub fn herd_flush(&mut self) {
+        for o in self.herd_plugin.take_obs() {
+            self.herd_obs(&o);
+        }
+    }
+
+    /// One herd command, as the vanilla adapter applies it: the species and the dimension are
+    /// the engine's dictionary's (a DICT before first use), translated to Java's; the fake plugin
+    /// answers HERD_MATERIALIZED and HERD_DEMATERIALIZED (with each member's capture).
+    fn herd_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_ecology::herds::HerdSpecies;
+        use rtsim_ecology::herds::boundary::{self as hb, Cmd as H, HerdDict};
+        let mut dict = HerdDict { body: [0; 5] };
+        for s in HerdSpecies::ALL {
+            for (&(kind, id), name) in &self.cmd_dict {
+                if kind == wire::DICT_BODY && name == s.entity_id() {
+                    dict.body[s.index()] = id;
+                }
+            }
+        }
+        let (_, s, mut c) = hb::decode_cmd(bytes, &dict).expect("a herd command decodes");
+        assert_eq!(s, seq);
+        if let H::Materialize(m) = &mut c {
+            m.dimension = self.java_dim(m.dimension);
+        }
+        let at = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
+        self.herd_plugin.apply(vec![c.clone()], at);
+        self.herds.push((seq, c));
+        self.herd_flush();
+    }
+
+    // ---- a conflict plugin (docs/boundary.md §9; none exists yet, P8) ---------------------------
+
+    /// A conflict observation, encoded with the reference codec in Java's ids: journaled (a new
+    /// sequence, at the current game time) for kinds 0x0800 to 0x08FF, otherwise into the open
+    /// buffer (latest-wins). Returns the sequence (0 for latest-wins).
+    pub fn conflict_obs(&mut self, o: &rtsim_conflict::boundary::Obs) -> u64 {
+        let mut b = Vec::new();
+        rtsim_conflict::boundary::encode_obs(0, self.game_time, o, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        if !obs::is_journaled(kind) {
+            if self.preamble() {
+                assert!(self.copy(&b), "room for a latest-wins conflict record");
+            }
+            return 0;
+        }
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// Journals what the fake conflict plugin has to say by now (its answers, casualties and
+    /// recalls, each some ticks after the command that caused it).
+    pub fn conflict_flush(&mut self) {
+        let now = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
+        for (_, o) in self.conflict_plugin.due(now) {
+            self.conflict_obs(&o);
+        }
+    }
+
+    /// One conflict command, as a plugin applies it: its dimension, body and item ids are the
+    /// engine's dictionary's (a DICT before first use), translated to Java's; the fake plugin
+    /// answers it (BAND_MATERIALIZED, a tribute or a refusal, casualties, BAND_DEMATERIALIZED).
+    fn conflict_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_conflict::boundary::{self as cb, Cmd as C};
+        let (s, mut c, _) = cb::decode_cmd(bytes).expect("a conflict command decodes");
+        assert_eq!(s, seq);
+        match &mut c {
+            C::Territory(t) => t.dimension = self.java_dim(t.dimension),
+            C::Notice(n) => n.dimension = self.java_dim(n.dimension),
+            C::Envoy(e) => {
+                e.dimension = self.java_dim(e.dimension);
+                for m in &mut e.members {
+                    m.0 = self.java_of_engine(wire::DICT_BODY, m.0);
+                }
+                if e.tribute_item != 0 {
+                    e.tribute_item = self.java_of_engine(wire::DICT_ITEM, e.tribute_item);
+                }
+            }
+            C::Materialize(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                for st in &mut m.members {
+                    st.body = self.java_of_engine(wire::DICT_BODY, st.body);
+                }
+            }
+            C::Steer(_) | C::Recall(_) | C::Settled(_) => {}
+        }
+        let at = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
+        self.conflict_plugin.apply(vec![c.clone()], at);
+        self.conflict.push((seq, c));
     }
 }

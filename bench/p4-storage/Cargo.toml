@@ -1,0 +1,48 @@
+# The P4 storage bench (DECISIONS.md P4, PLAN.md §17): the kernel's ColumnTable against bevy_ecs on
+# the same rows and the same operations. Its own workspace, so the main workspace's
+# `cargo test --workspace` never builds bevy_ecs.
+#
+#   cd bench/p4-storage
+#   flock /tmp/mic-rtsim-kernel2-heavy.lock nice -n 10 env CARGO_BUILD_JOBS=8 \
+#     nix develop -c cargo bench --bench p4_storage
+#
+# Run it from this directory: `.cargo/config.toml` here aligns loop headers, and cargo reads it only
+# from the working directory. From elsewhere, pass the same flag in RUSTFLAGS; the bench warns when
+# it is missing.
+#
+# Results go to bench/results/p4-storage-<UTC date>-<HHMM>-<profile>.json and .txt (profile from
+# P4_PROFILE: full, pinned2); bench/results/p4-storage.md
+# reads them.
+
+[package]
+name = "p4-storage-bench"
+description = "P4 storage bench: rtsim-kernel ColumnTable against bevy_ecs"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+rtsim-kernel = { path = "../../crates/rtsim-kernel" }
+# The results file. MIT OR Apache-2.0.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[dev-dependencies]
+# Storage, World, Query and Entity only. "std" is the smallest feature set that builds on a hosted
+# target; it pulls no executor ("multi_threaded" and "async_executor" stay off), no reflection and no
+# backtraces. MIT OR Apache-2.0.
+bevy_ecs = { version = "0.20.0", default-features = false, features = ["std"] }
+
+[[bench]]
+name = "p4_storage"
+harness = false
+
+# As the main workspace. `cargo bench` uses the bench profile, which inherits release.
+[profile.release]
+panic = "unwind"
+lto = "thin"
+debug = "line-tables-only"

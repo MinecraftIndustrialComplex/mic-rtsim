@@ -89,3 +89,54 @@ submit to publish 27.7 to 43.4 µs (p99 71 to 365 µs), `step` 7.7 to 17.9 µs; 
 6.9 to 10.1 µs, submit to publish 29.4 to 40.8 µs. Burst, native: submit to publish 2.9 to 4.0 µs
 (preamble only or 30 records) and 11.6 µs (1,000 records). Within the spread of the runs above:
 the fixes did not change the hand-over's cost.
+
+## 2026-10-20 13:33 and 13:35 UTC, with phase 1 running (`handover-2026-10-20-1333-gametest.json`, `-1335-`)
+
+**Conditions.** Code of commit `102ee01` (the 1333 run from the working tree just before it, without the end-of-run counters; phase 1 on the native engine, branch
+`overnight/phase1-jni`), same machine and settings as above, 1-minute load 4.7 to 6.6 (other
+sessions). A third rig joins the bench, **`native-p1`**: the native engine with its phase 1 world
+running. 64 villages are adopted (an 8 x 8 grid 500 blocks apart, five structures, 45 pieces each),
+the hand-overs start ten days of game time on (so the first step runs the world through ten days of
+flows, news and caravans, inside the warm-up), the module mask has phase 1's four modules on, and
+every hand-over also carries four PLAYER records (players 30 blocks off four villages; the bridge
+reports a player every 20 ticks, so this is more than play). Every step runs the phase 1 world to
+the hand-over's game time; every 20 hand-overs the engine looks for caravans and bands near the
+players, every 100 it refreshes the markets near them. At the end of the 1335 run its counters read:
+64 villages, world tick 246,900, 8 caravans materialized (SPAWN_GROUP and MERCHANT_OFFERS sent; the
+bench's command sink never answers, so they stay spawning), 28 MARKET snapshots, 72 inputs logged (64
+joins, 8 promotions). The JSON's `step` field for `native-p1` is null in these two files (the writer
+only kept it for `native`, fixed after); the step p50 below is from the run's `[gametest]` lines.
+
+**Per-tick cost to the server thread (cadence, the play case), p50, the two runs:**
+
+| Payload | native `handOver` | native-p1 `handOver` | native-p1 `submitCall` | stub `handOver` |
+|---|---|---|---|---|
+| preamble only (+ 4 PLAYER for p1) | 12.8, 17.8 µs | 11.2, 20.1 µs | 8.0, 15.5 µs | 10.6, 13.7 µs |
+| 30 records | 10.3, 17.2 µs | 12.5, 18.5 µs | 9.7, 15.5 µs | 8.5, 12.5 µs |
+| 1,000 records | 8.9, 14.5 µs | 16.9, 17.6 µs | 13.8, 14.6 µs | 5.9, 6.8 µs |
+
+p99 of the native-p1 `handOver` in cadence: 23 to 51 µs (native 21 to 29 µs).
+
+**Submit to publish and the step (cadence), p50:**
+
+| Payload | native s2p | native step | native-p1 s2p | native-p1 step |
+|---|---|---|---|---|
+| preamble only | 36.1, 47.2 µs | 14.5, 18.5 µs | 32.7, 47.1 µs | 15.1, 19.8 µs |
+| 30 records | 32.2, 43.1 µs | 14.4, 17.8 µs | 38.6, 46.2 µs | 18.4, 20.3 µs |
+| 1,000 records | 40.3, 51.2 µs | 25.4, 28.6 µs | 58.0, 57.5 µs | 33.1, 32.1 µs |
+
+native-p1 submit to publish p99: 71 to 492 µs.
+
+**What it shows:**
+- **With phase 1 running the hand-over still costs the server thread 11 to 20 µs a tick** (p50),
+  the same band as the 11 to 20 µs measured without it: the phase 1 world runs on the pool thread,
+  and what the server thread pays is the submit's wake-up of a parked worker plus the extra PLAYER
+  records it writes. Only the 1,000-record payload sits a few microseconds higher with phase 1
+  (16.9 and 17.6 µs against 8.9 and 14.5), within the spread between the two runs.
+- **The step grows by 1 to 7 µs** (p50) with a 64-village world running to each hand-over, so a
+  quiet event-driven world costs the pool thread almost nothing per tick; the first step's ten days
+  (and the interest and market passes every 20 and 100 hand-overs) land in the p99.
+- **TEST mode is not play.** A first run of the phase 1 rig opened the engine with `FLAG_TEST`
+  (`handover-2026-10-20-1331-testmode-gametest.json`): its `handOver` read 27 to 29 µs, and 176 µs
+  with 1,000 records, because `NativeEngine.submit` drains the received log (every record, through
+  JNI) in TEST mode. GameTests pay that; a server does not. The rig now runs without it.

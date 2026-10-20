@@ -3,9 +3,10 @@ package com.minecraftindustrialcomplex.mic_rtsim_carryon.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
-import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.CaravanGameTests;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.HerdKit;
+import com.minecraftindustrialcomplex.mic_rtsim.herd.HerdRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PuppetGroup;
 import com.minecraftindustrialcomplex.mic_rtsim_carryon.MicRtsimCarryOn;
@@ -67,13 +68,13 @@ public final class CarryOnGameTests {
                 })
                 .thenWaitUntil(() -> RtsimTests.check("TAKEN reached the engine", !RtsimTests.recordsFor(stub, Obs.TAKEN, agent).isEmpty()))
                 .thenExecute(() -> {
-                    StubEngine.Received t = RtsimTests.recordsFor(stub, Obs.TAKEN, agent).get(0);
+                    ScriptedEngine.Received t = RtsimTests.recordsFor(stub, Obs.TAKEN, agent).get(0);
                     RtsimTests.check("taken by a pickup", t.aux() == Obs.Taken.PICKUP);
                     RtsimTests.check("member 1", t.view().getInt(Obs.Taken.MEMBER) == 1);
                     UUID by = new UUID(t.view().getLong(Obs.Taken.PLAYER_MOST), t.view().getLong(Obs.Taken.PLAYER_LEAST));
                     RtsimTests.check("by the player", by.equals(player[0].getUUID()));
                     RtsimTests.check("with a Java op id for its cargo", (t.view().getLong(Obs.Taken.OP_ID) & Obs.JAVA_OP_BIT) != 0);
-                    List<StubEngine.Received> all = RtsimTests.allFor(stub, agent);
+                    List<ScriptedEngine.Received> all = RtsimTests.allFor(stub, agent);
                     int i = all.indexOf(t);
                     RtsimTests.check("its cargo came right before it", i > 0 && all.get(i - 1).kind() == Obs.MEMBER_STATE
                             && all.get(i - 1).view().getInt(Obs.MemberState.ITEM_COUNT) == 2);
@@ -84,6 +85,52 @@ public final class CarryOnGameTests {
                     stub.despawnGroup(agent, 1);
                 })
                 .thenWaitUntil(() -> RtsimTests.check("the rest despawned", RtsimTests.group(agent) == null))
+                .thenSucceed();
+    }
+
+    /**
+     * A Carry On pickup of a herd animal (docs/boundary.md §8.5, A10): Carry On's own event on a sheep of
+     * a herd group takes it out of the sim through the same hook ({@code RtsimApi.takeFromSim}, which asks
+     * the herds' adapter, choice Y8): HERD_TAKEN with reason PICKUP, the player and a Java op id; the
+     * sheep is ordinary and {@code Entity.save} works on it; the rest of the group stays.
+     */
+    @GameTest(template = "arena", timeoutTicks = 300, batch = "carryon_herd", skyAccess = true)
+    public static void aCarryOnPickupTakesAHerdAnimalOutOfTheSim(GameTestHelper helper) {
+        long agent = HerdKit.newAgent();
+        int[] c = HerdKit.abs(helper, 5, 5);
+        HerdKit.materialize(agent, 1, HerdKit.SHEEP, RtsimTests.dimension(helper), c[0], c[1], c[0], c[1], 0f, List.of(
+                HerdKit.Member.adult(1, 1, 0, c[0] - 1, c[1]),
+                HerdKit.Member.adult(2, 2, 15, c[0] + 1, c[1])));
+        ServerPlayer[] player = new ServerPlayer[1];
+        net.minecraft.world.entity.Entity[] sheep = new net.minecraft.world.entity.Entity[1];
+
+        helper.startSequence()
+                .thenWaitUntil(() -> HerdKit.bodies(agent, 2))
+                .thenExecute(() -> {
+                    sheep[0] = HerdKit.bodies(agent, 2).get(1);
+                    player[0] = FakePlayers.add(helper.getLevel(), sheep[0].position().add(1, 0, 0), "carryon-herd");
+                    RtsimTests.check("a puppet: Entity.save refuses it", RtsimApi.isPuppet(sheep[0]) && !sheep[0].save(new CompoundTag()));
+                    EntityPickupEvent event = NeoForge.EVENT_BUS.post(new EntityPickupEvent(player[0], sheep[0]));
+                    RtsimTests.check("nobody cancelled the pickup", !event.isCanceled());
+                    RtsimTests.check("it is no longer a puppet", !RtsimApi.isPuppet(sheep[0]));
+                    CompoundTag saved = new CompoundTag();
+                    RtsimTests.check("Carry On's save of it works now", sheep[0].save(saved) && saved.contains("id"));
+                    RtsimTests.check("the other sheep stays in the group", HerdKit.bodies(agent, 1).size() == 1);
+                })
+                .thenWaitUntil(() -> RtsimTests.check("HERD_TAKEN reached the engine", !HerdKit.about(HerdRecords.HERD_TAKEN, agent).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received t = HerdKit.about(HerdRecords.HERD_TAKEN, agent).get(0);
+                    RtsimTests.check("taken by a pickup", t.aux() == Obs.Taken.PICKUP);
+                    RtsimTests.check("member 2", t.view().getLong(HerdRecords.Taken.MEMBER) == 2);
+                    UUID by = new UUID(t.view().getLong(HerdRecords.Taken.PLAYER_MOST), t.view().getLong(HerdRecords.Taken.PLAYER_LEAST));
+                    RtsimTests.check("by the player", by.equals(player[0].getUUID()));
+                    RtsimTests.check("with a Java op id", (t.view().getLong(HerdRecords.Taken.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                    RtsimTests.record("carryon", "herd pickup", "HERD_TAKEN(PICKUP) member 2 by " + by);
+                    FakePlayers.remove(player[0]);
+                    sheep[0].discard();
+                    HerdKit.despawn(agent, 1, HerdKit.SHEEP);
+                })
+                .thenWaitUntil(() -> RtsimTests.check("the rest despawned", HerdKit.bridge().group(agent) == null))
                 .thenSucceed();
     }
 }

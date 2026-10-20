@@ -37,6 +37,29 @@ use crate::world::{Item, Member, World};
 /// it at its observe, simulate, write and save points (docs/industry-boundary.md).
 mod industry;
 pub use industry::{IndustryStats, KEY_LINK as KEY_INDUSTRY_LINK, MODULE_INDUSTRY};
+/// Phase 1 behind the boundary: the phase 1 world (settle, trade, travel, knowledge), its
+/// observations, commands and pages (docs/boundary.md §4, §5).
+mod phase1;
+pub use phase1::{STATS as PHASE1_STATS, TABLE as PHASE1_TABLE};
+/// Phase 2's dragons behind the boundary: `rtsim-ecology` fed by the Ice and Fire plugin's
+/// records, in the phase 1 world (docs/boundary.md §6).
+mod dragons;
+pub use dragons::{MODULE_ECOLOGY, TABLE as DRAGONS_TABLE};
+/// The ships behind the boundary: `rtsim-ships` fed by a ships plugin's records, in the phase 1
+/// world (docs/boundary.md §7).
+mod ships;
+pub use ships::{MODULE_SHIPS, TABLE as SHIPS_TABLE};
+/// The herds behind the boundary: rtsim-ecology's migrating herds fed by the core's vanilla herd
+/// adapter, in the phase 1 world (docs/boundary.md §8).
+mod herds;
+pub use herds::{HERD_INFO, MODULE_HERDS, TABLE as HERDS_TABLE};
+/// The conflict behind the boundary: rtsim-conflict's factions, feuds and war bands fed by a
+/// conflict plugin's records and the other modules, in the phase 1 world (docs/boundary.md §9).
+mod conflict;
+pub use conflict::{ConflictLinkStats, MODULE_CONFLICT, TABLE as CONFLICT_TABLE};
+/// What the modules in the phase 1 world share: one interest area per player, one clock.
+mod shared;
+pub use shared::PLAYER_STALE;
 
 /// Record bytes per buffer when Java asks for the default. PLACEHOLDER (the stub's 256 KiB): the
 /// engine is to size buffers from the per-player puppet caps and per-tick quotas (PLAN.md §4.5).
@@ -180,6 +203,10 @@ pub struct Inspect {
     pub replay: Replay,
     pub agents: std::collections::BTreeMap<u64, crate::world::Agent>,
     pub counters: crate::world::WorldCounters,
+    /// Every phase 1 village's feelings toward players: village to (UUID most, least, sentiment).
+    pub phase1_sentiments: std::collections::BTreeMap<u64, Vec<(u64, u64, i8)>>,
+    /// The phase 1 world's villages and bases.
+    pub phase1_villages: std::collections::BTreeSet<u64>,
 }
 
 impl Inspect {
@@ -207,6 +234,8 @@ pub struct Stats {
     pub commands_written: AtomicU64,
     pub save_failures: AtomicU64,
     pub steps_submitted: AtomicU64,
+    /// Phase 1's counters (`nPhase1Stats`, phase1::stat).
+    pub phase1: [AtomicU64; phase1::STATS],
 }
 
 pub const STATS_LEN: usize = 16;
@@ -238,6 +267,18 @@ struct State {
     op_counter: u64,
     /// The industry engine and its commands (`industry.rs`).
     industry: industry::Link,
+    /// The phase 1 world and its commands (`phase1.rs`).
+    phase1: phase1::Link,
+    /// The dragons and their commands (`dragons.rs`).
+    dragons: dragons::Link,
+    /// The ships and their commands (`ships.rs`).
+    ships: ships::Link,
+    /// The herds and their commands (`herds.rs`).
+    herds: herds::Link,
+    /// The conflict and its commands (`conflict.rs`).
+    conflict: conflict::Link,
+    /// Players' interest areas and the modules' clock (`shared.rs`).
+    shared: shared::Link,
 }
 
 impl State {
@@ -261,6 +302,12 @@ impl State {
             op_salt: std::collections::hash_map::RandomState::new(),
             op_counter: 0,
             industry: industry::Link::empty(),
+            phase1: phase1::Link::empty(),
+            dragons: dragons::Link::empty(),
+            ships: ships::Link::empty(),
+            herds: herds::Link::empty(),
+            conflict: conflict::Link::empty(),
+            shared: shared::Link::default(),
         }
     }
 
@@ -374,7 +421,7 @@ fn names_of(order: &Order, out: &mut Vec<(u32, String)>) {
             out.push((wire::DICT_DIMENSION, dimension.clone()));
             out.push((wire::DICT_ITEM, item.clone()));
         }
-        _ => {}
+        other => phase1::scripted_names(other, out),
     }
 }
 
@@ -397,7 +444,13 @@ fn command_bytes(order: &Order) -> usize {
         | Order::RewindCmdSeq(_)
         | Order::Fail
         | Order::IndustryThreat(_)
-        | Order::IndustryCommand { .. } => 0,
+        | Order::IndustryCommand { .. }
+        | Order::DragonCommand { .. }
+        | Order::ShipCommand { .. }
+        | Order::HerdCommand { .. }
+        | Order::HerdFound { .. }
+        | Order::ConflictCommand { .. } => 0,
+        other => phase1::scripted_bytes(other),
     }
 }
 
@@ -579,6 +632,40 @@ impl Engine {
         ]
     }
 
+    /// The phase 1 world's determinism hash, and whether the last load replayed its log to the
+    /// state the save had. Takes the state lock: tests and `/rtsim` only, never a game tick.
+    pub fn phase1_state(&self) -> (u64, bool, u64) {
+        let st = lock(&self.state);
+        (
+            st.phase1.world.state_hash(),
+            st.phase1.replay_diverged.is_none(),
+            st.phase1.capture_mismatches,
+        )
+    }
+
+    /// Phase 1's counters as of the last step (`phase1::stat` indexes).
+    pub fn phase1_stats(&self) -> [u64; PHASE1_STATS] {
+        std::array::from_fn(|i| self.stats.phase1[i].load(Ordering::Acquire))
+    }
+
+    /// A phase 1 village's sentiment toward a player as of the last step (TEST mode): `None`
+    /// when the engine knows no such village (or keeps no inspection).
+    pub fn phase1_sentiment(&self, village: u64, player: (u64, u64)) -> Option<i32> {
+        if !self.cfg.test {
+            return None;
+        }
+        let i = self.inspect();
+        if !i.phase1_villages.contains(&village) {
+            return None;
+        }
+        Some(
+            i.phase1_sentiments
+                .get(&village)
+                .and_then(|v| v.iter().find(|e| (e.0, e.1) == player))
+                .map_or(0, |e| i32::from(e.2)),
+        )
+    }
+
     fn set_protocol_error(&self, msg: String) {
         log_error(&format!("engine protocol error: {msg}"));
         self.protocol_error.publish(Some(msg));
@@ -631,6 +718,11 @@ impl Engine {
                 .map_err(|e| format!("cannot write the new industry engine's pages: {e}"))?;
             link.fresh = false;
         }
+        let p1link = phase1::Link::load(&mut store)?;
+        let dlink = dragons::Link::load(&mut store, p1link.world_restored())?;
+        let slink = ships::Link::load(&mut store, p1link.world_restored())?;
+        let hlink = herds::Link::load(&mut store, p1link.world_restored())?;
+        let clink = conflict::Link::load(&mut store, p1link.world_restored())?;
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(
@@ -651,6 +743,12 @@ impl Engine {
         st.last_applied_cmd = last_applied_cmd;
         st.industry = link;
         st.industry.resume(last_applied_cmd);
+        st.phase1 = p1link;
+        st.phase1.resume(last_applied_cmd);
+        st.dragons = dlink;
+        st.ships = slink;
+        st.herds = hlink;
+        st.conflict = clink;
         st.pages_obs_seq = pages_obs;
         st.session_first = pages_obs + 1;
         let next_cmd = st.outbox.next_seq();
@@ -714,8 +812,11 @@ impl Engine {
     /// Queues one unit of orders (decoded from `nOrder`).
     pub fn order(&self, unit: Vec<Order>) -> Result<(), String> {
         let mut unit = unit;
-        if !self.cfg.test && unit.iter().any(|o| matches!(o, Order::Fail)) {
-            return Err("a FAIL order needs an engine opened in TEST mode".into());
+        if !self.cfg.test && unit.iter().any(Order::test_only) {
+            return Err(
+                "a FAIL, P1_SPAWN_NEAR, P1_ADVANCE, DRAGON_COMMAND, SHIP_COMMAND, HERD_COMMAND, HERD_FOUND or CONFLICT_COMMAND order needs an engine opened in TEST mode"
+                    .into(),
+            );
         }
         if unit.iter().any(|o| matches!(o, Order::SaveAtNextStep)) {
             self.save_at_step_end.store(true, Ordering::Release);
@@ -765,17 +866,30 @@ impl Engine {
         }
         let mut result = Ok(());
         if save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
-            let (meta, world, industry, obs_seq) = {
-                let st = lock(&self.state);
+            let (meta, world, industry, extra, obs_seq) = {
+                let mut st = lock(&self.state);
+                // The dragons', the ships', the herds' and the conflict's pages ride with the
+                // industry engine's (all whole pages, deleted by table when gone).
+                let dragons = dragons::snapshot(&mut st);
+                let ships = ships::snapshot(&mut st);
+                let herds = herds::snapshot(&mut st);
+                let conflict = conflict::snapshot(&mut st);
+                let mut industry = industry::snapshot(&st);
+                industry.extend(dragons);
+                industry.extend(ships);
+                industry.extend(herds);
+                industry.extend(conflict);
                 (
                     encode_meta(&st.replay, &st.outbox),
                     st.world.to_bytes(),
-                    industry::snapshot(&st),
+                    industry,
+                    phase1::snapshot(&mut st),
                     st.replay.applied_through().0,
                 )
             };
             let this = Arc::clone(self);
-            result = self.run_io_waiting(move || this.commit(meta, world, industry, obs_seq));
+            result =
+                self.run_io_waiting(move || this.commit(meta, world, industry, extra, obs_seq));
         } else {
             self.dead.store(true, Ordering::Release);
             let _ = self.run_io_waiting(|| {});
@@ -894,9 +1008,15 @@ impl Engine {
         self.read_observations(&mut st, h, o);
         o.consumed().store(h, Ordering::Release);
 
-        // 2. Simulate: the industry engine runs to the hand-over's game time; orders stand in for
-        // the other decisions. 3. A save due at this boundary.
+        // 2. Simulate: the industry engine and the phase 1 world run to the hand-over's game time
+        // and decide; orders stand in for the other decisions. 3. A save due at this boundary.
         industry::simulate(&mut st);
+        dragons::simulate(&mut st);
+        ships::simulate(&mut st);
+        herds::simulate(&mut st);
+        conflict::simulate(&mut st);
+        shared::simulate(&mut st);
+        phase1::simulate(&mut st);
         let req = self.save_through.load(Ordering::Acquire);
         if self.save_at_step_end.swap(false, Ordering::AcqRel) {
             self.save_now(&mut st);
@@ -954,6 +1074,9 @@ impl Engine {
             .store(st.world.agents.len() as u64, Ordering::Release);
         s.embodied
             .store(st.world.embodied() as u64, Ordering::Release);
+        for (a, v) in s.phase1.iter().zip(st.phase1.stats) {
+            a.store(v, Ordering::Release);
+        }
     }
 
     fn publish_inspect(&self, st: &State) {
@@ -963,6 +1086,8 @@ impl Engine {
             replay: st.replay.clone(),
             agents: st.world.agents.clone(),
             counters: st.world.counters,
+            phase1_sentiments: phase1::sentiments(st),
+            phase1_villages: phase1::villages(st),
         });
     }
 
@@ -975,6 +1100,24 @@ impl Engine {
                 Order::IndustryCommand { names, record } => {
                     industry::order_command(st, &names, &record)
                 }
+                Order::DragonCommand { names, record } => {
+                    dragons::order_command(st, &names, &record)
+                }
+                Order::ShipCommand { names, record } => ships::order_command(st, &names, &record),
+                Order::HerdCommand { names, record } => herds::order_command(st, &names, &record),
+                Order::HerdFound {
+                    name,
+                    species,
+                    dimension,
+                    x,
+                    z,
+                    count,
+                    seed,
+                } => herds::order_found(st, &name, &species, dimension, x, z, count, seed),
+                Order::ConflictCommand { names, record } => {
+                    conflict::order_command(st, &names, &record)
+                }
+                d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
             }
@@ -1038,6 +1181,13 @@ impl Engine {
                 st.world.game_time = wire::i64_at(b, obs::session_start::GAME_TIME);
                 let (game_time, mask) = (st.world.game_time, st.world.module_mask);
                 industry::session_start(st, game_time, mask);
+                let mask = st.world.module_mask;
+                phase1::session_start(st, mask);
+                dragons::session_start(st, mask);
+                ships::session_start(st, mask);
+                herds::session_start(st, mask);
+                conflict::session_start(st, mask);
+                shared::session_start(st);
                 if last_applied > st.last_applied_cmd {
                     st.last_applied_cmd = last_applied;
                 }
@@ -1078,6 +1228,12 @@ impl Engine {
             _ => {
                 st.world.observe_state(rec);
                 industry::observe_state(st, rec);
+                phase1::observe_state(st, rec);
+                dragons::observe_state(st, rec);
+                ships::observe_state(st, rec);
+                herds::observe_state(st, rec);
+                conflict::observe_state(st, rec);
+                shared::observe_state(st, rec);
                 Self::log_received(st, h, rec, 0, false);
             }
         }
@@ -1120,6 +1276,14 @@ impl Engine {
         Self::log_received(st, h, rec, seq, skipped);
         match verdict {
             Verdict::Apply if industry::claims(rec) => industry::journaled(st, rec),
+            Verdict::Apply if dragons::claims(rec) => dragons::journaled(st, rec),
+            Verdict::Apply if ships::claims(rec) => ships::journaled(st, rec),
+            Verdict::Apply if herds::claims(rec) => herds::journaled(st, rec),
+            Verdict::Apply if conflict::claims(rec) => conflict::journaled(st, rec),
+            Verdict::Apply if phase1::claims(rec) => {
+                shared::catch_up(st, rec);
+                phase1::journaled(st, rec)
+            }
             Verdict::Apply => {
                 let replayed = seq < st.session_first;
                 if rec.kind == obs::COMMAND_RESULT && rec.size() >= obs::command_result::SIZE {
@@ -1131,6 +1295,8 @@ impl Engine {
                     st.resend.retain(|(_, o, _)| *o != op);
                 }
                 st.world.apply_journaled(rec, replayed);
+                shared::catch_up(st, rec);
+                phase1::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1159,9 +1325,16 @@ impl Engine {
         let obs_seq = st.replay.applied_through().0;
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
-        let industry = industry::snapshot(st);
+        // The dragons', the ships', the herds' and the conflict's pages ride with the industry
+        // engine's (all whole pages, deleted by table when gone).
+        let mut industry = industry::snapshot(st);
+        industry.extend(dragons::snapshot(st));
+        industry.extend(ships::snapshot(st));
+        industry.extend(herds::snapshot(st));
+        industry.extend(conflict::snapshot(st));
+        let extra = phase1::snapshot(st);
         let this = Arc::clone(self);
-        self.spawn_io(move || this.commit(meta, world, industry, obs_seq));
+        self.spawn_io(move || this.commit(meta, world, industry, extra, obs_seq));
     }
 
     fn commit(
@@ -1169,6 +1342,7 @@ impl Engine {
         meta: Vec<u8>,
         world: Vec<u8>,
         industry: Vec<(PageKey, Vec<u8>)>,
+        (extra, p1_saved): (Vec<(PageKey, Vec<u8>)>, phase1::Saved),
         obs_seq: u64,
     ) {
         let _z = rt::zone!("rtsim.save");
@@ -1183,11 +1357,30 @@ impl Engine {
         for k in industry::deletions(store, &industry) {
             batch.delete(k);
         }
+        for k in dragons::deletions(store, &industry) {
+            batch.delete(k);
+        }
+        for k in ships::deletions(store, &industry) {
+            batch.delete(k);
+        }
+        for k in herds::deletions(store, &industry) {
+            batch.delete(k);
+        }
+        for k in conflict::deletions(store, &industry) {
+            batch.delete(k);
+        }
+        for k in phase1::deletions(store, &p1_saved) {
+            batch.delete(k);
+        }
+        for (k, b) in &extra {
+            batch.put(*k, b);
+        }
         for (k, b) in &industry {
             batch.put(*k, b);
         }
         match store.commit(batch, obs_seq) {
             Ok(_) => {
+                p1_saved.done();
                 self.durable.fetch_max(obs_seq, Ordering::AcqRel);
                 self.stats.saves_done.fetch_add(1, Ordering::AcqRel);
             }
@@ -1205,15 +1398,27 @@ impl Engine {
     fn write_commands(&self, st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
         let mut highest = 0;
         loop {
-            // Industry resends go out merged with these in sequence order (Java skips a command
-            // at or below the last it applied).
-            let (h, full) = industry::write_resends(st, w, st.resend.front().map(|r| r.0));
+            // The industry link's and phase 1's kept commands go out merged with the core's in
+            // sequence order: Java skips a command at or below the last it applied.
+            let core = st.resend.front().map(|r| r.0);
+            if core.is_none()
+                && phase1::next_resend(st).is_none()
+                && industry::next_resend(st).is_none()
+            {
+                break;
+            }
+            let (h, full) = industry::write_resends(st, w, lowest(core, phase1::next_resend(st)));
+            highest = highest.max(h);
+            if full {
+                return (highest, true);
+            }
+            let (h, full) = phase1::write_resends(st, w, lowest(core, industry::next_resend(st)));
             highest = highest.max(h);
             if full {
                 return (highest, true);
             }
             let Some((seq, op, t)) = st.resend.front().cloned() else {
-                break;
+                continue; // the others wrote theirs; the loop ends when all three are empty
             };
             let need = st.dict_bytes(&[
                 (wire::DICT_DIMENSION, &t.dimension),
@@ -1269,7 +1474,41 @@ impl Engine {
             self.stats.orders_pending.fetch_sub(1, Ordering::AcqRel);
         }
         let (h, more) = industry::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = phase1::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = dragons::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = ships::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = herds::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = conflict::write_queue(st, w);
         (highest.max(h), more)
+    }
+}
+
+/// The lower of two next sequences, `None` standing for none at all.
+fn lowest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) => x,
+        (None, y) => y,
     }
 }
 
@@ -1286,7 +1525,17 @@ fn op_of(rec: &Rec<'_>) -> Option<OpId> {
         {
             wire::u64_at(b, obs::command_result::OP_ID)
         }
-        _ => industry::op_of(rec),
+        _ => [
+            industry::op_of(rec),
+            dragons::op_of(rec),
+            ships::op_of(rec),
+            herds::op_of(rec),
+            conflict::op_of(rec),
+            phase1::op_of(rec),
+        ]
+        .into_iter()
+        .find(|&op| op != 0)
+        .unwrap_or(0),
     };
     (raw != 0).then_some(OpId(raw))
 }
@@ -1454,7 +1703,15 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
             None
         }
         Order::Fail => panic!("a FAIL order (tests): the engine fails on purpose"),
-        Order::SaveAtNextStep | Order::IndustryThreat(_) | Order::IndustryCommand { .. } => None,
+        Order::SaveAtNextStep
+        | Order::IndustryThreat(_)
+        | Order::IndustryCommand { .. }
+        | Order::DragonCommand { .. }
+        | Order::ShipCommand { .. }
+        | Order::HerdCommand { .. }
+        | Order::HerdFound { .. }
+        | Order::ConflictCommand { .. } => None,
+        other => phase1::write_scripted(st, w, &other),
     }
 }
 

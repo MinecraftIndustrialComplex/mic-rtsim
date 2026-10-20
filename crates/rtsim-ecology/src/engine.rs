@@ -60,6 +60,7 @@ use crate::dragon::{
     dragon_of,
 };
 use crate::flight::{self, dragon_owner, owner_dragon, owner_player, player_owner};
+use crate::herds::{HerdId, Herds};
 use crate::homes::Homes;
 use crate::index::PreyIndex;
 use crate::infra::Infrastructure;
@@ -92,7 +93,7 @@ const HOME_RADIUS: i64 = 512;
 const MAX_CROSSINGS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ev {
+pub(crate) enum Ev {
     Hungry {
         d: DragonId,
         plan: u32,
@@ -186,6 +187,8 @@ pub struct DragonStats {
     pub adopted: u64,
     pub discarded: u64,
     pub hoards_robbed: u64,
+    /// Hunts that took animals from a wild herd.
+    pub herd_hunts: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -230,10 +233,10 @@ pub struct NewDragon {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct PlayerView {
-    uuid: Uuid,
+pub(crate) struct PlayerView {
+    pub(crate) uuid: Uuid,
     /// The player's interest area in the leg index.
-    interest: Option<Stamp>,
+    pub(crate) interest: Option<Stamp>,
 }
 
 pub struct Dragons {
@@ -241,11 +244,11 @@ pub struct Dragons {
     pub seed: u64,
     pub dragons: Arena<Dragon>,
     pub lairs: Vec<Lair>,
-    lair_by_key: BTreeMap<u64, LairId>,
+    pub(crate) lair_by_key: BTreeMap<u64, LairId>,
     /// Lairs by region, so an interest area finds roosting dragons without the leg index: a
     /// dragon at rest books nothing there.
-    lair_cells: BTreeMap<(u16, i64, i64), Vec<LairId>>,
-    wheel: TimingWheel<Ev>,
+    pub(crate) lair_cells: BTreeMap<(u16, i64, i64), Vec<LairId>>,
+    pub(crate) wheel: TimingWheel<Ev>,
     pub homes: Homes,
     pub ledger: PreyLedger,
     pub stats: DragonStats,
@@ -256,18 +259,26 @@ pub struct Dragons {
     pub prey_by_season: [[u64; PreyKind::COUNT]; 4],
     /// Fullness gained, per [season][prey kind].
     pub food_by_season: [[i64; PreyKind::COUNT]; 4],
-    outbox: Vec<Cmd>,
-    players: BTreeMap<ActorId, PlayerView>,
-    index: PreyIndex,
-    by_entity: BTreeMap<Uuid, DragonId>,
+    pub(crate) outbox: Vec<Cmd>,
+    pub(crate) players: BTreeMap<ActorId, PlayerView>,
+    pub(crate) index: PreyIndex,
+    pub(crate) by_entity: BTreeMap<Uuid, DragonId>,
+    /// Every entity the engine adopted, for good (saved; `by_entity` is this session's bodies):
+    /// an untagged dragon reported again (after a crash its DRAGON_ADOPT never reached a world
+    /// save, or a chunk saved before the adoption loaded again) is the dragon it already is,
+    /// never a second one (review 3).
+    pub(crate) adopted: BTreeMap<Uuid, DragonId>,
     /// Set while removing a dragon whose body already died in game (no despawn to send).
-    dying_by_body: bool,
+    pub(crate) dying_by_body: bool,
     /// Item dictionary ids the plugin uses (HOARD_ROBBED), mapped to ledger items.
-    items: BTreeMap<u32, Item>,
+    pub(crate) items: BTreeMap<u32, Item>,
     /// Prey entity types (DRAGON_ATE's body dictionary ids) that are a village herd's good.
-    herd_bodies: BTreeMap<u32, GoodId>,
-    next_seed: u64,
-    now: Tick,
+    pub(crate) herd_bodies: BTreeMap<u32, GoodId>,
+    pub(crate) next_seed: u64,
+    pub(crate) now: Tick,
+    /// The herds, lent for the length of [`Dragons::run_until_with_herds`] (not saved: the
+    /// caller owns and saves them).
+    pub(crate) wild: Option<Herds>,
 }
 
 fn day_of(t: Tick) -> f64 {
@@ -312,11 +323,13 @@ impl Dragons {
             players: BTreeMap::new(),
             index: PreyIndex::default(),
             by_entity: BTreeMap::new(),
+            adopted: BTreeMap::new(),
             dying_by_body: false,
             items: BTreeMap::new(),
             herd_bodies: BTreeMap::new(),
             next_seed: 0,
             now,
+            wild: None,
         }
     }
 
@@ -631,22 +644,42 @@ impl Dragons {
         if let Some(v) = self.players.get_mut(&p) {
             v.interest = Some(stamp);
         }
+        let mut found = Vec::new();
         for other in w.legs.sharing(stamp) {
-            let Some(d) = w.legs.get(other.leg).and_then(|r| owner_dragon(r.owner)) else {
+            if w.legs
+                .get(other.leg)
+                .and_then(|r| owner_dragon(r.owner))
+                .is_none()
+            {
                 continue;
-            };
+            }
             if let Some(m) = w.legs.meeting(other, stamp) {
-                self.schedule(
-                    m.at,
-                    Ev::Seen {
-                        d,
-                        player: p,
-                        meeting: m,
-                    },
-                );
+                found.push(m);
             }
         }
-        // Dragons at rest in a lair the area covers.
+        self.seen_legs(w, p, &found);
+        self.seen_at_lairs(p, stamp, path);
+    }
+
+    /// Dragon legs crossing a player's area: one `Seen` per meeting (`a` the dragon's leg).
+    fn seen_legs(&mut self, w: &World, p: ActorId, found: &[Meeting]) {
+        for m in found {
+            let Some(d) = w.legs.get(m.a.leg).and_then(|r| owner_dragon(r.owner)) else {
+                continue;
+            };
+            self.schedule(
+                m.at,
+                Ev::Seen {
+                    d,
+                    player: p,
+                    meeting: *m,
+                },
+            );
+        }
+    }
+
+    /// Dragons at rest in a lair the area covers at its start: they book no leg.
+    fn seen_at_lairs(&mut self, p: ActorId, stamp: Stamp, path: Path) {
         let r = i64::from(path.radius);
         let (x0, z0) = (
             i64::from(path.x0.min(path.x1)) - r,
@@ -691,6 +724,15 @@ impl Dragons {
                 );
             }
         }
+    }
+
+    /// A player's position for the home counter (P26) only, when the player's interest area is
+    /// the engine's shared one (`rtsim_world::interest::Viewer`, routed by
+    /// `World::route_area`) instead of this engine's own ([`Dragons::observe_player`]).
+    pub fn observe_home(&mut self, w: &mut World, uuid: Uuid, pos: Pos, at: Tick) -> ActorId {
+        let p = self.player(w, uuid);
+        self.homes.observe(p, pos, at);
+        p
     }
 
     /// A dragon settling at its lair: any player whose interest area covers the lair now sees it.
@@ -741,6 +783,40 @@ impl Dragons {
         }
         w.run_until(to);
         self.now = self.now.max(to);
+    }
+
+    /// As [`Dragons::run_until`], with wild herds as prey (PLAN.md §10.2): the herds' events and
+    /// the dragons' run in one time order (a herd event at the same tick as a dragon's runs first),
+    /// and hungry dragons weigh and hunt the herds through the herds' prey interface
+    /// (`Herds::prey_near`, `Herds::predate`). The herds share the world's leg index.
+    pub fn run_until_with_herds(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        herds: &mut Herds,
+        to: Tick,
+    ) {
+        self.wild = Some(std::mem::replace(herds, Herds::empty()));
+        self.index.refresh(w);
+        loop {
+            let next = self.wheel.next_due().filter(|t| *t <= to).unwrap_or(to);
+            if let Some(h) = self.wild.as_mut() {
+                h.run_until(&mut w.legs, next);
+            }
+            let Some((at, ev)) = self.wheel.pop_until(next) else {
+                break;
+            };
+            w.run_until(at);
+            self.now = self.now.max(at);
+            self.stats.events += 1;
+            self.handle(w, infra, at, ev);
+        }
+        if let Some(h) = self.wild.as_mut() {
+            h.run_until(&mut w.legs, to);
+        }
+        w.run_until(to);
+        self.now = self.now.max(to);
+        *herds = self.wild.take().expect("lent");
     }
 
     fn handle(&mut self, w: &mut World, infra: &mut dyn Infrastructure, at: Tick, ev: Ev) {
@@ -906,7 +982,8 @@ impl Dragons {
                 Pos::new(frame, x, z)
             }
             Target::Village { node } => w.nodes[node as usize].pos,
-            Target::Home { x, z, .. } => Pos::new(0, x, z),
+            Target::Home { frame, x, z, .. } => Pos::new(frame, x, z),
+            Target::Herd { frame, x, z, .. } => Pos::new(frame, x, z),
         }
     }
 
@@ -1014,6 +1091,7 @@ impl Dragons {
             count: passes,
             strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
             target: ThreatTarget::Train(train),
+            loads: None,
             at,
         };
         let Some(loot) = infra.raid_train(&threat) else {
@@ -1110,9 +1188,12 @@ impl Dragons {
         let plan = self.bump(d);
         let hunt_below = self.tun.hunt_below;
         let rest = self.tun.rest_ticks.max(1);
+        let here = self.dragons[d].position(&self.lairs, at);
         let x = self.dragons.get_mut(d).expect("live");
         x.state = State::Roosting;
-        x.rest = None;
+        // A dragon with a lair rests at it; one without rests where it landed (with no resting
+        // place it would stand at the origin).
+        x.rest = if x.lair.is_none() { Some(here) } else { None };
         x.bout = 0;
         let t = x.hungry_at(&self.tun, hunt_below, at).max(at + rest);
         // At rest it books nothing in the leg index: players find it through the lair.
@@ -1131,10 +1212,41 @@ impl Dragons {
         {
             return;
         }
+        self.release_claim(d, at);
         self.leave_lair(w, d, at);
         self.lairs[l as usize].plan += 1;
         self.lairs[l as usize].vacant_since = None;
         self.fly(w, d, Purpose::Claim(l), at);
+    }
+
+    /// `d` no longer flies to claim a roost (it died on the way, or was sent elsewhere): a roost
+    /// nobody lives in stands empty again and its respawn clock starts over, or it would wait for
+    /// a claimant that never comes.
+    fn release_claim(&mut self, d: DragonId, at: Tick) {
+        let Some(x) = self.dragons.get(d) else {
+            return;
+        };
+        let (State::Flying(Purpose::Claim(l))
+        | State::Embodied {
+            purpose: Purpose::Claim(l),
+            ..
+        }
+        | State::Leaving {
+            purpose: Purpose::Claim(l),
+            ..
+        }) = x.state
+        else {
+            return;
+        };
+        let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
+        let lair = &mut self.lairs[l as usize];
+        if !lair.occupants.is_empty() || lair.vacant_since.is_some() {
+            return;
+        }
+        lair.vacant_since = Some(at);
+        lair.plan += 1;
+        let plan = lair.plan;
+        self.schedule(at + delay, Ev::Respawn { lair: l, plan });
     }
 
     // ---- choosing prey -----------------------------------------------------------------------------
@@ -1242,6 +1354,10 @@ impl Dragons {
             let Some(home) = self.homes.home(target, at) else {
                 continue;
             };
+            // A home in another dimension is out of reach, whatever its coordinates.
+            if home.pos.frame != origin.frame {
+                continue;
+            }
             let dist = flight::dist((ox, oz), (i64::from(home.pos.x), i64::from(home.pos.z)));
             if dist > f64::from(sp.grudge_range) {
                 continue;
@@ -1254,6 +1370,7 @@ impl Dragons {
             offer(
                 Target::Home {
                     player: target,
+                    frame: home.pos.frame,
                     x: home.pos.x,
                     z: home.pos.z,
                 },
@@ -1316,6 +1433,32 @@ impl Dragons {
                 PreyKind::Road,
                 food * w_road - cost(pt),
             );
+        }
+        // Wild herds (PLAN.md §10.2): where each will be when the dragon arrives, and the
+        // animals it could take there. A herd it ate from lately it follows farther.
+        if let Some(hd) = &self.wild {
+            let w_herd = f64::from(self.tun.season_weight(season, PreyKind::Herd)) / 100.0;
+            let (px, pz) = (i64::from(pos.x), i64::from(pos.z));
+            for o in hd.prey_near(origin.frame, ox, oz, range, at, d.to_bits()) {
+                let fly = flight::dist((px, pz), (i64::from(o.pos.0), i64::from(o.pos.1)));
+                let arrive = at + flight::flight_ticks(fly, sp.speed);
+                let (hx, hz) = hd.position(o.herd, arrive);
+                let food = (o.available as f64 * f64::from(o.food_each)).min(need);
+                if food <= 0.0 {
+                    continue;
+                }
+                let pt = Pos::new(origin.frame, hx as i32, hz as i32);
+                offer(
+                    Target::Herd {
+                        herd: o.herd.to_bits(),
+                        frame: origin.frame,
+                        x: pt.x,
+                        z: pt.z,
+                    },
+                    PreyKind::Herd,
+                    food * w_herd - f64::from(self.tun.herd_risk) - cost(pt),
+                );
+            }
         }
         all
     }
@@ -1381,6 +1524,11 @@ impl Dragons {
             Target::Road { edge, .. } => self.road_name(w, edge),
             Target::Village { node } => format!("village {}", w.nodes[node as usize].key),
             Target::Home { player, .. } => format!("the home of player {}", player.to_bits()),
+            Target::Herd { herd, .. } => self
+                .wild
+                .as_ref()
+                .and_then(|h| h.herd(HerdId::from_bits(herd)))
+                .map_or_else(|| format!("herd {herd:#x}"), |x| x.name.clone()),
         }
     }
 
@@ -1414,32 +1562,44 @@ impl Dragons {
         true
     }
 
-    /// The nearest roost of `d`'s species with nobody in it and nobody on the way.
+    /// The nearest roost of `d`'s species with nobody in it and nobody on the way. Looks up the
+    /// lair cells within range (one range query per row of regions), never every lair.
     fn vacant_lair(&self, d: DragonId, at: Tick) -> Option<LairId> {
         let x = &self.dragons[d];
         let (p, _) = x.position(&self.lairs, at);
-        let range = f64::from(self.tun.species(x.species).grudge_range);
-        self.lairs
-            .iter()
-            .enumerate()
-            .filter(|(i, l)| {
-                l.species == x.species
-                    && l.occupants.is_empty()
-                    && l.vacant_since.is_some()
-                    && Some(*i as LairId) != x.lair
-            })
-            .map(|(i, l)| {
-                (
-                    flight::dist(
-                        (i64::from(p.x), i64::from(p.z)),
-                        (i64::from(l.pos.x), i64::from(l.pos.z)),
-                    ),
-                    i as LairId,
-                )
-            })
-            .filter(|(dd, _)| *dd <= range)
-            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-            .map(|(_, i)| i)
+        let range = self.tun.species(x.species).grudge_range;
+        let r = i64::from(range);
+        let (px, pz) = (i64::from(p.x), i64::from(p.z));
+        let (ra, rb) = (
+            rtsim_travel::legs::LegIndex::region_of(px - r, pz - r),
+            rtsim_travel::legs::LegIndex::region_of(px + r, pz + r),
+        );
+        let mut best: Option<(f64, LairId)> = None;
+        for rx in ra.0..=rb.0 {
+            for (_, ls) in self
+                .lair_cells
+                .range((p.frame, rx, ra.1)..=(p.frame, rx, rb.1))
+            {
+                for &i in ls {
+                    let l = &self.lairs[i as usize];
+                    if l.species != x.species
+                        || !l.occupants.is_empty()
+                        || l.vacant_since.is_none()
+                        || Some(i) == x.lair
+                    {
+                        continue;
+                    }
+                    let dd = flight::dist((px, pz), (i64::from(l.pos.x), i64::from(l.pos.z)));
+                    if dd > f64::from(range) {
+                        continue;
+                    }
+                    if best.is_none_or(|b| dd.total_cmp(&b.0).then(i.cmp(&b.1)).is_lt()) {
+                        best = Some((dd, i));
+                    }
+                }
+            }
+        }
+        best.map(|(_, i)| i)
     }
 
     // ---- arriving, hunting, eating -----------------------------------------------------------------
@@ -1489,6 +1649,31 @@ impl Dragons {
                 (f, t, v, PreyKind::Village)
             }
             Target::Home { .. } => (0, Vec::new(), Vec::new(), PreyKind::Grudge),
+            Target::Herd { herd, x, z, .. } => {
+                let need = {
+                    let x = &self.dragons[d];
+                    let sp = self.tun.species(x.species);
+                    (self.tun.full - x.fullness_at(&self.tun, at)).min(sp.appetite)
+                };
+                let p = self.wild.as_mut().map_or_else(Default::default, |h| {
+                    h.predate(
+                        HerdId::from_bits(herd),
+                        i64::from(x),
+                        i64::from(z),
+                        at,
+                        need,
+                        d.to_bits(),
+                    )
+                });
+                let taken = match p.species {
+                    Some(s) if p.animals > 0 => {
+                        self.stats.herd_hunts += 1;
+                        vec![(s.entity_id().to_string(), p.animals as i64)]
+                    }
+                    _ => Vec::new(),
+                };
+                (p.food, taken, Vec::new(), PreyKind::Herd)
+            }
         };
         self.feed(d, at, food, &victims);
         let name = self.target_name(w, target);
@@ -1757,19 +1942,31 @@ impl Dragons {
         t: Target,
         at: Tick,
     ) {
-        let Target::Home { player, x, z } = t else {
+        let Target::Home {
+            player,
+            frame,
+            x,
+            z,
+        } = t
+        else {
             return;
         };
         let x0 = &self.dragons[d];
         let sp = self.tun.species(x0.species).clone();
         let stage = x0.stage(&sp, at);
-        let sites = infra.districts_near(0, i64::from(x), i64::from(z), HOME_RADIUS);
+        let sites = infra.districts_near(frame, i64::from(x), i64::from(z), HOME_RADIUS);
         let mut food = 0;
         let mut taken = Vec::new();
         let mut any = false;
         for site in sites.into_iter().take(self.tun.raid_districts) {
             if site.watched {
-                // The player is there: a real fight. Materialize at the district.
+                // The player is there: a real fight. Materialize at the district, with what it
+                // already ate at unwatched districts on the way (the ledger has it).
+                if any {
+                    self.feed(d, at, food, &[]);
+                    let name = format!("the home of player {}", player.to_bits());
+                    self.record_hunt(at, d, PreyKind::Grudge, name, food, taken);
+                }
                 let p = site.pos;
                 self.materialize(w, d, player, true, Some((p, sp.cruise_y)), at);
                 return;
@@ -1789,6 +1986,7 @@ impl Dragons {
                 count: passes,
                 strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
                 target: ThreatTarget::District(site.id),
+                loads: None,
                 at,
             };
             let Some(o) = infra.raid(&threat) else {
@@ -2116,10 +2314,11 @@ impl Dragons {
                 let Some(d) = self.embodied(s.agent, s.epoch) else {
                     return;
                 };
-                let starving = self.tun.starving;
+                let (starving, full) = (self.tun.starving, self.tun.full);
                 let x = self.dragons.get_mut(d).expect("live");
                 x.set_health(s.health, at);
-                x.set_fullness(s.hunger, at);
+                // Ice and Fire's Hunger is 0 to 100; anything else from the plugin is clamped.
+                x.set_fullness(s.hunger.clamp(0, full), at);
                 x.rest = Some((
                     Pos::new(s.dimension as u16, s.pos.0 as i32, s.pos.2 as i32),
                     s.pos.1 as i32,
@@ -2145,15 +2344,17 @@ impl Dragons {
                     return;
                 };
                 {
+                    let full = self.tun.full;
                     let x = self.dragons.get_mut(d).expect("live");
                     x.set_health(m.health, at);
-                    x.set_fullness(m.hunger, at);
+                    x.set_fullness(m.hunger.clamp(0, full), at);
                     x.rest = Some((
                         Pos::new(m.dimension as u16, m.pos.0 as i32, m.pos.2 as i32),
                         m.pos.1 as i32,
                     ));
                 }
                 self.by_entity.retain(|_, v| *v != d);
+                self.adopted.retain(|_, v| *v != d);
                 let leaving = matches!(self.dragons[d].state, State::Leaving { .. });
                 let what = format!("captured (health {:.0}, hunger {})", m.health, m.hunger);
                 self.note(at, "capture", Some(d), what);
@@ -2377,7 +2578,8 @@ impl Dragons {
             self.note(at, "death", Some(d), "killed".into());
         }
         let heir = w.knowledge.die(x.actor, at);
-        if let Some(h) = heir {
+        // Naming the heir looks through every dragon: only for the log.
+        if let Some(h) = heir.filter(|_| self.log_enabled) {
             let who = self
                 .dragons
                 .iter()
@@ -2394,6 +2596,7 @@ impl Dragons {
     /// Takes a dead dragon out: its lair may stand empty (the respawn clock starts), its kin
     /// lose a link and re-point their heirs.
     fn remove(&mut self, w: &mut World, d: DragonId, at: Tick) {
+        self.release_claim(d, at);
         self.cancel_leg(w, d);
         // A body still in the world goes with it.
         if let Some(State::Embodied { epoch, .. } | State::Leaving { epoch, .. }) =
@@ -2679,6 +2882,12 @@ impl Dragons {
         if self.by_entity.contains_key(&u.entity) {
             return;
         }
+        if let Some(&d) = self.adopted.get(&u.entity)
+            && self.dragons.contains(d)
+        {
+            self.adopt_again(w, d, u, at);
+            return;
+        }
         let lair = (u.lair != 0).then(|| self.lair_of_key(u.lair)).flatten();
         let discard = match u.spawn {
             SpawnKind::Natural | SpawnKind::Spawner => Some(1),
@@ -2732,6 +2941,7 @@ impl Dragons {
             home,
         }));
         self.by_entity.insert(u.entity, d);
+        self.adopted.insert(u.entity, d);
         let plan = self.bump(d);
         let _ = plan;
         self.cancel_leg(w, d);
@@ -2744,6 +2954,42 @@ impl Dragons {
             purpose: Purpose::Home,
             harass: false,
         };
+    }
+
+    /// An entity the engine adopted before, reported untagged again: the same dragon takes the
+    /// body back under a new epoch, where the body is (its abstract self is dropped where it
+    /// was), and it is embodied until the plugin hands it back.
+    fn adopt_again(&mut self, w: &mut World, d: DragonId, u: &boundary::Untagged, at: Tick) {
+        self.stats.adopted += 1;
+        self.bump(d);
+        self.cancel_leg(w, d);
+        let x = self.dragons.get_mut(d).expect("live");
+        let epoch = x.epoch + 1;
+        x.epoch = epoch;
+        x.rest = Some((
+            Pos::new(u.dimension as u16, u.pos.0 as i32, u.pos.2 as i32),
+            u.pos.1 as i32,
+        ));
+        x.state = State::Embodied {
+            epoch,
+            since: at,
+            depart_at: Tick(u64::MAX),
+            purpose: Purpose::Home,
+            harass: false,
+        };
+        let lair = x.lair;
+        let home = lair.map_or((0, 0, 0), |l| {
+            let l = &self.lairs[l as usize];
+            (l.pos.x, l.y, l.pos.z)
+        });
+        self.outbox.push(Cmd::Adopt(boundary::Adopt {
+            entity: u.entity,
+            agent: agent_of(d),
+            epoch,
+            flags: lair.is_some() as u32,
+            home,
+        }));
+        self.by_entity.insert(u.entity, d);
     }
 
     /// A player robbed a lair's hoard: what the engine's hoard held comes out (the rest was the
@@ -2945,6 +3191,33 @@ impl Dragons {
                 .map(|s| s.id)
                 .collect(),
             None => Vec::new(),
+        }
+    }
+}
+
+/// The dragons as a viewer of the engine's shared interest areas (one per player across every
+/// module; overnight choices U2 to U6). Through it the dragons see exactly what their own areas
+/// ([`Dragons::observe_player`]) showed them: the dragon legs a player's area crosses, and the
+/// dragons at rest in a lair it covers. The home counter is fed apart, by
+/// [`Dragons::observe_home`]. A player's view here keeps no area of its own (`interest` stays
+/// `None`), so [`Dragons::player_left`] never cancels the shared one.
+impl rtsim_world::interest::Viewer for Dragons {
+    fn owns(&self, owner: rtsim_travel::legs::Owner) -> bool {
+        owner_dragon(owner).is_some()
+    }
+
+    fn area_booked(&mut self, w: &mut World, player: ActorId, uuid: (u64, u64), area: Stamp) {
+        let _ = (w, area);
+        self.players.entry(player).or_insert(PlayerView {
+            uuid,
+            interest: None,
+        });
+    }
+
+    fn crossings(&mut self, w: &mut World, player: ActorId, area: Stamp, found: &[Meeting]) {
+        self.seen_legs(w, player, found);
+        if let Some(path) = w.legs.get(area.leg).map(|r| r.path) {
+            self.seen_at_lairs(player, area, path);
         }
     }
 }

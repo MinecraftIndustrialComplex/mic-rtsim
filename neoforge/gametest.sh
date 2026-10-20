@@ -2,9 +2,9 @@
 #
 # mic_rtsim's headless GameTest suites (and the pure-Java unit tests first).
 #
-#   ./gametest.sh                        core, then the plugins (ribbits, carryon, create, and the industry
-#                                        plugins oreexcavation, dieselgenerators, endertransmission, powergrid,
-#                                        destroy, climate, radar)
+#   ./gametest.sh                        core, then the plugins (ribbits, carryon, create, iceandfire, and the
+#                                        industry plugins oreexcavation, dieselgenerators, endertransmission,
+#                                        powergrid, destroy, climate, radar)
 #   ./gametest.sh core                   one or more projects by name
 #   ./gametest.sh core -PgametestDebugLog   with DEBUG logging (shows "Mixing ... into ..." lines)
 #   ./gametest.sh -PrtsimEngine=stub -PskipJni   every suite on the pure-Java stub, no cargo
@@ -15,7 +15,7 @@
 #
 # Each project boots its own dedicated NeoForge server: the core with mic_native (no pack mod, D4),
 # and each plugin with the core, mic_native and the mod it is built around (Ribbits with YUNG's API and
-# GeckoLib; Carry On), loaded from the pack's own jars (gradle.properties: packMods). Every @GameTest
+# GeckoLib; Carry On; Create; Ice and Fire with Uranus, Jupiter, GeckoLib and Architectury), loaded from the pack's own jars (gradle.properties: packMods). Every @GameTest
 # in the project's namespace runs; the script exits non-zero if any suite failed. Each full log is left
 # in <project>/build/gametest.log.
 #
@@ -33,11 +33,11 @@ projects=()
 extra=()
 for a in "$@"; do
     case "$a" in
-        core|ribbits|carryon|create|oreexcavation|dieselgenerators|endertransmission|powergrid|destroy|climate|radar) projects+=("$a") ;;
+        core|ribbits|carryon|create|iceandfire|oreexcavation|dieselgenerators|endertransmission|powergrid|destroy|climate|radar) projects+=("$a") ;;
         *) extra+=("$a") ;;
     esac
 done
-[ ${#projects[@]} -eq 0 ] && projects=(core ribbits carryon create oreexcavation dieselgenerators endertransmission powergrid destroy climate radar)
+[ ${#projects[@]} -eq 0 ] && projects=(core ribbits carryon create iceandfire oreexcavation dieselgenerators endertransmission powergrid destroy climate radar)
 
 # A JDK 21: the repository flake's dev shell when there is one, else nixpkgs' jdk21.
 run() {

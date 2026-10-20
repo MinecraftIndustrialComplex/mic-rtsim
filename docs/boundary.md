@@ -276,7 +276,7 @@ start at 16.
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
 | 0x8001 | DICT | dict kind | 16 u32 id, 20 u32 nameLen, 24 UTF-8 name | 24 + name, aligned | |
-| 0x8002 | SPAWN_GROUP | member count | 16 u64 agent, 24 u32 epoch, 28 u32 groupKind, 32 u32 dimension, 36 u32 flags (0), 40 f64 x, 48 f64 y, 56 f64 z, 64 member blocks | 64 + blocks | MATERIALIZED or SPAWN_REJECTED |
+| 0x8002 | SPAWN_GROUP | member count | 16 u64 agent, 24 u32 epoch, 28 u32 groupKind, 32 u32 dimension, 36 u32 flags (1 SURFACE: each member stands on the highest motion-blocking, non-leaf block at its own x, z, found once its position is entity-ticking), 40 f64 x, 48 f64 y, 56 f64 z, 64 member blocks | 64 + blocks | MATERIALIZED or SPAWN_REJECTED |
 | 0x8003 | DESPAWN_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 u32 reason | 32 | DEMATERIALIZED |
 | 0x8004 | STEER_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8005 | TRANSFER_TO_CONTAINER | 0 | 16 u64 opId, 24 u32 dimension, 28 u32 item, 32 i32 x, 36 i32 y, 40 i32 z, 44 i32 count | 48 | COMMAND_RESULT |
@@ -520,7 +520,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    puppet commands are per session. DICT records come before their first use in the same buffer.
    What does not fit waits (`MORE`).
 7. **Op ids**: Java's have the top bit set; the engine's leave it clear. Ordered transfers take 55
-   random bits (§2.2); the sim's own transfers will derive theirs from their identity.
+   random bits (§2.2); the sim's own commands derive theirs from their identity (industry, phase 1).
 8. **Failure**: a panic or protocol error in a step makes every later command buffer empty and
    flagged `FAILED` (§1.1).
 9. **Industry** (`engine/industry.rs`, docs/industry-boundary.md §7, choices W1 to W23): the industry
@@ -529,21 +529,166 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    (their sequences from the same counter, resent merged in sequence order); its pages are tables
    0x4900 to 0x4902 and page 1:0x49.
 
-**Still to build: phase 1 (§4).** The native engine reads every phase 1 record safely (journaled
-kinds go through `Replay`; unknown kinds are skipped) but does nothing with them yet, and sends none
-of the phase 1 commands. The integration step should: read VILLAGE_ADOPTED (idempotent by village
-id) into rtsim-settle; TRADE, CARGO_CHANGED, DIED and TAKEN cargo into the markets and caravans
-exactly once by op id; HURT, RESCUE, TAKEN and CARGO_CHANGED into rtsim-knowledge reports (skip
-echoing anything flagged VANILLA_GOSSIP); BASE into rtsim-settle's player-base nodes; VILLAGE_CENSUS
-and VILLAGE_GOSSIP as latest state. Send MARKET with `asOfObsSeq` = the highest observation sequence
-the step applied, MERCHANT_OFFERS when a caravan materializes or its news changes, SENTIMENT
-snapshots for ribbit villages, WRITE_GOSSIP from rtsim-knowledge's `VanillaGossip`, and PLACE_HOUSE
-then SPAWN_RESIDENT for growth.
+10. **Phase 1** (`engine/phase1.rs`, choices V1 to V28 in docs/overnight-choices-phase1jni.md): the
+   phase 1 world (`rtsim-world`: settle, trade, travel, knowledge) runs inside the step.
+   - **Observations.** VILLAGE_ADOPTED joins a village (a no-op for one it has); TRADE (a resident's
+     at its village's market, a puppet's at its caravan) and CARGO_CHANGED are booked as the counts
+     the bridge reports, once by op id; HURT and RESCUE become reports of the caravan or the village
+     (a resident's first-hand hurt is still a report: rtsim-knowledge never writes back what vanilla
+     saw itself); TAKEN and DIED of a phase 1 puppet take or kill its member; BASE marks and unmarks
+     player-base nodes; HOUSE_PLACED lets a grown house's residents move in; the first
+     VILLAGE_CENSUS sets a village's population and later ones only raise it; VILLAGE_GOSSIP is read
+     as latest state.
+   - **Commands.** MARKET (`asOfObsSeq` the highest observation the step applied) for villages near
+     a player or just traded at, when they changed; MERCHANT_OFFERS when a caravan materializes;
+     SENTIMENT for ribbit villages whose feelings may have changed; WRITE_GOSSIP from
+     rtsim-knowledge's vanilla gossip (amounts below 2 raised to 2); PLACE_HOUSE then SPAWN_RESIDENT
+     for growth. The last three carry op ids derived from what they are (§2.2) and are kept and
+     resent like transfers. Caravans and touring bands a player can see are materialized as C25
+     groups (SPAWN_GROUP with `FLAG_SURFACE`, cargo in the chests), steered toward where the sim
+     walks them, and captured back when no player is near or the sim's caravan moved on.
+   - **Pages** (choices S1 to S7 in docs/overnight-choices-persist.md). Table 0x5001: a snapshot
+     of the world (`World::save`) in 1 MiB pieces; table 0x5000: the meta page and the inputs since
+     the snapshot in chunks of 1,024. `start` reads the snapshot and replays only that tail, then
+     checks the state hash against the one saved. A save writes the meta page and the tail chunks
+     not yet on disk, or a new snapshot when the tail reaches 1,024 inputs or a world day, or the
+     world changed outside the log (the dragons). Pages this build cannot read are dropped with a
+     loud log and the phase 1 world starts afresh (`when_pages_unreadable`, S5).
+   - **Tests.** Orders 16 to 21 script the phase 1 commands (the stub's `market`, `merchantOffers`
+     and so on); order 22 marks a village as a test's own, which the engine then leaves alone; orders
+     23 (`P1_SPAWN_NEAR`) and 24 (`P1_ADVANCE`) materialize a caravan off the flows at a chosen place
+     and run the world ahead of game time (TEST mode only).
+
+11. **Dragons** (`engine/dragons.rs`, §6, choices S8 to S14 in docs/overnight-choices-persist.md):
+   rtsim-ecology's engine runs inside the step, in the phase 1 world (its knowledge holds the
+   dragons' memories and grudges, its leg index their flights) on the phase 1 world's clock.
+   - **Observations.** The journaled kinds 0x0500 to 0x05FF go through `Replay` (HOARD_ROBBED by its
+     op id too) into `Dragons::ingest`; DRAGON_STATE is latest state. Players' positions reach the
+     dragons through the shared interest areas (item 13). Java's dictionary names species (kind
+     3), lairs (kind 4), dimensions and hoard items. The dragons run before the phase 1 world each
+     step, interleaved with the ships on one clock (item 13), and a phase 1 input or a record runs
+     them to its time first, so a dragon event never meets a world that ran past it.
+   - **Commands.** DRAGON_MATERIALIZE, STEER, DEPART, ADOPT and DISCARD take sequences from the
+     core's counter, after the core's, the industry's and phase 1's; all are per session (a lost
+     adoption or discard is decided again when Java reports the body again). The species and the
+     dimension go through the engine's dictionary.
+   - **Pages.** Table 0x4400: one page, `Dragons::save` with its state hash (checked on load). While
+     there is a dragon or a lair the phase 1 link snapshots at every save, in the same commit. A
+     dragons page without the phase 1 world it was saved with, or one this build cannot read, is
+     dropped loudly and the dragons start afresh.
+   - **The switch** (C25, `Module.ECOLOGY`, bit 4; choice U10 in
+     docs/overnight-choices-integrate2.md): off, the dragons ignore their records, run and write
+     nothing and keep the page they had; on again, their bodies of before are gone and they run on.
+   - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
+     Java's species and dimension ids as the dragons' own: the Ice and Fire plugin's GameTests drive
+     MATERIALIZE, STEER, DEPART, ADOPT and DISCARD with it on the native engine (choice Z2).
+   - **Not wired yet:** the dragons' raids reach the industry engine only while the industry module
+     runs.
+
+12. **Ships** (`engine/ships.rs`, §7, choices U1 to U18 in docs/overnight-choices-integrate2.md):
+   rtsim-ships' engine runs inside the step, in the phase 1 world (lanes are its edges, voyages
+   its legs, captains its notables) on the phase 1 world's clock, beside the dragons.
+   - **Observations.** The journaled kinds 0x0600 to 0x06FF go through `Replay` (CARGO_LOOTED,
+     SHIP_SUNK and SHIP_CAPTURED by their op ids too) into `Ships::ingest`, at their own time with
+     the dragons and the world run to it first; those three book against the agent whatever the
+     epoch (a replay can name a body the pages never saw, U14). SHIP_STATE is latest state. Item
+     ids are Java's and map to the phase 1 catalogue's goods by name; dimensions are Java's ids
+     (the ships' frames). PORT_FOUND names an adopted village (a port of a village the world
+     lacks is ignored); HAVEN_FOUND joins its haven to the world as a haven node (U13). The
+     network is built at the first simulate point where two docks share a medium and a dimension;
+     later ports get shuttles (U12). No water mask is provided yet: every cell is water (U11).
+   - **Commands.** SHIP_MATERIALIZE, TIMETABLE, STEER, DEPART, CARGO and DESPAWN take sequences
+     from the core's counter after every other module's; all are per session (U4), so none is
+     kept or resent. Body kinds, the dimension and cargo items go through the engine's dictionary.
+     A merchant embodied across a docking gets its next voyage's hold (SHIP_CARGO, U18), its op id
+     from the ship, epoch and voyage (allocator 0x53).
+   - **Pages.** Table 0x5300: one page, `Ships::save` with its state hash (checked on load). While
+     there are ships, docks or havens the phase 1 link snapshots at every save, in the same commit.
+     A ships page without the phase 1 world it was saved with, or one this build cannot read, is
+     dropped loudly and the ships start afresh.
+   - **The switch** (C25, `Module.SHIPS`, bit 6; U10): as the dragons'.
+   - **Tests.** Order 26 (`SHIP_COMMAND`, TEST mode only) queues a ship command record with Java's
+     body, item and dimension ids as the ships' own (U15), for a future plugin's GameTests. The
+     Rust fake Java side (`tests/common`, `Java::ship_obs`, `ship_command`) plays the plugin in the
+     protocol test.
+
+13. **What the modules in the phase 1 world share** (`engine/shared.rs`, U2 to U8): **one interest
+   area per player** and **one clock**. PLAYER records go in once per hand-over (the latest per
+   player); at the simulate point each player's area is kept or booked anew in the phase 1 world's
+   leg index (`World::observe_area`: kept while the player stays within a quarter of the radius
+   and it covers the next window) and routed to the modules that run (`World::route_area`, the
+   `rtsim_world::interest::Viewer` trait): each books what the area needs, the legs sharing its
+   cells are looked up once, and each crossing goes to the module that owns the traveller (leg
+   owner bits: 63 players, 62 dragons, 61 ships, 60 herds, 59 conflict parties). A player not
+   reported for 200 game ticks leaves; a session start clears every area; with no such module
+   running no area is booked. The dragons', the ships', the herds' and the conflict's events run
+   interleaved in time (`shared::run_to`); a module that starts running in the middle of a session
+   (the herds' first herd, the conflict's first camp) hears of the areas already booked
+   (`shared::introduce_herds`, Y1; `shared::introduce_conflict`, C2-5).
+
+14. **Herds** (`engine/herds.rs`, §8, choices Y1 to Y7 and Y22 in
+   docs/overnight-choices-herdsmc.md): rtsim-ecology's herds run inside the step, in the phase 1
+   world (their legs and the players' areas are its leg index) on its clock, beside the dragons and
+   the ships.
+   - **Observations.** The journaled kinds 0x0700 to 0x07FF go through `Replay` (HERD_KILLED and
+     HERD_TAKEN by their op ids too) into `Herds::ingest`, at their own time with the other modules
+     run to it first. HERD_GROUP_STATE is latest state, counted and not yet read. Dimensions are
+     Java's ids (the herds' frames).
+   - **Commands.** HERD_MATERIALIZE, STEER and DESPAWN take sequences from the core's counter after
+     every other module's; all are per session, none kept or resent, none with an op id. The species
+     and the dimension go through the engine's dictionary.
+   - **Pages.** Table 0x4800: one page, `Herds::save` with its state hash (checked on load). While
+     there are herds the phase 1 link snapshots at every save, in the same commit. A herds page
+     without the phase 1 world it was saved with, or one this build cannot read, is dropped loudly.
+   - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule).
+   - **Prey.** With the dragons running too, the dragons run with the herds as prey
+     (`Dragons::run_until_with_herds`, Y7).
+   - **Climate and founding.** The climate is `Uniform` (Y3) and nothing in the game founds a herd:
+     only order 28 (`HERD_FOUND`, TEST mode) does (Y4).
+   - **Tests.** Order 27 (`HERD_COMMAND`, TEST mode) queues a herd command record with Java's
+     species and dimension ids as the herds' own (Y5); `nHerdInfo` reads one herd (Y22). The Rust
+     fake Java side (`tests/common`, `Java::herd_obs`, `herd_command`) plays the adapter with
+     rtsim-ecology's `FakeHerds` in the protocol test.
+
+15. **Conflict** (`engine/conflict.rs`, §9, choices C2-1 to C2-17 in
+   docs/overnight-choices-conflictjni.md): rtsim-conflict's factions, feuds and war bands run
+   inside the step, in the phase 1 world (havens are its nodes, marches legs in its leg index,
+   chiefs notables in its knowledge) on its clock, beside the dragons, the ships and the herds.
+   - **Observations.** The journaled kinds 0x0800 to 0x08FF go through `Replay` (CHIEF_KILLED,
+     TRIBUTE_PAID, GIFT_GIVEN and BAND_LOOTED by their op ids too) into `Conflict::ingest`, at
+     their own time with the other modules run to it first; Java's items, bodies, structures and
+     pollution types are translated to the conflict's own first (C2-4). BAND_STATE is latest
+     state, counted and not yet read. Dimensions are Java's ids (the conflict's frames).
+   - **Signals inside the engine.** Each industry district's learned pollution (deposit goods
+     named for a Destroy pollution type, `d/0/destroy:smog/<hash>`, I14) is the settlers' source
+     while the district runs, loaded or replaying (C2-7); what an unloaded district drains of any
+     other deposit is the settlers' mining (C2-8). Raids on districts go through the industry
+     engine's threat interface with the band's own loads (`Threat::loads`, C2-1); raids on villages
+     and havens move stock in the phase 1 world (`World::stock_to_held`, C2-10).
+   - **Commands.** TERRITORY, FACTION_NOTICE, ENVOY_MATERIALIZE, BAND_MATERIALIZE, BAND_STEER,
+     BAND_RECALL and DEMAND_SETTLED take sequences from the core's counter after every other
+     module's; all are per session (K2-27), none kept, resent or with an op id. TERRITORY goes
+     again for every faction at a session start. Body kinds, the dimension and the tribute item go
+     through the engine's dictionary; deadlines and arrivals are game time.
+   - **Pages.** Table 0x4300: one page, `Conflict::save` with its state hash (checked on load).
+     While the conflict is active the phase 1 link snapshots at every save, in the same commit. A
+     page without the phase 1 world it was saved with, or one this build cannot read, is dropped
+     loudly.
+   - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
+   - **Tests.** Order 29 (`CONFLICT_COMMAND`, TEST mode) queues a conflict command record with
+     Java's ids as the conflict's own (C2-15). The Rust fake Java side (`tests/common`,
+     `Java::conflict_obs`, `conflict_command`) plays the plugin with rtsim-conflict's
+     `FakeConflict` in the protocol test.
 
 ## 6. Phase 2: dragons (PLAN.md §9; the Ice and Fire plugin)
 
 Written 2026-10-20 overnight with the engine side, `crates/rtsim-ecology` (`boundary.rs` is the
-reference codec, with round-trip tests); the plugin, `mic_rtsim_iceandfire`, is not written. This
+reference codec, with round-trip tests); the plugin, `mic_rtsim_iceandfire` (`neoforge/iceandfire`,
+choices Z1 to Z21 in `docs/overnight-choices-iceandfire.md`), was written the same night. The
+native engine routes these records since 2026-10-20 (§5 item 11); the Rust fake Java side in
+`crates/rtsim-jni/tests/common` (`Java::dragon_obs`, `dragon_command`) plays the plugin for the
+protocol test and is the plugin's executable reference: what it answers to each command is what
+the plugin must answer. This
 section and `boundary.rs` change together. Choices are numbered R# in
 `docs/overnight-choices-dragons.md`. Ice and Fire facts below were checked in the CE 2.1-beta.1 jar
 and the pack's `config/iceandfire/iaf-common.json` (2026-10-20); anything not checked says
@@ -603,8 +748,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   ice, `copper_pile` for lightning, verified) or took items from a container, inside a known lair's
   box. Summed per (player, lair) per tick. The engine takes what its abstract hoard holds of each
   item (the rest was the structure's own treasure, never in its ledger) and the lair and its
-  dragons witness a robbery report. Hoard piles are blocks: how many items a broken pile counts as
-  is the plugin's (UNVERIFIED: the pile's layer count).
+  dragons witness a robbery report. Hoard piles are blocks: a broken pile counts what its loot table
+  drops for that player (verified: 2 nuggets a layer, layers 1 to 8; the plugin's hoard blocks are the
+  tag `#mic_rtsim_iceandfire:hoard`, Z16).
 - **DRAGON_UNTAGGED**: an Ice and Fire dragon joined the level without the plugin's tag (§6.5).
 
 ### 6.4 Commands
@@ -627,10 +773,11 @@ Write its NBT before it ticks (verified keys and types, `DragonBaseEntity.addAdd
   lair dragons spawn with aging disabled anyway, verified).
 - `Hunger` (int, 0 to 100, higher is fuller) = hunger.
 - `Gender` (bool, true is male) = gender == 1.
-- `Variant` (string): Ice and Fire picks an egg's colour as `DRAGON_COLOR.byId(random(4) +
-  getStartMetaForType())`, offsets 0, 4 and 8 for fire, ice and lightning (verified), so the
-  variant index maps to `DRAGON_COLOR.byId(variant + offset)` and its registry name.
-  UNVERIFIED: that the NBT string is exactly that registry name.
+- `Variant` (string): the colour's plain name, `DragonColor.getName()` (`red`, not a namespaced id;
+  verified in `addAdditionalSaveData`, `finalizeSpawn` and both lair pieces). The variant index is the
+  position in the species' `DragonType.colors()` list, in `IafDragonColors`' construction order: fire
+  red, green, bronze, gray; ice blue, white, sapphire, silver; lightning electric, amethyst, copper,
+  black (verified), which is also `DRAGON_COLOR.byId(variant + offset)` with offsets 0, 4 and 8.
 - With flag 2: `HomeAreaX/Y/Z` (int), `HomeDimension` (string), `HasHomePosition` (bool) = true.
   **Trap** (verified): on read the home is dropped if any coordinate is exactly 0; the plugin nudges a
   0 to 1.
@@ -656,9 +803,13 @@ captured the same way with §2.3's reasons.
 
 **Adopt** tags an untagged entity with the agent and epoch, makes it persistent, and sets its home
 when flag 1 is set; from then on it is an embodied puppet like a materialized one, and leaves view
-through DRAGON_DEMATERIALIZED.
+through DRAGON_DEMATERIALIZED. Answered by DRAGON_MATERIALIZED with the entity's UUID. An entity the
+engine adopted before and that comes back untagged (the adoption never reached a world save) is
+adopted again as the same agent under a new epoch, never as a second dragon.
 
-**Discard** removes the entity (`discard()`), with no drops.
+**Discard** removes the entity (`discard()`), with no drops. Answered by COMMAND_RESULT (status
+applied, its `cmdSeq`, op id 0: the record has none, and a discard repeated after a crash is
+harmless).
 
 ### 6.6 Owning the population (P13's recommendation: the sim owns every dragon)
 
@@ -669,14 +820,16 @@ What the bridge must do:
    `config/incontrol/spawn.json` whose mob list holds `minecraft:blaze` and `iceandfire:fire_dragon`
    (allowed in `c:is_desert`, denied elsewhere when In Control caused the join), all verified in the
    pack config. Remove the spawner entry and take `iceandfire:fire_dragon` out of both rules' mob
-   lists (the blaze rules stay). This is a pack change (outward-facing: Ben's to apply).
+   lists (the blaze rules stay). This is a pack change (outward-facing: Ben's to apply); the edited
+   files are ready in `neoforge/iceandfire/pack-proposal/config/incontrol/` (not applied, Z21).
 2. **Report every untagged dragon** that joins a level (`EntityJoinLevelEvent`) as DRAGON_UNTAGGED,
    with its spawn kind from `FinalizeSpawnEvent.getSpawnType()` where one fired first (STRUCTURE,
    NATURAL, SPAWNER, SPAWN_EGG, COMMAND, BREEDING mapped to the codes above), its NBT fields, and the
-   lair whose box holds it. UNVERIFIED: whether Ice and Fire's lair pieces spawn their dragon through
-   `finalizeSpawn` (the jar shows lair pieces set hunger 50 themselves) and so whether a
-   STRUCTURE spawn type is seen; the lair's box is the fallback: a dragon that joins inside a known
-   lair's box while the chunk generates counts as a structure spawn.
+   lair whose box holds it. Ice and Fire's lair pieces do **not** spawn their dragon through
+   `finalizeSpawn` (verified: `DragonRoostPiece.spawnDragon` and `DragonCavePiece.createDragon` call
+   `EntityType.create` and `WorldGenLevel.addFreshEntity`), so no STRUCTURE spawn type is ever seen for
+   them; the lair's box decides: a dragon with no spawn type that joins inside a lair's box is a
+   structure spawn (choice Z10). In Control's spawner spawns as NATURAL (verified).
 3. **Apply the engine's answer:** the engine adopts a lair's own dragon from world generation as its
    occupant, adopts spawn-egg and command dragons as wanderers, discards natural and spawner dragons
    (a rule the pack should no longer have) and a second structure dragon for a lair that has one,
@@ -693,7 +846,8 @@ What the bridge must do:
 ### 6.7 What the engine side does with them (rtsim-ecology)
 
 - Player positions (PLAYER, §2.3) feed a decaying home counter per player (P26's recommendation)
-  and book each player's interest area into the shared leg index; a dragon's leg that crosses one
+  and book each player's interest area into the shared leg index (on the native engine, the one
+  area per player every module shares, §5 item 13); a dragon's leg that crosses one
   books exactly one meeting, which materializes it at the edge of the area if both legs are still
   as booked when it fires (A15).
 - Every dragon is a knowledge notable; its death of age is one booked event (C24), its heir is its
@@ -703,3 +857,459 @@ What the bridge must do:
   boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
   P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
   best comparable observed fight, with capped damage applied on load (C18).
+
+## 7. Ships (PLAN.md §10.1; a future ships plugin)
+
+Written 2026-10-20 overnight with the engine side, `crates/rtsim-ships` (`boundary.rs` is the
+reference codec, with round-trip tests). **No plugin exists**, and none is chosen: which mod gives
+the bodies (Small Ships, Create Aeronautics Structures, the Seven Seas add-on) and how ports and
+havens are provided are P8 (Ben). So every record names **abstract body kinds**, and the plugin
+maps them to a mod's entities (P15's body-kind data). The executable reference for what a plugin
+answers is the fake in `crates/rtsim-ships/src/synth.rs` (`FakeShips`), which the tests and
+`rtsim-cli sim ships` drive through this codec. The native engine routes these records since
+2026-10-20 (§5 item 12, choices U# in `docs/overnight-choices-integrate2.md`); the Rust fake Java
+side in `crates/rtsim-jni/tests/common` (`Java::ship_obs`, `ship_command`) plays a plugin for the
+protocol test. Choices are numbered T# in `docs/overnight-choices-ships.md`. Nothing below about a
+body mod is verified; it is the contract a plugin would have to meet.
+
+### 7.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x0070 to 0x007F | Java to engine | ship latest-wins observations |
+| 0x0600 to 0x06FF | Java to engine | ship journaled observations (the 24-byte prefix of §2.3) |
+| 0x8600 to 0x86FF | engine to Java | ship commands (`cmdSeq` at 8) |
+
+The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1) and the dragons' (§6.1)
+ranges stay as they are; these three are next to the dragons'.
+
+### 7.2 Ids and dictionaries
+
+- **Agents.** A ship's agent id is `0x53 << 56 | handle` (namespace byte 0x53, "S"), the engine
+  row's 48-bit handle, as dragons use 0x44 (R13). The ship and its crew are one group (C25): one
+  agent, one epoch, members listed in the materialize record. Epochs as §2.2: new for every
+  materialization.
+- **Body kinds** (dictionary kind 3), abstract until P8: `mic_rtsim:ship/sea_merchant`,
+  `ship/sea_pirate`, `ship/sea_navy`, `ship/sky_merchant`, `ship/sky_pirate`, `ship/sky_navy`, and
+  crews `mic_rtsim:crew/sailor`, `crew/pirate`, `crew/marine`, `crew/aeronaut`, `crew/sky_pirate`
+  (`ShipTunables`). D7 rules out player-like crews: the plugin's body data picks mob-like bodies.
+- **Items** (dictionary kind 2) for cargo. **Structures** (kind 4) name the structure a port or
+  haven was found in, 0 for none.
+- **Ports and havens** are keyed by their village's (or haven's) key, packed as §4's villages are.
+- **Op ids**: the plugin's (top bit set, §2.2) on CARGO_LOOTED, SHIP_SUNK and SHIP_CAPTURED; the
+  engine's SHIP_CARGO uses allocator 0x53 in bits 56 to 62 over 56 bits derived from the ship, its
+  epoch and the voyage (U18).
+
+### 7.3 Observations
+
+| Kind | Name | aux | Fields (offset type name) | Size |
+|---|---|---|---|---|
+| 0x0070 | SHIP_STATE (latest-wins) | flags: 1 ticking, 2 a player aboard, 4 in combat | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 hull (thousandths), 28 u32 crew, 32 f64 x, 40 f64 y, 48 f64 z. Every 100 ticks per embodied ship (PLACEHOLDER) | 56 |
+| 0x0600 | SHIP_MATERIALIZED | 0 | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast (the ship entity) | 56 |
+| 0x0601 | SHIP_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
+| 0x0602 | SHIP_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 hull, 44 u32 crew, 48 f64 x, 56 f64 y, 64 f64 z | 72 |
+| 0x0603 | SHIP_DAMAGED | by: 0 none, 1 player, 2 ship, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 hull after, 40 u32 crew lost, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 attacker agent (by ship) | 72 |
+| 0x0604 | SHIP_SUNK | by (as DAMAGED) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 playerMost, 48 u64 playerLeast, 56 u64 killer agent, 64 u64 opId, 72 f64 x, 80 f64 y, 88 f64 z | 96 |
+| 0x0605 | SHIP_BOARDED | by: 1 player, 2 ship | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast, 56 u64 boarder agent | 64 |
+| 0x0606 | SHIP_CAPTURED | by: 1 player, 2 ship | 24 u64 agent, 32 u32 epoch, 36 u32 crew taken (M2's crew conversion; 0 for a player), 40 u64 playerMost, 48 u64 playerLeast, 56 u64 captor agent, 64 u64 opId | 72 |
+| 0x0607 | CARGO_LOOTED | n | 24 u64 agent (whose hold), 32 u32 epoch, 36 u32 by (1 player, 2 ship), 40 u64 playerMost, 48 u64 playerLeast, 56 u64 looter agent, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x0608 | SHIP_FIGHT | outcome: 1 the attacker won, 2 the defender won, 3 broke off | 24 u64 attacker agent, 32 u64 defender agent, 40 u32 attacker crew before, 44 after, 48 u32 defender crew before, 52 after, 56 u32 attacker hull after, 60 defender hull after | 64 |
+| 0x0609 | PORT_FOUND | medium: 1 sea, 2 sky | 24 u64 village, 32 u32 dimension, 36 u32 structure (dictionary 4, 0 none), 40 i32 dockX, 44 dockY, 48 dockZ, 52 u32 berths | 56 |
+| 0x060A | HAVEN_FOUND | media: 1 sea pirates, 2 sky pirates (a mask) | 24 u64 haven, 32 u32 dimension, 36 u32 structure, 40 i32 dockX, 44 dockY, 48 dockZ, 52 reserved | 56 |
+
+All of 0x0600 to 0x060A are journaled. CARGO_LOOTED, SHIP_SUNK and SHIP_CAPTURED carry the
+plugin's op id: the engine applies each once (§2.3's idempotent events).
+
+### 7.4 Commands
+
+| Kind | Name | aux | Fields | Size | Answered by |
+|---|---|---|---|---|---|
+| 0x8600 | SHIP_MATERIALIZE | members m (the ship first, then its crew) | 16 u64 agent, 24 u32 epoch, 28 u32 body (dictionary 3), 32 u32 dimension, 36 u32 flags (1 clamp above the surface, 2 hostile, 4 docked), 40 f64 x, 48 f64 y, 56 f64 z, 64 u8 medium (1 sea, 2 sky), 65 u8 role (1 merchant, 2 pirate, 3 navy), 66 u8 phase (0 dock, 1 depart, 2 cruise, 3 approach, 4 hunting, 5 sailing), 67 u8 platform, 68 i32 cruiseY, 72 u64 target agent (a pirate's prey, 0 none), 80 u32 crew, 84 u32 hull, 88 u32 waypoints w, 92 u32 cargo c, 96 i64 departTick, 104 i64 cruiseTick, 112 i64 approachTick, 120 i64 arriveTick, 128 u32 harbourBlocks, 132 reserved, 136 w × (i32 x, i32 z), then c × (u32 item, i32 count, u64 reserved), then m × (u32 body, u32 flags: 1 captain) | 136 + 8w + 16c + 8m | SHIP_MATERIALIZED or SHIP_SPAWN_REJECTED |
+| 0x8601 | SHIP_TIMETABLE | flags: 1 dock at the end | 16 u64 agent, 24 u32 epoch, 28 u32 waypoints w, 32 i64 departTick, 40 cruiseTick, 48 approachTick, 56 arriveTick, 64 i32 cruiseY, 68 i32 dockY, 72 u8 platform, 73 reserved, 76 u32 harbourBlocks, 80 w × (i32 x, i32 z) | 80 + 8w | |
+| 0x8602 | SHIP_STEER | flags: 1 attack the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed (blocks a tick), 32 f64 x, 40 f64 y, 48 f64 z, 56 u64 target agent | 64 | |
+| 0x8603 | SHIP_DEPART | reason: 1 bored, 2 hold full, 3 damaged, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | SHIP_DEMATERIALIZED |
+| 0x8604 | SHIP_CARGO | n | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 u64 opId, 40 n × (u32 item, i32 count, u64 reserved): the hold, exactly | 40 + 16n | COMMAND_RESULT |
+| 0x8605 | SHIP_DESPAWN | reason: 1 lost, 2 recalled | 16 u64 agent, 24 u32 epoch | 32 | SHIP_DEMATERIALIZED |
+
+### 7.5 How Java would apply them
+
+**Materialize** spawns the role's ship body and its crew as one group at (x, y, z), raised above
+the surface with flag 1 (the engine flies sky ships at a forced cruise height while unloaded, as
+Veloren's airships, so one never appears underground; sea ships come at sea level, 63). It tags
+every member with the agent and epoch, as the bridge tags puppets, and suppresses vanilla saving
+(P3). The hold gets the cargo. A merchant or navy ship then **follows its timetable**: docked at
+waypoint 0 until `departTick`; departing over the first `harbourBlocks` of the path until
+`cruiseTick` (a sky ship climbing from its dock's height to `cruiseY`); cruising until
+`approachTick`; approaching over the last `harbourBlocks` until `arriveTick` (descending to the
+next dock's height), at the platform given. The engine's positions are these same pieces of the
+path at constant speed each, so the body and the engine agree without physics; a body that falls
+behind (blocked) catches up or reports where it is, and the engine's timetable stays as it is. Each
+time it reaches a dock while embodied, a SHIP_TIMETABLE gives the next voyage and, for a merchant,
+a SHIP_CARGO its hold: the plugin replaces the hold exactly (what it carried was landed by the
+flow) and answers COMMAND_RESULT, applied, or duplicate for an op id it already applied (U18). A hostile pirate
+(flag 2) attacks its target agent; a pirate without a target holds its position (hunting) or sails
+where SHIP_STEER says.
+
+**Fights** are the plugin's to play with real entities while a player watches. When one ends it
+reports SHIP_FIGHT (the real outcome the engine's abstract fights are floored by: never better for
+the defender than what was seen), and what changed hands: CARGO_LOOTED (by a ship or a player),
+SHIP_CAPTURED, SHIP_SUNK, SHIP_DAMAGED.
+
+**Leaving.** A ship that stops entity-ticking for every player is captured and despawned with
+SHIP_DEMATERIALIZED (hull and crew: wounds persist as numbers; holes in hulls are not kept, PLAN.md
+§10.1's UNVERIFIED sub-level templates). SHIP_DEPART steers a pirate away and despawns it once out of
+view or after the timeout.
+
+**Ports and havens** are reported once, when found (PORT_FOUND, HAVEN_FOUND). How a plugin finds
+them is P8: a structure (a harbour piece, an airship tower), a marker block, or a village feature.
+
+### 7.6 What the engine side does with them (rtsim-ships)
+
+- **Lanes are world edges** (`World::add_lane`): merchant ships carry the ports' flows exactly as
+  caravans carry roads' (A13), capped by their holds; sea lanes follow a water mask's paths, sky
+  lanes are straight. Routes are closed loops after Veloren's (the lane graph made Eulerian and
+  split into loops); each loop is sailed both ways.
+- **Timetables**: a ship's position is a closed form of the clock and its saved clock offset, so a
+  restart moves no ship. Unobserved ships cost nothing: no event, no booking.
+- **Enters view** (A15): a player's interest area (on the native engine, the player's one shared
+  area, §5 item 13) books the voyages it could see into the shared leg index and asks it for every
+  ship leg it shares cells with; each voyage enters a player's view once (a crossing) and
+  materializes the ship and its crew as one group.
+- **Pirates** at havens hunt lanes as a hazard (a share of each consignment sails to the haven's
+  market, C24; traders price it as an expected loss and send less on a hunted lane, U9), get bored on a scheduled event brought forward by damage or a full hold, and raid
+  a merchant a player sees with the lane's hazard as the chance; a raid nobody watches is
+  Lanchester's square law floored by SHIP_FIGHT outcomes. A hunt may start with a raid on a coastal
+  player district or a booked player leg through the industry threat interface (C16 to C18).
+- **Navies** (M2's recommendation) sail patrol services whose presence lowers the lanes' hazard;
+  players' escorts add to it (`Ships::set_escort`, for a future plugin).
+- **Losses come back**: a lost merchant or navy ship relaunches at its home dock in its own slot; a
+  haven rebuilds a pirate ship when its crew pool can man one; captured crews join the pool.
+
+## 8. Herds (PLAN.md §10.2; the core's vanilla herd adapter)
+
+Written 2026-10-20 overnight with the engine side, `crates/rtsim-ecology/src/herds`
+(`herds/boundary.rs` is the reference codec, with round-trip tests). Bodies are vanilla animals for
+now (D4: nothing in the core depends on a pack mod), so the adapter is built into the core: package
+`herd` of `mic_rtsim` (`HerdBridge`; `HerdRecords` mirrors this section; choices Y8 to Y21 in
+`docs/overnight-choices-herdsmc.md`). Naturalist is a later body candidate (P8). The native engine
+routes these records (§5 item 14). The fake in `crates/rtsim-ecology/src/herds/synth.rs`
+(`FakeHerds`) plays the adapter in the crate's tests, `rtsim-cli sim herds` and rtsim-jni's
+protocol test. Choices are numbered H2-# in `docs/overnight-choices-herds.md`. The vanilla facts
+below were checked in the 1.21.1 sources (NeoForm's decompiled `EntityType`, `Sheep`, `Horse`,
+`AbstractHorse`, `Goat`, `AgeableMob`, `EatBlockGoal`, `DyeColor`); anything else is the contract
+the adapter meets.
+
+### 8.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x0080 to 0x008F | Java to engine | herd latest-wins observations |
+| 0x0700 to 0x07FF | Java to engine | herd journaled observations (the 24-byte prefix of §2.3) |
+| 0x8700 to 0x87FF | engine to Java | herd commands (`cmdSeq` at 8) |
+
+The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1) and
+the ships' (§7.1) ranges stay as they are; these three are next to the ships'.
+
+### 8.2 Ids and dictionaries
+
+- **Agents.** A herd's materialized group has the agent id `0x48 << 56 | handle` (namespace byte
+  0x48, "H"), the herd row's 48-bit handle, as dragons use 0x44 and ships 0x53. A herd has at most
+  one group at a time; the group is one puppet unit (C25): one agent, one epoch, every member
+  spawned, steered and captured together. Epochs as §2.2: new for every materialization.
+- **Members** are not agents. A member is its **member index** (u64) in its herd: the identity
+  the engine derives everything from (PLAN.md §4.4). Indices are never reused (births take a
+  monotonic next index), so a member index names one animal forever.
+- **Identity seed** (u64, per member): a pure function of (herd seed, member index). The plugin
+  seeds the body's own random with it wherever vanilla rolls something per animal (a horse's
+  health, speed and jump strength), so the same horse comes back with the same stats.
+- **Species** (dictionary kind 3, body kinds): `minecraft:sheep`, `minecraft:cow`, `minecraft:pig`,
+  `minecraft:horse`, `minecraft:goat` (verified entity type ids).
+- **Players** are UUIDs (most, least), as everywhere. **Op ids** are the plugin's (top bit set,
+  §2.2) on HERD_KILLED and HERD_TAKEN; the engine applies each once.
+
+### 8.3 Observations
+
+| Kind | Name | aux | Fields (offset type name) | Size |
+|---|---|---|---|---|
+| 0x0080 | HERD_GROUP_STATE (latest-wins) | flags: 1 ticking | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 members present, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z (the group's centroid). Every 100 ticks per embodied group (PLACEHOLDER) | 56 |
+| 0x0700 | HERD_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension | 40 |
+| 0x0701 | HERD_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown species) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
+| 0x0702 | HERD_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × capture (24 bytes: 0 u64 member, 8 u32 flags (1 sheared), 12 f32 health, 16 i32 x, 20 i32 z) | 40 + 24n |
+| 0x0703 | HERD_KILLED | by: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 member, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
+| 0x0704 | HERD_SHEARED | 0 | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 member, 48 u64 playerMost, 56 u64 playerLeast | 64 |
+| 0x0705 | HERD_TAKEN | how: 1 lead, 2 taming, 3 pickup, 4 another mod, 5 a plugin (§2.3's TAKEN codes) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 member, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId | 72 |
+| 0x0706 | HERD_OBSTACLE | members that failed to pass | 24 u64 agent, 32 u32 epoch, 36 u32 members present, 40 i32 stuckX, 44 i32 stuckZ, 48 i32 targetX, 52 i32 targetZ | 56 |
+
+All of 0x0700 to 0x0706 are journaled.
+
+- **HERD_DEMATERIALIZED** captures the group: one entry per member still present. A member
+  missing from it without a HERD_KILLED or HERD_TAKEN before is treated as still alive (the plugin
+  lost track of it), never as dead.
+- **HERD_KILLED** is journaled at the end of the tick, as DIED (§2.3). A player's kill is booked
+  as killed; any other death (a wolf, a fall, a dragon's real attack while embodied) as lost. The
+  member goes to the herd's dead-index set: it never materializes again.
+- **HERD_TAKEN** (A10): a lead, taming (horses), a Carry On pickup or another mod's capture. The
+  plugin strips the tag and the animal becomes an ordinary entity that vanilla saves; the engine
+  removes the member from its year-class and books it as taken. It never materializes again.
+- **HERD_SHEARED** makes the member notable (its sheared state is kept) until its wool has
+  regrown, after which it folds back into its cohort (it stays known as seen).
+- **HERD_OBSTACLE**: the group's members keep failing to pass a place on the way to the steer
+  target (the adapter's rule, Y15 in docs/overnight-choices-herdsmc.md: at least half the members
+  present lagging behind the herd and stalled for 30 seconds, PLACEHOLDER). The engine raises the cost of entering the cell a cell ahead of `stuck` toward
+  `target` (H2-14) and replans the herd from `stuck` at once; the cost decays with a half-life of
+  two sim years (PLACEHOLDER).
+
+### 8.4 Commands
+
+| Kind | Name | aux | Fields | Size | Answered by |
+|---|---|---|---|---|---|
+| 0x8700 | HERD_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 u32 flags (1 SURFACE: each member stands on the surface at its own x, z), 40 i32 centreX, 44 i32 centreZ, 48 i32 targetX, 52 i32 targetZ, 56 f32 speed (blocks a tick), 60 u32 footprint radius (blocks), 64 m × member (40 bytes: 0 u64 member, 8 u64 identity seed, 16 u32 variant, 20 i32 vanillaAge, 24 u32 ageDays, 28 u8 cohort (0 young, 1 adult, 2 old), 29 u8 flags (1 sheared), 30 u16 reserved, 32 i32 x, 36 i32 z) | 64 + 40m | HERD_MATERIALIZED or HERD_SPAWN_REJECTED |
+| 0x8701 | HERD_STEER | 0 | 16 u64 agent, 24 u32 epoch, 28 f32 speed (blocks a tick), 32 i32 targetX, 36 i32 targetZ, 40 i64 arriveTick | 48 | |
+| 0x8702 | HERD_DESPAWN | reason: 1 left view, 2 the player left, 3 recalled | 16 u64 agent, 24 u32 epoch, 28 reserved | 32 | HERD_DEMATERIALIZED |
+
+The member **variant** is, per species (vanilla NBT, verified):
+- sheep: the `Color` byte's dye id (white 0, pink 6, gray 7, light gray 8, brown 12, black 15),
+  rolled with vanilla's own odds (`Sheep.getRandomSheepColor`: 5% black, 5% gray, 5% light gray, 3%
+  brown, the rest white but one in 500 of those pink);
+- horse: the `Variant` int, `colour | markings << 8` (7 colours, 5 markings, uniform as
+  `Horse.finalizeSpawn` rolls them);
+- goat: 1 for `IsScreamingGoat` (2%, as `Goat.finalizeSpawn`), else 0; horns as spawned;
+- cow and pig: 0 (no variants in 1.21.1).
+
+**vanillaAge** is `AgeableMob`'s `Age`: negative for a young member (a baby, at most −24,000 at
+birth and closer to 0 as it nears the sim's maturity age), 0 for adults and old members. The sim's
+cohorts run on its own clock (sim years); vanilla's 24,000-tick growth only decides how the body
+looks.
+
+### 8.5 How Java applies them (the core's `herd` package)
+
+**Materialize** spawns every member at its (x, z) as one group in one tick (§2.4's quota counts the
+whole group, Y13), all inside the entity-ticking area of the player the group was made for (the
+engine places them in the part of the herd's footprint the player's area covers, at its inner
+edge); a member whose column is not entity-ticking rejects the whole group (reason 1). The record
+has no y: each member stands on the highest motion-blocking, non-leaf block of its column (Y11).
+Each body is made as vanilla makes the animal (`finalizeSpawn`, called directly with spawn type
+EVENT, so no `FinalizeSpawnEvent`), then gets: the agent and epoch tag, persistence required while
+embodied, vanilla saving suppressed (P3), and through its own NBT read its variant (`Color`,
+`Variant`, `IsScreamingGoat`), `Age` = vanillaAge and `Sheared` for flag 1 (Y10). What vanilla rolls
+per animal comes from the identity seed: a horse's max health, speed and jump
+(`AbstractHorse.randomizeAttributes` fed a random seeded with it; vanilla feeds the level's
+random), a goat's lost horn (Y12). HERD_MATERIALIZED answers with the members spawned; a species
+the adapter does not have is rejected with reason 9.
+
+**Steering** (Y14): the group's anchor walks from the herd's centre toward `target` at `speed`; each
+member keeps its place around it (its offset from the centre at spawn). A member more than 8 blocks
+from its place (PLACEHOLDER) walks back to it (a goal below panic, breeding and tempting; goats
+through their brain's walk target); otherwise vanilla's own AI runs. **Steer** sets a new target:
+the herd's next waypoint. `arriveTick` is when the engine's closed form reaches it, so a body that
+dawdles can catch up: the anchor arrives then.
+
+**Despawn** captures the group (HERD_DEMATERIALIZED, reason 1, one capture per member present) and
+removes the bodies; for a group not embodied it answers reason 6 with no capture. Any other loss is
+captured the same way with §2.3's reasons: a member not entity-ticking (2), unloaded or changing
+dimension (3), the session ending or the ECOLOGY switch off (4, Y9); a group whose last member died
+or was taken is answered reason 5 with no capture.
+
+**Takings and deaths** are reported as they happen: HERD_KILLED at the end of the tick of a certain
+death, with the killer (Y17), its drops carrying it (§3.1); HERD_TAKEN for a lead (any holder), a
+tamed horse, Carry On's pickup (`RtsimApi.takeFromSim`, through `SessionPlugin.take`) or a body
+another mod removed (Y16), the animal untagged and carrying its record; HERD_SHEARED when a member
+turns sheared, naming the player who used shears on it that tick (Y18). A taken animal leaves the
+group (C25: taking one member splits it from its group) and becomes ordinary.
+
+**Obstacles** (Y15): a member more than 14 blocks behind the anchor's progress toward the waypoint
+that has gained less than a block for 600 ticks (PLACEHOLDER) has failed to pass; when at least half
+the members present have, HERD_OBSTACLE goes once per waypoint, with where they stand on average.
+
+**HERD_GROUP_STATE** goes every 100 ticks per group (Y19).
+
+**Vanilla's own animals.** Vanilla keeps spawning its own passive animals at chunk generation; the
+sim's herds are extra bodies over them. The adapter neither suppresses nor adopts them; whether it
+should (as the dragons adopt lair dragons, §6.6) is open (H2-28; the recommendation is Y20).
+
+### 8.6 What the engine side does with them (rtsim-ecology's herds)
+
+- **Herds are group rows** (SCALE.md §2): counts per year-class (young, adult and old are sums by
+  age), body condition per cohort, a route that is a closed form of time, and the few members a
+  player has seen. An animal nobody has seen costs zero bytes.
+- **Each sub-season** (staggered by a hash of the herd) a herd is charged for its grazing, gives
+  birth if it is its breeding sub-season (one binomial draw on the adults), and picks its next
+  target from a forage flow field within its comfort band. Deaths are dyadic counts per
+  year-class (O5's recommendation), read in O(log) whenever anything asks: catch-up is flat in
+  elapsed time.
+- **Legs are booked lazily** (A15): the herds index their routes by region themselves; only when a
+  player's interest area is near (the world's one area per player, the herds being one of its
+  viewers, owner bit 60) does the part of a route inside the area's window go into the shared leg
+  index, with one meeting per approach; the group materializes when the footprint
+  reaches into the area: count × the share of the footprint in view at closest approach, capped
+  per herd (PLACEHOLDER 32) and per player (PLACEHOLDER 48).
+- **Identity**: seen members come back first (most recently seen first), then fresh members by
+  cohort share; anonymous deaths never fall on a seen member while unseen ones remain; killed and
+  taken members are in the dead-index set and never come back.
+- **Predators**: dragons weigh herds near their lair (and farther for a herd they follow) and take
+  latent animals by cohort weight (`Herds::predate`); an embodied group's animals are the
+  plugin's, lost only in a real fight (HERD_KILLED, by 2).
+## 9. Conflict (PLAN.md §10.3; a future conflict plugin)
+
+Written 2026-10-20 overnight with the engine side, `crates/rtsim-conflict` (`boundary.rs` is the
+reference codec, with round-trip tests). **No plugin exists**, and none is chosen: which mods give
+the bodies (Goblin's Tyranny for goblins, Illager Invasion for raiders, `minecraft:pillager` as the
+fallback) and which structures are camps and havens are P8 (Ben). So every record names **abstract
+body kinds**, and the plugin maps them to a mod's entities (P15's body-kind data); D7: mob-like
+bodies only. The executable reference for what a plugin answers is the fake in
+`crates/rtsim-conflict/src/synth.rs` (`FakeConflict`), which the tests and `rtsim-cli sim conflict`
+drive through this codec. The native engine routes them (§5 item 15, choices C2-# in
+`docs/overnight-choices-conflictjni.md`). Choices are numbered K2-# in
+`docs/overnight-choices-conflict.md`. Nothing below about a
+body mod is verified: it is the contract a plugin would have to meet.
+
+### 9.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x0090 to 0x009F | Java to engine | conflict latest-wins observations |
+| 0x0800 to 0x08FF | Java to engine | conflict journaled observations (the 24-byte prefix of §2.3) |
+| 0x8800 to 0x88FF | engine to Java | conflict commands (`cmdSeq` at 8) |
+
+The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1), the
+ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
+stay as they are; these three are next to the herds'. **Dictionary kind 0x20** (each direction, as
+§2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12 are untouched.
+**Pages**: table 0x4300 ('C'), one page with `Conflict::save` and its state hash, as the ships'
+0x5300 (§5 item 15).
+
+### 9.2 Ids and dictionaries
+
+- **Agents.** A party's agent id is `0x43 << 56 | handle` (namespace byte 0x43, "C"), the engine
+  row's 48-bit handle, as dragons use 0x44, ships 0x53 and herds 0x48. A party (an envoy and its
+  guards, scouts, a war band, plunderers) is one group (C25): one agent, one epoch per
+  materialization, its members listed by body kind and count. Waves of one watched raid share the
+  agent and the epoch (`wave` counts them).
+- **Factions** are keyed by their camp's key (u64), packed as §4's villages are: the plugin reports
+  the camp (FACTION_FOUND) and the engine joins it to the world as a haven node (C24).
+- **Body kinds** (dictionary kind 3), abstract until P8, from the culture data
+  (`crates/rtsim-conflict/data/cultures/*.json`): `mic_rtsim:conflict/goblin/warrior`, `.../archer`,
+  `.../brute`, `.../emissary`; `mic_rtsim:conflict/bandit/thug`, `.../crossbowman`,
+  `.../messenger`; `mic_rtsim:conflict/raider/vindicator`, `.../pillager`, `.../ravager`,
+  `.../herald`.
+- **Structures** (kind 4): a culture's camps, from its data (`goblinstyranny:goblin_camp`,
+  `minecraft:pillager_outpost`, `illagerinvasion:illager_fort`, `mic_rtsim:conflict/bandit_camp`;
+  the mod ids are UNVERIFIED).
+- **Items** (kind 2): tribute, gifts and loot, mapped to the phase 1 catalogue's goods by name.
+- **Players** are UUIDs (most, least); **(0, 0) means the settlers** (P14's recommendation: one
+  shared actor for unowned signals and acts). **Op ids** are the plugin's (top bit set, §2.2) on
+  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN and BAND_LOOTED; the engine applies each once. The engine's
+  commands move no items, so they carry no op ids.
+
+### 9.3 Observations
+
+| Kind | Name | aux | Fields (offset type name) | Size |
+|---|---|---|---|---|
+| 0x0090 | BAND_STATE (latest-wins) | flags: 1 ticking, 2 fighting | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 members present, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z. Every 100 ticks per embodied party (PLACEHOLDER) | 56 |
+| 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 reserved | 56 |
+| 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
+| 0x0802 | POLLUTION | 0 | 24 u64 source (the district's id, or 0 and the engine keys the chunk), 32 u32 dimension, 36 u32 type (dictionary 0x20), 40 i32 x, 44 i32 z, 48 i64 amount over the window (Destroy's units; 0: the source stopped), 56 u32 windowTicks, 60 reserved | 64 |
+| 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 reserved | 48 |
+| 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq | 48 |
+| 0x0805 | BAND_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × (u32 body, u32 survivors) | 40 + 8n |
+| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast | 64 |
+| 0x0807 | CHIEF_KILLED | killer kind (as CASUALTIES) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
+| 0x0808 | ENVOY_ANSWER | 1 accepted, 2 refused, 3 attacked | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast | 56 |
+| 0x0809 | TRIBUTE_PAID | n | 24 u64 faction, 32 u64 agent (the envoy; 0 at the camp), 40 u32 epoch, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x080A | GIFT_GIVEN | n | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u64 opId, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
+| 0x080B | BAND_LOOTED | n | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 opId, 48 n × (u32 item, i32 count, u64 reserved) | 48 + 16n |
+
+All of 0x0800 to 0x080B are journaled.
+
+- **TERRITORY_SIGNAL** is what the plugin counts inside a territory the engine told it about
+  (TERRITORY): logs broken (2), ore broken (3), blocks placed on the faction's plots (5), members
+  killed outside a party's group (4), each by the acting player, or (0, 0) for an act with no player
+  (a Create drill, a deployer: P14 gives it to the settlers). It may batch a player's acts of one
+  kind over a few seconds into one record. Ore drained by an unloaded district reaches the engine
+  from the industry engine's deposits, not from here.
+- **POLLUTION** is the Destroy plugin's attribution by position (I14) aggregated per source and
+  window: the engine sets the source's rate to amount ÷ window (a continuous signal, so the
+  culture's tolerated rate applies). While a district is unloaded, the composition sets the same
+  source's rate from the industry engine's learned rate of the pollution good (choice K2-9).
+- **BAND_DEMATERIALIZED** after the engine's BAND_RECALL can only lower the counts: those that died
+  on the way out go; a despawn the plugin decided (chunks unloaded) sets them.
+- **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
+  that player (P14). CHIEF_KILLED routs the band (§9.5).
+
+### 9.4 Commands
+
+| Kind | Name | aux | Fields | Size | Answered by |
+|---|---|---|---|---|---|
+| 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
+| 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 reserved | 64 | |
+| 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
+| 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 the demand was settled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
+| 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
+
+Every conflict command is per session: puppets never outlive one (the dragons' S11 and the ships'
+U4), so none is kept or resent; TERRITORY is sent again for every faction at a session start
+(`Conflict::session_start`, C2-9). DEMAND_SETTLED 4 (refused) answers an ENVOY_ANSWER refusal or an
+attack: a refused demand is never a cut signal (C2-12).
+
+### 9.5 How Java would apply them
+
+**Territory.** The plugin keeps each faction's circle and counts, inside it, the signals its mask
+names (TERRITORY_SIGNAL). It needs no body mod for this: block break and place events and a mixin
+or event for kills are vanilla and NeoForge.
+
+**A notice** is the faction showing it has noticed: the plugin may place a sign (a banner, a totem
+from the body mod) at the place, or show nothing; it changes nothing the engine keeps.
+
+**An envoy** is spawned as one group at (x, y, z) (SURFACE), peaceful, and walks to or waits at the
+target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
+of the item before `deadlineTick`. Paying is a TRIBUTE_PAID with the envoy's agent (the items leave
+the player's inventory; an op id); refusing or attacking is an ENVOY_ANSWER. An envoy that is
+killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3).
+
+**The raid director.** A war band that arrives where a player watches materializes in **waves**:
+each BAND_MATERIALIZE with an `arcRadius` spawns its members on the arc of that radius around
+(arcX, arcZ), the watching player's position, within `half width` degrees of `bearing`: the side
+the band came from, at the edge of the entity-ticking area (PLACEHOLDER 112 blocks). A wave is never
+more than the spawn quota of members in Minecraft at once (PLACEHOLDER 16); the engine sends the
+next wave as casualties free room, a wave interval apart. Hostile members attack the target
+position and players. Every death is a BAND_CASUALTIES with the killer; the war chief's is a
+CHIEF_KILLED (op id). When the engine recalls the band (bored, routed, done) the survivors walk
+toward (towardX, towardZ) and the plugin despawns them once out of view or after the timeout, and
+reports BAND_DEMATERIALIZED with who is left. Items a body really carried off from a container are
+BAND_LOOTED (op id). The fight itself, and any block a body breaks, is vanilla's and the body mod's;
+the industry plugin observes it as a fight at the district (IND_FIGHT, I21), which floors later
+abstract raids there.
+
+**A band seen on the march** (its leg crosses a player's interest area) is materialized at its
+place (`arcRadius` 0) and steered along its road (BAND_STEER, one per waypoint, with the tick it
+should get there); it is recalled (reason 4) where its walk leaves the view. Bands on their way home
+are not materialized.
+
+### 9.6 What the engine side does with them (rtsim-conflict)
+
+- **Factions** come from FACTION_FOUND (or the composition's own data): a culture from the
+  structure, a camp joined to the world as a haven node (C24: what they steal is stocked and sold
+  there), a territory, a chief and an heir (knowledge notables: temperament from the seed bends
+  thresholds, tribute, patience and forgiveness, C25; the heir inherits the chief's strongest
+  grudges, C24), and a warrior pool recruited back in closed form.
+- **Grievance** per (faction, actor) is a closed form between events (exponential forgiveness plus
+  the continuous signals over their tolerance), so catch-up is flat in elapsed time; impulses jump it.
+  Its next rung is the time the curve crosses that rung's threshold: one booked event per feud.
+- **The ladder**: notice (FACTION_NOTICE), an envoy with a demand (ENVOY_MATERIALIZE when seen),
+  scouts, a raid, an invasion, a siege. De-escalation: tribute paid in full (back to notice, a share
+  of the grievance gone, a respite), the signal cut by the deadline, gifts and trade at the haven,
+  the war chief killed (the band routs, the faction is cowed, the feud drops rungs, the heir holds
+  the grudge), and plain forgiveness falling under a rung (hysteresis).
+- **War bands** muster from the pool, march the road graph as legs in the world's leg index (owner
+  bit 59), may ambush a booked train leg on the way (I24), get bored at the target on a booked
+  departure brought forward by losses (C24), and go home with their loot. **Unwatched**, a raid on a
+  player district goes through the industry threat interface (never better than observed, capped,
+  applied on load even with the owner offline: C16 to C18), and a raid on a village or a rival
+  haven moves stock between the world's markets (taken into the band's hold, stocked at the haven
+  on its return: conservation exact). A district raid's threats carry the band's own loads (its
+  units' carry and blocks broken, `Threat::loads`, C2-1); threats without loads keep the industry
+  engine's per-class tunables. **Watched**, the director above.
+- **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
+  and remember the raids on them (a robbery report against the faction).

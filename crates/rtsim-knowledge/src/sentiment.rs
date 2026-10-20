@@ -121,11 +121,11 @@ fn rank(is_player: bool, value: i8, target: ActorId) -> (bool, u8, u64) {
 /// One holder's sentiment table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sentiments {
-    holder: ActorId,
-    anchor: Tick,
-    cap: u16,
+    pub(crate) holder: ActorId,
+    pub(crate) anchor: Tick,
+    pub(crate) cap: u16,
     /// Sorted by target handle, so lookups are binary searches and the order is deterministic.
-    entries: Vec<SentimentEntry>,
+    pub(crate) entries: Vec<SentimentEntry>,
 }
 
 impl Sentiments {
