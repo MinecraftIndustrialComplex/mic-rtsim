@@ -82,8 +82,8 @@ choice.
   interest area. Unit tests in the module
   (18): vanilla food points and colour odds, cohorts, the forage closed form against an ODE
   stepper and its composition, grazing's floor and fold, year-class reads and re-anchors, catch-up
-  work, the route through a gap and the fenced gap, route closed forms, the codec. Workspace: 389
-  passed, 0 failed; clippy `-D warnings` and fmt clean.
+  work, the route through a gap and the fenced gap, route closed forms, the codec. Workspace (with
+  origin/main merged): 399 passed, 0 failed; clippy `-D warnings` and fmt clean.
 - **`sim herds`** and **the sweeps**: see the reply that merged this branch and
   `bench/results/README.md` (2026-10-20, the herd sweeps).
 
