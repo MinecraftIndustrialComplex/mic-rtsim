@@ -906,7 +906,7 @@ impl Dragons {
                 Pos::new(frame, x, z)
             }
             Target::Village { node } => w.nodes[node as usize].pos,
-            Target::Home { x, z, .. } => Pos::new(0, x, z),
+            Target::Home { frame, x, z, .. } => Pos::new(frame, x, z),
         }
     }
 
@@ -1110,9 +1110,12 @@ impl Dragons {
         let plan = self.bump(d);
         let hunt_below = self.tun.hunt_below;
         let rest = self.tun.rest_ticks.max(1);
+        let here = self.dragons[d].position(&self.lairs, at);
         let x = self.dragons.get_mut(d).expect("live");
         x.state = State::Roosting;
-        x.rest = None;
+        // A dragon with a lair rests at it; one without rests where it landed (with no resting
+        // place it would stand at the origin).
+        x.rest = if x.lair.is_none() { Some(here) } else { None };
         x.bout = 0;
         let t = x.hungry_at(&self.tun, hunt_below, at).max(at + rest);
         // At rest it books nothing in the leg index: players find it through the lair.
@@ -1131,10 +1134,41 @@ impl Dragons {
         {
             return;
         }
+        self.release_claim(d, at);
         self.leave_lair(w, d, at);
         self.lairs[l as usize].plan += 1;
         self.lairs[l as usize].vacant_since = None;
         self.fly(w, d, Purpose::Claim(l), at);
+    }
+
+    /// `d` no longer flies to claim a roost (it died on the way, or was sent elsewhere): a roost
+    /// nobody lives in stands empty again and its respawn clock starts over, or it would wait for
+    /// a claimant that never comes.
+    fn release_claim(&mut self, d: DragonId, at: Tick) {
+        let Some(x) = self.dragons.get(d) else {
+            return;
+        };
+        let (State::Flying(Purpose::Claim(l))
+        | State::Embodied {
+            purpose: Purpose::Claim(l),
+            ..
+        }
+        | State::Leaving {
+            purpose: Purpose::Claim(l),
+            ..
+        }) = x.state
+        else {
+            return;
+        };
+        let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
+        let lair = &mut self.lairs[l as usize];
+        if !lair.occupants.is_empty() || lair.vacant_since.is_some() {
+            return;
+        }
+        lair.vacant_since = Some(at);
+        lair.plan += 1;
+        let plan = lair.plan;
+        self.schedule(at + delay, Ev::Respawn { lair: l, plan });
     }
 
     // ---- choosing prey -----------------------------------------------------------------------------
@@ -1242,6 +1276,10 @@ impl Dragons {
             let Some(home) = self.homes.home(target, at) else {
                 continue;
             };
+            // A home in another dimension is out of reach, whatever its coordinates.
+            if home.pos.frame != origin.frame {
+                continue;
+            }
             let dist = flight::dist((ox, oz), (i64::from(home.pos.x), i64::from(home.pos.z)));
             if dist > f64::from(sp.grudge_range) {
                 continue;
@@ -1254,6 +1292,7 @@ impl Dragons {
             offer(
                 Target::Home {
                     player: target,
+                    frame: home.pos.frame,
                     x: home.pos.x,
                     z: home.pos.z,
                 },
@@ -1414,32 +1453,44 @@ impl Dragons {
         true
     }
 
-    /// The nearest roost of `d`'s species with nobody in it and nobody on the way.
+    /// The nearest roost of `d`'s species with nobody in it and nobody on the way. Looks up the
+    /// lair cells within range (one range query per row of regions), never every lair.
     fn vacant_lair(&self, d: DragonId, at: Tick) -> Option<LairId> {
         let x = &self.dragons[d];
         let (p, _) = x.position(&self.lairs, at);
-        let range = f64::from(self.tun.species(x.species).grudge_range);
-        self.lairs
-            .iter()
-            .enumerate()
-            .filter(|(i, l)| {
-                l.species == x.species
-                    && l.occupants.is_empty()
-                    && l.vacant_since.is_some()
-                    && Some(*i as LairId) != x.lair
-            })
-            .map(|(i, l)| {
-                (
-                    flight::dist(
-                        (i64::from(p.x), i64::from(p.z)),
-                        (i64::from(l.pos.x), i64::from(l.pos.z)),
-                    ),
-                    i as LairId,
-                )
-            })
-            .filter(|(dd, _)| *dd <= range)
-            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-            .map(|(_, i)| i)
+        let range = self.tun.species(x.species).grudge_range;
+        let r = i64::from(range);
+        let (px, pz) = (i64::from(p.x), i64::from(p.z));
+        let (ra, rb) = (
+            rtsim_travel::legs::LegIndex::region_of(px - r, pz - r),
+            rtsim_travel::legs::LegIndex::region_of(px + r, pz + r),
+        );
+        let mut best: Option<(f64, LairId)> = None;
+        for rx in ra.0..=rb.0 {
+            for (_, ls) in self
+                .lair_cells
+                .range((p.frame, rx, ra.1)..=(p.frame, rx, rb.1))
+            {
+                for &i in ls {
+                    let l = &self.lairs[i as usize];
+                    if l.species != x.species
+                        || !l.occupants.is_empty()
+                        || l.vacant_since.is_none()
+                        || Some(i) == x.lair
+                    {
+                        continue;
+                    }
+                    let dd = flight::dist((px, pz), (i64::from(l.pos.x), i64::from(l.pos.z)));
+                    if dd > f64::from(range) {
+                        continue;
+                    }
+                    if best.is_none_or(|b| dd.total_cmp(&b.0).then(i.cmp(&b.1)).is_lt()) {
+                        best = Some((dd, i));
+                    }
+                }
+            }
+        }
+        best.map(|(_, i)| i)
     }
 
     // ---- arriving, hunting, eating -----------------------------------------------------------------
@@ -1757,19 +1808,31 @@ impl Dragons {
         t: Target,
         at: Tick,
     ) {
-        let Target::Home { player, x, z } = t else {
+        let Target::Home {
+            player,
+            frame,
+            x,
+            z,
+        } = t
+        else {
             return;
         };
         let x0 = &self.dragons[d];
         let sp = self.tun.species(x0.species).clone();
         let stage = x0.stage(&sp, at);
-        let sites = infra.districts_near(0, i64::from(x), i64::from(z), HOME_RADIUS);
+        let sites = infra.districts_near(frame, i64::from(x), i64::from(z), HOME_RADIUS);
         let mut food = 0;
         let mut taken = Vec::new();
         let mut any = false;
         for site in sites.into_iter().take(self.tun.raid_districts) {
             if site.watched {
-                // The player is there: a real fight. Materialize at the district.
+                // The player is there: a real fight. Materialize at the district, with what it
+                // already ate at unwatched districts on the way (the ledger has it).
+                if any {
+                    self.feed(d, at, food, &[]);
+                    let name = format!("the home of player {}", player.to_bits());
+                    self.record_hunt(at, d, PreyKind::Grudge, name, food, taken);
+                }
                 let p = site.pos;
                 self.materialize(w, d, player, true, Some((p, sp.cruise_y)), at);
                 return;
@@ -2116,10 +2179,11 @@ impl Dragons {
                 let Some(d) = self.embodied(s.agent, s.epoch) else {
                     return;
                 };
-                let starving = self.tun.starving;
+                let (starving, full) = (self.tun.starving, self.tun.full);
                 let x = self.dragons.get_mut(d).expect("live");
                 x.set_health(s.health, at);
-                x.set_fullness(s.hunger, at);
+                // Ice and Fire's Hunger is 0 to 100; anything else from the plugin is clamped.
+                x.set_fullness(s.hunger.clamp(0, full), at);
                 x.rest = Some((
                     Pos::new(s.dimension as u16, s.pos.0 as i32, s.pos.2 as i32),
                     s.pos.1 as i32,
@@ -2145,9 +2209,10 @@ impl Dragons {
                     return;
                 };
                 {
+                    let full = self.tun.full;
                     let x = self.dragons.get_mut(d).expect("live");
                     x.set_health(m.health, at);
-                    x.set_fullness(m.hunger, at);
+                    x.set_fullness(m.hunger.clamp(0, full), at);
                     x.rest = Some((
                         Pos::new(m.dimension as u16, m.pos.0 as i32, m.pos.2 as i32),
                         m.pos.1 as i32,
@@ -2377,7 +2442,8 @@ impl Dragons {
             self.note(at, "death", Some(d), "killed".into());
         }
         let heir = w.knowledge.die(x.actor, at);
-        if let Some(h) = heir {
+        // Naming the heir looks through every dragon: only for the log.
+        if let Some(h) = heir.filter(|_| self.log_enabled) {
             let who = self
                 .dragons
                 .iter()
@@ -2394,6 +2460,7 @@ impl Dragons {
     /// Takes a dead dragon out: its lair may stand empty (the respawn clock starts), its kin
     /// lose a link and re-point their heirs.
     fn remove(&mut self, w: &mut World, d: DragonId, at: Tick) {
+        self.release_claim(d, at);
         self.cancel_leg(w, d);
         // A body still in the world goes with it.
         if let Some(State::Embodied { epoch, .. } | State::Leaving { epoch, .. }) =

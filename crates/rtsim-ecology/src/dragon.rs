@@ -65,8 +65,13 @@ pub enum Target {
     },
     /// A village's livestock (a market node).
     Village { node: u32 },
-    /// A player's home (P26), when a grudge sends it.
-    Home { player: ActorId, x: i32, z: i32 },
+    /// A player's home (P26), when a grudge sends it, in the home's frame (dimension).
+    Home {
+        player: ActorId,
+        frame: u16,
+        x: i32,
+        z: i32,
+    },
 }
 
 /// Why a dragon is flying.
@@ -194,7 +199,7 @@ impl Dragon {
         if points <= 0 {
             return;
         }
-        self.fullness = (f + points).min(tun.full);
+        self.fullness = f.saturating_add(points).min(tun.full);
         self.fed_at = at;
     }
 
