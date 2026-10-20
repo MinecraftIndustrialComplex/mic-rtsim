@@ -372,24 +372,23 @@ pub(super) fn snapshot(st: &mut State, save_failures: u64) -> Vec<(PageKey, Vec<
 // ---- inspection ---------------------------------------------------------------------------------
 
 /// [`super::Engine::habitat_info`]'s fields, in order.
-pub const HABITAT_INFO: usize = 14;
+pub const HABITAT_INFO: usize = 16;
 
 impl super::Engine {
     /// The world model at block (x, z) of Java's dimension `dim` ([`HABITAT_INFO`] values): 1
     /// when the cell is known, its known, water, ice and land masks, its mean surface y, its
     /// fingerprint, the cells and regions known, the agent of the herd founded for the region (0
-    /// none), the region's marks, the HABITAT records taken, the herds founded and the
-    /// HABITAT_KNOWN records written.
+    /// none), the region's marks, the HABITAT records taken, the herds founded, the
+    /// HABITAT_KNOWN records written, and the region's herd's position (x, z) now.
     pub fn habitat_info(&self, dim: u32, x: i32, z: i32) -> [i64; HABITAT_INFO] {
         let st = super::lock(&self.state);
         let w = st.worldmodel.world.read();
         let frame = dim as u16;
         let k = RegionKey::of_block(frame, x, z);
-        let herd = st
-            .herds
-            .engine
-            .by_name(&region_herd_name(k))
-            .map_or(0, |h| rtsim_ecology::herds::herd::agent_of(h) as i64);
+        let h = &st.herds.engine;
+        let found = h.by_name(&region_herd_name(k));
+        let herd = found.map_or(0, |id| rtsim_ecology::herds::herd::agent_of(id) as i64);
+        let herd_pos = found.map_or((0, 0), |id| h.position(id, h.now()));
         let (cells, regions, marks) = w.sampled_ref().map_or((0, 0, 0), |s| {
             (
                 s.cell_count() as i64,
@@ -414,6 +413,8 @@ impl super::Engine {
         out[11] = st.worldmodel.records as i64;
         out[12] = st.worldmodel.herds_founded as i64;
         out[13] = st.worldmodel.commands_written as i64;
+        out[14] = herd_pos.0;
+        out[15] = herd_pos.1;
         out
     }
 

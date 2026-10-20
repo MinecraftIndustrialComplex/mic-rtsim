@@ -55,7 +55,8 @@ public final class RtsimCommands {
                         + ", removed by others " + s.removedByOther() + ", stale copies discarded " + s.staleDiscarded(),
                 "puppet pass: " + s.passNanos() / 1000 + " us last tick; dropped latest-wins records " + b.droppedRecords(),
                 "modules: " + Integer.toBinaryString(RtsimConfig.effectiveMask()),
-                "phase 1: " + s.phase1.describe());
+                "phase 1: " + s.phase1.describe(),
+                com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatSampler.INSTANCE.summary());
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
         return 1;
     }
