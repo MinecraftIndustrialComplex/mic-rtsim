@@ -54,6 +54,11 @@ pub struct DragonTunables {
     /// goal hunts below 90 (verified, `DragonAITargetGoal`); the sim waits longer so a dragon hunts
     /// every few days, not every few hours. TUNABLE, PLACEHOLDER 60.
     pub hunt_below: i32,
+    /// Hunts one bout may chain before the dragon goes home, however hungry. PLACEHOLDER 2.
+    pub bout_hunts: u8,
+    /// The least a dragon rests at its lair between bouts, ticks. PLACEHOLDER 12,000 (half a
+    /// day): a dragon that ate little does not hunt again at once.
+    pub rest_ticks: u64,
     /// An embodied dragon this hungry leaves to hunt (C24: hunger brings the departure
     /// forward). PLACEHOLDER 20.
     pub starving: i32,
@@ -65,7 +70,7 @@ pub struct DragonTunables {
     /// PLACEHOLDER 4.
     pub distance_cost_per_kblock: i32,
     /// A village's defenders (iron golems, guards): utility lost before temperament, in fullness
-    /// points. Bold dragons discount it (C25). PLACEHOLDER 6.
+    /// points. Bold dragons discount it (C25). PLACEHOLDER 8.
     pub village_risk: i32,
     /// Sentiment at or below which a dragon holds a grudge (rtsim-knowledge's scale, -127 to
     /// 127). PLACEHOLDER -40.
@@ -113,9 +118,9 @@ impl Default for DragonTunables {
         let pct = |road: i32, village: i32| [road, village, 100];
         let mut season_percent = [[100; PreyKind::COUNT]; 4];
         season_percent[Season::Spring.index()] = pct(100, 80);
-        season_percent[Season::Summer.index()] = pct(120, 50);
-        season_percent[Season::Autumn.index()] = pct(110, 70);
-        season_percent[Season::Winter.index()] = pct(60, 170);
+        season_percent[Season::Summer.index()] = pct(130, 50);
+        season_percent[Season::Autumn.index()] = pct(120, 60);
+        season_percent[Season::Winter.index()] = pct(60, 160);
         DragonTunables {
             species: [
                 SpeciesData::of(Species::Fire),
@@ -127,10 +132,12 @@ impl Default for DragonTunables {
             full: 100,
             hunger_tick_rate: 3_000,
             hunt_below: 60,
+            bout_hunts: 2,
+            rest_ticks: 12_000,
             starving: 20,
             season_percent,
             distance_cost_per_kblock: 4,
-            village_risk: 6,
+            village_risk: 8,
             grudge_below: -40,
             grudge_weight: 60,
             raid_districts: 2,

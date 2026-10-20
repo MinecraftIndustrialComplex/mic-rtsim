@@ -444,6 +444,7 @@ impl Dragons {
             children: Vec::new(),
             victims: Vec::new(),
             fruitless: 0,
+            bout: 0,
             rest: n.at,
         };
         let d = self.dragons.insert(row);
@@ -825,10 +826,12 @@ impl Dragons {
     fn roost(&mut self, w: &mut World, d: DragonId, at: Tick) {
         let plan = self.bump(d);
         let hunt_below = self.tun.hunt_below;
+        let rest = self.tun.rest_ticks.max(1);
         let x = self.dragons.get_mut(d).expect("live");
         x.state = State::Roosting;
         x.rest = None;
-        let t = x.hungry_at(&self.tun, hunt_below, at).max(at + 1);
+        x.bout = 0;
+        let t = x.hungry_at(&self.tun, hunt_below, at).max(at + rest);
         let (pos, y) = x.position(&self.lairs, at);
         self.book_leg(w, d, flight::stay(pos, at, t, BODY_RADIUS), y);
         self.schedule(t, Ev::Hungry { d, plan });
@@ -838,6 +841,7 @@ impl Dragons {
 
     /// Picks the best prey and flies to it. `chain` counts hunts already made in this bout.
     fn decide(&mut self, w: &mut World, d: DragonId, at: Tick, chain: u8) {
+        self.dragons.get_mut(d).expect("live").bout = chain;
         self.stats.decisions += 1;
         let x = &self.dragons[d];
         let sp = self.tun.species(x.species).clone();
@@ -851,6 +855,7 @@ impl Dragons {
         }
         match self.choose(w, d, at) {
             Some((t, kind, u)) => {
+                self.dragons.get_mut(d).expect("live").bout = chain + 1;
                 let name = self.target_name(w, t);
                 self.note(
                     at,
@@ -877,6 +882,18 @@ impl Dragons {
     /// The best target by utility: expected fullness × season weight, less flight cost and risk,
     /// bent by temperament (C25); a grudge adds its pull. Ties go to the lower kind, then index.
     fn choose(&self, w: &World, d: DragonId, at: Tick) -> Option<(Target, PreyKind, f64)> {
+        let mut best: Option<(Target, PreyKind, f64)> = None;
+        for (t, k, u) in self.weigh(w, d, at) {
+            if u > 0.0 && best.is_none_or(|b| u > b.2) {
+                best = Some((t, k, u));
+            }
+        }
+        best
+    }
+
+    /// Every target `d` would weigh at `at`, with its utility, in the order weighed (grudges,
+    /// villages, roads). For diagnostics; [`Dragons::choose`] takes the best positive one.
+    pub fn weigh(&self, w: &World, d: DragonId, at: Tick) -> Vec<(Target, PreyKind, f64)> {
         let x = &self.dragons[d];
         let sp = self.tun.species(x.species);
         let (pos, _) = x.position(&self.lairs, at);
@@ -894,15 +911,8 @@ impl Dragons {
             flight::dist((ox, oz), (i64::from(p.x), i64::from(p.z))) / 1000.0
                 * f64::from(self.tun.distance_cost_per_kblock)
         };
-        let mut best: Option<(Target, PreyKind, f64)> = None;
-        let mut offer = |t: Target, k: PreyKind, u: f64| {
-            if u <= 0.0 {
-                return;
-            }
-            if best.is_none_or(|b| u > b.2) {
-                best = Some((t, k, u));
-            }
-        };
+        let mut all: Vec<(Target, PreyKind, f64)> = Vec::new();
+        let mut offer = |t: Target, k: PreyKind, u: f64| all.push((t, k, u));
         // Grudges: the player it hates, at their home (P26).
         for (target, v) in w.knowledge.sentiment_snapshot(x.actor, at) {
             if v > self.tun.grudge_below || !w.knowledge.actors().is_player(target) {
@@ -966,7 +976,7 @@ impl Dragons {
             if flight::dist((ox, oz), p) > range as f64 {
                 continue;
             }
-            let food = self.road_food(w, e as usize, sp.dwell_ticks, sp.catch_milli, sp.caravan_share_milli).min(need);
+            let food = self.road_food(w, e as usize, sp.catch_milli, sp.caravan_share_milli).min(need);
             if food <= 0.0 {
                 continue;
             }
@@ -981,7 +991,7 @@ impl Dragons {
                 food * w_road - cost(pt),
             );
         }
-        best
+        all
     }
 
     fn class_of_world(&self, w: &World, g: GoodId) -> PreyClass {
@@ -1011,14 +1021,15 @@ impl Dragons {
         food
     }
 
-    /// Expected fullness from a dwell over a road: caravans passing in the dwell, the chance each
-    /// is caught, and the edible share of what each carries, from the flows' current rates.
-    fn road_food(&self, w: &World, e: usize, dwell: u64, catch_milli: i64, share_milli: i64) -> f64 {
-        let q = w.cfg.trade.quantum.len() as f64;
+    /// Expected fullness from a patrol of a road: the caravans on it (its travel time over the
+    /// caravan period, each way), the chance each is caught, and the edible share of what each
+    /// carries, from the flows' current rates.
+    fn road_food(&self, w: &World, e: usize, catch_milli: i64, share_milli: i64) -> f64 {
         let mut total = 0.0;
+        let d = w.edges[e].d as f64;
         for dir in &w.edges[e].dirs {
             let period = dir.lattice.current_period().max(1) as f64;
-            let passing = dwell as f64 / (period * q);
+            let passing = (d / period).max(1.0);
             let mut per_caravan = 0.0;
             for (g, p) in dir.goods.iter() {
                 if let PreyClass::Food { per_item, .. } = self.class_of_world(w, *g) {
@@ -1110,7 +1121,11 @@ impl Dragons {
             }
             Purpose::Hunt(t) => {
                 let sp = self.tun.species(self.dragons[d].species).clone();
-                let until = at + sp.dwell_ticks;
+                let dwell = match t {
+                    Target::Road { .. } => sp.patrol_ticks,
+                    _ => sp.dwell_ticks,
+                };
+                let until = at + dwell;
                 let plan = self.bump(d);
                 let pos = self.target_pos(w, t);
                 self.dragons.get_mut(d).expect("live").state = State::Hunting { target: t, until };
@@ -1121,17 +1136,14 @@ impl Dragons {
     }
 
     fn hunt_end(&mut self, w: &mut World, d: DragonId, at: Tick) {
-        let State::Hunting { target, until } = self.dragons[d].state else {
+        let State::Hunting { target, .. } = self.dragons[d].state else {
             return;
         };
         self.stats.hunts += 1;
-        let sp = self.tun.species(self.dragons[d].species).clone();
         let (food, taken, victims, kind) = match target {
-            Target::Road {
-                edge, frac_milli, ..
-            } => {
-                let from = Tick(until.0.saturating_sub(sp.dwell_ticks));
-                let (f, t, v) = self.hunt_road(w, d, edge, frac_milli, from, until, at);
+            Target::Road { edge, .. } => {
+                // A patrol: everything on the road when it ends.
+                let (f, t, v) = self.hunt_road(w, d, edge, 0, Tick::ZERO, Tick(u64::MAX), at);
                 (f, t, v, PreyKind::Road)
             }
             Target::Village { node } => {
@@ -1146,7 +1158,8 @@ impl Dragons {
         self.after_hunt(w, d, at, food);
     }
 
-    /// After a hunt: home if fed enough, else another try (at most two in a bout).
+    /// After a hunt: home if fed enough, else another target (a bout chains at most
+    /// `bout_hunts`).
     fn after_hunt(&mut self, w: &mut World, d: DragonId, at: Tick, food: i32) {
         let x = self.dragons.get_mut(d).expect("live");
         if food > 0 {
@@ -1155,9 +1168,11 @@ impl Dragons {
             x.fruitless = x.fruitless.saturating_add(1);
             self.stats.fruitless += 1;
         }
-        let hungry = self.dragons[d].fullness_at(&self.tun, at) < self.tun.hunt_below;
-        if hungry && self.dragons[d].fruitless == 1 {
-            self.decide(w, d, at, 1);
+        let x = &self.dragons[d];
+        let hungry = x.fullness_at(&self.tun, at) < self.tun.hunt_below;
+        if hungry && x.bout < self.tun.bout_hunts {
+            let chain = x.bout;
+            self.decide(w, d, at, chain);
         } else {
             self.fly(w, d, Purpose::Home, at);
         }
@@ -1290,9 +1305,13 @@ impl Dragons {
                 if t.cargo.values().all(|&a| a <= 0) {
                     continue;
                 }
-                let pass = t.departed + (t.arrives.0.saturating_sub(t.departed.0)) * f / 1000;
-                if pass < from || pass > to {
-                    continue;
+                // A crossing catches what passes its point in its window; a patrol (the whole
+                // window) catches everything on the road.
+                if (from, to) != (Tick::ZERO, Tick(u64::MAX)) {
+                    let pass = t.departed + (t.arrives.0.saturating_sub(t.departed.0)) * f / 1000;
+                    if pass < from || pass > to {
+                        continue;
+                    }
                 }
                 let k = t.key;
                 let slot = fnv1a64(

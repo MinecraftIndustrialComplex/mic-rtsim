@@ -98,8 +98,11 @@ pub struct SpeciesData {
     /// How close a target must be to be seen and fallen on, blocks: the pack's Ice and Fire
     /// `targetSearchLength` (128, from the pack config).
     pub reach: u32,
-    /// How long it hunts over a road or a village before going home, ticks. PLACEHOLDER 1,500.
+    /// How long a raid on a village lasts before it goes home, ticks. PLACEHOLDER 1,500.
     pub dwell_ticks: u64,
+    /// How long it patrols a road, ticks: it falls on the caravans on the road when the patrol
+    /// ends. PLACEHOLDER 6,000.
+    pub patrol_ticks: u64,
     /// How long it stays when it materializes to harass a place before it gets bored (C24),
     /// ticks. PLACEHOLDER 6,000 (five real minutes).
     pub visit_ticks: u64,
@@ -141,10 +144,11 @@ impl SpeciesData {
             grudge_range: 6_000,
             reach: 128,
             dwell_ticks: 1_500,
+            patrol_ticks: 6_000,
             visit_ticks: 6_000,
-            catch_milli: 600,
-            caravan_share_milli: 500,
-            village_share_milli: 150,
+            catch_milli: 800,
+            caravan_share_milli: 700,
+            village_share_milli: 100,
             appetite: 100,
             max_health: 500.0,
             regen_per_day_milli: 200,
@@ -164,7 +168,7 @@ impl SpeciesData {
             },
             Species::Lightning => SpeciesData {
                 speed: 0.6,
-                catch_milli: 700,
+                catch_milli: 900,
                 ..base
             },
         }

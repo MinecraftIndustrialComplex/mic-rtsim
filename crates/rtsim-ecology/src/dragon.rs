@@ -150,6 +150,8 @@ pub struct Dragon {
     pub victims: Vec<ActorId>,
     /// Hunts in a row that found nothing.
     pub fruitless: u8,
+    /// Hunts in the current bout (since it last left its lair).
+    pub bout: u8,
     /// Where it last was when it stopped flying (a captured position).
     pub rest: Option<(Pos, i32)>,
 }
@@ -279,6 +281,7 @@ mod tests {
             children: vec![],
             victims: vec![],
             fruitless: 0,
+            bout: 0,
             rest: None,
         }
     }
