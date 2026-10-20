@@ -89,6 +89,9 @@ public interface IndustryPlugin {
         return false;
     }
 
+    /** Once per tick, after the core's own industry work (train departures waiting for a destination). */
+    default void tick(Industry industry, long now) {}
+
     /**
      * Reads and writes an inventory of a kind this plugin declared (a postbox, whose packages are
      * counted by their contents), or null to use the capabilities.

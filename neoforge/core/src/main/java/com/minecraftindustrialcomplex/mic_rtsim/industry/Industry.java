@@ -112,6 +112,13 @@ public final class Industry {
         reconciler.tick(now);
         sampler.tick(now);
         ledgers.tick(now);
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            try {
+                p.tick(this, now);
+            } catch (RuntimeException e) {
+                fail("plugin tick " + p.getClass().getSimpleName(), e);
+            }
+        }
         ticks++;
     }
 

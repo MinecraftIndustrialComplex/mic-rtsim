@@ -876,6 +876,83 @@ public final class Districts {
         return new District.Inventory(0, c.pos, kind, slots, fluid, energy);
     }
 
+    // ---- test helpers (GameTests) ---------------------------------------------------------------
+
+    /**
+     * GameTests: forgets every district of {@code level} with a chunk in the box (removed, as a player's
+     * removal would be), and the seeds, epochs, pins and exclusions of the box's loaded chunks, so a test
+     * starts from no industry wherever the runner put its structure.
+     */
+    public void forgetArea(ServerLevel level, int minCx, int minCz, int maxCx, int maxCz) {
+        ResourceKey<Level> dim = level.dimension();
+        for (District d : new ArrayList<>(data.districts.values())) {
+            if (d.dim != dim)
+                continue;
+            boolean hit = false;
+            for (long c : d.chunks) {
+                int x = ChunkPos.getX(c), z = ChunkPos.getZ(c);
+                if (x >= minCx && x <= maxCx && z >= minCz && z <= maxCz) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit)
+                continue;
+            data.districts.remove(d.id);
+            loaded.remove(d.id);
+            ByteBuffer r = ind.journal(IndRecords.IND_DISTRICT_REMOVED, IndRecords.DistrictRemoved.SIZE, 0);
+            r.putLong(IndRecords.DistrictRemoved.DISTRICT, d.id);
+            ind.commit(r);
+            ind.sampler.revisionChanged(d);
+        }
+        for (int x = minCx; x <= maxCx; x++)
+            for (int z = minCz; z <= maxCz; z++) {
+                long c = ChunkPos.asLong(x, z);
+                data.pins(dim).remove(c);
+                data.excluded(dim).remove(c);
+                LevelChunk chunk = level.getChunkSource().getChunkNow(x, z);
+                if (chunk != null) {
+                    chunk.removeData(IndustryAttachments.SEEDS.get());
+                    chunk.removeData(IndustryAttachments.RECONCILE.get());
+                    chunk.setUnsaved(true);
+                }
+            }
+        Long2ObjectOpenHashMap<District> index = byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>());
+        index.clear();
+        for (District d : data.districts.values())
+            if (d.dim == dim)
+                for (long c : d.chunks)
+                    index.put(c, d);
+        dirty.remove(dim);
+        data.setDirty();
+    }
+
+    /** GameTests: a district of one chunk, made directly (no seed, no scan), declared. */
+    public District createForTest(ServerLevel level, long chunk) {
+        District d = new District(data.allocateId(), level.dimension());
+        d.chunks.add(chunk);
+        d.recomputeBounds();
+        data.districts.put(d.id, d);
+        byChunk.computeIfAbsent(level.dimension(), k -> new Long2ObjectOpenHashMap<>()).put(chunk, d);
+        LongOpenHashSet ls = new LongOpenHashSet();
+        if (level.getChunkSource().getChunkNow(ChunkPos.getX(chunk), ChunkPos.getZ(chunk)) != null)
+            ls.add(chunk);
+        loaded.put(d.id, ls);
+        d.revision++;
+        declare(d, ind.gameTime());
+        d.loadDirty = true;
+        return d;
+    }
+
+    /** GameTests: adds a chunk to a district as if detection had kept it (an unloaded member chunk). */
+    public void addChunkForTest(District d, long chunk) {
+        d.chunks.add(chunk);
+        d.recomputeBounds();
+        byChunk.computeIfAbsent(d.dim, k -> new Long2ObjectOpenHashMap<>()).put(chunk, d);
+        redeclare(d);
+        d.loadDirty = true;
+    }
+
     // ---- declaring ------------------------------------------------------------------------------
 
     /** IND_DISTRICT, its chunk parts, its inventories and its stations, all with the current revision. */
