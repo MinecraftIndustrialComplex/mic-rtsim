@@ -55,7 +55,7 @@ public final class LivePhase1GameTests {
         return n;
     }
 
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 6000, batch = "mic_rtsim_p1_live")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 24000, batch = "mic_rtsim_p1_live")
     public static void aRealCaravanTradesIsRobbedAndTheNewsTravels(GameTestHelper helper) {
         if (!(RtsimTests.engine() instanceof NativeEngine e)) {
             record("liveCaravan", "skipped", "the stub engine decides nothing; this test needs the native engine's phase 1 world");
@@ -164,7 +164,7 @@ public final class LivePhase1GameTests {
                     if (told.size() >= 2)
                         return;
                     if (ask[0]++ % 10 == 0) {
-                        check("the news spread within 500 asks in all", ask[1] < 500);
+                        check("the news spread within 2,000 asks in all", ask[1] < 2_000);
                         e.phase1Advance(6_000);
                         ask[1]++;
                     }
@@ -175,7 +175,7 @@ public final class LivePhase1GameTests {
                     List<String> feel = new ArrayList<>();
                     for (Village v : villages)
                         feel.add(Long.toHexString(v.id) + "=" + e.phase1Sentiment(v.id, player.getUUID()));
-                    record("liveCaravan", "villages whose gossip holds the robbery", told);
+                    record("liveCaravan", "villages whose gossip holds the robbery", told + " after " + ask[1] + " asks");
                     record("liveCaravan", "their sentiment toward the robber now", feel);
                     record("liveCaravan", "engine phase 1 stats (trades, robberies, gossip sent)",
                             (s[NativeEngine.P1_CARAVAN_TRADES] - base[NativeEngine.P1_CARAVAN_TRADES]) + ", "

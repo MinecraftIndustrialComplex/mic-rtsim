@@ -53,11 +53,13 @@ Measured with `cargo test` on the same laptop (release for the decision cost, at
 | A fully sampled plains region in memory (64 cells, their creature entries) | 6,208 bytes |
 | Its page | 4,757 bytes |
 | The meta page (one biome, four bodies) | 110 bytes |
-| A herd's decision on the world model (`decision_cost_on_the_world_model`: 16 sheep herds, the strait world, two sim years) | 1,450 µs |
-| The same on the uniform climate (Y3) | 883 µs |
+| A herd's decision on the world model, before the cache (`decision_cost_on_the_world_model`: 16 sheep herds, the strait world, two sim years) | 1,450 µs |
+| The same with the forage-cell cache (each cell read once per model revision) | 507 µs |
+| The same on the uniform climate (Y3) | 853 µs |
 
 So a region explored in full costs about 6 KB in the engine: 1,000 regions (a 16 km square) about
 6 MB, paged per region on save (only the regions changed since the last save are written). A herd's
-decision costs about 1.6 times what it did on the uniform climate, from reading the world model for
-every forage cell its flow field touches (four habitat cells each, under the model's lock); a cache of
-the forage cell's `Area` would cut it, and herds decide once per sub-season.
+decision first cost 1.6 times what it did on the uniform climate, from reading the world model (four
+habitat cells under the model's lock) for every forage cell its flow field touches, several times
+each; caching each forage cell's reading until the model changes brought it to 0.6 times (the sea and
+the unknown ground also close cells the uniform climate let the flow field explore).
