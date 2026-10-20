@@ -408,6 +408,18 @@ pub enum Obs {
         district: DistrictId,
         watched: bool,
     },
+    /// A player near an unloaded district (the Java side's IND_APPROACH, H23): data for the
+    /// stale-tick race's option (d). The engine keeps the latest on the district and does not act
+    /// on it (W16); what to do with it is Ben's call.
+    Approach {
+        district: DistrictId,
+        /// Blocks from the nearest player to the district's chunk box.
+        distance: u32,
+        /// `distance` over the closing rate, in ticks; None when unknown.
+        eta_ticks: Option<u32>,
+        /// Closer than at the record before.
+        closing: bool,
+    },
     // Journaled events.
     District(DistrictDecl),
     DistrictChunks {
@@ -484,6 +496,7 @@ impl Obs {
                 | Obs::ChannelSample { .. }
                 | Obs::LedgerRequest { .. }
                 | Obs::Watched { .. }
+                | Obs::Approach { .. }
         )
     }
 }

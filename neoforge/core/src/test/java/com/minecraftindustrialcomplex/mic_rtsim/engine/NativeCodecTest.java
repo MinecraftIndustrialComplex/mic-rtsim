@@ -157,6 +157,31 @@ class NativeCodecTest {
     }
 
     @Test
+    void anIndustryCommandCarriesItsNamesThenTheRecord() {
+        byte[] record = new byte[48];
+        ByteBuffer rb = ByteBuffer.wrap(record).order(ByteOrder.LITTLE_ENDIAN);
+        rb.putShort(0, (short) 0x8403);
+        rb.putShort(2, (short) 48);
+        rb.putLong(16, (0x49L << 56) | 7);
+        byte[] bytes = new NativeCodec.Orders().industryCommand(List.of(
+                new NativeEngine.DictEntry(0x10, 3, "d/0/oreexcavation:vein"),
+                new NativeEngine.DictEntry(1, 1, "minecraft:overworld")), record).toBytes();
+        Reader r = new Reader(bytes);
+        int end = r.header(NativeCodec.INDUSTRY_COMMAND);
+        assertEquals(bytes.length, end);
+        assertEquals(2, r.u32());
+        assertEquals(0x10, r.u32());
+        assertEquals(3, r.u32());
+        assertEquals("d/0/oreexcavation:vein", r.str());
+        assertEquals(1, r.u32());
+        assertEquals(1, r.u32());
+        assertEquals("minecraft:overworld", r.str());
+        byte[] tail = new byte[end - r.b.position()];
+        r.b.get(tail);
+        assertArrayEquals(record, tail, "the record follows the names unchanged");
+    }
+
+    @Test
     void manyOrdersGrowTheBufferAndChainTheirSizes() {
         NativeCodec.Orders orders = new NativeCodec.Orders();
         for (int i = 0; i < 200; i++)

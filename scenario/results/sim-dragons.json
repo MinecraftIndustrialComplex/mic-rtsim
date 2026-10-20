@@ -2,7 +2,7 @@
   "seed": 7,
   "days": 48,
   "starts_in": "Autumn",
-  "wall_ms": 118.17264399999999,
+  "wall_ms": 109.25463500000001,
   "checks": [
     {
       "name": "conservation with predation",

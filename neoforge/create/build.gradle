@@ -51,17 +51,17 @@ neoForge {
 
     runs {
         // `./gradlew :create:runGameTestServer`: the core, this plugin and Create 6.0.10 on a headless
-        // dedicated server, running every @GameTest in this plugin's namespace against the core's
-        // StubEngine (the industry tests script the engine side). mic_rtsim_create.mixins.json is
+        // dedicated server, running every @GameTest in this plugin's namespace against the session's
+        // engine (the industry tests script the engine side on either). mic_rtsim_create.mixins.json is
         // defaultRequire 1, so a Create mixin that no longer matches fails the launch.
         gameTestServer {
             type = 'gameTestServer'
             systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
             systemProperty 'mic_rtsim.gametest', 'true'
-            // The industry GameTests script the engine side through the stub, whatever -PrtsimEngine says:
-            // the industry commands they script (IND_CHUNK_RECONCILE, IND_CARRIAGE_DELTA, IND_LEDGER) are
-            // raw orders only the stub's script API takes (choice H25).
-            systemProperty 'mic_rtsim.engine', 'stub'
+            // The session's engine, as the core's run: native (rtsim-jni, with the industry engine behind it)
+            // unless -PrtsimEngine=stub. The industry commands the tests script go to the native engine as
+            // INDUSTRY_COMMAND orders (choice W17; before it, H25 pinned this run to the stub).
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
             jvmArgument '-Xmx4G'
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')

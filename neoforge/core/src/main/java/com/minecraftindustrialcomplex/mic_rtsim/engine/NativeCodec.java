@@ -30,6 +30,13 @@ import java.util.List;
  *   <li>6 REWIND_CMD_SEQ: u64 next.</li>
  *   <li>7 FAIL: no body. The step that writes it panics on purpose (an engine opened with
  *       {@code FLAG_TEST} only).</li>
+ *   <li>8 INDUSTRY_THREAT: u64 id, u32 source, u32 class, u32 count, u32 target kind, f64 strength,
+ *       u64 target, u64 gameTime (rtsim-jni's orders.rs; no Java caller yet).</li>
+ *   <li>9 INDUSTRY_COMMAND: u32 names, then per name: u32 dictionary kind, u32 Java's id, str name
+ *       (the Java dictionary entries the record uses); then an industry command record exactly as
+ *       docs/industry-boundary.md §4 lays it out (its cmdSeq ignored), with Java's own dictionary ids
+ *       (GOOD, NAME, BLOCK_STATE and dimension). The engine writes it as if its industry engine had
+ *       decided it (choice W17).</li>
  * </ul>
  *
  * <p><b>The received log</b>: entries of u64 handover, u64 obsSeq (0 if not journaled), u32 flags
@@ -48,6 +55,7 @@ final class NativeCodec {
     static final int SAVE_AT_NEXT_STEP = 5;
     static final int REWIND_CMD_SEQ = 6;
     static final int FAIL = 7;
+    static final int INDUSTRY_COMMAND = 9;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -133,6 +141,19 @@ final class NativeCodec {
         Orders rewindCommandSequence(long next) {
             begin(REWIND_CMD_SEQ);
             u64(next);
+            return end();
+        }
+
+        Orders industryCommand(List<NativeEngine.DictEntry> names, byte[] record) {
+            begin(INDUSTRY_COMMAND);
+            u32(names.size());
+            for (NativeEngine.DictEntry n : names) {
+                u32(n.kind());
+                u32(n.id());
+                str(n.name());
+            }
+            room(record.length);
+            b.put(record);
             return end();
         }
 
