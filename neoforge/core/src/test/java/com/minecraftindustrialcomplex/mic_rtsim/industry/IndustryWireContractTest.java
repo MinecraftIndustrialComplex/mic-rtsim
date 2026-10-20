@@ -72,19 +72,19 @@ class IndustryWireContractTest {
 
     /** The command fixtures; every other record fixture is an observation. */
     private static final Set<String> COMMANDS = Set.of("IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA",
-            "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT", "IND_CHANNEL_DELTA", "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
+            "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT", "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
 
     /** What the Rust program must have printed. A missing one fails, so a shrunken file cannot pass. */
     private static final List<String> REQUIRED = List.of(
             "IND_STOCK_SAMPLE", "IND_SWEEP_END", "IND_LEDGER_REQUEST", "IND_WATCHED", "IND_APPROACH", "IND_DISTRICT",
             "IND_DISTRICT_CHUNKS", "IND_INVENTORY", "IND_DISTRICT_REMOVED", "IND_EDIT", "IND_DISCARD",
-            "IND_LOAD_STATE", "IND_CHUNK_LOADED", "IND_PORT", "IND_PORT_NO_INVENTORY", "IND_TRAIN_ARRIVED",
+            "IND_LOAD_STATE", "IND_CHUNK_LOADED", "IND_CHUNK_UNLOADED", "IND_PORT", "IND_PORT_NO_INVENTORY", "IND_TRAIN_ARRIVED",
             "IND_TRAIN_DEPARTED", "IND_STATION", "IND_RECONCILE_RESULT", "IND_CARRIAGE_RESULT",
             "IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA", "IND_LEDGER", "IND_LEDGER_NO_BREAKPOINT",
             // overnight agent 14: the plugin, threat and level-store records
-            "IND_DEPOSIT_SAMPLE", "IND_CHANNEL_SAMPLE", "IND_CONDITIONS", "IND_POWER_LINK", "IND_PACKAGE",
+            "IND_DEPOSIT_SAMPLE", "IND_CONDITIONS", "IND_POWER_LINK", "IND_PACKAGE",
             "IND_SPAWN_SAMPLE", "IND_FIGHT", "IND_SURVEY", "IND_SURVEY_BLOCKS",
-            "IND_CHANNEL_DELTA", "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
+            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -116,7 +116,7 @@ class IndustryWireContractTest {
                 "TrainCargo", IndRecords.Port.TRAIN_CARGO, "Package", IndRecords.Port.PACKAGE,
                 "PlayerSession", IndRecords.Port.PLAYER_SESSION, "PlayerToss", IndRecords.Port.PLAYER_TOSS,
                 "PlayerPickup", IndRecords.Port.PLAYER_PICKUP, "StockBroken", IndRecords.Port.STOCK_BROKEN,
-                "Channel", IndRecords.Port.CHANNEL, "Other", IndRecords.Port.OTHER);
+                "Other", IndRecords.Port.OTHER);
         group("package_direction", "In", IndRecords.Package.IN, "Out", IndRecords.Package.OUT);
         group("not_learnable",
                 "RotationCrossesBoundary", IndRecords.NotLearnable.ROTATION_CROSSES,
@@ -574,6 +574,12 @@ class IndustryWireContractTest {
                         .put32("chunk_x", IndRecords.ChunkLoaded.X, f.i32("chunk_x") & 0xFFFF_FFFFL)
                         .put32("chunk_z", IndRecords.ChunkLoaded.Z, f.i32("chunk_z") & 0xFFFF_FFFFL)
                         .put32("applied_epoch", IndRecords.ChunkLoaded.APPLIED_EPOCH, f.u32("applied_epoch"));
+            case "IND_CHUNK_UNLOADED":
+                return journaled(n, IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.SIZE, 0, f)
+                        .put64("district", IndRecords.ChunkUnloaded.DISTRICT, f.u64("district"))
+                        .put32("dim", IndRecords.ChunkUnloaded.DIM, f.u32("dim"))
+                        .put32("chunk_x", IndRecords.ChunkUnloaded.X, f.i32("chunk_x") & 0xFFFF_FFFFL)
+                        .put32("chunk_z", IndRecords.ChunkUnloaded.Z, f.i32("chunk_z") & 0xFFFF_FFFFL);
             case "IND_PORT":
             case "IND_PORT_NO_INVENTORY": {
                 int c = f.count("n_entries");
@@ -670,13 +676,6 @@ class IndustryWireContractTest {
                         .put32("chunk_x", IndRecords.DepositSample.CHUNK_X, f.i32("chunk_x") & 0xFFFF_FFFFL)
                         .put32("chunk_z", IndRecords.DepositSample.CHUNK_Z, f.i32("chunk_z") & 0xFFFF_FFFFL)
                         .put32("infinite", IndRecords.DepositSample.FLAGS, f.bool("infinite") ? IndRecords.DepositSample.FLAG_INFINITE : 0);
-            case "IND_CHANNEL_SAMPLE": {
-                int c = f.count("n_entries");
-                return latest(n, IndRecords.IND_CHANNEL_SAMPLE, IndRecords.ChannelSample.size(c), c, IndRecords.ChannelSample.GAME_TIME, f)
-                        .put64("channel", IndRecords.ChannelSample.CHANNEL, f.u64("channel"))
-                        .put64("capacity", IndRecords.ChannelSample.CAPACITY, f.i64("capacity"))
-                        .entries(IndRecords.ChannelSample.ENTRIES, f, "entry", c);
-            }
             case "IND_CONDITIONS":
                 return journaled(n, IndRecords.IND_CONDITIONS, IndRecords.Conditions.SIZE, 0, f)
                         .put32("season", IndRecords.Conditions.SEASON, f.u32("season"))
@@ -936,18 +935,6 @@ class IndustryWireContractTest {
                     r.u32(p + "good", at + IndRecords.Ledger.G_GOOD, f.u32(p + "good"))
                             .b64(p + "per_hour", at + IndRecords.Ledger.G_PER_HOUR, f.i64(p + "per_hour"))
                             .b64(p + "since_start", at + IndRecords.Ledger.G_SINCE_START, f.i64(p + "since_start"));
-                }
-                break;
-            }
-            case "IND_CHANNEL_DELTA": {
-                int c = f.count("n_entries");
-                r.header(IndRecords.IND_CHANNEL_DELTA, IndRecords.ChannelDelta.ENTRIES + c * IndRecords.ENTRY16, c, f);
-                r.b64("op", IndRecords.ChannelDelta.OP_ID, f.u64("op"))
-                        .b64("channel", IndRecords.ChannelDelta.CHANNEL, f.u64("channel"));
-                for (int i = 0; i < c; i++) {
-                    int at = IndRecords.ChannelDelta.ENTRIES + i * IndRecords.ENTRY16;
-                    r.u32("entry" + i + ".good", at + E_GOOD, f.u32("entry" + i + ".good"))
-                            .b64("entry" + i + ".amount", at + E_AMOUNT, f.i64("entry" + i + ".amount"));
                 }
                 break;
             }

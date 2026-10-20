@@ -72,6 +72,16 @@ pub struct ConflictTunables {
     /// Of the attackers an unwatched district raid did not leave standing (walls, defenders), the
     /// share that falls; the rest straggle home. PLACEHOLDER 0.5.
     pub abstract_loss_share: f64,
+    /// P14 (Ben, changed): time spent per chunk decays with this half-life. PLACEHOLDER 216,000
+    /// ticks (three Minecraft days, P26's home counter's scale).
+    pub presence_half_life_ticks: u64,
+    /// Players kept per chunk (the most time first). PLACEHOLDER 3.
+    pub presence_top: usize,
+    /// Chunks kept; the one touched longest ago goes. PLACEHOLDER 65,536 (about 6 MiB).
+    pub presence_chunks: usize,
+    /// The most one gap between two position reports counts. PLACEHOLDER 1,200 ticks, as P26's
+    /// `Homes::max_gap`.
+    pub presence_max_gap: u64,
 }
 
 impl Default for ConflictTunables {
@@ -107,6 +117,10 @@ impl Default for ConflictTunables {
             recall_timeout_ticks: 1_200,
             player_stale_ticks: 2_400,
             abstract_loss_share: 0.5,
+            presence_half_life_ticks: 216_000,
+            presence_top: 3,
+            presence_chunks: 65_536,
+            presence_max_gap: 1_200,
         }
     }
 }
