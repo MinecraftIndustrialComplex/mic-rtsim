@@ -371,6 +371,30 @@ impl Answers<HeadCount> for Field {
     }
 }
 
+impl Encode for Stock {
+    fn encode(&self, w: &mut Writer) {
+        w.var_i64(self.amount);
+        w.i64(self.flow.rate_fixed());
+        w.u32(self.flow.carry());
+        w.var_i64(self.threshold);
+        w.var_i64(self.produced);
+    }
+}
+
+impl Decode for Stock {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        let amount = r.var_i64()?;
+        let rate = r.i64()?;
+        let carry = r.u32()?;
+        Ok(Stock {
+            amount,
+            flow: Diffuser::with_carry(rate, carry),
+            threshold: r.var_i64()?,
+            produced: r.var_i64()?,
+        })
+    }
+}
+
 impl Encode for SynthRegion {
     fn encode(&self, w: &mut Writer) {
         w.u64(self.herd.seed);
@@ -380,41 +404,22 @@ impl Encode for SynthRegion {
         w.var_u64(self.herd.born);
         w.var_u64(self.herd.died);
         w.var_u64(self.herd.capacity);
-        w.var_i64(self.stock.amount);
-        w.i64(self.stock.flow.rate_fixed());
-        w.u32(self.stock.flow.carry());
-        w.var_i64(self.stock.threshold);
-        w.var_i64(self.stock.produced);
+        self.stock.encode(w);
     }
 }
 
 impl Decode for SynthRegion {
     fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
-        let seed = r.u64()?;
-        let cohorts = [r.var_u64()?, r.var_u64()?, r.var_u64()?];
-        let born = r.var_u64()?;
-        let died = r.var_u64()?;
-        let capacity = r.var_u64()?;
-        let amount = r.var_i64()?;
-        let rate = r.i64()?;
-        let carry = r.u32()?;
-        let threshold = r.var_i64()?;
-        let produced = r.var_i64()?;
-        let flow = Diffuser::with_carry(rate, carry);
+        let herd = Herd {
+            seed: r.u64()?,
+            cohorts: [r.var_u64()?, r.var_u64()?, r.var_u64()?],
+            born: r.var_u64()?,
+            died: r.var_u64()?,
+            capacity: r.var_u64()?,
+        };
         Ok(SynthRegion {
-            stock: Stock {
-                amount,
-                flow,
-                threshold,
-                produced,
-            },
-            herd: Herd {
-                seed,
-                cohorts,
-                born,
-                died,
-                capacity,
-            },
+            stock: Stock::decode(r)?,
+            herd,
         })
     }
 }
