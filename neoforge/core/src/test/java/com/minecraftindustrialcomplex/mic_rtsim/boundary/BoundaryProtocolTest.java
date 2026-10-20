@@ -358,4 +358,19 @@ class BoundaryProtocolTest {
                 "the engine sees the world's own next sequence, so it can tell it is ahead");
         assertEquals(11L, j3.nextObsSeq());
     }
+
+    @Test
+    void commandsThatDoNotFitWaitForTheNextStepInOrder() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, 512);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        Sink sink = new Sink(s);
+        for (int i = 0; i < 30; i++)
+            e.transferToContainer(Obs.ENGINE_OP_BIT | (1000 + i), "minecraft:overworld", 8, 0, 0, "minecraft:stone", 1);
+        for (int i = 0; i < 40 && sink.containers.getOrDefault(8L, 0) < 30; i++)
+            tick(s, sink, e);
+        assertEquals(30, sink.containers.get(8L), "every command arrives, over several steps");
+        assertEquals(0, e.scriptedPending());
+        assertTrue(s.journal().lastAppliedCmdSeq() >= 32, "two DICT and thirty transfers, each with its own sequence");
+        assertEquals(0, s.skippedStaleCommands(), "no sequence was reused when a step rolled a command back");
+    }
 }
