@@ -448,7 +448,8 @@ impl World {
         self.edges.push(edge);
         let (pa, pb) = (self.nodes[a].pos, self.nodes[b].pos);
         if pa.frame == pb.frame {
-            self.roads.add(
+            self.roads.add_on(
+                self.legs.topo(pa.frame),
                 e,
                 pa.frame,
                 (i64::from(pa.x), i64::from(pa.z)),
@@ -466,8 +467,10 @@ impl World {
     /// recipes and its new neighbours' costs, and it links to the world by the edge rule. Existing
     /// markets keep their anchors (overnight choice E15); their `T` bound does not move either, so
     /// a longer new edge than they had is a known gap until anchors are recomputed.
-    pub fn join(&mut self, d: NodeData, at: Tick) -> usize {
+    pub fn join(&mut self, mut d: NodeData, at: Tick) -> usize {
         self.run_until(at);
+        // Where it is on the world (topology choice TP4), so its edges and its key are one place's.
+        d.pos = self.canonical_pos(d.pos);
         let sid = self.settlements.insert(Settlement {
             key: d.key,
             kind: d.kind,
@@ -610,9 +613,8 @@ impl World {
         else {
             return false;
         };
-        let dist = self.nodes[from]
-            .pos
-            .dist(self.nodes[haven].pos)
+        let dist = self
+            .pos_dist(self.nodes[from].pos, self.nodes[haven].pos)
             .unwrap_or(0);
         let delay = self
             .cfg
