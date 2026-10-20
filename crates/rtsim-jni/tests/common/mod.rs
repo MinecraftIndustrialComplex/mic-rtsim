@@ -140,6 +140,12 @@ pub struct Java {
     /// Ship commands applied, as a ships plugin would (docs/boundary.md §7.5): (cmdSeq, command
     /// decoded with the reference codec, its body, item and dimension ids in Java's dictionary).
     pub ships: Vec<(u64, rtsim_ships::boundary::Cmd)>,
+    /// Herd commands applied, as the core's vanilla herd adapter would (docs/boundary.md §8.5):
+    /// (cmdSeq, command decoded with the reference codec, its dimension in Java's dictionary).
+    pub herds: Vec<(u64, rtsim_ecology::herds::boundary::Cmd)>,
+    /// The vanilla herd adapter this Java plays: rtsim-ecology's fake plugin
+    /// (`herds::synth::FakeHerds`), which answers the commands and plays kills, shearing, leads.
+    pub herd_plugin: rtsim_ecology::herds::synth::FakeHerds,
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -229,6 +235,8 @@ impl Java {
             failed_carriage: None,
             iaf: Vec::new(),
             ships: Vec::new(),
+            herds: Vec::new(),
+            herd_plugin: rtsim_ecology::herds::synth::FakeHerds::default(),
         }
     }
 
@@ -584,6 +592,7 @@ impl Java {
                     k if (0x8400..=0x84FF).contains(&k) => self.industry_command(k, seq, rec.bytes),
                     k if (0x8500..=0x85FF).contains(&k) => self.dragon_command(seq, rec.bytes),
                     k if (0x8600..=0x86FF).contains(&k) => self.ship_command(seq, rec.bytes),
+                    k if (0x8700..=0x87FF).contains(&k) => self.herd_command(seq, rec.bytes),
                     cmd::DESPAWN_GROUP => {
                         let b = rec.bytes;
                         let agent = wire::u64_at(b, cmd::despawn_group::AGENT);
@@ -1089,5 +1098,53 @@ impl Java {
             S::Timetable(_) | S::Steer(_) | S::Depart(_) => {}
         }
         self.ships.push((seq, c));
+    }
+
+    // ---- the vanilla herd adapter (docs/boundary.md §8) ------------------------------------------
+
+    /// Journals a herd observation (a kind of 0x0700 to 0x07FF), encoded with the reference codec.
+    pub fn herd_obs(&mut self, o: &rtsim_ecology::herds::boundary::Obs) -> u64 {
+        let mut b = Vec::new();
+        rtsim_ecology::herds::boundary::encode_obs(0, self.game_time, o, &mut b);
+        let kind = wire::u16_at(&b, wire::R_KIND);
+        assert!(obs::is_journaled(kind), "a journaled herd kind");
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut b, obs::OBS_SEQ, seq);
+        self.journal.push_back((seq, b));
+        seq
+    }
+
+    /// Journals everything the fake herd plugin has to say (its answers, and the kills, shearing
+    /// and leads a test played on it).
+    pub fn herd_flush(&mut self) {
+        for o in self.herd_plugin.take_obs() {
+            self.herd_obs(&o);
+        }
+    }
+
+    /// One herd command, as the vanilla adapter applies it: the species and the dimension are
+    /// the engine's dictionary's (a DICT before first use), translated to Java's; the fake plugin
+    /// answers HERD_MATERIALIZED and HERD_DEMATERIALIZED (with each member's capture).
+    fn herd_command(&mut self, seq: u64, bytes: &[u8]) {
+        use rtsim_ecology::herds::HerdSpecies;
+        use rtsim_ecology::herds::boundary::{self as hb, Cmd as H, HerdDict};
+        let mut dict = HerdDict { body: [0; 5] };
+        for s in HerdSpecies::ALL {
+            for (&(kind, id), name) in &self.cmd_dict {
+                if kind == wire::DICT_BODY && name == s.entity_id() {
+                    dict.body[s.index()] = id;
+                }
+            }
+        }
+        let (_, s, mut c) = hb::decode_cmd(bytes, &dict).expect("a herd command decodes");
+        assert_eq!(s, seq);
+        if let H::Materialize(m) = &mut c {
+            m.dimension = self.java_dim(m.dimension);
+        }
+        let at = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
+        self.herd_plugin.apply(vec![c.clone()], at);
+        self.herds.push((seq, c));
+        self.herd_flush();
     }
 }
