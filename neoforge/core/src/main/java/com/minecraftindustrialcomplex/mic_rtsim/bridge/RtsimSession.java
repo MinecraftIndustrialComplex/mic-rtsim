@@ -7,6 +7,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.body.GroupKind;
 import com.minecraftindustrialcomplex.mic_rtsim.body.MemberCapture;
 import com.minecraftindustrialcomplex.mic_rtsim.body.MemberSpawn;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Buffers;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Engine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
@@ -114,6 +116,12 @@ public final class RtsimSession {
         this.journalData = journal;
         this.boundary = new BoundarySession(engine, journal.journal(), RtsimConfig.effectiveMask(), gameTime());
         this.commands = new CommandDispatcher(this);
+        for (int i = 0; i < 2; i++) {
+            int o = Buffers.capacity(engine.observationBuffer(i).duplicate().order(Layout.ORDER));
+            if (o < Layout.MIN_CAPACITY)
+                MicRtsim.LOGGER.warn("[mic_rtsim] observation buffer {} holds {} bytes, below the {} a largest record needs",
+                        i, o, Layout.MIN_CAPACITY);
+        }
         for (ServerLevel level : server.getAllLevels())
             dimId(level.dimension());
         for (GroupKind kind : BodyKinds.groups())

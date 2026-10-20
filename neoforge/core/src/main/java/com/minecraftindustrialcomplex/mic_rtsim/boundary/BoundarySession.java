@@ -210,7 +210,9 @@ public final class BoundarySession {
                     return true;
                 }
                 long cmdSeq = buffer.getLong(at + Cmd.CMD_SEQ);
-                if (cmdSeq <= journal.lastAppliedCmdSeq()) {
+                // DICT is idempotent and per session: never skipped, so a dictionary the engine resends
+                // under old sequences after a restart still defines its ids.
+                if (kind != Cmd.DICT && cmdSeq <= journal.lastAppliedCmdSeq()) {
                     skippedStaleCommands++;
                     return true;
                 }

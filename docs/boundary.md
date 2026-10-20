@@ -25,8 +25,9 @@ rtsim-jni, not written yet). Written 2026-10-20 with the Java side and its pure-
 - **Byte order** is little-endian everywhere. Both engine targets (x86-64, AArch64) are little-endian,
   so neither side swaps.
 - **Sizing** is the engine's: capacity goes in the header (`capacity`), and the engine sizes it from
-  the per-player puppet caps and per-tick quotas so a normal tick fits. The stub uses 256 KiB per
-  buffer, a PLACEHOLDER.
+  the per-player puppet caps and per-tick quotas so a normal tick fits. It must be at least 65,656
+  bytes (`Layout.MIN_CAPACITY`: the largest record plus SESSION_START and TICK), or a largest
+  journaled record could never be sent. The stub uses 256 KiB per buffer, a PLACEHOLDER.
 
 ### 1.1 Header (64 bytes, every buffer)
 
@@ -216,8 +217,8 @@ of a clean shutdown come later, as journal replay.
 
 ### 2.4 Commands (the engine to Java)
 
-Every command has a `cmdSeq` at offset 8: per world, increasing. Java skips any command at or below
-the journal's `lastAppliedCmdSeq` (sent back in every observation header as `wordA`, which is the
+Every command has a `cmdSeq` at offset 8: per world, increasing. Java skips any command except DICT
+at or below the journal's `lastAppliedCmdSeq` (sent back in every observation header as `wordA`, which is the
 kernel's `Outbox::ack_through`). After a restart the engine resends its outbox (`Outbox::after`)
 with the commands' original sequences; Java applies those above `lastAppliedCmdSeq` and skips any
 whose op id it already applied. New commands must get sequences above `lastAppliedCmdSeq` too, so

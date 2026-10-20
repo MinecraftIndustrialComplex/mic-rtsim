@@ -81,6 +81,13 @@ public final class Layout {
     /** The largest record size a u16 can hold that is a multiple of 8. */
     public static final int MAX_RECORD = 0xFFF8;
 
+    /**
+     * The smallest record area an engine should allocate: the largest record, plus room for the
+     * SESSION_START and TICK records that may precede it in an empty buffer. A journaled record that
+     * cannot fit in an empty buffer would hold the journal's stream up forever.
+     */
+    public static final int MIN_CAPACITY = MAX_RECORD + 128;
+
     /** Rounds a byte count up to the record alignment. */
     public static int align(int bytes) {
         return (bytes + (RECORD_ALIGN - 1)) & -RECORD_ALIGN;
