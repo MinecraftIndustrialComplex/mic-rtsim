@@ -123,6 +123,26 @@ public final class PowerLinks {
         }
     }
 
+    /** Every line of the level, described (GameTests and debugging). */
+    public static String describe(Industry ind, ServerLevel level) {
+        StringBuilder sb = new StringBuilder();
+        WorldNetworks wn = GlobalElectricNetworks.getWorldNetworks(level);
+        sb.append(wn == null ? "no networks" : wn.transmissionLines.size() + " lines");
+        if (wn != null)
+            for (TransmissionLine line : new ArrayList<>(wn.transmissionLines.values())) {
+                IWireEndpoint e1 = line.getEndpoint1(), e2 = line.getEndpoint2();
+                sb.append("; [").append(e1).append(" -> ").append(e2).append(", I ").append(line.current());
+                OwnedFloatingNode n1 = line.getNode1(), n2 = line.getNode2();
+                sb.append(", V1 ").append(n1 == null ? "none" : n1.getVoltage()).append(", V2 ").append(n2 == null ? "none" : n2.getVoltage());
+                if (e1 instanceof BlockWireEndpoint b1 && e2 instanceof BlockWireEndpoint b2) {
+                    District d1 = ind.districtAt(level, b1.getPos()), d2 = ind.districtAt(level, b2.getPos());
+                    sb.append(", districts ").append(d1 == null ? "none" : d1.id).append("/").append(d2 == null ? "none" : d2.id);
+                }
+                sb.append("]");
+            }
+        return sb.toString();
+    }
+
     /** Decides the window: sends IND_POWER_LINK for each sink whose source changed (GameTests call it too). */
     public static void decide(Industry ind) {
         Links saved = Links.get(ind);

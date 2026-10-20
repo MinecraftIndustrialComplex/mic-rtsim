@@ -89,7 +89,7 @@ public final class PowerGridGameTests {
     }
 
     /**
-     * I13: a creative voltage source in one district feeds a creative resistor in another, two chunks away,
+     * I13: a creative voltage source in one district feeds a creative resistor in another chunk's district
      * over two hanging wires. The power measured across the lines (current times the end voltage, summed
      * over both conductors) flows from the source's district, so IND_POWER_LINK names the resistor's district
      * the sink and the source's the source.
@@ -99,41 +99,50 @@ public final class PowerGridGameTests {
         fastConfig();
         forgetAll(helper);
         PowerLinks.forget(ind());
-        BlockPos src = inChunk(helper, 6, 6);
-        BlockPos res = inChunk(helper, 6 + 32, 6);
+        // Both inside the structure (whose chunks tick), 29 blocks apart: two chunks, each its own district
+        // (made directly: two chunks this close would be one detected district).
+        BlockPos src = helper.absolutePos(new BlockPos(2, 1, 5));
+        BlockPos res = helper.absolutePos(new BlockPos(31, 1, 5));
         long[] ids = {0, 0};
         List<Entity> wires = new ArrayList<>();
         helper.startSequence()
                 .thenExecute(() -> {
                     set(helper, src, block("powergrid:creative_voltage_source").defaultBlockState());
                     set(helper, res, block("powergrid:creative_resistor").defaultBlockState());
-                    playerPlaced(helper, src);
-                    playerPlaced(helper, res);
+                    check("two chunks", chunk(src) != chunk(res));
+                    ids[0] = ind().districts().createForTest(helper.getLevel(), chunk(src)).id;
+                    ids[1] = ind().districts().createForTest(helper.getLevel(), chunk(res)).id;
                 })
-                .thenWaitUntil(() -> {
-                    District a = districtAt(helper, src), b = districtAt(helper, res);
-                    check("two districts", a != null && b != null && a != b);
-                    ids[0] = a.id;
-                    ids[1] = b.id;
-                })
+                .thenIdle(5)
                 .thenExecute(() -> {
-                    ((CreativeSourceBlockEntity) helper.getLevel().getBlockEntity(src)).setValue(100f);
-                    ItemStack wire = new ItemStack(BuiltInRegistries.ITEM.get(ResourceLocation.parse("powergrid:wire")), 64);
+                    ((CreativeSourceBlockEntity) helper.getLevel().getBlockEntity(src)).setValue(5f); // low: a hot wire burns and is discarded
+                    ItemStack wire = new ItemStack(BuiltInRegistries.ITEM.get(ResourceLocation.parse("powergrid:wire")), 32);
                     for (int t = 0; t < 2; t++) {
-                        HangingWireEntity e = HangingWireEntity.create(helper.getLevel(), new BlockWireEndpoint(src, t), new BlockWireEndpoint(res, t), wire, 0.01f);
+                        BlockWireEndpoint a = new BlockWireEndpoint(src, t), b = new BlockWireEndpoint(res, t);
+                        record("aLineBetweenDistrictsIsAPowerLink", "terminal " + t, "valid " + a.isValid(helper.getLevel()) + "/" + b.isValid(helper.getLevel())
+                                + ", nodes " + a.getNode(helper.getLevel()) + "/" + b.getNode(helper.getLevel()));
+                        HangingWireEntity e = HangingWireEntity.create(helper.getLevel(), new BlockWireEndpoint(src, t), new BlockWireEndpoint(res, t), wire, null);
                         check("the wire entity joined the level", helper.getLevel().tryAddFreshEntityWithPassengers(e));
                         wires.add(e);
                     }
                 })
                 .thenIdle(40)
-                .thenExecute(() -> {
+                .thenWaitUntil(() -> {
                     for (int i = 0; i < 5; i++)
                         PowerLinks.sample(ind());
                     PowerLinks.decide(ind());
-                })
-                .thenWaitUntil(() -> {
                     List<ByteBuffer> links = received(IndRecords.IND_POWER_LINK, IndRecords.PowerLink.SINK, ids[1]);
                     double[] last = PowerLinks.last(ids[1]);
+                    if (links.isEmpty()) {
+                        StringBuilder sb = new StringBuilder();
+                        var beh = ((org.patryk3211.powergrid.electricity.base.ElectricBlockEntity) helper.getLevel().getBlockEntity(src)).getElectricBehaviour();
+                        sb.append("connections ").append(beh.getConnections().size()).append(", parts ").append(beh.wires().size());
+                        for (var part : beh.wires())
+                            sb.append(" [line ").append(part.getLine()).append(", I ").append(part.current()).append("]");
+                        for (Entity e : wires)
+                            sb.append(" entity alive ").append(e.isAlive()).append(" removed ").append(e.getRemovalReason());
+                        record("aLineBetweenDistrictsIsAPowerLink", "lines", PowerLinks.describe(ind(), helper.getLevel()) + "; " + sb);
+                    }
                     record("aLineBetweenDistrictsIsAPowerLink", "link (" + engineName() + ")", links.size() + " records, last decision "
                             + (last == null ? "none" : "source " + (long) last[0] + ", " + String.format("%.2f", last[1]) + " W"));
                     check("IND_POWER_LINK for the resistor's district", !links.isEmpty());

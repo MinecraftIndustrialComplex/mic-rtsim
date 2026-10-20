@@ -4,7 +4,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 
 /**
  * IND_CONDITIONS (I12, F28): the world's season calendar, from the first plugin that knows one
@@ -17,6 +16,9 @@ import java.util.Arrays;
  * cycle ahead, which moves the game time its season 0 began).
  */
 public final class Conditions {
+
+    /** Ticks an origin may move before the calendar is sent again (PLACEHOLDER: a minute). */
+    static final long ORIGIN_TOLERANCE = 1200;
 
     /** Vanilla: no seasons. */
     static final long[] VANILLA = {0, 1, 0, 0};
@@ -35,7 +37,9 @@ public final class Conditions {
             return;
         nextCheck = now + ThreatConfig.get(ThreatConfig.CONDITIONS_CHECK);
         long[] c = current();
-        if (last != null && Arrays.equals(c, last))
+        // The origin is compared with a tolerance: a calendar that pauses (no daylight cycle) moves it a
+        // little at every check; sleeping, which skips half a day, moves it past the tolerance.
+        if (last != null && c[0] == last[0] && c[1] == last[1] && c[2] == last[2] && Math.abs(c[3] - last[3]) <= ORIGIN_TOLERANCE)
             return;
         last = c;
         ByteBuffer r = ind.journal(IndRecords.IND_CONDITIONS, IndRecords.Conditions.SIZE, 0);
