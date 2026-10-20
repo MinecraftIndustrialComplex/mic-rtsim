@@ -333,7 +333,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "every region is resident: paging (A16) is not built yet",
+                    "this sweep keeps every region resident (LazyTable); the paged sweeps measure A16's budget",
                 ),
                 contract(Metric::Save, 1.1, 1.0, "a full save writes every region"),
             ],
@@ -359,7 +359,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "every region is resident: paging (A16) is not built yet",
+                    "this sweep keeps every region resident (LazyTable); the paged sweeps measure A16's budget",
                 ),
                 contract(Metric::Save, 1.1, 1.0, "a full save writes every region"),
             ],
@@ -483,7 +483,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "every region is resident: paging (A16) is not built yet",
+                    "this sweep keeps every region resident (LazyTable); the paged sweeps measure A16's budget",
                 ),
                 contract(Metric::Save, 1.1, 1.0, "a full save writes every region"),
             ],
@@ -547,7 +547,7 @@ fn paged_sweep(model: ModelKind, quick: bool) -> Sweep {
                 Metric::Heap,
                 PAGED_HEAP_SLOPE,
                 0.0,
-                "the budget plus the always-resident page index (about 33 bytes per page, 64 regions per page); see bench/results/README.md",
+                "the budget, the store's index-block cache and its overlay, all bounded by constants; the heap rises only until the world's index outgrows the block cache (K15)",
             ),
             contract(
                 Metric::Cpu,
@@ -565,10 +565,11 @@ fn paged_sweep(model: ModelKind, quick: bool) -> Sweep {
     }
 }
 
-/// Declared slopes of the paged sweeps. PLACEHOLDERS set from the first measured run (bench
-/// results README): the page index is resident and linear in pages, the miss rate rises until
-/// every event misses, and dirty pages per save rise until every event dirties its own page.
-const PAGED_HEAP_SLOPE: f64 = 0.2;
+/// Declared slopes of the paged sweeps. PLACEHOLDERS set from the first measured runs (bench
+/// results README): the heap holds constants only (the page index is paged, K15), the miss rate
+/// rises until every event misses, and dirty pages per save rise until every event dirties its
+/// own page.
+const PAGED_HEAP_SLOPE: f64 = 0.1;
 const PAGED_CPU_SLOPE: f64 = 0.35;
 const PAGED_SAVE_SLOPE: f64 = 0.35;
 
@@ -869,6 +870,9 @@ pub struct Report {
     /// Logical CPUs this process may run on (a `taskset` shows here).
     #[serde(default)]
     pub allowed_cpus: Option<String>,
+    /// The run's tag (`--tag`), e.g. `potato`.
+    #[serde(default)]
+    pub tag: Option<String>,
     pub loadavg_before: Option<String>,
     pub loadavg_after: Option<String>,
     pub baseline: Baseline,
@@ -935,6 +939,8 @@ pub struct Options {
     pub repeats: u32,
     pub out: Option<PathBuf>,
     pub only: Vec<String>,
+    /// Appended to the result file's name and recorded in it (e.g. `potato`).
+    pub tag: Option<String>,
 }
 
 pub(crate) fn command_line(cmd: &str, args: &[&str]) -> Option<String> {
@@ -1104,6 +1110,7 @@ pub fn run(opts: Options) -> i32 {
         machine: sys::Machine::probe(),
         nice: nice_level(),
         allowed_cpus: sys::allowed_cpus(),
+        tag: opts.tag.clone(),
         loadavg_before,
         loadavg_after: sys::loadavg(),
         baseline: base,
@@ -1162,7 +1169,11 @@ pub fn run(opts: Options) -> i32 {
 
 fn write_report(dir: &Path, stamp: &str, report: &Report) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("scale-{stamp}-{}.json", report.mode));
+    let tag = report
+        .tag
+        .as_ref()
+        .map_or(String::new(), |t| format!("-{t}"));
+    let path = dir.join(format!("scale-{stamp}-{}{tag}.json", report.mode));
     let mut f = std::fs::File::create(&path)?;
     serde_json::to_writer_pretty(&mut f, report)?;
     writeln!(f)?;

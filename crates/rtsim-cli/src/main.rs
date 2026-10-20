@@ -14,19 +14,21 @@ static ALLOC: sys::Counting = sys::Counting;
 const USAGE: &str = "\
 usage:
   rtsim-cli bench scale [--quick] [--check] [--repeats N] [--out DIR | --no-write] [--only NAME,...]
+                        [--tag NAME]
       Runs SCALE.md §10's sweeps, prints the table and slopes, writes JSON to DIR
       (default bench/results). --check exits 1 when a slope exceeds its declared contract.
+      --tag names the run in its file name and record (e.g. potato).
       --repeats runs each point N times and keeps the median (default 3, quick 1).
       --only picks sweeps by name: latent, regions, events, elapsed, age, paged.
   rtsim-cli bench scale-one --spec JSON
       Runs one configuration and prints its measurements as JSON (used by bench scale).
   rtsim-cli bench bsp [--quick] [--check] [--repeats N] [--workers 1,2,4] [--regions N]
-                      [--out DIR | --no-write]
+                      [--out DIR | --no-write] [--tag NAME]
       The parallel step at several worker counts, resident and paged, and the determinism
       gate: every run of a world must end in the same state hash. --check exits 1 when not.
   rtsim-cli bench bsp-one --spec JSON
       Runs one parallel-step configuration (used by bench bsp).
-  rtsim-cli bench o5 [--quick] [--repeats N] [--out DIR | --no-write]
+  rtsim-cli bench o5 [--quick] [--repeats N] [--out DIR | --no-write] [--tag NAME]
       Slot commits against dyadic counts at read cadences from 1 to 1,024 days (DECISIONS O5).
   rtsim-cli bench o5-one --spec JSON
       Runs one cadence point (used by bench o5).";
@@ -42,6 +44,7 @@ fn main() -> ExitCode {
                 repeats: 0,
                 out: Some(PathBuf::from("bench/results")),
                 only: Vec::new(),
+                tag: None,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -60,6 +63,10 @@ fn main() -> ExitCode {
                     "--only" => match it.next() {
                         Some(list) => opts.only = list.split(',').map(str::to_string).collect(),
                         None => return usage("--only needs sweep names"),
+                    },
+                    "--tag" => match it.next() {
+                        Some(t) => opts.tag = Some(t.to_string()),
+                        None => return usage("--tag needs a name"),
                     },
                     other => return usage(&format!("unknown option {other}")),
                 }
@@ -86,6 +93,7 @@ fn main() -> ExitCode {
                 out: Some(PathBuf::from("bench/results")),
                 workers: Vec::new(),
                 regions: None,
+                tag: None,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -113,6 +121,10 @@ fn main() -> ExitCode {
                         Some(d) => opts.out = Some(PathBuf::from(d)),
                         None => return usage("--out needs a folder"),
                     },
+                    "--tag" => match it.next() {
+                        Some(t) => opts.tag = Some(t.to_string()),
+                        None => return usage("--tag needs a name"),
+                    },
                     other => return usage(&format!("unknown option {other}")),
                 }
             }
@@ -135,6 +147,7 @@ fn main() -> ExitCode {
                 quick: false,
                 repeats: 0,
                 out: Some(PathBuf::from("bench/results")),
+                tag: None,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -148,6 +161,10 @@ fn main() -> ExitCode {
                     "--out" => match it.next() {
                         Some(d) => opts.out = Some(PathBuf::from(d)),
                         None => return usage("--out needs a folder"),
+                    },
+                    "--tag" => match it.next() {
+                        Some(t) => opts.tag = Some(t.to_string()),
+                        None => return usage("--tag needs a name"),
                     },
                     other => return usage(&format!("unknown option {other}")),
                 }

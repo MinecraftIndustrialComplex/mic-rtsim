@@ -110,6 +110,8 @@ pub struct Options {
     pub quick: bool,
     pub repeats: u32,
     pub out: Option<PathBuf>,
+    /// Appended to the result file's name and recorded in it (e.g. `potato`).
+    pub tag: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,6 +130,7 @@ pub struct Report {
     pub build_profile: String,
     pub machine: sys::Machine,
     pub allowed_cpus: Option<String>,
+    pub tag: Option<String>,
     pub nice: Option<i32>,
     pub loadavg_before: Option<String>,
     pub loadavg_after: Option<String>,
@@ -213,6 +216,7 @@ pub fn run(opts: Options) -> i32 {
         .into(),
         machine: sys::Machine::probe(),
         allowed_cpus: sys::allowed_cpus(),
+        tag: opts.tag.clone(),
         nice: super::scale::nice_level(),
         loadavg_before,
         loadavg_after: sys::loadavg(),
@@ -232,7 +236,11 @@ pub fn run(opts: Options) -> i32 {
 
 fn write_report(dir: &Path, stamp: &str, report: &Report) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("o5-{stamp}-{}.json", report.mode));
+    let tag = report
+        .tag
+        .as_ref()
+        .map_or(String::new(), |t| format!("-{t}"));
+    let path = dir.join(format!("o5-{stamp}-{}{tag}.json", report.mode));
     let mut f = std::fs::File::create(&path)?;
     serde_json::to_writer_pretty(&mut f, report)?;
     writeln!(f)?;
