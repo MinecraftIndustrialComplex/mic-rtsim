@@ -357,3 +357,44 @@ fn a_channel_couples_two_unloaded_districts() {
     assert_eq!(a2 + b2 + c2, 3_000, "bars are only moved: a {a2}, b {b2}, channel {c2}");
     e.check_books().unwrap();
 }
+
+/// A chunk-loaded district with nobody near is attacked abstractly and the damage lands at once
+/// (C18, INDUSTRY.md §13.1), not at some later load.
+#[test]
+fn a_loaded_unwatched_district_is_raided_at_once() {
+    use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
+    let mut w = mill(20_000, vec![(0.0, true)], false, Mode::Apply);
+    w.run_until(day(0.1));
+    w.engine.ingest(&Timed { at: w.t, obs: Obs::Watched { district: MILL, watched: false } });
+    let ore = |w: &FakeWorld| w.districts[0].inventories[0].contents.get(ORE);
+    let before = ore(&w);
+    w.engine.threat(&Threat {
+        id: 9,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::District(MILL),
+        at: w.t,
+    });
+    // Three bandits carry a stack each, split over the goods in proportion to their caps.
+    assert_eq!(w.engine.books.stolen.total(), 3 * 64);
+    let stolen = w.engine.books.stolen.get(ORE);
+    w.run_until(w.t + 3);
+    // The mill used at most one batch in those ticks; the theft is in the vault already.
+    let after = ore(&w);
+    assert!(before - after >= stolen && before - after <= stolen + 8, "ore {before} to {after}");
+    w.conservation().unwrap();
+    // Watched again, the next raid is a real fight, not the engine's.
+    w.engine.ingest(&Timed { at: w.t, obs: Obs::Watched { district: MILL, watched: true } });
+    w.engine.threat(&Threat {
+        id: 10,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::District(MILL),
+        at: w.t + 30_000,
+    });
+    assert_eq!(w.engine.books.stolen.get(ORE), stolen);
+}

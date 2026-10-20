@@ -529,6 +529,11 @@ impl FakeWorld {
                 ticking_chunks: chunks.len() as u32,
                 total_chunks: chunks.len() as u32,
             });
+            // The player's presence is what loads a district here, so it is watched.
+            self.send(Obs::Watched {
+                district: id,
+                watched: true,
+            });
             let name = self.districts[di].name.clone();
             self.note(format!("{name} loads"));
         } else {

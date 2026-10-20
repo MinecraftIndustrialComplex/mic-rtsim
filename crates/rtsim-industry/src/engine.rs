@@ -412,6 +412,14 @@ impl Engine {
                 let line = self.ledger_line(*district, at);
                 self.out.push(Cmd::Ledger(line));
             }
+            Obs::Watched { district, watched } => {
+                let dist = self.district_mut(*district);
+                let w = *watched && dist.presence != Presence::Unloaded;
+                if dist.watched != w {
+                    dist.watched = w;
+                    self.schedule_pressure(*district, at);
+                }
+            }
             Obs::District(decl) => {
                 let dist = self.district_mut(decl.district);
                 if dist.revision != decl.revision {
@@ -708,6 +716,7 @@ impl Engine {
             }
             (_, Presence::Unloaded) => {
                 let dist = self.districts.get_mut(&d).expect("exists");
+                dist.watched = false;
                 // An unloaded gap must not sit inside a learning window.
                 dist.learner.discard();
                 dist.loaded_chunks.clear();
@@ -1685,7 +1694,8 @@ impl Engine {
             return;
         };
         dist.pressure_stamp += 1;
-        if dist.presence != Presence::Unloaded {
+        // Natural mobs need a player near to spawn (vanilla); unattended, the sim adds them (I20).
+        if dist.watched {
             return;
         }
         let Some(survey) = dist.defence.survey else {
@@ -1711,7 +1721,7 @@ impl Engine {
         let live = self
             .districts
             .get(&d)
-            .is_some_and(|x| x.pressure_stamp == stamp && x.presence == Presence::Unloaded);
+            .is_some_and(|x| x.pressure_stamp == stamp && !x.watched);
         if !live {
             return;
         }
@@ -1778,9 +1788,9 @@ impl Engine {
             machine_lost: false,
             skipped: None,
         };
-        // Watched fights are real (§13.1; F22: live counts as watched until the bridge sends
-        // player positions).
-        if dist.presence != Presence::Unloaded {
+        // Watched fights are real (§13.1). Unwatched ones resolve abstractly, whether or not the
+        // chunks are loaded (C18).
+        if dist.watched {
             report.skipped = Some("watched");
         } else if at < dist.defence.cooldown_until[t.class.index()] {
             report.skipped = Some("cooldown");
@@ -1859,6 +1869,11 @@ impl Engine {
                 let dist = self.districts.get_mut(&d).expect("exists");
                 for (g, n) in take.iter() {
                     dist.owed.add(g, -n);
+                }
+                // Chunk-loaded with nobody near: applied at once, as a reconcile round now
+                // (§13.1); unloaded: at the next load.
+                if dist.presence != Presence::Unloaded {
+                    self.reconcile_on_load(d, at);
                 }
             }
         }

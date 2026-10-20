@@ -214,6 +214,8 @@ pub struct District {
     pub chunks: BTreeSet<(i32, i32)>,
     pub inventories: VecMap<u32, Inventory>,
     pub presence: Presence,
+    /// A player is near enough to fight for real (IND_WATCHED); never set while unloaded.
+    pub watched: bool,
     pub phase: Phase,
     pub learner: Learner,
     pub models: VecMap<u32, Model>,
@@ -264,6 +266,7 @@ impl District {
             chunks: BTreeSet::new(),
             inventories: VecMap::new(),
             presence: Presence::Unloaded,
+            watched: false,
             phase: Phase::Learning,
             learner: Learner::new(),
             models: VecMap::new(),
@@ -603,6 +606,7 @@ mod persist_impls {
             self.chunks.put(w);
             self.inventories.put(w);
             self.presence.put(w);
+            self.watched.put(w);
             self.phase.put(w);
             self.learner.put(w);
             self.models.put(w);
@@ -642,6 +646,7 @@ mod persist_impls {
                 chunks: Persist::get(r)?,
                 inventories: Persist::get(r)?,
                 presence: Persist::get(r)?,
+                watched: Persist::get(r)?,
                 phase: Persist::get(r)?,
                 learner: Persist::get(r)?,
                 models: Persist::get(r)?,

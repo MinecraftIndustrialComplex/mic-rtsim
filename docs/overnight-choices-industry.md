@@ -154,8 +154,13 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
   - **Theft:** survivors × carry, split in proportion to each good's cap.
   - **Destroyed blocks:** perimeter first for walkers, roofless first for flyers, ties by a hash of
     the attack id. Natural mobs break blocks only with `mobGriefing` on.
-- **F22 (§13.1, C18).** Live districts count as watched and get no abstract attack, until the
-  bridge's player positions are wired in. The chunk-loaded but unwatched case is not resolved yet.
+- **F22 (§13.1, C18).** "Watched" is a per-district flag the sampler sends (IND_WATCHED, latest-wins);
+  unloading clears it.
+  - Watched districts fight for real.
+  - Unwatched ones resolve abstractly: at once, as a reconcile round, if loaded; at the next load if
+    not.
+  - Natural pressure applies to unwatched districts, loaded or not, since vanilla spawns nothing
+    there either.
 - **F35 (I19).** Stolen goods leave the world's books as `stolen`; the bandit camp market is the
   conflict module's.
 

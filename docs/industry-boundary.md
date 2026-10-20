@@ -75,6 +75,7 @@ Offsets from the record start; the 8-byte header is `u16 kind, u16 size, u32 aux
 | 0x0042 | IND_DEPOSIT_SAMPLE | plugin: 1 Ore Excavation, 2 Diesel oil, 3 Destroy crude | 8 i64 gameTime, 16 u64 district, 24 u32 good, 28 u32 sweep, 32 i64 remaining, 40 u32 dim, 44 i32 chunkX, 48 i32 chunkZ, 52 u32 flags (1 infinite) | 56 |
 | 0x0043 | IND_CHANNEL_SAMPLE | n entries | 8 i64 gameTime, 16 u64 channel, 24 i64 capacity, 32 n × Entry16 | 32 + 16n |
 | 0x0044 | IND_LEDGER_REQUEST | 0 | 8 i64 gameTime, 16 u64 district | 24 |
+| 0x0045 | IND_WATCHED | 1 a player is near enough to fight for real, 0 not | 8 i64 gameTime, 16 u64 district | 24 |
 
 **Sweeps.** The sampler reads a district's boundary inventories round-robin, K per tick (INDUSTRY.md
 §3.2), numbering each full pass a sweep. Each inventory's contents go in one IND_STOCK_SAMPLE, or in
@@ -178,6 +179,12 @@ was applied. A shortfall is not an error: the engine trims what it funded (§4.2
 **Power lines.** IND_POWER_LINK is the PowerGrid plugin's: a `TransmissionLine` feeds the sink
 district's loads from the source district's generators. While both are simulated, the sink runs only
 while the source runs (I13). A source that is live is assumed to be running (F21).
+
+**Watched.** IND_WATCHED says whether a player is within the district's entity-ticking area, so
+attacks there are real fights (INDUSTRY.md §13.1). The sampler sends it when it changes and every few
+seconds while it holds; an unloaded district is never watched. Attacks on a district that is
+unwatched resolve abstractly: applied at once, as a reconcile round, if its chunks are loaded; at the
+next load if not (C18).
 
 **Threat data.**
 - **IND_SPAWN_SAMPLE:** natural hostile spawns counted while a player was in the district at night,

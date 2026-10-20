@@ -401,6 +401,12 @@ pub enum Obs {
     LedgerRequest {
         district: DistrictId,
     },
+    /// Whether a player is near enough to fight for real (C18, INDUSTRY.md §13.1): sent when it
+    /// changes and every few seconds while it holds (latest-wins).
+    Watched {
+        district: DistrictId,
+        watched: bool,
+    },
     // Journaled events.
     District(DistrictDecl),
     DistrictChunks {
@@ -476,6 +482,7 @@ impl Obs {
                 | Obs::DepositSample(_)
                 | Obs::ChannelSample { .. }
                 | Obs::LedgerRequest { .. }
+                | Obs::Watched { .. }
         )
     }
 }

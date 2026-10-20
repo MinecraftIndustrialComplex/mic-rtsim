@@ -38,6 +38,7 @@ pub const IND_SWEEP_END: u16 = 0x0041;
 pub const IND_DEPOSIT_SAMPLE: u16 = 0x0042;
 pub const IND_CHANNEL_SAMPLE: u16 = 0x0043;
 pub const IND_LEDGER_REQUEST: u16 = 0x0044;
+pub const IND_WATCHED: u16 = 0x0045;
 
 // Journaled observations, Java to engine.
 pub const IND_DISTRICT: u16 = 0x0400;
@@ -70,12 +71,13 @@ pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 pub const IND_LEDGER: u16 = 0x8405;
 
-const OBS_KINDS: [u16; 26] = [
+const OBS_KINDS: [u16; 27] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
     IND_CHANNEL_SAMPLE,
     IND_LEDGER_REQUEST,
+    IND_WATCHED,
     IND_DISTRICT,
     IND_DISTRICT_CHUNKS,
     IND_INVENTORY,
@@ -548,6 +550,11 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u64(district.0);
             w.finish()
         }
+        Obs::Watched { district, watched } => {
+            let mut w = W::obs(out, IND_WATCHED, u32::from(*watched), seq, at);
+            w.put_u64(district.0);
+            w.finish()
+        }
         Obs::District(d) => {
             let reason = d.not_learnable.map_or(0, NotLearnable::code);
             let mut w = W::obs(out, IND_DISTRICT, reason, seq, at);
@@ -852,6 +859,24 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             check(kind, size, 24)?;
             Obs::LedgerRequest {
                 district: r.district(16),
+            }
+        }
+        IND_WATCHED => {
+            check(kind, size, 24)?;
+            let watched = match aux {
+                0 => false,
+                1 => true,
+                v => {
+                    return Err(WireError::BadCode {
+                        kind,
+                        field: "watched",
+                        value: u64::from(v),
+                    });
+                }
+            };
+            Obs::Watched {
+                district: r.district(16),
+                watched,
             }
         }
         IND_DISTRICT => {
@@ -1481,6 +1506,14 @@ mod tests {
                 goods: goods3(),
             },
             Obs::LedgerRequest { district: d },
+            Obs::Watched {
+                district: d,
+                watched: true,
+            },
+            Obs::Watched {
+                district: d,
+                watched: false,
+            },
             Obs::District(DistrictDecl {
                 district: d,
                 revision: 5,
@@ -1963,6 +1996,7 @@ mod tests {
             Obs::DepositSample(_) => 56,
             Obs::ChannelSample { goods, .. } => 32 + 16 * goods.len(),
             Obs::LedgerRequest { .. } => 24,
+            Obs::Watched { .. } => 24,
             Obs::District(_) => 48,
             Obs::DistrictChunks { chunks, .. } => 40 + 8 * chunks.len(),
             Obs::Inventory(_) => 72,
@@ -1994,6 +2028,7 @@ mod tests {
             Obs::DepositSample(_) => 0x0042,
             Obs::ChannelSample { .. } => 0x0043,
             Obs::LedgerRequest { .. } => 0x0044,
+            Obs::Watched { .. } => 0x0045,
             Obs::District(_) => 0x0400,
             Obs::DistrictChunks { .. } => 0x0401,
             Obs::Inventory(_) => 0x0402,
@@ -2130,12 +2165,13 @@ mod tests {
 
     #[test]
     fn kind_constants_match_the_spec_table() {
-        let spec: [(u16, u16); 26] = [
+        let spec: [(u16, u16); 27] = [
             (IND_STOCK_SAMPLE, 0x0040),
             (IND_SWEEP_END, 0x0041),
             (IND_DEPOSIT_SAMPLE, 0x0042),
             (IND_CHANNEL_SAMPLE, 0x0043),
             (IND_LEDGER_REQUEST, 0x0044),
+            (IND_WATCHED, 0x0045),
             (IND_DISTRICT, 0x0400),
             (IND_DISTRICT_CHUNKS, 0x0401),
             (IND_INVENTORY, 0x0402),
@@ -2494,7 +2530,7 @@ mod tests {
     fn unknown_kinds_are_skipped_not_errors() {
         let mut rec = vec![0u8; 16];
         for kind in [
-            0x0001u16, 0x0045, 0x005F, 0x0060, 0x040A, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
+            0x0001u16, 0x0046, 0x005F, 0x0060, 0x040A, 0x04FF, 0x0500, 0x8001, 0x8406, 0x84FF,
         ] {
             rec[0..2].copy_from_slice(&kind.to_le_bytes());
             rec[2..4].copy_from_slice(&16u16.to_le_bytes());
