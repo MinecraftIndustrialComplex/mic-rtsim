@@ -13,8 +13,9 @@
 //! the port grid grows (49 to 6,400 ports at sixteen ships a service, about 400 to 51,000 ships)
 //! with a player touring the docks, one an hour, and the fake plugin answering, so ships are seen,
 //! embodied and released all over the grid. `ships-paged` runs the same points with the ship rows
-//! and lane threats paged to a page store under a fixed budget, saved every autosave interval:
-//! its row tables' resident bytes are held to the budget whatever the ship count, while the
+//! and lane threats paged to a page store under a fixed budget, saved every autosave interval and
+//! whenever every resident page has changed (`Ships::needs_save`, PM7): its row tables' resident
+//! bytes are held to the budget whatever the ship count, while the
 //! network (docks, lanes, services: the flow graph, resident) grows with the ports and is reported
 //! apart (`network_bytes`).
 
@@ -258,6 +259,8 @@ struct Pager {
     dir: PathBuf,
     save_every: u64,
     saves: u64,
+    /// Saves the budget asked for (`Ships::needs_save`), beyond the autosaves.
+    pressure: u64,
     cpu_ns: u64,
     bytes: u64,
     pages: u64,
@@ -278,6 +281,7 @@ impl Pager {
             dir,
             save_every: c.save_every.max(STEP),
             saves: 0,
+            pressure: 0,
             cpu_ns: 0,
             bytes: 0,
             pages: 0,
@@ -286,11 +290,12 @@ impl Pager {
     }
 
     /// One paged save as the game makes it: the batch, the commit, the tickets back, the budget.
-    fn save(&mut self, s: &mut Ships) {
+    fn save(&mut self, s: &mut Ships, pressure: bool) {
         let c0 = sys::thread_cpu_ns();
         let mut b = SaveBatch::new();
         let t = s.save_paged(&mut b, META);
         self.saves += 1;
+        self.pressure += u64::from(pressure);
         let st = self
             .store
             .write()
@@ -360,11 +365,15 @@ fn tour(
                 for o in &obs {
                     s.ingest(w, o, mask, next);
                 }
+                s.enforce_budget();
             });
-            if let Some(p) = pager.as_mut()
-                && next.0.is_multiple_of(p.save_every)
-            {
-                p.save(s);
+        }
+        // The autosave, or the budget's save when every resident page has changed (PM7).
+        if let Some(p) = pager.as_mut() {
+            if next == boundary && next.0.is_multiple_of(p.save_every) {
+                p.save(s, false);
+            } else if s.needs_save() {
+                p.save(s, true);
             }
         }
     }
@@ -399,7 +408,7 @@ fn run_grid(c: &ShipsConfig) -> Measured {
             c.paged.as_ref().map_or(0, |p| p.budget_bytes) as usize,
         );
         // The first save writes every row; then the budget evicts them.
-        p.save(&mut s);
+        p.save(&mut s, false);
     }
     let mut fake = FakeShips::new(f64::from(s.tun.view_radius));
     let mut t = Tick::ZERO;
@@ -409,7 +418,9 @@ fn run_grid(c: &ShipsConfig) -> Measured {
     );
     let before = s.stats;
     s.reset_row_stats();
-    let saves0 = pager.as_ref().map(|p| (p.saves, p.cpu_ns, p.bytes));
+    let saves0 = pager
+        .as_ref()
+        .map(|p| (p.saves, p.cpu_ns, p.bytes, p.pressure));
     sys::reset_heap_peak();
     sys::trim_heap();
     sys::reset_rss_peak();
@@ -430,12 +441,14 @@ fn run_grid(c: &ShipsConfig) -> Measured {
     let network = s.network_bytes() as u64;
     let st = s.stats;
     let mut failures = Vec::new();
+    let mut save_counts = None;
     let (save_cpu, save_bytes) = match (&mut pager, saves0) {
-        (Some(p), Some((n0, c0, b0))) => {
+        (Some(p), Some((n0, c0, b0, p0))) => {
             let n = (p.saves - n0).max(1) as f64;
             let r = ((p.cpu_ns - c0) as f64, (p.bytes - b0) as f64 / n);
+            save_counts = Some(((p.saves - n0) as f64, (p.pressure - p0) as f64));
             // At a step boundary after a save, the budget holds: nothing is dirty.
-            p.save(&mut s);
+            p.save(&mut s, false);
             let budget = c.paged.as_ref().map_or(0, |p| p.budget_bytes);
             if s.rows_resident_bytes() as u64 > budget {
                 failures.push(format!(
@@ -461,8 +474,8 @@ fn run_grid(c: &ShipsConfig) -> Measured {
     );
     if let Some(p) = &pager {
         eprintln!(
-            "  {} saves: {} pages written, {} compacted, {} bytes",
-            p.saves, p.pages, p.compacted, p.bytes
+            "  {} saves ({} for the budget): {} pages written, {} compacted, {} bytes",
+            p.saves, p.pressure, p.pages, p.compacted, p.bytes
         );
     }
     let conservation = match s.check(&w) {
@@ -503,6 +516,8 @@ fn run_grid(c: &ShipsConfig) -> Measured {
         save_cpu_ms_per_day: save_cpu.map(|c| c / 1e6 / days),
         save_bytes_per_save: save_bytes,
         network_bytes: Some(network),
+        saves_per_day: save_counts.map(|(n, _)| n / days),
+        pressure_saves_per_day: save_counts.map(|(_, p)| p / days),
         ..Measured::default()
     }
 }
