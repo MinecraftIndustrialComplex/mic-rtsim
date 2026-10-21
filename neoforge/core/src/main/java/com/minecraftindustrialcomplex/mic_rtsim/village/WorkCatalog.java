@@ -3,10 +3,12 @@ package com.minecraftindustrialcomplex.mic_rtsim.village;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import net.minecraft.commands.arguments.blocks.BlockStateParser;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -51,8 +53,8 @@ import java.util.TreeMap;
  * }</pre>
  *
  * A template's blocks and items are read from its palette when the catalogue is sent (WORK_CATALOG,
- * docs/boundary.md §4.1): air, structure voids and jigsaws are not counted (a jigsaw is replaced by its
- * final state, mostly air), a door or a bed counts once, and a block that is no item (water) counts as
+ * docs/boundary.md §4.1): air and structure voids are not counted, a jigsaw counts as its final state
+ * (what the house builder places), a door or a bed counts once, and a block that is no item (water) counts as
  * a block placed but no item. The engine prices the items it trades as goods and the rest as labour.
  */
 public final class WorkCatalog {
@@ -147,7 +149,7 @@ public final class WorkCatalog {
     // ---- the record -------------------------------------------------------------------------------
 
     /** What a variant uses, read from its template's palette (or its items alone, for a body). */
-    record Bill(int blocks, Map<String, Integer> items) {}
+    public record Bill(int blocks, Map<String, Integer> items) {}
 
     /** A template's placed blocks and their items, or null when the template is missing. */
     public static Bill bill(MinecraftServer server, ResourceLocation template) {
@@ -165,11 +167,15 @@ public final class WorkCatalog {
         Map<String, Integer> items = new TreeMap<>();
         ListTag list = tag.getList("blocks", Tag.TAG_COMPOUND);
         for (int i = 0; i < list.size(); i++) {
-            int s = list.getCompound(i).getInt("state");
+            CompoundTag block = list.getCompound(i);
+            int s = block.getInt("state");
             if (s < 0 || s >= states.length)
                 continue;
             BlockState state = states[s];
-            if (state.isAir() || state.is(Blocks.STRUCTURE_VOID) || state.is(Blocks.JIGSAW) || state.is(Blocks.STRUCTURE_BLOCK))
+            if (state.is(Blocks.JIGSAW))
+                state = finalState(block.getCompound("nbt").getString("final_state"));
+            if (state == null || state.isAir() || state.is(Blocks.STRUCTURE_VOID) || state.is(Blocks.JIGSAW)
+                    || state.is(Blocks.STRUCTURE_BLOCK))
                 continue;
             if (state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
                     && state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.UPPER)
@@ -182,6 +188,17 @@ public final class WorkCatalog {
                 items.merge(BuiltInRegistries.ITEM.getKey(item).toString(), 1, Integer::sum);
         }
         return new Bill(blocks, items);
+    }
+
+    /** A jigsaw's final state (what {@code JigsawReplacementProcessor} places), or null. */
+    private static BlockState finalState(String text) {
+        if (text.isEmpty())
+            return null;
+        try {
+            return BlockStateParser.parseForBlock(BuiltInRegistries.BLOCK.asLookup(), text, true).blockState();
+        } catch (CommandSyntaxException ex) {
+            return null;
+        }
     }
 
     /**
