@@ -241,7 +241,10 @@ op id at 16 that Java journals when it applies the command (COMMAND_RESULT, `doc
    the blocks broken, and the count skipped.
 
 A chunk that loads with several pending epochs gets them in order. A crash at any point replays
-correctly: a chunk saved before step 5 still has the older epoch and its older contents.
+correctly: a chunk saved before step 5 still has the older epoch and its older contents, and the
+journal's file never reaches disk ahead of the chunk (its write waits for the chunks its records speak
+for, docs/choices-repair.md R21), so a result the engine took from the journal is always in the chunk on
+disk too. A chunk on disk ahead of the journal journals its pending result again at its next load.
 
 ### 4.2 Shortfalls
 

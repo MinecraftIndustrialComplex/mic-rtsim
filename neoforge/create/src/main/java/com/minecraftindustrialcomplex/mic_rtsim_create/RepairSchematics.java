@@ -63,6 +63,8 @@ import java.util.function.Consumer;
  *       while away) is one schematic. Damage after that is a new one.</li>
  *   <li><b>Delivery</b> (R15): the item lies where the damage is, at the destroyed block nearest the
  *       middle of the damage, among the drops, and never despawns.</li>
+ *   <li><b>Retention</b> (R25, {@link RepairFiles}): a district's new schematic deletes its earlier ones whose
+ *       blocks are all back; this world's files only.</li>
  * </ul>
  */
 public final class RepairSchematics implements IndustryPlugin {
@@ -224,6 +226,12 @@ public final class RepairSchematics implements IndustryPlugin {
             MicRtsimCreate.LOGGER.error("[mic_rtsim_create] repair schematic {} could not be written", path, ex);
             return;
         }
+        // R25: the district's earlier schematics that print nothing any more go; this one is listed.
+        RepairFiles files = RepairFiles.get(level.getServer());
+        List<String> retired = files.retire(level.getServer(), district, path.getParent());
+        files.add(new RepairFiles.Entry(district, file, level.dimension().location().toString(), anchor.asLong()));
+        if (!retired.isEmpty())
+            MicRtsimCreate.LOGGER.info("[mic_rtsim_create] repair schematics of district {} deleted, every block back: {}", district, retired);
         ItemStack stack = SchematicItem.create(level, file, OWNER);
         stack.set(AllDataComponents.SCHEMATIC_DEPLOYED, true);
         stack.set(AllDataComponents.SCHEMATIC_ANCHOR, anchor);
