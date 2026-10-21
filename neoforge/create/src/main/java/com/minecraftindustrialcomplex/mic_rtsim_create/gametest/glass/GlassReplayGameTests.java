@@ -259,7 +259,7 @@ public final class GlassReplayGameTests {
             this.partial = partial;
             this.far = new Far(helper, farOffset(slot));
             this.test = "glass replay " + (partial ? "partial " : "") + f.name();
-            this.rec = GlassExitKit.start(helper.getLevel().getGameTime());
+            this.rec = GlassExitKit.start(helper.getLevel());
             this.judge = GlassExitKit.canJudge();
             this.stub = !IndustryKit.nativeEngine();
             farMin = far.absolutePos(BlockPos.ZERO);
@@ -724,7 +724,7 @@ public final class GlassReplayGameTests {
         }
         IndustryKit.record(test, "engine saw", unloads + " IND_CHUNK_UNLOADED, " + loads + " IND_CHUNK_LOADED (epochs "
                 + epochs(recs, run) + "), IND_CHUNK_TICKING " + tickingOff + " off / " + tickingOn + " on, load states " + loadStates(recs, run)
-                + "; recorder kept " + recs.size() + " records, dropped " + run.rec.dropped() + " stamped before the test");
+                + "; recorder kept " + recs.size() + " records, dropped " + run.rec.dropped());
         District fd = IndustryKit.ind().district(run.fd);
         int districtChunks = fd == null ? -1 : fd.chunks.size();
         if (!run.partial && unloads < districtChunks)
