@@ -1,6 +1,6 @@
 # Mowzie's Mobs: factions and boss encounters
 
-**Status:** design for Ben's review, revised 2026-10-21 after an adversarial review that was checked
+**Status:** design for Ben's review, revised 2026-10-21 after two adversarial reviews that were checked
 against the jars. Nothing is built. Ben approves this design before code.
 
 **Decided, and binding here:**
@@ -103,12 +103,14 @@ warriors walking in from its edge.
 | Whose train it is | `Train.owner`, a UUID (`Train.java:162`); who sets it in the hash-matched jar is UNVERIFIED (MZ-13) | create |
 | Cargo lost from a train | I24: `attack_train` (`crates/rtsim-industry/src/engine.rs:2914`), which finds the train's current booked leg by its id (`LegIndex::leg_of`, `threat.rs:689`), and `IND_CARRIAGE_DELTA` on `Carriage.storage` | mic_rtsim_create |
 | Train arrivals and lines | industry line edges from Create train arrivals (`TrainWatch.java`; `crates/rtsim-industry/src/engine.rs:109-119`, `2076-2087`) | mic_rtsim_create |
-| Defending a station or base | the I21 survey: walls 2 blocks or more, fences and walls; Create Radars fire control with Create Big Cannons (Radars class the Frostmaw, hostile Umvuthana and the Umvuthi as hostile); Create saws, drills, crushing wheels; iron golems, which attack every Mowzie body in this plan (`INDUSTRY.md:574-585`) | create, createbigcannons, create radars, minecraft |
+| Defending a station or base | the I21 survey: walls 2 blocks or more, fences and walls; Create Radars fire control with Create Big Cannons (Radars class every `Enemy` as hostile, `TrackCategory`: the Frostmaw, every Umvuthana, envoys included, and the Umvuthi); Create saws, drills, crushing wheels; iron golems, which attack every Mowzie body in this plan (`INDUSTRY.md:574-585`) | create, createbigcannons, create radars, minecraft |
 | Weapons that hurt a Frostmaw | melee, fire, TaCZ guns (`EntityKineticBullet` extends `Projectile`, not `AbstractArrow`), Create Big Cannons shells (also `Projectile`, with no attacker entity); a thrown trident is an `AbstractArrow` (`ThrownTrident`), so it bounces off like an arrow | tacz, createbigcannons, minecraft |
 | Stealing the crystal | vanilla invisibility (`minecraft:potion` of invisibility) | minecraft |
 | Keeping a robbed Frostmaw | vanilla `Mob.setPersistenceRequired()`, saved as `PersistenceRequired` | minecraft |
 | Puppets: bodies the sim owns while they are away | `BodyAdapter` (`core/body/BodyAdapter.java:16`) and `BodyKinds.registerBody` (`core/body/BodyKinds.java:41`), as dragons and herds use them | mic_rtsim |
 | Keeping golems off an envoy | NeoForge `LivingChangeTargetEvent`, which the core already listens to (`core/industry/ThreatEvents.java:32`, `56`) | neoforge |
+| Keeping turret shells and stray blows off an envoy | NeoForge `LivingIncomingDamageEvent` (cancelable; not yet used in the core) and `DamageSource.getEntity()`, the attacker or a projectile's owner | neoforge, minecraft |
+| Knowing a camp's bodies are in before counting them | `ServerLevel.areEntitiesLoaded(long)` (`ServerLevel.java:1702`): entities load after their chunk, asynchronously (`PersistentEntitySectionManager.java:215-222`, `243-250`) | minecraft |
 | Camps found when they load | the lair finder pattern: a structure start seen on `ChunkEvent.Load` (`neoforge/iceandfire/.../Lairs.java:44-60`, `114-125`) | mic_rtsim_iceandfire (pattern) |
 | Tribute put in a real chest | `TRANSFER_TO_CONTAINER` 0x8005 (`docs/boundary.md:286`), as the dragons' `LAIR_CHEST` uses it (`docs/boundary.md:850`, `880-908`) | mic_rtsim |
 | A rail fixture for tests | `RailFixtureGameTests` (branch `test/create-rail-fixture`, not merged): real Create 6.0.10 track with a 90 degree curve and an S-bend, two stations, a signal and an assembled two-carriage train on a schedule | mic_rtsim_create |
@@ -117,15 +119,18 @@ warriors walking in from its edge.
 
 Sizes are estimates by analogy with code that exists; they are not measured.
 
-**Engine (Rust: rtsim-conflict, rtsim-settle and the composition), about 1,500 lines plus tests:**
+**Engine (Rust: rtsim-conflict, rtsim-settle and the composition), about 1,600 lines plus tests:**
 1. **Rail from sampled trains** (§4.3). `SignalKind::Rail` = 6, appended. The composition decodes
-   RAIL_PASS, holds a pass until the train's next arrival names its line, and keeps a decayed leg
-   count per (line, faction) with a hysteresis band, pushing a rate only when it leaves the band and
-   booking one wake for its next downward push. A new `set_emission_for(faction, key, kind, rate,
-   pos, actor)` pins a source to one faction (today `set_emission_inner` finds factions from the
-   source's one position, `engine.rs:1337-1424`, so a source can reach only the dens around that
-   point). A source with no district keeps a position focus (today `refresh_rates` keeps a focus
-   only with a district, `engine.rs:1513-1517`). About 260 lines.
+   RAIL_PASS and keeps one decayed leg count per (faction, actor) over all of that actor's passes,
+   with a hysteresis band and a daily resync, pushing a rate only on those and booking one wake for
+   its next push; the engine subtracts the tolerance once from that one rate. Per-line counts are
+   kept beside it only to pick the focus and the ambush line: a pass is credited to its line when
+   the train's next arrival names it, and a held pass with no arrival in 1 day (PLACEHOLDER) is let
+   go. A new `set_emission_for(faction, key, kind, rate, pos, actor)` pins a source to one faction
+   (today `set_emission_inner` finds factions from the source's one position,
+   `engine.rs:1337-1424`, so a source can reach only the dens around that point). A source with no
+   district keeps a position focus (today `refresh_rates` keeps a focus only with a district,
+   `engine.rs:1513-1517`). About 280 lines.
 2. **Empty parties and skipped rungs.** A culture may leave a rung's party empty (today
    `Culture::resolve` refuses one, `culture.rs:378-382`). A climb skips empty rungs (Notice goes
    straight to Raid after Notice's dwell), and a step down that lands on an empty rung goes on to the
@@ -140,13 +145,23 @@ Sizes are estimates by analogy with code that exists; they are not measured.
    same report, death, succession and cowing as a party chief's, every party out routs home, and the
    **killer's** feud steps down `chief_rout_steps`, floored at Notice; with no killer, or a killer
    who has no feud, no feud steps down (§4.2). About 80.
-6. **A culture of one:** the pool refills only while the pool plus the members away is under the
-   cap, so a den never fields a second Frostmaw while the first is out (today the pool refills from
-   the moment a party leaves, `engine.rs:1053-1066`). About 20.
+6. **A culture of one, and waiting for whole bodies:** the pool refills only while the pool plus
+   the members away is under the cap, so a den never fields a second Frostmaw while the first is
+   out (today the pool refills from the moment a party leaves, `engine.rs:1053-1066`). A feud that
+   cannot field its party waits for `need` = ceil(party size ÷ 2) whole bodies. Today `escalate`
+   waits for size ÷ 2 (`engine.rs:1671`), 0.5 of a body for the Frostmaw's party of 1, while
+   `send_party` needs floor(pool) × 2 ≥ size (`2236-2238`): with the pool between 0.5 and 1 the
+   wait is already over, the send fails again, and `plan_feud` books the next tick (`1569`), one
+   wake a tick, about 72,000 for a feud over the 3 days a den takes to refill from 0.5 (a den found
+   empty with a busy line, or a bold chief's cowed time under 6 days). About 30.
 7. **A pool cap per camp, and the census** (§4.9). `pool_cap` is per culture today (`engine.rs:882`,
    `1062`); a camp's cap becomes the count of its bodies at FACTION_FOUND (a grove's 5 to 9), bounded
-   by the culture's. HOME_CENSUS on each camp load reconciles the engine's home count with the
-   vanilla bodies there, and HOME_SPAWN sends the deficit. About 140.
+   by the culture's. HOME_CENSUS on each camp load, once every chunk of the camp has its entities in,
+   reconciles the engine's count with the vanilla bodies there: it keeps per kind the members away
+   whose bodies stayed behind and the members dead whose bodies stayed behind, HOME_SPAWN removes
+   only the dead ones' bodies and sends the deficit, and a camp loading while a member is away with
+   its body there recalls that member's party (`BAND_RECALL` with a new reason 7, the camp loaded;
+   today 1 to 6, `docs/boundary.md:1402`), unless a player is watching that party. About 180.
 8. **Lying in wait** (§4.4): a war party at a position with no district waits out its patience
    (today it "finds nothing to raid", `engine.rs:2869-2878`), sends AMBUSH_SPOT, and rolls
    `ambush_milli` once per TRAIN_PASSED; a hit calls `attack_train` for that train id. The spot's
@@ -161,10 +176,13 @@ Sizes are estimates by analogy with code that exists; they are not measured.
 11. **Hunted animals** (decided, §4.5): a raptor raid that beats a district's defences owes the
     district dead animals, applied when it next loads, under a cap (like I23's destroyed blocks);
     plunder of a village takes its livestock goods, eaten. About 120.
-12. **Tribute priced by value:** `tribute_per_grievance` stays in the market's money (emeralds, 0.5
-    a point, goblin's) and a demand converts it to the culture's tribute good at the haven market's
-    price, with a fixed fallback rate until it has one (§4.5). With MZ-6 (a), a `gold_nugget` good in
-    rtsim-world's catalogue and the phase 1 item map (`crates/rtsim-jni/src/engine/phase1/catalog.rs:28-38`).
+12. **Tribute priced by value**, a real engine change: today `escalate` demands
+    `tribute_per_grievance` × grievance units of the tribute good itself (`engine.rs:1680-1683`).
+    The rate stays in the market's money (emeralds, 0.5 a point, goblin's) and a demand converts it
+    to the culture's tribute good at the haven market's price. The catalogue has no gold good and so
+    no gold price (`crates/rtsim-world/src/synth.rs` has none), so a fixed fallback rate (§4.5) carries every
+    demand until the grove's market has one. With MZ-6 (a), a `gold_nugget` good in rtsim-world's
+    catalogue and the phase 1 item map (`crates/rtsim-jni/src/engine/phase1/catalog.rs:28-38`).
     About 70.
 13. **A den without a market:** a culture flag `haven: false` joins the camp as a market-less world
     node (a new `NodeKind::Lair` in `crates/rtsim-settle/src/lib.rs:48`, no stock or market rows),
@@ -175,8 +193,11 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     masked trade at the grove, into `Conflict::traded`, `engine.rs:2045`, which has no caller today),
     a haven's chest (latest-wins, as `LAIR_CHEST`), NOTICE_SHOWN (a notice is kept per feud until the
     plugin has played it, and resent at each session start), TRAIN_ROBBED (the train the robbed-train
-    roar plays for), and the world's difficulty (no war party leaves on Peaceful). About 240 with the
-    decoding.
+    roar plays for), and the world's difficulty (no war party leaves on Peaceful). An envoy party
+    wiped out with no player among its killers withdraws its demand: a new DEMAND_SETTLED outcome 5
+    (today 1 to 4, `docs/boundary.md:1403`) with no relief, no refusal and no climb, the feud staying
+    on Envoy (today the demand would run to its deadline and expire as if refused,
+    `demand_due`, `engine.rs:1809-1821`). About 260 with the decoding.
 15. **Two cultures as data:** `data/cultures/frostmaw.json` and `umvuthana.json`, added to `builtin()`
     (`culture.rs:430-432`, `449`), each with `market_culture` (`Culture::resolve` errors without it,
     `culture.rs:383-387`), `chief_lifespan_days` 1,000,000 (§4.2) and the fields above. About 140
@@ -197,8 +218,8 @@ Sizes are estimates by analogy with code that exists; they are not measured.
 18. **The Mowzie plugin** `neoforge/mowziesmobs` (mod id `mic_rtsim_mowziesmobs`): body adapters for
     the Frostmaw, the Umvuthana warrior, raptor pack and envoy; camp finding and the census for the two
     structures; turning a home body into a puppet when it leaves and back into a saved vanilla body
-    when it returns (§4.9); persistence for a robbed Frostmaw; the swipe at passing carriages; the
-    envoy party's targeting; a mixin on `EntityUmvuthi.rememberTrade` and an event on minion trades;
+    when it returns (§4.9); persistence for a robbed Frostmaw (a mixin at the steal, §4.7); the swipe
+    at passing carriages; the envoy party's targeting and damage (§4.5); a mixin on `EntityUmvuthi.rememberTrade` and an event on minion trades;
     the notice sounds. About 1,100 to 1,300, by analogy with the Ice and Fire plugin
     (`DragonBridge.java` 1,029, `Lairs.java` 409).
 19. **A strength hook for observed fights:** `IND_FIGHT` counts one per attacker today
@@ -212,8 +233,8 @@ Sizes are estimates by analogy with code that exists; they are not measured.
 
 No new blocks, items or entities.
 
-**Boundary records** (next to §9 of `docs/boundary.md`; field layouts are written with the code, and
-the kinds are provisional: taken when the code lands, after checking other branches for the same ids):
+**Boundary records**: 12 new kinds, plus a new BAND_RECALL reason and a new DEMAND_SETTLED outcome
+(next to §9 of `docs/boundary.md`; field layouts are written with the code, and the kinds are provisional: taken when the code lands, after checking other branches for the same ids):
 
 | Kind | Name | Direction | What it carries |
 |---|---|---|---|
@@ -227,7 +248,7 @@ the kinds are provisional: taken when the code lands, after checking other branc
 | 0x0092 | HAVEN_CHEST (latest-wins) | Java to engine | faction, dimension, a grove chest's position, its free slots (as `LAIR_CHEST`) |
 | 0x0093 | DIFFICULTY (latest-wins) | Java to engine | the world's difficulty, sent at session start and on change |
 | 0x8807 | AMBUSH_SPOT | engine to Java | agent, epoch, faction, dimension, the track point, the body's spot, reach; flag removed |
-| 0x8808 | HOME_SPAWN | engine to Java | the answer to a census: faction, bodies to remove by kind (left behind, §4.9), bodies to spawn by kind, chief flag, crystal |
+| 0x8808 | HOME_SPAWN | engine to Java | the answer to a census: faction, bodies to remove by kind (only those of members that died away, §4.9), bodies to spawn by kind, chief flag, crystal |
 | 0x8809 | TRAIN_ROBBED | engine to Java | faction, train id |
 
 FACTION_FOUND's reserved word (`docs/boundary.md:1363`) carries the census at discovery: the count
@@ -243,7 +264,7 @@ disables the Wroughtnaut's `wrought_chamber` (`pack/config/structurify.json:405-
 
 | Mob | Where it lives (verified) | What it does today (verified) |
 |---|---|---|
-| Frostmaw | `frostmaw_spawn` dens in snowy biomes that are not ocean, river, beach, forest or taiga, height 50 to 100, away from villages and outposts (`ConfigHandler.java:443`). In this pack's biome set: 15 biomes, including `frozen_peaks`, `snowy_slopes`, `snowy_plains`, `ice_spikes` and Terralith's `emerald_peaks`, `glacial_chasm`, `rocky_mountains`. How often dens pass the 50 to 100 height check in this pack's terrain is UNVERIFIED. | Sleeps until a player comes within 8 blocks while it has a target (`EntityFrostmaw.java:590-606`); fights; goes back to sleep after 1,200 ticks without a target (`580-589`). Targets players only (`284`). Never wakes on Peaceful (`582`, `600`). Persistent while it holds its crystal (`977`); once robbed it despawns like any monster when no player is within 128 blocks, as nothing in the den's template sets `PersistenceRequired` (`MowzieEntity.java:291-317`). Wanders inside its restriction (`208-209`). |
+| Frostmaw | `frostmaw_spawn` dens in snowy biomes that are not ocean, river, beach, forest or taiga, height 50 to 100, away from villages and outposts (`ConfigHandler.java:443`). In this pack's biome set: 15 biomes, including `frozen_peaks`, `snowy_slopes`, `snowy_plains`, `ice_spikes` and Terralith's `emerald_peaks`, `glacial_chasm`, `rocky_mountains`. How often dens pass the 50 to 100 height check in this pack's terrain is UNVERIFIED. | Sleeps until a player comes within 8 blocks while it has a target (`EntityFrostmaw.java:590-606`); fights; goes back to sleep after 1,200 ticks without a target (`580-589`). Targets players only (`284`). Never wakes on Peaceful (`582`, `600`). Persistent while it holds its crystal (`977`); once robbed it despawns like any monster, as nothing in the den's template sets `PersistenceRequired` (`MowzieEntity.java:291-317`): at once with no player within 128 blocks, and beyond 32 blocks at 1 in 800 a tick once idle for 600 ticks, so within about a minute of the thief walking off. Wanders inside its restriction (`208-209`). |
 | Umvuthi | `umvuthana_grove` in the 8 savanna biomes, height 50 to 100 (`ConfigHandler.java:466`) | Placed at the fire pit, finalized as a structure spawn and restricted there (`UmvuthanaGrovePieces.java:276-288`). Persistent (`EntityUmvuthi.java:393`). Targets unmasked players, iron golems, zombies, skeletons, Elokosa (`318-345`). In a fight, summons Umvuthana while fewer than 4 are within 50 blocks (`488`), and cranes each time it has lost 45 health (`469-471`; `spawn_healers_threshold`, `ConfigHandler.java:473`). A crane heals only the Umvuthi (`EntityUmvuthanaCrane.java:174`) and gives it Sunblock, under which it takes no damage (`EntityUmvuthi.java:628-632`). |
 | Umvuthana | 5 to 9 in each grove, restricted to 25 blocks of its centre (`UmvuthanaGrovePieces.java:494-507`) | Persistent (`EntityUmvuthanaMinion.java:253`). Target unmasked players, zombies, skeletons, Elokosa (`133-151`). Trade with masked players (`107`, `236-240`). |
 | Umvuthana raptor | natural spawns in savanna at y 60 or more, weight 5, groups of 1, away from villages, outposts and groves (`ConfigHandler.java:539`) | Leads 4 or 5 followers (`EntityUmvuthanaRaptor.java:191-199`), who take its target (`EntityUmvuthanaFollowerToRaptor.java:47`) and hunt on their own once leaderless (`94-97`). The raptor hunts animals with attack damage under 3 and a volume between 0.1 and 6 (`EntityUmvuthana.java:338-342`, `EntityUmvuthanaRaptor.java:88-90`): cows, sheep, pigs, chickens. |
@@ -339,8 +360,8 @@ blocks apart, so circles overlap and one line can cross two ranges. `reach_block
 (PLACEHOLDER; goblin's is 300): only what happens inside the circle counts.
 
 **Camps are found** as the Ice and Fire plugin finds lairs: when a chunk holding the structure's start
-loads, the plugin reports FACTION_FOUND (flag LATE when found after generation) with the structure from
-dictionary 4 and the census of the bodies there (§4.9). A camp in a chunk nobody has generated does
+loads and the camp's entities are in, the plugin reports FACTION_FOUND (flag LATE when found after
+generation) with the structure from dictionary 4 and the census of the bodies there (§4.9). A camp in a chunk nobody has generated does
 not exist yet: a line laid through a range nobody has explored meets no Frostmaw until that den
 generates. That is a limit of the design.
 
@@ -371,8 +392,8 @@ goblin. It ignores logging and mining (weight 0): nothing in the jar ties it to 
 |---|---|
 | Notice (10) | The plugin plays `mowziesmobs:frostmaw.roar` to the player the feud is against, from 32 blocks (PLACEHOLDER) toward the den, when they are in the range. If they are not, the notice waits in the engine's save until their next entry, across logouts and restarts (NOTICE_SHOWN, ledger 14). |
 | Envoy, Scouts | Skipped: a climb from Notice goes straight to Raid after Notice's half-day dwell. |
-| Raid (70) | It leaves the den and walks to the focus: a spot beside the real track of the line that angers it most (§4.4). There it lies in wait for its patience (2 days, PLACEHOLDER), ambushing trains that pass. Then it goes home, bored (C24). While the grievance stays at 70 or more it comes again `repeat_days` (4, PLACEHOLDER) after each return (ledger 3). |
-| Invasion (140) | After Raid's 4-day dwell: it waits beside the track at the line's station nearer the den, where every train from or to that station passes it and a district there is raided (§4.6). It repeats like the Raid. |
+| Raid (70) | It leaves the den and walks to the focus: a spot beside the real track of the line that carries the most of that player's traffic through the range (§4.3, §4.4). There it lies in wait for its patience (2 days, PLACEHOLDER), ambushing trains that pass. Then it goes home, bored (C24). While the grievance stays at 70 or more it comes again `repeat_days` (4, PLACEHOLDER) after each return (ledger 3). |
+| Invasion (140) | After Raid's 4-day dwell, and once no raid is out (a feud climbs only with no party out, `engine.rs:1550`): it waits beside the track at the line's station nearer the den, where every train from or to that station passes it and a district there is raided (§4.6). It repeats like the Raid. |
 | Siege | Skipped: Invasion is its top rung. |
 
 **Its class follows its crystal.** With the crystal it throws ice balls at targets 14.5 blocks away
@@ -421,49 +442,87 @@ The range feels the trains themselves, on the track they really run.
   the sampled point nearest the camp, and reports one RAIL_PASS: the faction, the train's id and
   owner, that point, the entry and exit ticks. A train that stops inside a range reports its pass when
   it leaves.
-- **The line.** The composition holds a pass until the train's next arrival at a station, which
-  names the leg it was on (the industry engine already pairs a train's departure and arrival into a
-  line edge, `engine.rs:2076-2087`). The pass then counts on that (line, faction): line meaning the
-  unordered station pair. A den found after the line exists feels the line's next pass: the sampler
-  reads the circles as they are now, so there is nothing to re-test.
-- **The meter.** Each (line, faction) keeps a decayed count of its passes: on each pass n ← n ×
-  e^(-Δt/τ) + 1, and its rate is n ÷ τ legs a day, with τ = 2 days (PLACEHOLDER). The composition
-  pushes the rate into the engine's source only when it leaves a band around the last rate pushed
-  (10% of it, and at least 1 leg a day, PLACEHOLDER), and not while both are under the tolerance.
-  Between passes the rate falls as a closed form, so the composition books one wake for the moment
-  it will cross the band's lower edge. A steady line makes no events: at 24 legs a day the rate
-  ripples between 23.75 and 24.25; at 3 legs a day between 2.76 and 3.26, inside the 1-leg band.
-- **The source.** One continuous source per (line, faction), pinned to that faction
-  (`set_emission_for`, ledger 1). Its position is the line's sampled point nearest the den, kept as
-  the feud's focus when this line's rate is its largest. Its actor is MZ-13's: recommended, the
-  train's owner, else P14 at the line's two stations.
-- **Weight and tolerance** (PLACEHOLDER): weight 1.0 per leg, tolerance 2 legs a day per line (one
-  round trip). With the 6-day half-life (λ = ln 2 / 6 = 0.1155 a day) the grievance settles at 8.66 ×
-  (legs a day - 2). Tolerance is per line, so a player who splits the same traffic over more station
-  pairs through one range gets one more free round trip a day for each pair; `sim mowzie` measures
-  whether that matters.
+- **The meter: one per den and actor.** Each pass counts against an actor: MZ-13's, recommended the
+  train's owner, else P14 at the line's two stations. Each (faction, actor) keeps one decayed count
+  of all that actor's passes through the range, whatever line they ran: on each pass n ← n ×
+  e^(-Δt/τ) + 1, and its rate is n ÷ τ legs a day, with τ = 2 days (PLACEHOLDER). A pass by an owned
+  train counts the moment it is reported.
+- **Pushing.** The composition pushes the meter's rate into the engine when it leaves a band around
+  the last rate pushed (10% of it, and at least 1 leg a day, PLACEHOLDER), and when a day has passed
+  since the last push (the resync, below); never while both are under the tolerance, where the
+  engine would count nothing anyway. Between passes the rate falls as a closed form, so each meter
+  books one wake: the earlier of the band's lower edge and the resync. A meter over the tolerance
+  pushes about once a day while its traffic is steady.
+- **The source.** One continuous source per (faction, actor), pinned to that faction
+  (`set_emission_for`, ledger 1). The engine sums a feud's sources of one kind and subtracts the
+  tolerance once from the sum (`refresh_rates`, `engine.rs:1480-1506`); with one source per
+  (faction, actor), that sum is the meter, so the tolerance is applied once to all of a player's
+  traffic through the range, however many station pairs it is split over.
+- **The line: only for the focus.** Beside the meter the composition keeps a decayed count per
+  (line, faction, actor), line meaning the unordered station pair. A pass is credited to its line
+  when the train's next arrival at a station names the leg it was on (the industry engine already
+  pairs a train's departure and arrival into a line edge, `engine.rs:2076-2087`). The line with the
+  largest count is the focus: the source's position, sent with each push, is that line's sampled
+  point nearest the den; the Raid lies in wait there (§4.4) and the Invasion goes to that line's
+  station nearer the den. Line counts make no pushes and book no wakes; they are read when the meter
+  pushes. A held pass whose train makes no arrival within 1 day (PLACEHOLDER: a train parked or
+  removed mid-line) is let go: an owned one has already counted on its meter and misses only its
+  line's count; an ownerless one, which needs the stations for P14, counts against P14 at its own
+  sampled point, or against nobody. A den found after the line exists feels the line's next pass:
+  the sampler reads the circles as they are now, so there is nothing to re-test.
+- **Weight and tolerance** (PLACEHOLDER): weight 1.0 per leg, tolerance 2 legs a day (one round trip)
+  per den and actor. With the 6-day half-life (λ = ln 2 / 6 = 0.1155 a day) the grievance settles at
+  8.66 × (legs a day - 2).
 
-Days to each rung for a line started on day 0 and run steadily, with the meter and the band in the
-loop (integrated in 1/1,200-day steps; dwell and temperament left out):
+**Why a daily resync** (decided here; it can be undone). With the band alone, the pushed rate froze
+wherever it last entered the band, up to 1 leg a day off, and 1 leg a day is 8.66 grievance points,
+the size of Notice: a 4-leg line settled at 11.3 from below and 17 from above. Of the three fixes the
+review offered:
+- a band floor of 0.25 leg sits inside the meter's own ripple (one pass moves n ÷ τ by 0.5, so the
+  rate swings ±0.25 about the true one), and a steady line would push at nearly every pass;
+- a band on the rate above the tolerance keeps the 1-leg floor where it does the most harm, at low
+  rates (a 4-leg line is only 2 legs over);
+- the resync clears the bias from both sides for one push a day per (den, actor), a cost that does
+  not grow with the number of lines or trains. What remains is the ripple: the resync reads the
+  meter at a random point between passes, at most ±0.25 leg, ±2.2 grievance points.
 
-| Legs a day | Settles at | Notice (10) | Raid (70) | Invasion (140) | Siege (260) | Pushes |
+Days to each rung for traffic started on day 0 and run steadily, against the engine's arithmetic:
+the meter, band and resync in the loop; the tolerance subtracted once from the one rate; the
+grievance integrated in 1/600-day steps; the Frostmaw's climbs with goblin's dwell (half a day on
+Notice before Raid, 4 days on Raid before Invasion) and none while a party is out (`plan_feud`,
+`engine.rs:1550`); a raid out 3.6 days (a 1-day muster, 150 blocks each way, a 2-day lurk) and
+repeated 4 days after it is home (ledger 3); middling temperament. Each figure is the median of 8
+runs with every pass jittered by up to 40% of the headway; perfectly regular trains move a settled
+grievance by under 1 point and a crossing by under 0.8 day, except the 4-leg Notice (day 10.0) and
+the 24-leg Invasion (below).
+
+| Traffic through the range | Settles at | Notice (10) | Raid (70) | Grievance 140 | Invasion | Pushes in the first 20 days |
 |---|---|---|---|---|---|---|
-| 4 | 17.3 | day 21 | never | never | never | 2 |
-| 12 | 86.6 | day 3.0 | day 20 | never | never | 9 |
-| 24 | 190.4 | day 1.8 | day 6.4 | day 16 | never | 15 |
-| 50 | 415.5 | day 1.1 | day 3.5 | day 6.0 | day 11.5 (the Frostmaw has no Siege rung) | 22 |
+| 4 legs a day | 17.3 | day 11.8 | never | never | never | 19 |
+| 12 legs a day | 86.6 | day 3.0 | day 17.1 | never | never | 24 |
+| 24 legs a day | 190.4 | day 1.8 | day 6.4 | day 14.1 | day 17.6 | 30 |
+| 14 lines at 1.7 legs a day on one trunk (23.8) | 188.7 | day 1.8 | day 6.3 | day 14.2 | day 17.5 (13.8 to 13.9 in 4 runs of 32) | 33 |
+| 50 legs a day | 415.5 | day 1.1 | day 3.5 | day 5.8 | day 7.5 (Raid's 4-day dwell) | 37 |
 
-The meter's lag (τ) adds about two days to each crossing against a rate known at once, and the band
-holds the pushed rate up to 10% under the true one (at 24 legs a day the pushed rate sits at about
-22.7, settling at 179 instead of 190).
+After the first 20 days every row pushes about once a day. At 24 legs a day the grievance passes 140
+a few hours after the first repeat raid was sent (day 14.0), so the Invasion waits for that raid to
+come home; with perfectly regular trains it passes 140 first, on day 13.9, and climbs then. The
+trunk row is the common case of many routes sharing one track through a range: with a meter per line,
+each line stayed under its own tolerance and its push gate, and the range felt nothing (grievance
+0); with one meter per (den, actor) it feels the trunk's 23.8 legs a day as one line of 23.8 would.
+
+The meter's lag (τ) adds 0.9 to 2.8 days to a crossing against a rate known at once, and 4.3 days to
+the 4-leg Notice, where the rate first has to climb past the tolerance.
 
 **Running fewer trains works, on a timescale of days.** A line run at 12 legs a day from day 0 and 24
-from day 2 peaks at a grievance of 120 on day 13 if traffic changes on day 12:
+from day 2 (walkthrough A) peaks at a grievance of about 122 on day 13 if traffic changes on day 12:
 
 | From day 12 | Grievance under 70 (no more raids) | Under 42 (Raid rung left) | Settles at |
 |---|---|---|---|
-| cut to 4 legs a day | day 21.2 | day 27.9 | 17.3 (Notice: a roar now and then) |
-| stopped | day 19.0 | day 23.5 | 0 (under 6, the Notice rung left, day 40.3) |
+| cut to 4 legs a day | day 21.4 | day 28.1 | 17.3 (Notice: a roar now and then) |
+| stopped | day 19.2 | day 23.6 | 0 (under 6, the Notice rung left, day 40.5) |
+
+In both, the repeat raid due on day 15.1 still comes: the grievance is over 70 then.
 
 The old estimator (trips over a line's lifetime) would have held such a line near 14 legs a day for a
 month after the cut; the meter forgets a stopped line in about two τ.
@@ -529,7 +588,20 @@ players only (`284`).
 - **No collision.** A train passes through a Frostmaw (§3.1): the spot keeps it off the rail so it
   never looks that way.
 
-**Its den while it is out.** Empty. A player who visits finds the ruin and no Frostmaw.
+**Its den while it is out.** If it left while the den was loaded, its body left with it (§4.9): a
+player who visits finds the ruin and no Frostmaw. If it left while the den was unloaded, its vanilla
+body is still in the saved den, and what the den's next load does depends on whether anyone is
+watching the Frostmaw by the line:
+- **Nobody is.** The body stays and the engine recalls the party: the Frostmaw has come home to
+  mind its den. So a player who visits the den ends a lurk early; the next raid comes `repeat_days`
+  after this return. Reason (UR-1): removing the body instead would leave the den empty while its
+  Frostmaw lives, and an uninstall then would empty it for good.
+- **A player is** (its puppet stands by the line). It stays out, and the plugin takes its body from
+  the den as when it leaves a loaded den, so it is never in two places. A rider coming along the
+  line usually meets this case: the puppet appears once the rider is within 160 blocks of the spot
+  (`view_radius`), before the den, about 145 blocks beyond the spot, comes within the 10 chunks of
+  vanilla's default view distance (the server's own setting is UNVERIFIED). This has the uninstall
+  exposure of any member away from a loaded camp, which §4.9 lists.
 
 ### 4.5 The Umvuthana: a tribe
 
@@ -541,7 +613,9 @@ who traded with it (`TRADED_PLAYERS`, NBT `"players"`, `779-792`). Umvuthana it 
 are vanilla minions like the rest, and the census counts them up to the grove's cap. Its cranes stay
 vanilla and are never counted: a crane heals and shields only the Umvuthi
 (`EntityUmvuthanaCrane.java:174`), so it has no place in a band away from it. The pool is a count of
-fighters, and a raptor pack counts as one.
+fighters, and a raptor pack counts as one. At home every pool unit is a warrior's body: a raptor pack
+that leaves a loaded grove takes one warrior's body with it, and one that comes home is one warrior
+again (§4.9).
 
 **Units** (strength by §4.13):
 
@@ -558,7 +632,8 @@ pool holds at least half its make-up, `engine.rs:2236-2238`, and a grove starts 
 - envoy: 1 envoy and 2 warriors (goblin's pattern);
 - scouts: 1 raptor pack;
 - raid: 3 warriors and 1 raptor pack (4 units, strength 3.8);
-- invasion: 6 warriors and 2 raptor packs (8 units, strength 7.6; a grove of 5 sends 5);
+- invasion: 6 warriors and 2 raptor packs (8 units, strength 7.6); a grove of 5 sends 4, 3 warriors
+  and 1 pack (`send_party` floors each unit's share, 5 ÷ 8 of each, `engine.rs:2240-2247`);
 - siege: empty, so Invasion is the top rung: the tribe breaks no blocks, so it cannot besiege;
 - plunder: 1 raptor pack, against village herds.
 
@@ -566,14 +641,20 @@ pool holds at least half its make-up, `engine.rs:2236-2238`, and a grove starts 
 `mowziesmobs:umvuthana*` entity, natural raptor packs included), logging, mining, building, smog.
 
 **The envoy party** (decided). While a demand is open, the plugin strips the target goals of all
-three bodies of the envoy party, and cancels any golem's target change onto them
-(`LivingChangeTargetEvent`, which the core already handles, `ThreatEvents.java:32`, `56`). If a
-player strikes the envoy or a guard, all three get their target goals back and the hit is an insult
-(ENVOY_ANSWER 3). Killed by zombies or skeletons (which fight Umvuthana both ways), they are
-casualties with killer kind mob, not an insult. Reason: nearly every base has an iron golem, and
-every Umvuthana is an `Enemy` that golems attack (`IronGolem.java:78`); without this, golems would
-turn every demand into a war the player never chose, and the guards would attack every unmasked
-player at the base before a word was said.
+three bodies of the envoy party, cancels any golem's target change onto them
+(`LivingChangeTargetEvent`, which the core already handles, `ThreatEvents.java:32`, `56`), and
+cancels every hit on them (`LivingIncomingDamageEvent`) unless a player is the attacker or the
+projectile's owner (`DamageSource.getEntity()`), or the damage bypasses invulnerability (the void,
+`/kill`). So a Create Radars turret, which classes every Umvuthana as hostile and fires on it
+(`TrackCategory`: any `Enemy`), a golem's blow, a zombie, a skeleton's arrow, lava and a fall do
+nothing to them. If a player strikes the envoy or a guard, all three get their target goals back and
+the hit is an insult (ENVOY_ANSWER 3). A party wiped out by anything else (only damage that
+bypasses invulnerability can) is casualties with killer kind mob, neither an insult nor a refusal:
+the demand is withdrawn (ledger 14) and the feud stays on Envoy. Reason: nearly every base has an
+iron golem, and a late base has radar-guided cannons (§5 A recommends one), and every Umvuthana is
+an `Enemy` that both attack (`IronGolem.java:78`); without this, the base's own defences would turn
+every demand into a war the player never chose, and the guards would attack every unmasked player
+at the base before a word was said.
 
 **The ladder.**
 
@@ -587,8 +668,10 @@ player at the base before a word was said.
 
 **Tribute** is gold (MZ-6), priced by value (ledger 12): the culture asks 0.5 emerald's worth per point
 of grievance (goblin's), converted at the grove market's price for gold nuggets, or at a fallback of
-9 nuggets an emerald (PLACEHOLDER: one gold ingot an emerald) until the market has a price. Gold nuggets
-are the tribe's trading currency on screen (a masked player buys clawed logs, cooked meat, feathers,
+9 nuggets an emerald (PLACEHOLDER: one gold ingot an emerald) until the market has a price. The
+catalogue has no gold good today, so no market has one, and the fallback carries every demand until
+the gold good and its price exist (ledger 12). Gold nuggets are the tribe's trading currency on
+screen (a masked player buys clawed logs, cooked meat, feathers,
 sticks and campfires from the grove's warriors with gold nuggets, and sells them melon, raw meat,
 beetroot, fish, acacia saplings and bones for nuggets, one offer at a time, `EntityUmvuthanaMinion.java:107`;
 the player's item goes in, `InventoryUmvuthana.java:97-105`). Paid tribute is stocked at the grove's
@@ -650,7 +733,7 @@ rule.
 
 | Body | At home | Away (a puppet) | State it gives back |
 |---|---|---|---|
-| Frostmaw | the jar's vanilla body, untagged; `PersistenceRequired` set by the plugin once it is robbed, so it does not despawn (§3.1) | its constructor; NBT `has_crystal`, `active`, `alwaysActive` set before its first tick (`EntityFrostmaw.java:960-975`); health from the engine | health and crystal (CHIEF_STATE; census), death with killer |
+| Frostmaw | the jar's vanilla body, untagged; `PersistenceRequired` set by the plugin at the steal, which also reports CHIEF_STATE: a mixin at the `setHasCrystal(false)` call in `EntityFrostmaw.tick` (`615`), not on the setter itself, which loading NBT also calls (`963`); without it the random despawn takes a robbed Frostmaw within about a minute (§3.1) | its constructor; NBT `has_crystal`, `active`, `alwaysActive` set before its first tick (`EntityFrostmaw.java:960-975`); health from the engine | health and crystal (CHIEF_STATE; census), death with killer |
 | Umvuthana warrior, envoy | the jar's vanilla bodies | its constructor, then `finalizeSpawn` so it gets its trade table (`EntityUmvuthanaMinion.java:243-250`); mask (NBT `"mask"`), weapon (NBT `"weapon"`, `EntityUmvuthana.java:682-690`) | casualties with killer |
 | Raptor pack | not at home: a raptor pack exists only in a party | the raptor's constructor, then 4 followers through the public `(type, level, leader)` constructor (`EntityUmvuthanaFollowerToRaptor.java:33`), not `finalizeSpawn` (which adds 4 or 5 of its own, `EntityUmvuthanaRaptor.java:191-199`) | casualties |
 | Umvuthi | vanilla, always; a new chief by HOME_SPAWN: its constructor, `finalizeSpawn` as a structure spawn, `restrictTo` the fire pit | never away (MZ-3) | death with killer |
@@ -680,28 +763,48 @@ warriors. So:
 - **Bodies at home stay vanilla:** saved by vanilla, untagged, with their own health, crystal, mask and
   weapon. Remove rtsim and every den and grove looks as the jar left it, give or take what players
   did.
-- **A body is tagged only while it is away.** When a party leaves a loaded camp, the plugin takes the
-  home body, removes it, and spawns the puppet with its state. When the camp is unloaded, the vanilla
-  body stays in the saved chunk and the engine counts it as left behind; the next time the camp
-  loads, the census first removes one vanilla body of that kind for each member left behind, whether
-  that member is still away or has died since. So a Frostmaw killed by a line does not reappear in its
-  den, and one still out is not in two places.
+- **A body is tagged only while it is away.** When a party leaves a loaded camp, the plugin takes one
+  home body for each unit (a warrior's for a raptor pack), removes it, and spawns the puppet with its
+  state. When a party leaves an unloaded camp, the vanilla bodies stay in the saved chunk and the
+  engine books them, per kind, as *away, body left behind*. A member so booked that dies away is
+  booked *dead, body left behind* instead.
 - **Coming home.** A party that reaches a loaded camp dematerializes into saved vanilla bodies there
-  (the tag removed, `PersistenceRequired` set). One that reaches an unloaded camp returns to the pool,
-  and the next load's census spawns the bodies.
-- **The census** (HOME_CENSUS, every camp load; ledger 7), after those removals, compares the vanilla
-  bodies at home with the engine's home count. Fewer than the engine expects and not ordered: the missing ones died unseen,
-  and the pool loses them. Fewer because the pool refilled: the deficit is spawned (HOME_SPAWN), the
-  Frostmaw asleep at the den's template spot, warriors at the grove's edge farthest from any player,
-  restricted to its centre as `UmvuthanaGrovePieces.java:494-507` does. More (the Umvuthi summoned
-  some): the pool takes them up to the grove's cap; the rest stay vanilla and uncounted.
+  (the tag removed, `PersistenceRequired` set). One that reaches an unloaded camp returns to the pool:
+  members whose bodies stayed behind are simply home again, with nothing to spawn, and the next
+  load's census spawns the others.
+- **When the census runs.** Entities load after their chunk, asynchronously
+  (`PersistentEntitySectionManager.java:215-222`, `243-250`), so a count taken at `ChunkEvent.Load`
+  could see an empty den, book its Frostmaw as dead, and six days later spawn a second one, crystal
+  and all, beside the first. So a camp chunk loading only queues the camp, and the census runs at
+  the end of the first server tick in which `ServerLevel.areEntitiesLoaded` (`ServerLevel.java:1702`)
+  holds for every chunk of the camp's footprint (the den's template, the grove's 25-block circle). A
+  partly loaded camp (a player at the edge of a grove) is skipped and stays queued until it is whole
+  or unloads. FACTION_FOUND's census waits the same way. Reason, over counting
+  `EntityJoinLevelEvent`s as `HabitatEvents.java:25` and `DragonBridge.java:930` do: a count has to
+  know the last body is in, and join events alone cannot say when that is.
+- **The census** (HOME_CENSUS; ledger 7), in three steps:
+  1. **The dead left behind.** HOME_SPAWN removes one vanilla body of the kind for each member booked
+     dead with its body left behind. So a Frostmaw killed by a line does not reappear in its den.
+  2. **The living away.** For each member booked away with its body here, the body stays and the
+     engine recalls that member's party (BAND_RECALL reason 7): the members are home. A party a
+     player is watching at that moment (its puppets are in the world) is not recalled: the plugin
+     takes its members' bodies from the camp, as when a party leaves a loaded camp. So no member is
+     in two places, and none that lives is removed from its camp while nobody sees it elsewhere.
+  3. **The rest.** The vanilla bodies at home are compared with the engine's home count. Fewer than
+     it expects, with none ordered: the missing ones died unseen (a despawn, a death the plugin
+     missed, a warrior carried off with Carry On), and the pool loses them. Fewer because the pool
+     refilled: the deficit is spawned (HOME_SPAWN), the Frostmaw asleep at the den's template spot,
+     warriors at the grove's edge farthest from any player, restricted to its centre as
+     `UmvuthanaGrovePieces.java:494-507` does. More (the Umvuthi summoned some): the pool takes them
+     up to the grove's cap; the rest stay vanilla and uncounted.
 - **A reset** recreates each faction from FACTION_FOUND, which carries the census: a robbed den comes
   back robbed (the body's `has_crystal` is 0), a grove comes back with the warriors standing in it, a
   den found empty starts with an empty pool (§4.10).
 - **What an uninstall or reset loses:** members away from a loaded camp at that moment (puppets), and
   the grudges, which are the sim's own. The other way round, a member that left an unloaded camp and
-  died away comes back with an uninstall, since its vanilla body was still in the saved den: the jar's
-  state wins, which UR-1 allows.
+  died away comes back with an uninstall if its camp has not loaded since (the census's first step
+  removes its body then), since its vanilla body was still in the saved camp: the jar's state wins,
+  which UR-1 allows.
 - **Untested so far for any module:** the deploy rehearsal's uninstall had no puppets to check, as
   no player joined (`docs/deploy-rehearsal-omegasrv.md:461-462`); dragons carry the same gap. Test 4
   covers this plan's bodies.
@@ -783,8 +886,8 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 | Value | Here | Source | What it tunes | How to measure |
 |---|---|---|---|---|
 | Territory radius | 200 | TUNABLE: half the structure spacing | how far a camp's range reaches | GameTest census of den spacing in a generated world; Ben's call |
-| Rail weight, tolerance | 1.0, 2 legs a day per line | PLACEHOLDER | how much traffic a Frostmaw stands | `sim mowzie` sweep of legs a day against days to the first raid; Ben's call on the target |
-| Meter τ, band | 2 days; 10% and at least 1 leg a day | PLACEHOLDER | how fast a changed line is felt; pushes a line costs | `sim mowzie` cut and reroute runs; push counts |
+| Rail weight, tolerance | 1.0, 2 legs a day per den and actor | PLACEHOLDER | how much traffic a Frostmaw stands | `sim mowzie` sweep of legs a day against days to the first raid; Ben's call on the target |
+| Meter τ, band, resync; held pass | 2 days; 10% and at least 1 leg a day; a day; 1 day | PLACEHOLDER | how fast changed traffic is felt; pushes a meter costs; how long a pass waits for its line | `sim mowzie` cut, reroute and trunk runs; push counts |
 | Sample period, hash cell | 20 ticks, 512 blocks | PLACEHOLDER | sampler cost and pass accuracy | bench at 200 trains; test 11 on the fixture's curves |
 | Lurk offset, reach | 5 blocks off the rail, 8 blocks | PLACEHOLDER | where it stands; which passes count | test 9 |
 | Repeat | 4 days after a return | PLACEHOLDER | how often an angry Frostmaw comes back | `sim mowzie` line run; Ben's call |
@@ -818,22 +921,25 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
    route: the plugin reported FACTION_FOUND with its census (one Frostmaw, holding its crystal). The
    Frostmaw sleeps on as the jar's own entity.
 2. Day 0: one train shuttles between the stations, 12 legs a Minecraft day. Every leg's leading point
-   enters the den's circle; the sampler reports a RAIL_PASS each time, and on each arrival the pass
-   counts on the line {Copper Halt, Smelter} for this den. The meter climbs; the first pushes set a
-   Rail source against Iva, the train's owner (MZ-13 (a)).
+   enters the den's circle; the sampler reports a RAIL_PASS each time, and the pass counts at once
+   on the den's meter for Iva, the train's owner (MZ-13 (a)); each arrival also credits the line
+   {Copper Halt, Smelter}, which makes it the focus. The meter climbs, and its first pushes set the
+   Rail source against Iva.
 3. Day 2: she adds a second train: 24 legs a day.
-4. Day 2.8: the grievance passes 10. She is at the smelter, outside the range, so the notice waits.
+4. Day 2.7: the grievance passes 10. She is at the smelter, outside the range, so the notice waits.
    The next morning she rides north and, as her train enters the range, hears a roar from the north.
-5. Day 7.6: the grievance passes 70; the Frostmaw climbs from Notice straight to Raid. After its
+5. Day 7.5: the grievance passes 70; the Frostmaw climbs from Notice straight to Raid. After its
    1-day muster it leaves the den (the den is unloaded, so its vanilla body stays in the saved chunk
-   and the party marches abstractly), walks 150 blocks at 0.02 blocks a tick (7,500 ticks, a third of
-   a day) and waits 5 blocks off the rail at the point of the real track nearest its den, from day
-   8.9 to day 10.9.
+   and the party marches abstractly), walks 150 blocks at 0.02 blocks a tick (7,500 ticks, under a
+   third of a day) and waits 5 blocks off the rail at the point of the real track nearest its den,
+   from day 8.8 to day 10.8. It is home on day 11.1.
 6. She is at her smelter, 1,500 blocks away. Each train passing within 8 blocks of the spot rolls; a
    hit takes up to 64 ingots and at most 10% of what the train carries, destroyed, at most once a
    train a day. Over the two days her two trains lose at most 256 ingots. When a robbed train pulls
    into Smelter, she hears the roar from the north. No track is cut.
-7. Day 9.5: she rides north. Rounding the ridge, she sees the Frostmaw beside the line, awake. It
+7. Day 9.5: she rides north. Rounding the ridge, she sees the Frostmaw beside the line, awake (it
+   appeared as she came within 160 blocks of its spot; when the den loads a little later, the plugin
+   takes the body left in it, §4.4). It
    throws an ice ball well ahead of her train; it bursts beside her seat, she freezes, and she is
    pulled off the carriage. For 2.5 seconds she stands frozen in the snow next to the Frostmaw while
    her train runs on to Copper Halt. As the second carriage passed, it swiped; the carriage's chest is
@@ -851,14 +957,16 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
      sets it persistent, so it stays in its den instead of despawning when she leaves, and reports its
      state. From now on it has no breath or ice balls, so riders are safe from the dismount; it counts
      as melee, and a 2-block wall at her station stops it while she is away.
-   - **Run fewer trains.** She cuts back to 4 legs a day on day 12. The grievance peaks at 120 on day
-     13, falls under 70 on day 21 (no more raids) and under 42 on day 28, when the feud drops back to
-     Notice. Stopping the line entirely gets there by day 23.5.
+   - **Run fewer trains.** She cuts back to 4 legs a day on day 12. The grievance peaks at about 122
+     on day 13; the raid due on day 15.1, 4 days after the Frostmaw came home, still comes; the
+     grievance falls under 70 on day 21.4 (no more raids) and under 42 on day 28.1, when the feud
+     drops back to Notice. Stopping the line entirely gets there by day 23.6.
    - **Reroute.** She lays new track west around the range. Her trains' passes stop, and the old
      line's meter decays as if she had stopped it. A halt station with no new track changes nothing:
      the range feels the track, not the stations.
-   - **Defend the station.** At 140 (about day 16 at 24 legs a day) it comes to wait by Copper Halt,
-     the station nearer its den. A Create Big Cannons autocannon on a Create Radars controller with
+   - **Defend the station.** If she changes nothing, the grievance passes 140 on day 15.2, just after
+     the repeat raid was sent (day 15.1); a feud climbs only with no party out, so when that raid is home,
+     on day 18.7, it comes to wait by Copper Halt, the station nearer its den. A Create Big Cannons autocannon on a Create Radars controller with
      auto-target and auto-fire counts against every class (I21), and its shells hurt the Frostmaw
      without giving it anyone to turn on; a 2-block wall counts only once the crystal is gone; an iron
      golem counts as a guard.
@@ -904,8 +1012,11 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 
 **D. Clearing a range, and what comes back.**
 1. Iva kills the Frostmaw by her line on day 9.5, as in A. The den is empty.
-2. She visits the den on day 12. It loads, and the census removes the vanilla body left behind when
-   the Frostmaw marched (§4.9): she finds the ruin and no Frostmaw. The pool is at 0.4.
+2. She visits the den on day 12. It loads, and she finds the ruin and no Frostmaw: its body was taken
+   when the den loaded while she watched it by the line (§4.4), so the census has nothing to remove.
+   Had the den stayed unloaded until she killed it, the census would now remove the body left behind,
+   as its member is dead (§4.9). The pool is at 0.4, and while it is under 1 the feud waits for a
+   whole body without waking (ledger 6).
 3. On day 15.5 the pool reaches 1. Nothing shows yet: the den is unloaded.
 4. On day 17 she flies over the den; it loads, the census finds no Frostmaw where the engine expects
    one, and the plugin places it asleep in the ruin. If her trains still run, it is already angry:
@@ -915,9 +1026,11 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
    gains the six empty days.
 
 **E. Removing rtsim.**
-Ben removes mic-rtsim on day 10, while the Frostmaw waits by Iva's line. The puppet by the line is not
-saved and is gone; the den's saved chunk still holds the vanilla body (the den has not loaded since it
-left), so after the uninstall the Frostmaw is home asleep. The grove keeps its vanilla warriors and its
+Ben removes mic-rtsim on day 10, while the Frostmaw waits by Iva's line and Iva has stayed at her
+smelter. The den's saved chunk still holds the vanilla body (the den has not loaded since it left), so
+after the uninstall the Frostmaw is home asleep. Had Iva ridden north as in A, step 7, the den would
+have loaded while she watched the Frostmaw, its body would have gone to the puppet, and the uninstall
+would leave the den empty: the exposure §4.9 lists. The grove keeps its vanilla warriors and its
 Umvuthi. Ben reinstalls on day 30: FACTION_FOUND rebuilds both factions from their censuses (crystal
 held, 7 warriors), with no grudges.
 
@@ -933,9 +1046,10 @@ held, 7 warriors), with no grudges.
 | Train sampler | per second | one leading-point read and one hash lookup per overworld train; about 1 µs a train (inferred), about 0.2 ms a second at 200 trains; no chunk loads |
 | Watched swipe timing | per tick, while a player watches a lurking Frostmaw | the trains within 64 blocks of it |
 | RAIL_PASS | per train per range crossed | one observation |
-| Rail meters | per (line, faction) | a few dozen bytes and one booked wake; pushes only while the rate moves: 2 to 22 while a new line ramps up (§4.3), none while it is steady |
+| Rail meters | per (faction, actor), plus a line count per (line, faction, actor) | a few dozen bytes and one booked wake per meter, a few bytes per line count (no wakes); about one push a day while over the tolerance, 19 to 37 in a new line's first 20 days (§4.3) |
 | Lying in wait | per pass within reach of a spot | one roll; a hit is one `attack_train`, as today's bandit ambushes |
-| Camp finding and census | per camp chunk load | one check of the chunk's structure starts (`Lairs.java:114-125`) and one entity scan of the den's template or the grove's 25-block circle |
+| Envoy guard | per damage event to a living entity, server-wide | one lookup of the target's UUID in the open envoy parties, usually an empty set |
+| Camp finding and census | per camp chunk load | one check of the chunk's structure starts (`Lairs.java:114-125`); while the camp is queued, one `areEntitiesLoaded` lookup per footprint chunk a tick (a grove's 51-block circle spans at most 5 × 5 chunks) until its entities are in; then one entity scan of the den's template or the grove's 25-block circle |
 | Notices | per feud | one pending bit, resent at session start |
 | Watched boss | while seen | one Frostmaw, or a band in waves of at most 16 |
 | Animals owed | per district load with a debt | one entity scan of the district's loaded chunks, capped |
@@ -952,10 +1066,12 @@ its schedule under GameTest's unthrottled ticks is UNVERIFIED (no GameTest has r
 a schedule, `neoforge/README.md:262`), so each rail test has a stationary form that settles the
 mechanism, and the moving form runs if the fixture's train moves.
 1. `aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth`.
-2. `aRobbedFrostmawIsKeptAndAResetDoesNotGiveItsCrystalBack`.
+2. `aRobbedFrostmawIsKeptAndAResetDoesNotGiveItsCrystalBack`: the steal sets `PersistenceRequired`
+   and sends CHIEF_STATE; loading a robbed Frostmaw from NBT does neither.
 3. `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt`.
 4. `aBodyComingHomeBecomesASavedVanillaBodyAndAnAwayPuppetIsNotSaved`.
-5. `aRefilledPoolIsSpawnedAtTheNextCampLoad`, for a den and a grove.
+5. `aRefilledPoolIsSpawnedAtTheNextCampLoad`, for a den and a grove; a member that left an unloaded
+   camp and came back to it is not spawned a second time.
 6. `anArrowAndATridentDoNothingAndABulletHurtsAFrostmaw` (TaCZ's bullet if TaCZ is in the test run;
    otherwise a `Projectile` stand-in).
 7. `anInvisiblePlayerStealsTheCrystalFromASleepingFrostmaw` (a mock player).
@@ -972,17 +1088,30 @@ mechanism, and the moving form runs if the fixture's train moves.
     the track avoids gets none.
 12. `aMaskedPlayerIsNotTargetedByTheBand`.
 13. `theUmvuthisTradeIsReportedAsTributeAtTheCamp`.
-14. `anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment`.
+14. `anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment`, extended: while the demand is
+    open, a projectile with no owner (a Create Big Cannons shell fired by a Create Radars controller
+    if both are in the test run, else a stand-in), a golem's blow and a skeleton's arrow do no damage
+    to the envoy or a guard; a player's arrow or bullet does and is an insult (ENVOY_ANSWER 3); a
+    party killed by `/kill` sends no ENVOY_ANSWER and the demand is withdrawn (DEMAND_SETTLED 5).
 15. `aChiefKilledAtTheCampIsReportedWithTheKiller`, for both bosses.
 16. `tributeLandsInAGroveChestWhenTheGroveLoads`.
 17. `raptorsHuntTheBasesAnimalsAndAnOwedHuntIsAppliedOnLoad`.
 18. `aNaturalFoliaathIsNotCountedAsPressure` (the core tag).
 19. `aNoticeWaitsForThePlayersNextEntryAcrossALogout`.
 20. Strength fights: each body against reference bases through `IND_FIGHT`, for §4.13.
+21. `theCensusWaitsForEntitiesOnACampsColdLoad`: the stationary form calls the plugin's chunk-load
+    hook for a den whose chunk is loaded but whose entities are not yet in (`areEntitiesLoaded`
+    false), and asserts no HOME_CENSUS and no HOME_SPAWN; once they are in, the count is 1 with the
+    crystal. A grove with one footprint chunk unloaded is skipped until that chunk loads.
+22. `aDenLoadingWhileItsFrostmawIsAwayKeepsTheBody`: unwatched, the body stays and the party is
+    recalled; watched, the plugin takes the body and the puppet stays; a member that died away has
+    its body removed; no Frostmaw is ever counted twice.
 
 **`rtsim-cli sim mowzie`** (a scenario beside `sim conflict`, `main.rs:81-85`), with runs:
-1. A line through a range, with the meter: notice, raid, repeat, invasion; ambushes bounded per train
-   per day; a kill, cowed, the heir, the body six days later.
+1. A line through a range, with the meter: notice, raid, repeat, invasion, at §4.3's first table;
+   ambushes bounded per train per day; a kill, cowed, the heir, the body six days later. It asserts
+   on `stats.feud_wakes` (`engine.rs:1582`): a den refilling from 0.5 with a busy line wakes its feud
+   a handful of times, never once a tick.
 2. Cut service and stopped service: the grievance follows §4.3's second table; no raid once it is
    under 70.
 3. Reroute: the new track's passes miss the circle and the old line's meter decays.
@@ -993,6 +1122,8 @@ mechanism, and the moving form runs if the fixture's train moves.
 7. Kills: by the feud's player on a raid, by a third player on a raid, at the camp by a player with no
    feud: which feud steps down in each.
 8. Save and restore in the middle of a lurk, a cowed time and a meter's decay, with identical results.
+9. A trunk: 14 lines at 1.7 legs a day through one range reach §4.3's trunk row, as one line of 23.8
+   does; the focus follows the busiest line; two owners' trains on one line make two meters.
 
 **Bench:** `rtsim-cli bench scale --only factions,factions-paged` (`crates/rtsim-cli/src/main.rs:25`)
 before and after, and a sampler bench at 200 trains on the laptop.
@@ -1008,11 +1139,14 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | MZ-9 | The Wroughtnaut stays out | Its crash is found (§4.15) and is in the jar's own placement check, which this plan cannot fix. |
 | MZ-12 | Real track, by sampling trains once a second | Ben rejected straight lines between stations; chords put the Frostmaw where no train runs and anger the wrong dens. |
 | Old age | `chief_lifespan_days` 1,000,000 for both cultures | §4.2. |
-| Envoy party | Targeting stripped and golems kept off while a demand is open | §4.5. |
+| Envoy party | While a demand is open: targeting stripped, golems kept off, every hit cancelled unless a player struck it; a party killed by anything else withdraws the demand | §4.5: golems and radar turrets would otherwise start a war the player never chose. |
+| Rail meter | One meter per (den, actor), tolerance once; a band plus a daily resync; line counts only for the focus | §4.3: a meter per line hid a trunk of light lines, and the band alone froze a rate up to 1 leg off. |
+| Census | Only once every chunk of the camp has its entities in | §4.9: a cold count books living bodies as dead and, six days later, dupes a Frostmaw and its crystal. |
+| Bodies away | Only a dead member's body is removed; a camp loading while a member is out keeps the body and recalls the party, unless a player is watching that party | §4.4, §4.9 (UR-1): a living member's den is never emptied unseen, and no member is in two places. |
 | Peaceful | No war parties leave | §4.12. |
 | Kills | A chief killed at its camp steps down the killer's feud only; a killer with no feud steps none down; a third player's kill on a raid steps down the raided player's feud, as today | §4.2: a stranger's kill should not clear another player's grudge, but breaking a raid should end it. |
 | Den node | A market-less world node (`NodeKind::Lair`), not a haven | Ledger 13: a Frostmaw trades nothing, and a haven costs about 17 KB. |
-| Robbed Frostmaw | Kept persistent in its den | The steal should disarm it, not remove it; otherwise stealing and leaving farms a crystal every six days without a fight. |
+| Robbed Frostmaw | Kept persistent in its den, set at the steal | The steal should disarm it, not remove it; otherwise stealing and leaving farms a crystal every six days without a fight. |
 
 **Questions** (recommended option first):
 
