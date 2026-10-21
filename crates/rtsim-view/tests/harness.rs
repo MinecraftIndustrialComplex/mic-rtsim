@@ -13,6 +13,7 @@
 mod common;
 mod support;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +37,7 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_ships::boundary::{self as sb, Obs as SO};
 use rtsim_space::HabitatRecord;
 use rtsim_space::synth::{Painter, land, sea};
+use rtsim_view::industry::DistrictPeek;
 use rtsim_view::{Limits, Status, View, keys};
 use support::*;
 
@@ -323,11 +325,15 @@ fn every_module_world(world: &Path) {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
-/// The iron line (rtsim-industry's scenario) through the link for `days`, saved and closed.
-fn iron_line(world: &Path, days: u64) {
+/// The iron line (rtsim-industry's scenario) through the link for `days`, saved and closed: what
+/// the engine itself says of each district just before the save (VIEWER.md §5.3: the card must
+/// show the same). The scenario is set for ten days, so the player is home from day 1.5 and the
+/// other three districts replay (the smelter and its power plant as one cluster, I13) when the
+/// run stops before day 8.
+fn iron_line(world: &Path, days: u64) -> BTreeMap<u64, DistrictPeek> {
     let cfg = IronLine {
         seed: 11,
-        days,
+        days: 10,
         threats: false,
         control: false,
         tick_first: true,
@@ -362,8 +368,25 @@ fn iron_line(world: &Path, days: u64) {
     j.mc = Some(w);
     j.module_mask = MODULE_INDUSTRY;
     j.mc_run_until(Tick(days * TICKS_PER_DAY));
+    let engine = e.with_industry(|ie, _| {
+        ie.districts()
+            .map(|d| {
+                let peek = DistrictPeek {
+                    inspection: ie.inspect_peek(d.id, ie.now()).expect("a district"),
+                    stock: ie.stock_peek(d.id),
+                    members: ie
+                        .cluster_members(d.id)
+                        .map(|m| m.into_iter().map(|m| m.0).collect())
+                        .unwrap_or_default(),
+                    processes: ie.processes_peek(d.id).unwrap_or_default(),
+                };
+                (d.id.0, peek)
+            })
+            .collect()
+    });
     write_journal(world, &j.dict);
     e.close(true, Duration::from_secs(5)).unwrap();
+    engine
 }
 
 /// Opens `world`, checks what every save must satisfy, runs a whole session and returns the
@@ -441,10 +464,45 @@ fn every_module_saved_by_the_link_draws_and_viewing_writes_nothing() {
 #[test]
 fn the_iron_line_saved_by_the_link_draws_its_industry_layers() {
     let world = tmpdir("view-iron");
-    iron_line(&world, 3);
+    let engine = iron_line(&world, 3);
     let (drawing, _) = view_world("iron line", &world);
     for l in ["industry.districts", "industry.stations", "industry.lines"] {
         assert!(drawing.iter().any(|d| d == l), "{l} draws");
     }
+    // Every district's card decodes what the engine held: its inspection, replay stock, cluster
+    // and processes from the saved pages equal the live engine's just before the save.
+    let view = View::open(&world, Limits::default()).expect("the save opens");
+    let saved = view.saved();
+    let industry = saved.industry.as_ref().expect("industry pages");
+    assert!(!engine.is_empty());
+    // Only the industry module ran, so the phase 1 clock stayed at its start: the save's time is
+    // the industry engine's.
+    assert!(
+        industry.now >= (2 * TICKS_PER_DAY) as i64,
+        "{}",
+        industry.now
+    );
+    assert_eq!(saved.now(), industry.now);
+    for (id, want) in &engine {
+        let got = industry
+            .inspect(&*saved.source, *id)
+            .unwrap_or_else(|e| panic!("district {id}: {e}"));
+        eprintln!(
+            "iron line: district {id} {:?}, {} processes, {} in its cluster",
+            got.inspection.state,
+            got.processes.len(),
+            got.members.len()
+        );
+        assert_eq!(&got, want, "district {id}");
+    }
+    // The run stopped with the player home: the other three replay, the smelter and its power
+    // plant in one cluster, each with its processes.
+    let replaying: Vec<&DistrictPeek> = engine.values().filter(|p| p.stock.is_some()).collect();
+    assert_eq!(replaying.len(), 3, "{engine:#?}");
+    assert!(replaying.iter().all(|p| !p.processes.is_empty()));
+    assert!(
+        replaying.iter().any(|p| p.members.len() == 2),
+        "{engine:#?}"
+    );
     let _ = std::fs::remove_dir_all(&world);
 }

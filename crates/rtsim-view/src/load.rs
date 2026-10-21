@@ -78,6 +78,16 @@ pub struct Module {
     pub hash: Option<(u64, Option<u64>)>,
 }
 
+impl Module {
+    /// Whether the state read back is the one a TEST save wrote: `Some(false)` means the viewer
+    /// decodes the module differently from the engine (a bug: what it draws may be wrong), `None`
+    /// that the save wrote no hash to compare with.
+    pub fn hash_matches(&self) -> Option<bool> {
+        self.hash
+            .and_then(|(now, saved)| saved.map(|saved| saved == now))
+    }
+}
+
 /// The phase 1 world as the link restores it: its snapshot, then the input tail replayed.
 pub struct Phase1 {
     pub world: World,
@@ -126,12 +136,12 @@ impl Saved {
         scrub_path(text, &self.world_dir, &world_name(&self.world_dir))
     }
 
-    /// The save's game tick: the phase 1 world's, else the industry engine's.
+    /// The save's game tick: the later of the phase 1 world's and the industry engine's (a link
+    /// run with only the industry module on leaves the phase 1 clock where it started).
     pub fn now(&self) -> i64 {
-        if let Some(p) = &self.phase1 {
-            return p.game(p.world.now().0);
-        }
-        self.industry.as_ref().map_or(0, |i| i.now)
+        let phase1 = self.phase1.as_ref().map(|p| p.game(p.world.now().0));
+        let industry = self.industry.as_ref().map(|i| i.now);
+        phase1.max(industry).unwrap_or(0)
     }
 
     /// The game tick of a world tick (the phase 1 clock the other modules share).
@@ -580,8 +590,7 @@ fn world_parts() -> (
     rtsim_trade::Goods,
     rtsim_trade::labour::RecipeBook,
 ) {
-    let (goods, ids) = rtsim_world::synth::goods();
-    let book = rtsim_world::synth::recipes(&ids);
+    let (goods, book) = rtsim_world::catalogue::catalogue();
     (WorldConfig::new(p1::WORLD_SEED), goods, book)
 }
 
