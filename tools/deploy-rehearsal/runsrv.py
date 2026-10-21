@@ -49,6 +49,26 @@ def parse_tps(text):
     return res
 
 
+def proc_stats(pid):
+    """(rss_kb, cpu_seconds, threads) of a process, or None when it is gone."""
+    try:
+        with open('/proc/%d/stat' % pid) as f:
+            parts = f.read().rsplit(')', 1)[1].split()
+        with open('/proc/%d/status' % pid) as f:
+            rss = next(int(ln.split()[1]) for ln in f if ln.startswith('VmRSS:'))
+        tck = os.sysconf('SC_CLK_TCK')
+        return rss, (int(parts[11]) + int(parts[12])) / tck, int(parts[17])
+    except (OSError, StopIteration, IndexError, ValueError):
+        return None
+
+
+def loadavg():
+    try:
+        return float(open('/proc/loadavg').read().split()[0])
+    except OSError:
+        return None
+
+
 def main():
     sdir, scen_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
     sc = json.load(open(scen_path))
@@ -116,9 +136,16 @@ def main():
                 end = time.time() + p['seconds']
                 while time.time() < end:
                     txt = r.cmd(p.get('command', 'neoforge tps'))
-                    samples.append([round(time.time() - t0, 1), parse_tps(txt)])
+                    samples.append([round(time.time() - t0, 1), parse_tps(txt), proc_stats(proc.pid), loadavg()])
                     time.sleep(p.get('every', 5))
                 rec['samples'] = samples
+                ps = [x for x in samples if x[2]]
+                if len(ps) >= 2:
+                    rec['cpu_cores'] = round((ps[-1][2][1] - ps[0][2][1]) / (ps[-1][0] - ps[0][0]), 3)
+                    rec['rss_mb_max'] = max(x[2][0] for x in ps) // 1024
+                la = [x[3] for x in samples if x[3] is not None]
+                if la:
+                    rec['loadavg_mean'] = round(sum(la) / len(la), 1)
                 ov = [s[1]['Overall'][0] for s in samples if 'Overall' in s[1]]
                 if ov:
                     ov2 = sorted(ov)
