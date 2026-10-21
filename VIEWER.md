@@ -1311,8 +1311,8 @@ For Deep Time's coordinator to review.
     every second hand-over so a save is taken before the next is asked. The test sets the mark to
     one row: every save of a three-day run comes from the buffer, and none at the default mark.
 - **Open from V3** (known gaps, not yet scheduled):
-  - Industry's `undetected` set is not saved, so a restart can write `industry.detected` again for
-    a district already announced.
+  - Industry's `undetected` set is not saved across a restart; what that does to the
+    `industry.detected` rows after a restart is untested.
   - `industry.attack` uses a district as its subject for some attacks and a train for others.
   - Train lines get no legs, so trains do not move on the timeline.
   - `CargoLooted`'s loot is not recorded (the row has no payload of what was taken).
