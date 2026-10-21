@@ -116,9 +116,10 @@ pub enum Mark {
     },
 }
 
-/// Row kinds 1 to 8 are the mark kinds, in this order. Kinds 16 and up are reserved for the
-/// glass box's graph rows (V6: nodes, edges with rates); a reader skips any kind it does not know
-/// by the row's length.
+/// Row kinds 1 to 8 are the mark kinds, in this order. Kinds 16 and 17 are reserved for the glass
+/// box's graph rows (V6: nodes, edges with rates); 32 and 33 are the archive's pending rows. A
+/// reader skips any kind it does not know by the row's length; a row that is not a mark comes back
+/// as its frame and its body's bytes (`part::Row::body`).
 pub mod kind {
     pub const POINT: u8 = 1;
     pub const LEG: u8 = 2;
@@ -132,6 +133,12 @@ pub mod kind {
     pub const GRAPH_NODE: u8 = 16;
     /// Reserved for V6: a graph edge with its rate.
     pub const GRAPH_EDGE: u8 = 17;
+    /// An event archive row recorded since the last save: its 32 bytes (rtsim-archive's row),
+    /// then its payload's, if any (VIEWER.md §10.2).
+    pub const ARCHIVE_ROW: u8 = 32;
+    /// An archive dictionary name the pending rows use: a byte (0 a kind, 1 a frame), the
+    /// number, the name.
+    pub const ARCHIVE_NAME: u8 = 33;
 
     /// The kind's name, as descriptors and `/api/layers` spell it.
     pub fn name(k: u8) -> &'static str {
@@ -146,6 +153,8 @@ pub mod kind {
             LABEL => "label",
             GRAPH_NODE => "graph_node",
             GRAPH_EDGE => "graph_edge",
+            ARCHIVE_ROW => "archive_row",
+            ARCHIVE_NAME => "archive_name",
             _ => "unknown",
         }
     }

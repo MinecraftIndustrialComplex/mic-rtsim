@@ -155,8 +155,35 @@ fn unknown_row_kinds_are_skipped_by_their_length() {
     assert_eq!(v.rows.len(), 2);
     assert_eq!(v.rows[0].kind, kind::GRAPH_EDGE);
     assert!(v.rows[0].mark.is_none());
+    assert!(v.rows[0].body.ends_with(b"anything a later version writes"));
     assert_eq!(v.rows[1].mark, Some(Mark::point(1, 0.0, 0.0)));
     assert_eq!(kind::name(kind::GRAPH_NODE), "graph_node");
+}
+
+#[test]
+fn raw_rows_round_trip_with_their_bodies_and_regions() {
+    let mut w = PartWriter::new(part_kind::ARCHIVE_ROWS, 3, 1 << 20, false);
+    w.push_raw(0, 0, [10.0, -600.0], kind::ARCHIVE_ROW, &[7u8; 32]);
+    w.push_raw(1, 2, [1e9, 0.0], kind::ARCHIVE_NAME, b"\x00\x05trade.sold");
+    w.push(2, 0, &Mark::point(3, 513.0, 0.0));
+    let (key, part) = w.finish().remove(0);
+    assert_eq!(key.kind, part_kind::ARCHIVE_ROWS);
+    assert_eq!(part.rows, 3);
+    assert_eq!(
+        part.regions,
+        vec![
+            RegionKey::of(0, 10.0, -600.0),
+            RegionKey::of(0, 513.0, 0.0),
+            RegionKey::of(2, 1e9, 0.0),
+        ]
+    );
+    let v = read_part(&part.bytes).unwrap();
+    assert_eq!(v.rows[0].kind, kind::ARCHIVE_ROW);
+    assert_eq!(v.rows[0].body, vec![7u8; 32]);
+    assert_eq!(v.rows[1].frame, 2);
+    assert_eq!(v.rows[1].body, b"\x00\x05trade.sold".to_vec());
+    assert!(v.rows[2].mark.is_some() && v.rows[2].body.is_empty());
+    assert_eq!(kind::name(kind::ARCHIVE_ROW), "archive_row");
 }
 
 #[test]
