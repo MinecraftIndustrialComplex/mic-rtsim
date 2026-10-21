@@ -21,8 +21,8 @@ usage:
       --tag names the run in its file name and record (e.g. potato).
       --repeats runs each point N times and keeps the median (default 3, quick 1).
       --only picks sweeps by name: latent, regions, events, elapsed, age, markets, edges,
-      markets-paged, dragons, ships, herds, herds-wide, herds-paged, members, factions,
-      factions-paged, paged.
+      markets-paged, dragons, dragons_paged, dragons_resident, ships, ships-grid, ships-paged,
+      herds, herds-wide, herds-paged, members, factions, factions-paged, paged.
   rtsim-cli bench scale-one --spec JSON
       Runs one configuration and prints its measurements as JSON (used by bench scale).
   rtsim-cli bench bsp [--quick] [--check] [--repeats N] [--workers 1,2,4] [--regions N]
