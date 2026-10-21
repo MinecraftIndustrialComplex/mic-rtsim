@@ -69,6 +69,8 @@ pub const DICT_CULTURE: u32 = 5;
 pub const DICT_PROFESSION: u32 = 6;
 pub const DICT_TEMPLATE: u32 = 7;
 pub const DICT_PROCESSORS: u32 = 8;
+/// The works catalogue's kinds (SINK.md §4.2, `mic_rtsim:plains_lamp`; docs/boundary.md §4.1).
+pub const DICT_WORK: u32 = 9;
 
 /// Observation records (Java to the engine). Kinds below 0x8000.
 pub mod obs {
@@ -252,6 +254,7 @@ pub mod obs {
 
     pub const VILLAGE_CENSUS: u16 = 0x0020;
     pub const VILLAGE_GOSSIP: u16 = 0x0021;
+    pub const WORK_CATALOG: u16 = 0x0022;
     pub const VILLAGE_ADOPTED: u16 = 0x0120;
     pub const TRADE: u16 = 0x0121;
     pub const HURT: u16 = 0x0122;
@@ -276,6 +279,38 @@ pub mod obs {
         pub const ENTRIES: usize = 56;
         pub const ENTRY: usize = 8;
         pub const FLAG_MEETING_POI: u32 = 1;
+    }
+
+    /// Latest-wins: the works catalogue (SINK.md §4.2), every kind in one record, item counts read
+    /// from each template's palette by the bridge.
+    pub mod work_catalog {
+        pub const N: usize = 8;
+        pub const DEFS: usize = 16;
+        /// A kind: 0 u32 id (DICT_WORK), 4 u32 group (0 lamp, 1 decor, 2 golem), 8 u32 culture
+        /// (DICT_CULTURE), 12 u32 style (DICT_STRUCTURE, 0 every village of the culture), 16 u32 cap
+        /// (1 per residents, 2 fixed), 20 u32 cap n, 24 u32 variants v, 28 reserved; then v variants.
+        pub const DEF: usize = 32;
+        pub const D_ID: usize = 0;
+        pub const D_GROUP: usize = 4;
+        pub const D_CULTURE: usize = 8;
+        pub const D_STYLE: usize = 12;
+        pub const D_CAP: usize = 16;
+        pub const D_CAP_N: usize = 20;
+        pub const D_VARIANTS: usize = 24;
+        /// A variant: 0 u32 place (1 template, 2 body), 4 u32 template (DICT_TEMPLATE) or body
+        /// (DICT_BODY), 8 u32 processors (DICT_PROCESSORS, 0 none), 12 u32 blocks, 16 u32 items n,
+        /// 20 reserved; then n × (u32 item (DICT_ITEM), u32 count).
+        pub const VARIANT: usize = 24;
+        pub const V_PLACE: usize = 0;
+        pub const V_WHAT: usize = 4;
+        pub const V_PROCESSORS: usize = 8;
+        pub const V_BLOCKS: usize = 12;
+        pub const V_ITEMS: usize = 16;
+        pub const ITEM: usize = 8;
+        pub const CAP_PER_RESIDENTS: u32 = 1;
+        pub const CAP_FIXED: u32 = 2;
+        pub const PLACE_TEMPLATE: u32 = 1;
+        pub const PLACE_BODY: u32 = 2;
     }
 
     /// Latest-wins: vanilla's own gossip about players, summed over a village's residents.
@@ -635,6 +670,8 @@ pub mod cmd {
         pub const HOUSE: usize = 72;
         pub const SIZE: usize = 80;
         pub const FLAG_AT_HOUSE: u32 = 1;
+        /// At the village's meeting point (a work's body: SINK.md's golems).
+        pub const FLAG_AT_VILLAGE: u32 = 2;
     }
 }
 

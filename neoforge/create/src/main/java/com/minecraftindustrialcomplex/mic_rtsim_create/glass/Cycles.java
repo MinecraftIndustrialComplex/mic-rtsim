@@ -55,7 +55,7 @@ public final class Cycles {
     private static final int K_MILL = 1, K_CRUSH = 2, K_CRUSH_APPLY = 3, K_PRESS = 4, K_PRESS_DEPOT = 5,
             K_MIX_FIRST = 6, K_MIX_STEADY = 7, K_MIX_RESTART = 8, K_SAW = 9, K_SAW_APPLY = 10, K_DEPLOY = 11,
             K_DEPLOY_DEPOT = 12, K_CRAFT = 13, K_ARM = 14, K_ARM_MAX = 15, K_BELT_INS = 16, K_BELT_FOLLOW = 17,
-            K_CHUTE = 18, K_SPOUT = 19, K_DRAIN = 20, K_PACKAGER = 21;
+            K_CHUTE = 18, K_SPOUT = 19, K_DRAIN = 20, K_PACKAGER = 21, K_CHUTE_UP = 22;
 
     // ---------------------------------------------------------------- Mth, copied exactly
 
@@ -1029,15 +1029,48 @@ public final class Cycles {
     }
 
     /**
-     * Steady period of a top chute pulling from an inventory above into chutes or an inventory below that
-     * always accept: one tick grabs ({@code handleInputFromAbove}, no movement that tick) and
-     * {@link #chuteTicksPerBlock} ticks move it out, so {@code 1 + chuteTicksPerBlock} ticks per
-     * {@link #CHUTE_EXTRACTION} items (7 under gravity). Chutes below are stages of {@link #chuteTicksPerBlock}
-     * ticks and do not slow it, in either ticker order. UNVERIFIED in game for the bottom chute's insertion
-     * into an inventory (a partial insert keeps the remainder).
+     * Chute ticks for a held stack to pass one upward chute (a fan below facing up, or a fan above facing
+     * down, turning so the air goes up): re-enacts {@code ChuteBlockEntity.tick}'s upward branch. An item
+     * pulled from the inventory below ({@code handleInputFromBelow}) or handed up from a chute below
+     * ({@code handleUpwardOutput}) starts at 0.0; each tick {@code nextOffset = position + motion}; above 0.5
+     * the output is simulated (assumed to accept); above 1 it is handed on. 6 at motion 0.2 (a 256 RPM fan:
+     * the fifth move ends at exactly 1.0), 20 at 0.05 (64 RPM). An upward chute is CALIBRATED in the graph
+     * (choice GB45), so this is its starting estimate. UNVERIFIED in game.
+     *
+     * @param motion {@link #chuteMotion}, positive
+     */
+    public static int chuteTicksPerBlockUp(float motion) {
+        if (!(motion > 0.0F)) {
+            throw new IllegalArgumentException("upward motion must be positive: " + motion);
+        }
+        return (int) cached(new Key(K_CHUTE_UP, Float.floatToIntBits(motion), 0, 0, 0), () -> {
+            float position = 0.0F;
+            int ticks = 0;
+            while (true) {
+                guard(++ticks);
+                float nextOffset = position + motion;
+                if (nextOffset > 1.0F) {
+                    return ticks;
+                }
+                position = nextOffset;
+            }
+        });
+    }
+
+    /**
+     * Steady period of an end chute pulling from an inventory into chutes or an inventory that always
+     * accept: the top chute of a downward run pulls from above ({@code handleInputFromAbove}), the bottom
+     * chute of an upward run from below ({@code handleInputFromBelow}). One tick grabs (no movement that
+     * tick) and {@link #chuteTicksPerBlock} (down) or {@link #chuteTicksPerBlockUp} (up) ticks move it out,
+     * so 1 plus those ticks per {@link #CHUTE_EXTRACTION} items (7 under gravity, 7 at a 256 RPM fan). The
+     * other chutes of the run are stages of the per-block ticks and do not slow it, in either ticker order.
+     * UNVERIFIED in game for the last chute's insertion into an inventory (a partial insert keeps the
+     * remainder) and for every upward case.
+     *
+     * @param motion {@link #chuteMotion}, not zero
      */
     public static int chuteGrabPeriod(float motion) {
-        return 1 + chuteTicksPerBlock(motion);
+        return 1 + (motion > 0.0F ? chuteTicksPerBlockUp(motion) : chuteTicksPerBlock(motion));
     }
 
     /**

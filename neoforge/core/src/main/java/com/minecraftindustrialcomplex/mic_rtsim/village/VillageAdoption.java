@@ -151,6 +151,40 @@ public final class VillageAdoption {
     }
 
     /**
+     * Every village the registry holds, adopted again (flag LATE): for an engine whose pages lack
+     * observations the journal no longer holds (a sim reset, {@code BoundarySession#observationsLost}).
+     * The registry is the world's, so its villages are never adopted again by their starts; without
+     * this the new engine would know none of them. The engine takes a village it knows as a no-op (C22).
+     * Returns how many were sent.
+     */
+    public static int announceAgain(RtsimSession session, VillageRegistry villages, long now) {
+        int n = 0;
+        for (Village v : villages.all()) {
+            BoundingBox box = v.box;
+            BlockPos meeting = v.meeting;
+            ByteBuffer r = session.boundary().beginJournaled(Obs.VILLAGE_ADOPTED, Obs.VillageAdopted.SIZE,
+                    Obs.VillageAdopted.FLAG_LATE, now);
+            r.putLong(Obs.VillageAdopted.VILLAGE, v.id);
+            r.putInt(Obs.VillageAdopted.DIM, session.dimId(v.dimension));
+            r.putInt(Obs.VillageAdopted.STRUCTURE, session.dictId(Obs.DICT_STRUCTURE, v.structure.toString()));
+            r.putInt(Obs.VillageAdopted.CULTURE, session.dictId(Obs.DICT_CULTURE, v.culture));
+            r.putInt(Obs.VillageAdopted.PIECES, v.pieces.size());
+            r.putInt(Obs.VillageAdopted.MIN_X, box.minX());
+            r.putInt(Obs.VillageAdopted.MIN_Y, box.minY());
+            r.putInt(Obs.VillageAdopted.MIN_Z, box.minZ());
+            r.putInt(Obs.VillageAdopted.MAX_X, box.maxX());
+            r.putInt(Obs.VillageAdopted.MAX_Y, box.maxY());
+            r.putInt(Obs.VillageAdopted.MAX_Z, box.maxZ());
+            r.putInt(Obs.VillageAdopted.MEET_X, meeting.getX());
+            r.putInt(Obs.VillageAdopted.MEET_Y, meeting.getY());
+            r.putInt(Obs.VillageAdopted.MEET_Z, meeting.getZ());
+            session.boundary().commit(r);
+            n++;
+        }
+        return n;
+    }
+
+    /**
      * Adopts a village directly (GameTests, and later a command): the same record a generated start
      * produces. Returns the village (the existing one when its id is known).
      */
