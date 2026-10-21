@@ -26,8 +26,11 @@ public final class GlassCorpus {
             new SawShaftsFactory(),
             new PrecisionMechanismFactory(),
             new CrafterGridFactory(),
+            new ArmBurnersDepotsFactory(),
+            new BoilerOverstressFactory(),
             new BrassTunnelsFactory(),
             new PackageLoopFactory(),
+            new ThresholdSmelterFactory(),
             new SheepWoolFactory()
     );
 
