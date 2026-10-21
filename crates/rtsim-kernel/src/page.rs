@@ -1143,9 +1143,9 @@ impl PageStore {
             // No file stays open between reads: a writer may delete it (VIEWER.md §5.3). On
             // Windows, std opens with FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so
             // the writer's delete of this file succeeds while a read is in flight (run under
-            // Wine 11, tests/read_while_saving.rs). Replacing the root while a reader has it open
-            // needs std's POSIX-semantics rename, which Wine lacks: there a log fold fails
-            // (VIEWER.md §16, "V4 as built", exit test (e)). UNVERIFIED on a real Windows server.
+            // Wine 11, tests/read_while_saving.rs). A rename over a file that is open is refused
+            // on hosts without POSIX rename semantics (Wine 11): the handle here lives for one
+            // read, and the writer's `rename_over` retries until it closes.
             let mut f = File::open(&path).map_err(io(&path))?;
             f.seek(SeekFrom::Start(loc.offset)).map_err(io(&path))?;
             let mut buf = vec![0; loc.stored_len as usize];
@@ -1796,7 +1796,7 @@ impl PageStore {
                 f.sync_all().map_err(io(&tmp))?;
             }
             drop(f);
-            fs::rename(&tmp, &path).map_err(io(&path))?;
+            rename_over(&tmp, &path).map_err(io(&path))?;
             if self.durability == Durability::Fsync {
                 sync_dir(&self.dir);
             }
@@ -2239,11 +2239,50 @@ fn write_atomic(path: &Path, bytes: &[u8], durability: Durability) -> Result<()>
             f.sync_all().map_err(io(&tmp))?;
         }
     }
-    fs::rename(&tmp, path).map_err(io(path))?;
+    rename_over(&tmp, path).map_err(io(path))?;
     if durability == Durability::Fsync {
         sync_dir(path.parent().unwrap_or(Path::new(".")));
     }
     Ok(())
+}
+
+/// Waits between the tries of a rename that Windows refused for a sharing reason (ms). Five
+/// retries, 155 ms in all (VIEWER.md §16, "Open from V4").
+#[cfg(windows)]
+const RENAME_RETRY_MS: &[u64] = &[5, 10, 20, 40, 80];
+#[cfg(not(windows))]
+const RENAME_RETRY_MS: &[u64] = &[];
+
+/// Whether `e` is Windows saying a file is in use: access denied (5) or a sharing violation (32).
+/// A reader that holds a file open (even with `FILE_SHARE_DELETE`, on a host without POSIX rename
+/// semantics, such as Wine 11) makes a rename over it fail this way until the reader closes.
+fn is_sharing_refusal(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5 | 32))
+}
+
+/// Runs `op`, and on a sharing refusal tries again after each pause in `pauses_ms`. The last error
+/// is returned as it came.
+fn retry_sharing<T>(
+    pauses_ms: &[u64],
+    mut op: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut pauses = pauses_ms.iter();
+    loop {
+        match op() {
+            Err(e) if is_sharing_refusal(&e) => match pauses.next() {
+                Some(&ms) => std::thread::sleep(std::time::Duration::from_millis(ms)),
+                None => return Err(e),
+            },
+            r => return r,
+        }
+    }
+}
+
+/// `fs::rename`, and on Windows (only) a few retries when a reader holds the target open.
+/// Every replace of a file in the world's folder goes through this: the page store's root, logs
+/// and segments, the host's meta and journal, the archive's index and chunks, the lease.
+pub fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
+    retry_sharing(RENAME_RETRY_MS, || fs::rename(from, to))
 }
 
 /// Makes a rename durable. Windows cannot open a folder to sync it; there the rename is as
@@ -2260,6 +2299,38 @@ fn sync_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_sharing_retries_only_sharing_refusals() {
+        let mut calls = 0;
+        let r = retry_sharing(&[0, 0, 0], || {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::Error::from_raw_os_error(32))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(r.unwrap(), 3);
+        // Access denied (5) retries too, and runs out of pauses with the error as it came.
+        let mut calls = 0;
+        let e = retry_sharing(&[0, 0], || -> std::io::Result<()> {
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+        assert_eq!((calls, e.kind()), (3, std::io::ErrorKind::PermissionDenied));
+        // Anything else is returned at once.
+        let mut calls = 0;
+        let e = retry_sharing(&[0, 0], || -> std::io::Result<()> {
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        assert_eq!((calls, e.kind()), (1, std::io::ErrorKind::NotFound));
+        // The schedule stays within 200 ms.
+        assert!(RENAME_RETRY_MS.iter().sum::<u64>() <= 200 && RENAME_RETRY_MS.len() <= 5);
+    }
     use proptest::prelude::*;
 
     fn tmpdir(tag: &str) -> PathBuf {
