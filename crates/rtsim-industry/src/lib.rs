@@ -7,6 +7,7 @@ pub mod deposit;
 pub mod district;
 pub mod engine;
 pub mod fake;
+pub mod glass;
 pub mod ids;
 pub mod learn;
 pub mod model;

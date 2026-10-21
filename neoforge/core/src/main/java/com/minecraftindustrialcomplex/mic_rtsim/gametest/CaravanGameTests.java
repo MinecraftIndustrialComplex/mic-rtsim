@@ -110,8 +110,8 @@ public final class CaravanGameTests {
                     check("no member left the group (a despawn would show as removed by another)",
                             RtsimTests.group(agent) != null && RtsimTests.group(agent).liveMembers() == 3);
                 })
-                .thenWaitUntil(() -> check("the far chunk is entity-ticking", level.isPositionEntityTicking(forced.getMiddleBlockPosition(64))))
-                .thenWaitUntil(() -> check("its neighbour is loaded", level.hasChunk(forced.x + 1, forced.z)))
+                .thenWaitUntil(RtsimTests.io(() -> check("the far chunk is entity-ticking", level.isPositionEntityTicking(forced.getMiddleBlockPosition(64)))))
+                .thenWaitUntil(RtsimTests.io(() -> check("its neighbour is loaded", level.hasChunk(forced.x + 1, forced.z))))
                 .thenExecute(() -> {
                     check("the neighbour is loaded but not entity-ticking", !level.isPositionEntityTicking(frozenAt));
                     // One llama wanders into a chunk that is loaded but frozen: the whole caravan goes.
