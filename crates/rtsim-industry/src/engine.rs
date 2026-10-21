@@ -51,6 +51,17 @@ use crate::threat::{
 };
 use crate::tunables::Tunables;
 
+/// How a district replays while away (GLASSBOX.md §4, G2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlassMode {
+    /// On its compiled graph, one regime at a time.
+    Glass,
+    /// Frozen: a compile that has not passed a window yet, or one edited since (G-B4, G2-2).
+    Freeze,
+    /// By the black box as before (no compile, a compile it does not model yet, or a fallback).
+    Black,
+}
+
 /// The replay table's system id (the replay draws nothing; the id only names the table).
 const REPLAY: SystemId = SystemId::named("industry.replay");
 
@@ -749,6 +760,7 @@ impl Engine {
             c.add_to_pool(PoolKey::Stock(d, g), n, false, at)
         });
         self.after_cluster(h, at);
+        self.glass_touch(d, at);
         got
     }
 
@@ -791,6 +803,11 @@ impl Engine {
             });
         self.glass
             .ingest(at, g, view.as_ref(), &self.goods, &self.tun.glass);
+        // A new compile or a chunk's ticking changes how the district replays (G2).
+        use crate::glass::records::GlassObs;
+        if matches!(g, GlassObs::End(_) | GlassObs::ChunkTicking(_)) {
+            self.mark(g.district());
+        }
     }
 
     fn sweep_end(&mut self, at: Tick, e: &crate::obs::SweepEnd) {
@@ -955,6 +972,10 @@ impl Engine {
         }
         match p {
             Presence::Live => {
+                // A fallback holds until the district is live again (§4.5).
+                if let Some(dg) = self.glass.districts.get_mut(&d) {
+                    dg.fallback = None;
+                }
                 self.reconcile_round(d, at, Round::Full);
             }
             Presence::Partial => self.mark(d),
@@ -1005,13 +1026,24 @@ impl Engine {
             return;
         }
         let held = dist.hold_until.is_some_and(|h| h > at);
-        let want = if held || dist.freeze_reason(season).is_some() {
-            BTreeSet::new()
-        } else {
-            dist.unloaded_inventories()
+        let mode = self.glass_mode(d);
+        let want = match mode {
+            _ if held => BTreeSet::new(),
+            GlassMode::Glass => self.glass_covered(d),
+            GlassMode::Freeze => BTreeSet::new(),
+            GlassMode::Black if dist.freeze_reason(season).is_some() => BTreeSet::new(),
+            GlassMode::Black => dist.unloaded_inventories(),
         };
         if let Some(span) = &dist.sim {
-            if span.invs == want {
+            let same_kind = span.glass == (mode == GlassMode::Glass);
+            let same_live = !span.glass
+                || self
+                    .glass
+                    .districts
+                    .get(&d)
+                    .and_then(|g| g.replay.as_ref())
+                    .is_some_and(|r| r.live() == self.glass_live(d).as_slice());
+            if span.invs == want && same_kind && same_live {
                 return;
             }
             let leaving: BTreeSet<ChunkPos> = span
@@ -1036,6 +1068,11 @@ impl Engine {
     /// engine knows they hold (I5, I6, I7). Nothing starts while it is live, frozen, held for a
     /// player on the way, or when no process could run in the part that is unloaded.
     fn start_sim(&mut self, d: DistrictId, at: Tick) {
+        match self.glass_mode(d) {
+            GlassMode::Glass => return self.start_glass(d, at),
+            GlassMode::Freeze => return,
+            GlassMode::Black => {}
+        }
         let season = self.season_at(at);
         let dist = &self.districts[&d];
         if dist.freeze_reason(season).is_some()
@@ -1138,6 +1175,10 @@ impl Engine {
             glass: false,
         });
         self.stats.sims_started += 1;
+        if let Some(dg) = self.glass.districts.get_mut(&d) {
+            dg.replay_model = crate::glass::report::replay_model::BLACK_BOX;
+            dg.replay_since = Some(at);
+        }
         if pollutes {
             self.wake_seq += 1;
             let at_next = at + self.tun.replay.live_pollution_ticks.max(1);
@@ -1163,6 +1204,11 @@ impl Engine {
     ) -> Option<(SimSpan, Vec<crate::cluster::Pool>)> {
         let h = *self.cluster_of.get(&d)?;
         self.cluster_of.remove(&d);
+        if let Some(dg) = self.glass.districts.get_mut(&d) {
+            dg.replay = None;
+            dg.replay_model = crate::glass::report::replay_model::NONE;
+            dg.replay_since = None;
+        }
         let out = self.clusters.apply(h, at, |c, at| c.remove_member(d, at))?;
         // Book what the replay made and used.
         let mut minted = GoodVec::new();
@@ -1201,11 +1247,22 @@ impl Engine {
         };
         self.stats.cluster_settles += settles;
         let mut season_change = false;
+        let mut glass_stops: Vec<(DistrictId, Stop)> = Vec::new();
         for e in events {
             match e {
                 ClusterEvent::Stopped { at, owner, id, why }
                     if id < crate::district::LINK_PROC_BASE =>
                 {
+                    if id == 0
+                        && why != Stop::Disabled
+                        && self
+                            .glass
+                            .districts
+                            .get(&owner)
+                            .is_some_and(|g| g.replay.is_some())
+                    {
+                        glass_stops.push((owner, why));
+                    }
                     if let Some(dist) = self.districts.get_mut(&owner) {
                         dist.last_run = Some((at, Some(why)));
                     }
@@ -1242,8 +1299,250 @@ impl Engine {
                 _ => {}
             }
         }
+        for (d, why) in glass_stops {
+            self.glass_step(h, d, Some(why), at);
+        }
         if season_change {
             self.season_boundary(h, at);
+        }
+    }
+
+    // ---- the glass replay (GLASSBOX.md §4, G2) ----------------------------------------------
+
+    /// How district `d` replays while away. A compiled district replays on its graph once a
+    /// window of the compile passed (G-B4), and freezes before that; what the glass replay does
+    /// not model yet (deposits, cross-district links, PowerGrid coupling, damage) keeps the black
+    /// box (choice G2-16), as does a compile whose glass replay fell back (§4.5).
+    fn glass_mode(&self, d: DistrictId) -> GlassMode {
+        let Some(dg) = self.glass.districts.get(&d) else {
+            return GlassMode::Black;
+        };
+        let Some(comp) = dg.compiled.as_ref() else {
+            return GlassMode::Black;
+        };
+        let Some(dist) = self.districts.get(&d) else {
+            return GlassMode::Black;
+        };
+        if dist.phase == Phase::Damaged
+            || !dist.deposits.is_empty()
+            || !dist.links.is_empty()
+            || dist.power_source.is_some()
+            || self.sinks_of.get(&d).is_some_and(|s| !s.is_empty())
+            || dg.fallback.is_some()
+        {
+            return GlassMode::Black;
+        }
+        if comp.eligible() {
+            GlassMode::Glass
+        } else {
+            GlassMode::Freeze
+        }
+    }
+
+    /// Does chunk `c` of the district run in the world (loaded and block-ticking)? A Java side
+    /// that sends no IND_CHUNK_TICKING is read as "every loaded chunk ticks" (choice G2-17).
+    fn chunk_runs(&self, d: DistrictId, c: ChunkPos) -> bool {
+        let Some(dist) = self.districts.get(&d) else {
+            return false;
+        };
+        let ticking = self.glass.districts.get(&d).map(|g| &g.ticking);
+        dist.loaded_chunks.contains(&c) && ticking.is_none_or(|t| t.is_empty() || t.contains(&c))
+    }
+
+    /// The inventories a glass replay covers: every one whose chunk does not run (I7, §6.1).
+    fn glass_covered(&self, d: DistrictId) -> BTreeSet<u32> {
+        let dist = &self.districts[&d];
+        dist.inventories
+            .values()
+            .filter(|i| !i.destroyed && !self.chunk_runs(d, i.chunk))
+            .map(|i| i.decl.index)
+            .collect()
+    }
+
+    /// Per graph node: it runs in the world. A compile on a moving frame (a Sable ship, frame
+    /// not 0) has no world positions: every node is simulated (choice G2-18).
+    fn glass_live(&self, d: DistrictId) -> Vec<bool> {
+        let Some(comp) = self
+            .glass
+            .districts
+            .get(&d)
+            .and_then(|g| g.compiled.as_ref())
+        else {
+            return Vec::new();
+        };
+        let dim = self.districts.get(&d).map_or(0, |x| x.dim);
+        if comp.graph.end.frame != 0 {
+            return vec![false; comp.graph.nodes.len()];
+        }
+        comp.graph
+            .nodes
+            .iter()
+            .map(|n| self.chunk_runs(d, n.pos.chunk(dim)))
+            .collect()
+    }
+
+    /// Starts a glass replay over the district's covered inventories, from what the engine knows
+    /// they hold. It has its own cluster (G2-16 keeps linked districts on the black box).
+    fn start_glass(&mut self, d: DistrictId, at: Tick) {
+        use crate::glass::replay::{Replay, Setup, StoreDecl};
+        let season = self.season_at(at);
+        let Some(dist) = self.districts.get(&d) else {
+            return;
+        };
+        if dist.sim.is_some()
+            || dist.presence == Presence::Live
+            || dist.hold_until.is_some_and(|h| h > at)
+        {
+            return;
+        }
+        let part = self.glass_covered(d);
+        if part.is_empty() {
+            return;
+        }
+        let mut setup = Setup {
+            district: d,
+            live: self.glass_live(d),
+            covered: BTreeMap::new(),
+            contents: BTreeMap::new(),
+            owed: dist.owed.clone(),
+        };
+        let mut base = GoodVec::new();
+        for inv in dist.inventories.values().filter(|i| !i.destroyed) {
+            let c = inv.effective();
+            if part.contains(&inv.decl.index) {
+                setup.covered.insert(
+                    inv.decl.index,
+                    StoreDecl {
+                        item_slots: inv.decl.item_slots,
+                        fluid_capacity: inv.decl.fluid_capacity,
+                    },
+                );
+                base.merge(&c);
+            }
+            setup.contents.insert(inv.decl.index, c);
+        }
+        let Engine {
+            glass, goods, tun, ..
+        } = self;
+        let Some(dg) = glass.districts.get_mut(&d) else {
+            return;
+        };
+        let Some(comp) = dg.compiled.as_mut() else {
+            return;
+        };
+        let (rp, spec) = match Replay::start(comp, setup, goods, &tun.glass, at) {
+            Ok(x) => x,
+            Err(f) => {
+                if f == crate::glass::replay::Fallback::Oscillating {
+                    comp.replay_oscillations += 1;
+                }
+                dg.fallback = Some(f);
+                self.glass.stats.fallbacks += 1;
+                self.note(d, at, format!("glass replay falls back: {}", f.words()));
+                self.start_sim(d, at);
+                return;
+            }
+        };
+        let cut = rp.cut_edges();
+        dg.replay = Some(rp);
+        dg.replay_model = crate::glass::report::replay_model::GLASS;
+        dg.replay_since = Some(at);
+        let mut c = Cluster::new(self.tun.replay.restart_min_run_ticks);
+        c.add_member(spec, at);
+        let key = self.next_cluster;
+        self.next_cluster += 1;
+        let h = self.clusters.insert(key, c, at);
+        self.cluster_of.insert(d, h);
+        let dist = self.districts.get_mut(&d).expect("exists");
+        let whole = dist.is_whole(&part);
+        let covered = part.len();
+        dist.sim = Some(SimSpan {
+            started: at,
+            base,
+            season,
+            invs: part,
+            glass: true,
+        });
+        self.stats.sims_started += 1;
+        self.glass.stats.replays += 1;
+        let what = if whole {
+            "glass replay starts".to_string()
+        } else {
+            format!("glass replay starts over {covered} inventories ({cut} cut edges)")
+        };
+        self.note(d, at, what);
+        self.after_cluster(h, at);
+        // A first regime blocked at once stops silently: take it as its breakpoint.
+        if let Some(Run::Stopped(w)) = self.clusters.get(h).and_then(|r| r.cell().model().run_of(d, 0))
+            && w != Stop::Disabled
+        {
+            self.glass_step(h, d, Some(w), at);
+        }
+    }
+
+    /// The glass replay of `d` at a breakpoint (`why`), or after an outside event changed its
+    /// pools (None): the next regime, or a fallback.
+    fn glass_step(&mut self, h: RegionId<Cluster>, d: DistrictId, why: Option<Stop>, at: Tick) {
+        if self.cluster_of.get(&d) != Some(&h) {
+            return;
+        }
+        let Engine {
+            clusters,
+            glass,
+            goods,
+            tun,
+            dirty,
+            ..
+        } = self;
+        let Some(dg) = glass.districts.get_mut(&d) else {
+            return;
+        };
+        let (Some(rp), Some(comp)) = (dg.replay.as_mut(), dg.compiled.as_mut()) else {
+            return;
+        };
+        if rp.compile() != comp.graph.end.compile {
+            // A new compile came in: the coverage pass stops this replay.
+            dirty.insert(d);
+            return;
+        }
+        let r = clusters.apply(h, at, |c, at| match why {
+            Some(w) => rp.on_stop(comp, c, w, at, goods, &tun.glass),
+            None => rp.refresh(comp, c, at, goods, &tun.glass),
+        });
+        match r {
+            Some(Err(f)) => self.glass_fallback(d, f, at),
+            _ => self.after_cluster(h, at),
+        }
+    }
+
+    /// The glass replay cannot go on (§4.5): what it did is carried, and the district replays by
+    /// the black box until the next compile or until it is live again.
+    fn glass_fallback(&mut self, d: DistrictId, f: crate::glass::replay::Fallback, at: Tick) {
+        if let Some(dg) = self.glass.districts.get_mut(&d) {
+            dg.fallback = Some(f);
+            if f == crate::glass::replay::Fallback::Oscillating
+                && let Some(c) = dg.compiled.as_mut()
+            {
+                c.replay_oscillations += 1;
+            }
+        }
+        self.glass.stats.fallbacks += 1;
+        self.note(d, at, format!("glass replay falls back: {}", f.words()));
+        self.sync_coverage(d, at);
+    }
+
+    /// An outside event changed a glass replay's pools (an import, an export, a theft).
+    fn glass_touch(&mut self, d: DistrictId, at: Tick) {
+        if !self
+            .glass
+            .districts
+            .get(&d)
+            .is_some_and(|g| g.replay.is_some())
+        {
+            return;
+        }
+        if let Some(&h) = self.cluster_of.get(&d) {
+            self.glass_step(h, d, None, at);
         }
     }
 
@@ -2011,6 +2310,7 @@ impl Engine {
             return;
         };
         self.after_cluster(h, at);
+        self.glass_touch(d, at);
         if entries.is_empty() {
             return;
         }
@@ -2114,6 +2414,7 @@ impl Engine {
                 short
             });
             self.after_cluster(h, at);
+            self.glass_touch(d, at);
             if let Some(short) = short
                 && let Some(dist) = self.districts.get_mut(&d)
             {
@@ -2264,6 +2565,7 @@ impl Engine {
             span.base.merge(&moved);
         }
         self.after_cluster(h, at);
+        self.glass_touch(d, at);
     }
 
     // ---- threats --------------------------------------------------------------------------
@@ -2620,6 +2922,9 @@ impl Engine {
                         .apply(h, at, |c, at| c.set_enabled(d, false, at));
                 }
                 self.after_cluster(h, at);
+                if !dmg.machine_lost {
+                    self.glass_touch(d, at);
+                }
                 // A doomed inventory takes its room with it: rebuild the member (F20).
                 if doomed_any {
                     if dmg.machine_lost {
@@ -3167,6 +3472,15 @@ mod persist_impls {
                     e.cluster_of.insert(m, h);
                 }
             }
+            // A glass replay's regime state is not paged (choice G2-9): its district goes on by
+            // the black box (or freezes) from the next step, its stores' changes carried.
+            let glass: Vec<DistrictId> = e
+                .districts
+                .values()
+                .filter(|d| d.sim.as_ref().is_some_and(|s| s.glass))
+                .map(|d| d.id)
+                .collect();
+            e.dirty.extend(glass);
             Ok(e)
         }
     }
