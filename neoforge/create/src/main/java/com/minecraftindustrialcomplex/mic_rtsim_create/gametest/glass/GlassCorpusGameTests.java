@@ -79,6 +79,8 @@ public final class GlassCorpusGameTests {
                 .thenIdle(f.warmupTicks())
                 .thenExecute(() -> {
                     CorpusFactory.Built b = built[0];
+                    if (b == null)
+                        throw new GameTestAssertException(f.name() + ": build failed");
                     if (b.window() < 2400 || b.window() > maxWindow(f))
                         throw new GameTestAssertException("window " + b.window() + " outside [2400, " + maxWindow(f) + "]");
                     district[0] = GlassCorpus.district(helper, b);
@@ -87,13 +89,19 @@ public final class GlassCorpusGameTests {
                 })
                 .thenWaitUntil(() -> {
                     StockWindow w = window[0];
-                    if (w.full())
+                    // A failed setup step has already failed the test, but the sequence still runs its
+                    // next events (GameTestSequence.executeWithoutFail): no window, nothing to measure.
+                    if (w == null || w.full())
                         return;
                     f.perturb(helper, built[0], w.ticks());
                     w.sample(helper.getLevel());
                     throw new GameTestAssertException("measuring " + f.name() + ": " + w.ticks() + " of " + built[0].window());
                 })
-                .thenExecute(() -> verify(f, built[0], window[0]))
+                .thenExecute(() -> {
+                    if (window[0] == null)
+                        throw new GameTestAssertException(f.name() + ": the window never started (build or district step failed)");
+                    verify(f, built[0], window[0]);
+                })
                 .thenSucceed();
     }
 
