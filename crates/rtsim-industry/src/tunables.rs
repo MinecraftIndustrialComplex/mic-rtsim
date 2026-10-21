@@ -189,10 +189,68 @@ impl Default for ThreatTunables {
     }
 }
 
+/// The glass box, phase G1 (GLASSBOX.md §2.10, §3, §5.3; docs/industry-boundary.md §9.3).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct GlassTunables {
+    /// `glass.checksumZ`: standard errors allowed between model and measurement (§5.3). TUNABLE,
+    /// PLACEHOLDER 3.
+    pub checksum_z: f64,
+    /// `glass.checksumWindowMin`: the window, in ticks, when IND_GRAPH_END's `window` is 0. TUNABLE,
+    /// PLACEHOLDER 6,000 (five minutes).
+    pub checksum_window_min: u64,
+    /// `glass.warmupTicks`: ticks after a compile (plus its longest path latency, §4.4) before a
+    /// window may start, so work in progress settles. TUNABLE, PLACEHOLDER 1,200 (a minute).
+    pub warmup_ticks: u64,
+    /// `glass.solveRoundsMax` is `rounds_per_multi_input × multi-input nodes + rounds_base`
+    /// (§2.10's `2 × multi-input machines + 2`); past it the solve stops and its goods are
+    /// bounded. TUNABLE, PLACEHOLDER 2.
+    pub rounds_per_multi_input: u32,
+    /// TUNABLE, PLACEHOLDER 2.
+    pub rounds_base: u32,
+    /// `glass.mismatchStrikes`: failed windows in a row before the limiting node's kind is demoted
+    /// to measured (§5.3, G-B14). TUNABLE, PLACEHOLDER 3.
+    pub mismatch_strikes: u32,
+    /// A store holds a good the graph also brings into it (supplies it without limit) only with at
+    /// least this many stacks of it (fluids: this many thousand mB); below, it passes on what it
+    /// receives, so a chest that a funnel keeps nearly empty is not a source. A good nothing brings
+    /// in is held from one unit (GB100). TUNABLE, PLACEHOLDER 1.
+    pub holding_stacks: i64,
+    /// The LP for U (G-B15) runs only on cones of at most this many variables; larger ones take
+    /// the linear relaxation bound, which is valid but looser. TUNABLE, PLACEHOLDER 3,000.
+    pub lp_vars_max: usize,
+    /// U is the LP's optimum times `1 + lp_margin_rel`, plus 1e-9, rounded up: microlp solves in
+    /// f64. TUNABLE, PLACEHOLDER 1e-6.
+    pub lp_margin_rel: f64,
+    /// Solves kept per district by regime, so a controller cycling between two regimes solves each
+    /// once. TUNABLE, PLACEHOLDER 4.
+    pub regime_cache: usize,
+    /// Buffers named in one IND_PROBE_SET at most. TUNABLE, PLACEHOLDER 16.
+    pub probe_nodes_max: usize,
+}
+
+impl Default for GlassTunables {
+    fn default() -> Self {
+        Self {
+            checksum_z: 3.0,
+            checksum_window_min: 6_000,
+            warmup_ticks: 1_200,
+            rounds_per_multi_input: 2,
+            rounds_base: 2,
+            mismatch_strikes: 3,
+            holding_stacks: 1,
+            lp_vars_max: 3_000,
+            lp_margin_rel: 1e-6,
+            regime_cache: 4,
+            probe_nodes_max: 16,
+        }
+    }
+}
+
 /// All of them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Tunables {
     pub learn: LearnTunables,
     pub replay: ReplayTunables,
     pub threat: ThreatTunables,
+    pub glass: GlassTunables,
 }

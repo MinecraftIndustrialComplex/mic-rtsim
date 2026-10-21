@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jni::errors::{Error as JniError, ThrowRuntimeExAndDefault};
-use jni::objects::{JByteArray, JByteBuffer, JClass, JLongArray, JString};
+use jni::objects::{JByteArray, JByteBuffer, JClass, JDoubleArray, JLongArray, JString};
 use jni::sys::{jboolean, jint, jlong};
 use jni::{Env, EnvUnowned};
 use mic_native_rt::abi;
@@ -423,6 +423,64 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         Ok(true)
     })
     .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native double[] nGlassReport(long handle, long district)`: the district's glass report
+/// (`Engine::glass_report`, the layout of `rtsim_industry::glass::report::Report::to_f64s`); null
+/// while it has no complete compile. Between steps; tests and operators.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nGlassReport<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    district: jlong,
+) -> JDoubleArray<'l> {
+    env.with_env(|env| -> Result<JDoubleArray<'l>, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        match e.glass_report(district as u64) {
+            Some(v) => doubles(env, &v),
+            None => Ok(JDoubleArray::null()),
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native double[] nGlassOffline(byte[] records, long district)`: the glass check of a
+/// record stream on a fresh industry engine (`engine::glass_offline`, the stub engine's
+/// GameTests); null when the district has no complete compile in it. No handle: pure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nGlassOffline<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    records: JByteArray<'l>,
+    district: jlong,
+) -> JDoubleArray<'l> {
+    env.with_env(|env| -> Result<JDoubleArray<'l>, JniError> {
+        if records.is_null() {
+            return Err(JniError::NullPtr("records"));
+        }
+        let raw = env.convert_byte_array(&records)?;
+        match crate::engine::glass_offline(&raw, district as u64) {
+            Ok(Some(v)) => doubles(env, &v),
+            Ok(None) => Ok(JDoubleArray::null()),
+            Err(m) => {
+                set_last_error(&m);
+                Err(JniError::JniCall(jni::errors::JniError::InvalidArguments))
+            }
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+fn doubles<'l>(env: &mut Env<'l>, v: &[f64]) -> Result<JDoubleArray<'l>, JniError> {
+    let arr = env.new_double_array(v.len())?;
+    arr.set_region(env, 0, v)?;
+    Ok(arr)
 }
 
 /// `static native void nHabitatInfo(long handle, int dim, int x, int z, long[] out)`: the world

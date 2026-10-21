@@ -238,6 +238,9 @@ pub struct Engine {
     /// Keep [`Engine::log`]: off by default (formatting lines costs every breakpoint); the fake
     /// world and the CLI turn it on.
     pub log_enabled: bool,
+    /// The glass box (GLASSBOX.md, G1 read only): compiled graphs, solves and checksums. Not
+    /// paged in G1: Java resends the last compile periodically (choice GB4).
+    pub glass: crate::glass::Glass,
     /// Every frame's topology (docs/choices-topology.md TP16): districts are local, so only a
     /// train leg's booking reads it, going the short way across a seam. Not saved.
     pub topo: rtsim_space::SharedTopologies,
@@ -286,6 +289,7 @@ impl Engine {
             books: Books::default(),
             log: std::collections::VecDeque::new(),
             log_enabled: false,
+            glass: crate::glass::Glass::default(),
             topo: rtsim_space::topology::all_flat(),
             sent_this_session: BTreeSet::new(),
         }
@@ -386,6 +390,7 @@ impl Engine {
                 self.set_presence(d, Presence::Unloaded, at);
             }
         }
+        self.glass.session_start(at, &self.tun.glass);
     }
 
     // ---- time -----------------------------------------------------------------------------
@@ -447,6 +452,7 @@ impl Engine {
         self.fire_until(at);
         self.stats.observations += 1;
         match &t.obs {
+            Obs::Glass(g) => self.glass_obs(at, g),
             Obs::StockSample {
                 district,
                 inventory,
@@ -574,6 +580,7 @@ impl Engine {
                     self.stop_sim(*district, at);
                     self.districts.remove(district);
                 }
+                self.glass.remove(*district);
             }
             Obs::Edit { district, .. } => {
                 // Every IND_EDIT is a player's (§3.3): a learned district goes stale (I5), and
@@ -585,6 +592,13 @@ impl Engine {
                 if dist.phase == Phase::Learned {
                     dist.phase = Phase::Stale;
                 }
+                // The compile no longer matches the blocks until Java recompiles (G-B3).
+                self.glass.discard(
+                    at,
+                    *district,
+                    crate::glass::report::discard::EDIT,
+                    &self.tun.glass,
+                );
                 self.mark(*district);
             }
             Obs::Discard { district, .. } => self.district_mut(*district).learner.discard(),
@@ -764,6 +778,21 @@ impl Engine {
 
     // ---- sweeps and learning --------------------------------------------------------------
 
+    /// A glass-box record (GLASSBOX.md §1.4): the compiled graph, probe samples, chunk ticking.
+    /// Read only in G1: nothing here changes the replay.
+    fn glass_obs(&mut self, at: Tick, g: &crate::glass::records::GlassObs) {
+        let view = self
+            .districts
+            .get(&g.district())
+            .map(|d| crate::glass::check::View {
+                revision: d.revision,
+                inventories: &d.inventories,
+                ports: &d.ports,
+            });
+        self.glass
+            .ingest(at, g, view.as_ref(), &self.goods, &self.tun.glass);
+    }
+
     fn sweep_end(&mut self, at: Tick, e: &crate::obs::SweepEnd) {
         let season = self.season_at(at);
         // Split borrows: no clone of the GOOD dictionary per sweep (review finding 16).
@@ -773,11 +802,16 @@ impl Engine {
             .districts
             .entry(e.district)
             .or_insert_with(|| District::new(e.district));
+        use crate::glass::report::discard;
         let Some(buf) = dist.sweep.take() else {
+            self.glass
+                .discard(at, e.district, discard::NO_SWEEP, &self.tun.glass);
             return;
         };
         if buf.sweep != e.sweep || buf.records != e.records {
             // A latest-wins record was dropped: the whole sweep goes (F5).
+            self.glass
+                .discard(at, e.district, discard::DROPPED, &self.tun.glass);
             return;
         }
         let read_at = buf.read_at;
@@ -798,6 +832,24 @@ impl Engine {
         }
         for s in buf.deposits {
             dist.deposits.insert(s.good, s);
+        }
+        // The glass checksum (GLASSBOX.md §5.3): every live sweep counts, creative and
+        // overstressed ones too (the compile models both); read only in G1.
+        if e.live {
+            let view = crate::glass::check::View {
+                revision: dist.revision,
+                inventories: &dist.inventories,
+                ports: &dist.ports,
+            };
+            if let Some(p) = self
+                .glass
+                .sweep(at, e.district, &view, goods, &self.tun.glass)
+            {
+                self.out.push(Cmd::ProbeSet(p));
+            }
+        } else {
+            self.glass
+                .discard(at, e.district, discard::NOT_LIVE, &self.tun.glass);
         }
         if !e.live || e.creative || e.overstressed {
             if e.creative || e.overstressed {
