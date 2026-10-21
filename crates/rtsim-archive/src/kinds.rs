@@ -92,6 +92,8 @@ kinds! {
     DRAGONS_BIRTH = "dragons.birth", "Dragon hatched", Notable;
     DRAGONS_DEATH = "dragons.death", "Dragon dies", Major;
     DRAGONS_ARRIVE = "dragons.arrive", "Dragon arrives", Notable;
+    DRAGONS_TRIBUTE = "dragons.tribute", "Village pays a lair tribute", Notable;
+    DRAGONS_TRIBUTE_LAPSED = "dragons.tribute_lapsed", "Village stops paying tribute", Notable;
     // Herds (rtsim-ecology).
     HERDS_FOUNDED = "herds.founded", "Herd founded", Minor;
     HERDS_MIGRATION = "herds.migration", "Herd migrates", Minor;
