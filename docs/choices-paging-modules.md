@@ -3,6 +3,35 @@
 Reversible choices made on 2026-10-20 by the paging-modules agent (branch `feat/paging-modules`),
 for Ben's review (D10). Each one can be undone.
 
+## Summary
+
+Both kernel review bugs are fixed with a failing test first (PM1, PM2). Herds, dragons, conflict,
+ships and the phase 1 world's markets now keep their rows on the page store: a meta page holds
+what stays resident, and row pages are written only when they change. Industry did not move
+because the glass box has not merged. rtsim-jni does not page any module yet.
+
+Every module gives the same state hash paged and resident at every point. A save reopened from
+its pages continues exactly like the run that kept going (each module's paged tests).
+
+Each module's own memory as its world grows: rows all resident, against rows paged under a fixed
+budget. The rest of the process heap is the phase 1 world under the module.
+
+| Module | Grows | Rows resident: module memory | Paged: module memory | Paged: rows in memory at peak (budget) | Peak slope |
+|---|---|---|---|---|---|
+| Herds | 256 to 16,384 herds | 1.5 to 95.1 MiB (live heap) | 1.2 to 10.9 MiB (live heap) | 1.17 to 2.04 MB (1 MiB) | 0.137 |
+| Dragons | 512 to 32,768 dragons | 0.71 to 34.5 MB | 0.60 to 12.1 MB | 271 to 695 KB (256 KiB) | 0.23 |
+| Conflict | 1,024 to 4,096 factions | 2.91 MB at 1,024 | 1.44 to 3.37 MB | 313 KB at both (256 KiB) | -0.001 |
+| Ships | 372 to 51,774 ships | 0.54 to 20.6 MiB | 0.50 to 7.8 MiB | 82 to 90 KB (64 KiB) | 0.015 |
+| Phase 1 markets | 4,096 villages | 49.1 MiB (live heap) | 42.7 MiB (live heap) | 15.8 MB (4 MiB): not bounded | |
+
+What still grows with the world in a paged run:
+- the meta page (the wheel and the position indexes, written whole by every save);
+- the extra saves for the budget when every entity acts in the same window;
+- the phase 1 world's other per-village parts (news, pipelines, the world wheel, knowledge
+  holders).
+
+"Not done here", at the end, lists them.
+
 ## The two open kernel review bugs
 
 | # | Choice | Why |
@@ -442,8 +471,8 @@ left alone (task rule). What it will need, from its `Engine` today:
 ## Not done here
 
 - **rtsim-jni does not page any module yet.** Each module still saves its `save()` blob as one
-  page (herds 0x4800 version 2, dragons 0x4400 version 2, ships 0x5300 version 2, phase 1 meta
-  version 3). Wiring paging
+  page (herds 0x4800 version 2, dragons 0x4400 version 2, conflict 0x4300 version 2, ships
+  0x5300 version 2, phase 1 meta version 3). Wiring paging
   in means: the engine's store shared as the modules' `PageSource` (it is a
   `Mutex<Option<PageStore>>`, which implements it), the save path calling each module's
   `save_paged` into the save's batch, the IO lane handing the tickets back once the commit is
