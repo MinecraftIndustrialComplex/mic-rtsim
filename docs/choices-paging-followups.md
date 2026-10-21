@@ -37,3 +37,35 @@ sessions; resident peak, saves and bytes are deterministic, CPU is noisy):
 What a save still writes is mostly the world's meta page: nodes, edges, pipelines, packets,
 bands and the world wheel, all resident and written whole by every save (see the paged wheel
 below and "Not done here").
+
+## The paged wheel and paged indexes
+
+Before: every paged module's save wrote its whole meta page, and the meta page held the module's
+timing wheel and its position indexes, all resident. So a save cost grew with the entity count in
+every module even when nothing changed: measured per save, the dragons' meta page was 32.6 KB at
+512 dragons and 259 KB at 4,096 (the wheel 167 KB, the lair index 49 KB, the road, lair and
+village cell indexes 42 KB), the factions' 115 KB at 1,024 and 464 KB at 4,096 (the parties 205
+KB, the wheel 115 KB, the source keys 78 KB, the faction keys and cells 65 KB), the herds' 6.4 KB
+at 256 and 25.6 KB at 1,024 (the claims and the wheel). The tests first: each module's
+`a_save_with_nothing_changed_is_flat_in_the_*` saves a world with nothing changed at one size and
+at four times it, and asks that the second save write at most half as much again plus 1 KB. All
+three failed (the bytes grew four times).
+
+| # | Choice | Why |
+|---|---|---|
+| PF5 | **The wheel is saved as a log** (`rtsim_kernel::meta_pages::PagedWheel`): it stays a resident `TimingWheel` with the same pop order, every entry gets a sequence number when scheduled, and a save appends the entries scheduled since the last save to an open tail page. A full tail seals into pages of `WHEEL_PAGE_ENTRIES` (PLACEHOLDER 1,024). The key of the last entry popped, (due tick, sequence), is a watermark saved in the header: an entry is pending exactly when its key is above it, so a sealed page whose largest key is at or below it is deleted, and reopening keeps only the entries above it. Once the popped entries left in live pages outweigh the pending ones plus `WHEEL_SLACK` (PLACEHOLDER 4,096), the save writes the pending entries into fresh pages and deletes the old ones. A failed save rewrites every pending entry next time and deletes every page it knew. | Pops come in (time, sequence) order, so one watermark says which entries are gone without writing anything per pop. A save then costs the entries scheduled since the last one, plus a rewrite amortized over at least as many pops as it writes. The rewrite on failure needs no record of what the failed batch held. The slack keeps a small wheel from being rewritten every few saves. |
+| PF6 | **An index is a map in key-range pages** (`PagedMap`): resident as a `BTreeMap`, a change marks the page its key falls in, a save writes the marked pages, a page grown past twice `MAP_PAGE_ENTRIES` (PLACEHOLDER 512) splits, and a page left empty is deleted (its range joins the page before it). Small pages are not merged. A failed save marks every page dirty and deletes again what it would have deleted. | Range pages keep neighbours together (a lair's cells, a faction's places), so a change touches one page. Not merging keeps a page's range fixed between saves; an empty page goes, so the page count follows the live keys. Marking everything on a failure is what the row tables do (PM5). |
+| PF7 | **The factions' parties are a `ResidentArena`**: an `Arena` saved in pages of `ARENA_PAGE_SLOTS` (PLACEHOLDER 64) slots, a change marking its slot's page, and the free list saved as a stack of pages (from page id 2^40) of which a save writes those from the lowest depth reached since the last save. They stay resident, not moved to `rows::PagedArena`. | The parties are handles the whole engine holds; a resident arena keeps the handles, the generation checks and the memory budget as they were and costs only the save. Moving them to rows would make them evictable, a larger change the bench does not ask for (parties are about 50 bytes each). |
+| PF8 | **Herds: tables 0x4814 (wheel) and 0x4815 (claims), meta version 3.** The meta page's wheel and claims are written as page headers in a paged save and as blobs in a resident save (`save`, used by the resident tests and the JNI's blob path). | The module's tables sit at its base plus 0x10 and up, clear of the JNI's own keys (0x4800), so the JNI's `deletions` never touches them. |
+| PF9 | **Dragons: tables 0x4412 (wheel), 0x4413 (lairs by key), 0x4414 (lair cells), 0x4415 (village cells), 0x4416 (road cells); magic `RTD2` and meta magic `RTN2`.** `PreyIndex::reset` clears the village and road indexes when the topologies change (`set_topologies`), so their pages are dropped by the next save rather than kept as stale cells. | As PF8. The magic changes because the meta layout did (no backward compatibility before release). |
+| PF10 | **Conflict: tables 0x4314 (wheel), 0x4315 (parties), 0x4316 (faction keys), 0x4317 (faction cells), 0x4318 (source keys); magic `RTC3`, meta version 2.** The structures (a few per faction, written whole) stay a blob in the meta page. | As PF8. The rest of the meta page, the structures with it, was about 1 KB of the 464 KB at 4,096 factions. |
+| PF11 | **The kernel's own tests use small constants** (`cfg!(test)`: 64 entries a wheel page, slack 128, 32 a map page, 8 slots an arena page). Property tests (`a_reopened_wheel_pops_as_a_resident_one`, `a_reopened_map_is_the_saved_one`, `a_reopened_arena_is_the_saved_one`) run random histories of schedules, pops, saves, failed saves and reopens against the resident structure. | With the real sizes a short history never seals a page, splits or rewrites. The modules' tests run the real sizes. |
+
+**Measured** by the three tests (raw bytes a save writes when nothing changed since the last one,
+deterministic):
+
+| | Before | After |
+|---|---|---|
+| Herds, 64 herds, then 256 | 2,252 B, then 9,024 B | 103 B, then 108 B |
+| Dragons, 96 dragons in 48 lairs, then 384 in 192 | 5,472 B, then 22,171 B | 245 B, then 267 B |
+| Factions, 64, then 256 | 9,047 B, then 33,252 B | 1,096 B, then 1,125 B |

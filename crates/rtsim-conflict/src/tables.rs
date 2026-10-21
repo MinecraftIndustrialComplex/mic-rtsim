@@ -16,9 +16,9 @@
 //!
 //! Table 0x4311 (feuds) is reserved and unused while feuds are folded into the faction rows.
 
-use std::collections::BTreeMap;
 use std::ops::{Index, IndexMut};
 
+use rtsim_kernel::meta_pages::PagedMap;
 use rtsim_kernel::rows::{PagedRows, Row};
 use rtsim_knowledge::ActorId;
 
@@ -33,6 +33,14 @@ pub const FACTION_TABLE: u16 = 0x4310;
 pub const FEUD_TABLE: u16 = 0x4311;
 pub const SOURCE_TABLE: u16 = 0x4312;
 pub const PLACE_TABLE: u16 = 0x4313;
+/// The page tables of the resident structures when the conflict pages
+/// (docs/choices-paging-followups.md PF10): the wheel's log, the parties, factions by key and by
+/// cell, and the sources' index.
+pub const WHEEL_TABLE: u16 = 0x4314;
+pub const PARTY_TABLE: u16 = 0x4315;
+pub const FACTION_KEY_TABLE: u16 = 0x4316;
+pub const FACTION_CELL_TABLE: u16 = 0x4317;
+pub const SOURCE_KEY_TABLE: u16 = 0x4318;
 
 /// Factions per page. PLACEHOLDER 4: a faction with two feuds is about 450 bytes encoded (710
 /// resident), so a page is about 1.8 KB. An event dirties its faction's page, and dirty pages stay
@@ -196,7 +204,7 @@ pub struct SourceRef {
 /// The continuous sources, by (key, kind) through a resident index to their rows' ids.
 pub struct SourceTable {
     pub(crate) rows: PagedRows<SourceRow>,
-    pub(crate) ids: BTreeMap<(u64, SignalKind), SourceRef>,
+    pub(crate) ids: PagedMap<(u64, SignalKind), SourceRef>,
     /// The next source id (never reused).
     pub(crate) next: u32,
 }
@@ -214,7 +222,7 @@ impl Default for SourceTable {
     fn default() -> Self {
         SourceTable {
             rows: PagedRows::new(SOURCE_TABLE, SOURCES_PER_PAGE),
-            ids: BTreeMap::new(),
+            ids: PagedMap::new(),
             next: 0,
         }
     }

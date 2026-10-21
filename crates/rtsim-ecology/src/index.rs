@@ -8,7 +8,7 @@
 //! canonical cell its short way's bounding box covers, across seams; a query folds its square
 //! into canonical rectangles, so a dragon near an edge sees the villages and roads beyond it.
 
-use std::collections::BTreeMap;
+use rtsim_kernel::meta_pages::PagedMap;
 
 use rtsim_space::topology::{Rect, Topologies, Topology};
 use rtsim_world::World;
@@ -18,8 +18,8 @@ pub const CELL: i64 = 1_024;
 
 #[derive(Clone, Debug, Default)]
 pub struct PreyIndex {
-    pub(crate) villages: BTreeMap<(u16, i64, i64), Vec<u32>>,
-    pub(crate) roads: BTreeMap<(u16, i64, i64), Vec<u32>>,
+    pub(crate) villages: PagedMap<(u16, i64, i64), Vec<u32>>,
+    pub(crate) roads: PagedMap<(u16, i64, i64), Vec<u32>>,
     pub(crate) nodes: usize,
     pub(crate) edges: usize,
 }
@@ -29,6 +29,15 @@ fn cell(x: i64) -> i64 {
 }
 
 impl PreyIndex {
+    /// Empties the index, so the next [`PreyIndex::refresh`] builds it again. Its pages are kept
+    /// (the next save writes them), so none is left behind in the store.
+    pub fn reset(&mut self) {
+        self.villages.clear();
+        self.roads.clear();
+        self.nodes = 0;
+        self.edges = 0;
+    }
+
     /// Brings the index up to the world's markets and roads.
     pub fn refresh(&mut self, w: &World, topo: &Topologies) {
         if self.nodes == w.nodes.len() && self.edges == w.edges.len() {
@@ -41,12 +50,11 @@ impl PreyIndex {
                 continue;
             }
             self.villages
-                .entry((
+                .get_or_default((
                     n.pos.frame,
                     cell(i64::from(n.pos.x)),
                     cell(i64::from(n.pos.z)),
                 ))
-                .or_default()
                 .push(i as u32);
         }
         for (k, e) in w.edges.iter().enumerate() {
@@ -58,7 +66,7 @@ impl PreyIndex {
                 let (x0, z0, x1, z1) = part.grid_cells(CELL);
                 for cx in x0..=x1 {
                     for cz in z0..=z1 {
-                        let v = self.roads.entry((a.frame, cx, cz)).or_default();
+                        let v = self.roads.get_or_default((a.frame, cx, cz));
                         if v.last() != Some(&(k as u32)) {
                             v.push(k as u32);
                         }
@@ -71,7 +79,7 @@ impl PreyIndex {
     }
 
     fn near(
-        map: &BTreeMap<(u16, i64, i64), Vec<u32>>,
+        map: &PagedMap<(u16, i64, i64), Vec<u32>>,
         t: &Topology,
         frame: u16,
         x: i64,
