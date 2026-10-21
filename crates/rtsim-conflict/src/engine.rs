@@ -26,6 +26,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rtsim_archive::{At, Severity, Tape, kinds};
 use rtsim_ecology::infra::Infrastructure;
 use rtsim_industry::ids::DistrictId;
 use rtsim_industry::threat::{Loads, Threat, ThreatSource, ThreatTarget};
@@ -518,6 +519,31 @@ impl NodeIndex {
     }
 }
 
+/// Where `pos` is at `at`, for the archive.
+fn spot(at: Tick, pos: Pos) -> At {
+    At::new(at.0, u32::from(pos.frame), pos.x, pos.z)
+}
+
+/// An actor's archive id: its knowledge handle, as every module records actors (a player's UUID
+/// is in the world's player table).
+fn aid(a: ActorId) -> u128 {
+    u128::from(a.to_bits())
+}
+
+/// A party's archive id: its handle, as the viewer's parties layer names it.
+fn pid(p: Handle<Party>) -> u128 {
+    u128::from(p.to_bits())
+}
+
+/// War bands are named movers (VIEWER.md §10.4): their rows are notable; envoys' and scouts' minor.
+fn party_severity(kind: PartyKind) -> Severity {
+    if kind.is_war() {
+        Severity::Notable
+    } else {
+        Severity::Minor
+    }
+}
+
 pub struct Conflict {
     pub seed: u64,
     pub tun: ConflictTunables,
@@ -556,6 +582,8 @@ pub struct Conflict {
     pub(crate) now: Tick,
     pub log: Vec<LogEntry>,
     pub log_enabled: bool,
+    /// The event archive's recorder (VIEWER.md §10.1): off until the host turns it on; not state.
+    pub tape: Tape,
     pub(crate) nodes: NodeIndex,
     /// Time spent per chunk (P14): whom an unowned source counts against.
     pub presence: Presence,
@@ -636,6 +664,7 @@ impl Conflict {
             now,
             log: Vec::new(),
             log_enabled: false,
+            tape: Tape::new(),
             nodes: NodeIndex::default(),
             presence,
             topo: rtsim_space::topology::all_flat(),
@@ -742,6 +771,11 @@ impl Conflict {
             kind,
             what,
         });
+    }
+
+    /// A faction's archive id: its key, as the plugin knows it.
+    fn fid(&self, f: u32) -> u128 {
+        u128::from(self.factions[f as usize].key)
     }
 
     pub fn faction_name(&self, f: u32) -> String {
@@ -919,6 +953,9 @@ impl Conflict {
                 self.refresh_rates(f, a, kind, at);
             }
         }
+        let (fid, pool) = (self.fid(f), self.factions[f as usize].pool as i64);
+        self.tape
+            .event(kinds::CONFLICT_FACTION, spot(at, pos), fid, 0, pool);
         self.note(
             at,
             Some(f),
@@ -1104,6 +1141,16 @@ impl Conflict {
             }
             None => "its chief dies of age; the heir takes over".to_string(),
         };
+        let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
+        self.tape
+            .event(
+                kinds::CONFLICT_HEIR,
+                spot(at, camp),
+                fid,
+                killer.map_or(0, aid),
+                grudges.len() as i64,
+            )
+            .text(|| format!("{what} ({} grudges)", grudges.len()));
         self.note(
             at,
             Some(f),
@@ -1565,6 +1612,14 @@ impl Conflict {
                 feud.since = at;
                 self.stats.calmed += 1;
                 let to = step.down();
+                let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
+                self.tape.event(
+                    kinds::CONFLICT_CALM,
+                    spot(at, camp),
+                    fid,
+                    aid(a),
+                    to.index() as i64,
+                );
                 self.note(
                     at,
                     Some(f),
@@ -1640,6 +1695,16 @@ impl Conflict {
                 });
                 self.stats.demands += 1;
                 let gname = w.goods.get(good).name.clone();
+                let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
+                self.tape
+                    .event(kinds::CONFLICT_DEMAND, spot(at, camp), fid, aid(a), tribute)
+                    .text(|| {
+                        format!(
+                            "stop the {} or pay {tribute} {gname} by day {:.1}",
+                            kind.name(),
+                            deadline.0 as f64 / TICKS_PER_DAY as f64
+                        )
+                    });
                 self.note(
                     at,
                     Some(f),
@@ -1667,6 +1732,22 @@ impl Conflict {
         feud.wait_until = Tick::ZERO;
         self.stats.escalations[to.index()] += 1;
         let pos = focus.map_or(self.factions[f as usize].pos, |fo| fo.pos);
+        let severity = if matches!(to, Step::Invasion | Step::Siege) {
+            Severity::Major
+        } else {
+            Severity::Notable
+        };
+        let fid = self.fid(f);
+        self.tape
+            .event_as(
+                kinds::CONFLICT_STEP,
+                severity,
+                spot(at, pos),
+                fid,
+                aid(a),
+                to.index() as i64,
+            )
+            .text(|| format!("{} ({} first, grievance {g:.1})", to.name(), kind.name()));
         if to == Step::Notice {
             let player = self.uuid_of(w, a);
             self.outbox.push(Cmd::Notice(boundary::Notice {
@@ -1762,6 +1843,22 @@ impl Conflict {
             let feud = self.feud_mut(f, a).expect("exists");
             feud.demand = None;
             feud.party = None;
+            let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
+            self.tape
+                .event(
+                    kinds::CONFLICT_UNMET,
+                    spot(at, camp),
+                    fid,
+                    aid(a),
+                    d.tribute - d.paid,
+                )
+                .text(|| {
+                    format!(
+                        "{} of {} unpaid, grievance {g:.1}",
+                        d.tribute - d.paid,
+                        d.tribute
+                    )
+                });
             self.note(
                 at,
                 Some(f),
@@ -1826,6 +1923,23 @@ impl Conflict {
         }
         self.settle_outbox(w, f, a, d, outcome);
         self.envoy_home(w, d.envoy, at);
+        let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
+        if outcome == boundary::SETTLED_PAID {
+            let gname = w.goods.get(d.good).name.clone();
+            self.tape
+                .event(
+                    kinds::CONFLICT_TRIBUTE,
+                    spot(at, camp),
+                    fid,
+                    aid(a),
+                    d.tribute,
+                )
+                .text(|| format!("{} {gname}", d.tribute));
+        } else {
+            self.tape
+                .event(kinds::CONFLICT_COMPLIED, spot(at, camp), fid, aid(a), 0)
+                .text(|| format!("the {} stopped", d.kind.name()));
+        }
         self.note(
             at,
             Some(f),
@@ -2185,6 +2299,17 @@ impl Conflict {
         });
         self.stats.parties[kind.index()] += 1;
         let pos = self.factions[f as usize].pos;
+        let fid = self.fid(f);
+        self.tape
+            .event_as(
+                kinds::CONFLICT_PARTY,
+                party_severity(kind),
+                spot(at, pos),
+                pid(p),
+                fid,
+                i64::from(start_units),
+            )
+            .text(|| format!("{} of {start_units} for ({}, {})", kind.name(), to.x, to.z));
         self.book_leg(w, p, (pos.x, pos.z), (pos.x, pos.z), at, at + muster);
         self.schedule(at + muster, Ev::Party { party: p, plan: 0 });
         self.note(
@@ -2233,6 +2358,15 @@ impl Conflict {
             t1: t1.max(t0),
             radius: self.tun.party_radius,
         };
+        let severity = party_severity(self.parties[p].kind);
+        self.tape.leg_as(
+            kinds::CONFLICT_PARTY_LEG,
+            severity,
+            u32::from(frame),
+            (path.t0.0, path.x0, path.z0),
+            (path.t1.0, path.x1, path.z1),
+            pid(p),
+        );
         let old = self.parties[p].leg;
         let stamp = match old.and_then(|l| w.legs.replan(l.leg, path)) {
             Some(s) => s,
@@ -2540,6 +2674,17 @@ impl Conflict {
         self.stats.ambushes += 1;
         let got = self.take_industry_loot(w, infra, p, &loot);
         let f = self.parties[p].faction;
+        let (x, z) = self.party_pos(p, at);
+        let frame = u32::from(self.parties[p].frame);
+        self.tape
+            .event(
+                kinds::CONFLICT_AMBUSH,
+                At::new(at.0, frame, x, z),
+                pid(p),
+                u128::from(train),
+                got,
+            )
+            .text(|| format!("train {train}: {got} items"));
         self.note(
             at,
             Some(f),
@@ -2715,6 +2860,7 @@ impl Conflict {
     ) {
         let f = self.parties[p].faction;
         let target = self.parties[p].target;
+        let before = self.parties[p].alive();
         let (stolen, blocks) = match target {
             Target::District(d, _) => self.raid_district(w, infra, p, d, at),
             Target::Node(i) => (self.raid_node(w, p, i, at), 0),
@@ -2733,6 +2879,33 @@ impl Conflict {
                 }
             }
         };
+        let (aim, after) = (self.target_pos(w, target), self.parties[p].alive());
+        let what = match self.parties[p].target {
+            Target::District(d, _) => format!("district {}", d.0),
+            Target::Node(i) => format!("node {}", w.nodes[i].key),
+            Target::Pos(_) => "nothing".to_string(),
+        };
+        let severity = if stolen == 0 && blocks == 0 {
+            Severity::Minor
+        } else {
+            Severity::Major
+        };
+        let object = self.parties[p].feud.map_or(0, aid);
+        self.tape
+            .event_as(
+                kinds::CONFLICT_RAID,
+                severity,
+                spot(at, aim),
+                pid(p),
+                object,
+                stolen,
+            )
+            .text(|| {
+                format!(
+                    "{what}: took {stolen} items and {blocks} blocks; {} of {before} fell",
+                    before.saturating_sub(after)
+                )
+            });
         // Vengeance: what it took eases the feud it served (capped).
         if let Some(a) = self.parties[p].feud {
             let c = self.culture(f);
@@ -3021,6 +3194,17 @@ impl Conflict {
         }
         let x = &self.parties[p];
         let (kind, alive, chief) = (x.kind, x.alive(), x.chief);
+        let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
+        self.tape
+            .event_as(
+                kinds::CONFLICT_PARTY_HOME,
+                party_severity(kind),
+                spot(at, camp),
+                pid(p),
+                fid,
+                items,
+            )
+            .text(|| format!("{} home: {alive} left, {items} items", kind.name()));
         if kind.is_war() {
             self.pool_add(f, f64::from(alive), at);
         }
@@ -3328,6 +3512,26 @@ impl Conflict {
         if reason == boundary::RECALL_BORED {
             self.stats.bored += 1;
         }
+        let (x, z) = self.party_pos(p, at);
+        let x_ = &self.parties[p];
+        let (frame, alive, start) = (u32::from(x_.frame), x_.alive(), x_.start_units);
+        let object = x_.breaker.map_or(0, aid);
+        self.tape
+            .event(
+                kinds::CONFLICT_FIGHT,
+                At::new(at.0, frame, x, z),
+                pid(p),
+                object,
+                i64::from(alive),
+            )
+            .text(|| {
+                let how = match reason {
+                    boundary::RECALL_ROUTED => "routed",
+                    boundary::RECALL_BORED => "bored",
+                    _ => "withdraws",
+                };
+                format!("{how}: {alive} of {start} left")
+            });
         self.note(
             at,
             Some(f),
@@ -3930,6 +4134,8 @@ impl Conflict {
         }
         self.stats.chiefs_killed += 1;
         self.parties[p].chief = false;
+        let (x, z) = self.party_pos(p, at);
+        let fall = At::new(at.0, u32::from(self.parties[p].frame), x, z);
         let chief = self.factions[f as usize].chief;
         let heir = self.factions[f as usize].heir;
         if let Some(k) = killer {
@@ -3952,6 +4158,15 @@ impl Conflict {
         let cowed = (days_to_ticks(self.culture(f).def.cowed_days) as f64 * 1000.0
             / f64::from(bend)) as u64;
         self.factions[f as usize].cowed_until = at + cowed;
+        let fid = self.fid(f);
+        self.tape
+            .event(kinds::CONFLICT_CHIEF, fall, fid, killer.map_or(0, aid), 0)
+            .text(|| {
+                format!(
+                    "the band routs; cowed for {:.1} days",
+                    cowed as f64 / TICKS_PER_DAY as f64
+                )
+            });
         if let Some(a) = self.parties[p].feud.or(killer) {
             let steps = self.tun.chief_rout_steps;
             if let Some(feud) = self.feud_mut(f, a) {

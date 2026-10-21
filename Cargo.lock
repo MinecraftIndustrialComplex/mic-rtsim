@@ -677,6 +677,7 @@ dependencies = [
  "crc32fast",
  "libc",
  "mic-viewer",
+ "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
@@ -698,6 +699,7 @@ name = "rtsim-conflict"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-ecology",
  "rtsim-industry",
  "rtsim-kernel",
@@ -716,6 +718,7 @@ name = "rtsim-ecology"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
@@ -734,6 +737,7 @@ version = "0.0.1"
 dependencies = [
  "microlp",
  "proptest",
+ "rtsim-archive",
  "rtsim-kernel",
  "rtsim-space",
  "serde",
@@ -748,6 +752,7 @@ dependencies = [
  "mic-native-host",
  "mic-native-rt",
  "proptest",
+ "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
@@ -775,6 +780,7 @@ name = "rtsim-knowledge"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-kernel",
 ]
 
@@ -792,6 +798,7 @@ name = "rtsim-ships"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-ecology",
  "rtsim-industry",
  "rtsim-kernel",
@@ -867,6 +874,7 @@ name = "rtsim-world"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",

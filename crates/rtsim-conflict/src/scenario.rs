@@ -144,6 +144,7 @@ pub fn run(o: &Options) -> Outcome {
     let (mut w, _ids) = synth::world(o.seed);
     let mut c = synth::conflict(o.seed, &w);
     c.log_enabled = true;
+    c.tape.set_on(true);
     let store = o.paged.as_ref().map(|p| {
         let _ = std::fs::remove_dir_all(&p.dir);
         let s = Arc::new(RwLock::new(
@@ -359,6 +360,7 @@ pub fn run(o: &Options) -> Outcome {
             let log = std::mem::take(&mut c.log);
             let tun = c.tun.clone();
             let cultures = c.cultures.clone();
+            let tape = std::mem::take(&mut c.tape);
             c = match (&store, &o.paged) {
                 (Some(s), Some(p)) => {
                     save_paged(&mut c, s);
@@ -372,6 +374,7 @@ pub fn run(o: &Options) -> Outcome {
             };
             c.log = log;
             c.log_enabled = true;
+            c.tape = tape;
         }
         t = next;
         if t >= end {
