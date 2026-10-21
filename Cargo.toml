@@ -78,8 +78,10 @@ debug = false
 
 [profile.dev]
 # As Deep Time: the kernel's own crates at -O1 so property tests finish, with debug assertions and
-# overflow checks still on.
+# overflow checks still on. Line tables only, as release: panics and backtraces keep file and line,
+# and the debug info that was most of each worktree's target/ goes.
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
