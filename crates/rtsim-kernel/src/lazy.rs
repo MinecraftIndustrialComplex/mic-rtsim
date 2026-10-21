@@ -517,3 +517,346 @@ impl<M: LazyModel> LazyTable<M> {
         })
     }
 }
+
+// ---- Paged lazy regions ----------------------------------------------------------------------
+
+/// How a [`PagedLazyTable`] writes its models, apart from the model's own `Encode` (which may be
+/// a hashing form). Implement it on a local unit type.
+pub trait ModelCodec<M> {
+    fn put(m: &M, w: &mut Writer);
+    fn get(r: &mut Reader<'_>) -> codec::Result<M>;
+    /// Heap bytes the model owns beyond its own size, for the budget.
+    fn heap_bytes(_m: &M) -> usize {
+        0
+    }
+}
+
+/// The generation of every handle a [`PagedLazyTable`] hands out (its arena never reuses one).
+const PAGED_GENERATION: u16 = 1;
+
+/// A region as a row of a [`PagedLazyTable`].
+pub struct LazyRow<M, C> {
+    region: Region<M>,
+    _codec: std::marker::PhantomData<fn() -> C>,
+}
+
+impl<M, C: ModelCodec<M>> crate::codec::Encode for LazyRow<M, C> {
+    fn encode(&self, w: &mut Writer) {
+        let row = &self.region;
+        w.u64(row.key);
+        w.u32(row.stamp);
+        match row.wake {
+            Some(t) => {
+                w.u8(1);
+                w.u64(t.0);
+            }
+            None => w.u8(0),
+        }
+        w.u64(row.touched.0);
+        w.u64(row.cell.anchor.0);
+        C::put(&row.cell.model, w);
+    }
+}
+
+impl<M, C: ModelCodec<M>> crate::codec::Decode for LazyRow<M, C> {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        let key = r.u64()?;
+        let stamp = r.u32()?;
+        let wake = match r.u8()? {
+            0 => None,
+            1 => Some(Tick(r.u64()?)),
+            t => return Err(CodecError::Invalid(format!("wake tag {t}"))),
+        };
+        let touched = Tick(r.u64()?);
+        let anchor = Tick(r.u64()?);
+        let model = C::get(r)?;
+        Ok(LazyRow {
+            region: Region {
+                cell: Lazy { model, anchor },
+                key,
+                stamp,
+                wake,
+                touched,
+            },
+            _codec: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<M, C: ModelCodec<M>> crate::rows::Row for LazyRow<M, C> {
+    fn heap_bytes(&self) -> usize {
+        std::mem::size_of::<M>() + C::heap_bytes(&self.region.cell.model)
+    }
+}
+
+/// A [`LazyTable`] whose regions live in row pages ([`crate::rows::PagedArena`]): the same
+/// calls, the same handles in insertion order (never reused), the same wakes in the same order,
+/// and so the same trajectories, resident or paged. The wake wheel stays resident (SCALE.md §8).
+///
+/// **Reads and pages.** [`PagedLazyTable::get`] loads through `&self` and changes nothing.
+/// [`PagedLazyTable::read`] and [`PagedLazyTable::apply`] change the region (catch-up, the read
+/// time in `touched`), so its page is dirty until the next save; reads of a model with no slot
+/// period that only want a projection should go through `get` and [`Lazy::view_without_catch_up`].
+pub struct PagedLazyTable<M, C: ModelCodec<M>> {
+    rows: crate::rows::PagedArena<LazyRow<M, C>>,
+    wheel: TimingWheel<Wake<M>>,
+    world_seed: u64,
+    system: SystemId,
+    stats: LazyStats,
+}
+
+impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
+    /// A resident table whose rows go to page table `table`, `per` regions a page once paged.
+    pub fn new(world_seed: u64, system: SystemId, now: Tick, table: u16, per: u64) -> Self {
+        Self {
+            rows: crate::rows::PagedArena::new(table, per),
+            wheel: TimingWheel::new(now),
+            world_seed,
+            system,
+            stats: LazyStats::default(),
+        }
+    }
+
+    fn row_handle(h: RegionId<M>) -> Handle<LazyRow<M, C>> {
+        h.cast()
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn stats(&self) -> LazyStats {
+        self.stats
+    }
+
+    pub fn reset_stats(&mut self) {
+        self.stats = LazyStats::default();
+    }
+
+    pub fn pending_wakes(&self) -> usize {
+        self.wheel.len()
+    }
+
+    fn stream(&self, key: u64) -> StreamKey {
+        StreamKey::new(self.world_seed, self.system, key)
+    }
+
+    pub fn insert(&mut self, key: u64, model: M, at: Tick) -> RegionId<M> {
+        let h = self.rows.insert(LazyRow {
+            region: Region {
+                cell: Lazy::new(model, at),
+                key,
+                stamp: 0,
+                wake: None,
+                touched: at,
+            },
+            _codec: std::marker::PhantomData,
+        });
+        let h = h.cast();
+        self.reschedule(h);
+        h
+    }
+
+    pub fn remove(&mut self, h: RegionId<M>) -> Option<(u64, Lazy<M>)> {
+        self.rows
+            .remove(Self::row_handle(h))
+            .map(|r| (r.region.key, r.region.cell))
+    }
+
+    /// The region, loading its page through `&self`. Changes nothing.
+    pub fn get(&self, h: RegionId<M>) -> Option<&Region<M>> {
+        self.rows.get(Self::row_handle(h)).map(|r| &r.region)
+    }
+
+    /// Every region in handle order: a whole-table pass (saving, checks, diagnostics).
+    pub fn iter(&self) -> impl Iterator<Item = (RegionId<M>, &Region<M>)> {
+        self.rows.iter().map(|(h, r)| (h.cast(), &r.region))
+    }
+
+    fn row_mut(&mut self, h: RegionId<M>) -> Option<&mut Region<M>> {
+        self.rows.get_mut(Self::row_handle(h)).map(|r| &mut r.region)
+    }
+
+    fn reschedule(&mut self, h: RegionId<M>) {
+        let Some(row) = self.row_mut(h) else {
+            return;
+        };
+        row.stamp = row.stamp.wrapping_add(1);
+        let anchor = row.cell.anchor();
+        row.wake = row.cell.model().next_breakpoint(anchor);
+        if let Some(at) = row.wake {
+            debug_assert!(at > anchor, "breakpoint {at:?} not after anchor {anchor:?}");
+            let stamp = row.stamp;
+            self.wheel
+                .schedule(at.max(self.wheel.now()), Wake { region: h, stamp });
+        }
+    }
+
+    /// As [`LazyTable::read`].
+    pub fn read(&mut self, h: RegionId<M>, at: Tick) -> Option<M::View> {
+        debug_assert!(at <= self.wheel.now(), "read before next_due was drained");
+        let key = self.stream(self.get(h)?.key);
+        self.stats.reads += 1;
+        let row = self.row_mut(h)?;
+        row.touched = row.touched.max(at);
+        let commits = row.cell.catch_up(at, key);
+        let v = row
+            .cell
+            .model
+            .view(row.cell.anchor, at.max(row.cell.anchor));
+        self.stats.slot_commits += commits;
+        Some(v)
+    }
+
+    /// As [`LazyTable::apply`].
+    pub fn apply<R>(
+        &mut self,
+        h: RegionId<M>,
+        at: Tick,
+        f: impl FnOnce(&mut M, Tick) -> R,
+    ) -> Option<R> {
+        debug_assert!(at <= self.wheel.now(), "event before next_due was drained");
+        let key = self.stream(self.get(h)?.key);
+        self.stats.events += 1;
+        let row = self.row_mut(h)?;
+        row.touched = row.touched.max(at);
+        let commits = row.cell.catch_up(at, key);
+        row.cell.settle_to(at);
+        let r = f(&mut row.cell.model, at);
+        self.stats.slot_commits += commits;
+        self.reschedule(h);
+        Some(r)
+    }
+
+    /// As [`LazyTable::next_due`]: the wake's region is loaded (its page read) to check its stamp.
+    pub fn next_due(&mut self, limit: Tick) -> Option<(Tick, RegionId<M>)> {
+        while let Some((at, wake)) = self.wheel.pop_until(limit) {
+            let Some(row) = self.get(wake.region) else {
+                self.stats.stale_wakes += 1;
+                continue;
+            };
+            if row.stamp != wake.stamp {
+                self.stats.stale_wakes += 1;
+                continue;
+            }
+            let key = self.stream(row.key);
+            let row = self.row_mut(wake.region).expect("checked above");
+            let commits = row.cell.catch_up(at, key);
+            row.cell.settle_to(at);
+            self.stats.breakpoints += 1;
+            self.stats.slot_commits += commits;
+            self.reschedule(wake.region);
+            return Some((at, wake.region));
+        }
+        None
+    }
+
+    pub fn now(&self) -> Tick {
+        self.wheel.now()
+    }
+
+    /// Heap bytes: resident row pages and the wheel.
+    pub fn heap_bytes(&self) -> usize {
+        self.rows.rows().heap_bytes() + self.wheel.heap_bytes()
+    }
+
+    pub fn rows(&self) -> &crate::rows::PagedRows<LazyRow<M, C>> {
+        self.rows.rows()
+    }
+
+    pub fn rows_mut(&mut self) -> &mut crate::rows::PagedRows<LazyRow<M, C>> {
+        self.rows.rows_mut()
+    }
+
+    /// Everything but the rows: the seed, the system, the row count and next index, the wheel in
+    /// pop order and the counters.
+    pub fn encode_meta(&self, w: &mut Writer) {
+        w.u64(self.world_seed);
+        w.u64(self.system.0);
+        let (len, next) = self.rows.meta();
+        w.var_u64(len);
+        w.u32(next);
+        self.wheel.encode_with(w, |wake, w| {
+            w.u32(wake.region.index());
+            w.u32(wake.stamp);
+        });
+        let s = &self.stats;
+        for v in [
+            s.reads,
+            s.events,
+            s.slot_commits,
+            s.breakpoints,
+            s.stale_wakes,
+        ] {
+            w.var_u64(v);
+        }
+    }
+
+    /// A table with [`PagedLazyTable::encode_meta`]'s state and no rows yet, and the rows' count
+    /// and next index (for [`PagedLazyTable::open_rows`] or [`PagedLazyTable::decode_rows`]).
+    pub fn decode_meta(
+        r: &mut Reader<'_>,
+        table: u16,
+        per: u64,
+    ) -> codec::Result<(Self, (u64, u32))> {
+        let world_seed = r.u64()?;
+        let system = SystemId(r.u64()?);
+        let meta = (r.var_u64()?, r.u32()?);
+        let wheel = TimingWheel::decode_with(r, |r| {
+            Ok(Wake {
+                region: Handle::from_parts(r.u32()?, PAGED_GENERATION),
+                stamp: r.u32()?,
+            })
+        })?;
+        let stats = LazyStats {
+            reads: r.var_u64()?,
+            events: r.var_u64()?,
+            slot_commits: r.var_u64()?,
+            breakpoints: r.var_u64()?,
+            stale_wakes: r.var_u64()?,
+        };
+        Ok((
+            PagedLazyTable {
+                rows: crate::rows::PagedArena::new(table, per),
+                wheel,
+                world_seed,
+                system,
+                stats,
+            },
+            meta,
+        ))
+    }
+
+    /// Every row, in key order, after the meta: the whole table as one blob.
+    pub fn encode_rows(&self, w: &mut Writer) {
+        self.rows.encode_all(w);
+    }
+
+    /// The rows [`PagedLazyTable::encode_rows`] wrote, resident; they must match the meta's
+    /// count and next index.
+    pub fn decode_rows(&mut self, r: &mut Reader<'_>, meta: (u64, u32)) -> codec::Result<()> {
+        let (table, per) = (self.rows.rows().table(), self.rows.rows().rows_per_page());
+        self.rows = crate::rows::PagedArena::decode_all(table, per, r)?;
+        if self.rows.meta() != meta {
+            return Err(CodecError::Invalid(
+                "region rows differ from the table's count".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The rows from `source`, none resident: a table saved paged.
+    pub fn open_rows(
+        &mut self,
+        source: std::sync::Arc<dyn crate::rows::PageSource>,
+        budget: usize,
+        meta: (u64, u32),
+    ) {
+        let (table, per) = (self.rows.rows().table(), self.rows.rows().rows_per_page());
+        self.rows = crate::rows::PagedArena::open(table, per, source, budget, meta);
+    }
+}

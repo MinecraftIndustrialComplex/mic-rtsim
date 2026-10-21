@@ -4,9 +4,11 @@
 //! its next snapshot alike.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
 use proptest::prelude::*;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::build::Genesis;
 use rtsim_trade::{GoodId, MILLI};
@@ -257,6 +259,81 @@ proptest! {
         prop_assert_eq!(a.take_commands(), b.take_commands());
         a.check_conserved(end).unwrap();
         b.check_conserved(end).unwrap();
+    }
+}
+
+fn tmpdir(tag: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("rtsim-world-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+type Store = Arc<RwLock<PageStore>>;
+
+/// A paged save: the meta page and the changed market pages in one commit, then the budget.
+fn save_paged(w: &mut World, store: &Store) {
+    let mut b = SaveBatch::new();
+    let t = w.save_paged(&mut b);
+    store.write().unwrap().commit(b, 0).expect("commit");
+    w.saved(t);
+    w.enforce_budget();
+}
+
+/// Market bytes a paged world keeps resident: a page or two of the synthetic world's markets.
+const BUDGET: usize = 12_000;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// Paged: a world whose market rows page through a store under a budget of a page or two
+    /// (saved after every op, then evicted down to the budget) runs exactly as a resident one,
+    /// and one opened from those pages at any point continues exactly.
+    #[test]
+    fn a_paged_world_runs_and_restores_exactly(
+        seed in 0u64..1000,
+        ops in prop::collection::vec((1u64..60, op()), 1..12),
+        cut in 0usize..12,
+    ) {
+        let dir = tmpdir("prop");
+        let store: Store = Arc::new(RwLock::new(PageStore::open(&dir, Durability::NoSync).unwrap()));
+        let (mut a, ids) = world(seed);
+        let (mut b, _) = world(seed);
+        b.attach_store(store.clone(), BUDGET);
+        save_paged(&mut b, &store);
+        let (mut ja, mut jb) = (0, 0);
+        let mut t = Tick::from_days(2);
+        for (i, (gap, o)) in ops.iter().enumerate() {
+            t += gap * 1000;
+            if i == cut {
+                b.run_until(Tick(t.0 - 1));
+                save_paged(&mut b, &store);
+                let (goods, gids) = synth::goods();
+                let book = synth::recipes(&gids);
+                b = World::open_paged(cfg(seed), goods, book, store.clone(), BUDGET)
+                    .expect("the pages open");
+                a.run_until(Tick(t.0 - 1));
+                prop_assert_eq!(b.state_hash(), a.state_hash());
+            }
+            apply(&mut a, &ids, o, t, &mut ja);
+            apply(&mut b, &ids, o, t, &mut jb);
+            save_paged(&mut b, &store);
+            prop_assert_eq!(a.state_hash(), b.state_hash(), "after op {} ({:?})", i, o);
+        }
+        let end = t + 3 * TICKS_PER_DAY;
+        a.run_until(end);
+        b.run_until(end);
+        save_paged(&mut b, &store);
+        prop_assert!(b.markets.rows().resident_bytes() <= BUDGET);
+        prop_assert!(b.markets.rows().stats().loads > 0, "the markets paged");
+        prop_assert_eq!(a.state_hash(), b.state_hash());
+        prop_assert_eq!(a.save(), b.save());
+        prop_assert_eq!(a.take_commands(), b.take_commands());
+        b.check_conserved(end).unwrap();
+        drop(b);
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
