@@ -37,9 +37,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::{self, Decode, Encode, Reader, Writer};
+use rtsim_kernel::meta_pages::{PagedMap, PagedWheel};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::rows::{PagedArena, PagedRows, cell_key};
-use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
 use rtsim_space::topology::{CONE_CLEARANCE, Iso, STOP_MARGIN, SharedTopologies, Topology};
 use rtsim_travel::legs::{LegIndex, Meeting, Owner, Path, REGION_BLOCKS, Stamp};
@@ -227,7 +227,7 @@ pub struct Herds {
     pub herds: PagedArena<Herd>,
     pub forage: Forage,
     pub obstacles: Obstacles,
-    pub(crate) wheel: TimingWheel<Ev>,
+    pub(crate) wheel: PagedWheel<Ev>,
     /// Herds by the regions their current route covers (with the footprint), keyed by
     /// [`region_key`], in pages. Each herd's row holds its own list ([`Herd::regions`]), so the
     /// index is never recomputed from every herd but after a topology change.
@@ -238,7 +238,7 @@ pub struct Herds {
     pub(crate) players: Vec<PlayerView>,
     pub(crate) player_by_key: BTreeMap<u64, u32>,
     /// Cells herds settled on in sub-season `claims_sub`.
-    pub(crate) claims: BTreeMap<CellKey, u64>,
+    pub(crate) claims: PagedMap<CellKey, u64>,
     pub(crate) claims_sub: i64,
     pub(crate) outbox: Vec<Cmd>,
     /// Predator → herds it follows.
@@ -301,8 +301,10 @@ pub fn player_key(uuid: Uuid) -> u64 {
 pub const TABLE_HERDS: u16 = 0x4810;
 /// The page table of the region index.
 pub const TABLE_REGIONS: u16 = 0x4812;
-/// The page table of the herds' resident state when they page (one page, id 0).
-pub const TABLE_META: u16 = 0x4813;
+/// The page table of the wheel's log pages (docs/choices-paging-followups.md PF8).
+pub const TABLE_WHEEL: u16 = 0x4814;
+/// The page table of the claims map's pages (PF8).
+pub const TABLE_CLAIMS: u16 = 0x4815;
 /// Herds per page: a row is 0.5 to 2 KB resident, a few hundred bytes on disk.
 pub const HERDS_PER_PAGE: u64 = 32;
 /// Regions per page: 4 x 4 regions of [`REGION_BLOCKS`] (an aligned square, 2,048 blocks a side).
@@ -369,12 +371,12 @@ impl Herds {
             herds: PagedArena::new(TABLE_HERDS, HERDS_PER_PAGE),
             forage: Forage::new(),
             obstacles: Obstacles::default(),
-            wheel: TimingWheel::new(now),
+            wheel: PagedWheel::new(now),
             regions: PagedRows::new(TABLE_REGIONS, REGIONS_PER_PAGE),
             active: BTreeSet::new(),
             players: Vec::new(),
             player_by_key: BTreeMap::new(),
-            claims: BTreeMap::new(),
+            claims: PagedMap::new(),
             claims_sub: i64::MIN,
             outbox: Vec::new(),
             follows: BTreeMap::new(),

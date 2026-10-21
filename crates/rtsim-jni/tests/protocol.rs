@@ -1938,6 +1938,130 @@ mod herds {
         }
     }
 
+    /// Founds `n` herds of 20 sheep, 64 blocks apart along a line, in one order unit.
+    fn found_many(e: &Engine, j: &mut Java, n: u64) {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let unit = (0..n)
+            .map(|i| Order::HerdFound {
+                name: format!("Testdown flock {i}"),
+                species: "minecraft:sheep".into(),
+                dimension: dim,
+                x: AT.0 + 64 * i as i32,
+                z: AT.1,
+                count: 20,
+                seed: i + 1,
+            })
+            .collect();
+        e.order(unit).unwrap();
+        j.idle();
+        assert_eq!(e.herd_agents().len() as u64, n, "every herd founded");
+    }
+
+    /// A save at the next step, waited for: the raw bytes it wrote.
+    fn save_bytes(e: &Engine, j: &mut Java) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        let done = e.stats.saves_done.load(Acquire);
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while e.stats.saves_done.load(Acquire) == done {
+            assert!(Instant::now() < deadline, "the save never committed");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        e.stats.last_save_bytes.load(Acquire)
+    }
+
+    /// The herds page through the engine's store (docs/choices-paging-followups.md PF12): a
+    /// save with nothing changed since the last one writes what changed, not every herd. At 32
+    /// herds and at 128 (no player near them, a few ticks between the two saves), the second
+    /// save writes at most 4 KB more. It failed while the link saved the herds as one page.
+    #[test]
+    fn a_save_with_nothing_changed_is_flat_in_the_herd_count() {
+        let quiet = |n: u64| {
+            let dir = tmpdir("herds-quiet");
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), WorldSave::fresh());
+            j.module_mask = MODULES;
+            found_many(&e, &mut j, n);
+            save_bytes(&e, &mut j);
+            let bytes = save_bytes(&e, &mut j);
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            bytes
+        };
+        let (small, large) = (quiet(32), quiet(128));
+        eprintln!("a quiet save: {small} B at 32 herds, {large} B at 128");
+        assert!(
+            large <= small + 4096,
+            "a quiet save wrote {small} B at 32 herds, {large} B at 128"
+        );
+    }
+
+    /// Herds under a row budget a fraction of their rows (docs/choices-paging-followups.md
+    /// PF15): saved pages leave at the step boundary, a step whose resident rows all changed
+    /// since the last save takes a save of its own (a pending generation), and after a crash the
+    /// start rolls those back and reads the herds back at the last save's state hash, paging
+    /// their rows in from the store as they are needed.
+    #[test]
+    fn herds_over_their_row_budget_page_out_and_read_back_after_a_crash() {
+        use std::sync::atomic::Ordering::Acquire;
+        let dir = tmpdir("herds-budget");
+        let budget = 4 * 1024;
+        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        found_many(&e, &mut j, 128);
+        save_bytes(&e, &mut j);
+        // The founding dirtied every row; the herds move on for a few days, no save asked for.
+        let asked = e.stats.saves_done.load(Acquire);
+        let mut peak = 0;
+        for _ in 0..80 {
+            j.game_time += 1_200;
+            j.idle();
+            peak = peak.max(e.with_herds(|h, _| h.rows_resident_bytes()));
+        }
+        let (resident, total) = e.with_herds(|h, _| (h.rows_resident_bytes(), h.rows_budget()));
+        let pressure = e.stats.pressure_saves.load(Acquire);
+        eprintln!(
+            "herds under {total} B: rows {resident} B at the end, {peak} B at peak, {pressure} saves for the budget"
+        );
+        assert_eq!(e.stats.saves_done.load(Acquire), asked, "no save asked for");
+        assert!(pressure > 0, "the budget took saves of its own");
+        assert!(
+            resident <= total,
+            "the rows left down to their budget: {resident} B against {total} B"
+        );
+        let herds = e.herd_agents();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let saved = j.crash();
+        {
+            let store = PageStore::open(&dir, rtsim_kernel::page::Durability::NoSync).unwrap();
+            assert_ne!(
+                store.current(),
+                store.confirmed(),
+                "the budget's saves are pending generations"
+            );
+        }
+        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            e.herds_restore_check(),
+            (None, false),
+            "the herds read back to the last save's state hash"
+        );
+        assert_eq!(e.herd_agents(), herds, "every herd paged back in");
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let _ = j.crash();
+        let store = PageStore::open(&dir, rtsim_kernel::page::Durability::NoSync).unwrap();
+        assert_eq!(
+            store.current(),
+            store.confirmed(),
+            "the start rolled the pending generations back"
+        );
+    }
+
     /// The herds through the native engine and a fake vanilla herd adapter (rtsim-ecology's
     /// `FakeHerds`): a herd founded by the test order, a player beside it seeing a group of its
     /// sheep materialize (the engine's species, colours, ages and positions, DICT records first),

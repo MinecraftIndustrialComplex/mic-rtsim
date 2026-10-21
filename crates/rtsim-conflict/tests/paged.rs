@@ -251,3 +251,39 @@ fn the_walkthrough_paged_equals_the_resident_one_and_restores_from_pages() {
     assert_eq!(c.plugin.commands, a.plugin.commands);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Bytes of a paged save made right after another, nothing changed between them, for `factions`
+/// camps two days in.
+fn quiet_save_bytes(factions: usize) -> usize {
+    let dir = tmpdir(&format!("quiet-{factions}"));
+    let store = open_store(&dir);
+    let mut r = Run::new(factions, 3, None);
+    r.run_to(Tick::from_days(2), u64::MAX);
+    r.c.attach_store(store.clone(), 64 << 20);
+    let mut bytes = 0;
+    for _ in 0..2 {
+        let mut b = SaveBatch::new();
+        let t = r.c.save_paged(&mut b, META_KEY);
+        bytes = b.raw_bytes();
+        store.write().unwrap().commit(b, 0).unwrap();
+        r.c.saved(t);
+    }
+    drop(r);
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
+    bytes
+}
+
+/// A save writes what changed since the last one: with nothing changed, as many bytes at four
+/// times the factions (docs/choices-paging-followups.md, the paged wheel). It failed while the
+/// meta page held the whole wheel, the parties in flight and the indexes.
+#[test]
+fn a_save_with_nothing_changed_is_flat_in_the_factions() {
+    let small = quiet_save_bytes(64);
+    let big = quiet_save_bytes(256);
+    eprintln!("a quiet save: {small} bytes, then {big} at four times the size");
+    assert!(
+        big <= small + small / 2 + 1024,
+        "a save with nothing changed wrote {small} bytes at 64 factions and {big} at 256"
+    );
+}

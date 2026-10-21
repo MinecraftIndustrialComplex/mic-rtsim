@@ -19,7 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::graph::{Graph, carries_goods, term_amount};
 use super::q::Q;
 use super::records::{
-    EdgeKind, NodeKind, edge_flags, heat as heat_level, node_flags, rule, term_flags,
+    EdgeKind, NodeKind, edge_flags, heat as heat_level, model, node_flags, recipe_type, rule,
+    term_flags,
 };
 use super::report::why;
 use crate::ids::Good;
@@ -40,6 +41,19 @@ pub fn chance_variance(e: f64) -> f64 {
         k * p * (1.0 - p)
     }
 }
+
+/// GB72 (GLASSBOX.md §3.3, changed by Ben 2026-10-21): belt side insertion as Create has it.
+/// `BeltInventory.canInsertAtFromSide` (`isBlocking`) stops an insertion only while an earlier
+/// insertion at the same segment from the same side is within a block of it, never for the items
+/// passing, so at a belt segment the insertions go first, sharing the segment's capacity among
+/// themselves, and the through traffic (in-edges flagged `THROUGH`) takes what is left. `false`
+/// restores the earlier rule: the main line first, the side inputs sharing the rest.
+pub const BELT_INSERTIONS_FIRST: bool = true;
+
+/// GB72 (GLASSBOX.md §3.4, changed by Ben 2026-10-21): a sequenced-assembly loop fed faster than
+/// its machines finish items stalls ([`Solver::shut_overfed_loops`]). `false` restores
+/// settling at the machines' capacity.
+pub const OVERFED_LOOPS_STALL: bool = true;
 
 /// Taint levels, ordered: a good takes the worst on its paths (`report::class`).
 pub const EXACT: u8 = 0;
@@ -159,6 +173,9 @@ pub struct Solution {
     pub edge_flow: Vec<f64>,
     /// Read-store edges with their good and L flow: (edge, good, flow, into the store).
     pub store_edges: Vec<(u32, Good, f64, bool)>,
+    /// Every goods edge's exact L flow per good, nonzero only, by edge then good: what the glass
+    /// replay books per store and across a partial load's cut (G2).
+    pub edge_goods: Vec<(u32, Good, Q)>,
     /// Per domain: the running level index under L (None: stopped or overstressed).
     pub dom_level: Vec<Option<u32>>,
     /// Per node: a heater's duty under L.
@@ -392,6 +409,15 @@ pub struct Solver<'a> {
     rbuf: Vec<Q>,
     rbuf2: Vec<Q>,
     takes: Vec<(usize, Q)>,
+    /// A belt merge's in-edges in priority order (GB72).
+    in_order: Vec<u32>,
+    /// GB72's switches, from [`BELT_INSERTIONS_FIRST`] and [`OVERFED_LOOPS_STALL`] (tests flip
+    /// them).
+    pub(crate) insertions_first: bool,
+    pub(crate) loops_stall: bool,
+    /// Nodes taken as sinks: an over-fed loop's probe (what its feed brings when the loop takes
+    /// everything). Empty in a solve.
+    as_sink: Vec<bool>,
 }
 
 impl<'a> Solver<'a> {
@@ -445,6 +471,10 @@ impl<'a> Solver<'a> {
             rbuf: Vec::new(),
             rbuf2: Vec::new(),
             takes: Vec::new(),
+            in_order: Vec::new(),
+            insertions_first: BELT_INSERTIONS_FIRST,
+            loops_stall: OVERFED_LOOPS_STALL,
+            as_sink: Vec::new(),
         };
         s.reachability();
         s.slots();
@@ -462,6 +492,9 @@ impl<'a> Solver<'a> {
     /// The node's kind as the solve treats it: a demoted model is a black box (G-B14), and a store
     /// the sampler does not read is a buffer (its stock is unknown, so it only passes goods on).
     pub fn kind(&self, v: u32) -> NodeKind {
+        if self.as_sink.get(v as usize) == Some(&true) {
+            return NodeKind::Sink;
+        }
         let n = self.g.node(v);
         match n.kind {
             NodeKind::Store => {
@@ -1222,9 +1255,33 @@ impl<'a> Solver<'a> {
         self.use_proportional(v, |s, gi| if room { Q::INF } else { s.s_push.get(gi) });
     }
 
+    /// A belt segment where insertions meet the through traffic (GB72): a BELT mover with a
+    /// `THROUGH` in-edge and another in-edge. Writes its in-edges into `order` in two priority
+    /// groups and returns where the second starts: the insertions, then the through traffic
+    /// ([`BELT_INSERTIONS_FIRST`]), or the other way round with the switch off. None for any
+    /// other node, whose in-edges keep their order.
+    fn belt_merge(&self, v: u32, kind: NodeKind, order: &mut Vec<u32>) -> Option<usize> {
+        let g = self.g;
+        if kind != NodeKind::Mover || g.node(v).model != model::BELT {
+            return None;
+        }
+        let ins = g.in_g.of(v);
+        let through = |e: u32| g.edge(e).flags & edge_flags::THROUGH != 0;
+        let n = ins.iter().filter(|&&e| through(e)).count();
+        if n == 0 || n == ins.len() {
+            return None;
+        }
+        let first_through = !self.insertions_first;
+        order.clear();
+        order.extend(ins.iter().copied().filter(|&e| through(e) == first_through));
+        let split = order.len();
+        order.extend(ins.iter().copied().filter(|&e| through(e) != first_through));
+        Some(split)
+    }
+
     /// Buffers, movers, junctions and sinks: conserve each good under a shared capacity, taking
     /// in-edges by priority group (a mover's in-edges in order, side insertion's main line
-    /// first, else one proportional group).
+    /// first, a belt merge's insertions then its through traffic, else one proportional group).
     fn fwd_conserve(&mut self, v: u32, dl: &[Option<u32>]) {
         let g = self.g;
         let kind = self.kind(v);
@@ -1242,16 +1299,31 @@ impl<'a> Solver<'a> {
         }
         let allowed = |s: &Self, gi: u32| if sink { Q::INF } else { s.s_acc.get(gi) };
         // Priority groups of in-edges.
-        let ins = g.in_g.of(v);
+        let mut order = std::mem::take(&mut self.in_order);
+        let merge = self.belt_merge(v, kind, &mut order);
+        let ins: &[u32] = if merge.is_some() {
+            &order
+        } else {
+            g.in_g.of(v)
+        };
         let mut takes = std::mem::take(&mut self.takes);
         takes.clear();
         let mut remaining = cap;
         let mut i = 0;
         let mut binding = false;
+        let mut edges_flowing = 0;
         while i < ins.len() {
-            let j = match (kind, node.rule) {
-                (NodeKind::Mover, _) => i + 1,
-                (_, rule::SIDE_INSERT) => {
+            let j = match (merge, kind, node.rule) {
+                // A belt merge: two groups, each shared in proportion to supply (GB72).
+                (Some(k), _, _) => {
+                    if i < k {
+                        k
+                    } else {
+                        ins.len()
+                    }
+                }
+                (None, NodeKind::Mover, _) => i + 1,
+                (None, _, rule::SIDE_INSERT) => {
                     let o = g.edge(ins[i]).order;
                     let mut j = i + 1;
                     if o == 0 {
@@ -1314,7 +1386,22 @@ impl<'a> Solver<'a> {
             if binding && flowing > 1 && kind != NodeKind::Mover {
                 self.taint_node(v, BOUNDED, why::SHARED_CAPACITY);
             }
+            if merge.is_some() {
+                let mut k = start;
+                for &e in group {
+                    let n = self.slots_of(e).len();
+                    if takes[k..k + n].iter().any(|t| t.1.is_pos()) {
+                        edges_flowing += 1;
+                    }
+                    k += n;
+                }
+            }
             i = j;
+        }
+        // A belt merge that binds with two in-edges flowing: which gets the gaps depends on the
+        // ticks of each insertion and of the through traffic, not modelled (GB72).
+        if merge.is_some() && binding && edges_flowing > 1 {
+            self.taint_node(v, BOUNDED, why::SHARED_CAPACITY);
         }
         if !cap.is_inf() && remaining.is_zero() {
             self.saturated[v as usize] = true;
@@ -1350,6 +1437,7 @@ impl<'a> Solver<'a> {
             self.used[t.0] = u;
         }
         self.takes = takes;
+        self.in_order = order;
     }
 
     /// Machines and sources: crafts per recipe, time-shared, limited by inputs, capacity, heat and
@@ -1756,7 +1844,10 @@ impl<'a> Solver<'a> {
             }
         }
         let mut warming = vec![false; self.g.nodes.len()];
-        while rounds < max {
+        let mut limit = max;
+        // A probe (`as_sink`) never looks for over-fed loops itself.
+        let mut stall_checked = !self.loops_stall || !self.as_sink.is_empty();
+        while rounds < limit {
             rounds += 1;
             self.backward();
             self.forward();
@@ -1795,11 +1886,156 @@ impl<'a> Solver<'a> {
             }
             self.duty_assumed.clone_from(&self.duty);
             if !changed {
+                // Settled: shut the over-fed sequenced-assembly loops once (GB72), and run more
+                // rounds (a fresh budget) to carry their stall up- and downstream.
+                if !stall_checked {
+                    stall_checked = true;
+                    if self.shut_overfed_loops() {
+                        limit = rounds + max;
+                        continue;
+                    }
+                }
                 converged = true;
                 break;
             }
         }
         (rounds, converged)
+    }
+
+    /// GB72 (GLASSBOX.md §3.4): shuts the over-fed sequenced-assembly loops of a settled L and
+    /// returns whether it shut any.
+    ///
+    /// A loop is a goods component holding a SEQUENCED machine (the collapsed line, §9.3), with no
+    /// store in it. Create's belt insertions never wait for the items passing (§3.3), so a loop's
+    /// feed is what the outside would bring if the loop took everything: a probe solve with the
+    /// component as a sink gives it, per good, on the edges into the component. The machine works
+    /// at most `μ` of the sequence's base input a tick (its capacity, in base input per craft).
+    /// With the machine running flat out (saturated, so no other input is short: a deployer
+    /// without its part lets the item pass) and a feed `f > μ` of a base input, the loop's
+    /// population grows by `f - μ` a tick until every belt slot is full; then no item moves, and
+    /// a stopped item is never processed (`BeltInventory.handleBeltProcessingAndCheckIfRemoved`
+    /// returns on `noMovement`) or taken by a funnel (`BeltFunnelInteractionHandler` needs the
+    /// item to cross it): a jam for good. Every goods edge into the component is shut
+    /// (acceptance 0). `f = μ` runs.
+    fn shut_overfed_loops(&mut self) -> bool {
+        let g = self.g;
+        let n = g.nodes.len();
+        let mut shut = false;
+        let mut seen = vec![false; n];
+        for h in 0..n as u32 {
+            if seen[h as usize]
+                || !g.cyclic[h as usize]
+                || g.node(h).model != model::SEQUENCED
+                || self.kind(h) != NodeKind::Machine
+                || !self.saturated[h as usize]
+            {
+                continue;
+            }
+            let comp = self.goods_component(h);
+            for (v, &c) in comp.iter().enumerate() {
+                seen[v] |= c;
+            }
+            if (0..n).any(|v| comp[v] && g.nodes[v].kind == NodeKind::Store) {
+                continue;
+            }
+            let drain = self.sequence_drain(h);
+            if drain.iter().all(|&(_, mu)| mu.is_inf()) {
+                continue;
+            }
+            let Some(feed) = self.loop_feed(&comp) else {
+                continue;
+            };
+            if !drain.iter().any(|&(gi, mu)| feed[gi as usize] > mu) {
+                continue;
+            }
+            for (e, ed) in g.edges.iter().enumerate() {
+                if carries_goods(ed.kind) && comp[ed.to as usize] {
+                    for s in self.slots_of(e as u32) {
+                        self.ovr[s] = Q::ZERO;
+                    }
+                }
+            }
+            shut = true;
+        }
+        shut
+    }
+
+    /// The nodes on a goods cycle with `h`: reachable from it and reaching it by goods edges.
+    fn goods_component(&self, h: u32) -> Vec<bool> {
+        let g = self.g;
+        let n = g.nodes.len();
+        let walk = |forward: bool| {
+            let mut mark = vec![false; n];
+            let mut stack = vec![h];
+            mark[h as usize] = true;
+            while let Some(v) = stack.pop() {
+                let row = if forward { g.out_g.of(v) } else { g.in_g.of(v) };
+                for &e in row {
+                    let ed = g.edge(e);
+                    let w = if forward { ed.to } else { ed.from };
+                    if !mark[w as usize] {
+                        mark[w as usize] = true;
+                        stack.push(w);
+                    }
+                }
+            }
+            mark
+        };
+        let ahead = walk(true);
+        let behind = walk(false);
+        ahead.iter().zip(&behind).map(|(a, b)| *a && *b).collect()
+    }
+
+    /// What a SEQUENCED machine works of each base input (its sequences' first input) a tick at
+    /// its capacity under L, by dense good.
+    fn sequence_drain(&self, h: u32) -> Vec<(u32, Q)> {
+        let g = self.g;
+        let mut out: Vec<(u32, Q)> = Vec::new();
+        for &r in g.node_recipes.of(h) {
+            let rec = &g.recipes[r as usize];
+            if rec.recipe_type != recipe_type::SEQUENCED {
+                continue;
+            }
+            let Some(t) = rec.inputs.first() else {
+                continue;
+            };
+            let Some(gi) = self.gidx(t.good) else {
+                continue;
+            };
+            let cap = self
+                .recipe_cap_with(h, r, &self.dom_level)
+                .mul(self.heat_factor_with(h, rec.heat, &self.duty));
+            let mu = cap.mul(term_amount(t.num, t.den));
+            match out.iter_mut().find(|x| x.0 == gi) {
+                Some(x) => x.1 = x.1.add(mu),
+                None => out.push((gi, mu)),
+            }
+        }
+        out
+    }
+
+    /// The probe: per dense good, what the edges into `comp` carry when `comp` takes everything
+    /// (each of its nodes a sink, under its own capacity). None if the probe did not settle.
+    fn loop_feed(&self, comp: &[bool]) -> Option<Vec<Q>> {
+        let g = self.g;
+        let mut p = Solver::new(g, self.rg, self.tun);
+        p.insertions_first = self.insertions_first;
+        p.as_sink = comp.to_vec();
+        let (_, converged) = p.run();
+        if !converged {
+            return None;
+        }
+        let mut feed = vec![Q::ZERO; p.goods.len()];
+        for (e, ed) in g.edges.iter().enumerate() {
+            if !carries_goods(ed.kind) || !comp[ed.to as usize] || comp[ed.from as usize] {
+                continue;
+            }
+            for s in p.slots_of(e as u32) {
+                let gi = p.slot_good[s] as usize;
+                feed[gi] = feed[gi].add(p.used[s]);
+            }
+        }
+        Some(feed)
     }
 }
 
@@ -2023,7 +2259,20 @@ fn priority_tie(s: &Solver<'_>, v: u32) -> bool {
 
 /// The district's solve: L, classes, then U (`lp.rs`).
 pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
+    solve_with(g, rg, tun, BELT_INSERTIONS_FIRST, OVERFED_LOOPS_STALL)
+}
+
+/// [`solve`] with GB72's switches given (tests).
+pub(crate) fn solve_with(
+    g: &Graph,
+    rg: &Regime,
+    tun: &GlassTunables,
+    insertions_first: bool,
+    loops_stall: bool,
+) -> Solution {
     let mut s = Solver::new(g, rg, tun);
+    s.insertions_first = insertions_first;
+    s.loops_stall = loops_stall;
     let (rounds, converged) = s.run();
     let (comp_taint, _uf, comp_cycle, comp_why) = classes(&s, converged);
     let n = g.nodes.len();
@@ -2164,6 +2413,14 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
             .map(|e| s.slots_of(e).map(|sl| s.used[sl].to_f64()).sum())
             .collect(),
         store_edges,
+        edge_goods: (0..g.edges.len() as u32)
+            .flat_map(|e| {
+                let s = &s;
+                s.slots_of(e)
+                    .filter(|&sl| !s.used[sl].is_zero())
+                    .map(move |sl| (e, s.goods[s.slot_good[sl] as usize], s.used[sl]))
+            })
+            .collect(),
         dom_level: s.dom_level.clone(),
         duty: s.duty.clone(),
         fed: s.fed.iter().map(|q| q.to_f64()).collect(),

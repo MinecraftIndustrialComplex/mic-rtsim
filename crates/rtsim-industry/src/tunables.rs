@@ -226,6 +226,10 @@ pub struct GlassTunables {
     pub regime_cache: usize,
     /// Buffers named in one IND_PROBE_SET at most. TUNABLE, PLACEHOLDER 16.
     pub probe_nodes_max: usize,
+    /// `glass.breakpointsPerEventMax`: breakpoints a glass replay may take between two outside
+    /// events (or since its last closed-form cycle) before it counts as oscillating and the
+    /// district falls back to the black box (GLASSBOX.md §4.5, choice G2-7). TUNABLE, PLACEHOLDER 64.
+    pub breakpoints_per_event_max: u32,
 }
 
 impl Default for GlassTunables {
@@ -242,6 +246,7 @@ impl Default for GlassTunables {
             lp_margin_rel: 1e-6,
             regime_cache: 4,
             probe_nodes_max: 16,
+            breakpoints_per_event_max: 64,
         }
     }
 }
