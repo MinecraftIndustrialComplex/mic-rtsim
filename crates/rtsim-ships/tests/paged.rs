@@ -15,9 +15,11 @@ use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_settle::Pos;
+use rtsim_ships::NETWORK_KEY;
 use rtsim_ships::synth::{self, Coastal, FakeShips, Script};
 use rtsim_ships::water::AllWater;
 use rtsim_ships::{ShipTunables, Ships};
+use rtsim_travel::Medium;
 use rtsim_world::World;
 
 /// Where the paged runs keep the ships' meta page (rtsim-jni's ships table, outside the row
@@ -398,4 +400,63 @@ fn a_watched_hour_loads_only_the_pages_it_needs() {
     assert!(st.loads <= embodied, "{st:?} for {embodied} embodied ships");
     assert!(g.ships.ships.iter().all(|(_, x)| !x.embodied));
     g.ships.check(&g.world).expect("the indexes agree");
+}
+
+/// The network (the flow graph, resident and growing with the world) is written only by the saves
+/// after it changed: a port that joins later is in the next save's network page, and an engine
+/// opened from it has the port and its shuttle.
+#[test]
+fn the_network_page_is_written_only_when_it_changes() {
+    let mut c = Coast::new();
+    let mut store = Store::new("network");
+    page(&mut c, &mut store);
+    let save = |c: &mut Coast, store: &mut Store| -> bool {
+        let mut b = SaveBatch::new();
+        let t = c.ships().save_paged(&mut b, META);
+        let wrote = t.wrote_network();
+        store.commits += 1;
+        store
+            .store
+            .write()
+            .unwrap()
+            .commit(b, store.commits)
+            .unwrap();
+        c.ships().saved(t);
+        wrote
+    };
+    c.run(Tick::ZERO, Tick(HALF_DAY));
+    assert!(!save(&mut c, &mut store), "nothing joined: no network page");
+    // Brightwater (node 1) has no sky dock: one joins, linked by a shuttle.
+    let (docks, lanes) = (c.c.ships.docks.len(), c.c.ships.lanes.len());
+    let d = c.c.ships.add_port(
+        &mut c.c.world,
+        1,
+        Medium::Sky,
+        (1_330, 120, synth::shore(1_300) - 60),
+        4,
+        &c.c.mask,
+        Tick(HALF_DAY),
+    );
+    assert!(d.is_some());
+    assert_eq!(c.c.ships.lanes.len(), lanes + 1, "a shuttle");
+    c.run(Tick(HALF_DAY), Tick(2 * HALF_DAY));
+    assert!(save(&mut c, &mut store), "a port joined");
+    assert!(!save(&mut c, &mut store), "and once written, not again");
+    assert!(
+        store
+            .store
+            .read()
+            .unwrap()
+            .get_shared(NETWORK_KEY)
+            .unwrap()
+            .is_some()
+    );
+    let tun = c.c.ships.tun.clone();
+    let opened = Ships::open_paged(store.store.clone(), BUDGET, META, tun).expect("opens");
+    assert_eq!(opened.docks.len(), docks + 1);
+    let mut q = c.fork(opened);
+    assert_eq!(q.hashes(), c.hashes());
+    q.run(Tick(2 * HALF_DAY), Tick(4 * HALF_DAY));
+    c.run(Tick(2 * HALF_DAY), Tick(4 * HALF_DAY));
+    assert_eq!(q.hashes(), c.hashes());
 }
