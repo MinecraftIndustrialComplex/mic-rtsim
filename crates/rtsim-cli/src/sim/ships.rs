@@ -238,11 +238,10 @@ fn script(
             Some(watch)
         } else {
             c.ships
-                .threats
-                .iter()
-                .find(|(_, th)| !th.hunters.is_empty())
-                .map(|(l, _)| {
-                    let ln = &c.ships.lanes[*l as usize];
+                .hunted_lanes()
+                .first()
+                .map(|&l| {
+                    let ln = &c.ships.lanes[l as usize];
                     ln.path.at(ln.path.length() / 2)
                 })
                 .or(Some(watch))
@@ -294,10 +293,9 @@ fn script(
         if day(t) >= 5.0 && escort.is_none() {
             let hunted = c
                 .ships
-                .threats
-                .iter()
-                .find(|(_, th)| !th.hunters.is_empty() && th.share > 0)
-                .map(|(l, _)| *l);
+                .hunted_lanes()
+                .into_iter()
+                .find(|&l| c.ships.threat(l).is_some_and(|th| th.share > 0));
             if let Some(l) = hunted {
                 c.ships.set_escort(&mut c.world, l, 1, 4.0, t);
                 *escort = Some((l, t));
@@ -472,11 +470,11 @@ pub fn main(o: Options) -> i32 {
     }
     let sea_pirate = tun.sea.pirate_crew as f64 * tun.pirate_strength;
     let mut patrols = Vec::new();
-    for (l, th) in &s.threats {
+    for (l, th) in s.lane_threats() {
         if th.patrol_milli > 0 {
             let n = th.patrol_milli as f64 / 1000.0;
             patrols.push(PatrolRow {
-                lane: *l,
+                lane: l,
                 patrol_strength: n,
                 hazard_with_patrol: fight::hazard_milli(sea_pirate, n, &tun),
                 hazard_without: fight::hazard_milli(sea_pirate, 0.0, &tun),

@@ -13,21 +13,36 @@
 //! **Not written:** the tunables (the caller's, as the dragons' are) and the CLI's log. The ships'
 //! legs, reports and captains live in the phase 1 world (its leg index and knowledge), saved
 //! beside them with `World::save`.
+//!
+//! # Two forms (docs/choices-paging-modules.md, PM-S rows)
+//!
+//! - **One blob** ([`Ships::save`], [`Ships::load`]): the row tables written whole, rows in key
+//!   order ([`PagedArena::encode_all`]), then the resident state. What rtsim-jni writes as page
+//!   0x5300/0 until it wires paging, and what [`Ships::state_hash`] hashes: equal for equal
+//!   engines, paged or not.
+//! - **Paged** ([`Ships::save_paged`], [`Ships::open_paged`]): a meta page with the resident state
+//!   and each row table's layout, count and next index, beside the row tables' dirty pages (ships
+//!   0x5310, lane threats 0x5311). Opening reads the meta page and leaves every row page on disk
+//!   until something reads it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
-use rtsim_kernel::handle::{Arena, Handle};
+use rtsim_kernel::handle::Handle;
+use rtsim_kernel::page::{PageError, PageKey, SaveBatch};
 use rtsim_kernel::rng::fnv1a64;
+use rtsim_kernel::rows::{PageSource, PagedArena, PagedRows, Row, RowStats};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_trade::GoodId;
 use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, LaneThreat, Navy, PState, Pirate, PlayerView, Promoted, Role, Ship,
-    ShipLedger, ShipStats, Ships, Status,
+    Booked, Ev, Haven, LaneThreat, Navy, PState, Pirate, PlayerView, Promoted, Role,
+    SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats, ShipTickets, Ships,
+    Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
 use crate::fight::Observed;
 use crate::geom::Polyline;
@@ -35,7 +50,15 @@ use crate::network::{Dock, Hop, Lane, NetworkLints};
 use crate::timetable::{Leg, Service, ServiceKind};
 use crate::tunables::ShipTunables;
 
-const MAGIC: u32 = u32::from_le_bytes(*b"RTS1");
+/// RTS2 since the rows moved to paged tables (RTS1 wrote an `Arena` and lists of ships per
+/// service). No reader of RTS1 is kept: nothing is released (no backward compatibility before a
+/// release).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTS2");
+/// The row tables follow whole, in key order ([`Ships::save`]).
+const ROWS_INLINE: u8 = 0;
+/// The row tables are in their own pages; only their layouts and counts follow
+/// ([`Ships::save_paged`]).
+const ROWS_PAGED: u8 = 1;
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -482,6 +505,95 @@ fn get_ship(r: &mut Reader<'_>) -> codec::Result<Ship> {
     })
 }
 
+/// Heap bytes of a small B-tree map of 10-byte entries: a leaf node of eleven slots (128 bytes)
+/// per eleven entries. An estimate for the row budget.
+fn small_map_bytes(n: usize) -> usize {
+    n.div_ceil(11) * 128
+}
+
+impl Encode for Ship {
+    fn encode(&self, w: &mut Writer) {
+        put_ship(w, self);
+    }
+}
+
+impl Decode for Ship {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        get_ship(r)
+    }
+}
+
+impl Row for Ship {
+    fn heap_bytes(&self) -> usize {
+        small_map_bytes(self.cargo.len())
+            + small_map_bytes(self.quotes.len())
+            + self.pirate.as_ref().map_or(0, |p| {
+                std::mem::size_of::<Pirate>() + small_map_bytes(p.district_loot.len())
+            })
+    }
+}
+
+impl Encode for LaneThreat {
+    fn encode(&self, w: &mut Writer) {
+        match self.haven {
+            Some(h) => {
+                w.u8(1);
+                w.var_u64(u64::from(h));
+            }
+            None => w.u8(0),
+        }
+        put_usize(w, self.hunters.len());
+        self.hunters.iter().for_each(|s| w.u64(s.to_bits()));
+        w.var_i64(self.patrol_milli);
+        put_usize(w, self.escorts.len());
+        for (k, v) in &self.escorts {
+            w.u64(*k);
+            w.var_i64(*v);
+        }
+        w.var_i64(self.share);
+    }
+}
+
+impl Decode for LaneThreat {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        let haven = match r.u8()? {
+            0 => None,
+            1 => Some(get_u32(r)?),
+            t => return bad(format!("option tag {t}")),
+        };
+        let n = r.len_prefix(8)?;
+        let hunters = (0..n)
+            .map(|_| handle(r))
+            .collect::<codec::Result<Vec<_>>>()?;
+        if !hunters.is_sorted_by(|a, b| a < b) {
+            return bad("a lane's hunters out of order".into());
+        }
+        let patrol_milli = r.var_i64()?;
+        let n = r.len_prefix(9)?;
+        let mut escorts: Vec<(u64, i64)> = Vec::with_capacity(n);
+        for _ in 0..n {
+            escorts.push((r.u64()?, r.var_i64()?));
+        }
+        if !escorts.is_sorted_by(|a, b| a.0 < b.0) {
+            return bad("a lane's escorts out of order".into());
+        }
+        let share = r.var_i64()?;
+        Ok(LaneThreat {
+            haven,
+            hunters,
+            patrol_milli,
+            escorts,
+            share,
+        })
+    }
+}
+
+impl Row for LaneThreat {
+    fn heap_bytes(&self) -> usize {
+        self.hunters.capacity() * 8 + self.escorts.capacity() * 16
+    }
+}
+
 fn put_ev(w: &mut Writer, e: &Ev) {
     match *e {
         Ev::Seen {
@@ -748,126 +860,189 @@ fn get_ledger(r: &mut Reader<'_>) -> codec::Result<ShipLedger> {
     Ok(l)
 }
 
+fn put_ranges(w: &mut Writer, v: &[ShipRange]) {
+    put_usize(w, v.len());
+    for r in v {
+        w.var_u64(u64::from(r.first));
+        w.var_u64(u64::from(r.n));
+    }
+}
+
+fn get_ranges(r: &mut Reader<'_>, services: usize) -> codec::Result<Vec<ShipRange>> {
+    let n = r.len_prefix(2)?;
+    if n != services {
+        return bad(format!("{n} ship ranges for {services} services"));
+    }
+    (0..n)
+        .map(|_| {
+            Ok(ShipRange {
+                first: get_u32(r)?,
+                n: get_u32(r)?,
+            })
+        })
+        .collect()
+}
+
+fn page_format(what: &str) -> impl Fn(CodecError) -> PageError + '_ {
+    move |e| PageError::Format(format!("{what}: {e}"))
+}
+
+/// How [`Ships::attach_store`] and [`Ships::open_paged`] split one budget between the row
+/// tables: the lane threats get an eighth (a threat row is a few dozen bytes, and only hunted,
+/// patrolled or escorted lanes have one), the ships the rest.
+fn split_budget(budget: usize) -> (usize, usize) {
+    let threats = budget / 8;
+    (budget - threats, threats)
+}
+
 impl Ships {
-    /// The whole engine as bytes (see the module docs for what is left out).
+    /// The whole engine as bytes, the row tables written whole in key order (see the module
+    /// docs for what is left out). Works paged or not, with the same bytes; paged, it loads every
+    /// row page through `&self` (a whole-table pass: saves of the unpaged form, `state_hash`,
+    /// tools and tests).
     pub fn save(&self) -> Vec<u8> {
         let mut w = Writer::with_capacity(4096 + self.ships.len() * 64);
         w.u32(MAGIC);
+        w.u8(ROWS_INLINE);
+        self.ships.encode_all(&mut w);
+        self.threats.encode_all(&mut w);
+        self.put_resident(&mut w);
+        w.into_bytes()
+    }
+
+    /// The meta page of a paged save: the rows' layouts, counts and next index, and everything
+    /// resident.
+    fn save_meta(&self) -> Vec<u8> {
+        let mut w = Writer::with_capacity(4096);
+        w.u32(MAGIC);
+        w.u8(ROWS_PAGED);
+        let (len, next) = self.ships.meta();
+        w.var_u64(self.ships.rows().rows_per_page());
+        w.var_u64(len);
+        w.u32(next);
+        w.var_u64(self.threats.rows_per_page());
+        w.var_u64(self.threats.len());
+        self.put_resident(&mut w);
+        w.into_bytes()
+    }
+
+    /// Everything but the row tables.
+    fn put_resident(&self, w: &mut Writer) {
+        let w = &mut *w;
         w.u64(self.seed);
         w.u64(self.now.0);
         w.bool(self.built);
-        put_usize(&mut w, self.docks.len());
-        self.docks.iter().for_each(|d| put_dock(&mut w, d));
-        put_usize(&mut w, self.lanes.len());
-        self.lanes.iter().for_each(|l| put_lane(&mut w, l));
-        put_usize(&mut w, self.services.len());
-        self.services.iter().for_each(|s| put_service(&mut w, s));
-        self.ships.encode_with(&mut w, |x, w| put_ship(w, x));
-        for v in &self.service_ships {
-            put_usize(&mut w, v.len());
-            v.iter().for_each(|s| w.u64(s.to_bits()));
-        }
-        put_usize(&mut w, self.havens.len());
+        put_usize(w, self.docks.len());
+        self.docks.iter().for_each(|d| put_dock(w, d));
+        put_usize(w, self.lanes.len());
+        self.lanes.iter().for_each(|l| put_lane(w, l));
+        put_usize(w, self.services.len());
+        self.services.iter().for_each(|s| put_service(w, s));
+        put_ranges(w, &self.service_ships);
+        put_usize(w, self.havens.len());
         for h in &self.havens {
-            put_usize(&mut w, h.node);
+            put_usize(w, h.node);
             w.u16(h.frame);
             for v in [h.dock.0, h.dock.1, h.dock.2] {
                 w.var_i64(i64::from(v));
             }
             w.var_u64(u64::from(h.media));
             w.var_u64(u64::from(h.crew_pool));
-            put_usize(&mut w, h.ships.len());
+            put_usize(w, h.ships.len());
             h.ships.iter().for_each(|s| w.u64(s.to_bits()));
-            put_usize(&mut w, h.lanes.len());
+            put_usize(w, h.lanes.len());
             h.lanes.iter().for_each(|l| w.var_u64(u64::from(*l)));
         }
-        put_usize(&mut w, self.navies.len());
+        put_usize(w, self.navies.len());
         for n in &self.navies {
-            put_usize(&mut w, n.node);
+            put_usize(w, n.node);
             w.var_u64(u64::from(n.dock));
-            put_medium(&mut w, n.medium);
+            put_medium(w, n.medium);
             w.var_u64(u64::from(n.service));
-            put_usize(&mut w, n.ships.len());
+            put_usize(w, n.ships.len());
             n.ships.iter().for_each(|s| w.u64(s.to_bits()));
         }
-        put_usize(&mut w, self.threats.len());
-        for (l, t) in &self.threats {
-            w.var_u64(u64::from(*l));
-            match t.haven {
-                Some(h) => {
-                    w.u8(1);
-                    w.var_u64(u64::from(h));
-                }
-                None => w.u8(0),
-            }
-            put_usize(&mut w, t.hunters.len());
-            t.hunters.iter().for_each(|s| w.u64(s.to_bits()));
-            w.var_i64(t.patrol_milli);
-            put_usize(&mut w, t.escorts.len());
-            for (k, v) in &t.escorts {
-                w.u64(*k);
-                w.var_i64(*v);
-            }
-            w.var_i64(t.share);
-        }
-        self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
-        put_usize(&mut w, self.players.len());
+        self.wheel.encode_with(w, |e, w| put_ev(w, e));
+        put_usize(w, self.players.len());
         for (a, p) in &self.players {
             w.u64(a.to_bits());
             w.u64(p.uuid.0);
             w.u64(p.uuid.1);
-            put_opt_stamp(&mut w, p.interest);
+            put_opt_stamp(w, p.interest);
         }
-        put_usize(&mut w, self.booked.len());
+        put_usize(w, self.booked.len());
         for ((s, v), b) in &self.booked {
             w.u64(s.to_bits());
             w.var_u64(*v);
-            put_usize(&mut w, b.legs.len());
+            put_usize(w, b.legs.len());
             b.legs.iter().for_each(|l| w.u64(l.to_bits()));
             w.u64(b.end.0);
         }
-        put_usize(&mut w, self.applied_ops.len());
+        put_usize(w, self.applied_ops.len());
         self.applied_ops.iter().for_each(|o| w.u64(*o));
-        put_usize(&mut w, self.seen_by.len());
+        put_usize(w, self.seen_by.len());
         for (s, v, p) in &self.seen_by {
             w.u64(s.to_bits());
             w.var_u64(*v);
             w.u64(p.to_bits());
         }
+        put_usize(w, self.embodied.len());
+        self.embodied.iter().for_each(|s| w.u64(s.to_bits()));
         for v in &self.observed {
-            put_usize(&mut w, v.len());
+            put_usize(w, v.len());
             for o in v {
                 w.f64(o.strength);
                 w.f64(o.survived);
             }
         }
-        put_ledger(&mut w, &self.ledger);
-        put_stats(&mut w, &self.stats);
+        put_ledger(w, &self.ledger);
+        put_stats(w, &self.stats);
         let l = &self.lints;
         for v in [l.too_long, l.no_water_path, l.too_roundabout, l.over_degree] {
             w.var_u64(u64::from(v));
         }
-        put_usize(&mut w, l.docks_not_on_water.len());
+        put_usize(w, l.docks_not_on_water.len());
         l.docks_not_on_water
             .iter()
             .for_each(|d| w.var_u64(u64::from(*d)));
-        put_usize(&mut w, self.over_berths.len());
+        put_usize(w, self.over_berths.len());
         for (d, k) in &self.over_berths {
             w.var_u64(u64::from(*d));
             w.var_u64(u64::from(*k));
         }
-        put_usize(&mut w, self.outbox.len());
-        self.outbox.iter().for_each(|c| put_cmd(&mut w, c));
-        w.into_bytes()
+        put_usize(w, self.outbox.len());
+        self.outbox.iter().for_each(|c| put_cmd(w, c));
     }
 
-    /// Reads an engine [`Ships::save`] wrote, with the tunables it ran with.
+    /// Reads an engine [`Ships::save`] wrote, with the tunables it ran with. Its row tables are
+    /// resident until [`Ships::attach_store`].
     pub fn load(tun: ShipTunables, bytes: &[u8]) -> codec::Result<Ships> {
         let mut r = Reader::new(bytes);
         let r = &mut r;
         if r.u32()? != MAGIC {
             return bad("not a ships save".into());
         }
+        if r.u8()? != ROWS_INLINE {
+            return bad("a ships meta page, not a whole save".into());
+        }
+        let ships: PagedArena<Ship> = PagedArena::decode_all(SHIP_TABLE, SHIP_ROWS_PER_PAGE, r)?;
+        let threats: PagedRows<LaneThreat> =
+            PagedRows::decode_all(THREAT_TABLE, THREAT_ROWS_PER_PAGE, r)?;
+        let mut s = Self::get_resident(r, tun)?;
+        s.ships = ships;
+        s.threats = threats;
+        s.rebuild_indexes()?;
+        // The whole table is in memory already: check every row's service.
+        for (_, x) in s.ships.iter() {
+            if x.service.is_some_and(|v| v as usize >= s.services.len()) {
+                return bad("a ship on a service that does not exist".into());
+            }
+        }
+        Ok(s)
+    }
+
+    /// The resident state [`Ships::put_resident`] wrote, with empty row tables.
+    fn get_resident(r: &mut Reader<'_>, tun: ShipTunables) -> codec::Result<Ships> {
         let seed = r.u64()?;
         let now = Tick(r.u64()?);
         let built = r.bool()?;
@@ -880,16 +1055,7 @@ impl Ships {
         let services = (0..r.len_prefix(8)?)
             .map(|_| get_service(r))
             .collect::<codec::Result<Vec<_>>>()?;
-        let ships: Arena<Ship> = Arena::decode_with(r, get_ship)?;
-        let mut service_ships = Vec::with_capacity(services.len());
-        for _ in 0..services.len() {
-            let n = r.len_prefix(8)?;
-            service_ships.push(
-                (0..n)
-                    .map(|_| handle(r))
-                    .collect::<codec::Result<Vec<_>>>()?,
-            );
-        }
+        let service_ships = get_ranges(r, services.len())?;
         let mut havens = Vec::new();
         for _ in 0..r.len_prefix(6)? {
             let node = get_usize(r)?;
@@ -933,35 +1099,6 @@ impl Ships {
                 ships: ns,
             });
         }
-        let mut threats = BTreeMap::new();
-        for _ in 0..r.len_prefix(3)? {
-            let l = get_u32(r)?;
-            let haven = match r.u8()? {
-                0 => None,
-                1 => Some(get_u32(r)?),
-                t => return bad(format!("option tag {t}")),
-            };
-            let n = r.len_prefix(8)?;
-            let hunters = (0..n)
-                .map(|_| handle(r))
-                .collect::<codec::Result<BTreeSet<_>>>()?;
-            let patrol_milli = r.var_i64()?;
-            let mut escorts = BTreeMap::new();
-            for _ in 0..r.len_prefix(9)? {
-                escorts.insert(r.u64()?, r.var_i64()?);
-            }
-            let share = r.var_i64()?;
-            threats.insert(
-                l,
-                LaneThreat {
-                    haven,
-                    hunters,
-                    patrol_milli,
-                    escorts,
-                    share,
-                },
-            );
-        }
         let wheel: TimingWheel<Ev> = TimingWheel::decode_with(r, get_ev)?;
         let mut players = BTreeMap::new();
         for _ in 0..r.len_prefix(25)? {
@@ -992,6 +1129,10 @@ impl Ships {
         let mut seen_by = BTreeSet::new();
         for _ in 0..r.len_prefix(17)? {
             seen_by.insert((handle(r)?, r.var_u64()?, handle(r)?));
+        }
+        let mut embodied = BTreeSet::new();
+        for _ in 0..r.len_prefix(8)? {
+            embodied.insert(handle(r)?);
         }
         let mut observed: [Vec<Observed>; 2] = Default::default();
         for v in &mut observed {
@@ -1029,16 +1170,15 @@ impl Ships {
         s.docks = docks;
         s.lanes = lanes;
         s.services = services;
-        s.ships = ships;
         s.service_ships = service_ships;
         s.havens = havens;
         s.navies = navies;
-        s.threats = threats;
         s.wheel = wheel;
         s.players = players;
         s.booked = booked;
         s.leg_voyage = leg_voyage;
         s.seen_by = seen_by;
+        s.embodied = embodied;
         s.applied_set = applied_ops.iter().copied().collect();
         s.applied_ops = applied_ops;
         s.observed = observed;
@@ -1048,11 +1188,12 @@ impl Ships {
         s.over_berths = over_berths;
         s.outbox = outbox;
         s.built = built;
-        s.rebuild_indexes()?;
         Ok(s)
     }
 
-    /// The indexes that are pure functions of the stored tables.
+    /// The indexes that are pure functions of the resident tables (the network), and the
+    /// services' key ranges checked against the ship table's next index. Never a pass over the
+    /// rows.
     fn rebuild_indexes(&mut self) -> codec::Result<()> {
         let nl = self.lanes.len();
         self.lane_hops = vec![Vec::new(); nl];
@@ -1072,17 +1213,157 @@ impl Ships {
         for (i, d) in self.docks.iter().enumerate() {
             self.dock_of.insert((d.node, d.medium), i as u32);
         }
-        for (_, x) in self.ships.iter() {
-            if x.service.is_some_and(|s| s as usize >= self.services.len()) {
-                return bad("a ship on a service that does not exist".into());
+        let next = u64::from(self.ships.meta().1);
+        for (s, r) in self.service_ships.iter().enumerate() {
+            if u64::from(r.first) + u64::from(r.n) > next {
+                return bad(format!("service {s}'s ships {r:?} past the table's end {next}"));
             }
         }
         Ok(())
     }
 
     /// A hash of everything the engine holds (its save's bytes): equal hashes mean the same
-    /// state, whoever read what when.
+    /// state, whoever read what when, paged or not. A whole-table pass (tests and tools).
     pub fn state_hash(&self) -> u64 {
         fnv1a64(&self.save())
+    }
+
+    // ---- paging (A16; docs/choices-paging-modules.md) -------------------------------------------
+
+    /// Starts paging the row tables to `source` (the page store the saves commit to) under
+    /// `budget` resident bytes, split between the ships and the lane threats. Their pages stay
+    /// until a [`Ships::save_paged`] writes them and its commit is durable.
+    pub fn attach_store(&mut self, source: Arc<dyn PageSource>, budget: usize) {
+        let (s, t) = split_budget(budget);
+        self.ships.rows_mut().attach(source.clone(), s);
+        self.threats.attach(source, t);
+    }
+
+    pub fn is_paged(&self) -> bool {
+        self.ships.rows().is_paged()
+    }
+
+    /// The row tables' budget (both together).
+    pub fn set_budget(&mut self, budget: usize) {
+        let (s, t) = split_budget(budget);
+        self.ships.rows_mut().set_budget(s);
+        self.threats.set_budget(t);
+    }
+
+    /// The row pages per table: for tests and the bench, before paging starts (a resident table
+    /// is rewritten under the new layout). Saved in the meta page, so [`Ships::open_paged`]
+    /// reads the same layout back.
+    pub fn set_page_layout(&mut self, ships_per_page: u64, threats_per_page: u64) {
+        assert!(!self.is_paged(), "the page layout is set before paging starts");
+        let mut w = Writer::new();
+        self.ships.encode_all(&mut w);
+        self.threats.encode_all(&mut w);
+        let b = w.into_bytes();
+        let mut r = Reader::new(&b);
+        self.ships = PagedArena::decode_all(SHIP_TABLE, ships_per_page, &mut r).expect("ours");
+        self.threats = PagedRows::decode_all(THREAT_TABLE, threats_per_page, &mut r).expect("ours");
+    }
+
+    /// One paged save: the meta page at `meta_key` (everything resident, and each row table's
+    /// layout, count and next index) and every row page changed since it was last written, into
+    /// `batch`. Hand the tickets back with [`Ships::saved`] once the commit is durable, or
+    /// [`Ships::save_failed`]. `meta_key` must not be in the row tables (0x5310, 0x5311).
+    pub fn save_paged(&mut self, batch: &mut SaveBatch, meta_key: PageKey) -> ShipTickets {
+        assert!(
+            meta_key.table() != SHIP_TABLE && meta_key.table() != THREAT_TABLE,
+            "the ships' meta page in a row table"
+        );
+        batch.put(meta_key, &self.save_meta());
+        ShipTickets {
+            ships: self.ships.rows_mut().save_dirty(batch),
+            threats: self.threats.save_dirty(batch),
+        }
+    }
+
+    /// The commit holding these tickets' pages is durable: they may be evicted.
+    pub fn saved(&mut self, t: ShipTickets) {
+        self.ships.rows_mut().saved(t.ships);
+        self.threats.saved(t.threats);
+    }
+
+    /// The commit failed: the tickets' pages are dirty again.
+    pub fn save_failed(&mut self, t: ShipTickets) {
+        self.ships.rows_mut().save_failed(t.ships);
+        self.threats.save_failed(t.threats);
+    }
+
+    /// An engine saved by [`Ships::save_paged`] at `meta_key`: the meta page is read, the row
+    /// tables open with nothing resident under `budget`, and continue exactly as the saved one.
+    pub fn open_paged(
+        source: Arc<dyn PageSource>,
+        budget: usize,
+        meta_key: PageKey,
+        tun: ShipTunables,
+    ) -> rtsim_kernel::page::Result<Ships> {
+        let raw = source
+            .read(meta_key)?
+            .ok_or_else(|| PageError::Format("no ships meta page".into()))?;
+        let fmt = page_format("the ships' meta page");
+        let mut r = Reader::new(&raw);
+        let r = &mut r;
+        if r.u32().map_err(&fmt)? != MAGIC {
+            return Err(PageError::Format("not a ships meta page".into()));
+        }
+        if r.u8().map_err(&fmt)? != ROWS_PAGED {
+            return Err(PageError::Format("a whole ships save, not a meta page".into()));
+        }
+        let per = |r: &mut Reader<'_>| -> codec::Result<u64> {
+            let v = r.var_u64()?;
+            if v == 0 || v > 1 << 32 {
+                return bad(format!("{v} rows per page"));
+            }
+            Ok(v)
+        };
+        let ship_per = per(r).map_err(&fmt)?;
+        let ship_len = r.var_u64().map_err(&fmt)?;
+        let ship_next = r.u32().map_err(&fmt)?;
+        let threat_per = per(r).map_err(&fmt)?;
+        let threat_len = r.var_u64().map_err(&fmt)?;
+        let mut s = Self::get_resident(r, tun).map_err(&fmt)?;
+        let (sb, tb) = split_budget(budget);
+        s.ships = PagedArena::open(
+            SHIP_TABLE,
+            ship_per,
+            source.clone(),
+            sb,
+            (ship_len, ship_next),
+        );
+        s.threats = PagedRows::open(THREAT_TABLE, threat_per, source, tb, threat_len);
+        s.rebuild_indexes().map_err(&fmt)?;
+        Ok(s)
+    }
+
+    /// Evicts row pages whose state is on disk until the tables fit their budget. Called at the
+    /// end of every [`Ships::run_until`] (a step boundary); a caller that reads or ingests a lot
+    /// between runs may call it too. Returns the pages evicted.
+    pub fn enforce_budget(&mut self) -> usize {
+        self.ships.rows_mut().enforce_budget() + self.threats.enforce_budget()
+    }
+
+    /// The row tables' resident page bytes now (what the budget bounds).
+    pub fn rows_resident_bytes(&self) -> usize {
+        self.ships.rows().resident_bytes() + self.threats.resident_bytes()
+    }
+
+    /// Both row tables' counters, summed (peaks are summed: at least the peak of the sum).
+    pub fn row_stats(&self) -> RowStats {
+        let (a, b) = (self.ships.rows().stats(), self.threats.stats());
+        RowStats {
+            loads: a.loads + b.loads,
+            load_bytes: a.load_bytes + b.load_bytes,
+            evictions: a.evictions + b.evictions,
+            over_budget: a.over_budget + b.over_budget,
+            peak_resident_bytes: a.peak_resident_bytes + b.peak_resident_bytes,
+        }
+    }
+
+    pub fn reset_row_stats(&mut self) {
+        self.ships.rows_mut().reset_stats();
+        self.threats.reset_stats();
     }
 }
