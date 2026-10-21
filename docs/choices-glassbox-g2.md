@@ -108,6 +108,10 @@ Rounds alone, before G2-62, at a load of 32 to 52: 138 cells 27 to 31 ms against
 
 Not built: spreading the remaining rounds over later steps. The solver's state is in memory and not paged, so a solve carried across steps would not replay the same after a restart.
 
+## Known bugs
+
+- **The cut from a simulated sender into a live store or machine is not capped (I7, G-B6, G-B2).** G2-11 bounds the live-to-simulated direction by the live side's supply (a dry `Stock` stops the live sender). The other direction books whatever the simulated sender makes into `Stock(d, g)` with no ceiling. A live receiving store's room is a flag from the compile's regime, not an amount: a store that reads full gates the sender at once, and one with any room takes everything. A live machine receiver takes the sender's whole rate. What the reload cannot place stays owed and lands later wherever the district has room, which is above what a fully loaded factory makes. `a_cut_into_a_live_store_carries_no_more_than_its_room` (ignored until the fix) shows it: 1,000 brass pressed into 312 sheets of room. The m7 straddle smoke shows it with water: about 96,000 mB booked across the cut into a live boiler, 10,000 placed in a live tank (native) and the rest owed. The fix (next): cap the carry per good at the live receivers' room at the replay start (a store's free room, 0 for a machine) and gate the simulated sender once it is reached, a breakpoint like a dry cut good. No exit row has a cut except the straddle smoke, whose rows are information only.
+
 ## For Ben
 
 Recommended option first in each.
