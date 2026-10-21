@@ -9,6 +9,9 @@
 //!   buffer h & 1 and stores `published = h` (release).
 //! - A save snapshots the pages at a step boundary on the step thread and writes them on the
 //!   host's IO lane; the acknowledgement (`ackedObsSeq`) only ever names pages already on disk.
+//!   The paged modules write only their pages changed since the last save, and a module over its
+//!   row budget gets an extra save at a step boundary, kept as a pending generation that a crash
+//!   rolls back (`paging`, docs/choices-paging-followups.md PF12 to PF21).
 //!
 //! At most one step runs at a time (the bridge submits h only once step h - 1 published). The
 //! state lock is taken by the step and, outside any step, by `start` and `close`: no game thread
@@ -68,6 +71,9 @@ pub use shared::PLAYER_STALE;
 
 // Every level's topology (TOPOLOGY records; docs/boundary.md §11).
 mod topology;
+// The paged modules' saves, tickets and budgets (PF12 to PF21).
+mod paging;
+pub use paging::DEFAULT_ROW_BUDGET;
 
 /// Record bytes per buffer when Java asks for the default. PLACEHOLDER (the stub's 256 KiB): the
 /// engine is to size buffers from the per-player puppet caps and per-tick quotas (PLAN.md §4.5).
@@ -107,6 +113,9 @@ pub struct Config {
     pub industry_read_only: bool,
     /// The world seed of a new industry engine (tests); None draws one (W5).
     pub industry_seed: Option<u64>,
+    /// Row bytes each paged module (herds, dragons, conflict, ships, the phase 1 world's
+    /// markets) keeps resident (PF19).
+    pub row_budget: usize,
 }
 
 impl Config {
@@ -119,6 +128,7 @@ impl Config {
             exec: Exec::Host,
             industry_read_only: false,
             industry_seed: None,
+            row_budget: DEFAULT_ROW_BUDGET,
         }
     }
 }
@@ -247,6 +257,12 @@ pub struct Stats {
     pub steps_submitted: AtomicU64,
     /// Phase 1's counters (`nPhase1Stats`, phase1::stat).
     pub phase1: [AtomicU64; phase1::STATS],
+    /// Raw bytes the last committed save wrote (its batch's pages, a budget's save included).
+    /// Not in Java's array.
+    pub last_save_bytes: AtomicU64,
+    /// Saves taken for the paged modules' budgets and committed (pending generations, PF15;
+    /// not in `saves_done`, which counts the saves Java asked for). Not in Java's array.
+    pub pressure_saves: AtomicU64,
 }
 
 pub const STATS_LEN: usize = 16;
@@ -294,6 +310,8 @@ struct State {
     shared: shared::Link,
     /// Every level's topology (`topology.rs`), handed to the modules.
     topology: topology::Link,
+    /// The paged modules' saves on their way back from the IO lane (`paging.rs`).
+    paging: paging::Channel,
 }
 
 impl State {
@@ -326,6 +344,7 @@ impl State {
             worldmodel: wm,
             shared: shared::Link::default(),
             topology: topology::Link::default(),
+            paging: paging::Channel::new(),
         }
     }
 
@@ -509,7 +528,11 @@ pub struct Engine {
     bufs: Arc<[Buf; 4]>,
     cfg: Config,
     state: Mutex<State>,
-    store: Mutex<Option<PageStore>>,
+    /// Shared with the paged modules, which read their pages through it (`paging::Store`).
+    store: paging::Store,
+    /// Saves that failed or were not made (`paging::Job`): a save built before the step saw one
+    /// of them is not made either (PF14).
+    io_failures: Arc<AtomicU64>,
     orders_tx: Mutex<Sender<Vec<Order>>>,
     received_rx: Mutex<Option<Receiver<Received>>>,
     pub stats: Stats,
@@ -553,7 +576,8 @@ impl Engine {
             bufs: Arc::new(bufs),
             cfg,
             state: Mutex::new(State::new(orders_rx, received_tx)),
-            store: Mutex::new(None),
+            store: Arc::new(Mutex::new(None)),
+            io_failures: Arc::new(AtomicU64::new(0)),
             orders_tx: Mutex::new(orders_tx),
             received_rx: Mutex::new(received_rx),
             stats: Stats::default(),
@@ -702,6 +726,16 @@ impl Engine {
                 self.cfg.pages_dir.display()
             )
         })?;
+        // A save taken for a module's budget past the last save Java asked for (a pending
+        // generation, PF15) never had the journal trimmed behind it: the journal replays it.
+        if store
+            .rollback()
+            .map_err(|e| format!("cannot roll back the engine pages' pending saves: {e}"))?
+        {
+            log_info(
+                "rolled back the pages of saves taken for the modules' budgets since the last save; the journal replays them",
+            );
+        }
         let meta = store
             .get(KEY_META)
             .map_err(|e| format!("cannot read the engine's meta page: {e}"))?;
@@ -736,12 +770,7 @@ impl Engine {
                 .map_err(|e| format!("cannot write the new industry engine's pages: {e}"))?;
             link.fresh = false;
         }
-        let p1link = phase1::Link::load(&mut store)?;
-        let dlink = dragons::Link::load(&mut store, p1link.world_restored())?;
-        let slink = ships::Link::load(&mut store, p1link.world_restored())?;
         let wlink = worldmodel::Link::load(&mut store);
-        let hlink = herds::Link::load(&mut store, p1link.world_restored(), &wlink.world)?;
-        let clink = conflict::Link::load(&mut store, p1link.world_restored())?;
         let pages_obs = store.obs_seq();
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(
@@ -749,7 +778,47 @@ impl Engine {
                 replay.applied_through().0
             ));
         }
+        // The paged modules read their pages through the shared store from here on.
         *lock(&self.store) = Some(store);
+        let source: Arc<dyn rtsim_kernel::rows::PageSource> = self.store.clone();
+        let (budget, test) = (self.cfg.row_budget, self.cfg.test);
+        let p1link = phase1::Link::load(&source, budget, test)?;
+        let restored = p1link.world_restored();
+        let dlink = dragons::Link::load(&source, budget, test, restored)?;
+        let slink = ships::Link::load(&source, budget, test, restored)?;
+        let hlink = herds::Link::load(&source, budget, test, restored, &wlink.world)?;
+        let clink = conflict::Link::load(&source, budget, test, restored)?;
+        // Pages a module dropped go before anything runs: a fresh table would read them as its
+        // own (PF18).
+        let purge: Vec<std::ops::RangeInclusive<u16>> = [
+            (p1link.purge, phase1::TABLE),
+            (dlink.pager.purge, dragons::TABLE),
+            (slink.pager.purge, ships::TABLE),
+            (hlink.pager.purge, herds::TABLE),
+            (clink.pager.purge, conflict::TABLE),
+        ]
+        .into_iter()
+        .filter(|(p, _)| *p)
+        .map(|(_, t)| paging::tables(t))
+        .collect();
+        if !purge.is_empty() {
+            let mut guard = lock(&self.store);
+            let store = guard.as_mut().expect("the store opened above");
+            let mut batch = SaveBatch::new();
+            for tables in &purge {
+                for k in paging::purge_keys(store, tables)
+                    .map_err(|e| format!("cannot list the dropped pages: {e}"))?
+                {
+                    batch.delete(k);
+                }
+            }
+            if !batch.is_empty() {
+                let at = store.obs_seq();
+                store
+                    .commit(batch, at)
+                    .map_err(|e| format!("cannot delete the dropped pages: {e}"))?;
+            }
+        }
 
         let mut st = lock(&self.state);
         st.replay = replay;
@@ -886,33 +955,9 @@ impl Engine {
         }
         let mut result = Ok(());
         if save && self.started.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
-            let (meta, world, industry, extra, obs_seq) = {
-                let mut st = lock(&self.state);
-                // The dragons', the ships', the herds' and the conflict's pages ride with the
-                // industry engine's (all whole pages, deleted by table when gone).
-                let dragons = dragons::snapshot(&mut st);
-                let ships = ships::snapshot(&mut st);
-                let herds = herds::snapshot(&mut st);
-                let conflict = conflict::snapshot(&mut st);
-                let failures = self.stats.save_failures.load(Ordering::Acquire);
-                let world_model = worldmodel::snapshot(&mut st, failures);
-                let mut industry = industry::snapshot(&st);
-                industry.extend(dragons);
-                industry.extend(ships);
-                industry.extend(herds);
-                industry.extend(conflict);
-                industry.extend(world_model);
-                (
-                    encode_meta(&st.replay, &st.outbox),
-                    st.world.to_bytes(),
-                    industry,
-                    phase1::snapshot(&mut st),
-                    st.replay.applied_through().0,
-                )
-            };
+            let save = self.take_save(&mut lock(&self.state), false);
             let this = Arc::clone(self);
-            result =
-                self.run_io_waiting(move || this.commit(meta, world, industry, extra, obs_seq));
+            result = self.run_io_waiting(move || this.commit(save));
         } else {
             self.dead.store(true, Ordering::Release);
             let _ = self.run_io_waiting(|| {});
@@ -1016,6 +1061,8 @@ impl Engine {
         // while h - 1 is still in its last lines: wait for them (microseconds), lending this pool
         // thread's slot meanwhile. Never a game thread: they take this lock only outside steps.
         let mut st = rt::blocking(|| lock(&self.state));
+        // The paged modules' saves that came back since the last step (PF13).
+        paging::drain(&mut st);
         // 1. Observations: published (acquire), read, consumed (release).
         let o = self.obs_buffer(h as usize);
         let published = o.published().load(Ordering::Acquire);
@@ -1046,12 +1093,19 @@ impl Engine {
         phase1::simulate(&mut st);
         let req = self.save_through.load(Ordering::Acquire);
         if self.save_at_step_end.swap(false, Ordering::AcqRel) {
-            self.save_now(&mut st);
+            self.save_now(&mut st, false);
         } else if req != 0 && st.replay.applied_through().0 >= req - 1 {
             let _ = self
                 .save_through
                 .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
-            self.save_now(&mut st);
+            self.save_now(&mut st, false);
+        }
+        // The paged modules' budgets, at this step boundary: saved rows leave; a module whose
+        // resident rows all changed since the last save gets a save of its own, one at a time
+        // (PF15).
+        paging::drain(&mut st);
+        if paging::enforce_budget(&mut st) && st.paging.in_flight == 0 {
+            self.save_now(&mut st, true);
         }
 
         // 4. Commands, into C[h & 1] once Java has finished with step h - 2's.
@@ -1289,7 +1343,7 @@ impl Engine {
             let _ = self
                 .save_through
                 .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
-            self.save_now(st);
+            self.save_now(st, false);
         }
         let op = op_of(rec);
         let mut verdict = st.replay.admit(ObsSeq(seq), op);
@@ -1351,72 +1405,140 @@ impl Engine {
         }
     }
 
-    /// Snapshots the pages at this step boundary and writes them on the IO lane.
-    fn save_now(self: &Arc<Self>, st: &mut State) {
+    /// Snapshots the pages at this step boundary and writes them on the IO lane. `pending`: a
+    /// save for the paged modules' budgets, past the last save Java asked for (PF15).
+    fn save_now(self: &Arc<Self>, st: &mut State, pending: bool) {
+        let save = self.take_save(st, pending);
+        let this = Arc::clone(self);
+        self.spawn_io(move || this.commit(save));
+    }
+
+    /// One save's pages, taken at this step boundary on the step thread.
+    fn take_save(&self, st: &mut State, pending: bool) -> Save {
         let _z = rt::zone!("rtsim.snapshot");
+        // Results that came back first: a failed save's pages go into this one (PF14).
+        paging::drain(st);
+        let test = self.cfg.test;
         let obs_seq = st.replay.applied_through().0;
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
-        // The dragons', the ships', the herds' and the conflict's pages ride with the industry
-        // engine's (all whole pages, deleted by table when gone).
-        let mut industry = industry::snapshot(st);
-        industry.extend(dragons::snapshot(st));
-        industry.extend(ships::snapshot(st));
-        industry.extend(herds::snapshot(st));
-        industry.extend(conflict::snapshot(st));
+        let mut whole = industry::snapshot(st);
+        let mut batch = SaveBatch::new();
+        let mut tickets = paging::Tickets::default();
+        // The dragons, the ships, the herds and the conflict page into the batch (PF13): their
+        // meta pages and the pages changed since the last save.
+        let (t, dragons) = dragons::save(st, &mut batch, test);
+        tickets.dragons = t;
+        let (t, ships) = ships::save(st, &mut batch, test);
+        tickets.ships = t;
+        let (t, herds) = herds::save(st, &mut batch, test);
+        tickets.herds = t;
+        let (t, conflict) = conflict::save(st, &mut batch, test);
+        tickets.conflict = t;
         let failures = self.stats.save_failures.load(Ordering::Acquire);
-        industry.extend(worldmodel::snapshot(st, failures));
-        let extra = phase1::snapshot(st);
-        let this = Arc::clone(self);
-        self.spawn_io(move || this.commit(meta, world, industry, extra, obs_seq));
+        whole.extend(worldmodel::snapshot(st, failures));
+        let (p1, t) = phase1::snapshot(st, &mut batch, test);
+        tickets.world = t;
+        st.paging.in_flight += 1;
+        let job = paging::Job::new(
+            tickets,
+            st.paging.tx.clone(),
+            Arc::clone(&self.io_failures),
+            st.paging.failures_seen,
+        );
+        Save {
+            meta,
+            world,
+            whole,
+            batch,
+            live: [
+                (dragons::TABLE, dragons),
+                (ships::TABLE, ships),
+                (herds::TABLE, herds),
+                (conflict::TABLE, conflict),
+            ],
+            p1,
+            job,
+            obs_seq,
+            pending,
+        }
     }
 
-    fn commit(
-        &self,
-        meta: Vec<u8>,
-        world: Vec<u8>,
-        industry: Vec<(PageKey, Vec<u8>)>,
-        (extra, p1_saved): (Vec<(PageKey, Vec<u8>)>, phase1::Saved),
-        obs_seq: u64,
-    ) {
+    fn commit(&self, save: Save) {
         let _z = rt::zone!("rtsim.save");
+        let Save {
+            meta,
+            world,
+            whole,
+            mut batch,
+            live,
+            p1,
+            job,
+            obs_seq,
+            pending,
+        } = save;
+        // From here on, a return before `job.succeeded()` reports the save failed (the job's
+        // drop): its modules write their pages again.
         if self.dead.load(Ordering::Acquire) {
             return;
         }
         let mut guard = lock(&self.store);
         let Some(store) = guard.as_mut() else { return };
-        let mut batch = SaveBatch::new();
+        if job.stale() {
+            // Built before the step saw a save fail: its paged modules wrote only what changed
+            // since that save, which never reached the disk (PF14).
+            self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
+            log_warn(
+                "a save taken before an earlier one failed is not made; the next save writes the pages again",
+            );
+            return;
+        }
         batch.put(KEY_META, &meta);
         batch.put(KEY_WORLD, &world);
-        for k in industry::deletions(store, &industry) {
+        // The paged modules' and phase 1's deletions read only their tables' index blocks.
+        let deletions = (|| -> Result<Vec<PageKey>, rtsim_kernel::page::PageError> {
+            let mut out = industry::deletions(store, &whole);
+            for (table, l) in &live {
+                out.extend(l.deletions(store, *table)?);
+            }
+            out.extend(phase1::deletions(store, &p1)?);
+            Ok(out)
+        })();
+        let deletions = match deletions {
+            Ok(d) => d,
+            Err(e) => {
+                self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
+                log_error(&format!(
+                    "saving the engine pages failed: the page index: {e}"
+                ));
+                return;
+            }
+        };
+        for k in deletions {
             batch.delete(k);
         }
-        for k in dragons::deletions(store, &industry) {
-            batch.delete(k);
-        }
-        for k in ships::deletions(store, &industry) {
-            batch.delete(k);
-        }
-        for k in herds::deletions(store, &industry) {
-            batch.delete(k);
-        }
-        for k in conflict::deletions(store, &industry) {
-            batch.delete(k);
-        }
-        for k in phase1::deletions(store, &p1_saved) {
-            batch.delete(k);
-        }
-        for (k, b) in &extra {
+        for (k, b) in &whole {
             batch.put(*k, b);
         }
-        for (k, b) in &industry {
-            batch.put(*k, b);
-        }
-        match store.commit(batch, obs_seq) {
+        let bytes = batch.raw_bytes() as u64;
+        let r = if pending {
+            store.commit_pending(batch, obs_seq)
+        } else {
+            store.commit(batch, obs_seq)
+        };
+        match r {
             Ok(_) => {
-                p1_saved.done();
-                self.durable.fetch_max(obs_seq, Ordering::AcqRel);
-                self.stats.saves_done.fetch_add(1, Ordering::AcqRel);
+                self.stats.last_save_bytes.store(bytes, Ordering::Release);
+                p1.done();
+                if pending {
+                    // Past the last save Java asked for: the journal is not trimmed behind it.
+                    self.stats.pressure_saves.fetch_add(1, Ordering::AcqRel);
+                } else {
+                    self.durable.fetch_max(obs_seq, Ordering::AcqRel);
+                    self.stats.saves_done.fetch_add(1, Ordering::AcqRel);
+                }
+                drop(guard);
+                job.succeeded();
             }
             Err(e) => {
                 self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
@@ -1543,6 +1665,21 @@ impl Engine {
 }
 
 /// The lower of two next sequences, `None` standing for none at all.
+/// One save on its way from the step thread to the IO lane: the core's pages, the whole pages
+/// (the industry engine's and the world model's), and the paged modules' batch with their
+/// tickets (`job`, sent back whatever happens) and what each leaves live in its own table.
+struct Save {
+    meta: Vec<u8>,
+    world: Vec<u8>,
+    whole: Vec<(PageKey, Vec<u8>)>,
+    batch: SaveBatch,
+    live: [(u16, paging::Live); 4],
+    p1: phase1::Saved,
+    job: paging::Job,
+    obs_seq: u64,
+    pending: bool,
+}
+
 fn lowest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x.min(y)),

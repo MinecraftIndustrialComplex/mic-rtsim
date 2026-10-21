@@ -35,6 +35,7 @@ pub mod handle;
 pub mod journal;
 pub mod ladder;
 pub mod lazy;
+pub mod meta_pages;
 pub mod page;
 pub mod paging;
 pub mod profile;

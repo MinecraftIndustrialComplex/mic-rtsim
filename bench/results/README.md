@@ -437,3 +437,67 @@ Live heap at the top point, resident against paged:
 | dragons, 32,768 | 753.7 MiB | 735.2 MiB | the phase 1 world under the dragons |
 
 docs/choices-paging-modules.md has the per-module tables.
+
+## 2026-10-21 07:20 to 09:02 UTC, the paging follow-ups: markets held to their budget, the paged wheel
+
+Quick runs, release, nice 15 as recorded, each build pinned to one core and run side by side with
+its pair (load average 11 to 36 from other sessions). Resident peak, saves and bytes are
+deterministic; CPU is noisy. The choices are in docs/choices-paging-followups.md (PF1 to PF11).
+
+**Markets** (`--only markets-paged`, a 4 MiB budget; all built from b100817's tree, so the JSONs
+record b100817 dirty):
+
+| File | Build | Core |
+|---|---|---|
+| `0720-quick-markets-before` | b100817 | 4 |
+| `0721-quick-markets-stagger16` | PF1, 16 markets a page | 6 |
+| `0724-quick-markets-per1` | PF1 and PF3, 1 a page (357ef23) | 4 |
+| `0725-quick-markets-per1-swap` | the same | 6 |
+
+| 4,096 markets | Before | PF1, 16 a page | PF1 and PF3, 1 a page |
+|---|---|---|---|
+| Market rows resident at peak (budget 4.19 MB) | 15.79 MB | 4.21 MB | 4.21 MB |
+| Saves a day | 24 | 88 | 17.7 |
+| Bytes a save | 4.78 MB | 4.41 MB | 4.84 MB |
+| Save CPU a day | 2.71 s | 5.49 s | 1.27 to 1.31 s |
+| Sim CPU a day | 1.47 s | 1.15 s | 1.04 to 1.09 s |
+
+At 256 markets (all under the budget) sim CPU went from 51 to 19 to 22 ms a day. The resident
+slope fell from 1.107 to 0.630 (2 points; the recheck sweep starts above the budget, PF4).
+
+**The paged wheel and indexes** (`--only dragons_paged,ships-paged,herds-paged,factions-paged`;
+built outside git, so the JSONs record no commit; before is 357ef23, after is 0d4d13f):
+
+| Files | Before on | After on |
+|---|---|---|
+| `0824-quick-wheel-before`, `0824-quick-wheel-after` | core 8 | core 10 |
+| `0902-quick-wheel-swap-before`, `0901-quick-wheel-swap-after` (no ships) | core 10 | core 8 |
+
+Bytes a save and save CPU a day, before and after (save CPU from the swapped pair; the first
+pair's after-over-before ratios agree within 0.2, its absolute times move with the load):
+
+| Sweep | KB a save | Save CPU a day |
+|---|---|---|
+| dragons, 512 | 37.2, then 29.1 | 8.3, then 7.7 ms |
+| dragons, 4,096 | 277.2, then 83.9 | 21.7, then 12.5 ms |
+| dragons, 32,768 | 2,077.3, then 199.3 | 1,096, then 199 ms |
+| herds, 256 | 32.8, then 29.7 | 0.9, then 0.9 ms |
+| herds, 1,024 | 158.5, then 149.5 | 5.5, then 4.8 ms |
+| herds, 4,096 | 454.9, then 408.7 | 28.7, then 25.3 ms |
+| factions, 1,024 | 132.2, then 91.7 | 30.9, then 25.4 ms |
+| factions, 4,096 | 396.7, then 200.1 | 214.7, then 144.5 ms |
+| ships, 49 to 6,400 ports | 12.2 to 13.4, unchanged | 7 to 12 ms, unchanged |
+
+- **Saves a day and row pages resident at peak are the same** before and after: the wheel and
+  the indexes change only what a save writes.
+- **State hashes:** dragons and ships the same. Herds and factions differ: their hash is the
+  bytes of their resident save, whose format changed (herds meta version 3, conflict `RTC3`;
+  PF8, PF10).
+- **Ships unchanged:** their save was already flat across the sweep (12 to 13 KB), and PF5 to
+  PF10 did not touch them.
+- **What the herds still write** is their rows: a herd's row changes with nearly every event, so
+  its page is dirty at the next save either way.
+- **Live heap** rises up to 3% for dragons, under 1% for factions, and 0.1 to 0.6 MiB for herds
+  (2.6 to 3.2 MiB at 4,096).
+- **Sim CPU** is within the noise in both pairs. The `cpuperunit` FAILs (herds in the first
+  pair, both builds; factions before in the swapped pair) move with the core, not the build.

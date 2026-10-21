@@ -706,13 +706,15 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             vary: Vary::Markets,
             regions: None,
             paged: true,
-            values: pick(&[256, 1_024, 4_096], &[256, 4_096]),
+            // Every point's rows are over the budget (a market row is about 4 KB), so every point
+            // pages.
+            values: pick(&[2_048, 4_096, 8_192], &[2_048, 4_096]),
             contracts: vec![
                 contract(
                     Metric::Resident,
-                    1.2,
+                    flat,
                     0.0,
-                    "NOT bounded yet: market breakpoints fall on quantum boundaries, so one tick can change every market, and a page changed since the last save cannot leave (measured 15.8 MB resident at peak against a 4 MiB budget at 4,096 markets; slope 1.107 from 256 to 4,096, every row plus the pages' own overhead). Needs market wakes staggered by page, as the herds' decisions are",
+                    "resident market rows are held to the budget plus one tick's changes: market breakpoints fall on trade quantum boundaries, so each market's wake is shifted by a phase of its page over the quantum (docs/choices-paging-followups.md PF1) and a tick changes a market or two, which the next save frees (measured 4.21 MB at peak against a 4 MiB budget at 4,096 markets, 15.8 MB before the stagger)",
                 ),
                 contract(
                     Metric::Heap,

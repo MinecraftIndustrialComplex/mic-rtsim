@@ -45,5 +45,6 @@ pub mod tunables;
 
 pub use engine::{HerdOffer, HerdStats, Herds, NewHerd, Predation};
 pub use herd::{Herd, HerdId, HerdLedger};
+pub use persist::HerdsTicket;
 pub use species::{Cohort, HerdSpecies, HerdSpeciesData};
 pub use tunables::HerdTunables;

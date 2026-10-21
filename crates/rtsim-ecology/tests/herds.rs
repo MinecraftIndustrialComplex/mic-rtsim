@@ -13,7 +13,10 @@ use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_ecology::tunables::PreyKind;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::{Decode, Encode};
-use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
+
+/// The meta page's key: rtsim-jni's herds page (table 0x4800, id 0).
+const META: PageKey = PageKey::new(0x4800, 0);
 use rtsim_settle::Pos;
 use rtsim_travel::legs::LegIndex;
 use std::sync::{Arc, RwLock};
@@ -424,7 +427,7 @@ fn store(tag: &str) -> (Store, std::path::PathBuf) {
 /// A paged save: the meta and the changed row pages in one commit, then the budget.
 fn save_paged(h: &mut Herds, store: &Store) {
     let mut b = SaveBatch::new();
-    let t = h.save_paged(&mut b);
+    let t = h.save_paged(&mut b, META);
     store.write().unwrap().commit(b, 0).expect("commit");
     h.saved(t);
     h.enforce_budget();
@@ -456,7 +459,7 @@ proptest! {
         save_paged(&mut b.h, &st);
         let mut c = Rig {
             legs: LegIndex::from_bytes(&b.legs.to_bytes()).expect("legs load"),
-            h: Herds::open_paged(HerdTunables::default(), Box::new(Valley::default()), st.clone(), BUDGET)
+            h: Herds::open_paged(st.clone(), BUDGET, META, HerdTunables::default(), Box::new(Valley::default()))
                 .expect("herds open"),
             fake: b.fake.clone(),
         };
@@ -755,4 +758,40 @@ fn the_shared_interest_area_brings_one_group_and_takes_it_back() {
     assert!(fake.group_of(agent).is_none());
     assert!(h.herd(f).unwrap().embodied.is_none());
     h.check(now).unwrap();
+}
+
+/// Bytes of a paged save made right after another, nothing changed between them, for `n` herds
+/// in a valley grown with them, four days in.
+fn quiet_save_bytes(n: usize) -> usize {
+    let (st, dir) = store(&format!("quiet-{n}"));
+    let mut legs = legs();
+    let mut h = synth::bench_herds_in(3, n, 5_000, Tick::ZERO, synth::wide_valley(n));
+    h.run_until(&mut legs, Tick::from_days(4));
+    h.attach_store(st.clone(), 64 << 20);
+    let mut bytes = 0;
+    for _ in 0..2 {
+        let mut b = SaveBatch::new();
+        let t = h.save_paged(&mut b, META);
+        bytes = b.raw_bytes();
+        st.write().unwrap().commit(b, 0).expect("commit");
+        h.saved(t);
+    }
+    drop(h);
+    drop(st);
+    let _ = std::fs::remove_dir_all(dir);
+    bytes
+}
+
+/// A save writes what changed since the last one: with nothing changed, as many bytes at four
+/// times the herds (docs/choices-paging-followups.md, the paged wheel). It failed while the meta
+/// page held the whole wheel and the claims.
+#[test]
+fn a_save_with_nothing_changed_is_flat_in_the_herds() {
+    let small = quiet_save_bytes(64);
+    let big = quiet_save_bytes(256);
+    eprintln!("a quiet save: {small} bytes, then {big} at four times the size");
+    assert!(
+        big <= small + small / 2 + 1024,
+        "a save with nothing changed wrote {small} bytes at 64 herds and {big} at 256"
+    );
 }
