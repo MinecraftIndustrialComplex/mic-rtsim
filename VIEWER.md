@@ -919,12 +919,14 @@ buffer passes half full, so the archive flushes (§10.3) at any speed.
   999.2 of 1,000).
 - **Outboxes stay bounded** over those 1,000 days: Java's journal peaks at 254 records and no command
   stays in flight; the industry and core outboxes do not grow.
-- **The state does not stay bounded yet**: phase 1's leg index (`rtsim_travel::legs`) never drops its
-  past time windows (`LegIndex::purge` has no caller), so its meta page (table 0x5001) grows from
-  62 KB on day 10 to 820 KB on day 1,000 with one dragon flying, about 0.8 KB a game day, and the heap
-  with it. It grows on a real server the same way. `a_thousand_days_at_max_keeps_the_state_bounded`
-  is ignored until it is fixed; the fix belongs to phase 1 (a purge at fixed game-time boundaries, so
-  strides still agree).
+- **The state stays bounded** (docs/choices-leg-purge.md): before, phase 1's leg index
+  (`rtsim_travel::legs`) never dropped its past time windows and the market table's wheel kept every
+  superseded wake, so the world's meta page (table 0x5001) grew from 62 KB on day 10 to 706 KB on day
+  1,000 with one dragon flying, and the heap from 4,633 KiB to 14,641 KiB. The index now purges its past
+  windows' stale bookings once a game day at fixed game-time boundaries, so strides still agree (LP1,
+  LP2), and a rebooked market takes its old wake off the wheel (LP7): all the pages stay at 26 to 39 KB
+  and the heap at 4,285 to 4,660 KiB through 5,000 game days. `a_thousand_days_at_max_keeps_the_state_bounded`
+  runs again.
 
 Before V2, what was measured:
 - **The `rtsim-cli sim` scenarios** (scenario/results, on the laptop), one module each with its small
@@ -1133,10 +1135,10 @@ For Deep Time's coordinator to review.
   as a server crash would, and the fork starts again from its last save. The export's race is
   forced in a test (`fork::export_with`'s hook saves the world mid-copy, in the bridge's order).
 - **Found on the way:** a dragon's u8 fruitless count overflowed after 256 days with nothing in range
-  (a panic in the debug profile, a wrap in release); it saturates now. Phase 1's leg index grows
-  without bound (§12.4). That fix is phase 1's and is not in V2: the purge will run at fixed
-  game-time boundaries, and until it lands the test `a_thousand_days_at_max_keeps_the_state_bounded`
-  stays ignored; it is the regression test for the fix.
+  (a panic in the debug profile, a wrap in release); it saturates now. Phase 1's leg index grew
+  without bound (§12.4). That fix was phase 1's and is not in V2: it landed with
+  docs/choices-leg-purge.md (a purge at fixed game-time boundaries), and
+  `a_thousand_days_at_max_keeps_the_state_bounded` is its regression test.
 
 **V5 as built** (feat/viewer-events, 2026-10-21):
 - **Surveyor over HABITAT.** Each frame named by a dimension gets a "Terrain (Surveyor)" tile layer
