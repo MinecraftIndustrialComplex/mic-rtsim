@@ -170,6 +170,9 @@ public final class NativeEngine implements ScriptedEngine {
     /** The dragons' tribute: {@code TRIBUTE_*} values. */
     private static native void nDragonsTribute(long handle, long[] out);
 
+    /** The oil gate's counters and one dragon's reserve: {@code OIL_*} values. */
+    private static native void nDragonsOil(long handle, long agent, long[] out);
+
     /** The world model at block (x, z) of Java's dimension {@code dim}: {@code HABITAT_INFO} values. */
     private static native void nHabitatInfo(long handle, int dim, int x, int z, long[] out);
 
@@ -596,6 +599,24 @@ public final class NativeEngine implements ScriptedEngine {
     public synchronized long[] dragonsTribute() {
         long[] out = new long[TRIBUTE_INFO];
         nDragonsTribute(live(), out);
+        return out;
+    }
+
+    /** {@link #dragonsOil}'s fields. */
+    public static final int OIL_CHUNKS = 0, OIL_FIELDS = 1, OIL_FIELD_ROLLS = 2, OIL_FIELD_DRAWS = 3, OIL_REFUELS = 4,
+            OIL_RAIDS = 5, OIL_DRUNK_MB = 6, OIL_BREATHS = 7, OIL_DRY_RAIDS = 8, OIL_ENCROACHMENTS = 9,
+            OIL_DISTRICT_RAIDS = 10, OIL_LAIRS_PLACED = 11, OIL_VISITORS_LEFT = 12, OIL_SURVEYS = 13, OIL_LEVEL = 14,
+            OIL_FLAGS = 15, OIL_INFO = 16;
+
+    /**
+     * The oil gate's counters in the whole world, as of the engine's last step (indexed by {@code OIL_*};
+     * OILGATE.md §4): oil chunks indexed, fields, field-flight rolls and draws, refuels, drinking raids, mB
+     * drunk, breaths, dry raids, Encroachment reports, district raids, lairs placed, visitors gone, surveys;
+     * then dragon {@code agent}'s reserve now (-1 for no such dragon) and the OIL_CONFIG switches it holds.
+     */
+    public synchronized long[] dragonsOil(long agent) {
+        long[] out = new long[OIL_INFO];
+        nDragonsOil(live(), agent, out);
         return out;
     }
 

@@ -792,4 +792,35 @@ impl super::Engine {
             d.placing().count() as i64,
         ]
     }
+
+    /// The oil gate's counters (OILGATE.md §4, `DragonStats`): oil chunks indexed, fields,
+    /// field-flight rolls and draws, refuels, drinking raids, mB drunk, breaths, dry raids,
+    /// Encroachment reports, district raids, lairs placed, visitors gone, surveys; then `agent`'s
+    /// oil reserve now (-1 for no such dragon) and the OIL_CONFIG switches. Between steps; tests.
+    pub fn dragons_oil(&self, agent: u64) -> [i64; 16] {
+        let st = super::lock(&self.state);
+        let d = &st.dragons.engine;
+        let s = &d.stats;
+        let level = rtsim_ecology::dragon::dragon_of(agent)
+            .and_then(|x| d.oil_level(x, d.now()))
+            .map_or(-1, i64::from);
+        [
+            s.oil_chunks as i64,
+            s.fields as i64,
+            s.field_rolls as i64,
+            s.field_draws as i64,
+            s.refuels as i64,
+            s.oil_raids as i64,
+            s.oil_drunk_mb as i64,
+            s.breaths as i64,
+            s.dry_raids as i64,
+            s.encroachments as i64,
+            s.district_target_raids as i64,
+            s.lairs_placed as i64,
+            s.visitors_left as i64,
+            s.surveys as i64,
+            level,
+            i64::from(d.oil_flags),
+        ]
+    }
 }
