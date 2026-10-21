@@ -85,13 +85,22 @@ class Rcon:
         return rid, typ, d[8:-2].decode("utf-8", "replace")
 
     def cmd(self, c):
+        # Vanilla splits a long response into 4096-char packets with the command's id, so a length test
+        # cannot find the end (multibyte text). A second, unknown-type packet gets its own reply
+        # ("Unknown request 0") only after the command's last packet: read up to it. It goes out only
+        # once the first reply is in: vanilla closes the connection when one read holds two packets.
         rid = self._send(2, c)
         out = []
+        r, _t, body = self._recv()
+        if r == rid:
+            out.append(body)
+        mid = self._send(0, "")
         while True:
             r, _t, body = self._recv()
-            out.append(body)
-            if r == rid and len(body) < 4000:
+            if r == mid:
                 break
+            if r == rid:
+                out.append(body)
         return re.sub(r"§.", "", "".join(out))
 
 
@@ -327,7 +336,7 @@ class Server:
              "cpu_ms_per_tick": 1000 * (c1 - c0) / ticks if ticks else None,
              "server_thread_ms_per_tick": 1000 * st / ticks if ticks else None,
              "threads_cpu_s": dict(sorted(thd.items(), key=lambda kv: -kv[1])[:25]),
-             "spark_tps": self.cmd("spark tps"), "load1_end": load1()}
+             "load1_end": load1()}  # no "spark tps": spark answers asynchronously, into the next command's output
         self.res.setdefault("windows", {})[name] = w
         log(self.run, name, "mspt", round(w["mspt_mean"] or -1, 2), "cpu/tick", round(w["cpu_ms_per_tick"] or -1, 2),
             "srv/tick", round(w["server_thread_ms_per_tick"] or -1, 2), "tps", round(w["tps"] or -1, 2))
@@ -478,7 +487,7 @@ def wait_mem(need_gb):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["prep", "pair", "boot", "upgrade"])
+    ap.add_argument("cmd", choices=["prep", "pair", "boot", "upgrade", "rcon"])
     ap.add_argument("name")
     ap.add_argument("--world")
     ap.add_argument("--scene")
@@ -513,6 +522,10 @@ def main():
                 pass
         s.res["log_groups"] = log_scan(d)
         s.save()
+        return
+    if a.cmd == "rcon":
+        # sw.py rcon "<command>" --slot N: one command to a running server (a second RCON client).
+        print(Rcon(26200 + a.slot, timeout=60).cmd(a.name))
         return
     if a.cmd == "prep":
         print(prep(a.name, a.world, a.rtsim, a.slot, a.xmx, a.world_from_run))
