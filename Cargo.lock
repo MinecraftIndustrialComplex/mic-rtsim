@@ -773,6 +773,7 @@ dependencies = [
 name = "rtsim-jni"
 version = "0.0.1"
 dependencies = [
+ "crc32fast",
  "jni",
  "mic-native-host",
  "mic-native-rt",
