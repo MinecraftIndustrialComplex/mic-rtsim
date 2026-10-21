@@ -1469,7 +1469,12 @@ For Deep Time's coordinator to review.
     replace on Windows for a few milliseconds. A read-only reader holds the root only for the
     length of one read.
 - **Open from V4:**
-  - Windows: the fold's root replace against a reader (exit test (e) above), not fixed.
+  - FIXED in 2d05352: Windows: the fold's root replace against a reader (exit test (e) above). Every
+    replace under the world folder now goes through `rtsim_kernel::page::rename_over`, which on
+    Windows retries a refused rename (access denied or a sharing violation) 5 times over 155 ms.
+    `read_while_saving.rs` passes under Wine 11 (3 of 3; without the retry 0 of 3). The readers
+    open with std's default sharing (including `FILE_SHARE_DELETE`) and hold a file for one open,
+    read and close. Real Windows is still UNVERIFIED.
   - The encode costs of districts, stations, lines, trains, herds and conflict at scale are not
     measured, so their caps are ESTIMATES.
   - The header's cycle time has millisecond resolution.
