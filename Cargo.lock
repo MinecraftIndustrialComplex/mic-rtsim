@@ -811,6 +811,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsim-parts"
+version = "0.0.1"
+dependencies = [
+ "crc32fast",
+ "rtsim-kernel",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rtsim-settle"
 version = "0.0.1"
 dependencies = [
