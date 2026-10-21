@@ -12,12 +12,14 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use rtsim_archive::record::Meter;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_knowledge::{ActorId, ReportId};
 use rtsim_trade::{GoodId, MILLI, PRICE_ONE};
 use rtsim_world::synth::{self, NAMES, SynthGoods};
 use rtsim_world::{Command, Side, World, WorldConfig};
 
+use super::archive::{Rate, drain_world, world_on};
 use super::trace::print_trace;
 use serde::Serialize;
 
@@ -103,6 +105,8 @@ struct Report {
     final_events_per_day: f64,
     caravan_sizes: SizeStats,
     features: Features,
+    /// The archive rows the world's two tapes took per game day (VIEWER.md §10.4).
+    archive: Rate,
 }
 
 /// What the round 2 features did in the run: bands, sorcerers, growth, the base (P16, P17, P30).
@@ -400,6 +404,8 @@ pub fn run(o: Options) -> i32 {
         cfg.trade.rules = r;
     }
     let (mut w, ids) = synth::build(cfg, true);
+    world_on(&mut w);
+    let mut meter = Meter::new();
     if o.trace_days > 0 {
         w.enable_trace();
     }
@@ -701,6 +707,7 @@ pub fn run(o: Options) -> i32 {
                 Command::SpawnResident(_) | Command::PlaceWork(_) | Command::SpawnWork(_) => {}
             }
         }
+        drain_world(&mut meter, &mut w);
         if day > 20 {
             sizes(&w, &mut caravans);
         }
@@ -804,6 +811,8 @@ pub fn run(o: Options) -> i32 {
     if o.trace_days > 0 {
         print_trace(&w, o.trace_days, &|i| NAMES[i].to_string());
     }
+    drain_world(&mut meter, &mut w);
+    let archive = Rate::new(&meter, o.days as f64);
     let report = Report {
         schema: 2,
         seed: o.seed,
@@ -833,8 +842,10 @@ pub fn run(o: Options) -> i32 {
         final_events_per_day: last10,
         caravan_sizes,
         features,
+        archive,
     };
     println!("state hash {}", report.state_hash);
+    report.archive.print(None);
     if let Some(dir) = &o.out {
         match write(dir, &report) {
             Ok(p) => println!("wrote {}", p.display()),
