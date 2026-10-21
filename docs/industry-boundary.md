@@ -312,22 +312,25 @@ record below against wire.rs fixtures).
 Ben chose "reconcile ahead of arrival" for the stale-tick race. A latest-wins record (H23); the engine
 acts on it since this rework (IR9, IR10): a **closing** record within `approach_distance_blocks`
 stops the district's replay and sends every chunk's reconcile at once (`Round::Ahead`). Java holds each
-until its chunk loads and **applies it at the chunk's `ChunkEvent.Load`, before any machine there
-ticks**, journaling its IND_RECONCILE_RESULT before the chunk's IND_CHUNK_LOADED (which then carries the
-epoch now applied). The replay stays stopped while closing records keep coming and goes on from the
+until its chunk loads and **applies it before any block entity of the chunk ticks**, journaling its
+IND_RECONCILE_RESULT before the chunk's IND_CHUNK_LOADED (which then carries the epoch now applied).
+At `ChunkEvent.Load` the chunk and the district's other loaded chunks stop ticking block entities (a
+mixin on `LevelChunk.isTicking`); the reconcile lands at the next drain of chunk loads, at
+`ServerTickEvent.Pre` or the end of the tick, and the gate lifts (docs/choices-repair.md R1 to R3).
+After a restart the engine sends the held commands again with the next closing record (R4). The replay stays stopped while closing records keep coming and goes on from the
 reconciled state `approach_hold_ticks` after the last one (the player turned away).
 
 | Kind | Name | aux | Fields | Size |
 |---|---|---|---|---|
-| 0x0046 | IND_APPROACH | 1: closing in since the last one | 8 i64 gameTime, 16 u64 district, 24 u32 distance (blocks from the nearest player to the district's chunk box), 28 u32 etaTicks (distance / closing rate; 0xFFFFFFFF unknown) | 32 |
+| 0x0046 | IND_APPROACH | 1: closing in since the last one | 8 i64 gameTime, 16 u64 district, 24 u32 distance (blocks from the player to the district's nearest unloaded chunk), 28 u32 etaTicks (distance / closing rate; 0xFFFFFFFF unknown) | 32 |
 
-Sent every 20 ticks for each unloaded district within `approachRadiusBlocks` (256, PLACEHOLDER) of a
-player; `approachSignal = false` stops it.
+Sent every 20 ticks for each district with a chunk that is not loaded (unloaded or partly loaded), when a
+player is within `approachRadiusBlocks` (256, PLACEHOLDER) of such a chunk; `approachSignal = false`
+stops it. Closing is per player: some player's distance fell since the last record. The record carries
+the closing player who arrives first, else the nearest player with an unknown ETA (R5).
 
 `wire.rs` reads it (`Obs::Approach`, W16) and the engine keeps the latest on the district
-(`District::approach`). Java should send it for partly loaded districts too (a player walking toward
-the unloaded part), and apply held reconciles at `ChunkEvent.Load` (today it applies them at the next
-server tick): the Java pointers in docs/choices-indrework.md.
+(`District::approach`).
 
 ## 7. The engine side: rtsim-jni
 

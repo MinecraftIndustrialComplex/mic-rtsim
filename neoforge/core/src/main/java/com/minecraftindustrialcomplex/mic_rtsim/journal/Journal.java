@@ -81,6 +81,11 @@ public final class Journal {
         return appliedCmdOps.contains(opId);
     }
 
+    /** GameTests: a crash rolled the journal back to before this op id was applied. */
+    public void forgetAppliedForTest(long opId) {
+        appliedCmdOps.remove(opId);
+    }
+
     // ---- observation side -----------------------------------------------------------------------
 
     public long nextObsSeq() {
