@@ -26,7 +26,6 @@ import com.simibubi.create.content.kinetics.crusher.CrushingWheelBlockEntity;
 import com.simibubi.create.content.kinetics.crusher.CrushingWheelControllerBlock;
 import com.simibubi.create.content.kinetics.crusher.CrushingWheelControllerBlockEntity;
 import com.simibubi.create.content.kinetics.deployer.DeployerBlockEntity;
-import com.simibubi.create.content.kinetics.fan.AirCurrent;
 import com.simibubi.create.content.kinetics.fan.EncasedFanBlockEntity;
 import com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes;
 import com.simibubi.create.content.kinetics.fan.processing.FanProcessingType;
@@ -179,6 +178,15 @@ final class CreateCompile implements GlassExtractor.Compile {
         int unitBatch = 64;
         /** Kind-specific: the host (belt or depot) of a station, a fan's processing type, a heater's level. */
         Object extra;
+        /** The kinetic block entity whose domain the node took ({@link #attachKinetic}), or Long.MIN_VALUE. */
+        long kinPos = Long.MIN_VALUE;
+        /**
+         * Ticks a hand-off loop adds to each of its crafts' cycles at level {@code l} (choice GB59), or null:
+         * a machine that refills only once empty, from a parked chute.
+         */
+        java.util.function.IntFunction<Rat> handOff;
+        /** A pass-through machine of a collapsed sequenced line: no entry of its own, unlimited (§9.3). */
+        boolean noEntry;
         /** A machine whose recipes need every input at once (basin, crafter grid, spout): re-matched on growth. */
         boolean multiInput;
         int multiSeen = -1;
@@ -383,6 +391,10 @@ final class CreateCompile implements GlassExtractor.Compile {
     // ---- step 0: kinetic domains ----------------------------------------------------------------
 
     private void kinetics() {
+        // clutches, gearshifts, smart chutes and funnels a modelled switch powers: compiled unpowered,
+        // the switch's CONTROL edge gates them (GB51)
+        for (BlockEntity be : all(K.SWITCH))
+            switchDriven.addAll(poweredBy(be.getBlockPos(), ThresholdSwitchBlock.getTargetDirection(be.getBlockState())));
         boolean stressEnabled = IRotate.StressImpact.isEnabled();
         List<KineticBlockEntity> ks = new ArrayList<>();
         for (BlockEntity be : claimed)
@@ -475,6 +487,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                     unstableDomains.add(d.index); // engines of several boilers: the current level only
             }
             levelSpeeds.add(speeds);
+            domainRoot.put(d.index, rootSpeed);
             for (var e : net.members.entrySet()) {
                 KineticBlockEntity m = e.getKey();
                 float sp = m.getTheoreticalSpeed();
@@ -485,6 +498,111 @@ final class CreateCompile implements GlassExtractor.Compile {
                 memberImpact.put(m.getBlockPos().asLong(), (double) e.getValue());
             }
         }
+        walk();
+    }
+
+    /** Positions a modelled switch powers (its neighbours but its target, and along dust). */
+    private final LongOpenHashSet switchDriven = new LongOpenHashSet();
+    /** Block entities the walk put in a domain (not in a live network at compile), with their signed speed. */
+    private final it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap walkedSpeed = new it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap();
+    /** Each domain's root speed, the one its members' ratios are relative to. */
+    private final it.unimi.dsi.fastutil.ints.Int2FloatOpenHashMap domainRoot = new it.unimi.dsi.fastutil.ints.Int2FloatOpenHashMap();
+    /** Per switch-driven clutch: the district's kinetic block entities it turns (empty: something else drives them). */
+    private final Long2ObjectOpenHashMap<LongOpenHashSet> clutchTurns = new Long2ObjectOpenHashMap<>();
+
+    /**
+     * Puts the district's kinetic block entities that are in no live network into the domain of a
+     * connected one (choice GB51): past a clutch a modelled switch drives (engaged: the running line), and
+     * block entities that have not joined their network yet (they do on their first tick). Their ratio is
+     * the product of Create's speed factors along the walk ({@link KineticWalk}), so the compile is the same
+     * with the clutch on or off and before or after the first tick. The walk stays in the district, never
+     * enters a generator or a speed controller (another drive, or a speed set rather than conveyed), and
+     * stops at a link Create would not turn (a powered clutch no switch drives).
+     */
+    private void walk() {
+        java.util.ArrayDeque<KineticBlockEntity> queue = new java.util.ArrayDeque<>();
+        Long2ObjectOpenHashMap<Direction> walkSource = new Long2ObjectOpenHashMap<>();
+        for (BlockEntity be : claimed)
+            if (be instanceof KineticBlockEntity k && kin.containsKey(k.getBlockPos().asLong()))
+                queue.add(k);
+        int steps = 0;
+        while (!queue.isEmpty() && steps++ < 65536) {
+            KineticBlockEntity k = queue.poll();
+            long kp = k.getBlockPos().asLong();
+            Kin kk = kin.get(kp);
+            Direction src = walkSource.containsKey(kp) ? walkSource.get(kp) : KineticWalk.liveSource(k);
+            for (BlockPos q : KineticWalk.neighbours(k)) {
+                long qp = q.asLong();
+                if (!claimedPos.contains(qp) || kin.containsKey(qp))
+                    continue;
+                if (!(level.getBlockEntity(q) instanceof KineticBlockEntity n) || n.isRemoved() || n.getGeneratedSpeed() != 0
+                        || n instanceof com.simibubi.create.content.kinetics.speedController.SpeedControllerBlockEntity)
+                    continue;
+                float m = KineticWalk.modifier(k, src, n, switchDriven::contains);
+                if (m == 0 || Float.isNaN(m))
+                    continue;
+                Rat ratio = kk.ratio().mul(Rat.ofFloat(m)).fitSigned();
+                float speed = (float) (ratio.toDouble() * domainRoot.get(kk.domain()));
+                kin.put(qp, new Kin(kk.domain(), ratio, Math.abs(speed), kk.ratioKnown()));
+                walkedSpeed.put(qp, speed);
+                walkSource.put(qp, KineticWalk.sideToward(q, k.getBlockPos()));
+                memberImpact.put(qp, com.simibubi.create.api.stress.BlockStressValues.getImpact(n.getBlockState().getBlock()));
+                queue.add(n);
+            }
+        }
+    }
+
+    /**
+     * What a switch-driven clutch turns (choice GB51): the district's kinetic block entities connected to its
+     * side away from its source, walked as {@link #walk} does whether the clutch is engaged or not. Empty when
+     * the walk meets a generator (the part has another drive, so the clutch alone does not stop it) or the
+     * clutch has no source.
+     */
+    private LongOpenHashSet turnedBy(KineticBlockEntity clutch) {
+        LongOpenHashSet out = clutchTurns.get(clutch.getBlockPos().asLong());
+        if (out != null)
+            return out;
+        out = new LongOpenHashSet();
+        clutchTurns.put(clutch.getBlockPos().asLong(), out);
+        Direction src = KineticWalk.liveSource(clutch);
+        if (src == null)
+            return out;
+        BlockPos upstream = clutch.getBlockPos().relative(src);
+        java.util.ArrayDeque<KineticBlockEntity> queue = new java.util.ArrayDeque<>();
+        Long2ObjectOpenHashMap<Direction> srcOf = new Long2ObjectOpenHashMap<>();
+        LongOpenHashSet seen = new LongOpenHashSet();
+        seen.add(clutch.getBlockPos().asLong());
+        srcOf.put(clutch.getBlockPos().asLong(), src);
+        queue.add(clutch);
+        int steps = 0;
+        while (!queue.isEmpty() && steps++ < 65536) {
+            KineticBlockEntity k = queue.poll();
+            for (BlockPos q : KineticWalk.neighbours(k)) {
+                long qp = q.asLong();
+                if ((k == clutch && q.equals(upstream)) || !claimedPos.contains(qp) || seen.contains(qp))
+                    continue;
+                if (!(level.getBlockEntity(q) instanceof KineticBlockEntity n) || n.isRemoved())
+                    continue;
+                float m = KineticWalk.modifier(k, srcOf.get(k.getBlockPos().asLong()), n, switchDriven::contains);
+                if (m == 0 || Float.isNaN(m))
+                    continue;
+                if (n.getGeneratedSpeed() != 0) {
+                    out.clear();
+                    return out;
+                }
+                seen.add(qp);
+                out.add(qp);
+                srcOf.put(qp, KineticWalk.sideToward(q, k.getBlockPos()));
+                queue.add(n);
+            }
+        }
+        return out;
+    }
+
+    /** A kinetic block entity's signed speed: the walk's when it placed it, else Create's theoretical speed. */
+    float signedSpeed(KineticBlockEntity k) {
+        long p = k.getBlockPos().asLong();
+        return walkedSpeed.containsKey(p) ? walkedSpeed.get(p) : k.getTheoreticalSpeed();
     }
 
     private final Long2IntOpenHashMap boilerDomains = intMap();
@@ -508,6 +626,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     private void attachKinetic(Info info, BlockPos pos) {
         Kin k = kin.get(pos.asLong());
         info.kinetic = true;
+        info.kinPos = pos.asLong();
         if (k == null) {
             info.rpmNow = 0;
             return;
@@ -754,7 +873,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         boolean brass = s.getBlock() == com.simibubi.create.AllBlocks.BRASS_FUNNEL.get()
                 || s.getBlock() == com.simibubi.create.AllBlocks.BRASS_BELT_FUNNEL.get();
         int model = brass ? GlassRecords.Model.FUNNEL_BRASS : GlassRecords.Model.FUNNEL_ANDESITE;
-        boolean powered = s.hasProperty(AbstractFunnelBlock.POWERED) && s.getValue(AbstractFunnelBlock.POWERED);
+        boolean powered = s.hasProperty(AbstractFunnelBlock.POWERED) && redstonePowered(f.getBlockPos());
         FilteringBehaviour filter = BlockEntityBehaviour.get(f, FilteringBehaviour.TYPE);
         boolean beltFunnel = s.getBlock() instanceof BeltFunnelBlock;
         boolean extracting;
@@ -788,6 +907,16 @@ final class CreateCompile implements GlassExtractor.Compile {
         return filter.anyAmount() ? 64 : Math.max(1, filter.getAmount());
     }
 
+    /**
+     * Whether a smart chute or funnel at {@code p} is held by redstone (choice GB51): never when a modelled
+     * switch powers it (it runs, and the switch's CONTROL edge gates it); otherwise the signal it gets now
+     * ({@code hasNeighborSignal}, what its block tick sets POWERED to), not the POWERED property, which lags a
+     * tick behind a change and starts true on a smart chute placed without a player (its default state).
+     */
+    private boolean redstonePowered(BlockPos p) {
+        return !switchDriven.contains(p.asLong()) && level.hasNeighborSignal(p);
+    }
+
     private void chuteNode(ChuteBlockEntity c) {
         boolean smart = c instanceof SmartChuteBlockEntity;
         Info i = info(K.CHUTE, c, GlassRecords.Node.MOVER, smart ? GlassRecords.Model.SMART_CHUTE : GlassRecords.Model.CHUTE);
@@ -796,8 +925,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (smart) {
             FilteringBehaviour f = BlockEntityBehaviour.get(c, FilteringBehaviour.TYPE);
             amount = f == null ? 64 : Cycles.smartChuteExtraction(f.isCountVisible(), f.anyAmount(), f.getAmount());
-            BlockState st = c.getBlockState();
-            powered = st.hasProperty(BlockStateProperties.POWERED) && st.getValue(BlockStateProperties.POWERED);
+            powered = redstonePowered(c.getBlockPos());
         }
         float motion = c.getItemMotion();
         i.moverBatch = powered ? 0 : amount;
@@ -810,13 +938,14 @@ final class CreateCompile implements GlassExtractor.Compile {
     // ---- fans -----------------------------------------------------------------------------------
 
     private void fanZones(EncasedFanBlockEntity fan) {
-        AirCurrent air = fan.airCurrent;
-        if (air == null || air.maxDistance <= 0 || air.direction == null)
+        // the current at the walk's speed, rebuilt from the blocks (AirCurrent.findAffectedHandlers below)
+        FanCurrent air = FanCurrent.of(fan, signedSpeed(fan));
+        if (air == null || air.maxDistance <= 0)
             return;
         BlockPos start = fan.getBlockPos();
         int limit = (float) (int) air.maxDistance == air.maxDistance ? (int) air.maxDistance : (int) air.maxDistance + 1;
         for (int d = 1; d <= limit; d++) {
-            FanProcessingType segType = air.getTypeAt((float) (d - 1));
+            FanProcessingType segType = air.typeAt((float) (d - 1));
             for (int off = 0; off <= 1; off++) {
                 BlockPos p = start.relative(air.direction, d).below(off);
                 if (BlockEntityBehaviour.get(level, p, TransportedItemStackHandlerBehaviour.TYPE) != null) {
@@ -1014,7 +1143,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         Belt(BeltBlockEntity controller, Info info) {
             this.controller = controller;
             this.info = info;
-            this.positive = controller.getDirectionAwareBeltMovementSpeed() >= 0;
+            this.positive = directionAwareSpeed() >= 0;
             int len = controller.beltLength;
             for (int k = 0; k < len; k++)
                 segments.add(BeltHelper.getPositionForOffset(controller, positive ? k : len - 1 - k));
@@ -1022,6 +1151,26 @@ final class CreateCompile implements GlassExtractor.Compile {
 
         int index(BlockPos p) {
             return segments.indexOf(p);
+        }
+
+        /**
+         * {@code BeltBlockEntity.getDirectionAwareBeltMovementSpeed} at the walk's speed ({@link #signedSpeed}),
+         * not the live one: a belt that has not turned yet, or turns behind a switch-driven clutch, has its
+         * running direction (GB51).
+         */
+        float directionAwareSpeed() {
+            Direction f = controller.getBlockState().getValue(BlockStateProperties.HORIZONTAL_FACING);
+            int offset = f.getAxisDirection().getStep();
+            if (f.getAxis() == Direction.Axis.X)
+                offset *= -1;
+            return signedSpeed(controller) / 480f * offset;
+        }
+
+        /** {@code BeltBlockEntity.getMovementFacing} at the walk's speed. */
+        Direction movementFacing() {
+            Direction.Axis axis = controller.getBlockState().getValue(BlockStateProperties.HORIZONTAL_FACING).getAxis();
+            return Direction.fromAxisAndDirection(axis, signedSpeed(controller) / 480f < 0 ^ axis == Direction.Axis.X
+                    ? Direction.AxisDirection.NEGATIVE : Direction.AxisDirection.POSITIVE);
         }
 
         /** The mover where items join at movement index {@code k} (created on first use). */
@@ -1712,30 +1861,22 @@ final class CreateCompile implements GlassExtractor.Compile {
                 out.add(i.node.index);
         }
         // A powered clutch stops everything that turns through it (ClutchBlockEntity: speed modifier 0 on
-        // the side away from its source): every node whose kinetic source chain passes the clutch. While
-        // the clutch is powered at compile those parts are detached and already stopped.
-        LongOpenHashSet clutches = new LongOpenHashSet();
+        // the side away from its source). The compile has it engaged (GB51); the gate is every node whose
+        // kinetic block entity is on its far side, the same set whether it is on or off at compile.
+        LongOpenHashSet turned = new LongOpenHashSet();
         for (long p : powered)
-            if (level.getBlockEntity(BlockPos.of(p)) instanceof com.simibubi.create.content.kinetics.transmission.ClutchBlockEntity)
-                clutches.add(p);
-        if (!clutches.isEmpty())
-            for (Info i : infos.values())
-                if (i.node != null && i.be instanceof KineticBlockEntity k && throughClutch(k, clutches) && !out.contains(i.node.index))
+            if (level.isLoaded(BlockPos.of(p))
+                    && level.getBlockEntity(BlockPos.of(p)) instanceof com.simibubi.create.content.kinetics.transmission.ClutchBlockEntity c)
+                turned.addAll(turnedBy(c));
+        if (!turned.isEmpty())
+            for (Info i : infos.values()) {
+                if (i.node == null)
+                    continue;
+                long kp = i.kinPos != Long.MIN_VALUE ? i.kinPos : i.be instanceof KineticBlockEntity k ? k.getBlockPos().asLong() : Long.MIN_VALUE;
+                if (turned.contains(kp) && !out.contains(i.node.index))
                     out.add(i.node.index);
+            }
         return out;
-    }
-
-    /** Whether {@code k}'s rotation comes through one of {@code clutches} (its source chain, as Create propagates). */
-    private boolean throughClutch(KineticBlockEntity k, LongOpenHashSet clutches) {
-        BlockPos s = k.source;
-        for (int steps = 0; s != null && steps < 4096; steps++) {
-            if (clutches.contains(s.asLong()))
-                return true;
-            if (!(level.getBlockEntity(s) instanceof KineticBlockEntity n) || n == k)
-                return false;
-            s = n.source;
-        }
-        return false;
     }
 
     /** Positions a redstone source at {@code at} powers: its neighbours but {@code notSide}, and along dust. */
@@ -1785,7 +1926,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             b.endTarget = acceptAt(next);
         } else {
             BlockState s = level.getBlockState(next);
-            if (!s.isFaceSturdy(level, next, b.controller.getMovementFacing().getOpposite())) {
+            if (!s.isFaceSturdy(level, next, b.movementFacing().getOpposite())) {
                 b.endKind = GlassRecords.Edge.DROP;
                 b.endTarget = dropAt(next);
             }
@@ -1838,7 +1979,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         int m = b.entry(k);
         Info mi = infos.get(m);
         BlockPos seg = b.segments.get(k);
-        Direction movement = b.controller.getMovementFacing();
+        Direction movement = b.movementFacing();
         if (t instanceof BrassTunnelBlockEntity brass) {
             ScrollOptionBehaviour<?> mode = null;
             for (BlockEntityBehaviour x : brass.getAllBehaviours())
@@ -2154,6 +2295,9 @@ final class CreateCompile implements GlassExtractor.Compile {
                     return st != null && st.id().equals(id);
                 });
                 m.node.flag(GlassRecords.Node.PASS_THROUGH);
+                // a line machine left with no work of its own has no entry (unlimited), not a stop
+                if (m != host && m.crafts.isEmpty())
+                    m.noEntry = true;
             }
             for (int u : unrolled)
                 host.crafts.add(new Craft(u, 1, cycle));
@@ -2188,6 +2332,8 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     private void storeContents(GraphBuilder.Node node, IntOpenHashSet into) {
         BlockPos p = node.pos();
+        if (!level.isLoaded(p))
+            return; // a capability read would load the chunk (and keep it loaded while compiles repeat)
         IItemHandler items = level.getCapability(Capabilities.ItemHandler.BLOCK, p, null);
         if (items != null)
             for (int s = 0; s < items.getSlots(); s++) {
@@ -2243,7 +2389,74 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     // ---- step 6: rates --------------------------------------------------------------------------
 
+    /**
+     * Hand-off loops (choice GB59): a machine that takes its next input only once empty (a saw's or crushing
+     * wheels' ProcessingInventory; a fan zone on a depot, which holds one stack), fed by a downward chute
+     * directly above it whose next stack waits parked at 0.5, has the loop's hand-offs on top of its own
+     * cycle ({@link Cycles#chuteHandOff}). A saw or crusher hands its outputs on in its own tick; a depot
+     * station needs the arm that takes them, whose move to the depot is part of the loop. Only when the
+     * chute is the machine's one feeder and, for a depot, arms are its only takers; any other feeder or
+     * taker (a funnel, a belt) is not modelled and leaves the cycle as it is (UNVERIFIED).
+     */
+    private void handOffs() {
+        for (Info i : infos.values()) {
+            if (i.node == null || i.crafts.isEmpty())
+                continue;
+            BlockPos at;
+            boolean self;
+            if (i.kind == K.SAW || i.kind == K.CRUSHER) {
+                at = i.be.getBlockPos();
+                self = true;
+            } else if (i.kind == K.FAN && i.extra instanceof Object[] x && x[1] == null && x[2] instanceof BlockPos host) {
+                at = host;
+                self = false;
+            } else {
+                continue;
+            }
+            Info chute = null;
+            boolean other = false;
+            List<Info> takers = new ArrayList<>();
+            for (GraphBuilder.Edge e : g.edges()) {
+                if (e.kind == GlassRecords.Edge.CONTROL || e.kind == GlassRecords.Edge.OBSERVE || e.kind == GlassRecords.Edge.HEAT)
+                    continue;
+                if (e.to == i.node.index) {
+                    Info f = infos.get(e.from);
+                    if (f != null && f.kind == K.CHUTE && chute == null && f.be.getBlockPos().equals(at.above())
+                            && f.extra instanceof Float m && m < 0)
+                        chute = f;
+                    else
+                        other = true;
+                } else if (e.from == i.node.index && !self) {
+                    Info t = infos.get(e.to);
+                    if (t != null && t.kind == K.ARM)
+                        takers.add(t);
+                    else
+                        other = true;
+                }
+            }
+            if (chute == null || other || (!self && takers.size() != 1))
+                continue;
+            float motion = (Float) chute.extra;
+            if (self) {
+                Cycles.Ratio h = Cycles.chuteHandOff(motion, 0, true);
+                Rat r = Rat.of(h.num(), h.den());
+                i.handOff = l -> r;
+                continue;
+            }
+            Info arm = takers.get(0);
+            i.handOff = l -> {
+                float rpm = arm.domain == NONE ? arm.rpmNow
+                        : rpmAt(arm, arm.domain == i.domain ? l : Math.max(0, g.domains().get(arm.domain).current));
+                if (!(rpm > 0))
+                    return null;
+                Cycles.Ratio h = Cycles.chuteHandOff(motion, Cycles.armMoveTicks(rpm), false);
+                return Rat.of(h.num(), h.den());
+            };
+        }
+    }
+
     private void rates() {
+        handOffs();
         // A belt's stack: the smallest batch its feeders hand on (64 when unknown).
         for (Belt b : belts) {
             int s = 64;
@@ -2296,14 +2509,18 @@ final class CreateCompile implements GlassExtractor.Compile {
                     }
                     int n = c.batch() == FEEDER_BATCH ? feederBatch(i) : c.batch();
                     Rat t = safe(c.cycle(), rpm, n);
+                    if (t != null && i.handOff != null) {
+                        Rat h = i.handOff.apply(l);
+                        t = h == null ? null : t.add(h);
+                    }
                     if (t != null && n > 0) {
                         i.node.rate(l, c.recipe(), n, t, 0);
                         any = true;
                     }
                 }
             }
-            boolean limited = i.mover != null || i.crafts.stream().anyMatch(c -> c.cycle() != null)
-                    || (i.kinetic && i.node.kind == GlassRecords.Node.MACHINE);
+            boolean limited = !i.noEntry && (i.mover != null || i.crafts.stream().anyMatch(c -> c.cycle() != null)
+                    || (i.kinetic && i.node.kind == GlassRecords.Node.MACHINE));
             if (!any && limited)
                 i.node.stopped(0);
         }

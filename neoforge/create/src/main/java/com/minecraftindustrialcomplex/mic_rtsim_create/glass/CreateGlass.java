@@ -39,11 +39,11 @@ public final class CreateGlass implements GlassExtractor {
 
     /**
      * Block state properties that are the model's state, not its structure: redstone power, lit, a blaze
-     * burner's heat, a hopper's enabled flag. A paused funnel or a burner running out is a regime the
+     * burner's heat, a hopper's enabled flag, a crushing controller's VALID (its wheels turn). A paused funnel or a burner running out is a regime the
      * engine follows from the stores and sweeps, not a new graph.
      */
     private static final Set<String> VOLATILE = Set.of("powered", "lit", "blaze", "enabled", "triggered", "open", "power",
-            "waterlogged", "inverted_signal");
+            "waterlogged", "inverted_signal", "valid");
 
     @Override
     public long fingerprint(BlockEntity be) {
@@ -67,9 +67,11 @@ public final class CreateGlass implements GlassExtractor {
                     h = mix(h, v.getValue());
                 }
             }
-        // which kinetic network a block is in (its source's position) is structure: a machine joins its
-        // network a tick after it is placed, and a compile from before has it outside any domain
-        if (be instanceof com.simibubi.create.content.kinetics.base.KineticBlockEntity k)
+        // A generator's network (its own position once it turns) is structure: a compile from before its
+        // first tick has no domain. Any other block's network is not (GB51): a switch-driven clutch moves the
+        // far side in and out of it, and the compile walks to a block that has not joined yet.
+        if (be instanceof com.simibubi.create.content.kinetics.base.KineticBlockEntity k
+                && (k.getGeneratedSpeed() != 0 || k instanceof com.simibubi.create.content.kinetics.steamEngine.PoweredShaftBlockEntity))
             h = mix(h, k.network == null ? 0 : k.network);
         if (be instanceof ArmBlockEntity a) {
             h = points(h, CreateGlassAccess.armInputs(a));
@@ -79,7 +81,8 @@ public final class CreateGlass implements GlassExtractor {
         if (be instanceof DeployerBlockEntity d) {
             String m = CreateGlassAccess.deployerMode(d);
             h = mix(h, m == null ? -1 : m.hashCode());
-            h = mix(h, d.getPlayer() == null ? 0 : item(d.getPlayer().getMainHandItem()));
+            // the held item's kind only: a tool's damage changes at every use (sheep shears)
+            h = mix(h, d.getPlayer() == null ? 0 : itemKind(d.getPlayer().getMainHandItem()));
         }
         if (be instanceof ThresholdSwitchBlockEntity t) {
             h = mix(h, t.onWhenAbove);
@@ -125,6 +128,10 @@ public final class CreateGlass implements GlassExtractor {
     }
 
     /** An item and its components, without the count. */
+    private static long itemKind(ItemStack s) {
+        return s.isEmpty() ? 0 : net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(s.getItem()).hashCode();
+    }
+
     private static long item(ItemStack s) {
         if (s.isEmpty())
             return 0;

@@ -66,8 +66,10 @@ import java.util.Optional;
  * operators' static filters. Sequenced assembly steps are recognised by re-enacting
  * {@code SequencedAssemblyRecipe.appliesTo}, {@code getStep} and {@code advance} (they are private), so
  * each step's output is the transitional item with the next {@code SequencedAssembly} component, a distinct
- * good. Chance outputs are exact: {@code ProcessingOutput.rollOutput} keeps a stack unless
- * {@code nextFloat() > chance}, and {@code nextFloat} is {@code k / 2^24}.
+ * good. A chance output's expected share is its chance's exact binary value, reduced (0.25f is 1/4).
+ * {@code ProcessingOutput.rollOutput} keeps a stack unless {@code nextFloat() > chance} with {@code nextFloat}
+ * {@code k / 2^24}, which keeps it 2^-24 more often than the chance; that ulp is left out (it only
+ * bloats the denominators the solver works with).
  */
 final class Recipes {
     private Recipes() {}
@@ -76,14 +78,14 @@ final class Recipes {
 
     // ---- terms ----------------------------------------------------------------------------------
 
-    /** P(kept) of a ProcessingOutput with this chance, as num/den. */
+    /** P(kept) of a ProcessingOutput with this chance, as num/den: the float's exact value; 0 for none. */
     static long[] keep(float chance) {
         if (chance >= 1f)
             return new long[] {1, 1};
         if (!(chance > 0f))
-            return new long[] {1, 1L << 24}; // nextFloat() <= 0 only for k = 0
-        long k = (long) Math.floor((double) chance * (1 << 24));
-        return new long[] {Math.min(k + 1, 1L << 24), 1L << 24};
+            return new long[] {0, 1};
+        Rat r = Rat.ofFloat(chance);
+        return new long[] {r.num(), r.den()};
     }
 
     static void outputs(CreateCompile c, GraphBuilder.Recipe r, List<ProcessingOutput> outs, long per) {
@@ -92,6 +94,8 @@ final class Recipes {
             if (s.isEmpty())
                 continue;
             long[] p = keep(o.getChance());
+            if (p[0] == 0)
+                continue;
             int flags = p[0] == p[1] ? 0 : GlassRecords.Recipe.TERM_CHANCE;
             r.out(c.good(s), per * s.getCount() * p[0], p[1], flags);
         }
@@ -336,6 +340,8 @@ final class Recipes {
                 for (ProcessingOutput o : p.getRollableResults()) {
                     ItemStack st = o.getStack();
                     long[] q = keep(o.getChance());
+                    if (q[0] == 0)
+                        continue;
                     r.out(c.good(st), st.getCount() * q[0], q[1] * k, q[0] == q[1] ? 0 : GlassRecords.Recipe.TERM_CHANCE);
                 }
             } else {

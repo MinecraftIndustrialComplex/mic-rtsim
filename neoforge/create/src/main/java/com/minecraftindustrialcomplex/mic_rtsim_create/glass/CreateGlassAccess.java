@@ -7,14 +7,19 @@ import com.simibubi.create.content.kinetics.mechanicalArm.ArmBlockEntity;
 import com.simibubi.create.content.kinetics.mechanicalArm.ArmInteractionPoint;
 import net.minecraft.world.level.LevelAccessor;
 
+import com.simibubi.create.content.kinetics.RotationPropagator;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+
+import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.invoke.VarHandle;
 import java.util.List;
 import java.util.Map;
 
 /**
  * The glass box's only reads of Create's non-public members (P7, one accessor class for Create; PATCHES.md
- * rows 30 to 33). Read only, at compile time on the server thread, through VarHandles resolved once. A
+ * rows 30 to 34). Read only, at compile time on the server thread, through VarHandles resolved once. A
  * member that is gone (a Create update) makes its getter return null; the compile then models that block
  * entity as a black box instead of failing.
  */
@@ -25,6 +30,8 @@ public final class CreateGlassAccess {
     private static final VarHandle DEPLOYER_MODE = find(DeployerBlockEntity.class, "mode", modeClass(), false);
     private static final VarHandle ARM_INPUTS = find(ArmBlockEntity.class, "inputs", List.class, false);
     private static final VarHandle ARM_OUTPUTS = find(ArmBlockEntity.class, "outputs", List.class, false);
+    private static final MethodHandle ROTATION_MODIFIER = findStatic(RotationPropagator.class, "getRotationSpeedModifier",
+            MethodType.methodType(float.class, KineticBlockEntity.class, KineticBlockEntity.class));
 
     /** {@code DeployerBlockEntity.Mode} is package-private: its class by name. */
     private static Class<?> modeClass() {
@@ -46,9 +53,17 @@ public final class CreateGlassAccess {
         }
     }
 
+    private static MethodHandle findStatic(Class<?> owner, String name, MethodType type) {
+        try {
+            return MethodHandles.privateLookupIn(owner, MethodHandles.lookup()).findStatic(owner, name, type);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
     /** True when every member resolved (the GameTests assert it, so a Create update fails loudly there). */
     public static boolean allResolved() {
-        return NETWORKS != null && DEPLOYER_MODE != null && ARM_INPUTS != null && ARM_OUTPUTS != null;
+        return NETWORKS != null && DEPLOYER_MODE != null && ARM_INPUTS != null && ARM_OUTPUTS != null && ROTATION_MODIFIER != null;
     }
 
     /**
@@ -85,5 +100,22 @@ public final class CreateGlassAccess {
     @SuppressWarnings("unchecked")
     public static List<ArmInteractionPoint> armOutputs(ArmBlockEntity be) {
         return ARM_OUTPUTS == null ? null : (List<ArmInteractionPoint>) ARM_OUTPUTS.get(be);
+    }
+
+    /**
+     * {@code RotationPropagator.getRotationSpeedModifier} (private static): the speed factor from one kinetic
+     * block entity to a neighbour, as Create propagates it. Pure: it reads block states and, for shaft-half
+     * blocks (gearboxes, clutches, gearshifts), their live source, which is why the compile calls it only for
+     * connections that are not shaft to shaft (cogs, belts, chain drives); it computes those itself
+     * ({@code CreateCompile.modifier}). NaN when the member is gone. Row 34.
+     */
+    public static float rotationModifier(KineticBlockEntity from, KineticBlockEntity to) {
+        if (ROTATION_MODIFIER == null)
+            return Float.NaN;
+        try {
+            return (float) ROTATION_MODIFIER.invokeExact(from, to);
+        } catch (Throwable t) {
+            return Float.NaN;
+        }
     }
 }
