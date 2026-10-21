@@ -1000,28 +1000,30 @@ public final class Cycles {
     }
 
     /**
-     * Chute ticks for a held stack to pass one downward chute: re-enacts {@code ChuteBlockEntity.tick}'s
-     * downward branch. An item handed down from a chute above (or pulled from an inventory above) starts at
-     * 1.0; each tick {@code nextOffset = position + motion}; below 0.5 the output is simulated (assumed to
-     * accept); below 0 it is handed on. Counts moves until hand-off: 6 under gravity (the fifth leaves
-     * {@code +2.98e-8}). The chute is empty after that tick.
+     * Chute ticks for a held stack to pass one chute: re-enacts {@code ChuteBlockEntity.tick}. Downward, an
+     * item handed down from a chute above (or pulled from an inventory above) starts at 1.0; each tick
+     * {@code nextOffset = position + motion}; below 0.5 the output is simulated (assumed to accept); below 0
+     * it is handed on. Counts moves until hand-off: 6 under gravity (the fifth leaves {@code +2.98e-8}).
+     * Upward (a fan below pushing, or one above pulling), the mirror image: an item pulled from below
+     * ({@code handleInputFromBelow}) or handed up from a chute below ({@code handleUpwardOutput}) starts at
+     * 0.0; above 0.5 the output is simulated; above 1.0 it is handed on (14 at 0.075, a 96 RPM fan). The
+     * chute is empty after that tick.
      *
-     * @param motion {@link #chuteMotion}, negative
+     * @param motion {@link #chuteMotion}, not 0
      */
     public static int chuteTicksPerBlock(float motion) {
-        if (!(motion < 0.0F)) {
-            throw new IllegalArgumentException("downward motion must be negative: " + motion);
+        if (!(motion < 0.0F) && !(motion > 0.0F)) {
+            throw new IllegalArgumentException("a still chute moves nothing: " + motion);
         }
         return (int) cached(new Key(K_CHUTE, Float.floatToIntBits(motion), 0, 0, 0), () -> {
-            float position = 1.0F;
+            boolean down = motion < 0.0F;
+            float position = down ? 1.0F : 0.0F;
             int ticks = 0;
             while (true) {
                 guard(++ticks);
                 float nextOffset = position + motion;
-                if (nextOffset < 0.5F) {
-                    if (nextOffset < 0.0F) {
-                        return ticks;
-                    }
+                if (down ? nextOffset < 0.0F : nextOffset > 1.0F) {
+                    return ticks;
                 }
                 position = nextOffset;
             }
@@ -1034,7 +1036,8 @@ public final class Cycles {
      * {@link #chuteTicksPerBlock} ticks move it out, so {@code 1 + chuteTicksPerBlock} ticks per
      * {@link #CHUTE_EXTRACTION} items (7 under gravity). Chutes below are stages of {@link #chuteTicksPerBlock}
      * ticks and do not slow it, in either ticker order. UNVERIFIED in game for the bottom chute's insertion
-     * into an inventory (a partial insert keeps the remainder).
+     * into an inventory (a partial insert keeps the remainder). Upward ({@code handleInputFromBelow}) the
+     * same shape, UNVERIFIED in game (the compile flags an upward chute CALIBRATED, choice GB45).
      */
     public static int chuteGrabPeriod(float motion) {
         return 1 + chuteTicksPerBlock(motion);
