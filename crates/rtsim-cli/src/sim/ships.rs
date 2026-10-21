@@ -26,16 +26,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_settle::Pos;
-use rtsim_ships::boundary::Role as WireRole;
 use rtsim_ships::engine::{LogEntry, ShipStats};
-use rtsim_ships::synth::{self, Coastal, FakeShips};
+use rtsim_ships::synth::{self, Coastal, FakeShips, Script};
 use rtsim_ships::timetable::ServiceKind;
 use rtsim_ships::{Role, ShipTunables, Ships, fight};
 use rtsim_trade::{GoodId, MILLI};
-use rtsim_travel::Medium;
 use rtsim_world::World;
 use serde::Serialize;
 
@@ -83,8 +79,6 @@ fn bad(why: &str) -> ExitCode {
     );
     ExitCode::from(64)
 }
-
-const PLAYER: (u64, u64) = (0x5EA, 0x5A11);
 
 #[derive(Serialize)]
 struct DockRow {
@@ -187,146 +181,6 @@ fn by_name(w: &World, m: &BTreeMap<GoodId, i128>) -> BTreeMap<String, f64> {
         .collect()
 }
 
-fn day(t: Tick) -> f64 {
-    t.0 as f64 / TICKS_PER_DAY as f64
-}
-
-/// A straight sea lane's middle (where the player first watches).
-fn watch_point(s: &Ships) -> (i32, i32) {
-    let l = (0..s.lanes.len())
-        .find(|&l| {
-            let ln = &s.lanes[l];
-            ln.medium == Medium::Sea && ln.path.pts.len() == 2 && ln.path.length() > 1_000
-        })
-        .unwrap_or(0);
-    let ln = &s.lanes[l];
-    ln.path.at(ln.path.length() / 2)
-}
-
-/// The scripted run from `from` to `to`, hour by hour; conservation failures are collected.
-#[allow(clippy::too_many_arguments)]
-fn script(
-    c: &mut Coastal,
-    fake: &mut FakeShips,
-    from: Tick,
-    to: Tick,
-    conserved: &mut Vec<String>,
-    looted: &mut bool,
-    sank: &mut bool,
-    escort: &mut Option<(u32, Tick)>,
-    away: &mut Option<Tick>,
-) {
-    let watch = watch_point(&c.ships);
-    let mut t = from;
-    while t < to {
-        let d = day(t);
-        if away.is_some_and(|u| t < u) {
-            let next = (t + 250).min(to);
-            synth::drive(
-                &mut c.world,
-                &mut c.ships,
-                fake,
-                &mut NoInfrastructure,
-                &c.mask,
-                next,
-                50,
-            );
-            t = next;
-            continue;
-        }
-        let at = if d < 2.0 {
-            Some(watch)
-        } else {
-            c.ships
-                .hunted_lanes()
-                .first()
-                .map(|&l| {
-                    let ln = &c.ships.lanes[l as usize];
-                    ln.path.at(ln.path.length() / 2)
-                })
-                .or(Some(watch))
-        };
-        if let Some(p) = at {
-            fake.set_player(PLAYER, f64::from(p.0), f64::from(p.1));
-            c.ships
-                .observe_player(&mut c.world, PLAYER, Pos::new(0, p.0, p.1), t);
-        }
-        let next = (t + 1_000).min(to);
-        while t < next {
-            let step = (t + 50).min(next);
-            synth::drive(
-                &mut c.world,
-                &mut c.ships,
-                fake,
-                &mut NoInfrastructure,
-                &c.mask,
-                step,
-                50,
-            );
-            t = step;
-            // From day 7: a raid is coming on a ship in view, and the player logs off before it
-            // strikes: the fight is resolved unobserved (Lanchester, never better than the
-            // fights seen).
-            if day(t) >= 7.2 && away.is_none() && c.ships.pending_by_kind().contains_key("raid") {
-                fake.players.clear();
-                let p = c.ships.player(&mut c.world, PLAYER);
-                c.ships.player_left(&mut c.world, p);
-                *away = Some(t + TICKS_PER_DAY / 4);
-                break;
-            }
-        }
-        if !*looted && day(t) >= 7.0 {
-            let target = fake
-                .bodies
-                .iter()
-                .find(|(_, b)| b.role == WireRole::Merchant && !b.cargo.is_empty())
-                .map(|(a, _)| *a);
-            if let Some(a) = target
-                && let Some(o) = fake.player_loots(a, PLAYER, 0.5)
-            {
-                c.ships.ingest(&mut c.world, &o, &c.mask, t);
-                *looted = true;
-            }
-        }
-        // Day 5: the player's escort ships (for a future plugin) join the hunted lane for a day:
-        // its hazard falls while they are there.
-        if day(t) >= 5.0 && escort.is_none() {
-            let hunted = c
-                .ships
-                .hunted_lanes()
-                .into_iter()
-                .find(|&l| c.ships.threat(l).is_some_and(|th| th.share > 0));
-            if let Some(l) = hunted {
-                c.ships.set_escort(&mut c.world, l, 1, 4.0, t);
-                *escort = Some((l, t));
-            }
-        }
-        if let Some((l, since)) = *escort
-            && t.0 >= since.0 + TICKS_PER_DAY
-            && l != u32::MAX
-        {
-            c.ships.set_escort(&mut c.world, l, 1, 0.0, t);
-            *escort = Some((u32::MAX, since));
-        }
-        if !*sank && day(t) >= 9.0 {
-            let target = fake
-                .bodies
-                .iter()
-                .find(|(_, b)| b.role == WireRole::Pirate)
-                .map(|(a, _)| *a);
-            if let Some(a) = target
-                && let Some(o) = fake.player_sinks(a, PLAYER)
-            {
-                c.ships.ingest(&mut c.world, &o, &c.mask, t);
-                *sank = true;
-            }
-        }
-        if let Err(e) = c.ships.check(&c.world) {
-            conserved.push(format!("day {:.2}: {e}", day(t)));
-        }
-    }
-}
-
 pub fn main(o: Options) -> i32 {
     let started = Instant::now();
     let tun = ShipTunables::default();
@@ -338,21 +192,8 @@ pub fn main(o: Options) -> i32 {
     let mut fake = FakeShips::new(f64::from(tun.view_radius));
     let end = Tick::from_days(o.days);
     let mid = Tick::from_days(o.days / 2);
-    let mut conserved = Vec::new();
-    let (mut looted, mut sank) = (false, false);
-    let mut escort = None;
-    let mut away = None;
-    script(
-        &mut c,
-        &mut fake,
-        Tick::ZERO,
-        mid,
-        &mut conserved,
-        &mut looted,
-        &mut sank,
-        &mut escort,
-        &mut away,
-    );
+    let mut script = Script::default();
+    script.run(&mut c, &mut fake, Tick::ZERO, mid);
     // A restart in the middle: a copy restored from the saves runs the rest of the script beside
     // the engine that never stopped.
     let (goods, ids) = rtsim_world::synth::goods();
@@ -375,25 +216,20 @@ pub fn main(o: Options) -> i32 {
                 f.seq = fake.seq;
                 f
             },
-            (looted, sank, escort, away),
+            Script {
+                conserved: Vec::new(),
+                ..script.clone()
+            },
         )
     });
-    script(
-        &mut c,
-        &mut fake,
-        mid,
-        end,
-        &mut conserved,
-        &mut looted,
-        &mut sank,
-        &mut escort,
-        &mut away,
-    );
+    script.run(&mut c, &mut fake, mid, end);
+    let conserved = script.conserved;
     let mut twin_conserved = Vec::new();
     let restart_ok = match twin.as_mut() {
-        Some((tc, tf, (l, s, e, a))) => {
+        Some((tc, tf, ts)) => {
             tc.ships.log_enabled = true;
-            script(tc, tf, mid, end, &mut twin_conserved, l, s, e, a);
+            ts.run(tc, tf, mid, end);
+            twin_conserved = std::mem::take(&mut ts.conserved);
             tc.ships.state_hash() == c.ships.state_hash()
                 && tc.world.state_hash() == c.world.state_hash()
         }
