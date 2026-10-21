@@ -439,6 +439,8 @@ pub struct ArchiveReader {
     entries: Vec<Entry>,
     dict: Dictionary,
     dropped: Dropped,
+    /// Chunks [`ArchiveReader::rows`] and [`ArchiveReader::legs_at`] skipped as damaged.
+    damaged: std::cell::Cell<u32>,
 }
 
 /// A row as read, with where it came from.
@@ -488,6 +490,7 @@ impl ArchiveReader {
             entries,
             dict,
             dropped,
+            damaged: std::cell::Cell::new(0),
         }))
     }
 
@@ -501,6 +504,11 @@ impl ArchiveReader {
 
     pub fn dropped(&self) -> &Dropped {
         &self.dropped
+    }
+
+    /// How many damaged chunks reads have skipped so far (the page says so rather than failing).
+    pub fn damaged(&self) -> u32 {
+        self.damaged.get()
     }
 
     /// The first and last tick any row touches.
@@ -579,11 +587,25 @@ impl ArchiveReader {
         }
     }
 
+    /// [`ArchiveReader::read`], but a damaged chunk is skipped and counted: one bad file costs the
+    /// page its rows, not the whole answer.
+    fn read_or_skip(&self, e: &Entry) -> io::Result<Option<Chunk>> {
+        match self.read(e) {
+            Err(err) if err.kind() == io::ErrorKind::InvalidData => {
+                self.damaged.set(self.damaged.get().saturating_add(1));
+                Ok(None)
+            }
+            other => other,
+        }
+    }
+
     /// Every row touching `t0..=t1` (an event in it, a leg overlapping it), oldest chunk first.
     pub fn rows(&self, t0: u64, t1: u64) -> io::Result<Vec<Record>> {
         let mut out = Vec::new();
         for e in self.entries.iter().filter(|e| e.header.overlaps(t0, t1)) {
-            let Some(c) = self.read(e)? else { continue };
+            let Some(c) = self.read_or_skip(e)? else {
+                continue;
+            };
             for (i, r) in c.rows.iter().enumerate() {
                 if crate::row::tick(r) <= t1 && crate::row::end(r) >= t0 {
                     out.push(Record {
@@ -605,7 +627,9 @@ impl ArchiveReader {
             .iter()
             .filter(|e| e.header.overlaps(tick, tick))
         {
-            let Some(c) = self.read(e)? else { continue };
+            let Some(c) = self.read_or_skip(e)? else {
+                continue;
+            };
             out.extend(c.rows.iter().filter_map(|r: &RawRow| match Row::decode(r) {
                 Row::Leg(l) if l.covers(tick) => Some(l),
                 _ => None,
