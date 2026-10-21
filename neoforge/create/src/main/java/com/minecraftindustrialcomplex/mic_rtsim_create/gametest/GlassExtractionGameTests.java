@@ -9,6 +9,7 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.glass.Cycles;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.kinetics.motor.CreativeMotorBlockEntity;
+import com.simibubi.create.content.logistics.chute.ChuteBlockEntity;
 import com.simibubi.create.content.redstone.DirectedDirectionalBlock;
 import com.simibubi.create.content.redstone.thresholdSwitch.ThresholdSwitchBlockEntity;
 import net.minecraft.core.BlockPos;
@@ -202,6 +203,83 @@ public final class GlassExtractionGameTests {
                     String after = millstoneView(g);
                     record(t, "disengaged", after);
                     check("the same millstone, domain, entry and gate: " + after + " vs " + before[0], after.equals(before[0]));
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * An upward chute compiles. The main base of a live world (docs/deploy-rehearsal-omegasrv.md) had a
+     * fan-driven upward chute, and the compile threw "downward motion must be negative" (the upward branch
+     * asked Cycles for the downward grab period), which left the whole district not compilable. A creative
+     * motor at 256 RPM turns an encased fan facing up; the fan pushes the chute above it up into a chest.
+     * The compile is complete and compilable; the chute is a CALIBRATED mover with a CHUTE edge into the
+     * chest, and its rate is 16 items per {@code Cycles.chuteGrabPeriod} of its motion (7 ticks at 0.2). The
+     * first compile can come before the fan turns (a chute under gravity): the chute turning up changes its
+     * fingerprint and the compile that follows is the upward one.
+     */
+    @GameTest(template = YARD, batch = "glass_extract_03", timeoutTicks = 600)
+    public static void anUpwardChuteCompiles(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        check("6 ticks per block at 0.2 up", Cycles.chuteTicksPerBlockUp(0.2F) == 6);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos motor = new BlockPos(bx + 3, y, z), fan = motor.above(), chute = fan.above(), chest = chute.above();
+        set(helper, motor, AllBlocks.CREATIVE_MOTOR.getDefaultState().setValue(BlockStateProperties.FACING, Direction.UP));
+        if (helper.getLevel().getBlockEntity(motor) instanceof CreativeMotorBlockEntity m)
+            m.generatedSpeed.setValue(256);
+        set(helper, fan, AllBlocks.ENCASED_FAN.getDefaultState().setValue(BlockStateProperties.FACING, Direction.UP));
+        set(helper, chute, AllBlocks.CHUTE.getDefaultState());
+        set(helper, chest, Blocks.CHEST.defaultBlockState());
+        playerPlaced(helper, chest);
+        long[] id = {0};
+        float[] motion = {0};
+        GlassKit.Graph[] seen = {null};
+        String t = "anUpwardChuteCompiles";
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, chest);
+                    check("the chest's chunk is a district", d != null);
+                    id[0] = d.id;
+                    check("the fan turns", helper.getLevel().getBlockEntity(fan) instanceof KineticBlockEntity k && k.getSpeed() != 0);
+                })
+                .thenExecute(() -> {
+                    // a fan facing up pushes up at positive speed (ChuteBlockEntity.calculatePush reads its
+                    // speed as is); turn the motor the other way if this layout gives the fan minus 256
+                    if (helper.getLevel().getBlockEntity(chute) instanceof ChuteBlockEntity c && c.getItemMotion() < 0
+                            && helper.getLevel().getBlockEntity(motor) instanceof CreativeMotorBlockEntity m)
+                        m.generatedSpeed.setValue(-256);
+                })
+                .thenWaitUntil(() -> {
+                    check("the chute moves up", helper.getLevel().getBlockEntity(chute) instanceof ChuteBlockEntity c && c.getItemMotion() > 0);
+                    motion[0] = ((ChuteBlockEntity) helper.getLevel().getBlockEntity(chute)).getItemMotion();
+                })
+                .thenWaitUntil(() -> {
+                    GlassKit.Graph g = GlassKit.latest(id[0]);
+                    check("a compile's END arrived", g != null);
+                    int flags = g.end().flags();
+                    check("a complete, compilable compile: flags " + flags + ", " + g.describe(), g.complete()
+                            && (flags & (GlassRecords.End.NOT_COMPILABLE | GlassRecords.End.BLACK_BOX)) == 0);
+                    // a compile from before the fan turned has a chute under gravity; the chute's direction is
+                    // in its fingerprint, so a compile with the chute moving up follows (before that was so,
+                    // the downward compile stayed in force with its edges the wrong way round)
+                    check("a compile with an upward (CALIBRATED) chute", g.nodes(GlassRecords.Node.MOVER, GlassRecords.Model.CHUTE).stream()
+                            .anyMatch(n -> n.has(GlassRecords.Node.CALIBRATED)));
+                    seen[0] = g;
+                })
+                .thenExecute(() -> {
+                    GlassKit.Graph g = seen[0];
+                    record(t, "graph", g.describe());
+                    record(t, "motion", Float.toString(motion[0]));
+                    var stores = g.nodes(GlassRecords.Node.STORE, -1);
+                    check("one store, the chest: " + stores.size(), stores.size() == 1 && stores.get(0).inventory() != GlassRecords.NONE);
+                    var chutes = g.nodes(GlassRecords.Node.MOVER, GlassRecords.Model.CHUTE);
+                    check("one chute mover: " + chutes.size(), chutes.size() == 1);
+                    GlassKit.Node c = chutes.get(0);
+                    check("chute to chest", g.edgesFrom(c.index()).stream().anyMatch(e -> e.to() == stores.get(0).index() && e.kind() == GlassRecords.Edge.CHUTE));
+                    int ticks = Cycles.chuteGrabPeriod(motion[0]);
+                    check("7 ticks a grab at 256 RPM: " + ticks + " at motion " + motion[0], motion[0] != 0.2F || ticks == 7);
+                    check("the chute moves 16 per " + ticks + " ticks: " + c.rates(), c.rates().size() == 1 && c.rates().get(0).batch() == Cycles.CHUTE_EXTRACTION
+                            && c.rates().get(0).ticksNum() == ticks && c.rates().get(0).ticksDen() == 1);
                 })
                 .thenSucceed();
     }
