@@ -9,6 +9,7 @@ import com.simibubi.create.content.kinetics.crafter.MechanicalCrafterBlockEntity
 import com.simibubi.create.content.kinetics.deployer.DeployerBlockEntity;
 import com.simibubi.create.content.kinetics.mechanicalArm.ArmBlockEntity;
 import com.simibubi.create.content.kinetics.mechanicalArm.ArmInteractionPoint;
+import com.simibubi.create.content.logistics.chute.ChuteBlockEntity;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
 import com.simibubi.create.content.logistics.tunnel.BeltTunnelBlockEntity;
 import com.simibubi.create.content.redstone.thresholdSwitch.ThresholdSwitchBlockEntity;
@@ -124,6 +125,12 @@ public final class CreateGlass implements GlassExtractor {
                 sum += mix(rel.asLong(), 0x3C);
             h = mix(h, sum);
         }
+        // A chute's direction is structure: down it pulls from above and hands down (or drops), up (a fan
+        // below or above it) it pulls from below and hands up. A fan starting, stopping or turning round
+        // flips it, and a compile from before (a fan whose network had not formed yet) has every edge the
+        // wrong way round. Its speed within a direction is not: an upward chute is CALIBRATED (GB45)
+        if (be instanceof ChuteBlockEntity c)
+            h = mix(h, c.getItemMotion() > 0 ? 0x0C : 0x0D);
         return h;
     }
 
