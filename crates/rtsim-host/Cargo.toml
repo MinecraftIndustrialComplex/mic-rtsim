@@ -26,6 +26,9 @@ flate2.workspace = true
 # The host source (`--view`): the save viewer's backend over the fork, served by mic-viewer.
 rtsim-view.workspace = true
 mic-viewer.workspace = true
+# The fork's copy of the event archive, rolled back to the copied generation as the engine's start
+# rolls a world's back (VIEWER.md §10.5).
+rtsim-archive = { path = "../rtsim-archive" }
 
 [dev-dependencies]
 rtsim-travel.workspace = true

@@ -8,7 +8,10 @@
 //! ```text
 //! <dir>/rtsim/                        the pages: the world's confirmed generation (what the
 //!                                     engine's start opens), page for page; then the host's saves
-//! <dir>/rtsim/archive/                the world's archive (§10.3), when it has one
+//! <dir>/rtsim/archive/                the world's archive (§10.3), when it has one, less the chunks
+//!                                     above the copied generation (§10.5)
+//! <dir>/**/data/surveyor/             Surveyor's terrain summaries of each dimension, when there
+//!                                     (§9): the base map; the host never changes them
 //! <dir>/data/mic_rtsim_journal.dat    the bridge's journal that pairs with those pages
 //! <dir>/level.dat                     the game time (the host keeps it current at each save)
 //! <dir>/serverconfig/mic_rtsim-server.toml   the module switches, when the world has the file
@@ -60,6 +63,8 @@ pub struct ForkInfo {
     pub deep_time_folder: Option<String>,
     /// Files copied from the world's archive.
     pub archive_files: u64,
+    /// Files copied from Surveyor's terrain summaries, over every dimension.
+    pub surveyor_files: u64,
     /// Copies taken (more than one when the world saved during the copy).
     pub attempts: u32,
     /// Notes for the operator (e.g. pages ahead of the journal after a crash).
@@ -283,6 +288,16 @@ fn copy_file(from: &Path, to: &Path) -> Result<bool, String> {
     }
 }
 
+/// Copies a file with no fsync (the archive and Surveyor's summaries are records the world itself
+/// writes unsynced, and the marker is written after them); `false` when `from` is not there.
+fn copy_loose(from: &Path, to: &Path) -> Result<bool, String> {
+    match fs::copy(from, to) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{}: {e}", from.display())),
+    }
+}
+
 /// Copies a folder tree file by file; a file that vanishes during the copy is skipped.
 fn copy_tree(from: &Path, to: &Path) -> Result<u64, String> {
     let mut n = 0;
@@ -300,11 +315,52 @@ fn copy_tree(from: &Path, to: &Path) -> Result<u64, String> {
         let dst = to.join(entry.file_name());
         if ty.is_dir() {
             n += copy_tree(&entry.path(), &dst)?;
-        } else if ty.is_file() && copy_file(&entry.path(), &dst)? {
+        } else if ty.is_file() && copy_loose(&entry.path(), &dst)? {
             n += 1;
         }
     }
     Ok(n)
+}
+
+/// Folders under a dimension's folder that never hold another dimension.
+const NOT_DIMENSIONS: [&str; 4] = ["region", "entities", "poi", "data"];
+/// How deep `dimensions/<namespace>/<path>` is searched (a path may have parts).
+const DIMENSION_DEPTH: usize = 6;
+
+/// The Surveyor folders of `world`'s dimensions (`dir_for` in mic-viewer-surveyor), relative.
+fn surveyor_dirs(world: &Path) -> Result<Vec<PathBuf>, String> {
+    let at = |base: PathBuf| base.join("data").join("surveyor");
+    let mut found: Vec<PathBuf> = [PathBuf::new(), "DIM-1".into(), "DIM1".into()]
+        .into_iter()
+        .map(at)
+        .filter(|d| world.join(d).is_dir())
+        .collect();
+    let mut stack = vec![(PathBuf::from("dimensions"), 0)];
+    while let Some((rel, depth)) = stack.pop() {
+        let entries = match fs::read_dir(world.join(&rel)) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("{}: {e}", world.join(&rel).display())),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", world.join(&rel).display()))?;
+            let name = entry.file_name();
+            if !entry.file_type().is_ok_and(|t| t.is_dir())
+                || NOT_DIMENSIONS.iter().any(|n| name == *n)
+            {
+                continue;
+            }
+            let sub = rel.join(&name);
+            if world.join(at(sub.clone())).is_dir() {
+                found.push(at(sub.clone()));
+            }
+            if depth < DIMENSION_DEPTH {
+                stack.push((sub, depth + 1));
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 fn finish(
@@ -319,6 +375,26 @@ fn finish(
         &world.join(save::PAGES).join("archive"),
         &partial.join("archive"),
     )?;
+    let mut notes = Vec::new();
+    if archive_files > 0 {
+        // The world's newest chunks may be from a save it never confirmed, which the fork's pages
+        // do not hold: cut them, as the engine's start does (§10.5), or the host's own later saves
+        // would bring them into view. Open also drops what a save in progress left half copied.
+        let mut a = rtsim_archive::Archive::open(partial.join("archive"))
+            .map_err(|e| format!("the archive's copy: {e}"))?;
+        let cut = a
+            .cut_above(c.generation.obs_seq)
+            .map_err(|e| format!("the archive's copy: {e}"))?;
+        if cut > 0 {
+            notes.push(format!(
+                "{cut} archive chunks from saves after the copied generation were left out, as the world's next start would drop them"
+            ));
+        }
+    }
+    let mut surveyor_files = 0;
+    for d in surveyor_dirs(world)? {
+        surveyor_files += copy_tree(&world.join(&d), &dir.join(&d))?;
+    }
     let pages_dir = dir.join(save::PAGES);
     fs::rename(partial, &pages_dir).map_err(|e| format!("{}: {e}", pages_dir.display()))?;
     if let Some(b) = &c.journal {
@@ -334,7 +410,6 @@ fn finish(
     let manifest = Path::new(&folder).join("manifest.json");
     let deep_time_folder =
         copy_file(&world.join(&manifest), &dir.join(&manifest))?.then_some(folder);
-    let mut notes = Vec::new();
     if c.parsed.save.next_obs.saturating_sub(1) < c.generation.obs_seq {
         notes.push(format!(
             "the pages hold observations through {}, the journal only to {}: the world stopped between the engine's save and the journal's (P29); the host starts from the pages, as the game would",
@@ -363,6 +438,7 @@ fn finish(
         game_time: level.as_ref().and_then(save::level_time),
         deep_time_folder,
         archive_files,
+        surveyor_files,
         attempts,
         notes,
     };
