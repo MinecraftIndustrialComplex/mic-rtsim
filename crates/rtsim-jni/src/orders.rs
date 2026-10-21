@@ -73,6 +73,9 @@ pub const OP_SHIP_COMMAND: u16 = 26;
 pub const OP_HERD_COMMAND: u16 = 27;
 pub const OP_HERD_FOUND: u16 = 28;
 pub const OP_CONFLICT_COMMAND: u16 = 29;
+pub const OP_WORKS_GRANT: u16 = 30;
+pub const OP_WORKS_RAID: u16 = 31;
+pub const OP_TRIBUTE_START: u16 = 32;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -287,6 +290,24 @@ pub enum Order {
         names: Vec<(u32, u32, String)>,
         record: Vec<u8>,
     },
+    /// TEST: coin (thousandths of the village's own currency) put straight into a phase 1
+    /// village's works purse (SINK.md), ledgered as minted; applied at the next step.
+    WorksGrant {
+        village: u64,
+        amount: i64,
+    },
+    /// TEST: a dragon raided a phase 1 village (SINK.md §4.6): golems first for a season, and
+    /// with `tribute` its purse is the dragon's; applied at the next step.
+    WorksRaid {
+        village: u64,
+        tribute: bool,
+    },
+    /// TEST: phase 1 village `village` becomes the tributary of the dragons' lair `lair` (keys),
+    /// as if a dragon of the lair had raided it (SINK.md §4.6); applied at the next step.
+    TributeStart {
+        village: u64,
+        lair: u64,
+    },
 }
 
 impl Order {
@@ -299,6 +320,9 @@ impl Order {
                 | Order::Phase1SpawnNear { .. }
                 | Order::Phase1Advance(_)
                 | Order::HerdFound { .. }
+                | Order::WorksGrant { .. }
+                | Order::WorksRaid { .. }
+                | Order::TributeStart { .. }
         )
     }
 
@@ -314,6 +338,9 @@ impl Order {
                 | Order::HerdCommand { .. }
                 | Order::HerdFound { .. }
                 | Order::ConflictCommand { .. }
+                | Order::WorksGrant { .. }
+                | Order::WorksRaid { .. }
+                | Order::TributeStart { .. }
         )
     }
 }
@@ -626,6 +653,18 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 search: [c.f64()?, c.f64()?],
             },
             OP_P1_ADVANCE => Order::Phase1Advance(c.u64()?),
+            OP_WORKS_GRANT => Order::WorksGrant {
+                village: c.u64()?,
+                amount: c.u64()? as i64,
+            },
+            OP_WORKS_RAID => Order::WorksRaid {
+                village: c.u64()?,
+                tribute: c.u32()? != 0,
+            },
+            OP_TRIBUTE_START => Order::TributeStart {
+                village: c.u64()?,
+                lair: c.u64()?,
+            },
             OP_INDUSTRY_THREAT => {
                 let id = c.u64()?;
                 let source = *SOURCES
@@ -1048,6 +1087,24 @@ impl Encoder {
                 self.u64(*t);
                 self.end(at);
             }
+            Order::WorksGrant { village, amount } => {
+                let at = self.begin(OP_WORKS_GRANT);
+                self.u64(*village);
+                self.u64(*amount as u64);
+                self.end(at);
+            }
+            Order::WorksRaid { village, tribute } => {
+                let at = self.begin(OP_WORKS_RAID);
+                self.u64(*village);
+                self.u32(u32::from(*tribute));
+                self.end(at);
+            }
+            Order::TributeStart { village, lair } => {
+                let at = self.begin(OP_TRIBUTE_START);
+                self.u64(*village);
+                self.u64(*lair);
+                self.end(at);
+            }
             Order::IndustryThreat(t) => {
                 let at = self.begin(OP_INDUSTRY_THREAT);
                 self.u64(t.id);
@@ -1281,6 +1338,18 @@ mod tests {
                 search: [1_000_000.5, -3.0],
             },
             Order::Phase1Advance(72_000),
+            Order::WorksGrant {
+                village: 6,
+                amount: 25_000,
+            },
+            Order::WorksRaid {
+                village: 6,
+                tribute: true,
+            },
+            Order::TributeStart {
+                village: 6,
+                lair: 0x1d_0000_0003,
+            },
             Order::IndustryThreat(Threat {
                 id: 5,
                 source: ThreatSource::Bandit,

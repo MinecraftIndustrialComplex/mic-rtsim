@@ -419,6 +419,54 @@ impl Line {
         }
         None
     }
+
+    /// Whether the trajectory under the current rates ever sinks anything.
+    pub fn will_sink(&self) -> bool {
+        self.plan().segs().iter().any(|s| s.sink > 0)
+    }
+
+    /// What the next `n` boundaries sink above the ceiling, without changing anything (the
+    /// money sink's purse grows by exactly this, SINK.md §3).
+    pub fn sunk_over(&self, n: u64) -> Count {
+        let plan = self.plan();
+        let mut left = n;
+        let mut total: i128 = 0;
+        for seg in plan.segs() {
+            if left == 0 {
+                break;
+            }
+            let k = seg.len.min(left);
+            total += i128::from(seg.sink) * i128::from(k);
+            left -= k;
+        }
+        Count::try_from(total).expect("sink overflow")
+    }
+
+    /// The fewest boundaries after which this line has sunk at least `amount`: `Some(0)` when
+    /// `amount` is not positive, `None` when the trajectory never sinks that much.
+    pub fn steps_to_sink(&self, amount: Count) -> Option<u64> {
+        if amount <= 0 {
+            return Some(0);
+        }
+        let plan = self.plan();
+        let mut need = i128::from(amount);
+        let mut done: u64 = 0;
+        for seg in plan.segs() {
+            let rate = i128::from(seg.sink);
+            if rate > 0 {
+                let j = ceil_div(need, rate);
+                if seg.len == FOREVER || j <= i128::from(seg.len) {
+                    return u64::try_from(j).ok().map(|j| done.saturating_add(j));
+                }
+                need -= rate * i128::from(seg.len);
+            }
+            if seg.len == FOREVER {
+                return None;
+            }
+            done = done.saturating_add(seg.len);
+        }
+        None
+    }
 }
 
 /// The first step `j` in `1..=len` at which `level_of(s + j·delta)` differs from `from`.
@@ -607,6 +655,33 @@ mod tests {
                 prop_assert_eq!(c.level, Some(f));
             } else if let Some(l) = c.level {
                 prop_assert!(l > n);
+            }
+        }
+
+        /// What a line will sink, and when it has sunk an amount, agree with stepping.
+        #[test]
+        fn sink_projection_matches_steps(stock in 0i64..10_000, target in 0i64..5_000, cap in 0i64..500, cons in 0i64..500, inflow in 0i64..500, outflow in 0i64..500, n in 0u64..200, slack in prop_oneof![Just(0i64), 0i64..300, Just(UNLIMITED)], above in prop_oneof![Just(0i64), 0i64..5_000], want in 0i64..20_000) {
+            let mut base = line(stock, target, cap, cons, inflow, outflow);
+            base.rates.slack = slack;
+            base.ceiling = target + above;
+            let mut stepped = base;
+            let mut first = (want <= 0).then_some(0u64);
+            for i in 1..=n {
+                step(&mut stepped);
+                if first.is_none() && stepped.book.sunk >= want {
+                    first = Some(i);
+                }
+            }
+            prop_assert_eq!(base.sunk_over(n), stepped.book.sunk);
+            match first {
+                Some(f) => prop_assert_eq!(base.steps_to_sink(want), Some(f)),
+                None => {
+                    if let Some(k) = base.steps_to_sink(want) {
+                        prop_assert!(k > n);
+                        prop_assert!(base.sunk_over(k) >= want);
+                        prop_assert!(base.sunk_over(k - 1) < want);
+                    }
+                }
             }
         }
     }

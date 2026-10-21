@@ -768,6 +768,13 @@ impl World {
             .culture()
             .map_or(f64::INFINITY, |c| self.mint_cost[c.index()]);
         let mut changes = Vec::new();
+        // The currency lines after the step, for the works purse (SINK.md §4.4), when the village
+        // has something to buy.
+        let works_par = self.works_wanted(i).then(|| {
+            let home = self.nodes[i].kind.culture();
+            (home, self.mint_cost)
+        });
+        let mut coins: Option<Vec<crate::works::CoinLine>> = None;
         let World {
             markets,
             nodes,
@@ -794,6 +801,11 @@ impl World {
                 let mut s = Snapshot::of_after(i, m, at, node.last_sent.as_deref());
                 s.inflows = inflows_by_source(node, edges, nb);
                 count_suppliers(&mut s, node);
+                if let Some((Some(home), mint_cost)) = works_par {
+                    coins = Some(crate::works::coin_lines(m, |g| {
+                        crate::works::mint_par(goods, mint_cost, home, g)
+                    }));
+                }
                 s
             })
             .expect("every node has a market");
@@ -854,6 +866,9 @@ impl World {
             self.emit_snapshot(i, at, snap);
         }
         self.growth_check(i, at);
+        if let Some(coins) = coins {
+            self.works_rebook(i, at, &coins);
+        }
         if self.cfg.check_every_event {
             self.assert_conserved(at);
         }

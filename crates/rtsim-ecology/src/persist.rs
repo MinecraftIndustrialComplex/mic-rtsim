@@ -41,8 +41,9 @@ use rtsim_travel::legs::{Meeting, Path, Stamp};
 use crate::boundary::{self, SpeciesDict};
 use crate::dragon::{Dragon, FlightLeg, Lair, LairKind, Lairs, Purpose, State, Target};
 use crate::engine::{
-    DRAGON_TABLE, DRAGONS_PER_PAGE, DragonStats, Dragons, Ev, LAIR_CELL_TABLE, LAIR_KEY_TABLE,
-    PlayerView, ROAD_CELL_TABLE, VILLAGE_CELL_TABLE, WHEEL_TABLE,
+    Chest, DRAGON_TABLE, DRAGONS_PER_PAGE, DragonStats, Dragons, Ev, LAIR_CELL_TABLE,
+    LAIR_KEY_TABLE, Placing, PlayerView, ROAD_CELL_TABLE, TributeRow, VILLAGE_CELL_TABLE,
+    WHEEL_TABLE,
 };
 use crate::homes::{Entry, Homes, PlayerHome};
 use crate::index::PreyIndex;
@@ -50,10 +51,11 @@ use crate::prey::{Item, PreyLedger};
 use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
 
-/// "RTDG" was the format before the indexes moved behind the meta (PF9); no older save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD2");
-/// The meta page of a paged save ("RTDM" before PF9).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN2");
+/// "RTDG" was the format before the indexes moved behind the meta (PF9), "RTD2" before tribute
+/// (SINK.md §4.6); no older save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD3");
+/// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN3");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -442,6 +444,9 @@ fn put_lair(w: &mut Writer, l: &Lair) {
     put_items(w, &l.hoard);
     put_opt_tick(w, l.vacant_since);
     w.u32(l.plan);
+    put_items(w, &l.unplaced);
+    w.var_i64(l.placed);
+    w.var_u64(l.stacks);
 }
 
 fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
@@ -465,6 +470,9 @@ fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
         hoard: get_items(r)?,
         vacant_since: get_opt_tick(r)?,
         plan: r.u32()?,
+        unplaced: get_items(r)?,
+        placed: r.var_i64()?,
+        stacks: r.var_u64()?,
     })
 }
 
@@ -512,6 +520,7 @@ impl Row for Lair {
         self.name.capacity()
             + self.occupants.capacity() * std::mem::size_of::<Handle<Dragon>>()
             + btree_bytes(self.hoard.len(), std::mem::size_of::<(Item, i64)>())
+            + btree_bytes(self.unplaced.len(), std::mem::size_of::<(Item, i64)>())
     }
 }
 
@@ -602,6 +611,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u8(12);
             w.u64(d.to_bits());
         }
+        Ev::Tribute { node, stamp } => {
+            w.u8(13);
+            w.var_u64(u64::from(node));
+            w.u32(stamp);
+        }
     }
 }
 
@@ -663,6 +677,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             plan: r.u32()?,
         },
         12 => Ev::Death { d: h(r)? },
+        13 => Ev::Tribute {
+            node: u32_of(r.var_u64()?)?,
+            stamp: r.u32()?,
+        },
         t => return bad(format!("dragon event {t}")),
     })
 }
@@ -772,7 +790,7 @@ fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     Ok(m.into())
 }
 
-const STATS: usize = 28;
+const STATS: usize = 31;
 
 fn stats_array(s: &DragonStats) -> [u64; STATS] {
     [
@@ -804,6 +822,9 @@ fn stats_array(s: &DragonStats) -> [u64; STATS] {
         s.hoards_robbed,
         s.herd_hunts,
         s.seen_across_stop,
+        s.tributes,
+        s.tribute_lapses,
+        s.tribute_stacks,
     ]
 }
 
@@ -837,6 +858,9 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
         hoards_robbed: v[25],
         herd_hunts: v[26],
         seen_across_stop: v[27],
+        tributes: v[28],
+        tribute_lapses: v[29],
+        tribute_stacks: v[30],
     }
 }
 
@@ -915,7 +939,9 @@ impl Dragons {
         w.u64(self.next_seed);
         put_homes(w, &self.homes);
         let l = &self.ledger;
-        for m in [&l.taken, &l.eaten, &l.burnt, &l.hoarded, &l.robbed, &l.lost] {
+        for m in [
+            &l.taken, &l.eaten, &l.burnt, &l.hoarded, &l.robbed, &l.lost, &l.tribute,
+        ] {
             put_items128(w, m);
         }
         stats_array(&self.stats).iter().for_each(|v| w.var_u64(*v));
@@ -975,6 +1001,23 @@ impl Dragons {
         self.embodied.iter().for_each(|d| w.u64(d.to_bits()));
         w.var_u64(self.vacant.len() as u64);
         self.vacant.iter().for_each(|l| w.var_u64(u64::from(*l)));
+        w.u32(self.tribute_stamp);
+        w.var_u64(self.tribute.len() as u64);
+        for (node, row) in &self.tribute {
+            w.var_u64(u64::from(*node));
+            w.u32(row.lair);
+            w.u32(row.stamp);
+            put_opt_tick(w, row.paid_at);
+        }
+        w.var_u64(self.placing.len() as u64);
+        for (op, p) in &self.placing {
+            w.u64(*op);
+            w.u32(p.lair);
+            put_item(w, p.item);
+            w.var_i64(p.count);
+            w.u32(p.chest.dimension);
+            p.chest.pos.iter().for_each(|v| w.var_i64(i64::from(*v)));
+        }
     }
 
     /// An engine from what [`Dragons::put_meta`] wrote, with empty row tables.
@@ -992,6 +1035,7 @@ impl Dragons {
             hoarded: get_items128(r)?,
             robbed: get_items128(r)?,
             lost: get_items128(r)?,
+            tribute: get_items128(r)?,
         };
         let mut s = [0u64; STATS];
         for v in &mut s {
@@ -1055,6 +1099,36 @@ impl Dragons {
         }
         for _ in 0..r.len_prefix(1)? {
             d.vacant.insert(u32_of(r.var_u64()?)?);
+        }
+        d.tribute_stamp = r.u32()?;
+        for _ in 0..r.len_prefix(10)? {
+            let node = u32_of(r.var_u64()?)?;
+            let row = TributeRow {
+                lair: r.u32()?,
+                stamp: r.u32()?,
+                paid_at: get_opt_tick(r)?,
+            };
+            d.tribute.insert(node, row);
+        }
+        for _ in 0..r.len_prefix(20)? {
+            let op = r.u64()?;
+            let lair = r.u32()?;
+            let item = get_item(r)?;
+            let count = r.var_i64()?;
+            let dimension = r.u32()?;
+            let mut pos = [0; 3];
+            for v in &mut pos {
+                *v = i32_of(r.var_i64()?)?;
+            }
+            d.placing.insert(
+                op,
+                Placing {
+                    lair,
+                    item,
+                    count,
+                    chest: Chest { dimension, pos },
+                },
+            );
         }
         Ok(d)
     }
@@ -1314,7 +1388,9 @@ impl Dragons {
         let nl = self.lairs.len() as u32;
         let lairs_ok = self.lair_by_key.values().all(|&l| l < nl)
             && self.lair_cells.values().flatten().all(|&l| l < nl)
-            && self.vacant.iter().all(|&l| l < nl);
+            && self.vacant.iter().all(|&l| l < nl)
+            && self.tribute.values().all(|t| t.lair < nl)
+            && self.placing.values().all(|p| p.lair < nl);
         if !lairs_ok {
             return bad("a lair index names a lair past the table".into());
         }

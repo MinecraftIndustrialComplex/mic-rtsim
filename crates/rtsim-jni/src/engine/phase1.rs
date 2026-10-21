@@ -35,7 +35,6 @@
 
 mod catalog;
 mod cmds;
-mod log;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -52,6 +51,7 @@ use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::{Amount, GoodId, MILLI, OfferSide};
 use rtsim_travel::caravan::{Body, GroupKind};
 use rtsim_world::bases::CaravanRef;
+use rtsim_world::works::{self, WorkCap, WorkDef, WorkGroup, WorkPlace, WorkVariant};
 use rtsim_world::{CaravanId, Command, Visible, World, WorldConfig, identity_op};
 
 use super::{State, log_info, log_warn};
@@ -62,7 +62,8 @@ use crate::orders::{
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 pub(super) use cmds::P1Cmd;
-use log::{Input, Logged, Uuid};
+use rtsim_world::inputs as log;
+use rtsim_world::inputs::{Input, Logged, Uuid};
 
 /// The phase 1 pages: table 0x5000 ('P'; table 1 is the core's and the industry link's key, the
 /// industry engine's are 0x4900 to 0x4902) holds the meta page and the tail's chunks; table
@@ -81,14 +82,14 @@ pub const TAIL_MAX_INPUTS: usize = CHUNK;
 /// ... or once the snapshot is this many world ticks old (S3, PLACEHOLDER: one world day): a
 /// start replays the world's time since its snapshot, inputs or not.
 pub const TAIL_MAX_TICKS: u64 = 24_000;
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
+pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
 /// Version 2: a snapshot and a tail (S1). Version 3: the snapshot's world writes its market rows
 /// as a row table (`World::save` RTW2, docs/choices-paging-modules.md). Version 4: the world pages
 /// through the store (`World::save_paged`, PF17), the snapshot pieces hold the link's part only,
 /// and the state hash is written in TEST mode only (0 otherwise, PF16). Before release a version
 /// this build does not read is dropped (S5, [`when_pages_unreadable`]); there is no migration.
-const META_VERSION: u16 = 4;
-const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
+pub const META_VERSION: u16 = 4;
+pub const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
 
 fn chunk_key(k: usize) -> PageKey {
     PageKey::new(TABLE, 1 + k as u64)
@@ -186,8 +187,16 @@ pub mod stat {
     pub const INPUTS: usize = 13;
     pub const SPAWNS_SENT: usize = 14;
     pub const WORLD_TICK: usize = 15;
+    /// Works the world bought from village purses (SINK.md), this session's world.
+    pub const WORKS_BOUGHT: usize = 16;
+    /// Bought works the bridge answered placed (APPLIED or DUPLICATE).
+    pub const WORKS_PLACED: usize = 17;
+    /// Bought works the bridge answered NOT_FREE or FAILED: the kind is full (MS-11).
+    pub const WORKS_REFUSED: usize = 18;
+    /// Tributes villages paid to dragons' lairs (MS-5).
+    pub const TRIBUTES: usize = 19;
 }
-pub const STATS: usize = 16;
+pub const STATS: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PuppetOf {
@@ -1016,7 +1025,26 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             }
             let key = wire::u64_at(b, obs::village_census::VILLAGE);
             let residents = wire::u32_at(b, obs::village_census::RESIDENTS);
-            census(st, key, residents);
+            let golems = wire::u32_at(b, obs::village_census::GOLEMS);
+            census(st, key, residents, golems);
+        }
+        obs::WORK_CATALOG if rec.size() >= obs::work_catalog::DEFS => {
+            let Some(defs) = work_catalog(st, rec) else {
+                log_warn("phase 1: a malformed WORK_CATALOG was ignored");
+                return;
+            };
+            let l = &mut st.phase1;
+            if defs != l.world.works_catalog {
+                // Taken while switched off too, at the frozen clock (as HOUSE_PLACED, PR13): the
+                // catalogue is sent once a session.
+                let at = if l.enabled {
+                    l.wt(st.game_time)
+                } else {
+                    l.world.now().0
+                };
+                l.input(Input::Works { defs }, at);
+                take_world_commands(st);
+            }
         }
         // VILLAGE_GOSSIP is vanilla's own record of players; the engine reads it as latest
         // state and acts on none of it yet (the knowledge crate keeps its own).
@@ -1026,15 +1054,23 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
 
 /// A census: the first one sets the village's population (its adoption guessed it from its
 /// pieces); later ones only raise it, since growth books residents before they exist (P17) and a
-/// census of a part-loaded village counts low (choice V9).
-fn census(st: &mut State, key: u64, residents: u32) {
+/// census of a part-loaded village counts low (choice V9). Its golems are the latest count
+/// (SINK.md MS-8: defenders against dragons), logged when they change.
+fn census(st: &mut State, key: u64, residents: u32, golems: u32) {
     let l = &mut st.phase1;
-    if l.scripted.contains(&key) || residents == 0 {
+    if l.scripted.contains(&key) {
         return;
     }
     let Some(&i) = l.nodes.get(&key) else {
         return;
     };
+    if l.world.golems(i) != golems {
+        let at = l.wt(st.game_time);
+        l.input(Input::Golems { key, golems }, at);
+    }
+    if residents == 0 {
+        return;
+    }
     let pop = l.world.nodes[i].local.pop;
     // The first census is logged even when it changes nothing: the log is what tells a later
     // session which villages had theirs.
@@ -1049,6 +1085,114 @@ fn census(st: &mut State, key: u64, residents: u32) {
             at,
         );
     }
+}
+
+/// The works catalogue a WORK_CATALOG record holds (docs/boundary.md §4.1, SINK.md §4.2), its
+/// names through Java's dictionary, sorted and deduplicated as the world keeps it. `None` when the
+/// record is malformed. A kind of a culture the phase 1 world does not trade in, or naming what
+/// the dictionary does not know, is left out (logged); an item none of the world's goods is
+/// priced as material labour (MSC3).
+fn work_catalog(st: &State, rec: &Rec<'_>) -> Option<Vec<WorkDef>> {
+    use obs::work_catalog as k;
+    let b = rec.bytes;
+    let size = rec.size();
+    let name = |kind: u32, id: u32| st.world.java_dict.get(&(kind, id)).cloned();
+    let n = wire::u32_at(b, k::N) as usize;
+    let mut at = k::DEFS;
+    let mut defs = Vec::new();
+    for _ in 0..n {
+        if at + k::DEF > size {
+            return None;
+        }
+        let id = name(wire::DICT_WORK, wire::u32_at(b, at + k::D_ID));
+        let group = WorkGroup::from_u32(wire::u32_at(b, at + k::D_GROUP));
+        let culture = name(wire::DICT_CULTURE, wire::u32_at(b, at + k::D_CULTURE))
+            .and_then(|c| catalog::culture(&c));
+        let style = match wire::u32_at(b, at + k::D_STYLE) {
+            0 => Some(0),
+            s => name(wire::DICT_STRUCTURE, s).map(|s| works::style_of(&s)),
+        };
+        let cap_n = wire::u32_at(b, at + k::D_CAP_N);
+        let cap = match wire::u32_at(b, at + k::D_CAP) {
+            k::CAP_PER_RESIDENTS => Some(WorkCap::PerResidents(cap_n.max(1))),
+            k::CAP_FIXED => Some(WorkCap::Fixed(cap_n)),
+            _ => None,
+        };
+        let nv = wire::u32_at(b, at + k::D_VARIANTS) as usize;
+        at += k::DEF;
+        let mut variants = Vec::new();
+        let mut known = true;
+        for _ in 0..nv {
+            if at + k::VARIANT > size {
+                return None;
+            }
+            let what = wire::u32_at(b, at + k::V_WHAT);
+            let place = match wire::u32_at(b, at + k::V_PLACE) {
+                k::PLACE_TEMPLATE => name(wire::DICT_TEMPLATE, what).map(|template| {
+                    let processors = match wire::u32_at(b, at + k::V_PROCESSORS) {
+                        0 => Some(String::new()),
+                        p => name(wire::DICT_PROCESSORS, p),
+                    };
+                    processors.map(|processors| WorkPlace::Template {
+                        template,
+                        processors,
+                    })
+                }),
+                k::PLACE_BODY => {
+                    name(wire::DICT_BODY, what).map(|body| Some(WorkPlace::Spawn { body }))
+                }
+                _ => None,
+            }
+            .flatten();
+            let blocks = i64::from(wire::u32_at(b, at + k::V_BLOCKS));
+            let ni = wire::u32_at(b, at + k::V_ITEMS) as usize;
+            at += k::VARIANT;
+            if at + ni * k::ITEM > size {
+                return None;
+            }
+            let mut goods: BTreeMap<GoodId, i64> = BTreeMap::new();
+            let mut other_items = 0i64;
+            for j in 0..ni {
+                let item = wire::u32_at(b, at + j * k::ITEM);
+                let count = i64::from(wire::u32_at(b, at + j * k::ITEM + 4));
+                match name(wire::DICT_ITEM, item).and_then(|i| st.phase1.cat.good(&i)) {
+                    Some(g) => *goods.entry(g).or_default() += count,
+                    None => other_items += count,
+                }
+            }
+            at += ni * k::ITEM;
+            match place {
+                Some(place) => variants.push(WorkVariant {
+                    place,
+                    goods: goods.into_iter().collect(),
+                    other_items,
+                    blocks,
+                }),
+                None => known = false,
+            }
+        }
+        match (id, group, culture, style, cap) {
+            (Some(id), Some(group), Some(culture), Some(style), Some(cap))
+                if known && !variants.is_empty() =>
+            {
+                defs.push(WorkDef {
+                    id,
+                    group,
+                    culture,
+                    style,
+                    cap,
+                    variants,
+                })
+            }
+            (id, ..) => log_warn(&format!(
+                "phase 1: work kind {} left out of the catalogue (an unknown name, culture or cap)",
+                id.as_deref().unwrap_or("?")
+            )),
+        }
+    }
+    defs.sort_by(|a, b| a.id.cmp(&b.id));
+    defs.dedup_by(|a, b| a.id == b.id);
+    Some(defs)
 }
 
 // ---- hooks: journaled records ---------------------------------------------------------------------
@@ -1129,6 +1273,11 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             if st.phase1.scripted.contains(&village) || !st.phase1.nodes.contains_key(&village) {
                 return;
             }
+            // A work placed (SINK.md): its COMMAND_RESULT, right after, is what the world takes;
+            // a work has no resident.
+            if st.phase1.world.is_work_op(op) {
+                return;
+            }
             st.phase1.input(Input::HousePlaced { op }, at);
             take_world_commands(st);
         }
@@ -1172,6 +1321,11 @@ fn adopted(st: &mut State, rec: &Rec<'_>, at: u64) {
         resources,
     };
     st.phase1.input(input, at);
+    // Its village type: which of the catalogue's styled works it buys (SINK.md §4.2).
+    let style = works::style_of(&structure);
+    if style != 0 && st.phase1.nodes.contains_key(&key) {
+        st.phase1.input(Input::WorkStyle { key, style }, at);
+    }
     st.phase1.stats[stat::VILLAGES] = st.phase1.nodes.len() as u64;
     take_world_commands(st);
 }
@@ -1519,6 +1673,24 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             l.resend.retain(|(_, o, _)| *o != op);
             // A kept command queued again after a restart that Java applied before the crash.
             l.queue.retain(|c| c.kept_op() != Some(op));
+            // A bought work's answer (SINK.md MS-11): placed, or its kind is full. Taken while
+            // switched off too, at the frozen clock, as HOUSE_PLACED is (PR13).
+            if l.world.is_work_op(op) {
+                use obs::command_result as r;
+                let placed = rec.aux == r::APPLIED || rec.aux == r::DUPLICATE_OP;
+                let at = if l.enabled {
+                    l.wt(wire::i64_at(b, obs::GAME_TIME))
+                } else {
+                    l.world.now().0
+                };
+                l.input(Input::WorkResult { op, placed }, at);
+                if placed {
+                    l.stats[stat::WORKS_PLACED] += 1;
+                } else {
+                    l.stats[stat::WORKS_REFUSED] += 1;
+                }
+                take_world_commands(st);
+            }
         }
         _ => {}
     }
@@ -1569,6 +1741,36 @@ pub(super) fn directive(st: &mut State, order: Order) {
         }
         Order::Phase1Advance(t) => {
             l.offset = l.offset.saturating_add(t);
+        }
+        Order::WorksGrant { village, amount } => {
+            // Switched off the world's clock is frozen (U10): a test's raid or grant waits for
+            // nothing and is dropped.
+            if l.enabled && l.nodes.contains_key(&village) {
+                let at = l.wt(st.game_time);
+                l.input(
+                    Input::Grant {
+                        key: village,
+                        amount,
+                    },
+                    at,
+                );
+                take_world_commands(st);
+            }
+        }
+        Order::WorksRaid { village, tribute } => {
+            // Switched off the world's clock is frozen (U10): a test's raid or grant waits for
+            // nothing and is dropped.
+            if l.enabled && l.nodes.contains_key(&village) {
+                let at = l.wt(st.game_time);
+                l.input(
+                    Input::Raided {
+                        key: village,
+                        tribute,
+                    },
+                    at,
+                );
+                take_world_commands(st);
+            }
         }
         Order::Phase1SpawnNear {
             agent,
@@ -1630,6 +1832,8 @@ pub(super) fn simulate(st: &mut State) {
         .filter(|p| p.state == PState::Embodied)
         .count() as u64;
     l.stats[stat::WORLD_TICK] = l.world.now().0;
+    l.stats[stat::WORKS_BOUGHT] = l.world.stats.works;
+    l.stats[stat::TRIBUTES] = l.world.stats.tributes;
 }
 
 /// Turns the world's commands into records. Scripted villages get none.
@@ -1747,6 +1951,58 @@ fn take_world_commands(st: &mut State) {
                     flags: cmd::spawn_resident::FLAG_AT_HOUSE,
                     pos: [0.0; 3],
                     house: r.house,
+                })
+            }
+            // A bought work (SINK.md): its template on a free plot near the meeting point, as a
+            // house is placed, or its body at the meeting point. Kept by op like a house.
+            Command::PlaceWork(p) => {
+                if st.phase1.scripted.contains(&p.village) {
+                    continue;
+                }
+                let Some(dimension) = Link::java_dim(&st.world, p.frame) else {
+                    log_warn(&format!(
+                        "phase 1: no dimension for frame {} (work {:#x} dropped)",
+                        p.frame, p.op
+                    ));
+                    continue;
+                };
+                P1Cmd::PlaceHouse(PlaceHouseCmd {
+                    op: p.op,
+                    village: p.village,
+                    dimension,
+                    template: p.template,
+                    processors: p.processors,
+                    pos: [p.x, 0, p.z],
+                    rotation: u32::from(p.rotation),
+                    mirror: 0,
+                    flags: u32::from(
+                        cmd::place_house::FLAG_SEARCH | cmd::place_house::FLAG_Y_FROM_VILLAGE,
+                    ),
+                    radius: p.radius,
+                    seed: p.seed,
+                    y_offset: 0,
+                })
+            }
+            Command::SpawnWork(s) => {
+                let l = &st.phase1;
+                if l.scripted.contains(&s.village) {
+                    continue;
+                }
+                let Some(&i) = l.nodes.get(&s.village) else {
+                    continue;
+                };
+                let Some(dimension) = Link::java_dim(&st.world, l.world.nodes[i].pos.frame) else {
+                    continue;
+                };
+                P1Cmd::SpawnResident(SpawnResidentCmd {
+                    op: s.op,
+                    village: s.village,
+                    dimension,
+                    body: s.body,
+                    profession: String::new(),
+                    flags: cmd::spawn_resident::FLAG_AT_VILLAGE,
+                    pos: [0.0; 3],
+                    house: 0,
                 })
             }
         };
@@ -2643,6 +2899,36 @@ pub(super) fn villages(st: &State) -> BTreeSet<u64> {
     st.phase1.nodes.keys().copied().collect()
 }
 
+/// Every village's works (TEST mode's inspection, SINK.md), indexed by `WORKS_*`: works bought,
+/// kinds full, the purse now, golems the census counts, coin paid as tribute and coin spent on
+/// works (thousandths, every currency summed).
+pub(super) fn works_view(st: &State) -> BTreeMap<u64, [i64; WORKS_VIEW]> {
+    let l = &st.phase1;
+    let now = l.world.now();
+    let sum = |v: &[(GoodId, Amount)]| v.iter().map(|&(_, a)| a).sum::<i64>();
+    let mut out = BTreeMap::new();
+    for (&key, &i) in &l.nodes {
+        let Some(w) = l.world.works_of(i) else {
+            continue;
+        };
+        out.insert(
+            key,
+            [
+                i64::from(w.nth),
+                w.full.len() as i64,
+                sum(&l.world.works_purse(i, now)),
+                i64::from(w.golems),
+                sum(&w.tribute),
+                sum(&w.spent),
+            ],
+        );
+    }
+    out
+}
+
+/// The length of a village's works view ([`works_view`]).
+pub const WORKS_VIEW: usize = 6;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2781,8 +3067,8 @@ mod tests {
             },
             0,
         );
-        census(&mut st, 5, 25);
-        census(&mut st, 5, 28);
+        census(&mut st, 5, 25, 0);
+        census(&mut st, 5, 28, 0);
         let i = st.phase1.nodes[&5];
         assert_eq!(st.phase1.world.nodes[i].local.pop, 28);
         let dir = tmpdir("census");
@@ -2790,7 +3076,7 @@ mod tests {
         commit(&s, &mut st);
         let mut st2 = state();
         st2.phase1 = load(&s).unwrap();
-        census(&mut st2, 5, 20);
+        census(&mut st2, 5, 20, 0);
         assert_eq!(
             st2.phase1.world.nodes[i].local.pop, 28,
             "a low census after the restart left the population alone"
@@ -3514,7 +3800,7 @@ mod tests {
             P1Op::Census { village: v, pop } => {
                 if let Some(key) = village(l, v) {
                     let _ = l;
-                    census(st, key, pop);
+                    census(st, key, pop, 0);
                 }
             }
             P1Op::Trade {

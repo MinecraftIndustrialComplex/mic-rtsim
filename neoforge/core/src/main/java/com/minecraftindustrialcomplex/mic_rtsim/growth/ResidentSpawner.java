@@ -93,6 +93,14 @@ public final class ResidentSpawner {
                 return;
             }
             at = Vec3.atBottomCenterOf(house.slot());
+        } else if ((o.flags & Cmd.SpawnResident.FLAG_AT_VILLAGE) != 0) {
+            Village v = villages.get(o.village);
+            if (v == null) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] resident {}: no village {}", o.op, o.village);
+                finish(o, Obs.CommandResult.FAILED, null, null, now);
+                return;
+            }
+            at = Vec3.atBottomCenterOf(v.meeting);
         }
         BlockPos pos = BlockPos.containing(at);
         LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
@@ -111,6 +119,8 @@ public final class ResidentSpawner {
             finish(o, Obs.CommandResult.FAILED, null, null, now);
             return;
         }
+        if ((o.flags & Cmd.SpawnResident.FLAG_AT_VILLAGE) != 0)
+            standNear(level, e, pos);
         if (e instanceof Mob mob)
             mob.setPersistenceRequired();
         if (!level.addFreshEntity(e)) {
@@ -120,6 +130,37 @@ public final class ResidentSpawner {
         spend.applyAsInt(1);
         spawned++;
         finish(o, Obs.CommandResult.APPLIED, chunk, e, now);
+    }
+
+    /** Around a meeting point: the ground of each column, nearest first (PLACEHOLDER offsets). */
+    private static final int[][] AROUND = {
+            {2, 0}, {-2, 0}, {0, 2}, {0, -2}, {3, 3}, {-3, 3}, {3, -3}, {-3, -3}, {5, 0}, {-5, 0}, {0, 5}, {0, -5}};
+
+    /** Heights tried in each column, nearest the meeting point's first (a roof or a canopy above is never the ground). */
+    private static final int[] DY = {0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6};
+
+    /**
+     * Stands {@code e} on the ground beside the meeting point {@code meet} (a bell has a post or a
+     * roof over it): in the first of a few nearby columns, the height nearest the meeting point's,
+     * within 6 blocks, where the block below holds it up, the body fits and stands in no liquid;
+     * else at the meeting point itself.
+     */
+    static void standNear(ServerLevel level, Entity e, BlockPos meet) {
+        for (int[] d : AROUND) {
+            BlockPos c = meet.offset(d[0], 0, d[1]);
+            if (!level.isLoaded(c))
+                continue;
+            for (int dy : DY) {
+                BlockPos at = c.above(dy);
+                BlockPos below = at.below();
+                if (!level.getBlockState(below).isFaceSturdy(level, below, net.minecraft.core.Direction.UP))
+                    continue;
+                e.moveTo(at.getX() + 0.5, at.getY(), at.getZ() + 0.5, e.getYRot(), e.getXRot());
+                if (level.noCollision(e) && !level.containsAnyLiquid(e.getBoundingBox()))
+                    return;
+            }
+        }
+        e.moveTo(meet.getX() + 0.5, meet.getY(), meet.getZ() + 0.5, e.getYRot(), e.getXRot());
     }
 
     private void finish(VillageRegistry.ResidentOrder o, int status, LevelChunk chunk, Entity resident, long now) {
