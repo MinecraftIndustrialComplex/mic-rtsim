@@ -14,15 +14,15 @@ A probe (a temporary mixin on `IOWorker`, commit 6eb35a0 on a throwaway worktree
 overworld's chunk worker around each journal write of the create suite on the stub engine, with the first
 barrier (`IOWorker.synchronize(true)` for every level with a noted chunk).
 
-| At the crash test's first save | Light load (siblings' builds, load 11 to 17) | Heavy load (16 CPU burners added) |
+| At the crash test's first save | Siblings' builds running | The same, plus 16 CPU burners (load about 50) |
 |---|---|---|
-| Chunk writes pending in the worker at the arm | 1,718 | HEAVY_PENDING |
-| Tasks in the worker's mailbox at the arm | 23,111 | HEAVY_MAILBOX |
-| One chunk write (`runStore`, with DSYNC), mean | 19.9 ms | HEAVY_WRITE |
-| The noted chunks' places in the pending queue | 846 and 1,214 | HEAVY_PLACES |
-| When they were on disk, after the arm | 16.7 s and 24.5 s | HEAVY_LANDED |
-| When `synchronize(true)` returned (the old wait) | 34.4 s (1,719 writes of 19.9 ms) | HEAVY_WAIT |
-| How long a foreground task queued at the arm waited to run | 7 ms | HEAVY_FG |
+| Chunk writes pending in the worker at the arm | 1,718 | 1,143 |
+| Tasks in the worker's mailbox at the arm | 23,111 | 19,810 |
+| One chunk write (`runStore`, with DSYNC), mean | 19.9 ms | 25.2 ms |
+| The noted chunks' places in the pending queue | 846 and 1,214 | 640 and 1,049 |
+| When they were on disk, after the arm | 16.7 s and 24.5 s | 15.4 s and 26.3 s |
+| When `synchronize(true)` returned (the old wait) | 34.4 s (1,719 writes of 19.9 ms) | 29.1 s (1,144 writes of 25.2 ms) |
+| How long a foreground task queued at the arm waited to run | 7 ms | 46 ms |
 
 **Why the waits were tens of seconds.** Vanilla's `IOWorker` keeps a level's queued chunk writes in
 `pendingWrites` (a `LinkedHashMap`, oldest first) and writes one per background turn: every foreground task
@@ -34,7 +34,11 @@ test's arena), so at any save the worker had well over a thousand writes queued.
 for every one of them, then fsyncs every region file: the barrier waited for the whole level's backlog, not
 for its own two chunks, which were somewhere in the middle of it. The wait grows with the backlog times the
 write time, and both grow with load: hence 34 s here, 43 s at a load of 11 to 17 in the failing run and over
-60 s at 50. The server thread was not the problem; a foreground task ran 7 ms after it was queued.
+60 s at 50. The server thread was not the problem; a foreground task ran 7 ms (46 ms under the burners)
+after it was queued. CPU load matters less than it seems: the burners (at nice 19) made each write a quarter
+slower; the backlog and the synchronous writes make the wait. At the heavy run's shutdown save 1,876 writes
+were pending at 31.2 ms each: the old barrier waited 58.6 s, 1.4 s short of its limit, although its two
+chunks were on disk after 0.4 s and 8.0 s.
 
 **What production did at the limit (the first barrier).** At 60 s, or when a chunk write failed, the journal's
 file was written anyway (logged, counted `late`), and the noted chunks had already been forgotten at the arm.
