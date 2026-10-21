@@ -2,7 +2,8 @@
 //! replays on its graph one regime at a time.
 //!
 //! **Regimes.** A regime is the graph's flags (§4.1): which stores hold which goods, which have
-//! room, which controllers are on, which heaters burn, which cut goods ran dry. Its solve gives
+//! room, which controllers are on, which heaters burn, which cut goods ran dry or filled their live
+//! receivers' room (choice G2-66). Its solve gives
 //! every goods edge's L flow; the replay books those per store (`PoolKey::Store`) and across a
 //! partial load's cut (`PoolKey::Stock`, I7, G-B6) as one all-or-nothing Box process. Each flag a
 //! level can change has a watch: a bound on one pool with weight ±1, which the cluster checks
@@ -105,6 +106,9 @@ pub struct Setup {
     pub contents: BTreeMap<u32, GoodVec>,
     /// What the district owes per good (virtual stock), for the cut's supply.
     pub owed: GoodVec,
+    /// The declared capacity of every inventory the replay does not cover, for the room a cut
+    /// from the simulated side may fill (choice G2-66).
+    pub live_decls: BTreeMap<u32, StoreDecl>,
 }
 
 /// Counters for the report (since the replay started).
@@ -136,6 +140,8 @@ enum Watch {
     Switch { node: u32, key: PoolKey },
     /// A cut good that ran dry coming back.
     Undry { good: Good },
+    /// A good the simulated side sends across the cut filling its live receivers' room.
+    Seal { good: Good },
 }
 
 impl Watch {
@@ -145,7 +151,7 @@ impl Watch {
             | Watch::Refill { key }
             | Watch::Frees { key, .. }
             | Watch::Switch { key, .. } => key,
-            Watch::Undry { good } => PoolKey::Stock(d, good),
+            Watch::Undry { good } | Watch::Seal { good } => PoolKey::Stock(d, good),
         }
     }
 }
@@ -173,6 +179,8 @@ struct State {
     full: BTreeMap<u32, BTreeMap<Good, i64>>,
     ctrl_on: Vec<bool>,
     dry: BTreeSet<Good>,
+    /// Cut goods whose live receivers' room is spent: their simulated senders are off (G2-66).
+    sealed: BTreeSet<Good>,
     /// The latency rule: nodes held off until the tick their rise comes into force.
     hold: BTreeMap<u32, Tick>,
 }
@@ -230,6 +238,11 @@ struct Part {
     fixed: BTreeMap<u32, GoodVec>,
     /// Goods edges across the cut: (edge, from simulated).
     cut: Vec<(u32, bool)>,
+    /// Per live store inventory a cut edge from the simulated side lands in: its capacity in item
+    /// slots and in millibuckets (0 unknown), for the room the carry may fill (choice G2-66).
+    live_caps: BTreeMap<u32, (i64, i64)>,
+    /// `Stock` levels at the start (the live side's supply), the base of each good's seal.
+    stock0: BTreeMap<Good, i64>,
     st: State,
     heaters: Vec<Burn>,
     heat_at: Tick,
@@ -687,6 +700,31 @@ impl Part {
                 cut.push((e as u32, a));
             }
         }
+        // The live stores the simulated side sends into, with what they can hold.
+        let mut live_caps: BTreeMap<u32, (i64, i64)> = BTreeMap::new();
+        for &(e, from_sim) in &cut {
+            let v = graph.edge(e).to;
+            let node = graph.node(v);
+            let (true, NodeKind::Store, Some(inv)) = (from_sim, node.kind, node.inventory) else {
+                continue;
+            };
+            let c = live_caps.entry(inv).or_insert((0, 0));
+            if graph.is_fluid(v) {
+                c.1 = c.1.max(node.capacity);
+            } else {
+                c.0 = c.0.max(node.capacity);
+            }
+        }
+        for (inv, c) in &mut live_caps {
+            if let Some(decl) = setup.live_decls.get(inv) {
+                if c.0 <= 0 {
+                    c.0 = i64::from(decl.item_slots);
+                }
+                if c.1 <= 0 {
+                    c.1 = decl.fluid_capacity;
+                }
+            }
+        }
         let fixed: BTreeMap<u32, GoodVec> = setup
             .contents
             .iter()
@@ -720,6 +758,13 @@ impl Part {
                 }
             }
         }
+        let stock0: BTreeMap<Good, i64> = levels
+            .iter()
+            .filter_map(|(k, &a)| match *k {
+                PoolKey::Stock(_, g) => Some((g, a)),
+                _ => None,
+            })
+            .collect();
         // Heaters spend from where the model left them to now, on the compile's last regime.
         let mut heaters: Vec<Burn> = comp.heaters().to_vec();
         let dt = at.0.saturating_sub(comp.model_at().0) as f64;
@@ -743,11 +788,14 @@ impl Part {
             stores,
             fixed,
             cut,
+            live_caps,
+            stock0,
             st: State {
                 empty: BTreeMap::new(),
                 full: BTreeMap::new(),
                 ctrl_on: comp.ctrl_on.clone(),
                 dry: BTreeSet::new(),
+                sealed: BTreeSet::new(),
                 hold: BTreeMap::new(),
             },
             heaters,
@@ -908,6 +956,9 @@ impl Part {
                             Watch::Undry { good } => {
                                 self.st.dry.remove(&good);
                             }
+                            Watch::Seal { good } => {
+                                self.st.sealed.insert(good);
+                            }
                         }
                     }
                     Stop::Timer => {
@@ -1055,6 +1106,23 @@ impl Part {
                     && self.st.dry.iter().any(|&g| graph.allows(e, g))
                 {
                     rg.gate_off[ed.from as usize] = true;
+                }
+            }
+        }
+        // A sealed cut good stops what would carry more of it into the live side (choice G2-66):
+        // the simulated node that sends it, or the live machine a simulated store feeds.
+        if !self.st.sealed.is_empty() {
+            for &(e, from_sim) in &self.cut {
+                if !from_sim || !self.st.sealed.iter().any(|&g| graph.allows(e, g)) {
+                    continue;
+                }
+                let ed = graph.edge(e);
+                if graph.node(ed.from).kind != NodeKind::Store {
+                    rg.gate_off[ed.from as usize] = true;
+                } else if graph.node(ed.to).kind != NodeKind::Store {
+                    rg.gate_off[ed.to as usize] = true;
+                } else {
+                    rg.room[ed.to as usize] = false;
                 }
             }
         }
@@ -1535,6 +1603,17 @@ impl Part {
                 watches.push((Watch::Undry { good: g }, (vec![(k, 1)], 0, h - 1)));
             }
         }
+        for (&k, &r) in &nets {
+            let PoolKey::Stock(_, g) = k else {
+                continue;
+            };
+            if r <= 0 || self.st.sealed.contains(&g) {
+                continue;
+            }
+            if let Some(top) = self.seal_at(comp, g, goods) {
+                watches.push((Watch::Seal { good: g }, (vec![(k, 1)], 0, top)));
+            }
+        }
         self.watches = watches;
         // The deadline: the next held node's rise or heater phase.
         let mut deadline: Option<Tick> = None;
@@ -1732,7 +1811,85 @@ impl Part {
             self.st.dry.remove(&g);
             changed = true;
         }
+        // (g) Seals: a cut good the simulated side sends that cannot run a tick more into its live
+        // receivers' room (choice G2-66). A seal holds to the end of the replay.
+        let mut seal = Vec::new();
+        for (&k, &r) in &self.nets {
+            let PoolKey::Stock(_, g) = k else {
+                continue;
+            };
+            if r <= 0 || self.st.sealed.contains(&g) {
+                continue;
+            }
+            if let Some(top) = self.seal_at(comp, g, goods)
+                && top - level(lv, k) < reach(r)
+            {
+                seal.push(g);
+            }
+        }
+        for g in seal {
+            self.st.sealed.insert(g);
+            changed = true;
+        }
         changed
+    }
+
+    /// The `Stock` level a good the simulated side sends across the cut may reach (choice G2-66):
+    /// its start level plus the room its live receivers had at the start. A store's room is its
+    /// free slots (or millibuckets) for the good; a machine, belt or other node holds nothing a
+    /// reload could place. None: no cut edge from the simulated side lets the good through, or a
+    /// receiving store's capacity is unknown (no bound, as a covered store of unknown capacity).
+    fn seal_at(&self, comp: &Compiled, g: Good, goods: &dyn GoodLookup) -> Option<i64> {
+        let graph = &comp.graph;
+        let mut any = false;
+        let mut seen = BTreeSet::new();
+        let mut room = 0i64;
+        for &(e, from_sim) in &self.cut {
+            if !from_sim || !graph.allows(e, g) {
+                continue;
+            }
+            any = true;
+            let node = graph.node(graph.edge(e).to);
+            if node.kind != NodeKind::Store {
+                continue;
+            }
+            let inv = node.inventory?;
+            if !seen.insert(inv) {
+                continue;
+            }
+            let &(slots, mb) = self.live_caps.get(&inv)?;
+            let none = GoodVec::new();
+            let c = self.fixed.get(&inv).unwrap_or(&none);
+            room += if goods.class(g) == GoodClass::Fluid {
+                if mb <= 0 {
+                    return None;
+                }
+                let used: i64 = c
+                    .iter()
+                    .filter(|&(h, _)| goods.class(h) == GoodClass::Fluid)
+                    .map(|(_, a)| a.max(0))
+                    .sum();
+                (mb - used).max(0)
+            } else {
+                if slots <= 0 {
+                    return None;
+                }
+                let used: i64 = c
+                    .iter()
+                    .filter(|&(h, _)| goods.class(h) == GoodClass::Item)
+                    .map(|(h, a)| {
+                        let ms = goods.max_stack(h).max(1);
+                        (a.max(0) + ms - 1) / ms
+                    })
+                    .sum();
+                let ms = goods.max_stack(g).max(1);
+                let a = c.get(g).max(0);
+                let partial = if a % ms == 0 { 0 } else { ms - a % ms };
+                (slots - used).max(0) * ms + partial
+            };
+        }
+        let base = self.stock0.get(&g).copied().unwrap_or(0);
+        any.then(|| base.saturating_add(room))
     }
 
     /// Spends the heaters' burn to `at`; true if a phase changed.
@@ -1778,6 +1935,10 @@ impl Part {
             mix(&mut h, u64::from(on));
         }
         for g in &self.st.dry {
+            mix(&mut h, u64::from(g.0));
+        }
+        mix(&mut h, 0xA6);
+        for g in &self.st.sealed {
             mix(&mut h, u64::from(g.0));
         }
         mix(&mut h, 0xA4);

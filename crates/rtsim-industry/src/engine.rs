@@ -1406,6 +1406,7 @@ impl Engine {
             covered: BTreeMap::new(),
             contents: BTreeMap::new(),
             owed: dist.owed.clone(),
+            live_decls: BTreeMap::new(),
         };
         let mut base = GoodVec::new();
         for inv in dist.inventories.values().filter(|i| !i.destroyed) {
@@ -1419,6 +1420,14 @@ impl Engine {
                     },
                 );
                 base.merge(&c);
+            } else {
+                setup.live_decls.insert(
+                    inv.decl.index,
+                    StoreDecl {
+                        item_slots: inv.decl.item_slots,
+                        fluid_capacity: inv.decl.fluid_capacity,
+                    },
+                );
             }
             setup.contents.insert(inv.decl.index, c);
         }
@@ -1720,6 +1729,9 @@ impl Engine {
             .collect();
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut net = GoodVec::new();
+        // A glass replay's `Stock` change (the cut's carry both ways, imports): owed, so it is
+        // planned with the district's owed and lands on the live side where it crossed (G2-11).
+        let mut stock = GoodVec::new();
         let mut deposits = GoodVec::new();
         let mut span_minted = std::mem::take(&mut dist.minted_carried);
         let since = stopped.as_ref().map_or(at, |s| s.0.started);
@@ -1747,7 +1759,7 @@ impl Engine {
                             net.add(g, change);
                         }
                     }
-                    PoolKey::Stock(_, g) if span.glass => net.add(g, p.level - p.books.initial),
+                    PoolKey::Stock(_, g) if span.glass => stock.add(g, p.level - p.books.initial),
                     PoolKey::Stock(_, g) => {
                         // Level pollution pushed live (I14) is in the world already.
                         let change = if live.contains(&g) {
@@ -1801,6 +1813,7 @@ impl Engine {
         }
         let mut rest = plan1.unplaced.clone();
         rest.merge(&owed);
+        rest.merge(&stock);
         if !rest.is_empty() {
             // Step 2 sees the inventories as step 1 left them.
             for (&(i, g), &n) in &deltas {
