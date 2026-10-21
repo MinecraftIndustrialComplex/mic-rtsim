@@ -269,8 +269,8 @@ public final class WorksGameTests {
     }
 
     /**
-     * MS-6, MS-8: a raided village buys a golem first; it appears at the meeting point and the census's
-     * count of it reaches the engine (the defence the dragons weigh).
+     * MS-6, MS-8: a raided village buys a golem first; it appears at the meeting point, the census's
+     * count of it reaches the engine, and the village's risk to the dragons rises by it.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = LIVE_TIMEOUT, batch = BATCH)
     public static void aRaidedVillageBuysAGolemThatTheCensusCounts(GameTestHelper helper) {
@@ -281,12 +281,15 @@ public final class WorksGameTests {
         BlockPos meet = BlockPos.containing(RtsimTests.centre(helper));
         Village v = RtsimTests.adoptArenaLive(helper, "human", "minecraft:village_plains", meet, 5, PIECES);
         IronGolem[] golem = {null};
+        long[] risk = {-1};
         hold(level, meet, LIVE_REACH, true);
 
         helper.startSequence()
                 .thenWaitUntil(() -> check("the chunks around are loaded", loaded(helper.getLevel(), meet, LIVE_REACH)))
                 .thenWaitUntil(() -> check("the engine knows the village's works", e.phase1Works(v.id) != null))
                 .thenExecute(() -> {
+                    risk[0] = e.dragonsVillageRisk(v.id);
+                    check("the dragons know the village (risk " + risk[0] + ")", risk[0] >= 0);
                     e.worksRaid(v.id, false);
                     e.worksGrant(v.id, GRANT);
                 })
@@ -299,11 +302,14 @@ public final class WorksGameTests {
                 .thenWaitUntil(() -> {
                     long[] w = e.phase1Works(v.id);
                     check("the engine counts it (census golems " + w[NativeEngine.WORKS_GOLEMS] + ")", w[NativeEngine.WORKS_GOLEMS] == 1);
+                    check("the dragons fear the village more (risk " + risk[0] + " to " + e.dragonsVillageRisk(v.id) + ")",
+                            e.dragonsVillageRisk(v.id) > risk[0]);
                 })
                 .thenExecute(() -> {
                     long[] w = e.phase1Works(v.id);
                     record("worksGolem", "golem at", golem[0].blockPosition() + " (meeting point " + meet + ")");
                     record("worksGolem", "works view (bought, full, purse, golems, tribute, spent)", java.util.Arrays.toString(w));
+                    record("worksGolem", "village risk before and after the golem", risk[0] + ", " + e.dragonsVillageRisk(v.id));
                     check("the golem was the first work", w[NativeEngine.WORKS_BOUGHT] >= 1);
                     check("not player made", !golem[0].isPlayerCreated());
                     check("on the meeting point's level", golem[0].blockPosition().getY() == meet.getY());
