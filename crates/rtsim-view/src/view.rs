@@ -13,12 +13,14 @@ use mic_viewer::api::{
     Card, Frame, Freshness, Layers, MARK_BUDGET, ProjectionDesc, TICKS_PER_DAY, Tick, TimeInfo,
     WorldInfo,
 };
+use mic_viewer::api::{EventsAnswer, Histogram};
 use mic_viewer::http::{Reply, Request, Response};
 use mic_viewer::scene::Scene;
 use mic_viewer::tiles::{TileCache, Tiles};
-use mic_viewer::viewer::Backend;
+use mic_viewer::viewer::{Backend, EventQuery};
 use serde_json::json;
 
+use crate::events::Events;
 use crate::habitat::HabitatTiles;
 use crate::layers::{self, Ctx};
 use crate::load::{Limits, Saved, Status, load_world};
@@ -53,6 +55,10 @@ pub struct View {
     worker: Arc<Mutex<()>>,
     cards: Mutex<CardCache>,
     heap: Option<HeapProbe>,
+    /// The save's event archive as of its generation (VIEWER.md §10.6), if it has one.
+    events: Option<Events>,
+    /// Why the archive did not open, when it is there but unreadable.
+    events_error: Option<String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -76,6 +82,11 @@ pub fn frame_id(saved: &Saved, frame: u32) -> String {
         .names
         .get(crate::keys::DICT_DIMENSION, frame)
         .map_or_else(|| format!("dim{frame}"), str::to_owned)
+}
+
+/// The engine's dimension number in an archive frame name (`dim3`).
+fn archive_frame(name: &str) -> Option<u32> {
+    name.strip_prefix("dim")?.parse().ok()
 }
 
 /// "minecraft:the_nether" as "The Nether".
@@ -125,6 +136,18 @@ impl View {
         let drawn = layers::build(&saved, &specs);
         let worker = Arc::new(Mutex::new(()));
         let mut frames: BTreeSet<u32> = drawn.frames.keys().copied().collect();
+        // The archive names frames as the engine numbers them (`dim<n>`); a frame with events but
+        // no marks still gets a page frame, so its timeline can be read.
+        let (events, events_error) =
+            match Events::open(&saved.world_dir, saved.generation.obs_seq, |name| {
+                archive_frame(name).map_or_else(|| name.to_owned(), |n| frame_id(&saved, n))
+            }) {
+                Ok(e) => (e, None),
+                Err(e) => (None, Some(e.to_string())),
+            };
+        if let Some(e) = &events {
+            frames.extend(e.frame_numbers().filter_map(archive_frame));
+        }
         let mut slugs: BTreeMap<u16, String> = BTreeMap::new();
         let habitat = saved.world_model.clone().map(|w| {
             let probe = HabitatTiles::new(w.clone(), &BTreeMap::new(), Arc::clone(&worker));
@@ -162,7 +185,10 @@ impl View {
             let id = frame_id(&saved, f);
             let mut w = writers.remove(&f).unwrap_or_default();
             for s in &specs {
-                w.layer(&s.desc.id);
+                match drawn.reasons.get(&s.desc.id) {
+                    Some(why) => w.empty(&s.desc.id, why.clone()),
+                    None => w.layer(&s.desc.id),
+                }
             }
             scenes.insert(id.clone(), Arc::new(w.finish(t, 0.0)));
             let mut bounds = drawn.bounds.get(&f).copied();
@@ -221,9 +247,14 @@ impl View {
                 note: "a save: nothing moves".into(),
             },
             budget: MARK_BUDGET,
+            event_kinds: events
+                .as_ref()
+                .map(|e| e.kinds().to_vec())
+                .unwrap_or_default(),
+            has_events: events.as_ref().is_some_and(Events::any),
             ..WorldInfo::default()
         };
-        let layers = Arc::new(layers::layers(&specs, &drawn.reasons));
+        let layers = Arc::new(layers::layers(&specs));
         // The tile cache's bytes are shared when both base maps are there.
         let tile_cache = match (&habitat, &surveyor) {
             (Some(_), Some(_)) => saved.limits.tile_cache / 2,
@@ -265,6 +296,8 @@ impl View {
             worker,
             cards: Mutex::new(CardCache::new(cap)),
             heap: None,
+            events,
+            events_error,
         }
     }
 
@@ -386,6 +419,19 @@ impl View {
                 "picture_bytes": s.cached_bytes(),
             })),
             "heap": self.heap.as_ref().map(|h| h()),
+            "events": match &self.events {
+                Some(e) => {
+                    let (dropped, damaged) = e.losses();
+                    json!({
+                        "kinds": e.kinds().len(),
+                        "chunks": e.chunks(),
+                        "span": e.span(),
+                        "dropped_rows": dropped,
+                        "damaged_chunks": damaged,
+                    })
+                }
+                None => json!({ "error": self.events_error.as_deref().map(|t| t.replace(&root, &self.world.name)) }),
+            },
         })
     }
 
@@ -441,6 +487,25 @@ impl Backend for View {
             lock(&self.cards).put(key, c.clone());
         }
         Some(c)
+    }
+
+    fn events(&self, q: &EventQuery) -> EventsAnswer {
+        self.events
+            .as_ref()
+            .map(|e| e.events(q))
+            .unwrap_or_default()
+    }
+
+    fn histogram(&self, q: &EventQuery) -> Histogram {
+        match &self.events {
+            Some(e) => e.histogram(q, self.now),
+            None => Histogram {
+                from: q.from,
+                to: q.to,
+                buckets: q.limit,
+                ..Histogram::default()
+            },
+        }
     }
 
     fn tiles(&self, source: &str) -> Option<&Tiles> {

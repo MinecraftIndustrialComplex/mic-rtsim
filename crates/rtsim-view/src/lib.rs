@@ -10,6 +10,7 @@
 //! - [`surveyor`]: Surveyor's terrain summaries as the base map over HABITAT (V5).
 
 pub mod cards;
+pub mod events;
 pub mod habitat;
 pub mod industry;
 pub mod journal;
