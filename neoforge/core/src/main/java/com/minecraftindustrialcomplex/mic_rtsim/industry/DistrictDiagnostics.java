@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 
@@ -130,6 +131,33 @@ public final class DistrictDiagnostics {
         out.add(Component.literal(r == null ? "  no reconcile applied yet"
                 : "  last reconcile at tick " + r.at + ": " + r.entries + " deltas, " + r.applied + " of " + r.requested
                         + " applied, " + r.shortfalls + " short, " + r.broken + " blocks broken, " + r.skipped + " skipped"));
+        out.addAll(glassLines(d));
+        return out;
+    }
+
+    /**
+     * The glass box's checksum for operators (GLASSBOX.md §5.3: the server log and this output, never the
+     * world): the engine's report, asked between steps. Only the native engine has one; the stub simulates
+     * nothing.
+     */
+    private List<MutableComponent> glassLines(District d) {
+        com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession s = com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current();
+        if (s == null || !(s.engine() instanceof com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine n))
+            return List.of();
+        GlassReport r;
+        try {
+            r = GlassReport.decode(n.glassReport(d.id));
+        } catch (RuntimeException e) {
+            return List.of(Component.literal("  glass: no report (" + e.getMessage() + ")"));
+        }
+        if (r == null)
+            return List.of(Component.literal("  glass: no complete compile yet"));
+        List<MutableComponent> out = new java.util.ArrayList<>();
+        out.add(Component.literal("  glass: " + r.summary()));
+        for (GlassReport.Good g : r.goods().stream().limit(MAX_LISTED).toList()) {
+            String name = ind.goodName(g.good());
+            out.add(Component.literal("    " + g.describe(name == null ? "good " + g.good() : name)));
+        }
         return out;
     }
 
