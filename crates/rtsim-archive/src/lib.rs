@@ -4,6 +4,7 @@
 //!
 //! - [`row`]: the two 32-byte rows, events and legs.
 //! - [`dict`]: kind and frame names and big ids, numbered on first use.
+//! - [`kinds`]: the kinds recorders write, with the labels and severities the page shows.
 //! - [`pending`]: the step's buffer, capped, dropping the lowest severity first.
 //! - [`chunk`]: a chunk file of up to 4,096 rows, LZ4 and CRC32, with the header the index keeps.
 //! - [`store`]: the folder: the engine's [`Archive`] (flush, rollback cut, replacement) and the
@@ -14,6 +15,7 @@
 
 pub mod chunk;
 pub mod dict;
+pub mod kinds;
 pub mod pending;
 pub mod row;
 pub mod store;
