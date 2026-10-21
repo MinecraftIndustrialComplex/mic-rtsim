@@ -14,8 +14,17 @@ edges (Create falls back to andesite for an unknown material): a ghost graph. Th
   * Steam 'n' Rails bogeys to Create's, and foreign schedule instructions and conditions (see
     fix_schedules: Create 6.0.10 cannot save a train holding one).
 
+It also writes Create 0.5's block positions in Create 6's form, which Create 6.0.10 does not read and
+silently turns into (0, 0, 0) on the first load (fix_positions): `TilePos {X, Y, Z}` and `TileDimension`
+of stations and observers to `BlockEntityPos [x, y, z]` and `BlockEntityDimension` (else no station knows
+its block, so nothing can find a station by position); a signal's `Tiles1`/`Tiles2` entries and a
+curve's `Positions` (in the track graph and in every curved track block entity) from `{X, Y, Z}` to
+`{Pos: [x, y, z]}` (else a curve's two track block entities both point at the curve's own start).
+
 With `--schedules-only` it touches nothing but the trains' schedules in data/create_tracks.dat (also
-repairs a world an older version of this script left with mismatched condition progress).
+repairs a world an older version of this script left with mismatched condition progress). With
+`--positions-only` it touches nothing but those positions (for a world converted before they were
+handled; run it before the world's first Create 6 load, which zeroes them for good).
 
 With `--drop NS` (repeatable) it also turns every palette entry of namespace NS into air and removes NS's block
 entities: what the server does anyway with a missing mod, minus one "Skipping BlockEntity" error line per
@@ -40,9 +49,9 @@ KEEP = {"railways:track_buffer", "railways:track_buffer_wood_variant", "railways
         "railways:track_switch_andesite", "railways:track_switch_brass"}  # not track pieces
 
 
-def remap_palette(chunk, stats, drop=()):
+def remap_palette(chunk, stats, drop=(), positions_only=False):
     changed = False
-    for sec in chunk.get("sections", []):
+    for sec in [] if positions_only else chunk.get("sections", []):
         bs = sec.get("block_states")
         if not bs:
             continue
@@ -61,7 +70,7 @@ def remap_palette(chunk, stats, drop=()):
                 names = stats.setdefault("names", {})
                 names[n] = names.get(n, 0) + 1
                 changed = True
-    if drop and "block_entities" in chunk:
+    if drop and not positions_only and "block_entities" in chunk:
         bes = chunk["block_entities"]
         keep = [be for be in bes if str(be.get("id", "")).split(":", 1)[0] not in drop]
         if len(keep) != len(bes):
@@ -72,11 +81,66 @@ def remap_palette(chunk, stats, drop=()):
     for be in chunk.get("block_entities", []):
         for c in be.get("Connections", []) if "Connections" in be else []:
             m = str(c.get("Material", ""))
-            if m.startswith("railways:"):
+            if m.startswith("railways:") and not positions_only:
                 c["Material"] = String("create:andesite")
                 stats["be_materials"] = stats.get("be_materials", 0) + 1
                 changed = True
+            if str(be.get("id", "")) == "create:track":
+                changed |= fix_curve_positions(c, stats, "be_curve_positions")
     return changed
+
+
+def xyz_to_pos(c):
+    """Create 0.5's {X, Y, Z} block position to Create 6's {Pos: [x, y, z]}, other keys kept; True if changed."""
+    if isinstance(c, nbtlib.Compound) and "X" in c and "Y" in c and "Z" in c and "Pos" not in c:
+        c["Pos"] = nbtlib.IntArray([int(c["X"]), int(c["Y"]), int(c["Z"])])
+        del c["X"], c["Y"], c["Z"]
+        return True
+    return False
+
+
+def fix_curve_positions(t, stats, key):
+    """Every list called Positions below t (a curve's two track block entity positions); True if changed."""
+    changed = False
+    if isinstance(t, nbtlib.Compound):
+        for k, v in t.items():
+            if k == "Positions" and isinstance(v, nbtlib.List):
+                for p in v:
+                    if xyz_to_pos(p):
+                        stats[key] = stats.get(key, 0) + 1
+                        changed = True
+            else:
+                changed |= fix_curve_positions(v, stats, key)
+    elif isinstance(t, nbtlib.List):
+        for v in t:
+            changed |= fix_curve_positions(v, stats, key)
+    return changed
+
+
+def fix_positions(graphs, stats):
+    """Create 0.5 positions in the track graph to Create 6's form (module docstring); returns the count."""
+    n = 0
+    for g in graphs:
+        for typ, points in g.get("Points", {}).items():
+            for p in points:
+                if "TilePos" in p:
+                    tp = p["TilePos"]
+                    p["BlockEntityPos"] = nbtlib.IntArray([int(tp["X"]), int(tp["Y"]), int(tp["Z"])])
+                    del p["TilePos"]
+                    stats["point_positions"] = stats.get("point_positions", 0) + 1
+                    n += 1
+                if "TileDimension" in p:
+                    p["BlockEntityDimension"] = nbtlib.Int(int(p["TileDimension"]))
+                    del p["TileDimension"]
+                for k in ("Tiles1", "Tiles2"):
+                    for t in p.get(k, []):
+                        if xyz_to_pos(t):
+                            stats["signal_tiles"] = stats.get("signal_tiles", 0) + 1
+                            n += 1
+        before = stats.get("graph_curve_positions", 0)
+        fix_curve_positions(g.get("Nodes", []), stats, "graph_curve_positions")
+        n += stats.get("graph_curve_positions", 0) - before
+    return n
 
 
 def fix_schedules(trains):
@@ -197,10 +261,12 @@ def main():
     world = sys.argv[1]
     dry = "--dry-run" in sys.argv
     drop = {sys.argv[i + 1] for i, x in enumerate(sys.argv) if x == "--drop"}
-    needles = [b"railways:"] + [d.encode() + b":" for d in drop]
     stats = {"chunks_changed": 0, "regions_changed": 0}
     reg = os.path.join(world, "region")
     only_schedules = "--schedules-only" in sys.argv
+    only_positions = "--positions-only" in sys.argv
+    # Curved track: a create:track block entity whose connections carry Positions.
+    needles = [b"Positions"] if only_positions else [b"railways:", b"Positions"] + [d.encode() + b":" for d in drop]
     for f in ([] if only_schedules else sorted(os.listdir(reg))):
         if not f.endswith(".mca"):
             continue
@@ -212,7 +278,7 @@ def main():
             if not any(n in raw for n in needles):
                 continue
             nb = nbtlib.File.parse(io.BytesIO(raw))
-            if remap_palette(nb, stats, drop):
+            if remap_palette(nb, stats, drop, only_positions):
                 buf = io.BytesIO()
                 nb.write(buf)
                 chunks[i] = (2, zlib.compress(buf.getvalue()))
@@ -241,6 +307,8 @@ def main():
                     walk(v)
 
         if not only_schedules:
+            stats["positions"] = fix_positions(nb["data"]["RailGraphs"], stats)
+        if not only_schedules and not only_positions:
             walk(nb["data"]["RailGraphs"])
             walk(nb["data"]["Trains"])  # travelling points carry edge data too
         # Bogeys: Create 6.0.10's CarriageBogey.read casts BLOCK.get(Type) to AbstractBogeyBlock, so an
@@ -261,8 +329,8 @@ def main():
                     if bd is not None and str(bd.get("BogeyStyle", "")).startswith("railways:"):
                         bd["BogeyStyle"] = String("create:standard")
         stats["bogeys"] = bogeys
-        stats["schedules"] = fix_schedules(nb["data"]["Trains"])
-        n = n[0] + sum(bogeys.values()) + sum(stats["schedules"].values())
+        stats["schedules"] = {} if only_positions else fix_schedules(nb["data"]["Trains"])
+        n = n[0] + sum(bogeys.values()) + sum(stats["schedules"].values()) + stats.get("positions", 0)
         stats["graph_materials"] = n
         if not dry and n:
             nb.save(tracks)
