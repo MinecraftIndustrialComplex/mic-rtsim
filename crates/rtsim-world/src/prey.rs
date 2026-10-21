@@ -29,6 +29,7 @@ impl World {
         if amount <= 0 || i >= self.nodes.len() {
             return 0;
         }
+        self.release(i, at);
         let region = self.nodes[i].region;
         let taken = self
             .markets

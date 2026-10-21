@@ -155,12 +155,12 @@ impl World {
             }
         }
         for first in [lo_flow, hi + 1] {
-            let wake = q.at(first + lag - 1).max(at);
+            let wake = self.phased(q.at(first + lag - 1), to).max(at);
             self.schedule(wake, Ev::Wake(to));
         }
         for (haven, lo_raid, delay) in raid_wakes {
             for first in [lo_raid, hi + 1] {
-                let wake = q.at(first + delay - 1).max(at);
+                let wake = self.phased(q.at(first + delay - 1), haven).max(at);
                 self.schedule(wake, Ev::Wake(haven));
             }
         }
@@ -206,6 +206,7 @@ impl World {
         }
         let payee = paid_to
             .filter(|&j| j != i && j < self.nodes.len() && self.nodes[j].kind.is_storehouse());
+        self.release(i, at);
         let region = self.nodes[i].region;
         let gd = &self.goods;
         let mut paid: Option<(GoodId, Amount)> = None;
@@ -251,6 +252,7 @@ impl World {
             stocked.insert(g, a);
         }
         if let (Some((cur, pay)), Some(j)) = (paid, payee) {
+            self.release(j, at);
             let region = self.nodes[j].region;
             self.markets.apply(region, at, |m, _| {
                 let l = m.line_mut(cur);
@@ -318,6 +320,7 @@ impl World {
         if i >= self.nodes.len() {
             return out;
         }
+        self.release(i, at);
         let region = self.nodes[i].region;
         self.markets.apply(region, at, |m, _| {
             if !m.is_storehouse() {

@@ -423,6 +423,8 @@ not prefetch pages: a row loads on demand on the step thread. Rows are not shrun
 
 ## Phase 1 world: the market rows (moved, not bounded yet)
 
+Bounded since 2026-10-21 by staggered wakes: docs/choices-paging-followups.md PF1 to PF4.
+
 | # | Choice | Why |
 |---|---|---|
 | PM10 | **`lazy::PagedLazyTable`**: a `LazyTable` whose regions live in a `PagedArena` (the same calls, handles in insertion order and never reused, the same wakes in the same order); its wake wheel stays resident. A `ModelCodec` says how rows are written, because a model's own `Encode` may be a hashing form (the market's is). | The markets are lazy regions; the kernel's `PagedTable` pages lazy regions too but takes the store in every call, and the world reaches its markets from twenty places. This keeps every call site. |
