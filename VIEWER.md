@@ -787,10 +787,9 @@ Each chunk carries the save serial and the `obs_seq` of the save it was flushed 
   includes everything up to its own snapshot, and it has a higher serial.
 - **Compaction** never touches a chunk whose serial is above the confirmed generation's.
 - **Readers.** The sidecar never cuts anything. It ignores chunks above the generation it reads, by
-  `obs_seq`, because that is the number it knows (it does not read the serial page). A fork (§12)
-  copies the archive and cuts it the same way (`Archive::cut_above`). Either may keep a rolled-back
-  save's chunks that share the generation's `obs_seq`. On the fork, the engine's start then cuts
-  them by serial.
+  `obs_seq`, because that is the number it knows (it does not read the serial page), so it may
+  show a rolled-back save's chunks that share the generation's `obs_seq`. A fork (§12) copies the
+  archive and cuts it by the serial in its copied pages, as the engine's start does.
 - **Power failures.** Chunks lost to a power failure are lost: the archive misses those minutes.
 
 ### 10.6 The timeline in the page
@@ -1288,10 +1287,29 @@ For Deep Time's coordinator to review.
   that changes it. At the soak's 5,009 chunks that is about 1 MB each time and about 2 MB a save,
   more than compaction itself writes. At a save every 5 minutes that is trivial. A log of index
   changes would fix it if a host at max speed ever needs that.
-- **The headless host (item 5).** `rtsim-cli run` opens the engine on `<fork>/rtsim`, so its
-  archive is `<fork>/rtsim/archive`: the fork's own, never the source world's (VWD-11). V2's export
-  copies the source's archive and cuts it by the copied generation's `obs_seq`. The serial page is
-  copied with the other pages, so the engine's start on the fork then cuts by serial.
+- **The headless host.** `rtsim-cli run` opens the engine on `<fork>/rtsim`, so its archive is
+  `<fork>/rtsim/archive`: the fork's own, never the world's (VWD-11). The host tests check it
+  with the engine's flush wired in: the world's files, its archive among them, are unchanged after
+  an export, a 12-day run on the fork and a second export, and the fork's saves write chunks above
+  the world's serial into the fork's archive. Three changes to V2's host:
+  - **The archive's copy is consistent.** A plain copy of the folder could catch a compaction
+    halfway: an index naming a chunk already deleted, or new chunks with the old index. The export
+    reads the index, copies the chunk files it names, reads the dictionary, then reads the index
+    again. When the index changed or a named chunk was gone, it copies the archive again, up to 8
+    times as the pages, and the fork notes how many. A chunk file is never rewritten under its
+    name, and the dictionary only grows and is written before its chunks, so the copy's index names
+    exactly the chunks beside it. Archives with no readable index are copied file by file, and the
+    copy's open rebuilds the index. The test forces both races through `fork::export_with`'s hook
+    (`MidCopy::Archive`): a compaction's replace on the first attempt and a flush on the second,
+    then a copy whose index equals the world's and names exactly its chunk files.
+  - **The cut is by serial.** The export reads the save serial from the copied pages and cuts the
+    copy's chunks above it, as the engine's start does, rather than by `obs_seq`.
+  - **Saves come sooner when the buffer fills.** Half the recorder's buffer is 16,384 rows: 10
+    game days of a world with about 3,300 markets (1,640 rows a game day at the R of §10.4), or
+    less with many payloads. The host saves when the buffer passes half of either cap
+    (`Options::archive_save_at`, from `archive_pending_rows` and `archive_pending_bytes`), at most
+    every second hand-over so a save is taken before the next is asked. The test sets the mark to
+    one row: every save of a three-day run comes from the buffer, and none at the default mark.
 
 ---
 

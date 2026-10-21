@@ -12,10 +12,10 @@
 //! - **Rollback.** On open, before anything new is written, the engine cuts the chunks tagged above
 //!   the save serial of the generation it selected ([`Archive::cut_above_serial`]). Saves with no
 //!   journaled record between them share an `obs_seq`, so only the serial tells a rolled-back
-//!   save's chunks from the confirmed one's. A copy of a save that knows only the generation's
-//!   `obs_seq` cuts by that ([`Archive::cut_above`]), which keeps those same-`obs_seq` chunks until
-//!   the engine's own start cuts them. The reader never cuts: it ignores chunks above the
-//!   generation it reads ([`ArchiveReader::open`]).
+//!   save's chunks from the confirmed one's. A copy that knows only a generation's `obs_seq` can
+//!   cut by that ([`Archive::cut_above`]), which keeps those same-`obs_seq` chunks until the
+//!   engine's own start cuts them. The reader never cuts: it ignores chunks above the generation
+//!   it reads ([`ArchiveReader::open`]).
 //! - **Damage.** An unreadable index is rebuilt from the chunk files' own headers. An unreadable
 //!   dictionary would make every kind name a guess, so the writer clears the archive and says so
 //!   ([`Archive::was_reset`]); the reader shows kinds by number.
@@ -307,7 +307,8 @@ pub struct Archive {
 
 impl Archive {
     /// Opens the folder for writing, creating it. Temporary files and chunk files the index does not
-    /// name are deleted; entries whose file is gone are dropped. Call [`Archive::cut_above`] next.
+    /// name are deleted; entries whose file is gone are dropped. Call [`Archive::cut_above_serial`]
+    /// next.
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<Archive> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;

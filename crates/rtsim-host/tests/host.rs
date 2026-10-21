@@ -30,7 +30,9 @@ use rtsim_ecology::species::{Gender, Species};
 use rtsim_host::fork;
 use rtsim_host::java::{self, Java, OVERWORLD, PLAYER, WorldSave};
 use rtsim_host::nbt::{self, Tag};
-use rtsim_host::run::{Control, DAY, Host, Options, STRIDE_FAST, Speed, Until, state_hashes};
+use rtsim_host::run::{
+    ARCHIVE_SAVE_AT, Control, DAY, Host, Options, STRIDE_FAST, Speed, Until, state_hashes,
+};
 use rtsim_host::save::{self, Journal};
 use rtsim_host::view::HostView;
 use rtsim_jni::engine::Engine;
@@ -632,7 +634,10 @@ fn a_save_during_the_copy_makes_the_export_copy_again() {
     let before = fs::read(world.join(save::JOURNAL)).unwrap();
     let dir = scratch("race-fork").join("fork");
     let mut hooked = Vec::new();
-    let info = fork::export_with(&world, &dir, |attempt| {
+    let info = fork::export_with(&world, &dir, |at| {
+        let fork::MidCopy::Pages(attempt) = at else {
+            return;
+        };
         hooked.push(attempt);
         if attempt == 1 {
             let through = save_as_the_bridge(&world, &mut j);
@@ -665,6 +670,135 @@ fn a_save_during_the_copy_makes_the_export_copy_again() {
     let _ = fs::remove_dir_all(&world);
 }
 
+/// A compaction, then a flush, landing between the export's read of the archive's index and its
+/// copy of the chunk files the index names (where a live server's fall by chance) make the export
+/// copy the archive again, and the fork's index names exactly the chunk files copied with it: the
+/// world's archive as the flush left it.
+#[test]
+fn an_archive_written_during_the_copy_makes_the_export_copy_it_again() {
+    use rtsim_archive::store::{INDEX_FILE, chunk_name};
+    use rtsim_archive::{Archive, ArchiveReader, Index, Pending, Stamp};
+    let world = populated("archive-race", 2);
+    let (obs, serial) = {
+        let mut s = PageStore::open_read_only(world.join(save::PAGES)).unwrap();
+        s.view_confirmed().unwrap();
+        (
+            s.confirmed().obs_seq,
+            archive_serial(&world.join(save::PAGES)),
+        )
+    };
+    let from = rtsim_archive::dir_for(&world);
+    let first = Archive::open(&from).unwrap().entries()[0].seq;
+    let dir = scratch("archive-race-fork").join("fork");
+    let mut hooked = Vec::new();
+    let info = fork::export_with(&world, &dir, |at| {
+        let fork::MidCopy::Archive(attempt) = at else {
+            return;
+        };
+        hooked.push(attempt);
+        let mut a = Archive::open(&from).unwrap();
+        match attempt {
+            // A compaction's replacement: a new chunk file, the index, then the old file goes.
+            1 => {
+                let c = a.read(first).unwrap();
+                a.replace(&[first], vec![c]).unwrap();
+            }
+            // A save's flush: a new chunk file, then the index. At the pages' serial, so the
+            // fork keeps it.
+            2 => {
+                let mut d = a.dictionary().clone();
+                let mut p = Pending::new();
+                p.push(&raid(&mut d, 1_000, 7));
+                let stamp = Stamp {
+                    obs_seq: obs,
+                    serial,
+                    tick: 1_000,
+                    wall_ms: 1_700_000_000_000,
+                };
+                a.flush(p.take(), stamp, Some(&d)).unwrap();
+            }
+            _ => {}
+        }
+    })
+    .unwrap();
+    assert_eq!(hooked, [1, 2, 3]);
+    assert!(
+        info.notes
+            .iter()
+            .any(|n| n.starts_with("the archive was copied 3 times")),
+        "{:?}",
+        info.notes
+    );
+    let to = rtsim_archive::dir_for(&dir);
+    let index = |d: &Path| Index::decode(&fs::read(d.join(INDEX_FILE)).unwrap()).unwrap();
+    let (world_index, fork_index) = (index(&from), index(&to));
+    assert!(!world_index.entries.iter().any(|e| e.seq == first));
+    assert_eq!(fork_index, world_index);
+    let named: Vec<String> = fork_index
+        .entries
+        .iter()
+        .map(|e| chunk_name(e.seq))
+        .collect();
+    let mut files: Vec<String> = fs::read_dir(&to)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".rtac"))
+        .collect();
+    files.sort();
+    assert_eq!(
+        files, named,
+        "the fork's index names exactly its chunk files"
+    );
+    assert_eq!(info.archive_files, named.len() as u64 + 2, "{info:?}");
+    let rows = |d: &Path| {
+        ArchiveReader::open(d, None)
+            .unwrap()
+            .unwrap()
+            .rows(0, u64::MAX)
+            .unwrap()
+    };
+    let r = rows(&to);
+    assert!(
+        r.iter().any(|r| matches!(
+            &r.row,
+            rtsim_archive::Row::Event(e) if (e.tick, e.x, e.z) == (1_000, 7, 40)
+        )),
+        "the flush's raid is in the fork"
+    );
+    assert_eq!(r, rows(&from));
+    let _ = fs::remove_dir_all(dir.parent().unwrap());
+    let _ = fs::remove_dir_all(&world);
+}
+
+/// The host brings a save forward when the event archive's buffer reaches its mark, so a fast run
+/// keeps its rows (VIEWER.md §12): with saves due every 1,000 game days, a mark of one row makes
+/// every save of a three-day run the buffer's, and the default mark (half the buffer) none.
+#[test]
+fn a_filling_archive_buffer_brings_the_save_forward() {
+    let world = populated("archive-save", 2);
+    let parent = scratch("archive-save-fork");
+    let mut seen = Vec::new();
+    for (name, mark) in [("one", (1, u64::MAX)), ("half", ARCHIVE_SAVE_AT)] {
+        let dir = parent.join(name);
+        fork::export(&world, &dir).unwrap();
+        let o = Options {
+            save_every: 1_000 * DAY,
+            archive_save_at: mark,
+            ..opts(false)
+        };
+        let (_, host) = run_days(&dir, &o, 3);
+        seen.push((host.saves, host.archive_saves));
+        assert_eq!(host.e.stats.archive_failures.load(Ordering::Acquire), 0);
+        host.close().unwrap();
+    }
+    eprintln!("  saves, of them the buffer's: {seen:?}");
+    assert!(seen[0].1 > 0, "{seen:?}");
+    assert_eq!(seen[0].0, seen[0].1, "{seen:?}");
+    assert_eq!(seen[1], (0, 0), "{seen:?}");
+    let _ = fs::remove_dir_all(&parent);
+    let _ = fs::remove_dir_all(&world);
+}
+
 /// The host never writes into the world: every file the same, bytes and times, after an export,
 /// a run on the fork and a second export. A fork inside the world, the world inside a fork, a
 /// folder already in use and a world without rtsim pages are refused.
@@ -672,11 +806,32 @@ fn a_save_during_the_copy_makes_the_export_copy_again() {
 fn the_world_is_never_written_and_overlaps_are_refused() {
     let world = populated("untouched", 2);
     let before = snapshot(&world);
+    let world_archive = rtsim_archive::dir_for(&world);
+    assert!(
+        before
+            .keys()
+            .any(|p| p.starts_with(&world_archive) && p.extension().is_some_and(|x| x == "rtac")),
+        "the world's engine recorded an archive, which the check covers"
+    );
     let parent = scratch("untouched-fork");
     let dir = parent.join("fork");
     fork::export(&world, &dir).unwrap();
     let (_, host) = run_days(&dir, &opts(false), 12);
     host.close().unwrap();
+    // The fork's engine recorded into the fork's archive: saves past the world's serial, and
+    // chunks tagged with them.
+    let serial = archive_serial(&world.join(save::PAGES));
+    assert!(archive_serial(&dir.join(save::PAGES)) > serial);
+    let fork_archive = rtsim_archive::ArchiveReader::open(rtsim_archive::dir_for(&dir), None)
+        .unwrap()
+        .unwrap();
+    assert!(
+        fork_archive
+            .entries()
+            .iter()
+            .any(|e| e.header.serial > serial),
+        "the fork's own saves wrote chunks into its archive"
+    );
     let again = parent.join("again");
     fork::export(&world, &again).unwrap();
     assert!(
@@ -700,35 +855,40 @@ fn the_world_is_never_written_and_overlaps_are_refused() {
     let _ = fs::remove_dir_all(&not_a_world);
 }
 
+/// The save serial of the confirmed generation in a page directory (the engine's `ARCHIVE_KEY`).
+fn archive_serial(pages: &Path) -> u64 {
+    let mut s = PageStore::open_read_only(pages).unwrap();
+    s.view_confirmed().unwrap();
+    let b = s
+        .get_shared(rtsim_jni::engine::ARCHIVE_KEY)
+        .unwrap()
+        .unwrap();
+    u64::from_le_bytes(b[..].try_into().unwrap())
+}
+
+/// A notable raid at (x, 40) in dim0, numbered in `d`.
+fn raid(d: &mut rtsim_archive::Dictionary, tick: u64, x: i32) -> rtsim_archive::Row {
+    rtsim_archive::Row::Event(rtsim_archive::Event {
+        tick,
+        kind: d.kind("conflict.raid").unwrap(),
+        frame: d.frame("dim0").unwrap(),
+        severity: rtsim_archive::Severity::Notable,
+        x,
+        z: 40,
+        subject: rtsim_archive::Handle::direct(12),
+        ..rtsim_archive::Event::default()
+    })
+}
+
 /// An archive beside `world`'s pages: raids at x 100 to 104 in a flush tagged with the world's
 /// generation, and one at x 999 tagged with the save after it, which the world never confirmed.
 /// The world's own engine recorded into the same archive; the raids take its save serial (the
 /// pages' `ARCHIVE_KEY`) and the one after it.
 fn archive(world: &Path, obs_seq: u64, now: u64) {
-    use rtsim_archive::{Archive, Dictionary, Event, Handle, Pending, Row, Severity, Stamp};
-    let serial = {
-        let mut s = PageStore::open_read_only(world.join(save::PAGES)).unwrap();
-        s.view_confirmed().unwrap();
-        let b = s
-            .get_shared(rtsim_jni::engine::ARCHIVE_KEY)
-            .unwrap()
-            .unwrap();
-        u64::from_le_bytes(b[..].try_into().unwrap())
-    };
+    use rtsim_archive::{Archive, Pending, Stamp};
+    let serial = archive_serial(&world.join(save::PAGES));
     let mut a = Archive::open(rtsim_archive::dir_for(world)).unwrap();
     let mut d = a.dictionary().clone();
-    let raid = |d: &mut Dictionary, tick: u64, x: i32| {
-        Row::Event(Event {
-            tick,
-            kind: d.kind("conflict.raid").unwrap(),
-            frame: d.frame("dim0").unwrap(),
-            severity: Severity::Notable,
-            x,
-            z: 40,
-            subject: Handle::direct(12),
-            ..Event::default()
-        })
-    };
     for (seq, serial, rows) in [
         (obs_seq, serial, 100..105),
         (obs_seq + 1, serial + 1, 999..1000),
