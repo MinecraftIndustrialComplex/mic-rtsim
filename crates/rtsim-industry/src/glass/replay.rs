@@ -9,9 +9,10 @@
 //! exactly, so the process stops the tick before the flag changes; the replay re-solves (the
 //! regime cache answers most of these) and replaces the process in place (choices G2-4, G2-10).
 //!
-//! **Time.** Heater phases and latency (§4.4) are timers, the process's deadline. A changed rate
-//! that rises waits the graph's longest latency, and the lower of the old and new rate runs
-//! meanwhile, per pool, so the replay never runs ahead of the control (G2-6).
+//! **Time.** Heater phases and latency (§4.4) are timers, the process's deadline. A simulated
+//! node that would run faster than it did is held off for its downstream latency (the time its
+//! output takes to reach a store), then runs: what it makes arrives no earlier than in Create,
+//! and every flow stays a solve's, so goods are conserved (G2-6). A fall is at once.
 //!
 //! **Cycles.** A regime sequence that repeats exactly (same flags, same watched levels, zero
 //! drift on every pool that decides a breakpoint) becomes one `Body::Cycle` over as many whole
@@ -22,7 +23,7 @@
 //! `glass.breakpointsPerEventMax` breakpoints between outside events ends the glass replay
 //! (§4.5, G2-7); the engine falls back to the black box or freezes.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::conserve::{Diffuser, FIXED_ONE};
@@ -142,34 +143,20 @@ impl Watch {
     }
 }
 
-/// One pool's net rate history for the latency rule: (set at, net in 32.32), oldest first. The
-/// first entry is in force; later ones are inside the latency window.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Lag {
-    hist: VecDeque<(Tick, i64)>,
-}
-
-impl Lag {
-    /// Drops entries that no longer matter at `at`.
-    fn prune(&mut self, at: Tick, lat: u64) {
-        while self.hist.len() > 1 && self.hist[1].0 + lat <= at {
-            self.hist.pop_front();
+/// Per node, every goods edge's flow under a solve (the larger of in and out), for the latency
+/// rule's "runs faster than it did".
+fn node_flows(graph: &super::graph::Graph, sol: &Solution) -> Vec<f64> {
+    let n = graph.nodes.len();
+    let (mut fin, mut fout) = (vec![0.0f64; n], vec![0.0f64; n]);
+    for (e, ed) in graph.edges.iter().enumerate() {
+        if !super::graph::carries_goods(ed.kind) {
+            continue;
         }
+        let f = sol.edge_flow.get(e).copied().unwrap_or(0.0);
+        fout[ed.from as usize] += f;
+        fin[ed.to as usize] += f;
     }
-
-    /// The rate that runs at `at`: the lowest of the one in force and those set within the window.
-    fn applied(&self) -> i64 {
-        self.hist.iter().map(|e| e.1).min().unwrap_or(0)
-    }
-
-    fn last(&self) -> Option<i64> {
-        self.hist.back().map(|e| e.1)
-    }
-
-    /// When the next entry comes into force (after `at`).
-    fn next_due(&self, lat: u64) -> Option<Tick> {
-        self.hist.get(1).map(|e| e.0 + lat)
-    }
+    fin.iter().zip(&fout).map(|(a, b)| a.max(*b)).collect()
 }
 
 /// Everything a breakpoint can change, for a mark (and its restore mid-cycle).
@@ -179,7 +166,8 @@ struct State {
     full: BTreeMap<u32, BTreeMap<Good, i64>>,
     ctrl_on: Vec<bool>,
     dry: BTreeSet<Good>,
-    lag: BTreeMap<PoolKey, Lag>,
+    /// The latency rule: nodes held off until the tick their rise comes into force.
+    hold: BTreeMap<u32, Tick>,
 }
 
 /// The replay at one breakpoint, for cycle detection.
@@ -234,10 +222,9 @@ pub struct Replay {
     heat_at: Tick,
     /// Per heater: the share of its burn its fuel pays for in the current regime.
     fed: Vec<f64>,
-    lat: u64,
-    /// The current regime's target nets (32.32), before the latency rule.
-    target: BTreeMap<PoolKey, i64>,
-    /// The nets that run.
+    /// Per node: its flow in the regime that runs (the latency rule's baseline).
+    flow: Vec<f64>,
+    /// The nets that run (32.32).
     nets: BTreeMap<PoolKey, i64>,
     watches: Vec<(Watch, SpaceSpec)>,
     /// This breakpoint's time shift (choice G2-12): the pool that fired and the carry the shift
@@ -492,13 +479,12 @@ impl Replay {
                 full: BTreeMap::new(),
                 ctrl_on: comp.ctrl_on.clone(),
                 dry: BTreeSet::new(),
-                lag: BTreeMap::new(),
+                hold: BTreeMap::new(),
             },
             heaters,
             heat_at: at,
             fed,
-            lat: graph.longest_latency,
-            target: BTreeMap::new(),
+            flow: vec![0.0; n],
             nets: BTreeMap::new(),
             watches: Vec::new(),
             fire: None,
@@ -630,7 +616,14 @@ impl Replay {
             if let Some(w) = why {
                 self.counts.breakpoints += 1;
                 comp.replay_breakpoints += 1;
-                self.steps += 1;
+                // A hold coming due is not an oscillation: a node holds at most once a rise of its
+                // potential, and a rise needs another breakpoint or an outside event.
+                let release = matches!(w, Stop::Timer)
+                    && self.cycle.is_none()
+                    && self.st.hold.values().any(|&t| t <= at);
+                if !release {
+                    self.steps += 1;
+                }
                 if self.steps > tun.breakpoints_per_event_max {
                     return Err(Fallback::Oscillating);
                 }
@@ -805,25 +798,39 @@ impl Replay {
         out
     }
 
-    /// The nets that run under the latency rule if `target` were the regime now.
-    fn applied(&self, target: &BTreeMap<PoolKey, i64>, first: bool) -> BTreeMap<PoolKey, i64> {
-        if first || self.lat == 0 {
-            return target.clone();
-        }
-        let mut out = BTreeMap::new();
-        let keys: BTreeSet<PoolKey> = target.keys().chain(self.st.lag.keys()).copied().collect();
-        for k in keys {
-            let t = target.get(&k).copied().unwrap_or(0);
-            let v = match self.st.lag.get(&k) {
-                Some(l) => l.applied().min(t),
-                // A new pool rises from 0.
-                None => t.min(0),
-            };
-            if v != 0 {
-                out.insert(k, v);
+    /// The latency rule (§4.4, choice G2-6): a simulated node with a downstream latency whose
+    /// potential (its flow in this regime with nothing held) is above its potential in the
+    /// regime before is held off until its output could have arrived. Holding it off is a solve
+    /// of its own (the node gated), so every flow stays recipe-consistent, and what it makes
+    /// arrives no earlier than in Create. Potentials do not depend on holds, so a hold coming due
+    /// never makes another node hold (a machine fed by two held paths, or a loop, would chain
+    /// holds forever). True if a node was newly held.
+    fn hold_rises(&mut self, comp: &Compiled, potential: &[f64], at: Tick) -> bool {
+        let graph = &comp.graph;
+        let mut added = false;
+        for (v, &f) in potential.iter().enumerate() {
+            let lat = graph.down_latency.get(v).copied().unwrap_or(0);
+            let id = v as u32;
+            if lat == 0 || !self.sim[v] || graph.node(id).kind == NodeKind::Store {
+                continue;
+            }
+            let old = self.flow.get(v).copied().unwrap_or(0.0);
+            if f <= old * (1.0 + 1e-9) + 1e-12 {
+                continue;
+            }
+            // A further rise while held waits from now; only a new hold changes the solve.
+            match self.st.hold.entry(id) {
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    let t = o.get_mut();
+                    *t = (*t).max(at + lat);
+                }
+                std::collections::btree_map::Entry::Vacant(o) => {
+                    o.insert(at + lat);
+                    added = true;
+                }
             }
         }
-        out
+        added
     }
 
     /// The residual node from the passing window (G-B13, §5.1): per good, what the model misses,
@@ -996,7 +1003,6 @@ impl Replay {
                 let keys: BTreeSet<PoolKey> = lv
                     .range(range.clone())
                     .map(|(k, _)| *k)
-                    .chain(self.target.range(range.clone()).map(|(k, _)| *k))
                     .chain(self.nets.range(range).map(|(k, _)| *k))
                     .filter(|k| graph.allows(e, k.good()))
                     .collect();
@@ -1029,7 +1035,6 @@ impl Replay {
         goods: &dyn GoodLookup,
         tun: &GlassTunables,
     ) -> Result<(ProcSpec, Vec<(u32, SpaceSpec)>), Fallback> {
-        let first = self.target.is_empty() && self.st.lag.is_empty() && at == self.started;
         let d = self.d;
         let n_ctrl = comp
             .graph
@@ -1037,59 +1042,50 @@ impl Replay {
             .iter()
             .filter(|nd| nd.kind == NodeKind::Controller)
             .count();
-        for lag in self.st.lag.values_mut() {
-            lag.prune(at, self.lat);
-        }
-        let cap = 2 * (lv.len() + self.stores.len() + n_ctrl) + 8;
+        // Holds that came due: those nodes run now. Their potential did not change, so they are
+        // not held again.
+        self.st.hold.retain(|_, t| *t > at);
+        let cap = 2 * (lv.len() + self.stores.len() + n_ctrl) + 8 + comp.graph.nodes.len();
         let mut settled = false;
         let mut sol = Solution::default();
+        let mut potential = Vec::new();
         for _ in 0..cap {
             self.coupled = self.coupling(lv);
             let rg = self.regime(comp, lv);
-            sol = comp.solve_regime(&rg, tun);
-            let target = self.book(comp, &sol, self.coupled);
-            let nets = self.applied(&target, first);
-            self.target = target;
-            self.nets = nets;
-            if !self.settle_once(comp, lv, goods, tun) {
-                settled = true;
-                break;
+            sol = if self.st.hold.is_empty() {
+                comp.solve_regime(&rg, tun)
+            } else {
+                let mut held = rg.clone();
+                for &v in self.st.hold.keys() {
+                    held.gate_off[v as usize] = true;
+                }
+                comp.solve_regime(&held, tun)
+            };
+            self.nets = self.book(comp, &sol, self.coupled);
+            if self.settle_once(comp, lv, goods, tun) {
+                continue;
             }
+            // Settled: what this regime runs with nothing held. A node whose potential rose waits
+            // its path latency; the start too, since a belt may have been empty at the unload
+            // (G-B2's ceiling).
+            potential = if self.st.hold.is_empty() {
+                node_flows(&comp.graph, &sol)
+            } else {
+                let free = comp.solve_regime(&rg, tun);
+                node_flows(&comp.graph, &free)
+            };
+            if self.hold_rises(comp, &potential, at) {
+                continue;
+            }
+            settled = true;
+            break;
         }
         if !settled {
             return Err(Fallback::Unsettled);
         }
         self.counts.regimes += 1;
         comp.replay_regimes += 1;
-        // The latency rule's history takes the new targets.
-        let keys: BTreeSet<PoolKey> = self
-            .target
-            .keys()
-            .chain(self.st.lag.keys())
-            .copied()
-            .collect();
-        if self.lat > 0 {
-            for k in keys {
-                let t = self.target.get(&k).copied().unwrap_or(0);
-                let lag = self.st.lag.entry(k).or_default();
-                if lag.last() != Some(t) {
-                    let since = if first || lag.hist.is_empty() && t <= 0 {
-                        Tick(0)
-                    } else {
-                        at
-                    };
-                    if lag.hist.is_empty() && since == at {
-                        // A pool that did not exist ran at 0 until now.
-                        lag.hist.push_back((Tick(0), 0));
-                    }
-                    lag.hist.push_back((since, t));
-                }
-                lag.prune(at, self.lat);
-            }
-            self.st
-                .lag
-                .retain(|_, l| !(l.hist.len() == 1 && l.hist[0].1 == 0));
-        }
+        self.flow = potential;
         self.fed = self
             .heaters
             .iter()
@@ -1195,17 +1191,15 @@ impl Replay {
             }
         }
         self.watches = watches;
-        // The deadline: the next latency arrival or heater phase.
+        // The deadline: the next held node's rise or heater phase.
         let mut deadline: Option<Tick> = None;
         let mut soon = |t: Tick| {
             if t > at {
                 deadline = Some(deadline.map_or(t, |x: Tick| x.min(t)));
             }
         };
-        for l in self.st.lag.values() {
-            if let Some(t) = l.next_due(self.lat) {
-                soon(t);
-            }
+        for &t in self.st.hold.values() {
+            soon(t);
         }
         for (h, b) in self.heaters.iter().enumerate() {
             if let Some(u) = b.until(self.fed[h]) {
@@ -1454,13 +1448,9 @@ impl Replay {
             mix(&mut h, u64::from(b.phase()));
         }
         mix(&mut h, u64::from(self.coupled));
-        for (&k, l) in &self.st.lag {
-            mix_key(&mut h, k);
-            for &(t, r) in &l.hist {
-                let rel = (t.0 + self.lat).saturating_sub(at.0);
-                mix(&mut h, rel);
-                mix(&mut h, r as u64);
-            }
+        for (&v, &t) in &self.st.hold {
+            mix(&mut h, u64::from(v));
+            mix(&mut h, t.0.saturating_sub(at.0));
         }
         h
     }
@@ -1824,16 +1814,11 @@ impl Replay {
         self.restore(&s, shift, at);
     }
 
-    /// The flags of a mark, its latency history moved forward by `shift` ticks.
-    fn restore(&mut self, s: &State, shift: u64, at: Tick) {
+    /// The flags of a mark, its held nodes' rises moved forward by `shift` ticks.
+    fn restore(&mut self, s: &State, shift: u64, _at: Tick) {
         let mut st = s.clone();
-        for l in st.lag.values_mut() {
-            for e in &mut l.hist {
-                if e.0 != Tick(0) {
-                    e.0 += shift;
-                }
-            }
-            l.prune(at, self.lat);
+        for t in st.hold.values_mut() {
+            *t += shift;
         }
         self.st = st;
     }
