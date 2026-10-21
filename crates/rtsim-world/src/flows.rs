@@ -757,6 +757,9 @@ fn set_payments(
 impl World {
     /// Something reached market `i` at `at`; `breakpoint` when it is one of the market's own.
     pub(crate) fn market_event(&mut self, i: usize, at: Tick, cause: Cause) {
+        if cause != Cause::Breakpoint {
+            self.release(i, at);
+        }
         self.stats.market_events += 1;
         let q = self.cfg.trade.quantum;
         let nb = q.index(at) + 1;
@@ -805,7 +808,8 @@ impl World {
         };
         for c in changes {
             self.stats.segments += 1;
-            self.schedule(q.at(c.first + c.delay - 1), Ev::Wake(c.dest));
+            let wake = self.phased(q.at(c.first + c.delay - 1), c.dest);
+            self.schedule(wake, Ev::Wake(c.dest));
         }
         let snap = Arc::new(snap);
         let differs = self.nodes[i]
@@ -858,6 +862,7 @@ impl World {
     /// Sends market `i`'s news on every edge with the next caravan. `force` sends even when
     /// nothing changed in kind (at build, on joining).
     pub(crate) fn emit(&mut self, i: usize, at: Tick, force: bool) {
+        self.release(i, at);
         let m = self.market_at(i, at);
         let nb = self.cfg.trade.quantum.index(at) + 1;
         let mut s = Snapshot::of_after(i, &m, at, self.nodes[i].last_sent.as_deref());
@@ -929,7 +934,7 @@ impl World {
                     );
                     dir.pending = Some((departs, pid));
                     self.stats.packets_sent += 1;
-                    let when = q.at(departs + ed);
+                    let when = self.phased(q.at(departs + ed), to);
                     self.schedule(when, Ev::Deliver(pid));
                 }
             }
@@ -974,7 +979,8 @@ impl World {
                     self.bands[b].pending[stop] = Some((departs, pid));
                     self.stats.packets_sent += 1;
                     self.stats.band_packets += 1;
-                    self.schedule(q.at(departs + walk), Ev::Deliver(pid));
+                    let when = self.phased(q.at(departs + walk), to);
+                    self.schedule(when, Ev::Deliver(pid));
                 }
             }
         }
@@ -988,6 +994,7 @@ impl World {
         };
         self.stats.deliveries += 1;
         let to = p.to;
+        self.release(to, at);
         let pinned = self.nodes[to].neighbours.clone();
         for s in p.own.iter().chain(p.relays.iter()) {
             if s.market != to {

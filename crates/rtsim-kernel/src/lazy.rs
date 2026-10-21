@@ -593,6 +593,16 @@ impl<M, C: ModelCodec<M>> crate::rows::Row for LazyRow<M, C> {
 /// calls, the same handles in insertion order (never reused), the same wakes in the same order,
 /// and so the same trajectories, resident or paged. The wake wheel stays resident (SCALE.md §8).
 ///
+/// **Staggered wakes** ([`PagedLazyTable::staggered`], docs/choices-paging-followups.md PF1). A
+/// model whose breakpoints fall on shared boundaries (every market on the trade quantum's) wakes
+/// every region in one tick, and a page changed since the last save cannot leave, so one tick
+/// would need every page resident. A staggered table books each wake `phase` ticks after the
+/// breakpoint, the phase a function of the region's page (page-mates share it) spread over the
+/// period. The region acts on the breakpoint at the phase instead: the caller's model must not
+/// care where in `[bp, bp + period)` it is delivered (markets decide per quantum). Something else
+/// reaching a region between its breakpoint and the phase must deliver the breakpoint first:
+/// [`PagedLazyTable::take_held`].
+///
 /// **Reads and pages.** [`PagedLazyTable::get`] loads through `&self` and changes nothing.
 /// [`PagedLazyTable::read`] and [`PagedLazyTable::apply`] change the region (catch-up, the read
 /// time in `touched`), so its page is dirty until the next save; reads of a model with no slot
@@ -603,6 +613,16 @@ pub struct PagedLazyTable<M, C: ModelCodec<M>> {
     world_seed: u64,
     system: SystemId,
     stats: LazyStats,
+    /// Ticks wakes are spread over by page; 0 for none.
+    stagger: u64,
+}
+
+/// Page `page`'s phase in `[0, period)`: the fractional part of `page` times the golden ratio,
+/// scaled, so consecutive pages land far apart and any run of `k` pages splits the period into
+/// gaps of at most three lengths.
+pub fn stagger_phase(page: u64, period: u64) -> u64 {
+    let x = page.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    ((u128::from(x) * u128::from(period)) >> 64) as u64
 }
 
 impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
@@ -614,7 +634,29 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
             world_seed,
             system,
             stats: LazyStats::default(),
+            stagger: 0,
         }
+    }
+
+    /// Spreads wakes over `period` ticks by page (see the type's docs). Set it before inserting:
+    /// wakes already booked keep their times.
+    pub fn staggered(mut self, period: u64) -> Self {
+        self.stagger = period;
+        self
+    }
+
+    /// The period wakes are spread over; 0 for none.
+    pub fn stagger(&self) -> u64 {
+        self.stagger
+    }
+
+    /// Ticks region `h`'s wakes come after its breakpoints: its page's phase.
+    pub fn phase(&self, h: RegionId<M>) -> u64 {
+        if self.stagger == 0 {
+            return 0;
+        }
+        let page = u64::from(h.index()) / self.rows.rows().rows_per_page();
+        stagger_phase(page, self.stagger)
     }
 
     fn row_handle(h: RegionId<M>) -> Handle<LazyRow<M, C>> {
@@ -684,18 +726,53 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
     }
 
     fn reschedule(&mut self, h: RegionId<M>) {
+        let phase = self.phase(h);
         let Some(row) = self.row_mut(h) else {
             return;
         };
         row.stamp = row.stamp.wrapping_add(1);
         let anchor = row.cell.anchor();
-        row.wake = row.cell.model().next_breakpoint(anchor);
-        if let Some(at) = row.wake {
+        let bp = row.cell.model().next_breakpoint(anchor);
+        if let Some(at) = bp {
             debug_assert!(at > anchor, "breakpoint {at:?} not after anchor {anchor:?}");
+        }
+        row.wake = bp.map(|at| at + phase);
+        if let Some(at) = row.wake {
             let stamp = row.stamp;
             self.wheel
                 .schedule(at.max(self.wheel.now()), Wake { region: h, stamp });
         }
+    }
+
+    /// Delivers region `h`'s breakpoint at `at` if it is due and only the stagger holds it back
+    /// (`bp <= at < bp + phase`): catches up and settles to `at`, books the next wake (the held
+    /// one goes stale) and returns true, and the caller acts on the breakpoint as if
+    /// [`PagedLazyTable::next_due`] had returned `(at, h)`. Call it before anything else reaches
+    /// the region at `at`, which would otherwise supersede the breakpoint.
+    pub fn take_held(&mut self, h: RegionId<M>, at: Tick) -> bool {
+        debug_assert!(at <= self.wheel.now(), "event before next_due was drained");
+        if !self.is_held(h, at) {
+            return false;
+        }
+        let key = self.stream(self.get(h).expect("held").key);
+        let row = self.row_mut(h).expect("checked above");
+        let commits = row.cell.catch_up(at, key);
+        row.cell.settle_to(at);
+        self.stats.breakpoints += 1;
+        self.stats.slot_commits += commits;
+        self.reschedule(h);
+        true
+    }
+
+    /// Whether region `h`'s breakpoint is due at `at` but held back by the stagger.
+    pub fn is_held(&self, h: RegionId<M>, at: Tick) -> bool {
+        let phase = self.phase(h);
+        if phase == 0 {
+            return false;
+        }
+        self.get(h)
+            .and_then(|r| r.wake)
+            .is_some_and(|w| w > at && w.0 - phase <= at.0)
     }
 
     /// As [`LazyTable::read`].
@@ -722,6 +799,10 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
         f: impl FnOnce(&mut M, Tick) -> R,
     ) -> Option<R> {
         debug_assert!(at <= self.wheel.now(), "event before next_due was drained");
+        debug_assert!(
+            !self.is_held(h, at),
+            "an event reached a region whose breakpoint the stagger holds: take_held first"
+        );
         let key = self.stream(self.get(h)?.key);
         self.stats.events += 1;
         let row = self.row_mut(h)?;
@@ -774,11 +855,12 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
         self.rows.rows_mut()
     }
 
-    /// Everything but the rows: the seed, the system, the row count and next index, the wheel in
-    /// pop order and the counters.
+    /// Everything but the rows: the seed, the system, the stagger, the row count and next index,
+    /// the wheel in pop order and the counters.
     pub fn encode_meta(&self, w: &mut Writer) {
         w.u64(self.world_seed);
         w.u64(self.system.0);
+        w.var_u64(self.stagger);
         let (len, next) = self.rows.meta();
         w.var_u64(len);
         w.u32(next);
@@ -807,6 +889,7 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
     ) -> codec::Result<(Self, (u64, u32))> {
         let world_seed = r.u64()?;
         let system = SystemId(r.u64()?);
+        let stagger = r.var_u64()?;
         let meta = (r.var_u64()?, r.u32()?);
         let wheel = TimingWheel::decode_with(r, |r| {
             Ok(Wake {
@@ -828,6 +911,7 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
                 world_seed,
                 system,
                 stats,
+                stagger,
             },
             meta,
         ))
