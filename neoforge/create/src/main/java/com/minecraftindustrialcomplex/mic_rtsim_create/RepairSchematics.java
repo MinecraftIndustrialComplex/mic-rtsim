@@ -77,8 +77,9 @@ public final class RepairSchematics implements IndustryPlugin {
     public record Delivered(long district, String file, Path path, BlockPos anchor, Vec3i size, List<DestroyedBlock> blocks, ItemEntity item) {}
 
     private static final List<Delivered> DELIVERED = new CopyOnWriteArrayList<>();
+    private static final int KEEP_DELIVERED = 64;
 
-    /** Every repair schematic delivered since the server started, in order (GameTests). */
+    /** The last {@link #KEEP_DELIVERED} repair schematics delivered since the server started, in order (GameTests). */
     public static List<Delivered> delivered() {
         return DELIVERED;
     }
@@ -232,6 +233,8 @@ public final class RepairSchematics implements IndustryPlugin {
         item.setUnlimitedLifetime();
         level.addFreshEntity(item);
         DELIVERED.add(new Delivered(district, file, path, anchor, size, List.copyOf(blocks), item));
+        while (DELIVERED.size() > KEEP_DELIVERED)
+            DELIVERED.remove(0);
         MicRtsimCreate.LOGGER.info("[mic_rtsim_create] repair schematic {}: {} blocks of district {}, anchored at {}, left at {}",
                 file, blocks.size(), district, anchor.toShortString(), drop.toShortString());
     }

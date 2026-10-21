@@ -68,6 +68,26 @@ public final class RepairSchematicGameTests {
         return ((x ? o.getX() : o.getZ()) >> 4) + offset;
     }
 
+    /**
+     * A wait on the world's IO (a far chunk generating, loading, saving its entities): the GameTest server
+     * ticks as fast as it can, so on a busy machine a timeout in ticks passes before the IO is done. While
+     * the check fails, the tick waits 5 ms, so a timeout of 12,000 ticks is at least a minute of IO.
+     */
+    private static Runnable io(Runnable check) {
+        return () -> {
+            try {
+                check.run();
+            } catch (RuntimeException e) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                throw e;
+            }
+        };
+    }
+
     private static ByteBuffer result(long op) {
         List<ByteBuffer> r = received(IndRecords.IND_RECONCILE_RESULT, IndRecords.ReconcileResult.OP_ID, op);
         return r.isEmpty() ? null : r.get(r.size() - 1);
@@ -113,7 +133,7 @@ public final class RepairSchematicGameTests {
         RepairSchematics.Delivered[] got = {null};
         helper.startSequence()
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
-                .thenWaitUntil(() -> check("the far chunk loads", level.getChunkSource().getChunkNow(fx, fz) != null))
+                .thenWaitUntil(io(() -> check("the far chunk loads", level.getChunkSource().getChunkNow(fx, fz) != null)))
                 .thenExecute(() -> {
                     ind().districts().forgetArea(level, fx - 1, fz - 1, fx + 1, fz + 1);
                     for (BlockPos q : BlockPos.betweenClosed(x0, y, z0, x0 + 15, y + 3, z0 + 15))
@@ -132,13 +152,13 @@ public final class RepairSchematicGameTests {
                     playerPlaced(helper, chestPos);
                     playerPlaced(helper, beltStart);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     check("a three-segment belt", level.getBlockEntity(beltMid) instanceof BeltBlockEntity b && b.getController() != null
                             && b.getControllerBE() != null && b.getControllerBE().beltLength == 3);
                     District d = ind().districtAt(level, chestPos);
                     check("district", d != null && d == ind().districtAt(level, beltMid));
                     id[0] = d.id;
-                })
+                }))
                 .thenExecute(() -> {
                     // A player breaks the casing next to the one the raid will hit: that hole is the player's.
                     FakePlayerFactory.getMinecraft(level).gameMode.destroyBlock(playerCasing);
@@ -150,32 +170,30 @@ public final class RepairSchematicGameTests {
                     expected[2] = BlockStateParser.serialize(level.getBlockState(chestPos));
                     level.setChunkForced(fx, fz, false);
                 })
-                .thenWaitUntil(() -> check("the district unloads", level.getChunkSource().getChunkNow(fx, fz) == null
-                        && ind().districts().loadedChunks(ind().district(id[0])) == 0))
+                .thenWaitUntil(io(() -> check("the district unloads", level.getChunkSource().getChunkNow(fx, fz) == null
+                        && ind().districts().loadedChunks(ind().district(id[0])) == 0)))
                 // The raid, unwatched: its damage reaches Java as the reconcile's destroy entries, held.
                 .thenExecute(() -> {
                     mark[0] = ind().reconciler().held();
                     reconcile(op, id[0], 1, level, fx, fz, List.of(), List.of(
                             new Destroy(beltMid, expected[0]), new Destroy(casing, expected[1]), new Destroy(chestPos, expected[2])));
                 })
-                .thenWaitUntil(() -> check("held", ind().reconciler().held() == mark[0] + 1))
+                .thenWaitUntil(io(() -> check("held", ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> {
-                    mark[0] = RepairSchematics.delivered().size();
                     level.setChunkForced(fx, fz, true);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     ByteBuffer r = result(op);
                     check("the damage applied at the load", r != null);
                     check("three blocks broken: " + r.getInt(IndRecords.ReconcileResult.DESTROYED), r.getInt(IndRecords.ReconcileResult.DESTROYED) == 3);
                     check("the belt is gone, its pulleys left as shafts", level.getBlockState(beltMid).isAir()
                             && AllBlocks.SHAFT.has(level.getBlockState(beltStart)) && AllBlocks.SHAFT.has(level.getBlockState(beltEnd)));
                     check("the torch popped off", level.getBlockState(torch).isAir() && level.getBlockState(casing).isAir());
-                })
-                .thenWaitUntil(() -> {
-                    check("a repair schematic is delivered", RepairSchematics.delivered().size() > mark[0]);
-                    got[0] = RepairSchematics.delivered().get(RepairSchematics.delivered().size() - 1);
-                    check("for the district", got[0].district() == id[0]);
-                })
+                }))
+                .thenWaitUntil(io(() -> {
+                    got[0] = RepairSchematics.delivered().stream().filter(x -> x.district() == id[0]).reduce((x, y) -> y).orElse(null);
+                    check("a repair schematic is delivered for the district", got[0] != null);
+                }))
                 .thenExecute(() -> {
                     RepairSchematics.Delivered d = got[0];
                     check("the file is in Create's uploaded folder under mic-rtsim: " + d.path(), Files.isRegularFile(d.path())
@@ -218,7 +236,7 @@ public final class RepairSchematicGameTests {
                     cannon.state = SchematicannonBlockEntity.State.RUNNING;
                     cannon.statusMsg = "running";
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     SchematicannonBlockEntity cannon = (SchematicannonBlockEntity) level.getBlockEntity(cannonPos);
                     check("the cannon finished: " + cannon.state + " " + cannon.statusMsg, cannon.state == SchematicannonBlockEntity.State.STOPPED
                             && cannon.flyingBlocks.isEmpty());
@@ -231,7 +249,7 @@ public final class RepairSchematicGameTests {
                                 && s.getValue(BeltBlock.PART) == before.get(p).getValue(BeltBlock.PART));
                     }
                     check("the player's hole stays a hole", level.getBlockState(playerCasing).isAir());
-                })
+                }))
                 .thenExecute(() -> {
                     record("anOfflineRaidComesBackAsARepairSchematicThatACannonPrints", "printed", "chest, casing, torch, belt "
                             + level.getBlockState(beltStart).getValue(BeltBlock.PART) + "/" + level.getBlockState(beltMid).getValue(BeltBlock.PART)
