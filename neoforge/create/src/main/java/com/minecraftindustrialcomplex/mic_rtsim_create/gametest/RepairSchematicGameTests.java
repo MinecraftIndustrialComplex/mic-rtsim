@@ -211,6 +211,9 @@ public final class RepairSchematicGameTests {
                     level.setBlock(cannonPos, AllBlocks.SCHEMATICANNON.getDefaultState(), 3);
                     SchematicannonBlockEntity cannon = (SchematicannonBlockEntity) level.getBlockEntity(cannonPos);
                     cannon.inventory.setStackInSlot(0, s.copy());
+                    // A belt prints from its last pulley, which the break left as a shaft: a block entity,
+                    // which a cannon replaces only with "Replace Block Entities" on (R17).
+                    cannon.replaceBlockEntities = true;
                     item.discard();
                     cannon.state = SchematicannonBlockEntity.State.RUNNING;
                     cannon.statusMsg = "running";
