@@ -234,58 +234,6 @@ compare.
 - **Whole passes stay for tools** (PM-D11), and rtsim-jni does not page the dragons yet (it saves
   the version 2 blob).
 
-## Phase 1 world: the market rows (moved, not bounded yet)
-
-| # | Choice | Why |
-|---|---|---|
-| PM10 | **`lazy::PagedLazyTable`**: a `LazyTable` whose regions live in a `PagedArena` (the same calls, handles in insertion order and never reused, the same wakes in the same order); its wake wheel stays resident. A `ModelCodec` says how rows are written, because a model's own `Encode` may be a hashing form (the market's is). | The markets are lazy regions; the kernel's `PagedTable` pages lazy regions too but takes the store in every call, and the world reaches its markets from twenty places. This keeps every call site. |
-| PM11 | **The world's markets are a `PagedLazyTable`** (table 0x5010, 16 markets a page; meta page 0x5012 id 0). `World::save` writes the market rows last, in key order (snapshot magic RTW2); `save_paged`, `open_paged`, `saved`, `save_failed`, `enforce_budget` and `needs_save` as the herds'. rtsim-jni's phase 1 meta page goes to version 3, so older pages are dropped (S5). | Market rows were the largest single per-village term in the market sweep. |
-
-**Tested:** `a_paged_world_runs_and_restores_exactly` (rtsim-world `tests/persist.rs`): a world
-paging its markets under a 12 KB budget, saved after every op of a random script, gives the
-resident world's state hash after every op and its exact snapshot at the end, and a world opened
-from its pages at any point continues exactly. Resident (no store), the world's state hash is
-unchanged from before (A/B at 1,024 markets against the binary at 1c43097: same hash, heap 12.5
-against 17.0 MiB, the wheel's freed vectors (PM8); CPU per day +5 to 8%, the row table's index
-lookups).
-
-**Measured, and why it is not done** (one pair side by side at 4,096 markets, 4 MiB budget, 3
-days after 10): heap 42.7 MiB paged against 49.1 resident, the same state hash; but the resident
-market rows peaked at 15.8 MB, four times the budget, CPU per day rose from 633 to 982 ms (4,310
-page loads a day) and saves took 2.5 s of CPU a day (24 saves, 20 of them for the budget, 4.8 MB
-each). Two reasons, both in the model, not the pages:
-
-1. **Every market is hot.** About five events per market per day, so between two autosaves every
-   market page changes, and a changed page cannot leave before a save.
-2. **One tick can change every market.** Market breakpoints fall on trade-quantum boundaries
-   (`Market::next_breakpoint` returns `quantum.at(..)`), so many markets wake in the same tick,
-   and no save can come between them.
-
-The `markets-paged` sweep declares this honestly (resident slope 1.1, "not bounded yet"). What
-it needs, in order: market wakes staggered by page within a quantum, as the herds' decisions are
-(PM6; a behaviour change, so Ben's call); then the other three quarters of a village's heap,
-which stay resident today: news rings (2.3 KB a village), pipelines (2.8 KB, the flow graph,
-resident by SCALE.md §8), the world wheel (2.3 KB) and knowledge holders (superlinear in the
-conflict world, 38.5 MiB of 104.5 at 2,048 nodes). Knowledge holders (planned table 0x5011) are
-the next module to page.
-
-## Industry: not moved (the glass box has not merged)
-
-`git log origin/main` on 2026-10-20 has no merge of `feat/glassbox-g1`, so rtsim-industry is
-left alone (task rule). What it will need, from its `Engine` today:
-
-- **Districts** (`districts: BTreeMap<DistrictId, District>`): a `PagedRows` keyed by the
-  district id, with `cluster_of` folded into the row (as the herds' regions, PM4).
-- **Clusters** (`clusters: LazyTable<Cluster>`): a `PagedLazyTable<Cluster, ClusterCodec>`
-  (PM10), the same change the markets took; wakes staggered by page if clusters share quantum
-  boundaries as markets do.
-- **Stations and lines** (`stations`, `lines`): the rail flow graph, resident (SCALE.md §8).
-- **Per train** (`last_departure`, `arrivals`, `train_cooldown`): resident while a train runs;
-  rows keyed by train id if train counts grow into the hundreds of thousands.
-- **Wakes and pressure** (`wakes`, `pressure`): resident, as every module's wheel.
-- The glass box's compiled machine graphs (G1) are per district: they belong in the district
-  row, or in their own row table keyed by district if they are large.
-
 ## Conflict
 
 Branch `feat/paging-conflict`. The conflict's row tables page; the meta page holds the rest.
@@ -439,6 +387,58 @@ why PM-S8 adds budget saves.
 not prefetch pages: a row loads on demand on the step thread. Rows are not shrunk by boxing
 `Pirate` and `Promoted` (PM-S14).
 
+## Phase 1 world: the market rows (moved, not bounded yet)
+
+| # | Choice | Why |
+|---|---|---|
+| PM10 | **`lazy::PagedLazyTable`**: a `LazyTable` whose regions live in a `PagedArena` (the same calls, handles in insertion order and never reused, the same wakes in the same order); its wake wheel stays resident. A `ModelCodec` says how rows are written, because a model's own `Encode` may be a hashing form (the market's is). | The markets are lazy regions; the kernel's `PagedTable` pages lazy regions too but takes the store in every call, and the world reaches its markets from twenty places. This keeps every call site. |
+| PM11 | **The world's markets are a `PagedLazyTable`** (table 0x5010, 16 markets a page; meta page 0x5012 id 0). `World::save` writes the market rows last, in key order (snapshot magic RTW2); `save_paged`, `open_paged`, `saved`, `save_failed`, `enforce_budget` and `needs_save` as the herds'. rtsim-jni's phase 1 meta page goes to version 3, so older pages are dropped (S5). | Market rows were the largest single per-village term in the market sweep. |
+
+**Tested:** `a_paged_world_runs_and_restores_exactly` (rtsim-world `tests/persist.rs`): a world
+paging its markets under a 12 KB budget, saved after every op of a random script, gives the
+resident world's state hash after every op and its exact snapshot at the end, and a world opened
+from its pages at any point continues exactly. Resident (no store), the world's state hash is
+unchanged from before (A/B at 1,024 markets against the binary at 1c43097: same hash, heap 12.5
+against 17.0 MiB, the wheel's freed vectors (PM8); CPU per day +5 to 8%, the row table's index
+lookups).
+
+**Measured, and why it is not done** (one pair side by side at 4,096 markets, 4 MiB budget, 3
+days after 10): heap 42.7 MiB paged against 49.1 resident, the same state hash; but the resident
+market rows peaked at 15.8 MB, four times the budget, CPU per day rose from 633 to 982 ms (4,310
+page loads a day) and saves took 2.5 s of CPU a day (24 saves, 20 of them for the budget, 4.8 MB
+each). Two reasons, both in the model, not the pages:
+
+1. **Every market is hot.** About five events per market per day, so between two autosaves every
+   market page changes, and a changed page cannot leave before a save.
+2. **One tick can change every market.** Market breakpoints fall on trade-quantum boundaries
+   (`Market::next_breakpoint` returns `quantum.at(..)`), so many markets wake in the same tick,
+   and no save can come between them.
+
+The `markets-paged` sweep declares this honestly (resident slope 1.1, "not bounded yet"). What
+it needs, in order: market wakes staggered by page within a quantum, as the herds' decisions are
+(PM6; a behaviour change, so Ben's call); then the other three quarters of a village's heap,
+which stay resident today: news rings (2.3 KB a village), pipelines (2.8 KB, the flow graph,
+resident by SCALE.md §8), the world wheel (2.3 KB) and knowledge holders (superlinear in the
+conflict world, 38.5 MiB of 104.5 at 2,048 nodes). Knowledge holders (planned table 0x5011) are
+the next module to page.
+
+## Industry: not moved (the glass box has not merged)
+
+`git log origin/main` on 2026-10-20 has no merge of `feat/glassbox-g1`, so rtsim-industry is
+left alone (task rule). What it will need, from its `Engine` today:
+
+- **Districts** (`districts: BTreeMap<DistrictId, District>`): a `PagedRows` keyed by the
+  district id, with `cluster_of` folded into the row (as the herds' regions, PM4).
+- **Clusters** (`clusters: LazyTable<Cluster>`): a `PagedLazyTable<Cluster, ClusterCodec>`
+  (PM10), the same change the markets took; wakes staggered by page if clusters share quantum
+  boundaries as markets do.
+- **Stations and lines** (`stations`, `lines`): the rail flow graph, resident (SCALE.md §8).
+- **Per train** (`last_departure`, `arrivals`, `train_cooldown`): resident while a train runs;
+  rows keyed by train id if train counts grow into the hundreds of thousands.
+- **Wakes and pressure** (`wakes`, `pressure`): resident, as every module's wheel.
+- The glass box's compiled machine graphs (G1) are per district: they belong in the district
+  row, or in their own row table keyed by district if they are large.
+
 ## Not done here
 
 - **rtsim-jni does not page any module yet.** Each module still saves its `save()` blob as one
@@ -450,4 +450,12 @@ not prefetch pages: a row loads on demand on the step thread. Rows are not shrun
   durable (`saved`, or `save_failed`), `enforce_budget` after each step, an extra pending save
   when any module `needs_save` (PM7), and `open_paged` on load. The per-module deletion lists
   (`deletions`) must keep away from the row tables (they do: different table ids).
+- **One convention for meta pages.** Herds and the phase 1 world keep theirs at a fixed key of
+  their own (0x4813 and 0x5012, id 0); dragons, conflict and ships take the key from the caller
+  (`save_paged(batch, meta_key)`). Pick one when wiring rtsim-jni.
+- **The meta page grows with the entities in every module** (the wheel, about one pending event
+  per entity, and the position indexes), and every save writes it whole: with the budget's extra
+  saves, bytes written a day grow with the square of the entity count (dragons: about 97 MB a sim
+  day at 32,768). The fix is a paged wheel (pending events in pages by time bucket) and paged
+  position indexes: a kernel change shared by every module.
 - **Prefetch for row tables** (rows load on demand on the step thread).
