@@ -201,6 +201,34 @@ impl<T> TimingWheel<T> {
         }
     }
 
+    /// Undoes pops: the wheel goes back to `now` (at or before its own) with `popped` pending
+    /// again. `popped` must be what [`TimingWheel::pop_until`] returned since the wheel was at
+    /// `now`, in the order it returned them; the wheel then pops exactly as it would have, schedule
+    /// order included. Rebuilds the wheel, so it costs every pending entry: for error paths.
+    pub fn rewind(&mut self, now: Tick, popped: Vec<(Tick, T)>) {
+        assert!(now.0 <= self.now, "rewind forward: {now:?} > {}", self.now);
+        // What is left, in pop order: `ready` (due at `self.now`, schedule order) first, then the
+        // slots, whose entries for one tick all sit in one slot in schedule order.
+        let mut rest: Vec<Entry<T>> = self.ready.drain(..).collect();
+        let mut slotted: Vec<Entry<T>> = Vec::with_capacity(self.len - rest.len());
+        for v in &mut self.slots {
+            slotted.append(v);
+        }
+        slotted.sort_by_key(|e| e.at);
+        rest.append(&mut slotted);
+        self.now = now.0;
+        self.len = 0;
+        self.occupied = [0; LEVELS];
+        // Every popped entry was due no later than any entry left, so scheduling them first keeps
+        // the pop order.
+        for (at, item) in popped {
+            self.schedule(at.max(now), item);
+        }
+        for e in rest {
+            self.schedule(Tick(e.at), e.item);
+        }
+    }
+
     /// Every pending entry with the time it is due, in no particular order. For saving: a caller
     /// that needs a canonical order sorts what this returns.
     pub fn iter(&self) -> impl Iterator<Item = (Tick, &T)> {
@@ -446,6 +474,37 @@ mod tests {
                 let pb: Vec<_> = std::iter::from_fn(|| b.pop_until(Tick(u64::MAX))).collect();
                 prop_assert_eq!(pa, pb);
             }
+        }
+
+        /// Pops undone with `rewind` leave a wheel that pops exactly what one that never popped
+        /// does, equal times in schedule order included.
+        #[test]
+        fn a_rewound_wheel_pops_as_if_never_popped(ops in prop::collection::vec(op(), 1..200), limit in delta(), start in 0u64..1_000_000) {
+            let mut a = TimingWheel::new(Tick(start));
+            let mut b = TimingWheel::new(Tick(start));
+            let mut now = start;
+            for (seq, op) in ops.iter().enumerate() {
+                match op {
+                    Op::Schedule(d) => {
+                        a.schedule(Tick(now + d), seq as u64);
+                        b.schedule(Tick(now + d), seq as u64);
+                    }
+                    Op::Drain(d) => {
+                        now += d;
+                        let pa: Vec<_> = std::iter::from_fn(|| a.pop_until(Tick(now))).collect();
+                        let pb: Vec<_> = std::iter::from_fn(|| b.pop_until(Tick(now))).collect();
+                        prop_assert_eq!(pa, pb);
+                    }
+                }
+            }
+            let popped: Vec<_> = std::iter::from_fn(|| b.pop_until(Tick(now + limit))).collect();
+            b.rewind(Tick(now), popped);
+            prop_assert_eq!(b.now(), a.now());
+            prop_assert_eq!(b.len(), a.len());
+            prop_assert_eq!(b.next_due(), a.next_due());
+            let pa: Vec<_> = std::iter::from_fn(|| a.pop_until(Tick(u64::MAX))).collect();
+            let pb: Vec<_> = std::iter::from_fn(|| b.pop_until(Tick(u64::MAX))).collect();
+            prop_assert_eq!(pa, pb);
         }
     }
 }

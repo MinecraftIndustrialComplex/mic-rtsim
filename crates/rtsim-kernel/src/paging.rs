@@ -370,7 +370,7 @@ pub struct PagedTable<M: PagedModel> {
     pub(crate) wheel: TimingWheel<Booked>,
     /// Entries popped for `due_at`, sorted so `pop` gives them in key order.
     pub(crate) due: Vec<Booked>,
-    due_at: Tick,
+    pub(crate) due_at: Tick,
     prefetch: TimingWheel<u64>,
     hints: Vec<u64>,
     /// The last snapshot's number ([`SaveTicket`]).

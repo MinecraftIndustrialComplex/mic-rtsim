@@ -443,6 +443,9 @@ pub enum Fault {
     MidCheckpoint,
     /// The new root is in place; the log it replaced and dead index segments were never deleted.
     AfterCheckpoint,
+    /// Not a save point: [`PageStore::get`] succeeds `after` more times, then fails like a disk
+    /// read error until the fault is cleared. The store is not poisoned.
+    Read { after: u32 },
 }
 
 /// One save generation: its number and the observation sequence its pages include (A9).
@@ -957,6 +960,12 @@ impl PageStore {
     pub fn get(&mut self, key: PageKey) -> Result<Option<Vec<u8>>> {
         if self.poisoned {
             return Err(PageError::Poisoned);
+        }
+        if let Some(Fault::Read { after }) = &mut self.fault {
+            if *after == 0 {
+                return Err(PageError::Injected);
+            }
+            *after -= 1;
         }
         let Some(loc) = self.lookup(key)? else {
             return Ok(None);
