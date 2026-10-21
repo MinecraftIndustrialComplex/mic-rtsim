@@ -81,6 +81,8 @@ import java.util.UUID;
  *   <li>31 WORKS_RAID: u64 village, u32 tribute (0 or 1). A dragon raided the village: it buys golems
  *       first for a season, and with tribute its purse is the dragon's (an engine opened with
  *       {@code FLAG_TEST} only).</li>
+ *   <li>32 TRIBUTE_START: u64 village, u64 lair. The village becomes the lair's tributary and pays a
+ *       season's tribute at once (SINK.md §4.6; an engine opened with {@code FLAG_TEST} only).</li>
  * </ul>
  *
  * <p><b>The received log</b>: entries of u64 handover, u64 obsSeq (0 if not journaled), u32 flags
@@ -117,6 +119,7 @@ final class NativeCodec {
     // 29: CONFLICT_COMMAND (no Java encoder here).
     static final int WORKS_GRANT = 30;
     static final int WORKS_RAID = 31;
+    static final int TRIBUTE_START = 32;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -348,6 +351,13 @@ final class NativeCodec {
             begin(WORKS_RAID);
             u64(village);
             u32(tribute ? 1 : 0);
+            return end();
+        }
+
+        Orders tributeStart(long village, long lair) {
+            begin(TRIBUTE_START);
+            u64(village);
+            u64(lair);
             return end();
         }
 
