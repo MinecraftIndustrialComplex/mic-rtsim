@@ -40,6 +40,10 @@ pub struct DistrictSummary {
     pub attacks: u32,
     pub inventories: u32,
     pub watched: bool,
+    /// Its chunks, sorted.
+    pub chunk_list: Vec<(i32, i32)>,
+    /// Its chunks' outline in chunk corners (`rtsim_layers::industry::chunk_outline`).
+    pub outline: Vec<Vec<[i32; 2]>>,
 }
 
 impl DistrictSummary {
@@ -229,6 +233,8 @@ fn summarize(d: &District) -> DistrictSummary {
         attacks: d.attacks.len() as u32,
         inventories: d.inventories.len() as u32,
         watched: d.watched,
+        chunk_list: d.chunks.iter().copied().collect(),
+        outline: rtsim_layers::industry::chunk_outline(&d.chunks),
     }
 }
 
@@ -244,6 +250,7 @@ impl IndustrySource for IndustryView {
                 chunks: d.chunks,
                 chunk_box: d.chunk_box,
                 state: d.state,
+                outline: d.outline.clone(),
             });
         }
     }

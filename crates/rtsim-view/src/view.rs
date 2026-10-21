@@ -10,16 +10,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mic_viewer::api::{
-    Card, Frame, Freshness, Layers, MARK_BUDGET, ProjectionDesc, TICKS_PER_DAY, Tick, TimeInfo,
-    WorldInfo,
+    Card, Found, Frame, Freshness, Group, Layers, MARK_BUDGET, ProjectionDesc, TICKS_PER_DAY, Tick,
+    TimeInfo, WorldInfo,
 };
 use mic_viewer::api::{EventsAnswer, Histogram};
 use mic_viewer::http::{Reply, Request, Response};
 use mic_viewer::scene::Scene;
 use mic_viewer::tiles::{TileCache, Tiles};
-use mic_viewer::viewer::{Backend, EventQuery};
+use mic_viewer::viewer::{Backend, Changes, EventQuery};
 use serde_json::json;
 
+use rtsim_layers::IndustrySource;
+
+use crate::create::{CreateLayers, LineAsk};
 use crate::events::Events;
 use crate::habitat::HabitatTiles;
 use crate::layers::{self, Ctx};
@@ -42,7 +45,12 @@ pub struct View {
     /// The manifest's modification time (when the save was written), ms since the epoch.
     saved_ms: i64,
     layers: Arc<Layers>,
+    /// The rtsim layers per frame, drawn once; Create's are composed in when asked.
     scenes: BTreeMap<String, Arc<Scene>>,
+    /// Create's rail and factories (docs/viewer/industry-map.md).
+    create: CreateLayers,
+    /// Published when Create's block entities land.
+    changes: Arc<Changes>,
     counts: BTreeMap<String, usize>,
     reasons: BTreeMap<String, String>,
     tiles: Option<Tiles>,
@@ -162,6 +170,50 @@ impl View {
         if frames.is_empty() {
             frames.insert(0);
         }
+        let changes = Arc::new(Changes::new());
+        let mut create = {
+            let c = Arc::clone(&changes);
+            CreateLayers::open(&saved.world_dir, Box::new(move || c.publish()))
+        };
+        // A dimension with Create track and no rtsim frame gets a frame of its own, numbered after
+        // the engine's.
+        let mut extra: Vec<(u32, String, [f64; 4])> = Vec::new();
+        let rail_bounds: BTreeMap<String, [f64; 4]> = create.rail_frames().into_iter().collect();
+        for (id, b) in &rail_bounds {
+            if !frames.iter().any(|&f| &frame_id(&saved, f) == id) {
+                let n = frames
+                    .iter()
+                    .copied()
+                    .chain(extra.iter().map(|e| e.0))
+                    .max()
+                    .map_or(0, |m| m + 1);
+                extra.push((n, id.clone(), *b));
+            }
+        }
+        if let Some(v) = &saved.industry {
+            let asks: Vec<LineAsk> = v
+                .lines
+                .iter()
+                .filter_map(|((a, b), _)| {
+                    let (sa, sb) = (v.station(*a)?, v.station(*b)?);
+                    (sa.dim == sb.dim).then(|| LineAsk {
+                        id: format!("{a}-{b}"),
+                        frame: frame_id(&saved, sa.dim),
+                        a: [sa.pos.x, sa.pos.y, sa.pos.z],
+                        b: [sb.pos.x, sb.pos.y, sb.pos.z],
+                    })
+                })
+                .collect();
+            create.route_lines(&asks);
+            let districts: Vec<(String, Vec<(i32, i32)>)> = v
+                .districts
+                .iter()
+                .map(|d| (frame_id(&saved, d.dim), d.chunk_list.clone()))
+                .collect();
+            create.want_at_open(&districts);
+        } else {
+            create.want_at_open(&[]);
+        }
         let named: Vec<(String, String)> = frames
             .iter()
             .map(|&f| {
@@ -192,6 +244,9 @@ impl View {
             }
             scenes.insert(id.clone(), Arc::new(w.finish(t, 0.0)));
             let mut bounds = drawn.bounds.get(&f).copied();
+            if let Some(b) = rail_bounds.get(&id) {
+                bounds = Some(union(bounds, *b));
+            }
             let mut tiles = Vec::new();
             if let Some(h) = &habitat
                 && let Ok(f16) = u16::try_from(f)
@@ -212,6 +267,20 @@ impl View {
                 projection: ProjectionDesc::flat(),
                 bounds: [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD],
                 tiles,
+            });
+        }
+        for (f, id, b) in extra {
+            let mut w = mic_viewer::scene::SceneWriter::new();
+            for s in &specs {
+                w.empty(&s.desc.id, "the engine has nothing in this dimension");
+            }
+            scenes.insert(id.clone(), Arc::new(w.finish(t, 0.0)));
+            infos.push(Frame {
+                label: frame_label(&id, f),
+                id,
+                projection: ProjectionDesc::flat(),
+                bounds: [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD],
+                tiles: Vec::new(),
             });
         }
         let manifest = saved.pages_dir.join("manifest.rtm");
@@ -252,9 +321,12 @@ impl View {
                 .map(|e| e.kinds().to_vec())
                 .unwrap_or_default(),
             has_events: events.as_ref().is_some_and(Events::any),
-            ..WorldInfo::default()
+            // Create's block entities land after the page opens: the stream says when. A save
+            // with no region files has nothing to land, and keeps no connection open.
+            stream: create.can_land(),
+            find: true,
         };
-        let layers = Arc::new(layers::layers(&specs));
+        let layers = Arc::new(with_create(layers::layers(&specs), &create));
         // The tile cache's bytes are shared when both base maps are there.
         let tile_cache = match (&habitat, &surveyor) {
             (Some(_), Some(_)) => saved.limits.tile_cache / 2,
@@ -286,6 +358,8 @@ impl View {
             saved_ms,
             layers,
             scenes,
+            create,
+            changes,
             counts: drawn.counts,
             reasons: drawn.reasons,
             tiles,
@@ -305,6 +379,58 @@ impl View {
     pub fn with_heap(mut self, probe: HeapProbe) -> View {
         self.heap = Some(probe);
         self
+    }
+
+    /// Create's rail and factories.
+    pub fn create(&self) -> &CreateLayers {
+        &self.create
+    }
+
+    /// Named things matching `q`: Create's stations and trains, then named districts.
+    pub fn find_named(&self, q: &str, limit: usize) -> Vec<Found> {
+        let mut found = self.create.find(q, limit);
+        let ql = q.trim().to_lowercase();
+        if !ql.is_empty() {
+            let s = lock(&self.saved);
+            if let Some(v) = &s.industry {
+                for d in &v.districts {
+                    let Some(name) = s.names.get(crate::keys::DICT_NAME, d.name) else {
+                        continue;
+                    };
+                    let n = name.to_lowercase();
+                    let score = if n == ql {
+                        0
+                    } else if n.starts_with(&ql) {
+                        1
+                    } else if n.contains(&ql) {
+                        2
+                    } else {
+                        continue;
+                    };
+                    let (x, z) = d.centre();
+                    found.push((
+                        score,
+                        Found {
+                            layer: "industry.districts".into(),
+                            id: d.id.to_string(),
+                            label: name.to_owned(),
+                            kind: "District".into(),
+                            frame: frame_id(&s, d.dim),
+                            x,
+                            z,
+                        },
+                    ));
+                }
+            }
+        }
+        found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.label.cmp(&b.1.label)));
+        found.into_iter().take(limit).map(|(_, f)| f).collect()
+    }
+
+    /// The scene of `frame` with Create's layers composed in.
+    pub fn composed(&self, frame: &str) -> Option<Arc<Scene>> {
+        let base = self.scenes.get(frame)?;
+        Some(Arc::new(self.create.compose(frame, base)))
     }
 
     /// The save (held: cards wait while it is).
@@ -420,6 +546,7 @@ impl View {
                 "picture_bytes": s.cached_bytes(),
             })),
             "heap": self.heap.as_ref().map(|h| h()),
+            "create": self.create.status(),
             "events": match &self.events {
                 Some(e) => {
                     let (dropped, damaged) = e.losses();
@@ -438,6 +565,10 @@ impl View {
 
     /// A thing's card, and whether it may be cached (a card refused at the cap may not).
     fn build_card(&self, layer: &str, id: &str) -> Option<(Card, bool)> {
+        if CreateLayers::owns(layer) {
+            // Read as the survey has them now: not kept, as more chunks may land.
+            return self.create.card(layer, id).map(|c| (c, false));
+        }
         let _one = lock(&self.worker);
         let saved = lock(&self.saved);
         if layer == "industry.districts" {
@@ -455,7 +586,27 @@ impl View {
                 ));
                 return Some((c, false));
             }
-            return crate::cards::district(&saved, id);
+            let (mut c, mut keep) = crate::cards::district(&saved, id)?;
+            if let Some(d) = saved.industry.as_ref().and_then(|v| v.district(id)) {
+                let frame = frame_id(&saved, d.dim);
+                let (things, missing) = self.create.in_chunks(&frame, &d.chunk_list);
+                c.sections
+                    .extend(mic_viewer_create::draw::census_sections(&things));
+                if missing > 0 {
+                    keep = false;
+                    let read = d.chunk_list.len() - missing;
+                    let more = format!(
+                        "Its machines are read from the world as the card is opened: {read} of its {} \
+                         chunks so far.",
+                        d.chunk_list.len()
+                    );
+                    c.note = Some(match c.note.take() {
+                        Some(n) => format!("{n} {more}"),
+                        None => more,
+                    });
+                }
+            }
+            return Some((c, keep));
         }
         crate::cards::card(&Ctx::new(&saved), layer, id).map(|c| (c, true))
     }
@@ -487,7 +638,20 @@ impl Backend for View {
 
     /// A save has one time: every `t` gets the save's scene (legs still place movers at `t`).
     fn scene(&self, frame: &str, _t: Option<Tick>) -> Option<Arc<Scene>> {
-        self.scenes.get(frame).cloned()
+        self.composed(frame)
+    }
+
+    fn look(&self, frame: &str, area: [f64; 4], bpp: f64) {
+        self.create.look(frame, area, bpp);
+    }
+
+    fn find(&self, q: &str, limit: usize) -> Vec<Found> {
+        self.find_named(q, limit)
+    }
+
+    fn changes(&self) -> Option<&Changes> {
+        // Only Create's landings publish: a save with nothing to land refuses the stream.
+        self.create.can_land().then_some(&*self.changes)
     }
 
     fn card(&self, layer: &str, id: &str, _t: Option<Tick>) -> Option<Card> {
@@ -543,6 +707,32 @@ impl Backend for View {
             _ => None,
         }
     }
+}
+
+/// The layer list with Create's layers: their groups first (rail, factories, logistics), and the
+/// rtsim station and train layers off where Create's own stations and trains are drawn.
+pub fn with_create(mut l: Layers, create: &CreateLayers) -> Layers {
+    let descs = create.layer_descs();
+    let mut groups: Vec<Group> = Vec::new();
+    for d in &descs {
+        if !groups.iter().any(|g| g.id == d.group) {
+            groups.push(Group {
+                id: d.group.clone(),
+                label: d.group.clone(),
+            });
+        }
+    }
+    groups.append(&mut l.groups);
+    l.groups = groups;
+    if create.has_rail() {
+        for d in &mut l.layers {
+            if d.id == "industry.stations" || d.id == "industry.trains" {
+                d.default_on = false;
+            }
+        }
+    }
+    l.layers.extend(descs);
+    l
 }
 
 /// Built cards, least recently used out first, bounded by their JSON size.

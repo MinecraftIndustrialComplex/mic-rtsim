@@ -76,6 +76,8 @@ pub fn to_viewer(m: rtsim_parts::Mark) -> Mark {
             s,
             l,
             ring,
+            a: None,
+            st: None,
         },
         P::Leg {
             id,
@@ -96,7 +98,17 @@ pub fn to_viewer(m: rtsim_parts::Mark) -> Mark {
             g,
             l,
         },
-        P::Path { id, p, ci, c, w } => Mark::Path { id, p, ci, c, w },
+        P::Path { id, p, ci, c, w } => Mark::Path {
+            id,
+            p,
+            ci,
+            c,
+            w,
+            st: None,
+            l: None,
+            arrow: false,
+            n: None,
+        },
         P::Edge { id, a, b, w, ci, c } => Mark::Edge { id, a, b, w, ci, c },
         P::Area {
             id,
@@ -104,9 +116,11 @@ pub fn to_viewer(m: rtsim_parts::Mark) -> Mark {
             z,
             r,
             r#box,
+            rings,
             ci,
             c,
             l,
+            st,
         } => Mark::Area {
             id,
             x,
@@ -116,6 +130,8 @@ pub fn to_viewer(m: rtsim_parts::Mark) -> Mark {
             ci,
             c,
             l,
+            rings,
+            st,
         },
         P::Cell {
             x0,
@@ -180,6 +196,12 @@ mod tests {
             rtsim_parts::Mark::edge([0.0, 0.0], [600.0, 0.0], 1.5),
             rtsim_parts::Mark::disc(Some("d".into()), -700.0, 9.0, 30.0),
             rtsim_parts::Mark::rect(None, [0.0, 0.0, 16.0, 32.0]),
+            rtsim_parts::Mark::rings(
+                Some("o".into()),
+                vec![vec![[0.0, 0.0], [16.0, 0.0], [16.0, 16.0]]],
+            )
+            .with_st(Some("dot"))
+            .with_label("o"),
             rtsim_parts::Mark::Label {
                 x: 1.0,
                 z: 2.0,

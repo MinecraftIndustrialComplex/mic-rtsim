@@ -35,7 +35,8 @@ pub const REGION: f64 = 512.0;
 pub const MAX_ROWS: u32 = 2_000;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"MICP");
-const VERSION: u8 = 1;
+/// 2: an area mark carries rings and a state.
+const VERSION: u8 = 2;
 
 /// Part kinds. A reader skips a kind it does not know.
 pub mod kind {
