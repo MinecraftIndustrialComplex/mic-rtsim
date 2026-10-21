@@ -50,7 +50,9 @@ import java.util.Set;
  *       count skipped) and COMMAND_RESULT are journaled.</li>
  * </ol>
  * A crash anywhere replays correctly: a chunk saved before step 5 still has its older epoch and its
- * older contents. Applying is under the block quota ({@code reconcileOpsPerTick}); a command bigger
+ * older contents, and the journal's file is written only after the chunk's
+ * ({@link com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier}), so a result the engine took
+ * is always in the chunk on disk. Applying is under the block quota ({@code reconcileOpsPerTick}); a command bigger
  * than the whole quota goes alone at the start of a tick.
  */
 public final class Reconciler {
@@ -355,6 +357,7 @@ public final class Reconciler {
         long seq = ind.commit(res);
         chunk.setData(IndustryAttachments.RECONCILE.get(), epochs.with(new IndustryAttachments.EpochEntry(districtId, epoch, Optional.of(res.array()))));
         chunk.setUnsaved(true);
+        ind.journalDependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
         recommitted.add(level.dimension().location() + "/" + cp.toLong() + "/" + districtId + "/" + epoch);
         dropResultWhenAcked(level, cp, districtId, epoch, seq);

@@ -340,6 +340,14 @@ acknowledges a sequence at or past them in this session; within one session sequ
 reused, so that comparison is exact. A known gap: an item picked up before the acknowledgement takes
 its record into a player's inventory, where nothing carries it.
 
+**The other way round** (the journal ahead of a chunk): vanilla writes the journal in `saveLevelData`,
+before it serializes any chunk, and skips a chunk saved in the last 10 s, so a journal could say applied
+while the chunk on disk did not have it, and the engine would never send the command again. Every chunk
+a journaled record speaks for (the holders above, and a reconcile's chunk) is noted when the record is
+committed; at the journal's write those still unsaved are saved, and the journal's write waits on the IO
+chain for their levels' chunk writes (`ChunkWriteBarrier`, docs/choices-repair.md R21 to R24). Entities
+that carry records are not covered.
+
 **Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29), and a
 journal write that fails (`SavedData.save` logs the IOException and the IO chain goes on, so
 WORLD_SAVED still reports it).
