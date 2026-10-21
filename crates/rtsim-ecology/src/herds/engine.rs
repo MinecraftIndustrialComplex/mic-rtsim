@@ -61,6 +61,7 @@ pub const SYS_HERD: SystemId = SystemId::named("herds.herd");
 const SYS_BIRTH: SystemId = SystemId::named("herds.birth");
 const SYS_STARVE: SystemId = SystemId::named("herds.starve");
 const SYS_PLACE: SystemId = SystemId::named("herds.place");
+const SYS_STAGGER: SystemId = SystemId::named("herds.stagger");
 
 /// Leg owners (opaque to the index): bit 60 marks a herd module leg, apart from a player's
 /// interest area (bit 63, rtsim-world and the dragons), a dragon (62) and a ship (61). Under it,
@@ -567,14 +568,21 @@ impl Herds {
         StreamKey::new(self.seed, SYS_HERD, self.next_seed).block(0, 0)[0]
     }
 
-    fn stagger(&self, x: &Herd) -> u64 {
-        x.seed % self.tun.stagger_ticks.max(1)
+    /// When in a sub-season the herd decides: the herds of one row page decide on consecutive
+    /// ticks, at a time hashed from the page, so a sub-season loads and dirties each page once
+    /// (not once per herd on it), and decisions stay spread over `stagger_ticks`.
+    fn stagger(&self, h: HerdId) -> u64 {
+        let n = self.tun.stagger_ticks.max(1);
+        let i = u64::from(h.index());
+        let page = i / HERDS_PER_PAGE;
+        let base = StreamKey::new(self.seed, SYS_STAGGER, page).block(0, 0)[0] % n;
+        (base + i % HERDS_PER_PAGE) % n
     }
 
-    fn decide_at(&self, x: &Herd, at: Tick) -> Tick {
+    fn decide_at(&self, h: HerdId, at: Tick) -> Tick {
         let subs = self.subs();
         let n = subs.index(at);
-        let s = self.stagger(x);
+        let s = self.stagger(h);
         let this = subs.start(n) + s;
         if this > at {
             this
@@ -763,7 +771,7 @@ impl Herds {
             return;
         }
         // The next decision, then the route to it.
-        let next = self.decide_at(&self.herds[h], at + 1);
+        let next = self.decide_at(h, at + 1);
         self.herds.get_mut(h).expect("live").next_decide = next;
         self.plan(legs, h, at, next);
         self.schedule(next, Ev::Decide { h });
@@ -2095,20 +2103,32 @@ impl Herds {
 
     /// The engine's heap: the resident pages of its row tables and its resident state.
     pub fn heap_bytes(&self) -> usize {
-        self.herds.rows().heap_bytes()
-            + self.forage.heap_bytes()
-            + self.regions.heap_bytes()
-            + self.obstacles.cells.len() * 64
-            + self.wheel.heap_bytes()
-            + self.active.len() * 16
-            + self.claims.len() * 40
-            + self.ops.len() * 32
-            + self
-                .follows
-                .values()
-                .map(|s| 32 + s.len() * 16)
-                .sum::<usize>()
-            + self.players.capacity() * std::mem::size_of::<PlayerView>()
+        self.heap_parts().iter().map(|p| p.1).sum()
+    }
+
+    /// [`Herds::heap_bytes`] by part, for the bench and the docs.
+    pub fn heap_parts(&self) -> Vec<(&'static str, usize)> {
+        vec![
+            ("herd rows", self.herds.rows().heap_bytes()),
+            ("forage rows", self.forage.heap_bytes()),
+            ("region index", self.regions.heap_bytes()),
+            ("obstacles", self.obstacles.cells.len() * 64),
+            ("wheel", self.wheel.heap_bytes()),
+            ("active", self.active.len() * 16),
+            ("claims", self.claims.len() * 40),
+            ("ops", self.ops.len() * 32),
+            (
+                "follows",
+                self.follows
+                    .values()
+                    .map(|s| 32 + s.len() * 16)
+                    .sum::<usize>(),
+            ),
+            (
+                "players",
+                self.players.capacity() * std::mem::size_of::<PlayerView>(),
+            ),
+        ]
     }
 }
 
