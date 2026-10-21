@@ -1212,6 +1212,7 @@ impl Engine {
                 Order::ConflictCommand { names, record } => {
                     conflict::order_command(st, &names, &record)
                 }
+                Order::TributeStart { village, lair } => dragons::tribute_start(st, village, lair),
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
@@ -1395,6 +1396,7 @@ impl Engine {
                 st.world.apply_journaled(rec, replayed);
                 shared::catch_up(st, rec);
                 phase1::after_core(st, rec);
+                dragons::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1407,6 +1409,7 @@ impl Engine {
                 if industry::claims(rec) {
                     industry::answered_again(st, rec);
                 }
+                dragons::answered_again(st, rec);
                 st.world.refused_journaled(rec);
             }
             Verdict::Gap { .. } => {

@@ -122,6 +122,9 @@ pub struct Java {
     /// Answer every new PLACE_HOUSE NOT_FREE (no plot), as HouseBuilder does when its search
     /// finds none.
     pub no_free_plot: bool,
+    /// Answer every new TRANSFER_TO_CONTAINER FAILED (the container's chunk not loaded, or no
+    /// room), as CommandDispatcher does.
+    pub fail_transfers: bool,
     /// Players reported every tick: (UUID, dimension id, position).
     pub players: Vec<((u64, u64), u32, [f64; 3])>,
     /// The industry world this Java plays (rtsim-industry's fake world in remote mode), if any.
@@ -240,6 +243,7 @@ impl Java {
             module_mask: 0,
             p1: Vec::new(),
             no_free_plot: false,
+            fail_transfers: false,
             players: Vec::new(),
             mc: None,
             ind_cmd_seq: HashMap::new(),
@@ -571,6 +575,8 @@ impl Java {
                         }
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP
+                        } else if self.fail_transfers {
+                            obs::command_result::FAILED
                         } else {
                             let pos = [
                                 wire::i32_at(b, cmd::transfer_to_container::X),
@@ -937,14 +943,20 @@ impl Java {
         d
     }
 
-    /// Journals a dragon observation (a kind of 0x0500 to 0x05FF), encoded with the reference
-    /// codec in Java's dictionary.
+    /// A dragon observation, encoded with the reference codec in Java's dictionary: journaled
+    /// (a new sequence) for kinds 0x0500 to 0x05FF, otherwise into the open buffer (latest-wins,
+    /// 0x0060 to 0x006F). Returns the sequence (0 for latest-wins).
     pub fn dragon_obs(&mut self, o: &rtsim_ecology::boundary::Obs) -> u64 {
         let dict = self.java_species();
         let mut b = Vec::new();
         rtsim_ecology::boundary::encode_obs(0, self.game_time, o, &dict, &mut b);
         let kind = wire::u16_at(&b, wire::R_KIND);
-        assert!(obs::is_journaled(kind), "a journaled dragon kind");
+        if !obs::is_journaled(kind) {
+            if self.preamble() {
+                assert!(self.copy(&b), "room for a latest-wins dragon record");
+            }
+            return 0;
+        }
         let seq = self.next_obs;
         self.next_obs += 1;
         wire::put_u64(&mut b, obs::OBS_SEQ, seq);

@@ -425,6 +425,49 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native long nDragonsVillageRisk(long handle, long village)`: a phase 1 village's fear
+/// to the dragons, its golems' included (`Engine::dragons_village_risk`); -1 for a village the
+/// world does not know. Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDragonsVillageRisk<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    village: jlong,
+) -> jlong {
+    env.with_env(|_env| -> Result<jlong, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        Ok(e.dragons_village_risk(village as u64))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native void nDragonsTribute(long handle, long[] out)`: the dragons' tribute
+/// (`Engine::dragons_tribute`: seasons paid, coins placed in chests, coins waiting for a chest,
+/// stacks on their way). Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDragonsTribute<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    out: JLongArray<'l>,
+) {
+    env.with_env(|env| -> Result<(), JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let info = e.dragons_tribute();
+        let n = out.len(env)?.min(info.len());
+        out.set_region(env, 0, &info[..n])?;
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// `static native double[] nGlassReport(long handle, long district)`: the district's glass report
 /// (`Engine::glass_report`, the layout of `rtsim_industry::glass::report::Report::to_f64s`); null
 /// while it has no complete compile. Between steps; tests and operators.

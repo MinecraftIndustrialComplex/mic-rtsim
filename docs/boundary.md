@@ -648,6 +648,16 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      core's counter, after the core's, the industry's and phase 1's; all are per session (a lost
      adoption or discard is decided again when Java reports the body again). The species and the
      dimension go through the engine's dictionary.
+   - **Tribute** (SINK.md §4.6, §6.4 above). LAIR_CHEST is latest state: the dragons keep the
+     chest for the session and queue the lair's waiting coin as stacks. Each step writes those
+     stacks first in the dragons' share of the command buffer (a stack that does not fit waits for
+     the next step), through the core's outbox with `push_with_op` and the core's
+     TRANSFER_TO_CONTAINER writer, the dimension and item names through the engine's dictionary. A
+     stack whose dimension or item the engine cannot name is failed at once. The COMMAND_RESULT is
+     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait; a
+     replayed answer for an op the replay already admitted (its DuplicateOp verdict) still places
+     the stack. While the module is off its COMMAND_RESULTs are not looked at: the stack is still in
+     the outbox, goes again, and Java answers DUPLICATE_OP.
    - **Pages** (PF12 to PF21 in docs/choices-paging-followups.md). Table 0x4400: the meta page
      at id 0, and in TEST mode the state hash at id 1 (checked on load); the rows, the wheel and
      the indexes at 0x4410 and up, read as they are needed under `Config.row_budget`. A save writes
@@ -661,6 +671,13 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
      Java's species and dimension ids as the dragons' own: the Ice and Fire plugin's GameTests drive
      MATERIALIZE, STEER, DEPART, ADOPT and DISCARD with it on the native engine (choice Z2).
+     Order 32 (`TRIBUTE_START`: u64 village, u64 lair, TEST mode only) makes a phase 1 village the
+     lair's tributary as if the lair's dragon had raided it: it pays a season's tribute at once,
+     at the later of game time's world tick and the dragons' and the world's clocks (ignored while
+     the dragons are off). `nDragonsVillageRisk` reads a village's fear to the dragons, its golems'
+     included (-1 for a village the world does not know), and `nDragonsTribute` the world-wide
+     tribute: seasons paid, coins placed in chests, coins waiting for a chest, stacks sent and not
+     yet answered. The three are on `NativeEngine` only, as `worksGrant` is.
    - **Not wired yet:** the dragons' raids reach the industry engine only while the industry module
      runs.
 
@@ -830,6 +847,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | Kind | Name | aux | Fields (offset type name) | Size |
 |---|---|---|---|---|
 | 0x0060 | DRAGON_STATE (latest-wins) | flags: 1 sleeping, 2 flying, 4 has an attack target, 8 ticking | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 f32 health, 28 f32 maxHealth, 32 i32 hunger, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z. Every 100 ticks per embodied dragon (PLACEHOLDER) | 64 |
+| 0x0061 | LAIR_CHEST (latest-wins) | 0 | 8 u64 lair, 16 u32 dimension, 20 i32 x, 24 i32 y, 28 i32 z: a chest in the lair's box the tribute can go into | 32 |
 | 0x0500 | DRAGON_MATERIALIZED | 0 | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast | 56 |
 | 0x0501 | DRAGON_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown species) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
 | 0x0502 | DRAGON_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 f32 health, 44 f32 maxHealth, 48 i32 hunger, 52 i32 ageTicks, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
@@ -859,6 +877,16 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   drops for that player (verified: 2 nuggets a layer, layers 1 to 8; the plugin's hoard blocks are the
   tag `#mic_rtsim_iceandfire:hoard`, Z16).
 - **DRAGON_UNTAGGED**: an Ice and Fire dragon joined the level without the plugin's tag (§6.5).
+- **LAIR_CHEST** (SINK.md §4.6, the money sink's tribute): every 100 ticks (PLACEHOLDER,
+  `Lairs.CHEST_SCAN_TICKS`) the plugin looks over the loaded chunks of each lair it reported this
+  session for a `ChestBlockEntity` inside the box with an empty slot (a chest whose loot table is not
+  rolled yet counts as having room: reading its slots would roll it), the nearest the lair's home
+  (ties by block order), and reports it. One report per lair per session, and again when that chest is
+  gone, full, or its chunk was unloaded since (a reloaded chunk is a new chunk object; an unloaded
+  chunk is what fails a transfer, and the engine forgets a chest whose transfer failed), and after
+  `Module.ECOLOGY` is switched back on. A lair with no chest sends nothing. Written after the lair's
+  LAIR_FOUND, which is earlier in the buffer, so the engine always knows the lair. The engine keeps
+  the chest for the session only (never saved): a new session hears of it again.
 
 ### 6.4 Commands
 
@@ -869,6 +897,16 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8502 | DRAGON_DEPART | reason: 1 bored, 2 hungry, 3 wounded, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | DRAGON_DEMATERIALIZED |
 | 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved | 64 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
+
+**Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
+lair's reported chest as the core's TRANSFER_TO_CONTAINER (§2.4, 0x8005), one stack of at most 64
+per command, the village's currency item (emerald for humans), the chest's dimension and block.
+These are engine ops in the core's outbox, so they are resent after a restart until answered, and
+each stack's op id is drawn from the lair's key and a per-lair stack counter (a resent stack is the
+same op). The answer is COMMAND_RESULT: APPLIED or DUPLICATE_OP count the stack in the chest;
+FAILED (the chunk unloaded, the chest gone or full) puts the coin back to wait and makes the engine
+forget the chest until LAIR_CHEST names one again, and the stack then goes under a new op id.
+Nothing goes out while the lair has no chest: the coin waits in the lair's books.
 
 ### 6.5 How Java applies them
 
@@ -965,6 +1003,14 @@ What the bridge must do:
   boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
   P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
   best comparable observed fight, with capped damage applied on load (C18).
+- **Tribute** (SINK.md §4.6, MS-5; choices MSC40 and up in docs/choices-money-sink.md). A village
+  with a works purse that a lair's dragon raided becomes that lair's tributary and pays at once, then
+  once a season at the calendar's season change: a share of its purse (PLACEHOLDER a quarter,
+  `tribute_share_milli`) in whole coins of its currency, booked as `tribute` in the village's works
+  books and in the dragons' ledger (a column of its own, apart from what dragons took). The coin joins the lair's hoard and waits there, unplaced, until
+  the plugin reports a chest (LAIR_CHEST); then it goes in stacks (§6.4). While a tribute is paid
+  within the season, the lair's dragons leave that village's livestock alone. It lapses when the
+  purse is dry at a payment or the lair is vacant.
 
 ## 7. Ships (PLAN.md §10.1; a future ships plugin)
 

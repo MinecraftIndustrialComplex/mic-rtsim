@@ -1305,6 +1305,8 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
 
 mod dragons {
     use super::*;
+    use std::collections::BTreeSet;
+
     use rtsim_ecology::boundary::{self as db, AttackerKind, Cmd as D, Obs as O, SpawnKind};
     use rtsim_ecology::dragon::LairKind;
     use rtsim_ecology::species::{Gender, Species};
@@ -1579,6 +1581,150 @@ mod dragons {
         assert_eq!(e.dragons_restore_check(), (None, false));
         assert_eq!(summary(&e).0, after.0);
         assert_eq!(summary(&e).2, after.2);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The transfers Java applied, by op id.
+    fn transfer_ops(j: &Java) -> BTreeSet<u64> {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op)
+            .collect()
+    }
+
+    /// Dragon tribute over the real boundary (SINK.md §4.5, §4.6): TRIBUTE_START makes a granted
+    /// village the lair's tributary and it pays at once, but the coin waits for the lair's chest;
+    /// LAIR_CHEST sends it as TRANSFER_TO_CONTAINER stacks; a FAILED stack comes back and waits
+    /// for the chest to be reported again; stacks Java never answered are in the outbox, so after
+    /// a crash they go again under the same op ids and land once. The village's risk counts its
+    /// golems' fear.
+    #[test]
+    fn tribute_lands_in_the_lairs_chest_once_across_a_failure_and_a_crash() {
+        let dir = tmpdir("tribute");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let risk = e.dragons_village_risk(village);
+        assert!(risk >= 0, "a known village has a risk: {risk}");
+        assert_eq!(e.dragons_village_risk(0xDEAD), -1, "an unknown village");
+
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [paid, placed, coins, placing] = e.dragons_tribute();
+        assert_eq!(paid, 1, "the raid's tribute is paid at once");
+        assert!(coins > 64, "more than a stack waits for the chest: {coins}");
+        assert_eq!((placed, placing), (0, 0), "no chest yet");
+        assert!(transfer_ops(&j).is_empty(), "nothing sent without a chest");
+        let tribute = e.phase1_works(village).expect("works")[4];
+        assert_eq!(
+            tribute,
+            coins * 1000,
+            "the village's books: its tribute paid"
+        );
+
+        // The plugin finds the chest, but the chunk is gone again: every stack fails and waits.
+        let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let lair_chest = O::LairChest(db::LairChest {
+            lair: LAIR,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+        });
+        j.fail_transfers = true;
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        let failed = transfer_ops(&j);
+        let stacks = (coins + 63) / 64;
+        assert_eq!(failed.len() as i64, stacks, "whole stacks of at most 64");
+        assert_eq!(e.dragons_tribute(), [1, 0, coins, 0], "all back, waiting");
+        assert!(j.containers.is_empty());
+        let has_chest = |e: &Engine| {
+            e.with_dragons(|d, _| d.lair_of_key(LAIR).and_then(|l| d.chest(l)).is_some())
+        };
+        assert!(!has_chest(&e), "a failed stack forgets the chest");
+        assert!(
+            j.cmd_dict
+                .iter()
+                .any(|((k, _), n)| *k == wire::DICT_ITEM && n == "minecraft:emerald"),
+            "the coin is the village's emeralds"
+        );
+
+        // Reported again, while Minecraft holds the commands (a world save that is lost): the
+        // stacks are new ops, in the outbox at the save.
+        j.fail_transfers = false;
+        j.hold_commands = true;
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        let held: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(held.len() as i64, stacks);
+        assert!(
+            held.is_disjoint(&failed),
+            "a failed stack goes again as a new op"
+        );
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let saved = j.world_save();
+        let _ = j.crash();
+
+        // After the crash the outbox sends them again, under the same op ids, and they land.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(e.dragons_restore_check(), (None, false));
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
+        j.idle();
+        j.idle();
+        assert_eq!(transfer_ops(&j), held, "the held stacks, by their op ids");
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed");
+        assert_eq!(j.containers.get(&chest).copied(), Some(coins as i32));
+        let (ledger, world) = e.with_dragons(|d, w| {
+            (
+                d.ledger.tribute.values().sum::<i128>(),
+                w.works_totals().1.iter().map(|(_, a)| *a).sum::<i128>(),
+            )
+        });
+        assert_eq!(
+            ledger,
+            i128::from(coins) * 1000,
+            "the books hold every coin"
+        );
+        assert_eq!(world, ledger, "the world's tribute is the dragons'");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
