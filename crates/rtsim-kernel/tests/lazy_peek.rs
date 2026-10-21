@@ -52,7 +52,7 @@ impl ModelCodec<Walk> for Codec {
 
 fn bytes(t: &LazyTable<Walk>) -> Vec<u8> {
     let mut w = Writer::new();
-    t.encode_with(&mut w, |m, w| Codec::put(m, w));
+    t.encode_with(&mut w, Codec::put);
     w.into_bytes()
 }
 

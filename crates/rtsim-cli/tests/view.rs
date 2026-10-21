@@ -171,6 +171,16 @@ fn the_sidecar_serves_loopback_reads_only_and_writes_nothing() {
         assert_eq!(w["source"], "save");
         let status = s.json("/api/status");
         assert!(status["modules"].is_array(), "{status}");
+        // No filesystem path beyond the world's name (VIEWER.md §13).
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        for answer in [&w, &status] {
+            let text = answer.to_string();
+            assert!(
+                !text.contains(root.to_str().unwrap()),
+                "a path in an answer: {text}"
+            );
+        }
+        assert_eq!(status["world"], "core");
         // DNS rebinding: a page on another name reaching the loopback port.
         let (forged, _) = raw(
             port,
