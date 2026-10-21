@@ -63,26 +63,44 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  * <p><b>Running</b> ({@code MillstoneBlockEntity}): s = 256 / 16 = 16, wheat's {@code processing_time} 150,
  * ceil(150 / 16) + 1 = 11 ticks per wheat per millstone: 4 x 1200 / 11 = 436.4 wheat per minute; flour
  * 1 + Binomial(2, 0.25) per wheat (1.5, variance 0.375), seeds Bernoulli(0.25) (0.25, variance 0.1875).
- * Exact (the boiler's heaters have duty 1: the burners are filled by hand to 10,000 ticks, more than
- * warm-up plus window).
+ * Exact (the boiler's heaters have duty 1). Measured while watered: 14,336 / 16,384 SU at the millstones'
+ * network, 128 / 256 SU on the pump's.
  *
- * <p><b>Stopping</b>: at window tick {@value #STOP} the pool's four sources become air. The open pipe end
- * still holds what it drew last (it draws 1,000 mB and keeps the rest: at most 984 mB, 62 ticks at 16).
- * The boiler samples its intake every 5 ticks and every 10th sample sets the supply to the largest of the
- * last 10 ({@code BoilerData.tick}), so the supply reaches 0 within 105 ticks of the last water. Then the
- * level is 0, the engine's efficiency 0 ({@code getEngineEfficiency}: heat but no level), the shaft's
- * capacity and speed 0, and the domain stops. Gap {@value #SETTLE} ticks (at least twice the 62 + 105 + 1
- * bound), then the stopped phase: every good at 0.
+ * <p><b>Burners</b>: filled by hand ("player", {@link SteamHelpers#topUpAsPlayer}): 7 coal reach the 10,000-tick cap
+ * ({@code BlazeBurnerBlockEntity.tryUpdateFuel}), more than warm-up plus window (6,600), and stay KINDLED (above
+ * 125 ticks left) throughout. They burn whether or not the boiler has water. Coal is not a store good here.
+ *
+ * <p><b>Stopping</b>: at window tick {@value #STOP} the pool's four sources become air. The open pipe end keeps
+ * what it drew beyond the transfer (it takes a whole 1,000 mB source and keeps the rest,
+ * {@code OpenEndedPipe.OpenEndFluidHandler.drainInner}): at most 984 mB, {@value #BUFFER_TICKS} ticks at 16. The
+ * boiler sums its intake over 5-tick samples and every 10th sample (50 ticks) sets the supply to the largest of
+ * the last 10 ({@code BoilerData.tick}), so the supply reaches 0 at the first such reset at least 50 ticks after
+ * the last water: under {@value #SUPPLY_TICKS} ticks. Then the level is 0 and the engine's efficiency 0
+ * ({@code getEngineEfficiency}: heat 2 but actual heat 0, so 0 / 1 engines), the powered shaft's speed and
+ * capacity 0, and the whole steam domain stops in that tick: it stops, it does not overstress (stress needs a
+ * running source). The chutes under the millstones land their last stacks within {@value #DRAIN_TICKS} ticks.
+ * Gap {@value #SETTLE} ticks, then the stopped phase: every good at 0. Measured: the shaft stopped between
+ * window ticks 2,490 and 2,500 (the buffer was nearly empty at the cut).
+ *
+ * <p>Placement trap: relative y 1 is the yard's polished andesite floor and y 0 is cleared to air
+ * ({@code StructureUtils.clearSpaceForStructure}), so the channel is dug out of the floor with stone under it.
  */
 public final class BoilerOverstressFactory implements CorpusFactory {
     static final int WINDOW = 6000;
     static final int STOP = 2400;
-    static final int SETTLE = 400;
+    /** Water left in the open pipe end at the cut: at most 984 mB at 16 mB per tick. */
+    static final int BUFFER_TICKS = (984 + 15) / 16;
+    /** The boiler's supply reaches 0 at the first 50-tick reset at least 50 ticks after the last water. */
+    static final int SUPPLY_TICKS = 100;
+    /** The last output stack in each chute under a millstone lands (5 ticks at 0.2 per tick, plus the pull). */
+    static final int DRAIN_TICKS = 10;
+    static final int SETTLE = BUFFER_TICKS + SUPPLY_TICKS + DRAIN_TICKS;
     static final int MILL_CYCLE = 11;
     static final int MILLS = 4;
     static final double WHEAT_PER_MIN = MILLS * TICKS_PER_MINUTE / (double) MILL_CYCLE;
 
     BlockPos tank, engine, shaft, wheel, pump, firstMill;
+    boolean stopLogged;
     final List<BlockPos> pool = new ArrayList<>();
 
     @Override
@@ -101,8 +119,8 @@ public final class BoilerOverstressFactory implements CorpusFactory {
         BlockState water = Blocks.WATER.defaultBlockState();
 
         // the pump's domain: a channel of flowing water under a water wheel, geared up to the pump
-        // relative y 1 is the yard's floor layer and y 0 is cleared to air under it
-        // (StructureUtils.clearSpaceForStructure): the water at y 1 needs stone under it or it falls away
+        // relative y 1 is the yard's polished andesite floor and y 0 is cleared to air under it
+        // (StructureUtils.clearSpaceForStructure): the channel at y 1 is dug out of the floor, with stone under it
         for (int x = 3; x <= 8; x++)
             for (int z = 9; z <= 18; z++)
                 set(h, at(h, x, 0, z), stone);
@@ -112,6 +130,8 @@ public final class BoilerOverstressFactory implements CorpusFactory {
         }
         set(h, at(h, 4, 1, 9), stone);
         set(h, at(h, 4, 1, 18), stone);
+        for (int z = 11; z <= 17; z++)
+            set(h, at(h, 4, 1, z), Blocks.AIR.defaultBlockState());
         set(h, at(h, 4, 1, 10), water);
         wheel = at(h, 4, 2, 12);
         set(h, wheel, AllBlocks.WATER_WHEEL.getDefaultState().setValue(BlockStateProperties.FACING, Direction.EAST));
@@ -194,38 +214,30 @@ public final class BoilerOverstressFactory implements CorpusFactory {
                 Expect.exact("minecraft:wheat", 0, "no water: boiler level 0, engine efficiency 0, domain at 0 RPM"),
                 Expect.exact("create:wheat_flour", 0, "domain stopped"),
                 Expect.exact("minecraft:wheat_seeds", 0, "domain stopped"));
+        stopLogged = false;
         return new Built(engine, ins, outs, running,
                 List.of(new Phase("running", 0, STOP, running), new Phase("stopped", STOP + SETTLE, WINDOW, stopped)),
                 WINDOW,
-                "boiler level 1 (2 burners, 16 mB/t, 4 blocks), 1 engine 64 RPM 16,384 SU; 14,336 SU of millstones and crushing wheels at 256 RPM; water removed at window tick " + STOP);
+                "boiler level 1 (2 burners, 16 mB/t, 4 blocks), 1 engine 64 RPM 16,384 SU; 14,336 SU of millstones and crushing wheels at 256 RPM;"
+                        + " pump domain: water wheel 8 RPM, 128 of 256 SU; water removed at window tick " + STOP + ", stopped phase from " + (STOP + SETTLE));
     }
 
     @Override
     public void perturb(GameTestHelper h, Built b, int t) {
-        if (t == 0) {
-            StringBuilder sb = new StringBuilder();
-            for (int[] r : new int[][]{{4, 0, 10}, {4, 1, 10}, {4, 1, 11}, {4, 1, 12}, {4, 1, 13}, {6, 1, 14}, {7, 1, 15}, {6, 2, 14}, {4, 2, 12}}) {
-                BlockPos q = h.absolutePos(new BlockPos(r[0], r[1], r[2]));
-                sb.append(" (").append(r[0]).append(',').append(r[1]).append(',').append(r[2]).append(") ").append(h.getLevel().getBlockState(q));
-            }
-            log(name(), "t0 blocks", sb.toString());
-        }
         if (t == STOP)
             for (BlockPos p : pool)
                 set(h, p, Blocks.AIR.defaultBlockState());
-        if (t % 200 == 0 || (t >= STOP && t < STOP + 300 && t % 10 == 0)) {
+        boolean stoppedNow = t > STOP && speed(h, shaft) == 0;
+        if (t % 600 == 0 || (stoppedNow && !stopLogged)) {
             String boiler = "no tank";
             if (h.getLevel().getBlockEntity(tank) instanceof FluidTankBlockEntity tb && tb.getControllerBE() != null) {
                 FluidTankBlockEntity c = tb.getControllerBE();
-                boiler = "size " + c.getTotalTankSize() + " heat " + c.boiler.activeHeat + " water " + c.boiler.waterSupply
-                        + " engines " + c.boiler.attachedEngines + " eff " + c.boiler.getEngineEfficiency(c.getTotalTankSize());
+                boiler = "boiler size " + c.getTotalTankSize() + " heat " + c.boiler.activeHeat + " water " + c.boiler.waterSupply
+                        + " mB/t engines " + c.boiler.attachedEngines + " eff " + c.boiler.getEngineEfficiency(c.getTotalTankSize());
             }
-            String flow = h.getLevel().getBlockEntity(wheel) instanceof com.simibubi.create.content.kinetics.waterwheel.WaterWheelBlockEntity ww
-                    ? "flow " + ww.flowScore + " fluid " + h.getLevel().getFluidState(wheel.below()) + " " + h.getLevel().getFluidState(wheel.below()).getFlow(h.getLevel(), wheel.below())
-                    : "no wheel " + h.getLevel().getBlockState(wheel);
-            log(name(), "t" + t, boiler + "; " + flow + " wheel stress " + stressText(h, wheel) + " LA " + speed(h, wheel.east()) + " SA " + speed(h, wheel.east().above().south())
-                    + " pump state " + h.getLevel().getBlockState(pump) + "; wheel " + speed(h, wheel) + " pump " + speed(h, pump) + " shaft " + speed(h, shaft)
-                    + " mill " + speed(h, firstMill) + " stress " + stressText(h, firstMill));
+            log(name(), "t" + t, (stoppedNow && !stopLogged ? "line stopped: " : "") + boiler + "; wheel " + speed(h, wheel) + " pump " + speed(h, pump)
+                    + " (" + stressText(h, wheel) + "); shaft " + speed(h, shaft) + " mill " + speed(h, firstMill) + " (" + stressText(h, firstMill) + ")");
+            stopLogged |= stoppedNow;
         }
     }
 }

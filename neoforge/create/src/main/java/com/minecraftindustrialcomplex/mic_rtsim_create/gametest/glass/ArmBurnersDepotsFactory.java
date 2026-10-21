@@ -59,7 +59,12 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  * 2 x 16 x 1200 / 159 = 241.5 per minute each of raw iron used and ingots made. The arm spends 16 ticks per
  * trip (four moves) and has two depot trips per 159 ticks plus two coal trips per 1,600, so it is free when a
  * depot finishes except when a coal trip overlaps (at most 2 x 16 ticks of delay per 1,600, under 2%).
- * EXACT: no bounded rule lies on the path (the arm, a mover, has spare capacity).
+ * EXACT: no bounded rule lies on the path (the arm, a mover, has spare capacity). Measured 240.1 per minute
+ * (159.9 ticks per batch: the coal trips' overlaps, inside the 2% above).
+ *
+ * <p>Placement traps: the smart chute's default block state is POWERED true, which never activates
+ * ({@link SteamHelpers#smartChute} places it unpowered), and relative y 0 is cleared to air under the yard's
+ * floor, so the chute stands on stone or it drops its coal into the world.
  *
  * <p>Stocks: 1,600 raw iron per station lasts 1,600 / 16 x 159 = 15,900 ticks; the double chest holds 3,456
  * ingots (6,800 ticks make 2,066); 64 coal last 51,200 ticks.
@@ -136,13 +141,8 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
 
     @Override
     public void perturb(GameTestHelper h, Built b, int t) {
-        if (t % 400 == 0 || t < 40) {
-            var armTag = h.getLevel().getBlockEntity(arm).saveWithoutMetadata(h.getLevel().registryAccess());
-            String chuteItem = h.getLevel().getBlockEntity(coalChute) instanceof com.simibubi.create.content.logistics.chute.ChuteBlockEntity c ? c.getItem().toString() : "?";
-            log(name(), "t" + t, "burners " + burnTime(h, burnerA) + "/" + burnTime(h, burnerB) + " " + heat(h, burnerA) + "/" + heat(h, burnerB)
-                    + ", arm speed " + speed(h, arm) + " phase " + armTag.getString("Phase") + " target " + armTag.getInt("TargetPointIndex")
-                    + " held " + armTag.get("HeldItem") + " points " + armTag.getList("InteractionPoints", 10)
-                    + ", coal chute " + chuteItem + ", depots " + items(h, depotA).getStackInSlot(0) + " / " + items(h, depotB).getStackInSlot(0));
-        }
+        if (t % 1600 == 0)
+            log(name(), "t" + t, "burners " + burnTime(h, burnerA) + "/" + burnTime(h, burnerB) + " ticks left, " + heat(h, burnerA) + "/" + heat(h, burnerB)
+                    + ", arm " + speed(h, arm) + " RPM");
     }
 }

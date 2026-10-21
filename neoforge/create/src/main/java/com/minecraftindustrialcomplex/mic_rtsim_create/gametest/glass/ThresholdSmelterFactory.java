@@ -58,15 +58,19 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  *
  * <p><b>Regimes</b> (output chest stock s):
  * <ul>
- *   <li>ON, switch off, line at 256 RPM: ds/dt = P - D = +91.5 per minute; from 64 to 128 in
- *       64 x 1200 / 91.5 = 839 ticks;</li>
- *   <li>OFF, switch on, line at 0 RPM: ds/dt = -D = -150 per minute; from 128 to 64 in 512 ticks.</li>
+ *   <li>ON, switch off, line at 256 RPM: ds/dt = P - D = +91.5 per minute (0.0763 per tick);</li>
+ *   <li>OFF, switch on, line at 0 RPM: ds/dt = -D = -150 per minute (0.125 per tick).</li>
  * </ul>
- * Period 839 + 512 = 1,351 ticks nominal, duty D / P = 0.621, so about 5 cycles in the window. Overshoot: at
- * the check that turns the switch on, s is at most 127 + 16 (one arm delivery since the last check), and one
- * more delivery can land in the 2-tick delay: s up to {@value #STOCK_HI}. At the check that turns it off s is
- * at least 63 (two hopper moves in 10 ticks); a restart can take a fresh batch (152 ticks) and an arm trip
- * (16) before glass lands, 21 more hopper moves: s down to {@value #STOCK_LO}, above 0.
+ * Switch points: the arm delivers 16 at a time, so s crosses 128 by a jump and the line stops at s in
+ * [128, 143], 136 on average (plus at most one more delivery inside the 2-tick delay); the hopper takes one at
+ * a time, so it restarts at 64 or 63. Nominal cycle from 64: ON for (136 - 64) / 0.0763 = 944 ticks, OFF for
+ * (136 - 64) / 0.125 = 576 ticks, period 1,520 ticks, duty 944 / 1,520 = 0.62 = D / P (without the overshoot:
+ * 839 + 512 = 1,351). Measured: the switch turned on at s 135 to 139 and off at 63 or 64; ON 957 to 968
+ * ticks, OFF 572 to 583, period 1,529 to 1,573: 10 transitions in the window. Overshoot bounds: at the check
+ * that turns the switch on, s is at most 127 + 16, and one more delivery can land in the 2-tick delay: s up to
+ * {@value #STOCK_HI}. At the check that turns it off s is at least 63 (two hopper moves in 10 ticks); a restart
+ * can take a fresh batch (152 ticks) and an arm trip (16) before glass lands, 21 more hopper moves: s down to
+ * {@value #STOCK_LO}, above 0 (measured low 50).
  *
  * <p><b>Rates</b> (BOUNDED: a controller is on the path, GLASSBOX.md §4.3). Over time the controlled stock's
  * inflow equals its outflow, so glass made (output chest plus sink, both stores) averages D. The stores'
@@ -163,7 +167,7 @@ public final class ThresholdSmelterFactory implements CorpusFactory {
                         "sand taken = glass made + in flight (chutes, depots, arm: 0.." + FLIGHT + "); +-1.5 x (stock band + flight band) / window")),
                 List.of(), WINDOW,
                 "on: 2 lava fans x 16 per 159 ticks = " + fmt(ON_PER_MIN) + "/min in, hopper 150/min out; switch 128/64 through a clutch;"
-                        + " nominal on 839, off 512 ticks, period 1351, duty 0.621");
+                        + " nominal from 64 to 136: on 944, off 576 ticks, period 1520, duty 0.62");
     }
 
     private static String fmt(double v) {
