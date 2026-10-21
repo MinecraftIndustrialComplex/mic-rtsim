@@ -64,6 +64,7 @@ public final class IndustryConfig {
                 .defineInRange(APPROACH_RADIUS, DEFAULTS.get(APPROACH_RADIUS), 0, 100_000));
         APPROACH = b.comment("Send IND_APPROACH (a player nears an unloaded district): the engine-agnostic hook of the stale-tick race's option (d).")
                 .define("approachSignal", true);
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.define(b); // [industry.glass] (GLASSBOX.md §2.10)
         b.pop();
         SPEC = b.build();
     }
