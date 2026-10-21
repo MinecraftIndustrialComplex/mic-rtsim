@@ -29,6 +29,7 @@ public final class MicRtsimTerraEntity {
 
     public MicRtsimTerraEntity(IEventBus modBus) {
         modBus.addListener(MicRtsimTerraEntity::onPackFinders);
+        Probes.register();
     }
 
     private static void onPackFinders(AddPackFindersEvent event) {
