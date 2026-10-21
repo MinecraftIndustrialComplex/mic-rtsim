@@ -346,6 +346,9 @@ pub fn run(o: &Options) -> Outcome {
             trail.push(c.state_hash());
             c.enforce_budget();
             next_save = o.save_every.map(|e| next + e);
+        } else if let Some(s) = store.as_ref().filter(|_| c.needs_save()) {
+            // The budget's save (every resident page changed; PM-C10): no save point.
+            save_paged(&mut c, s);
         }
         if restart == Some(next) {
             restarted = true;

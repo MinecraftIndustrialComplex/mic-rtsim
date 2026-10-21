@@ -1094,6 +1094,14 @@ impl Conflict {
             .saturating_add(self.places.rows.budget())
     }
 
+    /// Whether the row tables are over their budget with nothing left to evict (at a step
+    /// boundary, after [`Conflict::enforce_budget`]): every resident page changed since the last
+    /// save. The host should save (an extra, pending save is a generation like any other, P29;
+    /// PM7, PM-C10): the pages it writes can go.
+    pub fn needs_save(&self) -> bool {
+        self.is_paged() && self.resident_bytes() > self.budget()
+    }
+
     pub fn set_budget(&mut self, budget: usize) {
         self.budget_mark = None;
         let (f, s, p) = split(budget);
