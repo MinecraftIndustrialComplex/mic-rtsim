@@ -150,6 +150,11 @@ final class CreateCompile implements GlassExtractor.Compile {
     /** A sequenced assembly step's recipe: its sequence, its unrolled step (0-based) and the unrolled length. */
     record SeqStep(String id, int step, int total) {}
 
+    /** A belt and a fan processing type: the goods that type made on that belt (never processed again). */
+    record FanKey(Object belt, Object type) {}
+
+    final Map<FanKey, IntOpenHashSet> fanDone = new java.util.HashMap<>();
+
     /** Recipe index to its sequenced step, for the recipes {@code Recipes.stepRecipe} made. */
     final Int2ObjectOpenHashMap<SeqStep> seqSteps = new Int2ObjectOpenHashMap<>();
 
@@ -1461,6 +1466,12 @@ final class CreateCompile implements GlassExtractor.Compile {
             GraphBuilder.Edge e = edge(GlassRecords.Edge.ARM_REACH, i.node.index, to);
             if (e != null) {
                 e.order(order++);
+                // a funnel point inserts through the funnel: its filter limits what the arm hands it
+                if (level.getBlockEntity(pt.getPos()) instanceof FunnelBlockEntity fb) {
+                    FilteringBehaviour ff = BlockEntityBehaviour.get(fb, FilteringBehaviour.TYPE);
+                    if (ff != null && !ff.getFilter().isEmpty())
+                        edgeTests.put(e, new EdgeTest(ff::test, null));
+                }
                 Info ti = infos.get(to);
                 accept += ti != null && ti.kind == K.BURNER ? 1 : 64;
             }
@@ -1685,7 +1696,50 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /** Gated nodes powered by a switch at {@code at}: its neighbours and blocks along redstone dust from it. */
     private IntArrayList redstoneTargets(BlockPos at, Direction notSide) {
+        LongOpenHashSet powered = poweredBy(at, notSide);
         IntArrayList out = new IntArrayList();
+        for (Info i : infos.values()) {
+            if (i.be == null || !powered.contains(i.be.getBlockPos().asLong()))
+                continue;
+            boolean gated = switch (i.kind) {
+                case FUNNEL -> i.node.kind == GlassRecords.Node.MOVER || i.node.kind == GlassRecords.Node.JUNCTION;
+                case CHUTE -> i.be instanceof SmartChuteBlockEntity;
+                case ARM, HOPPER -> true;
+                case DEPLOYER -> i.node.kind == GlassRecords.Node.MACHINE;
+                default -> false;
+            };
+            if (gated && !out.contains(i.node.index))
+                out.add(i.node.index);
+        }
+        // A powered clutch stops everything that turns through it (ClutchBlockEntity: speed modifier 0 on
+        // the side away from its source): every node whose kinetic source chain passes the clutch. While
+        // the clutch is powered at compile those parts are detached and already stopped.
+        LongOpenHashSet clutches = new LongOpenHashSet();
+        for (long p : powered)
+            if (level.getBlockEntity(BlockPos.of(p)) instanceof com.simibubi.create.content.kinetics.transmission.ClutchBlockEntity)
+                clutches.add(p);
+        if (!clutches.isEmpty())
+            for (Info i : infos.values())
+                if (i.node != null && i.be instanceof KineticBlockEntity k && throughClutch(k, clutches) && !out.contains(i.node.index))
+                    out.add(i.node.index);
+        return out;
+    }
+
+    /** Whether {@code k}'s rotation comes through one of {@code clutches} (its source chain, as Create propagates). */
+    private boolean throughClutch(KineticBlockEntity k, LongOpenHashSet clutches) {
+        BlockPos s = k.source;
+        for (int steps = 0; s != null && steps < 4096; steps++) {
+            if (clutches.contains(s.asLong()))
+                return true;
+            if (!(level.getBlockEntity(s) instanceof KineticBlockEntity n) || n == k)
+                return false;
+            s = n.source;
+        }
+        return false;
+    }
+
+    /** Positions a redstone source at {@code at} powers: its neighbours but {@code notSide}, and along dust. */
+    private LongOpenHashSet poweredBy(BlockPos at, Direction notSide) {
         LongOpenHashSet powered = new LongOpenHashSet();
         java.util.ArrayDeque<BlockPos> dust = new java.util.ArrayDeque<>();
         LongOpenHashSet seenDust = new LongOpenHashSet();
@@ -1714,20 +1768,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                         dust.add(n);
                 }
         }
-        for (Info i : infos.values()) {
-            if (i.be == null || !powered.contains(i.be.getBlockPos().asLong()))
-                continue;
-            boolean gated = switch (i.kind) {
-                case FUNNEL -> i.node.kind == GlassRecords.Node.MOVER || i.node.kind == GlassRecords.Node.JUNCTION;
-                case CHUTE -> i.be instanceof SmartChuteBlockEntity;
-                case ARM, HOPPER -> true;
-                case DEPLOYER -> i.node.kind == GlassRecords.Node.MACHINE;
-                default -> false;
-            };
-            if (gated && !out.contains(i.node.index))
-                out.add(i.node.index);
-        }
-        return out;
+        return powered;
     }
 
     /** A belt's tunnels (side outputs) and where its end goes: INSERT, EJECT (a drop) or blocked. */
@@ -1895,16 +1936,24 @@ final class CreateCompile implements GlassExtractor.Compile {
                     if (f != null && !f.getFilter().isEmpty() && i.kind != K.SWITCH)
                         reach[x].add(good(f.getFilter()));
                 }
-                if (i.kind == K.DEPLOYER && i.node.kind == GlassRecords.Node.MACHINE)
-                    reach[x].add(good(held((DeployerBlockEntity) i.be).copyWithCount(1)));
+                if (i.kind == K.DEPLOYER && i.node.kind == GlassRecords.Node.MACHINE) {
+                    ItemStack h = held((DeployerBlockEntity) i.be);
+                    if (!h.isEmpty()) {
+                        int hg = good(h.copyWithCount(1));
+                        reach[x].add(hg);
+                        i.consumed.add(hg); // the held item and its refill stay in the deployer
+                    }
+                }
                 if (!reach[x].isEmpty())
                     work.add(x);
             }
         }
+        // Items on a belt reach its first mover; it is queued, or a later arrival of the same good (which
+        // adds nothing) would never propagate past it.
         for (Belt b : belts)
             for (var t : b.controller.getInventory().getTransportedItems())
-                if (!b.movers.isEmpty())
-                    reach[b.movers.getInt(0)].add(good(t.stack));
+                if (!b.movers.isEmpty() && reach[b.movers.getInt(0)].add(good(t.stack)))
+                    work.add(b.movers.getInt(0));
         int budget = 200_000;
         IntOpenHashSet[] emitted = new IntOpenHashSet[n];
         for (int x = 0; x < n; x++)
@@ -1942,7 +1991,13 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (i != null)
                 i.reach.addAll(reach[x]);
         }
-        // Materialize edge filters as GOOD lists over what reaches their tails.
+        // What each node hands on: what reaches it and what it emits (a machine's outputs).
+        IntOpenHashSet[] handed = new IntOpenHashSet[n];
+        for (int x = 0; x < n; x++) {
+            handed[x] = new IntOpenHashSet(reach[x]);
+            handed[x].addAll(emitted[x]);
+        }
+        // Materialize edge filters as GOOD lists over what their tails hand on.
         for (var en : edgeTests.entrySet()) {
             GraphBuilder.Edge e = en.getKey();
             if (e.kind == GlassRecords.Edge.OBSERVE) {
@@ -1952,7 +2007,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 continue;
             }
             IntArrayList pass = new IntArrayList(), deny = new IntArrayList();
-            for (int gid : reach[e.from])
+            for (int gid : handed[e.from])
                 (passes(en.getValue(), gid) ? pass : deny).add(gid);
             pass.sort(null);
             deny.sort(null);
@@ -1967,7 +2022,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                     e.filter(gid);
             }
         }
-        collapseSequenced(reach);
+        collapseSequenced(handed);
     }
 
     /** Whether edge {@code e} carries {@code gid} by its materialized filter. */
@@ -1987,7 +2042,7 @@ final class CreateCompile implements GlassExtractor.Compile {
      * at the sum of every step (GB40). Every machine of the line is PASS_THROUGH: what it no longer works
      * goes on. A sequence with a step no machine here does stays per step (it never finishes).
      */
-    private void collapseSequenced(IntOpenHashSet[] reach) {
+    private void collapseSequenced(IntOpenHashSet[] handed) {
         if (seqSteps.isEmpty())
             return;
         TreeMap<String, TreeMap<Integer, Info>> lines = new TreeMap<>();
@@ -2110,7 +2165,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 if (e.kind == GlassRecords.Edge.CONTROL || e.kind == GlassRecords.Edge.OBSERVE || e.kind == GlassRecords.Edge.HEAT)
                     continue;
                 boolean lineEdge = false;
-                for (int gid : reach[e.from])
+                for (int gid : handed[e.from])
                     if (own.contains(gid) && carries(e, gid)) {
                         lineEdge = true;
                         break;

@@ -405,6 +405,11 @@ final class Recipes {
         FanProcessingType type = (FanProcessingType) x[0];
         ServerLevel level = c.level;
         ItemStack one = is.copyWithCount(1);
+        // On a belt a fan's outputs are never processed again by that type: the new stacks copy
+        // processedBy and processingTime -1 (FanProcessing.applyProcessing, TransportedItemStack.getSimilar).
+        IntOpenHashSet done = x[1] != null ? c.fanDone.computeIfAbsent(new CreateCompile.FanKey(x[1], type), k -> new IntOpenHashSet()) : null;
+        if (done != null && done.contains(gid))
+            return;
         if (!type.canProcess(one, level))
             return;
         GraphBuilder.Recipe r;
@@ -439,6 +444,9 @@ final class Recipes {
             c.markBounded(i); // a large stack may leave before it is done
         CreateCompile.Cyc cyc = Double.isInfinite(exposure) ? (rpm, batch) -> Rat.of(Cycles.fanTicks(batch, fanTime), 1) : null;
         c.addCraft(i, r, CreateCompile.FEEDER_BATCH, cyc, gid);
+        if (done != null)
+            for (GraphBuilder.Term t : r.outputs)
+                done.add(t.good());
     }
 
     // ---- spout -------------------------------------------------------------------------------------
