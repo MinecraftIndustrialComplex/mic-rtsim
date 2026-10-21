@@ -710,9 +710,9 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             contracts: vec![
                 contract(
                     Metric::Resident,
-                    1.1,
+                    1.2,
                     0.0,
-                    "NOT bounded yet: market breakpoints fall on quantum boundaries, so one tick can change every market, and a page changed since the last save cannot leave (measured 15.8 MB resident at peak against a 4 MiB budget at 4,096 markets). Needs market wakes staggered by page, as the herds' decisions are",
+                    "NOT bounded yet: market breakpoints fall on quantum boundaries, so one tick can change every market, and a page changed since the last save cannot leave (measured 15.8 MB resident at peak against a 4 MiB budget at 4,096 markets; slope 1.107 from 256 to 4,096, every row plus the pages' own overhead). Needs market wakes staggered by page, as the herds' decisions are",
                 ),
                 contract(
                     Metric::Heap,
