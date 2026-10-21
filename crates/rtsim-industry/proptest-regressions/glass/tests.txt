@@ -5,3 +5,6 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 5dc92a23fc5049de6b0c152e3d2a3154e345b148cab1c3e454819e57d0826b8b # shrinks to kinds = [(1, 5, 15), (5, 12, 24)], edges = [(2, 1, false), (2, 5, false), (6, 1, false), (2, 5, false), (2, 1, false)], held = [true, true, true]
+cc 551ed1efd42d38065c4a7814ba8ece63becf25f2a20ada9ceb721f2304ddfae6 # shrinks to press = 6, slow = 19, hi = 108, band = 5, s0f = 0.0, span = 20000, mut reads = []
+cc 8df3b79ca3fd2c8d041d1e6813a6e7b8d1eac30c647fbb57b8bcb177c0f8a36d # shrinks to press = 4, slow = 13, hi = 30, band = 5, s0f = 0.0, span = 20000, mut reads = []
+cc 7436e8985f8bf80200f9aa38c1e8d39ccfaee4d67e4808403956a6081713918c # shrinks to press = 4, slow = 20, hi = 30, band = 5, s0f = 0.0, span = 20000, mut reads = []

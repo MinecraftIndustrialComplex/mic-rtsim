@@ -2465,14 +2465,21 @@ mod replay_path {
     /// Brass to a press to a store of sheets a consumer drains (1 per 20 ticks); a threshold switch
     /// on the sheets stops the press at 100 and restarts it at 20.
     fn switched_line() -> B {
+        switched_line_with(10, 20, 100, 20)
+    }
+
+    /// The switched line with a press of `press` ticks, a consumer of `consume` ticks, and the
+    /// switch on at `hi` sheets and off at `lo`.
+    fn switched_line_with(press: u32, consume: u32, hi: i64, lo: i64) -> B {
         let (mut b, p) = press_line();
+        b.nodes[p as usize].rates[0].ticks_num = press;
         let coal = b.store(2);
         let burn = b.recipe(&[(SHEET, 1)], &[(COAL, 1)]);
-        let m = b.machine(model::PRESS, burn, 1, 20);
+        let m = b.machine(model::PRESS, burn, 1, consume);
         b.edge(1, m);
         b.edge(m, coal);
         let ctl = b.node(NodeKind::Controller, model::THRESHOLD_SWITCH, 0, Vec::new());
-        b.nodes[ctl as usize].params = [100, 20, 0, 80];
+        b.nodes[ctl as usize].params = [hi, lo, 0, 80];
         b.edge_k(EdgeKind::Observe, 1, ctl, &[]);
         let e = b.edge_k(EdgeKind::Control, ctl, p, &[]);
         b.edges[e as usize].param = CONTROL_STOP_WHEN_ON;
@@ -2481,24 +2488,41 @@ mod replay_path {
 
     /// The switched line tick by tick, as Create runs it: (brass used, coal made) after `ticks`.
     fn switched_reference(sheets0: i64, ticks: u64) -> (i64, i64) {
-        let (mut sheets, mut used, mut coal) = (sheets0, 0i64, 0i64);
-        let mut on = false;
+        let r = switched_reference_with(10, 20, 100, 20, sheets0, ticks);
+        (r.0, r.1)
+    }
+
+    /// [`switched_reference`] for [`switched_line_with`]: (brass used, coal made, switch flips).
+    fn switched_reference_with(
+        press: u64,
+        consume: u64,
+        hi: i64,
+        lo: i64,
+        sheets0: i64,
+        ticks: u64,
+    ) -> (i64, i64, i64) {
+        let (mut sheets, mut used, mut coal, mut flips) = (sheets0, 0i64, 0i64, 0i64);
+        let mut on = sheets0 >= hi;
         for t in 1..=ticks {
-            if !on && t % 10 == 0 {
+            if !on && t % press == 0 {
                 sheets += 1;
                 used += 1;
             }
-            if sheets > 0 && t % 20 == 0 {
+            if sheets > 0 && t % consume == 0 {
                 sheets -= 1;
                 coal += 1;
             }
-            if sheets >= 100 {
-                on = true;
-            } else if sheets <= 20 {
-                on = false;
-            }
+            let next = if sheets >= hi {
+                true
+            } else if sheets <= lo {
+                false
+            } else {
+                on
+            };
+            flips += i64::from(next != on);
+            on = next;
         }
-        (used, coal)
+        (used, coal, flips)
     }
 
     /// The switch cycles the sheets between 20 and 100 with a period of about 3,200 ticks. The
@@ -2620,5 +2644,110 @@ mod replay_path {
         let a = run(&[]);
         let b = run(&[333, 1601, 1777, 3210, 9999, 17_003, 32_100, 40_000]);
         assert_eq!(a, b);
+    }
+
+    /// One switched line replayed from its unload at 200 to `200 + span`, reading the stock at
+    /// `reads` (sorted, inside the span): the stocks read, then the final stock and report.
+    fn switched_run(
+        line: (u32, u32, i64, i64),
+        s0: i64,
+        span: u64,
+        reads: &[u64],
+    ) -> (Vec<(u64, GoodVec)>, GoodVec, u32, u32, bool) {
+        let (press, consume, hi, lo) = line;
+        let b = switched_line_with(press, consume, hi, lo);
+        let mut s = setup(&b, 3);
+        sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, s0)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        let mut seen = Vec::new();
+        for &t in reads {
+            e.advance_to(Tick(200 + t));
+            seen.push((t, e.sim_stock(D).unwrap_or_default()));
+        }
+        e.advance_to(Tick(200 + span));
+        let st = e.sim_stock(D).unwrap_or_default();
+        let r = e.glass.report(D).expect("a compile");
+        let books = e.check_books().is_ok();
+        (seen, st, r.replay.breakpoints, r.replay.model, books)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// Switched lines of every shape (G2 property tests, GLASSBOX.md §11.3): goods are
+        /// conserved (nothing made from nothing, a few units at most lost to machines and carry
+        /// restarts), reads on the way change nothing (the composition rule with periodic edges),
+        /// and the controlled line never runs above the tick-by-tick control.
+        #[test]
+        fn switched_lines_conserve_compose_and_stay_under_the_control(
+            press in 4u32..=30,
+            slow in 11u32..=40,
+            hi in 30i64..=200,
+            band in 5i64..=60,
+            s0f in 0.0f64..=1.2,
+            span in 20_000u64..=200_000,
+            mut reads in prop::collection::vec(1u64..=200_000, 0..6),
+        ) {
+            // The consumer slower than the press (a tenth to four times slower), so the switch
+            // cycles; the band inside the levels.
+            let consume = press * slow / 10;
+            let lo = (hi - band).max(1);
+            let s0 = (hi as f64 * s0f) as i64;
+            reads.retain(|&t| t < span);
+            reads.sort_unstable();
+            let line = (press, consume, hi, lo);
+            let (seen, st, bps, model, books) = switched_run(line, s0, span, &reads);
+            prop_assert_eq!(model, replay_model::GLASS, "fell back after {} breakpoints", bps);
+            prop_assert!(books, "books");
+            let (ref_used, ref_coal, flips) = switched_reference_with(
+                u64::from(press),
+                u64::from(consume),
+                hi,
+                lo,
+                s0,
+                span,
+            );
+            // Conservation: never more than there was; at most a unit per switch flip (a carry
+            // restart) and a few in machines less.
+            let total = 100_000 + s0;
+            let slack = 4 + flips;
+            for (t, g) in seen.iter().chain(std::iter::once(&(span, st.clone()))) {
+                let sum = g.get(BRASS) + g.get(SHEET) + g.get(COAL);
+                prop_assert!(sum <= total, "at {}: {} above {}", t, sum, total);
+                prop_assert!(sum >= total - slack, "at {}: {} lost more than {}", t, total - sum, slack);
+            }
+            // The composition rule: the same run without reads ends the same.
+            let (_, st2, bps2, _, _) = switched_run(line, s0, span, &[]);
+            prop_assert_eq!(&st, &st2);
+            prop_assert_eq!(bps, bps2);
+            // Never above the control: the consumer made at most what Create made, and the press
+            // pressed at most what was taken plus the room left to the switch's top. A switch's
+            // breakpoint costs its regime under a tick (choice G2-12), and the replay's switch
+            // flips a tick before Create's at each threshold (G2-20), so it flips more often, by
+            // its band over the band less two.
+            let used = 100_000 - st.get(BRASS);
+            let coal = st.get(COAL);
+            let b = hi - lo;
+            let lost_ticks = flips * b / (b - 2).max(1) + 4;
+            prop_assert!(coal <= ref_coal, "made {} above {}", coal, ref_coal);
+            prop_assert!(
+                coal >= ref_coal - lost_ticks / i64::from(consume) - 2,
+                "made {}, reference {} ({} flips)", coal, ref_coal, flips
+            );
+            prop_assert!(
+                used <= coal + (hi - s0).max(0) + 2,
+                "pressed {} for {} taken (switch at {}, from {})", used, coal, hi, s0
+            );
+            prop_assert!(
+                (used - ref_used).abs()
+                    <= ref_used / 100 + (hi - lo) + 2 + lost_ticks / i64::from(press),
+                "pressed {}, reference {}", used, ref_used
+            );
+        }
     }
 }
