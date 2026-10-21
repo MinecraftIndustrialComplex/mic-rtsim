@@ -127,7 +127,14 @@ import java.util.stream.Collectors;
  * <p>The <b>partial</b> variant ({@link #PARTIAL}) keeps every far chunk loaded: the chunk of the factory's
  * anchor keeps ticking blocks (a level 32 ticket) and the others are FULL without ticking (level 33,
  * Java sends IND_CHUNK_TICKING), so the glass box simulates part of the factory with its cut edges (I7,
- * G-B6) and reconciles it when the chunks tick again. Judged the same way.
+ * G-B6) and reconciles it when the chunks tick again. Judged the same way. Its place against the chunk
+ * grid is fixed, whatever the yard's: a border between the stores along one axis, the whole build inside
+ * one chunk along the other, so the far district has two chunks.
+ *
+ * <p>The <b>straddle</b> smoke ({@link #STRADDLE}) is the partial variant across a chunk corner (three or
+ * four district chunks, the ticking one with FULL-only neighbours; G2-63). It passes when every far report
+ * read while away carries the snapshot's compile number and none after the first GLASS one says otherwise
+ * (on the stub, the one offline report). Its rows are printed for information, not judged.
  *
  * <p>{@code MIC_GLASS_SUITE=replay} runs only this suite, {@code MIC_GLASS_ONLY} only the named factories.
  * Without natives ({@code -PskipJni}) the stub run cannot judge: it runs the cycle and logs.
@@ -162,8 +169,14 @@ public final class GlassReplayGameTests {
     static final int IO_TICKS = 12_000;
     /** Stub: ticks after the reload the offline reconcile may take to appear before the settle goes on without one. */
     static final int OFFLINE_WAIT = 60;
-    /** The factories the partial variant runs (their district spans several chunks wherever the yard lands). */
+    /** The factories the partial variant runs (their far district spans two chunks, placed so, wherever the yard lands). */
     static final Set<String> PARTIAL = Set.of("brass_tunnels", "boiler_overstress");
+    /**
+     * The factories the straddle smoke runs: a partial copy across a chunk corner, so the ticking chunk has
+     * FULL-only neighbours in the district (G2-63). It checks only that the far compile number holds and the
+     * replay stays GLASS while away; its rows are printed for information, not judged.
+     */
+    static final Set<String> STRADDLE = Set.of("boiler_overstress");
     /** The yard template's width and depth ({@code yard.nbt}: 34 x 6 x 34, a polished andesite floor at its y 0). */
     static final int YARD_SIZE = 34;
     /**
@@ -196,12 +209,18 @@ public final class GlassReplayGameTests {
             int maxTicks = f.warmupTicks() + 2 * (WINDOW + GlassExitGameTests.SLACK) + SPAN + 3 * IO_TICKS + SETTLE + 2000;
             out.add(new TestFunction("glassreplay_" + f.name(), "glassreplay." + f.name().toLowerCase(Locale.ROOT),
                     MicRtsimCreate.MODID + ":" + IndustryKit.YARD, Rotation.NONE, maxTicks, 0L, true, false, 1, 1, true,
-                    helper -> start(helper, f, slot, false)));
+                    helper -> start(helper, f, slot, false, false)));
             if (PARTIAL.contains(f.name())) {
                 int pslot = GlassCorpus.ALL.size() + i;
                 out.add(new TestFunction("glassreplay_partial_" + f.name(), "glassreplay.partial_" + f.name().toLowerCase(Locale.ROOT),
                         MicRtsimCreate.MODID + ":" + IndustryKit.YARD, Rotation.NONE, maxTicks, 0L, true, false, 1, 1, true,
-                        helper -> start(helper, f, pslot, true)));
+                        helper -> start(helper, f, pslot, true, false)));
+            }
+            if (STRADDLE.contains(f.name())) {
+                int sslot = 2 * GlassCorpus.ALL.size() + i;
+                out.add(new TestFunction("glassreplay_straddle_" + f.name(), "glassreplay.straddle_" + f.name().toLowerCase(Locale.ROOT),
+                        MicRtsimCreate.MODID + ":" + IndustryKit.YARD, Rotation.NONE, maxTicks, 0L, true, false, 1, 1, true,
+                        helper -> start(helper, f, sslot, true, true)));
             }
         }
         return out;
@@ -257,6 +276,8 @@ public final class GlassReplayGameTests {
         final Far far;
         final CorpusFactory f;
         final boolean partial;
+        /** The straddle smoke: a partial copy across a chunk corner, judged on its compile and model only. */
+        final boolean straddle;
         final String test;
         final GlassExitKit.Recorder rec;
         final boolean judge;
@@ -281,6 +302,11 @@ public final class GlassReplayGameTests {
         Map<String, Long> c1, f1, wip1;
         GlassReport cReport1, fReport1, away;
         boolean sawGlass;
+        /** Reports read while away after the first GLASS one that no longer say GLASS, and the last of them. */
+        int leftGlass;
+        String leftGlassAs;
+        /** The far compile numbers the reports while away carried, with how many reports each. */
+        final Map<Integer, Integer> awayCompiles = new TreeMap<>();
         String awaySummary = "no report while away";
         /** Why the far copy replayed the way it did: the engine's notes and the report's model. */
         String why = "not read";
@@ -306,19 +332,20 @@ public final class GlassReplayGameTests {
         final List<String> failures = new ArrayList<>();
         String last = "starting";
 
-        Run(GameTestHelper helper, CorpusFactory f, int slot, boolean partial) {
+        Run(GameTestHelper helper, CorpusFactory f, int slot, boolean partial, boolean straddle) {
             this.helper = helper;
             this.f = f;
-            this.partial = partial;
+            this.partial = partial || straddle;
+            this.straddle = straddle;
             this.far = new Far(helper, farOffset(slot));
-            this.test = "glass replay " + (partial ? "partial " : "") + f.name();
+            this.test = "glass replay " + (straddle ? "straddle " : partial ? "partial " : "") + f.name();
             this.rec = GlassExitKit.start(helper.getLevel());
             this.judge = GlassExitKit.canJudge();
             this.stub = !IndustryKit.nativeEngine();
             farMin = far.absolutePos(BlockPos.ZERO);
             farMax = far.absolutePos(new BlockPos(33, TOP, 33));
-            // The partial variant shifts the far copy by up to 15 blocks in x or z: its chunks cover that too.
-            BlockPos reach = partial ? farMax.offset(15, 0, 15) : farMax;
+            // The partial variant shifts the far copy by up to 15 blocks in x and z: its chunks cover that too.
+            BlockPos reach = this.partial ? farMax.offset(15, 0, 15) : farMax;
             for (int cx = farMin.getX() >> 4; cx <= reach.getX() >> 4; cx++)
                 for (int cz = farMin.getZ() >> 4; cz <= reach.getZ() >> 4; cz++)
                     farChunks.add(new ChunkPos(cx, cz));
@@ -339,10 +366,10 @@ public final class GlassReplayGameTests {
         }
     }
 
-    static void start(GameTestHelper helper, CorpusFactory f, int slot, boolean partial) {
+    static void start(GameTestHelper helper, CorpusFactory f, int slot, boolean partial, boolean straddle) {
         GlassConfig.Test.set(GlassConfig.CHECKSUM_WINDOW_TICKS, WINDOW);
         IndustryKit.fastConfig();
-        Run run = new Run(helper, f, slot, partial);
+        Run run = new Run(helper, f, slot, partial, straddle);
         IndustryKit.record(run.test, "far copy", "offset " + run.far.offset.toShortString() + ", box " + run.farMin.toShortString() + " to "
                 + run.farMax.toShortString() + ", chunks " + run.farChunks + ", engine " + IndustryKit.engine().describe()
                 + (run.judge ? "" : ", NOT judged (no natives)"));
@@ -454,9 +481,12 @@ public final class GlassReplayGameTests {
     }
 
     /**
-     * The partial variant: shifts the far copy (0 to 15 blocks, along the axis its stores and anchor spread
-     * most) so that a chunk border runs between them, wherever the yard landed. The far district then has two
-     * chunks or more, the anchor's ticking and the others not.
+     * The partial variant: shifts the far copy (0 to 15 blocks in x and in z) so that its place against the
+     * chunk grid does not depend on where the yard landed. Along the axis its stores and anchor spread most a
+     * chunk border runs between them; along the other the control's whole build sits inside one chunk,
+     * centred (so the far district has the two chunks m5 ran, the anchor's ticking and the other not). The
+     * straddle smoke puts a border through the middle of the build along the other axis too: a chunk
+     * corner, three or four chunks, the ticking one with FULL-only neighbours (G2-63).
      */
     static void split(Run run) {
         List<BlockPos> ps = new ArrayList<>(run.control.stores());
@@ -473,13 +503,56 @@ public final class GlassReplayGameTests {
         // The first column of the second chunk, in the control's coordinates: past the middle, never past max.
         int border = min + Math.max(1, (max - min + 1) / 2);
         int shift = Math.floorMod(-border, 16);
-        BlockPos by = alongX ? new BlockPos(shift, 0, 0) : new BlockPos(0, 0, shift);
+        // The other axis: the control's built blocks, not only its stores (a machine past them shares their chunk).
+        int[] fp = footprint(run);
+        int lo = alongX ? fp[2] : fp[0], hi = alongX ? fp[3] : fp[1], width = hi - lo + 1;
+        int across;
+        String acrossWhy;
+        if (run.straddle) {
+            int oBorder = lo + Math.max(1, width / 2);
+            across = Math.floorMod(-oBorder, 16);
+            acrossWhy = "a chunk border before control " + (alongX ? "z " : "x ") + oBorder + " too (a corner)";
+        } else if (width <= 16) {
+            across = Math.floorMod((16 - width) / 2 - lo, 16);
+            acrossWhy = "the build inside one chunk, centred";
+        } else {
+            across = Math.floorMod(-lo, 16);
+            acrossWhy = "the build from a chunk's first column (" + width + " wide: it cannot fit one chunk)";
+        }
+        BlockPos by = alongX ? new BlockPos(shift, 0, across) : new BlockPos(across, 0, shift);
         run.far.offset = run.far.offset.offset(by);
         run.farMin = run.farMin.offset(by);
         run.farMax = run.farMax.offset(by);
+        // Where the far build lands on the chunk grid (the far offset is whole chunks plus this shift).
+        BlockPos d = run.far.offset;
+        int cx0 = (fp[0] + d.getX()) >> 4, cx1 = (fp[1] + d.getX()) >> 4, cz0 = (fp[2] + d.getZ()) >> 4, cz1 = (fp[3] + d.getZ()) >> 4;
         IndustryKit.record(run.test, "split", "stores and anchor span " + (alongX ? "x " : "z ") + min + " to " + max + " in the control; the far copy moves "
                 + shift + " along " + (alongX ? "x" : "z") + " so a chunk border falls before control " + (alongX ? "x " : "z ") + border
-                + (max == min ? " (they do not spread: no border between them)" : ""));
+                + (max == min ? " (they do not spread: no border between them)" : "") + ", and " + across + " along " + (alongX ? "z" : "x") + " for "
+                + acrossWhy + "; the build spans x " + fp[0] + " to " + fp[1] + ", z " + fp[2] + " to " + fp[3] + " in the control, far chunks x "
+                + cx0 + " to " + cx1 + ", z " + cz0 + " to " + cz1 + " (" + (cx1 - cx0 + 1) * (cz1 - cz0 + 1) + " in its box)");
+    }
+
+    /** The control's built blocks in its yard (above the floor, or in it where they replaced it): min x, max x, min z, max z. */
+    static int[] footprint(Run run) {
+        ServerLevel level = run.level();
+        BlockPos o = run.helper.absolutePos(BlockPos.ZERO);
+        int[] fp = {Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE};
+        for (BlockPos p : BlockPos.betweenClosed(o.offset(0, 1, 0), o.offset(YARD_SIZE - 1, TOP, YARD_SIZE - 1))) {
+            BlockState st = level.getBlockState(p);
+            if (st.isAir() || (p.getY() == o.getY() + 1 && st.is(Blocks.POLISHED_ANDESITE)))
+                continue;
+            fp[0] = Math.min(fp[0], p.getX());
+            fp[1] = Math.max(fp[1], p.getX());
+            fp[2] = Math.min(fp[2], p.getZ());
+            fp[3] = Math.max(fp[3], p.getZ());
+        }
+        if (fp[0] > fp[1]) {
+            // Nothing built (cannot happen for a corpus factory): the stores' anchor alone.
+            BlockPos a = run.control.anchor();
+            fp = new int[] {a.getX(), a.getX(), a.getZ(), a.getZ()};
+        }
+        return fp;
     }
 
     static void seed(GameTestHelper h, CorpusFactory.Built b) {
@@ -676,6 +749,11 @@ public final class GlassReplayGameTests {
                 run.stage(Stage.DONE);
                 return;
             }
+            if (run.straddle && d.chunks.size() < 3) {
+                // Two chunks are the partial variant's case: the smoke would pass without the corner it is for.
+                fail(run, "the straddle copy's far district has " + d.chunks.size() + " chunks " + longs(d.chunks) + ": no chunk corner");
+                return;
+            }
             for (ChunkPos c : run.farChunks) {
                 if (c.equals(run.ticking))
                     level.getChunkSource().addRegionTicket(BLOCK_TICKING, c, 1, c);
@@ -763,7 +841,13 @@ public final class GlassReplayGameTests {
             if (r != null) {
                 run.away = r;
                 run.awayReports++;
-                run.sawGlass |= r.replay().model() == GlassReport.REPLAY_GLASS;
+                boolean glass = r.replay().model() == GlassReport.REPLAY_GLASS;
+                if (run.sawGlass && !glass) {
+                    run.leftGlass++;
+                    run.leftGlassAs = r.replay().summary();
+                }
+                run.sawGlass |= glass;
+                run.awayCompiles.merge(r.compile(), 1, Integer::sum);
                 run.awaySummary = r.replay().summary();
                 if (run.stageTicks % 1200 == 0)
                     IndustryKit.record(run.test, "away", r.replay().summary() + "; " + r.summary());
@@ -778,6 +862,8 @@ public final class GlassReplayGameTests {
             run.awayReports = run.away == null ? 0 : 1;
             run.sawGlass = run.away != null && run.away.replay().model() == GlassReport.REPLAY_GLASS;
             run.awaySummary = run.away == null ? "no complete compile offline" : run.away.replay().summary();
+            if (run.away != null)
+                run.awayCompiles.merge(run.away.compile(), 1, Integer::sum);
         }
         IndustryKit.record(run.test, "replay while away", run.awaySummary + " (" + run.awayReports + " reports"
                 + (run.stub ? ", offline over " + run.prefix + " records" : "") + ")");
@@ -958,6 +1044,8 @@ public final class GlassReplayGameTests {
                     + (fReport2 == null ? "" : "; at the end " + fReport2.replay().summary()) + "; why: " + run.why);
             if (!run.sawGlass)
                 run.failures.add(run.f.name() + ": the report while away does not say replay model GLASS (" + run.awaySummary + ")");
+            if (run.straddle)
+                straddleChecks(run);
         }
 
         // Ticks neither copy ran: snapshot to the first record of the district leaving LIVE; first load to ticking again.
@@ -1010,12 +1098,13 @@ public final class GlassReplayGameTests {
             boolean below = c == 0 ? Math.abs(s) <= slack : Math.signum(c) * s <= Math.abs(c) + slack;
             boolean within = Math.abs(s - c) <= tol;
             boolean unbounded = cls == GlassReport.UNBOUNDED;
-            boolean pass = run.judge ? below && (unbounded || within) : true;
-            String verdict = (!run.judge ? "not judged"
+            boolean pass = run.judge && !run.straddle ? below && (unbounded || within) : true;
+            String verdict = (!run.judge ? "not judged" : run.straddle ? "information only (straddle smoke; would read "
+                    + (below ? "at or below pass" : "at or below FAIL") + ", " + (unbounded ? "within not judged" : within ? "within pass" : "within FAIL") + ")"
                     : (below ? "at or below pass" : "at or below FAIL") + ", " + (unbounded ? "within not judged (unbounded)" : within ? "within pass" : "within FAIL"))
                     + (c != 0 && slack >= Math.abs(c) ? " (WEAK: the slack covers the control's change)" : "");
             // A far copy that did not run as the control did proves nothing either way: no row of it passes.
-            if (run.invalidCopy != null) {
+            if (run.invalidCopy != null && !run.straddle) {
                 verdict = "INVALID COPY: " + verdict;
                 pass = false;
             }
@@ -1047,16 +1136,34 @@ public final class GlassReplayGameTests {
                 && run.control.expect().stream().allMatch(e -> e.lo() == 0 && e.hi() == 0);
         if (moved == 0 && stallExpected)
             IndustryKit.record(test, "stall", "the control moved nothing, as the factory expects: every row checks |simulated| <= slack");
-        else if (moved == 0)
+        else if (moved == 0 && !run.straddle)
             run.failures.add(run.f.name() + ": the control changed no good over the span (stalled or empty): nothing to compare");
         MicRtsim.LOGGER.info(String.format(Locale.ROOT, "[gametest] %s: %d goods (%d moved in the control, %d weak %s) over %d ticks (%d away), engine %s, eligible by %s, replay %s (why: %s), %s",
                 test, judged, moved, weak.size(), weak, span, run.forcedAt - run.unloadedAt, run.stub ? "stub (offline replay)" : "native", run.eligibleBy, run.awaySummary,
                 run.why,
                 !run.judge ? "not judged" : failed.isEmpty() && run.failures.isEmpty() ? "pass"
-                        : "FAIL " + (run.invalidCopy != null ? "INVALID COPY " : "") + failed + (run.failures.isEmpty() ? "" : " and " + run.failures)));
+                        : "FAIL " + (run.invalidCopy != null && !run.straddle ? "INVALID COPY " : "") + failed + (run.failures.isEmpty() ? "" : " and " + run.failures)));
         if (!failed.isEmpty())
-            run.failures.add(run.f.name() + ": " + (run.invalidCopy != null ? "INVALID COPY (" + run.invalidCopy + "): " : "")
+            run.failures.add(run.f.name() + ": " + (run.invalidCopy != null && !run.straddle ? "INVALID COPY (" + run.invalidCopy + "): " : "")
                     + failed + (KNOWN_GAPS.containsKey(run.f.name()) ? "; KNOWN GAP (" + KNOWN_GAPS.get(run.f.name()) + "), still a failure" : ""));
+    }
+
+    /**
+     * The straddle smoke's own checks (G2-63): every far report read while away carries the compile the far
+     * copy had at the snapshot, and once one says GLASS none after it says otherwise.
+     */
+    static void straddleChecks(Run run) {
+        int at = run.fReport1 == null ? -1 : run.fReport1.compile();
+        boolean held = at >= 0 && !run.awayCompiles.isEmpty() && run.awayCompiles.keySet().stream().allMatch(c -> c == at);
+        IndustryKit.record(run.test, "straddle compile", "far compile " + at + " at the snapshot; while away " + run.awayCompiles
+                + " (compile: reports): " + (held ? "held" : "CHANGED"));
+        if (!held)
+            run.failures.add(run.f.name() + ": straddle: the far compile did not hold while away (compile " + at + " at the snapshot, while away "
+                    + run.awayCompiles + ")");
+        IndustryKit.record(run.test, "straddle model", run.leftGlass == 0 ? (run.sawGlass ? "GLASS throughout once it started" : "never GLASS")
+                : run.leftGlass + " of " + run.awayReports + " reports while away left GLASS after it started, the last: " + run.leftGlassAs);
+        if (run.leftGlass > 0)
+            run.failures.add(run.f.name() + ": straddle: the replay left GLASS while away (" + run.leftGlass + " reports, the last: " + run.leftGlassAs + ")");
     }
 
     /** A good's batch in flight, in units, and how it was capped (empty: not capped). */
