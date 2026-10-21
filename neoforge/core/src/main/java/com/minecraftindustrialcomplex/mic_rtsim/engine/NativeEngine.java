@@ -182,6 +182,9 @@ public final class NativeEngine implements ScriptedEngine {
     /** A district's glass report (GlassReport's layout); null without a complete compile. */
     private static native double[] nGlassReport(long handle, long district);
 
+    /** One district's threat state ({@link #industryThreatProbe}'s layout). */
+    private static native double[] nIndustryThreatProbe(long handle, long district);
+
     /** The glass check of a record stream on a fresh industry engine; null without a complete compile. */
     private static native double[] nGlassOffline(byte[] records, long district);
 
@@ -478,6 +481,19 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().phase1Advance(ticks), "P1_ADVANCE");
     }
 
+    /** INDUSTRY_THREAT's source and class codes (rtsim-jni's orders.rs SOURCES and ThreatClass::ALL). */
+    public static final int THREAT_NATURAL = 0, THREAT_DRAGON = 1, THREAT_BANDIT = 2, THREAT_BOSS = 3, THREAT_SYNTHETIC = 4;
+    public static final int CLASS_GROUND_MELEE = 0, CLASS_GROUND_RANGED = 1, CLASS_FLYING = 2, CLASS_SIEGE = 3;
+
+    /**
+     * An attack on a district (INDUSTRY_THREAT, target kind 1), resolved by the industry engine at its next
+     * step as an unwatched attack: {@code count} attackers of one class and source, {@code strength} in all, at
+     * {@code gameTime} (GameTests: the roof gate, OILGATE.md OG-11).
+     */
+    public void industryThreat(long id, int source, int threatClass, int count, double strength, long district, long gameTime) {
+        order(new NativeCodec.Orders().industryThreat(id, source, threatClass, count, 1, strength, district, gameTime), "INDUSTRY_THREAT");
+    }
+
     /**
      * Test only (an engine opened with {@link #FLAG_TEST}): coin, in thousandths of the village's own
      * currency, put straight into a phase 1 village's works purse (SINK.md), at the next step.
@@ -606,13 +622,18 @@ public final class NativeEngine implements ScriptedEngine {
     public static final int OIL_CHUNKS = 0, OIL_FIELDS = 1, OIL_FIELD_ROLLS = 2, OIL_FIELD_DRAWS = 3, OIL_REFUELS = 4,
             OIL_RAIDS = 5, OIL_DRUNK_MB = 6, OIL_BREATHS = 7, OIL_DRY_RAIDS = 8, OIL_ENCROACHMENTS = 9,
             OIL_DISTRICT_RAIDS = 10, OIL_LAIRS_PLACED = 11, OIL_VISITORS_LEFT = 12, OIL_SURVEYS = 13, OIL_LEVEL = 14,
-            OIL_FLAGS = 15, OIL_INFO = 16;
+            OIL_FLAGS = 15, OIL_NOW = 16, OIL_WHEEL_NOW = 17, OIL_PRESENCES = 18, OIL_PRESENCES_FRESH = 19,
+            OIL_PRESENCES_AHEAD = 20, OIL_ROLLS_ACTIVE = 21, OIL_ROLLS_BOOKED = 22, OIL_ROLL_NEXT = 23,
+            OIL_VISITORS = 24, OIL_VISITORS_MOST = 25, OIL_INFO = 26;
 
     /**
      * The oil gate's counters in the whole world, as of the engine's last step (indexed by {@code OIL_*};
      * OILGATE.md §4): oil chunks indexed, fields, field-flight rolls and draws, refuels, drinking raids, mB
      * drunk, breaths, dry raids, Encroachment reports, district raids, lairs placed, visitors gone, surveys;
-     * then dragon {@code agent}'s reserve now (-1 for no such dragon) and the OIL_CONFIG switches it holds.
+     * then dragon {@code agent}'s reserve now (-1 for no such dragon) and the OIL_CONFIG switches it holds;
+     * then the field flights' state, for tests: the engine's clock and its event wheel's, players' presences
+     * kept, fresh and stamped ahead of the clock, rolls active, FieldRoll events booked and the earliest one's
+     * tick (-1 with none), field flights' dragons alive, and the most on one field.
      */
     public synchronized long[] dragonsOil(long agent) {
         long[] out = new long[OIL_INFO];
@@ -627,6 +648,19 @@ public final class NativeEngine implements ScriptedEngine {
      */
     public synchronized double[] glassReport(long district) {
         return nGlassReport(live(), district);
+    }
+
+    /**
+     * One district's threat state as of the engine's last step, for tests (the roof gate, OG-11): whether the
+     * engine has it (1 or 0), watched, presence (0 unloaded, 1 partial, 2 live), loaded chunks, exposed blocks
+     * and the roofless ones, blocks waiting to be destroyed, attack reports; then the last report's tick,
+     * skipped (0 no, 1 watched, 2 cooldown, 3 other), strength through, defender, survived, survivors and
+     * blocks destroyed; then the engine's threats taken, attacks and attacks skipped; then the link's
+     * commands queued and kept, written, dropped, failed by Java, the front command's name waits, and the
+     * module switch (1 on).
+     */
+    public synchronized double[] industryThreatProbe(long district) {
+        return nIndustryThreatProbe(live(), district);
     }
 
     /**

@@ -78,6 +78,10 @@ public final class OilGameTests {
                     d.setFlying(false);
                     d.setHovering(false);
                 }
+                // Its shake grabs the prey as a passenger and hurts it only there; a guarded mock player
+                // never rides (Guard cancels the mount), so the shake never lands. A bite does.
+                if (d.groundAttack == IafDragonAttacks.Ground.SHAKE_PREY)
+                    d.groundAttack = IafDragonAttacks.Ground.BITE;
             }
             case NONE -> {}
         }
@@ -186,19 +190,32 @@ public final class OilGameTests {
         long[] zeroAt = {-1}, start = {-1};
         UUID[] dragon = new UUID[1];
         DragonBridge.Breath[] log = new DragonBridge.Breath[1];
-        helper.onEachTick(() -> nudge(bodyOrNull(agent), player, mode[0]));
+        int[] anim = new int[3]; // ticks in the melee phase: biting, shaking, other attack animations
+        helper.onEachTick(() -> {
+            DragonBaseEntity d = bodyOrNull(agent);
+            nudge(d, player, mode[0]);
+            if (mode[0] == Fire.MELEE && d != null && d.isPlayingAttackAnimation())
+                anim[d.getAnimation() == DragonBaseEntity.ANIMATION_BITE ? 0 : d.getAnimation() == DragonBaseEntity.ANIMATION_SHAKEPREY ? 1 : 2]++;
+        });
 
         helper.startSequence()
-                .thenWaitUntil(() -> body(agent))
-                .thenExecute(() -> {
-                    check("the body carries the reserve (" + bridge().oilOf(agent) + ")", bridge().oilOf(agent) == reserve);
+                // The target is set at the end of the tick the body joins (the bridge's, or the nudge's), and a
+                // failed check in a thenExecute does not stop the sequence: everything here waits.
+                .thenWaitUntil(() -> {
                     check("hostile to the player", body(agent).getTarget() == player);
+                    check("its breath log", bridge().breathOf(agent) != null);
                     log[0] = bridge().breathOf(agent);
                     dragon[0] = body(agent).getUUID();
-                    start[0] = helper.getLevel().getGameTime();
                 })
-                .thenWaitUntil(() -> check("the reserve is spent (" + bridge().oilOf(agent) + " left, " + log[0].events + " events)",
-                        bridge().oilOf(agent) == 0))
+                .thenExecute(() -> {
+                    start[0] = helper.getLevel().getGameTime();
+                    // It may have breathed in the tick it took its target: what is left and what was paid add up.
+                    int paid = log[0].eventsPaid + log[0].chargesPaid;
+                    check("the body carried the reserve (" + bridge().oilOf(agent) + " left, " + paid + " paid)",
+                            bridge().oilOf(agent) + paid == reserve);
+                })
+                .thenWaitUntil(() -> check("the reserve is spent (" + bridge().oilOf(agent) + " left, "
+                        + (log[0] == null ? "?" : String.valueOf(log[0].events)) + " events)", bridge().oilOf(agent) == 0))
                 .thenExecute(() -> {
                     zeroAt[0] = helper.getLevel().getGameTime();
                     DragonBridge.Breath b = log[0];
@@ -234,9 +251,11 @@ public final class OilGameTests {
                             .count();
                     DragonBaseEntity d = bodyOrNull(agent);
                     String state = d == null ? "no body" : String.format("flying %b, hovering %b, on the ground %b, %.1f blocks away, %.1f above, "
-                            + "ground attack %s, attack animation %b, can move %b, line of sight %b, target the player %b",
+                            + "ground attack %s, attack animation %b, can move %b, line of sight %b, target the player %b, "
+                            + "ticks biting %d, shaking %d, other %d, reach %.1f",
                             d.isFlying(), d.isHovering(), d.onGround(), d.distanceTo(player), d.getY() - player.getY(), d.groundAttack,
-                            d.isPlayingAttackAnimation(), d.canMove(), d.hasLineOfSight(player), d.getTarget() == player);
+                            d.isPlayingAttackAnimation(), d.canMove(), d.hasLineOfSight(player), d.getTarget() == player,
+                            anim[0], anim[1], anim[2], d.getRenderSize() * 0.2574 * 2 + 2);
                     check("it fights on with bite and claws (" + melee + " blows; " + state + ")", melee > 0);
                 })
                 .thenWaitUntil(() -> check("its breaths reached the engine (" + breathsSent(agent) + " of " + reserve + ")",

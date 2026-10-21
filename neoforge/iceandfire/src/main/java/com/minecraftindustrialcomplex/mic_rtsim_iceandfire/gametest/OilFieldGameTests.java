@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.api.OilSource;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonConfig;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords;
@@ -446,7 +447,8 @@ public final class OilFieldGameTests {
      * second leaving 0.2 % of no draw by chance where one is due).
      */
     // An unthrottled GameTest server runs ~1,000 ticks a second, so one engine step spans many ticks and
-    // a roll can find the player's presence stale (r1 drew in 162 ticks, r2 in 6,427): the draw gets room.
+    // a roll can find the player's presence stale (r1 drew in 162 ticks, r2 in 6,427): the draw is waited
+    // for at 5 ms a tick and gets room.
     @GameTest(template = DragonKit.ARENA, timeoutTicks = 24000, batch = "oil_flights")
     public static void fieldFlightsDrawADragonOnlyOverOilAndHighEnough(GameTestHelper helper) {
         String test = "fieldFlightsDrawADragonOnlyOverOilAndHighEnough";
@@ -492,10 +494,20 @@ public final class OilFieldGameTests {
                     DragonKit.oilConfig(DragonRecords.OilConfig.FLAG_FIELD_FLIGHTS);
                     p[0] = OilGameTests.guardedPlayer(helper, high, "oil_flights");
                     mark[0] = DragonKit.nativeOil(0)[NativeEngine.OIL_FIELD_DRAWS];
+                    mark[5] = DragonKit.nativeOil(0)[NativeEngine.OIL_FIELD_ROLLS];
                     mark[1] = level.getGameTime();
+                    record(test, "start", flightProbe(DragonKit.nativeOil(0), level));
                     phase[0] = 1;
                 })
-                .thenWaitUntil(() -> check("a field flight was drawn", DragonKit.nativeOil(0)[NativeEngine.OIL_FIELD_DRAWS] > mark[0]))
+                // The engine's rolls run on its own thread: io() holds each failing tick 5 ms.
+                .thenWaitUntil(RtsimTests.io(() -> {
+                    long[] o = DragonKit.nativeOil(0);
+                    check("a field flight was drawn (" + (o[NativeEngine.OIL_FIELD_ROLLS] - mark[5]) + " rolls, switches "
+                            + o[NativeEngine.OIL_FLAGS] + ", " + o[NativeEngine.OIL_FIELDS] + " fields, " + o[NativeEngine.OIL_CHUNKS]
+                            + " oil chunks, " + o[NativeEngine.OIL_FIELD_DRAWS] + " draws and " + o[NativeEngine.OIL_VISITORS_LEFT]
+                            + " visitors gone in all, " + (level.getGameTime() - mark[1]) + " ticks; " + flightProbe(o, level) + ")",
+                            o[NativeEngine.OIL_FIELD_DRAWS] > mark[0]);
+                }))
                 .thenExecute(() -> drawn[0] = level.getGameTime() - mark[1])
                 .thenWaitUntil(() -> {
                     for (ScriptedEngine.Received r : engine().received(DragonRecords.DRAGON_MATERIALIZED)) {
@@ -552,5 +564,14 @@ public final class OilFieldGameTests {
                     DragonKit.restoreOilConfig();
                 })
                 .thenSucceed();
+    }
+
+    /** The engine's field flight probe (NativeEngine OIL_NOW on), for a failing wait's message. */
+    static String flightProbe(long[] o, ServerLevel level) {
+        return "game time " + level.getGameTime() + ", engine " + o[NativeEngine.OIL_NOW] + ", wheel " + o[NativeEngine.OIL_WHEEL_NOW]
+                + "; presences " + o[NativeEngine.OIL_PRESENCES] + " (" + o[NativeEngine.OIL_PRESENCES_FRESH] + " fresh, "
+                + o[NativeEngine.OIL_PRESENCES_AHEAD] + " ahead of the clock); rolls active " + o[NativeEngine.OIL_ROLLS_ACTIVE]
+                + ", booked " + o[NativeEngine.OIL_ROLLS_BOOKED] + " (next at " + o[NativeEngine.OIL_ROLL_NEXT] + "); visitors alive "
+                + o[NativeEngine.OIL_VISITORS] + ", most on a field " + o[NativeEngine.OIL_VISITORS_MOST];
     }
 }

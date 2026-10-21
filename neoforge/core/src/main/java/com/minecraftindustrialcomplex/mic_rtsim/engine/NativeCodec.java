@@ -35,7 +35,7 @@ import java.util.UUID;
  *   <li>7 FAIL: no body. The step that writes it panics on purpose (an engine opened with
  *       {@code FLAG_TEST} only).</li>
  *   <li>8 INDUSTRY_THREAT: u64 id, u32 source, u32 class, u32 count, u32 target kind, f64 strength,
- *       u64 target, u64 gameTime (rtsim-jni's orders.rs; no Java caller yet).</li>
+ *       u64 target, u64 gameTime (rtsim-jni's orders.rs; GameTests send it).</li>
  *   <li>9 INDUSTRY_COMMAND: u32 names, then per name: u32 dictionary kind, u32 Java's id, str name
  *       (the Java dictionary entries the record uses); then an industry command record exactly as
  *       docs/industry-boundary.md §4 lays it out (its cmdSeq ignored), with Java's own dictionary ids
@@ -101,6 +101,7 @@ final class NativeCodec {
     static final int SAVE_AT_NEXT_STEP = 5;
     static final int REWIND_CMD_SEQ = 6;
     static final int FAIL = 7;
+    static final int INDUSTRY_THREAT = 8;
     static final int INDUSTRY_COMMAND = 9;
     // 10 to 15: reserved.
     static final int MARKET = 16;
@@ -337,6 +338,20 @@ final class NativeCodec {
         Orders phase1Advance(long ticks) {
             begin(P1_ADVANCE);
             u64(ticks);
+            return end();
+        }
+
+        Orders industryThreat(long id, int source, int threatClass, int count, int targetKind, double strength, long target,
+                              long gameTime) {
+            begin(INDUSTRY_THREAT);
+            u64(id);
+            u32(source);
+            u32(threatClass);
+            u32(count);
+            u32(targetKind);
+            f64(strength);
+            u64(target);
+            u64(gameTime);
             return end();
         }
 

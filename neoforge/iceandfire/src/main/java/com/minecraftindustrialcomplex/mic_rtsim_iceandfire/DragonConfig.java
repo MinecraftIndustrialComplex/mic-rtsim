@@ -73,6 +73,15 @@ public final class DragonConfig {
         return Test.answerSurveys != null ? Test.answerSurveys : true;
     }
 
+    /**
+     * A breath is a burst, not a fire event: fire events and charges less than {@link DragonBridge#BURST_GAP}
+     * ticks after the last one of a paid burst go free (Ice and Fire's stream fires an event every tick, about
+     * 40 to a stream). GameTests only (OG-10's arm C): off, a point a fire event.
+     */
+    public static boolean breathPerBurst() {
+        return Test.breathPerBurst != null && Test.breathPerBurst;
+    }
+
     /** OIL_CONFIG's flags from the switches. */
     public static int oilFlags() {
         return (fieldFlights() ? DragonRecords.OilConfig.FLAG_FIELD_FLIGHTS : 0)
@@ -93,6 +102,7 @@ public final class DragonConfig {
         public static Boolean sampleNewChunks = ENABLED ? Boolean.FALSE : null;
         public static Boolean answerSurveys = ENABLED ? Boolean.FALSE : null;
         public static Integer samplesPerTick = null;
+        public static Boolean breathPerBurst = null;
 
         /** Back to the GameTest defaults. */
         public static void reset() {
@@ -103,6 +113,7 @@ public final class DragonConfig {
             sampleNewChunks = Boolean.FALSE;
             answerSurveys = Boolean.FALSE;
             samplesPerTick = null;
+            breathPerBurst = null;
         }
     }
 }

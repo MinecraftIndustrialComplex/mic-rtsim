@@ -2,11 +2,13 @@ package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
 import com.iafenvoy.iceandfire.entity.DragonChargeEntity;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.neoforged.bus.api.EventPriority;
+import net.neoforged.fml.util.ObfuscationReflectionHelper;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.EntityMountEvent;
 import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
@@ -46,6 +48,21 @@ public final class Guard {
         }
         GUARDED.put(e.getUUID(), new ArrayList<>());
         GROUNDED.add(e.getUUID());
+        if (e instanceof ServerPlayer p)
+            vulnerable(p);
+    }
+
+    /**
+     * A new ServerPlayer refuses every blow that does not bypass invulnerability for its first 60 ticks,
+     * counted down in its own tick, before the damage event this log reads. A mock player is never
+     * ticked: without this its spawn grace never ends, and no bite, claw or fire would ever be logged.
+     */
+    private static void vulnerable(ServerPlayer p) {
+        try {
+            ObfuscationReflectionHelper.findField(ServerPlayer.class, "spawnInvulnerableTime").setInt(p, 0);
+        } catch (IllegalAccessException x) {
+            throw new IllegalStateException("cannot end a GameTest player's spawn grace", x);
+        }
     }
 
     public static void release(LivingEntity e) {
