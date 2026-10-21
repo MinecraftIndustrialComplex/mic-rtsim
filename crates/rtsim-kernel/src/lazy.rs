@@ -81,6 +81,19 @@ pub trait LazyModel {
     }
 }
 
+/// Slots a peek catches up on a clone at most (VIEWER.md §5.3); past it, the peek answers as of
+/// the anchor. TUNABLE.
+pub const PEEK_MAX_SLOTS: u64 = 64;
+
+/// What a peek saw: a view, and the time it is as of.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Peek<V> {
+    pub view: V,
+    /// The time asked (clamped to what the table may read), or the anchor when catching up would
+    /// have passed [`PEEK_MAX_SLOTS`]: a viewer then says "as of" that time.
+    pub as_of: Tick,
+}
+
 /// A model plus the moment its state describes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lazy<M> {
@@ -172,6 +185,38 @@ impl<M: LazyModel> Lazy<M> {
         if at > self.anchor {
             self.model.settle(self.anchor, at);
             self.anchor = at;
+        }
+    }
+}
+
+impl<M: LazyModel + Clone> Lazy<M> {
+    /// What [`Lazy::read`] at `at` would see, changing nothing (VIEWER.md §5.3): the projection
+    /// when no slot boundary lies between the anchor and `at`, else a clone caught up to `at`
+    /// (cost: the elapsed slots), or the view as of the anchor when more than
+    /// [`PEEK_MAX_SLOTS`] slots have elapsed.
+    pub fn peek(&self, at: Tick, key: StreamKey) -> Peek<M::View> {
+        let at = at.max(self.anchor);
+        let slots = self
+            .model
+            .slot_period()
+            .map_or(0, |p| p.boundaries_between(self.anchor, at));
+        if slots == 0 {
+            return Peek {
+                view: self.model.view(self.anchor, at),
+                as_of: at,
+            };
+        }
+        if slots > PEEK_MAX_SLOTS {
+            return Peek {
+                view: self.model.view(self.anchor, self.anchor),
+                as_of: self.anchor,
+            };
+        }
+        let mut clone = self.clone();
+        clone.catch_up(at, key);
+        Peek {
+            view: clone.model.view(clone.anchor, at),
+            as_of: at,
         }
     }
 }
@@ -355,6 +400,21 @@ impl<M: LazyModel> LazyTable<M> {
             row.cell
                 .model
                 .view(row.cell.anchor, at.max(row.cell.anchor)),
+        )
+    }
+
+    /// [`LazyTable::read`] through `&self` (VIEWER.md §5.3): no slot is committed, `touched` and
+    /// the statistics stay as they are, and `at` is clamped to [`LazyTable::now`], so a peek never
+    /// sees past what the table has drained and never fires what is due. Agrees with `read` at the
+    /// same time unless more than [`PEEK_MAX_SLOTS`] slots have elapsed ([`Peek::as_of`]).
+    pub fn peek(&self, h: RegionId<M>, at: Tick) -> Option<Peek<M::View>>
+    where
+        M: Clone,
+    {
+        let row = self.rows.get(h)?;
+        Some(
+            row.cell
+                .peek(at.min(self.wheel.now()), self.stream(row.key)),
         )
     }
 
@@ -789,6 +849,19 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
             .view(row.cell.anchor, at.max(row.cell.anchor));
         self.stats.slot_commits += commits;
         Some(v)
+    }
+
+    /// As [`LazyTable::peek`]. Loads the region's page through `&self` if it is not resident
+    /// ([`PagedLazyTable::get`]) and leaves it clean.
+    pub fn peek(&self, h: RegionId<M>, at: Tick) -> Option<Peek<M::View>>
+    where
+        M: Clone,
+    {
+        let row = self.get(h)?;
+        Some(
+            row.cell
+                .peek(at.min(self.wheel.now()), self.stream(row.key)),
+        )
     }
 
     /// As [`LazyTable::apply`].

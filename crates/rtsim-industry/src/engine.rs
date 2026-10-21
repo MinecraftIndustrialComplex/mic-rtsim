@@ -2734,12 +2734,31 @@ impl Engine {
     /// here reaches the Java side.
     pub fn inspect(&mut self, d: DistrictId, at: Tick) -> Option<Inspection> {
         let at = at.min(self.now);
-        let season = self.season_at(at);
-        let dist = self.districts.get(&d)?;
+        self.districts.get(&d)?;
         let view = self
             .cluster_of
             .get(&d)
             .and_then(|&h| self.clusters.read(h, at));
+        self.inspection(d, at, view)
+    }
+
+    /// [`Engine::inspect`] through `&self`, for a viewer (VIEWER.md §5.3): the replay is peeked,
+    /// so `touched` and the statistics stay as they are. The cluster model has no slot period,
+    /// so the answer is the same as `inspect`'s.
+    pub fn inspect_peek(&self, d: DistrictId, at: Tick) -> Option<Inspection> {
+        let at = at.min(self.now);
+        self.districts.get(&d)?;
+        let view = self
+            .cluster_of
+            .get(&d)
+            .and_then(|&h| self.clusters.peek(h, at))
+            .map(|p| p.view);
+        self.inspection(d, at, view)
+    }
+
+    fn inspection(&self, d: DistrictId, at: Tick, view: Option<ClusterView>) -> Option<Inspection> {
+        let season = self.season_at(at);
+        let dist = self.districts.get(&d)?;
         let model = dist
             .models
             .get(&season)
@@ -2817,6 +2836,24 @@ impl Engine {
         let now = self.now;
         let v = self.clusters.read(h, now)?;
         Some(stock_of(&v, d))
+    }
+
+    /// [`Engine::sim_stock`] through `&self`, for a viewer: peeks the replay (VIEWER.md §5.3).
+    pub fn stock_peek(&self, d: DistrictId) -> Option<GoodVec> {
+        let h = *self.cluster_of.get(&d)?;
+        let v = self.clusters.peek(h, self.now)?.view;
+        Some(stock_of(&v, d))
+    }
+
+    /// Every station the engine knows, with where it is (a viewer's map; VIEWER.md §7).
+    pub fn stations(&self) -> impl Iterator<Item = &StationDecl> {
+        self.stations.values().map(|s| &s.decl)
+    }
+
+    /// The districts that share a replay cluster with `d` (`d` included), if it is simulated.
+    pub fn cluster_members(&self, d: DistrictId) -> Option<BTreeSet<DistrictId>> {
+        let h = *self.cluster_of.get(&d)?;
+        Some(self.clusters.get(h)?.cell().model().members())
     }
 
     /// The district's replay run state, if simulated: running if any of its processes runs.

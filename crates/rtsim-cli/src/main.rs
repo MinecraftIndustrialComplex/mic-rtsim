@@ -5,6 +5,7 @@
 mod bench;
 mod sim;
 mod sys;
+mod view;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -83,7 +84,9 @@ usage:
       forest. Runs ignore (notice, envoy and demand, scouts, a war band that raids while the
       player is offline, applied on load), tribute and converter (de-escalation), and a save and
       restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
-      Exits 1 if a check fails.";
+      Exits 1 if a check fails.
+  rtsim-cli view <world> [options]
+      Serves a saved world to the viewer page on loopback (VIEWER.md); --help for options.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -413,6 +416,7 @@ fn main() -> ExitCode {
             println!("{}", serde_json::to_string(&m).expect("serialize"));
             ExitCode::SUCCESS
         }
+        ["view", rest @ ..] => view::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS
