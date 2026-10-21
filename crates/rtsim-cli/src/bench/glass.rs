@@ -423,28 +423,6 @@ mod tests {
     }
 
     /// `cargo test --release -p rtsim-cli glass_table -- --ignored --nocapture`: the sweep alone.
-    /// `cargo test --release -p rtsim-cli glass_table -- --ignored --nocapture`: the sweep alone.
-    #[test]
-    #[ignore]
-    fn glass_debug() {
-        let cells = 1;
-        let records = factory(cells, false);
-        let mut e = engine(cells);
-        for g in records {
-            e.ingest(&Timed {
-                at: Tick(0),
-                obs: Obs::Glass(g),
-            });
-        }
-        let c = e.glass.districts[&D].compiled.as_ref().unwrap();
-        for b in &c.sol.goods {
-            println!(
-                "{:?} in L {:?} lin {:?} lp {:?} | out L {:?} lin {:?} lp {:?}",
-                b.good, b.in_l, b.in_u_lin, b.in_u_lp, b.out_l, b.out_u_lin, b.out_u_lp
-            );
-        }
-    }
-
     #[test]
     #[ignore]
     fn glass_table() {
