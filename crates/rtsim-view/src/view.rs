@@ -263,9 +263,12 @@ impl View {
         (live >= cap).then_some((live, cap))
     }
 
-    /// `/api/status`: what loaded, what each layer drew, the caches.
+    /// `/api/status`: what loaded, what each layer drew, the caches. No filesystem path beyond the
+    /// world's name (VIEWER.md §13): the world folder is said as its name.
     pub fn status(&self) -> serde_json::Value {
         let s = lock(&self.saved);
+        let root = s.world_dir.display().to_string();
+        let scrub = |text: &str| text.replace(&root, &self.world.name);
         let modules: Vec<_> = s
             .modules
             .iter()
@@ -273,13 +276,13 @@ impl View {
                 let (status, error) = match &m.status {
                     Status::Absent => ("absent", None),
                     Status::Loaded => ("loaded", None),
-                    Status::Unreadable(e) => ("unreadable", Some(e.clone())),
+                    Status::Unreadable(e) => ("unreadable", Some(scrub(e))),
                 };
                 json!({
                     "name": m.name,
                     "status": status,
                     "error": error,
-                    "detail": m.detail,
+                    "detail": scrub(&m.detail),
                     "hash": m.hash.map(|(now, _)| format!("{now:016x}")),
                     "saved_hash": m.hash.and_then(|(_, h)| h).map(|h| format!("{h:016x}")),
                 })
@@ -303,8 +306,11 @@ impl View {
             .collect();
         let tiles = self.tiles.as_ref().map(|t| t.cache.stats());
         json!({
-            "world": s.world_dir.display().to_string(),
-            "pages": s.pages_dir.display().to_string(),
+            "world": self.world.name,
+            "pages": s
+                .pages_dir
+                .strip_prefix(&s.world_dir)
+                .map_or_else(|_| "rtsim".into(), |p| p.display().to_string()),
             "save_seq": s.generation.save_seq,
             "obs_seq": s.generation.obs_seq,
             "page_count": s.pages,
