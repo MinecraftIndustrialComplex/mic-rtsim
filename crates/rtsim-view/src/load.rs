@@ -703,3 +703,37 @@ fn read_world_model(source: &dyn PageSource) -> Result<Option<(SampledWorld, u64
         .map(Some)
         .map_err(|e| format!("the world model's pages: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Which page loss makes a paged table panic depends on how a save laid out its segments, so
+    /// the fixtures cannot be relied on to hit it; the guard itself is checked here.
+    #[test]
+    fn a_load_that_panics_is_unreadable_with_the_panic_text() {
+        let e = guarded::<()>(|| panic!("page 7 went away")).unwrap_err();
+        assert!(e.starts_with("reading its pages failed"), "{e}");
+        assert!(e.contains("page 7 went away"), "{e}");
+        let n = 3;
+        let e = guarded::<()>(|| panic!("page {n} went away")).unwrap_err();
+        assert!(e.contains("page 3 went away"), "{e}");
+        assert_eq!(guarded(|| Ok::<_, String>(5)), Ok(5));
+        assert_eq!(guarded::<()>(|| Err("plain".into())), Err("plain".into()));
+    }
+
+    #[test]
+    fn a_path_is_replaced_by_the_world_name() {
+        let dir = Path::new("/srv/mc/worlds/Omega");
+        let name = world_name(dir);
+        assert_eq!(name, "Omega");
+        assert_eq!(
+            scrub_path(
+                "open /srv/mc/worlds/Omega/rtsim/seg-1.rts: denied",
+                dir,
+                &name
+            ),
+            "open Omega/rtsim/seg-1.rts: denied"
+        );
+    }
+}

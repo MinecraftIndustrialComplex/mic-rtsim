@@ -142,7 +142,8 @@ A reader that meets an unknown kind skips `size` bytes. A malformed size ends th
   kinds and member bodies share it; residents' entity types too, e.g. `minecraft:villager`), and for
   phase 1 (§4): 4 structure (`minecraft:village_plains`), 5 culture (`human`, `ribbit`: rtsim-settle's
   `Culture::name`), 6 profession (`minecraft:farmer`, `ribbits:merchant`), 7 structure template
-  (`ribbits:houses/small_house_red_1`), 8 processor list (`ribbits:main`). Ids start at 1.
+  (`ribbits:houses/small_house_red_1`), 8 processor list (`ribbits:main`), 9 work kind
+  (`mic_rtsim:plains_lamp`, SINK.md §4.2). Ids start at 1.
   - Java's dictionary is per **world**: it is saved in the journal, because a journaled observation
     replayed in a later session must mean the same thing. Java sends the whole of it again at every
     session start. A `DICT` always comes before, in the same or an earlier hand-over, any record that
@@ -193,7 +194,7 @@ an operation id at most once.
 | 0x0105 | DIED | member index | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0110 | TRANSFER | transfer kind | 24 u64 opId, 32 u64 from, 40 u64 to, 48 u32 item, 52 reserved, 56 i64 amount | 64 |
 | 0x0111 | COMMAND_RESULT | status | 24 u64 cmdSeq, 32 u64 opId | 40 |
-| 0x0020 to 0x0021, 0x0120 to 0x0126 | phase 1 | | §4.1 | |
+| 0x0020 to 0x0022, 0x0120 to 0x0126 | phase 1 | | §4.1 | |
 
 **MEMBER_STATE** (what a body adapter captured):
 
@@ -377,6 +378,7 @@ dictionary id).
 |---|---|---|---|---|
 | 0x0020 | VILLAGE_CENSUS (latest-wins) | 0 | 8 u64 village, 16 u32 dimension, 20 u32 flags (1 the meeting point is a meeting POI), 24 i32 meetX, 28 meetY, 32 meetZ, 36 u32 residents, 40 u32 beds, 44 u32 workstations, 48 u32 golems, 52 u32 n, 56 n × (u32 profession, u32 count) | 56 + 8n |
 | 0x0021 | VILLAGE_GOSSIP (latest-wins) | 0 | 8 u64 village, 16 u32 n, 20 u32 residents, 24 n × (u64 playerMost, u64 playerLeast, i32 major_negative, i32 minor_negative, i32 minor_positive, i32 major_positive, i32 trading, u32 reserved): vanilla's own gossip about each player, summed over the census's villagers | 24 + 40n |
+| 0x0022 | WORK_CATALOG (latest-wins) | 0 | 8 u32 kinds n, 12 reserved, 16 n × kind: 0 u32 id (dictionary 9), 4 u32 group (0 lamp, 1 decor, 2 golem), 8 u32 culture, 12 u32 style (structure; 0 every village of the culture), 16 u32 cap (1 one per capN residents, 2 capN a village), 20 u32 capN, 24 u32 variants v, 28 reserved, then v × variant: 0 u32 place (1 template, 2 body), 4 u32 what (template or body), 8 u32 processors (0 none), 12 u32 blocks, 16 u32 items m, 20 reserved, then m × (u32 item, u32 count) | 16 + Σ(32 + Σ(24 + 8m)) |
 | 0x0120 | VILLAGE_ADOPTED | flags (1 LATE) | 24 u64 village, 32 u32 dimension, 36 u32 structure, 40 u32 culture, 44 u32 pieces, 48 i32 minX, 52 minY, 56 minZ, 60 maxX, 64 maxY, 68 maxZ, 72 i32 meetX, 76 meetY, 80 meetZ, 84 reserved | 88 |
 | 0x0121 | TRADE | side | 24 u64 opId, 32 u64 node, 40 u64 agent, 48 u32 epoch, 52 u32 member, 56 u64 playerMost, 64 u64 playerLeast, 72 u64 merchantMost, 80 u64 merchantLeast, 88 u32 costA item, 92 i32 costA count, 96 u32 costB item (0 none), 100 i32 costB count, 104 u32 result item, 108 i32 result count, 112 u32 merchant body, 116 u32 profession (0 none) | 120 |
 | 0x0122 | HURT | what | 24 u64 agent, 32 u32 epoch, 36 u32 member, 40 u64 victimMost, 48 u64 victimLeast, 56 u64 attackerMost, 64 u64 attackerLeast, 72 u32 attacker kind, 76 f32 amount, 80 u64 node, 88 u32 victim body, 92 u32 flags, 96 u32 hits, 100 u32 profession | 104 |
@@ -421,7 +423,17 @@ All of 0x0120 to 0x0126 are journaled (the 24-byte prefix of §2.3).
 - **HOUSE_PLACED**: a PLACE_HOUSE finished; the slot is where a resident of the house stands (above the
   template's resident-pool jigsaw, else the floor's middle). Its COMMAND_RESULT(APPLIED) follows.
 - **VILLAGE_CENSUS / VILLAGE_GOSSIP**: one loaded village every 100 ticks (PLACEHOLDER), round robin, from
-  loaded chunks only; puppets are never residents.
+  loaded chunks only; puppets are never residents. The census's golems are what the engine counts as
+  the village's defenders (SINK.md MS-8), latest wins.
+- **WORK_CATALOG** (SINK.md §4.2, the money sink): what a village's works purse buys, from the data at
+  `data/<ns>/mic_rtsim/work/<id>.json` (`village/WorkCatalog.java`). A template's blocks and items are
+  read from its palette (air and structure voids not counted, a jigsaw as its final state, a door or a
+  bed once); a body's items are the data's. Sent as a preamble record once a session and again after a
+  data reload; the engine takes it while phase 1 is switched off too. A work the engine buys comes
+  back as a PLACE_HOUSE (a template, SEARCH and Y_FROM_VILLAGE around the meeting point) or a
+  SPAWN_RESIDENT with AT_VILLAGE (a body); its COMMAND_RESULT tells the engine whether it stands:
+  APPLIED or DUPLICATE placed it, NOT_FREE or FAILED mark the kind full for that village, with no
+  refund (MS-11). HOUSE_PLACED for a work changes nothing in the engine.
 
 ### 4.2 Commands
 
@@ -432,7 +444,7 @@ All of 0x0120 to 0x0126 are journaled (the 24-byte prefix of §2.3).
 | 0x8012 | WRITE_GOSSIP | 0 | 16 u64 opId, 24 u64 village, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gossip type, 52 i32 amount, 56 u32 report kind, 60 u32 flags (1 FIRST_HAND) | 64 | COMMAND_RESULT |
 | 0x8013 | SENTIMENT | entries n | 16 u64 holder (village), 24 i32 dislikeAtOrBelow, 28 i32 friendAtOrAbove, 32 u32 flags (1 REPLACE), 36 reserved, 40 n × (u64 playerMost, u64 playerLeast, i32 sentiment, u32 reserved) | 40 + 24n | |
 | 0x8014 | PLACE_HOUSE | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 template, 40 u32 processors (0 none), 44 i32 x, 48 i32 y, 52 i32 z, 56 u8 rotation, 57 u8 mirror, 58 u16 flags (1 SEARCH, 2 Y_FROM_VILLAGE), 60 u32 radius, 64 u64 seed, 72 i32 yOffset, 76 reserved | 80 | HOUSE_PLACED, then COMMAND_RESULT |
-| 0x8015 | SPAWN_RESIDENT | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 body (entity type), 40 u32 profession (0 the body's default), 44 u32 flags (1 AT_HOUSE), 48 f64 x, 56 f64 y, 64 f64 z, 72 u64 house (the PLACE_HOUSE op id) | 80 | COMMAND_RESULT |
+| 0x8015 | SPAWN_RESIDENT | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 body (entity type), 40 u32 profession (0 the body's default), 44 u32 flags (1 AT_HOUSE, 2 AT_VILLAGE), 48 f64 x, 56 f64 y, 64 f64 z, 72 u64 house (the PLACE_HOUSE op id) | 80 | COMMAND_RESULT |
 
 **MARKET good** (16 + 16LD bytes): 0 u32 item, 4 u32 reserved, 8 i64 stock (where its ladders start),
 16 two ladders, the market's sales (the player buys) then its purchases, each L levels × D steps of
@@ -511,7 +523,10 @@ killing).
   journal or the village's house list has is DUPLICATE; one still being built gets no second answer.
 - **SPAWN_RESIDENT** (C7). Made by the factory a plugin registered for the body
   (`mic_rtsim_ribbits` for `ribbits:ribbit`), at the house's slot (AT_HOUSE, waiting while the house is
-  being built) or at (x, y, z), once its chunk is entity-ticking, under the spawn quota. Residents are
+  being built), beside the village's meeting point (AT_VILLAGE: in the first of a few nearby columns,
+  the height nearest the meeting point's, within 6 blocks, where the block below holds it up and the
+  body fits out of liquid, else the meeting point itself; a bought golem, SINK.md) or at (x, y, z), once its chunk is
+  entity-ticking, under the spawn quota. Residents are
   ordinary entities (C2): the spawn chunk and the resident carry the COMMAND_RESULT (§3.1) so a crash
   cannot spawn it twice.
 
@@ -614,7 +629,11 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **Tests.** Orders 16 to 21 script the phase 1 commands (the stub's `market`, `merchantOffers`
      and so on); order 22 marks a village as a test's own, which the engine then leaves alone; orders
      23 (`P1_SPAWN_NEAR`) and 24 (`P1_ADVANCE`) materialize a caravan off the flows at a chosen place
-     and run the world ahead of game time (TEST mode only).
+     and run the world ahead of game time (TEST mode only); orders 30 (`WORKS_GRANT`: u64 village,
+     i64 thousandths of its own coin, ledgered as minted) and 31 (`WORKS_RAID`: u64 village, u32
+     tribute) fill a village's works purse and stand in for a dragon's raid (SINK.md; TEST mode, phase
+     1 switched on), and `nPhase1Works` reads a village's works back (bought, kinds full, purse,
+     census golems, tribute paid, spent).
 
 11. **Dragons** (`engine/dragons.rs`, §6, choices S8 to S14 in docs/overnight-choices-persist.md):
    rtsim-ecology's engine runs inside the step, in the phase 1 world (its knowledge holds the
@@ -629,6 +648,16 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      core's counter, after the core's, the industry's and phase 1's; all are per session (a lost
      adoption or discard is decided again when Java reports the body again). The species and the
      dimension go through the engine's dictionary.
+   - **Tribute** (SINK.md §4.6, §6.4 above). LAIR_CHEST is latest state: the dragons keep the
+     chest for the session and queue the lair's waiting coin as stacks. Each step writes those
+     stacks first in the dragons' share of the command buffer (a stack that does not fit waits for
+     the next step), through the core's outbox with `push_with_op` and the core's
+     TRANSFER_TO_CONTAINER writer, the dimension and item names through the engine's dictionary. A
+     stack whose dimension or item the engine cannot name is failed at once. The COMMAND_RESULT is
+     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait; a
+     replayed answer for an op the replay already admitted (its DuplicateOp verdict) still places
+     the stack. While the module is off its COMMAND_RESULTs are not looked at: the stack is still in
+     the outbox, goes again, and Java answers DUPLICATE_OP.
    - **Pages** (PF12 to PF21 in docs/choices-paging-followups.md). Table 0x4400: the meta page
      at id 0, and in TEST mode the state hash at id 1 (checked on load); the rows, the wheel and
      the indexes at 0x4410 and up, read as they are needed under `Config.row_budget`. A save writes
@@ -642,6 +671,13 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
      Java's species and dimension ids as the dragons' own: the Ice and Fire plugin's GameTests drive
      MATERIALIZE, STEER, DEPART, ADOPT and DISCARD with it on the native engine (choice Z2).
+     Order 32 (`TRIBUTE_START`: u64 village, u64 lair, TEST mode only) makes a phase 1 village the
+     lair's tributary as if the lair's dragon had raided it: it pays a season's tribute at once,
+     at the later of game time's world tick and the dragons' and the world's clocks (ignored while
+     the dragons are off). `nDragonsVillageRisk` reads a village's fear to the dragons, its golems'
+     included (-1 for a village the world does not know), and `nDragonsTribute` the world-wide
+     tribute: seasons paid, coins placed in chests, coins waiting for a chest, stacks sent and not
+     yet answered. The three are on `NativeEngine` only, as `worksGrant` is.
    - **Not wired yet:** the dragons' raids reach the industry engine only while the industry module
      runs.
 
@@ -811,6 +847,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | Kind | Name | aux | Fields (offset type name) | Size |
 |---|---|---|---|---|
 | 0x0060 | DRAGON_STATE (latest-wins) | flags: 1 sleeping, 2 flying, 4 has an attack target, 8 ticking | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 f32 health, 28 f32 maxHealth, 32 i32 hunger, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z. Every 100 ticks per embodied dragon (PLACEHOLDER) | 64 |
+| 0x0061 | LAIR_CHEST (latest-wins) | 0 | 8 u64 lair, 16 u32 dimension, 20 i32 x, 24 i32 y, 28 i32 z: a chest in the lair's box the tribute can go into | 32 |
 | 0x0500 | DRAGON_MATERIALIZED | 0 | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast | 56 |
 | 0x0501 | DRAGON_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown species) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
 | 0x0502 | DRAGON_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 f32 health, 44 f32 maxHealth, 48 i32 hunger, 52 i32 ageTicks, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
@@ -840,6 +877,16 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   drops for that player (verified: 2 nuggets a layer, layers 1 to 8; the plugin's hoard blocks are the
   tag `#mic_rtsim_iceandfire:hoard`, Z16).
 - **DRAGON_UNTAGGED**: an Ice and Fire dragon joined the level without the plugin's tag (§6.5).
+- **LAIR_CHEST** (SINK.md §4.6, the money sink's tribute): every 100 ticks (PLACEHOLDER,
+  `Lairs.CHEST_SCAN_TICKS`) the plugin looks over the loaded chunks of each lair it reported this
+  session for a `ChestBlockEntity` inside the box with an empty slot (a chest whose loot table is not
+  rolled yet counts as having room: reading its slots would roll it), the nearest the lair's home
+  (ties by block order), and reports it. One report per lair per session, and again when that chest is
+  gone, full, or its chunk was unloaded since (a reloaded chunk is a new chunk object; an unloaded
+  chunk is what fails a transfer, and the engine forgets a chest whose transfer failed), and after
+  `Module.ECOLOGY` is switched back on. A lair with no chest sends nothing. Written after the lair's
+  LAIR_FOUND, which is earlier in the buffer, so the engine always knows the lair. The engine keeps
+  the chest for the session only (never saved): a new session hears of it again.
 
 ### 6.4 Commands
 
@@ -850,6 +897,16 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8502 | DRAGON_DEPART | reason: 1 bored, 2 hungry, 3 wounded, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | DRAGON_DEMATERIALIZED |
 | 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved | 64 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
+
+**Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
+lair's reported chest as the core's TRANSFER_TO_CONTAINER (§2.4, 0x8005), one stack of at most 64
+per command, the village's currency item (emerald for humans), the chest's dimension and block.
+These are engine ops in the core's outbox, so they are resent after a restart until answered, and
+each stack's op id is drawn from the lair's key and a per-lair stack counter (a resent stack is the
+same op). The answer is COMMAND_RESULT: APPLIED or DUPLICATE_OP count the stack in the chest;
+FAILED (the chunk unloaded, the chest gone or full) puts the coin back to wait and makes the engine
+forget the chest until LAIR_CHEST names one again, and the stack then goes under a new op id.
+Nothing goes out while the lair has no chest: the coin waits in the lair's books.
 
 ### 6.5 How Java applies them
 
@@ -946,6 +1003,14 @@ What the bridge must do:
   boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
   P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
   best comparable observed fight, with capped damage applied on load (C18).
+- **Tribute** (SINK.md §4.6, MS-5; choices MSC40 and up in docs/choices-money-sink.md). A village
+  with a works purse that a lair's dragon raided becomes that lair's tributary and pays at once, then
+  once a season at the calendar's season change: a share of its purse (PLACEHOLDER a quarter,
+  `tribute_share_milli`) in whole coins of its currency, booked as `tribute` in the village's works
+  books and in the dragons' ledger (a column of its own, apart from what dragons took). The coin joins the lair's hoard and waits there, unplaced, until
+  the plugin reports a chest (LAIR_CHEST); then it goes in stacks (§6.4). While a tribute is paid
+  within the season, the lair's dragons leave that village's livestock alone. It lapses when the
+  purse is dry at a payment or the lair is vacant.
 
 ## 7. Ships (PLAN.md §10.1; a future ships plugin)
 

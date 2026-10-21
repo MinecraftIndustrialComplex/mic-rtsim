@@ -1,0 +1,7 @@
+{
+  "group": "lamp",
+  "culture": "human",
+  "style": "minecraft:village_plains",
+  "cap": { "per_residents": 3 },
+  "variants": [ { "template": "minecraft:village/plains/plains_lamp_1" } ]
+}
