@@ -204,6 +204,8 @@ pub struct Compiled {
     pub sol: Solution,
     /// Recent solves by regime key, newest last.
     cache: VecDeque<(u64, Solution)>,
+    /// The glass replay's parts (choice G2-22): the cache keeps `glass.regimeCache` per part.
+    pub cache_parts: usize,
     pub solves: u32,
     pub cache_hits: u32,
     pub solve_micros: f64,
@@ -366,6 +368,7 @@ impl Compiled {
             key: 0,
             sol: Solution::default(),
             cache: VecDeque::new(),
+            cache_parts: 1,
             solves: 0,
             cache_hits: 0,
             solve_micros: 0.0,
@@ -508,7 +511,7 @@ impl Compiled {
         self.solves += 1;
         self.sol = sol.clone();
         if tun.regime_cache > 0 {
-            if self.cache.len() >= tun.regime_cache {
+            while self.cache.len() >= tun.regime_cache * self.cache_parts.max(1) {
                 self.cache.pop_front();
             }
             self.cache.push_back((key, sol));
@@ -530,7 +533,7 @@ impl Compiled {
         self.solve_micros = t0.elapsed().as_secs_f64() * 1e6;
         self.solves += 1;
         if tun.regime_cache > 0 {
-            if self.cache.len() >= tun.regime_cache {
+            while self.cache.len() >= tun.regime_cache * self.cache_parts.max(1) {
                 self.cache.pop_front();
             }
             self.cache.push_back((key, sol.clone()));
