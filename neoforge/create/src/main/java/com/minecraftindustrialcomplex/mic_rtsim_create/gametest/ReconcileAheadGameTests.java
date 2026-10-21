@@ -7,10 +7,19 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.TickGate;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.NbtOps;
+import net.minecraft.nbt.Tag;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -20,16 +29,27 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.storage.RegionFileVersion;
+import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.attachment.AttachmentHolder;
+import net.neoforged.neoforge.common.IOUtilities;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
 
@@ -385,6 +405,193 @@ public final class ReconcileAheadGameTests {
                     check("epoch 3", epochIn(level, fx, fz, id[0]) == 3);
                     record("aReconcileSentAheadAppliesOnceAcrossACrashAtEachStep", "results",
                             "a " + commandResults(a) + ", b " + commandResults(b) + ", c " + commandResults(c) + ", d " + commandResults(d4));
+                }))
+                .thenExecute(() -> {
+                    level.setBlock(chestPos, Blocks.AIR.defaultBlockState(), 3);
+                    ind().districts().forgetArea(level, fx - 1, fz - 1, fx + 1, fz + 1);
+                    level.setChunkForced(fx, fz, false);
+                })
+                .thenSucceed();
+    }
+
+    /** What a crash leaves on disk at one instant: a chunk's reconcile state and gold from its region file, and the journal's file. */
+    private record OnDisk(IndustryAttachments.Epochs epochs, int gold, boolean journalHasOp, String error) {}
+
+    /**
+     * Saves the world as an autosave does ({@code saveEverything}), and right after the journal's file is
+     * written reads what a crash at that instant leaves: the chunk from its region file (not through the IO
+     * worker, whose queue serves a chunk not yet written), and whether the journal's file holds {@code op}
+     * applied. The read runs on NeoForge's SavedData IO chain, queued after the journal's write, as the bridge's
+     * WORLD_SAVED marker is (BridgeEvents.onLevelSave).
+     */
+    private static void saveAndPeek(ServerLevel level, int cx, int cz, BlockPos chest, long op, AtomicReference<OnDisk> out) {
+        out.set(null);
+        MinecraftServer server = level.getServer();
+        server.saveEverything(true, false, false);
+        Path root = server.getWorldPath(LevelResource.ROOT);
+        Path region = DimensionType.getStorageFolder(level.dimension(), root).resolve("region");
+        Path journal = DimensionType.getStorageFolder(Level.OVERWORLD, root).resolve("data").resolve(JournalSavedData.FILE + ".dat");
+        HolderLookup.Provider registries = level.registryAccess();
+        IOUtilities.withIOWorker(() -> {
+            try {
+                CompoundTag chunk = readRegionChunk(region, new ChunkPos(cx, cz));
+                IndustryAttachments.Epochs epochs = IndustryAttachments.Epochs.EMPTY;
+                int gold = 0;
+                if (chunk != null) {
+                    Tag a = chunk.getCompound(AttachmentHolder.ATTACHMENTS_NBT_KEY).get("mic_rtsim:reconcile");
+                    if (a != null)
+                        epochs = IndustryAttachments.Epochs.CODEC.parse(NbtOps.INSTANCE, a).getOrThrow();
+                    ListTag bes = chunk.getList("block_entities", Tag.TAG_COMPOUND);
+                    for (int i = 0; i < bes.size(); i++) {
+                        CompoundTag be = bes.getCompound(i);
+                        if (be.getInt("x") != chest.getX() || be.getInt("y") != chest.getY() || be.getInt("z") != chest.getZ())
+                            continue;
+                        ListTag items = be.getList("Items", Tag.TAG_COMPOUND);
+                        for (int j = 0; j < items.size(); j++)
+                            if ("minecraft:gold_ingot".equals(items.getCompound(j).getString("id")))
+                                gold += items.getCompound(j).getInt("count");
+                    }
+                }
+                CompoundTag j = NbtIo.readCompressed(journal, NbtAccounter.unlimitedHeap());
+                boolean has = JournalSavedData.load(j.getCompound("data"), registries).journal().commandOpApplied(op);
+                out.set(new OnDisk(epochs, gold, has, chunk == null ? "the chunk is not in its region file" : null));
+            } catch (Exception e) {
+                out.set(new OnDisk(IndustryAttachments.Epochs.EMPTY, -1, false, e.toString()));
+            }
+        });
+    }
+
+    /** One chunk's NBT straight from its region file (the anvil format: a sector table, then length, compression, data). */
+    private static CompoundTag readRegionChunk(Path regionDir, ChunkPos pos) throws java.io.IOException {
+        Path file = regionDir.resolve("r." + pos.getRegionX() + "." + pos.getRegionZ() + ".mca");
+        if (!Files.isRegularFile(file))
+            return null;
+        try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
+            ByteBuffer header = ByteBuffer.allocate(4096);
+            ch.read(header, 0);
+            int entry = header.getInt((pos.getRegionLocalX() + pos.getRegionLocalZ() * 32) * 4);
+            if (entry == 0)
+                return null;
+            ByteBuffer data = ByteBuffer.allocate((entry & 0xFF) * 4096);
+            ch.read(data, (long) (entry >>> 8) * 4096);
+            data.flip();
+            int length = data.getInt();
+            byte version = data.get();
+            if ((version & 0x80) != 0)
+                throw new java.io.IOException("the chunk is in an external .mcc file");
+            byte[] bytes = new byte[length - 1];
+            data.get(bytes);
+            try (java.io.DataInputStream in = new java.io.DataInputStream(
+                    RegionFileVersion.fromId(version).wrap(new java.io.ByteArrayInputStream(bytes)))) {
+                return NbtIo.read(in, NbtAccounter.unlimitedHeap());
+            }
+        }
+    }
+
+    /**
+     * Exactly once across a crash after the journal's file is written and before the chunk's is (I8;
+     * docs/choices-repair.md R21, "For Ben" 1 before it). Two reconciles into a chest in a far chunk, each
+     * followed by a world save and a look at the files right after the journal's write:
+     * <ol>
+     *   <li>held and applied at the chunk's load (+7 gold, epoch 1), the world saved: the chunk on disk already
+     *       holds epoch 1;</li>
+     *   <li>applied to the loaded chunk (+5 gold, epoch 2) within 10 s of that save, so vanilla's autosave skips
+     *       the chunk ({@code ChunkMap.saveChunkIfNeeded}'s eager-save cooldown), and the world saved again. The
+     *       journal's file says op b applied; the chunk on disk must hold it too. Then the crash at that instant
+     *       and a restart: the chunk takes what was on disk, the journal keeps b (the engine, as old as the
+     *       journal, never sends it again), and at its next load the chest has 12 gold, epoch 2, b applied once.</li>
+     * </ol>
+     */
+    @GameTest(template = YARD, batch = "ahead_4", timeoutTicks = 16000)
+    public static void aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        int fx = farChunk(helper, true, 3600), fz = farChunk(helper, false, 3600);
+        BlockPos chestPos = new BlockPos(fx * 16 + 5, 100, fz * 16 + 11);
+        long a = engineOp(), b = engineOp();
+        long[] id = {0};
+        int[] mark = {0};
+        AtomicReference<OnDisk> disk = new AtomicReference<>();
+        helper.startSequence()
+                .thenExecute(() -> level.setChunkForced(fx, fz, true))
+                .thenWaitUntil(io(() -> check("the far chunk loads", level.getChunkSource().getChunkNow(fx, fz) != null)))
+                .thenExecute(() -> {
+                    ind().districts().forgetArea(level, fx - 1, fz - 1, fx + 1, fz + 1);
+                    level.setBlock(chestPos, Blocks.CHEST.defaultBlockState(), 3);
+                    playerPlaced(helper, chestPos);
+                })
+                .thenWaitUntil(io(() -> {
+                    District d = ind().districtAt(level, chestPos);
+                    check("district", d != null);
+                    id[0] = d.id;
+                }))
+                .thenExecute(() -> level.setChunkForced(fx, fz, false))
+                .thenWaitUntil(io(() -> check("unloads", unloaded(level, fx, fz, id[0]))))
+                // 1. Held and applied at the load, then the world saves.
+                .thenExecute(() -> {
+                    mark[0] = ind().reconciler().held();
+                    reconcile(a, id[0], 1, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 7)), List.of());
+                })
+                .thenWaitUntil(io(() -> check("held" + pipeline(a), ind().reconciler().held() == mark[0] + 1)))
+                .thenExecute(() -> level.setChunkForced(fx, fz, true))
+                .thenWaitUntil(io(() -> {
+                    check("a applied at the load" + pipeline(a), result(a) != null && result(a).getLong(IndRecords.ReconcileResult.ENTRIES + 16) == 7);
+                    check("7 gold, epoch 1", count(container(level, chestPos), Items.GOLD_INGOT) == 7 && epochIn(level, fx, fz, id[0]) == 1);
+                }))
+                .thenExecute(() -> saveAndPeek(level, fx, fz, chestPos, a, disk))
+                .thenWaitUntil(io(() -> {
+                    OnDisk d = disk.get();
+                    check("the files are read after the journal's write", d != null);
+                    check("read: " + d.error(), d.error() == null);
+                    record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "after the first save",
+                            "chunk on disk epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold; journal on disk has a: " + d.journalHasOp());
+                    check("the journal on disk has a applied", d.journalHasOp());
+                    check("so the chunk on disk has a too: epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold",
+                            d.epochs().epoch(id[0]) == 1 && d.gold() == 7);
+                }))
+                // 2. Applied to the loaded chunk right after that save (the chunk's eager-save cooldown), then saved.
+                .thenExecute(() -> reconcile(b, id[0], 2, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 5)), List.of()))
+                .thenWaitUntil(io(() -> {
+                    check("b applied" + pipeline(b), result(b) != null && result(b).getLong(IndRecords.ReconcileResult.ENTRIES + 16) == 5);
+                    check("12 gold, epoch 2", count(container(level, chestPos), Items.GOLD_INGOT) == 12 && epochIn(level, fx, fz, id[0]) == 2);
+                }))
+                .thenExecute(() -> saveAndPeek(level, fx, fz, chestPos, b, disk))
+                .thenWaitUntil(io(() -> {
+                    OnDisk d = disk.get();
+                    check("the files are read after the journal's write", d != null);
+                    check("read: " + d.error(), d.error() == null);
+                    record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "after the second save",
+                            "chunk on disk epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold; journal on disk has b: " + d.journalHasOp());
+                    check("the journal on disk has b applied", d.journalHasOp());
+                }))
+                .thenExecute(() -> {
+                    // The crash right after the journal's write, and the restart: the chunk is what its region file
+                    // held, the journal keeps b (nothing rolled back), and the engine, as old as the journal, has b's
+                    // result and sends nothing again.
+                    OnDisk d = disk.get();
+                    Container chest = container(level, chestPos);
+                    chest.clearContent();
+                    if (d.gold() > 0)
+                        chest.setItem(0, new ItemStack(Items.GOLD_INGOT, d.gold()));
+                    LevelChunk chunk = level.getChunkSource().getChunkNow(fx, fz);
+                    chunk.setData(IndustryAttachments.RECONCILE.get(), d.epochs());
+                    chunk.setUnsaved(true);
+                    ind().reconciler().restartForTest();
+                    mark[0] = loadedCount(id[0], fx, fz);
+                    level.setChunkForced(fx, fz, false);
+                })
+                .thenWaitUntil(io(() -> check("unloads with what was on disk", unloaded(level, fx, fz, id[0]))))
+                .thenExecute(() -> level.setChunkForced(fx, fz, true))
+                .thenWaitUntil(io(() -> {
+                    check("the load is reported", loadedCount(id[0], fx, fz) > mark[0]);
+                    int gold = count(container(level, chestPos), Items.GOLD_INGOT);
+                    record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "after the restart",
+                            gold + " gold, epoch " + epochIn(level, fx, fz, id[0]) + ", a " + commandResults(a) + ", b " + commandResults(b));
+                    check("b's gold survived the crash, once: 12 gold, got " + gold, gold == 12);
+                    check("epoch 2", epochIn(level, fx, fz, id[0]) == 2);
+                    check("IND_CHUNK_LOADED says epoch 2", lastLoaded(id[0], fx, fz).view().getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 2);
+                    check("a and b each applied once", commandResults(a).stream().filter(s -> s == Obs.CommandResult.APPLIED).count() == 1
+                            && commandResults(b).stream().filter(s -> s == Obs.CommandResult.APPLIED).count() == 1);
                 }))
                 .thenExecute(() -> {
                     level.setBlock(chestPos, Blocks.AIR.defaultBlockState(), 3);
