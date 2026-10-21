@@ -203,6 +203,7 @@ fn compaction_keeps_every_tier_in_its_share_and_accounts_for_every_row() {
         seq += 1;
         let stamp = Stamp {
             obs_seq: seq,
+            serial: seq,
             tick: (dd + 1) * TICKS_PER_DAY,
             wall_ms: dd,
         };
@@ -266,7 +267,9 @@ fn compaction_never_touches_a_chunk_above_the_confirmed_generation() {
         a.flush(
             p.take(),
             Stamp {
-                obs_seq: dd + 1,
+                // No journaled record after save 3: the pressure saves share its observations.
+                obs_seq: (dd + 1).min(3),
+                serial: dd + 1,
                 tick: (dd + 1) * TICKS_PER_DAY,
                 wall_ms: 0,
             },
@@ -278,9 +281,10 @@ fn compaction_never_touches_a_chunk_above_the_confirmed_generation() {
     let above: Vec<_> = a
         .entries()
         .iter()
-        .filter(|e| e.header.obs_seq > 3)
+        .filter(|e| e.header.serial > 3)
         .cloned()
         .collect();
+    assert!(!above.is_empty());
     a.compact(3).unwrap();
     for e in &above {
         assert!(a.entries().contains(e), "{} was touched", e.seq);
@@ -288,17 +292,20 @@ fn compaction_never_touches_a_chunk_above_the_confirmed_generation() {
     assert!(
         a.entries()
             .iter()
-            .all(|e| e.header.obs_seq <= 3 || above.contains(e))
+            .all(|e| e.header.serial <= 3 || above.contains(e))
     );
     // Whatever compaction made from older chunks keeps a tag at or below confirmed.
     assert!(
         a.entries()
             .iter()
             .filter(|e| e.header.tier != Tier::Full)
-            .all(|e| e.header.obs_seq <= 3)
+            .all(|e| e.header.serial <= 3)
     );
-    // A restart that selects generation 3 cuts exactly the pressure saves' chunks.
-    assert_eq!(a.cut_above(3).unwrap(), above.len());
+    // A copy that knows only the generation's observations cannot tell the pressure saves' chunks
+    // from the confirmed save's; a restart that selects save 3 cuts exactly them.
+    assert_eq!(a.cut_above(3).unwrap(), 0);
+    assert_eq!(a.cut_above_serial(3).unwrap(), above.len());
+    assert!(a.entries().iter().all(|e| e.header.serial <= 3));
     check(&a);
 }
 
@@ -316,6 +323,7 @@ fn a_quiet_world_merges_its_tiny_chunks() {
             p.take(),
             Stamp {
                 obs_seq: s,
+                serial: s,
                 tick: s * TICKS_PER_DAY,
                 wall_ms: s,
             },
@@ -354,6 +362,7 @@ fn the_reader_counts_count_chunks_and_reads_them_as_heat() {
             p.take(),
             Stamp {
                 obs_seq: dd + 1,
+                serial: dd + 1,
                 tick: (dd + 1) * TICKS_PER_DAY,
                 wall_ms: dd,
             },

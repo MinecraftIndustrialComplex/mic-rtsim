@@ -215,6 +215,7 @@ fn soak(tag: &str, s: Soak) {
             obs += 1;
             let stamp = Stamp {
                 obs_seq: obs,
+                serial: obs,
                 tick: t0 + span,
                 wall_ms: obs * 300_000,
             };
