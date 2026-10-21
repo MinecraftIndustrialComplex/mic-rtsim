@@ -749,7 +749,7 @@ fn a_fork_keeps_the_worlds_terrain_and_its_confirmed_timeline() {
         "Surveyor's terrain is drawn from the fork"
     );
     std::thread::sleep(Duration::from_millis(500));
-    let v = page.close();
+    let v = page.close(i64::MIN);
     assert_eq!(v.failures, Vec::<String>::new());
     assert_eq!(v.error, None);
     let _ = fs::remove_dir_all(&world);
@@ -1054,13 +1054,22 @@ impl Page {
         }
     }
 
-    fn close(mut self) -> Viewed {
-        // One more look, so the last save is shown, and time for the page to ask again (a while,
-        // when the machine is loaded).
-        self.hv.poll();
-        let shown = self.hv.view().saved().now();
+    /// Stops the page once it shows a save from `until` or later. The engine's IO lane commits
+    /// saves behind the step, and on a loaded machine (the other soak's fsyncs) it can be several
+    /// saves behind when the run ends, so look again until the fork has caught up, then give the
+    /// page time to ask (a while, when the machine is loaded).
+    fn close(mut self, until: i64) -> Viewed {
         let t0 = Instant::now();
-        while self.seen.load(Ordering::Relaxed) < shown && t0.elapsed() < Duration::from_secs(20) {
+        let mut shown = i64::MIN;
+        while t0.elapsed() < Duration::from_secs(30) {
+            self.hv.poll();
+            shown = self.hv.view().saved().now();
+            if shown >= until {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        while self.seen.load(Ordering::Relaxed) < shown && t0.elapsed() < Duration::from_secs(50) {
             std::thread::sleep(Duration::from_millis(50));
         }
         self.stop.store(true, Ordering::Relaxed);
@@ -1125,7 +1134,9 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
             tables.push((ran, by_table));
         }
     }
-    let viewer = page.map(Page::close);
+    // The newest save a page can show is at most two 10-day saves before the end: the engine
+    // takes a requested save at its next step, and WORLD_SAVED confirms it a hand-over later.
+    let viewer = page.map(|p| p.close(host.last_handed - 20 * DAY));
     let out = Soak {
         viewer,
         end: host.last_handed,
