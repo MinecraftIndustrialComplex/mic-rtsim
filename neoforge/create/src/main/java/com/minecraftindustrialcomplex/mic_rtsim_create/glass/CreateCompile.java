@@ -1650,6 +1650,10 @@ final class CreateCompile implements GlassExtractor.Compile {
             int perBlock = Cycles.chuteTicksPerBlock(motion);
             ticks = top ? Cycles.chuteGrabPeriod(motion) : perBlock;
         } else if (motion > 0) {
+            // up (a fan pushes or pulls the air up): pulls from the inventory below, passes to the inventory
+            // or chute above; the period is Cycles' upward re-enactment, a starting estimate (CALIBRATED).
+            // It once called the downward one, which threw and left a whole district not compilable
+            // (docs/deploy-rehearsal-live.md: the main base of a live world had an upward chute)
             BlockEntity below = level.getBlockEntity(p.below());
             if (!(below instanceof ChuteBlockEntity) && below != null)
                 edge(GlassRecords.Edge.CHUTE, supplyAt(p.below()), i.node.index, test);
