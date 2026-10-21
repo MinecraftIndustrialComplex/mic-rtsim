@@ -729,7 +729,8 @@ fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
         .map(|_| Ok((get_u32(r)?, r.f64()?)))
         .collect::<codec::Result<Vec<_>>>()?;
     let actor = handle(r)?;
-    let m = r.len_prefix(9)?;
+    // A chunk is at least a u16 and two one-byte varints.
+    let m = r.len_prefix(4)?;
     let chunks = (0..m)
         .map(|_| get_chunk(r))
         .collect::<codec::Result<Vec<_>>>()?;
