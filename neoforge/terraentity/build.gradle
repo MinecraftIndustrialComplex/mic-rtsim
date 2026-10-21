@@ -1,0 +1,123 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_terraentity: a SPIKE (research/worm-mods-2026-10-20.md §5; DECISIONS.md OG-9). Its GameTests
+// measure whether Terra Entity 1.2.3's multipart worms can be the underground oil-field threat. It adds no
+// plugin logic. Terra Entity is not in the pack, so its jar comes from Modrinth's maven (project id
+// BZKgbCzw; the slug "terra-entity" also works, but ids are what survive a rename) and is never bundled.
+// GeckoLib is the pack's own 4.9.3 (the mod carries 4.8.4 jar-in-jar).
+//
+//   ./gradlew :terraentity:runGameTestServer -PrtsimEngine=stub -PskipJni
+//     -PnoTerraEntity          leave Terra Entity off the server (the start-time baseline)
+//     -PteSilence=datapack     run with a datapack that sets every Terra Entity biome modifier to neoforge:none
+//     -PteSilence=config       run with enemy_spawn_chance = 0 in Terra Entity's server config
+//     -PteTests=<regex>        only the tests whose name matches (a system property the holder reads)
+evaluationDependsOn(':core')
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    exclusiveContent {
+        forRepository { maven { url = 'https://api.modrinth.com/maven' } }
+        filter { includeGroup 'maven.modrinth' }
+    }
+    mavenCentral()
+}
+
+def packMods = rootProject.file(project.findProperty('packMods') ?: rootProject.packMods).absolutePath
+def geckoJar = files("${packMods}/${te_geckolib_jar}")
+def noTerra = project.hasProperty('noTerraEntity')
+def silence = (project.findProperty('teSilence') ?: 'none').toString()
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            systemProperty 'mic_rtsim_terraentity.silence', silence
+            systemProperty 'mic_rtsim_terraentity.arm', noTerra ? 'no-terra-entity' : "terra-entity-${silence}".toString()
+            if (project.hasProperty('teTests')) systemProperty 'mic_rtsim_terraentity.tests', project.property('teTests').toString()
+            jvmArgument '-Xmx4G'
+            if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
+            gameDirectory = file('run-gametest')
+        }
+    }
+
+    mods {
+        "mic_rtsim" {
+            sourceSet(project(':core').sourceSets.main)
+        }
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+// Terra Entity's server config for the config arm: the GameTest server reads world/serverconfig/.
+def seedConfig = tasks.register('seedTerraEntityConfig') {
+    doLast {
+        def dir = file('run-gametest/world/serverconfig')
+        def f = new File(dir, 'terra_entity-server.toml')
+        f.delete()
+        if (silence == 'config') {
+            dir.mkdirs()
+            f.text = 'enemy_spawn_chance = 0.0\nenemy_spawn_chance_apply_all = false\n'
+        }
+    }
+}
+tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn seedConfig }
+
+dependencies {
+    implementation project(':core')
+    runtimeOnly project(':core').micNativeFiles
+    compileOnly geckoJar
+    runtimeOnly geckoJar
+    compileOnly "maven.modrinth:BZKgbCzw:${terra_entity_version}"
+    if (!noTerra) runtimeOnly "maven.modrinth:BZKgbCzw:${terra_entity_version}"
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}
