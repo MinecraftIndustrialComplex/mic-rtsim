@@ -1135,6 +1135,7 @@ impl Engine {
             base,
             season,
             invs: part,
+            glass: false,
         });
         self.stats.sims_started += 1;
         if pollutes {
@@ -1347,10 +1348,20 @@ impl Engine {
         for p in &pools {
             dist.minted_carried.add(p.key.good(), p.books.minted);
             match p.key {
+                // A glass replay's district pool holds only events (imports waiting, G2-14).
+                PoolKey::Stock(_, g) if span.glass => dist.owed.add(g, p.level - p.books.initial),
                 // Level pollution pushed live (I14) is in the world (and in `remaining`) already.
                 PoolKey::Stock(_, g) if live.contains(&g) => dist.owed.add(g, p.level - p.pushed),
                 PoolKey::Stock(_, g) => dist.owed.add(g, p.level - span.base.get(g)),
                 PoolKey::Mail(_, _, _, g) => dist.owed.add(g, p.level - p.pushed),
+                // A store's change stays with that store (G2-3), counted in its contents.
+                PoolKey::Store(_, inv, g) => {
+                    let change = p.level - p.books.initial;
+                    match dist.inventories.get_mut(&inv) {
+                        Some(i) if !i.destroyed => i.held.add(g, change),
+                        _ => dist.owed.add(g, change),
+                    }
+                }
             }
         }
         // Deposits are read back from their pools, not carried as owed.
@@ -1410,10 +1421,21 @@ impl Engine {
         let covered: BTreeSet<u32> = stopped
             .as_ref()
             .map_or_else(|| all.clone(), |(span, _)| span.invs.clone());
+        // A glass replay's per-store changes land in their own stores (G2-3).
+        let mut direct: BTreeMap<(u32, Good), i64> = BTreeMap::new();
         if let Some((span, pools)) = stopped {
             for p in &pools {
                 span_minted.add(p.key.good(), p.books.minted);
                 match p.key {
+                    PoolKey::Store(_, inv, g) => {
+                        let change = p.level - p.books.initial;
+                        if dist.inventories.get(&inv).is_some_and(|i| !i.destroyed) {
+                            *direct.entry((inv, g)).or_default() += change;
+                        } else {
+                            net.add(g, change);
+                        }
+                    }
+                    PoolKey::Stock(_, g) if span.glass => net.add(g, p.level - p.books.initial),
                     PoolKey::Stock(_, g) => {
                         // Level pollution pushed live (I14) is in the world already.
                         let change = if live.contains(&g) {
@@ -1449,8 +1471,19 @@ impl Engine {
         // changes, theft while frozen), with what step 1 could not place: over everything in a
         // full round, over the covered part in a partial one (it stays virtual there).
         let owed = std::mem::take(&mut dist.owed);
-        let mut deltas: BTreeMap<(u32, Good), i64> = BTreeMap::new();
+        // Direct store changes first: the plan below sees the stores as they left them.
+        for (&(i, g), &n) in &direct {
+            if let Some(inv) = dist.inventories.get_mut(&i) {
+                inv.held.add(g, n);
+            }
+        }
         let plan1 = reconcile::plan(&states(dist, &covered), &net, &self.goods);
+        for (&(i, g), &n) in &direct {
+            if let Some(inv) = dist.inventories.get_mut(&i) {
+                inv.held.add(g, -n);
+            }
+        }
+        let mut deltas = direct;
         for p in &plan1.deltas {
             *deltas.entry((p.inventory, p.good)).or_default() += p.delta;
         }
@@ -2844,6 +2877,11 @@ impl Engine {
                         .map(|t| c.pools()[t.pool as usize].key.good())
                         .collect(),
                     crate::cluster::Body::Link { .. } => Vec::new(),
+                    crate::cluster::Body::Cycle(cy) => cy
+                        .pools
+                        .iter()
+                        .map(|&i| c.pools()[i as usize].key.good())
+                        .collect(),
                 };
                 (p.id, goods, p.run)
             })
@@ -2855,7 +2893,7 @@ fn stock_of(v: &ClusterView, d: DistrictId) -> GoodVec {
     v.levels
         .iter()
         .filter_map(|&(k, l)| match k {
-            PoolKey::Stock(o, g) if o == d => Some((g, l)),
+            PoolKey::Stock(o, g) | PoolKey::Store(o, _, g) if o == d => Some((g, l)),
             _ => None,
         })
         .collect()
@@ -2919,6 +2957,8 @@ fn stop_words(why: Stop, goods: &BTreeMap<Good, GoodInfo>) -> String {
         Stop::Target(k) => format!("stopped: target reached ({})", name(k)),
         Stop::SourceStopped(src) => format!("stopped: power source {} stopped", src.0),
         Stop::Waiting => "waiting to restart".to_string(),
+        Stop::Bound(_, tag) => format!("stopped: store bound {tag}"),
+        Stop::Timer => "stopped: regime timer".to_string(),
     }
 }
 
