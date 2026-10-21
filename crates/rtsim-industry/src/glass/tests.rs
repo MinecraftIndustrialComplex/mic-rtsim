@@ -1418,6 +1418,128 @@ fn the_inverted_flag_is_display_only() {
     assert_eq!(gate, vec![true, false, true]);
 }
 
+/// The corpus's precision_mechanisms after Java's sequenced-assembly merge: a SEQUENCED host (n5,
+/// one product per 30 ticks) on a belt loop (n5, n6, n7 deployers; n14 the prefer-first exit to the
+/// output junction n0; n16, n18, n17, n15 back to n5), cogs, large cogs and nuggets by chute, and
+/// golden sheets from n11 through n1 and n12 (one per 64 ticks) onto the loop at n18: the only way a
+/// sheet reaches the host is round the loop. `perm[id]` is node `id`'s index in the records.
+fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
+    let mut b = B::default();
+    let r = b.recipe(
+        &[(SHEET, 1), (COAL, 5), (ZINC, 5), (COPPER, 5)],
+        &[(BRASS, 1), (SHEET, 1), (ZINC, 1)],
+    );
+    b.recipes[r as usize].recipe_type = recipe_type::SEQUENCED;
+    let chance = |good, num, den| Term {
+        good,
+        flags: term_flags::CHANCE,
+        num,
+        den,
+    };
+    b.recipes[r as usize].outputs = vec![
+        chance(BRASS, 4, 5),
+        chance(SHEET, 4, 75),
+        chance(ZINC, 1, 30),
+    ];
+    let shared = |batch: u32, ticks: u32| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    let mut by_index = [0u32; 19];
+    for (id, &i) in perm.iter().enumerate() {
+        by_index[i as usize] = id as u32;
+    }
+    for &id in &by_index {
+        let v = match id {
+            0 => b.junction(rule::NONE),
+            1 => b.node(
+                NodeKind::Mover,
+                model::FUNNEL_ANDESITE,
+                0,
+                vec![shared(1, 9)],
+            ),
+            2..=4 => b.node(NodeKind::Mover, model::CHUTE, 0, vec![shared(16, 7)]),
+            5 => b.node(
+                NodeKind::Machine,
+                model::SEQUENCED,
+                node_flags::PASS_THROUGH,
+                vec![entry(Some(r), 1, 30)],
+            ),
+            6 | 7 => b.node(
+                NodeKind::Machine,
+                model::DEPLOYER,
+                node_flags::PASS_THROUGH,
+                Vec::new(),
+            ),
+            8 => b.store(4),
+            9 => b.store(0),
+            10 => b.store(3),
+            11 => b.store(1),
+            12 => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, 64)]),
+            13 => b.store(2),
+            _ => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(64, 2)]),
+        };
+        assert_eq!(v, perm[id as usize]);
+        if id == 14 {
+            b.nodes[v as usize].rule = rule::PREFER_FIRST;
+        }
+    }
+    let n = |id: usize| perm[id];
+    b.edge_k(EdgeKind::Adjacency, n(0), n(8), &[BRASS, SHEET, ZINC]);
+    b.edge_k(EdgeKind::Chute, n(9), n(2), &[]);
+    b.edge_k(EdgeKind::Chute, n(2), n(5), &[]);
+    b.edge_k(EdgeKind::Chute, n(10), n(4), &[]);
+    b.edge_k(EdgeKind::Chute, n(4), n(5), &[]);
+    b.edge(n(11), n(1));
+    b.edge(n(1), n(12));
+    b.edge_k(EdgeKind::Chute, n(13), n(3), &[]);
+    b.edge_k(EdgeKind::Chute, n(3), n(5), &[]);
+    b.edge_k(EdgeKind::Belt, n(15), n(5), &[]);
+    b.edge_k(EdgeKind::Belt, n(5), n(6), &[]);
+    b.edge_k(EdgeKind::Belt, n(6), n(7), &[]);
+    b.edge_k(EdgeKind::Belt, n(7), n(14), &[]);
+    b.edge_k(EdgeKind::Belt, n(17), n(15), &[]);
+    b.edge(n(14), n(0));
+    b.edge_k(EdgeKind::Belt, n(14), n(16), &[]);
+    b.edge_k(EdgeKind::Belt, n(16), n(18), &[]);
+    b.edge_k(EdgeKind::Belt, n(18), n(17), &[]);
+    b.edge_k(EdgeKind::Belt, n(12), n(18), &[]);
+    (b.graph(), [n(11), n(9), n(10), n(13), n(8)])
+}
+
+#[test]
+fn a_loop_carries_its_back_edge_from_round_to_round_in_any_node_order() {
+    // The exit run's order put the back edge on n15 -> n5, the host's only sheet supply; with back
+    // edges carrying nothing in L the host never got a sheet (brass in [0, 2^-24]). Carried over
+    // between rounds, every order gives a sheet per 64 ticks: 4/5 x 1/64 = 1/80 brass per tick
+    // (GB110).
+    let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+    let reversed: [u32; 19] = std::array::from_fn(|i| 18 - i as u32);
+    let rotated: [u32; 19] = std::array::from_fn(|i| ((i + 7) % 19) as u32);
+    for perm in [identity, reversed, rotated] {
+        let (g, [sheets, cogs, large, nug, _]) = precision_mechanisms(&perm);
+        assert_eq!(g.cycles, 1);
+        let s = run(
+            &g,
+            &regime(
+                &g,
+                &[
+                    (sheets, &[SHEET]),
+                    (cogs, &[ZINC]),
+                    (large, &[COPPER]),
+                    (nug, &[COAL]),
+                ],
+            ),
+        );
+        assert!(s.converged, "{perm:?}: {} rounds", s.rounds);
+        let brass = bound(&s, BRASS);
+        assert_eq!(brass.in_l, Q::new(1, 80), "{perm:?}");
+        assert_eq!(brass.class, class::BOUNDED);
+        assert!(brass.in_u >= brass.in_l);
+        assert_eq!(bound(&s, SHEET).out_l, Q::new(1, 64), "{perm:?}");
+    }
+}
+
 // ---- the graph store (F5) and the engine path -------------------------------------------------------
 
 fn glass_with(records: &[GlassObs]) -> Glass {

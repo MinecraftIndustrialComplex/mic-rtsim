@@ -6,8 +6,10 @@
 //! forward pass (each node runs at `min(supply by recipe ratio, capacity, acceptance)` and splits
 //! by its rule). After it, an edge whose head used less than arrived gets its acceptance lowered to
 //! what was used (coupling, §3.2 step 4), and a boiler whose level moved changes its domain's level.
-//! Acceptances only fall. The rounds stop when nothing changed, or at `glass.solveRoundsMax`, when
-//! every good is bounded.
+//! Acceptances only fall. A back edge of a cycle (its head comes first in the order) brings its
+//! tail's push of the round before, and a head whose back-edge supply still changes is not throttled
+//! (GB110). The rounds stop when nothing changed, or at `glass.solveRoundsMax`, when every good is
+//! bounded.
 //!
 //! **Cost:** O(rounds × slots) rational operations, a slot being one good on one edge. The passes
 //! allocate nothing; a solve allocates its slot arrays once.
@@ -346,6 +348,9 @@ pub struct Solver<'a> {
     pub acc: Vec<Q>,
     pub ovr: Vec<Q>,
     pub used: Vec<Q>,
+    /// Per slot on a back edge (GB12): what arrived at its head this round, the tail's push of the
+    /// round before (GB110).
+    back_in: Vec<Q>,
     pub dom_level: Vec<Option<u32>>,
     dom_next: Vec<Option<u32>>,
     pub duty: Vec<Q>,
@@ -401,6 +406,7 @@ impl<'a> Solver<'a> {
             acc: Vec::new(),
             ovr: Vec::new(),
             used: Vec::new(),
+            back_in: Vec::new(),
             dom_level: Vec::new(),
             dom_next: Vec::new(),
             duty: vec![Q::ZERO; n],
@@ -603,6 +609,17 @@ impl<'a> Solver<'a> {
         self.acc = vec![Q::ZERO; s];
         self.ovr = vec![Q::INF; s];
         self.used = vec![Q::ZERO; s];
+        self.back_in = vec![Q::ZERO; s];
+        // A back edge's tail reads its acceptance before the head sets it (reverse order): it
+        // starts at the edge's capacity, and coupling lowers it (GB110).
+        for e in 0..g.edges.len() as u32 {
+            if g.back[e as usize] {
+                let cap = g.edge_cap(e);
+                for sl in self.slots_of(e) {
+                    self.acc[sl] = cap;
+                }
+            }
+        }
     }
 
     pub fn slots_of(&self, e: u32) -> std::ops::Range<usize> {
@@ -790,9 +807,6 @@ impl<'a> Solver<'a> {
     fn collect_sides(&mut self, v: u32, gi: u32) {
         self.sides.clear();
         for &e in self.g.out_g.of(v) {
-            if self.g.back[e as usize] {
-                continue;
-            }
             if let Some(s) = self.slot_of(e, gi) {
                 self.sides.push(Side {
                     slot: s,
@@ -896,12 +910,6 @@ impl<'a> Solver<'a> {
         self.s_push.clear();
         for &e in g.out_g.of(v) {
             let r = self.slots_of(e);
-            if g.back[e as usize] {
-                for s in r {
-                    self.f[s] = Q::ZERO;
-                }
-                continue;
-            }
             for s in r.clone() {
                 if self.f[s].is_inf() {
                     self.f[s] = Q::ZERO;
@@ -961,9 +969,7 @@ impl<'a> Solver<'a> {
                         } else {
                             let mut sum = Q::ZERO;
                             for &e in g.out_g.of(v) {
-                                if let Some(s) = self.slot_of(e, gi)
-                                    && !g.back[e as usize]
-                                {
+                                if let Some(s) = self.slot_of(e, gi) {
                                     sum = sum.add(self.acc[s]);
                                 }
                             }
@@ -1015,13 +1021,8 @@ impl<'a> Solver<'a> {
             self.s_acc.list = list;
             for &e in g.in_g.of(v) {
                 let cap = g.edge_cap(e);
-                let back = g.back[e as usize];
                 for s in self.slots_of(e) {
-                    self.acc[s] = if back {
-                        Q::ZERO
-                    } else {
-                        cap.min(self.s_acc.get(self.slot_good[s])).min(self.ovr[s])
-                    };
+                    self.acc[s] = cap.min(self.s_acc.get(self.slot_good[s])).min(self.ovr[s]);
                 }
             }
         }
@@ -1114,9 +1115,11 @@ impl<'a> Solver<'a> {
             self.saturated[v as usize] = false;
             self.s_in.clear();
             for &e in g.in_g.of(v) {
+                let back = g.back[e as usize];
                 for s in self.slots_of(e) {
-                    if g.back[e as usize] {
-                        self.f[s] = Q::ZERO;
+                    // A back edge brings what its tail pushed in the round before (GB110).
+                    if back {
+                        self.back_in[s] = self.f[s];
                     }
                     self.s_in.add(self.slot_good[s], self.f[s]);
                 }
@@ -1710,15 +1713,38 @@ impl<'a> Solver<'a> {
                 self.duty_assumed[v as usize] = Q::ZERO;
             }
         }
+        let mut warming = vec![false; self.g.nodes.len()];
         while rounds < max {
             rounds += 1;
             self.backward();
             self.forward();
             let mut changed = false;
-            for s in 0..self.f.len() {
-                if self.used[s] < self.f[s] && self.used[s] < self.ovr[s] {
-                    self.ovr[s] = self.used[s];
+            // A back edge's head used what arrived this round: its tail's push of the round
+            // before. While that push still changes, the head is warming up (in the first round
+            // nothing has come round yet): it may have run short for want of it, so its in-edges
+            // are not throttled this round, and another round runs (GB110).
+            warming.iter_mut().for_each(|w| *w = false);
+            for e in 0..self.g.edges.len() as u32 {
+                if !self.g.back[e as usize] {
+                    continue;
+                }
+                if self.slots_of(e).any(|s| self.f[s] != self.back_in[s]) {
+                    warming[self.g.edge(e).to as usize] = true;
                     changed = true;
+                }
+            }
+            for e in 0..self.g.edges.len() as u32 {
+                let ed = self.g.edge(e);
+                if warming[ed.to as usize] {
+                    continue;
+                }
+                let back = self.g.back[e as usize];
+                for s in self.slots_of(e) {
+                    let arrived = if back { self.back_in[s] } else { self.f[s] };
+                    if self.used[s] < arrived && self.used[s] < self.ovr[s] {
+                        self.ovr[s] = self.used[s];
+                        changed = true;
+                    }
                 }
             }
             if self.dom_next != self.dom_level {

@@ -79,8 +79,9 @@ pub struct Graph {
     /// The passes' order: strongly connected components in topological order, each in the reverse
     /// postorder of a depth-first search inside it.
     pub order: Vec<u32>,
-    /// Goods edges inside a component that go back in [`Graph::order`]: L carries nothing on them
-    /// (a return loop carries nothing while downstream has room, §3.4); the LP keeps them.
+    /// Goods edges inside a component that go back in [`Graph::order`]: their head runs before
+    /// their tail in a pass, so L carries each round's push into the next (GB110); the LP keeps
+    /// them.
     pub back: Vec<bool>,
     /// Nodes in a component of more than one node, or with an edge to themselves.
     pub cyclic: Vec<bool>,

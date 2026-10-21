@@ -250,9 +250,8 @@ fn linear(s: &Solver<'_>, caps: &mut UCaps) -> Vec<Q> {
     for &v in &g.order {
         list.clear();
         for &e in g.in_g.of(v) {
-            if g.back[e as usize] {
-                continue;
-            }
+            // A back edge's tail comes later: it may bring all its head accepts (GB110).
+            let back = g.back[e as usize];
             for sl in s.slots_of(e) {
                 let gi = s.slot_good[sl];
                 if !seen[gi as usize] {
@@ -260,7 +259,8 @@ fn linear(s: &Solver<'_>, caps: &mut UCaps) -> Vec<Q> {
                     inn[gi as usize] = Q::ZERO;
                     list.push(gi);
                 }
-                inn[gi as usize] = inn[gi as usize].add_up(fu[sl]);
+                let x = if back { acc[sl] } else { fu[sl] };
+                inn[gi as usize] = inn[gi as usize].add_up(x);
             }
         }
         let kind = s.kind(v);
