@@ -340,6 +340,14 @@ impl SaveTicket {
     pub fn pages(&self) -> usize {
         self.pages.len()
     }
+
+    pub(crate) fn new(seq: u64, pages: Vec<u64>) -> Self {
+        SaveTicket { seq, pages }
+    }
+
+    pub(crate) fn into_parts(self) -> (u64, Vec<u64>) {
+        (self.seq, self.pages)
+    }
 }
 
 /// A page to read ahead of need, from [`PagedTable::prefetch_due`].
