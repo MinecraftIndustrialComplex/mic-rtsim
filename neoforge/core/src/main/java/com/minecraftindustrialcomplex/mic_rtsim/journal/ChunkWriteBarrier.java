@@ -107,6 +107,8 @@ public final class ChunkWriteBarrier {
     private static final class Note {
         long round;
         boolean unloadSeen;
+        /** Its write failed after it left its level: what it held is not on disk, and cannot be saved again. */
+        boolean lost;
 
         Note(long round) {
             this.round = round;
@@ -257,10 +259,17 @@ public final class ChunkWriteBarrier {
         long confirmed = confirmedRound;
         notes.values().removeIf(n -> n.round <= confirmed);
         for (Failed f; (f = failed.poll()) != null; ) {
-            // a write that failed: the chunk is saved again (vanilla cleared its unsaved flag before writing)
-            for (LevelChunk c : notes.keySet())
-                if (c.getLevel() == f.level() && c.getPos().equals(f.pos()) && ((LevelChunkAccessor) c).mic_rtsim$loaded())
+            // a write that failed: the chunk is saved again (vanilla cleared its unsaved flag before writing); one
+            // that has left its level cannot be, and holds every round until the valve
+            for (Map.Entry<LevelChunk, Note> e : notes.entrySet()) {
+                LevelChunk c = e.getKey();
+                if (c.getLevel() != f.level() || !c.getPos().equals(f.pos()))
+                    continue;
+                if (((LevelChunkAccessor) c).mic_rtsim$loaded())
                     c.setUnsaved(true);
+                else
+                    e.getValue().lost = true;
+            }
         }
         if (notes.isEmpty())
             return null;
@@ -276,6 +285,10 @@ public final class ChunkWriteBarrier {
                 continue;
             }
             boolean loaded = ((LevelChunkAccessor) c).mic_rtsim$loaded();
+            if (e.getValue().lost && !loaded) {
+                hold = "chunk " + c.getPos() + " in " + level.dimension().location() + " was unloaded and its write failed";
+                continue;
+            }
             if (loaded && c.isUnsaved()) {
                 boolean saved;
                 try {
