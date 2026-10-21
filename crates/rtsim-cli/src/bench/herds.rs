@@ -139,8 +139,8 @@ pub fn run(c: &HerdsConfig) -> Measured {
     let mut paged = c.paged.as_ref().map(|p| {
         let dir = scratch_dir();
         let _ = std::fs::remove_dir_all(&dir);
-        let store = PageStore::open(&dir, Durability::NoSync)
-            .unwrap_or_else(|e| panic!("page store: {e}"));
+        let store =
+            PageStore::open(&dir, Durability::NoSync).unwrap_or_else(|e| panic!("page store: {e}"));
         let store = Arc::new(RwLock::new(store));
         h.attach_store(store.clone(), p.budget_bytes as usize);
         let mut pg = Paged {
@@ -171,10 +171,7 @@ pub fn run(c: &HerdsConfig) -> Measured {
     let heap_peak = sys::heap_peak() as u64;
     let rows = h.row_stats();
     let resident = h.rows_resident_bytes() as u64;
-    let saves = paged
-        .as_ref()
-        .map(|p| p.saves)
-        .unwrap_or_default();
+    let saves = paged.as_ref().map(|p| p.saves).unwrap_or_default();
     let save_cpu = (saves.cpu_ns - saves0.cpu_ns) as f64;
     let n_saves = (saves.saves - saves0.saves).max(1) as f64;
     // Catch-up: every herd's cohorts read after a long unread gap (pure reads, dyadic counts).
