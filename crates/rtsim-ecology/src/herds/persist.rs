@@ -24,10 +24,10 @@ use std::sync::Arc;
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
+use rtsim_kernel::meta_pages::{MapTicket, PagedMap, PagedWheel, WheelTicket};
 use rtsim_kernel::page::{PageKey, SaveBatch};
 use rtsim_kernel::paging::SaveTicket;
 use rtsim_kernel::rows::{PageSource, PagedArena, PagedRows, RowStats};
-use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
 use rtsim_travel::legs::{Meeting, Stamp};
 
@@ -35,10 +35,10 @@ use super::boundary::{self, HerdDict};
 use super::climate::Climate;
 use super::cohort::Class;
 use super::engine::{
-    Ev, HERDS_PER_PAGE, HerdStats, Herds, PlayerView, REGIONS_PER_PAGE, TABLE_HERDS, TABLE_META,
-    TABLE_REGIONS, player_key,
+    Ev, HERDS_PER_PAGE, HerdStats, Herds, PlayerView, REGIONS_PER_PAGE, TABLE_CLAIMS, TABLE_HERDS,
+    TABLE_META, TABLE_REGIONS, TABLE_WHEEL, player_key,
 };
-use super::forage::{FORAGE_PER_PAGE, TABLE_FORAGE};
+use super::forage::{CellKey, FORAGE_PER_PAGE, TABLE_FORAGE};
 use super::herd::{Embodied, Herd, HerdId, HerdLedger, Route, Seen};
 use super::route::Obstacle;
 use super::species::HerdSpecies;
@@ -46,8 +46,9 @@ use super::tunables::HerdTunables;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"RTHD");
 /// 2: the rows moved to row tables (key order, the herd's regions in its row), the active set and
-/// the predator map are saved.
-const VERSION: u8 = 2;
+/// the predator map are saved. 3: the wheel and the claims follow the rest of the meta, as blobs
+/// or as page headers (docs/choices-paging-followups.md PF8).
+const VERSION: u8 = 3;
 
 /// The meta page of a paged engine.
 pub const META_PAGE: PageKey = PageKey::new(TABLE_META, 0);
@@ -80,6 +81,16 @@ fn u32_of(v: u64) -> codec::Result<u32> {
 
 fn i32_of(v: i64) -> codec::Result<i32> {
     i32::try_from(v).map_err(|_| CodecError::Invalid(format!("{v} is not an i32")))
+}
+
+fn put_claim(w: &mut Writer, k: &CellKey) {
+    w.u16(k.0);
+    w.var_i64(i64::from(k.1));
+    w.var_i64(i64::from(k.2));
+}
+
+fn get_claim(r: &mut Reader<'_>) -> codec::Result<CellKey> {
+    Ok((r.u16()?, i32_of(r.var_i64()?)?, i32_of(r.var_i64()?)?))
 }
 
 fn put_xz(w: &mut Writer, p: (i32, i32)) {
@@ -453,9 +464,11 @@ struct Counts {
     regions: u64,
 }
 
-/// The tickets of one paged save: one per row table.
+/// The tickets of one paged save: the wheel, the claims and one per row table.
 #[derive(Debug)]
 pub struct HerdsTicket {
+    wheel: WheelTicket,
+    claims: MapTicket,
     herds: SaveTicket,
     forage: SaveTicket,
     regions: SaveTicket,
@@ -499,7 +512,6 @@ impl Herds {
             w.u64(o.at.0);
             w.var_u64(u64::from(o.reports));
         }
-        self.wheel.encode_with(w, |e, w| put_ev(w, e));
         w.var_u64(self.players.len() as u64);
         for p in &self.players {
             w.u64(p.uuid.0);
@@ -523,13 +535,6 @@ impl Herds {
                 None => w.u8(0),
             }
             w.var_u64(u64::from(p.puppets));
-        }
-        w.var_u64(self.claims.len() as u64);
-        for (k, v) in &self.claims {
-            w.u16(k.0);
-            w.var_i64(i64::from(k.1));
-            w.var_i64(i64::from(k.2));
-            w.u64(*v);
         }
         w.var_i64(self.claims_sub);
         let dict = HerdDict::default();
@@ -598,7 +603,6 @@ impl Herds {
                 },
             );
         }
-        h.wheel = TimingWheel::decode_with(r, get_ev)?;
         for _ in 0..r.len_prefix(27)? {
             let uuid = (r.u64()?, r.u64()?);
             let actor = r.u64()?;
@@ -627,10 +631,6 @@ impl Herds {
                 interest,
                 puppets,
             });
-        }
-        for _ in 0..r.len_prefix(12)? {
-            let k = (r.u16()?, i32_of(r.var_i64()?)?, i32_of(r.var_i64()?)?);
-            h.claims.insert(k, r.u64()?);
         }
         h.claims_sub = r.var_i64()?;
         let n = r.len_prefix(0)?;
@@ -670,6 +670,12 @@ impl Herds {
     pub fn save(&self) -> Vec<u8> {
         let mut w = Writer::with_capacity(1024 + self.herds.len() * 512);
         self.put_meta(&mut w);
+        self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
+        w.var_u64(self.claims.len() as u64);
+        for (k, v) in self.claims.iter() {
+            put_claim(&mut w, k);
+            w.u64(*v);
+        }
         self.herds.encode_all(&mut w);
         self.forage.rows.encode_all(&mut w);
         w.into_bytes()
@@ -685,6 +691,11 @@ impl Herds {
         let mut rd = Reader::new(bytes);
         let r = &mut rd;
         let (mut h, counts) = Self::get_meta(tun, climate, r)?;
+        h.wheel = PagedWheel::decode_with(r, get_ev)?;
+        for _ in 0..r.len_prefix(12)? {
+            let k = get_claim(r)?;
+            h.claims.insert(k, r.u64()?);
+        }
         h.herds = PagedArena::decode_all(TABLE_HERDS, HERDS_PER_PAGE, r)?;
         h.forage.rows = PagedRows::decode_all(TABLE_FORAGE, FORAGE_PER_PAGE, r)?;
         rd.finish()?;
@@ -722,6 +733,8 @@ impl Herds {
             .ok_or_else(|| CodecError::Invalid("no herds meta page".into()))?;
         let mut rd = Reader::new(&raw);
         let (mut h, counts) = Self::get_meta(tun, climate, &mut rd)?;
+        h.wheel = PagedWheel::open_paged(&mut rd, TABLE_WHEEL, &*source, get_ev)?;
+        h.claims = PagedMap::open_paged(&mut rd, TABLE_CLAIMS, &*source, get_claim, |r| r.u64())?;
         rd.finish()?;
         let (a, b, c) = split(budget);
         h.herds = PagedArena::open(TABLE_HERDS, HERDS_PER_PAGE, source.clone(), a, counts.herds);
@@ -740,10 +753,22 @@ impl Herds {
     /// stay pinned until the ticket comes back ([`Herds::saved`] once the commit is durable,
     /// [`Herds::save_failed`] if it failed).
     pub fn save_paged(&mut self, batch: &mut SaveBatch) -> HerdsTicket {
-        let mut w = Writer::with_capacity(1024 + self.wheel.len() * 16);
+        let mut w = Writer::with_capacity(1024);
         self.put_meta(&mut w);
+        let wheel = self
+            .wheel
+            .save_paged(batch, TABLE_WHEEL, &mut w, |e, w| put_ev(w, e));
+        let claims = self.claims.save_paged(
+            batch,
+            TABLE_CLAIMS,
+            &mut w,
+            |k, w| put_claim(w, k),
+            |v, w| w.u64(*v),
+        );
         batch.put(META_PAGE, w.as_bytes());
         HerdsTicket {
+            wheel,
+            claims,
             herds: self.herds.rows_mut().save_dirty(batch),
             forage: self.forage.rows.save_dirty(batch),
             regions: self.regions.save_dirty(batch),
@@ -751,12 +776,16 @@ impl Herds {
     }
 
     pub fn saved(&mut self, t: HerdsTicket) {
+        self.wheel.saved(t.wheel);
+        self.claims.saved(t.claims);
         self.herds.rows_mut().saved(t.herds);
         self.forage.rows.saved(t.forage);
         self.regions.saved(t.regions);
     }
 
     pub fn save_failed(&mut self, t: HerdsTicket) {
+        self.wheel.save_failed(t.wheel);
+        self.claims.save_failed(t.claims);
         self.herds.rows_mut().save_failed(t.herds);
         self.forage.rows.save_failed(t.forage);
         self.regions.save_failed(t.regions);

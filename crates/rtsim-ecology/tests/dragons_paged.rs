@@ -334,3 +334,49 @@ fn a_failed_save_loses_nothing() {
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::remove_dir_all(&dir2).unwrap();
 }
+
+/// Bytes of a paged save made right after another, nothing changed between them, for an engine
+/// of `lairs` lairs of two dragons on `villages` villages, a day in.
+fn quiet_save_bytes(villages: usize, lairs: usize) -> usize {
+    let seed = 7;
+    let mut w = synth::grid(villages, seed);
+    let mut d = Dragons::new(seed, DragonTunables::default(), Tick::ZERO);
+    let l = synth::bench_lairs(&w, lairs, 2, seed);
+    synth::populate(&mut w, &mut d, &l, Tick::ZERO);
+    d.run_until(&mut w, &mut NoInfrastructure, Tick::from_days(1));
+    let dir = tmpdir(&format!("quiet-{lairs}"));
+    let store = Arc::new(RwLock::new(
+        PageStore::open(&dir, Durability::NoSync).expect("the store opens"),
+    ));
+    d.attach_store(store.clone(), 64 << 20);
+    let mut bytes = 0;
+    for _ in 0..2 {
+        let mut b = SaveBatch::new();
+        let t = d.save_paged(&mut b, META);
+        bytes = b.raw_bytes();
+        store
+            .write()
+            .unwrap()
+            .commit(b, 0)
+            .expect("the save commits");
+        d.saved(t);
+    }
+    drop(d);
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
+    bytes
+}
+
+/// A save writes what changed since the last one: with nothing changed, as many bytes at four
+/// times the dragons (docs/choices-paging-followups.md, the paged wheel). It failed while the
+/// meta page held the whole wheel and the lair indexes.
+#[test]
+fn a_save_with_nothing_changed_is_flat_in_the_dragons() {
+    let small = quiet_save_bytes(64, 48);
+    let big = quiet_save_bytes(256, 192);
+    eprintln!("a quiet save: {small} bytes, then {big} at four times the size");
+    assert!(
+        big <= small + small / 2 + 1024,
+        "a save with nothing changed wrote {small} bytes at 96 dragons and {big} at 384"
+    );
+}
