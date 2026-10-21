@@ -33,3 +33,33 @@ the end, under "For Ben", recommended option first.
 | MSC17 | **Golems are counted by the census, latest wins** (VILLAGE_CENSUS's golems, sent as an input even when the census has no residents), not by the engine's own purchases. | A golem a player killed or built is the village's real defence; the census already counts them. |
 | MSC18 | **A golem stands beside the meeting point** (SPAWN_RESIDENT flag 2, AT_VILLAGE): in the first of 12 nearby columns, the height nearest the meeting point's (within 6 blocks) where the block below holds it up and the body fits out of liquid, else the meeting point itself. Not a heightmap: the first GameTest run stood the golem on the test area's barrier roof, as it would on a roof or a canopy over a village square. Not player made (it defends the village, as vanilla's own), persistent. | SINK.md's "at the meeting point" without spawning a golem inside the bell or a wall. |
 | MSC19 | **TEST orders and inspection:** 30 WORKS_GRANT (coin straight into a purse, ledgered as minted) and 31 WORKS_RAID (a raid, with or without tribute), both TEST mode and phase 1 switched on; `nPhase1Works` returns (bought, kinds full, purse, census golems, tribute, spent). Phase 1 stats 16 to 19: works bought, placed, refused, tributes (Java `PHASE1_STATS` 20). | GameTests cannot wait for a ceiling's slow surplus or a real dragon. |
+
+## For Ben
+
+Each item is reversible and already built as the first option; say which to change.
+
+1. **Work prices are tiny until the world trades a template's goods.** With the placeholder labour
+   (MSC3: 20 thousandths of a worker-day per item, 10 per block placed) the plains lamp costs 0.08 coin
+   and a golem about 0.25 coin (GameTests: `spent` 80 for a lamp, 330 for a lamp and a golem). A village
+   at its ceiling therefore buys its whole catalogue within days of reaching it, and then the purse just
+   grows (MS-9).
+   - (a, recommended) Keep the placeholders until the world's goods include planks, iron and torches,
+     then price works by the recipe graph as SINK.md §4.3 says. The sink still removes every coin above
+     the ceiling either way: the price only sets how fast the works appear.
+   - (b) Raise the two labour tunables now (for example 1 worker-day per item) so a lamp costs a few
+     coins and a golem tens of coins.
+2. **Caps count census residents, not houses** (MSC4; SINK.md's table says houses). The sim does not know
+   a vanilla village's houses, only its residents.
+   - (a, recommended) Residents: one lamp per 3, one Ribbit lamp per 2, one golem per 5.
+   - (b) Count beds or houses from the village's structure pieces on the Java side and send them with
+     the census.
+3. **A broken work is never rebought** (MSC4: caps count works ever bought).
+   - (a, recommended) Never rebuy, so a player cannot farm a village's purse by breaking lamps.
+   - (b) Count standing works (a census of the village's work blocks) and rebuy what is gone.
+4. **One work in flight per village** (MSC13). A village whose chunks are never loaded buys one work and
+   waits; its purse keeps growing until a player comes by.
+   - (a, recommended) Keep it: no coin is spent on works nobody can place.
+   - (b) Allow a small queue (for example 3) so a visited village shows several new works at once.
+5. **Golems are bought only under threat** (MSC5: raided, or tribute lapsed, within the last season).
+   - (a, recommended) Only under threat.
+   - (b) Also up to the cap in peace time, as vanilla's own golem spawning does.
