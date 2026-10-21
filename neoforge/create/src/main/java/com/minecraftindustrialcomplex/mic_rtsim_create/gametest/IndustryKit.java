@@ -98,6 +98,15 @@ public final class IndustryKit {
     public static void fastConfig() {
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
+        // The glass box: compiles finish within a tick or two and resend often enough for a short test.
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.Test.set(
+                com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.COMPILE_SLICE_MICROS, 20_000);
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.Test.set(
+                com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.RESEND_TICKS, 200);
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.Test.set(
+                com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.FINGERPRINT_PER_TICK, 4096);
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.Test.set(
+                com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig.SEND_BYTES_PER_TICK, 256 * 1024);
     }
 
     /** The first chunk border inside the yard along x: the absolute x of a chunk's first column. */

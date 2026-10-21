@@ -150,6 +150,12 @@ public final class NativeEngine implements ScriptedEngine {
     /** Null when none. */
     private static native String nProtocolError(long handle);
 
+    /** A district's glass report (GlassReport's layout); null without a complete compile. */
+    private static native double[] nGlassReport(long handle, long district);
+
+    /** The glass check of a record stream on a fresh industry engine; null without a complete compile. */
+    private static native double[] nGlassOffline(byte[] records, long district);
+
     /** A hold on the engine's buffer memory for one Java buffer; {@link #nReleaseBuffers} gives it back. */
     private static native long nHoldBuffers(long handle);
 
@@ -517,6 +523,25 @@ public final class NativeEngine implements ScriptedEngine {
     public synchronized long[] herdInfo(long agent) {
         long[] out = new long[HERD_INFO];
         return nHerdInfo(live(), agent, out) ? out : null;
+    }
+
+    /**
+     * A district's glass report as of the engine's last step (G1, read only): the solve's bounds per good
+     * and the checksum's verdict ({@code industry.glass.GlassReport} decodes it). Null while the district
+     * has no complete compile.
+     */
+    public synchronized double[] glassReport(long district) {
+        return nGlassReport(live(), district);
+    }
+
+    /**
+     * The same report from a record stream (whole records back to back, as Java sent them) run through a
+     * fresh industry engine: the stub engine's GameTests check their run with the native code (choice
+     * GB80). Loads the natives; throws IllegalStateException when they cannot load.
+     */
+    public static double[] glassOffline(byte[] records, long district) {
+        ensureLoaded();
+        return nGlassOffline(records, district);
     }
 
     /** {@link #habitatInfo}'s fields (docs/boundary.md §10, {@code Engine::habitat_info}). */

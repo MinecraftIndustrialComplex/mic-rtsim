@@ -12,6 +12,7 @@ repository.workspace = true
 rtsim-kernel.workspace = true
 rtsim-space.workspace = true
 serde.workspace = true
+microlp.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
