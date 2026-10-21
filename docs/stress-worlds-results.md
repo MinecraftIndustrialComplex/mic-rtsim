@@ -281,7 +281,7 @@ All on branch `test/stress-worlds`, each with a failing test first.
 
 | Commit | What broke | Where it showed | Fix | Test |
 |---|---|---|---|---|
-| 1672a3a | `IllegalArgumentException: downward motion must be negative: 0.075`: a fan pushing items up a chute failed the whole district's glass compile, every time | StressB district 1 | `Cycles.chuteTicksPerBlock` models upward chutes (Create's own rule: start at 0, hand off above 1); a bottom chute takes the grab period, a middle one the transit time. Flagged CALIBRATED: not yet checked in game | `CyclesChuteTest` (new JUnit set in the create plugin) |
+| 1672a3a | `IllegalArgumentException: downward motion must be negative: 0.075`: a fan pushing items up a chute failed the whole district's glass compile, every time | StressB district 1 | `Cycles.chuteTicksPerBlock` models upward chutes (Create's own rule: start at 0, hand off above 1); a bottom chute takes the grab period, a middle one the transit time. Flagged CALIBRATED: not yet checked in game. Main fixed the same bug on its own (e1ff012, found on the livesrv deploy rehearsal) with `Cycles.chuteTicksPerBlockUp` and a chute's direction in the fingerprint; the merge (7e4042a) keeps main's version, same numbers | `CyclesChuteTest` (new JUnit set in the create plugin), now on main's function |
 | 1ed1774 | `NullPointerException` reading the level's tick order: Lithium parks sleeping block entities behind a shared ticker whose position is null | StressB, with Lithium (the GameTest servers have no Lithium) | `TickOrder.places` skips a ticker with no position | `TickOrderTest` |
 | 59c68f4 | Create's deployer is a NeoForge `FakePlayer`, and rtsim counted its block placements and breaks as a player editing the district: a journal edit, a glass compile restart, a district rescan and a threat survey each time | StressB: glass never finished, 1,051 rescans, surveys every 200 ticks | `IndustryEvents` and `ThreatEvents` treat `Player.isFakePlayer()` as a machine (no seed, no edit, no survey); a machine breaking boundary stock is still a port. INDUSTRY.md §3.3 says so. GameTests that stood in for a player with a FakePlayer now use a real server player (`FakePlayers.editor`) | `ThreatGameTests.machineEditsAreNoPlayerEdits` |
 | e330ce3 | `/rtsim district perf` had no train figures | all train worlds | an optional `IndustryPlugin.perfLine()`; the Create plugin reports arrivals, simulated arrivals, departures, cargo ports, trains seen and at a station | covered by the existing train GameTests |
@@ -340,6 +340,9 @@ compiled every glass box again on boot and logged no rtsim error.
 - **Two other event handlers still treat a FakePlayer as a player:** `BridgeEvents.onPlace` (the G12
   player-block marks) and the Ice and Fire plugin's break hook. Outside this test's worlds; same fix
   when wanted.
+- **The synthetic "thousands of machines" world was not built.** The four real worlds took the night;
+  the generator (the brief's fourth item, if time remained) is still open, and section 8 item 6 says
+  what it should add: scheduled cargo trains between districts, which no public world has.
 - **The GameTest servers have no Lithium,** so Lithium-only paths (1ed1774) are covered by a unit
   test, not a GameTest.
 
@@ -402,7 +405,7 @@ Recommended option first in each.
 | SW13 | JFR for allocation profiles | spark's allocation mode needs a restart per mode |
 | SW14 | StressA scene of five 256-chunk tiles | the whole map does not fit in memory at once |
 | SW15 | JUnit set in the create plugin (pure Java, no Minecraft on the class path) | the chute and tick-order fixes needed unit tests |
-| SW16 | Upward chute: a bottom chute takes the grab period, a middle one the transit time; CALIBRATED until checked in game | Create's code for upward chutes, not verified in game |
+| SW16 | Upward chute: a bottom chute takes the grab period, a middle one the transit time; CALIBRATED until checked in game (superseded by main's e1ff012 at the merge, same rule) | Create's code for upward chutes, not verified in game |
 | SW17 | Lithium's sleeping ticker skipped in the tick-order read | it has no position |
 | SW18 | Harness runs servers at `nice -n 10`, the harness itself not niced again | two nices put the servers at 19 and inflated MSPT |
 | SW19 | StressB's rescan rate profiled in a long busy window | to see the deployer edit storm |
@@ -422,3 +425,4 @@ Recommended option first in each.
 | SW33 | StressB's reload and uninstall boots taken from myl2's save (jars 7177451, after its glass verdict) | the latest jars and a world with a judged glass box |
 | SW34 | Detection spikes listed with a plan (section 7, section 8 item 10), not fixed | a scheduling change in detection, not a bug; the fix touches how districts are found |
 | SW35 | The al3 idle delta (+15.5 MSPT, before any district) read as noise | it ran just after boot at load 64 with an MSPT standard deviation of 36 ms; al2's was -2.2 |
+| SW36 | At the merge with main, main's upward chute fix (e1ff012) kept over this branch's 1672a3a, and `CyclesChuteTest` moved onto it | the same bug fixed twice; main's also puts a chute's direction in the fingerprint |
