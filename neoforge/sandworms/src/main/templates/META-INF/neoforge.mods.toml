@@ -1,0 +1,39 @@
+modLoader     = "javafml"
+loaderVersion = "${loader_version_range}"
+license       = "${mod_license}"
+
+[[mods]]
+modId       = "${mod_id}"
+version     = "${mod_version}"
+displayName = "${mod_name}"
+authors     = "${mod_authors}"
+description = '''${mod_description}'''
+
+[[dependencies.${mod_id}]]
+    modId        = "minecraft"
+    type         = "required"
+    versionRange = "${minecraft_version_range}"
+    ordering     = "NONE"
+    side         = "BOTH"
+
+[[dependencies.${mod_id}]]
+    modId        = "neoforge"
+    type         = "required"
+    versionRange = "${neo_version_range}"
+    ordering     = "NONE"
+    side         = "BOTH"
+
+[[dependencies.${mod_id}]]
+    modId        = "mic_rtsim"
+    type         = "required"
+    versionRange = "[0.1.0,)"
+    ordering     = "AFTER"
+    side         = "BOTH"
+
+# Sandworms, Lodestone and AAA Particles are optional here so the spike can time a server with and without them (-PswLoad).
+[[dependencies.${mod_id}]]
+    modId        = "sandworm_mod"
+    type         = "optional"
+    versionRange = "[1.2.0,)"
+    ordering     = "AFTER"
+    side         = "BOTH"

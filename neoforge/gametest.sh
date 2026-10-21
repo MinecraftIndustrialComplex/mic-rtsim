@@ -33,7 +33,7 @@ projects=()
 extra=()
 for a in "$@"; do
     case "$a" in
-        core|ribbits|carryon|create|iceandfire|oreexcavation|dieselgenerators|endertransmission|powergrid|destroy|climate|radar) projects+=("$a") ;;
+        core|ribbits|carryon|create|iceandfire|terraentity|sandworms|oreexcavation|dieselgenerators|endertransmission|powergrid|destroy|climate|radar) projects+=("$a") ;;
         *) extra+=("$a") ;;
     esac
 done
