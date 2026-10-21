@@ -532,7 +532,8 @@ public final class ReconcileAheadGameTests {
                     mark[0] = ind().reconciler().held();
                     reconcile(a, id[0], 1, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 7)), List.of());
                 })
-                .thenWaitUntil(io(() -> check("held" + pipeline(a), ind().reconciler().held() == mark[0] + 1)))
+                .thenWaitUntil(io(() -> check("held" + pipeline(a) + ", chunk loaded now " + (level.getChunkSource().getChunkNow(fx, fz) != null)
+                        + ", loads reported " + loadedCount(id[0], fx, fz), ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(io(() -> {
                     check("a applied at the load" + pipeline(a), result(a) != null && result(a).getLong(IndRecords.ReconcileResult.ENTRIES + 16) == 7);
@@ -560,8 +561,12 @@ public final class ReconcileAheadGameTests {
                     OnDisk d = disk.get();
                     check("the files are read after the journal's write", d != null);
                     check("read: " + d.error(), d.error() == null);
+                    com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier barrier =
+                            com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current().journal().chunks();
                     record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "after the second save",
-                            "chunk on disk epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold; journal on disk has b: " + d.journalHasOp());
+                            "chunk on disk epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold; journal on disk has b: " + d.journalHasOp()
+                                    + "; the journal's write waited " + barrier.lastWaitMillis() + " ms (" + barrier.forcedSaves() + " chunks saved early, "
+                                    + barrier.late() + " writes late so far)");
                     check("the journal on disk has b applied", d.journalHasOp());
                 }))
                 .thenExecute(() -> {
