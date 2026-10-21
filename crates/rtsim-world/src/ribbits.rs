@@ -481,7 +481,7 @@ impl World {
                 .filter(|&j| !route.contains(&j) && self.band_may_visit(home, j, at))
                 .min_by_key(|&j| {
                     (
-                        self.nodes[here].pos.dist(self.nodes[j].pos),
+                        self.pos_dist(self.nodes[here].pos, self.nodes[j].pos),
                         self.nodes[j].key,
                     )
                 });
@@ -500,7 +500,9 @@ impl World {
         (0..route.len())
             .map(|i| {
                 let (a, b) = (route[i], route[(i + 1) % route.len()]);
-                let dist = self.nodes[a].pos.dist(self.nodes[b].pos).unwrap_or(0);
+                let dist = self
+                    .pos_dist(self.nodes[a].pos, self.nodes[b].pos)
+                    .unwrap_or(0);
                 q.covering((dist as f64 / speed).ceil() as u64)
             })
             .collect()
@@ -637,8 +639,8 @@ impl World {
             if phi < walk {
                 let (a, c) = (pos(i), pos(i + 1));
                 let f = phi as i64 * 1000 / walk.max(1) as i64;
-                view.x = i64::from(a.x) + (i64::from(c.x) - i64::from(a.x)) * f / 1000;
-                view.z = i64::from(a.z) + (i64::from(c.z) - i64::from(a.z)) * f / 1000;
+                // On the road the short way, canonical (TP21).
+                (view.x, view.z) = self.road_point(a, c, f);
                 view.walking = Some((band.route[i], band.route[(i + 1) % n], f as u32));
                 return view;
             }

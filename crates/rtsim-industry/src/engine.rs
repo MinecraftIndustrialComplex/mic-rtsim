@@ -241,9 +241,22 @@ pub struct Engine {
     /// The glass box (GLASSBOX.md, G1 read only): compiled graphs, solves and checksums. Not
     /// paged in G1: Java resends the last compile periodically (choice GB4).
     pub glass: crate::glass::Glass,
+    /// Every frame's topology (docs/choices-topology.md TP16): districts are local, so only a
+    /// train leg's booking reads it, going the short way across a seam. Not saved.
+    pub topo: rtsim_space::SharedTopologies,
+    /// Op ids of the chunk reconciles sent since the session started. Java holds a command for an
+    /// unloaded chunk in memory only, so a restart loses what it held: the next approach sends
+    /// again whatever is still pending and was not sent in this session (docs/choices-repair.md
+    /// R4). Not saved: a restore starts a session.
+    sent_this_session: BTreeSet<OpId>,
 }
 
 impl Engine {
+    /// Hands the engine every frame's topology (TP6).
+    pub fn set_topologies(&mut self, t: rtsim_space::SharedTopologies) {
+        self.topo = t;
+    }
+
     pub fn new(world_seed: u64, tun: Tunables, now: Tick) -> Self {
         Self {
             tun,
@@ -277,6 +290,8 @@ impl Engine {
             log: std::collections::VecDeque::new(),
             log_enabled: false,
             glass: crate::glass::Glass::default(),
+            topo: rtsim_space::topology::all_flat(),
+            sent_this_session: BTreeSet::new(),
         }
     }
 
@@ -364,6 +379,7 @@ impl Engine {
     /// unloaded until its chunks report in.
     pub fn session_start(&mut self, at: Tick) {
         self.advance_to(at);
+        self.sent_this_session.clear();
         let ids: Vec<DistrictId> = self.districts.keys().copied().collect();
         for d in ids {
             let dist = self.districts.get_mut(&d).expect("listed");
@@ -1629,6 +1645,7 @@ impl Engine {
                 if p.cmd.epoch > applied_epoch {
                     p.sent = true;
                     self.stats.chunk_commands += 1;
+                    self.sent_this_session.insert(p.cmd.op);
                     self.out.push(Cmd::ChunkReconcile(p.cmd.clone()));
                 }
             }
@@ -1862,6 +1879,7 @@ impl Engine {
             for p in list.iter_mut().filter(|p| p.cmd.epoch == epoch) {
                 p.sent = true;
                 self.stats.chunk_commands += 1;
+                self.sent_this_session.insert(p.cmd.op);
                 self.out.push(Cmd::ChunkReconcile(p.cmd.clone()));
             }
         }
@@ -2116,7 +2134,9 @@ impl Engine {
             .map(|s| s.decl.clone());
         if let Some(from) = from {
             let to_pos = to.as_ref().map_or(from.pos, |t| t.pos);
-            self.legs.book(
+            let topo = self.topo.clone();
+            self.legs.book_on(
+                topo.of(from.dim as u16),
                 Leg {
                     train: dep.train,
                     from: dep.station,
@@ -2271,17 +2291,20 @@ impl Engine {
         self.wake_seq += 1;
         self.wakes
             .insert((until, self.wake_seq), Wake::Hold(d, stamp));
-        if was_held || live {
+        if live {
             return;
         }
-        self.stats.reconciles_ahead += 1;
-        self.note(
-            d,
-            at,
-            "a player is on the way: reconcile ahead of arrival".to_string(),
-        );
-        self.reconcile_round(d, at, Round::Ahead);
-        // Commands of earlier rounds still waiting for their chunks go now too.
+        if !was_held {
+            self.stats.reconciles_ahead += 1;
+            self.note(
+                d,
+                at,
+                "a player is on the way: reconcile ahead of arrival".to_string(),
+            );
+            self.reconcile_round(d, at, Round::Ahead);
+        }
+        // Commands of earlier rounds still waiting for their chunks go now too, and on every
+        // closing record those sent before a restart (Java held them in memory only, R4).
         let chunks: Vec<ChunkPos> = self
             .districts
             .get(&d)
@@ -2377,13 +2400,16 @@ impl Engine {
         self.sync_coverage(d, at);
     }
 
-    /// Every command for `chunk` not sent yet.
+    /// Every command for `chunk` not sent in this session (never, or before a restart).
     fn send_unsent(&mut self, d: DistrictId, chunk: ChunkPos) {
         let Some(dist) = self.districts.get_mut(&d) else {
             return;
         };
         if let Some(list) = dist.pending.get_mut(&chunk) {
-            for p in list.iter_mut().filter(|p| !p.sent) {
+            for p in list.iter_mut() {
+                if !self.sent_this_session.insert(p.cmd.op) {
+                    continue;
+                }
                 p.sent = true;
                 self.stats.chunk_commands += 1;
                 self.out.push(Cmd::ChunkReconcile(p.cmd.clone()));

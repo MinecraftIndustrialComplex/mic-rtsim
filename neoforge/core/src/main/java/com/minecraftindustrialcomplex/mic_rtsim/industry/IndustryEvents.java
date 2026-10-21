@@ -18,6 +18,7 @@ import net.neoforged.neoforge.event.entity.player.PlayerContainerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -38,6 +39,7 @@ final class IndustryEvents {
     static void register() {
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(IndustryEvents::onChunkLoad);
+        bus.addListener(IndustryEvents::onServerTickPre);
         bus.addListener(IndustryEvents::onChunkUnload);
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.EntityPlaceEvent.class, IndustryEvents::onPlace);
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.BreakEvent.class, IndustryEvents::onBreak);
@@ -52,18 +54,44 @@ final class IndustryEvents {
 
     /** At the end of the tick, with the session: chunk loads and placements in the order they came. */
     static void drain(Industry ind, long now) {
+        drainLoads(ind, now);
+        for (Placed p; (p = PLACED.poll()) != null; )
+            ind.districts.playerPlaced(p.level, p.pos, p.player, now);
+    }
+
+    /**
+     * Chunk loads, at the start of the tick (loads between ticks, which is where the chunk system
+     * finishes most) and at its end (loads inside it): held reconciles land in each chunk before its
+     * IND_CHUNK_LOADED, then the tick gates lift (R2).
+     */
+    static void drainLoads(Industry ind, long now) {
         for (LevelChunk c; (c = LOADED.poll()) != null; )
             if (c.getLevel() instanceof ServerLevel level && level.getChunkSource().getChunkNow(c.getPos().x, c.getPos().z) == c)
                 ind.districts.onChunkLoad(level, c, now);
-        for (Placed p; (p = PLACED.poll()) != null; )
-            ind.districts.playerPlaced(p.level, p.pos, p.player, now);
+        TickGate.releaseAll();
     }
 
     private static void onChunkLoad(ChunkEvent.Load event) {
         // Only while a module will drain the queue: chunks loaded before the session (spawn chunks) are
         // found at the session start instead, and nothing is retained when the module is off.
-        if (!event.getLevel().isClientSide() && event.getChunk() instanceof LevelChunk chunk && IndustryApi.current() != null)
-            LOADED.add(chunk);
+        if (event.getLevel().isClientSide() || !(event.getChunk() instanceof LevelChunk chunk) || !(event.getLevel() instanceof ServerLevel level))
+            return;
+        Industry ind = IndustryApi.current();
+        if (ind == null)
+            return;
+        LOADED.add(chunk);
+        // A reconcile held for this chunk lands at the next drain, at most a tick away; until then no block
+        // entity of the chunk, or of the district's other loaded chunks, ticks (R2). The event comes inside
+        // the chunk system's main-thread task, so the reconcile itself waits: applying it could load another
+        // chunk synchronously from there.
+        if (ind.reconciler.holdsFor(level.dimension(), chunk.getPos().toLong()))
+            ind.districts.holdTicking(level, chunk);
+    }
+
+    private static void onServerTickPre(ServerTickEvent.Pre event) {
+        Industry ind = IndustryApi.current();
+        if (ind != null)
+            ind.startOfTick();
     }
 
     private static void onChunkUnload(ChunkEvent.Unload event) {

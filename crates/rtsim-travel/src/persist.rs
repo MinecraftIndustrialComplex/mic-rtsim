@@ -536,6 +536,8 @@ impl Decode for LegIndex {
             cells,
             window,
             stats,
+            // Session state, handed over again by the engine host (topology choice TP6).
+            topo: rtsim_space::topology::all_flat(),
         })
     }
 }
