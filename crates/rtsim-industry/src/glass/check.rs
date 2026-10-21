@@ -1157,6 +1157,7 @@ impl Compiled {
             district_revision: self.district_revision,
             last_discard: dg.last_discard.map(|(t, r)| (t.0, r)),
             discards: dg.discards,
+            replay: report::ReplayReport::default(),
             goods: goods.into_values().collect(),
         }
     }

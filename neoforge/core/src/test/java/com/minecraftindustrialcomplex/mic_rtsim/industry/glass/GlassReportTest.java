@@ -24,6 +24,8 @@ class GlassReportTest {
         v[15] = 40; // latency
         double[] checksum = {100, 1300, 9, 7, 2, 2000, 4, -1, 900, 2, 1, 2, 3, 4, 5, 6, 7};
         System.arraycopy(checksum, 0, v, 16, checksum.length);
+        double[] replay = {GlassReport.REPLAY_GLASS, 5000, 3, 9, 1, 2, 1, 4};
+        System.arraycopy(replay, 0, v, 33, replay.length);
         int b = GlassReport.HEADER;
         v[b] = 7;
         v[b + 1] = GlassReport.BOUNDED;
@@ -57,6 +59,16 @@ class GlassReportTest {
         for (int reason = 1; reason <= 7; reason++)
             assertEquals(reason, c.discards(reason));
         assertTrue(c.summary().contains("last discard dropped records at 900"), c.summary());
+        GlassReport.Replay rp = r.replay();
+        assertEquals(GlassReport.REPLAY_GLASS, rp.model());
+        assertEquals(5000, rp.since());
+        assertEquals(3, rp.regimes());
+        assertEquals(9, rp.breakpoints());
+        assertEquals(1, rp.oscillations());
+        assertEquals(2, rp.cutEdges());
+        assertTrue(rp.eligible());
+        assertEquals(4, rp.learnedSources());
+        assertTrue(rp.summary().startsWith("replay glass since 5000, eligible"), rp.summary());
         assertEquals(1, r.goods().size());
         GlassReport.Good g = r.good(7);
         assertEquals(GlassReport.BOUNDED, g.cls());
