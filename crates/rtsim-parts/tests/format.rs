@@ -53,6 +53,15 @@ fn every_kind() -> Vec<Mark> {
             z: -1.0,
             text: "a label".into(),
         },
+        Mark::rings(
+            Some("o".into()),
+            vec![
+                vec![[0.0, 0.0], [32.0, 0.0], [32.0, 16.0], [0.0, 16.0]],
+                vec![[64.0, 0.0], [80.0, 0.0], [80.0, 16.0], [64.0, 16.0]],
+            ],
+        )
+        .with_st(Some("dash"))
+        .with_label("Outlined"),
     ]
 }
 
@@ -138,7 +147,8 @@ fn unknown_row_kinds_are_skipped_by_their_length() {
     // Splice in a row of kind GRAPH_EDGE with an arbitrary body before the point.
     let mut b = Writer::new();
     b.u32(u32::from_le_bytes(*b"MICP"));
-    b.u8(1);
+    // The format's version (2: areas with rings).
+    b.u8(2);
     key.encode(&mut b);
     b.var_u64(0);
     b.var_u64(2);

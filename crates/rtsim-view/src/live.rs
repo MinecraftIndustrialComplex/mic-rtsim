@@ -371,6 +371,8 @@ struct ReadState {
     longest_read: Duration,
     longest_save_reread: Duration,
     save_error: Option<String>,
+    /// The Create survey version last published.
+    create_seen: u64,
 }
 
 #[derive(Default)]
@@ -600,6 +602,12 @@ impl LiveView {
                     r.save_error = Some(e.replace(&self.dir.display().to_string(), &self.name))
                 }
             }
+        }
+        // Create's block entities landed: the composed scenes moved.
+        let cv = self.save().create().survey().version();
+        if cv != r.create_seen {
+            r.create_seen = cv;
+            self.changes.publish();
         }
         let epoch = vstore::epochs(&self.rtsim).last().copied();
         let store_at = epoch.map(|e| (e, stamp(&vstore::epoch_dir(&self.rtsim, e))));
@@ -1327,9 +1335,20 @@ impl Backend for LiveView {
         self.save().layers()
     }
 
-    /// One time, now: the live marks for every `t`.
+    /// One time, now: the live marks for every `t`, with Create's layers from the world's files.
     fn scene(&self, frame: &str, _t: Option<Tick>) -> Option<Arc<Scene>> {
-        self.live().scenes.get(frame).cloned()
+        let base = self.live().scenes.get(frame).cloned()?;
+        Some(Arc::new(self.save().create().compose(frame, &base)))
+    }
+
+    /// The lease's focus, and Create's chunks for a close view.
+    fn look(&self, frame: &str, area: [f64; 4], bpp: f64) {
+        LiveView::look(self, frame, area, bpp);
+        self.save().create().look(frame, area, bpp);
+    }
+
+    fn find(&self, q: &str, limit: usize) -> Vec<mic_viewer::api::Found> {
+        self.save().find_named(q, limit)
     }
 
     fn card(&self, layer: &str, id: &str, t: Option<Tick>) -> Option<Card> {
@@ -1490,12 +1509,8 @@ impl Backend for LiveView {
     }
 }
 
-fn finite(req: &Request, key: &str) -> Option<f64> {
-    req.num::<f64>(key).filter(|v| v.is_finite())
-}
-
-/// The routes, as mic-viewer's [`App`] answers them, with each `/api/marks` request's view passed
-/// to [`LiveView::look`] first (the lease's focus).
+/// The routes, as mic-viewer's [`App`] answers them: each `/api/marks` request's view reaches
+/// [`LiveView::look`] (the lease's focus) through [`Backend::look`].
 pub struct LiveApp {
     app: App<LiveView>,
 }
@@ -1514,20 +1529,6 @@ impl LiveApp {
 
 impl Handler for LiveApp {
     fn handle(&self, req: &Request) -> Reply {
-        if req.path == "/api/marks"
-            && req.method == "GET"
-            && let (Some(frame), Some(x0), Some(z0), Some(x1), Some(z1), Some(bpp)) = (
-                req.param("frame"),
-                finite(req, "x0"),
-                finite(req, "z0"),
-                finite(req, "x1"),
-                finite(req, "z1"),
-                finite(req, "bpp"),
-            )
-        {
-            let b = [x0.min(x1), z0.min(z1), x0.max(x1), z0.max(z1)];
-            self.app.backend.look(&frame, b, bpp);
-        }
         self.app.handle(req)
     }
 }

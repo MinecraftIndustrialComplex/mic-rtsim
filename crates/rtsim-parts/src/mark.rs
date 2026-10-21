@@ -87,6 +87,13 @@ pub enum Mark {
         c: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         l: Option<String>,
+        /// An outline: closed rings in blocks, filled even-odd (a hole is a ring inside another).
+        /// Declared after `l` so its JSON is mic-viewer's, field for field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rings: Option<Vec<Vec<[f64; 2]>>>,
+        /// Its outline's state: `dash`, `dot` (grey) or `bad` (mic-viewer's area `st`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        st: Option<String>,
     },
     Cell {
         x0: f64,
@@ -208,9 +215,11 @@ impl Mark {
             z: Some(z),
             r: Some(r),
             r#box: None,
+            rings: None,
             ci: None,
             c: None,
             l: None,
+            st: None,
         }
     }
 
@@ -221,10 +230,52 @@ impl Mark {
             z: None,
             r: None,
             r#box: Some(b),
+            rings: None,
             ci: None,
             c: None,
             l: None,
+            st: None,
         }
+    }
+
+    /// An outline of closed rings (blocks), filled even-odd.
+    pub fn rings(id: Option<String>, rings: Vec<Vec<[f64; 2]>>) -> Mark {
+        // Their bounds as the box too, as mic-viewer's `Mark::outline` does, for pages that only
+        // know boxes.
+        let mut b = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for q in rings.iter().flatten() {
+            b = [
+                b[0].min(q[0]),
+                b[1].min(q[1]),
+                b[2].max(q[0]),
+                b[3].max(q[1]),
+            ];
+        }
+        Mark::Area {
+            id,
+            x: None,
+            z: None,
+            r: None,
+            r#box: b[0].is_finite().then_some(b),
+            rings: Some(rings),
+            ci: None,
+            c: None,
+            l: None,
+            st: None,
+        }
+    }
+
+    /// Sets an area's outline state (no-op for other kinds).
+    pub fn with_st(mut self, v: Option<&str>) -> Self {
+        if let Mark::Area { st, .. } = &mut self {
+            *st = v.map(str::to_owned);
+        }
+        self
     }
 
     /// Sets the legend index (no-op for kinds without one).
@@ -335,8 +386,19 @@ impl Mark {
                 add(a[0], a[1]);
                 add(e[0], e[1]);
             }
-            Mark::Area { x, z, r, r#box, .. } => {
-                if let Some(bx) = r#box {
+            Mark::Area {
+                x,
+                z,
+                r,
+                r#box,
+                rings,
+                ..
+            } => {
+                if let Some(rs) = rings.as_ref().filter(|rs| rs.iter().any(|q| !q.is_empty())) {
+                    for q in rs.iter().flatten() {
+                        add(q[0], q[1]);
+                    }
+                } else if let Some(bx) = r#box {
                     add(bx[0], bx[1]);
                     add(bx[2], bx[3]);
                 } else if let (Some(x), Some(z)) = (x, z) {
@@ -467,9 +529,11 @@ impl Mark {
                 z,
                 r,
                 r#box,
+                rings,
                 ci,
                 c,
                 l,
+                st,
             } => {
                 opt_str(w, id);
                 opt_f64(w, *x);
@@ -484,9 +548,24 @@ impl Mark {
                     }
                     None => w.bool(false),
                 }
+                match rings {
+                    Some(rs) => {
+                        w.bool(true);
+                        w.var_u64(rs.len() as u64);
+                        for q in rs {
+                            w.var_u64(q.len() as u64);
+                            for p in q {
+                                w.f64(p[0]);
+                                w.f64(p[1]);
+                            }
+                        }
+                    }
+                    None => w.bool(false),
+                }
                 opt_u16(w, *ci);
                 opt_str(w, c);
                 opt_str(w, l);
+                opt_str(w, st);
             }
             Mark::Cell {
                 x0,
@@ -595,9 +674,25 @@ impl Mark {
                 } else {
                     None
                 },
+                rings: if r.bool()? {
+                    let n = r.len_prefix(1)?;
+                    let mut rs = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let m = r.len_prefix(16)?;
+                        let mut q = Vec::with_capacity(m);
+                        for _ in 0..m {
+                            q.push([r.f64()?, r.f64()?]);
+                        }
+                        rs.push(q);
+                    }
+                    Some(rs)
+                } else {
+                    None
+                },
                 ci: get_u16(r)?,
                 c: get_str(r)?,
                 l: get_str(r)?,
+                st: get_str(r)?,
             },
             kind::CELL => {
                 let (x0, z0, size) = (r.f64()?, r.f64()?, r.f64()?);

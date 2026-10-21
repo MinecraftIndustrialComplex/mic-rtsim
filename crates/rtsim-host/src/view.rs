@@ -417,6 +417,14 @@ impl Backend for HostView {
         self.view().card(layer, id, t)
     }
 
+    fn look(&self, frame: &str, area: [f64; 4], bpp: f64) {
+        self.view().look(frame, area, bpp);
+    }
+
+    fn find(&self, q: &str, limit: usize) -> Vec<mic_viewer::api::Found> {
+        self.view().find(q, limit)
+    }
+
     fn events(&self, q: &EventQuery) -> EventsAnswer {
         self.view().events(q)
     }

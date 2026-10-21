@@ -18,6 +18,12 @@ pub struct Style {
     pub glyph: String,
     pub size: f64,
     pub width: f64,
+    /// The line style of the layer's paths (`rail`, `chain`, `belt`, `flow`, `dash`, `dot`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// Labels are drawn on the map at this zoom and closer (blocks per CSS pixel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_bpp: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,6 +32,12 @@ pub struct LegendEntry {
     pub color: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glyph: Option<String>,
+    /// A line style, for an entry drawn as a line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// A state (`bad`, `warn`, `off`; an area's `dash`, `dot`), for an entry that names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub st: Option<String>,
 }
 
 /// Everything the page needs to draw a layer it has never heard of.
@@ -71,6 +83,8 @@ impl LayerDesc {
                 glyph: "circle".into(),
                 size: 6.0,
                 width: 2.0,
+                line: None,
+                label_bpp: None,
             },
             legend: Vec::new(),
             has_cards: true,
@@ -124,8 +138,37 @@ impl LayerDesc {
                 label: (*l).into(),
                 color: (*c).into(),
                 glyph: None,
+                line: None,
+                st: None,
             })
             .collect();
+        self
+    }
+
+    /// A legend whose entries name a state (`None`: plain).
+    pub fn legend_st(mut self, entries: &[(&str, &str, Option<&str>)]) -> Self {
+        self.legend = entries
+            .iter()
+            .map(|(l, c, st)| LegendEntry {
+                label: (*l).into(),
+                color: (*c).into(),
+                glyph: None,
+                line: None,
+                st: st.map(str::to_owned),
+            })
+            .collect();
+        self
+    }
+
+    /// The line style of its paths.
+    pub fn line(mut self, l: &str) -> Self {
+        self.style.line = Some(l.into());
+        self
+    }
+
+    /// Draws its labels on the map at `bpp` blocks a pixel and closer.
+    pub fn label_bpp(mut self, bpp: f64) -> Self {
+        self.style.label_bpp = Some(bpp);
         self
     }
 
