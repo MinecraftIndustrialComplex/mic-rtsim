@@ -11,9 +11,10 @@
 //! - **The slack.** Once step h has published its commands and counted itself done, the tap takes
 //!   the state lock only if it is free (step h + 1 has not started) and encodes whole units while
 //!   hand-over h + 1 has not been published (an acquire load between units), for at most
-//!   [`BUDGET`]. It stands down for the step when the hand-over held more than one tick (game time
-//!   moved by more than one since the last step: the engine was behind) or the step took more than
-//!   [`STAND_DOWN_STEP`]. Its time is not step time: `last_step_nanos` is stored before it runs.
+//!   [`BUDGET`]. It stands down for the step when the hand-over held more than one TICK record
+//!   (Java ticked again before the engine took the last one: the engine is behind) or the step took
+//!   more than [`STAND_DOWN_STEP`]. Its time is not step time: `last_step_nanos` is stored before it
+//!   runs.
 //! - **The order.** The layer list once an epoch; the archive's pending rows once a period; the
 //!   focus regions' units (found by where each unit's rows were last) and samples once a period;
 //!   then every unit round robin. A cycle is one pass over every unit; its length goes in the
@@ -87,6 +88,10 @@ pub struct Counters {
     pub stood_down: AtomicU64,
     pub next_already: AtomicU64,
     pub cut_by_next: AtomicU64,
+    /// Of the steps stood down, those whose hand-over held more than one TICK record (the engine
+    /// behind); and the steps after which the next step (or `close`) already held the state.
+    pub behind: AtomicU64,
+    pub lock_busy: AtomicU64,
     /// Units encoded, those that met evicted state, their rows and bytes, their total and longest
     /// encode time.
     pub units: AtomicU64,
@@ -104,6 +109,9 @@ pub struct Counters {
     /// The longest a published hand-over waited for the tap: the time since the tap last saw it
     /// absent (at most one unit's encode).
     pub ready_wait_nanos_max: AtomicU64,
+    /// The longest single job (a unit's encode, the archive's, the layer list, a cycle's wrap):
+    /// what the tap can run past its budget, and what a ready hand-over can wait.
+    pub job_nanos_max: AtomicU64,
     /// Whole cycles in this epoch and the last one's length.
     pub cycles: AtomicU64,
     pub cycle_ms: AtomicU64,
@@ -122,7 +130,7 @@ pub struct Counters {
 impl Counters {
     /// Name and value of each counter, as the header holds them, and the budget.
     pub fn snapshot(&self) -> Vec<(String, u64)> {
-        let all: [(&str, &AtomicU64); 27] = [
+        let all: [(&str, &AtomicU64); 30] = [
             ("leased", &self.leased),
             ("epoch", &self.epoch),
             ("lease_stats", &self.lease_stats),
@@ -130,6 +138,8 @@ impl Counters {
             ("stood_down", &self.stood_down),
             ("next_already", &self.next_already),
             ("cut_by_next", &self.cut_by_next),
+            ("behind", &self.behind),
+            ("lock_busy", &self.lock_busy),
             ("units", &self.units),
             ("not_resident", &self.not_resident),
             ("rows", &self.rows),
@@ -141,6 +151,7 @@ impl Counters {
             ("over_budget", &self.over_budget),
             ("overrun_nanos_max", &self.overrun_nanos_max),
             ("ready_wait_nanos_max", &self.ready_wait_nanos_max),
+            ("job_nanos_max", &self.job_nanos_max),
             ("cycles", &self.cycles),
             ("cycle_ms", &self.cycle_ms),
             ("commits", &self.commits),
@@ -166,6 +177,8 @@ impl Counters {
             &self.stood_down,
             &self.next_already,
             &self.cut_by_next,
+            &self.behind,
+            &self.lock_busy,
             &self.units,
             &self.not_resident,
             &self.rows,
@@ -177,6 +190,7 @@ impl Counters {
             &self.over_budget,
             &self.overrun_nanos_max,
             &self.ready_wait_nanos_max,
+            &self.job_nanos_max,
             &self.commit_nanos_max,
         ] {
             a.store(0, Ordering::Release);
@@ -208,7 +222,8 @@ pub(super) struct Tap {
     shared: Arc<Shared>,
     /// The hand-over number at which the lease is next `stat`ed.
     next_stat: u64,
-    last_game_time: Option<i64>,
+    /// TICK records in the last hand-over.
+    ticks: u32,
     /// The epoch the cursor works for; a new one restarts it.
     epoch: u64,
     globals_done: bool,
@@ -284,7 +299,12 @@ struct Io {
     started: bool,
     lease_mtime: Option<SystemTime>,
     lease_ok: bool,
-    unleased_since: Option<Instant>,
+    /// The process id the lease names, and the one the epoch was started for: another sidecar
+    /// is another lease.
+    lease_pid: u32,
+    epoch_pid: u32,
+    /// When the last lease ended: its last renewal plus [`LEASE_LIFE`], or when it was found gone.
+    unleased_since: Option<SystemTime>,
     delete_due: bool,
     last_epoch: u64,
     epoch: u64,
@@ -310,6 +330,8 @@ impl Io {
             started: self.started,
             lease_mtime: self.lease_mtime,
             lease_ok: self.lease_ok,
+            lease_pid: self.lease_pid,
+            epoch_pid: self.lease_pid,
             last_epoch: self.last_epoch,
             epoch,
             ..Io::default()
@@ -358,7 +380,10 @@ pub(super) fn after_step(e: &Arc<Engine>, h: u64, step_nanos: u64) {
         Ok(g) => g,
         Err(TryLockError::Poisoned(p)) => p.into_inner(),
         // Step h + 1 (or `close`) has the state: no slack.
-        Err(TryLockError::WouldBlock) => return,
+        Err(TryLockError::WouldBlock) => {
+            add(&e.stats.tap.lock_busy, 1);
+            return;
+        }
     };
     let st = &mut *guard;
     let leased = st.tap.shared.leased.load(Ordering::Acquire);
@@ -370,9 +395,7 @@ pub(super) fn after_step(e: &Arc<Engine>, h: u64, step_nanos: u64) {
         };
         spawn_stat(e, &st.tap.shared);
     }
-    let gt = st.game_time;
-    let held = st.tap.last_game_time.map_or(1, |l| gt.saturating_sub(l));
-    st.tap.last_game_time = Some(gt);
+    let held = st.tap.ticks;
     if !leased {
         return;
     }
@@ -384,10 +407,20 @@ pub(super) fn after_step(e: &Arc<Engine>, h: u64, step_nanos: u64) {
     let t0 = Instant::now();
     if held > 1 || step_nanos > nanos(STAND_DOWN_STEP) {
         add(&c.stood_down, 1);
+        if held > 1 {
+            add(&c.behind, 1);
+        }
     } else {
         slack(e, st, h, t0);
     }
     maybe_commit(e, &mut st.tap);
+}
+
+impl Tap {
+    /// TICK records the hand-over just read held (`read_observations`).
+    pub(super) fn ticks(&mut self, n: u32) {
+        self.ticks = n;
+    }
 }
 
 fn spawn_stat(e: &Arc<Engine>, shared: &Arc<Shared>) {
@@ -405,7 +438,7 @@ fn restart(tap: &mut Tap, epoch: u64) {
     *tap = Tap {
         shared: Arc::clone(&tap.shared),
         next_stat: tap.next_stat,
-        last_game_time: tap.last_game_time,
+        ticks: tap.ticks,
         epoch,
         regions: std::mem::take(&mut tap.regions),
         mailbox: Mailbox {
@@ -548,54 +581,82 @@ fn run(st: &mut State, c: &Counters, flush: bool, stop: &mut dyn FnMut() -> Opti
             return s;
         }
         let now = Instant::now();
-        match next_job(tap, flush, now) {
-            Job::Globals => {
-                tap.mailbox.layers = Some(rtsim_layers::layers(specs()).to_json());
-                tap.globals_done = true;
-            }
-            Job::Archive => {
-                if !archive_job(tap, archive, *archive_serial, now_game, c) {
-                    tap.archive_at = Some(now);
-                }
-            }
-            Job::Sample(r) => {
-                let mut w = PartWriter::new(part_kind::SAMPLES, 0, u64::MAX, true);
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    resident_only(|| source.write_samples(r, now_game, &mut w))
-                }));
-                let key = PartKey {
-                    kind: part_kind::SAMPLES,
-                    layer: 0,
-                    unit: r.pack(),
-                    region: None,
-                };
-                if w.rows() > 0 {
-                    let parts = w.finish().into_iter().map(|(k, p)| (k.region, p)).collect();
-                    tap.mailbox.units.insert(
-                        key,
-                        Encoded {
-                            resident: true,
-                            at: now_game,
-                            parts,
-                        },
-                    );
-                } else {
-                    tap.mailbox.units.remove(&key);
-                }
-            }
-            Job::Unit(key) => {
-                let (enc, why, regions) = encode_unit(&source, key, now_game, c);
-                tap.regions.insert(key, regions);
-                tap.mailbox.empty.insert(key.layer, why);
-                tap.mailbox.units.insert(key, enc);
-            }
-            Job::Wrap => {
-                if !wrap(tap, &source, c, flush, now) {
-                    return Stop::Done;
-                }
-            }
+        let job = next_job(tap, flush, now);
+        let done = run_job(
+            job,
+            tap,
+            &source,
+            archive,
+            *archive_serial,
+            now_game,
+            c,
+            flush,
+            now,
+        );
+        max(&c.job_nanos_max, nanos(now.elapsed()));
+        if !done {
+            return Stop::Done;
         }
     }
+}
+
+/// Runs one job; false when the cycle's wrap says to stop.
+#[allow(clippy::too_many_arguments)]
+fn run_job(
+    job: Job,
+    tap: &mut Tap,
+    source: &Source,
+    archive: &rtsim_archive::Recorder,
+    archive_serial: u64,
+    now_game: i64,
+    c: &Counters,
+    flush: bool,
+    now: Instant,
+) -> bool {
+    match job {
+        Job::Globals => {
+            tap.mailbox.layers = Some(rtsim_layers::layers(specs()).to_json());
+            tap.globals_done = true;
+        }
+        Job::Archive => {
+            if !archive_job(tap, archive, archive_serial, now_game, c) {
+                tap.archive_at = Some(now);
+            }
+        }
+        Job::Sample(r) => {
+            let mut w = PartWriter::new(part_kind::SAMPLES, 0, u64::MAX, true);
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                resident_only(|| source.write_samples(r, now_game, &mut w))
+            }));
+            let key = PartKey {
+                kind: part_kind::SAMPLES,
+                layer: 0,
+                unit: r.pack(),
+                region: None,
+            };
+            if w.rows() > 0 {
+                let parts = w.finish().into_iter().map(|(k, p)| (k.region, p)).collect();
+                tap.mailbox.units.insert(
+                    key,
+                    Encoded {
+                        resident: true,
+                        at: now_game,
+                        parts,
+                    },
+                );
+            } else {
+                tap.mailbox.units.remove(&key);
+            }
+        }
+        Job::Unit(key) => {
+            let (enc, why, regions) = encode_unit(source, key, now_game, c);
+            tap.regions.insert(key, regions);
+            tap.mailbox.empty.insert(key.layer, why);
+            tap.mailbox.units.insert(key, enc);
+        }
+        Job::Wrap => return wrap(tap, source, c, flush, now),
+    }
+    true
 }
 
 /// Encodes one unit whole, resident only. A unit that met evicted state, or whose builder
@@ -881,7 +942,7 @@ fn stat(e: &Engine, sh: &Shared) {
     add(&c.lease_stats, 1);
     let live = read_lease(&mut io, sh, rtsim);
     let was = sh.leased.load(Ordering::Acquire);
-    if live && !was {
+    if live && (!was || io.lease_pid != io.epoch_pid) {
         let epoch = unix_ms().max(io.last_epoch + 1);
         io.last_epoch = epoch;
         io.begin(epoch);
@@ -901,15 +962,22 @@ fn stat(e: &Engine, sh: &Shared) {
     } else if !live && was {
         sh.leased.store(false, Ordering::Release);
         io.store = None;
-        io.unleased_since = Some(Instant::now());
+        let now = SystemTime::now();
+        io.unleased_since = Some(
+            io.lease_mtime
+                .and_then(|m| m.checked_add(LEASE_LIFE))
+                .map_or(now, |end| end.min(now)),
+        );
         c.leased.store(0, Ordering::Release);
     }
     if !live {
         let due = !io.started
             || io.delete_due
-            || io
-                .unleased_since
-                .is_some_and(|t| t.elapsed() >= DELETE_AFTER);
+            || io.unleased_since.is_some_and(|t| {
+                SystemTime::now()
+                    .duration_since(t)
+                    .is_ok_and(|d| d >= DELETE_AFTER)
+            });
         let view = rtsim.join(vstore::VIEW_DIR);
         if due && view.exists() {
             match std::fs::remove_dir_all(&view) {
@@ -947,6 +1015,7 @@ fn read_lease(io: &mut Io, sh: &Shared, rtsim: &Path) -> bool {
         match Lease::read(rtsim) {
             Ok(l) => {
                 *lock(&sh.focus) = l.focus;
+                io.lease_pid = l.pid;
                 io.lease_ok = true;
             }
             Err(_) => io.lease_ok = false,
