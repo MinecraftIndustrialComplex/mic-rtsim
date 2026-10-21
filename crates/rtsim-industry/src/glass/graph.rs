@@ -88,6 +88,11 @@ pub struct Graph {
     pub cycles: u32,
     /// The longest path latency in ticks: edge latencies plus first cycles (§4.4).
     pub longest_latency: u64,
+    /// Per node: the longest latency from it to the stores its output reaches (its own cycle, the
+    /// first cycle where it has one, then edge latencies and the cycles of the nodes after it, to
+    /// the first store on each path): how long a start of the node takes to arrive (§4.4, choice
+    /// G2-6).
+    pub down_latency: Vec<u64>,
     /// Nodes that couple inputs or regimes: machines with a recipe of two inputs or more, nodes
     /// with two goods in-edges or more, and boilers that drive a domain (`glass.solveRoundsMax`).
     pub multi_input: u32,
@@ -207,6 +212,7 @@ impl Graph {
             cyclic: vec![false; n],
             cycles: 0,
             longest_latency: 0,
+            down_latency: vec![0; n],
             multi_input: 0,
         };
         g.order_and_cycles();
@@ -368,14 +374,56 @@ impl Graph {
         let n = self.nodes.len();
         let mut lat = vec![0u64; n];
         let mut best = 0u64;
+        let first: Vec<u64> = self
+            .nodes
+            .iter()
+            .map(|nd| {
+                nd.rates
+                    .iter()
+                    .filter(|r| r.flags & rate_flags::FIRST_CYCLE != 0 && r.ticks_den != 0)
+                    .map(|r| u64::from(r.ticks_num).div_ceil(u64::from(r.ticks_den)))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        // Downstream, successors first: a path ends at the first store it reaches. A node's output
+        // comes a cycle after it starts: its first cycle, else its slowest.
+        let cycle: Vec<u64> = self
+            .nodes
+            .iter()
+            .zip(&first)
+            .map(|(nd, &f)| {
+                if f > 0 {
+                    return f;
+                }
+                nd.rates
+                    .iter()
+                    .filter(|r| r.ticks_den != 0)
+                    .map(|r| u64::from(r.ticks_num).div_ceil(u64::from(r.ticks_den)))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let mut down = vec![0u64; n];
+        for &v in self.order.iter().rev() {
+            let mut after = 0u64;
+            for &e in self.out_g.of(v) {
+                if self.back[e as usize] {
+                    continue;
+                }
+                let ed = &self.edges[e as usize];
+                let tail = if self.nodes[ed.to as usize].kind == NodeKind::Store {
+                    0
+                } else {
+                    down[ed.to as usize]
+                };
+                after = after.max(u64::from(ed.latency) + tail);
+            }
+            down[v as usize] = cycle[v as usize] + after;
+        }
+        self.down_latency = down;
         for &v in &self.order {
-            let first = self.nodes[v as usize]
-                .rates
-                .iter()
-                .filter(|r| r.flags & rate_flags::FIRST_CYCLE != 0 && r.ticks_den != 0)
-                .map(|r| u64::from(r.ticks_num).div_ceil(u64::from(r.ticks_den)))
-                .max()
-                .unwrap_or(0);
+            let first = first[v as usize];
             let here = lat[v as usize] + first;
             best = best.max(here);
             for &e in self.out_g.of(v) {
@@ -587,6 +635,8 @@ mod tests {
         assert_eq!(g.cyclic, vec![false, true, true, false]);
         assert_eq!(g.cycles, 1);
         assert_eq!(g.longest_latency, 13);
+        // Downstream: the back edge is dropped, and no store ends a path here.
+        assert_eq!(g.down_latency, vec![13, 8, 1, 0]);
         let _ = NONE;
     }
 
