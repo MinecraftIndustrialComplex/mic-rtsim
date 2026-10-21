@@ -143,12 +143,13 @@ public final class OilFieldGameTests {
     // ---- OIL_SURVEY ---------------------------------------------------------------------------------
 
     /**
-     * OIL_SURVEY (OG-2): every chunk whose centre lies within the radius is sampled, generated or not,
-     * nearest first, under the per-tick budget; only chunks with oil go back, as OIL_CHUNKS source 2, a
-     * bottomless chunk with flag 1; chunks outside the radius are not asked; a repeat samples nothing.
-     * The cost split (§7 test 4) is the plugin's own: CDG's real cost is the dieselgenerators bench.
+     * OIL_SURVEY (OG-2, OGC43): every chunk whose centre lies within the radius is covered, nearest first,
+     * under the per-tick budget: a chunk in memory is sampled at once, any other when it next loads, so no
+     * sample reads the biome source of a chunk not in memory. Only chunks with oil go back, as OIL_CHUNKS
+     * source 2, a bottomless chunk with flag 1; chunks outside the radius are not asked; a repeat samples
+     * nothing. The cost split (§7 test 4) is the plugin's own: CDG's real cost is the dieselgenerators bench.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "oil_survey")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "oil_survey")
     public static void surveyAnswersWithTheOilWithinItsRadius(GameTestHelper helper) {
         String test = "surveyAnswersWithTheOilWithinItsRadius";
         ServerLevel level = helper.getLevel();
@@ -169,19 +170,64 @@ public final class OilFieldGameTests {
             if (a > 0)
                 expected.put(p, a);
         }
-        long done0 = s.surveysDone, sampled0 = s.surveySampled, ungen0 = s.ungenerated.samples, gen0 = s.generated.samples,
-                repeats0 = s.repeats, calls0 = src.calls;
-        long start = level.getGameTime();
-        long[] oil0 = DragonKit.nativeOil(0);
+        // The site's 3x3 is in memory when the survey comes; the rest of the radius is not.
+        List<ChunkPos> near = new ArrayList<>();
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dz = -1; dz <= 1; dz++)
+                near.add(new ChunkPos(sc.x + dx, sc.z + dz));
+        List<ChunkPos> forced = new ArrayList<>();
+        for (ChunkPos c : near)
+            if (level.setChunkForced(c.x, c.z, true))
+                forced.add(c);
+        Set<Long> inMemory = new HashSet<>();
+        long[] c0 = new long[7];
+        long[] took = {0, 0};
         int budget = DragonConfig.samplesPerTick();
-        long[] took = {0};
-        DragonKit.oilSurvey(DragonKit.dimension(helper), site.getX(), site.getZ(), radius);
+        long[] oil0 = DragonKit.nativeOil(0);
         helper.startSequence()
+                .thenWaitUntil(() -> {
+                    for (ChunkPos c : near)
+                        check("the site's chunk " + c + " is in memory", level.getChunkSource().getChunkNow(c.x, c.z) != null);
+                })
+                .thenExecute(() -> {
+                    for (long p : within)
+                        if (level.getChunkSource().getChunkNow(ChunkPos.getX(p), ChunkPos.getZ(p)) != null)
+                            inMemory.add(p);
+                    check("the site's 3x3 is in memory and the radius's edge is not (" + inMemory.size() + " of " + within.length + ")",
+                            inMemory.size() >= near.size() && inMemory.size() < within.length);
+                    c0[0] = s.surveysDone;
+                    c0[1] = s.surveySampled;
+                    c0[2] = s.surveyDeferred;
+                    c0[3] = s.deferredSampled;
+                    c0[4] = s.ungenerated.samples;
+                    c0[5] = s.repeats;
+                    c0[6] = src.calls;
+                    took[0] = level.getGameTime();
+                    DragonKit.oilSurvey(DragonKit.dimension(helper), site.getX(), site.getZ(), radius);
+                })
                 .thenWaitUntil(() -> check("the survey finished (" + s.surveysDone + ", " + s.surveysPending() + " pending)",
-                        s.surveysDone > done0 && s.surveysPending() == 0))
+                        s.surveysDone > c0[0] && s.surveysPending() == 0))
+                .thenExecute(() -> {
+                    long now = s.surveySampled - c0[1], later = s.surveyDeferred - c0[2];
+                    check("the chunks in memory were sampled at once (" + now + " of " + inMemory.size() + ")", now == inMemory.size());
+                    check("the others wait for their load (" + later + " of " + (within.length - inMemory.size()) + ", "
+                            + s.deferredPending(level.dimension()) + " pending)",
+                            later == within.length - inMemory.size() && s.deferredPending(level.dimension()) >= later);
+                    check("no sample read a chunk not in memory (" + (s.ungenerated.samples - c0[4]) + ")", s.ungenerated.samples == c0[4]);
+                    record(test, "survey", "radius " + radius + " at " + site.toShortString() + ": " + within.length + " chunks, "
+                            + now + " in memory sampled at once, " + later + " waiting for their load");
+                    // Their loads: each deferred chunk is sampled once it is in memory.
+                    for (long p : within)
+                        if (!inMemory.contains(p) && level.setChunkForced(ChunkPos.getX(p), ChunkPos.getZ(p), true))
+                            forced.add(new ChunkPos(p));
+                })
+                .thenWaitUntil(() -> check("the deferred chunks were sampled as they loaded (" + (s.deferredSampled - c0[3]) + " of "
+                        + (within.length - inMemory.size()) + ")", s.deferredSampled - c0[3] == within.length - inMemory.size()))
                 .thenIdle(5)
                 .thenExecute(() -> {
-                    took[0] = level.getGameTime() - start;
+                    took[1] = level.getGameTime() - took[0];
+                    for (ChunkPos c : forced)
+                        level.setChunkForced(c.x, c.z, false);
                     List<long[]> got = new ArrayList<>();
                     for (long[] e : oilEntries(dim))
                         if (Math.abs(e[0] - sc.x) <= 16 && Math.abs(e[1] - sc.z) <= 16)
@@ -205,16 +251,13 @@ public final class OilFieldGameTests {
                     }
                     int most = perRecord.values().stream().mapToInt(Integer::intValue).max().orElse(0);
                     check("no record carries more than a tick's budget (" + most + " > " + budget + ")", most <= budget);
-                    long sampled = s.surveySampled - sampled0;
-                    check("every chunk within the radius sampled once (" + sampled + " of " + within.length + ")",
-                            sampled == within.length && src.calls - calls0 == within.length);
-                    check("over at least " + (within.length / budget) + " ticks (" + took[0] + ")", took[0] >= within.length / budget - 1);
-                    long ungen = s.ungenerated.samples - ungen0, gen = s.generated.samples - gen0;
-                    check("the far chunks were never generated (" + ungen + " ungenerated, " + gen + " generated)", ungen + gen == within.length && ungen > 0);
-                    record(test, "survey", "radius " + radius + " at " + site.toShortString() + ": " + within.length + " chunks sampled in "
-                            + took[0] + " ticks (budget " + budget + " a tick), " + byChunk.size() + " with oil sent in "
-                            + perRecord.size() + " records, the bottomless one with flag 1; cost " + s.ungenerated + " ungenerated, "
-                            + s.generated + " generated (the test source: CDG's real cost is the dieselgenerators bench)");
+                    check("every chunk within the radius sampled once (" + (src.calls - c0[6]) + " of " + within.length + ")",
+                            src.calls - c0[6] == within.length);
+                    check("over at least " + (within.length / budget) + " ticks (" + took[1] + ")", took[1] >= within.length / budget - 1);
+                    check("still no sample of a chunk not in memory", s.ungenerated.samples == c0[4]);
+                    record(test, "loads", within.length + " chunks sampled in " + took[1] + " ticks (budget " + budget + " a tick), "
+                            + byChunk.size() + " with oil sent in " + perRecord.size() + " records, the bottomless one with flag 1; cost "
+                            + s.generated + " in memory (the test source: CDG's real cost is the dieselgenerators bench)");
                     if (oil0 != null) {
                         long[] oil1 = DragonKit.nativeOil(0);
                         check("the engine indexed them (" + (oil1[NativeEngine.OIL_CHUNKS] - oil0[NativeEngine.OIL_CHUNKS]) + ")",
@@ -227,10 +270,10 @@ public final class OilFieldGameTests {
                     // The same survey again: every chunk is a repeat this session.
                     DragonKit.oilSurvey(DragonKit.dimension(helper), site.getX(), site.getZ(), radius);
                 })
-                .thenWaitUntil(() -> check("the repeat finished", s.surveysDone > done0 + 1 && s.surveysPending() == 0))
+                .thenWaitUntil(() -> check("the repeat finished", s.surveysDone > c0[0] + 1 && s.surveysPending() == 0))
                 .thenExecute(() -> {
-                    check("the repeat sampled nothing (" + (s.repeats - repeats0) + " repeats)",
-                            s.repeats - repeats0 == within.length && s.surveySampled - sampled0 == within.length);
+                    check("the repeat sampled nothing (" + (s.repeats - c0[5]) + " repeats)",
+                            s.repeats - c0[5] == within.length && src.calls - c0[6] == within.length);
                     record(test, "repeat", within.length + " repeats, no sample");
                     src.off();
                     DragonConfig.Test.reset();

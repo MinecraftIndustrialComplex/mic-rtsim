@@ -13,7 +13,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraft.world.level.chunk.status.ChunkStatus;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -22,6 +21,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -33,7 +34,10 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  *   <li><b>New chunks</b>: each chunk as it first generates is sampled once, on the server thread at the
  *   end of a tick.</li>
  *   <li><b>Surveys</b>: an OIL_SURVEY from the engine (a new fire lair asks for the oil within its reach)
- *   samples every chunk within its radius, nearest first, generated or not.</li>
+ *   covers every chunk within its radius, nearest first: a chunk in memory is sampled now, any other the
+ *   first time it loads this session (choice OGC43). A sample of a chunk not in memory reads the biome
+ *   source, which on a real overworld costs Create: Diesel Generators about 80 ms a chunk, and a lair's
+ *   survey covers up to 13,000 chunks; a loaded one costs about 3 ms.</li>
  *   <li><b>Deep Time levels</b>: their oil traps' chunks go out once a session (source 1), before any
  *   sampling; the seam is reflective and UNTESTED (no GameTest server loads Deep Time).</li>
  * </ul>
@@ -44,14 +48,17 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * at the end of the tick. A chunk is sampled at most once a session.
  */
 public final class OilSampler {
-    /** PLACEHOLDER: the time sampling may take in one tick (nanoseconds); one sample always runs. */
+    /**
+     * PLACEHOLDER: the time sampling may take in one tick (nanoseconds); one sample always runs, so a tick
+     * with work pays at least one source call (about 3 ms for Create: Diesel Generators on a loaded chunk).
+     */
     public static final long NANOS_PER_TICK = 2_000_000L;
     /** Surveys wider than this are clamped (the engine asks for 1,024). */
     public static final int MAX_SURVEY_RADIUS = 1024;
 
     private final DragonBridge bridge;
 
-    private record NewChunk(ResourceKey<Level> dimension, long pos) {}
+    private record NewChunk(ResourceKey<Level> dimension, long pos, boolean deferred) {}
 
     private final ConcurrentLinkedQueue<NewChunk> newChunks = new ConcurrentLinkedQueue<>();
 
@@ -71,6 +78,8 @@ public final class OilSampler {
 
     private final ArrayDeque<Survey> surveys = new ArrayDeque<>();
     private final Map<ResourceKey<Level>, LongOpenHashSet> sampled = new HashMap<>();
+    /** Chunks a survey covered while they were not in memory: sampled when they next load (any thread adds). */
+    private final Map<ResourceKey<Level>, Set<Long>> deferred = new ConcurrentHashMap<>();
     private record Key(ResourceKey<Level> dimension, int source) {}
     private final Map<Key, List<int[]>> found = new LinkedHashMap<>();
     private boolean deepTimeDone;
@@ -101,7 +110,7 @@ public final class OilSampler {
 
     public final Cost generated = new Cost(), ungenerated = new Cost();
     public long newSampled, surveySampled, withOil, bottomless, records, surveysAsked, surveysDone, surveysRefused,
-            noSource, repeats, deepTimeChunks, ticksOverBudget;
+            noSource, repeats, deepTimeChunks, ticksOverBudget, surveyDeferred, deferredSampled;
 
     OilSampler(DragonBridge bridge) {
         this.bridge = bridge;
@@ -111,18 +120,27 @@ public final class OilSampler {
         newChunks.clear();
         surveys.clear();
         sampled.clear();
+        deferred.clear();
         found.clear();
         deepTimeDone = false;
         newSampled = surveySampled = withOil = bottomless = records = surveysAsked = surveysDone = surveysRefused = noSource = repeats
-                = deepTimeChunks = ticksOverBudget = 0;
+                = deepTimeChunks = ticksOverBudget = surveyDeferred = deferredSampled = 0;
         generated.samples = generated.nanos = generated.maxNanos = 0;
         ungenerated.samples = ungenerated.nanos = ungenerated.maxNanos = 0;
     }
 
-    /** ChunkEvent.Load (any thread): a chunk generated just now is queued for its sample. */
+    /**
+     * ChunkEvent.Load (any thread): a chunk generated just now, or one a survey deferred, is queued for its
+     * sample.
+     */
     void loaded(LevelChunk chunk, boolean newChunk) {
-        if (newChunk && DragonConfig.sampleNewChunks() && chunk.getLevel() instanceof ServerLevel level)
-            newChunks.add(new NewChunk(level.dimension(), chunk.getPos().toLong()));
+        if (!(chunk.getLevel() instanceof ServerLevel level))
+            return;
+        long pos = chunk.getPos().toLong();
+        Set<Long> waiting = deferred.get(level.dimension());
+        boolean wasDeferred = waiting != null && waiting.remove(pos);
+        if (wasDeferred || (newChunk && DragonConfig.sampleNewChunks()))
+            newChunks.add(new NewChunk(level.dimension(), pos, wasDeferred));
     }
 
     /** OIL_SURVEY from the engine. */
@@ -189,10 +207,19 @@ public final class OilSampler {
             if (n == null)
                 break;
             ServerLevel level = s.server().getLevel(n.dimension());
-            if (level == null || !seen(level, n.pos()))
+            if (level == null || isSampled(level, n.pos()))
                 continue;
+            if (!inMemory(level, n.pos())) {
+                // Unloaded again before its sample: it waits for its next load (OGC43).
+                defer(level, n.pos());
+                continue;
+            }
+            seen(level, n.pos());
             sample(level, new ChunkPos(n.pos()), true);
-            newSampled++;
+            if (n.deferred())
+                deferredSampled++;
+            else
+                newSampled++;
             budget--;
             any = true;
         }
@@ -204,10 +231,18 @@ public final class OilSampler {
                 continue;
             }
             long pos = v.chunks[v.next++];
-            if (!seen(v.level, pos)) {
+            if (isSampled(v.level, pos)) {
                 repeats++;
                 continue;
             }
+            if (!inMemory(v.level, pos)) {
+                // Never read the biome source of a chunk not in memory (OGC43): it is sampled when it loads.
+                defer(v.level, pos);
+                surveyDeferred++;
+                any = true; // the time budget bounds a run of deferrals too
+                continue;
+            }
+            seen(v.level, pos);
             sample(v.level, new ChunkPos(pos), false);
             surveySampled++;
             budget--;
@@ -223,6 +258,23 @@ public final class OilSampler {
         return sampled.computeIfAbsent(level.dimension(), k -> new LongOpenHashSet()).add(pos);
     }
 
+    private boolean isSampled(ServerLevel level, long pos) {
+        LongOpenHashSet done = sampled.get(level.dimension());
+        return done != null && done.contains(pos);
+    }
+
+    /** A full chunk in memory, asked without blocking (server thread). */
+    private static boolean inMemory(ServerLevel level, long pos) {
+        return level.getChunkSource().getChunkNow(ChunkPos.getX(pos), ChunkPos.getZ(pos)) != null;
+    }
+
+    private void defer(ServerLevel level, long pos) {
+        deferred.computeIfAbsent(level.dimension(), k -> ConcurrentHashMap.newKeySet()).add(pos);
+        // A load between the check and the add would be missed: look again now it is noted.
+        if (inMemory(level, pos) && deferred.get(level.dimension()).remove(pos))
+            newChunks.add(new NewChunk(level.dimension(), pos, true));
+    }
+
     private void sample(ServerLevel level, ChunkPos p, boolean fresh) {
         OilSource src = OilSources.forLevel(level);
         if (src == null) {
@@ -230,8 +282,9 @@ public final class OilSampler {
             return;
         }
         // In memory with its biomes (what LevelReader.getNoiseBiome reads), or not: a chunk saved but
-        // unloaded costs what an ungenerated one does (both read the biome source).
-        boolean wasGenerated = fresh || level.getChunkSource().getChunk(p.x, p.z, ChunkStatus.BIOMES, false) != null;
+        // unloaded costs what an ungenerated one does (both read the biome source). Since OGC43 only chunks
+        // in memory are sampled, so "ungenerated" stays at zero: the GameTests check that it does.
+        boolean wasGenerated = fresh || inMemory(level, p.toLong());
         long t0 = System.nanoTime();
         int amount = src.baseOil(level, p);
         long dt = System.nanoTime() - t0;
@@ -286,5 +339,11 @@ public final class OilSampler {
     /** New chunks waiting for their sample. */
     public int newChunksPending() {
         return newChunks.size();
+    }
+
+    /** Chunks a survey covered that wait for their load, in one dimension. */
+    public int deferredPending(ResourceKey<Level> dimension) {
+        Set<Long> d = deferred.get(dimension);
+        return d == null ? 0 : d.size();
     }
 }
