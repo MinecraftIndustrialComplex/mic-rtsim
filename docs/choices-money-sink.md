@@ -59,3 +59,33 @@ Made by the tribute agent (branch `feat/money-sink-tribute`): SINK.md §4.5, §4
 | MSC56 | **TEST order 32, TRIBUTE_START** (u64 village, u64 lair): a raid by the lair without a dragon, at the later of game time's world tick and the dragons' and the world's clocks; ignored while the dragons are off. Inspection: `nDragonsVillageRisk` and `nDragonsTribute` (seasons paid, coins placed, coins waiting, stacks in flight, world-wide). On `NativeEngine` only, as the lead's `worksGrant`. | A GameTest cannot wait for a real raid. World-wide totals because the GameTest world is reused: tests compare before and after. |
 | MSC57 | **The plugin looks for a lair's chest every 100 ticks** (PLACEHOLDER `Lairs.CHEST_SCAN_TICKS`) over the loaded chunks of each lair it reported this session: a `ChestBlockEntity` inside the box with an empty slot, the nearest the lair's home, ties by block order. A chest whose loot is not rolled yet counts as having room. | Cheap (a lair's box covers a few chunks, their block entities only). Reading an unrolled chest's slots would roll its loot early; the transfer rolls it when it inserts. |
 | MSC58 | **LAIR_CHEST once per lair per session, and again** when that chest is gone, full, or its chunk was unloaded since the report (a different chunk object), and after `Module.ECOLOGY` is switched back on. | An unloaded chunk is what fails a transfer, and the engine forgets a chest whose transfer failed: re-reporting after every reload keeps the two in step without hearing the COMMAND_RESULT in the plugin. |
+
+## For Ben
+
+Each item is reversible and already built as the first option; say which to change.
+
+1. **Work prices are tiny until the world trades a template's goods.** With the placeholder labour
+   (MSC3: 20 thousandths of a worker-day per item, 10 per block placed) the plains lamp costs 0.08 coin
+   and a golem about 0.25 coin (GameTests: `spent` 80 for a lamp, 330 for a lamp and a golem). A village
+   at its ceiling therefore buys its whole catalogue within days of reaching it, and then the purse just
+   grows (MS-9).
+   - (a, recommended) Keep the placeholders until the world's goods include planks, iron and torches,
+     then price works by the recipe graph as SINK.md §4.3 says. The sink still removes every coin above
+     the ceiling either way: the price only sets how fast the works appear.
+   - (b) Raise the two labour tunables now (for example 1 worker-day per item) so a lamp costs a few
+     coins and a golem tens of coins.
+2. **Caps count census residents, not houses** (MSC4; SINK.md's table says houses). The sim does not know
+   a vanilla village's houses, only its residents.
+   - (a, recommended) Residents: one lamp per 3, one Ribbit lamp per 2, one golem per 5.
+   - (b) Count beds or houses from the village's structure pieces on the Java side and send them with
+     the census.
+3. **A broken work is never rebought** (MSC4: caps count works ever bought).
+   - (a, recommended) Never rebuy, so a player cannot farm a village's purse by breaking lamps.
+   - (b) Count standing works (a census of the village's work blocks) and rebuy what is gone.
+4. **One work in flight per village** (MSC13). A village whose chunks are never loaded buys one work and
+   waits; its purse keeps growing until a player comes by.
+   - (a, recommended) Keep it: no coin is spent on works nobody can place.
+   - (b) Allow a small queue (for example 3) so a visited village shows several new works at once.
+5. **Golems are bought only under threat** (MSC5: raided, or tribute lapsed, within the last season).
+   - (a, recommended) Only under threat.
+   - (b) Also up to the cap in peace time, as vanilla's own golem spawning does.
