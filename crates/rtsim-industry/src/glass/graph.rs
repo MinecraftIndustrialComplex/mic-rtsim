@@ -392,12 +392,16 @@ impl Graph {
             })
             .collect();
         // Downstream, successors first: a path ends at the first store it reaches. A node's output
-        // comes a cycle after it starts: its first cycle, else its slowest.
+        // comes a cycle after it starts: its first cycle, else its slowest. A heater's rate is
+        // its burn per fuel, not a transit: a fuel lights it at once (choice G2-23).
         let cycle: Vec<u64> = self
             .nodes
             .iter()
             .zip(&first)
             .map(|(nd, &f)| {
+                if nd.kind == NodeKind::Heater {
+                    return 0;
+                }
                 if f > 0 {
                     return f;
                 }

@@ -3093,6 +3093,147 @@ mod replay_path {
         e.check_books().expect("books");
     }
 
+    /// Corpus 3, arm_burners_depots as the exit run compiled it: two fan-blasted depots, each fed
+    /// ore by a chute, each heated by a blaze burner; one arm feeds the burners coal from a smart
+    /// chute and carries what the depots make to a chest. The arm closes a loop through the heat
+    /// edges. Inventories: 0 the output chest, 1 and 3 the ore, 2 the coal.
+    fn arm_depots() -> B {
+        let mut b = B::default();
+        let out = b.store(0);
+        b.nodes[out as usize].capacity = 54;
+        let ore1 = b.store(1);
+        let coal = b.store(2);
+        let ore3 = b.store(3);
+        for v in [ore1, coal, ore3] {
+            b.nodes[v as usize].capacity = 27;
+        }
+        let blast = b.recipe(&[(ORE, 1)], &[(CRUSHED, 1)]);
+        b.recipes[blast as usize].recipe_type = recipe_type::BLASTING;
+        b.recipes[blast as usize].heat = heat::NEEDS_HEATED;
+        let fuel = b.recipe(&[(COAL, 1)], &[]);
+        b.recipes[fuel as usize].recipe_type = recipe_type::FUEL;
+        b.recipes[fuel as usize].heat = heat::KINDLED;
+        let shared = |batch, num, den| RateEntry {
+            level: 0,
+            recipe: None,
+            batch,
+            ticks_num: num,
+            ticks_den: den,
+            flags: rate_flags::SHARED,
+        };
+        let mut heaters = Vec::new();
+        for left in [1582, 782] {
+            let h = b.node(
+                NodeKind::Heater,
+                model::BLAZE_BURNER,
+                0,
+                vec![entry(Some(fuel), 1, 1600)],
+            );
+            b.nodes[h as usize].params = [left, i64::from(heat::KINDLED), 1600, 500];
+            heaters.push(h);
+        }
+        let mut depots = Vec::new();
+        for _ in 0..2 {
+            let m = b.node(
+                NodeKind::Machine,
+                model::FAN_ZONE,
+                node_flags::PASS_THROUGH,
+                vec![RateEntry {
+                    ticks_num: 319,
+                    ticks_den: 2,
+                    ..entry(Some(blast), 16, 0)
+                }],
+            );
+            depots.push(m);
+        }
+        let smart = b.node(
+            NodeKind::Mover,
+            model::SMART_CHUTE,
+            0,
+            vec![shared(1, 7, 1)],
+        );
+        let arm = b.node(
+            NodeKind::Mover,
+            model::ARM,
+            node_flags::BOUNDED,
+            vec![shared(64, 110, 7)],
+        );
+        b.nodes[arm as usize].rule = rule::PREFER_FIRST;
+        let ordered = |b: &mut B, kind, from, to, order, filter: &[Good]| {
+            let e = b.edge_k(kind, from, to, filter);
+            b.edges[e as usize].order = order;
+            e
+        };
+        for (ore, depot) in [(ore1, depots[0]), (ore3, depots[1])] {
+            let chute = b.node(NodeKind::Mover, model::CHUTE, 0, vec![shared(16, 7, 1)]);
+            ordered(&mut b, EdgeKind::Chute, ore, chute, 0, &[]);
+            ordered(&mut b, EdgeKind::Chute, chute, depot, 0, &[]);
+        }
+        ordered(&mut b, EdgeKind::Chute, coal, smart, 0, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, smart, arm, 0, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, depots[0], arm, 1, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, depots[1], arm, 2, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, arm, heaters[0], 0, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, arm, heaters[1], 1, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, arm, out, 2, &[CRUSHED]);
+        for (h, m) in heaters.iter().zip(&depots) {
+            let e = ordered(&mut b, EdgeKind::Heat, *h, *m, 0, &[]);
+            b.edges[e as usize].param = 3;
+        }
+        b
+    }
+
+    /// The exit run's arm_burners_depots made a fifth of the control while away. Two causes: the
+    /// path latency counted each burner's 1,600 ticks per coal as a transit (a start hold of
+    /// 3,500 ticks, in which the unfed burners went out), and the solve's first round read a
+    /// burner later in the order as unlit, capping its depot's input at nothing for good
+    /// (choices G2-23, G2-24). Replayed here, both depots blast at their rate once the holds
+    /// are over: the start's and each burner's first take of coal, when the arm's flow rises and
+    /// the whole arm waits the loop's bound.
+    #[test]
+    fn an_arm_fed_pair_of_heated_depots_replays_at_its_rate() {
+        let b = arm_depots();
+        let mut s = setup(&b, 4);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[&[], &[(ORE, 1200)], &[(COAL, 58)], &[(ORE, 1200)]],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        let c = e.glass.districts[&D].compiled.as_ref().expect("compiled");
+        assert_eq!(bound(&c.sol, CRUSHED).in_l, Q::new(2 * 16 * 2, 319));
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(2200));
+        let early = e.sim_stock(D).expect("replaying").get(CRUSHED);
+        let span = 6000u64;
+        e.advance_to(Tick(200 + span));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.oscillations, 0);
+        let st = e.sim_stock(D).expect("replaying");
+        let made = st.get(CRUSHED);
+        let rate = 2.0 * 16.0 / 159.5;
+        assert!(made as f64 <= rate * span as f64 + 2.0, "{st:?}");
+        assert!(made as f64 >= 0.85 * rate * span as f64, "{st:?}");
+        // Past the holds, at the rate.
+        let late = (made - early) as f64;
+        assert!((late - rate * 4000.0).abs() <= 3.0, "{late}");
+        // What is taken and not yet made sits on the depots and in the arm's hand.
+        let wip = 1200 * 2 - st.get(ORE) - made;
+        assert!((0..=2 * 16 + 2).contains(&wip), "{wip}");
+        e.check_books().expect("books");
+    }
+
     /// One switched line (its press's output on a belt `lat` ticks long) replayed from its unload
     /// at 200 to `200 + span`, reading the stock at `reads` (sorted, inside the span): the stocks
     /// read, then the final stock and report.

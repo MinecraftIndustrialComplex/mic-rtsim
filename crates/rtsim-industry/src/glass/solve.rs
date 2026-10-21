@@ -1837,12 +1837,16 @@ impl<'a> Solver<'a> {
         let max = max.max(1);
         let mut rounds = 0;
         let mut converged = false;
-        // Heaters start lit unless gated (the duty the first backward pass assumes).
+        // Heaters start lit unless gated (the duty the first backward pass assumes), and so does
+        // the first forward pass: a machine before its heater in the order (a loop through the
+        // heat edge) reads the round before's duty, and a duty of 0 there would cap its inputs
+        // at nothing for good (choice G2-24). L only comes down from there.
         for v in 0..self.g.nodes.len() as u32 {
             if self.g.node(v).kind == NodeKind::Heater && self.rg.gate_off[v as usize] {
                 self.duty_assumed[v as usize] = Q::ZERO;
             }
         }
+        self.duty.clone_from(&self.duty_assumed);
         let mut warming = vec![false; self.g.nodes.len()];
         let mut limit = max;
         // A probe (`as_sink`) never looks for over-fed loops itself.
