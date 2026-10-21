@@ -13,7 +13,7 @@
 //! list. A routine row is one push of 32 bytes; a payload's text is made only for a row at notable
 //! severity or above.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::dict::Dictionary;
 use crate::kinds::{KINDS, Kind};
@@ -288,7 +288,7 @@ impl Tape {
 
 /// The engine's side: the pending buffer and the dictionary, in the engine's state. Takes the
 /// modules' tapes each step ([`Recorder::absorb`]) and hands a save its rows ([`Recorder::take`]).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Recorder {
     pending: Pending,
     dict: Dictionary,
@@ -296,6 +296,13 @@ pub struct Recorder {
     kinds: Vec<Option<u16>>,
     /// Frame number by dimension id; `None` when the dictionary had no frame left.
     frames: HashMap<u32, Option<u8>>,
+}
+
+impl Default for Recorder {
+    /// A recorder with an empty dictionary.
+    fn default() -> Recorder {
+        Recorder::new(Dictionary::new())
+    }
 }
 
 impl Recorder {
@@ -440,16 +447,88 @@ pub fn rows_on(tape: &Tape) -> Vec<(Kind, u32, Row)> {
         .collect()
 }
 
-/// Rows and payload bytes a tape holds, and what it dropped: `rtsim-cli sim` counts R from them.
-pub fn drain_counts(tape: &mut Tape) -> (u64, u64, Dropped) {
-    let n = tape.rows.len() as u64;
-    let bytes = tape.payloads.iter().map(|p| p.1.len() as u64).sum();
-    tape.rows.clear();
-    tape.payloads.clear();
-    tape.ids.clear();
-    tape.dims.clear();
-    (n, bytes, std::mem::take(&mut tape.dropped))
+/// What a run recorded, for `rtsim-cli sim`'s R (rows per game day, VIEWER.md §10.4): every row
+/// its tapes took or dropped past their cap, by kind and by severity. Drain the tapes at least once
+/// a game day so a busy day's rows are counted by kind, not only as dropped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Meter {
+    /// Rows taken, by kind name.
+    pub by_kind: BTreeMap<&'static str, u64>,
+    /// Rows taken or dropped, by severity (routine, minor, notable, major).
+    pub by_severity: [u64; 4],
+    /// Leg rows taken.
+    pub legs: u64,
+    /// Payload bytes taken.
+    pub payload_bytes: u64,
+    /// Rows the tapes dropped past their cap or for want of a frame (in `by_severity` too, when
+    /// their severity is known).
+    pub dropped: u64,
 }
+
+impl Meter {
+    pub fn new() -> Meter {
+        Meter::default()
+    }
+
+    /// Counts a tape's rows and empties it (its on switch stays as it was).
+    pub fn drain(&mut self, tape: &mut Tape) {
+        for r in &tape.rows {
+            if let Some(k) = Kind::from_index(row::kind(r) as usize) {
+                *self.by_kind.entry(k.name()).or_default() += 1;
+            }
+            self.by_severity[row::severity(r) as usize] += 1;
+            if row::flags(r) & LEG != 0 {
+                self.legs += 1;
+            }
+        }
+        self.payload_bytes += tape.payloads.iter().map(|p| p.1.len() as u64).sum::<u64>();
+        let d = std::mem::take(&mut tape.dropped);
+        for (a, b) in self.by_severity.iter_mut().zip(d.by_severity) {
+            *a += b;
+        }
+        self.dropped += d.rows();
+        tape.rows.clear();
+        tape.payloads.clear();
+        tape.ids.clear();
+        tape.dims.clear();
+    }
+
+    /// Adds another meter's counts (a run's parts).
+    pub fn add(&mut self, o: &Meter) {
+        for (k, n) in &o.by_kind {
+            *self.by_kind.entry(k).or_default() += n;
+        }
+        for (a, b) in self.by_severity.iter_mut().zip(o.by_severity) {
+            *a += b;
+        }
+        self.legs += o.legs;
+        self.payload_bytes += o.payload_bytes;
+        self.dropped += o.dropped;
+    }
+
+    /// Every row counted, taken or dropped.
+    pub fn rows(&self) -> u64 {
+        self.by_kind.values().sum::<u64>() + self.dropped
+    }
+
+    /// Rows per game day over `days`.
+    pub fn per_day(&self, days: f64) -> f64 {
+        if days > 0.0 {
+            self.rows() as f64 / days
+        } else {
+            0.0
+        }
+    }
+
+    /// Game days of full detail the full tier keeps at `per_day` rows a day: its 128 MiB share of
+    /// the default budget holds 4,194,304 rows.
+    pub fn full_days(per_day: f64) -> Option<f64> {
+        (per_day > 0.0).then(|| FULL_TIER_ROWS as f64 / per_day)
+    }
+}
+
+/// Rows the full tier's 128 MiB share of the default 256 MiB budget holds, at 32 bytes a row.
+pub const FULL_TIER_ROWS: u64 = (128 << 20) / 32;
 
 #[cfg(test)]
 mod tests {
@@ -540,6 +619,33 @@ mod tests {
         let (b, _) = r.take();
         assert_eq!(b.rows.len(), MAX_TAPE_ROWS);
         assert_eq!(b.dropped.by_severity[0], 3);
+    }
+
+    #[test]
+    fn a_meter_counts_taken_and_dropped_rows() {
+        let mut t = Tape::new();
+        t.set_on(true);
+        for i in 0..MAX_TAPE_ROWS as u64 + 2 {
+            t.event(TRAVEL_CARAVAN, At::new(i, 0, 0, 0), 0, 0, 0);
+        }
+        let mut m = Meter::new();
+        m.drain(&mut t);
+        assert!(t.is_empty() && t.is_on());
+        t.event(CONFLICT_RAID, At::new(9, 1, 0, 0), 1, 2, 3)
+            .text(|| "loot: 2 bread".into());
+        t.leg(DRAGONS_FLIGHT, 0, (0, 0, 0), (10, 5, 5), 7);
+        let mut m2 = Meter::new();
+        m2.drain(&mut t);
+        m.add(&m2);
+        assert_eq!(m.rows(), MAX_TAPE_ROWS as u64 + 4);
+        assert_eq!(m.dropped, 2);
+        assert_eq!(m.by_kind["travel.caravan"], MAX_TAPE_ROWS as u64);
+        assert_eq!((m.by_kind["conflict.raid"], m.legs), (1, 1));
+        assert_eq!(m.by_severity, [MAX_TAPE_ROWS as u64 + 2, 0, 1, 1]);
+        assert_eq!(m.payload_bytes, 13);
+        assert_eq!(m.per_day(2.0), (MAX_TAPE_ROWS as u64 + 4) as f64 / 2.0);
+        assert_eq!(Meter::full_days(1_000.0), Some(4_194.304));
+        assert_eq!(Meter::full_days(0.0), None);
     }
 
     #[test]
