@@ -8,6 +8,9 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Goods;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.TickGate;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
@@ -81,13 +84,16 @@ import java.util.stream.Collectors;
  *
  * <p><b>Judging</b>, per good, with {@code c} the control's change and {@code s} the far copy's: on the
  * native engine {@code s} is the far copy's own change (the engine's reconcile is in it); on the stub, which
- * simulates nothing, it is the far copy's change plus every IND_CHUNK_RECONCILE delta a fresh native
- * industry engine sends the far district over the same records ({@link NativeEngine#glassReplayOffline}).
+ * simulates nothing, every IND_CHUNK_RECONCILE delta a fresh native industry engine sends the far district
+ * over the same records ({@link NativeEngine#glassReplayOffline}) is applied to the far stores after the
+ * reload, through the stock access the reconciler uses, takes before puts: {@code s} is again the far
+ * copy's own change, and a replay that fills a store leaves no room for the settle to fill twice (a delta
+ * the offline engine sends only over the later records is added on top, with a WARNING).
  * <ul>
  *   <li><b>at or below</b>: {@code sign(c) x s <= |c| + slack}, and {@code |s| <= slack} for {@code c = 0}:
  *       the replay never makes more, or uses more, than the control did;</li>
  *   <li><b>within tolerance</b>: {@code |s - c| <= tol}, {@code tol = slack + latency x |c| / span + WIP + }
- *       {@link #REL_TOL}{@code  x |c|}.</li>
+ *       {@code input WIP yield + }{@link #REL_TOL}{@code  x |c|}.</li>
  * </ul>
  * {@code slack} is one batch or stack in flight (the larger of the good's stack size, {@link #FLUID_IN_FLIGHT}
  * for a fluid, and the control report's quantum times its window) plus the control's noise over the span
@@ -95,7 +101,10 @@ import java.util.stream.Collectors;
  * line latency plus the ticks neither copy ran: from the snapshot to the first record telling the engine
  * the district left LIVE, and from the first IND_CHUNK_LOADED to the tick every far chunk ticks again.
  * {@code WIP} is what the far copy held outside its stores at the snapshot (machines, belts, depots, item
- * entities), frozen in the saved chunks. UNBOUNDED goods are judged only at or below. Every comparison is a
+ * entities), frozen in the saved chunks. {@code input WIP yield} (G2-25) is what the far machines' held inputs
+ * at the snapshot make of the good at the compile's recipe yields ({@link #inputYield}): the replay leaves
+ * machine WIP alone when the stores run dry, the control's machines finish it; within tolerance only, not
+ * at or below. UNBOUNDED goods are judged only at or below. Every comparison is a
  * {@code [gametest] glass replay <factory>: row} line: good, class, control, simulated, slack, tolerance,
  * verdict; a {@code terms} line says what the tolerance is made of.
  *
@@ -139,6 +148,8 @@ public final class GlassReplayGameTests {
     static final int TOP = 20;
     /** A wait on chunk IO, in ticks; each failed check sleeps 5 ms, so this is at least a minute. */
     static final int IO_TICKS = 12_000;
+    /** Stub: ticks after the reload the offline reconcile may take to appear before the settle goes on without one. */
+    static final int OFFLINE_WAIT = 60;
     /** The factories the partial variant runs (their district spans several chunks wherever the yard lands). */
     static final Set<String> PARTIAL = Set.of("brass_tunnels", "boiler_overstress");
 
@@ -255,6 +266,15 @@ public final class GlassReplayGameTests {
         int prefix = -1;
         /** The far report's completed windows when last polled before eligibility. */
         long windowsSeen = -1;
+        /** The far compile at eligibility. */
+        GlassKit.Graph graph;
+        /** Per good: what the far machines' held inputs at the snapshot make at the recipe yields (G2-25). */
+        final Map<String, Double> inputYield1 = new TreeMap<>();
+        /** Per good: the held inputs {@link #inputYield1} counts, summed over the machines. */
+        final Map<String, Map<String, Long>> inputFrom1 = new TreeMap<>();
+        /** Stub: the offline reconcile applied after the reload, per good, as sent and as applied (null: not yet). */
+        Map<String, Long> offlinePlanned, offlineApplied;
+        long nextOfflineAt = -1;
         final List<String> failures = new ArrayList<>();
         String last = "starting";
 
@@ -514,10 +534,14 @@ public final class GlassReplayGameTests {
         run.c1 = stock(level, run.cPos);
         run.f1 = stock(level, run.fPos);
         run.wip1 = wip(level, run.farMin, run.farMax, run.fPos);
+        inputYield(run, level);
         run.fReport1 = fr;
         run.cReport1 = run.judge ? report(run, run.cd) : null;
         IndustryKit.record(run.test, "snapshot 1", "at " + run.t1 + ": control " + run.c1 + " over " + run.cPos.size() + " stores; far "
                 + run.f1 + " over " + run.fPos.size() + " stores; far WIP " + run.wip1);
+        IndustryKit.record(run.test, "input WIP yield", run.inputYield1.isEmpty() ? "none: no far machine held a recipe's inputs"
+                : run.inputYield1.entrySet().stream().map(e -> String.format(Locale.ROOT, "%s %.1f from %s", e.getKey(), e.getValue(),
+                        run.inputFrom1.get(e.getKey()))).collect(Collectors.joining("; ")));
         if (run.cPos.size() != run.fPos.size())
             IndustryKit.record(run.test, "WARNING", "the copies' stores differ: control " + run.cPos.size() + ", far " + run.fPos.size());
         if (run.cReport1 != null)
@@ -681,6 +705,20 @@ public final class GlassReplayGameTests {
 
     static void settle(Run run) {
         ServerLevel level = run.level();
+        if (run.stub && run.judge && run.offlineApplied == null) {
+            if (run.now() < run.nextOfflineAt)
+                return;
+            run.nextOfflineAt = run.now() + 10;
+            if (!applyOffline(run)) {
+                run.last = "stub: no offline reconcile yet, " + (run.now() - run.loadedAt) + " ticks after the reload";
+                if (run.now() - run.loadedAt < OFFLINE_WAIT)
+                    return;
+                run.offlinePlanned = Map.of();
+                run.offlineApplied = Map.of();
+                IndustryKit.record(run.test, "offline reconcile applied", "none: the offline engine sent the far district no reconcile by "
+                        + run.now() + ", " + (run.now() - run.loadedAt) + " ticks after the reload");
+            }
+        }
         boolean busy = IndustryKit.ind().reconciler().held() > run.heldBase;
         for (ChunkPos c : run.farChunks) {
             LevelChunk ch = level.getChunkSource().getChunkNow(c.x, c.z);
@@ -778,6 +816,23 @@ public final class GlassReplayGameTests {
             }
             IndustryKit.record(test, "offline reconcile", (t.length / 3) + " deltas: " + offline + "; per inventory " + perInventory);
         }
+        // Stub: the offline reconcile went into the far stores after the reload (applyOffline); only a delta
+        // the offline engine sent over the later records is still outside the world change.
+        Map<String, Long> remainder = new TreeMap<>();
+        Map<String, Long> applied = run.offlineApplied == null ? Map.of() : run.offlineApplied;
+        if (run.stub && run.judge) {
+            Map<String, Long> planned = run.offlinePlanned == null ? Map.of() : run.offlinePlanned;
+            TreeSet<String> keys = new TreeSet<>(offline.keySet());
+            keys.addAll(planned.keySet());
+            for (String k : keys) {
+                long r = offline.getOrDefault(k, 0L) - planned.getOrDefault(k, 0L);
+                if (r != 0)
+                    remainder.put(k, r);
+            }
+            if (!remainder.isEmpty())
+                IndustryKit.record(test, "WARNING", "the offline reconcile over every record differs from the one applied after the reload by "
+                        + remainder + ": counted on top of the world change");
+        }
         if (!run.stub && results == 0)
             IndustryKit.record(test, "WARNING", "no IND_RECONCILE_RESULT for the far district after the snapshot");
 
@@ -813,6 +868,7 @@ public final class GlassReplayGameTests {
         goods.addAll(cGoods.keySet());
         goods.addAll(fGoods.keySet());
         goods.addAll(offline.keySet());
+        goods.addAll(applied.keySet());
         goods.addAll(reconciled.keySet());
         List<String> failed = new ArrayList<>();
         int judged = 0, moved = 0;
@@ -820,7 +876,7 @@ public final class GlassReplayGameTests {
         for (String g : goods) {
             long c = run.c1.containsKey(g) || c2.containsKey(g) ? c2.getOrDefault(g, 0L) - run.c1.getOrDefault(g, 0L) : 0;
             long world = f2.getOrDefault(g, 0L) - run.f1.getOrDefault(g, 0L);
-            long rec = offline.getOrDefault(g, 0L);
+            long rec = remainder.getOrDefault(g, 0L);
             long s = world + rec;
             GlassReport.Good cg = cGoods.get(g), fg = fGoods.get(g);
             int cls = fg != null ? fg.cls() : cg != null ? cg.cls() : -1;
@@ -833,8 +889,9 @@ public final class GlassReplayGameTests {
             double rate = span > 0 ? Math.abs(c) / (double) span : 0;
             double lat = latency * rate;
             long wip = run.wip1.getOrDefault(g, 0L);
+            double inputs = run.inputYield1.getOrDefault(g, 0.0);
             double rel = REL_TOL * Math.abs(c);
-            double tol = slack + lat + wip + rel;
+            double tol = slack + lat + wip + inputs + rel;
             boolean below = c == 0 ? Math.abs(s) <= slack : Math.signum(c) * s <= Math.abs(c) + slack;
             boolean within = Math.abs(s - c) <= tol;
             boolean unbounded = cls == GlassReport.UNBOUNDED;
@@ -843,9 +900,12 @@ public final class GlassReplayGameTests {
                     : (below ? "at or below pass" : "at or below FAIL") + ", " + (unbounded ? "within not judged (unbounded)" : within ? "within pass" : "within FAIL"))
                     + (c != 0 && slack >= Math.abs(c) ? " (WEAK: the slack covers the control's change)" : "");
             IndustryKit.record(test, "row", String.format(Locale.ROOT, "%s | %s | %s | control %+d | simulated %+d (world %+d, reconcile %+d) | slack %.1f | tolerance %.1f | %s",
-                    run.f.name(), g, clsName, c, s, world, run.stub ? rec : reconciled.getOrDefault(g, 0L), slack, tol, verdict));
-            IndustryKit.record(test, "terms", String.format(Locale.ROOT, "%s: in flight %.1f (stack %d, batch %.1f), noise %.1f (z %.1f x sigma %.6f/t x %d), latency %d x %.5f/t = %.1f, WIP %d, relative %.1f",
-                    g, inFlight, stack, batch, noise, CHECKSUM_Z, cg == null ? 0 : cg.sigma(), span, latency, rate, lat, wip, rel));
+                    run.f.name(), g, clsName, c, s, world, run.stub ? applied.getOrDefault(g, 0L) + rec : reconciled.getOrDefault(g, 0L), slack, tol, verdict));
+            IndustryKit.record(test, "terms", String.format(Locale.ROOT, "%s: in flight %.1f (stack %d, batch %.1f), noise %.1f (z %.1f x sigma %.6f/t x %d), latency %d x %.5f/t = %.1f, WIP %d, %s, relative %.1f",
+                    g, inFlight, stack, batch, noise, CHECKSUM_Z, cg == null ? 0 : cg.sigma(), span, latency, rate, lat, wip,
+                    inputs > 0 ? String.format(Locale.ROOT, "input WIP yield %.1f ADDED (within only; G2-25) from far machine inputs %s", inputs, run.inputFrom1.get(g))
+                            : "input WIP yield 0",
+                    rel));
             judged++;
             if (c != 0)
                 moved++;
@@ -872,6 +932,120 @@ public final class GlassReplayGameTests {
             run.failures.add(run.f.name() + ": " + failed);
     }
 
+    /**
+     * G2-25: per output good, what the far machines' held inputs at the first snapshot make at the compile's
+     * recipe yields. A machine is a node with a rate on a recipe; it counts once per recipe it runs that makes
+     * the good, its inputs read from the inventory at its own position (the limiting input over the recipe's
+     * amount, times the good's expected yield net of what the recipe takes of it). Stores are not machines;
+     * the partial variant's ticking chunk is skipped (its machines run in the world).
+     */
+    static void inputYield(Run run, ServerLevel level) {
+        GlassKit.Graph g = run.graph;
+        if (g == null)
+            return;
+        Map<Integer, GlassKit.Recipe> recipes = new TreeMap<>();
+        for (GlassKit.Recipe r : g.recipes())
+            recipes.put(r.index(), r);
+        Set<Object> skip = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (BlockPos p : run.fPos) {
+            IItemHandler inv = level.getCapability(Capabilities.ItemHandler.BLOCK, p, null);
+            if (inv != null)
+                skip.add(inv);
+            IFluidHandler fl = level.getCapability(Capabilities.FluidHandler.BLOCK, p, null);
+            if (fl != null)
+                skip.add(fl);
+        }
+        Set<Object> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (GlassKit.Node n : g.nodes()) {
+            TreeSet<Integer> runs = new TreeSet<>();
+            for (GlassKit.Rate r : n.rates())
+                if (recipes.containsKey(r.recipe()))
+                    runs.add(r.recipe());
+            BlockPos pos = new BlockPos(n.x(), n.y(), n.z());
+            if (runs.isEmpty() || run.fPos.contains(pos) || (run.partial && new ChunkPos(pos).equals(run.ticking)))
+                continue;
+            Map<String, Long> held = new TreeMap<>();
+            add(held, level, pos, seen, skip);
+            if (held.isEmpty())
+                continue;
+            for (int ri : runs) {
+                GlassKit.Recipe r = recipes.get(ri);
+                double lots = Double.POSITIVE_INFINITY;
+                Map<String, Double> net = new TreeMap<>();
+                Map<String, Long> used = new TreeMap<>();
+                for (GlassKit.Term t : r.inputs()) {
+                    if (t.num() <= 0 || t.den() <= 0)
+                        continue;
+                    String k = key(t.good());
+                    double amount = t.num() / (double) t.den();
+                    lots = Math.min(lots, held.getOrDefault(k, 0L) / amount);
+                    net.merge(k, -amount, Double::sum);
+                    used.put(k, held.getOrDefault(k, 0L));
+                }
+                if (used.isEmpty() || !(lots > 0) || Double.isInfinite(lots))
+                    continue;
+                for (GlassKit.Term t : r.outputs())
+                    if (t.num() > 0 && t.den() > 0)
+                        net.merge(key(t.good()), t.num() / (double) t.den(), Double::sum);
+                for (Map.Entry<String, Double> e : net.entrySet()) {
+                    if (e.getValue() <= 0)
+                        continue;
+                    run.inputYield1.merge(e.getKey(), lots * e.getValue(), Double::sum);
+                    Map<String, Long> from = run.inputFrom1.computeIfAbsent(e.getKey(), k -> new TreeMap<>());
+                    used.forEach((k, v) -> from.merge(k, v, Long::sum));
+                }
+            }
+        }
+    }
+
+    /**
+     * Stub: the reconcile the offline native engine sends the far district over the records so far, applied
+     * to the far stores through the stock access the reconciler uses (a plugin's, else the capabilities),
+     * takes before puts as in {@code Reconciler.apply}. False while it has sent none.
+     */
+    static boolean applyOffline(Run run) {
+        run.rec.poll();
+        long[] t = NativeEngine.glassReplayOffline(run.rec.stream(), run.fd);
+        if (t.length < 3)
+            return false;
+        ServerLevel level = run.level();
+        District d = IndustryKit.ind().district(run.fd);
+        Map<String, Long> planned = new TreeMap<>(), applied = new TreeMap<>();
+        List<String> lines = new ArrayList<>();
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i + 2 < t.length; i += 3) {
+                long delta = t[i + 2];
+                if ((pass == 0) != (delta < 0))
+                    continue;
+                int inventory = (int) t[i];
+                int good = (int) t[i + 1];
+                String k = key(good);
+                planned.merge(k, delta, Long::sum);
+                District.Inventory inv = d != null && inventory >= 0 && inventory < d.inventories.size() ? d.inventories.get(inventory) : null;
+                Goods.Name name = Goods.parse(IndustryKit.ind().goodName(good));
+                long got = inv == null || name == null ? 0 : access(level, inv).apply(name, delta);
+                applied.merge(k, got, Long::sum);
+                lines.add("inv " + inventory + (inv == null ? " (not in the district)" : " at " + inv.pos().toShortString()) + " " + k + " "
+                        + delta + " (applied " + got + ")");
+            }
+        }
+        run.offlinePlanned = planned;
+        run.offlineApplied = applied;
+        IndustryKit.record(run.test, "offline reconcile applied", "at " + run.now() + ", " + (run.now() - run.loadedAt) + " ticks after the reload: "
+                + applied + " of " + planned + "; " + lines);
+        return true;
+    }
+
+    /** The access the reconciler applies a delta through: a plugin's for its kinds, else the capabilities. */
+    static StockAccess access(ServerLevel level, District.Inventory inv) {
+        for (IndustryPlugin p : IndustryApi.plugins()) {
+            StockAccess a = p.access(level, inv);
+            if (a != null)
+                return a;
+        }
+        return StockAccess.capabilities(IndustryKit.ind(), level, inv);
+    }
+
     /** Engine notes logged per test at most; the rest are counted. */
     static final int NOTES = 400;
 
@@ -883,6 +1057,7 @@ public final class GlassReplayGameTests {
      */
     static void dumpCompile(Run run) {
         GlassKit.Graph g = GlassKit.latest(run.fd, run.rec.records());
+        run.graph = g;
         if (g == null) {
             IndustryKit.record(run.test, "graph", "no compile received");
             return;
