@@ -2604,7 +2604,7 @@ mod replay_path {
             e.glass.districts[&D]
                 .replay
                 .as_ref()
-                .is_some_and(|x| x.counts.cycles >= 1)
+                .is_some_and(|x| x.counts().cycles >= 1)
         );
         let st = e.sim_stock(D).expect("replaying");
         let used = 100_000 - st.get(BRASS);

@@ -428,6 +428,50 @@ pub struct Space {
     pub cap: i64,
 }
 
+fn touches(p: &Proc, k: u16) -> bool {
+    match &p.body {
+        Body::Box { terms } => terms.iter().any(|t| t.pool == k),
+        Body::Link { from, to, .. } => *from == k || *to == k,
+        Body::Cycle(c) => c.pools.contains(&k),
+    }
+}
+
+/// A cycle is invisible to constraints, its deadline bounding it, except on a pool another
+/// process shares (a hub between glass parts): there its safe envelope (GLASSBOX.md §4.2) is its
+/// steepest piece's drain from a carry of 0. A shift (G2-12) only gives units back, so the cycle
+/// never drains faster than that.
+fn cycle_drain(p: &Proc, k: u16) -> Option<i64> {
+    let Body::Cycle(c) = &p.body else {
+        return None;
+    };
+    let j = c.pools.iter().position(|&x| x == k)?;
+    let r = c
+        .pieces
+        .iter()
+        .map(|pc| pc.rates.get(j).copied().unwrap_or(0))
+        .min()?;
+    (r < 0).then_some(r)
+}
+
+/// Bits of a glass bound's tag that number it within its part; the part (its process id) is
+/// above them, so part 0's tags are 1, 2, ...
+pub const BOUND_PART_SHIFT: u32 = 20;
+
+/// The tag of bound `n` (from 1) of part `part`.
+pub fn bound_tag(part: u16, n: u32) -> u32 {
+    (u32::from(part) << BOUND_PART_SHIFT) | n
+}
+
+/// The part a glass bound's tag belongs to.
+pub fn bound_part(tag: u32) -> u16 {
+    (tag >> BOUND_PART_SHIFT) as u16
+}
+
+/// A glass bound's number within its part (from 1).
+pub fn bound_index(tag: u32) -> u32 {
+    tag & ((1 << BOUND_PART_SHIFT) - 1)
+}
+
 /// Something the engine must act on, recorded at a breakpoint or event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ClusterEvent {
@@ -1050,17 +1094,23 @@ impl Cluster {
     }
 
     /// A glass replay's breakpoint time shift ([`shift_back`], choice G2-12): district `d`'s
-    /// running regime stopped because pool `key` would cross next tick (`rising`: a unit up);
+    /// process `id` (a part's regime, GLASSBOX.md §4.3) stopped because pool `key` would cross next tick (`rising`: a unit up);
     /// every flow of the regime moves back by the same fraction of a tick, so `key`'s carry lands
     /// on [`fire_canon`]. The units this moves are booked like the regime's own. Returns the
     /// carry, or None (nothing changed) if `key` is not at a crossing, or a pool would go below 0.
     /// Callers settle the cluster to the moment first.
-    pub fn shift_back(&mut self, d: DistrictId, key: PoolKey, rising: bool) -> Option<u32> {
+    pub fn shift_back(
+        &mut self,
+        d: DistrictId,
+        id: u16,
+        key: PoolKey,
+        rising: bool,
+    ) -> Option<u32> {
         let ix = self.pool_index(key)?;
         let i = self
             .procs
             .iter()
-            .position(|p| p.owner == d && !matches!(p.body, Body::Link { .. }))?;
+            .position(|p| p.owner == d && p.id == id && !matches!(p.body, Body::Link { .. }))?;
         let (pools, mut c, rates): (Vec<u16>, Vec<i128>, Vec<i64>) = match &self.procs[i].body {
             Body::Box { terms } => (
                 terms.iter().map(|t| t.pool).collect(),
@@ -1118,8 +1168,17 @@ impl Cluster {
 
     /// Per pool of district `d`'s processes (not links): its diffuser's carry.
     pub fn carries_of(&self, d: DistrictId) -> BTreeMap<PoolKey, u32> {
+        self.carries_where(|p| p.owner == d)
+    }
+
+    /// Per pool of district `d`'s process `id`: its diffuser's carry.
+    pub fn carries_of_proc(&self, d: DistrictId, id: u16) -> BTreeMap<PoolKey, u32> {
+        self.carries_where(|p| p.owner == d && p.id == id)
+    }
+
+    fn carries_where(&self, mine: impl Fn(&Proc) -> bool) -> BTreeMap<PoolKey, u32> {
         let mut carries: BTreeMap<PoolKey, u32> = BTreeMap::new();
-        for p in self.procs.iter().filter(|p| p.owner == d) {
+        for p in self.procs.iter().filter(|p| mine(p)) {
             match &p.body {
                 Body::Box { terms } => {
                     for t in terms {
@@ -1186,6 +1245,52 @@ impl Cluster {
         for ps in procs {
             self.insert_proc(d, ps, &carries);
         }
+        for (tag, sp) in bounds {
+            self.insert_space(d, tag, sp);
+        }
+        self.evaluate(at);
+    }
+
+    /// Replaces district `d`'s process `id` and its bounds (tags [`bound_part`] says are its) in
+    /// place, keeping its pools and the district's other processes: one part of a glass replay
+    /// changing regime (GLASSBOX.md §4.3). Carries as [`Cluster::replace_procs`], from that
+    /// process alone.
+    pub fn replace_proc(
+        &mut self,
+        d: DistrictId,
+        ps: ProcSpec,
+        bounds: Vec<(u32, SpaceSpec)>,
+        at: Tick,
+    ) {
+        let id = ps.id;
+        let carries = self.carries_of_proc(d, id);
+        let mut ps = ps;
+        let used: BTreeSet<PoolKey> = match &ps.body {
+            ProcSpecBody::Box(terms) => terms.iter().map(|t| t.0).collect(),
+            ProcSpecBody::Cycle { pools, .. } => pools.iter().copied().collect(),
+            ProcSpecBody::Link { .. } => BTreeSet::new(),
+        };
+        let parked: Vec<PoolKey> = carries
+            .iter()
+            .filter(|&(k, &c)| c != 0 && !used.contains(k))
+            .map(|(&k, _)| k)
+            .collect();
+        match &mut ps.body {
+            ProcSpecBody::Box(terms) => {
+                terms.extend(parked.iter().map(|&k| (k, Diffuser::from_fixed(0))));
+            }
+            ProcSpecBody::Cycle { pools, pieces } => {
+                pools.extend(parked.iter().copied());
+                for p in pieces.iter_mut() {
+                    p.rates.resize(pools.len(), 0);
+                }
+            }
+            ProcSpecBody::Link { .. } => {}
+        }
+        self.procs.retain(|p| !(p.owner == d && p.id == id));
+        self.spaces
+            .retain(|s| !(s.owner == d && s.tag != 0 && bound_part(s.tag) == id));
+        self.insert_proc(d, ps, &carries);
         for (tag, sp) in bounds {
             self.insert_space(d, tag, sp);
         }
@@ -1399,6 +1504,11 @@ impl Cluster {
         }
     }
 
+    /// Does more than one process touch pool `k` (a glass part's hub, GLASSBOX.md §4.3)?
+    fn shared(&self, k: u16) -> bool {
+        self.procs.iter().filter(|p| touches(p, k)).count() > 1
+    }
+
     /// Terms on pool `k` from processes `running` admits, scaled by `coef`.
     fn pool_terms(&self, k: u16, coef: i64, running: &dyn Fn(usize) -> bool, out: &mut Vec<Tm>) {
         for (i, p) in self.procs.iter().enumerate() {
@@ -1453,6 +1563,19 @@ impl Cluster {
         match c {
             Con::Lower(k) => {
                 self.pool_terms(k, 1, running, out);
+                if self.shared(k) {
+                    for (i, p) in self.procs.iter().enumerate() {
+                        if running(i)
+                            && let Some(rate) = cycle_drain(p, k)
+                        {
+                            out.push(Tm {
+                                a: 1,
+                                rate,
+                                carry: 0,
+                            });
+                        }
+                    }
+                }
                 (self.pools[k as usize].level, Bound::Lower(0))
             }
             Con::Upper(k) => {
@@ -1514,6 +1637,7 @@ impl Cluster {
             Con::Lower(k) => {
                 self.proc_terms_on(p, k, 1, &mut ts);
                 ts.iter().any(|t| i128::from(t.a) * i128::from(t.rate) < 0)
+                    || (cycle_drain(p, k).is_some() && self.shared(k))
             }
             Con::Upper(k) => {
                 self.proc_terms_on(p, k, 1, &mut ts);
@@ -2393,7 +2517,7 @@ mod tests {
         );
         // At 2: out carries 6/8, within a tick (3/8) of its next unit.
         c.settle(Tick(0), Tick(2));
-        let canon = c.shift_back(d(1), out, true).expect("at a crossing");
+        let canon = c.shift_back(d(1), 0, out, true).expect("at a crossing");
         assert_eq!(i128::from(canon), U - U * 3 / 8);
         // Shifted back by 1/3 tick: out 6/8 -> 5/8, src gets 1/8 back, side 6/16 -> 5/16.
         let carry = |k: PoolKey| match &c.procs[0].body {
@@ -2409,8 +2533,8 @@ mod tests {
         assert_eq!(carry(src), Some((U * 3 / 8) as u32));
         c.check_books().unwrap();
         // Not at a crossing: nothing moves.
-        assert_eq!(c.shift_back(d(1), side, true), None);
-        assert_eq!(c.shift_back(d(1), out, false), None);
+        assert_eq!(c.shift_back(d(1), 0, side, true), None);
+        assert_eq!(c.shift_back(d(1), 0, out, false), None);
     }
 
     #[test]

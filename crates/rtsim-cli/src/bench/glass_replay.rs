@@ -484,7 +484,7 @@ impl Counters {
             c.cycles += e.glass.districts[&d]
                 .replay
                 .as_ref()
-                .map_or(0, |x| u64::from(x.counts.cycles));
+                .map_or(0, |x| u64::from(x.counts().cycles));
         }
         if c.model == u32::MAX {
             c.model = 0;
