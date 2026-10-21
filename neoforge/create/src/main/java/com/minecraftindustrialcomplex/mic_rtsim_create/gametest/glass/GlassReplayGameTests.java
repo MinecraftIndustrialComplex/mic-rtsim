@@ -52,6 +52,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import net.neoforged.neoforge.items.IItemHandler;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -74,8 +75,10 @@ import java.util.stream.Collectors;
  * <p>Each corpus factory is built twice in the same tick: the <b>control</b> in the GameTest yard and an
  * identical <b>far copy</b> {@link #farOffset} blocks away along x (far beyond any view or simulation
  * distance, a whole number of chunks so both copies meet the same chunk borders), each its own district.
- * The far copy's chunks are force-loaded exactly as the GameTest framework forces the yard's, so both tick
- * alike. Both run until the far copy's report has a completed passing window (G-B4: the replay is
+ * The far copy's place is laid out as the framework lays out the yard ({@link #clear}: stone, an air row,
+ * the template's floor at relative y 1) and its chunks are force-loaded exactly as the GameTest framework
+ * forces the yard's, so both tick alike. Each copy is its own build (a factory draws fresh ids, such as a
+ * logistics frequency, per build). Both run until the far copy's report has a completed passing window (G-B4: the replay is
  * eligible). Then, in one tick, both copies' stocks are snapshot and the far copy's chunks lose their
  * tickets: they stop ticking, unload for real (the engine sees IND_CHUNK_UNLOADED for every chunk) and stay
  * away at least {@link #SPAN} ticks from the snapshot while the control runs on. They are force-loaded again,
@@ -107,6 +110,12 @@ import java.util.stream.Collectors;
  * at or below. UNBOUNDED goods are judged only at or below. Every comparison is a
  * {@code [gametest] glass replay <factory>: row} line: good, class, control, simulated, slack, tolerance,
  * verdict; a {@code terms} line says what the tolerance is made of.
+ *
+ * <p>The <b>copy check</b> ({@link #copyCheck}): over the far copy's last {@link #WINDOW} ticks before the
+ * unload, each good's change in its declared stores must be within one stack or batch in flight, the
+ * control's checksum noise over that window and {@link #REL_TOL} of the control's change, of the control's.
+ * Otherwise the far copy is not the factory the control is, and every row reads INVALID COPY, a failure.
+ * A factory in {@link #KNOWN_GAPS} still fails, its failing rows marked KNOWN GAP with what is missing.
  *
  * <p>The report while the far copy is away must say replay model GLASS: on the native engine any report
  * read while it is unloaded; on the stub the offline report of the records up to the reload. Its replay
@@ -152,6 +161,13 @@ public final class GlassReplayGameTests {
     static final int OFFLINE_WAIT = 60;
     /** The factories the partial variant runs (their district spans several chunks wherever the yard lands). */
     static final Set<String> PARTIAL = Set.of("brass_tunnels", "boiler_overstress");
+    /** The yard template's width and depth ({@code yard.nbt}: 34 x 6 x 34, a polished andesite floor at its y 0). */
+    static final int YARD_SIZE = 34;
+    /**
+     * Factories whose failing rows are a gap the lead knows of, by what is missing: the rows say KNOWN GAP and
+     * still count as failures.
+     */
+    static final Map<String, String> KNOWN_GAPS = Map.of("package_loop", "package addresses not modelled");
 
     /** Keeps a chunk FULL (level 33, distance 0) and not block-ticking. */
     private static final TicketType<ChunkPos> FULL_ONLY =
@@ -229,6 +245,9 @@ public final class GlassReplayGameTests {
 
     enum Stage { LOAD_FAR, RUN, UNLOAD, AWAY, RELOAD, SETTLE, DONE }
 
+    /** Both copies' declared stores at one tick, for the copy check. */
+    record Sample(long t, Map<String, Long> control, Map<String, Long> far) {}
+
     /** One factory's run. */
     static final class Run {
         final GameTestHelper helper;
@@ -275,6 +294,10 @@ public final class GlassReplayGameTests {
         /** Stub: the offline reconcile applied after the reload, per good, as sent and as applied (null: not yet). */
         Map<String, Long> offlinePlanned, offlineApplied;
         long nextOfflineAt = -1;
+        /** Both copies' declared stores every {@link #POLL} ticks while loaded, back to {@link #WINDOW} before now. */
+        final ArrayDeque<Sample> samples = new ArrayDeque<>();
+        /** Why the far copy's last window before the unload does not match the control's (null: it does). */
+        String invalidCopy;
         final List<String> failures = new ArrayList<>();
         String last = "starting";
 
@@ -404,20 +427,24 @@ public final class GlassReplayGameTests {
                 return;
             }
         IndustryKit.record(run.test, "far chunks", "loaded and block-ticking after " + run.ticks + " ticks");
-        // Forget the industry of both places (the world is reused between runs), clear the far copy's place
-        // as the framework clears the yard, and build both in this tick.
+        // Forget the industry of both places (the world is reused between runs), lay the far copy's place out
+        // as the framework lays out the yard, and build both in this tick.
         IndustryKit.forget(run.helper);
         ChunkPos lo = run.farChunks.get(0), hi = run.farChunks.get(run.farChunks.size() - 1);
         IndustryKit.ind().districts().forgetArea(level, lo.x - 1, lo.z - 1, hi.x + 1, hi.z + 1);
-        clear(level, run.farMin, run.partial ? run.farMax.offset(15, 0, 15) : run.farMax);
+        BlockPos areaMin = run.farMin, areaMax = run.partial ? run.farMax.offset(15, 0, 15) : run.farMax;
+        clear(level, areaMin, areaMax, run.farMin);
         run.control = run.f.build(run.helper);
         seed(run.helper, run.control);
-        if (run.partial)
+        if (run.partial) {
             split(run);
+            // The floor moves with the shift: lay the place out again around the copy's own origin.
+            clear(level, areaMin, areaMax, run.farMin);
+        }
         run.copy = run.f.build(run.far);
         seed(run.far, run.copy);
         run.builtAt = run.now();
-        GlassCorpusKit.log(run.f.name(), "replay built", run.copy.notes());
+        GlassCorpusKit.log(run.f.name(), "replay built", "control: " + run.control.notes() + "; far: " + run.copy.notes());
         run.stage(Stage.RUN);
     }
 
@@ -477,6 +504,7 @@ public final class GlassReplayGameTests {
             IndustryKit.record(run.test, "districts", "control " + c + " (" + c.chunks.size() + " chunks, " + c.inventories.size()
                     + " inventories), far " + d + " (" + d.chunks.size() + " chunks, " + d.inventories.size() + " inventories)");
         }
+        sample(run);
         int budget = run.f.warmupTicks() + 2 * (WINDOW + GlassExitGameTests.SLACK);
         long since = run.now() - run.builtAt;
         GlassReport fr = null;
@@ -548,6 +576,61 @@ public final class GlassReplayGameTests {
             logReport(run, "control report 1", run.cReport1);
         if (fr != null)
             logReport(run, "far report 1", fr);
+        copyCheck(run, level);
+    }
+
+    /** Both copies' declared stores now, keeping the latest sample at or before {@link #WINDOW} ticks ago. */
+    static void sample(Run run) {
+        ServerLevel level = run.level();
+        run.samples.addLast(new Sample(run.now(), stock(level, run.control.stores()), stock(level, run.copy.stores())));
+        while (run.samples.size() > 1 && run.samples.stream().skip(1).findFirst().get().t() <= run.now() - WINDOW)
+            run.samples.removeFirst();
+    }
+
+    /**
+     * The copy check: over the far copy's last window before the unload ({@link #WINDOW} ticks, from the
+     * samples), each good's change in its declared stores is within tolerance of the control's: one stack or
+     * batch in flight, the checksum noise over the window, and {@link #REL_TOL} of the control's change.
+     * Otherwise the far copy is not the factory the control is (a block that did not survive, a store that
+     * filled), and every row reads INVALID COPY.
+     */
+    static void copyCheck(Run run, ServerLevel level) {
+        Sample from = run.samples.peekFirst();
+        if (from == null || from.t() >= run.t1) {
+            run.invalidCopy = "no store sample before the snapshot";
+            IndustryKit.record(run.test, "copy check", "INVALID COPY: " + run.invalidCopy);
+            return;
+        }
+        long len = run.t1 - from.t();
+        Map<String, Long> cNow = stock(level, run.control.stores()), fNow = stock(level, run.copy.stores());
+        Map<String, GlassReport.Good> cGoods = byKey(run.cReport1);
+        TreeSet<String> goods = new TreeSet<>(from.control().keySet());
+        goods.addAll(from.far().keySet());
+        goods.addAll(cNow.keySet());
+        goods.addAll(fNow.keySet());
+        List<String> off = new ArrayList<>();
+        for (String g : goods) {
+            long c = cNow.getOrDefault(g, 0L) - from.control().getOrDefault(g, 0L);
+            long f = fNow.getOrDefault(g, 0L) - from.far().getOrDefault(g, 0L);
+            GlassReport.Good cg = cGoods.get(g);
+            long stack = stackOf(g);
+            double batch = cg != null && Double.isFinite(cg.q()) ? cg.q() * run.cReport1.windowTicksTarget() : 0;
+            double inFlight = Math.max(stack, batch);
+            double noise = cg != null && Double.isFinite(cg.sigma()) ? CHECKSUM_Z * cg.sigma() * len : 0;
+            double rel = REL_TOL * Math.abs(c);
+            double tol = inFlight + noise + rel;
+            boolean ok = Math.abs(f - c) <= tol;
+            IndustryKit.record(run.test, "copy check good", String.format(Locale.ROOT,
+                    "%s: control %+d, far %+d over %d ticks from %d; tolerance %.1f (in flight %.1f, noise %.1f, relative %.1f): %s",
+                    g, c, f, len, from.t(), tol, inFlight, noise, rel, ok ? "match" : "OFF"));
+            if (!ok)
+                off.add(g + " (control " + c + ", far " + f + ")");
+        }
+        if (!off.isEmpty())
+            run.invalidCopy = "over the last " + len + " ticks before the unload the far copy's stores do not move as the control's: " + off;
+        IndustryKit.record(run.test, "copy check", run.invalidCopy == null
+                ? "match over the last " + len + " ticks before the unload (" + goods.size() + " goods)" + (len < WINDOW ? ", SHORT of " + WINDOW : "")
+                : "INVALID COPY: " + run.invalidCopy);
     }
 
     /** The far copy's chunks lose their tickets (the partial variant: all but one stop ticking blocks). */
@@ -899,6 +982,14 @@ public final class GlassReplayGameTests {
             String verdict = (!run.judge ? "not judged"
                     : (below ? "at or below pass" : "at or below FAIL") + ", " + (unbounded ? "within not judged (unbounded)" : within ? "within pass" : "within FAIL"))
                     + (c != 0 && slack >= Math.abs(c) ? " (WEAK: the slack covers the control's change)" : "");
+            // A far copy that did not run as the control did proves nothing either way: no row of it passes.
+            if (run.invalidCopy != null) {
+                verdict = "INVALID COPY: " + verdict;
+                pass = false;
+            }
+            String gap = KNOWN_GAPS.get(run.f.name());
+            if (gap != null && !pass)
+                verdict += "; KNOWN GAP (" + gap + ")";
             IndustryKit.record(test, "row", String.format(Locale.ROOT, "%s | %s | %s | control %+d | simulated %+d (world %+d, reconcile %+d) | slack %.1f | tolerance %.1f | %s",
                     run.f.name(), g, clsName, c, s, world, run.stub ? applied.getOrDefault(g, 0L) + rec : reconciled.getOrDefault(g, 0L), slack, tol, verdict));
             IndustryKit.record(test, "terms", String.format(Locale.ROOT, "%s: in flight %.1f (stack %d, batch %.1f), noise %.1f (z %.1f x sigma %.6f/t x %d), latency %d x %.5f/t = %.1f, WIP %d, %s, relative %.1f",
@@ -927,9 +1018,10 @@ public final class GlassReplayGameTests {
                 test, judged, moved, weak.size(), weak, span, run.forcedAt - run.unloadedAt, run.stub ? "stub (offline replay)" : "native", run.eligibleBy, run.awaySummary,
                 run.why,
                 !run.judge ? "not judged" : failed.isEmpty() && run.failures.isEmpty() ? "pass"
-                        : "FAIL " + failed + (run.failures.isEmpty() ? "" : " and " + run.failures)));
+                        : "FAIL " + (run.invalidCopy != null ? "INVALID COPY " : "") + failed + (run.failures.isEmpty() ? "" : " and " + run.failures)));
         if (!failed.isEmpty())
-            run.failures.add(run.f.name() + ": " + failed);
+            run.failures.add(run.f.name() + ": " + (run.invalidCopy != null ? "INVALID COPY (" + run.invalidCopy + "): " : "")
+                    + failed + (KNOWN_GAPS.containsKey(run.f.name()) ? "; KNOWN GAP (" + KNOWN_GAPS.get(run.f.name()) + "), still a failure" : ""));
     }
 
     /**
@@ -1202,16 +1294,32 @@ public final class GlassReplayGameTests {
         return out;
     }
 
-    /** Clears the far copy's place as the framework clears the yard: a polished andesite floor at y 0, air above, no entities. */
-    static void clear(ServerLevel level, BlockPos min, BlockPos max) {
-        BlockState floor = Blocks.POLISHED_ANDESITE.defaultBlockState(), air = Blocks.AIR.defaultBlockState();
+    /**
+     * Lays the far copy's place out as the framework lays out the yard. {@code StructureUtils.prepareTestStructure}
+     * puts the structure block at relative y 0 and the template one block above it, and
+     * {@code clearSpaceForStructure} fills its box (the template's, x -2 to +3, z -3 to +3, y -3 to +20 past it)
+     * with stone below the structure block's row and air from it up; the template then lays its 34 x 34 polished
+     * andesite floor at relative y 1. So: relative y -2 and -1 stone, y 0 air, y 1 the floor over the copy's
+     * {@link #YARD_SIZE} square from {@code origin} (its relative 0, 0, 0), air above, through {@code areaMin}
+     * to {@code areaMax} (x and z: the copy's reach, every shift of the partial variant) and the margin around
+     * it, in the far chunks only (no chunk loads); no entities. Factories lean on it: a diode at y 2 stands on
+     * the floor, a chute at y 1 drops into the air under it.
+     */
+    static void clear(ServerLevel level, BlockPos areaMin, BlockPos areaMax, BlockPos origin) {
+        BlockState stone = Blocks.STONE.defaultBlockState(), floor = Blocks.POLISHED_ANDESITE.defaultBlockState(), air = Blocks.AIR.defaultBlockState();
         int flags = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE;
-        for (BlockPos p : BlockPos.betweenClosed(min, max)) {
-            BlockState want = p.getY() == min.getY() ? floor : air;
+        int y0 = origin.getY(), x0 = origin.getX(), z0 = origin.getZ();
+        BlockPos lo = new BlockPos(areaMin.getX() - 2, y0 - 2, areaMin.getZ() - 3), hi = new BlockPos(areaMax.getX() + 3, areaMax.getY(), areaMax.getZ() + 3);
+        for (BlockPos p : BlockPos.betweenClosed(lo, hi)) {
+            if (level.getChunkSource().getChunkNow(p.getX() >> 4, p.getZ() >> 4) == null)
+                continue;
+            int x = p.getX() - x0, z = p.getZ() - z0;
+            boolean onFloor = x >= 0 && x < YARD_SIZE && z >= 0 && z < YARD_SIZE;
+            BlockState want = p.getY() < y0 ? stone : p.getY() == y0 + 1 && onFloor ? floor : air;
             if (level.getBlockState(p) != want)
                 level.setBlock(p, want, flags);
         }
-        AABB box = new AABB(Vec3.atLowerCornerOf(min), Vec3.atLowerCornerOf(max).add(1, 1, 1)).inflate(2);
+        AABB box = new AABB(Vec3.atLowerCornerOf(lo), Vec3.atLowerCornerOf(hi).add(1, 1, 1)).inflate(2);
         for (Entity e : level.getEntities((Entity) null, box, e -> !(e instanceof Player)))
             e.discard();
     }
