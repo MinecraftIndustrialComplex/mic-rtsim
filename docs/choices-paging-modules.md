@@ -32,6 +32,11 @@ What still grows with the world in a paged run:
 
 "Not done here", at the end, lists them.
 
+The scale bench before and after, on the full machine and the potato profile, is in
+`bench/results/README.md` (2026-10-21 06:11 UTC). No contract fails after the change that did not
+fail before. Live heap falls at every point; for example, 100,000 events a day fall from 50.8 to
+10.1 MiB and 4,096 markets from 67.4 to 45.8 MiB. CPU stays within noise of before.
+
 ## The two open kernel review bugs
 
 | # | Choice | Why |
