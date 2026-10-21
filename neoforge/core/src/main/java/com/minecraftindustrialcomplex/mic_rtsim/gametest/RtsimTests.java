@@ -80,6 +80,27 @@ public final class RtsimTests {
         throw new GameTestAssertException("no fresh engine of the kind " + kind.getClass().getSimpleName());
     }
 
+    /**
+     * A wait on the world's IO or lighting (a far chunk loading its entities, the light engine catching up
+     * with an edit): the GameTest server ticks as fast as it can, so on a busy machine a timeout in ticks
+     * passes in wall-clock time too short for work on other threads. While the check fails, the tick waits
+     * 5 ms, so a timeout of N ticks is at least N * 5 ms of real time. Use it inside {@code thenWaitUntil}.
+     */
+    public static Runnable io(Runnable check) {
+        return () -> {
+            try {
+                check.run();
+            } catch (RuntimeException e) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                throw e;
+            }
+        };
+    }
+
     /** The arena's middle, standing on the floor, in absolute coordinates. */
     public static Vec3 centre(GameTestHelper helper) {
         // Relative y 1 is the arena's floor (the structure sits one block above the test's structure

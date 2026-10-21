@@ -14,6 +14,7 @@ import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.Skeleton;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.living.FinalizeSpawnEvent;
@@ -24,6 +25,7 @@ import java.nio.ByteBuffer;
 import java.util.List;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.*;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 
 /**
  * The threat sampler (I20, I21; INDUSTRY.md §13.4, §13.5) on vanilla alone: the defence survey, natural
@@ -121,6 +123,13 @@ public final class ThreatGameTests {
                     check("a one-column doorway: 1 gap, got " + s[1], s[1] == 1);
                     door[0] = s[1];
                     set(helper, furnace.above(3), Blocks.STONE.defaultBlockState());
+                })
+                // "Roofed" is the sky light above the furnace: lighting runs on its own thread, so survey
+                // only once it has darkened that block.
+                .thenWaitUntil(io(() -> check("the light engine darkened the block above the furnace: "
+                        + helper.getLevel().getBrightness(LightLayer.SKY, furnace.above()),
+                        !helper.getLevel().canSeeSky(furnace.above()))))
+                .thenExecute(() -> {
                     n[0] = surveyCount(id[0]);
                     ind().threats().surveySoon(ind().district(id[0]));
                 })
@@ -134,7 +143,16 @@ public final class ThreatGameTests {
                             if (Math.abs(x - 8) > 3 || Math.abs(z - 8) > 3)
                                 set(helper, inChunk(helper, x, z).above(), Blocks.TORCH.defaultBlockState());
                 })
-                .thenIdle(40) // the light engine spreads the torches' light over the next ticks
+                // the light engine spreads the torches' light on its own thread: wait until each one shines
+                .thenWaitUntil(io(() -> {
+                    for (int x = 0; x < 16; x += 4)
+                        for (int z = 0; z < 16; z += 4)
+                            if (Math.abs(x - 8) > 3 || Math.abs(z - 8) > 3) {
+                                BlockPos t = inChunk(helper, x, z).above();
+                                check("the torch at " + t + " is lit: " + helper.getLevel().getBrightness(LightLayer.BLOCK, t),
+                                        helper.getLevel().getBrightness(LightLayer.BLOCK, t) >= 10);
+                            }
+                }))
                 .thenExecute(() -> {
                     n[0] = surveyCount(id[0]);
                     ind().threats().surveySoon(ind().district(id[0]));
