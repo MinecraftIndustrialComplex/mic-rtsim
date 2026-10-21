@@ -347,10 +347,103 @@ Other open items: `applied_ops` (the op set) grows with every applied op and is 
 before this work); `session_start` is one pass over every faction a session, page by page;
 rows per page and the budget shares are placeholders.
 
+## Ships (branch `feat/paging-ships`)
+
+| # | Choice | Why |
+|---|---|---|
+| PM-S1 | **Ship rows are a `PagedArena<Ship>`** (table 0x5310, 16 rows a page). Handles keep generation 1 and their index, so agent ids and every stored `ShipId` are unchanged. | A row is about 260 bytes resident (248 inline plus its small maps), so a page is about 4 KB, the size of the other modules' pages. A service's ships are consecutive keys (PM-S3), so a watched timetable loads one or two pages. |
+| PM-S2 | **Lane threats are paged rows keyed by lane** (0x5311, 64 a page). Their two small sets (`hunters`, `escorts`) are sorted Vecs instead of a `BTreeSet` and a `BTreeMap`. | They grow with the lanes: a lane gets a row the first time it is threatened, and the row is never removed. A `BTreeMap` with one entry allocates a node for eleven (about 100 to 200 bytes per non-empty set); a Vec holds 8 or 16. |
+| PM-S3 | **`service_ships` is a key range per service** (`ShipRange { first, n }`): 8 bytes per service and nothing per ship, instead of a Vec of ids. | `man_service` inserts a service's ships one after another, and handles are never reused, so the keys are consecutive. This is debug-asserted when ships are manned, and `check()` and every load check the ranges. |
+| PM-S4 | **The embodied index is kept and saved** (`embodied: BTreeSet<ShipId>`, maintained by `set_embodied` everywhere the flag changes, written in the meta page). `session_start` walks the index instead of every ship. | A whole-table pass at every session start would load every ship page. Rebuilding the index on open would be that same pass, so it is saved instead. Its size is bounded by what players embody. |
+| PM-S5 | **Hunted lanes come from the havens' active pirates** (`hunted_lanes()`, the pirates in Hunting), not from a pass over the threat rows. `lane_threats()` (every row) stays as a tool for `sim ships` and the tests. | The scripted player and the tests asked which lanes are hunted by walking every lane threat. |
+| PM-S6 | **The port network has its own page** (0x5312 id 0: docks, lanes, services and their key ranges, the lints, berth overflows). Only the save after the network changes writes it. `add_port`, `build`, `connect` and `add_navy` mark it, and a failed save that wrote the page marks it again. The meta page holds the rest of the resident state. | The network stays resident (the flow graph, SCALE.md §8) and grows with the world, at about 1.2 KB per port. Writing it in every autosave would make every save grow with the world. |
+| PM-S7 | **The budget is split 7/8 to ship rows and 1/8 to lane threats.** This is a PLACEHOLDER share. | Ships are almost all of the row bytes. A threat row is under 100 bytes, and only the lanes near a player or a hunt are touched. |
+| PM-S8 | **`enforce_budget` runs at the end of every `run_until`.** `needs_save()` reports when the rows are over budget and every resident page has changed since the last save, as herds do (PM7). The bench then saves; rtsim-jni does not page modules yet. | Dirty pages cannot leave memory before a save. Without the extra save, the resident peak grew with whatever a player dirtied between two autosaves. |
+| PM-S9 | **The one-blob `save()` stays** (rows by `encode_all` in key order), and its format is now **RTS2**. rtsim-jni's ships page VERSION is now 2. `state_hash` is still `fnv1a64(save())`, the same paged or not. | The brief asked for this. There is no backward compatibility before release, so old saves are not read. |
+| PM-S10 | **`check()` also checks the indexes** (`check_indexes`): embodied against the rows, each ship inside its service's range, and each hunting pirate against its lane's hunters, both ways. It is a whole pass, run only by tests and tools. | The indexes replace whole-table passes, so they must be proven to agree with the rows. |
+| PM-S11 | **`sim ships`'s scripted player moved to `synth::Script`**, so the paged tests run the same script. `sim ships` output is unchanged except the restart hash (the format) and wall time. | The tests can then compare paged and unpaged runs on the scenario the sim already checks. |
+| PM-S12 | **`set_page_layout(ships_per_page, threats_per_page)`** works only before paging starts, and the layout is saved in the meta page. Tests use 4 and 4. | With tiny pages a small test world pages hard (thousands of loads and evictions in 12 days). |
+| PM-S13 | **The caller picks the meta page's key** (`save_paged(batch, meta_key)`, `open_paged(source, budget, meta_key, tun)`). The key must not be in 0x5310 to 0x5312. | This is the brief's interface. rtsim-jni will most likely use 0x5300 id 0, the module's page today. Herds keep their meta page at a fixed key (0x4813), so one convention for every module is the lead's call when wiring. |
+| PM-S14 | **The per-ship `BTreeMap`s (cargo, quotes, a pirate's loot) are left as they are**, and so is the inline `Pirate`/`Promoted`. | Rows page, so this heap is resident only while the row's page is. Boxing `Pirate` and `Promoted` would make rows about half the size (fewer pages, smaller blob); it is optional and not done. |
+| PM-S15 | **The bench** (`ships-grid` resident, `ships-paged` paged) grows the ocean grid from 49 to 6,400 ports at 16 ships a service (372 to 51,774 ships, 139 times). One player tours the 7 x 7 docks around the haven, one dock an hour, and the fake plugin answers. The paged sweep uses a 64 KiB budget, autosaves every 6,000 ticks and adds budget saves. `ShipsConfig::roam` sends the player to every dock instead (one-off runs). | Each size gets the same play, so a slope measures the world rather than how much of it the player has seen. A roaming player's costs grow until it stops coming back within a save interval, then stay flat (measured below). |
+
+**What pages and what stays resident.** Paged: ship rows (0x5310) and lane threats (0x5311).
+Resident, in the meta page that every save writes (2 to 6 KB in the bench): the wheel, havens,
+navies, players, booked voyages, applied ops, `seen_by`, the embodied index, the fight
+observations, the ledger, the stats and the outbox. Every one of these is bounded by activity
+(players, pirates, what is watched), not by the ship count. Also resident, but in the network page
+(0x5312) that only a change rewrites: the network itself. At the top grid point (6,400 ports,
+12,720 lanes, 3,462 services) the network costs 7.74 MB by the module's estimate (6.97 MB measured
+by the allocator on a copy):
+
+| Part | Bytes | Per item |
+|---|---|---|
+| docks | 505 KB | 79 B per dock |
+| lanes | 4.92 MB | 387 B per lane |
+| services (with their key ranges) | 2.32 MB | 671 B per service |
+| all | 7.74 MB | 1.21 KB per port, 609 B per lane |
+
+The page store's own index is also resident and grows with the pages: 259 KB at the top point,
+for about 3,450 pages (75 B per page).
+
+**Measured.** The before numbers come from the table at the top of this file. The `ships` sweep
+at commit 1c43097 had per service 1, 4 and 16 ships on 100 ports. Its live heap was 3.4, 3.0 and
+3.8 MiB, and the engine's own estimate was 0.13, 0.18 and 0.38 MiB: about 0.25 KB per ship, all
+of it resident. The same quick sweep at 659b927 (resident, since rtsim-jni does not page yet)
+gives a live heap of 2.4, 2.2 and 2.4 MiB and an engine estimate of 0.15, 0.19 and 0.33 MiB:
+still 259 B per ship. The heap is lower because of the wheel's freed burst vectors (PM8), and CPU
+is flat (slope 0.013).
+
+The grid sweeps (`bench scale --only ships-grid,ships-paged`, full, at 659b927) ran in release,
+nice 10, at a load average of 27 to 40 from other sessions. Each point is the median of 3 runs
+of 10 sim days. CPU is thread CPU time: the ships engine's own calls, with the world, the fake
+plugin and the saves stepped apart (save CPU is its own column).
+
+| Ports | Ships | Lanes | Live heap: resident, paged | Engine: resident, paged | Network | Rows resident: end, peak | Loads a day | Saves a day (for the budget) | Bytes a save | CPU ms a sim day: resident, paged | Save CPU ms a day | Full blob |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 49 | 372 | 92 | 5.9, 5.9 MiB | 0.54, 0.50 MiB | 0.06 MiB | 55 KB, 82 KB | 130 | 7.7 (3.7) | 12.5 KB | 4.3, 8.5 | 9.0 | 25 KB |
+| 196 | 1,584 | 377 | 8.3, 8.0 MiB | 0.96, 0.61 MiB | 0.22 MiB | 56 KB, 89 KB | 192 | 8.4 (4.4) | 13.8 KB | 5.0, 8.2 | 12.4 | 88 KB |
+| 784 | 6,200 | 1,538 | 19.8, 18.4 MiB | 2.82, 1.33 MiB | 0.90 MiB | 56 KB, 87 KB | 181 | 8.0 (4.0) | 12.9 KB | 6.4, 11.5 | 13.3 | 345 KB |
+| 3,136 | 25,746 | 6,221 | 65.1, 58.9 MiB | 10.44, 4.09 MiB | 3.66 MiB | 56 KB, 90 KB | 204 | 9.1 (5.1) | 14.7 KB | 9.1, 11.9 | 13.5 | 1.43 MB |
+| 6,400 | 51,774 | 12,720 | 129.4, 116.9 MiB | 20.64, 7.83 MiB | 7.39 MiB | 56 KB, 90 KB | 193 | 8.5 (4.5) | 13.9 KB | 8.5, 11.2 | 13.4 | 2.92 MB |
+
+| Slopes | Measured | Declared |
+|---|---|---|
+| paged: row pages resident at peak (`Metric::Resident`) | 0.015 (max/min 1.10) | 0.1 |
+| paged: bytes a save | 0.023 (max/min 1.17) | 0.15, from 0.35 after this run |
+| paged: CPU a sim day | 0.077 | 0.2 |
+| resident: CPU a sim day | 0.160 | 0.2 |
+| live heap, both | 0.65, 0.63 | 1.1 |
+| resident: full blob | 0.98 | 1.1 |
+
+Under a 64 KiB budget the row pages stay at 56 KB at the end of each run and peak at about
+90 KB, whether there are 372 ships or 51,774. The peak is the budget plus what one step loads or
+changes before the step's `enforce_budget` or its budget save. At the top point the engine falls
+from 20.6 to 7.8 MiB, and the network is 7.4 MiB of what remains. A paged save writes about
+14 KB. Before, the one-blob save wrote 2.9 MB, which grows with the ships. The live heap is the
+phase 1 world under the grid (17 KB a village) plus the network, both resident by design. Paged
+CPU is 3 to 4 ms a sim day above resident: about 190 page loads a day, each a read and a decode
+of 16 rows.
+
+**A roaming player** (`roam: true`, one run of 3 days each, paged) gets a fresh dock most hours.
+At 1,584, 6,200 and 51,774 ships: the peak is 88.7, 88.5 and 88.5 KB; loads are 228, 236 and
+258 a day; there are 4.7, 4.0 and 6.0 budget saves a day; bytes a save are 16, 31 and 17 KB; CPU
+is 10.5, 12.2 and 15.7 ms a sim day. These costs are as flat as the fixed tour's once the grid is
+bigger than what the player covers between two saves. The bytes a save go up and down because the
+store compacts the first full save's segment when half of it is stale: 991 pages were compacted
+in the 6,200-ship window and 680 in the 51,774-ship one. An earlier run with this roaming tour and
+no budget saves had peaks of 57 to 136 KB, growing with the grid (resident slope 0.175). That is
+why PM-S8 adds budget saves.
+
+**Not done.** rtsim-jni does not page ships yet (the lead wires every module at once). Ships do
+not prefetch pages: a row loads on demand on the step thread. Rows are not shrunk by boxing
+`Pirate` and `Promoted` (PM-S14).
+
 ## Not done here
 
 - **rtsim-jni does not page any module yet.** Each module still saves its `save()` blob as one
-  page (herds 0x4800 version 2, dragons 0x4400 version 2, phase 1 meta version 3). Wiring paging
+  page (herds 0x4800 version 2, dragons 0x4400 version 2, ships 0x5300 version 2, phase 1 meta
+  version 3). Wiring paging
   in means: the engine's store shared as the modules' `PageSource` (it is a
   `Mutex<Option<PageStore>>`, which implements it), the save path calling each module's
   `save_paged` into the save's batch, the IO lane handing the tickets back once the commit is
