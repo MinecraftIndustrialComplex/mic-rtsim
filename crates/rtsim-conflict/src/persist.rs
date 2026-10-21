@@ -1077,6 +1077,7 @@ impl Conflict {
         self.sources.rows.attach(source.clone(), s);
         self.places.rows.attach(source.clone(), p);
         self.store = Some(source);
+        self.budget_mark = None;
     }
 
     pub fn is_paged(&self) -> bool {
@@ -1093,6 +1094,7 @@ impl Conflict {
     }
 
     pub fn set_budget(&mut self, budget: usize) {
+        self.budget_mark = None;
         let (f, s, p) = split(budget);
         self.factions.rows.set_budget(f);
         self.sources.rows.set_budget(s);
@@ -1104,9 +1106,21 @@ impl Conflict {
     /// a caller that reads or changes rows outside `run_until` (records, emissions) calls it at
     /// its own step boundary. Unpaged it only remeasures. Returns how many pages went.
     pub fn enforce_budget(&mut self) -> usize {
-        self.factions.rows.enforce_budget()
+        // After a check that ended over budget with every page dirty, only a load (a clean page)
+        // or a save (pages unpinned) gives the next one something to evict: skip until then, so
+        // a step does not walk every dirty page after every event (PM-C9).
+        let loads = self.row_stats().loads;
+        if self.budget_mark == Some(loads) {
+            return 0;
+        }
+        let n = self.factions.rows.enforce_budget()
             + self.sources.rows.enforce_budget()
-            + self.places.rows.enforce_budget()
+            + self.places.rows.enforce_budget();
+        let over = self.factions.rows.resident_bytes() > self.factions.rows.budget()
+            || self.sources.rows.resident_bytes() > self.sources.rows.budget()
+            || self.places.rows.resident_bytes() > self.places.rows.budget();
+        self.budget_mark = (self.store.is_some() && over).then_some(loads);
+        n
     }
 
     /// The paged save: the meta page (everything resident, and each row table's count) under
@@ -1130,12 +1144,14 @@ impl Conflict {
     }
 
     pub fn saved(&mut self, t: ConflictTickets) {
+        self.budget_mark = None;
         self.factions.rows.saved(t.factions);
         self.sources.rows.saved(t.sources);
         self.places.rows.saved(t.places);
     }
 
     pub fn save_failed(&mut self, t: ConflictTickets) {
+        self.budget_mark = None;
         self.factions.rows.save_failed(t.factions);
         self.sources.rows.save_failed(t.sources);
         self.places.rows.save_failed(t.places);

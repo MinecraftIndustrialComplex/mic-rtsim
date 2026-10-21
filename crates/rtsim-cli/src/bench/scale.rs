@@ -74,6 +74,10 @@ pub struct Measured {
     pub heap_peak_bytes: u64,
     /// What the engine's own structures say they hold.
     pub engine_heap_bytes: u64,
+    /// The engine's live heap, measured by dropping it at the end of the run (the counting
+    /// allocator's difference): sweeps whose world dominates the process heap.
+    #[serde(default)]
+    pub engine_live_bytes: Option<u64>,
     pub rss_bytes: Option<u64>,
     pub rss_peak_bytes: Option<u64>,
     pub save_full_bytes: Option<u64>,
@@ -270,6 +274,10 @@ impl Baseline {
                 // A faction's events are days apart: four times the baseline's days.
                 days: self.days * 4,
                 seed: self.seed,
+                paged: sweep.paged.then_some(super::conflict::FactionPaging {
+                    budget_bytes: FACTION_BUDGET,
+                    save_every_ticks: self.save_every_ticks,
+                }),
             });
         }
         if matches!(sweep.vary, Vary::Herds | Vary::Members) {
@@ -791,12 +799,40 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "factions, feuds and parties are resident rows (paging, A16, is not built yet)",
+                    "factions, feuds and parties are resident rows here; `factions-paged` pages them (A16)",
+                ),
+            ],
+        },
+        // The same factions with the conflict's row tables paged under a fixed budget (A16),
+        // saved at Minecraft's autosave interval (`bench::conflict`).
+        Sweep {
+            name: "factions-paged".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Factions,
+            regions: None,
+            paged: true,
+            values: pick(&[1_024, 2_048, 4_096], &[1_024, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    0.1,
+                    0.0,
+                    "the conflict's row tables (factions with their feuds, sources, places) are held to the budget whatever the faction count (A16); the phase 1 world under the camps is not paged here and is most of the heap, so the engine's own live bytes are reported apart (engine_live_bytes)",
+                ),
+                contract(
+                    Metric::EventsPerUnit,
+                    flat,
+                    0.0,
+                    "paging changes no decision: the same events per faction as the resident sweep",
                 ),
             ],
         },
     ]
 }
+
+/// The paged faction sweep's budget for the conflict's row tables. PLACEHOLDER 256 KiB: a tenth
+/// of the resident rows at 1,024 factions, so every point pages.
+const FACTION_BUDGET: u64 = 256 << 10;
 
 /// The faction sweep grows the village grid with the camps (one village per camp, a camp in each
 /// village cell), so it measures the cost per faction at a fixed density; at a fixed world,
