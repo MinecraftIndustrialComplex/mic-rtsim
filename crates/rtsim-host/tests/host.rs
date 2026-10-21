@@ -877,6 +877,10 @@ struct Sample {
     agents: u64,
 }
 
+/// The phase 1 world's meta page by section (raw bytes), then its leg index's legs, bookings and
+/// cells and its market rows and market wakes.
+type WorldSample = (Vec<(&'static str, usize)>, [usize; 5]);
+
 struct Soak {
     days: i64,
     steps: u64,
@@ -889,9 +893,8 @@ struct Soak {
     samples: Vec<Sample>,
     /// Bytes and pages by table on day 10, day 100 and the last sampled day.
     tables: Vec<(i64, Tables)>,
-    /// On the same days: the phase 1 world's meta page by section (raw bytes), and its leg
-    /// index's legs, bookings and cells.
-    world: Vec<(Vec<(&'static str, usize)>, [usize; 5])>,
+    /// On the same days: the phase 1 world's meta page by section, and its counters.
+    world: Vec<WorldSample>,
     /// The game time the run ended at.
     end: i64,
     viewer: Option<Viewed>,
