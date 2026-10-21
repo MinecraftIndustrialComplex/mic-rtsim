@@ -1,0 +1,128 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_sandworms: a SPIKE (research/worm-mods-2026-10-20.md section 5; DECISIONS.md OG-9). Its GameTests measure whether
+// Desert Behemoths: Sandworms! (sandworm_mod 1.2.0) can threaten oil fields, underground or on the surface. It adds no plugin logic.
+// The mod needs Lodestone 1.8.0+ and AAA Particles 2.2.0+, neither in the pack; they come from Modrinth's maven by version id and
+// are never bundled. This project is separate from :terraentity so their dependencies cannot touch each other.
+// GeckoLib and Architectury are the pack's own.
+//
+//   ./gradlew :sandworms:runGameTestServer -PrtsimEngine=stub -PskipJni
+//     -PswLoad=none|libs|all   none: only the core and the test mod; libs: GeckoLib, Architectury, Lodestone, AAA Particles without the
+//                              Sandworms mod; all (default): the mod too. The start-time baselines.
+//     -PswBiome=all|default    all (default): a datapack replaces the tag sandworm_mod:can_spawn_sandworms with every overworld biome (the
+//                              GameTest world is plains); default: the mod's own tag, #minecraft:spawns_gold_rabbits (desert)
+//     -PwithCreate             also load Create and Diesel Generators (pumpjack hole, Create machinery); no mock player may join the level
+//                              through the player list on a server with Create, and the tests that use it keep players out of the level
+//     -PswTests=<regex>        only the tests whose name matches
+evaluationDependsOn(':core')
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    exclusiveContent {
+        forRepository { maven { url = 'https://api.modrinth.com/maven' } }
+        filter { includeGroup 'maven.modrinth' }
+    }
+    mavenCentral()
+}
+
+def packMods = rootProject.file(project.findProperty('packMods') ?: rootProject.packMods).absolutePath
+def packJar = { String name -> files("${packMods}/${name}") }
+def swLoad = (project.findProperty('swLoad') ?: 'all').toString()
+def swBiome = (project.findProperty('swBiome') ?: 'all').toString()
+def withMod = swLoad == 'all'
+def withLibs = swLoad != 'none'
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            systemProperty 'mic_rtsim_sandworms.biome', swBiome
+            systemProperty 'mic_rtsim_sandworms.arm', "load-${swLoad}-biome-${swBiome}".toString()
+            if (project.hasProperty('swTests')) systemProperty 'mic_rtsim_sandworms.tests', project.property('swTests').toString()
+            jvmArgument '-Xmx4G'
+            if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
+            gameDirectory = file('run-gametest')
+        }
+    }
+
+    mods {
+        "mic_rtsim" {
+            sourceSet(project(':core').sourceSets.main)
+        }
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+dependencies {
+    implementation project(':core')
+    runtimeOnly project(':core').micNativeFiles
+    // compile against everything (the test code names the mod's classes, and they are only touched when it is loaded)
+    compileOnly packJar(sw_geckolib_jar)
+    compileOnly "maven.modrinth:pcE9q6Lu:${sw_mod_version}"
+    compileOnly "maven.modrinth:bN3xUWdo:${sw_lodestone_version}"
+    compileOnly "maven.modrinth:En8uHTOK:${sw_aaa_version}"
+    compileOnly packJar(sw_architectury_jar)
+    if (withLibs) {
+        runtimeOnly packJar(sw_geckolib_jar)
+        runtimeOnly packJar(sw_architectury_jar)
+        runtimeOnly "maven.modrinth:bN3xUWdo:${sw_lodestone_version}"
+        runtimeOnly "maven.modrinth:En8uHTOK:${sw_aaa_version}"
+    }
+    if (withMod) runtimeOnly "maven.modrinth:pcE9q6Lu:${sw_mod_version}"
+    // -PwithCreate: Create (carries Ponder, Flywheel and Registrate jar-in-jar) and Diesel Generators, for the pumpjack hole and the machinery
+    if (project.hasProperty('withCreate')) {
+        runtimeOnly packJar(sw_create_jar)
+        runtimeOnly packJar(sw_diesel_jar)
+    }
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}
