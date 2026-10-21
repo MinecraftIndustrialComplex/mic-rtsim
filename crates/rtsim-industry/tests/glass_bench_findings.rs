@@ -357,7 +357,9 @@ fn an_import_restarts_a_dry_glass_replay() {
 /// Found: the cycle search looks for a period of the whole district's state, which two loops of
 /// unequal periods never repeat (here 3,200 and 6,400 ticks by rates; the replay runs them at
 /// about 3,157 and 6,359), so the district passes `breakpointsPerEventMax` (64) breakpoints and
-/// falls back as oscillating. Loops of equal period find their cycle.
+/// falls back as oscillating. Loops of equal period find their cycle. On 20b740a a loop's
+/// period also depends on its press's cycle (the latency hold), so even equal rates in other
+/// batches (a press of 1 per 10 ticks beside one of 2 per 20) fall back the same way.
 #[test]
 #[ignore = "engine finding (G2 bench): two switched loops of unequal periods fall back as oscillating"]
 fn two_switched_loops_of_unequal_periods_stay_on_the_glass_box() {
@@ -384,14 +386,14 @@ fn two_switched_loops_of_unequal_periods_stay_on_the_glass_box() {
     );
 }
 
-/// The control: two loops of equal period (one band, other phases) stay on the glass box, with
-/// one closed-form cycle. Passes on feab04d; falls back as oscillating on 20b740a.
+/// The control: two identical loops in other phases stay on the glass box, with one
+/// closed-form cycle.
 #[test]
 fn two_switched_loops_of_equal_periods_stay_on_the_glass_box() {
     let mut l = Line::default();
     let brass = l.store(BIG, &[(BRASS, 1_000_000_000)]);
     l.switched_loop(brass, (1, 10), (1, 20), (100, 20), 80);
-    l.switched_loop(brass, (2, 20), (1, 20), (100, 20), 30);
+    l.switched_loop(brass, (1, 10), (1, 20), (100, 20), 30);
     let mut e = replaying(&l);
     for day in 1..=30 {
         e.advance_to(Tick(UNLOAD + day * TICKS_PER_DAY));
