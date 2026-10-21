@@ -368,7 +368,7 @@ public final class OilDangerGameTests {
                     current[0] = null;
                     record(test, "arm A (the pack's In Control rules, the gate off)", a.line());
                     clearRules();
-                    int swept = sweep(level, site, standIn[0]);
+                    int swept = sweep(level, site, standIn[0], false);
                     int fires = putOutFires(level, site);
                     record(test, "between arms", swept + " entities and " + fires + " fires cleared");
                 })
@@ -385,7 +385,7 @@ public final class OilDangerGameTests {
                     clearRules();
                     DragonKit.oilConfig(0);
                     if (oil) {
-                        int swept = sweep(level, site, standIn[0]);
+                        int swept = sweep(level, site, standIn[0], true);
                         int fires = putOutFires(level, site);
                         record(test, "between arms", swept + " entities and " + fires + " fires cleared");
                     }
@@ -408,7 +408,7 @@ public final class OilDangerGameTests {
                     DragonConfig.Test.breathPerBurst = null;
                     clearRules();
                     DragonKit.restoreOilConfig();
-                    sweep(level, site, null);
+                    sweep(level, site, null, false);
                     OilGameTests.release(probe[0]);
                     liveProbe = null;
                     liveStandIn = null;
@@ -580,9 +580,11 @@ public final class OilDangerGameTests {
 
     /**
      * Every mob, projectile, item and orb near the site, except the stand-in and the engine's own dragons
-     * (those leave with their chunks, as in the flights test). Returns how many went.
+     * (those leave with their chunks, as in the flights test), unless {@code engineDragons}: between arms B
+     * and C, B's visitors go too (they leave the sim), so C's first hit and its dragons are its own.
+     * Returns how many went.
      */
-    static int sweep(ServerLevel level, BlockPos site, Entity keep) {
+    static int sweep(ServerLevel level, BlockPos site, Entity keep, boolean engineDragons) {
         AABB box = new AABB(site).inflate(FORCE * 16 + 16, 400, FORCE * 16 + 16);
         List<Entity> gone = new ArrayList<>();
         for (Entity e : level.getEntities((Entity) null, box,
@@ -595,7 +597,7 @@ public final class OilDangerGameTests {
             }
             if (e.getTags().contains(STAND_IN))
                 continue;
-            if (e instanceof DragonBaseEntity d && DragonKit.bridge().agentOf(d) != 0)
+            if (!engineDragons && e instanceof DragonBaseEntity d && DragonKit.bridge().agentOf(d) != 0)
                 continue;
             gone.add(e);
         }
