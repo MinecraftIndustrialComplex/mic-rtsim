@@ -203,10 +203,13 @@ impl Link {
         Ok(l)
     }
 
-    /// Whether the dragons are in the world at all: no dragon and no lair means nothing to run
-    /// and nothing that touches the world.
+    /// Whether the dragons are in the world at all: no dragon, no lair and no oil known means
+    /// nothing to run and nothing that touches the world. Oil alone is enough: a field draws field
+    /// flights and asks for a lair before any dragon or lair exists (OILGATE.md §4.2, §4.4).
     fn active(&self) -> bool {
-        !self.engine.dragons.is_empty() || !self.engine.lairs.is_empty()
+        !self.engine.dragons.is_empty()
+            || !self.engine.lairs.is_empty()
+            || !self.engine.oil.is_empty()
     }
 }
 
