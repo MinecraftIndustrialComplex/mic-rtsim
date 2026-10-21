@@ -1082,7 +1082,10 @@ For Deep Time's coordinator to review.
   once after the journal check (or `level.dat_old` while vanilla swaps the two), since a live
   server rewrites it every save even when the journal stands still. A Deep Time folder named in
   `level.dat` is taken only as a plain relative path. A folder holding pages but no
-  `rtsim-fork.json` (an export that died) is refused with a message to delete it.
+  `rtsim-fork.json` (an export that died) is refused with a message to delete it. The fake Java
+  was written for tests and panics on what it does not expect; under `run` a panic ends the run
+  as a server crash would, and the fork starts again from its last save. The export's race is
+  forced in a test (`fork::export_with`'s hook saves the world mid-copy, in the bridge's order).
 - **Found on the way:** a dragon's u8 fruitless count overflowed after 256 days with nothing in range
   (a panic in the debug profile, a wrap in release); it saturates now. Phase 1's leg index grows
   without bound (§12.4). That fix is phase 1's and is not in V2: the purge will run at fixed
