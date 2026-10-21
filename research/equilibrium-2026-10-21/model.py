@@ -885,7 +885,8 @@ def run(p: Params, S=24, days=60 * YEAR, seed=1, player="homebody", farm=None,
         w.camps(t, dt)
         w.pirates(t, dt)
         if shock_kind and shock_day is not None and t <= shock_day < t + dt:
-            shock(w, shock_kind, t)
+            if shock_kind != "control":      # a control run: same seed, the player turns peaceful, no kill
+                shock(w, shock_kind, t)
             if peaceful_after_shock:
                 pl.kills = False
         pl.act(w, t, dt)
