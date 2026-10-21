@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::{Arena, Handle};
-use rtsim_kernel::lazy::{LazyTable, RegionId};
+use rtsim_kernel::lazy::RegionId;
 use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{ActorId, ActorKind, HolderKind, Knowledge, VanillaGossip};
@@ -22,6 +22,33 @@ use rtsim_travel::legs::LegIndex;
 use rtsim_travel::news::{NewsRing, Snapshot};
 
 use crate::config::WorldConfig;
+
+/// How the market table writes a market: rtsim-trade's save form.
+pub struct MarketCodec;
+
+impl rtsim_kernel::lazy::ModelCodec<Market> for MarketCodec {
+    fn put(m: &Market, w: &mut rtsim_kernel::codec::Writer) {
+        rtsim_trade::persist::save_market(w, m);
+    }
+
+    fn get(r: &mut rtsim_kernel::codec::Reader<'_>) -> rtsim_kernel::codec::Result<Market> {
+        rtsim_trade::persist::load_market(r)
+    }
+
+    fn heap_bytes(m: &Market) -> usize {
+        m.heap_bytes()
+    }
+}
+
+/// The market table: lazy regions in row pages.
+pub type MarketTable = rtsim_kernel::lazy::PagedLazyTable<Market, MarketCodec>;
+
+/// The page table of the market rows (docs/choices-paging-modules.md, "Page tables").
+pub const TABLE_MARKETS: u16 = 0x5010;
+/// The page table of a paged world's meta page (id 0): everything but the market rows.
+pub const TABLE_META: u16 = 0x5012;
+/// Markets per page. PLACEHOLDER 16: a market row is 1 to 7 KB resident (its goods).
+pub const MARKETS_PER_PAGE: u64 = 16;
 
 /// The markets' system id: keys their lazy table (they draw nothing, but the table wants one).
 pub const SYS_MARKET: SystemId = SystemId::named("trade.market");
@@ -212,7 +239,8 @@ pub struct World {
     pub book: RecipeBook,
     pub settlements: Settlements,
     pub nodes: Vec<Node>,
-    pub markets: LazyTable<Market>,
+    /// The markets, as lazy regions in row pages (docs/choices-paging-modules.md).
+    pub markets: MarketTable,
     pub edges: Vec<Edge>,
     pub knowledge: Knowledge,
     pub(crate) wheel: TimingWheel<Ev>,
@@ -351,7 +379,13 @@ impl World {
         let knowledge = Knowledge::with_tunables(cfg.seed, cfg.knowledge.clone());
         let window = cfg.trade.quantum.len();
         World {
-            markets: LazyTable::new(cfg.seed, SYS_MARKET, Tick::ZERO),
+            markets: MarketTable::new(
+                cfg.seed,
+                SYS_MARKET,
+                Tick::ZERO,
+                TABLE_MARKETS,
+                MARKETS_PER_PAGE,
+            ),
             wheel: TimingWheel::new(Tick::ZERO),
             cfg,
             goods,
@@ -710,6 +744,7 @@ impl World {
         // table's wheel got there in the last `next_due`).
         let _ = self.wheel.pop_until(to);
         self.now = self.now.max(to);
+        self.markets.rows_mut().enforce_budget();
     }
 
     pub fn run_days(&mut self, days: u64) {

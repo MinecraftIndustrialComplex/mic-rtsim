@@ -495,6 +495,7 @@ impl<T: Row> PagedRows<T> {
     /// Adds the row, or replaces the one under this key (returned).
     pub fn try_insert(&mut self, key: u64, value: T) -> Result<Option<T>> {
         let slot = self.slot_of(key);
+        let per = self.per as usize;
         let page = self.page_for_change(self.page_of(key))?;
         let before = page.bytes();
         let add = value.heap_bytes();
@@ -505,6 +506,13 @@ impl<T: Row> PagedRows<T> {
                 Some(old)
             }
             Err(i) => {
+                // Double up to the page's row count, never past it: a `Vec`'s first push reserves
+                // four, so a page of one row held room for four (three idle dragons' worth).
+                let len = page.rows.len();
+                if len == page.rows.capacity() {
+                    page.rows
+                        .reserve_exact((len * 2).clamp(1, per).saturating_sub(len));
+                }
                 page.rows.insert(i, (slot, value));
                 page.heap += add;
                 None
@@ -1229,6 +1237,24 @@ mod tests {
             assert!(p.iter().all(|&k| k == p[0]), "{x0},{z0}: {p:?}");
         }
         assert!(std::panic::catch_unwind(|| cell_key(0, 1 << 19, 0)).is_err());
+    }
+
+    #[test]
+    fn a_page_reserves_room_for_its_own_rows_only() {
+        let page = size_of::<RowPage<R>>() + INDEX_ENTRY_BYTES;
+        let row = size_of::<(u32, R)>();
+        let r = |a| R { a, tail: vec![] };
+        let mut one: PagedRows<R> = PagedRows::new(3, 1);
+        for k in 0..5 {
+            one.insert(k, r(k));
+        }
+        assert_eq!(one.resident_bytes(), 5 * (page + row));
+        // Doubling, capped at the page: 1, 2, 4, 6 rows' room for 1, 2, 3 to 4, and 5 to 6.
+        let mut six: PagedRows<R> = PagedRows::new(3, 6);
+        for (k, room) in [(0, 1), (1, 2), (2, 4), (3, 4), (4, 6), (5, 6)] {
+            six.insert(k, r(k));
+            assert_eq!(six.resident_bytes(), page + room * row, "{k}");
+        }
     }
 
     #[test]
