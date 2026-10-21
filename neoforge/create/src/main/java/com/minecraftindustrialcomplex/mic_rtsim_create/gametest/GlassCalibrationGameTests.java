@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.GlassCalibrationKit.Meter;
+import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.SteamHelpers;
 import com.minecraftindustrialcomplex.mic_rtsim_create.glass.Cycles;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.AllItems;
@@ -60,6 +61,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.GlassCalibrationKit.*;
@@ -83,6 +85,13 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.GlassCali
  * what an always-ready feeder that ticks before it would give. Differences of a tick per cycle from the
  * placement order of neighbours (who ticks first) are hand-off effects, not model errors.
  *
+ * <p>The hand-off cases use the corpus's real feeders instead, so {@link Cycles#chuteHandOff} is measured,
+ * not fitted: {@code saw_chute} (corpus 5: a smart chute pulling one alloy over the saw),
+ * {@code crusher_chute} (corpus 1: a smart chute pulling 2 raw iron over the crushing wheels) and
+ * {@code fan_depot_arm} (corpus 8: a chute over a blasting depot, emptied by a mechanical arm into a filtered
+ * funnel, in two placement orders, since the three-actor loop depends on the ticker order). Their lines add
+ * {@code periods=<ticks>x<count>}, the periods seen after the warm-up.
+ *
  * <p>Each machine is its own batch (its speeds run side by side). The environment variable
  * {@code MIC_GLASS_CALIB} (comma-separated machine names, or {@code none}) limits the run; unset, all run.
  */
@@ -96,6 +105,8 @@ public final class GlassCalibrationGameTests {
     static final int FAN_TIME = 150;
     static final float MEDIUM_SPEED = 30.0F;
     static final int EXTRACTION_TIMER = 8;
+    /** A chute's item motion under gravity alone. */
+    static final float GRAVITY = Cycles.chuteMotion(0.0F, 0.0F);
 
     record Run(Meter meter, Runnable step) {}
 
@@ -135,6 +146,18 @@ public final class GlassCalibrationGameTests {
         add(out, filter, "funnel_andesite", "rpm0", Cycles.funnelPeriod(EXTRACTION_TIMER), (h, t) -> funnel(h, t, false));
         add(out, filter, "funnel_brass", "rpm0", Cycles.funnelPeriod(EXTRACTION_TIMER), (h, t) -> funnel(h, t, true));
         add(out, filter, "chute", "rpm0", Cycles.chuteGrabPeriod(Cycles.chuteMotion(0.0F, 0.0F)), GlassCalibrationGameTests::chute);
+        // Hand-off loops with the corpus's real feeders: the machine takes its next input only once empty,
+        // from a parked chute above it (Cycles.chuteHandOff).
+        double self = Cycles.chuteHandOff(GRAVITY, 0, true).ticks();
+        for (int rpm : new int[] {16, 32, 64, 96, 128, 256})
+            add(out, filter, "saw_chute", "rpm" + rpm, Cycles.saw(200, 1, rpm) + self, (h, t) -> sawChute(h, t, rpm));
+        for (int rpm : new int[] {16, 32, 50, 64, 128, 256})
+            add(out, filter, "crusher_chute", "n2_rpm" + rpm, Cycles.crusher(400, 2, rpm) + self, (h, t) -> crusherChute(h, t, rpm));
+        for (int rpm : new int[] {64, 256})
+            for (String order : new String[] {"cfa", "afc"})
+                add(out, filter, "fan_depot_arm", order + "_rpm" + rpm,
+                        Cycles.fanTicks(16, FAN_TIME) + Cycles.chuteHandOff(GRAVITY, Cycles.armMoveTicks(rpm), false).ticks(),
+                        (h, t) -> fanDepotArm(h, t, rpm, order));
         return out;
     }
 
@@ -685,6 +708,185 @@ public final class GlassCalibrationGameTests {
                 if (ticks[0] == window)
                     m.rate(sum[0] / (double) ticks[0], ticks[0]);
             }
+        });
+    }
+
+    // ---- hand-off loops: real feeders -----------------------------------------------------------
+
+    /**
+     * Marks a meter and keeps a histogram of the periods it measures (those after its warm-up), shown on
+     * the calib line as {@code periods=<ticks>x<count>,...}: an order effect shows as two values.
+     */
+    static final class Periods {
+        final Meter m;
+        final TreeMap<Long, Integer> hist = new TreeMap<>();
+        long last = -1;
+        int seen;
+        String extra = "";
+
+        Periods(Meter m) {
+            this.m = m;
+        }
+
+        void mark(long tick) {
+            m.mark(tick);
+            seen++;
+            if (last >= 0 && seen > Meter.WARM + 1)
+                hist.merge(tick - last, 1, Integer::sum);
+            last = tick;
+            note();
+        }
+
+        void extra(String s) {
+            extra = s;
+            note();
+        }
+
+        private void note() {
+            StringBuilder b = new StringBuilder("periods=");
+            hist.forEach((k, v) -> b.append(b.length() > 8 ? "," : "").append(k).append('x').append(v));
+            m.note(b + (extra.isEmpty() ? "" : " " + extra));
+        }
+    }
+
+    /**
+     * Corpus 5's saw station: a chest of andesite alloy over an unpowered smart chute (filter alloy, count
+     * 1) over an upward saw filtered to shafts, on a motor. The chute grabs the next alloy long before the
+     * saw is free and parks it at 0.5; an operation is the saw's inventory emptying after a load (the
+     * shafts are killed). Model: {@code saw + chuteHandOff(gravity, 0, true)}, the two-actor loop.
+     */
+    static Run sawChute(GameTestHelper h, int target, int rpm) {
+        Cycles.Ratio ho = Cycles.chuteHandOff(GRAVITY, 0, true);
+        int own = Cycles.saw(200, 1, rpm);
+        Meter m = new Meter("saw_chute", Integer.toString(rpm), "D200 n1 saw=" + own + " handoff=" + ho.num() + "/" + ho.den(),
+                own + ho.ticks(), target);
+        BlockPos saw = at(h, 8, 1, 8), chute = at(h, 8, 2, 8), chest = at(h, 8, 3, 8);
+        set(h, saw, AllBlocks.MECHANICAL_SAW.getDefaultState().setValue(SawBlock.FACING, Direction.UP)
+                .setValue(DirectionalAxisKineticBlock.AXIS_ALONG_FIRST_COORDINATE, true));
+        motor(h, at(h, 7, 1, 8), Direction.EAST, rpm);
+        FilteringBehaviour f = BlockEntityBehaviour.get(h.getLevel(), saw, FilteringBehaviour.TYPE);
+        if (f == null)
+            throw new GameTestAssertException("no filter on the saw");
+        f.setFilter(new ItemStack(AllBlocks.SHAFT.get()));
+        Item alloy = AllItems.ANDESITE_ALLOY.get();
+        SteamHelpers.smartChute(h, chute, alloy, 1);
+        chest(h, chest);
+        fill(h, chest, alloy, 256);
+        Periods per = new Periods(m);
+        boolean[] loaded = {false};
+        return new Run(m, () -> {
+            killItems(h);
+            SawBlockEntity s = beOrNull(h, saw, SawBlockEntity.class);
+            if (s == null || s.getSpeed() == 0)
+                return;
+            boolean now = !s.inventory.isEmpty();
+            if (loaded[0] && !now)
+                per.mark(h.getTick());
+            loaded[0] = now;
+            if (count(h, chest, alloy) < 64)
+                fill(h, chest, alloy, 128);
+        });
+    }
+
+    /**
+     * Corpus 1's crusher station: crushing wheels as in {@link #crusher}, a chest of raw iron over an
+     * unpowered smart chute (filter raw iron, count 2) right above the controller. The controller takes
+     * items only while empty; an operation is its inventory emptying after a load (the drops are killed).
+     * Model: {@code crusher(400, 2) + chuteHandOff(gravity, 0, true)}.
+     */
+    static Run crusherChute(GameTestHelper h, int target, int rpm) {
+        Cycles.Ratio ho = Cycles.chuteHandOff(GRAVITY, 0, true);
+        int own = Cycles.crusher(400, 2, rpm);
+        Meter m = new Meter("crusher_chute", Integer.toString(rpm), "D400 n2 crusher=" + own + " handoff=" + ho.num() + "/" + ho.den(),
+                own + ho.ticks(), target);
+        BlockPos a = at(h, 7, 2, 8), b = at(h, 9, 2, 8), ctrl = at(h, 8, 2, 8), chute = at(h, 8, 3, 8), chest = at(h, 8, 4, 8);
+        BlockState wheel = AllBlocks.CRUSHING_WHEEL.getDefaultState().setValue(BlockStateProperties.AXIS, Direction.Axis.Z);
+        set(h, a, wheel);
+        set(h, b, wheel);
+        motor(h, at(h, 7, 2, 7), Direction.SOUTH, -rpm);
+        motor(h, at(h, 9, 2, 7), Direction.SOUTH, rpm);
+        SteamHelpers.smartChute(h, chute, Items.RAW_IRON, 2);
+        chest(h, chest);
+        fill(h, chest, Items.RAW_IRON, 256);
+        Periods per = new Periods(m);
+        boolean[] loaded = {false};
+        int[] most = {0};
+        return new Run(m, () -> {
+            killItems(h);
+            CrushingWheelControllerBlockEntity c = beOrNull(h, ctrl, CrushingWheelControllerBlockEntity.class);
+            if (c == null || c.crushingspeed == 0)
+                return;
+            int in = c.inventory.getStackInSlot(0).is(Items.RAW_IRON) ? c.inventory.getStackInSlot(0).getCount() : 0;
+            if (in > most[0]) {
+                most[0] = in;
+                per.extra("load=" + in + " facing=" + h.getLevel().getBlockState(ctrl).getValue(BlockStateProperties.FACING).getName());
+            }
+            boolean now = !c.inventory.isEmpty();
+            if (loaded[0] && !now)
+                per.mark(h.getTick());
+            loaded[0] = now;
+            if (count(h, chest, Items.RAW_IRON) < 64)
+                fill(h, chest, Items.RAW_IRON, 128);
+        });
+    }
+
+    /**
+     * Corpus 8's depot station in miniature: a fan blowing up through a walled lava source onto a depot
+     * (blasting raw iron into iron ingots), a plain chute from a chest of raw iron above the depot (16 per
+     * grab, parked at 0.5 while the depot holds a stack), and a mechanical arm meshed with the fan's cog that
+     * takes from the depot into a brass funnel filtered to iron ingots on a chest (so it never lifts raw
+     * iron). {@code order} is the placement order of the three actors, which is their order in the level's
+     * ticker list: {@code c} the chute (and its chest), {@code f} the depot and fan (with the cog, motor and
+     * lava), {@code a} the arm (its targets set once all exist). An operation is the output chest gaining
+     * items. Model: {@code fanTicks(16) + chuteHandOff(gravity, armMoveTicks, false)}, the mean of a
+     * three-actor loop: 159.5 at 256 RPM, where {@code cfa} (a cyclic order) should give 159 and {@code afc}
+     * (the reverse) 160. Measured (stub, one run): 256 RPM cfa 159.000, afc 160.000 (single periods 157 to
+     * 162, centred on those); 64 RPM cfa 170.824, afc 172.118 against 171 and 172 (single periods two
+     * groups, 165 to 167 and 174 to 176, the arm's lazy-tick phase; 17 periods, so a few tenths of noise).
+     */
+    static Run fanDepotArm(GameTestHelper h, int target, int rpm, String order) {
+        int time = AllConfigs.server().kinetics.fanProcessingTime.get();
+        Cycles.Ratio ho = Cycles.chuteHandOff(GRAVITY, Cycles.armMoveTicks(rpm), false);
+        int own = Cycles.fanTicks(16, time);
+        Meter m = new Meter("fan_depot_arm", Integer.toString(rpm), "order=" + order + " T" + time + " n16 fan=" + own + " arm="
+                + Cycles.armMoveTicks(rpm) + " handoff=" + ho.num() + "/" + ho.den(), own + ho.ticks(), target);
+        BlockPos motorPos = at(h, 8, 1, 8), cogPos = at(h, 8, 2, 8), fanPos = at(h, 8, 3, 8), lava = at(h, 8, 4, 8),
+                depotPos = at(h, 8, 5, 8), chutePos = at(h, 8, 6, 8), src = at(h, 8, 7, 8), armPos = at(h, 9, 2, 8),
+                funnel = at(h, 9, 2, 6), out = at(h, 9, 2, 5);
+        chest(h, out);
+        SteamHelpers.brassFunnel(h, funnel, Direction.SOUTH, Items.IRON_INGOT);
+        for (Direction d : Direction.Plane.HORIZONTAL)
+            set(h, lava.relative(d), Blocks.GLASS.defaultBlockState());
+        for (char c : order.toCharArray()) {
+            switch (c) {
+                case 'c' -> {
+                    chest(h, src);
+                    fill(h, src, Items.RAW_IRON, 640);
+                    SteamHelpers.chute(h, chutePos);
+                }
+                case 'f' -> {
+                    depot(h, depotPos);
+                    motor(h, motorPos, Direction.UP, rpm);
+                    cog(h, cogPos, Direction.Axis.Y);
+                    SteamHelpers.fan(h, fanPos, Direction.UP);
+                    set(h, lava, Blocks.LAVA.defaultBlockState());
+                }
+                case 'a' -> set(h, armPos, AllBlocks.MECHANICAL_ARM.getDefaultState());
+                default -> throw new GameTestAssertException("unknown part " + c);
+            }
+        }
+        armTargets(h, armPos, List.of(depotPos), List.of(funnel), ArmBlockEntity.SelectionMode.PREFER_FIRST);
+        Periods per = new Periods(m);
+        int[] last = {0};
+        return new Run(m, () -> {
+            int c = count(h, out, Items.IRON_INGOT);
+            if (c > last[0]) {
+                per.mark(h.getTick());
+                per.extra("batch=" + (c - last[0]) + " arm=" + fmt(speed(h, armPos)));
+            }
+            last[0] = c;
+            if (count(h, src, Items.RAW_IRON) < 128)
+                fill(h, src, Items.RAW_IRON, 256);
         });
     }
 }
