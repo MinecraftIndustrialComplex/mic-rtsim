@@ -8,3 +8,5 @@ cc 5dc92a23fc5049de6b0c152e3d2a3154e345b148cab1c3e454819e57d0826b8b # shrinks to
 cc 551ed1efd42d38065c4a7814ba8ece63becf25f2a20ada9ceb721f2304ddfae6 # shrinks to press = 6, slow = 19, hi = 108, band = 5, s0f = 0.0, span = 20000, mut reads = []
 cc 8df3b79ca3fd2c8d041d1e6813a6e7b8d1eac30c647fbb57b8bcb177c0f8a36d # shrinks to press = 4, slow = 13, hi = 30, band = 5, s0f = 0.0, span = 20000, mut reads = []
 cc 7436e8985f8bf80200f9aa38c1e8d39ccfaee4d67e4808403956a6081713918c # shrinks to press = 4, slow = 20, hi = 30, band = 5, s0f = 0.0, span = 20000, mut reads = []
+cc c2f9b841368101dfad415cc7dfe609a5d5ea11db7a696e637dd571c6119aa8af # shrinks to press = 11, slow = 11, hi = 30, band = 5, s0f = 0.0, span = 20000, lat = 26, mut reads = []
+cc 6483d1577d485f3b8b7d67baf940fa782345d83bb473ab7affece8a17dd9ce98 # shrinks to press = 15, slow = 11, hi = 30, band = 19, s0f = 0.0, span = 20000, lat = 180, mut reads = []

@@ -1515,6 +1515,13 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
 /// Corpus 6's compile with the andesite funnel moving a sheet per `funnel` ticks onto a feeder belt
 /// that takes an entry per `feeder` ticks (64 at 8 RPM, 8 at 64 RPM).
 fn precision_mechanisms_fed(perm: &[u32; 19], funnel: u32, feeder: u32) -> (Graph, [u32; 5]) {
+    let (b, stores) = precision_builder(perm, funnel, feeder);
+    (b.graph(), stores)
+}
+
+/// [`precision_mechanisms_fed`]'s builder: the stores are inventories 0 (cogs, zinc here), 1
+/// (golden sheets), 2 (nuggets, coal), 3 (large cogs, copper) and 4 (the output).
+fn precision_builder(perm: &[u32; 19], funnel: u32, feeder: u32) -> (B, [u32; 5]) {
     let mut b = B::default();
     let r = b.recipe(
         &[(SHEET, 1), (COAL, 5), (ZINC, 5), (COPPER, 5)],
@@ -1601,7 +1608,7 @@ fn precision_mechanisms_fed(perm: &[u32; 19], funnel: u32, feeder: u32) -> (Grap
     through(&mut b, n(16), n(18));
     b.edge_k(EdgeKind::Belt, n(18), n(17), &[]);
     b.edge_k(EdgeKind::Belt, n(12), n(18), &[]);
-    (b.graph(), [n(11), n(9), n(10), n(13), n(8)])
+    (b, [n(11), n(9), n(10), n(13), n(8)])
 }
 
 #[test]
@@ -2405,11 +2412,13 @@ mod replay_path {
         let r = e.glass.report(D).expect("a compile");
         assert_eq!(r.replay.model, replay_model::GLASS);
         assert_eq!(r.replay.since, Some(3500));
-        // 3,000 ticks later: 300 more sheets, never more; a brass may be in the press.
+        // 3,000 ticks later: 300 more sheets, never more. The press is held a cycle (the item it
+        // held at the unload is still in it, G2-6), a brass may be in it, and a unit either way
+        // goes to the rates' rounding.
         e.advance_to(Tick(6500));
         let st = e.sim_stock(D).expect("replaying");
-        assert!((649..=650).contains(&st.get(SHEET)), "{st:?}");
-        assert!((349..=350).contains(&st.get(BRASS)), "{st:?}");
+        assert!((648..=650).contains(&st.get(SHEET)), "{st:?}");
+        assert!((349..=351).contains(&st.get(BRASS)), "{st:?}");
         // Long after the brass ran out, the press stopped where the brass did.
         e.advance_to(Tick(20_000));
         let st = e.sim_stock(D).expect("replaying");
@@ -2488,41 +2497,8 @@ mod replay_path {
 
     /// The switched line tick by tick, as Create runs it: (brass used, coal made) after `ticks`.
     fn switched_reference(sheets0: i64, ticks: u64) -> (i64, i64) {
-        let r = switched_reference_with(10, 20, 100, 20, sheets0, ticks);
+        let r = switched_reference_lat((10, 20, 100, 20), sheets0, ticks, 0);
         (r.0, r.1)
-    }
-
-    /// [`switched_reference`] for [`switched_line_with`]: (brass used, coal made, switch flips).
-    fn switched_reference_with(
-        press: u64,
-        consume: u64,
-        hi: i64,
-        lo: i64,
-        sheets0: i64,
-        ticks: u64,
-    ) -> (i64, i64, i64) {
-        let (mut sheets, mut used, mut coal, mut flips) = (sheets0, 0i64, 0i64, 0i64);
-        let mut on = sheets0 >= hi;
-        for t in 1..=ticks {
-            if !on && t % press == 0 {
-                sheets += 1;
-                used += 1;
-            }
-            if sheets > 0 && t % consume == 0 {
-                sheets -= 1;
-                coal += 1;
-            }
-            let next = if sheets >= hi {
-                true
-            } else if sheets <= lo {
-                false
-            } else {
-                on
-            };
-            flips += i64::from(next != on);
-            on = next;
-        }
-        (used, coal, flips)
     }
 
     /// The switch cycles the sheets between 20 and 100 with a period of about 3,200 ticks. The
@@ -2570,8 +2546,10 @@ mod replay_path {
         let used = 100_000 - st.get(BRASS);
         let coal = st.get(COAL);
         let (ref_used, ref_coal) = switched_reference(80, span);
-        // The consumer never runs above the control: what it made is at most what Create made.
-        assert!(coal <= ref_coal, "made {coal}, reference {ref_coal}");
+        // The consumer never runs above the control: what it made is at most what Create made, and
+        // the item in its cycle (Create counts it when the cycle ends, the replay's continuous
+        // output as it goes: choice G2-21).
+        assert!(coal <= ref_coal + 1, "made {coal}, reference {ref_coal}");
         assert!(
             coal as f64 >= ref_coal as f64 * 0.99,
             "made {coal}, reference {ref_coal}"
@@ -2646,16 +2624,424 @@ mod replay_path {
         assert_eq!(a, b);
     }
 
-    /// One switched line replayed from its unload at 200 to `200 + span`, reading the stock at
-    /// `reads` (sorted, inside the span): the stocks read, then the final stock and report.
+    /// A blaze burner on 1,593 ticks of burn takes coal from the mixer's input store (one per
+    /// 1,600 ticks once its burn falls to 500) while away: its phases are the replay's timers, the
+    /// coal runs out, the burner goes out 500 ticks later, and the mixer stops there. Create's
+    /// count: lit to 1,593 + 16 x 1,600 = 27,193, a craft of 2 brass per 17 ticks.
+    #[test]
+    fn a_heater_burns_its_coal_while_away_then_goes_out_and_the_mixer_stops() {
+        let b = burning_mixer([1593, i64::from(heat::KINDLED), 1600, 500], true);
+        let mut s = setup(&b, 2);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[&[(ZINC, 10_000), (COPPER, 10_000), (COAL, 16)], &[]],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        let crafts = |t: u64| 2 * (t.min(27_193) / 17 - 200 / 17) as i64;
+        let mut seen = Vec::new();
+        for t in [1_000u64, 20_000, 26_000, 30_000, 60_000] {
+            e.advance_to(Tick(t));
+            let st = e.sim_stock(D).expect("replaying");
+            seen.push((t, st.get(BRASS), st.get(COAL), st.get(ZINC)));
+        }
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        for &(t, brass, coal, zinc) in &seen {
+            // Never above Create, at most a craft and a tick per breakpoint below.
+            let c = crafts(t);
+            assert!(
+                brass <= c + 1 && brass >= c - 6,
+                "at {t}: {brass} vs {c}: {seen:?}"
+            );
+            // Coal: one when the burn reaches 500 at 1,093, then one per 1,600 ticks.
+            let took = (t.saturating_sub(1093).div_ceil(1600) as i64).min(16);
+            assert!(
+                (coal - (16 - took)).abs() <= 1,
+                "at {t}: {coal} coal: {seen:?}"
+            );
+            // The recipe: a zinc per 2 brass, nothing made from nothing.
+            assert!(
+                zinc + brass / 2 <= 10_000 && zinc + brass / 2 >= 9_998,
+                "{seen:?}"
+            );
+        }
+        // Out by 27,193: the mixer made nothing more.
+        assert_eq!(seen[3].1, seen[4].1, "{seen:?}");
+        assert_eq!(seen[4].2, 0, "{seen:?}");
+        assert!(r.replay.breakpoints >= 3, "{}", r.replay.breakpoints);
+        e.check_books().expect("books");
+    }
+
+    /// The switched line with the press's output on a belt `lat` ticks long, tick by tick as
+    /// Create runs it: (brass used, coal made, the fewest sheets the store held, switch flips).
+    /// Each machine takes an item when it is idle and has one, and gives its output a cycle later
+    /// (a press on a belt starts when an item reaches it); the switch stops the press taking.
+    fn switched_reference_lat(
+        line: (u64, u64, i64, i64),
+        sheets0: i64,
+        ticks: u64,
+        lat: u64,
+    ) -> (i64, i64, i64, i64) {
+        let (press, consume, hi, lo) = line;
+        let (mut sheets, mut used, mut coal, mut flips) = (sheets0, 0i64, 0i64, 0i64);
+        let mut on = sheets0 >= hi;
+        let mut belt = std::collections::VecDeque::new();
+        let mut least = sheets0;
+        // Ticks left of each machine's cycle (None: idle).
+        let (mut p, mut c): (Option<u64>, Option<u64>) = (None, None);
+        for t in 1..=ticks {
+            if let Some(r) = p {
+                p = (r > 1).then(|| r - 1);
+                if r == 1 {
+                    belt.push_back(t + lat);
+                }
+            }
+            if p.is_none() && !on {
+                used += 1;
+                p = Some(press);
+            }
+            while belt.front().is_some_and(|&a| a <= t) {
+                belt.pop_front();
+                sheets += 1;
+            }
+            if let Some(r) = c {
+                c = (r > 1).then(|| r - 1);
+                if r == 1 {
+                    coal += 1;
+                }
+            }
+            if c.is_none() && sheets > 0 {
+                sheets -= 1;
+                c = Some(consume);
+            }
+            least = least.min(sheets);
+            let next = if sheets >= hi {
+                true
+            } else if sheets <= lo {
+                false
+            } else {
+                on
+            };
+            flips += i64::from(next != on);
+            on = next;
+        }
+        (used, coal, least, flips)
+    }
+
+    /// Latency (§4.4): the press's output reaches the store over a 300-tick belt. A rise waits
+    /// the latency (the lower rate runs meanwhile), so after the switch restarts the press the
+    /// store keeps draining for 300 ticks, to about 5 sheets, as in Create; a fall is at once, so
+    /// the replay never runs ahead of the control.
+    #[test]
+    fn a_rise_waits_the_path_latency_and_the_replay_stays_under_the_control() {
+        let run = |lat: u32| {
+            let mut b = switched_line();
+            b.edges[1].latency = lat;
+            let mut s = setup(&b, 3);
+            sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, 80)], &[]]);
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            pass(&mut e);
+            assert_eq!(
+                e.glass.districts[&D]
+                    .compiled
+                    .as_ref()
+                    .map(|c| c.graph.longest_latency),
+                Some(u64::from(lat))
+            );
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            let span = 100_000u64;
+            let mut least = i64::MAX;
+            for t in (200..200 + span).step_by(7) {
+                e.advance_to(Tick(t));
+                let st = e.sim_stock(D).expect("replaying");
+                let sum = st.get(BRASS) + st.get(SHEET) + st.get(COAL);
+                assert!((100_080 - 16..=100_080).contains(&sum), "at {t}: {st:?}");
+                least = least.min(st.get(SHEET));
+            }
+            e.advance_to(Tick(200 + span));
+            let r = e.glass.report(D).expect("a compile");
+            assert_eq!(
+                r.replay.model,
+                replay_model::GLASS,
+                "{:?}",
+                e.glass.districts[&D].fallback
+            );
+            e.check_books().expect("books");
+            let st = e.sim_stock(D).expect("replaying");
+            (
+                100_000 - st.get(BRASS),
+                st.get(COAL),
+                least,
+                r.replay.breakpoints,
+            )
+        };
+        let span = 100_000;
+        let (used, coal, least, bps) = run(300);
+        let (ref_used, ref_coal, ref_least, _) =
+            switched_reference_lat((10, 20, 100, 20), 80, span, 300);
+        // Never above the control (the item in the consumer's cycle aside, G2-21).
+        assert!(coal <= ref_coal + 1, "made {coal}, reference {ref_coal}");
+        assert!(
+            coal as f64 >= ref_coal as f64 * 0.99,
+            "made {coal}, reference {ref_coal}"
+        );
+        // The press feeds what is taken, plus the switch's band (Create's belt overshoots the
+        // top, the replay's does not, so the two press in different phases).
+        assert!(used <= coal + 20 + 2, "pressed {used}, made {coal}");
+        assert!(
+            (used - ref_used).abs() as f64 <= ref_used as f64 * 0.01 + 40.0,
+            "pressed {used}, reference {ref_used}"
+        );
+        // The store drains through the latency as in Create: down to about 5 sheets.
+        assert!(
+            (ref_least - 2..=ref_least + 2).contains(&least),
+            "{least} vs {ref_least}"
+        );
+        // Without the belt it turns at 20.
+        let (_, _, least0, bps0) = run(0);
+        assert!(least0 >= 18, "{least0}");
+        assert!(bps < 200 && bps0 < 200, "{bps} {bps0} breakpoints");
+    }
+
+    /// A partial load (I7, G-B6): the brass store's chunk runs, the press and the sheet store's do
+    /// not. The cut edge from the live store carries brass from the district's stock across, the
+    /// simulated press makes sheets in its store, and the reload lands both sides.
+    #[test]
+    fn a_partial_load_carries_the_cut_edge_from_the_live_store() {
+        let (mut b, p) = press_line();
+        let far = BlockPos::new(32, 64, 0);
+        b.nodes[p as usize].pos = far;
+        b.nodes[1].pos = far;
+        let mut s = setup(&b, 2);
+        for t in &mut s {
+            if let Obs::Inventory(decl) = &mut t.obs
+                && decl.index == 1
+            {
+                decl.pos = far;
+            }
+        }
+        let near = BlockPos::default().chunk(0);
+        let away = far.chunk(0);
+        for c in [near, away] {
+            s.push(at(
+                0,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: c,
+                    applied_epoch: 0,
+                },
+            ));
+        }
+        sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::ChunkUnloaded {
+                    district: D,
+                    chunk: away,
+                },
+            ),
+        );
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::LoadState {
+                    district: D,
+                    state: LoadState::Partial,
+                    ticking_chunks: 1,
+                    total_chunks: 2,
+                },
+            ),
+        );
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.cut_edges, 1);
+        // A sheet per 10 ticks across the cut, never more; the district's stock pays the brass.
+        e.advance_to(Tick(3200));
+        let st = e.sim_stock(D).expect("replaying");
+        // A cycle's hold at the start (G2-6), and a unit either way to the rates' rounding (a rise
+        // rounds down, a fall away from zero).
+        assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+        assert!(
+            (998..=1000).contains(&(st.get(BRASS) + st.get(SHEET))),
+            "{st:?}"
+        );
+        // The live store held 1,000: the press stops when the cut has carried them all.
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 0, "{st:?}");
+        assert!((999..=1000).contains(&st.get(SHEET)), "{st:?}");
+        e.check_books().expect("books");
+        // Back: the sheets land in their store, the brass leaves the live one (the last brass is
+        // in the press, as in the whole-district replay).
+        let mut cmds = feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: away,
+                    applied_epoch: 0,
+                },
+            ),
+        );
+        cmds.extend(feed(&mut e, &load_state(20_000, LoadState::Live)));
+        e.advance_to(Tick(20_001));
+        cmds.extend(e.drain_commands());
+        let d = deltas(&cmds);
+        let made = d.get(&(1, SHEET)).copied().unwrap_or(0);
+        assert!((999..=1000).contains(&made), "{d:?}");
+        assert_eq!(d.get(&(0, BRASS)), Some(&-1000), "{d:?}");
+        e.check_books().expect("books");
+    }
+
+    /// The residual node (G-B13, I9): a black box between the brass and the sheets is measured
+    /// at a sheet per 10 ticks for a brass. Its window passes, and the replay runs what it
+    /// measured (shaded by the checksum's z, never above) while the factory is as it saw it:
+    /// once the brass runs out the sheets stop too.
+    #[test]
+    fn the_residual_replays_a_black_box_while_its_stores_hold() {
+        let mut b = B::default();
+        let input = b.store(0);
+        let out = b.store(1);
+        let bb = b.node(NodeKind::BlackBox, model::BLACK_BOX, 0, Vec::new());
+        b.edge(input, bb);
+        b.edge_k(EdgeKind::Adjacency, bb, out, &[SHEET]);
+        b.window = 2000;
+        let mut s = setup(&b, 2);
+        for k in 1..=35u32 {
+            let t = u64::from(k) * 100;
+            let m = (t / 10) as i64;
+            sweep(&mut s, k, t, &[&[(BRASS, 2000 - m)], &[(SHEET, m)]]);
+        }
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        let r = e.glass.report(D).expect("a compile");
+        assert!(r.replay.eligible, "a window passed: {:?}", r.verdict);
+        feed(&mut e, &load_state(3500, LoadState::Unloaded));
+        e.advance_to(Tick(3501));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.learned_sources, 1);
+        e.advance_to(Tick(6500));
+        let st = e.sim_stock(D).expect("replaying");
+        let made = st.get(SHEET) - 350;
+        let used = 1650 - st.get(BRASS);
+        assert!((270..=300).contains(&made), "{st:?}");
+        assert!((270..=301).contains(&used), "{st:?}");
+        // The brass runs out near 20,000: the residual stops with it.
+        e.advance_to(Tick(40_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 0, "{st:?}");
+        let end = st.get(SHEET);
+        assert!(end <= 2000, "{st:?}");
+        e.advance_to(Tick(60_000));
+        assert_eq!(e.sim_stock(D).expect("replaying").get(SHEET), end);
+        e.check_books().expect("books");
+    }
+
+    /// Corpus 6, precision_mechanisms (the exit run's loop factory): the host's only sheet supply
+    /// is round the belt loop. Replayed while away it makes what the solve gives, 4/5 of a
+    /// mechanism per sheet at a sheet per 64 ticks, never above it.
+    #[test]
+    fn a_sequenced_loop_replays_its_mechanisms_while_away() {
+        let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+        let (b, _) = precision_builder(&identity, 9, 64);
+        let mut s = setup(&b, 5);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[
+                &[(ZINC, 1000)],
+                &[(SHEET, 1000)],
+                &[(COAL, 1000)],
+                &[(COPPER, 1000)],
+                &[],
+            ],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        // 6,400 ticks: 100 sheets, 80 mechanisms, less the start's hold of 113 ticks (the
+        // funnel, the feeder, and the whole loop as a bound). Each hold coming due is a
+        // breakpoint, and none is an oscillation: holds key on what the regime could run, so the
+        // host's other inputs are not held again when the sheets' hold comes due.
+        e.advance_to(Tick(6600));
+        let r = e.glass.report(D).expect("a compile");
+        let st = e
+            .sim_stock(D)
+            .unwrap_or_else(|| panic!("{r:?} {:?}", e.glass.districts[&D].fallback));
+        let made = st.get(BRASS);
+        assert!((77..=79).contains(&made), "{st:?}");
+        // A sheet in 4/75 comes back; 5 parts a product, a zinc in 30 back.
+        let rounds = 1000 - st.get(SHEET);
+        assert!((92..=94).contains(&rounds), "{st:?}");
+        assert!((487..=490).contains(&(1000 - st.get(ZINC))), "{st:?}");
+        assert_eq!(r.replay.oscillations, 0);
+        assert!(r.replay.breakpoints <= 8, "{:?}", r.replay);
+        e.check_books().expect("books");
+    }
+
+    /// One switched line (its press's output on a belt `lat` ticks long) replayed from its unload
+    /// at 200 to `200 + span`, reading the stock at `reads` (sorted, inside the span): the stocks
+    /// read, then the final stock and report.
     fn switched_run(
         line: (u32, u32, i64, i64),
+        lat: u32,
         s0: i64,
         span: u64,
         reads: &[u64],
     ) -> (Vec<(u64, GoodVec)>, GoodVec, u32, u32, bool) {
         let (press, consume, hi, lo) = line;
-        let b = switched_line_with(press, consume, hi, lo);
+        let mut b = switched_line_with(press, consume, hi, lo);
+        b.edges[1].latency = lat;
         let mut s = setup(&b, 3);
         sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, s0)], &[]]);
         let mut e = engine();
@@ -2679,10 +3065,11 @@ mod replay_path {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(24))]
 
-        /// Switched lines of every shape (G2 property tests, GLASSBOX.md §11.3): goods are
-        /// conserved (nothing made from nothing, a few units at most lost to machines and carry
-        /// restarts), reads on the way change nothing (the composition rule with periodic edges),
-        /// and the controlled line never runs above the tick-by-tick control.
+        /// Switched lines of every shape (G2 property tests, GLASSBOX.md §11.3), half of them with
+        /// the press's output on a belt: goods are conserved (nothing made from nothing, a few
+        /// units at most lost to machines and time shifts), reads on the way change nothing (the
+        /// composition rule with periodic edges), and the controlled line never runs above the
+        /// tick-by-tick control.
         #[test]
         fn switched_lines_conserve_compose_and_stay_under_the_control(
             press in 4u32..=30,
@@ -2691,6 +3078,7 @@ mod replay_path {
             band in 5i64..=60,
             s0f in 0.0f64..=1.2,
             span in 20_000u64..=200_000,
+            lat in prop_oneof![Just(0u32), 1u32..=400],
             mut reads in prop::collection::vec(1u64..=200_000, 0..6),
         ) {
             // The consumer slower than the press (a tenth to four times slower), so the switch
@@ -2701,53 +3089,63 @@ mod replay_path {
             reads.retain(|&t| t < span);
             reads.sort_unstable();
             let line = (press, consume, hi, lo);
-            let (seen, st, bps, model, books) = switched_run(line, s0, span, &reads);
+            let (seen, st, bps, model, books) = switched_run(line, lat, s0, span, &reads);
             prop_assert_eq!(model, replay_model::GLASS, "fell back after {} breakpoints", bps);
             prop_assert!(books, "books");
-            let (ref_used, ref_coal, flips) = switched_reference_with(
-                u64::from(press),
-                u64::from(consume),
-                hi,
-                lo,
+            let (ref_used, ref_coal, _, flips) = switched_reference_lat(
+                (u64::from(press), u64::from(consume), hi, lo),
                 s0,
                 span,
+                u64::from(lat),
             );
-            // Conservation: never more than there was; at most a unit per switch flip (a carry
-            // restart) and a few in machines less.
+            // Conservation: never more than there was; at most a unit per switch flip (a time
+            // shift's rounding, G2-12) and a few in machines less. The latency rule holds nodes
+            // off, so it loses nothing (G2-6).
             let total = 100_000 + s0;
-            let slack = 4 + flips;
+            let b = hi - lo;
+            let periods = 2 * span as i64 / ((b - 2).max(1) * i64::from(consume)) + 2;
+            let slack = 4 + if lat == 0 { flips } else { periods };
             for (t, g) in seen.iter().chain(std::iter::once(&(span, st.clone()))) {
                 let sum = g.get(BRASS) + g.get(SHEET) + g.get(COAL);
                 prop_assert!(sum <= total, "at {}: {} above {}", t, sum, total);
                 prop_assert!(sum >= total - slack, "at {}: {} lost more than {}", t, total - sum, slack);
             }
             // The composition rule: the same run without reads ends the same.
-            let (_, st2, bps2, _, _) = switched_run(line, s0, span, &[]);
+            let (_, st2, bps2, _, _) = switched_run(line, lat, s0, span, &[]);
             prop_assert_eq!(&st, &st2);
             prop_assert_eq!(bps, bps2);
-            // Never above the control: the consumer made at most what Create made, and the press
-            // pressed at most what was taken plus the room left to the switch's top. A switch's
-            // breakpoint costs its regime under a tick (choice G2-12), and the replay's switch
-            // flips a tick before Create's at each threshold (G2-20), so it flips more often, by
-            // its band over the band less two.
+            // Never above the control: the consumer made at most what Create made (and the item
+            // in its cycle, G2-21), and the press pressed at most what was taken plus the room
+            // left to the switch's top.
             let used = 100_000 - st.get(BRASS);
             let coal = st.get(COAL);
-            let b = hi - lo;
-            let lost_ticks = flips * b / (b - 2).max(1) + 4;
-            prop_assert!(coal <= ref_coal, "made {} above {}", coal, ref_coal);
-            prop_assert!(
-                coal >= ref_coal - lost_ticks / i64::from(consume) - 2,
-                "made {}, reference {} ({} flips)", coal, ref_coal, flips
-            );
+            prop_assert!(coal <= ref_coal + 1, "made {} above {}", coal, ref_coal);
             prop_assert!(
                 used <= coal + (hi - s0).max(0) + 2,
                 "pressed {} for {} taken (switch at {}, from {})", used, coal, hi, s0
             );
-            prop_assert!(
-                (used - ref_used).abs()
-                    <= ref_used / 100 + (hi - lo) + 2 + lost_ticks / i64::from(press),
-                "pressed {}, reference {}", used, ref_used
-            );
+            // And not far below it. A switch's breakpoint costs its regime under a tick (choice
+            // G2-12), and the replay's switch flips a tick before Create's at each threshold
+            // (G2-20), so it flips more often, by its band over the band less two. With a belt
+            // the replay's cycle is shorter than Create's (it stops at the top, Create's belt
+            // still delivers), so it is held only where the consumer never runs dry.
+            if lat == 0 {
+                let lost_ticks = flips * b / (b - 2).max(1) + 4;
+                prop_assert!(
+                    coal >= ref_coal - lost_ticks / i64::from(consume) - 2,
+                    "made {}, reference {} ({} flips)", coal, ref_coal, flips
+                );
+                prop_assert!(
+                    (used - ref_used).abs()
+                        <= ref_used / 100 + (hi - lo) + 2 + lost_ticks / i64::from(press),
+                    "pressed {}, reference {}", used, ref_used
+                );
+            } else if lo > i64::from(lat) / i64::from(consume) + 3 && s0 > i64::from(lat) / i64::from(consume) + 3 {
+                prop_assert!(
+                    coal >= ref_coal - periods / i64::from(consume) - 2,
+                    "made {}, reference {} (belt {})", coal, ref_coal, lat
+                );
+            }
         }
     }
 }
