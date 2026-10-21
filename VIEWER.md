@@ -1310,6 +1310,20 @@ For Deep Time's coordinator to review.
     (`Options::archive_save_at`, from `archive_pending_rows` and `archive_pending_bytes`), at most
     every second hand-over so a save is taken before the next is asked. The test sets the mark to
     one row: every save of a three-day run comes from the buffer, and none at the default mark.
+- **Open from V3** (known gaps, not yet scheduled):
+  - Industry's `undetected` set is not saved, so a restart can write `industry.detected` again for
+    a district already announced.
+  - `industry.attack` uses a district as its subject for some attacks and a train for others.
+  - Train lines get no legs, so trains do not move on the timeline.
+  - `CargoLooted`'s loot is not recorded (the row has no payload of what was taken).
+  - A captured merchant's player is 0, and `ships.haven` has no payload.
+  - Ship sinking and capture have no tests of their rows.
+  - A raid seen in view is notable with magnitude 0.
+  - One tribute-order assertion was dropped from the tribute test.
+  - The sidecar filters chunks by `obs_seq`, not the serial (§10.5), so it can show a rolled-back
+    save's chunks until the engine's next start cuts them.
+  - The index is rewritten whole at every flush and compaction step: about 2 MB a save at 5,000
+    chunks.
 
 ---
 
