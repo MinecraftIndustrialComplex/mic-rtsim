@@ -40,8 +40,10 @@ impl World {
                 if m.goods[gi].currency {
                     // Money above the ceiling is in the works purse (a holder) until it is spent
                     // on works or paid as tribute (burns), SINK.md §4.5.
-                    let (spent, tribute) = ws.map_or((0, 0), |s| (s.spent(g), s.tribute(g)));
-                    seen.add(k, w(b.sunk) - w(spent) - w(tribute));
+                    let (spent, tribute, granted) =
+                        ws.map_or((0, 0, 0), |s| (s.spent(g), s.tribute(g), s.granted(g)));
+                    seen.add(k, w(b.sunk) + w(granted) - w(spent) - w(tribute));
+                    book.mint(k, w(granted));
                     book.burn(k, w(spent) + w(tribute));
                 } else {
                     book.burn(k, w(b.sunk));
@@ -244,7 +246,7 @@ impl World {
         for (n, s) in &self.works {
             w.u64(*n as u64);
             w.u64(s.style);
-            for (g, a) in s.spent.iter().chain(&s.tribute) {
+            for (g, a) in s.spent.iter().chain(&s.tribute).chain(&s.granted) {
                 w.u16(g.0);
                 w.i64(*a);
             }

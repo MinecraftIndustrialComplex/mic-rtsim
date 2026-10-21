@@ -149,6 +149,8 @@ pub struct WorksState {
     pub spent: Vec<(GoodId, Amount)>,
     /// Coin paid as tribute, per currency (thousandths), sorted by good.
     pub tribute: Vec<(GoodId, Amount)>,
+    /// Coin a test put straight into the purse ([`World::grant_purse`]), ledgered as minted.
+    pub granted: Vec<(GoodId, Amount)>,
     /// Works bought, per kind key, sorted.
     pub bought: Vec<(u64, u32)>,
     /// Kinds the bridge found no plot for (MS-11), sorted.
@@ -188,6 +190,10 @@ impl WorksState {
         get(&self.tribute, g)
     }
 
+    pub fn granted(&self, g: GoodId) -> Amount {
+        get(&self.granted, g)
+    }
+
     pub fn bought(&self, kind: u64) -> u32 {
         self.bought
             .binary_search_by_key(&kind, |e| e.0)
@@ -213,7 +219,7 @@ impl WorksState {
 
     /// The purse in currency `g` given the line's books: sunk, less what left it.
     pub fn purse(&self, g: GoodId, line: &Line) -> Amount {
-        line.book.sunk - self.spent(g) - self.tribute(g)
+        line.book.sunk + self.granted(g) - self.spent(g) - self.tribute(g)
     }
 }
 
@@ -675,6 +681,21 @@ impl World {
         self.stats.tributes += 1;
         self.works_book(node, at, &lines);
         Some((g, amount))
+    }
+
+    /// TEST: `amount` thousandths of village `node`'s home coin straight into its works purse,
+    /// booked as minted (GameTests give a village a purse without running it to its ceiling).
+    /// Returns false for a node with no works purse.
+    pub fn grant_purse(&mut self, node: usize, amount: Amount, at: Tick) -> bool {
+        if amount <= 0 || !self.works_village(node) {
+            return false;
+        }
+        let Some(g) = self.nodes[node].kind.culture().and_then(|c| self.goods.currency(c)) else {
+            return false;
+        };
+        add(&mut self.works.entry(node).or_default().granted, g, amount);
+        self.works_touch(node, at);
+        true
     }
 
     /// Village `node` pays no tribute any more (its purse ran dry, or the lair fell vacant):

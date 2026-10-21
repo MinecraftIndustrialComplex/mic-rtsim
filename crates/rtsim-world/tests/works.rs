@@ -367,3 +367,32 @@ fn a_paged_world_with_works_runs_as_a_resident_one() {
     drop(store);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A test's grant goes straight into the purse, ledgered as minted: a village far below its
+/// ceiling buys its next work at once.
+#[test]
+fn a_granted_purse_buys_at_once() {
+    let mut w = world(7, Genesis::Share(500), true);
+    w.run_until(Tick::from_days(2));
+    let _ = w.take_commands();
+    let i = (0..w.nodes.len())
+        .find(|&i| {
+            culture(&w, i) == Some(Culture::Human)
+                && w.works_of(i).is_some_and(|s| s.nth == 0)
+        })
+        .expect("a human village that bought nothing yet");
+    let key = w.nodes[i].key;
+    assert!(w.grant_purse(i, 100 * MILLI, w.now()));
+    assert!(!w.grant_purse(i, 0, w.now()));
+    w.check_conserved(w.now()).unwrap();
+    w.run_until(Tick(w.now().0 + 1));
+    let bought = w
+        .take_commands()
+        .into_iter()
+        .filter(|c| matches!(c, Command::PlaceWork(p) if p.village == key))
+        .count();
+    assert!(bought > 0, "the grant bought a work at once");
+    w.check_conserved(w.now()).unwrap();
+    let c = reload(&w, 7, Genesis::Share(500));
+    assert_eq!(c.state_hash(), w.state_hash());
+}
