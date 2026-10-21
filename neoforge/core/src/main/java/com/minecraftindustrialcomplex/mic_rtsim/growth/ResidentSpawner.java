@@ -93,6 +93,14 @@ public final class ResidentSpawner {
                 return;
             }
             at = Vec3.atBottomCenterOf(house.slot());
+        } else if ((o.flags & Cmd.SpawnResident.FLAG_AT_VILLAGE) != 0) {
+            Village v = villages.get(o.village);
+            if (v == null) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] resident {}: no village {}", o.op, o.village);
+                finish(o, Obs.CommandResult.FAILED, null, null, now);
+                return;
+            }
+            at = Vec3.atBottomCenterOf(v.meeting);
         }
         BlockPos pos = BlockPos.containing(at);
         LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
@@ -111,6 +119,8 @@ public final class ResidentSpawner {
             finish(o, Obs.CommandResult.FAILED, null, null, now);
             return;
         }
+        if ((o.flags & Cmd.SpawnResident.FLAG_AT_VILLAGE) != 0)
+            standNear(level, e, pos);
         if (e instanceof Mob mob)
             mob.setPersistenceRequired();
         if (!level.addFreshEntity(e)) {
@@ -120,6 +130,32 @@ public final class ResidentSpawner {
         spend.applyAsInt(1);
         spawned++;
         finish(o, Obs.CommandResult.APPLIED, chunk, e, now);
+    }
+
+    /** Around a meeting point: the ground of each column, nearest first (PLACEHOLDER offsets). */
+    private static final int[][] AROUND = {
+            {2, 0}, {-2, 0}, {0, 2}, {0, -2}, {3, 3}, {-3, 3}, {3, -3}, {-3, -3}, {5, 0}, {-5, 0}, {0, 5}, {0, -5}};
+
+    /**
+     * Stands {@code e} on the ground beside the meeting point {@code meet} (a bell has a post or a
+     * roof over it): the first column whose ground is within 6 blocks of the meeting point's height
+     * and where it fits, else on top of the meeting point's own column.
+     */
+    static void standNear(ServerLevel level, Entity e, BlockPos meet) {
+        var ground = net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES;
+        for (int[] d : AROUND) {
+            BlockPos c = meet.offset(d[0], 0, d[1]);
+            if (!level.isLoaded(c))
+                continue;
+            BlockPos top = level.getHeightmapPos(ground, c);
+            if (Math.abs(top.getY() - meet.getY()) > 6)
+                continue;
+            e.moveTo(top.getX() + 0.5, top.getY(), top.getZ() + 0.5, e.getYRot(), e.getXRot());
+            if (level.noCollision(e) && !level.containsAnyLiquid(e.getBoundingBox()))
+                return;
+        }
+        BlockPos top = level.getHeightmapPos(ground, meet);
+        e.moveTo(top.getX() + 0.5, top.getY(), top.getZ() + 0.5, e.getYRot(), e.getXRot());
     }
 
     private void finish(VillageRegistry.ResidentOrder o, int status, LevelChunk chunk, Entity resident, long now) {
