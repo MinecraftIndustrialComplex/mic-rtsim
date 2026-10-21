@@ -478,6 +478,10 @@ left alone (task rule). What it will need, from its `Engine` today:
 
 ## Not done here
 
+The first three items below (rtsim-jni paging the modules, one meta-page convention, the meta
+page growing with the entities) were taken up on 2026-10-21, with the market rows' budget
+(above, "not bounded yet"): docs/choices-paging-followups.md, PF1 to PF21.
+
 - **rtsim-jni does not page any module yet.** Each module still saves its `save()` blob as one
   page (herds 0x4800 version 2, dragons 0x4400 version 2, conflict 0x4300 version 2, ships
   0x5300 version 2, phase 1 meta version 3). Wiring paging

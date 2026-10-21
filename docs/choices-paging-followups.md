@@ -69,3 +69,79 @@ deterministic):
 | Herds, 64 herds, then 256 | 2,252 B, then 9,024 B | 103 B, then 108 B |
 | Dragons, 96 dragons in 48 lairs, then 384 in 192 | 5,472 B, then 22,171 B | 245 B, then 267 B |
 | Factions, 64, then 256 | 9,047 B, then 33,252 B | 1,096 B, then 1,125 B |
+
+**Measured** by the scale sweeps (`bench scale --quick`, two pairs side by side, the second with
+the cores swapped; bench/results/README.md, 2026-10-21 08:24 and 09:02 UTC). Bytes a save, and
+save CPU a sim day from the swapped pair, before and after:
+
+| | Bytes a save | Save CPU a day |
+|---|---|---|
+| Dragons, 512, 4,096, 32,768 | 37.2, 277 and 2,077 KB, then 29.1, 83.9 and 199 KB | 8.3, 21.7 and 1,096 ms, then 7.7, 12.5 and 199 ms |
+| Herds, 256, 1,024, 4,096 | 32.8, 159 and 455 KB, then 29.7, 150 and 409 KB | 0.9, 5.5 and 28.7 ms, then 0.9, 4.8 and 25.3 ms |
+| Factions, 1,024, 4,096 | 132 and 397 KB, then 91.7 and 200 KB | 30.9 and 215 ms, then 25.4 and 145 ms |
+| Ships, 49 to 6,400 ports | 12 to 13 KB, unchanged | unchanged |
+
+Saves a day and row pages resident at peak are the same before and after (the budget sweeps'
+peaks: dragons 271 to 695 KB, herds 1.17 to 1.70 MB, factions 314 KB, against 262 KB, 1.05 MB
+and 262 KB budgets; the peak is the budget plus what one step changes). Live heap rises up to 3%.
+Sim CPU is within the noise. In the sweeps the herds still write about 100 B per herd a save:
+a herd's row changes with nearly every event, so its page is dirty at the next save either way.
+
+## Paging wired into rtsim-jni
+
+Before: rtsim-jni held every module resident and wrote each one's `save()` blob as one page at
+every save (herds 0x4800, dragons 0x4400, conflict 0x4300, ships 0x5300), and the phase 1 world's
+whole `World::save` in snapshot pieces; while herds, dragons, ships or the conflict are in the
+world, the phase 1 link snapshots at every save. So every save wrote every module and the whole
+world, and nothing paged. The test first: `a_save_with_nothing_changed_is_flat_in_the_herd_count`
+(rtsim-jni `tests/protocol.rs`) founds 32 herds and then 128, saves twice, and asks that the
+second save at 128 write at most 4 KB more than at 32. It failed: 6,126 B and 23,750 B. Industry
+is untouched (the glass box G2 work is on it).
+
+| # | Choice | Why |
+|---|---|---|
+| PF12 | **One meta-page convention: the caller passes the key, and the engine passes the module's own page `(table, 0)`**: herds 0x4800, dragons 0x4400, conflict 0x4300, ships 0x5300, the phase 1 world 0x5001 (its snapshot table; the link's own meta page stays at 0x5000 id 0, its snapshot pieces move to 0x5001 id 1 and up). Herds and the world gave up their fixed keys (0x4813 and 0x5012): `Herds::save_paged(batch, meta_key)`, `Herds::open_paged(source, budget, meta_key, ..)`, `World::save_paged(batch, meta_key)`, `World::open_paged(source, budget, meta_key, ..)`, as dragons, conflict and ships already were. Every module's row and index tables stay at its table plus 0x10 and up. | The engine owns the key space and every module's tables sit next to the page the engine already had for it. Keeping a module's own pages off its row tables lets the engine's per-table deletions (PF21) never touch the module's pages. A fixed key inside a module would be a second rule for two modules out of five. |
+| PF13 | **A save is built on the step thread and committed on the IO lane, and the tickets come back through a channel.** At the step boundary (`take_save`) each module's `save_paged` puts its meta page and its changed pages into the save's batch; the batch goes to the IO lane with the core's and industry's pages (serial, as before). The modules' tickets travel in a `paging::Job` that sends its outcome when the commit is made, or when the job is dropped for any reason (a failed commit, a refused job, a closed engine). Each step drains the channel at its start, before each save and before the budget check, and hands each ticket to `saved` or `save_failed`. | Building needs `&mut` on the modules, which only the step thread has; committing is IO, which must stay off it (D1). A failure reported on drop means no path can leave a ticket unanswered, so a module never waits on pages it will not get back. |
+| PF14 | **A save built before the step saw an earlier save fail is not committed** (`Job::stale`: the job was built when the failure count was lower than it is at commit time). It counts in `save_failures`, its tickets come back failed, and the next save writes the pages again. | A paged module writes only what changed since its last save. If that save failed, the next batch built before the failure was drained lacks those pages: committing it would make a generation that reads back rows that never reached the disk. |
+| PF15 | **Pressure saves are pending generations.** After every step the engine runs each module's `enforce_budget`; when a module (switched on, or with a save due) is still over its budget with every resident page changed since the last save (`needs_save`) and no save is in flight, it takes a save of its own at that boundary, committed with `commit_pending` (P29). It counts in `stats.pressure_saves`, not `saves_done`, and does not move the acknowledgement (`ackedObsSeq`), so Java keeps the journal behind it. `start` rolls back every pending generation right after opening the store, and the journal replays from the last save Java asked for. The next ordinary save's `commit` confirms the pending generations with it. | A save Java did not ask for must not trim the journal: the world save it pairs with is Java's. Rolling back at start keeps one rule for the restart: the store is exactly the last acknowledged save. One in flight at a time keeps a slow disk from stacking saves; meanwhile the rows stay resident over the budget. |
+| PF16 | **State hashes only in TEST mode**, in a page of their own beside the meta page, `(table, 1)`, checked on load (a mismatch is logged and reported by the `*_restore_check` calls). The phase 1 meta page's hash is written as 0 outside TEST and checked only when TEST and nonzero. | A state hash hashes the module's whole save: it reads every row, so in production it would page in everything at every save, which is what paging is for avoiding. The tests that check restores run in TEST mode. |
+| PF17 | **The phase 1 world pages through the store** (markets at 0x5010). A snapshot is now the world's `save_paged` (its meta page and the pages changed since the last snapshot) plus the link's own part (the village index and the censused villages) in pieces. The world's pages are written only with a snapshot, and a snapshot is also taken when the world `needs_save` (over its budget with every resident market page changed). Phase 1 meta version 4 (older pages are dropped, S5). | The tail of the input log replays on top of the snapshot, so the world on disk must be the snapshot's world: a world page written between snapshots would be ahead of the inputs replayed onto it. The world's own needs-save trigger keeps its rows within the budget between snapshots. |
+| PF18 | **Dropped pages are deleted at start.** A module whose pages are dropped (unreadable, pages without a meta page, or pages without the phase 1 world they were saved with) is flagged `purge`; `start` deletes all its tables (`table..=table + 0x1f`) in one synchronous commit before anything runs. | A fresh module's row ids start again, so a fresh table would read the old rows by key as its own. Deleting them first is the only order in which that cannot happen. |
+| PF19 | **`Config.row_budget`, 4 MiB of rows per paged module by default** (`DEFAULT_ROW_BUDGET`, PLACEHOLDER): herds, dragons, conflict, ships and the phase 1 world's markets, so 20 MiB of rows at most beside the resident indexes and wheels. | The markets sweep's budget (PF1 to PF4). One number per module keeps the config small until the potato box says how to split it. |
+| PF20 | **A switched-on module writes its meta page at every save**, even with nothing changed (a quiet save is about 450 B in all). **Switched off, it writes once** (`save_due`, set when the switch goes off) and then keeps its pages as they are until it is on again (U10). A failed save sets `save_due` too, so the module writes again even switched off. | The meta pages are small now (PF5 to PF10): writing one every save costs a few hundred bytes and needs no record of whether it changed. |
+| PF21 | **Deletions read only the module's own table** (`PageStore::table_ids` per table), not the whole store index (`keys()`). | A save's deletion pass then costs the module's own pages, not every page in the store (the row tables can hold millions). Industry's `deletions` still reads `keys()`: it was out of bounds here. |
+
+**Measured** (rtsim-jni tests, raw bytes, deterministic):
+
+| | Before (the link at f38a384) | After |
+|---|---|---|
+| A save with nothing changed, 32 herds | 6,126 B | 444 B |
+| The same, 128 herds | 23,750 B | 449 B |
+
+`herds_over_their_row_budget_page_out_and_read_back_after_a_crash` runs 128 herds under a 4 KiB
+row budget for four sim days without a save asked for: the budget took 3 saves of its own, the
+rows end at 1,400 B, and they peak at 96,110 B in a step where every herd decided (the budget
+plus one step's changes, as in the sweeps). After a crash the start rolls the pending generations
+back, the journal replays, and the herds read back at the last save's state hash; a second crash
+then finds nothing pending. There is no JNI CPU bench: the sweeps measure
+the modules themselves.
+
+## Not done here
+
+- **The phase 1 world's meta page is written whole at every snapshot** (its nodes, edges,
+  pipelines, packets, bands and wheel, all resident), and while herds, dragons, ships or the
+  conflict run there is a snapshot at every save. At 4,096 markets that is most of the 4.8 MB a
+  save writes. `PagedWheel` and `PagedMap` (PF5, PF6) are the pieces for it.
+- **Industry's deletions read the whole store index at every save** (`store.keys()`). Industry was
+  out of bounds for this work.
+- **A page miss on the step thread waits for the store's mutex**, which the IO lane holds through
+  a commit and its fsync, so a step that misses during a commit stalls for it. The fix needs
+  page reads that do not wait on a commit.
+- **A failed commit poisons the store** until the engine is reopened (the kernel's rule), so the
+  next page miss panics in the step and the engine fails. That is the right end for a store that
+  may be half written, but it means one disk error stops the engine rather than retrying.
+- **Ordinary saves still confirm at once** (`commit`); P29's confirm on WORLD_SAVED (a pending
+  generation confirmed when Java's world save lands) is not done.
+- **The world model's link** (`worldmodel`) still writes its own pages whole.
+- **The row budget is a placeholder**, and a step's changes come on top of it: a long catch-up
+  step that touches every row holds them all until the save after it.
