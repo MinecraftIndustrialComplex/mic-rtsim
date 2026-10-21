@@ -463,6 +463,9 @@ pub enum Fault {
     MidSegment,
     /// Half the log record is written and synced: a torn record.
     TornLog,
+    /// The whole log record is written, then its sync fails, as on a disk error: the kernel may
+    /// never write the record, so [`PageStore::recover`] cuts it.
+    SyncFails,
     /// A fold's index segment is durable and the root's temporary file written, not renamed.
     MidCheckpoint,
     /// The new root is in place; the log it replaced and dead index segments were never deleted.
@@ -686,6 +689,10 @@ pub struct PageStore {
     log: Option<File>,
     files: Mutex<HashMap<u32, File>>,
     poisoned: bool,
+    /// A log record whose write or sync failed, and the log's length before it: the record may
+    /// read whole from the page cache and still never reach the disk (a failed fsync drops the
+    /// dirty pages), so [`PageStore::recover`] cuts the log there before it reopens.
+    cut_log: Option<(PathBuf, u64)>,
     fault: Option<Fault>,
     /// [`Fault::Read`]: reads left before they fail; `u64::MAX` when no read fault is set.
     reads_left: std::sync::atomic::AtomicU64,
@@ -803,6 +810,7 @@ impl PageStore {
             log: None,
             files: Mutex::new(HashMap::new()),
             poisoned: false,
+            cut_log: None,
             fault: None,
             reads_left: std::sync::atomic::AtomicU64::new(u64::MAX),
             read_only,
@@ -885,7 +893,9 @@ impl PageStore {
     /// Reopens a poisoned store from its files, as [`PageStore::open`] does after a crash, so a
     /// write that failed partway costs that save and not the store (docs/choices-leg-purge.md
     /// LP10). The files hold what is durable: the failed save if its log record made it, else the
-    /// generation before it, and the pending and confirmed generations as the log has them. Keeps
+    /// generation before it, and the pending and confirmed generations as the log has them. A
+    /// record whose write or sync failed is cut first, as if it never made it: a failed fsync
+    /// can leave it readable now and lost after a crash, a hole under every later record. Keeps
     /// the durability and the index cache's size; drops an injected fault. A store that is not
     /// poisoned is left as it is (false). On an error the store stays poisoned and a later call
     /// tries again.
@@ -897,6 +907,15 @@ impl PageStore {
         // Every handle closes first: the open cuts a torn log record off and deletes strays.
         self.log = None;
         lock(&self.files).clear();
+        if let Some((path, len)) = self.cut_log.clone() {
+            let f = OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .map_err(io(&path))?;
+            f.set_len(len).map_err(io(&path))?;
+            f.sync_all().map_err(io(&path))?;
+            self.cut_log = None;
+        }
         let mut fresh = PageStore::open(self.dir.clone(), self.durability)?;
         fresh.set_index_cache_blocks(cap);
         *self = fresh;
@@ -1647,9 +1666,20 @@ impl PageStore {
             let _ = f.sync_data();
             return Err(PageError::Injected);
         }
-        f.write_all(&rec).map_err(io(&path))?;
-        if self.durability == Durability::Fsync {
-            f.sync_data().map_err(io(&path))?;
+        let (before, sync_fails) = (self.log_bytes, self.fault == Some(Fault::SyncFails));
+        let fsync = self.durability == Durability::Fsync;
+        let written = f.write_all(&rec).and_then(|()| {
+            if sync_fails {
+                return Err(std::io::Error::other("injected: the log's sync failed"));
+            }
+            if fsync {
+                f.sync_data()?;
+            }
+            Ok(())
+        });
+        if let Err(e) = written {
+            self.cut_log = Some((path.clone(), before));
+            return Err(PageError::Io { path, source: e });
         }
         self.log_bytes += rec.len() as u64;
         Ok(rec.len() as u64)
@@ -2403,12 +2433,13 @@ mod tests {
     }
 
     /// A write that fails partway poisons the store, and `recover` reopens it in place at what
-    /// the files hold: the failed save if its record is durable, the one before if not, with a
-    /// pending generation kept pending. The store then reads and saves as one opened afresh.
+    /// the files hold: the failed save if its record is durable, the one before if not (a torn
+    /// record, or one whose sync failed), with a pending generation kept pending. The store then reads and saves as one opened afresh.
     #[test]
     fn a_poisoned_store_recovers_in_place() {
         for fault in [
             Fault::TornLog,
+            Fault::SyncFails,
             Fault::BeforeCleanup,
             Fault::MidCheckpoint,
             Fault::AfterCheckpoint,
@@ -2442,12 +2473,17 @@ mod tests {
                     s.commit_pending(b, 5).map(|_| ())
                 }
             };
-            assert!(matches!(r, Err(PageError::Injected)), "{fault:?}");
+            if fault == Fault::SyncFails {
+                assert!(matches!(r, Err(PageError::Io { .. })), "{fault:?}");
+            } else {
+                assert!(matches!(r, Err(PageError::Injected)), "{fault:?}");
+            }
             assert!(s.is_poisoned(), "{fault:?}");
             assert!(matches!(s.get(PageKey(0)), Err(PageError::Poisoned)));
             assert!(s.recover().unwrap(), "{fault:?}");
             assert!(!s.is_poisoned());
-            let new = fault != Fault::TornLog;
+            // A record whose sync failed is whole in the file but cut: it may never be on disk.
+            let new = !matches!(fault, Fault::TornLog | Fault::SyncFails);
             assert_eq!(s.obs_seq(), if new { 5 } else { 4 }, "{fault:?}");
             assert_eq!(s.confirmed().obs_seq, 3, "{fault:?}: still pending");
             let want0 = if new { page(99, 300) } else { page(20, 300) };

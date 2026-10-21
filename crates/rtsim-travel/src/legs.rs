@@ -114,7 +114,7 @@ pub struct LegIndex {
     /// Ticks between purges, 0 for none ([`LegIndex::set_purge_every`]): session state, not saved.
     pub(crate) purge_every: u64,
     /// The last purge boundary passed ([`LegIndex::purge_due`]): session state, not saved, so the
-    /// first purge after a load runs at the first boundary the owner's clock passes.
+    /// first `purge_due` after a load purges at once, for the latest boundary before its clock.
     pub(crate) purged_through: u64,
 }
 
