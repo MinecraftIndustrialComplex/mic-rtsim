@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.content.kinetics.mechanicalArm.ArmBlockEntity;
 import com.simibubi.create.content.kinetics.mechanicalArm.ArmInteractionPoint;
+import com.simibubi.create.content.logistics.chute.SmartChuteBlock;
 import com.simibubi.create.content.logistics.funnel.FunnelBlock;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlock;
 import com.simibubi.create.content.processing.burner.BlazeBurnerBlockEntity;
@@ -102,12 +103,14 @@ public final class SteamHelpers {
     }
 
     /**
-     * A smart chute filtering {@code filter} that pulls at most {@code count} per extraction from the
+     * A smart chute (unpowered) filtering {@code filter} that pulls at most {@code count} per extraction from the
      * inventory above ({@code SmartChuteBlockEntity.getExtractionAmount}: the filter count while the count
      * is shown, which it is when the block above is an inventory).
      */
     public static void smartChute(GameTestHelper h, BlockPos abs, Item filter, int count) {
-        set(h, abs, AllBlocks.SMART_CHUTE.getDefaultState());
+        // the block's default state is POWERED true (SmartChuteBlock's constructor): a powered smart chute
+        // never activates (canActivate), so place it unpowered as a player would without a signal
+        set(h, abs, AllBlocks.SMART_CHUTE.getDefaultState().setValue(SmartChuteBlock.POWERED, false));
         FilteringBehaviour f = filtering(h, abs);
         f.setFilter(new ItemStack(filter));
         f.count = count;
@@ -145,6 +148,18 @@ public final class SteamHelpers {
     }
 
     // ---- kinetics -------------------------------------------------------------------------------
+
+    /**
+     * The kinetic network's stress and capacity as the block at {@code abs} last heard them (its saved
+     * {@code Network} tag), "stress/capacity SU", for logs.
+     */
+    public static String stressText(GameTestHelper h, BlockPos abs) {
+        BlockEntity be = h.getLevel().getBlockEntity(abs);
+        if (be == null)
+            return "no block entity";
+        CompoundTag n = be.saveWithoutMetadata(h.getLevel().registryAccess()).getCompound("Network");
+        return n.isEmpty() ? "no network" : n.getFloat("Stress") + "/" + n.getFloat("Capacity") + " SU";
+    }
 
     /** An encased fan blowing out of its {@code facing} side (its shaft is on the opposite side). */
     public static void fan(GameTestHelper h, BlockPos abs, Direction facing) {

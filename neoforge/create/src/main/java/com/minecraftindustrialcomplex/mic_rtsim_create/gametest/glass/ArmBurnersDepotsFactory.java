@@ -5,6 +5,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
 
 import java.util.List;
 
@@ -71,7 +72,7 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
     static final double IRON_PER_MIN = 2.0 * BATCH * TICKS_PER_MINUTE / CYCLE;
     static final double COAL_PER_MIN = 2.0 * TICKS_PER_MINUTE / 1600;
 
-    BlockPos burnerA, burnerB, depotA, depotB, arm;
+    BlockPos burnerA, burnerB, depotA, depotB, arm, coalChute;
 
     @Override
     public String name() {
@@ -86,7 +87,8 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
     @Override
     public Built build(GameTestHelper h) {
         BlockPos chestA = at(h, 8, 7, 10), chestB = at(h, 10, 7, 10);
-        BlockPos coalChest = at(h, 9, 2, 12), coalChute = at(h, 9, 1, 12);
+        BlockPos coalChest = at(h, 9, 2, 12);
+        coalChute = at(h, 9, 1, 12);
         BlockPos outLeft = at(h, 9, 2, 7), outRight = at(h, 8, 2, 7), funnel = at(h, 9, 2, 8);
         depotA = at(h, 8, 5, 10);
         depotB = at(h, 10, 5, 10);
@@ -108,6 +110,9 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
 
         chest(h, coalChest);
         fill(h, coalChest, Items.COAL, 64);
+        // relative y 0 is under the yard's floor and cleared to air (StructureUtils.clearSpaceForStructure):
+        // without a block under it the chute would drop its coal into the world
+        set(h, coalChute.below(), Blocks.STONE.defaultBlockState());
         smartChute(h, coalChute, Items.COAL, 1);
         doubleChest(h, outLeft, outRight, Direction.SOUTH);
         brassFunnel(h, funnel, Direction.SOUTH, Items.IRON_INGOT);
@@ -131,8 +136,13 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
 
     @Override
     public void perturb(GameTestHelper h, Built b, int t) {
-        if (t % 400 == 0)
+        if (t % 400 == 0 || t < 40) {
+            var armTag = h.getLevel().getBlockEntity(arm).saveWithoutMetadata(h.getLevel().registryAccess());
+            String chuteItem = h.getLevel().getBlockEntity(coalChute) instanceof com.simibubi.create.content.logistics.chute.ChuteBlockEntity c ? c.getItem().toString() : "?";
             log(name(), "t" + t, "burners " + burnTime(h, burnerA) + "/" + burnTime(h, burnerB) + " " + heat(h, burnerA) + "/" + heat(h, burnerB)
-                    + ", arm speed " + speed(h, arm));
+                    + ", arm speed " + speed(h, arm) + " phase " + armTag.getString("Phase") + " target " + armTag.getInt("TargetPointIndex")
+                    + " held " + armTag.get("HeldItem") + " points " + armTag.getList("InteractionPoints", 10)
+                    + ", coal chute " + chuteItem + ", depots " + items(h, depotA).getStackInSlot(0) + " / " + items(h, depotB).getStackInSlot(0));
+        }
     }
 }
