@@ -131,17 +131,20 @@ the modules themselves.
 - **The phase 1 world's meta page is written whole at every snapshot** (its nodes, edges,
   pipelines, packets, bands and wheel, all resident), and while herds, dragons, ships or the
   conflict run there is a snapshot at every save. At 4,096 markets that is most of the 4.8 MB a
-  save writes. `PagedWheel` and `PagedMap` (PF5, PF6) are the pieces for it.
+  save writes. `PagedWheel` and `PagedMap` (PF5, PF6) are the pieces for it. Written up with
+  measurements: docs/choices-leg-purge.md LP11 and its "For Ben" 1.
 - **Industry's deletions read the whole store index at every save** (`store.keys()`). Industry was
-  out of bounds for this work.
+  out of bounds for this work. Done: docs/choices-leg-purge.md LP6.
 - **A page miss on the step thread waits for the store's mutex**, which the IO lane holds through
   a commit and its fsync, so a step that misses during a commit stalls for it. The fix needs
   page reads that do not wait on a commit.
 - **A failed commit poisons the store** until the engine is reopened (the kernel's rule), so the
   next page miss panics in the step and the engine fails. That is the right end for a store that
-  may be half written, but it means one disk error stops the engine rather than retrying.
+  may be half written, but it means one disk error stops the engine rather than retrying. Done: the
+  store reopens in place (docs/choices-leg-purge.md LP10).
 - **Ordinary saves still confirm at once** (`commit`); P29's confirm on WORLD_SAVED (a pending
-  generation confirmed when Java's world save lands) is not done.
+  generation confirmed when Java's world save lands) is not done. Written up: docs/choices-leg-purge.md
+  LP12.
 - **The world model's link** (`worldmodel`) still writes its own pages whole.
 - **The row budget is a placeholder**, and a step's changes come on top of it: a long catch-up
   step that touches every row holds them all until the save after it.

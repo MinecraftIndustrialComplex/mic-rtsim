@@ -1064,6 +1064,10 @@ struct Sample {
     agents: u64,
 }
 
+/// The phase 1 world's meta page by section (raw bytes), then its leg index's legs, bookings and
+/// cells and its market rows and market wakes.
+type WorldSample = (Vec<(&'static str, usize)>, [usize; 5]);
+
 struct Soak {
     days: i64,
     steps: u64,
@@ -1074,8 +1078,10 @@ struct Soak {
     peak_in_flight: u64,
     refused: BTreeMap<u16, u64>,
     samples: Vec<Sample>,
-    /// Bytes and pages by table on the first sampled day and the last.
+    /// Bytes and pages by table on day 10, day 100 and the last sampled day.
     tables: Vec<(i64, Tables)>,
+    /// On the same days: the phase 1 world's meta page by section, and its counters.
+    world: Vec<WorldSample>,
     /// The game time the run ended at.
     end: i64,
     viewer: Option<Viewed>,
@@ -1109,21 +1115,28 @@ impl Soak {
             "journal peak {}, in flight peak {}, answered as refused {:x?}",
             self.peak_journal, self.peak_in_flight, self.refused
         );
-        eprintln!(" day  journal  in-flight  industry  core-pages  all-pages     heap  agents");
+        eprintln!(" day  journal  in-flight  industry  core-pages  all-pages      heap  agents");
+        // Day 10, then every 100 days (or every tenth sample in a short soak), and the last.
+        let every = if self.days >= 200 {
+            100
+        } else {
+            (self.days / 10).max(10)
+        };
+        let last = self.samples.last().map_or(0, |s| s.day);
         for s in self
             .samples
             .iter()
-            .step_by((self.samples.len() / 10).max(1))
+            .filter(|s| s.day == 10 || s.day % every == 0 || s.day == last)
         {
             eprintln!(
-                "{:>4}  {:>7}  {:>9}  {:>8}  {:>10}  {:>9}  {:>4} MiB  {:>6}",
+                "{:>4}  {:>7}  {:>9}  {:>8}  {:>10}  {:>9}  {:>5} KiB  {:>6}",
                 s.day,
                 s.journal,
                 s.in_flight,
                 s.industry,
                 s.core,
                 s.pages,
-                s.heap >> 20,
+                s.heap >> 10,
                 s.agents
             );
         }
@@ -1140,13 +1153,52 @@ impl Soak {
                 v.last_tick as f64 / DAY as f64
             );
         }
-        if let [(d0, a), .., (d1, b)] = &self.tables[..] {
-            eprintln!("table   bytes (pages) on day {d0}   on day {d1}");
-            for (t, (n1, p1)) in b {
-                let (n0, p0) = a.get(t).copied().unwrap_or_default();
-                if n1 != &n0 {
-                    eprintln!("{t:#06x}  {n0:>10} ({p0:>4})  {n1:>10} ({p1:>4})");
+        if let [(_, a), .., (_, b)] = &self.tables[..] {
+            let days: String = self
+                .tables
+                .iter()
+                .map(|(d, _)| format!("  {:>17}", format!("day {d}")))
+                .collect();
+            eprintln!("table   bytes (pages) on{days}");
+            for (t, (n1, _)) in b {
+                if a.get(t).map_or(0, |x| x.0) == *n1 {
+                    continue;
                 }
+                let row: String = self
+                    .tables
+                    .iter()
+                    .map(|(_, x)| {
+                        let (n, p) = x.get(t).copied().unwrap_or_default();
+                        format!("  {n:>10} ({p:>4})")
+                    })
+                    .collect();
+                eprintln!("{t:#06x}  {row}");
+            }
+            eprintln!("phase 1 meta page, raw bytes by section, on the same days");
+            if let Some((first, _)) = self.world.first() {
+                for (k, (name, _)) in first.iter().enumerate() {
+                    let row: String = self
+                        .world
+                        .iter()
+                        .map(|(m, _)| format!("  {:>17}", m.get(k).map_or(0, |x| x.1)))
+                        .collect();
+                    eprintln!("{name:>24}{row}");
+                }
+            }
+            let names = [
+                "legs",
+                "leg bookings",
+                "leg cells",
+                "market rows",
+                "market wakes",
+            ];
+            for (k, name) in names.iter().enumerate() {
+                let row: String = self
+                    .world
+                    .iter()
+                    .map(|(_, c)| format!("  {:>17}", c[k]))
+                    .collect();
+                eprintln!("{name:>24}{row}");
             }
         }
     }
@@ -1401,6 +1453,7 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
     let page = viewer.then(|| Page::open(&dir, ctl));
     let mut samples = Vec::new();
     let mut tables = Vec::new();
+    let mut sections = Vec::new();
     let t0 = Instant::now();
     let mut ran = 0;
     while ran + 10 <= days {
@@ -1422,8 +1475,14 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
             heap: mic_native_rt::memory::in_use().max(0) as u64,
             agents: host.e.stats_array()[11],
         });
-        if ran == 10 || ran + 10 > days {
+        if ran == 10 || ran == 100 || ran + 10 > days {
             tables.push((ran, by_table));
+            sections.push(host.e.with_dragons(|_, w| {
+                let (bookings, cells) = w.legs.booking_counts();
+                let markets = [w.markets.len(), w.markets.pending_wakes()];
+                let counts = [w.legs.len(), bookings, cells, markets[0], markets[1]];
+                (w.meta_sections(), counts)
+            }));
         }
     }
     // The newest save a page can show is at most two 10-day saves before the end: the engine
@@ -1442,6 +1501,7 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
         refused: host.j.refused.clone(),
         samples,
         tables,
+        world: sections,
     };
     assert!(
         host.e.protocol_error().is_none(),
@@ -1513,12 +1573,11 @@ fn outboxes_bounded(s: &Soak) {
     );
 }
 
-/// The whole state over a soak: the pages and the heap flat once the world settles. Fails today:
-/// the phase 1 world's leg index (rtsim_travel::legs) never drops its past time windows
-/// (`LegIndex::purge` has no caller), so its meta page (table 0x5001) grows about 0.7 KiB a game
-/// day with one dragon flying, and the heap with it (VIEWER.md §12.4).
+/// The whole state over a soak: the pages and the heap flat once the world settles. It failed
+/// before the leg index purged its past windows (docs/choices-leg-purge.md LP1): the phase 1
+/// world's meta page (table 0x5001) grew from 62 KB on day 10 to 706 KB on day 1,000 with one
+/// dragon flying, and the heap with it (VIEWER.md §12.4).
 #[test]
-#[ignore = "the leg index never purges its past windows (VIEWER.md §12.4)"]
 fn a_thousand_days_at_max_keeps_the_state_bounded() {
     let s = soak("soak-state", soak_days(), false);
     let pages = s.early_late(|x| x.pages);
