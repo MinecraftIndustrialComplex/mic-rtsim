@@ -90,10 +90,26 @@ public final class GlassExtractionGameTests {
         set(helper, barrel, Blocks.BARREL.defaultBlockState());
         com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass x = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.withEmptyCaches();
         check("a vanilla barrel has none", x.fingerprint(helper.getLevel().getBlockEntity(barrel)) == 0);
-        com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass y = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.withEmptyCaches();
+        com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass fresh = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.withEmptyCaches();
         com.simibubi.create.content.logistics.depot.DepotBlockEntity depot = new com.simibubi.create.content.logistics.depot.DepotBlockEntity(
                 net.minecraft.world.level.block.entity.BlockEntityType.BARREL, barrel.above(), Blocks.BARREL.defaultBlockState());
-        check("an addon's depot has a part", y.fingerprint(depot) != 0);
+        check("an addon's depot has a part", fresh.fingerprint(depot) != 0);
+        helper.succeed();
+    }
+
+    /**
+     * A fan recipe of a type other than smoking and blasting (Garnished's freezing and dye blowing in the
+     * TBSMP world) is named by its type's registry id, not as blasting. Create's splashing stands in for an
+     * addon's type here: the dev server has no addon types.
+     */
+    @GameTest(template = YARD, batch = "glass_extract_fp", timeoutTicks = 100)
+    public static void anAddonsFanTypeIsNamedByItsId(GameTestHelper helper) {
+        String smoking = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.SMOKING);
+        String blasting = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.BLASTING);
+        String other = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.SPLASHING);
+        check("smoking keeps its name: " + smoking, smoking.equals("create:fan_smoking/"));
+        check("blasting keeps its name: " + blasting, blasting.equals("create:fan_blasting/"));
+        check("another type is named by its id: " + other, other.equals("create:fan_splashing/"));
         helper.succeed();
     }
 
