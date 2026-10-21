@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 
+use rtsim_space::topology::Topology;
+
 use crate::legs::REGION_BLOCKS;
 
 #[derive(Clone, Debug, Default)]
@@ -24,21 +26,36 @@ impl RoadIndex {
 
     /// Books edge `edge`, a straight road from `a` to `b` in `frame`, widened by `margin` blocks.
     pub fn add(&mut self, edge: u32, frame: u16, a: (i64, i64), b: (i64, i64), margin: i64) {
+        self.add_on(&Topology::flat(), edge, frame, a, b, margin);
+    }
+
+    /// [`RoadIndex::add`] on a world with seams (docs/choices-topology.md TP7, TP8): the road
+    /// runs the short way, from `a` to the image of `b` nearest it, and every region it passes
+    /// is keyed canonically.
+    pub fn add_on(
+        &mut self,
+        topo: &Topology,
+        edge: u32,
+        frame: u16,
+        a: (i64, i64),
+        b: (i64, i64),
+        margin: i64,
+    ) {
+        let b = topo.toward(a, b);
         let len = ((b.0 - a.0).pow(2) + (b.1 - a.1).pow(2)) as f64;
         // Sample the segment every half region, so every region it crosses is booked.
         let steps = (len.sqrt() / (REGION_BLOCKS as f64 / 2.0)).ceil().max(1.0) as i64;
         for k in 0..=steps {
             let x = a.0 + (b.0 - a.0) * k / steps;
             let z = a.1 + (b.1 - a.1) * k / steps;
-            for rx in
-                (x - margin).div_euclid(REGION_BLOCKS)..=(x + margin).div_euclid(REGION_BLOCKS)
-            {
-                for rz in
-                    (z - margin).div_euclid(REGION_BLOCKS)..=(z + margin).div_euclid(REGION_BLOCKS)
-                {
-                    let v = self.cells.entry((frame, rx, rz)).or_default();
-                    if let Err(i) = v.binary_search(&edge) {
-                        v.insert(i, edge);
+            for part in topo.fold_rect(rtsim_space::topology::Rect::around(x, z, margin)) {
+                let (x0, z0, x1, z1) = part.grid_cells(REGION_BLOCKS);
+                for rx in x0..=x1 {
+                    for rz in z0..=z1 {
+                        let v = self.cells.entry((frame, rx, rz)).or_default();
+                        if let Err(i) = v.binary_search(&edge) {
+                            v.insert(i, edge);
+                        }
                     }
                 }
             }
@@ -47,13 +64,19 @@ impl RoadIndex {
 
     /// The edges booked in any region a circle of `radius` around `(x, z)` overlaps, sorted.
     pub fn near(&self, frame: u16, x: i64, z: i64, radius: i64) -> Vec<u32> {
+        self.near_on(&Topology::flat(), frame, x, z, radius)
+    }
+
+    /// [`RoadIndex::near`] across seams: the square folded onto canonical regions (TP8).
+    pub fn near_on(&self, topo: &Topology, frame: u16, x: i64, z: i64, radius: i64) -> Vec<u32> {
         let mut out = Vec::new();
-        for rx in (x - radius).div_euclid(REGION_BLOCKS)..=(x + radius).div_euclid(REGION_BLOCKS) {
-            for rz in
-                (z - radius).div_euclid(REGION_BLOCKS)..=(z + radius).div_euclid(REGION_BLOCKS)
-            {
-                if let Some(v) = self.cells.get(&(frame, rx, rz)) {
-                    out.extend_from_slice(v);
+        for part in topo.rects_near(x, z, radius) {
+            let (x0, z0, x1, z1) = part.grid_cells(REGION_BLOCKS);
+            for rx in x0..=x1 {
+                for rz in z0..=z1 {
+                    if let Some(v) = self.cells.get(&(frame, rx, rz)) {
+                        out.extend_from_slice(v);
+                    }
                 }
             }
         }

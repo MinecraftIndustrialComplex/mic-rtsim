@@ -56,6 +56,14 @@ public final class PuppetGroup {
     public int captureRequested;
     /** A player interacted with a member (a lead): check the group on the next tick, not the next pass. */
     public boolean dirty;
+    /**
+     * The last STEER_GROUP target as the engine sent it, and the image of it the leader was last sent
+     * toward (TP11): Toroidal World and Deep Time's wrap engine fold a leader that crosses an edge back
+     * into the domain without an event, so each pass the target is taken again as its image nearest the
+     * leader, and the leader re-steered when that image moved. Null when never steered.
+     */
+    public net.minecraft.world.phys.Vec3 steerTarget, steerImage;
+    public float steerSpeed;
 
     public PuppetGroup(long agent, int epoch, GroupKind kind, ResourceKey<Level> dimension, Entity[] bodies, long spawnedAt) {
         this.agent = agent;

@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 rtsim-kernel.workspace = true
+rtsim-space.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

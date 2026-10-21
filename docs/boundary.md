@@ -1505,3 +1505,61 @@ alone.
   vanilla's temperature on mic-climate's scale (-0.5 to 2.0 over -20 to +56 °C, X2-8); a dimension
   where a plugin reported seasons adds mic-climate's default season offsets by sub-season.
 
+
+## 11. The world's topology: TOPOLOGY (DECISIONS.md C31; docs/choices-topology.md)
+
+How each level's edges are joined: flat (vanilla, with the world border), an x wrap (Toroidal World
+alone) or a glued domain (Deep Time's Petroff–Guyou layout: east and west slide by 2b, north and
+south are half-turns about (0, ∓b/2), with an edge_stop border on north and south until the wrap
+engine joins them). The engine measures every distance, leg, query and key through it.
+
+### 11.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x00B0 to 0x00BF | Java to engine | topology latest-wins observations |
+
+### 11.2 TOPOLOGY (0x00B0, latest wins, aux = dimension)
+
+Reference codec `crates/rtsim-space/src/topology/record.rs`, mirrored by the core's
+`topology/TopologyRecords.java`; the bytes of the 16k Guyou record are pinned on both sides.
+
+| Offset | Type | Field |
+|---|---|---|
+| 8 | u8 | kind: 0 flat, 1 x wrap, 2 glued |
+| 9 | u8 | n, the edges that follow (at most 4) |
+| 10 | u8 | flags: 1 the rectangle below is set |
+| 11 | u8 | source: 0 the bridge's default (world border), 1 Toroidal World, 2 Deep Time's layout, 3 a plugin |
+| 12 | u32 | reserved |
+| 16, 24, 32, 40 | i64 | x0, z0, x1, z1. Flat: the world border. X wrap: the lap [x0, x1) and the border's z (the whole i32 range when there is none). Glued: the domain, x in [x0, x1), z in [z0, z1] |
+| 48 | | n edges of 24 bytes: 0 u8 side (0 west, 1 east, 2 north, 3 south), 1 u8 quarter turns k, 2 u8 flags (1 stopped by edge_stop), 3 to 7 reserved, 8 i64 tx, 16 i64 tz |
+
+Size 48 + 24n. An edge's motion takes what lies beyond it back inside, as Deep Time's wrap engine's
+`CellIsometry(k, tx, tz)`: k clockwise quarter-turns seen from above, then the translation; on block
+cells k = 2 is (x, z) to (−x − 1 + tx, −z − 1 + tz), on points (−x + tx, −z + tz). These are the
+manifest's `projection.edges[].iso` (FORMAT.md "The world's layout").
+
+### 11.3 When Java sends it
+
+- For every level at the session's first hand-over, as a **sticky preamble record**: written right
+  after the dictionary and MODULES, so before any journal entry the hand-over replays
+  (`BoundarySession.preamble`). Never dropped for space: a preamble that does not fit waits for the
+  next hand-over, with everything after it.
+- Again when a level's topology changes: the bridge looks every 200 ticks (PLACEHOLDER) and at once
+  after `RtsimApi.topologyChanged()`.
+- Detection order (TP18): a registered `TopologySource` (Deep Time's layout, TP19), then Toroidal
+  World's shape, then the world border.
+
+### 11.4 What the engine side does with it
+
+- **One value, shared** (`engine/topology.rs`): the engine keeps every frame's topology as one
+  `Arc<Topologies>`, logs each change, and hands it to every module at each step (a pointer
+  comparison when nothing changed). Not saved: Java sends it again at every session start (TP6). A
+  frame never described is flat, exactly the behaviour before this record (TP1).
+- **Canonical at the door** (TP4): positions Java reports are folded into the domain on entry;
+  HABITAT cells past a slid edge are re-keyed, past a turned edge dropped (TP17).
+- **Commands carry chart positions** (TP11): a spawn is at the image of the agent nearest the player,
+  and a target or waypoint continues from the body's position, so either can lie a little past an
+  edge. Java takes every target as its image nearest the body each time it steers.
+- **Edge_stop** (TP12): nothing is materialized across a stopped seam, targets go round it, and
+  bodies are dematerialized before they would cross it.

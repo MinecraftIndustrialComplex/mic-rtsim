@@ -3,9 +3,14 @@
 //! what is within its territory by looking up the cells around its lair, never by scanning the
 //! world (SCALE.md §0). It is rebuilt when the world gains markets or roads (a village joining,
 //! C22), which is rare.
+//!
+//! **Seams** (TP4, TP8): villages are keyed by their canonical cell; a road is keyed by every
+//! canonical cell its short way's bounding box covers, across seams; a query folds its square
+//! into canonical rectangles, so a dragon near an edge sees the villages and roads beyond it.
 
 use std::collections::BTreeMap;
 
+use rtsim_space::topology::{Rect, Topologies, Topology};
 use rtsim_world::World;
 
 /// Cell edge in blocks. PLACEHOLDER 1,024: a territory of 2,500 blocks looks up about 36 cells.
@@ -25,7 +30,7 @@ fn cell(x: i64) -> i64 {
 
 impl PreyIndex {
     /// Brings the index up to the world's markets and roads.
-    pub fn refresh(&mut self, w: &World) {
+    pub fn refresh(&mut self, w: &World, topo: &Topologies) {
         if self.nodes == w.nodes.len() && self.edges == w.edges.len() {
             return;
         }
@@ -46,14 +51,18 @@ impl PreyIndex {
         }
         for (k, e) in w.edges.iter().enumerate() {
             let (a, b) = (w.nodes[e.a].pos, w.nodes[e.b].pos);
-            let (x0, x1) = (i64::from(a.x.min(b.x)), i64::from(a.x.max(b.x)));
-            let (z0, z1) = (i64::from(a.z.min(b.z)), i64::from(a.z.max(b.z)));
-            for cx in cell(x0)..=cell(x1) {
-                for cz in cell(z0)..=cell(z1) {
-                    self.roads
-                        .entry((a.frame, cx, cz))
-                        .or_default()
-                        .push(k as u32);
+            let t = topo.of(a.frame);
+            let pa = (i64::from(a.x), i64::from(a.z));
+            let pb = t.toward(pa, (i64::from(b.x), i64::from(b.z)));
+            for part in t.fold_rect(Rect::spanning(pa, pb, 0)) {
+                let (x0, z0, x1, z1) = part.grid_cells(CELL);
+                for cx in x0..=x1 {
+                    for cz in z0..=z1 {
+                        let v = self.roads.entry((a.frame, cx, cz)).or_default();
+                        if v.last() != Some(&(k as u32)) {
+                            v.push(k as u32);
+                        }
+                    }
                 }
             }
         }
@@ -63,16 +72,20 @@ impl PreyIndex {
 
     fn near(
         map: &BTreeMap<(u16, i64, i64), Vec<u32>>,
+        t: &Topology,
         frame: u16,
         x: i64,
         z: i64,
         r: i64,
     ) -> Vec<u32> {
         let mut out = Vec::new();
-        for cx in cell(x - r)..=cell(x + r) {
-            for cz in cell(z - r)..=cell(z + r) {
-                if let Some(v) = map.get(&(frame, cx, cz)) {
-                    out.extend_from_slice(v);
+        for part in t.rects_near(x, z, r) {
+            let (x0, z0, x1, z1) = part.grid_cells(CELL);
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    if let Some(v) = map.get(&(frame, cx, cz)) {
+                        out.extend_from_slice(v);
+                    }
                 }
             }
         }
@@ -81,14 +94,15 @@ impl PreyIndex {
         out
     }
 
-    /// Market nodes in the cells within `r` of (x, z): candidates; the caller checks distance.
-    pub fn villages_near(&self, frame: u16, x: i64, z: i64, r: i64) -> Vec<u32> {
-        Self::near(&self.villages, frame, x, z, r)
+    /// Market nodes in the cells within `r` of (x, z), across seams: candidates; the caller
+    /// checks distance (through the topology).
+    pub fn villages_near(&self, t: &Topology, frame: u16, x: i64, z: i64, r: i64) -> Vec<u32> {
+        Self::near(&self.villages, t, frame, x, z, r)
     }
 
-    /// Edges whose bounding box touches a cell within `r` of (x, z).
-    pub fn roads_near(&self, frame: u16, x: i64, z: i64, r: i64) -> Vec<u32> {
-        Self::near(&self.roads, frame, x, z, r)
+    /// Edges whose bounding box touches a cell within `r` of (x, z), across seams.
+    pub fn roads_near(&self, t: &Topology, frame: u16, x: i64, z: i64, r: i64) -> Vec<u32> {
+        Self::near(&self.roads, t, frame, x, z, r)
     }
 
     pub fn heap_bytes(&self) -> usize {

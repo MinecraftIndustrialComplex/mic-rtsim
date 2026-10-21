@@ -41,6 +41,34 @@ public final class RtsimApi {
         com.minecraftindustrialcomplex.mic_rtsim.habitat.Climates.register(source);
     }
 
+    /**
+     * Registers a topology source (a world mod that glues a level's edges, Deep Time's layout) asked
+     * before Toroidal World's shape and the world border (TP18). Call during mod construction.
+     */
+    public static void registerTopology(TopologySource source) {
+        com.minecraftindustrialcomplex.mic_rtsim.topology.TopologySources.register(source);
+    }
+
+    /**
+     * A level's topology changed in play (Deep Time's wrap engine installed a layout, ending its
+     * edge_stop border): the bridge looks again at the next tick and tells the engine.
+     */
+    public static void topologyChanged() {
+        RtsimSession s = RtsimSession.current();
+        if (s != null)
+            s.topologies().changed();
+    }
+
+    /**
+     * A level's topology as the sim sees it: flat when no session runs. Steering code takes every
+     * target as its image nearest the body ({@code LevelTopology.nearestImage}), because Toroidal World
+     * and the wrap engine fold a body that crosses an edge back into the domain without an event.
+     */
+    public static com.minecraftindustrialcomplex.mic_rtsim.topology.LevelTopology topology(net.minecraft.world.level.Level level) {
+        RtsimSession s = RtsimSession.current();
+        return s == null ? com.minecraftindustrialcomplex.mic_rtsim.topology.LevelTopology.flat() : s.topology(level);
+    }
+
     /** True when the entity is a puppet: tagged with {@code mic_rtsim:agent}. */
     public static boolean isPuppet(Entity entity) {
         return RtsimAttachments.isTagged(entity);

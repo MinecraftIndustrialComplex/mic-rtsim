@@ -39,6 +39,14 @@ public final class BoundarySession {
     private long durableReported;
     private volatile long durablePending;
 
+    /**
+     * Sticky latest-wins records written right after the dictionary in the next hand-over, so before
+     * anything journaled it carries (a level's TOPOLOGY, docs/boundary.md §11). Keyed by kind and aux:
+     * a newer one replaces one not written yet. Each value is the record's bytes after its header.
+     */
+    private final java.util.LinkedHashMap<Long, byte[]> preamble = new java.util.LinkedHashMap<>();
+    private final java.util.Map<Long, Integer> preambleKinds = new java.util.HashMap<>();
+
     private long pendingAck;
     private java.util.function.LongConsumer ackListener = acked -> {};
     private long droppedRecords;
@@ -133,6 +141,18 @@ public final class BoundarySession {
         return at;
     }
 
+    /**
+     * Queues a sticky latest-wins record for the next hand-over, written right after the dictionary
+     * (before any journal entry it replays): {@code body} is the record after its 8-byte header. A newer
+     * record of the same kind and aux replaces one not written yet.
+     */
+    public void preamble(int kind, int aux, byte[] body) {
+        long key = ((long) kind << 32) | (aux & 0xFFFFFFFFL);
+        preamble.remove(key);
+        preamble.put(key, body.clone());
+        preambleKinds.put(key, kind);
+    }
+
     public ByteBuffer openBuffer() {
         return handover.open().buffer();
     }
@@ -168,6 +188,17 @@ public final class BoundarySession {
                 return false;
             b.putInt(at + Obs.Modules.MASK, moduleMask);
             modulesDirty = false;
+        }
+        while (!preamble.isEmpty()) {
+            var it = preamble.entrySet().iterator();
+            var e = it.next();
+            byte[] body = e.getValue();
+            int kind = preambleKinds.get(e.getKey());
+            int at = w.reserve(kind, Layout.RECORD_HEADER + body.length, (int) (long) e.getKey());
+            if (at < 0)
+                return false;
+            b.put(at + Layout.RECORD_HEADER, body);
+            it.remove();
         }
         if (tickMarked != gameTime) {
             int at = w.reserve(Obs.TICK, Obs.Tick.SIZE, 0);

@@ -73,7 +73,7 @@ pub(super) struct Link {
     pub(super) engine: Dragons,
     /// Districts by cell for the industry engine's threat interface (rebuilt on its own when the
     /// district count changes; not saved).
-    index: DistrictIndex,
+    pub(super) index: DistrictIndex,
     /// Commands not written yet (per session).
     queue: VecDeque<Cmd>,
     enabled: bool,
