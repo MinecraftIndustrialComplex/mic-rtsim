@@ -344,6 +344,9 @@ public final class GlassReplayGameTests {
         int rebuilds;
         final List<String> failures = new ArrayList<>();
         String last = "starting";
+        /** A wait for chunks to tick ({@link #notTicking}): the first reason it waited on, and its start. */
+        String waitedOn;
+        long waitStartNanos = -1;
 
         Run(GameTestHelper helper, CorpusFactory f, int slot, boolean partial, boolean straddle) {
             this.helper = helper;
@@ -463,17 +466,91 @@ public final class GlassReplayGameTests {
 
     // ---- stages -------------------------------------------------------------------------------
 
+    /**
+     * Why block entities in a chunk would not tick now, or null when they would (G2-68). Vanilla ticks a
+     * chunk's block entities only where {@code LevelChunk.isTicking} holds (its status at BLOCK_TICKING or
+     * after, and its entities loaded, {@code ServerLevel.areEntitiesLoaded}) inside the world border, and
+     * runs its scheduled block and fluid ticks (a smart chute's POWERED, a diode's delay) only once its
+     * ticking future is done ({@code isPositionTickingWithEntitiesLoaded}: its neighbours FULL).
+     * {@link Districts#blockTicking} reads the ticket alone: a chunk forced a tick ago passes it while its
+     * entities, read on the entity IOWorker, can take seconds more on a loaded GameTest server, and a copy
+     * built then stands dead with every kinetic block entity unticked. The entity-ticking and tick gate
+     * terms are what the GameTest framework waits for in the yard and what the reconcile holds.
+     */
+    static String notTicking(ServerLevel level, ChunkPos c) {
+        long k = c.toLong();
+        LevelChunk ch = level.getChunkSource().getChunkNow(c.x, c.z);
+        if (ch == null)
+            return "not loaded";
+        if (!Districts.blockTicking(level, k))
+            return "not block-ticking by its ticket";
+        return null;
+    }
+
+    /** The first chunk of {@code cs} whose block entities would not tick, with why (null: all would). */
+    static String firstNotTicking(ServerLevel level, Collection<ChunkPos> cs) {
+        for (ChunkPos c : cs) {
+            String why = notTicking(level, c);
+            if (why != null)
+                return "chunk " + c + " " + why;
+        }
+        return null;
+    }
+
+    /** The chunks the yard's box intersects. */
+    static List<ChunkPos> yardChunks(GameTestHelper helper) {
+        BlockPos a = helper.absolutePos(BlockPos.ZERO), b = helper.absolutePos(new BlockPos(YARD_SIZE - 1, 0, YARD_SIZE - 1));
+        List<ChunkPos> out = new ArrayList<>();
+        for (int cx = Math.min(a.getX(), b.getX()) >> 4; cx <= Math.max(a.getX(), b.getX()) >> 4; cx++)
+            for (int cz = Math.min(a.getZ(), b.getZ()) >> 4; cz <= Math.max(a.getZ(), b.getZ()) >> 4; cz++)
+                out.add(new ChunkPos(cx, cz));
+        return out;
+    }
+
+    /**
+     * A wait for chunks to tick ({@link #notTicking}): true once every one of them would. Keeps the wait's
+     * first reason and start for {@link #waited}; fails the run after {@link #IO_TICKS} ticks of the stage.
+     */
+    static boolean ticking(Run run, Collection<ChunkPos> cs, String what) {
+        String why = firstNotTicking(run.level(), cs);
+        if (run.waitStartNanos < 0)
+            run.waitStartNanos = System.nanoTime();
+        if (why == null)
+            return true;
+        if (run.waitedOn == null)
+            run.waitedOn = why;
+        run.last = what + ": " + why;
+        if (run.stageTicks > IO_TICKS)
+            fail(run, "the chunks never ticked (" + run.last + " after " + run.stageTicks + " ticks)");
+        else
+            ioWait();
+        return false;
+    }
+
+    /** What the last {@link #ticking} wait took, for the log; resets it. */
+    static String waited(Run run, int chunks) {
+        long ms = run.waitStartNanos < 0 ? 0 : (System.nanoTime() - run.waitStartNanos) / 1_000_000;
+        String s = chunks + " chunks tick after " + run.stageTicks + " ticks and " + ms + " ms"
+                + (run.waitedOn == null ? "" : " (first waited on " + run.waitedOn + ")");
+        run.waitedOn = null;
+        run.waitStartNanos = -1;
+        return s;
+    }
+
+    /**
+     * Waits until the far copy's chunks and the yard's would tick block entities (G2-68), then builds. Also
+     * the way back in after a dead warm-up (the area is kept: the partial variant's shift is in it).
+     */
     static void loadFar(Run run) {
-        ServerLevel level = run.level();
-        for (ChunkPos c : run.farChunks)
-            if (level.getChunkSource().getChunkNow(c.x, c.z) == null || !Districts.blockTicking(level, c.toLong())) {
-                run.last = "far chunk " + c + " loading";
-                ioWait();
-                return;
-            }
-        IndustryKit.record(run.test, "far chunks", "loaded and block-ticking after " + run.ticks + " ticks");
-        run.areaMin = run.farMin;
-        run.areaMax = run.partial ? run.farMax.offset(15, 0, 15) : run.farMax;
+        List<ChunkPos> cs = new ArrayList<>(run.farChunks);
+        cs.addAll(yardChunks(run.helper));
+        if (!ticking(run, cs, "far chunks"))
+            return;
+        IndustryKit.record(run.test, "far chunks", waited(run, cs.size()) + ", " + run.farChunks.size() + " far and the yard's");
+        if (run.areaMin == null) {
+            run.areaMin = run.farMin;
+            run.areaMax = run.partial ? run.farMax.offset(15, 0, 15) : run.farMax;
+        }
         build(run);
     }
 
@@ -521,11 +598,38 @@ public final class GlassReplayGameTests {
             e.discard();
     }
 
+    /** One good at the warm-up check: both copies' change since the first sample and the tolerance's terms. */
+    record WarmGood(String good, long control, long far, long stack, double inFlight, double noise, double rel) {
+        double tol() {
+            return inFlight + noise + rel;
+        }
+
+        boolean off() {
+            return Math.abs(far - control) > tol();
+        }
+    }
+
+    /**
+     * The warm-up verdict over the goods' changes since the first sample: null when the far copy lives,
+     * else why it is dead. Dead when a good's change is off the control's by more than its tolerance (the
+     * copy check's window test).
+     */
+    static String warmVerdict(List<WarmGood> goods) {
+        List<String> off = new ArrayList<>();
+        for (WarmGood w : goods)
+            if (w.off())
+                off.add(w.good() + " (control " + w.control() + ", far " + w.far() + ")");
+        if (!off.isEmpty())
+            return "the far copy's stores do not move as the control's: " + off;
+        return null;
+    }
+
     /**
      * The warm-up check, once one {@link #WINDOW} of samples is in: the copy check's window test from the
-     * first sample to now (the control's report so far for the noise and the batch, no compile cap). A far
-     * copy that does not move its goods as the control does is dead (stub m5's press belt, stub m6's
-     * precision mechanisms): both are built again once; dead again, the run fails as INVALID COPY.
+     * first sample to now (the control's report so far for the noise and the batch, no compile cap), and
+     * {@link #warmVerdict}. A far copy that does not move its goods as the control does is dead (stub m5's
+     * press belt, stub m6's precision mechanisms): both are built again once, once their chunks tick
+     * ({@link #loadFar}); dead again, the run fails as INVALID COPY. Runs on the unjudged stub too.
      * Returns true when it rebuilt or failed (the caller stops for this poll).
      */
     static boolean warmUpCheck(Run run) {
@@ -535,14 +639,16 @@ public final class GlassReplayGameTests {
         run.warmChecked = true;
         ServerLevel level = run.level();
         long len = run.now() - from.t();
-        GlassReport cr = report(run, run.cd);
+        // Without natives (the unjudged stub) there is no report: one stack in flight and no noise, as the
+        // copy check has there (G2-71).
+        GlassReport cr = run.judge ? report(run, run.cd) : null;
         Map<String, Long> cNow = stock(level, run.control.stores()), fNow = stock(level, run.copy.stores());
         Map<String, GlassReport.Good> cGoods = byKey(cr);
         TreeSet<String> goods = new TreeSet<>(from.control().keySet());
         goods.addAll(from.far().keySet());
         goods.addAll(cNow.keySet());
         goods.addAll(fNow.keySet());
-        List<String> off = new ArrayList<>();
+        List<WarmGood> ws = new ArrayList<>();
         for (String g : goods) {
             long c = cNow.getOrDefault(g, 0L) - from.control().getOrDefault(g, 0L);
             long f = fNow.getOrDefault(g, 0L) - from.far().getOrDefault(g, 0L);
@@ -550,21 +656,19 @@ public final class GlassReplayGameTests {
             long stack = stackOf(g);
             double inFlight = Math.max(stack, batch(null, g, cg, cr, stack).units());
             double sigma = cg != null && Double.isFinite(cg.sigma()) ? cg.sigma() : 0;
-            double noise = CHECKSUM_Z * sigma * len, rel = REL_TOL * Math.abs(c);
-            double tol = inFlight + noise + rel;
-            boolean ok = Math.abs(f - c) <= tol;
+            WarmGood w = new WarmGood(g, c, f, stack, inFlight, CHECKSUM_Z * sigma * len, REL_TOL * Math.abs(c));
+            ws.add(w);
             IndustryKit.record(run.test, "warm-up check good", String.format(Locale.ROOT,
                     "%s: control %+d, far %+d over %d ticks from %d; tolerance %.1f (in flight %.1f, noise %.1f, relative %.1f): %s",
-                    g, c, f, len, from.t(), tol, inFlight, noise, rel, ok ? "match" : "OFF"));
-            if (!ok)
-                off.add(g + " (control " + c + ", far " + f + ")");
+                    g, c, f, len, from.t(), w.tol(), inFlight, w.noise(), w.rel(), w.off() ? "OFF" : "match"));
         }
-        if (off.isEmpty()) {
+        String dead = warmVerdict(ws);
+        if (dead == null) {
             IndustryKit.record(run.test, "warm-up check", "match over " + len + " ticks from " + from.t() + " (" + goods.size() + " goods)"
                     + (run.rebuilds > 0 ? ", after " + run.rebuilds + " rebuild" : ""));
             return false;
         }
-        String what = "over " + len + " ticks from " + from.t() + " the far copy's stores do not move as the control's: " + off
+        String what = "over " + len + " ticks from " + from.t() + " " + dead
                 + "; far kinetics " + kinetics(level, run.farMin, run.farMax) + "; control kinetics "
                 + kinetics(level, run.helper.absolutePos(BlockPos.ZERO), run.helper.absolutePos(new BlockPos(YARD_SIZE - 1, TOP, YARD_SIZE - 1)));
         if (run.rebuilds > 0) {
@@ -579,13 +683,14 @@ public final class GlassReplayGameTests {
         run.firstSample = null;
         run.warmChecked = false;
         run.windowsSeen = -1;
-        build(run);
+        run.stage(Stage.LOAD_FAR);
         return true;
     }
 
     /**
      * A copy's Create kinetics in a box, for a dead warm-up: kinetic block entities (still, with no network,
-     * overstressed), belts (still), and each source with its speed and whether its chunk ticks blocks.
+     * overstressed), belts (still), and each source with its speed and whether its chunk ticks block
+     * entities ({@link #notTicking}).
      */
     static String kinetics(ServerLevel level, BlockPos min, BlockPos max) {
         int n = 0, still = 0, noNet = 0, over = 0, belts = 0, beltsStill = 0;
@@ -608,10 +713,15 @@ public final class GlassReplayGameTests {
             }
             if (k instanceof GeneratingKineticBlockEntity g)
                 sources.add(p.toShortString() + " generated " + g.getGeneratedSpeed() + " speed " + g.getSpeed()
-                        + (Districts.blockTicking(level, ChunkPos.asLong(p)) ? ", chunk ticking" : ", chunk NOT ticking"));
+                        + tickingNote(level, new ChunkPos(p)));
         }
         return String.format(Locale.ROOT, "{%d kinetic (%d still, %d no network, %d overstressed), %d belts (%d still), sources %s}",
                 n, still, noNet, over, belts, beltsStill, sources);
+    }
+
+    static String tickingNote(ServerLevel level, ChunkPos c) {
+        String why = notTicking(level, c);
+        return why == null ? ", chunk ticking" : ", chunk NOT ticking (" + why + ")";
     }
 
     /**
@@ -717,7 +827,7 @@ public final class GlassReplayGameTests {
                     + " inventories), far " + d + " (" + d.chunks.size() + " chunks, " + d.inventories.size() + " inventories)");
         }
         sample(run);
-        if (run.judge && warmUpCheck(run))
+        if (warmUpCheck(run))
             return;
         int budget = run.f.warmupTicks() + 2 * (WINDOW + GlassExitGameTests.SLACK);
         long since = run.now() - run.builtAt;
@@ -1020,13 +1130,8 @@ public final class GlassReplayGameTests {
     }
 
     static void reload(Run run) {
-        ServerLevel level = run.level();
-        for (ChunkPos c : run.farChunks)
-            if (level.getChunkSource().getChunkNow(c.x, c.z) == null || !Districts.blockTicking(level, c.toLong())) {
-                run.last = "far chunk " + c + " reloading";
-                ioWait();
-                return;
-            }
+        if (!ticking(run, run.farChunks, "far chunks again"))
+            return;
         District d = IndustryKit.ind().district(run.fd);
         if (d == null || d.loadState() != IndRecords.LoadState.LIVE) {
             run.last = "far district " + (d == null ? "gone" : "load state " + d.loadState());
@@ -1035,7 +1140,8 @@ public final class GlassReplayGameTests {
             return;
         }
         run.loadedAt = run.now();
-        IndustryKit.record(run.test, "reloaded", "at " + run.loadedAt + ", " + (run.loadedAt - run.forcedAt) + " ticks after the tickets");
+        IndustryKit.record(run.test, "reloaded", "at " + run.loadedAt + ", " + (run.loadedAt - run.forcedAt) + " ticks after the tickets; "
+                + waited(run, run.farChunks.size()));
         run.stage(Stage.SETTLE);
     }
 
