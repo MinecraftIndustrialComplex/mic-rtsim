@@ -691,6 +691,14 @@ fn lp(
                             }
                             push(&mut cons, &mut terms, ComparisonOp::Le, c.to_f64());
                         }
+                    } else if pass {
+                        // Without recipes a pass-through machine (a sequenced loop's deployers)
+                        // passes every good on unchanged, as L and the linear bound have it. Read
+                        // as passing nothing, a stalled loop's U fell to L's 0 (GB72).
+                        for (ins, outs) in per.values() {
+                            net(&mut terms, ins, outs, 1.0, -1.0);
+                            push(&mut cons, &mut terms, ComparisonOp::Eq, 0.0);
+                        }
                     } else {
                         // A machine without recipes passes nothing.
                         for (ins, outs) in per.values() {
