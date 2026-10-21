@@ -15,6 +15,7 @@
 //!   PLAN.md §4.9).
 //! - [`journal`]: operation ids and idempotent replay (A9).
 //! - [`paging`]: lazy regions paged to disk under a memory budget, with prefetch (A16, SCALE.md §8).
+//! - [`rows`]: entity rows paged the same way, read through `&self` like an arena's (A16).
 //! - [`exec`] and [`bsp`]: the executor the caller hands in, and the bulk-synchronous parallel
 //!   step over paged regions (SCALE.md §5).
 //! - [`profile`]: named zones, microseconds per system.
@@ -38,6 +39,7 @@ pub mod page;
 pub mod paging;
 pub mod profile;
 pub mod rng;
+pub mod rows;
 pub mod store;
 pub mod synth;
 pub mod wheel;

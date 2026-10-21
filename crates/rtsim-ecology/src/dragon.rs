@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
+use rtsim_kernel::rows::PagedRows;
 use rtsim_knowledge::{ActorId, Temperament};
 use rtsim_settle::Pos;
 use rtsim_space::topology::Topologies;
@@ -52,6 +53,104 @@ pub struct Lair {
     pub vacant_since: Option<Tick>,
     /// Stamps the respawn event booked for this vacancy.
     pub plan: u32,
+}
+
+/// The lairs' row table (A16): page table 0x4411, rows keyed by lair index. Lairs are never
+/// removed, so the keys are `0..len` and a `LairId` is a stable key. Resident until
+/// [`Lairs::rows_mut`]'s table is attached to a page store; then a lair is read through `&self`
+/// and loads its page on a miss, like [`PagedRows`].
+pub struct Lairs {
+    rows: PagedRows<Lair>,
+}
+
+impl std::fmt::Debug for Lairs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.rows.fmt(f)
+    }
+}
+
+impl Default for Lairs {
+    fn default() -> Self {
+        Lairs::new()
+    }
+}
+
+impl Lairs {
+    /// The lairs' page table, next to the dragons' rows (0x4410).
+    pub const TABLE: u16 = 0x4411;
+    /// Lairs per page. PLACEHOLDER 1, as the dragons' rows (`engine::DRAGONS_PER_PAGE`): a lair
+    /// changes when a dragon claims, leaves or hoards, and pins its page until the next save.
+    pub const PER_PAGE: u64 = 1;
+
+    pub fn new() -> Self {
+        Lairs {
+            rows: PagedRows::new(Self::TABLE, Self::PER_PAGE),
+        }
+    }
+
+    /// A table from its rows (the save's blob, or a paged open).
+    pub fn from_rows(rows: PagedRows<Lair>) -> Self {
+        Lairs { rows }
+    }
+
+    pub fn rows(&self) -> &PagedRows<Lair> {
+        &self.rows
+    }
+
+    pub fn rows_mut(&mut self) -> &mut PagedRows<Lair> {
+        &mut self.rows
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len() as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The lair, loading its page if needed.
+    pub fn get(&self, l: LairId) -> Option<&Lair> {
+        self.rows.get(u64::from(l))
+    }
+
+    pub fn get_mut(&mut self, l: LairId) -> Option<&mut Lair> {
+        self.rows.get_mut(u64::from(l))
+    }
+
+    /// Adds a lair under the next index.
+    pub fn push(&mut self, lair: Lair) -> LairId {
+        let id = LairId::try_from(self.rows.len()).expect("fewer than 2^32 lairs");
+        let old = self.rows.insert(u64::from(id), lair);
+        debug_assert!(old.is_none(), "lair {id} added twice");
+        id
+    }
+
+    /// Every lair in index order. A whole-table pass (saves, checks, tools): in a paged table it
+    /// loads every page through `&self`.
+    pub fn iter(&self) -> impl Iterator<Item = &Lair> + '_ {
+        (0..self.len() as LairId).map(|l| self.get(l).expect("lairs are never removed"))
+    }
+}
+
+impl std::ops::Index<usize> for Lairs {
+    type Output = Lair;
+
+    fn index(&self, l: usize) -> &Lair {
+        LairId::try_from(l)
+            .ok()
+            .and_then(|l| self.get(l))
+            .unwrap_or_else(|| panic!("no lair {l}"))
+    }
+}
+
+impl std::ops::IndexMut<usize> for Lairs {
+    fn index_mut(&mut self, l: usize) -> &mut Lair {
+        LairId::try_from(l)
+            .ok()
+            .and_then(|l| self.get_mut(l))
+            .unwrap_or_else(|| panic!("no lair {l}"))
+    }
 }
 
 /// Where a hunt goes.
@@ -245,7 +344,7 @@ impl Dragon {
     /// Where it is at `at` while unloaded: on its leg (at the forced altitude) or at rest.
     /// Where the dragon is at `at`: on its leg (the leg's chart position folded, TP7), at rest, or
     /// at its lair. Always canonical.
-    pub fn position(&self, topo: &Topologies, lairs: &[Lair], at: Tick) -> (Pos, i32) {
+    pub fn position(&self, topo: &Topologies, lairs: &Lairs, at: Tick) -> (Pos, i32) {
         if let (State::Flying(_) | State::Hunting { .. }, Some(l)) = (self.state, self.leg) {
             let (x, y, z) = l.at(at);
             let (x, z) = topo.canonical(l.path.frame, x, z);
@@ -254,7 +353,7 @@ impl Dragon {
         if let Some(r) = self.rest {
             return r;
         }
-        match self.lair.and_then(|l| lairs.get(l as usize)) {
+        match self.lair.and_then(|l| lairs.get(l)) {
             Some(l) => (l.pos, l.y),
             None => (Pos::new(0, 0, 0), 64),
         }

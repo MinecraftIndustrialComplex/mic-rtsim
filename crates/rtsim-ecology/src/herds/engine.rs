@@ -36,8 +36,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_kernel::handle::Arena;
+use rtsim_kernel::codec::{self, Decode, Encode, Reader, Writer};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::rows::{PagedArena, PagedRows, cell_key};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
 use rtsim_space::topology::{CONE_CLEARANCE, Iso, STOP_MARGIN, SharedTopologies, Topology};
@@ -60,6 +61,7 @@ pub const SYS_HERD: SystemId = SystemId::named("herds.herd");
 const SYS_BIRTH: SystemId = SystemId::named("herds.birth");
 const SYS_STARVE: SystemId = SystemId::named("herds.starve");
 const SYS_PLACE: SystemId = SystemId::named("herds.place");
+const SYS_STAGGER: SystemId = SystemId::named("herds.stagger");
 
 /// Leg owners (opaque to the index): bit 60 marks a herd module leg, apart from a player's
 /// interest area (bit 63, rtsim-world and the dragons), a dragon (62) and a ship (61). Under it,
@@ -221,14 +223,18 @@ pub struct Herds {
     pub tun: HerdTunables,
     pub climate: Box<dyn Climate>,
     pub seed: u64,
-    pub herds: Arena<Herd>,
+    /// Every herd's row, in pages (docs/choices-paging-modules.md).
+    pub herds: PagedArena<Herd>,
     pub forage: Forage,
     pub obstacles: Obstacles,
     pub(crate) wheel: TimingWheel<Ev>,
-    /// Herds by the regions their current route covers (with the footprint): derived from the
-    /// routes, so not saved.
-    pub(crate) regions: BTreeMap<(u16, i64, i64), BTreeSet<HerdId>>,
-    pub(crate) herd_regions: BTreeMap<HerdId, Vec<(u16, i64, i64)>>,
+    /// Herds by the regions their current route covers (with the footprint), keyed by
+    /// [`region_key`], in pages. Each herd's row holds its own list ([`Herd::regions`]), so the
+    /// index is never recomputed from every herd but after a topology change.
+    pub(crate) regions: PagedRows<RegionHerds>,
+    /// Herds that may hold legs for players or an embodied group: a superset, pruned when a player
+    /// leaves or a session starts, so neither walks every herd.
+    pub(crate) active: BTreeSet<HerdId>,
     pub(crate) players: Vec<PlayerView>,
     pub(crate) player_by_key: BTreeMap<u64, u32>,
     /// Cells herds settled on in sub-season `claims_sub`.
@@ -291,18 +297,81 @@ pub fn player_key(uuid: Uuid) -> u64 {
     crate::engine::uuid_hash(uuid.0, uuid.1)
 }
 
+/// The page table of the herd rows (docs/choices-paging-modules.md, "Page tables").
+pub const TABLE_HERDS: u16 = 0x4810;
+/// The page table of the region index.
+pub const TABLE_REGIONS: u16 = 0x4812;
+/// The page table of the herds' resident state when they page (one page, id 0).
+pub const TABLE_META: u16 = 0x4813;
+/// Herds per page: a row is 0.5 to 2 KB resident, a few hundred bytes on disk.
+pub const HERDS_PER_PAGE: u64 = 32;
+/// Regions per page: 4 x 4 regions of [`REGION_BLOCKS`] (an aligned square, 2,048 blocks a side).
+pub const REGIONS_PER_PAGE: u64 = 16;
+
+/// The region index's row key of a region (frame, region x, region z): neighbours share pages.
+pub fn region_key(r: (u16, i64, i64)) -> u64 {
+    cell_key(r.0, r.1, r.2)
+}
+
+/// The herds whose routes cover one region, by handle index, in order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegionHerds(pub Vec<u32>);
+
+impl Encode for RegionHerds {
+    fn encode(&self, w: &mut Writer) {
+        w.var_u64(self.0.len() as u64);
+        let mut last = 0u32;
+        for &i in &self.0 {
+            w.var_u64(u64::from(i - last));
+            last = i;
+        }
+    }
+}
+
+impl Decode for RegionHerds {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        let n = r.len_prefix(1)?;
+        let mut out = Vec::with_capacity(n);
+        let mut last = 0u64;
+        for k in 0..n {
+            let d = r.var_u64()?;
+            if k > 0 && d == 0 {
+                return Err(codec::CodecError::Invalid(
+                    "region herds out of order".into(),
+                ));
+            }
+            last += d;
+            out.push(
+                u32::try_from(last)
+                    .map_err(|_| codec::CodecError::Invalid("herd index over u32".into()))?,
+            );
+        }
+        Ok(RegionHerds(out))
+    }
+}
+
+impl rtsim_kernel::rows::Row for RegionHerds {
+    fn heap_bytes(&self) -> usize {
+        self.0.capacity() * 4
+    }
+}
+
+fn herd_at(i: u32) -> HerdId {
+    PagedArena::<Herd>::handle(i)
+}
+
 impl Herds {
     pub fn new(seed: u64, tun: HerdTunables, climate: Box<dyn Climate>, now: Tick) -> Self {
         let mut h = Herds {
             tun,
             climate,
             seed,
-            herds: Arena::new(),
+            herds: PagedArena::new(TABLE_HERDS, HERDS_PER_PAGE),
             forage: Forage::new(),
             obstacles: Obstacles::default(),
             wheel: TimingWheel::new(now),
-            regions: BTreeMap::new(),
-            herd_regions: BTreeMap::new(),
+            regions: PagedRows::new(TABLE_REGIONS, REGIONS_PER_PAGE),
+            active: BTreeSet::new(),
             players: Vec::new(),
             player_by_key: BTreeMap::new(),
             claims: BTreeMap::new(),
@@ -501,14 +570,21 @@ impl Herds {
         StreamKey::new(self.seed, SYS_HERD, self.next_seed).block(0, 0)[0]
     }
 
-    fn stagger(&self, x: &Herd) -> u64 {
-        x.seed % self.tun.stagger_ticks.max(1)
+    /// When in a sub-season the herd decides: the herds of one row page decide on consecutive
+    /// ticks, at a time hashed from the page, so a sub-season loads and dirties each page once
+    /// (not once per herd on it), and decisions stay spread over `stagger_ticks`.
+    fn stagger(&self, h: HerdId) -> u64 {
+        let n = self.tun.stagger_ticks.max(1);
+        let i = u64::from(h.index());
+        let page = i / HERDS_PER_PAGE;
+        let base = StreamKey::new(self.seed, SYS_STAGGER, page).block(0, 0)[0] % n;
+        (base + i % HERDS_PER_PAGE) % n
     }
 
-    fn decide_at(&self, x: &Herd, at: Tick) -> Tick {
+    fn decide_at(&self, h: HerdId, at: Tick) -> Tick {
         let subs = self.subs();
         let n = subs.index(at);
-        let s = self.stagger(x);
+        let s = self.stagger(h);
         let this = subs.start(n) + s;
         if this > at {
             this
@@ -600,6 +676,7 @@ impl Herds {
                 ..HerdLedger::default()
             },
             clips: BTreeMap::new(),
+            regions: Vec::new(),
         };
         let id = self.herds.insert(herd);
         self.herds[id].next_decide = at;
@@ -623,6 +700,7 @@ impl Herds {
             self.handle(legs, at, ev);
         }
         self.now = self.now.max(to);
+        self.enforce_budget();
     }
 
     fn handle(&mut self, legs: &mut LegIndex, at: Tick, ev: Ev) {
@@ -695,7 +773,7 @@ impl Herds {
             return;
         }
         // The next decision, then the route to it.
-        let next = self.decide_at(&self.herds[h], at + 1);
+        let next = self.decide_at(h, at + 1);
         self.herds.get_mut(h).expect("live").next_decide = next;
         self.plan(legs, h, at, next);
         self.schedule(next, Ev::Decide { h });
@@ -779,39 +857,90 @@ impl Herds {
         self.meet_players(legs, h, at);
     }
 
+    /// Indexes the herd under `list` (its route's regions), in place of its old list. An
+    /// unchanged list touches no page.
     fn set_regions(&mut self, h: HerdId, list: Vec<(u16, i64, i64)>) {
-        if let Some(old) = self.herd_regions.remove(&h) {
-            for r in old {
-                if let Some(s) = self.regions.get_mut(&r) {
-                    s.remove(&h);
-                    if s.is_empty() {
-                        self.regions.remove(&r);
+        let x = self.herds.get(h).expect("live");
+        if x.regions == list {
+            return;
+        }
+        let i = h.index();
+        let old = std::mem::take(&mut self.herds.get_mut(h).expect("live").regions);
+        for r in old {
+            let k = region_key(r);
+            let empty = match self.regions.get_mut(k) {
+                Some(s) => {
+                    if let Ok(p) = s.0.binary_search(&i) {
+                        s.0.remove(p);
                     }
+                    s.0.is_empty()
                 }
+                None => false,
+            };
+            if empty {
+                self.regions.remove(k);
             }
         }
         for r in &list {
-            self.regions.entry(*r).or_default().insert(h);
+            let k = region_key(*r);
+            match self.regions.get_mut(k) {
+                Some(s) => {
+                    if let Err(p) = s.0.binary_search(&i) {
+                        s.0.insert(p, i);
+                    }
+                }
+                None => {
+                    self.regions.insert(k, RegionHerds(vec![i]));
+                }
+            }
         }
-        if !list.is_empty() {
-            self.herd_regions.insert(h, list);
+        self.herds.get_mut(h).expect("live").regions = list;
+    }
+
+    /// Recomputes every herd's regions from its route (a new topology): a whole-table pass.
+    pub(crate) fn rebuild_regions(&mut self) {
+        self.regions.clear();
+        for h in self.herds.handles() {
+            let x = &self.herds[h];
+            // Extinct, or not planned yet (a route is indexed when it is planned).
+            let list = if x.next_decide == Tick(u64::MAX) || x.reach == 0 {
+                Vec::new()
+            } else {
+                route_regions(&x.route, x.frame, x.reach, self.topo.of(x.frame))
+            };
+            if !self.herds[h].regions.is_empty() {
+                self.herds.get_mut(h).expect("live").regions = Vec::new();
+            }
+            self.set_regions(h, list);
+            self.enforce_budget();
         }
     }
 
-    /// Rebuilds the region index from every herd's route (after a load).
-    pub(crate) fn rebuild_regions(&mut self) {
+    /// The region index from the herds' own lists (a whole-table pass: a blob load).
+    pub(crate) fn index_regions(&mut self) {
         self.regions.clear();
-        self.herd_regions.clear();
-        let ids: Vec<HerdId> = self.herds.iter().map(|(h, _)| h).collect();
-        for h in ids {
-            let x = &self.herds[h];
-            // Extinct, or not planned yet (a route is indexed when it is planned).
-            if x.next_decide == Tick(u64::MAX) || x.reach == 0 {
-                continue;
+        let mut pairs: Vec<(u64, u32)> = Vec::new();
+        self.herds.rows().for_each(|k, x| {
+            for r in &x.regions {
+                pairs.push((region_key(*r), k as u32));
             }
-            let regions = route_regions(&x.route, x.frame, x.reach, self.topo.of(x.frame));
-            self.set_regions(h, regions);
+        });
+        pairs.sort_unstable();
+        pairs.dedup();
+        for chunk in pairs.chunk_by(|a, b| a.0 == b.0) {
+            let list = chunk.iter().map(|p| p.1).collect();
+            self.regions.insert(chunk[0].0, RegionHerds(list));
         }
+    }
+
+    /// Forgets the herds that hold no leg and no group any more.
+    fn prune_active(&mut self) {
+        let herds = &self.herds;
+        self.active.retain(|h| {
+            herds
+                .get(*h)
+                .is_some_and(|x| !x.clips.is_empty() || x.embodied.is_some())
+        });
     }
 
     /// Charges the herd for its grazing since its last decision, at the place it stayed: forage
@@ -1034,8 +1163,8 @@ impl Herds {
         let (x, z) = (i64::from(pos.x), i64::from(pos.z));
         let mut near = BTreeSet::new();
         for (rx, rz) in self.regions_near(pos.frame, x, z, reach) {
-            if let Some(s) = self.regions.get(&(pos.frame, rx, rz)) {
-                near.extend(s.iter().copied());
+            if let Some(s) = self.regions.get(region_key((pos.frame, rx, rz))) {
+                near.extend(s.0.iter().map(|i| herd_at(*i)));
             }
         }
         for h in near {
@@ -1052,26 +1181,29 @@ impl Herds {
             legs.cancel(s.leg);
         }
         self.players[slot as usize].pos = None;
-        // Its herd legs go too: nothing can meet an area that is gone.
-        let ids: Vec<HerdId> = self.herds.iter().map(|(h, _)| h).collect();
-        for h in ids {
-            if let Some(s) = self.herds.get_mut(h).expect("live").clips.remove(&slot) {
+        // Its herd legs go too: nothing can meet an area that is gone. Only the active herds
+        // can hold one (or a group), in handle order as before.
+        let ids: Vec<HerdId> = self.active.iter().copied().collect();
+        for &h in &ids {
+            if self.herds[h].clips.contains_key(&slot)
+                && let Some(s) = self.herds.get_mut(h).expect("live").clips.remove(&slot)
+            {
                 legs.cancel(s.leg);
             }
         }
-        let mine: Vec<HerdId> = self
-            .herds
-            .iter()
-            .filter(|(_, x)| {
-                x.embodied
+        let mine: Vec<HerdId> = ids
+            .into_iter()
+            .filter(|h| {
+                self.herds[*h]
+                    .embodied
                     .as_ref()
                     .is_some_and(|e| e.player == slot && !e.leaving)
             })
-            .map(|(h, _)| h)
             .collect();
         for h in mine {
             self.despawn(h, 2, at);
         }
+        self.prune_active();
     }
 
     /// Meetings for every player whose area is near the herd's (new) route.
@@ -1079,9 +1211,10 @@ impl Herds {
         if self.herds[h].embodied.is_some() {
             return;
         }
-        let Some(regions) = self.herd_regions.get(&h) else {
+        let regions = &self.herds[h].regions;
+        if regions.is_empty() {
             return;
-        };
+        }
         let near: Vec<u32> = self
             .players
             .iter()
@@ -1159,6 +1292,7 @@ impl Herds {
             .expect("live")
             .clips
             .insert(slot, stamp);
+        self.active.insert(h);
         self.stats.clips += 1;
         if !meet {
             return;
@@ -1299,6 +1433,8 @@ impl Herds {
         let species = x.species;
         let frame = x.frame;
         let count = spawns.len() as u32;
+        self.active.insert(h);
+        let x = self.herds.get_mut(h).expect("live");
         x.embodied = Some(Embodied {
             epoch,
             player: slot,
@@ -1432,7 +1568,7 @@ impl Herds {
     /// abstract again with what the engine knew, and every leg booked for a player goes (the
     /// players report again).
     pub fn session_start(&mut self, legs: &mut LegIndex, at: Tick) {
-        let ids: Vec<HerdId> = self.herds.iter().map(|(h, _)| h).collect();
+        let ids: Vec<HerdId> = std::mem::take(&mut self.active).into_iter().collect();
         for h in ids {
             for (_, s) in std::mem::take(&mut self.herds.get_mut(h).expect("live").clips) {
                 legs.cancel(s.leg);
@@ -1714,8 +1850,8 @@ impl Herds {
     ) -> Vec<HerdOffer> {
         let mut cands = BTreeSet::new();
         for (rx, rz) in self.regions_near(frame, x, z, range) {
-            if let Some(s) = self.regions.get(&(frame, rx, rz)) {
-                cands.extend(s.iter().copied());
+            if let Some(s) = self.regions.get(region_key((frame, rx, rz))) {
+                cands.extend(s.0.iter().map(|i| herd_at(*i)));
             }
         }
         let followed: BTreeSet<HerdId> = self
@@ -1967,34 +2103,34 @@ impl Herds {
         fnv1a64(&self.save())
     }
 
+    /// The engine's heap: the resident pages of its row tables and its resident state.
     pub fn heap_bytes(&self) -> usize {
-        self.herds.heap_bytes()
-            + self
-                .herds
-                .iter()
-                .map(|(_, x)| x.heap_bytes())
-                .sum::<usize>()
-            + self.forage.heap_bytes()
-            + self.obstacles.cells.len() * 64
-            + self.wheel.heap_bytes()
-            + self
-                .regions
-                .values()
-                .map(|s| 48 + s.len() * 16)
-                .sum::<usize>()
-            + self
-                .herd_regions
-                .values()
-                .map(|v| 32 + v.capacity() * 24)
-                .sum::<usize>()
-            + self.claims.len() * 40
-            + self.ops.len() * 32
-            + self
-                .follows
-                .values()
-                .map(|s| 32 + s.len() * 16)
-                .sum::<usize>()
-            + self.players.capacity() * std::mem::size_of::<PlayerView>()
+        self.heap_parts().iter().map(|p| p.1).sum()
+    }
+
+    /// [`Herds::heap_bytes`] by part, for the bench and the docs.
+    pub fn heap_parts(&self) -> Vec<(&'static str, usize)> {
+        vec![
+            ("herd rows", self.herds.rows().heap_bytes()),
+            ("forage rows", self.forage.heap_bytes()),
+            ("region index", self.regions.heap_bytes()),
+            ("obstacles", self.obstacles.cells.len() * 64),
+            ("wheel", self.wheel.heap_bytes()),
+            ("active", self.active.len() * 16),
+            ("claims", self.claims.len() * 40),
+            ("ops", self.ops.len() * 32),
+            (
+                "follows",
+                self.follows
+                    .values()
+                    .map(|s| 32 + s.len() * 16)
+                    .sum::<usize>(),
+            ),
+            (
+                "players",
+                self.players.capacity() * std::mem::size_of::<PlayerView>(),
+            ),
+        ]
     }
 }
 
@@ -2030,8 +2166,8 @@ impl Herds {
         let (x, z) = (i64::from(pos.x), i64::from(pos.z));
         let mut near = BTreeSet::new();
         for (rx, rz) in self.regions_near(pos.frame, x, z, reach) {
-            if let Some(s) = self.regions.get(&(pos.frame, rx, rz)) {
-                near.extend(s.iter().copied());
+            if let Some(s) = self.regions.get(region_key((pos.frame, rx, rz))) {
+                near.extend(s.0.iter().map(|i| herd_at(*i)));
             }
         }
         for h in near {
