@@ -481,9 +481,10 @@ public final class GlassCompiler {
         compiles++;
         lastCompileNanos = j.nanos;
         lastGraph.put(st.district, g);
-        MicRtsim.LOGGER.debug("[mic_rtsim] glass: district {} compile {}: {} nodes, {} edges, {} recipes, {} domains{}",
-                st.district, st.compileNo, g.nodeCount(), g.edges().size(), g.recipeCount(), g.domains().size(),
-                g.hasResidual() ? ", residual of " + g.residualPositions() + " block entities" : "");
+        if (MicRtsim.LOGGER.isDebugEnabled())
+            MicRtsim.LOGGER.debug("[mic_rtsim] glass: district {} compile {}: {} nodes, {} edges, {} recipes, {} domains{}",
+                    st.district, st.compileNo, g.nodeCount(), g.edges().size(), g.recipeCount(), g.domains().size(),
+                    g.hasResidual() ? ", residual of " + g.residualPositions() + " block entities (" + g.residualKinds(8) + ")" : "");
     }
 
     private void finishNotCompilable(Job j, long now) {
@@ -586,14 +587,25 @@ public final class GlassCompiler {
     // ---- fingerprints (G-B3) --------------------------------------------------------------------
 
     private final Map<BlockEntityType<?>, Long> typeHash = new HashMap<>();
+    /** Per block: its registry key's string hash (a fingerprint pass hashes every block entity of a district). */
+    private final it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<net.minecraft.world.level.block.Block> blockHash =
+            new it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<>();
 
     /** One block entity's part of its chunk's fingerprint: position, type, block, and the plugins' configuration. */
     private long hash(BlockEntity be) {
         long h = mix(be.getBlockPos().asLong());
+        net.minecraft.world.level.block.Block block = be.getBlockState().getBlock();
+        long bh;
+        if (blockHash.containsKey(block)) {
+            bh = blockHash.getLong(block);
+        } else {
+            bh = BuiltInRegistries.BLOCK.getKey(block).toString().hashCode();
+            blockHash.put(block, bh);
+        }
         h += mix(typeHash.computeIfAbsent(be.getType(), t -> {
             ResourceLocation k = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(t);
             return k == null ? 0L : (long) k.toString().hashCode() * 0x9E3779B97F4A7C15L;
-        }) ^ (long) BuiltInRegistries.BLOCK.getKey(be.getBlockState().getBlock()).toString().hashCode());
+        }) ^ bh);
         for (IndustryPlugin p : IndustryApi.plugins()) {
             GlassExtractor x = p.glass();
             if (x != null) {

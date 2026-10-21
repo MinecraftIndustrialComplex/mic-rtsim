@@ -775,6 +775,11 @@ impl World {
             (home, self.mint_cost)
         });
         let mut coins: Option<Vec<crate::works::CoinLine>> = None;
+        // A trade shift is judged at the market's own events (VIEWER.md §10.1), from the market
+        // as stepped, so it costs no page load of its own.
+        let shift = self.tape.is_on()
+            && matches!(cause, Cause::Breakpoint | Cause::Delivery | Cause::Arrival);
+        let mut index = None;
         let World {
             markets,
             nodes,
@@ -806,10 +811,16 @@ impl World {
                         crate::works::mint_par(goods, mint_cost, home, g)
                     }));
                 }
+                if shift {
+                    index = m.price_index();
+                }
                 s
             })
             .expect("every node has a market");
         let changed = changes.len() as u32;
+        if let Some(ix) = index {
+            self.trade_shift(i, at, ix);
+        }
         let flows: Vec<(usize, GoodId, PipeKind, Amount, Amount)> = if self.trace.is_some() {
             changes
                 .iter()

@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::conserve::Diffuser;
 use rtsim_kernel::journal::OpId;
+use rtsim_space::Topologies;
 use serde::Serialize;
 
 use crate::cluster::{MemberSpec, PoolKey, ProcSpec, ProcSpecBody};
@@ -399,6 +400,25 @@ impl District {
         if self.attacks.len() > 16 {
             self.attacks.pop_front();
         }
+    }
+
+    /// The district's centre in blocks: the average of its chunk centres
+    /// `(cx * 16 + 8, cz * 16 + 8)`, taken through the frame's topology in the chart of its first
+    /// chunk so a district across a seam is not averaged to the far side (the same arithmetic as
+    /// rtsim-ecology's `DistrictIndex::refresh`). `None` while it has no chunks. The event archive
+    /// places the district's rows here.
+    pub fn centre(&self, topo: &Topologies) -> Option<(i32, i32)> {
+        let t = topo.of(self.dim as u16);
+        let first = self.chunks.iter().next()?;
+        let origin = (i64::from(first.0) * 16 + 8, i64::from(first.1) * 16 + 8);
+        let (sx, sz) = self.chunks.iter().fold((0i64, 0i64), |a, c| {
+            let p = (i64::from(c.0) * 16 + 8, i64::from(c.1) * 16 + 8);
+            let q = t.toward(origin, p);
+            (a.0 + (q.0 - 8) / 16, a.1 + (q.1 - 8) / 16)
+        });
+        let k = self.chunks.len() as i64;
+        let (x, z) = t.canonical(sx * 16 / k + 8, sz * 16 / k + 8);
+        Some((x as i32, z as i32))
     }
 
     /// The inventories the replay covers now (I7): every live one whose chunk is not loaded.
