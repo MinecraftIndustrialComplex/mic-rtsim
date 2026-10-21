@@ -489,6 +489,7 @@ fn put_works(w: &mut Writer, s: &WorksState) {
     w.u64(s.style);
     put_amounts(w, &s.spent);
     put_amounts(w, &s.tribute);
+    put_amounts(w, &s.granted);
     put_usize(w, s.bought.len());
     for (k, c) in &s.bought {
         w.u64(*k);
@@ -522,6 +523,7 @@ fn get_works(r: &mut Reader<'_>) -> codec::Result<WorksState> {
     let style = r.u64()?;
     let spent = get_amounts(r)?;
     let tribute = get_amounts(r)?;
+    let granted = get_amounts(r)?;
     let n = r.len_prefix(12)?;
     let mut bought = Vec::with_capacity(n);
     for _ in 0..n {
@@ -546,6 +548,7 @@ fn get_works(r: &mut Reader<'_>) -> codec::Result<WorksState> {
         style,
         spent,
         tribute,
+        granted,
         bought,
         full,
         nth,
