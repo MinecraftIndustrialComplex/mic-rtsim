@@ -394,7 +394,8 @@ impl NodeIndex {
             self.cells.clear();
             self.known = 0;
         }
-        for (i, n) in w.nodes.iter().enumerate().skip(self.known) {
+        for (k, n) in w.nodes[self.known..].iter().enumerate() {
+            let i = self.known + k;
             self.cells
                 .entry((
                     n.pos.frame,
@@ -531,6 +532,9 @@ pub struct Conflict {
     pub(crate) places: PlaceIndex,
     /// The page store the row tables page to, when paged.
     pub(crate) store: Option<std::sync::Arc<dyn rtsim_kernel::rows::PageSource>>,
+    /// Pages loaded when a budget check last ended over budget with nothing it could evict:
+    /// until a load or a save makes a page evictable, another check would find nothing either.
+    pub(crate) budget_mark: Option<u64>,
     pub parties: Arena<Party>,
     pub(crate) wheel: TimingWheel<Ev>,
     /// Players seen through the interest areas: their UUIDs.
@@ -612,6 +616,7 @@ impl Conflict {
             sources: SourceTable::default(),
             places: PlaceIndex::default(),
             store: None,
+            budget_mark: None,
             parties: Arena::new(),
             wheel: TimingWheel::new(now),
             players: BTreeMap::new(),
@@ -3499,7 +3504,9 @@ impl Conflict {
             w.run_until(at);
             self.stats.events += 1;
             self.handle(w, infra, at, ev);
-            self.enforce_budget();
+            if self.store.is_some() {
+                self.enforce_budget();
+            }
         }
         self.now = self.now.max(to);
         self.enforce_budget();
@@ -4062,8 +4069,8 @@ impl Conflict {
     }
 
     /// The resident indexes that grow with the world: factions by key, factions by cell, and
-    /// sources by key (PM-C4, PM-C6). B-tree estimates: an entry's bytes over a node about two
-    /// thirds full, its header and the internal levels.
+    /// sources by key (PM-C4, PM-C6): about 60 bytes per faction and 64 per source (measured
+    /// B-tree costs per entry).
     pub fn index_bytes(&self) -> usize {
         self.by_key.len() * BTREE_KEY_BYTES
             + self.cells.len() * BTREE_CELL_BYTES
@@ -4078,14 +4085,16 @@ impl Conflict {
     }
 }
 
-/// B-tree bytes per entry, estimated (see [`Conflict::index_bytes`]): factions by key (u64 to
-/// u32), by cell ((u16, i32, i32), u32), sources by key ((u64, kind) to id and rate), the op set
-/// and the players.
+/// B-tree bytes per entry (see [`Conflict::index_bytes`]), measured with a counting allocator
+/// over 100,000 entries on 2026-10-20 (std's B-tree, leaves of 11): factions by key (u64 to u32,
+/// 26.3 inserted in order, 20.7 at random), by cell ((u16, i32, i32), u32: 33.6), sources by key
+/// ((u64, kind) to id and rate: 63.6), the op set (u64 at random: 15.4) and the players (u64 to
+/// two u64, estimated).
 const BTREE_KEY_BYTES: usize = 26;
-const BTREE_CELL_BYTES: usize = 30;
-const BTREE_SOURCE_BYTES: usize = 44;
-const BTREE_U64_BYTES: usize = 14;
-const BTREE_PLAYER_BYTES: usize = 44;
+const BTREE_CELL_BYTES: usize = 34;
+const BTREE_SOURCE_BYTES: usize = 64;
+const BTREE_U64_BYTES: usize = 16;
+const BTREE_PLAYER_BYTES: usize = 48;
 
 /// A raid on a village's or a haven's market (I22's rule applied to residents): Lanchester's
 /// linear law of the band's strength against the defence, floored by the faction's real fights at
