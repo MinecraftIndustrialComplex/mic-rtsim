@@ -62,11 +62,13 @@ class Params:
     starve_hazard: float = 0.2          # per day at zero satisfaction (engine)
     birth_doy: int = 24
     bh: bool = True                     # TUNABLE (rule): density term in births
-    disperse_frac: float = 0.02         # TUNABLE: share of a herd above 0.8 K that leaves each spring
+    disperse_frac: float = 0.05         # TUNABLE: share of a donor herd's adults that leave each spring
+    disperse_donor: float = 0.4         # TUNABLE: a herd above this share of K gives emigrants
+    disperse_thin: float = 0.25         # TUNABLE: a neighbour below this share of K takes them
     frontier_rate: float = 0.25         # TUNABLE: wanderers found a fallow region, per region-year
     loaded_regrow_rate: float = 0.0     # per region-year while loaded (not in the proposed rule; a sweep)
     founders: int = 12                  # TUNABLE: a frontier herd's size
-    founders_frac: float = 0.0          # TUNABLE (sweep): founders scale with K when above `founders`
+    founders_frac: float = 0.05         # TUNABLE: a frontier herd is max(founders, this x K)
     refuge_frac: float = 0.10           # TUNABLE: share of K dragons cannot reach
     refuge_min: int = 8
     # ---- dragons
@@ -373,8 +375,8 @@ class World:
         p = self.p
         N = self.Y + self.A
         live = self.founded & (N > 0)
-        thin = self.founded & (self.hab > 0) & (N < 0.5 * self.K)
-        donors = live & (N > 0.8 * self.K)
+        thin = self.founded & (self.hab > 0) & (N < p.disperse_thin * self.K)
+        donors = live & (N > p.disperse_donor * self.K)
         # emigrants split over the thin 4-neighbours
         n_thin = sum(shift(thin.astype(float), -dy, -dx) for dy, dx in DIR4)
         emig = np.where(donors & (n_thin > 0), self.rng.binomial(self.A, p.disperse_frac), 0)
