@@ -3104,7 +3104,11 @@ mod replay_path {
         }
         let mut s = setup(&b, 5);
         let mut out = vec![(BRASS, 39)];
-        out.extend([(WOOL, 64), (ORE, 64), (CRUSHED, 64), (XP, 64)].iter().take(kinds as usize));
+        out.extend(
+            [(WOOL, 64), (ORE, 64), (CRUSHED, 64), (XP, 64)]
+                .iter()
+                .take(kinds as usize),
+        );
         sweep(
             &mut s,
             1,
@@ -3184,7 +3188,13 @@ mod replay_path {
         let r = e.glass.report(D).expect("a compile");
         assert_ne!(r.replay.model, replay_model::GLASS, "{:?}", r.replay);
         if let Some(st) = e.sim_stock(D) {
-            for (g, was) in [(ZINC, 688), (SHEET, 202), (COAL, 688), (COPPER, 688), (BRASS, 64)] {
+            for (g, was) in [
+                (ZINC, 688),
+                (SHEET, 202),
+                (COAL, 688),
+                (COPPER, 688),
+                (BRASS, 64),
+            ] {
                 assert_eq!(st.get(g), was, "{st:?}");
             }
         }
