@@ -9,21 +9,37 @@
 //! the caller saves the world (`World::save`) in the same instant.
 //!
 //! **Not saved:** the tunables (the caller's), and the CLI's diagnostics (`log`, `hunts`).
+//!
+//! # One blob or pages (A16)
+//!
+//! Both ways write the same two parts: the **meta** (everything resident: the wheel, the lair
+//! indexes, players, homes, the ledger, the dictionaries) and the **row tables** (dragons, page
+//! table 0x4410; lairs, 0x4411).
+//!
+//! - [`Dragons::save`] / [`Dragons::load`]: one blob, the meta then every row in key order
+//!   (`PagedRows::encode_all`), for a host without a page store (rtsim-jni today, page 0x4400).
+//! - [`Dragons::save_paged`] / [`Dragons::open_paged`]: the meta as one page (with each table's
+//!   row count and next index) and each table's dirty pages, in the caller's batch; opening reads
+//!   the meta page and leaves every row page on disk until something reads it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use rtsim_industry::ids::{Good, TrainId};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
-use rtsim_kernel::handle::{Arena, Handle};
+use rtsim_kernel::handle::Handle;
+use rtsim_kernel::page::{PageError, PageKey, SaveBatch};
+use rtsim_kernel::paging::SaveTicket;
+use rtsim_kernel::rows::{PageSource, PagedArena, PagedRows, Row, RowStats};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
 use rtsim_travel::legs::{Meeting, Path, Stamp};
 
 use crate::boundary::{self, SpeciesDict};
-use crate::dragon::{Dragon, FlightLeg, Lair, LairKind, Purpose, State, Target};
-use crate::engine::{DragonStats, Dragons, Ev, PlayerView};
+use crate::dragon::{Dragon, FlightLeg, Lair, LairKind, Lairs, Purpose, State, Target};
+use crate::engine::{DRAGON_TABLE, DRAGONS_PER_PAGE, DragonStats, Dragons, Ev, PlayerView};
 use crate::homes::{Entry, Homes, PlayerHome};
 use crate::index::PreyIndex;
 use crate::prey::{Item, PreyLedger};
@@ -31,6 +47,8 @@ use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"RTDG");
+/// The meta page of a paged save.
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTDM");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -445,6 +463,53 @@ fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
     })
 }
 
+/// Heap bytes a `BTreeMap` of `len` entries of `entry` bytes owns: leaf nodes of eleven, at
+/// least one when not empty (an estimate for the page budget).
+fn btree_bytes(len: usize, entry: usize) -> usize {
+    len.div_ceil(11) * (11 * entry + 16)
+}
+
+impl Encode for Dragon {
+    fn encode(&self, w: &mut Writer) {
+        put_dragon(w, self);
+    }
+}
+
+impl Decode for Dragon {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        get_dragon(r)
+    }
+}
+
+impl Row for Dragon {
+    fn heap_bytes(&self) -> usize {
+        self.name.capacity()
+            + self.children.capacity() * std::mem::size_of::<Handle<Dragon>>()
+            + self.victims.capacity() * std::mem::size_of::<rtsim_knowledge::ActorId>()
+            + btree_bytes(self.carried.len(), std::mem::size_of::<(Item, i64)>())
+    }
+}
+
+impl Encode for Lair {
+    fn encode(&self, w: &mut Writer) {
+        put_lair(w, self);
+    }
+}
+
+impl Decode for Lair {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        get_lair(r)
+    }
+}
+
+impl Row for Lair {
+    fn heap_bytes(&self) -> usize {
+        self.name.capacity()
+            + self.occupants.capacity() * std::mem::size_of::<Handle<Dragon>>()
+            + btree_bytes(self.hoard.len(), std::mem::size_of::<(Item, i64)>())
+    }
+}
+
 fn put_ev(w: &mut Writer, e: &Ev) {
     match *e {
         Ev::Hungry { d, plan } => {
@@ -754,29 +819,71 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
     }
 }
 
+/// What [`Dragons::save_paged`] put in a batch: hand it back with [`Dragons::saved`] once the
+/// commit is durable, or [`Dragons::save_failed`].
+#[derive(Debug, Default)]
+#[must_use = "row pages stay pinned until the tickets come back through saved or save_failed"]
+pub struct DragonsTickets {
+    dragons: SaveTicket,
+    lairs: SaveTicket,
+}
+
+impl DragonsTickets {
+    /// Row pages the save wrote (or deleted), both tables.
+    pub fn pages(&self) -> usize {
+        self.dragons.pages() + self.lairs.pages()
+    }
+}
+
+/// The row tables' paging counters, for the bench.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DragonsPaging {
+    pub dragons: RowStats,
+    pub lairs: RowStats,
+}
+
+impl DragonsPaging {
+    pub fn loads(&self) -> u64 {
+        self.dragons.loads + self.lairs.loads
+    }
+
+    pub fn evictions(&self) -> u64 {
+        self.dragons.evictions + self.lairs.evictions
+    }
+
+    pub fn over_budget(&self) -> u64 {
+        self.dragons.over_budget + self.lairs.over_budget
+    }
+}
+
+/// The budget's share for the dragons' rows; the lairs get the rest. PLACEHOLDER three quarters:
+/// a dragon row is about twice a lair's, and most events change a dragon but only read its lair.
+fn split_budget(budget: usize) -> (usize, usize) {
+    let lairs = budget / 4;
+    (budget - lairs, lairs)
+}
+
+fn format_err(e: CodecError) -> PageError {
+    PageError::Format(format!("the dragons' meta page: {e}"))
+}
+
 impl Dragons {
-    /// Every dragon, lair, event and table (see the module docs for what is left out). The
-    /// commands not taken yet are written too.
-    pub fn save(&self) -> Vec<u8> {
-        let mut w = Writer::with_capacity(1024 + self.dragons.len() * 256);
-        w.u32(MAGIC);
+    /// Everything resident (module docs): the meta of both save forms.
+    fn put_meta(&self, w: &mut Writer) {
         w.u64(self.seed);
         w.u64(self.now.0);
         w.u64(self.next_seed);
-        self.dragons.encode_with(&mut w, |x, w| put_dragon(w, x));
-        w.var_u64(self.lairs.len() as u64);
-        self.lairs.iter().for_each(|l| put_lair(&mut w, l));
         w.var_u64(self.lair_by_key.len() as u64);
         for (k, l) in &self.lair_by_key {
             w.u64(*k);
             w.u32(*l);
         }
-        put_cells(&mut w, &self.lair_cells);
-        self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
-        put_homes(&mut w, &self.homes);
+        put_cells(w, &self.lair_cells);
+        self.wheel.encode_with(w, |e, w| put_ev(w, e));
+        put_homes(w, &self.homes);
         let l = &self.ledger;
         for m in [&l.taken, &l.eaten, &l.burnt, &l.hoarded, &l.robbed, &l.lost] {
-            put_items128(&mut w, m);
+            put_items128(w, m);
         }
         stats_array(&self.stats).iter().for_each(|v| w.var_u64(*v));
         w.bool(self.log_enabled);
@@ -801,13 +908,13 @@ impl Dragons {
             match p.interest {
                 Some(s) => {
                     w.u8(1);
-                    s.encode(&mut w);
+                    s.encode(w);
                 }
                 None => w.u8(0),
             }
         }
-        put_cells(&mut w, &self.index.villages);
-        put_cells(&mut w, &self.index.roads);
+        put_cells(w, &self.index.villages);
+        put_cells(w, &self.index.roads);
         w.var_u64(self.index.nodes as u64);
         w.var_u64(self.index.edges as u64);
         w.var_u64(self.by_entity.len() as u64);
@@ -826,30 +933,26 @@ impl Dragons {
         w.var_u64(self.items.len() as u64);
         for (id, item) in &self.items {
             w.u32(*id);
-            put_item(&mut w, *item);
+            put_item(w, *item);
         }
         w.var_u64(self.herd_bodies.len() as u64);
         for (id, g) in &self.herd_bodies {
             w.u32(*id);
             w.u16(g.0);
         }
-        w.into_bytes()
+        w.var_u64(self.embodied.len() as u64);
+        self.embodied.iter().for_each(|d| w.u64(d.to_bits()));
+        w.var_u64(self.vacant.len() as u64);
+        self.vacant.iter().for_each(|l| w.var_u64(u64::from(*l)));
     }
 
-    /// Reads what [`Dragons::save`] wrote, with the tunables the engine runs with.
-    pub fn load(tun: DragonTunables, bytes: &[u8]) -> codec::Result<Dragons> {
-        let r = &mut Reader::new(bytes);
-        if r.u32()? != MAGIC {
-            return bad("not a dragons page".into());
-        }
+    /// An engine from what [`Dragons::put_meta`] wrote, with empty row tables.
+    fn get_meta(tun: DragonTunables, r: &mut Reader<'_>) -> codec::Result<Dragons> {
         let seed = r.u64()?;
         let now = Tick(r.u64()?);
         let next_seed = r.u64()?;
         let mut d = Dragons::new(seed, tun, now);
         d.next_seed = next_seed;
-        d.dragons = Arena::decode_with(r, get_dragon)?;
-        let n = r.len_prefix(30)?;
-        d.lairs = (0..n).map(|_| get_lair(r)).collect::<codec::Result<_>>()?;
         for _ in 0..r.len_prefix(12)? {
             let k = r.u64()?;
             d.lair_by_key.insert(k, r.u32()?);
@@ -922,19 +1025,233 @@ impl Dragons {
             let id = r.u32()?;
             d.herd_bodies.insert(id, GoodId(r.u16()?));
         }
+        for _ in 0..r.len_prefix(8)? {
+            d.embodied.insert(h(r)?);
+        }
+        for _ in 0..r.len_prefix(1)? {
+            d.vacant.insert(u32_of(r.var_u64()?)?);
+        }
+        Ok(d)
+    }
+
+    /// Every dragon, lair, event and table (see the module docs for what is left out), as one
+    /// blob: the meta, then the dragons and the lairs in key order. The commands not taken yet
+    /// are written too. A whole-table pass: in a paged engine it loads every row page.
+    pub fn save(&self) -> Vec<u8> {
+        let mut w = Writer::with_capacity(1024 + self.dragons.len() * 256);
+        w.u32(MAGIC);
+        self.put_meta(&mut w);
+        self.dragons.encode_all(&mut w);
+        self.lairs.rows().encode_all(&mut w);
+        w.into_bytes()
+    }
+
+    /// Reads what [`Dragons::save`] wrote, with the tunables the engine runs with: a resident
+    /// engine (no page store).
+    pub fn load(tun: DragonTunables, bytes: &[u8]) -> codec::Result<Dragons> {
+        let r = &mut Reader::new(bytes);
+        if r.u32()? != MAGIC {
+            return bad("not a dragons page".into());
+        }
+        let mut d = Dragons::get_meta(tun, r)?;
+        d.dragons = PagedArena::decode_all(DRAGON_TABLE, DRAGONS_PER_PAGE, r)?;
+        let lairs = PagedRows::decode_all(Lairs::TABLE, Lairs::PER_PAGE, r)?;
+        // Keys in strictly rising order, the last `len - 1`: exactly `0..len`.
+        if !lairs.is_empty() && lairs.get(lairs.len() - 1).is_none() {
+            return bad("the lairs' keys are not 0..len".into());
+        }
+        d.lairs = Lairs::from_rows(lairs);
         if !r.is_empty() {
             return bad(format!(
                 "{} trailing bytes in a dragons page",
                 r.remaining()
             ));
         }
-        d.check_refs()?;
+        d.check_resident()?;
+        d.check_rows()?;
         Ok(d)
     }
 
-    /// Lairs and dragons a corrupt page could name wrongly, checked once on load.
-    fn check_refs(&self) -> codec::Result<()> {
+    // ---- paged (A16) ---------------------------------------------------------------------------
+
+    /// Starts paging the row tables to `source` (the page store the caller commits saves
+    /// through) under `budget` bytes of resident row pages, split between the dragons and the
+    /// lairs. The rows stay resident until a save writes them ([`Dragons::save_paged`]).
+    pub fn attach_store(&mut self, source: Arc<dyn PageSource>, budget: usize) {
+        let (bd, bl) = split_budget(budget);
+        self.dragons.rows_mut().attach(source.clone(), bd);
+        self.lairs.rows_mut().attach(source, bl);
+    }
+
+    /// Whether the row tables page to a store.
+    pub fn is_paged(&self) -> bool {
+        self.dragons.rows().is_paged()
+    }
+
+    /// A paged save into `batch`: the meta page under `meta_key` (everything resident, and each
+    /// row table's row count and next index) and every row page changed since the last save.
+    /// The pages stay pinned until the tickets come back. `meta_key` must not be in a row table.
+    pub fn save_paged(&mut self, batch: &mut SaveBatch, meta_key: PageKey) -> DragonsTickets {
+        assert!(
+            meta_key.table() != DRAGON_TABLE && meta_key.table() != Lairs::TABLE,
+            "the dragons' meta page {meta_key:?} inside a row table"
+        );
+        let mut w = Writer::with_capacity(1024 + self.wheel.len() * 24);
+        w.u32(META_MAGIC);
+        self.put_meta(&mut w);
+        let (len, next) = self.dragons.meta();
+        w.var_u64(len);
+        w.u32(next);
+        w.var_u64(self.lairs.rows().len());
+        batch.put(meta_key, w.as_bytes());
+        DragonsTickets {
+            dragons: self.dragons.rows_mut().save_dirty(batch),
+            lairs: self.lairs.rows_mut().save_dirty(batch),
+        }
+    }
+
+    /// The commit holding [`Dragons::save_paged`]'s batch is durable.
+    pub fn saved(&mut self, t: DragonsTickets) {
+        self.dragons.rows_mut().saved(t.dragons);
+        self.lairs.rows_mut().saved(t.lairs);
+    }
+
+    /// The commit failed: the row pages it held are dirty again (the meta is rewritten whole by
+    /// every save, so it needs nothing).
+    pub fn save_failed(&mut self, t: DragonsTickets) {
+        self.dragons.rows_mut().save_failed(t.dragons);
+        self.lairs.rows_mut().save_failed(t.lairs);
+    }
+
+    /// An engine saved by [`Dragons::save_paged`]: reads the meta page and opens both row tables
+    /// with nothing resident, paging under `budget` as [`Dragons::attach_store`].
+    pub fn open_paged(
+        source: Arc<dyn PageSource>,
+        budget: usize,
+        meta_key: PageKey,
+        tun: DragonTunables,
+    ) -> Result<Dragons, PageError> {
+        let raw = source
+            .read(meta_key)?
+            .ok_or_else(|| PageError::Format(format!("no dragons meta page at {meta_key:?}")))?;
+        let r = &mut Reader::new(&raw);
+        if r.u32().map_err(format_err)? != META_MAGIC {
+            return Err(PageError::Format("not a dragons meta page".into()));
+        }
+        let mut d = Dragons::get_meta(tun, r).map_err(format_err)?;
+        let len = r.var_u64().map_err(format_err)?;
+        let next = r.u32().map_err(format_err)?;
+        let lairs = r.var_u64().map_err(format_err)?;
+        if !r.is_empty() {
+            return Err(PageError::Format(format!(
+                "{} trailing bytes in the dragons' meta page",
+                r.remaining()
+            )));
+        }
+        if len > u64::from(next) || lairs > u64::from(u32::MAX) {
+            return Err(PageError::Format(format!(
+                "the dragons' meta page: {len} rows under next index {next}, {lairs} lairs"
+            )));
+        }
+        let (bd, bl) = split_budget(budget);
+        d.dragons = PagedArena::open(
+            DRAGON_TABLE,
+            DRAGONS_PER_PAGE,
+            source.clone(),
+            bd,
+            (len, next),
+        );
+        d.lairs = Lairs::from_rows(PagedRows::open(
+            Lairs::TABLE,
+            Lairs::PER_PAGE,
+            source,
+            bl,
+            lairs,
+        ));
+        d.check_resident().map_err(format_err)?;
+        Ok(d)
+    }
+
+    /// Evicts row pages whose state is on disk until each table fits its share of the budget,
+    /// and measures the rows changed since the last call. A paged host calls it at its step
+    /// boundaries (rtsim-jni once a step, the bench every second of sim time): `run_until` does
+    /// not, so a host stepping event by event pays the check (a pass over the resident pages
+    /// when over budget) once a step, not once an event. Returns the pages evicted.
+    pub fn enforce_budget(&mut self) -> usize {
+        self.dragons.rows_mut().enforce_budget() + self.lairs.rows_mut().enforce_budget()
+    }
+
+    /// Resident row page bytes, both tables: what the budget bounds.
+    pub fn resident_row_bytes(&self) -> usize {
+        self.dragons.rows().resident_bytes() + self.lairs.rows().resident_bytes()
+    }
+
+    /// The row tables' budget (both shares), `usize::MAX` while resident.
+    pub fn row_budget(&self) -> usize {
+        self.dragons
+            .rows()
+            .budget()
+            .saturating_add(self.lairs.rows().budget())
+    }
+
+    /// Whether the rows are over their budget with nothing left to evict (asked right after
+    /// [`Dragons::enforce_budget`]): every resident page beyond the budget changed since the last
+    /// save. The host should save; an extra save is a pending generation like any other (P29),
+    /// as herds' `needs_save` (PM7). Over both tables, so either may use the other's unused share
+    /// until the save. Never while resident.
+    pub fn needs_save(&self) -> bool {
+        self.is_paged() && self.resident_row_bytes() > self.row_budget()
+    }
+
+    pub fn paging_stats(&self) -> DragonsPaging {
+        DragonsPaging {
+            dragons: self.dragons.rows().stats(),
+            lairs: self.lairs.rows().stats(),
+        }
+    }
+
+    pub fn reset_paging_stats(&mut self) {
+        self.dragons.rows_mut().reset_stats();
+        self.lairs.rows_mut().reset_stats();
+    }
+
+    // ---- checks on load --------------------------------------------------------------------------
+
+    /// The resident state a corrupt page could name wrongly: lairs past the table, embodied
+    /// dragons past the arena. Checked on every load, paged or not; no row is read.
+    fn check_resident(&self) -> codec::Result<()> {
         let nl = self.lairs.len() as u32;
+        let lairs_ok = self.lair_by_key.values().all(|&l| l < nl)
+            && self.lair_cells.values().flatten().all(|&l| l < nl)
+            && self.vacant.iter().all(|&l| l < nl);
+        if !lairs_ok {
+            return bad("a lair index names a lair past the table".into());
+        }
+        for (_, e) in self.wheel.iter() {
+            let ok = match *e {
+                Ev::SeenAtLair { lair, .. } | Ev::Respawn { lair, .. } => lair < nl,
+                _ => true,
+            };
+            if !ok {
+                return bad("a dragon event names a lair past the table".into());
+            }
+        }
+        let (_, next) = self.dragons.meta();
+        if let Some(d) = self
+            .embodied
+            .iter()
+            .find(|d| d.generation() != PagedArena::<Dragon>::GENERATION || d.index() >= next)
+        {
+            return bad(format!("the embodied index names {d:?}, past the dragons"));
+        }
+        Ok(())
+    }
+
+    /// Lairs the rows name, and the embodied and vacant indexes against the rows: a whole-table pass,
+    /// for [`Dragons::load`] (which has read every row anyway).
+    fn check_rows(&self) -> codec::Result<()> {
+        let nl = self.lairs.len() as u32;
+        let mut embodied = BTreeSet::new();
         for (id, x) in self.dragons.iter() {
             let ok = x.lair.is_none_or(|l| l < nl)
                 && match x.state {
@@ -952,20 +1269,22 @@ impl Dragons {
             if !ok {
                 return bad(format!("dragon {id:?} names a lair past {nl}"));
             }
-        }
-        let lairs_ok = self.lair_by_key.values().all(|&l| l < nl)
-            && self.lair_cells.values().flatten().all(|&l| l < nl);
-        if !lairs_ok {
-            return bad("a lair index names a lair past the table".into());
-        }
-        for (_, e) in self.wheel.iter() {
-            let ok = match *e {
-                Ev::SeenAtLair { lair, .. } | Ev::Respawn { lair, .. } => lair < nl,
-                _ => true,
-            };
-            if !ok {
-                return bad("a dragon event names a lair past the table".into());
+            if x.is_embodied() {
+                embodied.insert(id);
             }
+        }
+        if embodied != self.embodied {
+            return bad("the embodied index does not match the dragons".into());
+        }
+        let vacant: BTreeSet<u32> = self
+            .lairs
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.occupants.is_empty() && l.vacant_since.is_some())
+            .map(|(i, _)| i as u32)
+            .collect();
+        if vacant != self.vacant {
+            return bad("the vacant index does not match the lairs".into());
         }
         Ok(())
     }
