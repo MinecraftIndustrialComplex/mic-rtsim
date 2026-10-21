@@ -38,7 +38,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
  * loaded, lands before any block entity in the chunk ticks; its IND_RECONCILE_RESULT is journaled before
  * the chunk's IND_CHUNK_LOADED, which carries the epoch now applied; it is exactly once across a crash at
  * any step; and a partly loaded district sends IND_APPROACH for its unloaded part, closing only while a
- * player really closes in. Far chunks, each test its own batch, either engine.
+ * player really closes in. Far chunks, each test its own batch, either engine. The timeouts are long: the
+ * GameTest server ticks unthrottled, so generating and unloading a far chunk costs thousands of ticks.
  */
 @GameTestHolder(MicRtsimCreate.MODID)
 @PrefixGameTestTemplate(false)
@@ -128,7 +129,7 @@ public final class ReconcileAheadGameTests {
      * <p>The chest and hopper are built in a chunk held FULL and not block-ticking, so the hopper never
      * ticks before the test wants it to.
      */
-    @GameTest(template = YARD, batch = "ahead_1", timeoutTicks = 2400)
+    @GameTest(template = YARD, batch = "ahead_1", timeoutTicks = 12000)
     public static void aHeldReconcileLandsBeforeAHopperInItsChunkMoves(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();
@@ -140,7 +141,13 @@ public final class ReconcileAheadGameTests {
         long[] id = {0};
         int[] heldBefore = {0};
         helper.startSequence()
-                .thenExecute(() -> level.getChunkSource().addRegionTicket(FULL_ONLY, cp, 0, cp))
+                // Generated and loaded under a forced ticket, then held at FULL alone.
+                .thenExecute(() -> {
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, cp, 0, cp);
+                    level.setChunkForced(fx, fz, true);
+                })
+                .thenWaitUntil(() -> check("the far chunk loads", level.getChunkSource().getChunkNow(fx, fz) != null))
+                .thenExecute(() -> level.setChunkForced(fx, fz, false))
                 .thenWaitUntil(() -> {
                     LevelChunk c = level.getChunkSource().getChunkNow(fx, fz);
                     check("the far chunk is loaded and not block-ticking: " + (c == null ? "not loaded" : c.getFullStatus()),
@@ -215,7 +222,7 @@ public final class ReconcileAheadGameTests {
      *       again is held and applies once at the next load.</li>
      * </ol>
      */
-    @GameTest(template = YARD, batch = "ahead_2", timeoutTicks = 4800)
+    @GameTest(template = YARD, batch = "ahead_2", timeoutTicks = 16000)
     public static void aReconcileSentAheadAppliesOnceAcrossACrashAtEachStep(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();
@@ -344,7 +351,7 @@ public final class ReconcileAheadGameTests {
      * near that distance. Standing still is not closing. Once B loads, nothing of the district is unloaded
      * and the approach records stop.
      */
-    @GameTest(template = YARD, batch = "ahead_3", timeoutTicks = 2400)
+    @GameTest(template = YARD, batch = "ahead_3", timeoutTicks = 12000)
     public static void aPartlyLoadedDistrictSendsApproachForItsUnloadedPart(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();

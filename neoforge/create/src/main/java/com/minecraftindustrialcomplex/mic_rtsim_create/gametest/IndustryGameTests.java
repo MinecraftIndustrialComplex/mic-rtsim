@@ -833,11 +833,12 @@ public final class IndustryGameTests {
 
     /**
      * Commands held for a chunk that is not loaded (§4.1 step 1): a far chunk's district, unloaded; its
-     * reconcile waits; when the chunk loads, IND_CHUNK_LOADED (epoch 0) goes out and the held command
-     * applies. The epoch went to disk with the chunk: after another unload and load, IND_CHUNK_LOADED
-     * carries epoch 1, read back from the chunk's NBT.
+     * reconcile waits; when the chunk loads, the held command applies and then IND_CHUNK_LOADED goes out
+     * with epoch 1 (R1, R3). The epoch went to disk with the chunk: after another unload and load,
+     * IND_CHUNK_LOADED carries epoch 1, read back from the chunk's NBT. A long timeout: the GameTest server
+     * ticks unthrottled, and a far chunk's generation and unload cost thousands of ticks.
      */
-    @GameTest(template = YARD, batch = "industry_09", timeoutTicks = 2400)
+    @GameTest(template = YARD, batch = "industry_09", timeoutTicks = 12000)
     public static void aHeldReconcileAppliesWhenItsChunkLoads(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();

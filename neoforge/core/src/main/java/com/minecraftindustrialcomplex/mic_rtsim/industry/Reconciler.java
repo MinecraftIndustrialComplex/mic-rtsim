@@ -9,6 +9,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 
 import java.nio.ByteBuffer;
@@ -17,6 +18,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -288,6 +290,8 @@ public final class Reconciler {
 
         List<BlockPos> broken = new ArrayList<>();
         int skipped = 0;
+        // I1: the states before of everything a break may remove, to tell the plugins what the sim destroyed.
+        Map<BlockPos, DestroyedBlock> before = m > 0 ? new LinkedHashMap<>() : null;
         int b0 = IndRecords.ChunkReconcile.DELTAS + n * IndRecords.ChunkReconcile.DELTA_SIZE;
         for (int i = 0; i < m; i++) {
             int e = b0 + i * IndRecords.ChunkReconcile.DESTROY_SIZE;
@@ -298,6 +302,7 @@ public final class Reconciler {
                 skipped++;
                 continue;
             }
+            snapshotAround(level, pos, before);
             // Broken with drops (C18, I23): containers spill their contents as recoverable items. The
             // engine books the spill as a port (engine.rs reconcile_result), so the drops are marked:
             // a player picking them up is not a second outflow. Another mod's onRemove may throw; the
@@ -315,6 +320,14 @@ public final class Reconciler {
         }
         blocksBroken += broken.size();
         blocksSkipped += skipped;
+        List<DestroyedBlock> removed = List.of();
+        if (before != null && !broken.isEmpty()) {
+            removed = new ArrayList<>();
+            for (DestroyedBlock b : before.values())
+                if (level.getChunkSource().getChunkNow(b.pos().getX() >> 4, b.pos().getZ() >> 4) != null
+                        && !level.getBlockState(b.pos()).is(b.state().getBlock()))
+                    removed.add(b);
+        }
 
         // The result, then the epoch in the same tick (the chunk carries the result until acknowledged).
         ByteBuffer res = ind.journal(IndRecords.IND_RECONCILE_RESULT, IndRecords.ReconcileResult.size(n, broken.size()), n);
@@ -348,7 +361,50 @@ public final class Reconciler {
         applied++;
         if (d != null)
             ind.diagnostics.noteReconcile(d, results, broken.size(), skipped);
+        if (d != null && !removed.isEmpty())
+            ind.destroyed(level, d, removed, now);
         return true;
+    }
+
+    /**
+     * Before a reconcile breaks {@code pos}: the states of the block, its six neighbours (what is attached
+     * to it pops off) and whatever a plugin says goes with it, each once per command, in loaded chunks only
+     * (reading an unloaded one would load it). After the breaks, those whose block changed are what the sim
+     * destroyed (I1).
+     */
+    private void snapshotAround(ServerLevel level, BlockPos pos, Map<BlockPos, DestroyedBlock> before) {
+        BlockState state = level.getBlockState(pos);
+        snapshot(level, pos, before);
+        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values())
+            snapshot(level, pos.relative(dir), before);
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            try {
+                p.alsoBroken(level, pos, state, q -> snapshot(level, q.immutable(), before));
+            } catch (RuntimeException ex) {
+                ind.fail("plugin alsoBroken " + p.getClass().getSimpleName(), ex);
+            }
+        }
+    }
+
+    private void snapshot(ServerLevel level, BlockPos pos, Map<BlockPos, DestroyedBlock> before) {
+        if (before.containsKey(pos) || level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null)
+            return;
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir())
+            return;
+        net.minecraft.nbt.CompoundTag data = null;
+        net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
+        if (be != null)
+            for (IndustryPlugin p : IndustryApi.PLUGINS) {
+                try {
+                    data = p.rebuildData(level, pos, state, be);
+                } catch (RuntimeException ex) {
+                    ind.fail("plugin rebuildData " + p.getClass().getSimpleName(), ex);
+                }
+                if (data != null)
+                    break;
+            }
+        before.put(pos, new DestroyedBlock(pos, state, data));
     }
 
     private void dropResultWhenAcked(ServerLevel level, ChunkPos cp, long district, int epoch, long seq) {

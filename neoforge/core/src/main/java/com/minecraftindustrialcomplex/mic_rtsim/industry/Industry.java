@@ -482,6 +482,17 @@ public final class Industry {
         }
     }
 
+    /** I1: a reconcile broke blocks; the plugins hear what the sim destroyed (repair schematics). */
+    void destroyed(ServerLevel level, District d, java.util.List<DestroyedBlock> blocks, long now) {
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            try {
+                p.destroyed(this, level, d, blocks, now);
+            } catch (RuntimeException e) {
+                fail("plugin destroyed " + p.getClass().getSimpleName(), e);
+            }
+        }
+    }
+
     void fail(String what, Throwable t) {
         MicRtsim.LOGGER.error("[mic_rtsim] industry: {}", what, t);
     }
