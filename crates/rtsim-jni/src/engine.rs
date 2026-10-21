@@ -66,6 +66,9 @@ pub use worldmodel::{
 mod shared;
 pub use shared::PLAYER_STALE;
 
+// Every level's topology (TOPOLOGY records; docs/boundary.md §11).
+mod topology;
+
 /// Record bytes per buffer when Java asks for the default. PLACEHOLDER (the stub's 256 KiB): the
 /// engine is to size buffers from the per-player puppet caps and per-tick quotas (PLAN.md §4.5).
 pub const DEFAULT_CAPACITY: usize = 256 * 1024;
@@ -212,6 +215,9 @@ pub struct Inspect {
     pub phase1_sentiments: std::collections::BTreeMap<u64, Vec<(u64, u64, i8)>>,
     /// The phase 1 world's villages and bases.
     pub phase1_villages: std::collections::BTreeSet<u64>,
+    /// Every frame's topology as the TOPOLOGY records left it, and the records refused.
+    pub topologies: rtsim_space::SharedTopologies,
+    pub topology_refused: u64,
 }
 
 impl Inspect {
@@ -286,6 +292,8 @@ struct State {
     worldmodel: worldmodel::Link,
     /// Players' interest areas and the modules' clock (`shared.rs`).
     shared: shared::Link,
+    /// Every level's topology (`topology.rs`), handed to the modules.
+    topology: topology::Link,
 }
 
 impl State {
@@ -317,6 +325,7 @@ impl State {
             conflict: conflict::Link::empty(),
             worldmodel: wm,
             shared: shared::Link::default(),
+            topology: topology::Link::default(),
         }
     }
 
@@ -1024,6 +1033,9 @@ impl Engine {
 
         // 2. Simulate: the industry engine and the phase 1 world run to the hand-over's game time
         // and decide; orders stand in for the other decisions. 3. A save due at this boundary.
+        // Every module measures through the levels' topologies (a module a load or a switch
+        // replaced gets them here).
+        topology::sync(&mut st);
         industry::simulate(&mut st);
         dragons::simulate(&mut st);
         ships::simulate(&mut st);
@@ -1103,6 +1115,8 @@ impl Engine {
             counters: st.world.counters,
             phase1_sentiments: phase1::sentiments(st),
             phase1_villages: phase1::villages(st),
+            topologies: st.topology.shared.clone(),
+            topology_refused: st.topology.refused,
         });
     }
 
@@ -1243,6 +1257,7 @@ impl Engine {
             }
             _ => {
                 st.world.observe_state(rec);
+                topology::observe_state(st, rec);
                 industry::observe_state(st, rec);
                 phase1::observe_state(st, rec);
                 dragons::observe_state(st, rec);

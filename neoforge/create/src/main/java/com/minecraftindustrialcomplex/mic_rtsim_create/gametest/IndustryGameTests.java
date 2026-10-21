@@ -833,11 +833,12 @@ public final class IndustryGameTests {
 
     /**
      * Commands held for a chunk that is not loaded (§4.1 step 1): a far chunk's district, unloaded; its
-     * reconcile waits; when the chunk loads, IND_CHUNK_LOADED (epoch 0) goes out and the held command
-     * applies. The epoch went to disk with the chunk: after another unload and load, IND_CHUNK_LOADED
-     * carries epoch 1, read back from the chunk's NBT.
+     * reconcile waits; when the chunk loads, the held command applies and then IND_CHUNK_LOADED goes out
+     * with epoch 1 (R1, R3). The epoch went to disk with the chunk: after another unload and load,
+     * IND_CHUNK_LOADED carries epoch 1, read back from the chunk's NBT. A long timeout: the GameTest server
+     * ticks unthrottled, and a far chunk's generation and unload cost thousands of ticks.
      */
-    @GameTest(template = YARD, batch = "industry_09", timeoutTicks = 2400)
+    @GameTest(template = YARD, batch = "industry_09", timeoutTicks = 12000)
     public static void aHeldReconcileAppliesWhenItsChunkLoads(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();
@@ -883,7 +884,7 @@ public final class IndustryGameTests {
                     heldBefore[0] = ind().reconciler().held();
                     reconcile(op, id[0], 1, level, fx, fz, List.of(new Delta(0, "i/64/minecraft:gold_ingot", chestPos, 7)), List.of());
                 })
-                .thenWaitUntil(() -> check("the reconcile is held", ind().reconciler().held() == heldBefore[0] + 1 && result(op) == null))
+                .thenWaitUntil(() -> check("the reconcile is held" + ReconcileAheadGameTests.pipeline(op), ind().reconciler().held() == heldBefore[0] + 1 && result(op) == null))
                 .thenExecute(() -> {
                     loadsBefore[0] = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]).size();
                     level.setChunkForced(fx, fz, true);
@@ -894,7 +895,8 @@ public final class IndustryGameTests {
                     check("the chest holds 7 gold", count((Container) level.getBlockEntity(chestPos), Items.GOLD_INGOT) == 7);
                     List<ByteBuffer> loads = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]);
                     check("IND_CHUNK_LOADED went out at the load", loads.size() > loadsBefore[0]);
-                    check("with epoch 0", loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 0);
+                    // R1, R3: the held reconcile lands at the load, before IND_CHUNK_LOADED, which carries its epoch.
+                    check("with epoch 1", loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 1);
                 })
                 .thenExecute(() -> {
                     unloadsBefore[0] = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size();
@@ -928,12 +930,6 @@ public final class IndustryGameTests {
 
     // ---- I18: the operator debug output -------------------------------------------------------------
 
-    /** The last record of a kind the engine received, or null. */
-    private static Object lastReceived(int kind) {
-        var l = engine().received(kind);
-        return l.isEmpty() ? null : l.getLast();
-    }
-
     /**
      * The operator diagnostic ({@code /rtsim district info} and {@code debug}, permission level 2) shows what
      * Java itself holds: the district's chunks and load state, the last sweep, the plugin warnings and the
@@ -950,9 +946,7 @@ public final class IndustryGameTests {
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         playerPlaced(helper, vaultPos);
         long[] id = {0};
-        // the last record of each kind, not a count: the received log is capped and evicts its oldest
-        // records, so a count drops while other districts' glass records arrive
-        Object[] sentBefore = {null, null};
+        Object[][] sentBefore = {null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, vaultPos);
@@ -961,8 +955,7 @@ public final class IndustryGameTests {
                 })
                 .thenWaitUntil(() -> check("its load state went to the engine", ind().district(id[0]).loadState() >= 0))
                 .thenExecute(() -> {
-                    sentBefore[0] = lastReceived(IndRecords.IND_LOAD_STATE);
-                    sentBefore[1] = lastReceived(IndRecords.IND_DISTRICT);
+                    sentBefore[0] = lastSentFor(id[0]);
                     ind().diagnostics().warn(id[0], "test", "a test warning");
                     District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
@@ -1001,10 +994,35 @@ public final class IndustryGameTests {
                     check("and the engine was not asked for anything (0x0044 is retired)", engine().received(0x0044).isEmpty());
                 })
                 .thenIdle(5)
-                .thenExecute(() -> check("producing the output sent the engine nothing",
-                        lastReceived(IndRecords.IND_LOAD_STATE) == sentBefore[0]
-                                && lastReceived(IndRecords.IND_DISTRICT) == sentBefore[1]))
+                // This district's records only: another test's district (a far chunk unloading after its test) may
+                // send its own load state meanwhile.
+                .thenExecute(() -> check("producing the output sent the engine nothing for the district",
+                        sameRecords(lastSentFor(id[0]), sentBefore[0])))
                 .thenSucceed();
+    }
+
+    /**
+     * The last IND_LOAD_STATE and IND_DISTRICT records the engine got for one district (both carry it at 24),
+     * null where none. Compared by identity, not counted: the received log is capped and evicts its oldest
+     * records, so a count drops while other districts' glass records arrive.
+     */
+    private static Object[] lastSentFor(long district) {
+        int[] kinds = {IndRecords.IND_LOAD_STATE, IndRecords.IND_DISTRICT};
+        Object[] last = new Object[kinds.length];
+        for (int i = 0; i < kinds.length; i++)
+            for (var r : engine().received(kinds[i]))
+                if (r.bytes().length >= 32 && r.view().getLong(IndRecords.LoadState.DISTRICT) == district)
+                    last[i] = r;
+        return last;
+    }
+
+    private static boolean sameRecords(Object[] a, Object[] b) {
+        if (a.length != b.length)
+            return false;
+        for (int i = 0; i < a.length; i++)
+            if (a[i] != b[i])
+                return false;
+        return true;
     }
 
     // ---- I7: IND_CHUNK_UNLOADED, U10: the module switch -----------------------------------------------
@@ -1046,6 +1064,7 @@ public final class IndustryGameTests {
         Industry[] industry = {null};
         long[] id = {0};
         int[] quiet = {0};
+        int[] quietEach = new int[QUIET.length];
         int[][] announced = {null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
@@ -1064,13 +1083,19 @@ public final class IndustryGameTests {
                 .thenExecute(() -> {
                     check("the module is off: no industry for the API", IndustryApi.current() == null);
                     quiet[0] = sentCount(QUIET);
+                    for (int i = 0; i < QUIET.length; i++)
+                        quietEach[i] = sentCount(QUIET[i]);
                     // A change the module would have sent: a player places a block next to the district.
                     set(helper, chestPos.above(), Blocks.CHEST.defaultBlockState());
                     playerPlaced(helper, chestPos.above());
                 })
                 .thenIdle(60)
                 .thenExecute(() -> {
-                    check("nothing was sent while off: " + quiet[0] + " then " + sentCount(QUIET), sentCount(QUIET) == quiet[0]);
+                    StringBuilder which = new StringBuilder();
+                    for (int i = 0; i < QUIET.length; i++)
+                        if (sentCount(QUIET[i]) != quietEach[i])
+                            which.append(" 0x").append(Integer.toHexString(QUIET[i])).append(" +").append(sentCount(QUIET[i]) - quietEach[i]);
+                    check("nothing was sent while off: " + quiet[0] + " then " + sentCount(QUIET) + which, sentCount(QUIET) == quiet[0]);
                     set(helper, chestPos.above(), Blocks.AIR.defaultBlockState());
                     announced[0] = new int[ANNOUNCED.length];
                     for (int i = 0; i < ANNOUNCED.length; i++)

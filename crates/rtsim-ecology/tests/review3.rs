@@ -212,7 +212,7 @@ fn a_lairless_dragon_settles_where_it_landed() {
     d.run_until(&mut w, &mut NoInfrastructure, Tick(1_000));
     let dr = d.dragon(x).unwrap();
     assert!(matches!(dr.state, State::Roosting), "{:?}", dr.state);
-    let (p, _) = dr.position(&d.lairs, Tick(1_000));
+    let (p, _) = dr.position(&d.topo, &d.lairs, Tick(1_000));
     assert_eq!((p.frame, p.x, p.z), (0, 7_000, -7_000));
 }
 

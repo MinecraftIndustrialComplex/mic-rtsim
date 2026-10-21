@@ -32,5 +32,10 @@ public final class MicRtsim {
         com.minecraftindustrialcomplex.mic_rtsim.herd.HerdEvents.register();
         // The habitat sampler (docs/boundary.md §10): the engine's world model, built in as vanilla is.
         com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatEvents.register();
+        // Deep Time's world layout, glued north and south (TP19); Toroidal World's shape is read
+        // without a registration, by reflection.
+        if (net.neoforged.fml.ModList.get().isLoaded("deeptime"))
+            com.minecraftindustrialcomplex.mic_rtsim.topology.TopologySources.register(
+                    new com.minecraftindustrialcomplex.mic_rtsim.topology.DeepTimeLayoutSource());
     }
 }

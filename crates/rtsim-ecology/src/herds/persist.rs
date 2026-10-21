@@ -178,6 +178,9 @@ fn put_herd(w: &mut Writer, x: &Herd) {
             w.u64(e.since.0);
             put_xz(w, e.steer);
             w.bool(e.leaving);
+            w.u8(e.chart.k);
+            w.i64(e.chart.tx);
+            w.i64(e.chart.tz);
         }
         None => w.u8(0),
     }
@@ -246,6 +249,11 @@ fn get_herd(r: &mut Reader<'_>) -> codec::Result<Herd> {
                 since: Tick(r.u64()?),
                 steer: get_xz(r)?,
                 leaving: r.bool()?,
+                chart: {
+                    let k = r.u8()?;
+                    let (tx, tz) = (r.i64()?, r.i64()?);
+                    rtsim_space::topology::Iso::new(i64::from(k), tx, tz)
+                },
             })
         }
         t => return bad(format!("embodied tag {t}")),

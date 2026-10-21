@@ -476,7 +476,7 @@ Antique Atlas markers, a chat ledger) was rejected and is gone from the code.
 | Infinite deposits; mob farms with nobody near | I11; I9. |
 | Log off to dodge attacks | C17. In single-player, nothing happens while the world is closed, to the factory or to its attackers (I4). |
 | Defences that only work while watched | Abstract outcomes are capped by observed ones (§13.6). Ammunition is a consumed good. |
-| Duplicate through a rebuild schematic | Depends on I1. A sim repair schematic stores block states only. The Schematicannon's own NBT filter (catnip `NBTProcessors.process`) is UNVERIFIED here. |
+| Duplicate through a rebuild schematic | A repair schematic (§13.10) holds the states from before and only the block-entity data the cannon would place itself (`BlockHelper.prepareBlockEntityData`), never an inventory; the cannon charges the items for every block it prints. |
 
 ---
 
@@ -637,7 +637,7 @@ base, but an undefended base keeps losing.
 **Alternatives:** (b) A shield after heavy losses; (c) Attack frequency tied to the owner's online time,
 which works against C17.
 
-### 13.10 Rebuilding (I1, open: Ben chose "decide later")
+### 13.10 Rebuilding (I1: Ben chose repair schematics)
 
 **Facts:**
 - `SchematicExport.saveSchematic(dir, name, overwrite, level, first, second)` writes a template from the
@@ -655,6 +655,15 @@ which works against C17.
   exactly the holes. Its size grows with damage, not with the district.
 - (b) **Full district snapshots** each time a district is learned. These are large files.
 - (c) **None.** Players use the Schematic and Quill; the operator's debug output lists the destroyed positions.
+
+**Built (2026-10-20, docs/choices-repair.md R10 to R20):** (a), delivered differently. The core records
+the states of what a reconcile destroys (the target, its neighbours, a belt's other segments) and hands
+the blocks that changed to the plugins; the Create plugin (`RepairSchematics`) writes one sparse schematic
+per district per wave of damage under `schematics/uploaded/mic-rtsim/` and drops Create's own schematic
+item, deployed and anchored, at the damage, never despawning. No postbox (not every district has one) and
+no chat (I18). A Schematicannon prints it in place; belts need its "Replace Block Entities" option (R17).
+Deferred by Ben: damage and repair scaling with progression, a wrench fix for damaged machines, and a
+"time rewind" device.
 
 ---
 
@@ -685,9 +694,8 @@ which works against C17.
    blocks are destroyed up to the cap, including a blaze burner, and the district stops: Damaged.
 3. **You log in.** Nothing announces it (I18). You find out by what you built: a stopped power readout, a
    computer that no longer hears the smelters, or the roofless blocks themselves once you ride out.
-4. **You ride out.** The blocks break as the chunks load, and their contents drop. If I1 picks (a), a
-   repair schematic waits in the postbox, and your Schematicannon, fed from a vault, prints the holes
-   back.
+4. **You ride out.** The blocks break as the chunks load, and their contents drop. Among the drops lies a
+   repair schematic (§13.10), and your Schematicannon, fed from a vault, prints the holes back.
 5. **You fortify.** You roof the smelters, and add a Create Radars fire controller set to auto-target
    mobs, on a Create Big Cannons autocannon with an ammo vault.
 6. **The next dragon** comes while you are there, and the turret fights for real. That fight becomes
@@ -823,7 +831,7 @@ capabilities or public fields.
 
 | # | Question | Recommended | Alternatives |
 |---|---|---|---|
-| I1 | Rebuild schematics (Ben: decide later) | (a) repair schematics of destroyed blocks only | (b) full snapshots; (c) none |
+| I1 | Rebuild schematics (Ben chose (a); built, §13.10) | (a) repair schematics of destroyed blocks only | (b) full snapshots; (c) none |
 | I2 | What a district is | automatic, closed under belts, pipes, shafts and wires; named after its station; command edits; retire P5 | (b) player-designated; (c) one logistics network (P5); (d) loader footprint |
 | I3 | Boundary stock | tagged storage + packager inventories + postboxes + plugin buffers; machines never | (b) all inventories counted, tagged written; (c) stock links only |
 | I4 | When time passes | game ticks only; nothing while the server is stopped | (b) wall-clock catch-up with a cap |

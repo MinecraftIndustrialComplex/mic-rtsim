@@ -22,6 +22,8 @@ include 'ribbits'   // mic_rtsim_ribbits: Ribbits 4.1.6 (C7, C23)
 include 'carryon'   // mic_rtsim_carryon: Carry On 2.2.6.13's EntityPickupEvent (A10, PLAN.md §6.2)
 include 'create'    // mic_rtsim_create: Create 6.0.10, the industry plugin (INDUSTRY.md §12 layer 2)
 include 'iceandfire' // mic_rtsim_iceandfire: Ice and Fire CE 2.1-beta.1, phase 2's dragons (PLAN.md §9)
+include 'terraentity' // mic_rtsim_terraentity: SPIKE, Terra Entity's worms as the underground oil threat (OG-9)
+include 'sandworms'      // mic_rtsim_sandworms: SPIKE, Desert Behemoths Sandworms (research/worm-mods-2026-10-20.md section 5); not in the default project list
 
 // The industry plugins of overnight agent 14 (docs/overnight-choices-indplugins.md), each built around
 // one mod and sharing ../plugin.gradle.

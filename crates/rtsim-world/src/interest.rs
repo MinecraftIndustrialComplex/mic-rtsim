@@ -17,6 +17,33 @@ use rtsim_travel::legs::{LegId, LegIndex, Meeting, Owner, Path, Stamp};
 
 use crate::world::{CaravanId, World};
 
+/// The canonical regions a square of half-side `r` around a block covers, across seams (TP8).
+fn regions_near(t: &rtsim_space::Topology, x: i64, z: i64, r: i64) -> Vec<(i64, i64)> {
+    if t.is_flat() {
+        let (rx0, rz0) = LegIndex::region_of(x - r, z - r);
+        let (rx1, rz1) = LegIndex::region_of(x + r, z + r);
+        let mut out = Vec::new();
+        for rx in rx0..=rx1 {
+            for rz in rz0..=rz1 {
+                out.push((rx, rz));
+            }
+        }
+        return out;
+    }
+    let mut out = Vec::new();
+    for part in t.rects_near(x, z, r) {
+        let (x0, z0, x1, z1) = part.grid_cells(rtsim_travel::legs::REGION_BLOCKS);
+        for rx in x0..=x1 {
+            for rz in z0..=z1 {
+                out.push((rx, rz));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// The top bit of a leg owner marks a player's interest area.
 pub const PLAYER_OWNER: u64 = 1 << 63;
 
@@ -133,11 +160,8 @@ impl World {
     /// Where a sampled traveller is now, in blocks.
     pub fn traveller_pos(&self, t: &Traveller) -> (i64, i64) {
         let (a, b) = (self.nodes[t.from].pos, self.nodes[t.to].pos);
-        let f = i64::from(t.progress_milli);
-        (
-            i64::from(a.x) + (i64::from(b.x) - i64::from(a.x)) * f / 1000,
-            i64::from(a.z) + (i64::from(b.z) - i64::from(a.z)) * f / 1000,
-        )
+        // On the road the short way, canonical (topology choice TP21).
+        self.road_point(a, b, i64::from(t.progress_milli))
     }
 
     /// Everything travelling within `radius` blocks of `pos` now: travellers sampled from the
@@ -148,12 +172,19 @@ impl World {
         let (x, z, r) = (i64::from(pos.x), i64::from(pos.z), i64::from(radius));
         let r2 = (r * r) as f64;
         let mut out: Vec<(f64, Visible)> = Vec::new();
+        let topo = self.legs.topologies().clone();
+        let t = topo.of(pos.frame);
+        // Through every seam (TP8): the plain squared distance on a flat frame.
         let near = |a: (i64, i64)| {
-            let d = ((a.0 - x).pow(2) + (a.1 - z).pow(2)) as f64;
+            let d = if t.is_flat() {
+                ((a.0 - x).pow(2) + (a.1 - z).pow(2)) as f64
+            } else {
+                t.dist_sq((x, z), a) as f64
+            };
             (d <= r2).then_some(d)
         };
         // Flows.
-        for e in self.roads.near(pos.frame, x, z, r) {
+        for e in self.roads.near_on(t, pos.frame, x, z, r) {
             for dir in 0..2u8 {
                 for t in self.travellers(e, dir) {
                     let p = self.traveller_pos(&t);
@@ -172,10 +203,8 @@ impl World {
         }
         // Individual caravans: the legs booked in the regions around.
         let mut seen: Vec<CaravanId> = Vec::new();
-        let (rx0, rz0) = LegIndex::region_of(x - r, z - r);
-        let (rx1, rz1) = LegIndex::region_of(x + r, z + r);
-        for rx in rx0..=rx1 {
-            for rz in rz0..=rz1 {
+        for (rx, rz) in regions_near(t, x, z, r) {
+            {
                 for s in self.legs.in_region(pos.frame, rx, rz, now) {
                     let Some(row) = self.legs.get(s.leg) else {
                         continue;
@@ -246,16 +275,18 @@ impl World {
             return Vec::new();
         };
         let r = i64::from(path.radius);
-        let (rx0, rz0) = LegIndex::region_of(i64::from(path.x0) - r, i64::from(path.z0) - r);
-        let (rx1, rz1) = LegIndex::region_of(i64::from(path.x0) + r, i64::from(path.z0) + r);
+        let cells = regions_near(
+            self.legs.topo(path.frame),
+            i64::from(path.x0),
+            i64::from(path.z0),
+            r,
+        );
         let mut stamps: Vec<Stamp> = Vec::new();
         let window = self.cfg.trade.quantum.len();
         let mut t = path.t0.0;
         while t <= path.t1.0 {
-            for rx in rx0..=rx1 {
-                for rz in rz0..=rz1 {
-                    stamps.extend(self.legs.in_region(path.frame, rx, rz, Tick(t)));
-                }
+            for &(rx, rz) in &cells {
+                stamps.extend(self.legs.in_region(path.frame, rx, rz, Tick(t)));
             }
             t += window;
         }
@@ -344,14 +375,14 @@ impl World {
         let window = self.legs.window_ticks();
         let leg = self.players.get(&player).and_then(|p| p.interest);
         let keep = leg.and_then(|l| self.legs.get(l)).is_some_and(|row| {
-            let (dx, dz) = (
-                i64::from(row.path.x0) - i64::from(pos.x),
-                i64::from(row.path.z0) - i64::from(pos.z),
+            let moved = self.legs.topo(pos.frame).dist_sq(
+                (i64::from(row.path.x0), i64::from(row.path.z0)),
+                (i64::from(pos.x), i64::from(pos.z)),
             );
-            let quarter = i64::from(radius / 4).pow(2);
+            let quarter = u64::from(radius / 4).pow(2);
             row.path.frame == pos.frame
                 && row.path.radius == radius
-                && dx * dx + dz * dz <= quarter
+                && moved <= quarter
                 && row.path.t1.0 >= at.0 + window
         });
         if let Some(st) = self.players.get_mut(&player) {

@@ -161,6 +161,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
+name = "deeptime-format"
+version = "0.0.1"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/deep-time.git?rev=3bf532d1383f578ccb81b90b42a8bd383d9ae61c#3bf532d1383f578ccb81b90b42a8bd383d9ae61c"
+dependencies = [
+ "crc32fast",
+ "lz4_flex",
+ "memmap2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -358,6 +370,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "mic-native-abi"
@@ -592,6 +613,7 @@ dependencies = [
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
  "rtsim-world",
@@ -623,6 +645,7 @@ dependencies = [
  "microlp",
  "proptest",
  "rtsim-kernel",
+ "rtsim-space",
  "serde",
  "serde_json",
 ]
@@ -671,6 +694,7 @@ version = "0.0.1"
 dependencies = [
  "proptest",
  "rtsim-kernel",
+ "rtsim-space",
 ]
 
 [[package]]
@@ -695,8 +719,10 @@ dependencies = [
 name = "rtsim-space"
 version = "0.0.1"
 dependencies = [
+ "deeptime-format",
  "proptest",
  "rtsim-kernel",
+ "serde_json",
 ]
 
 [[package]]
@@ -716,6 +742,7 @@ dependencies = [
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",
+ "rtsim-space",
  "rtsim-trade",
 ]
 
@@ -727,6 +754,7 @@ dependencies = [
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
 ]
