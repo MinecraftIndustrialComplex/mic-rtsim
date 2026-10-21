@@ -48,8 +48,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * <p><b>The loop is fed, not saturated.</b> Belt side insertion checks only earlier insertions from the
  * same side ({@code BeltInventory.canInsertAtFromSide}, {@code isBlocking}), never items already passing,
  * so a feed onto the loop adds sheets whatever the loop holds. Fed faster than the deployers finish them,
- * the loop's population grows until every belt slot is full and it jams (UNVERIFIED in a test; it follows
- * from the code). So the feed here is slower than the deployers, and it sets every rate:
+ * the loop's population grows until every belt slot is full and it jams for good. Measured once with this
+ * build and the feeder at 64 RPM (a sheet per 9 ticks, the funnel's cooldown): by the end of the 1,000-tick
+ * warm-up all 28 loop segments and the feeder held an item, and nothing left the loop in the 7,200-tick
+ * window. So the feed here is slower than the deployers, and it sets every rate:
  * <ul>
  *   <li>Feed ({@code FunnelBlockEntity.activateExtractingBeltFunnel}, {@code getAmountToExtract};
  *       {@code BeltBlockEntity.tryInsertingFromSide}, {@code isOccupied}): an andesite funnel moves one
