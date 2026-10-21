@@ -776,6 +776,28 @@ impl Herds {
             + self.regions.resident_bytes()
     }
 
+    /// The row budget over every table (`usize::MAX` resident).
+    pub fn rows_budget(&self) -> usize {
+        self.herds
+            .rows()
+            .budget()
+            .saturating_add(self.forage.rows.budget())
+            .saturating_add(self.regions.budget())
+    }
+
+    /// Whether the rows are over their budget with nothing left to evict: every resident page is
+    /// changed since the last save. The host should save (an extra, pending save is a generation
+    /// like any other, P29): the pages it writes can go.
+    pub fn needs_save(&self) -> bool {
+        self.herds.rows().is_paged() && self.rows_resident_bytes() > self.rows_budget()
+    }
+
+    pub fn reset_row_stats(&mut self) {
+        self.herds.rows_mut().reset_stats();
+        self.forage.rows.reset_stats();
+        self.regions.reset_stats();
+    }
+
     /// The row tables' counters, summed.
     pub fn row_stats(&self) -> RowStats {
         let mut out = RowStats::default();
