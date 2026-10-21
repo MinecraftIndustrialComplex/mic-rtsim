@@ -41,10 +41,10 @@ use crate::ribbits::{Band, Growth, PlaceHouse, SentimentSnapshot, SpawnResident}
 use crate::works::{
     Next, PlaceWork, SpawnWork, WorkCap, WorkDef, WorkGroup, WorkPlace, WorkVariant, WorksState,
 };
-use rtsim_settle::Culture;
 use crate::world::{
     Command, Ev, MARKETS_PER_PAGE, Node, Outside, PacketData, Stats, TABLE_MARKETS, Via, World,
 };
+use rtsim_settle::Culture;
 
 /// RTW3: the money sink's works (SINK.md) joined the meta; RTW2 moved the market rows to the
 /// end, as a row table (paging).
@@ -420,8 +420,8 @@ fn put_work_def(w: &mut Writer, d: &WorkDef) {
 
 fn get_work_def(r: &mut Reader<'_>) -> codec::Result<WorkDef> {
     let id = get_string(r)?;
-    let group = WorkGroup::from_u32(u32::from(r.u8()?))
-        .map_or_else(|| bad("work group".into()), Ok)?;
+    let group =
+        WorkGroup::from_u32(u32::from(r.u8()?)).map_or_else(|| bad("work group".into()), Ok)?;
     let culture = match r.u8()? {
         0 => Culture::Human,
         1 => Culture::Ribbit,
