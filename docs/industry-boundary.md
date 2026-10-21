@@ -456,7 +456,9 @@ reads); NONE for a store the sampler does not read.
 its Level24 list); a node without a domain uses level 0. An entry gives `batch` per `ticksNum/ticksDen`
 ticks: its capacity is `batch × ticksDen / ticksNum` per tick. A node with no entry for the level has
 capacity 0 there (a stopped or overstressed domain). FIRST_CYCLE entries are latency only, never rate.
-A node with no entries at all is unlimited (a junction, a buffer, a water source).
+A node with no entries at all is unlimited (a junction, a buffer, a water source). An entry with `batch`
+0 has capacity 0: Java writes one at level 0 for a limited node that runs at no level (a powered funnel, a
+machine whose domain is stopped), so that it is not read as unlimited (GB45).
 
 **Nodes.**
 - **Store:** supplies each good it held at its inventory's latest sweep and accepts while it had room;
@@ -468,7 +470,8 @@ A node with no entries at all is unlimited (a junction, a buffer, a water source
   Each craft takes the recipe's inputs (catalysts are needed, not consumed) and makes its outputs, chance
   outputs at their expectation. With ANY_OUTPUT_BLOCKS every output must be accepted in full
   (`c_r × out ≤ acceptance`). A machine fed from a basin or a depot is one node: the edges into the basin
-  or depot are its inputs and the edges out of it its outputs. A machine on a line (PASS_THROUGH) passes
+  or depot are its inputs and the edges out of it its outputs. A depot worked by two (a press and a fan
+  zone) is a BUFFER whose LINE edges run through each in turn, BOUNDED (GB37). A machine on a line (PASS_THROUGH) passes
   goods none of its recipes takes. A recipe with `heat` above NONE runs only with a Heat edge in whose
   heater's level is at least `heat`, at that heater's duty.
 - **Mover:** one SHARED entry: units per tick across every good. Its in-edges are tried in `order`, and
@@ -476,7 +479,9 @@ A node with no entries at all is unlimited (a junction, a buffer, a water source
 - **Junction:** unlimited unless it has an entry; splits by its `rule` over out-edges in `order`
   (GLASSBOX.md §3.3). Filtered sides (FILTERED_SIDE) are tried before the rest.
 - **Heater** (a blaze burner): `params` are remaining burn ticks, heat level when lit, burn ticks per
-  fuel item (0: never runs out, a creative burner) and the insertion threshold. It burns while lit
+  fuel item (the shortest of the fuels that reach it; 0: never runs out, a creative burner; 1 while no
+  fuel reaches it) and the insertion threshold. Each fuel is a FUEL recipe whose `heat` is the level it
+  burns at and whose `duration` its burn ticks (GB49). It burns while lit
   whatever it heats, so it accepts fuel up to `1 / burnTicks` items per tick, and its **duty** is
   `min(1, fuel accepted × burnTicks)`. L counts only the fuel supplied; U also counts remaining burn.
 - **Boiler:** accepts all the water it is offered and voids it (`BoilerData`'s handler returns the
@@ -489,18 +494,22 @@ A node with no entries at all is unlimited (a junction, a buffer, a water source
 - **Source:** emits its recipe's outputs (no inputs) at its entries' rate; unlimited without entries
   (a water source block under a pump: the pump limits it). An animal source (ANIMAL_SHEEP) is STOCHASTIC:
   a craft is one shearing, its rate the closed form of vanilla's regrowth for `params[1]` eligible
-  animals capped by the shearing deployer's cycle, and `params[2] / params[3]` the craft output's second
-  moment (14/3 for wool's `1 + nextInt(3)`). A source that is not accepted waits (unsheared sheep keep
+  animals among `params[0]` the deployer can pick, and `params[2] / params[3]` the craft output's second
+  moment (14/3 for wool's `1 + nextInt(3)`). Java writes the rate entry as one shearing per
+  `(2034 + params[0] × c) / params[1]` ticks, c the deployer's cycle: a sheared sheep eats after 2,034
+  ticks on average (`EatBlockGoal`) and each cycle shears a random entity of the deployer's box (GB53). A source that is not accepted waits (unsheared sheep keep
   their wool): nothing is lost.
 - **Sink:** accepts everything (burned or voided) up to its entries' rate, unlimited without.
 - **BlackBox:** a node the compiler could not model. L takes it as producing nothing; a good with a
   black box on its path has no U (it is reported unbounded).
 - **Controller** (a threshold switch, a factory gauge): `params` are on-above, off-below, flags (1
-  inverted) and the observed level at compile. Its Observe edges come from the stores it reads (a
+  inverted) and the observed level at compile, in items or mB. Its Observe edges come from the stores it reads (a
   filter on the edge limits the goods counted, empty counts all, in units); its Control edges go to
   the nodes it gates (`param` 1 stops the target while the switch is on, 2 runs it only while on). It
   is on when the observed level reaches on-above, off when it falls to off-below, else as before
-  (hysteresis). In G1 the engine evaluates it at every sweep from the observed stock, so each sweep
+  (hysteresis). "On" is the switch's state before inversion; the Control `param` already includes the
+  inversion (an inverted switch powers its targets while off, so it runs them only while on: 2), and the
+  inverted flag is for display only (GB51). In G1 the engine evaluates it at every sweep from the observed stock, so each sweep
   interval is predicted in the regime it was in; G2 turns a cycling switch into the closed form of G-B8.
 - **Port:** an exchange across the district (a station, a postbox): G1 reports its goods unbounded.
 
