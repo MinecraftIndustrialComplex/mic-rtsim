@@ -93,11 +93,11 @@ this work, and the season models are unchanged.
    `neoforge/tools/industry-wire-fixtures` and the contract test. `/rtsim district info` and `debug` are
    operator output (permission 2) from what Java holds, with no engine round trip. Plugin warnings (Q25)
    stay, as `DistrictDiagnostics.warn`: server log and the operator output only.
-2. **Reconcile ahead of arrival**: apply a held IND_CHUNK_RECONCILE at the chunk's `ChunkEvent.Load`,
-   before any block entity ticks (today: at the next server tick), and journal its IND_RECONCILE_RESULT
-   before the chunk's IND_CHUNK_LOADED. Send IND_APPROACH for partly loaded districts too (a player
-   walking toward the unloaded part), and keep `closing` (aux 1) accurate: only closing records hold a
-   district.
+2. **Reconcile ahead of arrival** (done, branch `feat/reconcile-ahead-repair`, docs/choices-repair.md R1
+   to R8): a held IND_CHUNK_RECONCILE lands before any block entity of its chunk ticks (gated from
+   `ChunkEvent.Load`, applied at the next drain), its IND_RECONCILE_RESULT journaled before the chunk's
+   IND_CHUNK_LOADED. IND_APPROACH goes for partly loaded districts too, `closing` per player. The engine
+   sends held commands again after a restart (`sent_this_session`).
 3. **I7** (done): IND_CHUNK_UNLOADED (0x040A, `IndRecords.ChunkUnloaded`) is journaled at `ChunkEvent.Unload`
    for every chunk of a district (`Districts.onChunkUnload`).
 4. **U10** (done): with `Module.INDUSTRY` off Java sends nothing (`Industry.endOfTick` returns early and
