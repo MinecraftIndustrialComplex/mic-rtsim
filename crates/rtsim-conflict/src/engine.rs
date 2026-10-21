@@ -383,6 +383,11 @@ pub(crate) struct NodeIndex {
 const NODE_CELL: i32 = 1_024;
 
 impl NodeIndex {
+    /// Bytes held: one B-tree entry per cell (about 40) and its vector of node indexes.
+    fn heap_bytes(&self) -> usize {
+        self.cells.values().map(|v| 40 + v.capacity() * 8).sum()
+    }
+
     /// Nodes only join, at the end, and never move: a refresh adds the newcomers (a faction's
     /// camp joining costs its own node, never the world's).
     fn refresh(&mut self, w: &World) {
@@ -1570,7 +1575,12 @@ impl Conflict {
                 );
             } else if step == Step::None
                 && g < self.tun.forget_below
-                && self.feud(f, a).expect("exists").raw.iter().all(|r| *r <= 0.0)
+                && self
+                    .feud(f, a)
+                    .expect("exists")
+                    .raw
+                    .iter()
+                    .all(|r| *r <= 0.0)
             {
                 self.remove_feud(f, a);
                 self.stats.feuds_forgotten += 1;
@@ -3519,10 +3529,7 @@ impl Conflict {
                 actor,
                 stamp,
             } => {
-                if self
-                    .feud(faction, actor)
-                    .is_none_or(|f| f.stamp != stamp)
-                {
+                if self.feud(faction, actor).is_none_or(|f| f.stamp != stamp) {
                     self.stats.stale += 1;
                     return;
                 }
@@ -4051,21 +4058,37 @@ impl Conflict {
 
     /// Bytes the engine holds: the row tables' resident pages and page indexes (bounded by the
     /// budget when paged), the resident indexes ([`Conflict::index_bytes`]), presence, parties,
-    /// the wheel and the op set. Estimates.
+    /// the wheel, the node index and the op set. Estimates; [`Conflict::memory`] splits them.
     pub fn heap_bytes(&self) -> usize {
-        self.factions.rows.heap_bytes()
-            + self.sources.rows.heap_bytes()
-            + self.places.rows.heap_bytes()
-            + self.index_bytes()
-            + self.presence.heap_bytes()
-            + self
-                .parties
-                .iter()
-                .map(|(_, x)| std::mem::size_of::<Party>() + x.route.len() * 16 + x.units.len() * 8)
-                .sum::<usize>()
-            + self.wheel.heap_bytes()
-            + self.applied_ops.len() * BTREE_U64_BYTES
-            + self.players.len() * BTREE_PLAYER_BYTES
+        self.memory().values().sum()
+    }
+
+    /// [`Conflict::heap_bytes`] by part, in bytes (as `World::memory`): what a bench reports to
+    /// say where the resident bytes per faction go.
+    pub fn memory(&self) -> BTreeMap<&'static str, usize> {
+        let party =
+            |x: &Party| std::mem::size_of::<Party>() + x.route.len() * 16 + x.units.len() * 8;
+        BTreeMap::from([
+            ("factions", self.factions.rows.heap_bytes()),
+            ("sources", self.sources.rows.heap_bytes()),
+            ("places", self.places.rows.heap_bytes()),
+            ("index by key", self.by_key.len() * BTREE_KEY_BYTES),
+            ("index by cell", self.cells.len() * BTREE_CELL_BYTES),
+            (
+                "index of sources",
+                self.sources.ids.len() * BTREE_SOURCE_BYTES,
+            ),
+            ("presence", self.presence.heap_bytes()),
+            (
+                "parties",
+                self.parties.heap_bytes()
+                    + self.parties.iter().map(|(_, x)| party(x)).sum::<usize>(),
+            ),
+            ("wheel", self.wheel.heap_bytes()),
+            ("nodes", self.nodes.heap_bytes()),
+            ("applied ops", self.applied_ops.len() * BTREE_U64_BYTES),
+            ("players", self.players.len() * BTREE_PLAYER_BYTES),
+        ])
     }
 
     /// The resident indexes that grow with the world: factions by key, factions by cell, and
