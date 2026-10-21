@@ -9,6 +9,10 @@ Private data stays private: the world copies, logs and player files live under `
 laptop and are not in this repository. The tools are in `tools/deploy-rehearsal/` (stdlib Python, no
 private data in them; the base coordinates and the seed are read from private files).
 
+> Note (2026-10-21): DECISIONS.md C8a replaced the `doTraderSpawning` gamerule switch with a veto on
+> vanilla's trader spawner. Everywhere below, `doTraderSpawning` findings, log lines and rollback steps describe
+> the build rehearsed, not today's: the bridge no longer writes the gamerule.
+
 ## 0. Findings, by deploy risk
 
 What booted: the July pack (the control), the upgraded pack (dc49fe7), the upgraded pack with rtsim
