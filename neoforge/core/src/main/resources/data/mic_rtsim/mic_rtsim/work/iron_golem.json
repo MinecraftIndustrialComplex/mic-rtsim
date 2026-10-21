@@ -1,0 +1,8 @@
+{
+  "group": "golem",
+  "culture": "human",
+  "cap": { "per_residents": 5 },
+  "variants": [
+    { "body": "minecraft:iron_golem", "items": { "minecraft:iron_ingot": 36, "minecraft:carved_pumpkin": 1 } }
+  ]
+}

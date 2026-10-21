@@ -708,6 +708,11 @@ impl LegIndex {
         self.legs.get(&id)
     }
 
+    /// Every booked leg by id, in id order (a viewer's map, VIEWER.md §7).
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &Leg)> {
+        self.legs.iter().map(|(id, l)| (*id, l))
+    }
+
     /// The most recent leg of a train that is under way at `at`.
     pub fn leg_of(&self, train: TrainId, at: Tick) -> Option<u64> {
         self.by_train.get(&train)?.iter().rev().copied().find(|id| {

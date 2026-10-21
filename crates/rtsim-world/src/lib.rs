@@ -24,6 +24,7 @@ pub mod caravans;
 pub mod check;
 pub mod config;
 pub mod flows;
+pub mod inputs;
 pub mod interest;
 pub mod lanes;
 pub mod memory;
@@ -34,6 +35,7 @@ pub mod raids;
 pub mod ribbits;
 pub mod synth;
 pub mod topology;
+pub mod works;
 pub mod world;
 
 pub use caravans::{Attack, CaravanOutcome};

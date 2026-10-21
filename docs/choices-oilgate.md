@@ -148,7 +148,7 @@ unwatched, resolved by the industry engine (a drinking raid when the dragon is l
 
 ## Saves and the bench
 
-**OGC23. New save magic, no migration.** The dragon pages are RTD3 and the dragons' meta RTN3, with
+**OGC23. New save magic, no migration.** The dragon pages are RTD4 and the dragons' meta RTN4 (RTD3 and RTN3 were the money sink's tribute, merged first), with
 the reserve, the visitor field and the oil index; nothing reads the old format (no backward
 compatibility before release).
 

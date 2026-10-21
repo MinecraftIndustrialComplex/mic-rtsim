@@ -131,6 +131,12 @@ pub struct Measured {
     pub saves_per_day: Option<f64>,
     #[serde(default)]
     pub pressure_saves_per_day: Option<f64>,
+    /// Market runs with the works catalogue (SINK.md): works bought, and works events run, in the
+    /// measured window.
+    #[serde(default)]
+    pub works: Option<u64>,
+    #[serde(default)]
+    pub works_events: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +220,9 @@ pub struct Contract {
 /// The max / min bound on flat contracts. PLACEHOLDER: the latent sweep's CPU varies about 3x
 /// where the binomial sampler moves from inversion to BTRS (bench/results/README.md).
 const FLAT_RATIO: f64 = 4.0;
+
+/// The markets sweep with the village money sink's works catalogue (SINK.md §7).
+const MARKETS_WORKS: &str = "markets-works";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sweep {
@@ -364,6 +373,7 @@ impl Baseline {
                     budget_bytes: MARKETS_BUDGET,
                     save_every_ticks: self.save_every_ticks,
                 }),
+                works: sweep.name == MARKETS_WORKS,
             });
         }
         if sweep.vary == Vary::Elapsed {
@@ -722,6 +732,32 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     1.1,
                     1.0,
                     "the market rows are a quarter of a village's heap; news rings, pipelines, edges, the world wheel and knowledge stay resident",
+                ),
+            ],
+        },
+        // The village money sink (SINK.md §7): the markets sweep with the works catalogue, every
+        // bought work answered as placed at the end of each day. Works are booked at the quantum a
+        // purse reaches the next price and rebooked after a market event at the village, so they
+        // add a constant per market event and nothing per tick: compare with "markets".
+        Sweep {
+            name: MARKETS_WORKS.into(),
+            model: ModelKind::Closed,
+            vary: Vary::Markets,
+            regions: None,
+            paged: false,
+            values: pick(&[16, 64, 256, 1_024, 4_096], &[16, 256, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Cpu,
+                    1.3,
+                    1.0,
+                    "as markets: a works event is booked in closed form when a market event changes a village's rates, and runs only when a purse reaches a price, so the sink adds work per market event and per purchase, none per tick",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "one works row per village that ever sank coin (counters, spent and tribute per currency)",
                 ),
             ],
         },

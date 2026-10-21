@@ -126,6 +126,8 @@ pub(crate) enum Ev {
     Grow { node: usize, stamp: u32 },
     /// A touring band begins its stay at a stop of its circuit (P16).
     BandPlays { band: u32, stop: u32, stamp: u32 },
+    /// A village's purse reaches its next work's price (SINK.md §4.4).
+    Works { node: usize, stamp: u32 },
 }
 
 /// Conserved quantities outside markets and pipelines: what left the world to players or was
@@ -217,6 +219,14 @@ pub struct Stats {
     pub band_packets: u64,
     /// Stays at which a touring band played for its host (P16).
     pub band_plays: u64,
+    /// Works villages bought from their purses (SINK.md).
+    pub works: u64,
+    /// Works events that ran (bought or rebooked).
+    pub works_events: u64,
+    /// Bought works the bridge found no place for (MS-11).
+    pub works_refused: u64,
+    /// Tributes villages paid to dragons' lairs (MS-5).
+    pub tributes: u64,
 }
 
 /// What the engine asks Minecraft to do (the bridge's command buffer, later).
@@ -230,6 +240,21 @@ pub enum Command {
     PlaceHouse(crate::ribbits::PlaceHouse),
     /// Spawn a grown house's resident.
     SpawnResident(crate::ribbits::SpawnResident),
+    /// Place a bought work (SINK.md §4.4): PLACE_HOUSE with the work's template.
+    PlaceWork(crate::works::PlaceWork),
+    /// Spawn a bought work's body (a golem): SPAWN_RESIDENT at the meeting point.
+    SpawnWork(crate::works::SpawnWork),
+}
+
+impl Command {
+    /// A bought work's op id, which the bridge answers ([`World::work_result`]).
+    pub fn work_op(&self) -> Option<u64> {
+        match self {
+            Command::PlaceWork(p) => Some(p.op),
+            Command::SpawnWork(s) => Some(s.op),
+            _ => None,
+        }
+    }
 }
 
 pub struct World {
@@ -278,6 +303,12 @@ pub struct World {
     pub bases: BTreeMap<usize, crate::bases::BaseState>,
     /// Travellers made individual rows, by key, while their departure could still be sampled.
     pub(crate) promoted: BTreeMap<rtsim_travel::CaravanKey, CaravanId>,
+    /// The works catalogue (SINK.md §4.2), sorted by id.
+    pub works_catalog: Vec<crate::works::WorkDef>,
+    /// Villages' works purses and pointers, by node.
+    pub(crate) works: BTreeMap<usize, crate::works::WorksState>,
+    /// Bought works the bridge has not answered: op to (node, kind key).
+    pub(crate) works_pending: BTreeMap<u64, (usize, u64)>,
 }
 
 impl World {
@@ -417,6 +448,9 @@ impl World {
             op_counter: 0,
             bases: BTreeMap::new(),
             promoted: BTreeMap::new(),
+            works_catalog: Vec::new(),
+            works: BTreeMap::new(),
+            works_pending: BTreeMap::new(),
         }
     }
 
@@ -628,6 +662,8 @@ impl World {
             m.goods[g.index()].curve = curve;
             m.recompute();
         });
+        // Its foreign coin now sinks at a new ceiling and counts at a new parity.
+        self.works_touch(j, at);
     }
 
     /// Raiders from the haven at node `haven` take `share_milli` thousandths of everything moving
@@ -795,6 +831,7 @@ impl World {
             Ev::BandPlays { band, stop, stamp } => {
                 self.band_plays(band as usize, stop as usize, stamp, at)
             }
+            Ev::Works { node, stamp } => self.works_due(node, stamp, at),
         }
     }
 

@@ -54,6 +54,13 @@ pub struct Lair {
     pub vacant_since: Option<Tick>,
     /// Stamps the respawn event booked for this vacancy.
     pub plan: u32,
+    /// Tribute coin not yet sent to the lair's chest, whole items (SINK.md §4.6): it waits for
+    /// the plugin to report the chest (LAIR_CHEST).
+    pub unplaced: BTreeMap<Item, i64>,
+    /// Whole items of tribute coin the plugin put in the lair's chest.
+    pub placed: i64,
+    /// Stacks of tribute coin this lair has sent: the next stack's op id is drawn at this index.
+    pub stacks: u64,
 }
 
 /// The lairs' row table (A16): page table 0x4411, rows keyed by lair index. Lairs are never

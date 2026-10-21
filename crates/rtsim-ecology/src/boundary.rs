@@ -18,6 +18,8 @@ use crate::dragon::LairKind;
 use crate::species::{Gender, Species};
 
 pub const DRAGON_STATE: u16 = 0x0060;
+/// A known lair's box is loaded and holds a chest: where its tribute goes (SINK.md §4.6).
+pub const LAIR_CHEST: u16 = 0x0061;
 pub const DRAGON_MATERIALIZED: u16 = 0x0500;
 pub const DRAGON_SPAWN_REJECTED: u16 = 0x0501;
 pub const DRAGON_DEMATERIALIZED: u16 = 0x0502;
@@ -289,6 +291,17 @@ pub struct OilConfig {
     pub flags: u32,
 }
 
+/// A known lair's chest (latest-wins, docs/boundary.md §6): the plugin found one in the lair's
+/// box once its chunks loaded. Sent once a session per lair, and again if the chest is gone and
+/// another is found. The engine puts the lair's tribute coin there (TRANSFER_TO_CONTAINER).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LairChest {
+    /// The lair, as LAIR_FOUND's.
+    pub lair: u64,
+    pub dimension: u32,
+    pub pos: (i32, i32, i32),
+}
+
 /// An observation from the plugin.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Obs {
@@ -305,12 +318,14 @@ pub enum Obs {
     OilChunks(OilChunks),
     Breaths(Breaths),
     OilConfig(OilConfig),
+    LairChest(LairChest),
 }
 
 impl Obs {
     pub fn kind(&self) -> u16 {
         match self {
             Obs::State(_) => DRAGON_STATE,
+            Obs::LairChest(_) => LAIR_CHEST,
             Obs::Materialized(_) => DRAGON_MATERIALIZED,
             Obs::SpawnRejected(_) => DRAGON_SPAWN_REJECTED,
             Obs::Dematerialized(_) => DRAGON_DEMATERIALIZED,
@@ -785,6 +800,12 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
         Obs::OilConfig(c) => {
             w.finish(OIL_CONFIG, c.flags, 24);
         }
+        Obs::LairChest(c) => {
+            w.u64(8, c.lair);
+            w.u32(16, c.dimension);
+            w.ipos(20, c.pos);
+            w.finish(LAIR_CHEST, 0, 32);
+        }
     }
 }
 
@@ -942,6 +963,11 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             }
             Obs::OilConfig(OilConfig { flags: aux })
         }
+        LAIR_CHEST => Obs::LairChest(LairChest {
+            lair: r.u64(8)?,
+            dimension: r.u32(16)?,
+            pos: r.ipos(20)?,
+        }),
         k => return Err(CodecError::Unknown(k)),
     };
     Ok((size, seq, time, o))
@@ -1210,6 +1236,11 @@ mod tests {
             }),
             Obs::OilConfig(OilConfig {
                 flags: OIL_FIELD_FLIGHTS | OIL_PLACE_LAIRS,
+            }),
+            Obs::LairChest(LairChest {
+                lair: 1 << 40 | 99,
+                dimension: 1,
+                pos: (-17, 70, 2_000_001),
             }),
         ]
     }

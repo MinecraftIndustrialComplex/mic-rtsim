@@ -881,6 +881,307 @@ fn phase1_caravans_trade_are_robbed_and_the_news_travels_across_a_crash() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+// ---- the works purse (SINK.md) ---------------------------------------------------------------------
+
+/// One work kind of a test catalogue, with one variant.
+struct TestWork<'a> {
+    id: &'a str,
+    /// 0 lamp, 1 decor, 2 golem.
+    group: u32,
+    culture: &'a str,
+    /// The village structure it belongs to, "" for every village of the culture.
+    style: &'a str,
+    /// (cap kind, n): 1 per residents, 2 fixed.
+    cap: (u32, u32),
+    /// A template (with its processor list, "" none) or a body.
+    template: Option<(&'a str, &'a str)>,
+    body: Option<&'a str>,
+    blocks: u32,
+    items: &'a [(&'a str, u32)],
+}
+
+impl Java {
+    /// A WORK_CATALOG record (latest wins) in the open buffer, after the DICTs it uses.
+    fn work_catalog(&mut self, kinds: &[TestWork<'_>]) {
+        use obs::work_catalog as k;
+        let mut ids = Vec::new();
+        let mut size = k::DEFS;
+        for w in kinds {
+            let style = if w.style.is_empty() {
+                0
+            } else {
+                self.dict_id(wire::DICT_STRUCTURE, w.style)
+            };
+            let (what, processors) = match (w.template, w.body) {
+                (Some((t, p)), _) => (
+                    self.dict_id(wire::DICT_TEMPLATE, t),
+                    if p.is_empty() {
+                        0
+                    } else {
+                        self.dict_id(wire::DICT_PROCESSORS, p)
+                    },
+                ),
+                (None, Some(b)) => (self.dict_id(wire::DICT_BODY, b), 0),
+                (None, None) => panic!("a work places something"),
+            };
+            let items: Vec<(u32, u32)> = w
+                .items
+                .iter()
+                .map(|(i, n)| (self.dict_id(wire::DICT_ITEM, i), *n))
+                .collect();
+            ids.push((
+                self.dict_id(wire::DICT_WORK, w.id),
+                self.dict_id(wire::DICT_CULTURE, w.culture),
+                style,
+                what,
+                processors,
+                items,
+            ));
+            size += k::DEF + k::VARIANT + w.items.len() * k::ITEM;
+        }
+        assert!(self.preamble(), "room for the dictionary");
+        let r = self
+            .reserve(obs::WORK_CATALOG, size, kinds.len() as u32)
+            .expect("room for WORK_CATALOG");
+        wire::put_u32(r, k::N, kinds.len() as u32);
+        let mut at = k::DEFS;
+        for (w, (id, culture, style, what, processors, items)) in kinds.iter().zip(ids) {
+            wire::put_u32(r, at + k::D_ID, id);
+            wire::put_u32(r, at + k::D_GROUP, w.group);
+            wire::put_u32(r, at + k::D_CULTURE, culture);
+            wire::put_u32(r, at + k::D_STYLE, style);
+            wire::put_u32(r, at + k::D_CAP, w.cap.0);
+            wire::put_u32(r, at + k::D_CAP_N, w.cap.1);
+            wire::put_u32(r, at + k::D_VARIANTS, 1);
+            at += k::DEF;
+            let place = if w.template.is_some() {
+                k::PLACE_TEMPLATE
+            } else {
+                k::PLACE_BODY
+            };
+            wire::put_u32(r, at + k::V_PLACE, place);
+            wire::put_u32(r, at + k::V_WHAT, what);
+            wire::put_u32(r, at + k::V_PROCESSORS, processors);
+            wire::put_u32(r, at + k::V_BLOCKS, w.blocks);
+            wire::put_u32(r, at + k::V_ITEMS, items.len() as u32);
+            at += k::VARIANT;
+            for (item, n) in items {
+                wire::put_u32(r, at, item);
+                wire::put_u32(r, at + 4, n);
+                at += k::ITEM;
+            }
+        }
+    }
+
+    /// A VILLAGE_CENSUS (latest wins) of `residents` and `golems`.
+    fn census(&mut self, village: u64, residents: u32, golems: u32) {
+        use obs::village_census as k;
+        let dim = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        assert!(self.preamble(), "room for the dictionary");
+        let r = self
+            .reserve(obs::VILLAGE_CENSUS, k::ENTRIES, 0)
+            .expect("room for VILLAGE_CENSUS");
+        wire::put_u64(r, k::VILLAGE, village);
+        wire::put_u32(r, k::DIM, dim);
+        wire::put_u32(r, k::RESIDENTS, residents);
+        wire::put_u32(r, k::GOLEMS, golems);
+    }
+}
+
+const PLAINS_LAMP: &str = "minecraft:village/plains/plains_lamp_1";
+const IRON_GOLEM: &str = "minecraft:iron_golem";
+/// `phase1::stat` indexes: works bought, placed, refused.
+const P1_WORKS_BOUGHT: usize = 16;
+const P1_WORKS_PLACED: usize = 17;
+const P1_WORKS_REFUSED: usize = 18;
+
+fn test_works() -> [TestWork<'static>; 2] {
+    [
+        TestWork {
+            id: "mic_rtsim:plains_lamp",
+            group: 0,
+            culture: "human",
+            style: "minecraft:village_plains",
+            cap: (1, 3),
+            template: Some((PLAINS_LAMP, "")),
+            body: None,
+            blocks: 13,
+            items: &[
+                ("minecraft:oak_fence", 4),
+                ("minecraft:white_wool", 4),
+                ("minecraft:torch", 4),
+                ("minecraft:cobblestone", 1),
+            ],
+        },
+        TestWork {
+            id: "mic_rtsim:iron_golem",
+            group: 2,
+            culture: "human",
+            style: "",
+            cap: (1, 5),
+            template: None,
+            body: Some(IRON_GOLEM),
+            blocks: 1,
+            items: &[
+                ("minecraft:iron_ingot", 36),
+                ("minecraft:carved_pumpkin", 1),
+            ],
+        },
+    ]
+}
+
+/// The PLACE_HOUSE and SPAWN_RESIDENT commands Java applied for `village`.
+fn works_sent(j: &Java, village: u64) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let houses = j
+        .p1_of(cmd::PLACE_HOUSE)
+        .into_iter()
+        .filter(|h| wire::u64_at(h, cmd::place_house::VILLAGE) == village)
+        .collect();
+    let bodies = j
+        .p1_of(cmd::SPAWN_RESIDENT)
+        .into_iter()
+        .filter(|h| wire::u64_at(h, cmd::spawn_resident::VILLAGE) == village)
+        .collect();
+    (houses, bodies)
+}
+
+/// The works purse over the real boundary (SINK.md): the catalogue from WORK_CATALOG, a granted
+/// purse buying the village type's own lamps up to the cap (PLACE_HOUSE with SEARCH from the
+/// meeting point, no resident queued for them), a raid buying golems first (SPAWN_RESIDENT
+/// AT_VILLAGE), the census's golems, a village with no free plot marking the kind full with the
+/// coin spent (MS-11), and after a crash the pages' input log rebuilding the same world.
+#[test]
+fn phase1_works_are_bought_placed_refused_and_replayed_across_a_crash() {
+    let dir = tmpdir("works");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = 0b1111;
+    let (a, b) = (0x0001_0000_0000_0001u64, 0x0001_0000_0000_0002);
+    j.adopt(a, "minecraft:village_plains", "human", 90, 0, 0);
+    j.adopt(b, "minecraft:village_plains", "human", 90, 400, 0);
+    j.idle();
+    j.idle();
+    j.work_catalog(&test_works());
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, P1_WORKS_BOUGHT),
+        0,
+        "a young village buys nothing"
+    );
+
+    // No free plot near B: its first lamp is refused, the kind is full, the coin stays spent.
+    j.no_free_plot = true;
+    e.order(vec![Order::WorksGrant {
+        village: b,
+        amount: 5_000_000,
+    }])
+    .unwrap();
+    j.idle();
+    j.idle();
+    let (houses, _) = works_sent(&j, b);
+    assert_eq!(houses.len(), 1, "one lamp tried, then the kind is full");
+    let vb = e.phase1_works(b).expect("B's works");
+    assert_eq!((vb[0], vb[1]), (1, 1), "one bought, one kind full: {vb:?}");
+    assert!(
+        vb[5] > 0 && vb[2] == 5_000_000 - vb[5],
+        "spent, not refunded: {vb:?}"
+    );
+    assert_eq!(p1_stat(&e, P1_WORKS_REFUSED), 1);
+    j.no_free_plot = false;
+
+    // A's purse buys its own type's lamps, up to one per 3 residents (30 from 90 pieces).
+    e.order(vec![Order::WorksGrant {
+        village: a,
+        amount: 5_000_000,
+    }])
+    .unwrap();
+    // One work in flight (MSC13): each lamp is bought once the last one is answered.
+    j.run_until("ten lamps", |j| works_sent(j, a).0.len() >= 10);
+    j.idle();
+    j.idle();
+    let (houses, bodies) = works_sent(&j, a);
+    eprintln!("A: {} lamps, view {:?}", houses.len(), e.phase1_works(a));
+    assert_eq!(houses.len(), 10, "lamps to the cap");
+    for h in &houses {
+        use cmd::place_house as k;
+        assert_eq!(
+            j.cmd_name(wire::DICT_TEMPLATE, wire::u32_at(h, k::TEMPLATE)),
+            PLAINS_LAMP
+        );
+        assert_eq!(
+            wire::u16_at(h, k::FLAGS),
+            k::FLAG_SEARCH | k::FLAG_Y_FROM_VILLAGE
+        );
+        assert_eq!(wire::u32_at(h, k::PROCESSORS), 0, "no processor list");
+    }
+    assert!(
+        bodies.is_empty(),
+        "no golem without a threat, no resident for a lamp"
+    );
+    assert_eq!(p1_stat(&e, P1_WORKS_PLACED), 10);
+
+    // A raid: golems first, at the meeting point.
+    e.order(vec![Order::WorksRaid {
+        village: a,
+        tribute: false,
+    }])
+    .unwrap();
+    j.run_until("six golems", |j| works_sent(j, a).1.len() >= 6);
+    j.idle();
+    j.idle();
+    let (_, bodies) = works_sent(&j, a);
+    assert_eq!(bodies.len(), 6, "golems to one per 5 residents");
+    for g in &bodies {
+        use cmd::spawn_resident as k;
+        assert_eq!(
+            j.cmd_name(wire::DICT_BODY, wire::u32_at(g, k::BODY)),
+            IRON_GOLEM
+        );
+        assert_eq!(wire::u32_at(g, k::FLAGS), k::FLAG_AT_VILLAGE);
+    }
+    j.census(a, 30, 6);
+    j.idle();
+    let va = e.phase1_works(a).expect("A's works");
+    assert_eq!((va[0], va[1], va[3]), (16, 0, 6), "{va:?}");
+
+    // More coin for B buys nothing: its only kind is full.
+    e.order(vec![Order::WorksGrant {
+        village: b,
+        amount: 1_000_000,
+    }])
+    .unwrap();
+    j.idle();
+    j.idle();
+    assert_eq!(
+        works_sent(&j, b).0.len(),
+        1,
+        "a full kind is never tried again"
+    );
+    assert_eq!(p1_stat(&e, P1_WORKS_BOUGHT), 17);
+
+    // A save, then a crash: the same world, works and all.
+    e.order(vec![Order::SaveAtNextStep]).unwrap();
+    j.idle();
+    while e.durable_obs_seq() < e.stats_array()[4] {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let saved = j.world_save();
+    let _ = j.crash();
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), saved);
+    j.module_mask = 0b1111;
+    let (_, replay_ok, _) = e.phase1_state();
+    assert!(replay_ok, "the replayed world is the saved one");
+    let back = e.phase1_works(a).expect("A's works after the crash");
+    let keep = |v: [i64; 6]| [v[0], v[1], v[3], v[4], v[5]];
+    assert_eq!(keep(back), keep(va), "bought, full, golems, tribute, spent");
+    assert_eq!(e.phase1_works(b).map(|v| (v[0], v[1])), Some((1, 1)));
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// Three villages, a player in the first, and days on until P1_SPAWN_NEAR materializes a caravan
 /// with wares as `agent` (epoch 1). Returns its SPAWN_GROUP's cargo as (member, item, count).
 fn phase1_caravan(e: &std::sync::Arc<Engine>, j: &mut Java, agent: u64) -> Vec<(u32, String, i32)> {
@@ -1004,6 +1305,8 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
 
 mod dragons {
     use super::*;
+    use std::collections::BTreeSet;
+
     use rtsim_ecology::boundary::{self as db, AttackerKind, Cmd as D, Obs as O, SpawnKind};
     use rtsim_ecology::dragon::LairKind;
     use rtsim_ecology::species::{Gender, Species};
@@ -1278,6 +1581,150 @@ mod dragons {
         assert_eq!(e.dragons_restore_check(), (None, false));
         assert_eq!(summary(&e).0, after.0);
         assert_eq!(summary(&e).2, after.2);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The transfers Java applied, by op id.
+    fn transfer_ops(j: &Java) -> BTreeSet<u64> {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op)
+            .collect()
+    }
+
+    /// Dragon tribute over the real boundary (SINK.md §4.5, §4.6): TRIBUTE_START makes a granted
+    /// village the lair's tributary and it pays at once, but the coin waits for the lair's chest;
+    /// LAIR_CHEST sends it as TRANSFER_TO_CONTAINER stacks; a FAILED stack comes back and waits
+    /// for the chest to be reported again; stacks Java never answered are in the outbox, so after
+    /// a crash they go again under the same op ids and land once. The village's risk counts its
+    /// golems' fear.
+    #[test]
+    fn tribute_lands_in_the_lairs_chest_once_across_a_failure_and_a_crash() {
+        let dir = tmpdir("tribute");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let risk = e.dragons_village_risk(village);
+        assert!(risk >= 0, "a known village has a risk: {risk}");
+        assert_eq!(e.dragons_village_risk(0xDEAD), -1, "an unknown village");
+
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [paid, placed, coins, placing] = e.dragons_tribute();
+        assert_eq!(paid, 1, "the raid's tribute is paid at once");
+        assert!(coins > 64, "more than a stack waits for the chest: {coins}");
+        assert_eq!((placed, placing), (0, 0), "no chest yet");
+        assert!(transfer_ops(&j).is_empty(), "nothing sent without a chest");
+        let tribute = e.phase1_works(village).expect("works")[4];
+        assert_eq!(
+            tribute,
+            coins * 1000,
+            "the village's books: its tribute paid"
+        );
+
+        // The plugin finds the chest, but the chunk is gone again: every stack fails and waits.
+        let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let lair_chest = O::LairChest(db::LairChest {
+            lair: LAIR,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+        });
+        j.fail_transfers = true;
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        let failed = transfer_ops(&j);
+        let stacks = (coins + 63) / 64;
+        assert_eq!(failed.len() as i64, stacks, "whole stacks of at most 64");
+        assert_eq!(e.dragons_tribute(), [1, 0, coins, 0], "all back, waiting");
+        assert!(j.containers.is_empty());
+        let has_chest = |e: &Engine| {
+            e.with_dragons(|d, _| d.lair_of_key(LAIR).and_then(|l| d.chest(l)).is_some())
+        };
+        assert!(!has_chest(&e), "a failed stack forgets the chest");
+        assert!(
+            j.cmd_dict
+                .iter()
+                .any(|((k, _), n)| *k == wire::DICT_ITEM && n == "minecraft:emerald"),
+            "the coin is the village's emeralds"
+        );
+
+        // Reported again, while Minecraft holds the commands (a world save that is lost): the
+        // stacks are new ops, in the outbox at the save.
+        j.fail_transfers = false;
+        j.hold_commands = true;
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        let held: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(held.len() as i64, stacks);
+        assert!(
+            held.is_disjoint(&failed),
+            "a failed stack goes again as a new op"
+        );
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let saved = j.world_save();
+        let _ = j.crash();
+
+        // After the crash the outbox sends them again, under the same op ids, and they land.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(e.dragons_restore_check(), (None, false));
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
+        j.idle();
+        j.idle();
+        assert_eq!(transfer_ops(&j), held, "the held stacks, by their op ids");
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed");
+        assert_eq!(j.containers.get(&chest).copied(), Some(coins as i32));
+        let (ledger, world) = e.with_dragons(|d, w| {
+            (
+                d.ledger.tribute.values().sum::<i128>(),
+                w.works_totals().1.iter().map(|(_, a)| *a).sum::<i128>(),
+            )
+        });
+        assert_eq!(
+            ledger,
+            i128::from(coins) * 1000,
+            "the books hold every coin"
+        );
+        assert_eq!(world, ledger, "the world's tribute is the dragons'");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
