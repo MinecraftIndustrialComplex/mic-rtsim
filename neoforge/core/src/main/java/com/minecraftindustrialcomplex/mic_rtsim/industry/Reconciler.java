@@ -85,6 +85,16 @@ public final class Reconciler {
         recommitted.clear();
     }
 
+    /**
+     * GameTests: what a server restart loses on the Java side. Held commands live in memory only (the
+     * engine sends them again at the chunk's next IND_CHUNK_LOADED, F27), and a result a chunk still
+     * carries is journaled again in the new session.
+     */
+    public void restartForTest() {
+        held.clear();
+        recommitted.clear();
+    }
+
     // ---- loads ----------------------------------------------------------------------------------
 
     /** A district chunk loaded: re-journal an unacknowledged result it carries, report its epoch. */
