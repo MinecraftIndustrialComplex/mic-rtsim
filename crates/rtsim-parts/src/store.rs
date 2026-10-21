@@ -246,7 +246,8 @@ impl Header {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Lease {
     pub pid: u32,
-    /// Regions open pages show at the Group level or deeper, most recent first.
+    /// Regions open pages show at the Group level or deeper, sorted by key with no repeats, at
+    /// most [`MAX_FOCUS`] (the sidecar keeps the nearest ones when its pages show more).
     pub focus: Vec<RegionKey>,
 }
 
