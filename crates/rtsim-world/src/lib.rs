@@ -35,6 +35,7 @@ pub mod raids;
 pub mod ribbits;
 pub mod synth;
 pub mod topology;
+pub mod works;
 pub mod world;
 
 pub use caravans::{Attack, CaravanOutcome};

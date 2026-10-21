@@ -97,6 +97,24 @@ pub fn cli(args: &[&str]) -> ExitCode {
     let Some(world) = o.world.clone() else {
         return bad("give the world folder");
     };
+    // Where it will listen, checked before the save is read: a typo should not cost a full load.
+    if o.socket.is_none() && !mic_viewer::http::address_allowed(o.bind, o.allow_tailnet) {
+        eprintln!(
+            "rtsim-cli view: {} is not a loopback address (reach the viewer with `ssh -L`; \
+             tailnet addresses need --allow-tailnet)",
+            o.bind
+        );
+        return ExitCode::from(2);
+    }
+    if let Some(sock) = &o.socket
+        && under(sock, &world)
+    {
+        eprintln!(
+            "rtsim-cli view: the socket would be inside the world folder, and the viewer writes \
+             nothing there; put it elsewhere"
+        );
+        return ExitCode::from(2);
+    }
     // Before any thread starts, so every thread inherits it.
     let priority = idle_priority();
 
@@ -191,6 +209,22 @@ pub fn cli(args: &[&str]) -> ExitCode {
     let _ = std::io::stdout().flush();
     server.join();
     ExitCode::SUCCESS
+}
+
+/// Whether `path` would sit inside `folder` (both made absolute, `..` and links resolved as far
+/// as they exist).
+fn under(path: &std::path::Path, folder: &std::path::Path) -> bool {
+    let abs = |p: &std::path::Path| {
+        let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+        // The socket itself does not exist yet: resolve its folder.
+        match (p.parent(), p.file_name()) {
+            (Some(dir), Some(name)) if !p.exists() => std::fs::canonicalize(dir)
+                .map(|d| d.join(name))
+                .unwrap_or(p),
+            _ => std::fs::canonicalize(&p).unwrap_or(p),
+        }
+    };
+    abs(path).starts_with(abs(folder))
 }
 
 fn bad(why: &str) -> ExitCode {

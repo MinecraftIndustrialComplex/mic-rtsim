@@ -731,7 +731,8 @@ fn train(cx: &Ctx, id: u64) -> Option<Card> {
 }
 
 /// A district's card: decoded from its pages (the caller holds the worker).
-pub fn district(saved: &Saved, id: u64) -> Option<Card> {
+/// A district's card, and whether its pages read (a card that says they did not is not kept).
+pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
     let v = saved.industry.as_ref()?;
     let d = v.district(id)?;
     let name = saved
@@ -803,7 +804,14 @@ pub fn district(saved: &Saved, id: u64) -> Option<Card> {
             }
             c = c.section(sec);
         }
-        Err(e) => c = c.note(format!("its pages did not read: {e}")),
+        Err(e) => {
+            let c = c.note(format!(
+                "its pages did not read ({}). The viewer shows the one save it opened: if the \
+                 world has saved since, restart the viewer to see the new save",
+                saved.scrub(&e)
+            ));
+            return Some((c, false));
+        }
     }
-    Some(c)
+    Some((c, true))
 }
