@@ -143,7 +143,8 @@ pub type CellKey = (u16, i32, i32);
 
 /// The page table of the grazed cells (docs/choices-paging-modules.md).
 pub const TABLE_FORAGE: u16 = 0x4811;
-/// Cells per page: 8 x 8 cells of [`CELL_BLOCKS`], 1,024 blocks square. PLACEHOLDER.
+/// Cells per page: 8 x 8 cells of [`CELL_BLOCKS`] (an aligned square, 1,024 blocks a side).
+/// PLACEHOLDER: a row is 32 bytes, so a full page is about 2 KB resident.
 pub const FORAGE_PER_PAGE: u64 = 64;
 
 /// A cell's row key: neighbouring cells share pages.
