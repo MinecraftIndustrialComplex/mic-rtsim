@@ -286,6 +286,67 @@ left alone (task rule). What it will need, from its `Engine` today:
 - The glass box's compiled machine graphs (G1) are per district: they belong in the district
   row, or in their own row table keyed by district if they are large.
 
+## Conflict
+
+Branch `feat/paging-conflict`. The conflict's row tables page; the meta page holds the rest.
+Tests: `crates/rtsim-conflict/tests/paged.rs` (`many_factions_paged_equal_the_resident_run`,
+`a_paged_save_reopened_in_the_middle_goes_on_as_the_run_that_kept_going`,
+`the_walkthrough_paged_equals_the_resident_one_and_restores_from_pages`) and the unit tests in
+`tables.rs`. Bench: `rtsim-cli bench scale --only factions-paged`.
+
+| # | Choice | Why |
+|---|---|---|
+| PM-C1 | **Three row tables** (`crates/rtsim-conflict/src/tables.rs`): factions on `PagedRows` keyed by faction index (0x4310), sources keyed by a source id handed out in order and never reused (0x4312, 32 a page), and a place index from 16 x 16-chunk regions to the ids of the sources with chunks there (0x4313, 4 x 4 regions a page, `tables::region_key`). The meta page (`save_paged(batch, meta_key)`; the bench and tests use 0x4300 id 0, rtsim-jni's conflict key) holds everything else and each table's count. | The faction rows (about 450 bytes encoded with two feuds) and the sources are what grow with the world. |
+| PM-C2 | **Feuds fold into their faction's row** (`FactionRow::feuds`, sorted by actor; table 0x4311 stays reserved, unused). The engine keeps only a feud count. | Every feud event reads and changes its faction anyway; a separate table would cost a second page per feud event. Two feuds a faction in the bench. |
+| PM-C3 | **Each faction row keeps its reach**: the ids of the sources, by signal kind, that affect it (`FactionRow::reach`), replacing the resident `source_index`. `refresh_rates` walks the faction's own reach. | The old index was resident and grew with factions times sources. |
+| PM-C4 | **Resident indexes**: factions by key (`by_key`, 26 bytes a faction), by cell (`cells`, 34), and sources by (key, kind) to id and rate (64 a source). Measured B-tree costs per entry, counting allocator, 100,000 entries. | Lookups by key from Java, and the cell queries of signals, plunder targets and routes, must not load pages. The rate is resident so rtsim-jni's district feed (`sources.rate`) reads no page. About 125 bytes a faction with its one source. |
+| PM-C5 | **The place index replaces `source_chunks` and the scan of every source in `add_faction`**: a new faction finds the sources near it through the regions its reach covers, and `reattribute(chunk)` reads one region row. `set_emission` diffs a source's reach and places, so a changed rate touches only the factions and regions that changed. | `add_faction` walked every source, and the chunk map was resident per source chunk. |
+| PM-C6 | **The node index grows incrementally**, and `rescue_news` reads its cells around the camp. | A node joining rebuilt the whole index, and `rescue_news` walked every node. |
+| PM-C7 | **Budget split**: factions half, sources a quarter, places the rest. PLACEHOLDER shares. | Factions are the working set. |
+| PM-C8 | **Step boundaries**: `run_until` enforces the budget after each event when paged; `session_start` (a TERRITORY for every faction, once a session) after each page of factions. | One step may touch many pages. |
+| PM-C9 | **A budget check that found nothing to evict skips until something changes**: after a check ends over budget with every page dirty, the next checks return at once until a load or a save. | Otherwise each event walked every resident dirty page (19,746 futile checks in one 12-day run). |
+| PM-C10 | **The host saves when the rows are over budget with every page dirty** (`Conflict::needs_save`), as herds PM7. The bench, the paged tests and the walkthrough do; rtsim-jni does not page modules yet. | Dirty pages cannot leave before a save, and conflict events land on factions all over the table: without it the resident peak between autosaves was every faction page (858 KB at 1,024 factions, 3.04 MB at 4,096: slope 0.91). With it, 314 KB at both. |
+| PM-C11 | **Formats**: the blob's magic is `RTC2` (the resident part, then the three tables by `encode_all` in key order) and rtsim-jni's conflict page VERSION goes from 1 to 2; the meta page is `RTCM` version 1. No migration (no compatibility work before a release). | `PagedRows`' blob is not the old maps'. |
+| PM-C12 | **4 factions a page** (PLACEHOLDER; was 16). | An event pins its faction's whole page until a save, so smaller pages pin fewer bytes per event: paired runs at 256 KiB, 16 against 4 a page, 1,024 factions: step CPU 75.4 against 52.3 us per faction-day, saves a day 44 against 13, save CPU 125 against 37 ms a day; 4,096 factions: 82.4 against 57.3 us, 162 against 47 saves, 801 against 276 ms. Same state hash. A load costs about 5 us of store read (two syscalls, CRC, LZ4) plus about 0.45 us of decode per faction. |
+| PM-C13 | **What stays resident by design**, at 4,096 factions with every page evicted (`Conflict::memory`): parties in flight 441 bytes a faction (0.43 parties a faction, about 1 KB each), the wheel 244 (2.6 pending events a faction), the indexes 124 (PM-C4), the node index 30, the row tables' page indexes 15. The allocator's measure of the paged engine grows 580 bytes a faction (1.39 MB at 1,024, 3.17 MB at 4,096). | The task let parties stay resident; the wheel is SCALE.md §8's events-booked term. |
+
+**Measured** (quick sweeps, release, nice 10, load 33 to 49; CPU is thread CPU of the conflict
+step with the world stepped apart; saves reported apart; budget 256 KiB, autosave every 6,000
+ticks plus PM-C10's saves; 12 days after 2 of warm-up; the same state hash paged and resident at
+every point).
+
+Before (branch point, resident): the engine's estimate 0.04, 0.62 and 2.5 MiB at 16, 256 and
+1,024 factions; 23.6 us per faction-day at 1,024 (paired with the after build's 25.3: the place
+and node indexes cost 7% resident).
+
+| Factions | resident: engine estimate | resident: engine live | resident: us per faction-day | paged: rows resident after a save | paged: rows resident at peak | paged: engine estimate | paged: engine live | paged: us per faction-day | paged: loads a day | paged: saves a day (for the budget) | paged: bytes a save | paged: save CPU ms a day |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 16 | 0.06 MB | 0.08 MB | 19.5 | | | | | | | | | |
+| 256 | 0.78 MB | 0.77 MB | 29.9 | | | | | | | | | |
+| 1,024 | 2.91 MB | 2.87 MB | 29.5 | 257,776 B | 313,568 B | 1.44 MB | 1.39 MB | 46.2 | 1,431 | 13.1 (9.1) | 133 KB | 34 |
+| 4,096 | | | | 257,496 B | 313,192 B | 3.37 MB | 3.17 MB | 53.1 | 6,790 | 46.9 (42.9) | 400 KB | 224 |
+
+Slopes: paged rows resident at peak -0.001 (declared 0.1), events per faction flat, paged CPU per
+faction-day 0.10 (declared 0.2, as the resident sweep's). The resident sweep's process heap slope
+is 1.12 against its 1.1 contract, as before this work: it is the phase 1 world under the camps
+(see "Measured first"), not the conflict engine. The page store's own index was 285 KB at 1,024
+and 618 KB at 4,096.
+
+**Not flat, and why.** Two things still grow with the factions in a paged run:
+
+1. **Saves a day.** Events scale with factions (about one a faction-day) and each pins a page, so
+   under a fixed budget PM-C10's saves grow with the factions: 13 a day at 1,024, 47 at 4,096.
+2. **The meta page, written by every save**, holds the wheel and the PM-C4 indexes: 115 bytes a
+   faction raw (474 KB at 4,096), about 60 compressed (246 KB written by a save with nothing
+   dirty). With (1), the bytes saved a day grow with the square of the factions. Fixing it means
+   paging the indexes (they change only when factions or sources come and go) and giving the
+   wheel a paged form (entries bucketed by due time), a kernel change shared with herds, whose
+   meta holds its wheel too. Not done here.
+
+Other open items: `applied_ops` (the op set) grows with every applied op and is never pruned (as
+before this work); `session_start` is one pass over every faction a session, page by page;
+rows per page and the budget shares are placeholders.
+
 ## Not done here
 
 - **rtsim-jni does not page any module yet.** Each module still saves its `save()` blob as one
