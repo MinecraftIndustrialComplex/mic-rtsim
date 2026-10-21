@@ -102,6 +102,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
     if let Some(m) = o.tile_cache_mib {
         limits.tile_cache = m * MIB;
     }
+    crate::sys::reset_heap_peak();
     let view = match View::open(&world, limits) {
         Ok(v) => v,
         Err(e) => {
@@ -109,6 +110,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let peak = crate::sys::heap_peak() as u64;
     crate::sys::trim_heap();
     let heap = crate::sys::heap_live() as u64;
     if let Some(cap) = limits.heap_cap
@@ -123,7 +125,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
         return ExitCode::from(1);
     }
     let view = view.with_heap(Arc::new(|| crate::sys::heap_live() as u64));
-    describe(&view, heap, limits, &priority);
+    describe(&view, (heap, peak), limits, &priority);
 
     let config = Config {
         allow_tailnet: o.allow_tailnet,
@@ -185,7 +187,7 @@ fn bad(why: &str) -> ExitCode {
     ExitCode::from(64)
 }
 
-fn describe(view: &View, heap: u64, limits: Limits, priority: &str) {
+fn describe(view: &View, (heap, peak): (u64, u64), limits: Limits, priority: &str) {
     let s = view.saved();
     let frames: Vec<&str> = view.frames().collect();
     println!(
@@ -239,8 +241,10 @@ fn describe(view: &View, heap: u64, limits: Limits, priority: &str) {
         .heap_cap
         .map_or_else(|| "no cap".into(), |c| format!("{} MiB cap", c / MIB));
     println!(
-        "memory: {} MiB decoded, {cap}; cards cached up to {} MiB, tiles up to {} MiB",
+        "memory: {} MiB decoded ({} MiB at most while reading), {cap}; cards cached up to {} \
+         MiB, tiles up to {} MiB",
         heap / MIB,
+        peak / MIB,
         limits.card_cache / MIB,
         limits.tile_cache / MIB
     );
