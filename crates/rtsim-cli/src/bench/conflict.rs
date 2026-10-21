@@ -13,10 +13,12 @@
 //!
 //! **Paged** (`factions-paged`, A16): the same run with the conflict's row tables (factions with
 //! their feuds, sources, places) paged to a page store under a fixed small budget and saved at
-//! Minecraft's autosave interval. The phase 1 world under the camps is not paged here and
-//! dominates the process heap, so the point reports the row tables' resident bytes (bounded by
-//! the budget), the engine's own `heap_bytes` estimate, and the engine's live bytes measured by
-//! dropping it at the end (`engine_live_bytes`, the counting allocator's difference).
+//! Minecraft's autosave interval, and again whenever the rows are over the budget with every
+//! resident page changed (`Conflict::needs_save`: the host's extra save). The phase 1 world under
+//! the camps is not paged here and dominates the process heap, so the point reports the row
+//! tables' resident bytes (bounded by the budget plus one step's changes), the engine's own
+//! `heap_bytes` estimate, and the engine's live bytes measured by dropping it at the end
+//! (`engine_live_bytes`, the counting allocator's difference).
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -58,6 +60,8 @@ const META: PageKey = PageKey::new(0x4300, 0);
 #[derive(Default)]
 struct Saves {
     n: u64,
+    /// Saves the budget asked for (`Conflict::needs_save`), beyond the autosaves.
+    pressure: u64,
     cpu_ns: u64,
     wall_ns: u64,
     bytes: u64,
@@ -93,6 +97,18 @@ impl Pager {
         }
         self.saves.bytes += st.segment_bytes;
         self.saves.log_bytes += st.log_bytes;
+    }
+
+    /// At a step boundary at `t`: the autosave when it is due, else the budget's save when every
+    /// resident page is changed (PM-C10).
+    fn after_step(&mut self, k: &mut Conflict, t: Tick) {
+        if self.next == t {
+            self.save(k);
+            self.next = t + self.every;
+        } else if k.needs_save() {
+            self.save(k);
+            self.saves.pressure += 1;
+        }
     }
 }
 
@@ -150,9 +166,8 @@ pub fn run(c: &FactionConfig) -> Measured {
     while t < warm {
         let next = step(t, warm, &k, &pager);
         k.run_until(&mut w, &mut NoInfrastructure, next);
-        if let Some(p) = pager.as_mut().filter(|p| p.next == next) {
-            p.save(&mut k);
-            p.next = next + p.every;
+        if let Some(p) = pager.as_mut() {
+            p.after_step(&mut k, next);
         }
         t = next;
     }
@@ -176,9 +191,8 @@ pub fn run(c: &FactionConfig) -> Measured {
             None => have_cpu = false,
         }
         let _ = k.take_commands();
-        if let Some(p) = pager.as_mut().filter(|p| p.next == next) {
-            p.save(&mut k);
-            p.next = next + p.every;
+        if let Some(p) = pager.as_mut() {
+            p.after_step(&mut k, next);
         }
         t = next;
     }
@@ -265,6 +279,8 @@ pub fn run(c: &FactionConfig) -> Measured {
         save_cpu_ms_per_day: paged.as_ref().map(|(s, _)| s.cpu_ns as f64 / 1e6 / days),
         save_bytes_per_save: per_save(&|s| s.bytes),
         save_log_bytes_per_save: per_save(&|s| s.log_bytes),
+        saves_per_day: paged.as_ref().map(|(s, _)| s.n as f64 / days),
+        pressure_saves_per_day: paged.as_ref().map(|(s, _)| s.pressure as f64 / days),
         ..Measured::default()
     }
 }

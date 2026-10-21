@@ -69,6 +69,7 @@ struct Run {
     t: Tick,
     next_save: Tick,
     saves: u64,
+    pressure: u64,
     hashes: Vec<(u64, u64)>,
 }
 
@@ -85,6 +86,7 @@ impl Run {
             t: Tick::ZERO,
             next_save: Tick(HALF_DAY),
             saves: 0,
+            pressure: 0,
             hashes: Vec::new(),
         }
     }
@@ -110,6 +112,10 @@ impl Run {
                     self.c.enforce_budget();
                 }
                 self.next_save = next + HALF_DAY;
+            } else if let Some(s) = self.store.as_ref().filter(|_| self.c.needs_save()) {
+                // The budget's save (every resident page changed): changes no state.
+                save(&mut self.c, s);
+                self.pressure += 1;
             }
             self.t = next;
         }
@@ -197,6 +203,7 @@ fn a_paged_save_reopened_in_the_middle_goes_on_as_the_run_that_kept_going() {
         t: a.t,
         next_save: a.next_save,
         saves: a.saves,
+        pressure: 0,
         hashes: Vec::new(),
     };
     assert_eq!(b.c.state_hash(), a.c.state_hash(), "the same state at once");
