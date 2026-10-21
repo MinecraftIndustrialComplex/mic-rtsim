@@ -35,8 +35,10 @@
 //!   is kept or resent and none carries an op id; TERRITORY goes again for every faction at a
 //!   session start. Body kinds, the dimension and the tribute item go through the engine's
 //!   dictionary; ticks (an envoy's deadline, a steer's arrival) are game time.
-//! - **Pages** ([`Link::load`], [`snapshot`]): table 0x4300 ('C'), one page with `Conflict::save`
-//!   and its state hash, checked on load. The conflict lives in the phase 1 world (havens are its
+//! - **Pages** ([`Link::load`], [`save`]): the conflict pages through the engine's store
+//!   (`engine/paging.rs`, PF12): its meta page at table 0x4300 ('C') id 0, its row and index
+//!   tables at 0x4310 to 0x4318, a save writing the pages changed since the last one; in TEST
+//!   mode its state hash beside the meta page, checked on load. The conflict lives in the phase 1 world (havens are its
 //!   nodes, marches its legs), so while it is active the phase 1 link snapshots at every save, in
 //!   the same commit; a page without the world it was saved with is dropped loudly.
 //! - **The switch** (C25, U10): `Module.CONFLICT` (bit 5). Off, the conflict ignores its records,
@@ -44,31 +46,32 @@
 //!   gone (its session reset) and it runs on from where it stopped.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use rtsim_conflict::boundary::{self, Cmd, Item, Obs};
 use rtsim_conflict::engine::{body_id, body_names, item_of};
 use rtsim_conflict::presence::ChunkKey;
-use rtsim_conflict::{Conflict, ConflictStats, ConflictTunables, Cultures, SignalKind};
+use rtsim_conflict::{
+    Conflict, ConflictStats, ConflictTickets, ConflictTunables, Cultures, SignalKind,
+};
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
 use rtsim_industry::cluster::Run;
 use rtsim_industry::district::{Phase as DistrictPhase, Presence};
 use rtsim_industry::ids::{DistrictId, GoodClass};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_kernel::codec::{CodecError, Reader, Writer};
-use rtsim_kernel::page::{PageKey, PageStore};
+use rtsim_kernel::page::{PageKey, SaveBatch};
+use rtsim_kernel::rows::PageSource;
 use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
 
+use super::paging::{self, Live, Pager};
 use super::{State, log_error, log_info, log_warn, phase1, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The conflict's pages: table 0x4300 ('C', docs/boundary.md §9.1), next to the dragons' 0x4400.
 pub const TABLE: u16 = 0x4300;
+/// Its meta page (PF12); its own tables are 0x4310 and up (`rtsim_conflict` tables).
 pub const KEY_CONFLICT: PageKey = PageKey::new(TABLE, 0);
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
-/// 2: the conflict's blob holds its row tables (factions with their feuds, sources, places) in
-/// key order (`Conflict::save`, RTC2).
-const VERSION: u16 = 2;
 
 /// Java's module bit the conflict runs under (`config/Module.java`: CONFLICT is ordinal 5).
 pub const MODULE_CONFLICT: u32 = 1 << 5;
@@ -114,12 +117,12 @@ pub(super) struct Link {
     pub(super) index: DistrictIndex,
     /// Commands not written yet (per session).
     queue: VecDeque<Queued>,
-    enabled: bool,
+    pub(super) enabled: bool,
     /// The conflict's session reset (bodies of an earlier session or of before a switch-off are
     /// gone) is due the next time it runs.
     reset_due: bool,
-    /// The page as last written or read: what a save keeps while the conflict is switched off.
-    last_page: Option<Vec<u8>>,
+    /// What the saves owe the conflict's pages (a save while switched off, a purge at start).
+    pub(super) pager: Pager,
     /// The conflict's own dictionary ids of structures (kind 4) and pollution types (kind 0x20),
     /// by name (C2-4).
     structures: BTreeMap<String, u32>,
@@ -194,13 +197,19 @@ fn new_engine() -> Conflict {
 
 /// **The policy for conflict pages this build cannot read** (as the dragons' S12, the ships' U1
 /// and the herds' Y6): dropped with a loud log, the conflict starts afresh (the plugin reports its
-/// camps again as their chunks load), and the next save replaces them.
-fn when_pages_unreadable(why: &str) -> Result<Link, String> {
+/// camps again as their chunks load), and the next save replaces them; they are deleted at start
+/// (`Pager::purge`), before a fresh table could read them.
+fn when_pages_unreadable(
+    why: &str,
+    source: &Arc<dyn PageSource>,
+    budget: usize,
+) -> Result<Link, String> {
     log_error(&format!(
         "CONFLICT PAGES DROPPED: {why}. The conflict starts afresh (camps are reported again as their chunks load) and the next save replaces them"
     ));
-    let mut l = Link::empty();
+    let mut l = Link::fresh(source, budget);
     l.dropped_pages = true;
+    l.pager.purge = true;
     Ok(l)
 }
 
@@ -223,7 +232,7 @@ impl Link {
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
-            last_page: None,
+            pager: Pager::default(),
             structures,
             pollution,
             reported: BTreeSet::new(),
@@ -237,69 +246,66 @@ impl Link {
         }
     }
 
-    /// Loads the conflict's page. `world_restored` says the phase 1 world came back from its
-    /// pages: the conflict's havens, legs and notables are that world's, so without it the page
-    /// is dropped too.
-    pub(super) fn load(store: &mut PageStore, world_restored: bool) -> Result<Link, String> {
-        let page = match store.get(KEY_CONFLICT) {
-            Ok(p) => p,
-            Err(e) => {
-                return when_pages_unreadable(&format!("cannot read the conflict's page: {e}"));
+    /// A new conflict paging through the engine's store under `budget` row bytes.
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize) -> Link {
+        let mut l = Link::empty();
+        l.engine.attach_store(source.clone(), budget);
+        l
+    }
+
+    /// Opens the conflict's pages (its meta page; the rows are read as they are needed), paging
+    /// under `budget` row bytes. `world_restored` says the phase 1 world came back from its
+    /// pages: the conflict's havens, legs and notables are that world's, so without it the pages
+    /// are dropped too. `test`: check the state hash the save wrote (PF16).
+    pub(super) fn load(
+        source: &Arc<dyn PageSource>,
+        budget: usize,
+        test: bool,
+        world_restored: bool,
+    ) -> Result<Link, String> {
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
+        let opened = Conflict::open_paged(
+            source.clone(),
+            budget,
+            KEY_CONFLICT,
+            ConflictTunables::default(),
+            Cultures::builtin(),
+        );
+        let engine = match opened {
+            Err(e) => return unreadable(&format!("the conflict's meta page: {e}")),
+            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+                return unreadable("conflict pages without their meta page");
             }
+            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(Some(_)) if !world_restored => {
+                return unreadable(
+                    "the phase 1 world it lives in did not come back from its pages",
+                );
+            }
+            Ok(Some(e)) => e,
         };
-        let Some(b) = page else {
-            return Ok(Link::empty());
-        };
-        if !world_restored {
-            return when_pages_unreadable(
-                "the phase 1 world it lives in did not come back from its pages",
-            );
+        let saved = test
+            .then(|| paging::saved_hash(&**source, KEY_CONFLICT))
+            .flatten();
+        let hash = saved.map(|_| engine.state_hash());
+        let diverged = saved.zip(hash).filter(|(s, h)| s != h);
+        if let Some((s, h)) = diverged {
+            log_warn(&format!(
+                "the conflict read back to state {h:016x}, the save had {s:016x}"
+            ));
         }
-        let mut r = Reader::new(&b);
-        let head = (|| -> Result<(), CodecError> {
-            if r.u32()? != MAGIC {
-                return Err(CodecError::Invalid("not a conflict page".into()));
-            }
-            let v = r.u16()?;
-            if v != VERSION {
-                return Err(CodecError::Invalid(format!(
-                    "conflict page version {v}, this build reads {VERSION}"
-                )));
-            }
-            Ok(())
-        })();
-        if let Err(e) = head {
-            return when_pages_unreadable(&format!("the conflict's page: {e}"));
-        }
-        let Ok(saved_hash) = r.u64() else {
-            return when_pages_unreadable("the conflict's page is cut short");
-        };
-        let rest = r.take(r.remaining()).unwrap_or_default();
-        match Conflict::load(ConflictTunables::default(), Cultures::builtin(), rest) {
-            Ok(engine) => {
-                let hash = engine.state_hash();
-                let diverged = (hash != saved_hash).then_some((saved_hash, hash));
-                if diverged.is_some() {
-                    log_warn(&format!(
-                        "the conflict read back to state {hash:016x}, the save had {saved_hash:016x}"
-                    ));
-                }
-                log_info(&format!(
-                    "conflict restored: {} factions, {} feuds, {} parties, {} events booked, state {:016x}",
-                    engine.factions.len(),
-                    engine.feud_count(),
-                    engine.parties.len(),
-                    engine.pending_events(),
-                    hash
-                ));
-                let (structures, pollution) = own_names(&engine.cultures, &engine.tun);
-                let mut l = Link::with_engine(engine, structures, pollution);
-                l.restore_diverged = diverged;
-                l.last_page = Some(b);
-                Ok(l)
-            }
-            Err(e) => when_pages_unreadable(&format!("the conflict's page: {e}")),
-        }
+        log_info(&format!(
+            "conflict restored: {} factions, {} feuds, {} parties, {} events booked{}",
+            engine.factions.len(),
+            engine.feud_count(),
+            engine.parties.len(),
+            engine.pending_events(),
+            hash.map_or(String::new(), |h| format!(", state {h:016x}"))
+        ));
+        let (structures, pollution) = own_names(&engine.cultures, &engine.tun);
+        let mut l = Link::with_engine(engine, structures, pollution);
+        l.restore_diverged = diverged;
+        Ok(l)
     }
 
     /// Whether the conflict is in the world at all: no faction, source or party means nothing to
@@ -325,7 +331,7 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.conflict.queue.clear();
     st.conflict.reported.clear();
     // The first record of the engine's only session: what it holds is its pages as read, so a
-    // switch that is off from the start keeps exactly those (`last_page`).
+    // switch that is off from the start keeps exactly those (no save writes them).
     st.conflict.enabled = module_mask & MODULE_CONFLICT != 0;
     st.conflict.reset_due = true;
     reset_if_due(st);
@@ -340,9 +346,7 @@ fn set_enabled(st: &mut State, on: bool) {
     if was && !on {
         let _ = st.conflict.engine.take_commands();
         st.conflict.queue.clear();
-        if st.conflict.active() {
-            st.conflict.last_page = Some(encode_page(&st.conflict.engine));
-        }
+        st.conflict.pager.save_due = true;
     }
     if on && !was {
         st.conflict.reset_due = true;
@@ -901,45 +905,31 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 
 // ---- saves --------------------------------------------------------------------------------------
 
-fn encode_page(c: &Conflict) -> Vec<u8> {
-    let body = c.save();
-    let mut w = Writer::with_capacity(body.len() + 16);
-    w.u32(MAGIC);
-    w.u16(VERSION);
-    w.u64(c.state_hash());
-    w.raw(&body);
-    w.into_bytes()
-}
-
-/// The conflict's page, taken at this step boundary with the phase 1 world's snapshot. Commands
-/// the conflict decided and the link has not taken go to the queue first. Switched off, the page
-/// it had (U10).
-pub(super) fn snapshot(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
-    if !st.conflict.enabled {
-        return st
-            .conflict
-            .last_page
-            .clone()
-            .map(|b| vec![(KEY_CONFLICT, b)])
-            .unwrap_or_default();
+/// The conflict's part of a save at this step boundary, with the phase 1 world's snapshot
+/// (PF13): its meta page and the pages changed since the last save, into `batch`. Commands the
+/// conflict decided and the link has not taken go to the queue first. Switched off, nothing
+/// unless a save is due (U10: the pages stay as they were).
+pub(super) fn save(
+    st: &mut State,
+    batch: &mut SaveBatch,
+    test: bool,
+) -> (Option<ConflictTickets>, Live) {
+    if st.conflict.enabled {
+        take_commands(st);
     }
-    take_commands(st);
-    if !st.conflict.active() && !st.conflict.dropped_pages {
-        st.conflict.last_page = None;
-        return Vec::new();
+    let l = &mut st.conflict;
+    let out = paging::save(
+        &mut l.engine,
+        &mut l.pager,
+        l.enabled,
+        KEY_CONFLICT,
+        batch,
+        test,
+    );
+    if out.0.is_some() {
+        l.dropped_pages = false;
     }
-    st.conflict.dropped_pages = false;
-    let page = encode_page(&st.conflict.engine);
-    st.conflict.last_page = Some(page.clone());
-    vec![(KEY_CONFLICT, page)]
-}
-
-/// Conflict pages a save no longer writes (dropped pages, or no conflict any more).
-pub(super) fn deletions(store: &PageStore, pages: &[(PageKey, Vec<u8>)]) -> Vec<PageKey> {
-    store
-        .keys()
-        .filter(|k| k.table() == TABLE && !pages.iter().any(|(p, _)| p == k))
-        .collect()
+    out
 }
 
 // ---- inspection ---------------------------------------------------------------------------------

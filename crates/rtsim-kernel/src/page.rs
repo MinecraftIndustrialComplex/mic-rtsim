@@ -284,6 +284,16 @@ impl SaveBatch {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }
+
+    /// Bytes the batch's pages hold before compression: what a save wrote, for tests and the
+    /// bench.
+    pub fn raw_bytes(&self) -> usize {
+        self.changes
+            .values()
+            .flatten()
+            .map(EncodedPage::raw_len)
+            .sum()
+    }
 }
 
 /// Where a page (or an index block) lives: 24 bytes. Segment 0 is never used, so a location with

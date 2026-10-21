@@ -24,36 +24,37 @@
 //!   in sequence order. Body kinds, the dimension and cargo items go through the engine's
 //!   dictionary. A SHIP_CARGO's op id comes from its identity: the engine's own from the ship,
 //!   epoch and voyage (U18), a test order's from the ship, epoch and hold (U5); allocator 0x53.
-//! - **Pages** ([`Link::load`], [`snapshot`]): table 0x5300, one page with `Ships::save` and its
-//!   state hash. The ships live in the phase 1 world (lanes are its edges, voyages its legs), so
+//! - **Pages** ([`Link::load`], [`save`]): the ships page through the engine's store
+//!   (`engine/paging.rs`, PF12): their meta page at table 0x5300 id 0, their row tables at 0x5310
+//!   to 0x5312, a save writing the pages changed since the last one; in TEST mode their state
+//!   hash beside the meta page, checked on load. The ships live in the phase 1 world (lanes are its edges, voyages its legs), so
 //!   while they are active the phase 1 link snapshots at every save, in the same commit.
 //! - **The switch** (C25, U10): `Module.SHIPS` (bit 6). Off, the ships ignore their records,
 //!   run nothing, write nothing and keep the page they had.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
 use rtsim_kernel::clock::Tick;
-use rtsim_kernel::codec::{CodecError, Reader, Writer};
-use rtsim_kernel::page::{PageKey, PageStore};
+use rtsim_kernel::page::{PageKey, SaveBatch};
 use rtsim_kernel::rng::{StreamKey, SystemId};
+use rtsim_kernel::rows::PageSource;
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_ships::boundary::{self, Cmd, Item, Obs};
 use rtsim_ships::engine::{body_names, good_of, item_of};
 use rtsim_ships::water::HabitatWater;
-use rtsim_ships::{ShipStats, ShipTunables, Ships};
+use rtsim_ships::{ShipStats, ShipTickets, ShipTunables, Ships};
 use rtsim_world::NodeData;
 
+use super::paging::{self, Live, Pager};
 use super::{State, log_error, log_info, log_warn, phase1, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The ships' pages: table 0x5300 ('S'), next to the dragons' 0x4400 and phase 1's 0x5000.
 pub const TABLE: u16 = 0x5300;
+/// Their meta page (PF12); their own tables are 0x5310 and up (`rtsim_ships` tables).
 pub const KEY_SHIPS: PageKey = PageKey::new(TABLE, 0);
-const MAGIC: u32 = u32::from_le_bytes(*b"RTSH");
-/// 2 since the ships' rows moved to paged tables (rtsim-ships RTS2: rows in key order, each
-/// service's ships a key range).
-const VERSION: u16 = 2;
 
 /// Java's module bit the ships run under (`config/Module.java`: SHIPS is ordinal 6).
 pub const MODULE_SHIPS: u32 = 1 << 6;
@@ -98,12 +99,12 @@ pub(super) struct Link {
     pub(super) index: DistrictIndex,
     /// Commands not written yet (per session).
     queue: VecDeque<Queued>,
-    enabled: bool,
+    pub(super) enabled: bool,
     /// The ships' session reset (bodies of an earlier session or of before a switch-off are
     /// gone) is due the next time they run.
     reset_due: bool,
-    /// The page as last written or read: what a save keeps while the ships are switched off.
-    last_page: Option<Vec<u8>>,
+    /// What the saves owe the ships' pages (a save while switched off, a purge at start).
+    pub(super) pager: Pager,
     /// Java item ids already mapped to world goods (`None`: not a good the catalogue trades).
     java_items: BTreeMap<u32, Option<u32>>,
     /// The last load dropped pages it could not read ([`when_pages_unreadable`]).
@@ -122,13 +123,19 @@ fn new_engine() -> Ships {
 
 /// **The policy for ship pages this build cannot read** (as the dragons' S12 and phase 1's S5):
 /// dropped with a loud log, the ships start afresh (the plugin reports ports and havens again as
-/// their chunks load), and the next save replaces them.
-fn when_pages_unreadable(why: &str) -> Result<Link, String> {
+/// their chunks load), and the next save replaces them; they are deleted at start
+/// (`Pager::purge`), before a fresh table could read them.
+fn when_pages_unreadable(
+    why: &str,
+    source: &Arc<dyn PageSource>,
+    budget: usize,
+) -> Result<Link, String> {
     log_error(&format!(
         "SHIP PAGES DROPPED: {why}. The ships start afresh (ports and havens are reported again as their chunks load) and the next save replaces them"
     ));
-    let mut l = Link::empty();
+    let mut l = Link::fresh(source, budget);
     l.dropped_pages = true;
+    l.pager.purge = true;
     Ok(l)
 }
 
@@ -140,7 +147,7 @@ impl Link {
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
-            last_page: None,
+            pager: Pager::default(),
             java_items: BTreeMap::new(),
             dropped_pages: false,
             restore_diverged: None,
@@ -150,68 +157,63 @@ impl Link {
         }
     }
 
-    /// Loads the ships' page. `world_restored` says the phase 1 world came back from its pages:
-    /// the ships live in that world (its lane edges, legs and knowledge), so without it their
-    /// page is dropped too.
-    pub(super) fn load(store: &mut PageStore, world_restored: bool) -> Result<Link, String> {
-        let page = match store.get(KEY_SHIPS) {
-            Ok(p) => p,
-            Err(e) => return when_pages_unreadable(&format!("cannot read the ships' page: {e}")),
-        };
-        let Some(b) = page else {
-            return Ok(Link::empty());
-        };
+    /// New ships paging through the engine's store under `budget` row bytes.
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize) -> Link {
+        let mut l = Link::empty();
+        l.engine.attach_store(source.clone(), budget);
+        l
+    }
+
+    /// Opens the ships' pages (their meta page; the rows are read as they are needed), paging
+    /// under `budget` row bytes. `world_restored` says the phase 1 world came back from its
+    /// pages: the ships live in that world (its lane edges, legs and knowledge), so without it
+    /// their pages are dropped too. `test`: check the state hash the save wrote (PF16).
+    pub(super) fn load(
+        source: &Arc<dyn PageSource>,
+        budget: usize,
+        test: bool,
+        world_restored: bool,
+    ) -> Result<Link, String> {
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
+        match source.read(KEY_SHIPS) {
+            Err(e) => return unreadable(&format!("cannot read the ships' meta page: {e}")),
+            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+                return unreadable("ship pages without their meta page");
+            }
+            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(Some(_)) => {}
+        }
         if !world_restored {
-            return when_pages_unreadable(
-                "the phase 1 world they live in did not come back from its pages",
-            );
+            return unreadable("the phase 1 world they live in did not come back from its pages");
         }
-        let mut r = Reader::new(&b);
-        let head = (|| -> Result<(), CodecError> {
-            if r.u32()? != MAGIC {
-                return Err(CodecError::Invalid("not a ships page".into()));
-            }
-            let v = r.u16()?;
-            if v != VERSION {
-                return Err(CodecError::Invalid(format!(
-                    "ships page version {v}, this build reads {VERSION}"
-                )));
-            }
-            Ok(())
-        })();
-        if let Err(e) = head {
-            return when_pages_unreadable(&format!("the ships' page: {e}"));
+        let engine =
+            match Ships::open_paged(source.clone(), budget, KEY_SHIPS, ShipTunables::default()) {
+                Ok(e) => e,
+                Err(e) => return unreadable(&format!("the ships' meta page: {e}")),
+            };
+        let saved = test
+            .then(|| paging::saved_hash(&**source, KEY_SHIPS))
+            .flatten();
+        let hash = saved.map(|_| engine.state_hash());
+        let diverged = saved.zip(hash).filter(|(s, h)| s != h);
+        if let Some((s, h)) = diverged {
+            log_warn(&format!(
+                "the ships read back to state {h:016x}, the save had {s:016x}"
+            ));
         }
-        let Ok(saved_hash) = r.u64() else {
-            return when_pages_unreadable("the ships' page is cut short");
-        };
-        let rest = r.take(r.remaining()).unwrap_or_default();
-        match Ships::load(ShipTunables::default(), rest) {
-            Ok(engine) => {
-                let hash = engine.state_hash();
-                let diverged = (hash != saved_hash).then_some((saved_hash, hash));
-                if diverged.is_some() {
-                    log_warn(&format!(
-                        "the ships read back to state {hash:016x}, the save had {saved_hash:016x}"
-                    ));
-                }
-                log_info(&format!(
-                    "ships restored: {} docks, {} lanes, {} ships, {} havens, {} events booked, state {:016x}",
-                    engine.docks.len(),
-                    engine.lanes.len(),
-                    engine.ships.len(),
-                    engine.havens.len(),
-                    engine.pending_events(),
-                    hash
-                ));
-                let mut l = Link::empty();
-                l.engine = engine;
-                l.restore_diverged = diverged;
-                l.last_page = Some(b);
-                Ok(l)
-            }
-            Err(e) => when_pages_unreadable(&format!("the ships' page: {e}")),
-        }
+        log_info(&format!(
+            "ships restored: {} docks, {} lanes, {} ships, {} havens, {} events booked{}",
+            engine.docks.len(),
+            engine.lanes.len(),
+            engine.ships.len(),
+            engine.havens.len(),
+            engine.pending_events(),
+            hash.map_or(String::new(), |h| format!(", state {h:016x}"))
+        ));
+        let mut l = Link::empty();
+        l.engine = engine;
+        l.restore_diverged = diverged;
+        Ok(l)
     }
 
     /// Whether the ships are in the world at all: no dock, no haven and no ship means nothing to
@@ -272,7 +274,7 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.ships.queue.clear();
     st.ships.java_items.clear();
     // The first record of the engine's only session: what it holds is its pages as read, so a
-    // switch that is off from the start keeps exactly those (`last_page`).
+    // switch that is off from the start keeps exactly those (no save writes them).
     st.ships.enabled = module_mask & MODULE_SHIPS != 0;
     st.ships.reset_due = true;
     reset_if_due(st);
@@ -288,9 +290,7 @@ fn set_enabled(st: &mut State, on: bool) {
         // comes back on.
         let _ = st.ships.engine.take_commands();
         st.ships.queue.clear();
-        if st.ships.active() {
-            st.ships.last_page = Some(encode_page(&st.ships.engine));
-        }
+        st.ships.pager.save_due = true;
     }
     if on && !was {
         st.ships.reset_due = true;
@@ -694,45 +694,31 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 
 // ---- saves --------------------------------------------------------------------------------------
 
-fn encode_page(s: &Ships) -> Vec<u8> {
-    let body = s.save();
-    let mut w = Writer::with_capacity(body.len() + 16);
-    w.u32(MAGIC);
-    w.u16(VERSION);
-    w.u64(s.state_hash());
-    w.raw(&body);
-    w.into_bytes()
-}
-
-/// The ships' page, taken at this step boundary with the phase 1 world's snapshot. Commands the
-/// ships decided and the link has not taken go to the queue first. Switched off, the page they
-/// had (U10).
-pub(super) fn snapshot(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
-    if !st.ships.enabled {
-        return st
-            .ships
-            .last_page
-            .clone()
-            .map(|b| vec![(KEY_SHIPS, b)])
-            .unwrap_or_default();
+/// The ships' part of a save at this step boundary, with the phase 1 world's snapshot (PF13):
+/// their meta page and the pages changed since the last save, into `batch`. Commands the ships
+/// decided and the link has not taken go to the queue first. Switched off, nothing unless a save
+/// is due (U10: the pages stay as they were).
+pub(super) fn save(
+    st: &mut State,
+    batch: &mut SaveBatch,
+    test: bool,
+) -> (Option<ShipTickets>, Live) {
+    if st.ships.enabled {
+        take_commands(st);
     }
-    take_commands(st);
-    if !st.ships.active() && !st.ships.dropped_pages {
-        st.ships.last_page = None;
-        return Vec::new();
+    let l = &mut st.ships;
+    let out = paging::save(
+        &mut l.engine,
+        &mut l.pager,
+        l.enabled,
+        KEY_SHIPS,
+        batch,
+        test,
+    );
+    if out.0.is_some() {
+        l.dropped_pages = false;
     }
-    st.ships.dropped_pages = false;
-    let page = encode_page(&st.ships.engine);
-    st.ships.last_page = Some(page.clone());
-    vec![(KEY_SHIPS, page)]
-}
-
-/// Ship pages a save no longer writes (dropped pages, or no ships any more).
-pub(super) fn deletions(store: &PageStore, pages: &[(PageKey, Vec<u8>)]) -> Vec<PageKey> {
-    store
-        .keys()
-        .filter(|k| k.table() == TABLE && !pages.iter().any(|(p, _)| p == k))
-        .collect()
+    out
 }
 
 // ---- inspection ---------------------------------------------------------------------------------

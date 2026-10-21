@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use rtsim_kernel::clock::Tick;
-use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_trade::build::Genesis;
 use rtsim_world::{World, WorldConfig, synth};
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,7 @@ impl Paged {
     fn save(&mut self, w: &mut World, pressure: bool) {
         let c0 = sys::thread_cpu_ns();
         let mut b = SaveBatch::new();
-        let t = w.save_paged(&mut b);
+        let t = w.save_paged(&mut b, PageKey::new(0x5001, 0));
         let st = self
             .store
             .write()

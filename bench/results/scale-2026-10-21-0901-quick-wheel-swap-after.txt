@@ -1,0 +1,29 @@
+bench scale (quick): 3 sweeps, load 12.22 13.67 11.19 10/6263 1170239
+  dragons_paged Closed = 512 ... 1.8 s
+  dragons_paged Closed = 4e3 ... 15.0 s
+  dragons_paged Closed = 33e3 ... 139.6 s
+  herds-paged Dyadic = 256 ... 2.1 s
+  herds-paged Dyadic = 1e3 ... 8.3 s
+  herds-paged Dyadic = 4e3 ... 35.8 s
+  factions-paged Closed = 1e3 ... 27.7 s
+  factions-paged Closed = 4e3 ... 126.5 s
+sweep    model    value | cpu ms/day catchup us  commits |  heap MiB   rss MiB  peak MiB |   save KiB   incr KiB | slots/day conserved
+dragons_paged closed     512 |     301.65          -        - |      10.7      18.7      18.7 |      212.6          - |         0 ok
+dragons_paged closed     4e3 |    3278.92          -        - |      89.9     103.3     103.3 |     2126.5          - |         0 ok
+dragons_paged closed    33e3 |   34085.53          -        - |     741.2     800.7     800.7 |    13849.0          - |         0 ok
+herds-paged dyadic     256 |     117.55      0.139        - |       1.3       8.7       8.7 |      666.1          - |         0 ok
+herds-paged dyadic     1e3 |     497.63      0.088        - |       1.7      10.3      10.7 |     2651.2          - |         0 ok
+herds-paged dyadic     4e3 |    2033.39      0.215        - |       3.1      22.2      22.9 |    10709.8          - |         0 ok
+factions-paged closed     1e3 |      41.96          -        - |      98.2     111.8     111.8 |      627.2          - |         0 ok
+factions-paged closed     4e3 |     216.60          -        - |     323.9     366.4     368.6 |     2513.2          - |         0 ok
+
+sweep    model  metric       slope  declared  SCALE.md  max/min  bound  verdict
+dragons_paged closed resident     0.226      0.30      0.00     2.56      -  ok  (declared above SCALE.md; see note)
+dragons_paged closed heap         1.018      1.10      0.00    68.96      -  ok  (declared above SCALE.md; see note)
+herds-paged dyadic resident     0.137      0.15      0.00     1.46    4.0  ok
+herds-paged dyadic heap         0.320      0.40      0.00     2.43      -  ok  (declared above SCALE.md; see note)
+herds-paged dyadic cpuperunit     0.028      0.10      0.00     1.08    4.0  ok
+factions-paged closed resident    -0.001      0.10      0.00     1.00    4.0  ok
+factions-paged closed eventsperunit    -0.009      0.10      0.00     1.01    4.0  ok
+factions-paged closed cpuperunit     0.184      0.20      0.00     1.29      -  ok  (declared above SCALE.md; see note)
+wrote bench/results/scale-2026-10-21-0901-quick-wheel-swap-after.json
