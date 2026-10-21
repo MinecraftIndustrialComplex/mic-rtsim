@@ -194,13 +194,14 @@ impl View {
             let asks: Vec<LineAsk> = v
                 .lines
                 .iter()
-                .filter_map(|((a, b), _)| {
+                .filter_map(|((a, b), l)| {
                     let (sa, sb) = (v.station(*a)?, v.station(*b)?);
                     (sa.dim == sb.dim).then(|| LineAsk {
                         id: format!("{a}-{b}"),
                         frame: frame_id(&saved, sa.dim),
                         a: [sa.pos.x, sa.pos.y, sa.pos.z],
                         b: [sb.pos.x, sb.pos.y, sb.pos.z],
+                        label: crate::cards::line_label(&saved, v, *a, *b, l.trips),
                     })
                 })
                 .collect();
