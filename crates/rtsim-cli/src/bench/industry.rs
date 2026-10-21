@@ -476,8 +476,8 @@ pub fn run(opts: Options) -> i32 {
         glass_points.extend(pts.into_iter().map(|p| (name, p)));
     }
 
-    // The glass replay (GLASSBOX.md §4, §9.3). Points are cheap but short, so the medians take
-    // at least three runs (five in full), except the quiet sweep's district counts.
+    // The glass replay (GLASSBOX.md §4, §9.3). Points are cheap but short, so each is the median
+    // of three runs (five in full).
     let glass_repeats = if opts.quick { 3 } else { 5 };
     let med = |f: &dyn Fn() -> ReplayPoint, reps: usize| -> ReplayPoint {
         let mut v: Vec<ReplayPoint> = (0..reps).map(|_| f()).collect();
@@ -558,7 +558,7 @@ pub fn run(opts: Options) -> i32 {
         };
         let pts: Vec<Point> = counts
             .iter()
-            .map(|&n| Point::glass(med(&|| gr::quiet(n, days), repeats), true))
+            .map(|&n| Point::glass(med(&|| gr::quiet(n, days), glass_repeats), true))
             .collect();
         out.push(sweep(
             "glass_quiet",
