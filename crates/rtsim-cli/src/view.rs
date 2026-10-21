@@ -26,13 +26,16 @@ struct Options {
     mem_cap_mib: u64,
     card_cache_mib: Option<u64>,
     tile_cache_mib: Option<u64>,
+    surveyor_cache_mib: Option<u64>,
 }
 
 const USAGE: &str = "\
   rtsim-cli view <world> [--port N] [--bind ADDR] [--allow-tailnet] [--socket PATH]
                          [--mem-cap MiB] [--card-cache MiB] [--tile-cache MiB]
+                         [--surveyor-cache MiB]
       Serves a saved world (its folder, or its rtsim/ folder) to the viewer page at
-      http://127.0.0.1:8740/ (VIEWER.md). Reads the pages and data/mic_rtsim_journal.dat;
+      http://127.0.0.1:8740/ (VIEWER.md). Reads the pages, data/mic_rtsim_journal.dat,
+      the event archive (rtsim/archive) and Surveyor's terrain (data/surveyor) when there;
       writes nothing. --bind takes a loopback address (a tailnet one with --allow-tailnet);
       --socket serves a Unix socket instead. Runs at idle CPU and IO priority. --mem-cap
       (default 1024) refuses a save that does not fit and district cards once the heap
@@ -48,6 +51,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
         mem_cap_mib: DEFAULT_MEM_CAP_MIB,
         card_cache_mib: None,
         tile_cache_mib: None,
+        surveyor_cache_mib: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -82,6 +86,10 @@ pub fn cli(args: &[&str]) -> ExitCode {
                 Some(m) => o.tile_cache_mib = Some(m),
                 None => return bad("--tile-cache takes MiB"),
             },
+            "--surveyor-cache" => match num(it.next()) {
+                Some(m) => o.surveyor_cache_mib = Some(m),
+                None => return bad("--surveyor-cache takes MiB"),
+            },
             w if !w.starts_with("--") && o.world.is_none() => o.world = Some(PathBuf::from(w)),
             other => return bad(&format!("unknown option {other}")),
         }
@@ -101,6 +109,9 @@ pub fn cli(args: &[&str]) -> ExitCode {
     }
     if let Some(m) = o.tile_cache_mib {
         limits.tile_cache = m * MIB;
+    }
+    if let Some(m) = o.surveyor_cache_mib {
+        limits.surveyor_cache = m * MIB;
     }
     crate::sys::reset_heap_peak();
     let view = match View::open(&world, limits) {
@@ -227,10 +238,25 @@ fn describe(view: &View, (heap, peak): (u64, u64), limits: Limits, priority: &st
         }
         None => println!("base map: none (no world model pages)"),
     }
+    if !view.surveyor_layers().is_empty() {
+        let names: Vec<&str> = view.surveyor_layers().iter().map(String::as_str).collect();
+        println!(
+            "terrain: Surveyor at a block a pixel ({})",
+            names.join(", ")
+        );
+    }
     if s.names.missing.is_some() {
         println!("names: no data/mic_rtsim_journal.dat, so dimensions show as ids");
     }
     drop(s);
+    // status() takes the save's lock: after the guard above is dropped.
+    let status = view.status();
+    if let Some(n) = status["events"]["chunks"].as_u64() {
+        println!(
+            "events: {n} archive chunks, {} kinds",
+            status["events"]["kinds"].as_u64().unwrap_or(0)
+        );
+    }
     let drawing = view.counts().values().filter(|n| **n > 0).count();
     println!(
         "layers: {drawing} of {} draw ({} marks)",
@@ -242,11 +268,12 @@ fn describe(view: &View, (heap, peak): (u64, u64), limits: Limits, priority: &st
         .map_or_else(|| "no cap".into(), |c| format!("{} MiB cap", c / MIB));
     println!(
         "memory: {} MiB decoded ({} MiB at most while reading), {cap}; cards cached up to {} \
-         MiB, tiles up to {} MiB",
+         MiB, tiles up to {} MiB, Surveyor pictures up to {} MiB",
         heap / MIB,
         peak / MIB,
         limits.card_cache / MIB,
-        limits.tile_cache / MIB
+        limits.tile_cache / MIB,
+        limits.surveyor_cache / MIB
     );
     println!("priority: {priority}");
 }
