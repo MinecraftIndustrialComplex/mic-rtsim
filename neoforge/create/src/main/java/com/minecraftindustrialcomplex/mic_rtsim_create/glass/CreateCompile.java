@@ -1650,13 +1650,16 @@ final class CreateCompile implements GlassExtractor.Compile {
             int perBlock = Cycles.chuteTicksPerBlock(motion);
             ticks = top ? Cycles.chuteGrabPeriod(motion) : perBlock;
         } else if (motion > 0) {
+            // up (a fan below or above): pulls from the inventory below (not a chute), passes to the chute or
+            // inventory above; the bottom chute grabs, the ones above it pass at chuteTicksPerBlock
             BlockEntity below = level.getBlockEntity(p.below());
-            if (!(below instanceof ChuteBlockEntity) && below != null)
+            boolean bottom = !(below instanceof ChuteBlockEntity);
+            if (bottom && below != null)
                 edge(GlassRecords.Edge.CHUTE, supplyAt(p.below()), i.node.index, test);
             BlockEntity above = level.getBlockEntity(p.above());
             if (above != null)
                 edge(GlassRecords.Edge.CHUTE, i.node.index, above instanceof ChuteBlockEntity ? acceptItem.get(p.above().asLong()) : acceptAt(p.above()));
-            ticks = Cycles.chuteGrabPeriod(motion);
+            ticks = bottom ? Cycles.chuteGrabPeriod(motion) : Cycles.chuteTicksPerBlock(motion);
             i.node.flag(GlassRecords.Node.CALIBRATED);
         } else {
             ticks = 0;
