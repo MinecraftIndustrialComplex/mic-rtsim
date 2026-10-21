@@ -75,6 +75,7 @@ pub const OP_HERD_FOUND: u16 = 28;
 pub const OP_CONFLICT_COMMAND: u16 = 29;
 pub const OP_WORKS_GRANT: u16 = 30;
 pub const OP_WORKS_RAID: u16 = 31;
+pub const OP_TRIBUTE_START: u16 = 32;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -301,6 +302,12 @@ pub enum Order {
         village: u64,
         tribute: bool,
     },
+    /// TEST: phase 1 village `village` becomes the tributary of the dragons' lair `lair` (keys),
+    /// as if a dragon of the lair had raided it (SINK.md §4.6); applied at the next step.
+    TributeStart {
+        village: u64,
+        lair: u64,
+    },
 }
 
 impl Order {
@@ -315,6 +322,7 @@ impl Order {
                 | Order::HerdFound { .. }
                 | Order::WorksGrant { .. }
                 | Order::WorksRaid { .. }
+                | Order::TributeStart { .. }
         )
     }
 
@@ -332,6 +340,7 @@ impl Order {
                 | Order::ConflictCommand { .. }
                 | Order::WorksGrant { .. }
                 | Order::WorksRaid { .. }
+                | Order::TributeStart { .. }
         )
     }
 }
@@ -651,6 +660,10 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
             OP_WORKS_RAID => Order::WorksRaid {
                 village: c.u64()?,
                 tribute: c.u32()? != 0,
+            },
+            OP_TRIBUTE_START => Order::TributeStart {
+                village: c.u64()?,
+                lair: c.u64()?,
             },
             OP_INDUSTRY_THREAT => {
                 let id = c.u64()?;
@@ -1086,6 +1099,12 @@ impl Encoder {
                 self.u32(u32::from(*tribute));
                 self.end(at);
             }
+            Order::TributeStart { village, lair } => {
+                let at = self.begin(OP_TRIBUTE_START);
+                self.u64(*village);
+                self.u64(*lair);
+                self.end(at);
+            }
             Order::IndustryThreat(t) => {
                 let at = self.begin(OP_INDUSTRY_THREAT);
                 self.u64(t.id);
@@ -1326,6 +1345,10 @@ mod tests {
             Order::WorksRaid {
                 village: 6,
                 tribute: true,
+            },
+            Order::TributeStart {
+                village: 6,
+                lair: 0x1d_0000_0003,
             },
             Order::IndustryThreat(Threat {
                 id: 5,
