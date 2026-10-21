@@ -22,6 +22,7 @@ use serde_json::json;
 use crate::habitat::HabitatTiles;
 use crate::layers::{self, Ctx};
 use crate::load::{Limits, Saved, Status, load_world};
+use crate::surveyor::SurveyorTiles;
 
 /// Heap bytes live now, from the host's allocator (rtsim-cli's counting allocator).
 pub type HeapProbe = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -44,6 +45,10 @@ pub struct View {
     reasons: BTreeMap<String, String>,
     tiles: Option<Tiles>,
     tile_layers: BTreeSet<String>,
+    /// Surveyor's terrain, over HABITAT where it has both (VIEWER.md §9).
+    surveyor: Option<Tiles>,
+    surveyor_layers: BTreeSet<String>,
+    surveyor_parses: Option<Arc<SurveyorTiles>>,
     /// The one worker (VWD-15): a card's build and a tile's render hold it.
     worker: Arc<Mutex<()>>,
     cards: Mutex<CardCache>,
@@ -134,6 +139,21 @@ impl View {
         if frames.is_empty() {
             frames.insert(0);
         }
+        let named: Vec<(String, String)> = frames
+            .iter()
+            .map(|&f| {
+                let id = frame_id(&saved, f);
+                let s = slug(&id);
+                (id, s)
+            })
+            .collect();
+        let surveyor = SurveyorTiles::open(
+            &saved.world_dir,
+            &named,
+            usize::try_from(saved.limits.surveyor_cache).unwrap_or(usize::MAX),
+            Arc::clone(&worker),
+        )
+        .map(Arc::new);
         let t: Tick = saved.now();
         let mut writers = drawn.frames;
         let mut scenes = BTreeMap::new();
@@ -151,6 +171,11 @@ impl View {
                 && let Ok(f16) = u16::try_from(f)
                 && let Some(d) = h.desc(&slugs, f16)
             {
+                bounds = Some(union(bounds, d.bounds));
+                tiles.push(d);
+            }
+            // Over HABITAT: Surveyor's unrecorded columns are transparent.
+            if let Some(d) = surveyor.as_ref().and_then(|s| s.desc(&slug(&id))) {
                 bounds = Some(union(bounds, d.bounds));
                 tiles.push(d);
             }
@@ -199,11 +224,25 @@ impl View {
             ..WorldInfo::default()
         };
         let layers = Arc::new(layers::layers(&specs, &drawn.reasons));
+        // The tile cache's bytes are shared when both base maps are there.
+        let tile_cache = match (&habitat, &surveyor) {
+            (Some(_), Some(_)) => saved.limits.tile_cache / 2,
+            _ => saved.limits.tile_cache,
+        };
         let (tiles, tile_layers) = match habitat {
             Some(h) => {
                 let names = h.layer_names().map(str::to_owned).collect();
-                let cache = TileCache::in_memory(saved.limits.tile_cache);
+                let cache = TileCache::in_memory(tile_cache);
                 (Some(Tiles::new(Arc::new(h), cache, false)), names)
+            }
+            None => (None, BTreeSet::new()),
+        };
+        let (surveyor_tiles, surveyor_layers) = match &surveyor {
+            Some(s) => {
+                let names = s.layer_names().map(str::to_owned).collect();
+                let cache = TileCache::in_memory(tile_cache);
+                let source: Arc<SurveyorTiles> = Arc::clone(s);
+                (Some(Tiles::new(source, cache, false)), names)
             }
             None => (None, BTreeSet::new()),
         };
@@ -220,6 +259,9 @@ impl View {
             reasons: drawn.reasons,
             tiles,
             tile_layers,
+            surveyor: surveyor_tiles,
+            surveyor_layers,
+            surveyor_parses: surveyor,
             worker,
             cards: Mutex::new(CardCache::new(cap)),
             heap: None,
@@ -252,9 +294,14 @@ impl View {
         self.scenes.keys().map(String::as_str)
     }
 
-    /// The base map layer names.
+    /// The HABITAT base map layer names.
     pub fn tile_layers(&self) -> &BTreeSet<String> {
         &self.tile_layers
+    }
+
+    /// The Surveyor base map layer names (none when the world has no Surveyor summaries).
+    pub fn surveyor_layers(&self) -> &BTreeSet<String> {
+        &self.surveyor_layers
     }
 
     fn over_cap(&self) -> Option<(u64, u64)> {
@@ -305,6 +352,7 @@ impl View {
             .map(|(m, h)| (m, format!("{h:016x}")))
             .collect();
         let tiles = self.tiles.as_ref().map(|t| t.cache.stats());
+        let surveyor = self.surveyor.as_ref().map(|t| t.cache.stats());
         json!({
             "world": self.world.name,
             "pages": s
@@ -324,12 +372,19 @@ impl View {
                 "row_budget": s.limits.row_budget,
                 "card_cache": s.limits.card_cache,
                 "tile_cache": s.limits.tile_cache,
+                "surveyor_cache": s.limits.surveyor_cache,
                 "heap_cap": s.limits.heap_cap,
             },
             "caches": {
                 "cards": { "bytes": cards.0, "entries": cards.1, "cap": cards.2 },
                 "tiles": tiles.map(|(b, n, c)| json!({ "bytes": b, "entries": n, "cap": c })),
+                "surveyor_tiles": surveyor.map(|(b, n, c)| json!({ "bytes": b, "entries": n, "cap": c })),
             },
+            "surveyor": self.surveyor_parses.as_ref().map(|s| json!({
+                "layers": self.surveyor_layers,
+                "regions_parsed": s.parses(),
+                "picture_bytes": s.cached_bytes(),
+            })),
             "heap": self.heap.as_ref().map(|h| h()),
         })
     }
@@ -389,6 +444,9 @@ impl Backend for View {
     }
 
     fn tiles(&self, source: &str) -> Option<&Tiles> {
+        if self.surveyor_layers.contains(source) {
+            return self.surveyor.as_ref();
+        }
         if self.tile_layers.contains(source) {
             self.tiles.as_ref()
         } else {
