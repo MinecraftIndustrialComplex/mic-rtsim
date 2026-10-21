@@ -21,10 +21,14 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.HopperBlock;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.GlassCorpusKit.*;
 
@@ -96,6 +100,13 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * shearings (43,000 ticks with 16 sheep); the cap does not allow it. The check still catches a factor of 2
  * (a goal tried every tick instead of every 2, or a wrong eat chance). The sheep start sheared, so the
  * window has no burst of first shearings. Shears: 238 uses; 53 in the window, so one pair is enough.
+ *
+ * <p><b>Measured</b> (stub engine, 7,200-tick window, three runs): wool 18.91, 20.32 and 20.67 per minute
+ * against 17.68 (all pass; all three above, so the model may run about 10% low). The window's own counters
+ * (logged as "sheep in the window") give T_r 1,964 and 1,966 ticks (55 regrowths each run, model 2,033.5)
+ * and W 126 ticks (56 and 57 shearings, model 139); 16 sheep stayed in the pen throughout. Both are within
+ * the counts' noise (55 geometric waits: about +-13% on T_r), so the model stands; a longer bench would
+ * settle the 10%.
  */
 public final class SheepWoolFactory implements CorpusFactory {
     static final int SHEEP = 16;
@@ -213,10 +224,46 @@ public final class SheepWoolFactory implements CorpusFactory {
         });
     }
 
+    /** Diagnostics over the window, logged at its end: sheep-ticks sheared and woolly, regrowths and shearings seen. */
+    private final Map<UUID, Boolean> lastSheared = new HashMap<>();
+    private long shearedTicks, woollyTicks, regrowths, shearings, minInPen = Long.MAX_VALUE;
+
+    @Override
+    public void perturb(GameTestHelper h, Built built, int windowTick) {
+        if (windowTick == 0) {
+            lastSheared.clear();
+            shearedTicks = woollyTicks = regrowths = shearings = 0;
+            minInPen = Long.MAX_VALUE;
+        }
+        BlockPos pen = built.anchor().relative(Direction.EAST, 2);
+        List<Sheep> sheep = h.getLevel().getEntitiesOfClass(Sheep.class, new AABB(pen));
+        minInPen = Math.min(minInPen, sheep.size());
+        for (Sheep s : sheep) {
+            boolean sheared = s.isSheared();
+            Boolean before = lastSheared.put(s.getUUID(), sheared);
+            if (before != null && before != sheared) {
+                if (sheared)
+                    shearings++;
+                else
+                    regrowths++;
+            }
+            if (sheared)
+                shearedTicks++;
+            else
+                woollyTicks++;
+        }
+        if (windowTick == built.window() - 1)
+            log(name(), "sheep in the window", String.format(Locale.ROOT,
+                    "at least %d in the pen; %d regrowths over %d sheared sheep-ticks (T_r %.1f, model %.1f); %d shearings over %d woolly sheep-ticks (W %.1f, model %.1f)",
+                    minInPen, regrowths, shearedTicks, shearedTicks / (double) Math.max(1, regrowths), T_REGROW,
+                    shearings, woollyTicks, woollyTicks / (double) Math.max(1, shearings), (SHEEP - 0.5) * MEAN_CYCLE));
+    }
+
     private void restore(MinecraftServer server) {
         if (savedMobGriefing == null)
             return;
         server.getGameRules().getRule(GameRules.RULE_MOBGRIEFING).set(savedMobGriefing, server);
+        log(name(), "mobGriefing restored", savedMobGriefing);
         savedMobGriefing = null;
     }
 }

@@ -45,8 +45,11 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  *   y3             motor up, 64 RPM            packager Q (9,3,14) facing W, millstone (10,3,14), cog (11,3,14)
  *   y2  frogport A (5,2,6)                     chute (10,2,14), motor up 256 RPM (11,2,14)
  *   y1  chest (4,1,6), packager P (5,1,6) facing E, stock link (5,1,7)      chest (10,1,14)
- *   requester (2,1,10), pulse timer (2,1,11) facing S, period 40
+ *   y2  requester (2,2,10), pulse timer (2,2,11) facing S, period 40 (both on the floor)
  * </pre>
+ * The yard's polished andesite floor is at relative y 1 (the structure block is at relative y 0, the
+ * template one block above it; relative y 0 is air, y -1 and below stone): the y 1 blocks above replace
+ * floor blocks, which only matters for blocks that need support (the diode stands on the floor at y 2).
  * The two conveyors are joined in code the way {@code ChainConveyorConnectionPacket} joins them
  * ({@code addConnectionTo} on each, after {@code prepareStats}, since {@code addConnectionTo} writes into
  * {@code connectionStats}, which is null before the first tick). The frogports' targets are
@@ -94,6 +97,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  *
  * <p><b>Stores.</b> 640 clay last 640 / 2 x 40 = 12,800 ticks; the output chest's 27 stacks hold 1,728
  * clay balls, 7,200 ticks of output plus the warm-up's.
+ *
+ * <p><b>Measured</b> (stub engine, 3,600-tick window): clay -59.993 per minute, clay balls +240.022. The
+ * first package leaves the packager 1 tick after build and its clay balls reach the chest about 112 ticks
+ * after build (packager 20, frogport 10, loop and chain about 60, catch 10, lazy push, millstone 10).
  */
 public final class PackageLoopFactory implements CorpusFactory {
     static final int CLOCK = 40;
@@ -166,8 +173,9 @@ public final class PackageLoopFactory implements CorpusFactory {
 
         // Trigger: a requester on the stock link's frequency, ordering 2 clay to "mill", clocked by a
         // pulse timer south of it (a diode's FACING is the side it is read from: it powers the block on
-        // the opposite side).
-        BlockPos requester = at(h, 2, 1, 10), timer = at(h, 2, 1, 11);
+        // the opposite side). Both stand on the yard's floor (relative y 1): a diode needs a sturdy block
+        // under it (DiodeBlock.canSurvive), and relative y 0 is air.
+        BlockPos requester = at(h, 2, 2, 10), timer = at(h, 2, 2, 11);
         set(h, requester, AllBlocks.REDSTONE_REQUESTER.getDefaultState());
         RedstoneRequesterBlockEntity r = be(h, requester, RedstoneRequesterBlockEntity.class);
         r.behaviour.freqId = freq;
@@ -180,7 +188,6 @@ public final class PackageLoopFactory implements CorpusFactory {
         if (period == null)
             throw new GameTestAssertException("no pulse timer setting at " + timer.toShortString());
         period.setValue(CLOCK);
-
         double c = CLAY_PER_MIN;
         return new Built(packager, List.of(src), List.of(out), List.of(
                 Expect.exact("minecraft:clay", -c,
