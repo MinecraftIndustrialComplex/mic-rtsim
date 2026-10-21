@@ -676,9 +676,11 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "mic-native-rt",
  "mic-viewer",
  "rtsim-conflict",
  "rtsim-ecology",
+ "rtsim-host",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
@@ -729,6 +731,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsim-host"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "mic-native-host",
+ "mic-native-rt",
+ "mic-viewer",
+ "rtsim-archive",
+ "rtsim-conflict",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-jni",
+ "rtsim-kernel",
+ "rtsim-ships",
+ "rtsim-space",
+ "rtsim-travel",
+ "rtsim-view",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rtsim-industry"
 version = "0.0.1"
 dependencies = [
@@ -750,6 +775,7 @@ dependencies = [
  "proptest",
  "rtsim-conflict",
  "rtsim-ecology",
+ "rtsim-host",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
@@ -848,6 +874,7 @@ dependencies = [
  "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
+ "rtsim-host",
  "rtsim-industry",
  "rtsim-jni",
  "rtsim-kernel",
