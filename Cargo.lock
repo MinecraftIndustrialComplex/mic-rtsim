@@ -681,6 +681,7 @@ dependencies = [
  "rtsim-kernel",
  "rtsim-ships",
  "rtsim-space",
+ "rtsim-travel",
  "rtsim-world",
  "serde",
  "serde_json",

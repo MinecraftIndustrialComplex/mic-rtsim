@@ -23,3 +23,6 @@ mic-native-rt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
+
+[dev-dependencies]
+rtsim-travel.workspace = true

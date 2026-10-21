@@ -181,6 +181,8 @@ struct Taken {
     bytes: u64,
     journal: Option<Vec<u8>>,
     parsed: Journal,
+    /// Observations neither the pages nor the journal hold.
+    lost: Option<(u64, u64)>,
 }
 
 enum Copied {
@@ -254,21 +256,19 @@ fn copy_once(world: &Path, pages: &Path, partial: &Path) -> Result<Copied, Retry
             .map_err(|e| Retry::Fatal(format!("{}: {e}", journal_path.display())))?,
         None => Journal::fresh(),
     };
-    // The journal must hold every observation after the pages' (else a later save's trim
-    // already dropped some the pages never had).
-    if parsed.first_obs() > generation.obs_seq + 1 {
-        return Ok(Copied::Again(format!(
-            "the journal starts at observation {}, past the pages' {}",
-            parsed.first_obs(),
-            generation.obs_seq
-        )));
-    }
+    // A journal trimmed past the pages: with the journal the same before and after the copy,
+    // the pages read in between are at least the generation that trim followed, so the gap is
+    // the world's own (its server would find the same observations lost at its next start, and
+    // the engine logs it then), not a save racing the copy.
+    let lost = (parsed.first_obs() > generation.obs_seq + 1)
+        .then(|| (generation.obs_seq + 1, parsed.first_obs() - 1));
     Ok(Copied::Done(Taken {
         generation,
         pages: n,
         bytes,
         journal: after,
         parsed,
+        lost,
     }))
 }
 
@@ -340,6 +340,13 @@ fn finish(
             "the pages hold observations through {}, the journal only to {}: the world stopped between the engine's save and the journal's (P29); the host starts from the pages, as the game would",
             c.generation.obs_seq,
             c.parsed.save.next_obs.saturating_sub(1)
+        ));
+    }
+    if let Some((from, to)) = c.lost {
+        notes.push(format!(
+            "the journal starts at observation {}, the pages hold observations through {}: observations {from} to {to} are in neither, as the world itself has it (its server would lose them at its next start too)",
+            to + 1,
+            from - 1
         ));
     }
     let info = ForkInfo {
