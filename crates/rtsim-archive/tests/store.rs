@@ -15,6 +15,7 @@ use rtsim_archive::{Archive, ArchiveReader, Dictionary, Pending};
 fn st(obs_seq: u64, wall_ms: u64) -> Stamp {
     Stamp {
         obs_seq,
+        serial: obs_seq,
         tick: obs_seq * 1_000,
         wall_ms,
     }
@@ -228,8 +229,8 @@ fn rollback_cuts_chunks_above_the_selected_generation() {
     // generation 20 and cuts.
     drop(a);
     let mut a = Archive::open(dir.path()).unwrap();
-    assert_eq!(a.cut_above(20).unwrap(), 1);
-    assert_eq!(a.cut_above(20).unwrap(), 0);
+    assert_eq!(a.cut_above_serial(20).unwrap(), 1);
+    assert_eq!(a.cut_above_serial(20).unwrap(), 0);
     assert!(!dir.files().contains(&chunk_name(2)));
     drop(a);
     let mut a = Archive::open(dir.path()).unwrap();

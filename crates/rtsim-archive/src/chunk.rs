@@ -79,7 +79,11 @@ impl Tier {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stamp {
     /// The observation sequence the save's generation includes (`Generation::obs_seq`, §10.5).
+    /// Only journaled records move it, so saves with none between them share it.
     pub obs_seq: u64,
+    /// The engine's save serial: one more at every save, kept in the engine's pages, so a restart
+    /// knows the serial of the generation it starts from and cuts every chunk above it (§10.5).
+    pub serial: u64,
     /// The game tick at the save's snapshot.
     pub tick: u64,
     /// The wall clock at the flush, in milliseconds since the Unix epoch.
@@ -102,6 +106,8 @@ pub struct ChunkHeader {
     pub last_end: u64,
     /// The observation sequence of the save the rows were flushed with (§10.5).
     pub obs_seq: u64,
+    /// That save's serial ([`Stamp::serial`]).
+    pub serial: u64,
     /// The game tick at that save's snapshot: with `wall_ms`, a point pairing game time with dates.
     pub save_tick: u64,
     /// The wall clock at the flush, in milliseconds since the Unix epoch.
@@ -142,6 +148,7 @@ impl ChunkHeader {
             last_tick: rows.last().map_or(0, row::tick),
             last_end,
             obs_seq: stamp.obs_seq,
+            serial: stamp.serial,
             save_tick: stamp.tick,
             wall_ms: stamp.wall_ms,
             bbox,
@@ -177,6 +184,7 @@ impl ChunkHeader {
             last_tick: counts.last().map_or(0, Count::first_tick),
             last_end,
             obs_seq: stamp.obs_seq,
+            serial: stamp.serial,
             save_tick: stamp.tick,
             wall_ms: stamp.wall_ms,
             bbox,
@@ -189,6 +197,7 @@ impl ChunkHeader {
     pub fn stamp(&self) -> Stamp {
         Stamp {
             obs_seq: self.obs_seq,
+            serial: self.serial,
             tick: self.save_tick,
             wall_ms: self.wall_ms,
         }
@@ -227,6 +236,7 @@ impl ChunkHeader {
         w.var_u64(self.last_tick - self.first_tick);
         w.var_u64(self.last_end - self.first_tick);
         w.var_u64(self.obs_seq);
+        w.var_u64(self.serial);
         w.var_u64(self.save_tick);
         w.var_u64(self.wall_ms);
         for v in self.bbox {
@@ -255,6 +265,7 @@ impl ChunkHeader {
             .checked_add(r.var_u64()?)
             .ok_or_else(|| bad("last end"))?;
         let obs_seq = r.var_u64()?;
+        let serial = r.var_u64()?;
         let save_tick = r.var_u64()?;
         let wall_ms = r.var_u64()?;
         let mut bbox = [0i32; 4];
@@ -283,6 +294,7 @@ impl ChunkHeader {
             last_tick,
             last_end,
             obs_seq,
+            serial,
             save_tick,
             wall_ms,
             bbox,
@@ -567,6 +579,7 @@ mod tests {
             vec![(0, b"loot".to_vec()), (9, b"gone".to_vec())],
             Stamp {
                 obs_seq: 77,
+                serial: 78,
                 tick: 400,
                 wall_ms: 1_700_000_000_000,
             },
@@ -587,9 +600,10 @@ mod tests {
                 h.last_tick,
                 h.last_end,
                 h.obs_seq,
+                h.serial,
                 h.save_tick
             ),
-            (4, 50, 300, 1_050, 77, 400)
+            (4, 50, 300, 1_050, 77, 78, 400)
         );
         assert_eq!(h.bbox, [-100, -5, 5, 400]);
         assert_eq!(h.frames(), [0, 2]);

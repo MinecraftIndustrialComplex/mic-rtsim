@@ -10,8 +10,12 @@
 //!   reached its page commit (the rollback would cut it anyway) or a compaction that never finished
 //!   (its rows are still in the chunks it would have replaced), and the writer deletes it on open.
 //! - **Rollback.** On open, before anything new is written, the engine cuts the chunks tagged above
-//!   the `obs_seq` of the generation it selected ([`Archive::cut_above`]). The reader never cuts: it
-//!   ignores chunks above the generation it reads ([`ArchiveReader::open`]).
+//!   the save serial of the generation it selected ([`Archive::cut_above_serial`]). Saves with no
+//!   journaled record between them share an `obs_seq`, so only the serial tells a rolled-back
+//!   save's chunks from the confirmed one's. A copy of a save that knows only the generation's
+//!   `obs_seq` cuts by that ([`Archive::cut_above`]), which keeps those same-`obs_seq` chunks until
+//!   the engine's own start cuts them. The reader never cuts: it ignores chunks above the
+//!   generation it reads ([`ArchiveReader::open`]).
 //! - **Damage.** An unreadable index is rebuilt from the chunk files' own headers. An unreadable
 //!   dictionary would make every kind name a guess, so the writer clears the archive and says so
 //!   ([`Archive::was_reset`]); the reader shows kinds by number.
@@ -21,7 +25,7 @@
 //!   go to the notable tier and the rest are counted, notable rows are counted, fine counts are
 //!   coarsened, and the oldest coarse counts go. It also merges small chunks (a quiet world writes a
 //!   tiny chunk a save). It reads and writes at most [`Budget::work`] bytes a save and never touches
-//!   a chunk tagged above the confirmed generation, which a rollback may still cut.
+//!   a chunk whose serial is above the confirmed generation's, which a rollback may still cut.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
@@ -433,14 +437,26 @@ impl Archive {
         write_atomic(&self.dir.join(INDEX_FILE), &self.index.encode())
     }
 
-    /// Rollback (§10.5): deletes the chunks tagged above `obs_seq`, the observation sequence of the
+    /// Rollback (§10.5): deletes the chunks tagged above `serial`, the save serial of the
     /// generation the engine selected. Returns how many went.
+    pub fn cut_above_serial(&mut self, serial: u64) -> io::Result<usize> {
+        self.cut(|h| h.serial > serial)
+    }
+
+    /// Deletes the chunks tagged above `obs_seq`, a generation's observation sequence, for a copy
+    /// of a save that does not know the generation's serial. Coarser than
+    /// [`Archive::cut_above_serial`]: a save rolled back with no journaled record after the
+    /// generation shares its `obs_seq` and stays. Returns how many went.
     pub fn cut_above(&mut self, obs_seq: u64) -> io::Result<usize> {
+        self.cut(|h| h.obs_seq > obs_seq)
+    }
+
+    fn cut(&mut self, above: impl Fn(&ChunkHeader) -> bool) -> io::Result<usize> {
         let cut: Vec<u64> = self
             .index
             .entries
             .iter()
-            .filter(|e| e.header.obs_seq > obs_seq)
+            .filter(|e| above(&e.header))
             .map(|e| e.seq)
             .collect();
         if cut.is_empty() {
@@ -454,7 +470,7 @@ impl Archive {
                 _ => {}
             }
         }
-        self.index.entries.retain(|e| e.header.obs_seq <= obs_seq);
+        self.index.entries.retain(|e| !above(&e.header));
         self.write_index()?;
         Ok(cut.len())
     }
@@ -573,14 +589,14 @@ impl Archive {
         read_chunk(&self.dir.join(chunk_name(seq)))
     }
 
-    /// Compaction (§10.4), after a save whose generation is confirmed at `confirmed` (the
-    /// observation sequence of the newest generation a restart would select). In order of need:
-    /// the count tier over its target (coarsen the oldest fine counts, then drop the oldest coarse
-    /// ones), the notable tier over its target or past its horizon (count its oldest chunks), the
-    /// full tier likewise (its oldest chunks' notable rows to the notable tier, the rest counted),
-    /// then small chunks merged. Stops once [`Budget::work`] bytes are read and written; a chunk
-    /// tagged above `confirmed` is never touched. A damaged chunk in the way is dropped (its rows
-    /// are lost either way) so it cannot stall the tier.
+    /// Compaction (§10.4), after a save whose generation is confirmed at `confirmed` (the save
+    /// serial of the newest generation a restart would select). In order of need: the count tier
+    /// over its target (coarsen the oldest fine counts, then drop the oldest coarse ones), the
+    /// notable tier over its target or past its horizon (count its oldest chunks), the full tier
+    /// likewise (its oldest chunks' notable rows to the notable tier, the rest counted), then small
+    /// chunks merged. Stops once [`Budget::work`] bytes are read and written; a chunk whose serial
+    /// is above `confirmed` is never touched. A damaged chunk in the way is dropped (its rows are
+    /// lost either way) so it cannot stall the tier.
     pub fn compact(&mut self, confirmed: u64) -> io::Result<Compaction> {
         let mut done = Compaction::default();
         let b = self.budget;
@@ -654,7 +670,7 @@ impl Archive {
             .index
             .entries
             .iter()
-            .filter(|e| e.header.tier == tier && e.header.obs_seq <= confirmed)
+            .filter(|e| e.header.tier == tier && e.header.serial <= confirmed)
             .collect();
         order.sort_by_key(|e| (e.header.first_tick, e.seq));
         let mut run = Vec::new();
@@ -772,7 +788,7 @@ impl Archive {
             for e in order {
                 let fits = rows + e.header.rows as usize <= ROWS_PER_CHUNK
                     && (run.is_empty() || read + e.bytes <= reads);
-                if e.header.obs_seq <= confirmed && small(e) && fits {
+                if e.header.serial <= confirmed && small(e) && fits {
                     rows += e.header.rows as usize;
                     read += e.bytes;
                     run.push(e.clone());
@@ -783,7 +799,7 @@ impl Archive {
                 }
                 run.clear();
                 (rows, read) = (0, 0);
-                if e.header.obs_seq <= confirmed && small(e) {
+                if e.header.serial <= confirmed && small(e) {
                     rows = e.header.rows as usize;
                     read = e.bytes;
                     run.push(e.clone());
@@ -906,7 +922,7 @@ fn total(encoded: &[(ChunkHeader, Vec<u8>)]) -> u64 {
 fn newest_stamp(run: &[Entry]) -> Stamp {
     run.iter()
         .map(|e| e.header.stamp())
-        .max_by_key(|s| (s.obs_seq, s.tick))
+        .max_by_key(|s| (s.serial, s.obs_seq, s.tick))
         .unwrap_or_default()
 }
 
