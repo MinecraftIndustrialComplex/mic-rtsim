@@ -1413,6 +1413,22 @@ impl Ships {
         self.ships.rows().resident_bytes() + self.threats.resident_bytes()
     }
 
+    /// The row budget over both tables (`usize::MAX` resident).
+    pub fn rows_budget(&self) -> usize {
+        self.ships
+            .rows()
+            .budget()
+            .saturating_add(self.threats.budget())
+    }
+
+    /// Whether the rows are over their budget with nothing left to evict (read it after
+    /// [`Ships::enforce_budget`], which [`Ships::run_until`] ends with): every resident page has
+    /// changed since the last save. The host should save, an extra pending save like an autosave
+    /// (P29, as herds do, PM7); the pages it writes can then go.
+    pub fn needs_save(&self) -> bool {
+        self.is_paged() && self.rows_resident_bytes() > self.rows_budget()
+    }
+
     /// Both row tables' counters, summed (peaks are summed: at least the peak of the sum).
     pub fn row_stats(&self) -> RowStats {
         let (a, b) = (self.ships.rows().stats(), self.threats.stats());

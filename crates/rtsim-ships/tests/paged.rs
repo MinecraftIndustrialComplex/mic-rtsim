@@ -400,6 +400,20 @@ fn a_watched_hour_loads_only_the_pages_it_needs() {
     assert!(st.loads <= embodied, "{st:?} for {embodied} embodied ships");
     assert!(g.ships.ships.iter().all(|(_, x)| !x.embodied));
     g.ships.check(&g.world).expect("the indexes agree");
+    // The session start changed the embodied ships' pages: over a budget of nothing with only
+    // changed pages left, the engine asks for a save, and after it has nothing to ask.
+    g.ships.enforce_budget();
+    assert!(
+        g.ships.needs_save(),
+        "{} bytes",
+        g.ships.rows_resident_bytes()
+    );
+    store.save(&mut g.ships);
+    assert!(!g.ships.needs_save());
+    assert!(
+        !Grid::with_side(3).ships.needs_save(),
+        "resident never asks"
+    );
 }
 
 /// The network (the flow graph, resident and growing with the world) is written only by the saves
