@@ -136,12 +136,12 @@ impl Saved {
         scrub_path(text, &self.world_dir, &world_name(&self.world_dir))
     }
 
-    /// The save's game tick: the phase 1 world's, else the industry engine's.
+    /// The save's game tick: the later of the phase 1 world's and the industry engine's (a link
+    /// run with only the industry module on leaves the phase 1 clock where it started).
     pub fn now(&self) -> i64 {
-        if let Some(p) = &self.phase1 {
-            return p.game(p.world.now().0);
-        }
-        self.industry.as_ref().map_or(0, |i| i.now)
+        let phase1 = self.phase1.as_ref().map(|p| p.game(p.world.now().0));
+        let industry = self.industry.as_ref().map(|i| i.now);
+        phase1.max(industry).unwrap_or(0)
     }
 
     /// The game tick of a world tick (the phase 1 clock the other modules share).
