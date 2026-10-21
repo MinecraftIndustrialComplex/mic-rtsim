@@ -1038,6 +1038,7 @@ public final class IndustryGameTests {
         Industry[] industry = {null};
         long[] id = {0};
         int[] quiet = {0};
+        int[] quietEach = new int[QUIET.length];
         int[][] announced = {null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
@@ -1056,13 +1057,19 @@ public final class IndustryGameTests {
                 .thenExecute(() -> {
                     check("the module is off: no industry for the API", IndustryApi.current() == null);
                     quiet[0] = sentCount(QUIET);
+                    for (int i = 0; i < QUIET.length; i++)
+                        quietEach[i] = sentCount(QUIET[i]);
                     // A change the module would have sent: a player places a block next to the district.
                     set(helper, chestPos.above(), Blocks.CHEST.defaultBlockState());
                     playerPlaced(helper, chestPos.above());
                 })
                 .thenIdle(60)
                 .thenExecute(() -> {
-                    check("nothing was sent while off: " + quiet[0] + " then " + sentCount(QUIET), sentCount(QUIET) == quiet[0]);
+                    StringBuilder which = new StringBuilder();
+                    for (int i = 0; i < QUIET.length; i++)
+                        if (sentCount(QUIET[i]) != quietEach[i])
+                            which.append(" 0x").append(Integer.toHexString(QUIET[i])).append(" +").append(sentCount(QUIET[i]) - quietEach[i]);
+                    check("nothing was sent while off: " + quiet[0] + " then " + sentCount(QUIET) + which, sentCount(QUIET) == quiet[0]);
                     set(helper, chestPos.above(), Blocks.AIR.defaultBlockState());
                     announced[0] = new int[ANNOUNCED.length];
                     for (int i = 0; i < ANNOUNCED.length; i++)
