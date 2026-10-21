@@ -119,14 +119,28 @@ fn for_each_tape(st: &mut State, mut f: impl FnMut(&mut rtsim_archive::Tape)) {
     f(&mut st.conflict.engine.tape);
 }
 
-/// Moves the modules' rows into the recorder (each step, and at a save's snapshot).
-pub(super) fn absorb(st: &mut State) {
+/// Moves the modules' rows into the recorder (each step, and at a save's snapshot), and says how
+/// full its buffer is (`archive_pending_rows`, `archive_pending_bytes`): past half of either cap
+/// (`rtsim_archive::pending::MAX_PENDING_ROWS`, `MAX_PENDING_BYTES`) a host that saves on its own
+/// clock saves sooner, so a fast run drops nothing (§12).
+pub(super) fn absorb(st: &mut State, stats: &Stats) {
     if !st.archive_on {
         return;
     }
     let mut rec = std::mem::take(&mut st.archive);
     for_each_tape(st, |t| rec.absorb(t));
     st.archive = rec;
+    pending(st, stats);
+}
+
+fn pending(st: &State, stats: &Stats) {
+    let p = st.archive.pending();
+    stats
+        .archive_pending_rows
+        .store(p.len() as u64, Ordering::Release);
+    stats
+        .archive_pending_bytes
+        .store(p.bytes() as u64, Ordering::Release);
 }
 
 /// One save's rows on their way to the IO lane.
@@ -141,12 +155,13 @@ pub(super) struct Taken {
 
 /// The rows up to this snapshot, with the save's serial (on the step thread, at the save's
 /// snapshot).
-pub(super) fn take(st: &mut State) -> Option<Taken> {
+pub(super) fn take(st: &mut State, stats: &Stats) -> Option<Taken> {
     if !st.archive_on {
         return None;
     }
-    absorb(st);
+    absorb(st, stats);
     let (batch, dict) = st.archive.take();
+    pending(st, stats);
     st.archive_serial += 1;
     Some(Taken {
         batch,

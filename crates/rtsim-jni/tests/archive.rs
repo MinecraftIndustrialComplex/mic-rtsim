@@ -136,9 +136,19 @@ fn villages(tag: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, u64
 fn a_crash_before_the_page_commit_cuts_the_saves_chunks_and_the_replay_records_them_once() {
     // The run that does not crash.
     let (dir, e, mut j, _, _) = villages("archive-whole");
+    // B's and C's joins wait in the buffer for the next save, and a host that saves on its own
+    // clock can see how full it is.
+    let waiting = e.stats.archive_pending_rows.load(Acquire);
+    assert!(waiting >= 2, "{waiting} rows waiting");
+    assert!(e.stats.archive_pending_bytes.load(Acquire) >= 32 * waiting);
     save(&e, &mut j);
     e.close(true, Duration::from_secs(5)).unwrap();
     assert_eq!(e.stats.archive_failures.load(Acquire), 0);
+    assert_eq!(
+        e.stats.archive_pending_rows.load(Acquire),
+        0,
+        "the last save took them"
+    );
     let (whole, _) = events(&dir);
     let joined = |v: &[Ev]| v.iter().filter(|r| r.0 == "settle.joined").count();
     assert_eq!(joined(&whole), 3, "three villages joined: {whole:?}");

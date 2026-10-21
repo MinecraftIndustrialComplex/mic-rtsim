@@ -297,6 +297,9 @@ pub struct Stats {
     /// select (`archive.rs`). Not in Java's array.
     pub archive_serial: AtomicU64,
     pub archive_confirmed: AtomicU64,
+    /// Rows and bytes waiting in the archive's buffer for the next save. Not in Java's array.
+    pub archive_pending_rows: AtomicU64,
+    pub archive_pending_bytes: AtomicU64,
 }
 
 pub const STATS_LEN: usize = 16;
@@ -1188,7 +1191,7 @@ impl Engine {
         if paging::enforce_budget(&mut st) && st.paging.in_flight == 0 {
             self.save_now(&mut st, true);
         }
-        archive::absorb(&mut st);
+        archive::absorb(&mut st, &self.stats);
 
         // 4. Commands, into C[h & 1] once Java has finished with step h - 2's.
         let c = self.cmd_buffer(h as usize);
@@ -1507,7 +1510,7 @@ impl Engine {
         let test = self.cfg.test;
         let obs_seq = st.replay.applied_through().0;
         // The events up to the state this save holds (§10.3).
-        let events = archive::take(st);
+        let events = archive::take(st, &self.stats);
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
         let mut whole = industry::snapshot(st);
