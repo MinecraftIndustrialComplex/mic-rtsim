@@ -33,8 +33,8 @@ use super::records::NodeKind;
 use super::report;
 use super::solve::{Regime, Solution, burn};
 use crate::cluster::{
-    Cluster, CyclePiece, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, RESET_CARRY, Run, SpaceSpec,
-    Stop, cycle_period,
+    Cluster, CycleFire, CyclePiece, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, Run, SpaceSpec,
+    Stop, cycle_fired, cycle_period,
 };
 use crate::ids::{DistrictId, Good, GoodClass, GoodVec};
 use crate::reconcile::GoodLookup;
@@ -198,8 +198,8 @@ struct Mark {
     room: bool,
     /// A heater's phase changed here.
     heater: bool,
-    /// The pools whose carries restarted here.
-    resetting: BTreeSet<PoolKey>,
+    /// The time shift applied here: the pool that fired, and the carry it landed on.
+    fire: Option<(PoolKey, u32)>,
     fed: Vec<f64>,
 }
 
@@ -240,9 +240,12 @@ pub struct Replay {
     /// The nets that run.
     nets: BTreeMap<PoolKey, i64>,
     watches: Vec<(Watch, SpaceSpec)>,
-    /// Pools whose carries restart at this breakpoint (the pool that fired, and every pool a
-    /// non-room watch looks at), so a repeated regime sequence repeats exactly.
-    resetting: BTreeSet<PoolKey>,
+    /// This breakpoint's time shift (choice G2-12): the pool that fired and the carry the shift
+    /// landed it on. The regime that ended moves back by under a tick, every flow together, so a
+    /// repeated regime sequence repeats exactly and nothing runs ahead of the control.
+    fire: Option<(PoolKey, u32)>,
+    /// When the running process was installed: a breakpoint at that same tick shifts nothing.
+    built_at: Tick,
     /// The residual node (G-B13): per pool, 32.32 per tick; runs while coupled.
     residual: BTreeMap<PoolKey, i64>,
     coupled: bool,
@@ -498,7 +501,8 @@ impl Replay {
             target: BTreeMap::new(),
             nets: BTreeMap::new(),
             watches: Vec::new(),
-            resetting: BTreeSet::new(),
+            fire: None,
+            built_at: at,
             residual: BTreeMap::new(),
             coupled: false,
             learned_sources: 0,
@@ -597,6 +601,28 @@ impl Replay {
             self.marks.clear();
         }
         for _ in 0..MAX_STEPS {
+            self.fire = None;
+            if let Some(w) = why
+                && at > self.built_at
+            {
+                let crossing = match w {
+                    Stop::InputEmpty(k) => Some((k, false)),
+                    Stop::Bound(_, tag) => self
+                        .watches
+                        .get((tag as usize).wrapping_sub(1))
+                        .filter(|(watch, _)| !matches!(watch, Watch::Room { .. }))
+                        .map(|(watch, spec)| {
+                            let rising = spec.0.first().is_some_and(|&(_, w)| w > 0);
+                            (watch.key(self.d), rising)
+                        }),
+                    _ => None,
+                };
+                if let Some((k, rising)) = crossing
+                    && let Some(canon) = c.shift_back(self.d, k, rising)
+                {
+                    self.fire = Some((k, canon));
+                }
+            }
             let lv = levels_of(c, self.d);
             let mut fired = None;
             let mut room = false;
@@ -655,17 +681,17 @@ impl Replay {
             let (proc, bounds) = self.build(comp, &lv, at, fired, room || heater, goods, tun)?;
             let mut proc = proc;
             let mut bounds = bounds;
-            if heater {
-                if let Some(m) = self.marks.last_mut() {
-                    m.heater = true;
-                }
+            if heater && let Some(m) = self.marks.last_mut() {
+                m.heater = true;
             }
-            if let Some((cp, deadline)) = self.detect(at, goods) {
+            let carries = c.carries_of(self.d);
+            if let Some((cp, deadline)) = self.detect(at, &carries, goods) {
                 proc = cp;
                 proc.deadline = Some(deadline);
                 bounds = Vec::new();
             }
-            c.replace_procs(self.d, vec![proc], bounds, &self.resetting, at);
+            c.replace_procs(self.d, vec![proc], bounds, at);
+            self.built_at = at;
             match c.run_of(self.d, 0) {
                 Some(Run::Running) | None => return Ok(()),
                 Some(Run::Stopped(Stop::Waiting)) => return Err(Fallback::Stuck),
@@ -850,11 +876,8 @@ impl Replay {
             }
             for (i, w) in cands {
                 let x = r * w / total;
-                let f = if x >= 0.0 {
-                    (x * FIXED_ONE as f64).floor() as i64
-                } else {
-                    (x * FIXED_ONE as f64).floor() as i64
-                };
+                // Floor: a rise rounds down, a fall away from zero (never above).
+                let f = (x * FIXED_ONE as f64).floor() as i64;
                 if f != 0 {
                     *self
                         .residual
@@ -902,7 +925,8 @@ impl Replay {
         } else {
             GoodClass::Item
         };
-        let (fits, other): (Vec<(PoolKey, i64)>, Vec<(PoolKey, i64)>) = arriving
+        type Shares = Vec<(PoolKey, i64)>;
+        let (fits, other): (Shares, Shares) = arriving
             .iter()
             .partition(|&&(k, _)| goods.class(k.good()) == kind);
         for (k, _) in other {
@@ -1170,12 +1194,6 @@ impl Replay {
                 watches.push((Watch::Undry { good: g }, (vec![(k, 1)], 0, h - 1)));
             }
         }
-        self.resetting = watches
-            .iter()
-            .filter(|(w, _)| !matches!(w, Watch::Room { .. }))
-            .map(|(w, _)| w.key(d))
-            .chain(fired)
-            .collect();
         self.watches = watches;
         // The deadline: the next latency arrival or heater phase.
         let mut deadline: Option<Tick> = None;
@@ -1240,13 +1258,17 @@ impl Replay {
         let d = self.d;
         let net = |k: PoolKey| self.nets.get(&k).copied().unwrap_or(0);
         let mut changed = false;
-        // (a) Refills: a good flagged empty that reached its holding threshold.
+        // (a) Refills: a good flagged empty that reached its holding threshold, or one that holds
+        // stock while nothing arrives (choice G2-19): a chest a funnel kept nearly empty is not a
+        // source while goods pass through it, but what is left in it drains once they stop.
         let mut unflag = Vec::new();
         for (&(inv, g), &l0) in &self.st.empty {
             let k = PoolKey::Store(d, inv, g);
             let r = net(k);
             let ahead = if r > 0 { reach(r) } else { 0 };
-            if level(lv, k) + ahead >= l0 + self.hold(comp, inv, g, goods, tun) {
+            if level(lv, k) + ahead >= l0 + self.hold(comp, inv, g, goods, tun)
+                || (r <= 0 && level(lv, k) >= 1)
+            {
                 unflag.push((inv, g));
             }
         }
@@ -1254,7 +1276,8 @@ impl Replay {
             self.st.empty.remove(&x);
             changed = true;
         }
-        // (b) Empties: a pool at 0, or one that cannot run a tick of its drain.
+        // (b) Empties: a drained pool that cannot run a tick of its drain. A pool nothing drains
+        // (an output store at 0) is not flagged: no watch restarts its carry (choice G2-12).
         let keys: Vec<PoolKey> = lv.keys().chain(self.nets.keys()).copied().collect();
         for k in keys {
             match k {
@@ -1264,7 +1287,7 @@ impl Replay {
                     }
                     let l = level(lv, k);
                     let r = net(k);
-                    if l <= 0 || (r < 0 && l < reach(r)) {
+                    if r < 0 && l < reach(r) {
                         self.st.empty.insert((inv, g), l.max(0));
                         changed = true;
                     }
@@ -1470,13 +1493,18 @@ impl Replay {
             fired,
             room,
             heater: false,
-            resetting: self.resetting.clone(),
+            fire: self.fire,
             fed: self.fed.clone(),
         });
     }
 
     /// Looks for a period ending at the newest mark; installs it as a cycle when one fits.
-    fn detect(&mut self, at: Tick, goods: &dyn GoodLookup) -> Option<(ProcSpec, Tick)> {
+    fn detect(
+        &mut self,
+        at: Tick,
+        carries: &BTreeMap<PoolKey, u32>,
+        goods: &dyn GoodLookup,
+    ) -> Option<(ProcSpec, Tick)> {
         let j = self.marks.len().checked_sub(1)?;
         let mut tries = 0;
         for i in (0..j).rev() {
@@ -1487,7 +1515,7 @@ impl Replay {
             if tries > CYCLE_TRIES {
                 break;
             }
-            if let Some(found) = self.try_cycle(i, j, at, goods) {
+            if let Some(found) = self.try_cycle(i, j, at, carries, goods) {
                 return Some(found);
             }
         }
@@ -1499,20 +1527,17 @@ impl Replay {
         i: usize,
         j: usize,
         at: Tick,
+        carries: &BTreeMap<PoolKey, u32>,
         goods: &dyn GoodLookup,
     ) -> Option<(ProcSpec, Tick)> {
         let (mi, mj) = (&self.marks[i], &self.marks[j]);
         let period = mj.at.0.checked_sub(mi.at.0)?;
-        if period == 0 || mi.resetting != mj.resetting || mj.resetting != self.resetting {
+        if period == 0 || mi.fire != mj.fire || mj.fire != self.fire {
             return None;
         }
         let ms = &self.marks[i..=j];
-        // Every breakpoint inside must repeat: no room re-split, no heater phase, every trigger
-        // restarting its carry.
-        if ms[1..]
-            .iter()
-            .any(|m| m.room || m.heater || m.fired.is_some_and(|k| !m.resetting.contains(&k)))
-        {
+        // Every breakpoint inside must repeat: no room re-split, no heater phase.
+        if ms[1..].iter().any(|m| m.room || m.heater) {
             return None;
         }
         let keys: BTreeSet<PoolKey> = ms
@@ -1567,10 +1592,18 @@ impl Replay {
         if pools.is_empty() {
             return None;
         }
+        let index: BTreeMap<PoolKey, usize> =
+            pools.iter().enumerate().map(|(j, &k)| (k, j)).collect();
         let mut pieces: Vec<CyclePiece> = Vec::new();
-        let mut pending: BTreeSet<PoolKey> = BTreeSet::new();
+        let mut pending: Vec<CycleFire> = Vec::new();
         for w in ms.windows(2) {
-            pending.extend(w[0].resetting.iter().copied());
+            if let Some((k, canon)) = w[0].fire {
+                let &j = index.get(&k)?;
+                pending.push(CycleFire {
+                    pool: j as u16,
+                    canon,
+                });
+            }
             let len = w[1].at.0 - w[0].at.0;
             if len == 0 {
                 continue;
@@ -1581,62 +1614,55 @@ impl Replay {
                     .iter()
                     .map(|k| w[0].nets.get(k).copied().unwrap_or(0))
                     .collect(),
-                reset: pools.iter().map(|k| pending.contains(k)).collect(),
+                fires: std::mem::take(&mut pending),
             });
-            pending.clear();
         }
-        // Restarts at the period's last instant land with the first piece's.
-        if let Some(first) = pieces.first_mut() {
-            for (j, k) in pools.iter().enumerate() {
-                if pending.contains(k) {
-                    first.reset[j] = true;
-                }
-            }
-        } else {
+        // Breakpoints at the period's last instant come before the first piece's.
+        let first = pieces.first_mut()?;
+        if !pending.is_empty() {
+            pending.append(&mut first.fires);
+            first.fires = pending;
+        }
+        // The cycle from the carries as they are: every fired pool must come back to its carry
+        // after one period (so every period is the first one), and every pool a breakpoint
+        // decides must come back to its level; a decided pool no breakpoint shifts must come back
+        // to its carry too.
+        let m = pools.len();
+        let c0: Vec<u32> = pools
+            .iter()
+            .map(|k| carries.get(k).copied().unwrap_or(0))
+            .collect();
+        let (e1, c1) = cycle_period(&pieces, &c0);
+        let fired = cycle_fired(&pieces, m);
+        if (0..m).any(|j| fired[j] && c1[j] != c0[j]) {
             return None;
         }
-        // Per pool over n periods: a pool a piece restarts moves its steady period's emission n
-        // times, within a unit for the first period's entry carry; one no piece restarts moves its
-        // exact rate, within a unit. A pool a breakpoint decides must return exactly.
-        let steady: Vec<Option<i128>> = (0..pools.len())
-            .map(|j| {
-                pieces.iter().any(|p| p.reset[j]).then(|| {
-                    let (_, c1) = cycle_period(&pieces, j, RESET_CARRY);
-                    cycle_period(&pieces, j, c1).0
-                })
-            })
-            .collect();
         let decides: BTreeSet<PoolKey> = ms
             .iter()
             .flat_map(|m| m.watched.iter().chain(m.fired.iter()))
             .copied()
             .collect();
         for (j, k) in pools.iter().enumerate() {
-            if decides.contains(k) && steady[j] != Some(0) {
+            if decides.contains(k) && (e1[j] != 0 || (!fired[j] && c1[j] != c0[j])) {
                 return None;
             }
         }
-        let index: BTreeMap<PoolKey, usize> =
-            pools.iter().enumerate().map(|(j, &k)| (k, j)).collect();
+        // Per pool over n periods: n times a period's move (exact; a unit either side covers the
+        // ticks inside a period).
         let change = |k: PoolKey, n: u64| -> (i64, i64) {
             let Some(&j) = index.get(&k) else {
                 return (0, 0);
             };
             let n128 = i128::from(n);
-            let (lo, hi) = match steady[j] {
-                Some(e) => (e * n128 - 1, e * n128 + 1),
-                None => {
-                    let s: i128 = pieces
-                        .iter()
-                        .map(|p| i128::from(p.rates[j]) * i128::from(p.len))
-                        .sum::<i128>()
-                        .saturating_mul(n128);
-                    (s.div_euclid(U) - 1, (s + U - 1).div_euclid(U) + 1)
-                }
+            let x = if fired[j] {
+                e1[j].saturating_mul(n128)
+            } else {
+                let mv = e1[j] * U + i128::from(c1[j]) - i128::from(c0[j]);
+                (i128::from(c0[j]) + mv.saturating_mul(n128)).div_euclid(U)
             };
             (
-                i64::try_from(lo).unwrap_or(i64::MIN / 4),
-                i64::try_from(hi).unwrap_or(i64::MAX / 4),
+                i64::try_from(x - 1).unwrap_or(i64::MIN / 4),
+                i64::try_from(x + 1).unwrap_or(i64::MAX / 4),
             )
         };
         let tick_max: i64 = ms
@@ -1645,8 +1671,14 @@ impl Replay {
             .map(|&r| reach(r))
             .max()
             .unwrap_or(1);
+        // A fired pool's path repeats exactly every period (its carry comes back), so the period
+        // it was found from bounds it; the others need a margin for their drift.
+        let exact = |k: PoolKey| index.get(&k).is_some_and(|&j| fired[j]);
         let check = |n: u64| -> bool {
             for &k in &keys {
+                if exact(k) {
+                    continue;
+                }
                 let lo = ms.iter().map(|m| level(&m.levels, k)).min().unwrap_or(0);
                 let drains = ms.iter().any(|m| m.nets.get(&k).is_some_and(|&r| r < 0));
                 if drains && lo + change(k, n).0.min(0) < CYCLE_MARGIN {
@@ -1667,7 +1699,11 @@ impl Replay {
                 }
                 let hi = |k: PoolKey| {
                     let top = ms.iter().map(|m| level(&m.levels, k)).max().unwrap_or(0);
-                    top + change(k, n).1.max(0) + CYCLE_MARGIN + tick_max
+                    if exact(k) {
+                        top
+                    } else {
+                        top + change(k, n).1.max(0) + CYCLE_MARGIN + tick_max
+                    }
                 };
                 let ok = if st.fluid {
                     mine.iter()
