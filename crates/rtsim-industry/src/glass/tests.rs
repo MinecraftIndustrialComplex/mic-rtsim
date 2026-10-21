@@ -806,6 +806,91 @@ fn the_least_squares_slope_of_a_compound_poisson_count_has_variance_six_fifths_l
     );
 }
 
+/// A press (1 per 10 ticks) making a sheet and two chance outputs from brass: an XP nugget at 3/4,
+/// and copper at 3/2 (2 units at 3/4). `split`: the nuggets go through a split junction, half to a
+/// void and half to the store.
+fn chance_press(split: bool) -> (Graph, Regime) {
+    let mut b = B::default();
+    let input = b.store(0);
+    let out = b.store(1);
+    let r = b.recipe(&[(BRASS, 1)], &[(SHEET, 1), (XP, 1), (COPPER, 1)]);
+    let chance = |good, num, den| Term {
+        good,
+        flags: term_flags::CHANCE,
+        num,
+        den,
+    };
+    b.recipes[r as usize].outputs[1] = chance(XP, 3, 4);
+    b.recipes[r as usize].outputs[2] = chance(COPPER, 3, 2);
+    let p = b.machine(model::PRESS, r, 1, 10);
+    b.edge(input, p);
+    if split {
+        let j = b.junction(rule::SPLIT);
+        let void = b.node(NodeKind::Sink, model::SINK_VOID, 0, Vec::new());
+        b.edge_k(EdgeKind::Adjacency, p, out, &[SHEET, COPPER]);
+        b.edge_k(EdgeKind::Adjacency, p, j, &[XP]);
+        b.edge(j, void);
+        b.edge(j, out);
+    } else {
+        b.edge(p, out);
+    }
+    let g = b.graph();
+    let rg = regime(&g, &[(input, &[BRASS])]);
+    (g, rg)
+}
+
+#[test]
+fn chance_outputs_add_their_roll_variance_to_the_checksum() {
+    assert!(close(solve::chance_variance(0.75), 0.1875));
+    assert!(close(solve::chance_variance(1.5), 0.375));
+    assert_eq!(solve::chance_variance(0.0), 0.0);
+    assert_eq!(solve::chance_variance(1.0), 0.0);
+    let (g, rg) = chance_press(false);
+    let s = run(&g, &rg);
+    assert!(close(bound(&s, XP).var_rate, 0.1 * 0.1875));
+    assert!(close(bound(&s, COPPER).var_rate, 0.1 * 0.375));
+    assert_eq!(bound(&s, SHEET).var_rate, 0.0);
+    // Half the nuggets are voided: half the roll variance reaches the store.
+    let (g, rg) = chance_press(true);
+    let s = run(&g, &rg);
+    assert_eq!(bound(&s, XP).in_l, Q::new(3, 80));
+    assert!(close(bound(&s, XP).var_rate, 0.5 * 0.1 * 0.1875));
+}
+
+#[test]
+fn the_least_squares_slope_of_a_rolled_output_has_variance_six_fifths_c_var_over_w() {
+    // A craft every 40 ticks rolling an output at 4/5 (the precision mechanism): a random walk
+    // with variance 0.16 a craft. W = 6,000 sampled every 20, as GB20's check.
+    let (period, e, w, step, windows) = (40u64, 0.8, 6000u64, 20u64, 3000);
+    let mut rng = Rng(7);
+    let mut slopes = Vec::with_capacity(windows);
+    for _ in 0..windows {
+        let (mut n, mut st, mut stt, mut sy, mut sty) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let mut y = 0.0;
+        for t in (0..=w).step_by(step as usize) {
+            if t > 0 && t % period == 0 && rng.unit() < e {
+                y += 1.0;
+            }
+            let x = t as f64;
+            n += 1.0;
+            st += x;
+            stt += x * x;
+            sy += y;
+            sty += x * y;
+        }
+        slopes.push((n * sty - st * sy) / (n * stt - st * st));
+    }
+    let mean = slopes.iter().sum::<f64>() / windows as f64;
+    let var = slopes.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (windows - 1) as f64;
+    let rate = solve::chance_variance(e) / period as f64;
+    let model = POISSON_SLOPE_FACTOR * rate / w as f64;
+    assert!(
+        (var / model - 1.0).abs() < 0.1,
+        "measured {var:e} vs model {model:e} (ratio {})",
+        var / model
+    );
+}
+
 // ---- the checksum (§5.3, G-B14) ------------------------------------------------------------------
 
 fn inventory(index: u32, contents: &[(Good, i64)]) -> Inventory {
@@ -1537,6 +1622,11 @@ fn a_loop_carries_its_back_edge_from_round_to_round_in_any_node_order() {
         assert_eq!(brass.class, class::BOUNDED);
         assert!(brass.in_u >= brass.in_l);
         assert_eq!(bound(&s, SHEET).out_l, Q::new(1, 64), "{perm:?}");
+        // A sequence a 64 ticks, the mechanism rolled at 4/5 (GB111): over the exit run's
+        // 2,400-tick window 3 sigma is about 4 a minute, so its 12.6 against 15 passes.
+        assert!(close(brass.var_rate, 0.16 / 64.0), "{}", brass.var_rate);
+        let sigma = (POISSON_SLOPE_FACTOR * brass.var_rate * 2400.0).sqrt() / 2400.0 * MIN;
+        assert!((1.3..1.4).contains(&sigma), "{sigma}");
     }
 }
 

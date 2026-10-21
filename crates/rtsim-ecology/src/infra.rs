@@ -18,6 +18,7 @@ use rtsim_industry::ids::{DistrictId, Good, GoodVec, TrainId};
 use rtsim_industry::threat::{Threat, ThreatTarget};
 use rtsim_kernel::clock::Tick;
 use rtsim_settle::Pos;
+use rtsim_space::topology::SharedTopologies;
 
 /// A district as a target: where it is and whether a player is near enough to fight for real.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,15 +100,39 @@ pub struct IndustryLink<'a> {
     pub index: &'a mut DistrictIndex,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DistrictIndex {
     cells: BTreeMap<(u16, i64, i64), Vec<(DistrictId, Pos)>>,
     known: usize,
+    /// The frames' topologies (TP6): a district's centre and a query's cells are taken through
+    /// them, so a district on a seam has one centre and a raid near an edge sees past it.
+    topo: SharedTopologies,
+}
+
+impl Default for DistrictIndex {
+    fn default() -> Self {
+        DistrictIndex {
+            cells: BTreeMap::new(),
+            known: 0,
+            topo: rtsim_space::topology::all_flat(),
+        }
+    }
 }
 
 const CELL: i64 = 1_024;
 
 impl DistrictIndex {
+    /// Hands the index the frames' topologies; it is rebuilt at the next query.
+    pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if std::sync::Arc::ptr_eq(&t, &self.topo) {
+            return;
+        }
+        if *t != *self.topo {
+            self.topo = t;
+            self.known = usize::MAX;
+        }
+    }
+
     fn refresh(&mut self, e: &Engine) {
         let n = e.districts().count();
         if n == self.known {
@@ -118,12 +143,19 @@ impl DistrictIndex {
             if d.chunks.is_empty() {
                 continue;
             }
+            let frame = d.dim as u16;
+            let t = self.topo.of(frame);
+            // The centre in the chart of the district's first chunk, so a district across a
+            // seam is not averaged to the far side of the world (TP16).
+            let first = d.chunks.iter().next().expect("not empty");
+            let origin = (i64::from(first.0) * 16 + 8, i64::from(first.1) * 16 + 8);
             let (sx, sz) = d.chunks.iter().fold((0i64, 0i64), |a, c| {
-                (a.0 + i64::from(c.0), a.1 + i64::from(c.1))
+                let p = (i64::from(c.0) * 16 + 8, i64::from(c.1) * 16 + 8);
+                let q = t.toward(origin, p);
+                (a.0 + (q.0 - 8) / 16, a.1 + (q.1 - 8) / 16)
             });
             let k = d.chunks.len() as i64;
-            let (x, z) = (sx * 16 / k + 8, sz * 16 / k + 8);
-            let frame = d.dim as u16;
+            let (x, z) = t.canonical(sx * 16 / k + 8, sz * 16 / k + 8);
             self.cells
                 .entry((frame, x.div_euclid(CELL), z.div_euclid(CELL)))
                 .or_default()
@@ -136,12 +168,24 @@ impl DistrictIndex {
 impl Infrastructure for IndustryLink<'_> {
     fn districts_near(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite> {
         self.index.refresh(self.engine);
+        let t = self.index.topo.clone();
+        let t = t.of(frame);
+        let mut cells = Vec::new();
+        for part in t.rects_near(x, z, r) {
+            let (x0, z0, x1, z1) = part.grid_cells(CELL);
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    cells.push((cx, cz));
+                }
+            }
+        }
+        cells.sort_unstable();
+        cells.dedup();
         let mut out = Vec::new();
-        for cx in (x - r).div_euclid(CELL)..=(x + r).div_euclid(CELL) {
-            for cz in (z - r).div_euclid(CELL)..=(z + r).div_euclid(CELL) {
+        for (cx, cz) in cells {
+            {
                 for &(id, pos) in self.index.cells.get(&(frame, cx, cz)).into_iter().flatten() {
-                    let (dx, dz) = (i64::from(pos.x) - x, i64::from(pos.z) - z);
-                    if dx * dx + dz * dz > r * r {
+                    if t.dist_sq((i64::from(pos.x), i64::from(pos.z)), (x, z)) > (r * r) as u64 {
                         continue;
                     }
                     let Some(d) = self.engine.district(id) else {

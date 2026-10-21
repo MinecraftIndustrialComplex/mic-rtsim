@@ -68,6 +68,32 @@ impl WaterMask for HabitatWater {
     }
 }
 
+/// A mask read through a world's topology (TP15): cell (cx, cz) of a chart is the canonical
+/// cell it folds to, so a lane's search runs straight across a seam. Cells near a cone point are
+/// never water (TP13).
+pub struct ChartMask<'a> {
+    pub inner: &'a dyn WaterMask,
+    pub topo: &'a rtsim_space::topology::Topology,
+}
+
+impl WaterMask for ChartMask<'_> {
+    fn cell(&self) -> i32 {
+        self.inner.cell()
+    }
+    fn is_water(&self, frame: u16, cx: i32, cz: i32) -> bool {
+        let c = i64::from(self.inner.cell());
+        let (x, z) = self.topo.grid(c).canonical(i64::from(cx), i64::from(cz));
+        if self.topo.near_cone(
+            x * c + c / 2,
+            z * c + c / 2,
+            rtsim_space::topology::CONE_CLEARANCE + c,
+        ) {
+            return false;
+        }
+        self.inner.is_water(frame, x as i32, z as i32)
+    }
+}
+
 /// A synthetic coast for tests and the CLI (scaffolding): land north of a wavy shore at
 /// `z = shore_z + amp · sin(x / wavelength)`, sea south of it, with round islands of land and
 /// round lakes of water carved into either. Only frame 0 has a sea.

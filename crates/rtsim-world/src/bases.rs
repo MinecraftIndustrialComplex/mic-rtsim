@@ -25,7 +25,6 @@ use rtsim_trade::tunables::Ratio;
 use rtsim_trade::units::mul_div_floor;
 use rtsim_trade::{Amount, GoodId, MILLI, OfferSide, PRICE_ONE, Price, Quote, Refusal};
 use rtsim_travel::caravan::CaravanKey;
-use rtsim_travel::roads::dist2_to_segment;
 
 use crate::flows::to_home;
 use crate::observe::Side;
@@ -135,7 +134,10 @@ impl World {
         let p = self.nodes[node].pos;
         let r = i64::from(self.cfg.base_stop_blocks);
         let here = (i64::from(p.x), i64::from(p.z));
-        for e in self.roads.near(p.frame, here.0, here.1, r) {
+        for e in self
+            .roads
+            .near_on(self.topo(p.frame), p.frame, here.0, here.1, r)
+        {
             let (a, b) = (self.edges[e as usize].a, self.edges[e as usize].b);
             if a == node || b == node {
                 continue;
@@ -144,11 +146,7 @@ impl World {
             if pa.frame != p.frame {
                 continue;
             }
-            let d2 = dist2_to_segment(
-                here,
-                (i64::from(pa.x), i64::from(pa.z)),
-                (i64::from(pb.x), i64::from(pb.z)),
-            );
+            let d2 = self.dist2_to_road(here, pa, pb);
             if d2 <= (r * r) as f64 && !self.edges[e as usize].stops.contains(&node) {
                 self.edges[e as usize].stops.push(node);
             }

@@ -27,6 +27,10 @@ rtsim-ships = { path = "crates/rtsim-ships" }
 rtsim-space = { path = "crates/rtsim-space" }
 # Conflict: factions, grievance, war bands and raids (PLAN.md §10.3).
 rtsim-conflict = { path = "crates/rtsim-conflict" }
+# Deep Time's world-data format: its layout block (`projection::ProjectionSpec`, FORMAT.md "The
+# world's layout") is linked, not mirrored (docs/choices-topology.md TP10). Private, pinned like
+# mic-native; Deep Time master 3bf532d1. LGPL-3.0-or-later.
+deeptime-format = { git = "ssh://git@github.com/MinecraftIndustrialComplex/deep-time.git", rev = "3bf532d1383f578ccb81b90b42a8bd383d9ae61c" }
 # The page codec, matching Deep Time's tile packs (crates/deeptime-format). MIT.
 lz4_flex = "0.14.0"
 # MIT OR Apache-2.0.
