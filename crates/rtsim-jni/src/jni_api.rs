@@ -535,6 +535,34 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native boolean nPhase1Works(long handle, long village, long[] out)`: a phase 1
+/// village's works as of the last step (TEST mode; `phase1::works_view`, `phase1::WORKS_VIEW` of
+/// them): false when the engine knows no such village, it has no works state, or the engine is
+/// not in TEST mode.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nPhase1Works<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    village: jlong,
+    out: JLongArray<'l>,
+) -> jboolean {
+    env.with_env(|env| -> Result<jboolean, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let Some(view) = e.phase1_works(village as u64) else {
+            return Ok(false);
+        };
+        let n = out.len(env)?.min(view.len());
+        let vals: Vec<jlong> = view[..n].to_vec();
+        out.set_region(env, 0, &vals)?;
+        Ok(true)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// `static native long nLedger(long handle, long store)` (TEST mode; 0 otherwise).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nLedger<

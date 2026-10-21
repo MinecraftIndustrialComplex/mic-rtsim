@@ -263,6 +263,7 @@ impl World {
             w.u64(s.threat_at.map_or(u64::MAX, |t| t.0));
             w.bool(s.tributary);
             w.u32(s.golems);
+            w.u32(s.in_flight);
             match s.next {
                 crate::works::Next::Unknown => w.u8(0),
                 crate::works::Next::Nothing => w.u8(1),

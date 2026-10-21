@@ -19,6 +19,7 @@ use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::labour::ResourceId;
 use rtsim_trade::{Amount, GoodId};
 use rtsim_travel::caravan::CaravanKey;
+use rtsim_world::works::WorkDef;
 use rtsim_world::{CaravanId, NodeData, Side, World};
 
 /// A player by UUID halves.
@@ -109,6 +110,18 @@ pub enum Input {
     UnmarkBase { key: u64, player: Uuid },
     /// HOUSE_PLACED for a house the world booked.
     HousePlaced { op: u64 },
+    /// The works catalogue Java read from its datapacks (WORK_CATALOG, SINK.md §4.2), whole.
+    Works { defs: Vec<WorkDef> },
+    /// A village's type (its structure's `works::style_of`), for its own lamps.
+    WorkStyle { key: u64, style: u64 },
+    /// The bridge's answer to a bought work: placed, or not (NOT_FREE, FAILED: MS-11).
+    WorkResult { op: u64, placed: bool },
+    /// A census counted this many golems at a village (MS-8).
+    Golems { key: u64, golems: u32 },
+    /// TEST (WORKS_GRANT): thousandths of the home coin straight into a village's works purse.
+    Grant { key: u64, amount: Amount },
+    /// TEST (WORKS_RAID): a village raided, as a dragon raid would (`tribute`: by a lair's dragon).
+    Raided { key: u64, tribute: bool },
 }
 
 /// An input and the world tick it was applied at.
@@ -344,6 +357,27 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
         Input::HousePlaced { op } => {
             out.refused = w.house_placed(*op) == 0;
         }
+        Input::Works { defs } => w.set_works(defs.clone(), at),
+        Input::WorkStyle { key, style } => match nodes.get(key) {
+            Some(&i) => w.set_work_style(i, *style, at),
+            None => out.refused = true,
+        },
+        Input::WorkResult { op, placed } => {
+            out.refused = !w.is_work_op(*op);
+            w.work_result(*op, *placed, at);
+        }
+        Input::Golems { key, golems } => match nodes.get(key) {
+            Some(&i) => w.set_golems(i, *golems),
+            None => out.refused = true,
+        },
+        Input::Grant { key, amount } => match nodes.get(key) {
+            Some(&i) => out.refused = !w.grant_purse(i, *amount, at),
+            None => out.refused = true,
+        },
+        Input::Raided { key, tribute } => match nodes.get(key) {
+            Some(&i) => w.village_raided(i, *tribute, at),
+            None => out.refused = true,
+        },
     }
     out
 }
@@ -547,6 +581,38 @@ impl Logged {
                 w.u8(u8::from(*killed));
                 put_goods(w, held);
             }
+            Input::Works { defs } => {
+                w.u8(15);
+                w.var_u64(defs.len() as u64);
+                for d in defs {
+                    rtsim_world::persist::put_work_def(w, d);
+                }
+            }
+            Input::WorkStyle { key, style } => {
+                w.u8(16);
+                w.u64(*key);
+                w.u64(*style);
+            }
+            Input::WorkResult { op, placed } => {
+                w.u8(17);
+                w.u64(*op);
+                w.u8(u8::from(*placed));
+            }
+            Input::Golems { key, golems } => {
+                w.u8(18);
+                w.u64(*key);
+                w.u32(*golems);
+            }
+            Input::Grant { key, amount } => {
+                w.u8(19);
+                w.u64(*key);
+                w.var_i64(*amount);
+            }
+            Input::Raided { key, tribute } => {
+                w.u8(20);
+                w.u64(*key);
+                w.u8(u8::from(*tribute));
+            }
         }
     }
 
@@ -633,6 +699,37 @@ impl Logged {
                 player: get_uuid(r)?,
                 killed: r.u8()? != 0,
                 held: get_goods(r)?,
+            },
+            15 => {
+                let n = r.var_u64()?;
+                if n > 1 << 16 {
+                    return Err(CodecError::Invalid(format!("{n} works in one catalogue")));
+                }
+                Input::Works {
+                    defs: (0..n)
+                        .map(|_| rtsim_world::persist::get_work_def(r))
+                        .collect::<codec::Result<_>>()?,
+                }
+            }
+            16 => Input::WorkStyle {
+                key: r.u64()?,
+                style: r.u64()?,
+            },
+            17 => Input::WorkResult {
+                op: r.u64()?,
+                placed: r.u8()? != 0,
+            },
+            18 => Input::Golems {
+                key: r.u64()?,
+                golems: r.u32()?,
+            },
+            19 => Input::Grant {
+                key: r.u64()?,
+                amount: r.var_i64()?,
+            },
+            20 => Input::Raided {
+                key: r.u64()?,
+                tribute: r.u8()? != 0,
             },
             t => return Err(CodecError::Invalid(format!("phase 1 input tag {t}"))),
         };
@@ -724,6 +821,23 @@ mod tests {
                 player: p,
                 killed: false,
                 held: vec![(7, 3_000), (0, 1_000)],
+            },
+            Input::Works {
+                defs: rtsim_world::works::synthetic_catalog(&rtsim_world::synth::goods().0),
+            },
+            Input::WorkStyle { key: 7, style: 99 },
+            Input::WorkResult {
+                op: 43,
+                placed: false,
+            },
+            Input::Golems { key: 7, golems: 2 },
+            Input::Grant {
+                key: 7,
+                amount: 5_000,
+            },
+            Input::Raided {
+                key: 7,
+                tribute: true,
             },
         ];
         let mut w = Writer::new();

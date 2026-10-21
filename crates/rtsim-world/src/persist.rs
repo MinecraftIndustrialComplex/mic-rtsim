@@ -377,7 +377,8 @@ fn get_string(r: &mut Reader<'_>) -> codec::Result<String> {
     String::from_utf8(r.bytes()?.to_vec()).map_err(|e| CodecError::Invalid(format!("utf-8: {e}")))
 }
 
-fn put_work_def(w: &mut Writer, d: &WorkDef) {
+/// A works catalogue entry as the snapshot writes it (also rtsim-jni's input log).
+pub fn put_work_def(w: &mut Writer, d: &WorkDef) {
     w.bytes(d.id.as_bytes());
     w.u8(d.group as u8);
     w.u8(d.culture.index() as u8);
@@ -418,7 +419,7 @@ fn put_work_def(w: &mut Writer, d: &WorkDef) {
     }
 }
 
-fn get_work_def(r: &mut Reader<'_>) -> codec::Result<WorkDef> {
+pub fn get_work_def(r: &mut Reader<'_>) -> codec::Result<WorkDef> {
     let id = get_string(r)?;
     let group =
         WorkGroup::from_u32(u32::from(r.u8()?)).map_or_else(|| bad("work group".into()), Ok)?;
@@ -517,6 +518,7 @@ fn put_works(w: &mut Writer, s: &WorksState) {
     put_opt_tick(w, s.threat_at);
     w.bool(s.tributary);
     w.u32(s.golems);
+    w.u32(s.in_flight);
 }
 
 fn get_works(r: &mut Reader<'_>) -> codec::Result<WorksState> {
@@ -558,6 +560,7 @@ fn get_works(r: &mut Reader<'_>) -> codec::Result<WorksState> {
         threat_at: get_opt_tick(r)?,
         tributary: r.bool()?,
         golems: r.u32()?,
+        in_flight: r.u32()?,
     })
 }
 
