@@ -15,6 +15,13 @@
 //! - **Damage.** An unreadable index is rebuilt from the chunk files' own headers. An unreadable
 //!   dictionary would make every kind name a guess, so the writer clears the archive and says so
 //!   ([`Archive::was_reset`]); the reader shows kinds by number.
+//! - **Budget** (§10.4). A flush writes the full tier, and drops its lowest-severity rows (counted)
+//!   rather than pass the tier's share. After a save, [`Archive::compact`] moves the oldest chunks
+//!   down a tier when a tier is near its share or past its horizon: full rows at notable and above
+//!   go to the notable tier and the rest are counted, notable rows are counted, fine counts are
+//!   coarsened, and the oldest coarse counts go. It also merges small chunks (a quiet world writes a
+//!   tiny chunk a save). It reads and writes at most [`Budget::work`] bytes a save and never touches
+//!   a chunk tagged above the confirmed generation, which a rollback may still cut.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
@@ -27,9 +34,10 @@ use rtsim_kernel::codec::{CodecError, Reader, Writer};
 use crate::chunk::{
     Chunk, ChunkHeader, PREFIX_BYTES, ROWS_PER_CHUNK, Stamp, Tier, header_len, sort_rows,
 };
+use crate::counts::{Count, TICKS_PER_DAY, Tally};
 use crate::dict::{Dictionary, check_crc};
 use crate::pending::{Batch, Dropped};
-use crate::row::{Leg, RawRow, Row};
+use crate::row::{self, Leg, RawRow, Row, Severity};
 
 pub const INDEX_FILE: &str = "index.rtai";
 pub const DICT_FILE: &str = "dict.rtad";
@@ -69,6 +77,73 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = PathBuf::from(tmp);
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path)
+}
+
+/// The archive's size limits (§10.4, VWD-4; every field TUNABLE).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Budget {
+    /// Bytes of chunk files in all, every tier.
+    pub total: u64,
+    /// Each tier's share of `total` in percent: full, notable, counts.
+    pub shares: [u64; 3],
+    /// Game days the full tier keeps at most.
+    pub full_days: u64,
+    /// Game days the notable tier keeps at most.
+    pub notable_days: u64,
+    /// Bytes compaction reads and writes a save at most (as the page store's `COMPACT_MAX_BYTES`).
+    pub work: u64,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Budget {
+            total: 256 << 20,
+            shares: [50, 35, 15],
+            full_days: 504,
+            notable_days: 7_200,
+            work: 4 << 20,
+        }
+    }
+}
+
+impl Budget {
+    /// A tier's share in bytes (0 full, 1 notable, 2 counts).
+    pub fn share(&self, tier: usize) -> u64 {
+        self.total / 100 * self.shares[tier] + self.total % 100 * self.shares[tier] / 100
+    }
+
+    /// The level compaction keeps a tier under: its share less room for what the next save brings
+    /// (an eighth of the share, at most a save's compaction work).
+    pub fn target(&self, tier: usize) -> u64 {
+        let s = self.share(tier);
+        s - (s / 8).min(self.work)
+    }
+}
+
+/// Bytes of chunk files per tier share: full, notable, counts.
+pub fn tier_bytes(entries: &[Entry]) -> [u64; 3] {
+    let mut b = [0; 3];
+    for e in entries {
+        b[e.header.tier.share()] += e.bytes;
+    }
+    b
+}
+
+/// What one compaction did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Compaction {
+    /// Chunk bytes read and written.
+    pub read: u64,
+    pub written: u64,
+    /// Chunks moved down a tier, from the full and from the notable tier.
+    pub demoted: [u32; 2],
+    /// Fine count chunks coarsened.
+    pub coarsened: u32,
+    /// Coarse count chunks dropped as the oldest, and the rows they counted.
+    pub expired: u32,
+    pub expired_rows: u64,
+    /// Small chunks merged into others.
+    pub merged: u32,
 }
 
 /// One chunk in the index.
@@ -219,6 +294,11 @@ pub struct Archive {
     index: Index,
     dict: Dictionary,
     reset: bool,
+    budget: Budget,
+    /// The dictionary changed and is not on disk yet (a flush that failed keeps it due).
+    dict_due: bool,
+    /// The latest save's tick: the horizons count back from it.
+    now: u64,
 }
 
 impl Archive {
@@ -284,11 +364,20 @@ impl Archive {
                 )
             }
         };
+        let now = index
+            .entries
+            .iter()
+            .map(|e| e.header.save_tick)
+            .max()
+            .unwrap_or(0);
         let mut a = Archive {
             dir,
             index,
             dict,
             reset,
+            budget: Budget::default(),
+            dict_due: false,
+            now,
         };
         a.index.next_seq = a.index.next_seq.max(seqs.last().map_or(0, |s| s + 1));
         if changed {
@@ -299,6 +388,21 @@ impl Archive {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Other limits than [`Budget::default`].
+    pub fn with_budget(mut self, budget: Budget) -> Archive {
+        self.budget = budget;
+        self
+    }
+
+    pub fn budget(&self) -> &Budget {
+        &self.budget
+    }
+
+    /// Bytes of chunk files per tier share: full, notable, counts.
+    pub fn tier_bytes(&self) -> [u64; 3] {
+        tier_bytes(&self.index.entries)
     }
 
     /// The stored dictionary: the engine starts from it, so numbers keep their meaning.
@@ -359,6 +463,11 @@ impl Archive {
     /// sorted by tick in chunks of at most [`ROWS_PER_CHUNK`] stamped with the save, then the index.
     /// Returns the new chunks' sequence numbers. On the IO lane this must finish before the page
     /// commit: open's deletion of unnamed chunk files relies on it.
+    ///
+    /// Rows that would take the full tier past its share are dropped, the lowest severity and the
+    /// oldest first, and counted. On an error the rows not written are counted as dropped too, and
+    /// the dictionary stays due for the next flush, so a failed flush costs its rows and nothing
+    /// after it.
     pub fn flush(
         &mut self,
         batch: Batch,
@@ -366,48 +475,80 @@ impl Archive {
         dict: Option<&Dictionary>,
     ) -> io::Result<Vec<u64>> {
         if let Some(d) = dict {
-            write_atomic(&self.dir.join(DICT_FILE), &d.encode())?;
             self.dict = d.clone();
             self.dict.mark_saved();
+            self.dict_due = true;
         }
+        self.now = self.now.max(stamp.tick);
         let Batch {
             mut rows,
             mut payloads,
             dropped,
         } = batch;
         self.index.dropped.add(&dropped);
-        sort_rows(&mut rows, &mut payloads);
-        let mut chunks = Vec::new();
-        let mut payloads = payloads.into_iter().peekable();
-        for (c, part) in rows.chunks(ROWS_PER_CHUNK).enumerate() {
-            let base = (c * ROWS_PER_CHUNK) as u32;
-            let end = base + part.len() as u32;
-            let mut mine = Vec::new();
-            while let Some(p) = payloads.next_if(|p| p.0 < end) {
-                mine.push((p.0 - base, p.1));
+        if self.dict_due {
+            if let Err(e) = write_atomic(&self.dir.join(DICT_FILE), &self.dict.encode()) {
+                self.lose(&rows);
+                return Err(e);
             }
-            chunks.push(Chunk::new(Tier::Full, part.to_vec(), mine, stamp));
+            self.dict_due = false;
         }
-        let seqs = self.write_chunks(chunks)?;
-        self.write_index()?;
-        Ok(seqs)
+        sort_rows(&mut rows, &mut payloads);
+        let room = self.budget.share(0).saturating_sub(self.tier_bytes()[0]);
+        let mut encoded = encode_all(chunks_of(&rows, &payloads, stamp));
+        // Each pass sheds to the share the encoded bytes say fits, a little under it; a chunk's
+        // fixed cost makes the last pass a guess, so after four the rows all go.
+        let mut passes = 0;
+        while total(&encoded) > room && !rows.is_empty() {
+            passes += 1;
+            let keep = if passes > 4 {
+                0
+            } else {
+                (rows.len() as u128 * u128::from(room) / u128::from(total(&encoded)) * 15 / 16)
+                    as usize
+            };
+            let d = shed(&mut rows, &mut payloads, keep);
+            self.index.dropped.add(&d);
+            encoded = encode_all(chunks_of(&rows, &payloads, stamp));
+        }
+        let before = self.index.entries.len();
+        let written = self.write_encoded(encoded);
+        let index = written.and_then(|seqs| self.write_index().map(|()| seqs));
+        if index.is_err() {
+            let kept: u64 = self.index.entries[before..]
+                .iter()
+                .map(|e| u64::from(e.header.rows))
+                .sum();
+            self.lose(&rows[kept as usize..]);
+        }
+        index
     }
 
-    fn write_chunks(&mut self, chunks: Vec<Chunk>) -> io::Result<Vec<u64>> {
+    /// Counts rows that never reached a chunk file.
+    fn lose(&mut self, rows: &[RawRow]) {
+        for r in rows {
+            self.index.dropped.by_severity[row::severity(r) as usize] += 1;
+        }
+    }
+
+    fn write_encoded(&mut self, chunks: Vec<(ChunkHeader, Vec<u8>)>) -> io::Result<Vec<u64>> {
         let mut seqs = Vec::with_capacity(chunks.len());
-        for c in chunks {
+        for (header, bytes) in chunks {
             let seq = self.index.next_seq;
-            let bytes = c.encode();
             write_atomic(&self.dir.join(chunk_name(seq)), &bytes)?;
             self.index.next_seq += 1;
             self.index.entries.push(Entry {
                 seq,
                 bytes: bytes.len() as u64,
-                header: c.header,
+                header,
             });
             seqs.push(seq);
         }
         Ok(seqs)
+    }
+
+    fn write_chunks(&mut self, chunks: Vec<Chunk>) -> io::Result<Vec<u64>> {
+        self.write_encoded(encode_all(chunks))
     }
 
     /// Replaces chunks with others (compaction, §10.4): the new chunks, then the index, then the old
@@ -431,6 +572,376 @@ impl Archive {
     pub fn read(&self, seq: u64) -> io::Result<Chunk> {
         read_chunk(&self.dir.join(chunk_name(seq)))
     }
+
+    /// Compaction (§10.4), after a save whose generation is confirmed at `confirmed` (the
+    /// observation sequence of the newest generation a restart would select). In order of need:
+    /// the count tier over its target (coarsen the oldest fine counts, then drop the oldest coarse
+    /// ones), the notable tier over its target or past its horizon (count its oldest chunks), the
+    /// full tier likewise (its oldest chunks' notable rows to the notable tier, the rest counted),
+    /// then small chunks merged. Stops once [`Budget::work`] bytes are read and written; a chunk
+    /// tagged above `confirmed` is never touched. A damaged chunk in the way is dropped (its rows
+    /// are lost either way) so it cannot stall the tier.
+    pub fn compact(&mut self, confirmed: u64) -> io::Result<Compaction> {
+        let mut done = Compaction::default();
+        let b = self.budget;
+        loop {
+            let spent = done.read + done.written;
+            if spent >= b.work {
+                break;
+            }
+            // At least one chunk a step, so a chunk larger than the work still moves.
+            let reads = ((b.work - spent) / 2).max(1);
+            let bytes = self.tier_bytes();
+            if bytes[2] > b.target(2) {
+                let run = self.run(Tier::Counts, confirmed, reads, |_, left| left > b.target(2));
+                if !run.is_empty() {
+                    self.coarsen(&run, &mut done)?;
+                    continue;
+                }
+                let run = self.run(Tier::Coarse, confirmed, u64::MAX, |_, left| {
+                    left > b.target(2)
+                });
+                if !run.is_empty() {
+                    done.expired += run.len() as u32;
+                    done.expired_rows += run.iter().map(|e| e.header.counted()).sum::<u64>();
+                    let old: Vec<u64> = run.iter().map(|e| e.seq).collect();
+                    self.replace(&old, vec![])?;
+                    continue;
+                }
+            }
+            let now = self.now;
+            let past = |days: u64| {
+                move |e: &Entry| e.header.last_end.saturating_add(days * TICKS_PER_DAY) < now
+            };
+            let (notable_past, full_past) = (past(b.notable_days), past(b.full_days));
+            let run = self.run(Tier::Notable, confirmed, reads, |e, left| {
+                left > b.target(1) || notable_past(e)
+            });
+            if !run.is_empty() {
+                self.demote(&run, &mut done)?;
+                done.demoted[1] += run.len() as u32;
+                continue;
+            }
+            let run = self.run(Tier::Full, confirmed, reads, |e, left| {
+                left > b.target(0) || full_past(e)
+            });
+            if !run.is_empty() {
+                self.demote(&run, &mut done)?;
+                done.demoted[0] += run.len() as u32;
+                continue;
+            }
+            if let Some(run) = self.small_run(confirmed, reads) {
+                self.merge(&run, &mut done)?;
+                continue;
+            }
+            break;
+        }
+        Ok(done)
+    }
+
+    /// A tier's oldest chunks at or below `confirmed`, oldest first, while `need` says the next is
+    /// still to go (given the chunk and the tier's bytes left without the run so far) and their
+    /// bytes stay within `reads` (at least one chunk).
+    fn run(
+        &self,
+        tier: Tier,
+        confirmed: u64,
+        reads: u64,
+        need: impl Fn(&Entry, u64) -> bool,
+    ) -> Vec<Entry> {
+        let mut left = self.tier_bytes()[tier.share()];
+        let mut order: Vec<&Entry> = self
+            .index
+            .entries
+            .iter()
+            .filter(|e| e.header.tier == tier && e.header.obs_seq <= confirmed)
+            .collect();
+        order.sort_by_key(|e| (e.header.first_tick, e.seq));
+        let mut run = Vec::new();
+        let mut read = 0;
+        for e in order {
+            if !need(e, left) || (!run.is_empty() && read + e.bytes > reads) {
+                break;
+            }
+            read += e.bytes;
+            left = left.saturating_sub(e.bytes);
+            run.push(e.clone());
+        }
+        run
+    }
+
+    /// The chunks of a run that read cleanly, the bytes read counted; a damaged one is left in the
+    /// run's old list, so the replacement deletes it.
+    fn read_run(&self, run: &[Entry], done: &mut Compaction) -> io::Result<Vec<Chunk>> {
+        let mut out = Vec::with_capacity(run.len());
+        for e in run {
+            done.read += e.bytes;
+            match self.read(e.seq) {
+                Ok(c) => out.push(c),
+                Err(err) if matches!(err.kind(), io::ErrorKind::InvalidData) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(out)
+    }
+
+    fn replace_run(
+        &mut self,
+        run: &[Entry],
+        new: Vec<Chunk>,
+        done: &mut Compaction,
+    ) -> io::Result<()> {
+        let encoded = encode_all(new);
+        done.written += total(&encoded);
+        let old: Vec<u64> = run.iter().map(|e| e.seq).collect();
+        let seqs = self.write_encoded(encoded)?;
+        let gone: HashSet<u64> = old.iter().copied().collect();
+        self.index.entries.retain(|e| !gone.contains(&e.seq));
+        self.write_index()?;
+        for &seq in &old {
+            match fs::remove_file(self.dir.join(chunk_name(seq))) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+        debug_assert!(seqs.iter().all(|s| !gone.contains(s)));
+        Ok(())
+    }
+
+    /// Moves a run down a tier: from the full tier its rows at notable and above to the notable
+    /// tier and the rest counted; from the notable tier every row counted.
+    fn demote(&mut self, run: &[Entry], done: &mut Compaction) -> io::Result<()> {
+        let chunks = self.read_run(run, done)?;
+        let stamp = newest_stamp(run);
+        let mut keep: Vec<RawRow> = Vec::new();
+        let mut payloads: Vec<(u32, Vec<u8>)> = Vec::new();
+        let mut tally = Tally::new();
+        for c in chunks {
+            let notable = c.header.tier == Tier::Full;
+            for (i, r) in c.rows.iter().enumerate() {
+                if notable && row::severity(r) >= Severity::Notable {
+                    if let Some(p) = c.payload(i) {
+                        payloads.push((keep.len() as u32, p.to_vec()));
+                    }
+                    keep.push(*r);
+                } else {
+                    tally.row(r);
+                }
+            }
+        }
+        sort_rows(&mut keep, &mut payloads);
+        let mut new = Vec::new();
+        let mut notable = chunks_of(&keep, &payloads, stamp);
+        for c in &mut notable {
+            c.header.tier = Tier::Notable;
+        }
+        new.extend(notable);
+        new.extend(count_chunks(false, tally.rows(), stamp));
+        self.replace_run(run, new, done)
+    }
+
+    /// Coarsens a run of fine count chunks.
+    fn coarsen(&mut self, run: &[Entry], done: &mut Compaction) -> io::Result<()> {
+        let chunks = self.read_run(run, done)?;
+        let mut tally = Tally::new();
+        for c in &chunks {
+            for n in &c.counts {
+                tally.count(n, true);
+            }
+        }
+        done.coarsened += run.len() as u32;
+        let new = count_chunks(true, tally.rows(), newest_stamp(run));
+        self.replace_run(run, new, done)
+    }
+
+    /// The oldest run of two or more small chunks next to each other in one tier (by first tick,
+    /// none above `confirmed` between them) that fits one chunk and `reads`.
+    fn small_run(&self, confirmed: u64, reads: u64) -> Option<Vec<Entry>> {
+        let small = |e: &Entry| (e.header.rows as usize) < ROWS_PER_CHUNK / 2;
+        for tier in [Tier::Full, Tier::Notable, Tier::Counts, Tier::Coarse] {
+            let mut order: Vec<&Entry> = self
+                .index
+                .entries
+                .iter()
+                .filter(|e| e.header.tier == tier)
+                .collect();
+            order.sort_by_key(|e| (e.header.first_tick, e.seq));
+            let mut run: Vec<Entry> = Vec::new();
+            let (mut rows, mut read) = (0usize, 0u64);
+            for e in order {
+                let fits = rows + e.header.rows as usize <= ROWS_PER_CHUNK
+                    && (run.is_empty() || read + e.bytes <= reads);
+                if e.header.obs_seq <= confirmed && small(e) && fits {
+                    rows += e.header.rows as usize;
+                    read += e.bytes;
+                    run.push(e.clone());
+                    continue;
+                }
+                if run.len() >= 2 {
+                    return Some(run);
+                }
+                run.clear();
+                (rows, read) = (0, 0);
+                if e.header.obs_seq <= confirmed && small(e) {
+                    rows = e.header.rows as usize;
+                    read = e.bytes;
+                    run.push(e.clone());
+                }
+            }
+            if run.len() >= 2 {
+                return Some(run);
+            }
+        }
+        None
+    }
+
+    /// Merges a run of small chunks of one tier into one.
+    fn merge(&mut self, run: &[Entry], done: &mut Compaction) -> io::Result<()> {
+        let tier = run[0].header.tier;
+        let chunks = self.read_run(run, done)?;
+        let stamp = newest_stamp(run);
+        let new = if tier.is_counts() {
+            let mut tally = Tally::new();
+            for c in &chunks {
+                for n in &c.counts {
+                    tally.count(n, false);
+                }
+            }
+            count_chunks(tier == Tier::Coarse, tally.rows(), stamp)
+        } else {
+            let mut rows = Vec::new();
+            let mut payloads = Vec::new();
+            for c in chunks {
+                let base = rows.len() as u32;
+                payloads.extend(c.payloads.into_iter().map(|(i, p)| (i + base, p)));
+                rows.extend(c.rows);
+            }
+            sort_rows(&mut rows, &mut payloads);
+            let mut out = chunks_of(&rows, &payloads, stamp);
+            for c in &mut out {
+                c.header.tier = tier;
+            }
+            out
+        };
+        done.merged += run.len() as u32;
+        self.replace_run(run, new, done)
+    }
+
+    /// What is wrong with the folder against the index: a named chunk missing, of another size or
+    /// with another header; a chunk file the index does not name. Empty when consistent.
+    pub fn verify(&self) -> io::Result<Vec<String>> {
+        let mut problems = Vec::new();
+        let (seqs, _) = list(&self.dir)?;
+        let named: HashSet<u64> = self.index.entries.iter().map(|e| e.seq).collect();
+        for e in &self.index.entries {
+            match read_header(&self.dir.join(chunk_name(e.seq))) {
+                Ok((h, bytes)) => {
+                    if bytes != e.bytes {
+                        problems.push(format!("{}: {bytes} bytes, index says {}", e.seq, e.bytes));
+                    }
+                    if h != e.header {
+                        problems.push(format!("{}: header differs from the index", e.seq));
+                    }
+                }
+                Err(err) => problems.push(format!("{}: {err}", e.seq)),
+            }
+            if e.seq >= self.index.next_seq {
+                problems.push(format!("{}: at or past the next sequence", e.seq));
+            }
+        }
+        for s in seqs.iter().filter(|s| !named.contains(s)) {
+            problems.push(format!("{s}: a chunk file the index does not name"));
+        }
+        let stored = Index::decode(&fs::read(self.dir.join(INDEX_FILE))?)
+            .map_err(|e| invalid(e, &self.dir.join(INDEX_FILE)))?;
+        if stored != self.index {
+            problems.push("the index file differs from the archive's".into());
+        }
+        Ok(problems)
+    }
+}
+
+/// Full-tier chunks of rows sorted by tick, at most [`ROWS_PER_CHUNK`] each; payloads go with
+/// their rows.
+fn chunks_of(rows: &[RawRow], payloads: &[(u32, Vec<u8>)], stamp: Stamp) -> Vec<Chunk> {
+    let mut chunks = Vec::new();
+    let mut payloads = payloads.iter().peekable();
+    for (c, part) in rows.chunks(ROWS_PER_CHUNK).enumerate() {
+        let base = (c * ROWS_PER_CHUNK) as u32;
+        let end = base + part.len() as u32;
+        let mut mine = Vec::new();
+        while let Some(p) = payloads.next_if(|p| p.0 < end) {
+            mine.push((p.0 - base, p.1.clone()));
+        }
+        chunks.push(Chunk::new(Tier::Full, part.to_vec(), mine, stamp));
+    }
+    chunks
+}
+
+/// Count chunks of rows sorted by key, at most [`ROWS_PER_CHUNK`] rows each.
+fn count_chunks(coarse: bool, counts: Vec<Count>, stamp: Stamp) -> Vec<Chunk> {
+    counts
+        .chunks(ROWS_PER_CHUNK)
+        .map(|part| Chunk::of_counts(coarse, part.to_vec(), stamp))
+        .collect()
+}
+
+fn encode_all(chunks: Vec<Chunk>) -> Vec<(ChunkHeader, Vec<u8>)> {
+    chunks
+        .into_iter()
+        .map(|c| {
+            let bytes = c.encode();
+            (c.header, bytes)
+        })
+        .collect()
+}
+
+fn total(encoded: &[(ChunkHeader, Vec<u8>)]) -> u64 {
+    encoded.iter().map(|c| c.1.len() as u64).sum()
+}
+
+/// The stamp of a run's newest save: a chunk made from others keeps it, so its tag is never
+/// below a row it holds.
+fn newest_stamp(run: &[Entry]) -> Stamp {
+    run.iter()
+        .map(|e| e.header.stamp())
+        .max_by_key(|s| (s.obs_seq, s.tick))
+        .unwrap_or_default()
+}
+
+/// Keeps `keep` rows of rows sorted by tick, dropping the lowest severity first and the oldest
+/// first within it; payloads follow their rows. Returns what went.
+fn shed(rows: &mut Vec<RawRow>, payloads: &mut Vec<(u32, Vec<u8>)>, keep: usize) -> Dropped {
+    let mut d = Dropped::default();
+    if rows.len() <= keep {
+        return d;
+    }
+    let mut order: Vec<u32> = (0..rows.len() as u32).collect();
+    order.sort_by_key(|&i| row::severity(&rows[i as usize]));
+    let mut gone = vec![false; rows.len()];
+    for &i in &order[..rows.len() - keep] {
+        gone[i as usize] = true;
+        d.by_severity[row::severity(&rows[i as usize]) as usize] += 1;
+    }
+    let mut new_of = vec![u32::MAX; rows.len()];
+    let mut k = 0;
+    for (i, g) in gone.iter().enumerate() {
+        if !g {
+            new_of[i] = k;
+            k += 1;
+        }
+    }
+    let mut i = 0;
+    rows.retain(|_| {
+        i += 1;
+        !gone[i - 1]
+    });
+    payloads.retain_mut(|p| {
+        p.0 = new_of[p.0 as usize];
+        p.0 != u32::MAX
+    });
+    d
 }
 
 /// The viewer's side: reads a world's archive and never writes it.
@@ -520,8 +1031,10 @@ impl ArchiveReader {
     }
 
     /// Rows per kind per bin over `t0..t1` in `bins` equal bins, from the headers alone: a chunk's
-    /// rows are spread evenly over its first to last tick. `frame` keeps one frame's rows; `kinds`
-    /// says which kinds to count. Kinds with no rows in the span are left out.
+    /// rows are spread evenly over its first to last tick (a count chunk's over its buckets, to the
+    /// last bucket's end), so the strip still shows years whose full rows are gone. `frame` keeps
+    /// one frame's rows; `kinds` says which kinds to count. Kinds with no rows in the span are left
+    /// out.
     pub fn histogram(
         &self,
         t0: u64,
@@ -537,11 +1050,16 @@ impl ArchiveReader {
         let width = (t1 - t0) as f64 / bins as f64;
         for e in &self.entries {
             let h = &e.header;
-            if h.last_tick < t0 || h.first_tick >= t1 {
+            let last = if h.tier.is_counts() {
+                h.last_end
+            } else {
+                h.last_tick
+            };
+            if last < t0 || h.first_tick >= t1 {
                 continue;
             }
             // The chunk as the ticks [first, last + 1), and its share in each bin it touches.
-            let (a, b) = (h.first_tick as f64, h.last_tick as f64 + 1.0);
+            let (a, b) = (h.first_tick as f64, last as f64 + 1.0);
             let lo = ((a - t0 as f64) / width).floor().max(0.0) as usize;
             let hi = (((b - t0 as f64) / width).ceil() as usize).min(bins);
             let shares: Vec<(usize, f64)> = (lo..hi)
@@ -603,7 +1121,11 @@ impl ArchiveReader {
     /// Every row touching `t0..=t1` (an event in it, a leg overlapping it), oldest chunk first.
     pub fn rows(&self, t0: u64, t1: u64) -> io::Result<Vec<Record>> {
         let mut out = Vec::new();
-        for e in self.entries.iter().filter(|e| e.header.overlaps(t0, t1)) {
+        for e in self
+            .entries
+            .iter()
+            .filter(|e| !e.header.tier.is_counts() && e.header.overlaps(t0, t1))
+        {
             let Some(c) = self.read_or_skip(e)? else {
                 continue;
             };
@@ -634,7 +1156,7 @@ impl ArchiveReader {
         let mut order: Vec<&Entry> = self
             .entries
             .iter()
-            .filter(|e| e.header.overlaps(t0, t1))
+            .filter(|e| !e.header.tier.is_counts() && e.header.overlaps(t0, t1))
             .collect();
         order.sort_by_key(|e| std::cmp::Reverse(e.header.last_tick));
         let mut out: Vec<Record> = Vec::new();
@@ -673,13 +1195,38 @@ impl ArchiveReader {
         Ok((out, more))
     }
 
+    /// The count rows whose buckets touch `t0..=t1`, one frame's or every frame's: the page draws
+    /// them as heat where the full rows are gone (§10.6). Fine and coarse rows both; a coarse row
+    /// covers a 4,096-block square and 7 days ([`Count::bbox`], [`Count::first_tick`]).
+    pub fn count_rows(&self, t0: u64, t1: u64, frame: Option<u8>) -> io::Result<Vec<Count>> {
+        let mut out = Vec::new();
+        for e in self
+            .entries
+            .iter()
+            .filter(|e| e.header.tier.is_counts() && e.header.overlaps(t0, t1))
+        {
+            if frame.is_some_and(|f| !e.header.counts.iter().any(|c| c.0 == f)) {
+                continue;
+            }
+            let Some(c) = self.read_or_skip(e)? else {
+                continue;
+            };
+            out.extend(
+                c.counts
+                    .into_iter()
+                    .filter(|n| n.overlaps(t0, t1) && frame.is_none_or(|f| n.frame == f)),
+            );
+        }
+        Ok(out)
+    }
+
     /// The legs covering `tick`: every mover's exact position then ([`Leg::at`]).
     pub fn legs_at(&self, tick: u64) -> io::Result<Vec<Leg>> {
         let mut out = Vec::new();
         for e in self
             .entries
             .iter()
-            .filter(|e| e.header.overlaps(tick, tick))
+            .filter(|e| !e.header.tier.is_counts() && e.header.overlaps(tick, tick))
         {
             let Some(c) = self.read_or_skip(e)? else {
                 continue;
