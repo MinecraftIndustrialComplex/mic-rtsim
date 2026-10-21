@@ -37,7 +37,7 @@ use crate::chunk::{
 use crate::counts::{Count, TICKS_PER_DAY, Tally};
 use crate::dict::{Dictionary, check_crc};
 use crate::pending::{Batch, Dropped};
-use crate::row::{self, Leg, RawRow, Row, Severity};
+use crate::row::{self, Handle, Leg, RawRow, Row, Severity};
 
 pub const INDEX_FILE: &str = "index.rtai";
 pub const DICT_FILE: &str = "dict.rtad";
@@ -1220,22 +1220,68 @@ impl ArchiveReader {
         Ok(out)
     }
 
-    /// The legs covering `tick`: every mover's exact position then ([`Leg::at`]).
+    /// The legs covering `tick`: every mover's exact position then ([`Leg::at`]). A mover is its
+    /// kind and subject, and its latest decision is where it is: a leg is passed over when the same
+    /// mover has a leg that starts later but by `tick` (a replan booked before the old leg ended,
+    /// even one that has itself ended). Finding those reads the chunks back to the oldest covering
+    /// leg's start that hold rows of its kind. Legs with no subject are all kept. Ordered by kind,
+    /// then subject.
     pub fn legs_at(&self, tick: u64) -> io::Result<Vec<Leg>> {
+        let none = Handle::default();
         let mut out = Vec::new();
-        for e in self
-            .entries
-            .iter()
-            .filter(|e| !e.header.tier.is_counts() && e.header.overlaps(tick, tick))
-        {
+        // Per mover, its latest leg start by `tick`.
+        let mut latest: BTreeMap<(u16, bool, u64), u64> = BTreeMap::new();
+        let mut note = |l: &Leg| {
+            if l.t0 <= tick && l.subject != none {
+                let t = latest
+                    .entry((l.kind, l.subject.dict, l.subject.value))
+                    .or_default();
+                *t = (*t).max(l.t0);
+            }
+        };
+        let legs = |c: Chunk| {
+            c.rows
+                .iter()
+                .filter_map(|r: &RawRow| match Row::decode(r) {
+                    Row::Leg(l) => Some(l),
+                    Row::Event(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let chunks = || self.entries.iter().filter(|e| !e.header.tier.is_counts());
+        for e in chunks().filter(|e| e.header.overlaps(tick, tick)) {
             let Some(c) = self.read_or_skip(e)? else {
                 continue;
             };
-            out.extend(c.rows.iter().filter_map(|r: &RawRow| match Row::decode(r) {
-                Row::Leg(l) if l.covers(tick) => Some(l),
-                _ => None,
-            }));
+            for l in legs(c) {
+                note(&l);
+                if l.covers(tick) {
+                    out.push(l);
+                }
+            }
         }
+        let named = out.iter().filter(|l| l.subject != none);
+        if let Some(lo) = named.clone().map(|l| l.t0).min() {
+            let kinds: BTreeSet<u16> = named.map(|l| l.kind).collect();
+            // Chunks that ended before `tick` but started legs after the oldest covering one.
+            for e in chunks().filter(|e| {
+                !e.header.overlaps(tick, tick)
+                    && e.header.last_tick > lo
+                    && kinds.iter().any(|&k| e.header.count(k) > 0)
+            }) {
+                let Some(c) = self.read_or_skip(e)? else {
+                    continue;
+                };
+                legs(c).iter().for_each(&mut note);
+            }
+        }
+        out.retain(|l| {
+            l.subject == none
+                || latest.get(&(l.kind, l.subject.dict, l.subject.value)) == Some(&l.t0)
+        });
+        out.sort_by_key(|l| (l.kind, l.subject.dict, l.subject.value, l.t0));
+        // Two legs of one mover from one tick: the first written stands.
+        out.dedup_by(|a, b| a.subject != none && (a.kind, a.subject) == (b.kind, b.subject));
         Ok(out)
     }
 }
