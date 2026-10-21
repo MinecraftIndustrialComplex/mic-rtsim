@@ -33,8 +33,11 @@ pub struct Limits {
     pub row_budget: usize,
     /// Bytes of built cards kept for repeat requests (VIEWER.md §16: 256 MiB).
     pub card_cache: u64,
-    /// Bytes of encoded base map tiles kept in memory.
+    /// Bytes of encoded base map tiles kept in memory (halved between HABITAT and Surveyor when a
+    /// world has both).
     pub tile_cache: u64,
+    /// Bytes of Surveyor region pictures kept in memory, shared by the frames that have them.
+    pub surveyor_cache: u64,
     /// Heap bytes above which a card is not decoded (it answers with a note instead). `None`:
     /// no probe (the library cannot see the heap; rtsim-cli passes its allocator's count).
     pub heap_cap: Option<u64>,
@@ -46,6 +49,7 @@ impl Default for Limits {
             row_budget: 4 << 20,
             card_cache: 256 << 20,
             tile_cache: 64 << 20,
+            surveyor_cache: mic_viewer_surveyor::DEFAULT_CACHE_BYTES as u64,
             heap_cap: None,
         }
     }
