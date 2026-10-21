@@ -38,7 +38,7 @@ use crate::reconcile::GoodLookup;
 use crate::tunables::GlassTunables;
 use check::{Compiled, DistrictGlass, View};
 use records::{GlassObs, ProbeSet};
-use report::Report;
+use report::{Report, discard};
 use store::EndOutcome;
 
 /// Counters across districts, for operators and tests.
@@ -113,6 +113,10 @@ impl Glass {
                                 let empty = empty_view(&none_inv, &none_ports);
                                 comp.start(view.unwrap_or(&empty), goods, tun);
                                 self.stats.solves += u64::from(comp.solves);
+                                // The old compile's window (open or warming up) goes with it.
+                                if dg.compiled.is_some() {
+                                    dg.note(at, discard::RECOMPILE);
+                                }
                                 dg.compiled = Some(comp);
                                 dg.not_compilable = None;
                                 self.stats.compiles_accepted += 1;
@@ -161,12 +165,16 @@ impl Glass {
         tun: &GlassTunables,
     ) -> Option<ProbeSet> {
         let dg = self.districts.get_mut(&district)?;
-        let c = dg.compiled.as_mut()?;
-        if view.revision != c.graph.end.revision {
+        let revision = dg.compiled.as_ref()?.graph.end.revision;
+        if view.revision != revision {
             // The inventory indices name another revision's list: nothing to measure (GB24).
+            dg.note(at, discard::REVISION);
+            let c = dg.compiled.as_mut()?;
+            c.district_revision = Some(view.revision);
             c.discard(at, tun);
             return None;
         }
+        let c = dg.compiled.as_mut()?;
         let solves = c.solves;
         let windows = c.windows_completed;
         let (probes, demoted) = c.sweep(at, view, goods, tun);
@@ -189,13 +197,22 @@ impl Glass {
         dg.probe_cmd(district, nodes)
     }
 
-    /// A sweep that does not count (not live, or dropped): the open window is discarded.
-    pub fn discard(&mut self, at: Tick, district: DistrictId, tun: &GlassTunables) {
-        if let Some(c) = self
-            .districts
-            .get_mut(&district)
-            .and_then(|d| d.compiled.as_mut())
-        {
+    /// A sweep that does not count, or a change that ends the window, for a [`discard`] reason. A
+    /// sweep without its samples (NO_SWEEP, DROPPED) is a skip: nothing is sampled and the window
+    /// goes on, integrating across the gap (GB101). The rest discard the open window, and the next
+    /// starts after a fresh warm-up.
+    pub fn discard(&mut self, at: Tick, district: DistrictId, reason: u32, tun: &GlassTunables) {
+        let Some(dg) = self.districts.get_mut(&district) else {
+            return;
+        };
+        if dg.compiled.is_none() {
+            return;
+        }
+        dg.note(at, reason);
+        if matches!(reason, discard::NO_SWEEP | discard::DROPPED) {
+            return;
+        }
+        if let Some(c) = dg.compiled.as_mut() {
             c.discard(at, tun);
         }
     }
@@ -203,6 +220,9 @@ impl Glass {
     /// A session start: every open window loses the samples that were in flight.
     pub fn session_start(&mut self, at: Tick, tun: &GlassTunables) {
         for dg in self.districts.values_mut() {
+            if dg.compiled.is_some() {
+                dg.note(at, discard::SESSION);
+            }
             if let Some(c) = dg.compiled.as_mut() {
                 c.discard(at, tun);
             }
@@ -219,6 +239,6 @@ impl Glass {
     /// The district's glass report (`report.rs`), or None if it has no complete compile.
     pub fn report(&self, district: DistrictId) -> Option<Report> {
         let dg = self.districts.get(&district)?;
-        dg.compiled.as_ref().map(|c| c.report(dg.demoted.len()))
+        dg.compiled.as_ref().map(|c| c.report(dg))
     }
 }

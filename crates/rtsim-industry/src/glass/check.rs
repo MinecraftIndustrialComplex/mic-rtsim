@@ -6,7 +6,9 @@
 //! regime it was in (controllers switch between sweeps, so the prediction is the time average of
 //! the per-interval regimes), the sample is added to the window's running sums, then the stores'
 //! states and the controllers are read again; only a changed regime solves (and a regime seen
-//! recently comes from the cache).
+//! recently comes from the cache). A heater lit on the burn it had at the compile changes phase at
+//! a known tick (it refuses fuel until its burn falls to the insertion threshold, then takes it, then
+//! runs out): the interval is cut there and the rest integrated under the new regime.
 //!
 //! **The fit.** Per good, the measured series is the read stores' summed stock minus the district's
 //! ports (`N = S - P`, as the learner); the predicted series is the cumulative L prediction. The
@@ -22,7 +24,7 @@ use super::graph::Graph;
 use super::q::Q;
 use super::records::{CONTROL_RUN_WHEN_ON, CONTROL_STOP_WHEN_ON, NodeKind, ProbeSet, model};
 use super::report::{self, GoodReport, Report};
-use super::solve::{self, Regime, Solution};
+use super::solve::{self, Regime, Solution, burn};
 use crate::district::Inventory;
 use crate::ids::{DistrictId, Good, GoodClass, GoodVec, VecMap};
 use crate::reconcile::GoodLookup;
@@ -36,7 +38,8 @@ pub const POISSON_SLOPE_FACTOR: f64 = 1.2;
 /// A controller flag (params[2]): the switch's output was on at compile (docs/industry-boundary.md
 /// §9.3, added in G1: choice GB15).
 pub const CONTROLLER_ON_AT_COMPILE: i64 = 2;
-/// A controller flag: the output is inverted.
+/// A controller flag: the switch is inverted. For display only: its Control edges' `param` already
+/// includes the inversion (§9.3, GB51), so "on" is the switch's state before inversion.
 pub const CONTROLLER_INVERTED: i64 = 1;
 
 /// Running sums for one good over a window.
@@ -66,10 +69,18 @@ struct Cum {
     hi: f64,
     lo_inf: bool,
     hi_inf: bool,
+    /// ∫ in L, out L, in U, out U dt (out less what the stores could not give).
+    il: f64,
+    ol: f64,
+    iu: f64,
+    ou: f64,
+    iu_inf: bool,
+    ou_inf: bool,
     /// ∫ λ E[X²] dt.
     var: f64,
     batch: f64,
     class: u32,
+    why: (u32, u32),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -87,6 +98,12 @@ struct Window {
 pub struct GoodResult {
     pub good: Good,
     pub class: u32,
+    pub why: (u32, u32),
+    /// The window's average flows (NaN for a window with no length yet).
+    pub in_l: f64,
+    pub in_u: f64,
+    pub out_l: f64,
+    pub out_u: f64,
     pub predicted: f64,
     pub lo: f64,
     pub hi: f64,
@@ -126,6 +143,47 @@ pub enum GlassEvent {
 /// Events kept per district.
 const EVENTS_KEPT: usize = 16;
 
+/// A heater lit on the burn it had at the compile, as the model spends it.
+#[derive(Clone, Debug, PartialEq)]
+struct Burn {
+    node: u32,
+    /// Burn ticks left.
+    left: f64,
+    /// The insertion threshold (`params[3]`): above it the heater refuses fuel.
+    thr: f64,
+}
+
+impl Burn {
+    fn phase(&self) -> u8 {
+        if self.left > self.thr {
+            burn::REFUSING
+        } else if self.left > 0.0 {
+            burn::TAKING
+        } else {
+            burn::OUT
+        }
+    }
+
+    /// Burn spent per tick: all of it while refusing, less what its fuel pays for while taking.
+    fn spend(&self, fed: f64) -> f64 {
+        match self.phase() {
+            burn::REFUSING => 1.0,
+            burn::TAKING => (1.0 - fed).max(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// Ticks until its phase changes at that spend, if it will.
+    fn until(&self, fed: f64) -> Option<f64> {
+        let r = self.spend(fed);
+        match self.phase() {
+            burn::REFUSING => Some(self.left - self.thr),
+            burn::TAKING if r > 1e-12 => Some(self.left / r),
+            _ => None,
+        }
+    }
+}
+
 /// The compile a district holds and everything computed from it.
 #[derive(Clone, Debug)]
 pub struct Compiled {
@@ -147,10 +205,19 @@ pub struct Compiled {
     pub last: Option<WindowResult>,
     pub windows_completed: u32,
     pub strikes: u32,
-    /// Per (inventory, good) with a negative L net rate: its stock at the last sweep, so an interval
-    /// never predicts more drain than the store held (§4.1's "input store empties").
-    drains: Vec<(u32, Good, f64, f64)>,
+    /// Per (inventory, good): its stock as of the last sweep, spent and refilled as the model
+    /// integrates, so an interval never predicts more drain than the store held (§4.1's "input
+    /// store empties").
+    stock_est: BTreeMap<(u32, Good), f64>,
     last_sweep: Option<Tick>,
+    /// Heaters lit on their compile-time burn, and the tick the model has reached.
+    heaters: Vec<Burn>,
+    model_at: Tick,
+    /// Live sweeps taken, and those sampled into a window.
+    pub sweeps: u32,
+    pub sweeps_sampled: u32,
+    /// The district's inventory revision at the last sweep.
+    pub district_revision: Option<u32>,
     pub probe_set: Vec<u32>,
     pub probes: BTreeMap<u32, ProbeTrack>,
     pub events: VecDeque<GlassEvent>,
@@ -159,6 +226,9 @@ pub struct Compiled {
 /// One district's glass state.
 #[derive(Clone, Debug, Default)]
 pub struct DistrictGlass {
+    /// Discards and skips by `report::discard` reason, and the latest (tick, reason).
+    pub discards: [u64; report::discard::COUNT],
+    pub last_discard: Option<(Tick, u32)>,
     pub asm: super::store::Assembler,
     pub compiled: Option<Compiled>,
     /// The latest not-compilable END: (compile, reason).
@@ -176,7 +246,13 @@ pub struct View<'a> {
     pub ports: &'a GoodVec,
 }
 
-fn holding_threshold(goods: &dyn GoodLookup, g: Good, stacks: i64) -> i64 {
+/// What a store must hold of a good to supply it. A good the graph also brings into the store
+/// needs `glass.holdingStacks` stacks (below, the store passes on what it receives: a chest a funnel
+/// keeps nearly empty is not a source); a good nothing brings in needs one unit (GB100).
+fn holding_threshold(goods: &dyn GoodLookup, g: Good, stacks: i64, fed: bool) -> i64 {
+    if !fed {
+        return 1;
+    }
     match goods.class(g) {
         GoodClass::Item => goods.max_stack(g) * stacks,
         GoodClass::Fluid => 1000 * stacks,
@@ -222,6 +298,21 @@ impl Compiled {
             .collect();
         let mut regime = Regime::new(n);
         regime.demoted = demoted.clone();
+        // Heaters lit at the compile spend their burn from here (§9.3); a creative one never does.
+        let mut heaters = Vec::new();
+        for (v, nd) in graph.nodes.iter().enumerate() {
+            let creative = nd.params[2] <= 0 && graph.node_recipes.of(v as u32).is_empty();
+            if nd.kind != NodeKind::Heater || creative || nd.params[0] <= 0 {
+                continue;
+            }
+            let b = Burn {
+                node: v as u32,
+                left: nd.params[0] as f64,
+                thr: nd.params[3].max(0) as f64,
+            };
+            regime.burning[v] = b.phase();
+            heaters.push(b);
+        }
         Compiled {
             graph,
             accepted_at: at,
@@ -239,8 +330,13 @@ impl Compiled {
             last: None,
             windows_completed: 0,
             strikes: 0,
-            drains: Vec::new(),
+            stock_est: BTreeMap::new(),
             last_sweep: None,
+            heaters,
+            model_at: at,
+            sweeps: 0,
+            sweeps_sampled: 0,
+            district_revision: None,
             probe_set: Vec::new(),
             probes: BTreeMap::new(),
             events: VecDeque::new(),
@@ -279,9 +375,11 @@ impl Compiled {
             };
             let decl = &view.inventories[&node.inventory.expect("read")].decl;
             self.regime.read[v as usize] = true;
+            let graph = &self.graph;
+            let fed = |g: Good| graph.in_g.of(v).iter().any(|&e| graph.allows(e, g));
             let held: Vec<Good> = c
                 .iter()
-                .filter(|&(g, a)| a >= holding_threshold(goods, g, tun.holding_stacks).max(1))
+                .filter(|&(g, a)| a >= holding_threshold(goods, g, tun.holding_stacks, fed(g)))
                 .map(|(g, _)| g)
                 .collect();
             self.regime.held[v as usize] = held;
@@ -346,8 +444,8 @@ impl Compiled {
             for &e in self.graph.control_in.of(v) {
                 let ed = self.graph.edge(e);
                 let c = ed.from as usize;
-                let signal =
-                    self.ctrl_on[c] ^ (self.graph.nodes[c].params[2] & CONTROLLER_INVERTED != 0);
+                // The param already includes the inversion (GB51).
+                let signal = self.ctrl_on[c];
                 let off = match ed.param {
                     CONTROL_STOP_WHEN_ON => signal,
                     CONTROL_RUN_WHEN_ON => !signal,
@@ -397,7 +495,7 @@ impl Compiled {
     pub fn discard(&mut self, at: Tick, tun: &GlassTunables) {
         self.win = None;
         self.last_sweep = None;
-        self.drains.clear();
+        self.stock_est.clear();
         self.ready_at = self
             .ready_at
             .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
@@ -426,29 +524,119 @@ impl Compiled {
         s
     }
 
-    /// Integrates the interval since the last sweep under the regime it was in.
-    fn integrate(&mut self, at: Tick) {
-        let (Some(win), Some(prev)) = (self.win.as_mut(), self.last_sweep) else {
-            return;
-        };
-        let dt = at.0.saturating_sub(prev.0) as f64;
+    /// Advances the model from where it was to `at`: heaters spend their compile-time burn, a heater
+    /// changing phase cuts the interval and solves again (cached regimes cost nothing), and the open
+    /// window integrates each piece under the regime it was in.
+    fn advance(&mut self, at: Tick, tun: &GlassTunables) {
+        let end = at.0 as f64;
+        let mut t = self.model_at.0 as f64;
+        let integrating = self.win.is_some() && self.last_sweep.is_some();
+        // Each heater changes phase at most twice: the loop ends.
+        let mut pieces = 0usize;
+        while t < end && pieces <= 2 * self.heaters.len() + 1 {
+            pieces += 1;
+            let mut dt = end - t;
+            let mut cut = false;
+            for h in &self.heaters {
+                let fed = self.sol.fed.get(h.node as usize).copied().unwrap_or(0.0);
+                if let Some(d) = h.until(fed)
+                    && d < dt
+                {
+                    dt = d.max(0.0);
+                    cut = true;
+                }
+            }
+            if integrating {
+                self.integrate(dt);
+            }
+            let mut changed = false;
+            for h in self.heaters.iter_mut() {
+                let fed = self.sol.fed.get(h.node as usize).copied().unwrap_or(0.0);
+                let before = h.phase();
+                let until = h.until(fed);
+                h.left -= h.spend(fed) * dt;
+                // Land exactly on a phase boundary this piece was cut at.
+                if before == burn::REFUSING && until.is_some_and(|u| u <= dt + 1e-9) {
+                    h.left = h.thr;
+                } else if before == burn::TAKING && until.is_some_and(|u| u <= dt + 1e-9) {
+                    h.left = 0.0;
+                }
+                let after = h.phase();
+                if after != before {
+                    self.regime.burning[h.node as usize] = after;
+                    changed = true;
+                }
+            }
+            t += dt;
+            if changed {
+                self.resolve(tun, false);
+            } else if !cut {
+                break;
+            }
+        }
+        self.model_at = at;
+    }
+
+    /// The tick the next heater changes phase, if one will.
+    pub fn next_breakpoint(&self) -> Option<u64> {
+        let mut best: Option<f64> = None;
+        for h in &self.heaters {
+            let fed = self.sol.fed.get(h.node as usize).copied().unwrap_or(0.0);
+            if let Some(d) = h.until(fed) {
+                best = Some(best.map_or(d, |b: f64| b.min(d)));
+            }
+        }
+        best.map(|d| self.model_at.0 + d.max(0.0).ceil() as u64)
+    }
+
+    /// Heaters still lit on their compile-time burn.
+    pub fn heaters_burning(&self) -> u32 {
+        self.heaters
+            .iter()
+            .filter(|h| h.phase() != burn::OUT)
+            .count() as u32
+    }
+
+    /// Integrates `dt` ticks of the current regime into the open window.
+    fn integrate(&mut self, dt: f64) {
         if dt <= 0.0 {
             return;
         }
-        // Clamp corrections per good: a store never drains below empty.
+        let Some(win) = self.win.as_mut() else {
+            return;
+        };
+        // What the stores could not give (they held too little), per good.
         let mut corr: BTreeMap<Good, f64> = BTreeMap::new();
-        for &(_, g, net, stock) in &self.drains {
+        for &(inv, g, net) in &self.sol.per_store {
+            let est = self.stock_est.entry((inv, g)).or_insert(0.0);
             let raw = net * dt;
-            let clamped = raw.max(-stock);
-            *corr.entry(g).or_insert(0.0) += clamped - raw;
+            let clamped = raw.max(-*est);
+            *est += clamped;
+            if clamped != raw {
+                *corr.entry(g).or_insert(0.0) += clamped - raw;
+            }
         }
         for gb in &self.sol.goods {
             let (_, cum) = win.goods.entry(gb.good).or_default();
-            let net = gb.in_l.to_f64() - gb.out_l.to_f64();
-            let dp = net * dt + corr.get(&gb.good).copied().unwrap_or(0.0);
+            let c = corr.get(&gb.good).copied().unwrap_or(0.0);
+            let (il, ol) = (gb.in_l.to_f64(), gb.out_l.to_f64());
+            let (iu, ou) = (gb.in_u.to_f64(), gb.out_u.to_f64());
+            let dp = (il - ol) * dt + c;
             cum.p += dp;
-            let out_spread = gb.out_u.to_f64() - gb.out_l.to_f64();
-            let in_spread = gb.in_u.to_f64() - gb.in_l.to_f64();
+            cum.il += il * dt;
+            cum.ol += ol * dt - c;
+            if iu.is_finite() {
+                cum.iu += iu * dt;
+            } else {
+                cum.iu_inf = true;
+            }
+            if ou.is_finite() {
+                cum.ou += ou * dt - c;
+            } else {
+                cum.ou_inf = true;
+            }
+            let out_spread = ou - ol;
+            let in_spread = iu - il;
             if out_spread.is_finite() {
                 cum.lo += dp - out_spread * dt;
             } else {
@@ -461,7 +649,10 @@ impl Compiled {
             }
             cum.var += gb.var_rate * dt;
             cum.batch = cum.batch.max(gb.batch);
-            cum.class = cum.class.max(gb.class);
+            if gb.class > cum.class || (gb.class == cum.class && cum.why.0 == report::why::NONE) {
+                cum.class = gb.class;
+                cum.why = gb.why;
+            }
         }
     }
 
@@ -545,6 +736,15 @@ impl Compiled {
             };
             let sigma = se.max(model);
             let q = if w > 0.0 { cum.batch.max(1.0) / w } else { 0.0 };
+            let avg = |x: f64, inf: bool| {
+                if inf {
+                    f64::INFINITY
+                } else if w > 0.0 {
+                    x / w
+                } else {
+                    f64::NAN
+                }
+            };
             let tol = z * sigma + q;
             let verdict =
                 if win.n < 3 || cum.class == report::class::UNBOUNDED || !measured.is_finite() {
@@ -564,6 +764,11 @@ impl Compiled {
             goods.push(GoodResult {
                 good: *g,
                 class: cum.class,
+                why: cum.why,
+                in_l: avg(cum.il, false),
+                in_u: avg(cum.iu, cum.iu_inf),
+                out_l: avg(cum.ol, false),
+                out_u: avg(cum.ou, cum.ou_inf),
                 predicted,
                 lo,
                 hi,
@@ -751,11 +956,14 @@ impl Compiled {
         tun: &GlassTunables,
     ) -> (Option<Vec<u32>>, Option<u32>) {
         let mut out = (None, None);
-        self.integrate(at);
+        self.sweeps += 1;
+        self.district_revision = Some(view.revision);
+        self.advance(at, tun);
         let stock = self.stock(view);
         let unbounded = self.sol.has_unbounded;
         if self.win.is_some() {
             self.sample(at, &stock, view.ports, unbounded);
+            self.sweeps_sampled += 1;
             let done = self
                 .win
                 .as_ref()
@@ -774,7 +982,7 @@ impl Compiled {
                 self.read_state(view, goods, tun);
                 self.resolve(tun, false);
                 self.sample(at, &stock, view.ports, unbounded);
-                self.set_drains(view);
+                self.set_stock(view);
                 self.last_sweep = Some(at);
                 return out;
             }
@@ -787,24 +995,26 @@ impl Compiled {
                 ..Window::default()
             });
             self.sample(at, &stock, view.ports, self.sol.has_unbounded);
+            self.sweeps_sampled += 1;
         }
-        self.set_drains(view);
+        self.set_stock(view);
         self.last_sweep = Some(at);
         out
     }
 
-    fn set_drains(&mut self, view: &View<'_>) {
-        self.drains.clear();
-        for &(inv, g, net) in &self.sol.per_store {
-            if net >= 0.0 {
+    /// The read stores' stock per (inventory, good) at this sweep, for the drain clamp.
+    fn set_stock(&mut self, view: &View<'_>) {
+        self.stock_est.clear();
+        for v in 0..self.graph.nodes.len() as u32 {
+            let Some(inv) = self.graph.node(v).inventory else {
                 continue;
+            };
+            let Some(c) = self.contents(v, view) else {
+                continue;
+            };
+            for (g, a) in c.iter() {
+                self.stock_est.insert((inv, g), a.max(0) as f64);
             }
-            let stock = view
-                .inventories
-                .get(&inv)
-                .map_or(0, |i| i.known.get(g))
-                .max(0) as f64;
-            self.drains.push((inv, g, net, stock));
         }
     }
 
@@ -828,10 +1038,11 @@ impl Compiled {
             });
     }
 
-    /// The district's report (`report.rs`).
-    pub fn report(&self, demoted: usize) -> Report {
+    /// The district's report (`report.rs`): with a window (the last completed one, else the one in
+    /// progress), its goods as that window integrated and judged them; before any, the current
+    /// solve's.
+    pub fn report(&self, dg: &DistrictGlass) -> Report {
         let sol = &self.sol;
-        // Window goods: the last completed window, else the one in progress.
         let partial;
         let res: Option<&WindowResult> = match (&self.last, &self.win) {
             (Some(r), _) => Some(r),
@@ -843,21 +1054,27 @@ impl Compiled {
         };
         let mut goods: BTreeMap<Good, GoodReport> = BTreeMap::new();
         for gb in &sol.goods {
+            let (il, iu) = (gb.in_l.to_f64(), gb.in_u.to_f64());
+            let (ol, ou) = (gb.out_l.to_f64(), gb.out_u.to_f64());
             goods.insert(
                 gb.good,
                 GoodReport {
                     good: gb.good.0,
                     class: gb.class,
-                    in_l: gb.in_l.to_f64(),
-                    in_u: gb.in_u.to_f64(),
-                    out_l: gb.out_l.to_f64(),
-                    out_u: gb.out_u.to_f64(),
-                    predicted: gb.in_l.to_f64() - gb.out_l.to_f64(),
+                    in_l: il,
+                    in_u: iu,
+                    out_l: ol,
+                    out_u: ou,
+                    predicted: il - ol,
                     measured: f64::NAN,
                     sigma: 0.0,
                     q: 0.0,
                     verdict: report::verdict::NONE,
                     samples: 0,
+                    lo: il - ou,
+                    hi: iu - ol,
+                    why: gb.why.0,
+                    why_at: gb.why.1,
                 },
             );
         }
@@ -876,9 +1093,28 @@ impl Compiled {
                     q: 0.0,
                     verdict: report::verdict::NONE,
                     samples: 0,
+                    lo: 0.0,
+                    hi: 0.0,
+                    why: report::why::NONE,
+                    why_at: u32::MAX,
                 });
-                if gr.predicted.is_finite() {
-                    e.predicted = gr.predicted;
+                // A window with length: every number is the window's, so they agree.
+                if r.ticks > 0 {
+                    e.class = gr.class;
+                    (e.why, e.why_at) = gr.why;
+                    e.in_l = gr.in_l;
+                    e.in_u = gr.in_u;
+                    e.out_l = gr.out_l;
+                    e.out_u = gr.out_u;
+                    if gr.predicted.is_finite() {
+                        e.predicted = gr.predicted;
+                    }
+                    if !gr.lo.is_nan() {
+                        e.lo = gr.lo;
+                    }
+                    if !gr.hi.is_nan() {
+                        e.hi = gr.hi;
+                    }
                 }
                 e.measured = gr.measured;
                 e.sigma = gr.sigma;
@@ -909,8 +1145,18 @@ impl Compiled {
                 .map_or(report::verdict::NONE, |r| r.verdict),
             strikes: self.strikes,
             solves: self.solves,
-            demoted: demoted as u32,
+            demoted: dg.demoted.len() as u32,
             latency: self.graph.longest_latency,
+            accepted_at: self.accepted_at.0,
+            ready_at: self.ready_at.0,
+            sweeps: self.sweeps,
+            sweeps_sampled: self.sweeps_sampled,
+            heaters_burning: self.heaters_burning(),
+            next_breakpoint: self.next_breakpoint(),
+            revision: self.graph.end.revision,
+            district_revision: self.district_revision,
+            last_discard: dg.last_discard.map(|(t, r)| (t.0, r)),
+            discards: dg.discards,
             goods: goods.into_values().collect(),
         }
     }
@@ -932,6 +1178,14 @@ impl Compiled {
 }
 
 impl DistrictGlass {
+    /// Counts a discard or skip.
+    pub fn note(&mut self, at: Tick, reason: u32) {
+        if let Some(c) = self.discards.get_mut(reason as usize) {
+            *c += 1;
+        }
+        self.last_discard = Some((at, reason));
+    }
+
     /// The probe set command for a district, if one is due.
     pub fn probe_cmd(&self, district: DistrictId, nodes: Vec<u32>) -> Option<ProbeSet> {
         let c = self.compiled.as_ref()?;

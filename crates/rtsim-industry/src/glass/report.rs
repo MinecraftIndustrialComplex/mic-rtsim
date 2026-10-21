@@ -14,6 +14,70 @@ pub mod class {
     pub const UNBOUNDED: u32 = 2;
 }
 
+/// Why a good's class is what it is (per good in the report, with the node or edge it came from):
+/// the first reason found at the worst taint on the good's paths (GB104).
+pub mod why {
+    pub const NONE: u32 = 0;
+    /// A node's BOUNDED or CALIBRATED flag (Java's).
+    pub const NODE_FLAG: u32 = 1;
+    /// A bounded rule (randomize, synchronize, merge, side insert) splitting over several sides.
+    pub const RULE: u32 = 2;
+    /// A cycle.
+    pub const CYCLE: u32 = 3;
+    pub const BLACK_BOX: u32 = 4;
+    pub const PORT: u32 = 5;
+    /// A store the sampler does not read, passing goods on.
+    pub const UNREAD_STORE: u32 = 6;
+    /// An edge's BOUNDED flag (Java's). At: the edge.
+    pub const EDGE_FLAG: u32 = 7;
+    /// A LINE edge (a depot worked by two stations, GB37). At: the edge.
+    pub const LINE: u32 = 8;
+    /// A DROP edge onto a collector (not a sink). At: the edge.
+    pub const DROP: u32 = 9;
+    /// The rounds stopped before the fixed point. At: the edge still settling, or none.
+    pub const UNCONVERGED: u32 = 10;
+    /// An exact good whose U is infinite.
+    pub const U_INFINITE: u32 = 11;
+    /// An unlimited flow arriving (an unlimited source into an unlimited sink).
+    pub const UNLIMITED_FLOW: u32 = 12;
+    /// An edge's capacity shared by two goods flowing on it.
+    pub const SHARED_EDGE: u32 = 13;
+    /// A machine short of inputs for several flows.
+    pub const SHORT_INPUTS: u32 = 14;
+    /// A node's capacity shared by several flows (not a mover).
+    pub const SHARED_CAPACITY: u32 = 15;
+    /// A machine time-sharing several recipes.
+    pub const TIME_SHARE: u32 = 16;
+    /// An input good shared by several recipes of one machine.
+    pub const SHARED_INPUT: u32 = 17;
+    /// A boiler heated by a heater at part duty.
+    pub const PART_DUTY: u32 = 18;
+    /// A priority node with two out-edges of one order (GB103).
+    pub const PRIORITY_TIE: u32 = 19;
+}
+
+/// Why a district's open window was thrown away or a sweep not counted (`Report` slots 24 to 32).
+/// The first two are skips: the sweep is not sampled and the window goes on.
+pub mod discard {
+    pub const NONE: u32 = 0;
+    /// IND_SWEEP_END with no samples buffered for it (skip).
+    pub const NO_SWEEP: u32 = 1;
+    /// IND_SWEEP_END whose record count did not match what arrived (skip).
+    pub const DROPPED: u32 = 2;
+    /// A sweep that was not live (some chunk did not block-tick throughout).
+    pub const NOT_LIVE: u32 = 3;
+    /// IND_EDIT: a player changed the district.
+    pub const EDIT: u32 = 4;
+    /// The district's inventory revision is not the compile's.
+    pub const REVISION: u32 = 5;
+    /// A new compile replaced the one whose window this was.
+    pub const RECOMPILE: u32 = 6;
+    /// A session start.
+    pub const SESSION: u32 = 7;
+    /// Reasons, for array sizes.
+    pub const COUNT: usize = 8;
+}
+
 /// A window's verdict for one good or for the whole district.
 pub mod verdict {
     /// No completed window yet (or the good was not judged).
@@ -22,21 +86,24 @@ pub mod verdict {
     pub const FAIL: u32 = 2;
 }
 
-/// One good's bounds and its checksum. Rates are per tick (items in units, fluids in mB).
+/// One good's bounds and its checksum. Rates are per tick (items in units, fluids in mB). With a
+/// window (the last completed one, else the one in progress) every number is that window's, so they
+/// agree with each other and with the verdict; before any, the current solve's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GoodReport {
     /// The good's id, as the district's records carry it.
     pub good: u32,
-    /// [`class`].
+    /// [`class`] (the worst over the window's regimes).
     pub class: u32,
-    /// Flow into stores: L (the fixed point) and U (the LP maximum). `f64::INFINITY` when unbounded.
+    /// Flow into stores: L (the fixed point) and U (the LP maximum), averaged over the window's
+    /// regimes. `f64::INFINITY` when unbounded.
     pub in_l: f64,
     pub in_u: f64,
-    /// Flow out of stores, likewise.
+    /// Flow out of stores, likewise (less what a store could not give: it held too little).
     pub out_l: f64,
     pub out_u: f64,
-    /// The predicted net change of the district's sampled stock, averaged over the window's regimes
-    /// (controllers change regime between sweeps): `in_l - out_l` in a single regime.
+    /// The predicted net change of the district's sampled stock: the slope of the integrated L
+    /// prediction over the window's samples (`in_l - out_l` in a single regime).
     pub predicted: f64,
     /// The measured slope of the sampled stock over the window; `f64::NAN` before any window.
     pub measured: f64,
@@ -48,6 +115,14 @@ pub struct GoodReport {
     pub verdict: u32,
     /// Sweeps in the window.
     pub samples: u32,
+    /// The band a bounded good is judged in (before the tolerance): slopes of the integrated
+    /// `in_l - out_u` and `in_u - out_l`, so `lo <= predicted <= hi`.
+    pub lo: f64,
+    pub hi: f64,
+    /// [`why`] the class is what it is, and the node (or edge, for the edge reasons) it came from;
+    /// `u32::MAX` (reported -1) for none.
+    pub why: u32,
+    pub why_at: u32,
 }
 
 /// A district's glass state for operators and tests.
@@ -78,23 +153,54 @@ pub struct Report {
     pub demoted: u32,
     /// The compile's longest path latency in ticks (part of the warm-up before a window).
     pub latency: u64,
+    /// The tick the compile was accepted.
+    pub accepted_at: u64,
+    /// The earliest tick the next window may open (after the warm-up and any discard).
+    pub ready_at: u64,
+    /// Live sweeps this compile's checksum took, and those sampled into a window.
+    pub sweeps: u32,
+    pub sweeps_sampled: u32,
+    /// Heaters still lit on the burn they had at the compile, and the tick the next of them changes
+    /// phase (None: none will).
+    pub heaters_burning: u32,
+    pub next_breakpoint: Option<u64>,
+    /// The inventory revision the compile names, and the district's at its last sweep.
+    pub revision: u32,
+    pub district_revision: Option<u32>,
+    /// The latest discard or skip: (tick, [`discard`] reason).
+    pub last_discard: Option<(u64, u32)>,
+    /// Discards and skips by [`discard`] reason (index 0 unused), since the district's glass began.
+    pub discards: [u64; discard::COUNT],
     pub goods: Vec<GoodReport>,
 }
 
 /// Values per good in [`Report::to_f64s`].
-pub const GOOD_STRIDE: usize = 12;
+pub const GOOD_STRIDE: usize = 16;
 /// Values before the first good in [`Report::to_f64s`].
-pub const HEADER: usize = 16;
+pub const HEADER: usize = 33;
+
+fn opt(x: Option<u64>) -> f64 {
+    x.map_or(-1.0, |v| v as f64)
+}
+
+fn idx(x: u32) -> f64 {
+    if x == u32::MAX { -1.0 } else { f64::from(x) }
+}
 
 impl Report {
-    /// The flat form the JNI inspection call returns (`NativeEngine.glassReport`):
+    /// The flat form the JNI inspection call returns (`NativeEngine.glassReport`); -1 is "none":
     ///
-    /// - header (16): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
+    /// - header (33): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
     ///   6 window start tick, 7 window ticks done, 8 window ticks target, 9 windows completed,
-    ///   10 verdict, 11 strikes, 12 goods, 13 solves, 14 demoted kinds, 15 latency ticks (13 to 15
-    ///   were reserved 0 before the solver landed: choice GB29);
-    /// - then per good (12): 0 good, 1 class, 2 in L, 3 in U, 4 out L, 5 out U, 6 predicted,
-    ///   7 measured, 8 sigma, 9 q, 10 verdict, 11 samples.
+    ///   10 verdict, 11 strikes, 12 goods, 13 solves, 14 demoted kinds, 15 latency ticks,
+    ///   16 accepted at (tick), 17 ready at (tick), 18 sweeps taken, 19 sweeps sampled,
+    ///   20 heaters burning, 21 next burn breakpoint (tick), 22 compile revision, 23 district
+    ///   revision at the last sweep, 24 last discard tick, 25 last discard reason ([`discard`]),
+    ///   26 to 32 discards and skips by reason 1 to 7 (no sweep, dropped records, not live, edit,
+    ///   revision, recompile, session start);
+    /// - then per good (16): 0 good, 1 class, 2 in L, 3 in U, 4 out L, 5 out U, 6 predicted,
+    ///   7 measured, 8 sigma, 9 q, 10 verdict, 11 samples, 12 lo, 13 hi, 14 why ([`why`]),
+    ///   15 why at (a node, or an edge for the edge reasons).
     pub fn to_f64s(&self) -> Vec<f64> {
         let mut v = Vec::with_capacity(HEADER + GOOD_STRIDE * self.goods.len());
         v.extend_from_slice(&[
@@ -114,7 +220,19 @@ impl Report {
             f64::from(self.solves),
             f64::from(self.demoted),
             self.latency as f64,
+            self.accepted_at as f64,
+            self.ready_at as f64,
+            f64::from(self.sweeps),
+            f64::from(self.sweeps_sampled),
+            f64::from(self.heaters_burning),
+            opt(self.next_breakpoint),
+            f64::from(self.revision),
+            opt(self.district_revision.map(u64::from)),
+            opt(self.last_discard.map(|d| d.0)),
+            self.last_discard.map_or(0.0, |d| f64::from(d.1)),
         ]);
+        v.extend(self.discards[1..].iter().map(|&c| c as f64));
+        debug_assert_eq!(v.len(), HEADER);
         for g in &self.goods {
             v.extend_from_slice(&[
                 f64::from(g.good),
@@ -129,6 +247,10 @@ impl Report {
                 g.q,
                 f64::from(g.verdict),
                 f64::from(g.samples),
+                g.lo,
+                g.hi,
+                f64::from(g.why),
+                idx(g.why_at),
             ]);
         }
         v
@@ -161,7 +283,21 @@ mod tests {
                 q: 0.0005,
                 verdict: verdict::PASS,
                 samples: 120,
+                lo: 0.0625,
+                hi: 0.1175,
+                why: why::RULE,
+                why_at: 5,
             }],
+            accepted_at: 100,
+            ready_at: 1300,
+            sweeps: 9,
+            sweeps_sampled: 7,
+            heaters_burning: 2,
+            next_breakpoint: Some(2000),
+            revision: 4,
+            district_revision: None,
+            last_discard: Some((900, discard::DROPPED)),
+            discards: [0, 1, 2, 3, 4, 5, 6, 7],
             ..Report::default()
         };
         let v = r.to_f64s();
@@ -170,9 +306,15 @@ mod tests {
         assert_eq!(v[2], 1.0);
         assert_eq!(v[12], 1.0);
         assert_eq!(&v[13..16], &[4.0, 1.0, 40.0]);
+        assert_eq!(
+            &v[16..26],
+            &[100.0, 1300.0, 9.0, 7.0, 2.0, 2000.0, 4.0, -1.0, 900.0, 2.0]
+        );
+        assert_eq!(&v[26..33], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
         assert_eq!(v[HEADER], 7.0);
         assert_eq!(v[HEADER + 1], 1.0);
         assert_eq!(v[HEADER + 3], 0.1175);
         assert_eq!(v[HEADER + 11], 120.0);
+        assert_eq!(&v[HEADER + 12..HEADER + 16], &[0.0625, 0.1175, 2.0, 5.0]);
     }
 }

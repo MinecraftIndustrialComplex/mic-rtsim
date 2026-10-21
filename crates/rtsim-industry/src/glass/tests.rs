@@ -7,11 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 use rtsim_kernel::clock::Tick;
 
-use super::check::{Compiled, GlassEvent, POISSON_SLOPE_FACTOR, View};
+use super::check::{Compiled, DistrictGlass, GlassEvent, POISSON_SLOPE_FACTOR, View};
 use super::graph::Graph;
 use super::q::Q;
 use super::records::*;
-use super::report::{class, verdict};
+use super::report::{class, verdict, why};
 use super::solve::{self, GoodBound, Regime, Solution};
 use super::{Glass, GlassStats};
 use crate::district::Inventory;
@@ -894,7 +894,7 @@ fn a_matching_window_passes_after_the_warm_up() {
     assert!(close(sheet.measured, 0.1) && close(sheet.predicted, 0.1));
     assert_eq!(sheet.samples, 21);
     assert!(close(sheet.q, 2.0 / 2000.0));
-    let rep = c.report(0);
+    let rep = c.report(&DistrictGlass::default());
     assert_eq!(rep.windows_completed, 1);
     assert_eq!(rep.verdict, verdict::PASS);
     assert_eq!(rep.window_ticks_target, 2000);
@@ -1067,6 +1067,357 @@ fn a_window_spanning_two_regimes_predicts_their_time_average() {
     assert_eq!(marker.predicted, 0.0);
 }
 
+// ---- heaters lit at the compile, holding, ties, the report (integration follow-ups) ---------------
+
+/// A heated mixer (1 per 17 ticks, 2 brass each) whose blaze burner has `params` (remaining burn,
+/// level, burn ticks per fuel, insertion threshold); `fuel`: coal reaches it from the input store.
+/// The heater is the last node.
+fn burning_mixer(params: [i64; 4], fuel: bool) -> B {
+    let mut b = B::default();
+    let input = b.store(0);
+    let out = b.store(1);
+    let mix = b.recipe(&[(ZINC, 1), (COPPER, 1)], &[(BRASS, 2)]);
+    b.recipes[mix as usize].heat = heat::NEEDS_HEATED;
+    let mixer = b.machine(model::MIXER, mix, 1, 17);
+    b.edge_k(EdgeKind::Adjacency, input, mixer, &[ZINC, COPPER]);
+    b.edge(mixer, out);
+    let h = b.node(NodeKind::Heater, model::BLAZE_BURNER, 0, Vec::new());
+    b.nodes[h as usize].params = params;
+    if fuel {
+        b.edge_k(EdgeKind::Adjacency, input, h, &[COAL]);
+    }
+    b.edge_k(EdgeKind::Heat, h, mixer, &[]);
+    b.window = 2000;
+    b
+}
+
+/// The least-squares slope of `p` over sample times `ts`.
+fn ls_slope(ts: &[f64], p: impl Fn(f64) -> f64) -> f64 {
+    let n = ts.len() as f64;
+    let tm = ts.iter().sum::<f64>() / n;
+    let pm = ts.iter().map(|&t| p(t)).sum::<f64>() / n;
+    let sxy: f64 = ts.iter().map(|&t| (t - tm) * (p(t) - pm)).sum();
+    let sxx: f64 = ts.iter().map(|&t| (t - tm) * (t - tm)).sum();
+    sxy / sxx
+}
+
+#[test]
+fn a_heater_lit_at_the_compile_runs_on_its_burn_then_goes_out() {
+    // The corpus's unfed burners: 9,984 ticks left, no fuel edge (burn ticks 1). Lit and refusing
+    // fuel to 9,484, lit and taking fuel (none comes) to 9,984, then out.
+    let b = burning_mixer([9984, i64::from(heat::KINDLED), 1, 500], false);
+    let h = b.nodes.len() - 1;
+    let tun = GlassTunables::default();
+    let goods = goods();
+    let ports = GoodVec::new();
+    let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+    assert_eq!(c.regime.burning[h], solve::burn::REFUSING);
+    assert_eq!(c.heaters_burning(), 1);
+    assert_eq!(c.next_breakpoint(), Some(9484));
+    let crafts = |t: u64| (t.min(9984) / 17) as i64;
+    let mut seen = Vec::new();
+    let mut t = 0;
+    while t <= 11_200 {
+        let k = crafts(t);
+        let mut invs = VecMap::new();
+        invs.insert(
+            0,
+            inventory(0, &[(ZINC, 100_000 - k), (COPPER, 100_000 - k)]),
+        );
+        invs.insert(1, inventory(1, &[(BRASS, 2 * k)]));
+        let view = View {
+            revision: 1,
+            inventories: &invs,
+            ports: &ports,
+        };
+        if t == 0 {
+            c.start(&view, &goods, &tun);
+            assert_eq!(bound(&c.sol, BRASS).in_l, Q::new(2, 17));
+        }
+        c.sweep(Tick(t), &view, &goods, &tun);
+        if matches!(t, 9400 | 9500 | 10_000) {
+            seen.push((t, c.regime.burning[h], bound(&c.sol, BRASS).in_l));
+        }
+        t += 100;
+    }
+    assert_eq!(
+        seen,
+        vec![
+            (9400, solve::burn::REFUSING, Q::new(2, 17)),
+            (9500, solve::burn::TAKING, Q::new(2, 17)),
+            (10_000, solve::burn::OUT, Q::ZERO),
+        ]
+    );
+    assert_eq!(c.heaters_burning(), 0);
+    assert_eq!(c.next_breakpoint(), None);
+    // Five windows passed; the last, [9,200, 11,200], predicts the burner going out at 9,984 (the
+    // sweep interval [9,900, 10,000] is cut there).
+    assert_eq!(c.windows_completed, 5);
+    let r = c.last.clone().expect("windows");
+    assert_eq!((r.start, r.verdict), (Tick(9200), verdict::PASS));
+    let ts: Vec<f64> = (0..=20).map(|i| 9200.0 + 100.0 * f64::from(i)).collect();
+    let expect = ls_slope(&ts, |t| 2.0 / 17.0 * (t.min(9984.0) - 9200.0));
+    let brass = r.goods.iter().find(|g| g.good == BRASS).expect("brass");
+    assert!(
+        close(brass.predicted, expect),
+        "{} vs {expect}",
+        brass.predicted
+    );
+    assert_eq!(brass.verdict, verdict::PASS);
+}
+
+#[test]
+fn a_heater_takes_fuel_once_its_burn_falls_to_the_threshold() {
+    // 1,593 ticks left, 1,600 per coal, threshold 500: it refuses coal until 1,093, then takes one
+    // per 1,600 ticks and stays lit. The input store holds 16 coal: nothing brings coal in, so it
+    // supplies (GB100).
+    let b = burning_mixer([1593, i64::from(heat::KINDLED), 1600, 500], true);
+    let h = b.nodes.len() - 1;
+    let tun = GlassTunables::default();
+    let goods = goods();
+    let ports = GoodVec::new();
+    let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+    let mut seen = Vec::new();
+    for t in [0u64, 1000, 1100, 3000] {
+        let mut invs = VecMap::new();
+        invs.insert(0, inventory(0, &[(ZINC, 1000), (COPPER, 1000), (COAL, 16)]));
+        invs.insert(1, inventory(1, &[]));
+        let view = View {
+            revision: 1,
+            inventories: &invs,
+            ports: &ports,
+        };
+        if t == 0 {
+            c.start(&view, &goods, &tun);
+        }
+        c.sweep(Tick(t), &view, &goods, &tun);
+        seen.push((
+            t,
+            c.regime.burning[h],
+            bound(&c.sol, COAL).out_l,
+            bound(&c.sol, BRASS).in_l,
+            c.next_breakpoint(),
+        ));
+    }
+    let lit = Q::new(2, 17);
+    assert_eq!(
+        seen,
+        vec![
+            (0, solve::burn::REFUSING, Q::ZERO, lit, Some(1093)),
+            (1000, solve::burn::REFUSING, Q::ZERO, lit, Some(1093)),
+            (1100, solve::burn::TAKING, Q::new(1, 1600), lit, None),
+            (3000, solve::burn::TAKING, Q::new(1, 1600), lit, None),
+        ]
+    );
+}
+
+/// Cornflowers at 1/7 per tick into a round-robin brass tunnel with a millstone (1 per 8 ticks, 2
+/// dye each) at its side and a belt on to a store straight on: the corpus's brass_tunnels.
+fn tunnel_mill(side_filtered: bool) -> Solution {
+    let mut b = B::default();
+    let input = b.store(0);
+    let dye = b.store(1);
+    let rest = b.store(2);
+    let mill_r = b.recipe(&[(ORE, 1)], &[(CRUSHED, 2)]);
+    let mill = b.machine(model::MILLSTONE, mill_r, 1, 8);
+    let t = b.junction(rule::ROUND_ROBIN);
+    let feed = b.edge_k(EdgeKind::Chute, input, t, &[ORE]);
+    b.edges[feed as usize].capacity = Some((1, 7));
+    let side = b.edge(t, mill);
+    if side_filtered {
+        b.edges[side as usize].flags |= edge_flags::FILTERED_SIDE;
+    }
+    b.edge_k(EdgeKind::Belt, t, rest, &[]);
+    b.edge(mill, dye);
+    let g = b.graph();
+    run(&g, &regime(&g, &[(input, &[ORE])]))
+}
+
+#[test]
+fn a_brass_tunnel_shares_unfiltered_sides_and_serves_filtered_ones_first() {
+    // As Create (`BrassTunnelBlockEntity`): a side whose flap filter is empty is in the second
+    // list with the straight-on output, and round robin halves the flow: what the corpus measured
+    // (85.7 cornflowers and 171.4 dye per minute).
+    let s = tunnel_mill(false);
+    assert_eq!(bound(&s, CRUSHED).in_l, Q::new(1, 7));
+    assert_eq!(bound(&s, ORE).in_l, Q::new(1, 14));
+    assert!(close(
+        (bound(&s, ORE).in_l.to_f64() - bound(&s, ORE).out_l.to_f64()) * MIN,
+        -1200.0 / 14.0
+    ));
+    // A filtered side (FILTERED_SIDE) is served first: the millstone runs flat out.
+    let s = tunnel_mill(true);
+    assert_eq!(bound(&s, CRUSHED).in_l, Q::new(1, 4));
+    assert_eq!(bound(&s, ORE).in_l, Q::new(1, 56));
+}
+
+#[test]
+fn the_report_gives_the_window_it_judged_after_a_derate() {
+    // The slow press fails its window and is derated: the solve now predicts half, but the report
+    // is the window's, so its bounds contain its prediction (U >= L, lo <= predicted <= hi).
+    let (b, p) = press_line();
+    let tun = GlassTunables::default();
+    let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+    drive(&mut c, 100, 3200, |t| (t / 20) as i64, &tun);
+    assert!(c.regime.derate.contains_key(&p));
+    assert_eq!(bound(&c.sol, SHEET).in_l, Q::new(1, 20));
+    let rep = c.report(&DistrictGlass::default());
+    assert_eq!(rep.verdict, verdict::FAIL);
+    for g in &rep.goods {
+        assert!(g.in_u >= g.in_l && g.out_u >= g.out_l, "{g:?}");
+        assert!(
+            g.lo <= g.predicted + 1e-12 && g.predicted <= g.hi + 1e-12,
+            "{g:?}"
+        );
+        assert!(close(g.predicted, g.in_l - g.out_l), "{g:?}");
+    }
+    let sheet = rep.goods.iter().find(|g| g.good == SHEET.0).expect("sheet");
+    assert!(close(sheet.in_l, 0.1) && close(sheet.predicted, 0.1));
+    assert!(close(sheet.measured, 0.05));
+    assert_eq!(sheet.verdict, verdict::FAIL);
+}
+
+/// The corpus's arm_burners_depots, cut down: a store of 16 coal, a smart chute (1 per 7 ticks)
+/// an arm takes from, two blaze burners the arm feeds (1,582 and 782 ticks left, 1,600 per coal).
+/// `drop`: the chute also drops onto the floor (a sink), at the order of the arm's pull, as Java
+/// encoded it.
+fn arm_burners(drop: bool) -> (B, u32) {
+    let mut b = B::default();
+    let coal = b.store(0);
+    let shared = |batch, ticks| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    let chute = b.node(NodeKind::Mover, model::SMART_CHUTE, 0, vec![shared(1, 7)]);
+    let arm = b.node(NodeKind::Mover, model::ARM, 0, vec![shared(1, 16)]);
+    b.nodes[arm as usize].rule = rule::PREFER_FIRST;
+    let mut heaters = Vec::new();
+    for left in [1582, 782] {
+        let h = b.node(NodeKind::Heater, model::BLAZE_BURNER, 0, Vec::new());
+        b.nodes[h as usize].params = [left, i64::from(heat::KINDLED), 1600, 500];
+        heaters.push(h);
+    }
+    b.edge_k(EdgeKind::Chute, coal, chute, &[]);
+    let pull = b.edge_k(EdgeKind::ArmReach, chute, arm, &[]);
+    for h in heaters {
+        b.edge_k(EdgeKind::ArmReach, arm, h, &[]);
+    }
+    if drop {
+        let sink = b.node(NodeKind::Sink, model::SINK_VOID, 0, Vec::new());
+        let d = b.edge_k(EdgeKind::Drop, chute, sink, &[]);
+        b.edges[d as usize].order = b.edges[pull as usize].order;
+    }
+    b.window = 2000;
+    (b, chute)
+}
+
+fn coal_view_sweep(c: &mut Compiled, t: u64, coal: i64, tun: &GlassTunables) {
+    let goods = goods();
+    let ports = GoodVec::new();
+    let mut invs = VecMap::new();
+    invs.insert(0, inventory(0, &[(COAL, coal)]));
+    let view = View {
+        revision: 1,
+        inventories: &invs,
+        ports: &ports,
+    };
+    if t == 0 {
+        c.start(&view, &goods, tun);
+    }
+    c.sweep(Tick(t), &view, &goods, tun);
+}
+
+#[test]
+fn burners_fed_by_an_arm_take_coal_as_their_burns_reach_the_threshold() {
+    let (b, _) = arm_burners(false);
+    let tun = GlassTunables::default();
+    let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+    // What Create does: a burner takes a coal when its burn falls to 500, then every 1,600 ticks
+    // (the 782 one at 282, 1,882, 3,482; the 1,582 one at 1,082, 2,682).
+    let taken = |t: u64| {
+        [282u64, 1082, 1882, 2682, 3482]
+            .iter()
+            .filter(|&&a| a <= t)
+            .count() as i64
+    };
+    let mut out = Vec::new();
+    let mut t = 0;
+    while t <= 3200 {
+        coal_view_sweep(&mut c, t, 16 - taken(t), &tun);
+        if matches!(t, 200 | 300 | 1100) {
+            out.push((t, bound(&c.sol, COAL).out_l));
+        }
+        t += 100;
+    }
+    assert_eq!(
+        out,
+        vec![
+            (200, Q::ZERO),
+            (300, Q::new(1, 1600)),
+            (1100, Q::new(2, 1600)),
+        ]
+    );
+    let coal = bound(&c.sol, COAL);
+    assert_eq!(coal.class, class::EXACT);
+    let r = c.last.clone().expect("a window");
+    let g = r.goods.iter().find(|g| g.good == COAL).expect("coal");
+    assert!(close(g.predicted, -2.0 / 1600.0));
+    assert_eq!(g.verdict, verdict::PASS, "{g:?}");
+}
+
+#[test]
+fn a_drop_to_the_floor_is_exact_but_a_tie_with_the_arm_is_bounded() {
+    let (b, chute) = arm_burners(true);
+    let tun = GlassTunables::default();
+    let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+    coal_view_sweep(&mut c, 0, 16, &tun);
+    let coal = bound(&c.sol, COAL);
+    // Bounded, not unbounded: the drop onto the floor is lost at the chute's rate; which of the
+    // drop and the arm's pull goes first is the edge index, not Create (GB102, GB103).
+    assert_eq!(coal.class, class::BOUNDED);
+    assert_eq!(coal.why, (why::PRIORITY_TIE, chute));
+    // Both burners refuse fuel: the chute drops everything (Java must not send a drop where the
+    // chute has a floor below it: `ChuteBlockEntity.handleDownwardOutput`).
+    assert_eq!(coal.out_l, Q::new(1, 7));
+    // Without the tie the drop is exact.
+    let (mut b, _) = arm_burners(true);
+    let n = b.edges.len();
+    b.edges[n - 1].order = 7;
+    let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+    coal_view_sweep(&mut c, 0, 16, &tun);
+    assert_eq!(bound(&c.sol, COAL).class, class::EXACT);
+}
+
+#[test]
+fn the_inverted_flag_is_display_only() {
+    // GB51: the Control param already includes the inversion; the engine reads "on" before it.
+    let (mut b, p, ctl) = gated_line();
+    b.nodes[ctl as usize].params[2] |= super::check::CONTROLLER_INVERTED;
+    let tun = GlassTunables::default();
+    let goods = goods();
+    let ports = GoodVec::new();
+    let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+    let mut gate = Vec::new();
+    for (i, level) in [50, 120, 20].into_iter().enumerate() {
+        let mut invs = VecMap::new();
+        invs.insert(0, inventory(0, &[(BRASS, 1000)]));
+        invs.insert(1, inventory(1, &[]));
+        invs.insert(2, inventory(2, &[(MARKER, level)]));
+        let view = View {
+            revision: 1,
+            inventories: &invs,
+            ports: &ports,
+        };
+        if i == 0 {
+            c.start(&view, &goods, &tun);
+        }
+        c.sweep(Tick(100 * i as u64), &view, &goods, &tun);
+        gate.push(c.regime.gate_off[p as usize]);
+    }
+    // RUN_WHEN_ON: stopped while off, running while on, as without the flag.
+    assert_eq!(gate, vec![true, false, true]);
+}
+
 // ---- the graph store (F5) and the engine path -------------------------------------------------------
 
 fn glass_with(records: &[GlassObs]) -> Glass {
@@ -1149,8 +1500,58 @@ mod engine_path {
     use super::*;
     use crate::cmd::Cmd;
     use crate::engine::Engine;
+    use crate::glass::report::discard;
     use crate::obs::{DistrictDecl, Obs, SweepEnd, Timed};
     use crate::tunables::Tunables;
+
+    /// One sweep's records at `t`: both stores, then the END.
+    fn push_sweep(out: &mut Vec<Timed>, k: u32, t: u64, made: i64) {
+        for (i, c) in [(0, (BRASS, 100_000 - made)), (1, (SHEET, made))] {
+            out.push(Timed {
+                at: Tick(t),
+                obs: Obs::StockSample {
+                    district: D,
+                    inventory: i,
+                    sweep: k,
+                    goods: GoodVec::from_pairs([c]),
+                },
+            });
+        }
+        out.push(Timed {
+            at: Tick(t),
+            obs: Obs::SweepEnd(SweepEnd {
+                district: D,
+                sweep: k,
+                records: 2,
+                inventories: 2,
+                live: true,
+                creative: false,
+                overstressed: false,
+            }),
+        });
+    }
+
+    /// The district and its two inventories at 0.
+    fn district() -> Vec<Timed> {
+        let mut out = vec![Timed {
+            at: Tick(0),
+            obs: Obs::District(DistrictDecl {
+                district: D,
+                revision: 1,
+                dim: 0,
+                name: 0,
+                not_learnable: None,
+                inventory_count: 2,
+            }),
+        }];
+        for i in 0..2 {
+            out.push(Timed {
+                at: Tick(0),
+                obs: Obs::Inventory(inventory(i, &[]).decl),
+            });
+        }
+        out
+    }
 
     /// The records Java would send: the district, its inventories, the compile, then a sweep every
     /// 100 ticks in which the press makes half what the compile predicts (one sweep creative).
@@ -1273,6 +1674,86 @@ mod engine_path {
         // warm-up (3,700) and is still open at 4,000.
         assert_eq!(r.windows_completed, 0);
         assert_eq!(r.window_start, 3700);
+        assert_eq!(r.discards[discard::NOT_LIVE as usize], 1);
+        assert_eq!(r.last_discard, Some((2500, discard::NOT_LIVE)));
+        assert_eq!(r.ready_at, 3700);
+    }
+
+    #[test]
+    fn a_sweep_with_dropped_records_is_skipped_and_the_window_goes_on() {
+        // Every 1,200 ticks a sweep loses a record (as a compile resend filling the link's buffer
+        // would). When each discarded the window, the next warm-up ended just as the next drop
+        // came, and no window ever opened. Now a skip: the window integrates across it.
+        let mut s = stream();
+        for t in s.iter_mut() {
+            if let Obs::SweepEnd(e) = &mut t.obs
+                && e.sweep % 12 == 0
+            {
+                e.records += 1;
+            }
+        }
+        // Sweep 30's samples never arrive at all.
+        s.retain(|t| !matches!(&t.obs, Obs::StockSample { sweep: 30, .. }));
+        let (e, _) = replay(&s);
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(r.windows_completed, 1);
+        assert_eq!(r.window_start, 1300);
+        assert_eq!(r.discards[discard::DROPPED as usize], 3);
+        assert_eq!(r.discards[discard::NO_SWEEP as usize], 1);
+        assert_eq!(r.last_discard, Some((3600, discard::DROPPED)));
+        // 40 sweeps less the 4 skipped; sampled from 1,300 (sweep 13) on, less 3 skipped.
+        assert_eq!((r.sweeps, r.sweeps_sampled), (36, 25));
+        let v = r.to_f64s();
+        assert_eq!(&v[24..26], &[3600.0, f64::from(discard::DROPPED)]);
+        assert_eq!(&v[26..28], &[1.0, 3.0]);
+    }
+
+    #[test]
+    fn a_recompile_starts_a_fresh_window_from_its_own_sweeps() {
+        // Compile 1 predicts a sheet per 10 ticks, and the press makes that until a player slows it
+        // to one per 20 at 2,050 (compile 2). Compile 1's window (from 1,200) goes with it; compile
+        // 2's starts after its own warm-up and sees only its own sweeps, so it passes.
+        let (b, p) = press_line();
+        let mut slow = b.clone();
+        slow.nodes[p as usize].rates = vec![entry(Some(0), 1, 20)];
+        let made = |t: u64| {
+            if t <= 2050 {
+                (t / 10) as i64
+            } else {
+                205 + ((t - 2050) / 20) as i64
+            }
+        };
+        let mut s = district();
+        for r in b.records(1) {
+            s.push(Timed {
+                at: Tick(0),
+                obs: Obs::Glass(r),
+            });
+        }
+        for k in 1..=54u32 {
+            let t = u64::from(k) * 100;
+            if t == 2100 {
+                for r in slow.records(2) {
+                    s.push(Timed {
+                        at: Tick(2050),
+                        obs: Obs::Glass(r),
+                    });
+                }
+            }
+            push_sweep(&mut s, k, t, made(t));
+        }
+        let (e, _) = replay(&s);
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(r.compile, 2);
+        assert_eq!((r.accepted_at, r.ready_at), (2050, 3250));
+        assert_eq!(r.windows_completed, 1);
+        assert_eq!(r.window_start, 3300);
+        assert_eq!(r.verdict, verdict::PASS);
+        assert_eq!(r.discards[discard::RECOMPILE as usize], 1);
+        // Compile 2 took the sweeps from 2,100 on, and sampled from 3,300.
+        assert_eq!((r.sweeps, r.sweeps_sampled), (34, 22));
+        let sheet = r.goods.iter().find(|g| g.good == SHEET.0).expect("sheet");
+        assert!(close(sheet.predicted, 0.05));
     }
 }
 
@@ -1370,6 +1851,12 @@ proptest! {
         let s = run(&g, &rg);
         for b in &s.goods {
             prop_assert!(b.in_u >= b.in_l && b.out_u >= b.out_l);
+            // Stopped at `glass.solveRoundsMax`, L is not a fixed point (its flows need not fit the
+            // capacities: five parallel edges into one funnel take more rounds) and only the guard
+            // above holds.
+            if !s.converged {
+                continue;
+            }
             // The guards aside, the relaxation and the LP must contain L's flow.
             prop_assert!(b.in_u_lin >= b.in_l, "linear in {:?} < L {:?}", b.in_u_lin, b.in_l);
             prop_assert!(b.out_u_lin >= b.out_l, "linear out {:?} < L {:?}", b.out_u_lin, b.out_l);

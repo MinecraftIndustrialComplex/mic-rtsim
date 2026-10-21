@@ -210,9 +210,10 @@ pub struct GlassTunables {
     /// `glass.mismatchStrikes`: failed windows in a row before the limiting node's kind is demoted
     /// to measured (§5.3, G-B14). TUNABLE, PLACEHOLDER 3.
     pub mismatch_strikes: u32,
-    /// A store holds a good for the solve (supplies it without limit) only with at least this many
-    /// stacks of it (fluids: this many thousand mB); below, it passes on what it receives, so a
-    /// chest that a funnel keeps nearly empty is not a source. TUNABLE, PLACEHOLDER 1.
+    /// A store holds a good the graph also brings into it (supplies it without limit) only with at
+    /// least this many stacks of it (fluids: this many thousand mB); below, it passes on what it
+    /// receives, so a chest that a funnel keeps nearly empty is not a source. A good nothing brings
+    /// in is held from one unit (GB100). TUNABLE, PLACEHOLDER 1.
     pub holding_stacks: i64,
     /// The LP for U (G-B15) runs only on cones of at most this many variables; larger ones take
     /// the linear relaxation bound, which is valid but looser. TUNABLE, PLACEHOLDER 3,000.

@@ -19,6 +19,7 @@ use super::q::Q;
 use super::records::{
     EdgeKind, NodeKind, edge_flags, heat as heat_level, node_flags, rule, term_flags,
 };
+use super::report::why;
 use crate::ids::Good;
 use crate::tunables::GlassTunables;
 
@@ -27,10 +28,21 @@ pub const EXACT: u8 = 0;
 pub const BOUNDED: u8 = 1;
 pub const UNBOUNDED: u8 = 2;
 
+/// A heater's burn phase in a regime (`Regime::burning`): what is left of the burn it had at the
+/// compile (`params[0]`), as Create's `BlazeBurnerBlockEntity` spends it.
+pub mod burn {
+    /// No burn left: its duty is the fuel it takes (§9.3).
+    pub const OUT: u8 = 0;
+    /// Lit, and above the insertion threshold (`params[3]`): it refuses fuel (`tryUpdateFuel`).
+    pub const REFUSING: u8 = 1;
+    /// Lit, at or below the threshold: it takes fuel up to `1 / burnTicks` items per tick.
+    pub const TAKING: u8 = 2;
+}
+
 /// What the solve takes from the latest sweep and the engine's own state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Regime {
-    /// Per node: the goods a store holds (at least `glass.holdingStacks`), ascending.
+    /// Per node: the goods a store holds (`check.rs`'s holding rule, GB13 and GB100), ascending.
     pub held: Vec<Vec<Good>>,
     /// Per node: a store with room.
     pub room: Vec<bool>,
@@ -42,6 +54,8 @@ pub struct Regime {
     pub derate: BTreeMap<u32, Q>,
     /// Model codes demoted to measured (black boxes) in this district.
     pub demoted: BTreeSet<u32>,
+    /// Per node: a heater's [`burn`] phase (the engine tracks its remaining burn between solves).
+    pub burning: Vec<u8>,
 }
 
 impl Regime {
@@ -53,6 +67,7 @@ impl Regime {
             gate_off: vec![false; n],
             derate: BTreeMap::new(),
             demoted: BTreeSet::new(),
+            burning: vec![burn::OUT; n],
         }
     }
 
@@ -69,7 +84,8 @@ impl Regime {
             mix(v as u64);
             mix(u64::from(self.room[v])
                 | u64::from(self.read[v]) << 1
-                | u64::from(self.gate_off[v]) << 2);
+                | u64::from(self.gate_off[v]) << 2
+                | u64::from(self.burning.get(v).copied().unwrap_or(burn::OUT)) << 3);
             for g in held {
                 mix(u64::from(g.0));
             }
@@ -105,6 +121,8 @@ pub struct GoodBound {
     pub var_rate: f64,
     /// The largest batch into plus out of the read stores, in units (q = batch / W).
     pub batch: f64,
+    /// Why the class is what it is: a `report::why` code and its node or edge (u32::MAX: none).
+    pub why: (u32, u32),
 }
 
 /// A solve's result.
@@ -126,6 +144,9 @@ pub struct Solution {
     pub dom_level: Vec<Option<u32>>,
     /// Per node: a heater's duty under L.
     pub duty: Vec<Q>,
+    /// Per node: the share of a heater's burn its fuel under L pays for, `min(1, Σ fuel × burnTicks)`
+    /// (its remaining burn falls by `1 - fed` per tick while lit).
+    pub fed: Vec<f64>,
     /// Graph-wide: a black box or port (or a demoted node) exists.
     pub has_unbounded: bool,
     /// LPs run, LPs skipped as too big (`glass.lpVarsMax`), LPs not needed (linear bound = L).
@@ -332,6 +353,10 @@ pub struct Solver<'a> {
     pub saturated: Vec<bool>,
     /// Per node: the worst rule on it (taint), set by the passes and the graph.
     pub taint: Vec<u8>,
+    /// Per node: the `report::why` code of its taint.
+    pub taint_why: Vec<u32>,
+    /// Per node: a heater's fed share (`Solution::fed`).
+    pub fed: Vec<Q>,
     /// Per node: crafts per tick it ran under L (sources, for the stochastic variance).
     pub crafts: Vec<Q>,
     s_in: Scratch,
@@ -382,6 +407,8 @@ impl<'a> Solver<'a> {
             duty_assumed: vec![Q::ONE; n],
             saturated: vec![false; n],
             taint: vec![EXACT; n],
+            taint_why: vec![why::NONE; n],
+            fed: vec![Q::ZERO; n],
             crafts: vec![Q::ZERO; n],
             s_in: Scratch::new(gn),
             s_out: Scratch::new(gn),
@@ -724,6 +751,24 @@ impl<'a> Solver<'a> {
         best
     }
 
+    /// Raises a node's taint, keeping the first reason at the worst level.
+    fn taint_node(&mut self, v: u32, t: u8, w: u32) {
+        let i = v as usize;
+        if t > self.taint[i] {
+            self.taint[i] = t;
+            self.taint_why[i] = w;
+        }
+    }
+
+    /// A heater's burn phase in this regime.
+    fn burning(&self, v: u32) -> u8 {
+        self.rg
+            .burning
+            .get(v as usize)
+            .copied()
+            .unwrap_or(burn::OUT)
+    }
+
     /// A heater's burn ticks per fuel item for a good: its fuel recipe's duration, else
     /// `params[2]`. 0 is a creative burner (never runs out, takes no fuel).
     pub fn burn_ticks(&self, v: u32, good: Good) -> i64 {
@@ -837,7 +882,7 @@ impl<'a> Solver<'a> {
             pushed = pushed.add(s.give);
         }
         if sides.len() > 1 && rule_bounded(r) {
-            self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
+            self.taint_node(v, BOUNDED, why::RULE);
         }
         self.sides = sides;
         pushed
@@ -860,9 +905,8 @@ impl<'a> Solver<'a> {
             for s in r.clone() {
                 if self.f[s].is_inf() {
                     self.f[s] = Q::ZERO;
-                    self.taint[v as usize] = UNBOUNDED;
-                    let to = g.edge(e).to as usize;
-                    self.taint[to] = UNBOUNDED;
+                    self.taint_node(v, UNBOUNDED, why::UNLIMITED_FLOW);
+                    self.taint_node(g.edge(e).to, UNBOUNDED, why::UNLIMITED_FLOW);
                 }
             }
             let cap = g.edge_cap(e);
@@ -878,7 +922,7 @@ impl<'a> Solver<'a> {
                         self.f[s] = self.f[s].mul(k);
                     }
                     if flowing > 1 {
-                        self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
+                        self.taint_node(v, BOUNDED, why::SHARED_EDGE);
                     }
                 }
             }
@@ -948,9 +992,10 @@ impl<'a> Solver<'a> {
                 }
                 NodeKind::Heater => {
                     let on = self.scale(v, &dl).is_some();
+                    let refusing = self.burning(v) == burn::REFUSING;
                     for &gi in &list {
                         let burn = self.burn_ticks(v, self.goods[gi as usize]);
-                        let a = if on && burn > 0 && self.is_fuel(v, gi) {
+                        let a = if on && !refusing && burn > 0 && self.is_fuel(v, gi) {
                             Q::new(1, burn)
                         } else {
                             Q::ZERO
@@ -1126,7 +1171,7 @@ impl<'a> Solver<'a> {
                 }
             }
             if short && flowing > 1 {
-                self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
+                self.taint_node(v, BOUNDED, why::SHORT_INPUTS);
             }
         }
     }
@@ -1244,7 +1289,7 @@ impl<'a> Solver<'a> {
             }
             let flowing = takes[start..].iter().filter(|t| t.1.is_pos()).count();
             if binding && flowing > 1 && kind != NodeKind::Mover {
-                self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
+                self.taint_node(v, BOUNDED, why::SHARED_CAPACITY);
             }
             i = j;
         }
@@ -1377,7 +1422,7 @@ impl<'a> Solver<'a> {
                 left -= 1;
             }
             if recipes.len() > 1 {
-                self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
+                self.taint_node(v, BOUNDED, why::TIME_SHARE);
             }
         } else if share_sum == Q::ONE {
             self.saturated[v as usize] = true;
@@ -1538,7 +1583,7 @@ impl<'a> Solver<'a> {
                     }
                 }
                 if users > 1 {
-                    self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
+                    self.taint_node(v, BOUNDED, why::SHARED_INPUT);
                 }
             }
         }
@@ -1561,13 +1606,15 @@ impl<'a> Solver<'a> {
         } else {
             Q::ONE
         };
+        // Lit on the burn it had at the compile, whatever fuel it takes (§9.3).
         let duty = if !on {
             Q::ZERO
-        } else if creative {
+        } else if creative || self.burning(v) != burn::OUT {
             Q::ONE
         } else {
             load.min(Q::ONE)
         };
+        self.fed[v as usize] = if on { load.min(Q::ONE) } else { Q::ZERO };
         self.duty[v as usize] = duty;
         self.saturated[v as usize] = duty == Q::ONE;
         self.use_proportional(v, |s, gi| {
@@ -1600,7 +1647,7 @@ impl<'a> Solver<'a> {
             let h = g.edge(e).from as usize;
             if g.nodes[h].kind == NodeKind::Heater && self.duty[h].is_pos() && self.duty[h] < Q::ONE
             {
-                self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
+                self.taint_node(v, BOUNDED, why::PART_DUTY);
             }
         }
     }
@@ -1721,8 +1768,11 @@ impl Uf {
 /// Classes: taint spreads through everything a flow couples (GLASSBOX.md §3.5), stopped by read
 /// stores that hold their goods and have room (they decouple their in-side from their out-side).
 /// Returns per element (node, or `n + store` for a store's out-side) its component's taint, the
-/// union-find, and per component whether it holds a cycle.
-pub(crate) fn classes(s: &Solver<'_>, converged: bool) -> (Vec<u8>, Uf, Vec<bool>) {
+/// union-find, per component whether it holds a cycle, and per element why (the first reason found
+/// at the component's worst taint: a `report::why` code and its node or edge).
+pub(crate) type Classes = (Vec<u8>, Uf, Vec<bool>, Vec<(u32, u32)>);
+
+pub(crate) fn classes(s: &Solver<'_>, converged: bool) -> Classes {
     let g = s.g;
     let n = g.nodes.len();
     let mut uf = Uf::new(2 * n);
@@ -1771,84 +1821,143 @@ pub(crate) fn classes(s: &Solver<'_>, converged: bool) -> (Vec<u8>, Uf, Vec<bool
         }
     }
     let mut taint = vec![EXACT; 2 * n];
+    let mut reason = vec![(why::NONE, u32::MAX); 2 * n];
     let mut cyc = vec![false; 2 * n];
-    let put = |uf: &mut Uf, taint: &mut Vec<u8>, x: u32, t: u8| {
+    // The first reason at the worst taint wins.
+    let put = |uf: &mut Uf,
+               taint: &mut Vec<u8>,
+               reason: &mut Vec<(u32, u32)>,
+               x: u32,
+               t: u8,
+               w: (u32, u32)| {
         let r = uf.find(x) as usize;
-        taint[r] = taint[r].max(t);
+        if t > taint[r] {
+            taint[r] = t;
+            reason[r] = w;
+        }
     };
     for v in 0..n as u32 {
         let node = g.node(v);
-        let mut t = s.taint[v as usize];
+        let (mut t, mut w) = (s.taint[v as usize], s.taint_why[v as usize]);
+        let mut raise = |level: u8, code: u32| {
+            if level > t {
+                t = level;
+                w = code;
+            }
+        };
         if node.flags & (node_flags::BOUNDED | node_flags::CALIBRATED) != 0 {
-            t = t.max(BOUNDED);
+            raise(BOUNDED, why::NODE_FLAG);
         }
         if rule_bounded(node.rule) {
-            t = t.max(BOUNDED);
+            raise(BOUNDED, why::RULE);
         }
         if g.cyclic[v as usize] {
-            t = t.max(BOUNDED);
+            raise(BOUNDED, why::CYCLE);
             let r = uf.find(v) as usize;
             cyc[r] = true;
         }
         match s.kind(v) {
-            NodeKind::BlackBox | NodeKind::Port => t = UNBOUNDED,
+            NodeKind::BlackBox => raise(UNBOUNDED, why::BLACK_BOX),
+            NodeKind::Port => raise(UNBOUNDED, why::PORT),
             NodeKind::Buffer if node.kind == NodeKind::Store && !g.out_g.of(v).is_empty() => {
-                t = t.max(BOUNDED);
+                raise(BOUNDED, why::UNREAD_STORE);
             }
             _ => {}
         }
+        if priority_tie(s, v) {
+            raise(BOUNDED, why::PRIORITY_TIE);
+        }
         if t > EXACT {
-            put(&mut uf, &mut taint, out_side(v), t);
+            put(&mut uf, &mut taint, &mut reason, out_side(v), t, (w, v));
         }
     }
     for (e, ed) in g.edges.iter().enumerate() {
         if !carries_goods(ed.kind) {
             continue;
         }
-        let mut t = EXACT;
+        let (mut t, mut w) = (EXACT, why::NONE);
         if ed.flags & edge_flags::BOUNDED != 0 {
-            t = BOUNDED;
+            (t, w) = (BOUNDED, why::EDGE_FLAG);
         }
-        if matches!(ed.kind, EdgeKind::Line | EdgeKind::Drop) {
-            t = UNBOUNDED;
+        // A depot's line through two stations, and an item dropped onto a collector, are honest
+        // about their order or timing only on average (GB37, GB102); one dropped to the floor is
+        // simply lost at the dropper's rate.
+        if ed.kind == EdgeKind::Line && t < BOUNDED {
+            (t, w) = (BOUNDED, why::LINE);
         }
-        if !converged {
+        if ed.kind == EdgeKind::Drop && s.kind(ed.to) != NodeKind::Sink && t < BOUNDED {
+            (t, w) = (BOUNDED, why::DROP);
+        }
+        if !converged && t < BOUNDED {
             for sl in s.slots_of(e as u32) {
                 if s.used[sl] < s.f[sl] {
-                    t = t.max(BOUNDED);
+                    (t, w) = (BOUNDED, why::UNCONVERGED);
                 }
             }
         }
         if t > EXACT {
-            put(&mut uf, &mut taint, ed.to, t);
+            put(&mut uf, &mut taint, &mut reason, ed.to, t, (w, e as u32));
         }
     }
     // Spread to roots.
     let mut out = vec![EXACT; 2 * n];
+    let mut outw = vec![(why::NONE, u32::MAX); 2 * n];
     let mut cycles = vec![false; 2 * n];
     for x in 0..2 * n as u32 {
         let r = uf.find(x) as usize;
-        out[r] = out[r].max(taint[x as usize]);
+        if taint[x as usize] > out[r] {
+            out[r] = taint[x as usize];
+            outw[r] = reason[x as usize];
+        }
         cycles[r] |= cyc[x as usize];
     }
     for x in 0..2 * n as u32 {
         let r = uf.find(x) as usize;
         out[x as usize] = out[r];
+        outw[x as usize] = outw[r];
         cycles[x as usize] = cycles[r];
     }
     if !converged {
-        for t in out.iter_mut() {
-            *t = (*t).max(BOUNDED);
+        for (t, w) in out.iter_mut().zip(outw.iter_mut()) {
+            if *t < BOUNDED {
+                *t = BOUNDED;
+                *w = (why::UNCONVERGED, u32::MAX);
+            }
         }
     }
-    (out, uf, cycles)
+    (out, uf, cycles, outw)
+}
+
+/// A priority node (rule NONE or PREFER_FIRST) with two goods out-edges of one `order` that can
+/// carry a good in common: which goes first is the edge index, not Create (an arm's pull ranks the
+/// edge for the arm, the node's own output for the node: a race). Bounded (GB103).
+fn priority_tie(s: &Solver<'_>, v: u32) -> bool {
+    let g = s.g;
+    if s.kind(v) == NodeKind::Store || !matches!(g.node(v).rule, rule::NONE | rule::PREFER_FIRST) {
+        return false;
+    }
+    let out = g.out_g.of(v);
+    for (i, &a) in out.iter().enumerate() {
+        for &b in &out[i + 1..] {
+            if g.edge(a).order != g.edge(b).order {
+                continue;
+            }
+            let shared = s
+                .slots_of(a)
+                .any(|sa| s.slots_of(b).any(|sb| s.slot_good[sa] == s.slot_good[sb]));
+            if shared {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The district's solve: L, classes, then U (`lp.rs`).
 pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
     let mut s = Solver::new(g, rg, tun);
     let (rounds, converged) = s.run();
-    let (comp_taint, _uf, comp_cycle) = classes(&s, converged);
+    let (comp_taint, _uf, comp_cycle, comp_why) = classes(&s, converged);
     let n = g.nodes.len();
     let out_side = |v: u32| -> usize {
         if s.kind(v) == NodeKind::Store {
@@ -1862,6 +1971,13 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
     let mut in_l = vec![Q::ZERO; gn];
     let mut out_l = vec![Q::ZERO; gn];
     let mut cls = vec![EXACT; gn];
+    let mut cls_why = vec![(why::NONE, u32::MAX); gn];
+    let mut raise = |gi: usize, x: usize, cls: &mut Vec<u8>| {
+        if comp_taint[x] > cls[gi] {
+            cls[gi] = comp_taint[x];
+            cls_why[gi] = comp_why[x];
+        }
+    };
     let mut on_store = vec![false; gn];
     let mut cyc_good = vec![false; gn];
     let mut b_in = vec![1.0f64; gn];
@@ -1881,7 +1997,7 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
                 let x = s.used[sl];
                 in_l[gi] = in_l[gi].add(x);
                 on_store[gi] = true;
-                cls[gi] = cls[gi].max(comp_taint[out_side(from)]);
+                raise(gi, out_side(from), &mut cls);
                 cyc_good[gi] |= comp_cycle[out_side(from)];
                 b_in[gi] = b_in[gi].max(g.batch_units(from, s.goods[gi]));
                 let k = (inv, s.goods[gi]);
@@ -1896,7 +2012,7 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
                 let x = s.used[sl];
                 out_l[gi] = out_l[gi].add(x);
                 on_store[gi] = true;
-                cls[gi] = cls[gi].max(comp_taint[to as usize]);
+                raise(gi, to as usize, &mut cls);
                 cyc_good[gi] |= comp_cycle[to as usize];
                 b_out[gi] = b_out[gi].max(g.batch_units(to, s.goods[gi]));
                 let k = (inv, s.goods[gi]);
@@ -1953,6 +2069,7 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
         store_edges,
         dom_level: s.dom_level.clone(),
         duty: s.duty.clone(),
+        fed: s.fed.iter().map(|q| q.to_f64()).collect(),
         has_unbounded,
         lp_solves: 0,
         lp_skipped: 0,
@@ -1974,13 +2091,15 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
         }
         in_u = in_u.max(in_l[gi]);
         out_u = out_u.max(out_l[gi]);
+        let (class, why) = if class == u32::from(EXACT) && (in_u.is_inf() || out_u.is_inf()) {
+            (u32::from(BOUNDED), (why::U_INFINITE, u32::MAX))
+        } else {
+            (class, cls_why[gi])
+        };
         sol.goods.push(GoodBound {
             good: s.goods[gi],
-            class: if class == u32::from(EXACT) && (in_u.is_inf() || out_u.is_inf()) {
-                u32::from(BOUNDED)
-            } else {
-                class
-            },
+            class,
+            why,
             in_l: in_l[gi],
             out_l: out_l[gi],
             in_u,

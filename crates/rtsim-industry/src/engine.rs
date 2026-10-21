@@ -577,7 +577,12 @@ impl Engine {
                     dist.phase = Phase::Stale;
                 }
                 // The compile no longer matches the blocks until Java recompiles (G-B3).
-                self.glass.discard(at, *district, &self.tun.glass);
+                self.glass.discard(
+                    at,
+                    *district,
+                    crate::glass::report::discard::EDIT,
+                    &self.tun.glass,
+                );
                 self.mark(*district);
             }
             Obs::Discard { district, .. } => self.district_mut(*district).learner.discard(),
@@ -781,13 +786,16 @@ impl Engine {
             .districts
             .entry(e.district)
             .or_insert_with(|| District::new(e.district));
+        use crate::glass::report::discard;
         let Some(buf) = dist.sweep.take() else {
-            self.glass.discard(at, e.district, &self.tun.glass);
+            self.glass
+                .discard(at, e.district, discard::NO_SWEEP, &self.tun.glass);
             return;
         };
         if buf.sweep != e.sweep || buf.records != e.records {
             // A latest-wins record was dropped: the whole sweep goes (F5).
-            self.glass.discard(at, e.district, &self.tun.glass);
+            self.glass
+                .discard(at, e.district, discard::DROPPED, &self.tun.glass);
             return;
         }
         let read_at = buf.read_at;
@@ -824,7 +832,8 @@ impl Engine {
                 self.out.push(Cmd::ProbeSet(p));
             }
         } else {
-            self.glass.discard(at, e.district, &self.tun.glass);
+            self.glass
+                .discard(at, e.district, discard::NOT_LIVE, &self.tun.glass);
         }
         if !e.live || e.creative || e.overstressed {
             if e.creative || e.overstressed {
