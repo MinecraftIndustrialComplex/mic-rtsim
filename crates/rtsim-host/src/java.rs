@@ -214,11 +214,18 @@ impl WorldSave {
 
 impl Java {
     pub fn open(e: Arc<Engine>, save: WorldSave) -> Java {
-        let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd).expect("start");
-        assert!(
-            next_cmd_seq > save.last_applied_cmd,
-            "nextCmdSeq must be above lastAppliedCmdSeq"
-        );
+        Java::try_open(e, save).expect("start")
+    }
+
+    /// [`Java::open`], returning the engine's start error instead of panicking (the host).
+    pub fn try_open(e: Arc<Engine>, save: WorldSave) -> Result<Java, String> {
+        let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd)?;
+        if next_cmd_seq <= save.last_applied_cmd {
+            return Err(format!(
+                "the engine's nextCmdSeq {next_cmd_seq} is not above the journal's lastAppliedCmdSeq {}",
+                save.last_applied_cmd
+            ));
+        }
         for i in 0..4 {
             let b = e.buffer(i).unwrap();
             assert_eq!(b.published().load(Ordering::Acquire), 0, "fresh buffers");
@@ -236,7 +243,7 @@ impl Java {
                 applied_cmd_ops.insert(wire::u64_at(r, obs::command_result::OP_ID));
             }
         }
-        Java {
+        Ok(Java {
             e,
             journal: save.journal,
             next_obs,
@@ -287,7 +294,7 @@ impl Java {
             policy: Policy::Play,
             refused: BTreeMap::new(),
             undecoded: 0,
-        }
+        })
     }
 
     pub fn world_save(&self) -> WorldSave {
