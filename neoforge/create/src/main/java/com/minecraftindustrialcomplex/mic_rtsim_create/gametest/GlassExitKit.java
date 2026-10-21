@@ -1,8 +1,11 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
+import net.minecraft.server.level.ServerLevel;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
@@ -10,6 +13,7 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.function.LongSupplier;
 
 /**
  * The glass box's report for a GameTest, on either engine (G1's exit test, GLASSBOX.md §11.3).
@@ -28,22 +32,53 @@ public final class GlassExitKit {
     public static final class Recorder {
         private final List<ScriptedEngine.Received> kept = new ArrayList<>();
         private final Set<ScriptedEngine.Received> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        /** Records stamped before this game time are dropped; MIN_VALUE keeps all. */
+        private final long from;
+        /** The game time now: records stamped later are dropped. Null keeps all. */
+        private final LongSupplier clock;
+        private int before, later;
 
-        private Recorder() {
+        private Recorder(long from, LongSupplier clock) {
+            this.from = from;
+            this.clock = clock;
         }
 
         /** Takes what arrived since the last poll. Poll more often than 10,000 records arrive. */
         public synchronized void poll() {
+            long now = clock == null ? Long.MAX_VALUE : clock.getAsLong();
             for (ScriptedEngine.Received r : IndustryKit.engine().received())
-                if (seen.add(r) && !r.skipped())
+                if (seen.add(r) && !r.skipped()) {
+                    long t = stamp(r);
+                    if (t != Long.MIN_VALUE && t < from) {
+                        before++;
+                        continue;
+                    }
+                    if (t != Long.MIN_VALUE && t > now) {
+                        later++;
+                        continue;
+                    }
                     kept.add(r);
+                }
+        }
+
+        /** What {@link #poll} dropped for its game time: stamped before the start, and later than the game's time. */
+        public synchronized String dropped() {
+            return before + " stamped before the start, " + later + " stamped later than the game";
         }
 
         /** The records kept, back to back (each sized by its header), for the offline check. */
         public synchronized byte[] stream() {
             poll();
+            return stream(kept.size());
+        }
+
+        /**
+         * The first {@code upTo} records kept, back to back: the stream as it stood when {@link #size} was
+         * {@code upTo} (the G2 exit test's offline report while its far copy was away). No poll.
+         */
+        public synchronized byte[] stream(int upTo) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            for (ScriptedEngine.Received r : kept)
+            for (ScriptedEngine.Received r : kept.subList(0, Math.min(upTo, kept.size())))
                 out.writeBytes(r.bytes());
             return out.toByteArray();
         }
@@ -61,9 +96,38 @@ public final class GlassExitKit {
 
     /** A recorder holding what the engine's log holds now (the session's dictionary among it, if still there). */
     public static Recorder start() {
-        Recorder r = new Recorder();
+        Recorder r = new Recorder(Long.MIN_VALUE, null);
         r.poll();
         return r;
+    }
+
+    /**
+     * A recorder like {@link #start()} that keeps only the records stamped from the level's game time now
+     * up to its game time at each poll (the dictionary, unstamped, always). The GameTest server starts
+     * every run at game time 0 on the same world, and the stub resends at each session start the
+     * journal's unacknowledged records of an earlier session (it acknowledges nothing), stamped with that
+     * session's later game time: one of those moves the offline engine's clock past every record after it,
+     * and no checksum window ever opens.
+     */
+    public static Recorder start(ServerLevel level) {
+        Recorder r = new Recorder(level.getGameTime(), level::getGameTime);
+        r.poll();
+        return r;
+    }
+
+    /**
+     * A record's game time: journaled records carry it at {@link Obs#GAME_TIME}, the industry's
+     * latest-wins records (graph, sweeps, samples) at byte 8; MIN_VALUE for anything else.
+     */
+    static long stamp(ScriptedEngine.Received r) {
+        int at;
+        if (Obs.isJournaled(r.kind()))
+            at = Obs.GAME_TIME;
+        else if (r.kind() >= IndRecords.LATEST_FIRST && r.kind() <= IndRecords.LATEST_LAST)
+            at = 8;
+        else
+            return Long.MIN_VALUE;
+        return r.bytes().length >= at + 8 ? r.view().getLong(at) : Long.MIN_VALUE;
     }
 
     private static Boolean natives;
@@ -91,6 +155,19 @@ public final class GlassExitKit {
         if (!canJudge())
             return null;
         return GlassReport.decode(NativeEngine.glassOffline(rec.stream(), district));
+    }
+
+    /**
+     * The engine's own log lines about the district from game time {@code from} on ("glass replay starts",
+     * "replay starts", "glass replay falls back: ...", breakpoints): the live engine's on the native engine,
+     * those of the offline engine over the recorder's records on the stub; empty when this run cannot judge.
+     */
+    public static List<String> notes(long district, long from, Recorder rec) {
+        if (IndustryKit.engine() instanceof NativeEngine n)
+            return n.industryNotes(district, from);
+        if (!canJudge())
+            return List.of();
+        return NativeEngine.glassNotesOffline(rec.stream(), district, from);
     }
 
     /**
