@@ -1308,9 +1308,9 @@ impl Dragons {
                 .get_mut(d)
                 .expect("live")
                 .burn_oil(&self.tun.oil, op.burn, at);
-            if op.dry {
-                self.stats.dry_raids += 1;
-            }
+        }
+        if op.dry {
+            self.stats.dry_raids += 1;
         }
         let mut food = 0;
         let mut taken = Vec::new();
@@ -1493,10 +1493,11 @@ impl Dragons {
                 .get_mut(d)
                 .expect("live")
                 .set_fullness(full, at);
-            self.dragons
-                .get_mut(d)
-                .expect("live")
-                .set_oil(&self.tun.oil, self.tun.oil.capacity, at);
+            self.dragons.get_mut(d).expect("live").set_oil(
+                &self.tun.oil,
+                self.tun.oil.capacity,
+                at,
+            );
             self.roost(w, d, at);
             return;
         }
@@ -1913,12 +1914,9 @@ impl Dragons {
             Purpose::Hunt(t @ Target::District { .. }) => {
                 self.raid_district(w, infra, d, t, at);
             }
-            Purpose::Refuel {
-                field,
-                frame,
-                x,
-                z,
-            } => self.refuel_arrive(w, infra, d, field, frame, x, z, at),
+            Purpose::Refuel { field, frame, x, z } => {
+                self.refuel_arrive(w, infra, d, field, frame, x, z, at)
+            }
             Purpose::Hunt(t) => {
                 let sp = self.tun.species(self.dragons[d].species).clone();
                 let dwell = match t {
@@ -2344,11 +2342,13 @@ impl Dragons {
             infra.raid(&threat)
         }?;
         self.stats.district_raids += 1;
-        if o.skipped.is_none() && op.burn > 0 {
-            self.dragons
-                .get_mut(d)
-                .expect("live")
-                .burn_oil(&self.tun.oil, op.burn, at);
+        if o.skipped.is_none() {
+            if op.burn > 0 {
+                self.dragons
+                    .get_mut(d)
+                    .expect("live")
+                    .burn_oil(&self.tun.oil, op.burn, at);
+            }
             if op.dry {
                 self.stats.dry_raids += 1;
             }
@@ -2396,7 +2396,11 @@ impl Dragons {
                     ""
                 },
                 o.destroyed_blocks,
-                if op.dry { ", some passes without fire" } else { "" },
+                if op.dry {
+                    ", some passes without fire"
+                } else {
+                    ""
+                },
                 if drunk > 0 {
                     format!(", drank {drunk} mB")
                 } else {
@@ -2423,8 +2427,7 @@ impl Dragons {
         let grudge =
             w.knowledge.sentiment(self.dragons[d].actor, player, at) <= self.tun.grudge_below;
         // It harasses when it hunts here: at its prey, or flying to prey near the player.
-        let near = |t: Target| {
-            let tp = self.target_pos(w, t);
+        let near = |tp: Pos| {
             self.homes.last_seen(player).is_some_and(|(p, _)| {
                 flight::dist(
                     self.topo(p.frame),
@@ -2440,7 +2443,9 @@ impl Dragons {
             || match self.dragons[d].state {
                 State::Hunting { .. } => true,
                 State::Flying(Purpose::Hunt(Target::Home { player: p, .. })) => p == player,
-                State::Flying(Purpose::Hunt(t)) => near(t),
+                State::Flying(Purpose::Hunt(t)) => near(self.target_pos(w, t)),
+                // Flying to drink at a field near the player: it comes in person (OGC19).
+                State::Flying(Purpose::Refuel { frame, x, z, .. }) => near(Pos::new(frame, x, z)),
                 _ => false,
             };
         self.materialize(w, d, player, harass, visitor, None, at);

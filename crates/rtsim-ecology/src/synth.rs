@@ -392,11 +392,19 @@ pub const FARM: DistrictId = DistrictId(1);
 pub const WHEAT: Good = Good(1);
 pub const BEEF: Good = Good(2);
 pub const GOLD_ITEM: Good = Good(3);
+/// The oil farm's fuel (OILGATE.md OG-5), in mB.
+pub const DIESEL: Good = Good(4);
 
 /// The farm: a roofless, unwalled industry district at the player's home (300, 1300), with a
 /// vault of wheat, beef and gold, a harvester and a butcher; `turrets` per threat class; loaded
 /// as `visits` say (the industry fake world's own timetable).
 pub fn farm(seed: u64, turrets: [f32; 4], visits: Vec<Visit>) -> FakeWorld {
+    oil_farm(seed, turrets, visits, 0)
+}
+
+/// The farm with a diesel tank of `diesel_mb` beside its vault (none when 0): what a dry dragon
+/// drinks (OG-5).
+pub fn oil_farm(seed: u64, turrets: [f32; 4], visits: Vec<Visit>, diesel_mb: i64) -> FakeWorld {
     let mut tun = Tunables::default();
     // The industry default carries nothing for flying attackers, on the strength of a dragon
     // `stealItems` key; the Ice and Fire jar check found `stealItems` is a pixie key, not a
@@ -480,6 +488,22 @@ pub fn farm(seed: u64, turrets: [f32; 4], visits: Vec<Visit>) -> FakeWorld {
             None,
         ));
     }
+    if diesel_mb > 0 {
+        w.good(DIESEL.0, GoodInfo::fluid("createdieselgenerators:diesel"));
+        let tank = BlockPos::new(bx, 64, bz + 3);
+        d.inventories.push(FInventory {
+            index: 1,
+            pos: tank,
+            kind: InvKind::FLUIDS,
+            slots: 0,
+            fluid_cap: diesel_mb.max(64_000),
+            energy_cap: 0,
+            contents: GoodVec::from_pairs([(DIESEL, diesel_mb)]),
+            destroyed: false,
+        });
+        d.exposed
+            .push(exposed(tank, 14, BlockFlags::INVENTORY | roofless, Some(1)));
+    }
     w.districts.push(d);
     w.visits = visits;
     w.declare();
@@ -536,6 +560,15 @@ pub struct FakeIaf {
     /// The village the player is at (its key), so a dragon materializing there to harass eats
     /// from its herd as Ice and Fire's own hunting would: `(village, prey body, count)`.
     pub village_here: Option<(u64, u32, u32)>,
+    /// Fire a body materialized with MAT_OIL breathes, reported 300 ticks into its visit
+    /// (DRAGON_BREATHS, OG-4). 0: none.
+    pub breaths: u32,
+    /// The ground's oil, as CDG's sampler would find it: `(dimension, chunk x, chunk z)` to
+    /// bottomless. OIL_SURVEY answers from it (source 2).
+    pub ground_oil: BTreeMap<(u32, i32, i32), bool>,
+    /// PLACE_LAIR commands carried out: each places a roost 48 blocks east of the asked point and
+    /// reports it (LAIR_FOUND), as the bridge's placement and its next lair scan would.
+    pub placed: u64,
 }
 
 impl FakeIaf {
@@ -554,6 +587,9 @@ impl FakeIaf {
             player,
             leave_ticks: 300,
             village_here: None,
+            breaths: 0,
+            ground_oil: BTreeMap::new(),
+            placed: 0,
         }
     }
 
@@ -603,6 +639,16 @@ impl FakeIaf {
                             entity,
                         }),
                     );
+                    if self.breaths > 0 && m.flags & boundary::MAT_OIL != 0 {
+                        self.push(
+                            at + 300,
+                            Obs::Breaths(boundary::Breaths {
+                                agent: m.agent,
+                                epoch: m.epoch,
+                                count: self.breaths,
+                            }),
+                        );
+                    }
                     if let Some((village, prey, count)) = self.village_here
                         && m.flags & boundary::MAT_SLEEPING == 0
                     {
@@ -669,9 +715,55 @@ impl FakeIaf {
                         entity: a.entity,
                     }),
                 ),
-                // The oil gate's asks go to the world (a structure placed, chunks sampled): the
-                // synthetic plugin has neither, and its scenarios hand over oil directly.
-                Cmd::Discard(_) | Cmd::PlaceLair(_) | Cmd::OilSurvey(_) => {}
+                Cmd::PlaceLair(p) => {
+                    self.placed += 1;
+                    let (x, z) = (p.x + 48, p.z);
+                    self.push(
+                        at + 40,
+                        Obs::LairFound(boundary::LairFound {
+                            lair: 0x504C_0000_0000 | self.placed,
+                            late: true,
+                            dimension: p.dimension,
+                            species: p.species,
+                            kind: p.kind,
+                            min: (x - 16, 90, z - 16),
+                            max: (x + 16, 110, z + 16),
+                            home: (x, 100, z),
+                        }),
+                    );
+                }
+                Cmd::OilSurvey(sv) => {
+                    let r = i64::from(sv.radius);
+                    let mut found: Vec<boundary::OilChunkRec> = self
+                        .ground_oil
+                        .range(
+                            (sv.dimension, i32::MIN, i32::MIN)..=(sv.dimension, i32::MAX, i32::MAX),
+                        )
+                        .filter(|((_, cx, cz), _)| {
+                            let dx = i64::from(*cx) * 16 + 8 - i64::from(sv.x);
+                            let dz = i64::from(*cz) * 16 + 8 - i64::from(sv.z);
+                            dx * dx + dz * dz <= r * r
+                        })
+                        .map(|(&(_, cx, cz), &deep)| boundary::OilChunkRec {
+                            cx,
+                            cz,
+                            amount: 1,
+                            flags: if deep { boundary::OIL_BOTTOMLESS } else { 0 },
+                        })
+                        .collect();
+                    while !found.is_empty() {
+                        let rest = found.split_off(found.len().min(boundary::OIL_CHUNKS_MAX));
+                        self.push(
+                            at + 20,
+                            Obs::OilChunks(boundary::OilChunks {
+                                dimension: sv.dimension,
+                                source: boundary::OIL_SOURCE_CDG,
+                                chunks: std::mem::replace(&mut found, rest),
+                            }),
+                        );
+                    }
+                }
+                Cmd::Discard(_) => {}
             }
         }
     }

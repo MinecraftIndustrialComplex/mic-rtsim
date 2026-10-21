@@ -993,6 +993,65 @@ mod tests {
         assert_eq!(Loads::share(7, 9, 3), 7, "never more than all survive");
     }
 
+    /// OG-11, the roof gate: a flyer breaks fewer blocks as more machines are roofed, and only
+    /// blocks with sky access; a ground attacker and the theft do not see the roof.
+    #[test]
+    fn a_roof_shields_blocks_from_flyers_only() {
+        let mut d = Defence::default();
+        let mut s = survey(100, 0.0, 0);
+        s.machine_blocks = 10;
+        s.roofed_machines = 6;
+        d.set_survey(&s);
+        // Twenty blocks, the even ones under a roof.
+        d.exposed = (0..20)
+            .map(|i| ExposedBlockRow {
+                x: i,
+                y: 0,
+                z: 0,
+                state: 1,
+                flags: BlockFlags::PERIMETER | if i % 2 == 1 { BlockFlags::ROOFLESS } else { 0 },
+                inventory: None,
+            })
+            .collect();
+        let tun = ThreatTunables::default();
+        let stock = GoodVec::from_pairs([(Good(1), 10_000)]);
+        let loads = Some(Loads {
+            carry: 40,
+            blocks: 5,
+        });
+        let mut fly = threat(ThreatClass::Flying, 4);
+        fly.loads = loads;
+        let o = resolve(&fly, &d, 0, &tun);
+        assert!((o.roof_pass - 0.4).abs() < 1e-12, "{}", o.roof_pass);
+        let dmg = damage(&fly, &o, &stock, &d, &tun);
+        assert_eq!(dmg.destroyed.len(), 2, "5 blocks at 0.4, floored");
+        assert!(
+            dmg.destroyed
+                .iter()
+                .all(|b| b.flags & BlockFlags::ROOFLESS != 0),
+            "only roofless blocks: {:?}",
+            dmg.destroyed
+        );
+        assert_eq!(dmg.stolen.total(), 40, "the roof does not stop theft");
+        // Every machine roofed: no blocks at all.
+        s.roofed_machines = 10;
+        d.set_survey(&s);
+        let o = resolve(&fly, &d, 0, &tun);
+        assert_eq!(o.roof_pass, 0.0);
+        assert!(damage(&fly, &o, &stock, &d, &tun).destroyed.is_empty());
+        // A ground attacker ignores the roof.
+        let mut walk = threat(ThreatClass::GroundMelee, 4);
+        walk.loads = loads;
+        let o = Outcome {
+            survived: 1.0,
+            ..resolve(&walk, &d, 0, &tun)
+        };
+        assert_eq!(o.roof_pass, 1.0);
+        assert_eq!(damage(&walk, &o, &stock, &d, &tun).destroyed.len(), 5);
+        // No survey: the gate is open.
+        assert_eq!(roof_pass(ThreatClass::Flying, None), 1.0);
+    }
+
     #[test]
     fn a_large_pressure_mean_gives_a_sane_count() {
         let (_, k) =

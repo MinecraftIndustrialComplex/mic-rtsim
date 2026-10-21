@@ -24,7 +24,6 @@
 //! says when a chunk is new to the index, which is where its first load would send the deep
 //! layer's command (0x8507, reserved in `boundary`).
 
-
 use rtsim_industry::ids::DistrictId;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::meta_pages::PagedMap;
@@ -767,7 +766,8 @@ impl Dragons {
 
     /// Whether `d`'s reserve is low (and the gate applies to it).
     pub(crate) fn oil_low(&self, d: DragonId, at: Tick) -> bool {
-        self.oil_gated(d) && self.dragons[d].oil_level(&self.tun.oil, at) <= self.tun.oil.refuel_below
+        self.oil_gated(d)
+            && self.dragons[d].oil_level(&self.tun.oil, at) <= self.tun.oil.refuel_below
     }
 
     /// Refuelling as a choice (§4.3): to the nearest oil chunk in reach of where it is, its
@@ -840,7 +840,10 @@ impl Dragons {
                             at,
                             "refuel",
                             Some(d),
-                            format!("dry: flies at the tanks of district {} (watched)", site.id.0),
+                            format!(
+                                "dry: flies at the tanks of district {} (watched)",
+                                site.id.0
+                            ),
                         );
                         self.materialize(w, d, p, true, false, Some((site.pos, cruise)), at);
                         return;
@@ -879,7 +882,9 @@ impl Dragons {
                 at,
                 "refuel",
                 Some(d),
-                format!("low on oil ({level}): flies to field {field} at ({x}, {z}) (utility {u:.1})"),
+                format!(
+                    "low on oil ({level}): flies to field {field} at ({x}, {z}) (utility {u:.1})"
+                ),
             );
         }
         self.fly(w, d, p, at);
@@ -1012,7 +1017,8 @@ impl Dragons {
                 (i64::from(q.x), i64::from(q.z)),
                 (i64::from(pos.x), i64::from(pos.z)),
             );
-            if dd <= f64::from(r) && best.is_none_or(|b| dd.total_cmp(&b.0).then(p.cmp(&b.1)).is_lt())
+            if dd <= f64::from(r)
+                && best.is_none_or(|b| dd.total_cmp(&b.0).then(p.cmp(&b.1)).is_lt())
             {
                 best = Some((dd, p));
             }
@@ -1124,6 +1130,7 @@ impl Dragons {
         let topo = self.topo.clone();
         let t = topo.of(frame);
         let before = self.oil.chunks;
+        let closed = self.oil.is_empty();
         for c in &o.chunks {
             if c.amount <= 0 {
                 continue;
@@ -1141,6 +1148,9 @@ impl Dragons {
         let added = self.oil.chunks - before;
         self.stats.oil_chunks += added;
         self.stats.fields = u64::from(self.oil.live);
+        if closed && !self.oil.is_empty() {
+            self.gate_opens(at);
+        }
         if added > 0 {
             self.note(
                 at,
@@ -1152,6 +1162,36 @@ impl Dragons {
                 ),
             );
         }
+    }
+
+    /// The first oil known opens the gate (OGC12): every fire dragon starts on a full reserve now
+    /// (it could not drink before), and a roosting one also wakes when it runs low. Once a world.
+    fn gate_opens(&mut self, at: Tick) {
+        let o = self.tun.oil.clone();
+        let fire: Vec<DragonId> = self
+            .dragons
+            .iter()
+            .filter(|(_, x)| self.tun.species(x.species).uses_oil)
+            .map(|(h, _)| h)
+            .collect();
+        for &d in &fire {
+            let x = self.dragons.get_mut(d).expect("live");
+            x.set_oil(&o, o.capacity, at);
+            if matches!(x.state, State::Roosting) {
+                let plan = x.plan;
+                let wake = x.oil_low_at(&o, o.refuel_below, at).max(at + 1);
+                self.schedule(wake, Ev::Hungry { d, plan });
+            }
+        }
+        self.note(
+            at,
+            "oil",
+            None,
+            format!(
+                "the oil gate opens: {} fire dragons start on a full reserve",
+                fire.len()
+            ),
+        );
     }
 
     /// DRAGON_BREATHS: an embodied dragon's fire costs a point a breath (OG-4).
@@ -1225,6 +1265,62 @@ mod tests {
         assert!(!ix.add_chunk(t, 0, -1, -1, true));
         assert!(ix.chunk_at(0, -1, -1).unwrap().bottomless);
         assert_eq!(ix.chunks(), 7);
+    }
+
+    /// OG-13 and OG-4: a raid's passes burn a point each while the reserve lasts; those beyond
+    /// it strike at `dry_strength_milli`; the theft may drink up to the room after the burn.
+    #[test]
+    fn a_raid_burns_what_it_has_and_bites_for_the_rest() {
+        let (mut w, _) = crate::synth::world(3);
+        let mut d = Dragons::new(3, crate::tunables::DragonTunables::default(), Tick::ZERO);
+        let l = d.add_lair(
+            &mut w,
+            1,
+            "L",
+            Species::Fire,
+            LairKind::Roost,
+            Pos::new(0, 0, 0),
+            100,
+            Tick(0),
+        );
+        let x = d.add_dragon(
+            &mut w,
+            NewDragon {
+                name: "x".into(),
+                species: Species::Fire,
+                gender: Gender::Male,
+                variant: 0,
+                age_ticks: 110 * TICKS_PER_DAY,
+                lair: Some(l),
+                fullness: 100,
+                health: None,
+                seed: None,
+                at: None,
+            },
+            Tick(0),
+        );
+        // No oil known: the gate is shut, a raid is all fire and drinks nothing.
+        let p = d.oil_passes(x, 4, Tick(0));
+        assert_eq!((p.factor, p.burn, p.room_mb, p.dry), (1.0, 0, 0, false));
+        let topo = all_flat();
+        d.oil.add_chunk(topo.of(0), 0, 50, 50, false);
+        let o = d.tun.oil.clone();
+        let at = Tick(10);
+        d.dragons.get_mut(x).unwrap().set_oil(&o, 60, at);
+        let p = d.oil_passes(x, 4, at);
+        assert_eq!((p.factor, p.burn, p.dry), (1.0, 4, false));
+        assert_eq!(p.room_mb, i64::from(o.capacity - 56) * o.mb_per_point);
+        // Two points left for four passes: two with fire, two with bite and claws at a half.
+        d.dragons.get_mut(x).unwrap().set_oil(&o, 2, at);
+        let p = d.oil_passes(x, 4, at);
+        assert!(p.dry && p.burn == 2);
+        assert!((p.factor - 0.75).abs() < 1e-12, "{}", p.factor);
+        assert_eq!(p.room_mb, i64::from(o.capacity) * o.mb_per_point);
+        // Drinking 30,500 mB refills 30 points (the half point is not counted).
+        d.drink(x, 30_500, at);
+        assert_eq!(d.oil_level(x, at), Some(32));
+        // A breath costs a point only while embodied; the closed form drains with time.
+        assert_eq!(d.oil_level(x, at + 5 * o.tick_rate), Some(27));
     }
 
     #[test]
