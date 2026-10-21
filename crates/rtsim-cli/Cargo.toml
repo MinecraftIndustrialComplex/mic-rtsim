@@ -23,6 +23,10 @@ rtsim-world.workspace = true
 rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
+rtsim-view.workspace = true
+rtsim-space.workspace = true
+# The viewer's HTTP server and page (rtsim-cli view). MPL-2.0.
+mic-viewer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # State hashes over pages. MIT OR Apache-2.0.

@@ -658,6 +658,7 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "mic-viewer",
  "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
@@ -665,8 +666,10 @@ dependencies = [
  "rtsim-knowledge",
  "rtsim-settle",
  "rtsim-ships",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
+ "rtsim-view",
  "rtsim-world",
  "serde",
  "serde_json",
