@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest;
 import com.iafenvoy.iceandfire.config.IafCommonConfig;
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
+import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonConfig;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.IafDragons;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.MicRtsimIceAndFire;
@@ -63,7 +64,9 @@ import static com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest.Drago
  * each its own far patch of the flat world dressed as a desert (desert biome, a sandstone floor at y 64,
  * In Control's 100 blocks and more): 1 on the surface over oil, 2 over oil in a sealed pocket below y 15,
  * 3 on the surface with no oil. At each, a probe player stands for {@link #ARM} ticks per arm, A then B,
- * at the same hour of the day.
+ * at the same hour of the day. At the oil sites an arm C follows: B with a breath counted a burst of fire,
+ * not a fire event ({@link DragonConfig#breathPerBurst}), so a reserve lasts about 40 times as long. C
+ * starts with B's visitors still in the engine's sim (the sweep only clears their bodies).
  *
  * <p>The probe is a mock player (the one In Control spawns around and every hostile targets) with a
  * stand-in at its feet: the mock player is in the level's player list but not its entity sections, so
@@ -162,6 +165,7 @@ public final class OilDangerGameTests {
             rulesActive = false;
             record("OilDangerGameTests", "watchdog", "could not clear the rules: " + e);
         }
+        DragonConfig.Test.breathPerBurst = null;
         if (liveProbe != null)
             OilGameTests.release(liveProbe);
         if (liveStandIn != null)
@@ -173,17 +177,17 @@ public final class OilDangerGameTests {
 
     // ---- the tests --------------------------------------------------------------------------------
 
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 12_000, batch = "og10_site1")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 16_000, batch = "og10_site1")
     public static void dangerSite1DesertSurfaceOverOil(GameTestHelper helper) {
         run(helper, 1);
     }
 
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 12_000, batch = "og10_site2")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 16_000, batch = "og10_site2")
     public static void dangerSite2DesertOverOilBelowY15(GameTestHelper helper) {
         run(helper, 2);
     }
 
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 12_000, batch = "og10_site3")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 16_000, batch = "og10_site3")
     public static void dangerSite3DesertWithoutOil(GameTestHelper helper) {
         run(helper, 3);
     }
@@ -245,6 +249,11 @@ public final class OilDangerGameTests {
                     dragonsHitting.size(), perHour(dragonsHitting.size()), dragonsEngaged().size(), perHour(dragonsEngaged().size()),
                     dragonsNear.size(), blazes.size(), underfoot, players, seeks, seekers.size());
         }
+
+        /** The engine's oil counters over the arm. */
+        String engineLine() {
+            return String.format(Locale.ROOT, "; engine: %d field draws, %d refuels, %d visitors left, %d breaths", draws, refuels, left, breaths);
+        }
     }
 
     /**
@@ -299,7 +308,7 @@ public final class OilDangerGameTests {
         Vec3 spot = new Vec3(site.getX() + 0.5, pocket ? POCKET_Y : FLOOR_Y + 1, site.getZ() + 0.5);
         ServerPlayer[] probe = {null};
         Husk[] standIn = {null};
-        Arm a = new Arm("A"), b = new Arm("B");
+        Arm a = new Arm("A"), b = new Arm("B"), c = new Arm("C");
         Arm[] current = {null};
         int[] ticks = {0};
 
@@ -372,9 +381,31 @@ public final class OilDangerGameTests {
                 .thenExecute(() -> {
                     endArm(level, b, probe[0], standIn[0]);
                     current[0] = null;
-                    record(test, "arm B (In Control without its fire dragons, field flights on)", b.line()
-                            + String.format(Locale.ROOT, "; engine: %d field draws, %d refuels, %d visitors left, %d breaths",
-                            b.draws, b.refuels, b.left, b.breaths));
+                    record(test, "arm B (In Control without its fire dragons, field flights on)", b.line() + b.engineLine());
+                    clearRules();
+                    DragonKit.oilConfig(0);
+                    if (oil) {
+                        int swept = sweep(level, site, standIn[0]);
+                        int fires = putOutFires(level, site);
+                        record(test, "between arms", swept + " entities and " + fires + " fires cleared");
+                    }
+                })
+                .thenIdle(oil ? 40 : 1)
+                .thenExecute(() -> {
+                    if (!oil)
+                        return;
+                    DragonConfig.Test.breathPerBurst = true;
+                    startArm(level, c, "b", DragonRecords.OilConfig.FLAG_FIELD_FLIGHTS);
+                    current[0] = c;
+                })
+                .thenIdle(oil ? ARM : 1)
+                .thenExecute(() -> {
+                    if (oil) {
+                        endArm(level, c, probe[0], standIn[0]);
+                        current[0] = null;
+                        record(test, "arm C (as B, a breath a burst of fire)", c.line() + c.engineLine());
+                    }
+                    DragonConfig.Test.breathPerBurst = null;
                     clearRules();
                     DragonKit.restoreOilConfig();
                     sweep(level, site, null);
@@ -384,10 +415,15 @@ public final class OilDangerGameTests {
                     unforce.run();
                     check("In Control spawned at the site in arm A (" + a.blazes.size() + " blazes)", !a.blazes.isEmpty());
                     check("In Control spawned at the site in arm B (" + b.blazes.size() + " blazes)", !b.blazes.isEmpty());
-                    check("the probe was the level's only player (" + a.players + ", " + b.players + ")", a.players == 1 && b.players == 1);
-                    record(test, "table", table(siteNo, a, b));
-                    if (siteNo != 3)
+                    if (oil)
+                        check("In Control spawned at the site in arm C (" + c.blazes.size() + " blazes)", !c.blazes.isEmpty());
+                    check("the probe was the level's only player (" + a.players + ", " + b.players + (oil ? ", " + c.players : "") + ")",
+                            a.players == 1 && b.players == 1 && (!oil || c.players == 1));
+                    record(test, "table", oil ? table(siteNo, a, b, c) : table(siteNo, a, b));
+                    if (siteNo != 3) {
                         record(test, "verdict", verdict(a, b));
+                        record(test, "verdict, a breath a burst", verdict(a, c));
+                    }
                 })
                 .thenSucceed();
     }
@@ -581,10 +617,10 @@ public final class OilDangerGameTests {
         return n;
     }
 
-    static String table(int siteNo, Arm a, Arm b) {
+    static String table(int siteNo, Arm... arms) {
         StringBuilder s = new StringBuilder("site " + siteNo + " | arm | dragon dmg/min | hostile dmg/min | first dragon hit | first hostile hit | "
                 + "dragons hitting/h | dragons targeting or hitting/h | dragons within 100 | blazes");
-        for (Arm x : List.of(a, b))
+        for (Arm x : arms)
             s.append(String.format(Locale.ROOT, " || %s | %.1f | %.1f | %s | %s | %.0f | %.0f | %d | %d", x.name,
                     x.perMinute(x.dragonEff), x.perMinute(x.hostileEff), Arm.at(x.firstDragonHit), Arm.at(x.firstHostileHit),
                     x.perHour(x.dragonsHitting.size()), x.perHour(x.dragonsEngaged().size()), x.dragonsNear.size(), x.blazes.size()));
@@ -601,9 +637,9 @@ public final class OilDangerGameTests {
         boolean distinct = b.dragonsHitting.size() >= a.dragonsHitting.size();
         boolean byTargeting = b.dragonsEngaged().size() >= a.dragonsEngaged().size();
         return String.format(Locale.ROOT,
-                "B >= A: %s (dragon damage %.1f vs %.1f per minute: %s; first dragon hit %s vs %s: %s; dragons hitting %d vs %d: %s); "
+                "%s >= A: %s (dragon damage %.1f vs %.1f per minute: %s; first dragon hit %s vs %s: %s; dragons hitting %d vs %d: %s); "
                         + "dragons targeting or hitting %d vs %d: %s",
-                damage && contact && distinct ? "yes" : "no", db, da, damage ? "yes" : "no", Arm.at(b.firstDragonHit), Arm.at(a.firstDragonHit),
+                b.name, damage && contact && distinct ? "yes" : "no", db, da, damage ? "yes" : "no", Arm.at(b.firstDragonHit), Arm.at(a.firstDragonHit),
                 contact ? "yes" : "no", b.dragonsHitting.size(), a.dragonsHitting.size(), distinct ? "yes" : "no",
                 b.dragonsEngaged().size(), a.dragonsEngaged().size(), byTargeting ? "yes" : "no");
     }

@@ -109,7 +109,10 @@ public final class DragonBridge implements SessionPlugin {
         /** Breaths since the last DRAGON_BREATHS. */
         int pendingBreaths;
         long lastBreathFlush;
-        /** The game tick of the last fire event paid for (a charge spawned on that tick is the same breath). */
+        /**
+         * The game tick of the last fire event paid for (a charge spawned on that tick is the same breath), or,
+         * with {@link DragonConfig#breathPerBurst}, of the last one inside a paid burst.
+         */
         long lastFireTick = Long.MIN_VALUE;
         final Breath breath = new Breath();
 
@@ -133,6 +136,8 @@ public final class DragonBridge implements SessionPlugin {
      */
     public static final class Breath {
         public int events, eventsPaid, eventsCancelled, chargesWithEvent, chargesPaid, chargesStopped, reported;
+        /** Fire events and charges inside a paid burst ({@link DragonConfig#breathPerBurst} only). */
+        public int inBurst;
         long lastSeen = Long.MIN_VALUE;
         public final ArrayDeque<Burst> bursts = new ArrayDeque<>();
 
@@ -775,6 +780,11 @@ public final class DragonBridge implements SessionPlugin {
         p.breath.saw(now, true, false);
         if (p.oil < 0)
             return;
+        if (inPaidBurst(p, now)) {
+            p.breath.inBurst++;
+            p.lastFireTick = now;
+            return;
+        }
         if (p.oil == 0) {
             event.setCanceled(true);
             p.breath.eventsCancelled++;
@@ -786,6 +796,11 @@ public final class DragonBridge implements SessionPlugin {
         p.pendingBreaths++;
         p.breath.eventsPaid++;
         p.lastFireTick = now;
+    }
+
+    /** With {@link DragonConfig#breathPerBurst}: {@code now} is inside the burst the last point paid for. */
+    private static boolean inPaidBurst(Puppet p, long now) {
+        return DragonConfig.breathPerBurst() && p.lastFireTick != Long.MIN_VALUE && now - p.lastFireTick < BURST_GAP;
     }
 
     /**
@@ -802,6 +817,11 @@ public final class DragonBridge implements SessionPlugin {
         p.breath.saw(now, false, true);
         if (paid || p.oil < 0) {
             p.breath.chargesWithEvent += paid ? 1 : 0;
+            return;
+        }
+        if (inPaidBurst(p, now)) {
+            p.breath.inBurst++;
+            p.lastFireTick = now;
             return;
         }
         if (p.oil == 0) {

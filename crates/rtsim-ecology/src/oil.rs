@@ -469,6 +469,53 @@ impl Dragons {
         self.rolls.get(&frame).map_or(0, |r| r.visitors)
     }
 
+    /// The field flights' state at `at`, for tests: the wheel's clock; players' presences kept,
+    /// fresh, and stamped after `at`; rolls active; FieldRoll events booked and the earliest one's
+    /// tick (-1 with none); field flights' dragons alive in all dimensions, and the most on one field.
+    pub fn flight_probe(&self, at: Tick) -> [i64; 9] {
+        let fresh = self.tun.oil.presence_fresh_ticks;
+        let kept = self.presence.len() as i64;
+        let fresh_n = self
+            .presence
+            .values()
+            .filter(|(_, _, t)| at.since(*t) <= fresh)
+            .count();
+        let ahead = self
+            .presence
+            .values()
+            .filter(|(_, _, t)| t.0 > at.0)
+            .count();
+        let active = self.rolls.values().filter(|r| r.active).count();
+        let (mut booked, mut first) = (0i64, -1i64);
+        for (t, ev) in self.wheel.iter() {
+            if matches!(ev, Ev::FieldRoll { .. }) {
+                booked += 1;
+                if first < 0 || (t.0 as i64) < first {
+                    first = t.0 as i64;
+                }
+            }
+        }
+        let visitors: i64 = self.rolls.values().map(|r| i64::from(r.visitors)).sum();
+        let most = self
+            .oil
+            .fields
+            .values()
+            .map(|f| i64::from(f.visitors))
+            .max()
+            .unwrap_or(0);
+        [
+            self.wheel.now().0 as i64,
+            kept,
+            fresh_n as i64,
+            ahead as i64,
+            active as i64,
+            booked,
+            first,
+            visitors,
+            most,
+        ]
+    }
+
     /// A PLAYER record with the player's height (the bridge's): the home counter (P26), and the
     /// oil gate's presence, which starts a dimension's field flights (§4.2) and checks a field
     /// for a lair (OG-7) when the player is near one.

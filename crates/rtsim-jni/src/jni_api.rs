@@ -514,6 +514,25 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native double[] nIndustryThreatProbe(long handle, long district)`: one district's
+/// threat state (`Engine::industry_threat_probe`). Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nIndustryThreatProbe<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    district: jlong,
+) -> JDoubleArray<'l> {
+    env.with_env(|env| -> Result<JDoubleArray<'l>, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        doubles(env, &e.industry_threat_probe(district as u64))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// `static native double[] nGlassOffline(byte[] records, long district)`: the glass check of a
 /// record stream on a fresh industry engine (`engine::glass_offline`, the stub engine's
 /// GameTests); null when the district has no complete compile in it. No handle: pure.
