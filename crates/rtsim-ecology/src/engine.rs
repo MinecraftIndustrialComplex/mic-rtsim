@@ -274,6 +274,10 @@ pub struct Dragons {
     /// watch, so a session start and the checks find them without a pass over every dragon.
     /// Saved in the meta page.
     pub(crate) embodied: BTreeSet<DragonId>,
+    /// The lairs nobody lives in and nobody flies to claim (no occupants, `vacant_since` set): a
+    /// young or starving dragon looks for a roost among these, so the search loads only vacant
+    /// lairs' rows, not every lair in range. Saved in the meta page.
+    pub(crate) vacant: BTreeSet<LairId>,
     pub(crate) wheel: TimingWheel<Ev>,
     pub homes: Homes,
     pub ledger: PreyLedger,
@@ -380,6 +384,7 @@ impl Dragons {
             lair_by_key: BTreeMap::new(),
             lair_cells: BTreeMap::new(),
             embodied: BTreeSet::new(),
+            vacant: BTreeSet::new(),
             wheel: TimingWheel::new(now),
             homes,
             ledger: PreyLedger::default(),
@@ -522,6 +527,7 @@ impl Dragons {
             plan: 1,
         });
         debug_assert_eq!(self.lairs.get(id).map(|l| l.key), Some(key));
+        self.track_lair(id);
         self.lair_by_key.insert(key, id);
         let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(pos.x), i64::from(pos.z));
         self.lair_cells
@@ -1025,6 +1031,20 @@ impl Dragons {
         }
     }
 
+    /// Keeps [`Dragons::vacant`] in step with lair `l`: called after every change of its
+    /// occupants or its vacancy.
+    fn track_lair(&mut self, l: LairId) {
+        if self
+            .lairs
+            .get(l)
+            .is_some_and(|x| x.occupants.is_empty() && x.vacant_since.is_some())
+        {
+            self.vacant.insert(l);
+        } else {
+            self.vacant.remove(&l);
+        }
+    }
+
     fn live(&mut self, d: DragonId, plan: u32) -> bool {
         let ok = self.dragons.get(d).is_some_and(|x| x.plan == plan);
         if !ok {
@@ -1321,6 +1341,7 @@ impl Dragons {
         self.leave_lair(w, d, at);
         self.lairs[l as usize].plan += 1;
         self.lairs[l as usize].vacant_since = None;
+        self.track_lair(l);
         self.fly(w, d, Purpose::Claim(l), at);
     }
 
@@ -1353,6 +1374,7 @@ impl Dragons {
         lair.vacant_since = Some(at);
         lair.plan += 1;
         let plan = lair.plan;
+        self.track_lair(l);
         self.schedule(at + delay, Ev::Respawn { lair: l, plan });
     }
 
@@ -1666,12 +1688,14 @@ impl Dragons {
         self.leave_lair(w, d, at);
         self.lairs[l as usize].plan += 1; // its respawn event is void: it is claimed
         self.lairs[l as usize].vacant_since = None;
+        self.track_lair(l);
         self.fly(w, d, Purpose::Claim(l), at);
         true
     }
 
     /// The nearest roost of `d`'s species with nobody in it and nobody on the way. Looks up the
-    /// lair cells within range (one range query per row of regions), never every lair.
+    /// lair cells within range (one range query per row of regions), never every lair, and reads
+    /// only the vacant ones' rows ([`Dragons::vacant`]).
     fn vacant_lair(&self, d: DragonId, at: Tick) -> Option<LairId> {
         let x = &self.dragons[d];
         let (p, _) = x.position(&self.topo, &self.lairs, at);
@@ -1683,6 +1707,9 @@ impl Dragons {
         for (rx, rz) in self.regions_near(p.frame, Rect::around(px, pz, r)) {
             if let Some(ls) = self.lair_cells.get(&(p.frame, rx, rz)) {
                 for &i in ls {
+                    if !self.vacant.contains(&i) {
+                        continue;
+                    }
                     let l = &self.lairs[i as usize];
                     if l.species != x.species
                         || !l.occupants.is_empty()
@@ -2824,6 +2851,7 @@ impl Dragons {
             let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
             self.schedule(at + delay, Ev::Respawn { lair: l, plan });
         }
+        self.track_lair(l);
         let _ = w;
     }
 
@@ -2851,6 +2879,7 @@ impl Dragons {
                 w.knowledge.adjust(actor, t, i16::from(v), at);
             }
         }
+        self.track_lair(l);
         self.refresh_heir(w, d);
     }
 
@@ -2962,6 +2991,7 @@ impl Dragons {
                 self.leave_lair(w, d, at);
                 self.lairs[l as usize].plan += 1;
                 self.lairs[l as usize].vacant_since = None;
+                self.track_lair(l);
                 self.fly(w, d, Purpose::Claim(l), at);
             }
             None => self.schedule(at + 10 * TICKS_PER_DAY, Ev::Disperse { d }),
@@ -3014,6 +3044,7 @@ impl Dragons {
         lair.plan += 1;
         lair.vacant_since = None;
         let name = lair.name.clone();
+        self.track_lair(l);
         self.note(
             at,
             "respawn",
@@ -3241,10 +3272,20 @@ impl Dragons {
             ));
         }
         let mut held: BTreeMap<Item, i128> = BTreeMap::new();
-        for l in self.lairs.iter() {
+        let mut vacant = BTreeSet::new();
+        for (i, l) in self.lairs.iter().enumerate() {
             for (k, v) in &l.hoard {
                 *held.entry(*k).or_default() += i128::from(*v);
             }
+            if l.occupants.is_empty() && l.vacant_since.is_some() {
+                vacant.insert(i as LairId);
+            }
+        }
+        if vacant != self.vacant {
+            return Err(format!(
+                "the vacant index holds {:?} but the lairs say {vacant:?}",
+                self.vacant
+            ));
         }
         let mut embodied = BTreeSet::new();
         for (h, x) in self.dragons.iter() {
@@ -3343,7 +3384,7 @@ impl Dragons {
                 self.dragons.rows().heap_bytes(),
             ),
             ("lair rows (resident pages)", self.lairs.rows().heap_bytes()),
-            ("lair indexes and embodied set", self.index_bytes()),
+            ("lair indexes, embodied and vacant sets", self.index_bytes()),
             ("wheel", self.wheel.heap_bytes()),
             ("homes", self.homes.heap_bytes()),
             ("prey index", self.index.heap_bytes()),
@@ -3356,8 +3397,8 @@ impl Dragons {
         ])
     }
 
-    /// The resident lair indexes (`lair_by_key`, `lair_cells`) and the embodied set, estimated as
-    /// B-tree entries at two-thirds fill plus each cell's vector.
+    /// The resident lair indexes (`lair_by_key`, `lair_cells`, `vacant`) and the embodied set,
+    /// estimated as B-tree entries at two-thirds fill plus each cell's vector.
     pub fn index_bytes(&self) -> usize {
         let node = |entry: usize| entry * 3 / 2;
         self.lair_by_key.len() * node(12)
@@ -3368,6 +3409,7 @@ impl Dragons {
                 .map(|v| (v.capacity() * 4).max(16))
                 .sum::<usize>()
             + self.embodied.len() * node(8)
+            + self.vacant.len() * node(4)
     }
 
     /// The districts a player's home holds, for display.

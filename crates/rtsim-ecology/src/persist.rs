@@ -942,6 +942,8 @@ impl Dragons {
         }
         w.var_u64(self.embodied.len() as u64);
         self.embodied.iter().for_each(|d| w.u64(d.to_bits()));
+        w.var_u64(self.vacant.len() as u64);
+        self.vacant.iter().for_each(|l| w.var_u64(u64::from(*l)));
     }
 
     /// An engine from what [`Dragons::put_meta`] wrote, with empty row tables.
@@ -1025,6 +1027,9 @@ impl Dragons {
         }
         for _ in 0..r.len_prefix(8)? {
             d.embodied.insert(h(r)?);
+        }
+        for _ in 0..r.len_prefix(1)? {
+            d.vacant.insert(u32_of(r.var_u64()?)?);
         }
         Ok(d)
     }
@@ -1208,7 +1213,8 @@ impl Dragons {
     fn check_resident(&self) -> codec::Result<()> {
         let nl = self.lairs.len() as u32;
         let lairs_ok = self.lair_by_key.values().all(|&l| l < nl)
-            && self.lair_cells.values().flatten().all(|&l| l < nl);
+            && self.lair_cells.values().flatten().all(|&l| l < nl)
+            && self.vacant.iter().all(|&l| l < nl);
         if !lairs_ok {
             return bad("a lair index names a lair past the table".into());
         }
@@ -1232,7 +1238,7 @@ impl Dragons {
         Ok(())
     }
 
-    /// Lairs the rows name, and the embodied index against the rows' states: a whole-table pass,
+    /// Lairs the rows name, and the embodied and vacant indexes against the rows: a whole-table pass,
     /// for [`Dragons::load`] (which has read every row anyway).
     fn check_rows(&self) -> codec::Result<()> {
         let nl = self.lairs.len() as u32;
@@ -1260,6 +1266,16 @@ impl Dragons {
         }
         if embodied != self.embodied {
             return bad("the embodied index does not match the dragons".into());
+        }
+        let vacant: BTreeSet<u32> = self
+            .lairs
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.occupants.is_empty() && l.vacant_since.is_some())
+            .map(|(i, _)| i as u32)
+            .collect();
+        if vacant != self.vacant {
+            return bad("the vacant index does not match the lairs".into());
         }
         Ok(())
     }
