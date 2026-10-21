@@ -129,6 +129,9 @@ pub mod edge_flags {
     pub const BOUNDED: u32 = 4;
     /// The edge leaves `from` as one of its filtered sides (brass tunnels try them first).
     pub const FILTERED_SIDE: u32 = 8;
+    /// A belt's own link to its next element: the items carried on along the belt (the through
+    /// traffic), which insertions onto that belt do not wait for (GB72, GLASSBOX.md §3.3).
+    pub const THROUGH: u32 = 16;
 }
 
 /// Rate entry flags.

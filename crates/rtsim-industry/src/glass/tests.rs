@@ -1509,6 +1509,12 @@ fn the_inverted_flag_is_display_only() {
 /// golden sheets from n11 through n1 and n12 (one per 64 ticks) onto the loop at n18: the only way a
 /// sheet reaches the host is round the loop. `perm[id]` is node `id`'s index in the records.
 fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
+    precision_mechanisms_fed(perm, 9, 64)
+}
+
+/// Corpus 6's compile with the andesite funnel moving a sheet per `funnel` ticks onto a feeder belt
+/// that takes an entry per `feeder` ticks (64 at 8 RPM, 8 at 64 RPM).
+fn precision_mechanisms_fed(perm: &[u32; 19], funnel: u32, feeder: u32) -> (Graph, [u32; 5]) {
     let mut b = B::default();
     let r = b.recipe(
         &[(SHEET, 1), (COAL, 5), (ZINC, 5), (COPPER, 5)],
@@ -1541,7 +1547,7 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
                 NodeKind::Mover,
                 model::FUNNEL_ANDESITE,
                 0,
-                vec![shared(1, 9)],
+                vec![shared(1, funnel)],
             ),
             2..=4 => b.node(NodeKind::Mover, model::CHUTE, 0, vec![shared(16, 7)]),
             5 => b.node(
@@ -1560,7 +1566,7 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
             9 => b.store(0),
             10 => b.store(3),
             11 => b.store(1),
-            12 => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, 64)]),
+            12 => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, feeder)]),
             13 => b.store(2),
             _ => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(64, 2)]),
         };
@@ -1579,14 +1585,20 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
     b.edge(n(1), n(12));
     b.edge_k(EdgeKind::Chute, n(13), n(3), &[]);
     b.edge_k(EdgeKind::Chute, n(3), n(5), &[]);
-    b.edge_k(EdgeKind::Belt, n(15), n(5), &[]);
-    b.edge_k(EdgeKind::Belt, n(5), n(6), &[]);
-    b.edge_k(EdgeKind::Belt, n(6), n(7), &[]);
+    // A belt's own links are THROUGH (the chain along belt A, and C's from its start to the
+    // feeder's segment); a belt's end into the next belt, and the feeder's, are insertions.
+    let through = |b: &mut B, from: u32, to: u32| {
+        let e = b.edge_k(EdgeKind::Belt, from, to, &[]);
+        b.edges[e as usize].flags |= edge_flags::THROUGH;
+    };
+    through(&mut b, n(15), n(5));
+    through(&mut b, n(5), n(6));
+    through(&mut b, n(6), n(7));
     b.edge_k(EdgeKind::Belt, n(7), n(14), &[]);
     b.edge_k(EdgeKind::Belt, n(17), n(15), &[]);
     b.edge(n(14), n(0));
     b.edge_k(EdgeKind::Belt, n(14), n(16), &[]);
-    b.edge_k(EdgeKind::Belt, n(16), n(18), &[]);
+    through(&mut b, n(16), n(18));
     b.edge_k(EdgeKind::Belt, n(18), n(17), &[]);
     b.edge_k(EdgeKind::Belt, n(12), n(18), &[]);
     (b.graph(), [n(11), n(9), n(10), n(13), n(8)])
@@ -1627,6 +1639,134 @@ fn a_loop_carries_its_back_edge_from_round_to_round_in_any_node_order() {
         assert!(close(brass.var_rate, 0.16 / 64.0), "{}", brass.var_rate);
         let sigma = (POISSON_SLOPE_FACTOR * brass.var_rate * 2400.0).sqrt() / 2400.0 * MIN;
         assert!((1.3..1.4).contains(&sigma), "{sigma}");
+    }
+}
+
+/// Corpus 6's held goods: sheets, the three parts (zinc, copper, coal stand in for them).
+fn precision_regime(g: &Graph, [sheets, cogs, large, nug, _]: [u32; 5]) -> Regime {
+    regime(
+        g,
+        &[
+            (sheets, &[SHEET]),
+            (cogs, &[ZINC]),
+            (large, &[COPPER]),
+            (nug, &[COAL]),
+        ],
+    )
+}
+
+#[test]
+fn an_overfed_sequenced_loop_stalls() {
+    // The feeder at 64 RPM (an entry per 8 ticks) under the andesite funnel's sheet per 9 ticks:
+    // f = 1/9 a tick against the host's mu = 1/30 (GB72). Every belt slot fills and nothing
+    // leaves: L is 0 for every good of the loop, U still the capacity.
+    let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+    let reversed: [u32; 19] = std::array::from_fn(|i| 18 - i as u32);
+    let rotated: [u32; 19] = std::array::from_fn(|i| ((i + 7) % 19) as u32);
+    for perm in [identity, reversed, rotated] {
+        let (g, stores) = precision_mechanisms_fed(&perm, 9, 8);
+        let rg = precision_regime(&g, stores);
+        let s = run(&g, &rg);
+        assert!(s.converged, "{perm:?}: {} rounds", s.rounds);
+        for good in [BRASS, SHEET, ZINC, COPPER, COAL] {
+            let b = bound(&s, good);
+            assert_eq!((b.in_l, b.out_l), (Q::ZERO, Q::ZERO), "{perm:?} {good:?}");
+            assert_eq!(b.class, class::BOUNDED, "{perm:?} {good:?}");
+        }
+        // U keeps the loop's capacity, 4/5 of a product per 30 ticks: the pass-through deployers
+        // carry it in the LP too (GB72).
+        let brass = bound(&s, BRASS);
+        assert!(brass.in_u >= Q::new(2, 75), "{perm:?}: U {:?}", brass.in_u);
+        assert_eq!(brass.var_rate, 0.0);
+        // Switched off (the old section 3.4): the loop settles at the host's capacity, a
+        // sheet per 30 ticks, the funnel held back to it.
+        let old = solve::solve_with(&g, &rg, &GlassTunables::default(), true, false);
+        assert!(old.converged);
+        assert_eq!(bound(&old, BRASS).in_l, Q::new(2, 75), "{perm:?}");
+        assert_eq!(bound(&old, SHEET).out_l, Q::new(1, 30), "{perm:?}");
+    }
+}
+
+#[test]
+fn a_sequenced_loop_fed_at_its_machines_rate_runs() {
+    // f = mu = 1/30 (a funnel a sheet per 30 ticks): the population does not grow, the loop runs
+    // at the feed (GB72, f > mu only stalls). 1/31 runs below it, as corpus 6's 1/64 does.
+    let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+    for (funnel, brass) in [(30, Q::new(2, 75)), (31, Q::new(4, 155))] {
+        let (g, stores) = precision_mechanisms_fed(&identity, funnel, 8);
+        let s = run(&g, &precision_regime(&g, stores));
+        assert!(s.converged);
+        assert_eq!(bound(&s, BRASS).in_l, brass, "funnel {funnel}");
+        assert_eq!(bound(&s, SHEET).out_l, Q::new(1, i64::from(funnel)));
+    }
+}
+
+/// A belt segment M2 where the through traffic from M1 (zinc, `zinc` an entry a tick into M1)
+/// meets a side insertion (copper, `copper` a tick): M2 takes an entry per 4 ticks.
+fn belt_merge(zinc: u32, copper: u32) -> (Graph, Regime) {
+    let mut b = B::default();
+    let zs = b.store(0);
+    let cs = b.store(2);
+    let out = b.store(1);
+    let shared = |batch: u32, ticks: u32| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    let fz = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_BRASS,
+        0,
+        vec![shared(1, zinc)],
+    );
+    let fc = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_BRASS,
+        0,
+        vec![shared(1, copper)],
+    );
+    let m1 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, 4)]);
+    let m2 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, 4)]);
+    b.edge(zs, fz);
+    b.edge(fz, m1);
+    // The belt's own link comes first by index: the rule, not the index, puts it last.
+    let link = b.edge_k(EdgeKind::Belt, m1, m2, &[]);
+    b.edges[link as usize].flags |= edge_flags::THROUGH;
+    b.edge(cs, fc);
+    b.edge(fc, m2);
+    b.edge(m2, out);
+    let g = b.graph();
+    let rg = regime(&g, &[(zs, &[ZINC]), (cs, &[COPPER])]);
+    (g, rg)
+}
+
+#[test]
+fn a_side_insertion_goes_before_the_through_traffic() {
+    // Saturated: the insertion brings 1/8 and takes it, the through traffic gets the 1/8 left of
+    // the segment's 1/4 (canInsertAtFromSide never waits for passing items). Which gaps each gets
+    // at saturation is timing: bounded (GB72).
+    let (g, rg) = belt_merge(2, 8);
+    let s = run(&g, &rg);
+    assert!(s.converged);
+    let (zinc, copper) = (bound(&s, ZINC), bound(&s, COPPER));
+    assert_eq!((zinc.in_l, copper.in_l), (Q::new(1, 8), Q::new(1, 8)));
+    assert_eq!((zinc.class, copper.class), (class::BOUNDED, class::BOUNDED));
+    assert_eq!(zinc.why.0, why::SHARED_CAPACITY);
+    assert!(zinc.in_u >= Q::new(1, 4) && copper.in_u >= Q::new(1, 8));
+    // Switched off (the old section 3.3): the main line first, nothing left for the side.
+    let old = solve::solve_with(&g, &rg, &GlassTunables::default(), false, true);
+    assert_eq!(bound(&old, ZINC).in_l, Q::new(1, 4));
+    assert_eq!(bound(&old, COPPER).in_l, Q::ZERO);
+}
+
+#[test]
+fn a_belt_merge_below_its_capacity_is_exact() {
+    // 1/16 through and 1/8 inserted fit in 1/4: both flow in full, in either order.
+    let (g, rg) = belt_merge(16, 8);
+    for first in [true, false] {
+        let s = solve::solve_with(&g, &rg, &GlassTunables::default(), first, true);
+        let (zinc, copper) = (bound(&s, ZINC), bound(&s, COPPER));
+        assert_eq!((zinc.in_l, copper.in_l), (Q::new(1, 16), Q::new(1, 8)));
+        assert_eq!((zinc.class, copper.class), (class::EXACT, class::EXACT));
     }
 }
 
@@ -1971,8 +2111,9 @@ mod engine_path {
 
 // ---- U is never below L (G-B15) ----------------------------------------------------------------------
 
-/// A random DAG of junctions, movers, buffers and machines between an input store and an output
-/// store.
+/// A random DAG of junctions, movers, buffers, machines and belts between an input store and an
+/// output store. A belt's edges from earlier middle nodes are its through traffic (THROUGH) unless
+/// filtered, so belts see side insertions (from the input store) merging into them (GB72).
 fn random_dag(
     kinds: &[(u8, u8, u8)],
     edges: &[(usize, usize, bool)],
@@ -1997,7 +2138,7 @@ fn random_dag(
     let mut mid = Vec::new();
     for &(k, a, t) in kinds {
         let ticks = 1 + u32::from(t % 40);
-        let v = match k % 4 {
+        let v = match k % 5 {
             0 => b.junction(rules[a as usize % rules.len()]),
             1 => b.node(
                 NodeKind::Mover,
@@ -2009,6 +2150,15 @@ fn random_dag(
                 }],
             ),
             2 => b.node(NodeKind::Buffer, model::DEPOT, 0, Vec::new()),
+            4 => b.node(
+                NodeKind::Mover,
+                model::BELT,
+                0,
+                vec![RateEntry {
+                    flags: rate_flags::SHARED,
+                    ..entry(None, 1 + u32::from(a % 4), ticks)
+                }],
+            ),
             _ => {
                 let m = b.machine(model::PRESS, rs[a as usize % 3], 1, ticks);
                 if a % 2 == 0 {
@@ -2036,7 +2186,10 @@ fn random_dag(
             if filt {
                 b.edge_k(EdgeKind::Adjacency, mid[a], mid[c], &[BRASS]);
             } else {
-                b.edge(mid[a], mid[c]);
+                let e = b.edge(mid[a], mid[c]);
+                if b.nodes[mid[c] as usize].model == model::BELT {
+                    b.edges[e as usize].flags |= edge_flags::THROUGH;
+                }
             }
         }
     }
@@ -2055,7 +2208,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
     #[test]
     fn u_is_never_below_l_on_random_dags(
-        kinds in prop::collection::vec((0u8..8, 0u8..16, 0u8..64), 1..10),
+        kinds in prop::collection::vec((0u8..10, 0u8..16, 0u8..64), 1..10),
         edges in prop::collection::vec((0usize..10, 0usize..10, any::<bool>()), 0..16),
         held in prop::array::uniform3(any::<bool>()),
     ) {
@@ -2079,6 +2232,25 @@ proptest! {
             }
             if let Some(x) = b.out_u_lp {
                 prop_assert!(x >= l_out - 1e-9 * (1.0 + l_out), "LP out {x} < L {l_out}");
+            }
+        }
+        // Conservation: converged, every mover, junction and buffer passes on what it takes
+        // (a belt merge included, GB72).
+        if s.converged {
+            for (v, node) in g.nodes.iter().enumerate() {
+                if !matches!(node.kind, NodeKind::Mover | NodeKind::Junction | NodeKind::Buffer) {
+                    continue;
+                }
+                let flow = |into: bool| -> f64 {
+                    g.edges
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| if into { e.to } else { e.from } as usize == v)
+                        .map(|(i, _)| s.edge_flow[i])
+                        .sum()
+                };
+                let (i, o) = (flow(true), flow(false));
+                prop_assert!((i - o).abs() <= 1e-9 * (1.0 + i), "node {v}: in {i} out {o}");
             }
         }
     }
