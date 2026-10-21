@@ -215,7 +215,7 @@ pub fn run(o: &Options) -> Outcome {
             && let Some(owner) = smog_owner
         {
             let f = c.faction_of_key(synth::CAMP).expect("camp");
-            if let Some(d) = c.feuds.get(&(f, owner)).and_then(|x| x.demand) {
+            if let Some(d) = c.feud(f, owner).and_then(|x| x.demand) {
                 converter_at = Some(d.made + TICKS_PER_DAY / 2);
             }
         }
@@ -262,9 +262,10 @@ pub fn run(o: &Options) -> Outcome {
             next_obs = next + 1_200;
         }
         plugin.apply(c.take_commands(), next);
-        // The ladder, for the timeline.
-        for (&(_, a), feud) in &c.feuds {
-            let k = a.to_bits();
+        // The ladder, for the timeline (the one faction's feuds).
+        let camp = c.faction_of_key(synth::CAMP).expect("camp");
+        for (a, feud) in c.feuds_of(camp) {
+            let (a, k) = (*a, a.to_bits());
             if last_steps.get(&k) != Some(&feud.step) {
                 last_steps.insert(k, feud.step);
                 rungs.push(Rung {

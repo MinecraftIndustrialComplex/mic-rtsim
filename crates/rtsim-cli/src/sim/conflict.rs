@@ -270,9 +270,9 @@ fn run_out(o: Outcome, v: Variant, wall_ms: f64) -> RunOut {
         })
         .collect();
     let feuds = c
-        .feuds
-        .keys()
-        .filter_map(|&(_, a)| c.feud_view(synth::CAMP, a))
+        .feuds_of(f)
+        .iter()
+        .filter_map(|(a, _)| c.feud_view(synth::CAMP, *a))
         .collect();
     RunOut {
         variant: v,
