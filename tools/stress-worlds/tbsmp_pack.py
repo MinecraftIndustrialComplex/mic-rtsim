@@ -6,7 +6,10 @@ Modrinth and CurseForge; each entry names the exact jar, its url and its hashes,
 that carries it as jar-in-jar. Nothing here is committed with jars or world files: the
 manifest written by `manifest` holds ids, versions, urls and hashes only.
 
-    tbsmp_pack.py manifest <pack-dir> <out.json>    one JSON manifest of the pack
+    tbsmp_pack.py manifest <pack-dir> <out.json> [bump.json]
+                                                    one JSON manifest of the pack; bump.json adds the
+                                                    instance bumped to Create 6.0.10 (its jars, the
+                                                    ones it replaced and removed, and why)
     tbsmp_pack.py packwiz  <pack-dir>               pack.toml + mods/*.pw.toml (then `packwiz refresh`)
     tbsmp_pack.py server   <pack-dir> <srv-dir>     copy the jars (sha1 checked) into <srv-dir>/mods
 """
@@ -34,11 +37,14 @@ def jar_path(pack, e):
     return os.path.join(pack, "dl", f"b{e['batch']}", e["filename"])
 
 
-def manifest(pack, out):
+def manifest(pack, out, bump=None):
     keep = ("modid", "version", "found", "exact", "jij_of", "source", "project_id", "slug", "version_id",
             "file_id", "filename", "url", "sha1", "sha512", "client_only", "notes")
     rows = [{k: e.get(k) for k in keep if e.get(k) is not None} for e in entries(pack)]
-    json.dump({"minecraft": MC, "neoforge": NEOFORGE, "mods": rows}, open(out, "w"), indent=1)
+    doc = {"minecraft": MC, "neoforge": NEOFORGE, "mods": rows}
+    if bump:
+        doc["bumped_instance"] = json.load(open(bump))
+    json.dump(doc, open(out, "w"), indent=1)
     print(f"{len(rows)} entries -> {out}")
 
 
