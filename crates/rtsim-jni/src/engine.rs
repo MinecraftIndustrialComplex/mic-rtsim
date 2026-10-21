@@ -77,6 +77,23 @@ mod topology;
 // The paged modules' saves, tickets and budgets (PF12 to PF21).
 mod paging;
 pub use paging::DEFAULT_ROW_BUDGET;
+/// The page layout rtsim-view mirrors in its `keys.rs` (it cannot link this crate); its test
+/// (`crates/rtsim-view/tests/harness.rs`) compares every value here with its own.
+pub mod mirrored {
+    pub use super::conflict::KEY_CONFLICT;
+    pub use super::dragons::KEY_DRAGONS;
+    pub use super::herds::KEY_HERDS;
+    pub use super::paging::{HASH_MAGIC, hash_key};
+    pub use super::ships::KEY_SHIPS;
+    pub use super::worldmodel::KEY_META as WORLD_MODEL_META;
+    /// Phase 1's pages.
+    pub mod phase1 {
+        pub use super::super::phase1::{
+            CHUNK, KEY_META, META_MAGIC, META_VERSION, PIECE, SNAP_MAGIC, SNAPSHOT_TABLE, TABLE,
+            WORLD_META, WORLD_SEED,
+        };
+    }
+}
 
 /// Record bytes per buffer when Java asks for the default. PLACEHOLDER (the stub's 256 KiB): the
 /// engine is to size buffers from the per-player puppet caps and per-tick quotas (PLAN.md §4.5).
