@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
@@ -1011,6 +1012,8 @@ public final class IndustryGameTests {
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         playerPlaced(helper, vaultPos);
         long[] id = {0};
+        long[] through = {0};
+        int[] stateAtMark = {0};
         Object[] mark = {null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
@@ -1018,9 +1021,17 @@ public final class IndustryGameTests {
                     check("district", d != null);
                     id[0] = d.id;
                 })
-                .thenWaitUntil(() -> check("its load state went to the engine", ind().district(id[0]).loadState() >= 0))
+                .thenWaitUntil(() -> check("Java worked out its load state", ind().district(id[0]).loadState() >= 0))
+                // Java journals the district and its load state in the tick it notices them, and the engine
+                // receives them only at a later publish (the native engine a step later still): the mark must
+                // come after the engine has everything journaled so far, or this district's own first records
+                // land after it.
+                .thenExecute(() -> through[0] = RtsimSession.current().boundary().journal().nextObsSeq() - 1)
+                .thenWaitUntil(() -> check("the engine received everything journaled through " + through[0],
+                        engine().maxObsSeq() >= through[0] && receivedThrough(through[0])))
                 .thenExecute(() -> {
                     mark[0] = lastReceived();
+                    stateAtMark[0] = ind().district(id[0]).loadState();
                     ind().diagnostics().warn(id[0], "test", "a test warning");
                     District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
@@ -1063,10 +1074,19 @@ public final class IndustryGameTests {
                 // send its own load state meanwhile.
                 .thenExecute(() -> {
                     int sent = sentSince(mark[0], id[0]);
-                    check("producing the output sent the engine nothing for the district (" + sent + " load state or district records since)",
-                            sent == 0);
+                    check("producing the output sent the engine nothing for the district (" + sent + " load state or district records since;"
+                            + " load state " + stateAtMark[0] + " at the mark, " + ind().district(id[0]).loadState() + " now)", sent == 0);
                 })
                 .thenSucceed();
+    }
+
+    /** True once the engine's received log holds a record at or past {@code seq} (it arrives in sequence order). */
+    private static boolean receivedThrough(long seq) {
+        var all = engine().received();
+        for (int i = all.size() - 1; i >= 0; i--)
+            if (all.get(i).obsSeq() >= seq)
+                return true;
+        return false;
     }
 
     /** The newest record in the engine's received log, of any kind; null when it is empty. */
