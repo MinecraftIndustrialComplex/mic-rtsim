@@ -275,6 +275,14 @@ public final class Industry {
         return id;
     }
 
+    /** The good behind one of Java's GOOD ids this session (operator output; a linear search), or null. */
+    public String goodName(int id) {
+        for (Map.Entry<String, Integer> e : goodIds.entrySet())
+            if (e.getValue() == id)
+                return e.getKey();
+        return null;
+    }
+
     /** Counts a stack under its good, or under its contents when a plugin expands it (a package). */
     public void countStack(ItemStack stack, long count, GoodsCounter out) {
         for (IndustryPlugin p : IndustryApi.PLUGINS) {

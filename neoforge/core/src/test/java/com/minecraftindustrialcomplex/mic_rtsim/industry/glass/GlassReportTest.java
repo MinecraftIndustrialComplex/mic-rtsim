@@ -19,6 +19,8 @@ class GlassReportTest {
         v[9] = 1; // windows completed
         v[10] = GlassReport.PASS;
         v[12] = 1; // goods
+        v[13] = 4; // solves
+        v[15] = 37; // latency
         int b = GlassReport.HEADER;
         v[b] = 7;
         v[b + 1] = GlassReport.BOUNDED;
@@ -31,6 +33,8 @@ class GlassReportTest {
         GlassReport r = GlassReport.decode(v);
         assertEquals(3, r.compile());
         assertTrue(r.converged());
+        assertEquals(4, r.solves());
+        assertEquals(37, r.latency());
         assertEquals(1, r.goods().size());
         GlassReport.Good g = r.good(7);
         assertEquals(GlassReport.BOUNDED, g.cls());

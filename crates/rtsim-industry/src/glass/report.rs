@@ -72,6 +72,12 @@ pub struct Report {
     pub verdict: u32,
     /// Failed windows in a row (demotion after `glass.mismatchStrikes`).
     pub strikes: u32,
+    /// Solves run for this compile (a regime change solves again, unless its regime was cached).
+    pub solves: u32,
+    /// Node kinds (model codes) demoted to measured in this district (G-B14).
+    pub demoted: u32,
+    /// The compile's longest path latency in ticks (part of the warm-up before a window).
+    pub latency: u64,
     pub goods: Vec<GoodReport>,
 }
 
@@ -85,7 +91,8 @@ impl Report {
     ///
     /// - header (16): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
     ///   6 window start tick, 7 window ticks done, 8 window ticks target, 9 windows completed,
-    ///   10 verdict, 11 strikes, 12 goods, 13 to 15 reserved (0);
+    ///   10 verdict, 11 strikes, 12 goods, 13 solves, 14 demoted kinds, 15 latency ticks (13 to 15
+    ///   were reserved 0 before the solver landed: choice GB29);
     /// - then per good (12): 0 good, 1 class, 2 in L, 3 in U, 4 out L, 5 out U, 6 predicted,
     ///   7 measured, 8 sigma, 9 q, 10 verdict, 11 samples.
     pub fn to_f64s(&self) -> Vec<f64> {
@@ -104,9 +111,9 @@ impl Report {
             f64::from(self.verdict),
             f64::from(self.strikes),
             self.goods.len() as f64,
-            0.0,
-            0.0,
-            0.0,
+            f64::from(self.solves),
+            f64::from(self.demoted),
+            self.latency as f64,
         ]);
         for g in &self.goods {
             v.extend_from_slice(&[
@@ -138,6 +145,9 @@ mod tests {
             compile: 3,
             rounds: 2,
             converged: true,
+            solves: 4,
+            demoted: 1,
+            latency: 40,
             goods: vec![GoodReport {
                 good: 7,
                 class: class::BOUNDED,
@@ -159,6 +169,7 @@ mod tests {
         assert_eq!(v[0], 3.0);
         assert_eq!(v[2], 1.0);
         assert_eq!(v[12], 1.0);
+        assert_eq!(&v[13..16], &[4.0, 1.0, 40.0]);
         assert_eq!(v[HEADER], 7.0);
         assert_eq!(v[HEADER + 1], 1.0);
         assert_eq!(v[HEADER + 3], 0.1175);

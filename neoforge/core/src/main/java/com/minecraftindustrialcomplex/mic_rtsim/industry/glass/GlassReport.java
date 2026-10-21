@@ -7,13 +7,13 @@ import java.util.Locale;
 /**
  * A district's glass report (G1, read only), decoded from the engine's flat form
  * ({@code rtsim_industry::glass::report::Report::to_f64s}; docs/industry-boundary.md §9.3 says what each
- * number means). Rates are per tick: items in units, fluids in millibuckets. Operators read it through
+ * number means; header slots 13 to 15 are solves, demoted kinds and the compile's longest latency, GB29). Rates are per tick: items in units, fluids in millibuckets. Operators read it through
  * {@code /rtsim district} and the log, GameTests through {@code NativeEngine.glassReport}; nothing in the
  * world shows it (I18).
  */
 public record GlassReport(int compile, int rounds, boolean converged, int nodes, int edges, double solveMicros,
                           long windowStart, long windowTicksDone, long windowTicksTarget, int windowsCompleted,
-                          int verdict, int strikes, List<Good> goods) {
+                          int verdict, int strikes, int solves, int demoted, long latency, List<Good> goods) {
 
     /** How a good is judged. */
     public static final int EXACT = 0, BOUNDED = 1, UNBOUNDED = 2;
@@ -71,7 +71,7 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
                     v[b + 8], v[b + 9], (int) v[b + 10], (int) v[b + 11]));
         }
         return new GlassReport((int) v[0], (int) v[1], v[2] != 0, (int) v[3], (int) v[4], v[5], (long) v[6], (long) v[7],
-                (long) v[8], (int) v[9], (int) v[10], (int) v[11], List.copyOf(goods));
+                (long) v[8], (int) v[9], (int) v[10], (int) v[11], (int) v[13], (int) v[14], (long) v[15], List.copyOf(goods));
     }
 
     public Good good(int id) {
@@ -82,8 +82,8 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
     }
 
     public String summary() {
-        return String.format(Locale.ROOT, "compile %d: %d nodes, %d edges, %d rounds (%s), solve %.0f us; window %d/%d ticks from %d, %d done, verdict %s, strikes %d",
-                compile, nodes, edges, rounds, converged ? "converged" : "NOT converged", solveMicros, windowTicksDone,
-                windowTicksTarget, windowStart, windowsCompleted, verdict == PASS ? "pass" : verdict == FAIL ? "FAIL" : "none", strikes);
+        return String.format(Locale.ROOT, "compile %d: %d nodes, %d edges, %d rounds (%s), %d solves, last %.0f us, latency %d ticks; window %d/%d ticks from %d, %d done, verdict %s, strikes %d, %d kinds demoted",
+                compile, nodes, edges, rounds, converged ? "converged" : "NOT converged", solves, solveMicros, latency, windowTicksDone,
+                windowTicksTarget, windowStart, windowsCompleted, verdict == PASS ? "pass" : verdict == FAIL ? "FAIL" : "none", strikes, demoted);
     }
 }
