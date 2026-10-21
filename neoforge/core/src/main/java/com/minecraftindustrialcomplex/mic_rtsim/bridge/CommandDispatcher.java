@@ -122,10 +122,13 @@ final class CommandDispatcher implements Handover.CommandSink {
                 PuppetGroup g = session.registry.byAgent(b.getLong(at + Cmd.SteerGroup.AGENT));
                 if (g != null && g.epoch == b.getInt(at + Cmd.SteerGroup.EPOCH)) {
                     Entity leader = g.leader();
-                    if (leader != null)
-                        RtsimSession.adapter(g, g.members[0]).steer(leader,
-                                new Vec3(b.getDouble(at + Cmd.SteerGroup.X), b.getDouble(at + Cmd.SteerGroup.Y), b.getDouble(at + Cmd.SteerGroup.Z)),
-                                b.getFloat(at + Cmd.SteerGroup.SPEED));
+                    g.steerTarget = new Vec3(b.getDouble(at + Cmd.SteerGroup.X), b.getDouble(at + Cmd.SteerGroup.Y), b.getDouble(at + Cmd.SteerGroup.Z));
+                    g.steerSpeed = b.getFloat(at + Cmd.SteerGroup.SPEED);
+                    if (leader != null) {
+                        // The target's image nearest the leader, never through an edge_stop seam (TP11, TP12).
+                        g.steerImage = session.steerImage(leader, g.steerTarget);
+                        RtsimSession.adapter(g, g.members[0]).steer(leader, g.steerImage, g.steerSpeed);
+                    }
                 }
                 applied++;
                 return true;
