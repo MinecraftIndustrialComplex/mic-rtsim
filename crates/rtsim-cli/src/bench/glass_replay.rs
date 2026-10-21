@@ -883,22 +883,34 @@ mod tests {
         }
     }
 
-    /// The export line breaks once per export: the store frees a stack, then fills again.
+    /// The export line breaks a fixed number of times per export (the store frees a stack and
+    /// fills again; a latency hold may add its timer), so breakpoints go as exports.
     #[test]
-    fn each_export_is_one_breakpoint() {
-        let p = regimes(10, 2);
-        assert_eq!(p.counters.model, replay_model::GLASS);
-        assert_eq!(p.counters.breakpoints, 20);
-        assert_eq!(p.counters.regimes, 40);
+    fn each_export_costs_the_same_breakpoints() {
+        let (a, b) = (regimes(10, 2), regimes(20, 2));
+        for p in [&a, &b] {
+            assert_eq!(p.counters.model, replay_model::GLASS);
+            assert_eq!(p.counters.oscillations, 0);
+        }
+        let per = a.counters.breakpoints / 20;
+        assert!((1..=2).contains(&per), "{per} breakpoints an export");
+        assert_eq!(a.counters.breakpoints, 20 * per);
+        assert_eq!(b.counters.breakpoints, 40 * per);
+        assert_eq!(b.counters.regimes, 2 * a.counters.regimes);
     }
 
-    /// The quiet cells neither break nor change regime over the measured days.
+    /// The quiet cells neither break nor change regime over the measured days: twice as many
+    /// add nothing to the busy lines' breakpoints and regimes.
     #[test]
     fn quiet_cells_do_nothing() {
-        let p = quiet(20, 3);
-        assert_eq!(p.counters.glass, BUSY + 20);
-        assert_eq!(p.counters.breakpoints, BUSY * 3);
-        assert_eq!(p.counters.regimes, BUSY * 3 * 2);
+        let (a, b) = (quiet(20, 3), quiet(40, 3));
+        assert_eq!(a.counters.glass, BUSY + 20);
+        assert_eq!(b.counters.glass, BUSY + 40);
+        assert_eq!(a.counters.breakpoints, b.counters.breakpoints);
+        assert_eq!(a.counters.regimes, b.counters.regimes);
+        // Each busy line breaks the same, every day.
+        assert_eq!(a.counters.breakpoints % (BUSY * 3), 0);
+        assert!(a.counters.breakpoints > 0);
     }
 
     fn show(name: &str, p: &ReplayPoint) {
