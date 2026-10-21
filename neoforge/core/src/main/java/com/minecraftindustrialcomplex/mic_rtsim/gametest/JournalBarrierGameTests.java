@@ -46,7 +46,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
- * The journal's chunk barrier (docs/choices-journal-barrier.md JB1 to JB6) on the real chunk storage: the
+ * The journal's chunk barrier (docs/choices-journal-barrier.md JB1 to JB5, the tests JB8) on the real chunk storage: the
  * journal's file waits for the chunks it speaks for and for nothing else, and a write it cannot order is held
  * to the next world save, never made late.
  *

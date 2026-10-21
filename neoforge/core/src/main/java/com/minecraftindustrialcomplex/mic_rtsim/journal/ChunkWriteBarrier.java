@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The journal never reaches disk ahead of a chunk it speaks for (I8; docs/choices-repair.md R21,
- * docs/choices-journal-barrier.md JB1 to JB6).
+ * docs/choices-journal-barrier.md JB1 to JB5).
  *
  * <p>A journaled record can claim something that lives in a chunk: a reconcile applied into it
  * (IND_RECONCILE_RESULT, its epoch in {@code mic_rtsim:reconcile}), a transfer, package, house or resident
