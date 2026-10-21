@@ -71,8 +71,10 @@ def main():
             for p in run_line(r):
                 print("   " + p)
             for key, rep in (r.get("rtsim_reports") or {}).items():
+                trains = [ln for ln in (rep.get("district_perf") or "").splitlines() if ln.startswith("trains: ")]
                 print(f"   rtsim {key}: {rep.get('n_districts')} districts, "
-                      f"{sum(d['inventories'] for d in rep.get('districts', []))} inventories")
+                      f"{sum(d['inventories'] for d in rep.get('districts', []))} inventories"
+                      + (f"; {trains[0]}" if trains else ""))
             summary[n] = r
         arms = {n.rsplit("-", 1)[1]: r for n, r in rs.items()}
         if len(rs) == 2:

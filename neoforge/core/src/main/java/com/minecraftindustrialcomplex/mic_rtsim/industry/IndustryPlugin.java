@@ -106,6 +106,11 @@ public interface IndustryPlugin {
     /** Once per tick, after the core's own industry work (train departures waiting for a destination). */
     default void tick(Industry industry, long now) {}
 
+    /** This plugin's own counters as one line of {@code /rtsim district perf}, or null for none. */
+    default String perfLine() {
+        return null;
+    }
+
     /**
      * The industry module was switched off and is on again (U10): the engine knows nothing of what was
      * sent before, so send again whatever this plugin keeps the engine told (a power link between
