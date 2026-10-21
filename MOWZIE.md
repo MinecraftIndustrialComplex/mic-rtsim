@@ -413,7 +413,10 @@ The range feels the trains themselves, on the track they really run.
   hash (512-block cells, PLACEHOLDER: a 200-block circle lies in at most 4). A train at top speed
   (28 blocks a second, Create's `trainTopSpeed`; 40 with fuel, `poweredTrainTopSpeed`,
   `CTrains.java:23-27`; no pack override) moves up to 40 blocks a sample, so the test is a segment
-  against a circle, never a point. No chunk is loaded and no track is read.
+  against a circle, never a point. No chunk is loaded and no track is read. Nothing is keyed on the
+  track graph: `TrackGraph.getChecksum` is a sum of node net ids (`TrackGraph.java:322-327`), which
+  misses changes to edges alone and is reassigned at load, so a line is known only by its station
+  pair.
 - **A pass.** When a train's samples enter a circle, the sampler follows it until it leaves, keeps
   the sampled point nearest the camp, and reports one RAIL_PASS: the faction, the train's id and
   owner, that point, the entry and exit ticks. A train that stops inside a range reports its pass when
@@ -699,6 +702,9 @@ warriors. So:
   the grudges, which are the sim's own. The other way round, a member that left an unloaded camp and
   died away comes back with an uninstall, since its vanilla body was still in the saved den: the jar's
   state wins, which UR-1 allows.
+- **Untested so far for any module:** the deploy rehearsal's uninstall had no puppets to check, as
+  no player joined (`docs/deploy-rehearsal-omegasrv.md:461-462`); dragons carry the same gap. Test 4
+  covers this plan's bodies.
 
 ### 4.10 Renewal: heirs, migrants and regrowth
 
