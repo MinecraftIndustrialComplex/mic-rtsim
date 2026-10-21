@@ -983,6 +983,28 @@ For Deep Time's coordinator to review.
 | **V5 Surveyor base map** | reader spike (done 2026-10-21, against a copy of the OmegaSrv world: §9), then the renderer | the MICTest save's explored area draws at 1 block per pixel; a world without Surveyor falls back to HABITAT |
 | **V6 Glass-box view** | after GLASSBOX G1: the compiled graph layer | the 12-factory corpus draws with rates matching the district's inspection |
 
+**V1 as built** (feat/viewer, 2026-10-21), where it differs from the sections above:
+- **No parts yet.** The save source draws mic-viewer scenes straight from the decoded save, once at
+  open (`rtsim-view` `layers.rs`); a request at any `t` gets the save's scene. The part format
+  (§4.3's `ViewSource`, `PartWriter`) comes with the live tap (V4), when a second producer first exists.
+- **`rtsim-cli export` moved to V2**, with `rtsim-cli run`.
+- **Flat frames.** The pages hold no topology, so every frame is flat with no wrap, a Deep Time
+  world's too, until the sidecar reads its `manifest.json` (§9).
+- **Names** come from Java's journal (`<world>/data/mic_rtsim_journal.dat`, its dictionary):
+  dimensions and district names. Without it, `dim<id>`.
+- **Messengers** are the news packets on roads (a packet with a band travels as the band); hunts are
+  their own layer, a line from the dragon to its target.
+- **Memory cap**: 1,024 MiB by default (`--mem-cap`, TUNABLE). A save whose decoded state is over it
+  is refused at open, and district cards are refused once the heap reaches it. Cards are cached
+  under 256 MiB, tiles under 64 MiB.
+- **`/api/status`** (an extra route): each module's load status and state hash, each layer's mark
+  count or why it is empty, the caches and the heap. An empty layer's reason is also on its
+  description.
+- **Measured** (the laptop, `rtsim-cli/tests/view.rs`): at 100,000 synthetic districts (the industry
+  bench's, 100,001 pages, 20.3 MiB raw), the sidecar starts in 0.8 s, a full-world request returns
+  250 marks at 40 bpp and 2,000 at 0.25 bpp in 11 to 19 ms, a district card takes 3 to 4 ms, and the
+  process peaks at 52 MiB resident (heap 32 MiB). The Windows half of the exit test is not run yet.
+
 ---
 
 ## 17. Proposals for Ben
