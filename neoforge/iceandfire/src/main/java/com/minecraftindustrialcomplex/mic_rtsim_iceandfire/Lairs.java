@@ -19,6 +19,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -47,6 +48,13 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * and when an untagged dragon joins inside one (its lair must be known before its DRAGON_UNTAGGED names it).
  * Each lair is reported once per session: the engine treats a lair it knows as a no-op, and an engine that
  * dropped its pages (S12) hears of every lair again as its chunks load.
+ *
+ * <p><b>Chests</b> (SINK.md §4.6, docs/boundary.md §6.3). Every {@link #CHEST_SCAN_TICKS} ticks the loaded
+ * chunks of each lair reported this session are looked over for a chest with room, the nearest the lair's
+ * home; the first found is reported (LAIR_CHEST), and the engine sends the lair's tribute into it. A lair is
+ * reported again only when its chest is gone, full, or its chunk was unloaded since (the engine forgets a
+ * chest whose transfer failed, and an unloaded chunk is what fails one), and every session. A lair with no chest sends
+ * nothing.
  */
 public final class Lairs {
     /** {@code #mic_rtsim_iceandfire:hoard}: blocks that are a lair's hoard (Ice and Fire's gold, silver and copper piles). */
@@ -73,7 +81,18 @@ public final class Lairs {
 
     private final Map<UUID, Opened> open = new HashMap<>();
 
-    public long lairsFound, robberies;
+    /** LAIR_CHEST: how often the lairs' loaded chunks are looked over for a chest (PLACEHOLDER). */
+    public static final int CHEST_SCAN_TICKS = 100;
+
+    /** Lairs reported this session, by id. */
+    private final Map<Long, Lair> known = new LinkedHashMap<>();
+    /** The chest reported for each lair this session, with the chunk it was in when reported. */
+    private final Map<Long, Reported> chests = new HashMap<>();
+    private long lastScan = Long.MIN_VALUE;
+
+    private record Reported(BlockPos pos, LevelChunk chunk) {}
+
+    public long lairsFound, robberies, chestsReported;
 
     Lairs(DragonBridge bridge) {
         this.bridge = bridge;
@@ -84,7 +103,10 @@ public final class Lairs {
         declared.clear();
         robbed.clear();
         open.clear();
-        lairsFound = robberies = 0;
+        known.clear();
+        chests.clear();
+        lastScan = Long.MIN_VALUE;
+        lairsFound = robberies = chestsReported = 0;
     }
 
     // ---- finding lairs --------------------------------------------------------------------------
@@ -155,6 +177,7 @@ public final class Lairs {
         r.putInt(DragonRecords.LairFound.HOME_Y, lair.home().getY());
         r.putInt(DragonRecords.LairFound.HOME_Z, lair.home().getZ());
         s.boundary().commit(r);
+        known.put(lair.id(), lair);
         lairsFound++;
     }
 
@@ -195,6 +218,94 @@ public final class Lairs {
         declared.add(l);
         report(l, false, now);
         return l;
+    }
+
+    // ---- chests ---------------------------------------------------------------------------------
+
+    /** End of tick: LAIR_CHEST for lairs whose chest is new to the engine (see the class comment). */
+    void scanChests(long now) {
+        if (lastScan != Long.MIN_VALUE && now - lastScan < CHEST_SCAN_TICKS)
+            return;
+        lastScan = now;
+        if (!RtsimConfig.on(Module.ECOLOGY)) {
+            chests.clear(); // switched on again, the engine has forgotten every chest
+            return;
+        }
+        RtsimSession s = bridge.session();
+        for (Lair l : known.values()) {
+            if (l.level().getServer() != s.server())
+                continue;
+            Reported had = chests.get(l.id());
+            if (had != null) {
+                // The same chunk object: never unloaded since the report, so no transfer into it failed.
+                LevelChunk chunk = l.level().getChunkSource().getChunkNow(had.pos().getX() >> 4, had.pos().getZ() >> 4);
+                if (chunk == had.chunk() && chunk.getBlockEntity(had.pos()) instanceof ChestBlockEntity c && hasRoom(c))
+                    continue;
+                chests.remove(l.id()); // unloaded since, gone or full: another, or this one again
+            }
+            BlockPos found = findChest(l);
+            LevelChunk in = found == null ? null : l.level().getChunkSource().getChunkNow(found.getX() >> 4, found.getZ() >> 4);
+            if (in != null && reportChest(s, l, found, now))
+                chests.put(l.id(), new Reported(found, in));
+        }
+    }
+
+    /** The chest with room in the lair's loaded chunks nearest its home, or null. */
+    private static BlockPos findChest(Lair l) {
+        BoundingBox b = l.box();
+        BlockPos best = null;
+        double bestD = Double.MAX_VALUE;
+        for (int cx = b.minX() >> 4; cx <= b.maxX() >> 4; cx++)
+            for (int cz = b.minZ() >> 4; cz <= b.maxZ() >> 4; cz++) {
+                LevelChunk chunk = l.level().getChunkSource().getChunkNow(cx, cz);
+                if (chunk == null)
+                    continue;
+                for (Map.Entry<BlockPos, BlockEntity> e : chunk.getBlockEntities().entrySet()) {
+                    BlockPos p = e.getKey();
+                    if (!(e.getValue() instanceof ChestBlockEntity c) || !b.isInside(p) || !hasRoom(c))
+                        continue;
+                    double d = p.distSqr(l.home());
+                    if (d < bestD || (d == bestD && p.compareTo(best) < 0)) {
+                        best = p.immutable();
+                        bestD = d;
+                    }
+                }
+            }
+        return best;
+    }
+
+    /**
+     * Whether a chest has an empty slot (a whole tribute stack fits). A chest whose loot is not rolled yet
+     * has room: reading its slots would roll it.
+     */
+    private static boolean hasRoom(ChestBlockEntity c) {
+        if (c.getLootTable() != null)
+            return true;
+        for (int i = 0; i < c.getContainerSize(); i++)
+            if (c.getItem(i).isEmpty())
+                return true;
+        return false;
+    }
+
+    private boolean reportChest(RtsimSession s, Lair l, BlockPos pos, long now) {
+        int dim = s.dimId(l.level().dimension()); // before direct(): an id is defined before its first use
+        int at = s.boundary().direct(DragonRecords.LAIR_CHEST, DragonRecords.LairChest.SIZE, 0, now);
+        if (at < 0)
+            return false; // dropped for space: the next scan
+        ByteBuffer b = s.boundary().openBuffer();
+        b.putLong(at + DragonRecords.LairChest.LAIR, l.id());
+        b.putInt(at + DragonRecords.LairChest.DIM, dim);
+        b.putInt(at + DragonRecords.LairChest.X, pos.getX());
+        b.putInt(at + DragonRecords.LairChest.Y, pos.getY());
+        b.putInt(at + DragonRecords.LairChest.Z, pos.getZ());
+        chestsReported++;
+        return true;
+    }
+
+    /** The chest reported for a lair this session, or null (GameTests). */
+    public BlockPos chestOf(long lair) {
+        Reported r = chests.get(lair);
+        return r == null ? null : r.pos();
     }
 
     // ---- robbed hoards --------------------------------------------------------------------------
