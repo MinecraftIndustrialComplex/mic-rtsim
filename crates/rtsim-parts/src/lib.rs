@@ -17,6 +17,8 @@ pub mod store;
 
 pub use desc::{Group, LayerDesc, Layers};
 pub use mark::{Mark, Tick};
-pub use part::{MAX_ROWS, Part, PartKey, PartView, PartWriter, REGION, RegionKey, Row, Value, read_part};
+pub use part::{
+    MAX_ROWS, Part, PartKey, PartView, PartWriter, REGION, RegionKey, Row, Value, read_part,
+};
 pub use source::ViewSource;
 pub use store::{Header, LayerState, Lease, PartEntry, UnitEntry};

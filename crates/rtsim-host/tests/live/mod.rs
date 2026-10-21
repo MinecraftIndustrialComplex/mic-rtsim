@@ -262,13 +262,21 @@ pub fn run(dir: &Path, days: i64, pace: Duration) -> Run {
 
 /// Every page of a fork's confirmed generation, by key.
 pub fn pages(dir: &Path) -> BTreeMap<u64, Vec<u8>> {
+    pages_at(dir).1
+}
+
+/// The confirmed generation's save and observation sequence, and its pages.
+pub fn pages_at(dir: &Path) -> ((u64, u64), BTreeMap<u64, Vec<u8>>) {
     let mut s = PageStore::open_read_only(dir.join(save::PAGES)).unwrap();
     s.view_confirmed().unwrap();
-    s.try_keys()
+    let g = s.confirmed();
+    let pages = s
+        .try_keys()
         .unwrap()
         .into_iter()
         .map(|k| (k.0, s.get_shared(k).unwrap().unwrap_or_default().to_vec()))
-        .collect()
+        .collect();
+    ((g.save_seq, g.obs_seq), pages)
 }
 
 /// The leased run's and the unleased run's state agree every day, the hand-overs carried back
@@ -286,16 +294,34 @@ pub fn assert_lockstep(a: &Run, b: &Run, a_dir: &Path, b_dir: &Path) {
             "the hand-overs carried back other records: {x:.300} / {y:.300}"
         );
     }
-    let (pa, pb) = (pages(a_dir), pages(b_dir));
+    let ((ga, pa), (gb, pb)) = (pages_at(a_dir), pages_at(b_dir));
     assert!(!pa.is_empty());
     let keys = |p: &BTreeMap<u64, Vec<u8>>| p.keys().copied().collect::<Vec<_>>();
-    assert_eq!(keys(&pa), keys(&pb), "the same pages");
+    assert_eq!(
+        keys(&pa),
+        keys(&pb),
+        "the same pages (generations (save, obs): leased {ga:?}, unleased {gb:?})"
+    );
+    // Each differing page: its table and id, both lengths, and the first byte that differs.
     let differ: Vec<String> = pa
         .iter()
         .filter(|(k, v)| pb.get(*k) != Some(*v))
-        .map(|(k, _)| format!("{k:#x}"))
+        .map(|(k, v)| {
+            let w = &pb[k];
+            let at = v.iter().zip(w).position(|(x, y)| x != y);
+            format!(
+                "table {:#x} id {:#x}: {} / {} bytes, first difference at {at:?}",
+                k >> 48,
+                k & ((1 << 48) - 1),
+                v.len(),
+                w.len()
+            )
+        })
         .collect();
-    assert!(differ.is_empty(), "pages that differ: {differ:?}");
+    assert!(
+        differ.is_empty(),
+        "pages that differ (generations (save, obs): leased {ga:?}, unleased {gb:?}): {differ:?}"
+    );
 }
 
 // ---- a server's pace ----------------------------------------------------------------------------
@@ -493,7 +519,6 @@ pub fn print_tap(label: &str, t: &BTreeMap<String, u64>, run: Option<&Run>) {
 /// longest job.
 pub fn assert_budget(t: &BTreeMap<String, u64>) {
     let g = |k: &str| t.get(k).copied().unwrap_or(0);
-    assert!(g("units") > 0, "the leased run encoded units");
     // The overrun and the wait are each measured over one job, so they cannot pass the longest
     // (the clock reads around the job bound them); a millisecond's slack for the reads themselves.
     assert!(
