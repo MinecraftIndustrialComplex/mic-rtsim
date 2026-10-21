@@ -1,0 +1,36 @@
+[package]
+name = "rtsim-view"
+description = "The save viewer: a world's rtsim pages opened read only and served to the shared viewer page as layers, cards and a habitat base map (VIEWER.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+rtsim-kernel.workspace = true
+rtsim-industry.workspace = true
+rtsim-settle.workspace = true
+rtsim-trade.workspace = true
+rtsim-travel.workspace = true
+rtsim-knowledge.workspace = true
+rtsim-world.workspace = true
+rtsim-ecology.workspace = true
+rtsim-ships.workspace = true
+rtsim-conflict.workspace = true
+rtsim-space.workspace = true
+# The event archive, read only (VIEWER.md §10.6).
+rtsim-archive = { path = "../rtsim-archive" }
+mic-viewer.workspace = true
+mic-viewer-surveyor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+# A populated world saved through the real persist path (the native link in process), and the
+# keys this crate mirrors checked against the link's own.
+rtsim-jni = { path = "../rtsim-jni" }
+mic-native-host.workspace = true
+mic-native-rt.workspace = true

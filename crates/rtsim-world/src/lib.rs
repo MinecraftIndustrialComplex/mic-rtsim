@@ -24,6 +24,7 @@ pub mod caravans;
 pub mod check;
 pub mod config;
 pub mod flows;
+pub mod inputs;
 pub mod interest;
 pub mod lanes;
 pub mod memory;
