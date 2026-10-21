@@ -465,7 +465,8 @@ final class CreateCompile implements GlassExtractor.Compile {
             for (var e : net.members.entrySet()) {
                 KineticBlockEntity m = e.getKey();
                 float sp = m.getTheoreticalSpeed();
-                boolean known = rootSpeed != 0;
+                // a stopped network (a cold boiler) gives every member speed 0: the ratio is unknown then
+                boolean known = rootSpeed != 0 && sp != 0;
                 Rat ratio = known ? Rat.ofFloat(sp).div(Rat.ofFloat(rootSpeed)).fitSigned() : Rat.ONE;
                 kin.put(m.getBlockPos().asLong(), new Kin(d.index, ratio, Math.abs(m.getSpeed()), known));
                 memberImpact.put(m.getBlockPos().asLong(), (double) e.getValue());
@@ -702,7 +703,9 @@ final class CreateCompile implements GlassExtractor.Compile {
         i.pass = Pass.NONE_OUT;
         boolean special = b.getActiveFuel() == BlazeBurnerBlockEntity.FuelType.SPECIAL;
         int heat = special ? GlassRecords.Heat.SEETHING : GlassRecords.Heat.KINDLED;
-        long burn = b.isCreative() ? 0 : -1; // per fuel item, set from the fuel that reaches it (step 5)
+        // burn ticks per fuel item: 0 never runs out (creative); else the shortest of the fuels that reach
+        // it (Recipes.fuel), 1 while none does (no fuel is accepted, so its duty is 0 whatever it is)
+        long burn = b.isCreative() ? 0 : 1;
         i.node.params(b.isCreative() ? Integer.MAX_VALUE : b.getRemainingBurnTime(), b.isCreative() ? heatOf(b) : heat, burn, BlazeBurnerBlockEntity.INSERTION_THRESHOLD);
         i.extra = b.isCreative() ? heatOf(b) : heat;
         accepts(b.getBlockPos(), i);
@@ -992,6 +995,8 @@ final class CreateCompile implements GlassExtractor.Compile {
         final TreeMap<Integer, List<Integer>> elements = new TreeMap<>();
         final IntArrayList movers = new IntArrayList();
         int stack = 64;
+        /** Where the belt's end goes (BELT into an input, DROP when it ejects), NONE when blocked. */
+        int endKind, endTarget = NONE;
 
         Belt(BeltBlockEntity controller, Info info) {
             this.controller = controller;
@@ -1316,6 +1321,10 @@ final class CreateCompile implements GlassExtractor.Compile {
                 case SWITCH -> switchEdges(i);
                 default -> {}
             }
+        // Two passes: tunnels and belt ends may feed another belt (a new entry mover there), so every
+        // belt's entries exist before any chain is linked.
+        for (Belt b : belts)
+            beltOutlets(b);
         for (Belt b : belts)
             beltEdges(b);
     }
@@ -1712,22 +1721,36 @@ final class CreateCompile implements GlassExtractor.Compile {
         return out;
     }
 
-    /** Belt chains: links between elements in movement order, the end, tunnels, and the belt's rate. */
-    private void beltEdges(Belt b) {
-        // Tunnels over segments: a junction with the tunnel's rule and its side outputs.
+    /** A belt's tunnels (side outputs) and where its end goes: INSERT, EJECT (a drop) or blocked. */
+    private void beltOutlets(Belt b) {
         for (int k = 0; k < b.segments.size(); k++) {
             BlockPos above = b.segments.get(k).above();
             BlockEntity be = level.getBlockEntity(above);
             if (be instanceof BeltTunnelBlockEntity t && claimedPos.contains(above.asLong()))
                 tunnel(b, k, t);
         }
+        BlockPos next = b.next();
+        if (BlockEntityBehaviour.get(level, next, DirectBeltInputBehaviour.TYPE) != null) {
+            b.endKind = GlassRecords.Edge.BELT;
+            b.endTarget = acceptAt(next);
+        } else {
+            BlockState s = level.getBlockState(next);
+            if (!s.isFaceSturdy(level, next, b.controller.getMovementFacing().getOpposite())) {
+                b.endKind = GlassRecords.Edge.DROP;
+                b.endTarget = dropAt(next);
+            }
+        }
+    }
+
+    /** A belt's chain: links between its elements in movement order, takers, and the end's edge. */
+    private void beltEdges(Belt b) {
         if (b.elements.isEmpty())
             return;
-        // Every element must sit behind a mover: make sure index 0 of the first used segment is one.
+        // The chain starts with a mover (where items join), even if only a taker is there.
+        b.entry(b.elements.firstKey());
         int prev = NONE;
-        int order = 0;
         for (var e : b.elements.entrySet()) {
-            List<Integer> at = e.getValue();
+            List<Integer> at = new ArrayList<>(e.getValue());
             for (int n : at) {
                 Info ni = infos.get(n);
                 boolean taker = ni != null && (ni.kind == K.FUNNEL || (ni.kind == K.ARM && ni.be == null));
@@ -1752,23 +1775,12 @@ final class CreateCompile implements GlassExtractor.Compile {
                         le.order(1);
                 }
                 prev = n;
-                order++;
             }
         }
-        // The end: insert into what is next, block, or eject.
-        BlockPos next = b.next();
-        if (BlockEntityBehaviour.get(level, next, DirectBeltInputBehaviour.TYPE) != null) {
-            GraphBuilder.Edge e = edge(GlassRecords.Edge.BELT, prev, acceptAt(next));
+        if (b.endTarget != NONE) {
+            GraphBuilder.Edge e = edge(b.endKind, prev, b.endTarget);
             if (e != null)
                 e.order(1);
-        } else {
-            BlockState s = level.getBlockState(next);
-            boolean blocked = s.isFaceSturdy(level, next, b.controller.getMovementFacing().getOpposite());
-            if (!blocked) {
-                GraphBuilder.Edge e = edge(GlassRecords.Edge.DROP, prev, dropAt(next));
-                if (e != null)
-                    e.order(1);
-            }
         }
     }
 

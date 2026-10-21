@@ -7,12 +7,17 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlassAccess;
 import com.minecraftindustrialcomplex.mic_rtsim_create.glass.Cycles;
 import com.simibubi.create.AllBlocks;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+import com.simibubi.create.content.kinetics.motor.CreativeMotorBlockEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.ChestBlockEntity;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -47,11 +52,14 @@ public final class GlassExtractionGameTests {
         check("the Create accessor resolved TorquePropagator.networks, the deployer's mode and the arm's points", CreateGlassAccess.allResolved());
         int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
         BlockPos motor = new BlockPos(bx + 3, y, z), mill = motor.above(), chute = mill.above(), chest = chute.above();
-        GlassCalibrationKit.motor(helper, motor, Direction.UP, 64);
+        set(helper, motor, AllBlocks.CREATIVE_MOTOR.getDefaultState().setValue(BlockStateProperties.FACING, Direction.UP));
+        if (helper.getLevel().getBlockEntity(motor) instanceof CreativeMotorBlockEntity m)
+            m.generatedSpeed.setValue(64);
         set(helper, mill, AllBlocks.MILLSTONE.getDefaultState());
         set(helper, chute, AllBlocks.CHUTE.getDefaultState());
-        GlassCalibrationKit.chest(helper, chest);
-        GlassCalibrationKit.fill(helper, chest, Items.WHEAT, 64);
+        set(helper, chest, Blocks.CHEST.defaultBlockState());
+        if (helper.getLevel().getBlockEntity(chest) instanceof ChestBlockEntity c)
+            c.setItem(0, new ItemStack(Items.WHEAT, 64));
         playerPlaced(helper, chest);
         long[] id = {0};
         GlassKit.Graph[] seen = {null};
@@ -60,14 +68,16 @@ public final class GlassExtractionGameTests {
                     District d = districtAt(helper, chest);
                     check("the chest's chunk is a district", d != null);
                     id[0] = d.id;
-                    check("the millstone turns", GlassCalibrationKit.speed(helper, mill) != 0);
+                    check("the millstone turns", helper.getLevel().getBlockEntity(mill) instanceof KineticBlockEntity k && k.getSpeed() != 0);
                 })
                 .thenWaitUntil(() -> {
                     GlassKit.Graph g = GlassKit.latest(id[0]);
                     check("a compile's END arrived", g != null);
                     check("the compile is complete: " + g.describe(), g.complete());
-                    // a compile from before the millstone turned has no rate: wait for one with a domain
-                    check("the compile has the kinetic domain", !g.domains().isEmpty());
+                    // a compile from before the millstone joined the motor's network has it outside any
+                    // domain; joining changes the fingerprint (the network id), so a new compile follows
+                    check("a compile with the millstone in a domain", g.nodes(GlassRecords.Node.MACHINE, GlassRecords.Model.MILLSTONE).stream()
+                            .anyMatch(n -> n.domain() != GlassRecords.NONE));
                     seen[0] = g;
                 })
                 .thenExecute(() -> {

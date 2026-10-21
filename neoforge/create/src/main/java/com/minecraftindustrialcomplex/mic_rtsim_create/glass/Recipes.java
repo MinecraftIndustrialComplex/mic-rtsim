@@ -535,7 +535,7 @@ final class Recipes {
         r.in(gid, 1, 1);
         final int burn = f[0];
         c.addCraft(i, r, 1, (rpm, batch) -> Rat.of(burn, 1), gid);
-        if (i.node.params[2] <= 0 || burn < i.node.params[2])
+        if (i.node.params[2] <= 1 || burn < i.node.params[2])
             i.node.params[2] = burn;
     }
 

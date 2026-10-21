@@ -67,6 +67,10 @@ public final class CreateGlass implements GlassExtractor {
                     h = mix(h, v.getValue());
                 }
             }
+        // which kinetic network a block is in (its source's position) is structure: a machine joins its
+        // network a tick after it is placed, and a compile from before has it outside any domain
+        if (be instanceof com.simibubi.create.content.kinetics.base.KineticBlockEntity k)
+            h = mix(h, k.network == null ? 0 : k.network);
         if (be instanceof ArmBlockEntity a) {
             h = points(h, CreateGlassAccess.armInputs(a));
             h = mix(h, 0xA5);

@@ -928,6 +928,12 @@ public final class IndustryGameTests {
 
     // ---- I18: the operator debug output -------------------------------------------------------------
 
+    /** The last record of a kind the engine received, or null. */
+    private static Object lastReceived(int kind) {
+        var l = engine().received(kind);
+        return l.isEmpty() ? null : l.getLast();
+    }
+
     /**
      * The operator diagnostic ({@code /rtsim district info} and {@code debug}, permission level 2) shows what
      * Java itself holds: the district's chunks and load state, the last sweep, the plugin warnings and the
@@ -944,7 +950,9 @@ public final class IndustryGameTests {
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         playerPlaced(helper, vaultPos);
         long[] id = {0};
-        int[] sentBefore = {0};
+        // the last record of each kind, not a count: the received log is capped and evicts its oldest
+        // records, so a count drops while other districts' glass records arrive
+        Object[] sentBefore = {null, null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, vaultPos);
@@ -953,7 +961,8 @@ public final class IndustryGameTests {
                 })
                 .thenWaitUntil(() -> check("its load state went to the engine", ind().district(id[0]).loadState() >= 0))
                 .thenExecute(() -> {
-                    sentBefore[0] = engine().received(IndRecords.IND_LOAD_STATE).size() + engine().received(IndRecords.IND_DISTRICT).size();
+                    sentBefore[0] = lastReceived(IndRecords.IND_LOAD_STATE);
+                    sentBefore[1] = lastReceived(IndRecords.IND_DISTRICT);
                     ind().diagnostics().warn(id[0], "test", "a test warning");
                     District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
@@ -993,7 +1002,8 @@ public final class IndustryGameTests {
                 })
                 .thenIdle(5)
                 .thenExecute(() -> check("producing the output sent the engine nothing",
-                        engine().received(IndRecords.IND_LOAD_STATE).size() + engine().received(IndRecords.IND_DISTRICT).size() == sentBefore[0]))
+                        lastReceived(IndRecords.IND_LOAD_STATE) == sentBefore[0]
+                                && lastReceived(IndRecords.IND_DISTRICT) == sentBefore[1]))
                 .thenSucceed();
     }
 
