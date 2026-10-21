@@ -21,6 +21,15 @@ import java.util.Map;
  * depot and belt co-simulations below run both orders and agree unless a method says otherwise.
  *
  * <p>Results are cached per key in a plain HashMap: call from the server thread only.
+ *
+ * <p>Calibration ({@code gametest/GlassCalibrationGameTests}, each evaluator beside the real block entity,
+ * 16 to 256 RPM, fed from the test's tick): exact, to the tick, for {@link #millstone}, {@link #crusher}
+ * (n 1 and 16), {@link #pressDepot}, {@link #pressBelt} (single items and stacks of 4, belt at the press's speed),
+ * {@link #mixerSteady} (and {@link #NEVER} at 16 RPM), {@link #saw}, {@link #deployerDepot},
+ * {@link #crafter(int, float, int)} (d 1 and 2, targets placed after their sources), {@link #fanTicks}
+ * (n 1, 16, 17, 64), {@link #beltInsertMoves}, {@link #funnelPeriod} (andesite 1 item, brass 64),
+ * {@link #chuteGrabPeriod} (16 per grab), {@link #pumpTransfer}, and {@link #armCycle} (to 0.03 ticks).
+ * Everything else is traced from the decompile only.
  */
 public final class Cycles {
     private Cycles() {}
@@ -170,7 +179,11 @@ public final class Cycles {
      * <p>Each tick: {@code remainingTime -= clamp(speed / d, 0.25, 20)} with
      * {@code d = (float) log(n) / (float) log(2)} before the recipe is applied and 1 after (n = 1 gives
      * d = 0, speed / 0 = infinity, clamped to 20). The first tick with {@code remainingTime < 20} applies
-     * the recipe to all n items and does not output; a later tick with {@code remainingTime <= 0} outputs.
+     * the recipe to all n items and does not output. {@code applyRecipe} empties the inventory with
+     * {@code ProcessingInventory.clear()}, which also zeroes {@code remainingTime}, so the next tick (its
+     * decrement leaves it below 0) outputs: there is no countdown from 20, and the period is the apply tick
+     * plus 1 at every speed. Calibrated in game (GlassCalibrationGameTests, raw iron, 400 ticks): n 1 is 21
+     * at 16 to 256 RPM; n 16 is 1189, 595, 298, 150, 76 at 16, 32, 64, 128, 256 RPM, exact.
      *
      * <p>Counts controller ticks from the first tick after the stack enters slot 0 (same game tick if the
      * inserter ticks first) through the tick the output leaves and the inventory clears. Slot 0 accepts
@@ -208,6 +221,9 @@ public final class Cycles {
             remaining -= processingSpeed;
             if (remaining < 20.0F && !applied) {
                 applied = true;
+                // applyRecipe empties the inventory through ProcessingInventory.clear(), which zeroes
+                // remainingTime: the next tick's decrement takes it below 0 and outputs.
+                remaining = 0.0F;
                 if (applyTick) {
                     return ticks;
                 }
@@ -356,8 +372,12 @@ public final class Cycles {
      * {@code start()} on the k-th belt move after that, k = {@link #beltFollowMoves}. Equals
      * {@code pressRun + beltFollowMoves - 1}.
      *
-     * <p>UNVERIFIED in game: the queued item's exact float position (taken as the output's position minus 1)
-     * and float ties at large belt positions; confirm with the calibration GameTest.
+     * <p>Calibrated in game for single items queued at the press's own speed (GlassCalibrationGameTests,
+     * belt and press at the same RPM): 151, 76, 39, 21, 11 at 16 to 256 RPM, exact. Stacks too: the press
+     * takes one item, the belt puts the remainder back at {@code centre - 1/512} locked
+     * ({@code BeltInventory.applyToEachWithin}); once the press stops it is unlocked, waits for the sheet to
+     * get 1 block ahead, crosses the centre again and is pressed. Stacks of 4 at 64 and 256 RPM: every
+     * ingot pressed, 39 and 11 ticks per sheet, exact. Belt speeds other than the press's are UNVERIFIED.
      */
     public static int pressBelt(float pressRpm, float beltRpm) {
         return pressRun(pressRpm) + beltFollowMoves(beltRpm) - 1;
@@ -563,16 +583,27 @@ public final class Cycles {
     }
 
     /**
-     * Shearing deployer (USE mode, shears, a sheep in front): the cycle is {@link #deployer}, unchanged:
-     * shears are not a BlockItem or bucket and the target is not a belt, so {@code shouldActivate} is true,
-     * and shearing drops item entities rather than filling the fake player's inventory, so no overflow wait.
-     * The brief's {@code 2 ceil(1000/s) + ceil(500/s) + 3} with {@code s = clamp(2 RPM, 8, 512)} matches,
-     * with s truncated to int after the float clamp. The yield is not the cycle: a sheared sheep regrows
-     * only after eating grass ({@code EatBlockGoal}: 1 in 1000 per tick for adults, then the eat animation),
-     * and the shears lose durability each use.
+     * Ticks a WAITING deployer loses each time it finds items in its fake player's inventory, or overflow
+     * not yet taken out ({@code DeployerBlockEntity.tick}): the check sets {@code timer = 10 u}, ten
+     * decrements of u run it out, and the next tick checks again. 11 at every speed.
+     */
+    public static final int DEPLOYER_OVERFLOW_WAIT = 11;
+
+    /**
+     * Shearing deployer (USE mode, shears, a sheep in front), one shear per cycle: {@link #deployer} plus
+     * one {@link #DEPLOYER_OVERFLOW_WAIT}. Shears are not a BlockItem or bucket and the target is not a
+     * belt, so {@code shouldActivate} is true; but the entity interaction captures the wool
+     * ({@code DeployerHandler}: {@code entity.captureDrops}, then {@code placeItemBackInInventory} into the
+     * fake player), so the next WAITING check moves it to the overflow list and waits 11 ticks. If the
+     * overflow is still there at the following check (a hopper pulling it one item per 8 ticks), another 11.
+     * So {@code deployer + 11}, or {@code + 22} and more while the overflow drains slowly: 19 or 30 at 256
+     * RPM. The corpus measured 19 to 30 (mean 22.67) at 256 RPM; not calibrated by the calibration
+     * GameTests. The yield is not the cycle: a sheared sheep regrows only after eating grass
+     * ({@code EatBlockGoal}: 1 in 1000 per tick for adults, then the eat animation), a shear on a sheep
+     * without wool yields nothing (no overflow wait), and the shears lose durability each use.
      */
     public static int shearingDeployer(float rpm) {
-        return deployer(rpm);
+        return deployer(rpm) + DEPLOYER_OVERFLOW_WAIT;
     }
 
     /**
@@ -900,8 +931,11 @@ public final class Cycles {
      * {@code BeltBlockEntity.tryInsertingFromSide} places the item at {@code index + 0.5 - 1/16} and
      * {@code BeltInventory.canInsertAtFromSide}/{@code isBlocking} refuses while it is at or before
      * {@code index + 0.5 + 1}; counts belt moves of v until it is past (it must travel 1.0625 blocks, not 1).
-     * The insertion waits in {@code toInsert} until the belt's next tick, which also moves it. A funnel's own
-     * 9-tick period dominates above about 60 RPM.
+     * Only earlier insertions at that segment from that side block it ({@code isBlocking} tests
+     * {@code insertedAt} and {@code insertedFrom}); items passing by from upstream do not. The insertion
+     * waits in {@code toInsert} until the belt's next tick, which also moves it. A funnel's own 9-tick period
+     * dominates above about 60 RPM. Calibrated in game (a segment's item capability, one item per
+     * insertion): 32, 16, 8, 4, 2 ticks per item at 16 to 256 RPM, exact.
      */
     public static int beltInsertMoves(float rpm) {
         int rb = bits(rpm);
@@ -1117,6 +1151,10 @@ public final class Cycles {
      * queued package and sets 20, no decrement that tick; otherwise it decrements) and
      * {@code PackagerItemHandler.extractItem} (only at {@code animationTicks == 0}). Period 21 ({@code CYCLE}
      * 20 plus the tick that starts the next), in either order with an extractor that is ready.
+     *
+     * <p>Not calibrated by the calibration GameTests. The corpus measured 21 per package on requests (up to
+     * 9 x 64 items each), 22 in redstone mode, and 22 per package for a receiving packager's unpacking;
+     * the last two are UNVERIFIED here.
      */
     public static int packager() {
         return (int) cached(new Key(K_PACKAGER, 0, 0, 0, 0), () -> {
