@@ -74,6 +74,9 @@ mod topology;
 // The paged modules' saves, tickets and budgets (PF12 to PF21).
 mod paging;
 pub use paging::DEFAULT_ROW_BUDGET;
+/// The event archive (VIEWER.md §10): the modules' tapes, flushed with each save.
+mod archive;
+pub use archive::{DIR as ARCHIVE_DIR, KEY as ARCHIVE_KEY, dir as archive_dir};
 /// The page layout rtsim-view mirrors in its `keys.rs` (it cannot link this crate); its test
 /// (`crates/rtsim-view/tests/harness.rs`) compares every value here with its own.
 pub mod mirrored {
@@ -133,6 +136,8 @@ pub struct Config {
     /// Row bytes each paged module (herds, dragons, conflict, ships, the phase 1 world's
     /// markets) keeps resident (PF19).
     pub row_budget: usize,
+    /// Record events in the archive under the pages folder (VIEWER.md §10; on by default).
+    pub archive: bool,
 }
 
 impl Config {
@@ -146,6 +151,7 @@ impl Config {
             industry_read_only: false,
             industry_seed: None,
             row_budget: DEFAULT_ROW_BUDGET,
+            archive: true,
         }
     }
 }
@@ -282,6 +288,18 @@ pub struct Stats {
     /// Saves taken for the paged modules' budgets and committed (pending generations, PF15;
     /// not in `saves_done`, which counts the saves Java asked for). Not in Java's array.
     pub pressure_saves: AtomicU64,
+    /// Event archive rows written, rows it dropped since it began (its index's count, every
+    /// cause), and its open, flush and compaction errors (none fail a save). Not in Java's array.
+    pub archive_rows: AtomicU64,
+    pub archive_dropped: AtomicU64,
+    pub archive_failures: AtomicU64,
+    /// The serial of the last save the archive wrote, and of the generation a restart would
+    /// select (`archive.rs`). Not in Java's array.
+    pub archive_serial: AtomicU64,
+    pub archive_confirmed: AtomicU64,
+    /// Rows and bytes waiting in the archive's buffer for the next save. Not in Java's array.
+    pub archive_pending_rows: AtomicU64,
+    pub archive_pending_bytes: AtomicU64,
 }
 
 pub const STATS_LEN: usize = 16;
@@ -331,6 +349,12 @@ struct State {
     topology: topology::Link,
     /// The paged modules' saves on their way back from the IO lane (`paging.rs`).
     paging: paging::Channel,
+    /// The event archive's pending rows and dictionary (`archive.rs`), and whether this session
+    /// records.
+    archive: rtsim_archive::Recorder,
+    archive_on: bool,
+    /// The serial of the last save that took the recorder's rows (`archive::KEY`).
+    archive_serial: u64,
 }
 
 impl State {
@@ -364,6 +388,9 @@ impl State {
             shared: shared::Link::default(),
             topology: topology::Link::default(),
             paging: paging::Channel::new(),
+            archive: rtsim_archive::Recorder::default(),
+            archive_on: false,
+            archive_serial: 0,
         }
     }
 
@@ -539,6 +566,33 @@ fn log_error(msg: &str) {
     rt::error(&format!("[mic_rtsim] {msg}"));
 }
 
+/// A write that failed partway poisons the store, which then refuses every read and write: the
+/// next page miss would stop the engine. The store reopens in place from its files, under the
+/// lock the failed write held, so no reader sees it poisoned (docs/choices-leg-purge.md LP10).
+/// What the files hold is durable; the save that failed counts as failed whether or not its
+/// record made it, so `durable` stays and Java keeps its journal, and its modules write their
+/// pages again at the next save (PF14). False if the store is still poisoned: the next save
+/// tries again.
+fn recover_store(store: &mut PageStore) -> bool {
+    match store.recover() {
+        Ok(false) => true,
+        Ok(true) => {
+            log_warn(&format!(
+                "the page store reopened from its files after a failed write; it holds generation {} (observations through {}); the next save writes the pages again",
+                store.save_seq(),
+                store.obs_seq()
+            ));
+            true
+        }
+        Err(e) => {
+            log_error(&format!(
+                "the page store cannot reopen after a failed write: {e}; the next save tries again"
+            ));
+            false
+        }
+    }
+}
+
 /// One session of the engine.
 pub struct Engine {
     /// Observation buffers 0 and 1, then command buffers 0 and 1.
@@ -549,6 +603,11 @@ pub struct Engine {
     state: Mutex<State>,
     /// Shared with the paged modules, which read their pages through it (`paging::Store`).
     store: paging::Store,
+    /// The event archive, written on the IO lane (`archive.rs`); `None` when off or unopened.
+    archive: Mutex<Option<rtsim_archive::Archive>>,
+    /// TEST: the next commit stops after the archive's flush, as a process killed before its page
+    /// commit would ([`Engine::crash_before_next_page_commit`]).
+    crash_at_page_commit: AtomicBool,
     /// Saves that failed or were not made (`paging::Job`): a save built before the step saw one
     /// of them is not made either (PF14).
     io_failures: Arc<AtomicU64>,
@@ -596,6 +655,8 @@ impl Engine {
             cfg,
             state: Mutex::new(State::new(orders_rx, received_tx)),
             store: Arc::new(Mutex::new(None)),
+            archive: Mutex::new(None),
+            crash_at_page_commit: AtomicBool::new(false),
             io_failures: Arc::new(AtomicU64::new(0)),
             orders_tx: Mutex::new(orders_tx),
             received_rx: Mutex::new(received_rx),
@@ -693,6 +754,24 @@ impl Engine {
         ]
     }
 
+    /// Makes the page store's next writes fail at `fault` (tests only: a failed save, then the
+    /// store's recovery).
+    #[doc(hidden)]
+    pub fn inject_store_fault(&self, fault: Option<rtsim_kernel::page::Fault>) {
+        if let Some(s) = lock(&self.store).as_mut() {
+            s.inject_fault(fault);
+        }
+    }
+
+    /// TEST mode: the next save's commit writes its events, then stops before the page commit as
+    /// a process killed there would; the engine saves nothing after it (a crash, `close(false)`,
+    /// comes next).
+    pub fn crash_before_next_page_commit(&self) {
+        if self.cfg.test {
+            self.crash_at_page_commit.store(true, Ordering::Release);
+        }
+    }
+
     /// The phase 1 world's determinism hash, and whether the last load replayed its log to the
     /// state the save had. Takes the state lock: tests and `/rtsim` only, never a game tick.
     pub fn phase1_state(&self) -> (u64, bool, u64) {
@@ -786,7 +865,9 @@ impl Engine {
             // decides, or a crash before the first save would derive them again under another (W20).
             let mut batch = SaveBatch::new();
             let pages = link.pages();
-            for k in industry::deletions(&store, &pages) {
+            let stale = industry::deletions(&store, &pages)
+                .map_err(|e| format!("cannot read the industry pages' index: {e}"))?;
+            for k in stale {
                 batch.delete(k);
             }
             for (k, b) in &pages {
@@ -800,6 +881,14 @@ impl Engine {
         }
         let wlink = worldmodel::Link::load(&mut store);
         let pages_obs = store.obs_seq();
+        // The archive cuts what lies above the generation the pages are at before anything is
+        // written (§10.5).
+        let serial = archive::load_serial(&mut store);
+        let archive = if self.cfg.archive {
+            archive::open(&self.cfg.pages_dir, serial, &self.stats)
+        } else {
+            None
+        };
         if replay.applied_through().0 != pages_obs {
             log_warn(&format!(
                 "the pages' manifest says observation {pages_obs}, their replay state {}",
@@ -868,6 +957,11 @@ impl Engine {
         st.worldmodel = wlink;
         st.pages_obs_seq = pages_obs;
         st.session_first = pages_obs + 1;
+        // Every module has loaded (phase 1 replayed its input log): their tapes go on now.
+        if let Some(a) = archive {
+            archive::start(&mut st, &a, serial);
+            *lock(&self.archive) = Some(a);
+        }
         let next_cmd = st.outbox.next_seq();
         self.durable.store(pages_obs, Ordering::Release);
         for b in self.bufs.iter() {
@@ -1135,6 +1229,7 @@ impl Engine {
         if paging::enforce_budget(&mut st) && st.paging.in_flight == 0 {
             self.save_now(&mut st, true);
         }
+        archive::absorb(&mut st, &self.stats);
 
         // 4. Commands, into C[h & 1] once Java has finished with step h - 2's.
         let c = self.cmd_buffer(h as usize);
@@ -1452,6 +1547,8 @@ impl Engine {
         paging::drain(st);
         let test = self.cfg.test;
         let obs_seq = st.replay.applied_through().0;
+        // The events up to the state this save holds (§10.3).
+        let events = archive::take(st, &self.stats);
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
         let mut whole = industry::snapshot(st);
@@ -1493,6 +1590,7 @@ impl Engine {
             job,
             obs_seq,
             pending,
+            events,
         }
     }
 
@@ -1508,6 +1606,7 @@ impl Engine {
             job,
             obs_seq,
             pending,
+            events,
         } = save;
         // From here on, a return before `job.succeeded()` reports the save failed (the job's
         // drop): its modules write their pages again.
@@ -1516,7 +1615,24 @@ impl Engine {
         }
         let mut guard = lock(&self.store);
         let Some(store) = guard.as_mut() else { return };
-        if job.stale() {
+        let stale = job.stale();
+        // The events go first, stale save or not: the chunks are tagged with this save's serial,
+        // and a restart at an older generation cuts them (§10.3, §10.5).
+        let serial = events.as_ref().map(|ev| ev.serial);
+        if let Some(ev) = events {
+            archive::flush(&self.archive, ev, obs_seq, &self.stats);
+        }
+        if self.cfg.test && self.crash_at_page_commit.swap(false, Ordering::AcqRel) {
+            self.dead.store(true, Ordering::Release);
+            return;
+        }
+        // A store poisoned by a failed write reopens from its files before this save writes to it
+        // (LP10); the events above went first either way.
+        if !recover_store(store) {
+            self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+        if stale {
             // Built before the step saw a save fail: its paged modules wrote only what changed
             // since that save, which never reached the disk (PF14).
             self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
@@ -1527,9 +1643,12 @@ impl Engine {
         }
         batch.put(KEY_META, &meta);
         batch.put(KEY_WORLD, &world);
+        if let Some(s) = serial {
+            batch.put(archive::KEY, &s.to_le_bytes());
+        }
         // The paged modules' and phase 1's deletions read only their tables' index blocks.
         let deletions = (|| -> Result<Vec<PageKey>, rtsim_kernel::page::PageError> {
-            let mut out = industry::deletions(store, &whole);
+            let mut out = industry::deletions(store, &whole)?;
             for (table, l) in &live {
                 out.extend(l.deletions(store, *table)?);
             }
@@ -1568,13 +1687,19 @@ impl Engine {
                 } else {
                     self.durable.fetch_max(obs_seq, Ordering::AcqRel);
                     self.stats.saves_done.fetch_add(1, Ordering::AcqRel);
+                    if let Some(s) = serial {
+                        self.stats.archive_confirmed.store(s, Ordering::Release);
+                    }
                 }
                 drop(guard);
                 job.succeeded();
+                let confirmed = self.stats.archive_confirmed.load(Ordering::Acquire);
+                archive::compact(&self.archive, confirmed, &self.stats);
             }
             Err(e) => {
                 self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
                 log_error(&format!("saving the engine pages failed: {e}"));
+                recover_store(store);
             }
         }
     }
@@ -1710,6 +1835,8 @@ struct Save {
     job: paging::Job,
     obs_seq: u64,
     pending: bool,
+    /// The events up to this snapshot, when the session records (`archive.rs`).
+    events: Option<archive::Taken>,
 }
 
 fn lowest(a: Option<u64>, b: Option<u64>) -> Option<u64> {

@@ -475,6 +475,14 @@ fn the_iron_line_saved_by_the_link_draws_its_industry_layers() {
     let saved = view.saved();
     let industry = saved.industry.as_ref().expect("industry pages");
     assert!(!engine.is_empty());
+    // Only the industry module ran, so the phase 1 clock stayed at its start: the save's time is
+    // the industry engine's.
+    assert!(
+        industry.now >= (2 * TICKS_PER_DAY) as i64,
+        "{}",
+        industry.now
+    );
+    assert_eq!(saved.now(), industry.now);
     for (id, want) in &engine {
         let got = industry
             .inspect(&*saved.source, *id)

@@ -24,6 +24,7 @@
 //! says when a chunk is new to the index, which is where its first load would send the deep
 //! layer's command (0x8507, reserved in `boundary`).
 
+use rtsim_archive::kinds;
 use rtsim_industry::ids::DistrictId;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::meta_pages::PagedMap;
@@ -36,7 +37,7 @@ use serde::Serialize;
 
 use crate::boundary::{self, Cmd, Uuid};
 use crate::dragon::{DragonId, LairKind, Purpose, SENSED_KEPT, State, Target};
-use crate::engine::{BODY_RADIUS, Dragons, Ev, HOME_RADIUS, NewDragon, place};
+use crate::engine::{BODY_RADIUS, Dragons, Ev, HOME_RADIUS, NewDragon, Quarry, did, place, spot};
 use crate::flight;
 use crate::infra::{DistrictSignals, DistrictSite, Infrastructure};
 use crate::prey::PreyClass;
@@ -733,6 +734,15 @@ impl Dragons {
         if let Some(r) = self.rolls.get_mut(&frame) {
             r.visitors += 1;
         }
+        self.tape
+            .event(
+                kinds::DRAGONS_ARRIVE,
+                spot(at, Pos::new(frame, fx, fz)),
+                did(d),
+                u128::from(n.field),
+                0,
+            )
+            .text(|| format!("a field flight flies in to drink at field {}", n.field));
         self.note(
             at,
             "visitor",
@@ -767,6 +777,10 @@ impl Dragons {
         if x.carried.is_empty() {
             self.stats.visitors_left += 1;
             let actor = x.actor;
+            let here = x.position(&self.topo, &self.lairs, at).0;
+            self.tape
+                .event(kinds::DRAGONS_DEPART, spot(at, here), did(d), 0, 0)
+                .text(|| "a field flight leaves the sim, carrying nothing".to_string());
             self.note(at, "visitor", Some(d), "leaves the sim".into());
             if w.knowledge.notable(actor).is_some() {
                 w.knowledge.die(actor, at);
@@ -899,8 +913,13 @@ impl Dragons {
                     let r = self.raid_sites(infra, d, vec![site], at);
                     self.feed(d, at, r.food, &[]);
                     if r.any {
-                        let name = format!("district {} (tanks)", site.id.0);
-                        self.record_hunt(at, d, PreyKind::Grudge, name, r.food, r.taken);
+                        let quarry = Quarry {
+                            kind: PreyKind::Grudge,
+                            name: format!("district {} (tanks)", site.id.0),
+                            pos: Some(site.pos),
+                            id: u128::from(site.id.0),
+                        };
+                        self.record_hunt(at, d, quarry, r.food, r.taken);
                     }
                 }
             }
@@ -1107,10 +1126,16 @@ impl Dragons {
             }
         }
         self.feed(d, at, r.food, &[]);
-        let name = format!("district {district}");
-        self.record_hunt(at, d, PreyKind::Grudge, name, r.food, r.taken);
+        let quarry = Quarry {
+            kind: PreyKind::Grudge,
+            name: format!("district {district}"),
+            pos: Some(Pos::new(frame, x, z)),
+            id: u128::from(district),
+        };
+        self.record_hunt(at, d, quarry, r.food, r.taken);
         if !r.any {
-            self.dragons.get_mut(d).expect("live").fruitless += 1;
+            let x = self.dragons.get_mut(d).expect("live");
+            x.fruitless = x.fruitless.saturating_add(1);
         }
         self.fly(w, d, Purpose::Home, at);
     }
@@ -1256,7 +1281,8 @@ impl Dragons {
         }
     }
 
-    /// A new fire lair asks for the oil around it ahead of generation (OIL_SURVEY, OG-2).
+    /// A new fire lair asks for the oil around it (OIL_SURVEY, OG-2): answered for chunks in memory
+    /// now and for the rest as they load (OGC43).
     pub(crate) fn survey(&mut self, dimension: u32, x: i32, z: i32) {
         self.stats.surveys += 1;
         self.outbox.push(Cmd::OilSurvey(boundary::OilSurvey {

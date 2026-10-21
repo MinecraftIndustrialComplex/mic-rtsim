@@ -19,7 +19,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.common.util.BlockSnapshot;
-import net.neoforged.neoforge.common.util.FakePlayerFactory;
 import net.neoforged.neoforge.event.level.BlockEvent;
 
 import java.nio.ByteBuffer;
@@ -96,11 +95,11 @@ public final class IndustryTestKit {
         ind().threats().forgetAll();
     }
 
-    /** What a player placing the block at {@code abs} fires, with a fake player. */
+    /** What a player placing the block at {@code abs} fires (with a server player: a NeoForge FakePlayer is a machine). */
     public static void playerPlaced(GameTestHelper helper, BlockPos abs) {
         ServerLevel level = helper.getLevel();
         NeoForge.EVENT_BUS.post(new BlockEvent.EntityPlaceEvent(BlockSnapshot.create(level.dimension(), level, abs),
-                level.getBlockState(abs.below()), FakePlayerFactory.getMinecraft(level)));
+                level.getBlockState(abs.below()), FakePlayers.editor(level)));
     }
 
     public static int floorY(GameTestHelper helper) {

@@ -19,7 +19,8 @@
     "ServerLevelAccessor",
     "StructureManagerMixin",
     "VillagerReputationMixin",
-    "VillagerRestockMixin"
+    "VillagerRestockMixin",
+    "WanderingTraderSpawnerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

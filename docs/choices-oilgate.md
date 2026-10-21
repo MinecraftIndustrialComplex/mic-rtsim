@@ -294,6 +294,11 @@ Nothing of the deep layer exists. What it will hang on:
   layer on this oil chunk's first load"; nothing sends it, and the plugin does not handle it.
 - **The y 15 line:** field flights already roll only for players at or above `flight_min_y` 15, the
   height below which the deep layer takes over (OILGATE.md §4.6).
+- **OG-9e** (DECISIONS.md, decided while this was built) makes the deep layer a Death Worm oil nest,
+  placed on the first load of oil chunks and asleep until a pumpjack drills, under a fifth threat
+  class `Burrowing`. The seams above fit it: the new-chunk return is where a nest is queued, 0x8507
+  is its placement, and OIL_CHUNKS source 3 (a deposit sample: defined, sent by nothing) is one way
+  a drilled chunk could reach the engine. `ThreatClass` has four classes; `Burrowing` is not added.
 
 ## For Ben
 

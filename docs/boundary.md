@@ -1038,8 +1038,10 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   load (source 1, Deep Time's `DeepTimeSites` and CDG bridge); elsewhere CDG's
   `OilChunksSavedData.getBaseOilAmount` for each chunk as it first generates (source 2), under a
   per-tick budget. CDG's infinite amount (`Integer.MAX_VALUE`) is flag 1.
-- **Answers OIL_SURVEY** by sampling CDG's amount for the chunks within `radius` of (x, z), generated
-  or not, under the same budget, and sending what it finds as OIL_CHUNKS (source 2).
+- **Answers OIL_SURVEY** by sampling CDG's amount for the chunks within `radius` of (x, z) under the
+  same budget, and sending what it finds as OIL_CHUNKS (source 2): the chunks in memory at once, each
+  of the others the first time it loads this session (a chunk not in memory reads the biome source,
+  79 ms on a real overworld; docs/choices-oilgate.md OGC43).
 - **Answers PLACE_LAIR** by placing the structure through `/place structure`'s code path (every biome
   allowed) on the first load of a free site within `radius` of (x, z), at most once per `field`, and
   sending its LAIR_FOUND (flag 1). The roost's own dragon, if Ice and Fire spawns one, is reported

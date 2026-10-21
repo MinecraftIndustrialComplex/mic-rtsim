@@ -167,7 +167,9 @@ leaves them alone; true restores R18's discard (R18a).
   - **Other levels:** CDG's own `getBaseOilAmount` for each chunk when it first generates, on the
     server thread under a per-tick budget (the 12,800 biome lookups are cheap on a generated chunk,
     which holds its biomes; their cost is UNVERIFIED until the bench). Lairs also ask for the chunks
-    within their reach (§4.4), sampled ahead of generation under the same budget.
+    within their reach (§4.4), sampled ahead of generation under the same budget. (Built: the chunks of
+    that ask in memory are sampled at once and the rest as they load, since a chunk not in memory cost
+    79 ms on a real overworld; OGC43.)
 - **A field** is a connected group (8-neighbour) of oil chunks. Its record: the canonical chunk set
   (TP4), its centre, finite oil known (from deposit samples once drilled), bottomless or not, and which
   dragons drink there.
@@ -396,7 +398,8 @@ threat there is vanilla's own, placed where the oil is:
    spawn a dragon.
 3. The placed feature at y below 15 in a desert chunk: shriekers that can summon, a warden on the fourth
    warning.
-4. CDG's `getBaseOilAmount` time on generated and ungenerated chunks (bench).
+4. CDG's `getBaseOilAmount` time on generated and ungenerated chunks (bench). Measured: 3.2 ms in memory,
+   79 ms a chunk not in memory on a real overworld (OGC43).
 5. TaCZ r6: do the pack's gun recipes load.
 6. The measurement of §4.8.
 

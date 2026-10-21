@@ -153,3 +153,65 @@ fn a_restore_continues_with_the_same_state() {
         );
     }
 }
+
+/// The event archive's rows (VIEWER.md §10.1): every kind the conflict records is registered in
+/// its group, and each walkthrough's story is there, positioned and with real ids.
+#[test]
+fn the_archive_records_each_walkthrough() {
+    use rtsim_archive::kinds::{self, Kind};
+    use rtsim_archive::record::{kinds_on, rows_on};
+    use rtsim_archive::{Row, Severity};
+    let common = [
+        kinds::CONFLICT_FACTION,
+        kinds::CONFLICT_STEP,
+        kinds::CONFLICT_DEMAND,
+        kinds::CONFLICT_PARTY,
+        kinds::CONFLICT_PARTY_LEG,
+        kinds::CONFLICT_PARTY_HOME,
+    ];
+    let runs: [(Variant, &[Kind]); 3] = [
+        (
+            Variant::Ignore,
+            &[kinds::CONFLICT_UNMET, kinds::CONFLICT_RAID],
+        ),
+        (Variant::Tribute, &[kinds::CONFLICT_TRIBUTE]),
+        (Variant::Converter, &[kinds::CONFLICT_COMPLIED]),
+    ];
+    for (v, own) in runs {
+        let o = run(v, None);
+        let got = kinds_on(&o.conflict.tape);
+        for k in &got {
+            assert_eq!(k.group(), "conflict", "{v:?}: {}", k.name());
+            assert_eq!(kinds::by_name(k.name()), Some(*k));
+        }
+        for k in common.iter().chain(own) {
+            assert!(got.contains(k), "{v:?}: no {} in {got:?}", k.name());
+        }
+        let rows = rows_on(&o.conflict.tape);
+        for (k, dim, r) in &rows {
+            assert_eq!(*dim, 0, "{v:?}: the walkthrough is in the overworld");
+            match r {
+                Row::Event(e) => {
+                    assert_ne!(e.subject.value, 0, "{v:?}: {} has no subject", k.name());
+                    assert!(e.x != 0 || e.z != 0, "{v:?}: {} at the origin", k.name());
+                }
+                Row::Leg(l) => assert_ne!(l.subject.value, 0),
+            }
+        }
+        if v == Variant::Ignore {
+            // The war band's raid on the refinery: major, with what it took.
+            let raid = rows
+                .iter()
+                .find(|(k, _, _)| *k == kinds::CONFLICT_RAID)
+                .expect("a raid");
+            let Row::Event(e) = raid.2 else {
+                panic!("a raid is an event")
+            };
+            assert_eq!(e.severity, Severity::Major);
+            assert!(e.magnitude > 0 && e.payload, "{e:?}");
+            // Its legs are a named mover's.
+            assert!(rows.iter().any(|(k, _, r)| *k == kinds::CONFLICT_PARTY_LEG
+                && matches!(r, Row::Leg(l) if l.severity == Severity::Notable)));
+        }
+    }
+}

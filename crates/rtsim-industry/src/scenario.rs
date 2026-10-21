@@ -15,6 +15,7 @@
 //! smelter and the coast again. Every number here is a scenario choice for the demonstration, not
 //! a game fact, except where a comment cites one.
 
+use rtsim_archive::record::Meter;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
 use crate::fake::{
@@ -366,7 +367,20 @@ pub fn run_iron_line(w: &mut FakeWorld, cfg: &IronLine) {
 /// Runs the iron line to `until`, the player's repair included, so a run cut anywhere and
 /// resumed with [`run_iron_line`] is the run that never stopped.
 pub fn run_iron_line_until(w: &mut FakeWorld, cfg: &IronLine, until: Tick) {
+    step_iron_line(w, cfg, until, None);
+}
+
+/// [`run_iron_line`] counting the engine's archive rows into `meter` once a game day, and once more
+/// at the end (the engine's tape must be on; draining empties it, so a run measured here leaves
+/// its rows in `meter`, not on the tape).
+pub fn run_iron_line_metered(w: &mut FakeWorld, cfg: &IronLine, meter: &mut Meter) {
     let end = Tick(cfg.days * TICKS_PER_DAY);
+    step_iron_line(w, cfg, end + 2_000, Some(meter));
+}
+
+fn step_iron_line(w: &mut FakeWorld, cfg: &IronLine, until: Tick, mut meter: Option<&mut Meter>) {
+    let end = Tick(cfg.days * TICKS_PER_DAY);
+    let mut next_drain = (w.t.0 / TICKS_PER_DAY + 1) * TICKS_PER_DAY;
     while w.t < until {
         w.tick();
         // The player repairs the coast when there (an edit: it goes stale and relearns).
@@ -374,5 +388,60 @@ pub fn run_iron_line_until(w: &mut FakeWorld, cfg: &IronLine, until: Tick) {
             w.repair_all(ORE_COAST);
             w.repaired = true;
         }
+        if w.t.0 >= next_drain {
+            if let Some(m) = meter.as_deref_mut() {
+                m.drain(&mut w.engine.tape);
+            }
+            next_drain += TICKS_PER_DAY;
+        }
+    }
+    if let Some(m) = meter {
+        m.drain(&mut w.engine.tape);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use rtsim_archive::record::rows_on;
+
+    use super::*;
+
+    fn line(cfg: IronLine) -> FakeWorld {
+        let mut w = iron_line_world(cfg, Tunables::default());
+        w.engine.tape.set_on(true);
+        w.declare();
+        w
+    }
+
+    /// A run measured as it goes counts the rows a plain run leaves on its tape, and ends in the
+    /// same world: the meter drains the tape, it does not change what happens.
+    #[test]
+    fn a_metered_run_counts_the_rows_a_plain_run_leaves_on_its_tape() {
+        let cfg = IronLine {
+            seed: 7,
+            days: 10,
+            threats: true,
+            control: false,
+            tick_first: true,
+            approach: true,
+        };
+        let mut plain = line(cfg);
+        run_iron_line(&mut plain, &cfg);
+        let mut kept: BTreeMap<&str, u64> = BTreeMap::new();
+        for (k, _, _) in rows_on(&plain.engine.tape) {
+            *kept.entry(k.name()).or_default() += 1;
+        }
+
+        let mut w = line(cfg);
+        let mut meter = Meter::new();
+        run_iron_line_metered(&mut w, &cfg, &mut meter);
+        assert!(w.engine.tape.is_empty(), "drained at the end");
+        assert!(w.engine.tape.is_on(), "and still on");
+        assert!(meter.rows() > 0, "the iron line records rows");
+        assert_eq!(meter.dropped, 0);
+        assert_eq!(meter.by_kind, kept);
+        assert_eq!((w.t, w.totals()), (plain.t, plain.totals()));
     }
 }

@@ -3,6 +3,7 @@
 //! composition, one materialization per approach, restore, the fence, and dragons as predators.
 
 use proptest::prelude::*;
+use rtsim_archive::{Row, Severity, kinds};
 use rtsim_ecology::herds::boundary::{self, Cmd, Obs};
 use rtsim_ecology::herds::cohort::Work;
 use rtsim_ecology::herds::forage::cell_of;
@@ -635,12 +636,14 @@ fn dragons_eat_from_herds_and_follow_them() {
         Tick::ZERO,
     );
     d.log_enabled = true;
+    d.tape.set_on(true);
     let mut h = Herds::new(
         seed,
         HerdTunables::default(),
         Box::new(Valley::default()),
         Tick::ZERO,
     );
+    h.tape.set_on(true);
     let herd = h.add_herd(
         NewHerd {
             name: "Bait flock".into(),
@@ -671,6 +674,176 @@ fn dragons_eat_from_herds_and_follow_them() {
     h.check(h.now()).unwrap();
     // The herds engine came back to the caller with its time advanced.
     assert_eq!(h.now(), Tick::from_days(30));
+    // The event archive: the herds' tape moved with them through the dragons' run, so every
+    // predation is on the herds' tape (the herd's, taken by the dragon) and the dragons' tape
+    // holds only dragons' kinds, among them the hunts of this herd.
+    let tester = d.by_name("Tester").unwrap();
+    let preds = events_of(&h, kinds::HERDS_PREDATION);
+    assert_eq!(preds.len() as u64, h.stats.predations);
+    assert!(!preds.is_empty());
+    for e in &preds {
+        assert_eq!(
+            (e.subject.value, e.object.value),
+            (herd.to_bits(), tester.to_bits())
+        );
+        assert_eq!(e.severity, Severity::Minor);
+        assert!(
+            e.magnitude > 0 && e.x.abs() < 5_000 && e.z.abs() < 5_000,
+            "{e:?}"
+        );
+    }
+    let eaten: i64 = preds.iter().map(|e| i64::from(e.magnitude)).sum();
+    assert_eq!(eaten, x.ledger.eaten as i64);
+    for k in rtsim_archive::record::kinds_on(&h.tape) {
+        assert_eq!(k.group(), "herds", "{}", k.name());
+    }
+    for k in rtsim_archive::record::kinds_on(&d.tape) {
+        assert_eq!(k.group(), "dragons", "{}", k.name());
+    }
+    let dragon_hunts: Vec<_> = rtsim_archive::record::rows_on(&d.tape)
+        .into_iter()
+        .filter_map(|(k, _, r)| match r {
+            Row::Event(e) if k == kinds::DRAGONS_HUNT && e.object.value == herd.to_bits() => {
+                Some(e)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(dragon_hunts.len() >= hunts.len(), "{}", dragon_hunts.len());
+    assert!(
+        dragon_hunts
+            .iter()
+            .all(|e| e.subject.value == tester.to_bits())
+    );
+}
+
+/// The tape's events of `kind`.
+fn events_of(h: &Herds, kind: rtsim_archive::Kind) -> Vec<rtsim_archive::Event> {
+    rtsim_archive::record::rows_on(&h.tape)
+        .into_iter()
+        .filter_map(|(k, _, r)| match r {
+            Row::Event(e) if k == kind => Some(e),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The herds' archive rows (VIEWER.md §10.1): the valley's six founded herds, two years of
+/// routes as one leg per straight piece, and the starvation of an overgrazed winter; then a herd
+/// of two that predators eat to the last.
+#[test]
+fn the_archive_records_the_herds() {
+    use rtsim_archive::record::{kinds_on, rows_on};
+    let mut h = Herds::new(
+        3,
+        HerdTunables::default(),
+        Box::new(Valley::default()),
+        Tick::ZERO,
+    );
+    h.tape.set_on(true);
+    for n in synth::scenario_herds() {
+        h.add_herd(n, Tick::ZERO);
+    }
+    let mut index = legs();
+    h.run_until(&mut index, Tick::from_days(2 * 365));
+    for k in kinds_on(&h.tape) {
+        assert_eq!(k.group(), "herds", "{}", k.name());
+        assert_eq!(kinds::by_name(k.name()), Some(k));
+    }
+    // Founded: one row per herd at its start, with its animals; minor.
+    let founded = events_of(&h, kinds::HERDS_FOUNDED);
+    assert_eq!(founded.len(), synth::scenario_herds().len());
+    for n in synth::scenario_herds() {
+        let id = h.by_name(&n.name).unwrap();
+        let e = founded
+            .iter()
+            .find(|e| e.subject.value == id.to_bits())
+            .unwrap();
+        assert_eq!((e.tick, e.x, e.z), (0, n.pos.0, n.pos.1));
+        assert_eq!((e.magnitude, e.severity), (n.count as i32, Severity::Minor));
+        assert_eq!(e.subject.value >> 60, 0, "no owner namespace bit");
+    }
+    // Migration: legs of the herds, each decision's route in pieces. The last route of the
+    // flock is the last legs on its tape.
+    let flock = h.by_name("Northdown flock").unwrap();
+    let mine: Vec<rtsim_archive::Leg> = rows_on(&h.tape)
+        .into_iter()
+        .filter_map(|(k, dim, r)| match r {
+            Row::Leg(l) if k == kinds::HERDS_MIGRATION && l.subject.value == flock.to_bits() => {
+                assert_eq!(dim, 0);
+                Some(l)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(mine.len() > 20, "{} legs", mine.len());
+    assert!(mine.iter().all(|l| l.severity == Severity::Minor));
+    let route = &h.herd(flock).unwrap().route;
+    let n = route.points.len() - 1;
+    assert!(n >= 1, "the flock's last route has a piece");
+    for (l, i) in mine[mine.len() - n..].iter().zip(0..) {
+        let (a, b) = (route.points[i], route.points[i + 1]);
+        assert_eq!((l.x0, l.z0, l.x1, l.z1), (a.0, a.1, b.0, b.1));
+        assert_eq!((l.t0, l.end()), (route.times[i].0, route.times[i + 1].0));
+    }
+    // Starvation: a herd's, with the count that starved, and the ledgers agree.
+    let starved = events_of(&h, kinds::HERDS_STARVATION);
+    assert!(!starved.is_empty());
+    let total: i64 = starved.iter().map(|e| i64::from(e.magnitude)).sum();
+    let ledger: u64 = h.herds.iter().map(|(_, x)| x.ledger.starved).sum();
+    assert_eq!(total, ledger as i64);
+    assert!(
+        starved
+            .iter()
+            .all(|e| e.magnitude > 0 && e.subject.value != 0)
+    );
+
+    // A herd of two, eaten to the last by a predator the engine only knows by its number.
+    let mut h = Herds::new(
+        4,
+        HerdTunables::default(),
+        Box::new(Valley::default()),
+        Tick::ZERO,
+    );
+    h.tape.set_on(true);
+    let few = h.add_herd(
+        NewHerd {
+            name: "Few".into(),
+            species: rtsim_ecology::herds::HerdSpecies::Goat,
+            frame: 0,
+            pos: (300, 1_700),
+            count: 2,
+            seed: Some(6),
+        },
+        Tick::ZERO,
+    );
+    let mut index = legs();
+    let at = Tick(5_000);
+    h.run_until(&mut index, at);
+    const WOLF: u64 = 0x1_0000_0007;
+    let (px, pz) = h.position(few, at);
+    for _ in 0..2 {
+        let p = h.predate(few, px, pz, at, 100, WOLF);
+        assert_eq!(p.animals, 1);
+    }
+    h.run_until(&mut index, Tick::from_days(10));
+    assert_eq!(h.count(few, h.now()), 0);
+    let preds = events_of(&h, kinds::HERDS_PREDATION);
+    assert_eq!(preds.len(), 2);
+    for e in &preds {
+        assert_eq!((e.subject.value, e.object.value), (few.to_bits(), WOLF));
+        assert_eq!((e.tick, e.magnitude), (at.0, 1));
+        assert_eq!((e.x, e.z), (px as i32, pz as i32));
+    }
+    let extinct = events_of(&h, kinds::HERDS_EXTINCT);
+    assert_eq!(extinct.len(), 1);
+    let e = extinct[0];
+    assert_eq!(e.subject.value, few.to_bits());
+    assert_eq!((e.severity, e.payload), (Severity::Notable, true));
+    assert!(e.tick >= at.0);
+    // Where its route ended.
+    let end = h.herd(few).unwrap().route.end();
+    assert_eq!((e.x, e.z), end);
 }
 
 /// No group outlives a session: at a session start every group is abstract again (no capture
@@ -764,9 +937,9 @@ fn the_shared_interest_area_brings_one_group_and_takes_it_back() {
 /// in a valley grown with them, four days in.
 fn quiet_save_bytes(n: usize) -> usize {
     let (st, dir) = store(&format!("quiet-{n}"));
-    let mut legs = legs();
+    let mut index = legs();
     let mut h = synth::bench_herds_in(3, n, 5_000, Tick::ZERO, synth::wide_valley(n));
-    h.run_until(&mut legs, Tick::from_days(4));
+    h.run_until(&mut index, Tick::from_days(4));
     h.attach_store(st.clone(), 64 << 20);
     let mut bytes = 0;
     for _ in 0..2 {

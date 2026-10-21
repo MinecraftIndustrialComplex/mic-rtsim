@@ -43,7 +43,8 @@ pub const DRAGON_ADOPT: u16 = 0x8503;
 pub const DRAGON_DISCARD: u16 = 0x8504;
 /// Place a fire roost near an oil field with no lair in reach (OILGATE.md §4.4, OG-7).
 pub const PLACE_LAIR: u16 = 0x8505;
-/// Sample oil chunks around a point ahead of generation (OILGATE.md §4.1, OG-2).
+/// Sample oil chunks around a point, those in memory now and the rest as they load (OILGATE.md
+/// §4.1, OG-2, OGC43).
 pub const OIL_SURVEY: u16 = 0x8506;
 // 0x8507 is reserved for the underground half (OILGATE.md §4.6, OG-9b): placing the deep layer's
 // sculk on an oil chunk's first load. Nothing sends it yet.
@@ -423,8 +424,9 @@ pub struct PlaceLair {
     pub radius: u32,
 }
 
-/// Sample CDG's oil for the chunks within `radius` blocks of (x, z), generated or not, under the
-/// plugin's per-tick budget, and answer with OIL_CHUNKS (source 2).
+/// Sample CDG's oil for the chunks within `radius` blocks of (x, z) under the plugin's per-tick
+/// budget, and answer with OIL_CHUNKS (source 2): chunks in memory now, the others the first time
+/// they load this session (a chunk not in memory costs 79 ms to sample; OGC43).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OilSurvey {
     pub dimension: u32,

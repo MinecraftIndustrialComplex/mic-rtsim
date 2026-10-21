@@ -43,6 +43,39 @@ public final class GlassExtractionGameTests {
     }
 
     /**
+     * One block entity's fingerprint (G-B3) through the caches a pass uses (per type, per block state, per
+     * block): a hopper's facing is structure and moves it, its enabled flag is model state and does not,
+     * and a state seen before hashes as before after other states came between. A Create chute has a
+     * part; a vanilla chest has none.
+     */
+    @GameTest(template = YARD, batch = "glass_extract_fp", timeoutTicks = 100)
+    public static void fingerprintsCountStructureNotModelState(GameTestHelper helper) {
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos hopper = new BlockPos(bx + 3, y, z), chute = hopper.east(), chest = chute.east();
+        net.minecraft.server.level.ServerLevel level = helper.getLevel();
+        set(helper, hopper, Blocks.HOPPER.defaultBlockState());
+        set(helper, chute, AllBlocks.CHUTE.getDefaultState());
+        set(helper, chest, Blocks.CHEST.defaultBlockState());
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassExtractor x = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.INSTANCE;
+        java.util.function.LongSupplier print = () -> x.fingerprint(level.getBlockEntity(hopper));
+        long down = print.getAsLong();
+        level.setBlock(hopper, level.getBlockState(hopper).setValue(net.minecraft.world.level.block.HopperBlock.ENABLED, false), 2);
+        long off = print.getAsLong();
+        level.setBlock(hopper, level.getBlockState(hopper).setValue(net.minecraft.world.level.block.HopperBlock.FACING, Direction.NORTH), 2);
+        long north = print.getAsLong();
+        level.setBlock(hopper, level.getBlockState(hopper).setValue(net.minecraft.world.level.block.HopperBlock.FACING, Direction.DOWN)
+                .setValue(net.minecraft.world.level.block.HopperBlock.ENABLED, true), 2);
+        long again = print.getAsLong();
+        check("a hopper has a part", down != 0);
+        check("enabled is model state: " + off + " against " + down, off == down);
+        check("facing is structure", north != down);
+        check("the first state hashes as before: " + again + " against " + down, again == down);
+        check("a Create chute has a part", x.fingerprint(level.getBlockEntity(chute)) != 0);
+        check("a vanilla chest has none", x.fingerprint(level.getBlockEntity(chest)) == 0);
+        helper.succeed();
+    }
+
+    /**
      * A chest of wheat over a chute over a millstone on a creative motor at 64 RPM. The compile reaches
      * the engine complete; its graph has the chest's STORE, the chute's MOVER (store to chute to
      * millstone), the millstone MACHINE in a one-level domain at 64 RPM with the milling recipe for wheat

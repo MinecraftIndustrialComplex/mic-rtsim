@@ -40,4 +40,24 @@ public final class FakePlayers {
     public static void remove(ServerPlayer p) {
         p.serverLevel().players().remove(p);
     }
+
+    private static final java.util.Map<ServerLevel, ServerPlayer> EDITORS = new java.util.WeakHashMap<>();
+
+    /**
+     * A server player who places and breaks blocks in GameTests, standing in no player list: what rtsim's
+     * edit hooks see from a real player. A NeoForge {@code FakePlayer} ({@code FakePlayerFactory}) is a
+     * machine to those hooks (a Create deployer is one), so it makes no edit (INDUSTRY.md §3.3).
+     */
+    public static ServerPlayer editor(ServerLevel level) {
+        return EDITORS.computeIfAbsent(level, l -> {
+            GameProfile profile = new GameProfile(UUID.nameUUIDFromBytes("mic_rtsim:gametest_editor".getBytes(java.nio.charset.StandardCharsets.UTF_8)), "rtsim_editor");
+            CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
+            ServerPlayer p = new ServerPlayer(l.getServer(), l, profile, cookie.clientInformation());
+            Connection connection = new Connection(PacketFlow.SERVERBOUND);
+            new EmbeddedChannel(connection);
+            new ServerGamePacketListenerImpl(l.getServer(), connection, p, cookie);
+            p.setGameMode(GameType.SURVIVAL);
+            return p;
+        });
+    }
 }

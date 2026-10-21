@@ -320,6 +320,7 @@ impl Knowledge {
             deaths,
             counters,
             vanilla,
+            tape: rtsim_archive::Tape::new(),
         })
     }
 }

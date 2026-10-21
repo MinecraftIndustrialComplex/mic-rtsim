@@ -41,6 +41,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rtsim_archive::{At, Severity, Tape, kinds};
 use rtsim_ecology::infra::Infrastructure;
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -489,6 +490,8 @@ pub struct Ships {
     pub(crate) outbox: Vec<Cmd>,
     pub log_enabled: bool,
     pub log: Vec<LogEntry>,
+    /// The event archive's recorder (VIEWER.md §10.1): off until the host turns it on; not state.
+    pub tape: Tape,
     pub(crate) now: Tick,
     pub(crate) built: bool,
     /// The network changed since a paged save last wrote it (not saved: a paged save clears it,
@@ -505,6 +508,26 @@ fn day_of(t: Tick) -> f64 {
 
 fn tick_of(t: i64) -> Tick {
     Tick(t.max(0) as u64)
+}
+
+/// An event's place for the archive: a block position, the frame being the dimension.
+fn spot(at: Tick, frame: u16, x: i32, z: i32) -> At {
+    At::new(at.0, u32::from(frame), x, z)
+}
+
+/// A ship's archive id: its handle's plain bits.
+fn sid(s: ShipId) -> u128 {
+    u128::from(s.to_bits())
+}
+
+/// A village or base's archive id: its key.
+fn nid(w: &World, node: usize) -> u128 {
+    u128::from(w.nodes[node].key)
+}
+
+/// An actor's archive id: its knowledge handle, as every module records actors.
+fn aid(a: ActorId) -> u128 {
+    u128::from(a.to_bits())
 }
 
 /// The same 64-bit stand-in for a player's UUID the phase 1 world uses.
@@ -583,6 +606,7 @@ impl Ships {
             outbox: Vec::new(),
             log_enabled: false,
             log: Vec::new(),
+            tape: Tape::new(),
             now,
             built: false,
             network_dirty: false,
@@ -728,9 +752,14 @@ impl Ships {
 
     /// A short readable name: role, medium and slot.
     pub fn ship_name(&self, s: ShipId) -> String {
-        let Some(x) = self.ships.get(s) else {
-            return format!("ship {}", s.to_bits());
-        };
+        match self.ships.get(s) {
+            Some(x) => Self::label(x),
+            None => format!("ship {}", s.to_bits()),
+        }
+    }
+
+    /// A ship's readable name from its own row (the archive's payloads read the row alone).
+    fn label(x: &Ship) -> String {
         let m = x.medium.name();
         match x.role {
             Role::Merchant => format!("{m} merchant {}.{}", x.service.unwrap_or(u32::MAX), x.slot),
@@ -1435,6 +1464,15 @@ impl Ships {
         if ok {
             self.threats.get_mut(u64::from(l)).expect("checked").share = share;
             self.stats.hazard_changes += 1;
+            // The haven's take of the lane, at the lane's middle; the lane has no key, so its
+            // place is its name.
+            self.tape.event(
+                kinds::SHIPS_HAVEN,
+                spot(at, ln.frame, mid.0, mid.1),
+                nid(w, node),
+                0,
+                share,
+            );
             self.note(
                 at,
                 "hazard",
@@ -1885,7 +1923,7 @@ impl Ships {
                     self.home(w, ship, at);
                 }
             }
-            Ev::Respawn { ship } => self.respawn(ship, at),
+            Ev::Respawn { ship } => self.respawn(w, ship, at),
             Ev::Rebuild { haven, medium } => self.rebuild(w, haven, medium, at),
         }
     }
@@ -2419,6 +2457,14 @@ impl Ships {
         if let Some(p) = self.ships[s].pirate.as_mut() {
             p.leg = Some(stamp);
         }
+        // Booked or replanned, it is a new leg of the archive; the old row stays as it was.
+        self.tape.leg(
+            kinds::SHIPS_PIRATE_LEG,
+            u32::from(path.frame),
+            (path.t0.0, path.x0, path.z0),
+            (path.t1.0, path.x1, path.z1),
+            sid(s),
+        );
         // Players already watching where it goes see it come.
         let plan = self.ships[s].plan;
         for other in w.legs.sharing(stamp) {
@@ -2614,11 +2660,13 @@ impl Ships {
         let until = at + len;
         let plan = self.ships[s].plan;
         let t = self.threat_mut(lane);
+        let held = t.haven;
         if t.haven
             .is_none_or(|o| o == h || (t.hunters.is_empty() && t.share == 0))
         {
             t.haven = Some(h);
         }
+        let claimed = t.haven != held;
         t.add_hunter(s);
         if let Some(p) = self.ships[s].pirate.as_mut() {
             p.state = PState::Hunting {
@@ -2630,6 +2678,17 @@ impl Ships {
         self.stats.hunts += 1;
         let ln = &self.lanes[lane as usize];
         let mid = self.lane_at(ln, ln.path.length() / 2);
+        if claimed {
+            // A haven takes the lane: from the haven that held it, or from none.
+            let from = held.map_or(0, |o| nid(w, self.havens[o as usize].node));
+            self.tape.event(
+                kinds::SHIPS_HAVEN,
+                spot(at, ln.frame, mid.0, mid.1),
+                nid(w, self.havens[h as usize].node),
+                from,
+                0,
+            );
+        }
         let stay = Path {
             frame: ln.frame,
             x0: mid.0,
@@ -2707,7 +2766,7 @@ impl Ships {
                 regions.push(r);
             }
         }
-        let (loot, what) = if let Some(site) = sites.iter().find(|d| !d.watched) {
+        let (loot, what, object) = if let Some(site) = sites.iter().find(|d| !d.watched) {
             let t = Threat {
                 id,
                 source: ThreatSource::Bandit,
@@ -2721,7 +2780,11 @@ impl Ships {
             let Some(o) = infra.raid(&t) else {
                 return;
             };
-            (o.stolen, format!("district {}", site.id.0))
+            (
+                o.stolen,
+                format!("district {}", site.id.0),
+                u128::from(site.id.0),
+            )
         } else if let Some(tr) = infra
             .trains_crossed(frame, &regions, at, until)
             .first()
@@ -2740,13 +2803,19 @@ impl Ships {
             let Some(l) = infra.raid_train(&t) else {
                 return;
             };
-            (l, format!("player leg {}", tr.train.0))
+            (
+                l,
+                format!("player leg {}", tr.train.0),
+                u128::from(tr.train.0),
+            )
         } else {
             return;
         };
         self.stats.coast_raids += 1;
         let mut got = 0i64;
+        let mut took = 0i64;
         for (g, n) in loot.iter() {
+            took += n;
             let name = infra
                 .good_name(g)
                 .unwrap_or_else(|| format!("good {}", g.0));
@@ -2764,6 +2833,22 @@ impl Ships {
                 }
             }
         }
+        // A raid that took nothing is minor. The place is the lane's middle, where the hunt is.
+        let severity = if took > 0 {
+            Severity::Notable
+        } else {
+            Severity::Minor
+        };
+        self.tape
+            .event_as(
+                kinds::SHIPS_RAID,
+                severity,
+                spot(at, frame, mid.0, mid.1),
+                sid(s),
+                object,
+                took,
+            )
+            .text(|| format!("raids {what} from lane {lane}: {took} items"));
         self.note(
             at,
             "coast raid",
@@ -3022,6 +3107,22 @@ impl Ships {
                 let viewer = self.viewer_pos(w, player);
                 self.materialize_pirate(p, pos, Ship::agent(victim), player, viewer, at);
             }
+            // The plugin plays the fight, so what was taken is not known yet: magnitude 0 is
+            // "not yet", and it is a player's raid to watch, so it stays notable.
+            self.tape
+                .event(
+                    kinds::SHIPS_RAID,
+                    spot(at, self.ships[victim].frame, fix.x, fix.z),
+                    sid(p),
+                    sid(victim),
+                    0,
+                )
+                .text(|| {
+                    format!(
+                        "attacks {} in view of a player",
+                        Self::label(&self.ships[victim])
+                    )
+                });
             self.note(
                 at,
                 "raid",
@@ -3100,7 +3201,8 @@ impl Ships {
             (f64::from(self.ships[p].hull_milli) * (0.5 + 0.5 * survived)).round() as u32;
         self.ships[victim].crew = vcrew;
         if pcrew == 0 {
-            self.lose_pirate(w, p, None, at);
+            self.tape_raid(w, p, victim, 0, false, at);
+            self.lose_pirate(w, p, sid(victim), None, at);
             return;
         }
         // Loot: a share of each good, by how well they did.
@@ -3123,6 +3225,7 @@ impl Ships {
             taken += t;
         }
         self.ships[victim].cargo.retain(|_, a| *a > 0);
+        self.tape_raid(w, p, victim, taken, captured, at);
         if taken > 0 {
             self.stats.loot_events += 1;
             self.robbery_report(w, p, victim, at);
@@ -3134,7 +3237,7 @@ impl Ships {
             let joined = (standing * self.tun.crew_conversion_milli).div_ceil(1000);
             self.havens[h as usize].crew_pool += joined;
             self.stats.captures += 1;
-            self.lose_merchant(w, victim, at);
+            self.lose_merchant(w, victim, sid(p), "captured by pirates", at);
             self.note(
                 at,
                 "capture",
@@ -3146,6 +3249,57 @@ impl Ships {
             );
         }
         self.check_hold(w, p, at);
+    }
+
+    /// Who did a thing the plugin reported, as the archive's id: the player's actor if the world
+    /// knows them already (this only looks, it never registers), the ship's handle, else 0.
+    fn doer(w: &World, by: By, player: Uuid, ship: u64) -> u128 {
+        match by {
+            By::Player => w
+                .knowledge
+                .actors()
+                .find(ActorKind::Player, uuid_hash(player.0, player.1))
+                .map_or(0, aid),
+            By::Ship => Ship::id_of_agent(ship).map_or(0, sid),
+            _ => 0,
+        }
+    }
+
+    /// A raid nobody watched, for the archive: pirate `p` on merchant `victim`, `taken` in the
+    /// hold's milli-items. One that took nothing is minor. The place is the victim's, where the
+    /// fight was.
+    fn tape_raid(
+        &mut self,
+        w: &World,
+        p: ShipId,
+        victim: ShipId,
+        taken: i64,
+        captured: bool,
+        at: Tick,
+    ) {
+        let pos = self.position(w, victim, at);
+        let items = (taken + MILLI - 1) / MILLI;
+        let severity = if taken > 0 {
+            Severity::Notable
+        } else {
+            Severity::Minor
+        };
+        self.tape
+            .event_as(
+                kinds::SHIPS_RAID,
+                severity,
+                spot(at, self.ships[victim].frame, pos.0, pos.1),
+                sid(p),
+                sid(victim),
+                items,
+            )
+            .text(|| {
+                format!(
+                    "raids {}: {items} items{}",
+                    Self::label(&self.ships[victim]),
+                    if captured { ", and takes the ship" } else { "" }
+                )
+            });
     }
 
     fn check_hold(&mut self, w: &World, p: ShipId, at: Tick) {
@@ -3234,11 +3388,25 @@ impl Ships {
 
     /// A merchant or navy ship is lost: its hold goes down with it unless taken first, and it
     /// relaunches at its home dock after the delay, in its own slot.
-    fn lose_merchant(&mut self, w: &mut World, s: ShipId, at: Tick) {
+    ///
+    /// `by` is the archive id of what did it (0 for none) and `how` the word for the payload.
+    fn lose_merchant(&mut self, w: &mut World, s: ShipId, by: u128, how: &'static str, at: Tick) {
         let cargo = std::mem::take(&mut self.ships[s].cargo);
+        let mut gone = 0i64;
         for (g, a) in w.destroy_held(&cargo) {
+            gone += a;
             add(&mut self.ledger.sunk, g, a);
         }
+        let pos = self.position(w, s, at);
+        self.tape
+            .event(
+                kinds::SHIPS_LOST,
+                spot(at, self.ships[s].frame, pos.0, pos.1),
+                sid(s),
+                by,
+                gone / MILLI,
+            )
+            .text(|| format!("{} is {how}", Self::label(&self.ships[s])));
         let back = self.relaunch_time(s, at + self.tun.respawn_ticks);
         let x = &mut self.ships[s];
         x.promoted = None;
@@ -3272,7 +3440,7 @@ impl Ships {
         Tick((m * p + base).max(i128::from(t.0)) as u64)
     }
 
-    fn respawn(&mut self, s: ShipId, at: Tick) {
+    fn respawn(&mut self, w: &World, s: ShipId, at: Tick) {
         let Some(x) = self.ships.get(s) else {
             return;
         };
@@ -3289,6 +3457,16 @@ impl Ships {
         x.crew = crew;
         x.hull_milli = 1000;
         self.stats.respawns += 1;
+        // Back at its home dock, which is where its timetable has it at `back`.
+        let pos = self.position(w, s, at);
+        let home = self.home_node(s).map_or(0, |n| nid(w, n));
+        self.tape.event(
+            kinds::SHIPS_BACK,
+            spot(at, self.ships[s].frame, pos.0, pos.1),
+            sid(s),
+            home,
+            i64::from(crew),
+        );
         self.note(
             at,
             "relaunch",
@@ -3297,10 +3475,21 @@ impl Ships {
         );
     }
 
-    fn lose_pirate(&mut self, w: &mut World, s: ShipId, killer: Option<ActorId>, at: Tick) {
+    /// A pirate ship is sunk, by `by` (an archive id, 0 for none; `killer` is the player's actor
+    /// when a player did it, for the books of the knowledge).
+    fn lose_pirate(
+        &mut self,
+        w: &mut World,
+        s: ShipId,
+        by: u128,
+        killer: Option<ActorId>,
+        at: Tick,
+    ) {
         let Some(h) = self.haven_of(s) else {
             return;
         };
+        // Where it went down, before its leg is cancelled.
+        let sank_at = self.pirate_pos(w, s, at);
         if let Some(PState::Hunting { lane, .. }) = self.ships[s].pirate.as_ref().map(|p| p.state) {
             if let Some(t) = self.threats.get_mut(u64::from(lane)) {
                 t.remove_hunter(s);
@@ -3308,13 +3497,16 @@ impl Ships {
             self.apply_hazard(w, lane, at);
         }
         let cargo = std::mem::take(&mut self.ships[s].cargo);
+        let mut gone = 0i64;
         for (g, a) in w.destroy_held(&cargo) {
+            gone += a;
             add(&mut self.ledger.sunk, g, a);
         }
         // District loot never entered the world's books: it goes down unrecorded there, and the
         // ledger notes it as lost.
         if let Some(p) = self.ships[s].pirate.as_mut() {
             for (g, a) in std::mem::take(&mut p.district_loot) {
+                gone += a;
                 add(&mut self.ledger.districts_lost, g, a);
             }
         }
@@ -3352,6 +3544,20 @@ impl Ships {
         x.plan = x.plan.wrapping_add(1);
         self.set_embodied(s, false);
         self.stats.sinkings += 1;
+        self.tape
+            .event(
+                kinds::SHIPS_LOST,
+                spot(at, self.ships[s].frame, sank_at.0, sank_at.1),
+                sid(s),
+                by,
+                gone / MILLI,
+            )
+            .text(|| {
+                format!(
+                    "{} is sunk; its haven will rebuild",
+                    Self::label(&self.ships[s])
+                )
+            });
         let medium = self.ships[s].medium;
         self.schedule(
             at + self.tun.haven_rebuild_ticks,
@@ -3412,6 +3618,15 @@ impl Ships {
         self.schedule(
             at + self.tun.pirate_rest_ticks,
             Ev::Decide { ship: s, plan },
+        );
+        // Back at its haven's dock, a new ship in the lost one's row, with a new captain.
+        let dock = self.havens[h as usize].dock;
+        self.tape.event(
+            kinds::SHIPS_BACK,
+            spot(at, self.havens[h as usize].frame, dock.0, dock.2),
+            sid(s),
+            nid(w, node),
+            i64::from(need),
         );
         self.note(
             at,
@@ -3525,8 +3740,9 @@ impl Ships {
                     return;
                 };
                 let killer = (k.by == By::Player).then(|| self.player(w, k.player));
+                let by = Self::doer(w, k.by, k.player, k.ship);
                 match self.ships[s].role {
-                    Role::Pirate { .. } => self.lose_pirate(w, s, killer, at),
+                    Role::Pirate { .. } => self.lose_pirate(w, s, by, killer, at),
                     _ => {
                         if let Some(pl) = killer
                             && let Some(home) = self.home_node(s)
@@ -3546,7 +3762,7 @@ impl Ships {
                             w.knowledge.witness(ha, id, at);
                         }
                         self.stats.sinkings += 1;
-                        self.lose_merchant(w, s, at);
+                        self.lose_merchant(w, s, by, "sunk", at);
                         self.note(at, "sunk", Some(s), "is sunk".into());
                     }
                 }
@@ -3570,9 +3786,12 @@ impl Ships {
                         match self.ships[s].role {
                             Role::Pirate { .. } => {
                                 let pl = self.player(w, c.player);
-                                self.lose_pirate(w, s, Some(pl), at);
+                                self.lose_pirate(w, s, aid(pl), Some(pl), at);
                             }
-                            _ => self.lose_merchant(w, s, at),
+                            _ => {
+                                let by = Self::doer(w, c.by, c.player, c.ship);
+                                self.lose_merchant(w, s, by, "captured by a player", at);
+                            }
                         }
                     }
                     By::Ship => {
@@ -3590,7 +3809,7 @@ impl Ships {
                         self.havens[h as usize].crew_pool += c.crew_taken;
                         self.stats.captures += 1;
                         self.robbery_report(w, p, s, at);
-                        self.lose_merchant(w, s, at);
+                        self.lose_merchant(w, s, sid(p), "captured by pirates", at);
                         self.check_hold(w, p, at);
                     }
                     _ => {}

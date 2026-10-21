@@ -279,6 +279,27 @@ public final class GraphBuilder {
         return residualPositions.size();
     }
 
+    /**
+     * The residual's commonest blocks, most first ("create:mechanical_arm 12, ..."), for the compile log:
+     * what the glass box could not model. Never loads a chunk.
+     */
+    String residualKinds(int top) {
+        Map<String, Integer> count = new HashMap<>();
+        it.unimi.dsi.fastutil.longs.LongIterator it = residualPositions.iterator();
+        while (it.hasNext()) {
+            BlockPos pos = BlockPos.of(it.nextLong());
+            net.minecraft.world.level.chunk.LevelChunk c = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+            String key = c == null ? "unloaded"
+                    : net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(c.getBlockState(pos).getBlock()).toString();
+            count.merge(key, 1, Integer::sum);
+        }
+        return count.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
+                .limit(top)
+                .map(e -> e.getKey() + " " + e.getValue())
+                .collect(java.util.stream.Collectors.joining(", "));
+    }
+
     boolean hasResidual() {
         return residual != NONE;
     }

@@ -34,12 +34,17 @@
 //! **Checks** (exit 1 on a failure): conservation (integer ledgers against the classes) after
 //! every step; the kill count drops the flock by exactly six; identity on return; no killed or
 //! taken animal reappears; the obstacle and the detour; dragons eating from herds; the restart.
+//!
+//! It also counts the event archive's rows (R, VIEWER.md §10.4): the tapes of the world (both), the
+//! dragons and the herds are on and drained every step, and turned on again on the engines the
+//! restart loads (they carry on as the main run).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
+use rtsim_archive::record::Meter;
 use rtsim_ecology::dragon::LairKind;
 use rtsim_ecology::engine::{Dragons, HuntRecord, NewDragon};
 use rtsim_ecology::herds::engine::{Decision, HerdLog};
@@ -57,6 +62,8 @@ use rtsim_settle::Pos;
 use rtsim_world::interest::Viewer;
 use rtsim_world::{World, WorldConfig};
 use serde::Serialize;
+
+use super::archive::{Rate, drain_world, world_on};
 
 pub struct Options {
     pub days: u64,
@@ -195,6 +202,8 @@ struct Results {
     decisions: Vec<Decision>,
     log: Vec<HerdLog>,
     checks: Vec<Check>,
+    /// The archive rows the run's engines took per game day.
+    archive: Rate,
 }
 
 struct Sim {
@@ -207,6 +216,8 @@ struct Sim {
     iaf: FakeIaf,
     lairs: BTreeMap<String, Pos>,
     seed: u64,
+    /// The archive rows the engines' tapes took so far.
+    meter: Meter,
 }
 
 fn tunables() -> HerdTunables {
@@ -225,7 +236,9 @@ fn dragon_tunables() -> DragonTunables {
 
 fn build(seed: u64) -> Sim {
     let (mut w, _) = synth::world(seed);
+    world_on(&mut w);
     let mut d = Dragons::new(seed, dragon_tunables(), Tick::ZERO);
+    d.tape.set_on(true);
     let mut lairs = BTreeMap::new();
     for (key, name, x, z, dragon, age) in [
         (201u64, "Highmoor Roost", 300, -3_400, "Ashwing", 110u64),
@@ -262,6 +275,7 @@ fn build(seed: u64) -> Sim {
     let mut h = rtsim_ecology::herds::synth::valley(seed, tunables(), Tick::ZERO);
     h.log_enabled = true;
     h.trace_enabled = true;
+    h.tape.set_on(true);
     d.log_enabled = true;
     Sim {
         w,
@@ -271,10 +285,18 @@ fn build(seed: u64) -> Sim {
         iaf: FakeIaf::new(PLAYER),
         lairs,
         seed,
+        meter: Meter::new(),
     }
 }
 
 impl Sim {
+    /// Counts and empties the engines' tapes.
+    fn drain(&mut self) {
+        drain_world(&mut self.meter, &mut self.w);
+        self.meter.drain(&mut self.d.tape);
+        self.meter.drain(&mut self.h.tape);
+    }
+
     /// Runs to `to` in steps, the player standing at `at` (or absent), with the plugin answering.
     fn run(&mut self, to: Tick, player: Option<Pos>, checks: &mut Vec<String>) {
         let mut t = self.h.now();
@@ -302,6 +324,7 @@ impl Sim {
                     next.0 as f64 / TICKS_PER_DAY as f64
                 ));
             }
+            self.drain();
             t = next;
         }
     }
@@ -549,6 +572,7 @@ pub fn main(o: Options) -> i32 {
     let mid = Tick::from_days(o.days / 2);
     advance(&mut sim, mid, None, &mut errors, &mut snapshots);
     let before = sim.h.state_hash();
+    sim.drain();
     let (goods, _) = synth::goods();
     let book = synth::recipes(&synth::goods().1);
     let w2 = World::load(WorldConfig::new(sim.seed), goods, book, &sim.w.save());
@@ -568,6 +592,10 @@ pub fn main(o: Options) -> i32 {
             sim.w = w2;
             sim.d = d2;
             sim.h = h2;
+            // The loaded engines go on as the main run: their tapes are off until turned on.
+            world_on(&mut sim.w);
+            sim.d.tape.set_on(true);
+            sim.h.tape.set_on(true);
             (before, sim.h.state_hash())
         }
         (a, b, c) => {
@@ -595,6 +623,7 @@ pub fn main(o: Options) -> i32 {
         &mut snapshots,
     );
     let end = sim.h.now();
+    sim.drain();
 
     // The fence: where the flock's routes crossed the ridge line, by year.
     let ridge_z = (valley.ridge.0 * 128, (valley.ridge.1 + 1) * 128);
@@ -772,6 +801,7 @@ pub fn main(o: Options) -> i32 {
         decisions: std::mem::take(&mut sim.h.trace),
         log: std::mem::take(&mut sim.h.log),
         checks,
+        archive: Rate::new(&sim.meter, o.days as f64),
     };
     if !o.quiet {
         print(&results);
@@ -894,4 +924,5 @@ fn print(r: &Results) {
             c.detail
         );
     }
+    r.archive.print(None);
 }
