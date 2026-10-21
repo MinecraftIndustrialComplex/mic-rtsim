@@ -884,7 +884,7 @@ public final class IndustryGameTests {
                     heldBefore[0] = ind().reconciler().held();
                     reconcile(op, id[0], 1, level, fx, fz, List.of(new Delta(0, "i/64/minecraft:gold_ingot", chestPos, 7)), List.of());
                 })
-                .thenWaitUntil(() -> check("the reconcile is held", ind().reconciler().held() == heldBefore[0] + 1 && result(op) == null))
+                .thenWaitUntil(() -> check("the reconcile is held" + ReconcileAheadGameTests.pipeline(op), ind().reconciler().held() == heldBefore[0] + 1 && result(op) == null))
                 .thenExecute(() -> {
                     loadsBefore[0] = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]).size();
                     level.setChunkForced(fx, fz, true);

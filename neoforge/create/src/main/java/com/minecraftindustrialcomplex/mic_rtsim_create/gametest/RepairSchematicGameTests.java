@@ -178,7 +178,7 @@ public final class RepairSchematicGameTests {
                     reconcile(op, id[0], 1, level, fx, fz, List.of(), List.of(
                             new Destroy(beltMid, expected[0]), new Destroy(casing, expected[1]), new Destroy(chestPos, expected[2])));
                 })
-                .thenWaitUntil(io(() -> check("held", ind().reconciler().held() == mark[0] + 1)))
+                .thenWaitUntil(io(() -> check("held" + ReconcileAheadGameTests.pipeline(op), ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> {
                     level.setChunkForced(fx, fz, true);
                 })
@@ -243,11 +243,19 @@ public final class RepairSchematicGameTests {
                     check("the chest is back", level.getBlockState(chestPos).is(Blocks.CHEST));
                     check("the casing is back", AllBlocks.ANDESITE_CASING.has(level.getBlockState(casing)));
                     check("the torch is back", level.getBlockState(torch).is(Blocks.TORCH));
+                    // Create prints a belt from its last pulley back (LaunchedItem.ForBelt), so the belt comes back
+                    // facing the other way, its START and END swapped; it carries items the same way (its movement
+                    // facing follows the axis and the shaft's rotation only).
                     for (BlockPos p : List.of(beltStart, beltMid, beltEnd)) {
                         BlockState s = level.getBlockState(p);
                         check("a belt at " + p.toShortString() + ": " + s, AllBlocks.BELT.has(s)
-                                && s.getValue(BeltBlock.PART) == before.get(p).getValue(BeltBlock.PART));
+                                && s.getValue(BeltBlock.HORIZONTAL_FACING).getAxis() == before.get(p).getValue(BeltBlock.HORIZONTAL_FACING).getAxis());
                     }
+                    check("the belt's middle", level.getBlockState(beltMid).getValue(BeltBlock.PART) == BeltPart.MIDDLE);
+                    check("its ends", Set.of(level.getBlockState(beltStart).getValue(BeltBlock.PART), level.getBlockState(beltEnd).getValue(BeltBlock.PART))
+                            .equals(Set.of(BeltPart.START, BeltPart.END)));
+                    check("three segments long", level.getBlockEntity(beltMid) instanceof BeltBlockEntity b && b.getControllerBE() != null
+                            && b.getControllerBE().beltLength == 3);
                     check("the player's hole stays a hole", level.getBlockState(playerCasing).isAir());
                 }))
                 .thenExecute(() -> {
