@@ -196,8 +196,7 @@ impl IndustryLink<'_> {
             }
             let rank = fuels.iter().position(|f| {
                 i.name == *f
-                    || i
-                        .name
+                    || i.name
                         .strip_prefix(f.as_str())
                         .is_some_and(|r| r.starts_with('/'))
             });
@@ -232,7 +231,6 @@ impl IndustryLink<'_> {
             skipped: r.skipped,
         })
     }
-
 }
 
 impl Infrastructure for IndustryLink<'_> {

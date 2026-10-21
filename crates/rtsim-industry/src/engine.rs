@@ -2545,8 +2545,8 @@ impl Engine {
         // Drinking (OG-5): fuel first, up to the surviving share of the room, all of a good's stock
         // if the room allows (choices-oilgate.md OGC8: not held to the item theft cap).
         if dmg.survivors > 0 && room > 0 {
-            let mut left = (i128::from(room) * i128::from(dmg.survivors)
-                / i128::from(t.count.max(1))) as i64;
+            let mut left =
+                (i128::from(room) * i128::from(dmg.survivors) / i128::from(t.count.max(1))) as i64;
             for &g in fuels {
                 if left <= 0 {
                     break;

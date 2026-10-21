@@ -333,7 +333,7 @@ impl Baseline {
         if sweep.vary == Vary::Dragons {
             // The paged sweep and its resident twin grow the world with the dragons; the first
             // dragon sweep keeps its fixed grid.
-            let grown = sweep.name != "dragons";
+            let grown = !matches!(sweep.name.as_str(), "dragons" | "dragons_oil");
             return Spec::Dragons(super::dragons::DragonConfig {
                 dragons: value,
                 villages: if grown {
@@ -346,6 +346,7 @@ impl Baseline {
                 seed: self.seed,
                 budget_bytes: sweep.paged.then_some(super::dragons::PAGED_BUDGET),
                 save_every: sweep.paged.then_some(self.save_every_ticks),
+                oil: sweep.name == "dragons_oil",
             });
         }
         if matches!(sweep.vary, Vary::Markets | Vary::Edges) {
@@ -758,6 +759,30 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     1.1,
                     1.0,
                     "this sweep runs the rows resident; dragons_paged pages them",
+                ),
+            ],
+        },
+        // The dragons sweep with the oil gate on (OILGATE.md): fields over the grid, fire dragons
+        // that burn, wake low, fly to drink and rest.
+        Sweep {
+            name: "dragons_oil".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Dragons,
+            regions: None,
+            paged: false,
+            values: pick(&[8, 32, 128, 512], &[8, 128, 512]),
+            contracts: vec![
+                contract(
+                    Metric::CpuPerUnit,
+                    flat,
+                    0.0,
+                    "the oil gate keeps the flat cost per unobserved dragon: the reserve is a closed form, a low dragon's wake is one more event, a refuel a leg to the nearest field (a lookup of the index's regions around it) and a rest; the index is fixed by the world (a field per eight villages), not the dragons",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "the dragons sweep's rows plus the oil index, which the world fixes",
                 ),
             ],
         },
