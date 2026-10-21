@@ -20,6 +20,8 @@ rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
 rtsim-space.workspace = true
+# The event archive, read only (VIEWER.md §10.6).
+rtsim-archive = { path = "../rtsim-archive" }
 mic-viewer.workspace = true
 mic-viewer-surveyor.workspace = true
 serde.workspace = true

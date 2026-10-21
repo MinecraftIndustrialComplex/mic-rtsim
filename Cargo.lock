@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "mic-viewer"
 version = "0.1.0"
-source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=8ed7a9946aedb5252da0a8b141411dcab32340a1#8ed7a9946aedb5252da0a8b141411dcab32340a1"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=e3392c345dfc788ba57cc586bb7ff0815cc8072f#e3392c345dfc788ba57cc586bb7ff0815cc8072f"
 dependencies = [
  "png",
  "serde",
@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "mic-viewer-surveyor"
 version = "0.1.0"
-source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=8ed7a9946aedb5252da0a8b141411dcab32340a1#8ed7a9946aedb5252da0a8b141411dcab32340a1"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=e3392c345dfc788ba57cc586bb7ff0815cc8072f#e3392c345dfc788ba57cc586bb7ff0815cc8072f"
 dependencies = [
  "flate2",
  "mic-viewer",
@@ -845,6 +845,7 @@ dependencies = [
  "mic-native-rt",
  "mic-viewer",
  "mic-viewer-surveyor",
+ "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
