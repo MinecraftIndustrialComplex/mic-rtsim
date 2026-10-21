@@ -81,7 +81,7 @@ fn round_batch(round: u64, model: &mut BTreeMap<u64, Vec<u8>>) -> SaveBatch {
         b.delete(PageKey(k));
         model.remove(&k);
     }
-    if round % 9 == 0 {
+    if round.is_multiple_of(9) {
         let k = 48 + round;
         let v = page(k, round + 1, 2000);
         b.put(PageKey(k), &v);
@@ -155,7 +155,7 @@ fn saves_succeed_while_every_file_is_held_open() {
         if st.checkpoint_bytes > 0 {
             folds += 1;
         }
-        if round % 7 == 0 {
+        if round.is_multiple_of(7) {
             s.checkpoint_now()
                 .unwrap_or_else(|e| panic!("fold at save {round} with every file held open: {e}"));
             folds += 1;
@@ -231,7 +231,7 @@ fn saves_succeed_while_viewers_read_in_a_loop() {
             .commit(b, saves)
             .unwrap_or_else(|e| panic!("save {saves} while viewers read: {e}"));
         removed += st.segments_removed;
-        if saves % 25 == 0 {
+        if saves.is_multiple_of(25) {
             s.checkpoint_now()
                 .unwrap_or_else(|e| panic!("fold at save {saves} while viewers read: {e}"));
             folds += 1;
