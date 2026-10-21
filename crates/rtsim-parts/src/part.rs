@@ -149,10 +149,10 @@ impl PartKey {
         let region = if r.bool()? {
             let frame = u32::try_from(r.var_u64()?)
                 .map_err(|_| CodecError::Invalid("region frame".into()))?;
-            let rx = i32::try_from(r.var_i64()?)
-                .map_err(|_| CodecError::Invalid("region x".into()))?;
-            let rz = i32::try_from(r.var_i64()?)
-                .map_err(|_| CodecError::Invalid("region z".into()))?;
+            let rx =
+                i32::try_from(r.var_i64()?).map_err(|_| CodecError::Invalid("region x".into()))?;
+            let rz =
+                i32::try_from(r.var_i64()?).map_err(|_| CodecError::Invalid("region z".into()))?;
             Some(RegionKey { frame, rx, rz })
         } else {
             None

@@ -151,3 +151,15 @@ pub struct Layers {
     pub groups: Vec<Group>,
     pub layers: Vec<LayerDesc>,
 }
+
+impl Layers {
+    /// The list as the view store's layers page holds it.
+    pub fn to_json(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    /// The list from the view store's layers page.
+    pub fn from_json(bytes: &[u8]) -> Result<Layers, String> {
+        serde_json::from_slice(bytes).map_err(|e| format!("view layers page: {e}"))
+    }
+}

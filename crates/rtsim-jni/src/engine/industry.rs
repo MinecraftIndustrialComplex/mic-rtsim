@@ -104,7 +104,7 @@ pub(super) struct Link {
     pub(super) engine: Industry,
     /// Java's names for the dictionaries industry records use, per world: dimension, GOOD, NAME
     /// and BLOCK_STATE (Java resends them at every session start, before any record using them).
-    java_names: HashMap<(u32, u32), String>,
+    pub(super) java_names: HashMap<(u32, u32), String>,
     /// The GOOD, NAME and BLOCK_STATE ids sent as DICT commands this session. The engine's ids for
     /// these kinds are Java's own (F2), so they need no table of their own.
     dict_sent: HashSet<(u32, u32)>,
