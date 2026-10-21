@@ -24,6 +24,10 @@ rtsim-world.workspace = true
 rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
+# The headless host: `run` and `export` (VIEWER.md §12).
+rtsim-host = { path = "../rtsim-host" }
+# The heap gauge of the allocator mic_native's runtime installs (rtsim-jni, through rtsim-host).
+mic-native-rt.workspace = true
 rtsim-view.workspace = true
 rtsim-space.workspace = true
 # The viewer's HTTP server and page (rtsim-cli view). MPL-2.0.

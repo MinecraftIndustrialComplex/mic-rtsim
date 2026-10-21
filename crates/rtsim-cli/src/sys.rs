@@ -1,69 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! What the bench measures about the process and the machine: heap bytes through a counting
+//! What the bench measures about the process and the machine: heap bytes through the counting
 //! allocator, thread CPU time, resident set size, and a description of the machine for the
 //! results file.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
-/// Counts live heap bytes and their peak. One relaxed atomic add per allocation; the bench pays it
-/// in every configuration alike, so it does not bend a slope.
-pub struct Counting;
+use mic_native_rt::memory::GAUGE;
 
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc(layout) };
-        if !p.is_null() {
-            let now = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            PEAK.fetch_max(now, Ordering::Relaxed);
-        }
-        p
-    }
-
-    /// Forwarded, so zeroed memory stays lazily zeroed (calloc): the default would write zeros
-    /// through every page and inflate the resident size the bench reports.
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc_zeroed(layout) };
-        if !p.is_null() {
-            let now = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            PEAK.fetch_max(now, Ordering::Relaxed);
-        }
-        p
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) };
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if !p.is_null() {
-            if new_size >= layout.size() {
-                let now = LIVE.fetch_add(new_size - layout.size(), Ordering::Relaxed)
-                    + (new_size - layout.size());
-                PEAK.fetch_max(now, Ordering::Relaxed);
-            } else {
-                LIVE.fetch_sub(layout.size() - new_size, Ordering::Relaxed);
-            }
-        }
-        p
-    }
-}
+// Heap bytes are counted by the global allocator mic_native's runtime installs in rtsim-jni (linked
+// here for `run`): one relaxed atomic add per allocation, paid in every configuration alike, so it
+// does not bend a slope. A binary can have one global allocator only, so the bench reads that one.
 
 pub fn heap_live() -> usize {
-    LIVE.load(Ordering::Relaxed)
+    GAUGE.in_use.load(Ordering::Relaxed).max(0) as usize
 }
 
 pub fn heap_peak() -> usize {
-    PEAK.load(Ordering::Relaxed)
+    GAUGE.peak.load(Ordering::Relaxed).max(0) as usize
 }
 
 pub fn reset_heap_peak() {
-    PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+    GAUGE
+        .peak
+        .store(GAUGE.in_use.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 /// CPU time of the calling thread, in nanoseconds. Unlike wall time it does not count time the

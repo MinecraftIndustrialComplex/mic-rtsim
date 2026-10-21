@@ -1560,7 +1560,9 @@ impl Dragons {
                 self.fly(w, d, Purpose::Hunt(t), at);
             }
             None => {
-                self.dragons.get_mut(d).expect("live").fruitless += 1;
+                // Once a day with nothing in range: a u8 that would overflow in 256 days.
+                let x = self.dragons.get_mut(d).expect("live");
+                x.fruitless = x.fruitless.saturating_add(1);
                 self.stats.fruitless += 1;
                 if chain > 0 {
                     self.fly(w, d, Purpose::Home, at);
@@ -2410,7 +2412,8 @@ impl Dragons {
         };
         self.record_hunt(at, d, quarry, food, taken);
         if !any {
-            self.dragons.get_mut(d).expect("live").fruitless += 1;
+            let x = self.dragons.get_mut(d).expect("live");
+            x.fruitless = x.fruitless.saturating_add(1);
         }
         self.fly(w, d, Purpose::Home, at);
     }
