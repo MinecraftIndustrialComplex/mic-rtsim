@@ -1066,7 +1066,7 @@ public final class Cycles {
 
     /**
      * Ticks a hand-off loop adds to a machine's own cycle when its next input can only arrive after it has
-     * emptied (choice GB59). Each actor in the loop (the machine, the mover that empties it if not itself,
+     * emptied (choice GB43). Each actor in the loop (the machine, the mover that empties it if not itself,
      * the parked chute that refills it) acts on its own tick; a hand-off from one to the next costs a tick
      * unless the receiver ticks after the giver in the level's ticker order, in which case it acts in the
      * same tick. Around a loop of {@code actors} block entities that happens for at least one and at most

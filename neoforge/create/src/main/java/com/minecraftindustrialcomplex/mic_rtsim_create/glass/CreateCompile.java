@@ -181,7 +181,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         /** The kinetic block entity whose domain the node took ({@link #attachKinetic}), or Long.MIN_VALUE. */
         long kinPos = Long.MIN_VALUE;
         /**
-         * Ticks a hand-off loop adds to each of its crafts' cycles at level {@code l} (choice GB59), or null:
+         * Ticks a hand-off loop adds to each of its crafts' cycles at level {@code l} (choice GB43), or null:
          * a machine that refills only once empty, from a parked chute.
          */
         java.util.function.IntFunction<Rat> handOff;
@@ -2390,7 +2390,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     // ---- step 6: rates --------------------------------------------------------------------------
 
     /**
-     * Hand-off loops (choice GB59): a machine that takes its next input only once empty (a saw's or crushing
+     * Hand-off loops (choice GB43): a machine that takes its next input only once empty (a saw's or crushing
      * wheels' ProcessingInventory; a fan zone on a depot, which holds one stack), fed by a downward chute
      * directly above it whose next stack waits parked at 0.5, has the loop's hand-offs on top of its own
      * cycle ({@link Cycles#chuteHandOff}). A saw or crusher hands its outputs on in its own tick; a depot
