@@ -42,7 +42,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  * the result keeps {@code processingTime} -1 so it is never blasted again): 16 sand per
  * 1 + 151 + 4 + 3 = 159 ticks per station, P = 2 x 16 x 1200 / 159 = 241.5 glass per minute into the chest.
  * The arm (deposit: the funnel only, so it never lifts sand: {@code getDistributableAmount}) is free when a
- * depot finishes: the two stations settle 16 ticks apart (one arm trip) after the first, simultaneous batch.
+ * depot finishes: the two stations settle 16 ticks apart (one arm trip) after the first, simultaneous batch (UNVERIFIED: not
+ * logged; the measured P of about 240 per minute from the cycle times below agrees).
  *
  * <p><b>Drain</b> ({@code HopperBlockEntity.tryMoveItems}, {@code MOVE_ITEM_SPEED} 8): one item per 8 ticks,
  * D = 150 per minute, as long as the output chest is not empty (it never is: see the low point below).
@@ -78,7 +79,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  * items, and a least-squares slope over W ticks of anything inside a band B differs from the trend by at
  * most 1.5 B / W per tick (the worst case is a step at mid-window). Sand taken from the chests is glass made
  * plus what is in flight: per station 0 to 16 in the chute and 0 to 16 on the depot, and up to 16 in the arm,
- * a band of {@value #FLIGHT} more. The regime bounds themselves are [0, P] (all off, all on).
+ * a band of {@value #FLIGHT} more (derived, not measured). The regime bounds themselves are [0, P] (all off, all on).
  *
  * <p>Stocks: 1,024 sand per station (about 500 used in warm-up plus window); the sink takes 975 of its 1,728;
  * the output chest starts at 96 glass so the first cycle begins in warm-up.

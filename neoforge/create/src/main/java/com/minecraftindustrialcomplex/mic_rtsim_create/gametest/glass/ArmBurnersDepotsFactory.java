@@ -60,7 +60,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  * trip (four moves) and has two depot trips per 159 ticks plus two coal trips per 1,600, so it is free when a
  * depot finishes except when a coal trip overlaps (at most 2 x 16 ticks of delay per 1,600, under 2%).
  * EXACT: no bounded rule lies on the path (the arm, a mover, has spare capacity). Measured 240.1 per minute
- * (159.9 ticks per batch: the coal trips' overlaps, inside the 2% above).
+ * (159.9 ticks per batch; UNVERIFIED that the extra 0.9 tick is the coal trips' overlaps, inside the 2% above).
  *
  * <p>Placement traps: the smart chute's default block state is POWERED true, which never activates
  * ({@link SteamHelpers#smartChute} places it unpowered), and relative y 0 is cleared to air under the yard's

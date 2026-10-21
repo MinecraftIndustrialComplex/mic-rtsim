@@ -80,7 +80,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
  * capacity 0, and the whole steam domain stops in that tick: it stops, it does not overstress (stress needs a
  * running source). The chutes under the millstones land their last stacks within {@value #DRAIN_TICKS} ticks.
  * Gap {@value #SETTLE} ticks, then the stopped phase: every good at 0. Measured: the shaft stopped between
- * window ticks 2,490 and 2,500 (the buffer was nearly empty at the cut).
+ * window ticks 2,490 and 2,500, at 2,496 in the last run (UNVERIFIED: the pipe's buffer at the cut was not
+ * logged).
  *
  * <p>Placement trap: relative y 1 is the yard's polished andesite floor and y 0 is cleared to air
  * ({@code StructureUtils.clearSpaceForStructure}), so the channel is dug out of the floor with stone under it.
