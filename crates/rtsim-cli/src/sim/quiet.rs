@@ -102,8 +102,14 @@ fn series_world(o: &Options) -> (Vec<f64>, Vec<WorksWindow>, Result<(), String>,
             spent: spent(&w) - spent0,
             purses,
         });
-        // Commands pile up with no bridge to take them.
-        let _ = w.take_commands();
+        // The bridge: every bought work placed at the window's end (a village buys its next
+        // work once the last one is answered, MSC13); other commands are dropped.
+        for c in w.take_commands() {
+            if let Some(op) = c.work_op() {
+                let now = w.now();
+                w.work_result(op, true, now);
+            }
+        }
         if let Err(e) = w.check_conserved(w.now()) {
             check = Err(format!("day {day}: {e}"));
         }

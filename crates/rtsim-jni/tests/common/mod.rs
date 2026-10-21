@@ -119,6 +119,9 @@ pub struct Java {
     pub module_mask: u32,
     /// Phase 1 commands applied, in order: (kind, record bytes).
     pub p1: Vec<(u16, Vec<u8>)>,
+    /// Answer every new PLACE_HOUSE NOT_FREE (no plot), as HouseBuilder does when its search
+    /// finds none.
+    pub no_free_plot: bool,
     /// Players reported every tick: (UUID, dimension id, position).
     pub players: Vec<((u64, u64), u32, [f64; 3])>,
     /// The industry world this Java plays (rtsim-industry's fake world in remote mode), if any.
@@ -236,6 +239,7 @@ impl Java {
             failed_seen: false,
             module_mask: 0,
             p1: Vec::new(),
+            no_free_plot: false,
             players: Vec::new(),
             mc: None,
             ind_cmd_seq: HashMap::new(),
@@ -625,6 +629,8 @@ impl Java {
                     cmd::WRITE_GOSSIP | cmd::PLACE_HOUSE | cmd::SPAWN_RESIDENT => {
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP
+                        } else if rec.kind == cmd::PLACE_HOUSE && self.no_free_plot {
+                            obs::command_result::NOT_FREE
                         } else {
                             if rec.kind == cmd::PLACE_HOUSE {
                                 let village = wire::u64_at(rec.bytes, cmd::place_house::VILLAGE);
