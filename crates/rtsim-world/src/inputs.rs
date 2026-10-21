@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The phase 1 world's inputs, as a log (choice V6).
+//! The phase 1 world's inputs, as a log (choice V6). Moved here from rtsim-jni so a reader of the
+//! pages outside the JVM (rtsim-view's `load_world`) replays the log with the engine's own code.
 //!
 //! The phase 1 world (`rtsim_world::World`) is deterministic: given the same inputs at the same
 //! world ticks it reaches the same state, bit for bit (`state_hash`). Everything that changes it
@@ -11,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::{CaravanId, NodeData, Side, World};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Reader, Writer};
 use rtsim_kernel::handle::Handle;
@@ -19,7 +21,6 @@ use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::labour::ResourceId;
 use rtsim_trade::{Amount, GoodId};
 use rtsim_travel::caravan::CaravanKey;
-use rtsim_world::{CaravanId, NodeData, Side, World};
 
 /// A player by UUID halves.
 pub type Uuid = (u64, u64);
