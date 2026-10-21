@@ -98,6 +98,7 @@ fn the_mirrored_page_keys_are_the_links() {
     assert_eq!(keys::CONFLICT, m::KEY_CONFLICT);
     assert_eq!(keys::WORLD_MODEL, m::WORLD_MODEL_META);
     assert_eq!(keys::HASH_MAGIC, m::HASH_MAGIC);
+    assert_eq!(keys::ARCHIVE_SERIAL, m::ARCHIVE_SERIAL);
     for k in [m::KEY_DRAGONS, m::KEY_HERDS, m::phase1::KEY_META] {
         assert_eq!(keys::hash_key(k), m::hash_key(k));
     }
@@ -532,6 +533,17 @@ fn the_iron_line_saved_by_the_link_draws_its_industry_layers() {
 
 // ---- the live source (V4) -----------------------------------------------------------------------
 
+/// An events query over all time, as the routes ask one with no `from` or `to`.
+fn all_time(frame: Option<String>, limit: usize) -> EventQuery {
+    EventQuery {
+        frame,
+        from: i64::MIN,
+        to: i64::MAX,
+        limit,
+        ..EventQuery::default()
+    }
+}
+
 /// Marks as sorted JSON: the same marks, whatever order each source drew them in.
 fn sorted(rows: Option<&mic_viewer::scene::LayerRows>) -> Vec<String> {
     let mut v: Vec<String> = rows
@@ -625,11 +637,7 @@ fn live_matches_save(name: &str, world: &Path) -> LiveSeen {
             }
         }
         // The timeline: nothing pending is newer than the save, so the save's own answers.
-        let q = EventQuery {
-            frame: Some(f.clone()),
-            limit: 500,
-            ..EventQuery::default()
-        };
+        let q = all_time(Some(f.clone()), 500);
         let (ea, eb): (EventsAnswer, EventsAnswer) = (save.events(&q), live.events(&q));
         assert_eq!(
             serde_json::to_value(&ea).unwrap(),
@@ -738,5 +746,116 @@ fn units_the_tap_met_evicted_are_drawn_from_the_save() {
         live.layer_sources()
     );
     assert!(from_save > 0, "units drawn from the save");
+    let _ = std::fs::remove_dir_all(&world);
+}
+
+/// The live timeline past the save: events the engine recorded after the last save are the view
+/// store's pending rows (§10.3), shown after the save's own and streamed once; the map and cards
+/// are the state now, with a card of the live fields for a thing newer than the save.
+#[test]
+fn the_live_timeline_and_map_run_past_the_save() {
+    use std::sync::atomic::Ordering::Acquire;
+    let world = tmpdir("view-live-past");
+    let e = engine(&world.join("rtsim"), 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = 0b1111;
+    for (v, structure, x, z) in &VILLAGES[..2] {
+        adopt(&mut j, *v, structure, "human", 90, *x, *z);
+    }
+    j.idle();
+    // A save: the two adoptions are in the archive.
+    let saves = e.stats.saves_done.load(Acquire);
+    e.order(vec![rtsim_jni::orders::Order::SaveAtNextStep])
+        .unwrap();
+    j.idle();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while e.stats.saves_done.load(Acquire) == saves {
+        assert!(std::time::Instant::now() < deadline, "the save committed");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    write_journal(&world, &j.dict);
+    // A day on, a third village: after the save, so only the view store has it.
+    j.game_time += TICKS_PER_DAY as i64;
+    j.idle();
+    let (v, structure, x, z) = VILLAGES[2];
+    adopt(&mut j, v, structure, "human", 90, x, z);
+    j.idle();
+    j.idle();
+    assert!(e.stats.archive_pending_rows.load(Acquire) > 0);
+    tap_flush(&world, &e);
+    // The server stops without another save.
+    e.close(false, Duration::from_secs(5)).unwrap();
+
+    let save = View::open(&world, Limits::default()).unwrap();
+    let live = LiveView::open(&world, Limits::default(), None, None).unwrap();
+    let save_now = save.saved().now();
+    let w = live.world();
+    assert!(w.time.tick > save_now, "{} after {save_now}", w.time.tick);
+    // Map: three villages now, two in the save.
+    let frame = save.frames().next().unwrap().to_owned();
+    let n = |b: &dyn Backend| {
+        b.scene(&frame, None)
+            .and_then(|s| s.layers.get("settle.villages").map(|r| r.len()))
+            .unwrap_or(0)
+    };
+    assert_eq!((n(&save), n(&*live)), (2, 3));
+    // The new village's card: its live fields, said to be newer than the save.
+    let ids = |b: &dyn Backend| -> std::collections::BTreeSet<String> {
+        b.scene(&frame, None)
+            .and_then(|s| s.layers.get("settle.villages").cloned())
+            .map(|r| {
+                r.marks()
+                    .iter()
+                    .filter_map(|m| m.id().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (old, now) = (ids(&save), ids(&*live));
+    let new: Vec<&String> = now.difference(&old).collect();
+    assert_eq!(new.len(), 1, "{old:?} {now:?}");
+    let c = live
+        .card("settle.villages", new[0], None)
+        .expect("a card of the live fields");
+    assert_eq!(c.sections[0].title, "Now");
+    assert!(
+        c.note
+            .as_deref()
+            .unwrap_or("")
+            .contains("new since the last save")
+    );
+    // Timeline: the save's rows and the pending rows past it.
+    let q = all_time(Some(frame.clone()), 500);
+    let (a, b) = (save.events(&q), live.events(&q));
+    let past: Vec<_> = b.rows.iter().filter(|r| r.t > save_now).collect();
+    assert!(!past.is_empty(), "pending rows past the save");
+    assert_eq!(b.rows.len(), a.rows.len() + past.len());
+    assert!(a.rows.iter().all(|r| r.t <= save_now));
+    assert!(b.rows.windows(2).all(|p| p[0].t >= p[1].t), "newest first");
+    for r in &past {
+        assert!(
+            w.event_kinds.iter().any(|k| k.id == r.kind),
+            "kind {} is listed",
+            r.kind
+        );
+    }
+    let h = live.histogram(&all_time(Some(frame.clone()), 50));
+    let total: u64 = h.series.values().flatten().map(|n| *n as u64).sum();
+    let saved: u64 = save
+        .histogram(&EventQuery {
+            to: w.time.tick + 1,
+            ..all_time(Some(frame.clone()), 50)
+        })
+        .series
+        .values()
+        .flatten()
+        .map(|n| *n as u64)
+        .sum();
+    assert_eq!(total, saved + past.len() as u64, "{h:?}");
+    // The stream sends each pending event once.
+    let mut cursor = 0;
+    let first = live.events_since(&mut cursor);
+    assert_eq!(first.len(), past.len());
+    assert!(live.events_since(&mut cursor).is_empty());
     let _ = std::fs::remove_dir_all(&world);
 }
