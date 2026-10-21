@@ -538,6 +538,9 @@ impl Decode for LegIndex {
             stats,
             // Session state, handed over again by the engine host (topology choice TP6).
             topo: rtsim_space::topology::all_flat(),
+            // Session state (LP2): the first boundary the owner's clock passes purges.
+            purge_every: crate::legs::PURGE_EVERY,
+            purged_through: 0,
         })
     }
 }
