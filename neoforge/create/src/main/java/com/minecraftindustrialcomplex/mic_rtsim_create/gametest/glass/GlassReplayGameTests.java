@@ -253,6 +253,8 @@ public final class GlassReplayGameTests {
         String why = "not read";
         int awayReports;
         int prefix = -1;
+        /** The far report's completed windows when last polled before eligibility. */
+        long windowsSeen = -1;
         final List<String> failures = new ArrayList<>();
         String last = "starting";
 
@@ -468,6 +470,12 @@ public final class GlassReplayGameTests {
                 return;
             fr = report(run, run.fd);
             run.last = fr == null ? "far copy: no complete compile" : "far copy: " + fr.summary() + "; " + fr.replay().summary();
+            if (fr != null && fr.windowsCompleted() != run.windowsSeen) {
+                // A window that does not pass keeps the copy from eligibility: log what it measured, per good.
+                run.windowsSeen = fr.windowsCompleted();
+                if (fr.windowsCompleted() > 0 && fr.verdict() != GlassReport.PASS)
+                    logReport(run, "far window " + fr.windowsCompleted() + " not a pass", fr);
+            }
             if (fr != null && fr.checksum().acceptedAt() > run.now() + WINDOW) {
                 // The GameTest server starts every run at game time 0 while the world's rtsim pages keep the
                 // engine's clock: no window opens until the game catches up. Not the glass box's fault.
