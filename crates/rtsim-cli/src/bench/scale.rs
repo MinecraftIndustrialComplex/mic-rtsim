@@ -292,7 +292,7 @@ impl Baseline {
                 gap_days: 10_000,
                 seed: self.seed,
                 wide,
-                paged: sweep.paged.then(|| super::herds::HerdsPaging {
+                paged: sweep.paged.then_some(super::herds::HerdsPaging {
                     budget_bytes: HERDS_BUDGET,
                     save_every_ticks: self.save_every_ticks,
                 }),
@@ -329,7 +329,7 @@ impl Baseline {
                 warmup_days: 10,
                 days: self.days,
                 seed: self.seed,
-                paged: sweep.paged.then(|| super::herds::HerdsPaging {
+                paged: sweep.paged.then_some(super::herds::HerdsPaging {
                     budget_bytes: MARKETS_BUDGET,
                     save_every_ticks: self.save_every_ticks,
                 }),
