@@ -443,6 +443,9 @@ pub enum Fault {
     MidCheckpoint,
     /// The new root is in place; the log it replaced and dead index segments were never deleted.
     AfterCheckpoint,
+    /// Not a save point: [`PageStore::get`] succeeds `after` more times, then fails like a disk
+    /// read error until the fault is cleared. The store is not poisoned.
+    Read { after: u32 },
 }
 
 /// One save generation: its number and the observation sequence its pages include (A9).
@@ -660,6 +663,8 @@ pub struct PageStore {
     files: Mutex<HashMap<u32, File>>,
     poisoned: bool,
     fault: Option<Fault>,
+    /// [`Fault::Read`]: reads left before they fail; `u64::MAX` when no read fault is set.
+    reads_left: std::sync::atomic::AtomicU64,
 }
 
 impl PageStore {
@@ -693,6 +698,7 @@ impl PageStore {
             files: Mutex::new(HashMap::new()),
             poisoned: false,
             fault: None,
+            reads_left: std::sync::atomic::AtomicU64::new(u64::MAX),
         };
         // Only a root that is certainly absent means "start from empty". Any other failure to
         // read it must stop here: treating it as absent would make every segment a stray.
@@ -787,6 +793,39 @@ impl PageStore {
     }
 
     /// Every page key, in order, reading every index block without disturbing the cache.
+    /// The ids of every page of one table, in order, reading only that table's index blocks.
+    /// Costs the table's size: for whole-table passes.
+    pub fn table_ids(&self, table: u16) -> Result<Vec<u64>> {
+        let lo = PageKey::new(table, 0).0;
+        let hi = lo | ((1 << 48) - 1);
+        let mut ids = std::collections::BTreeSet::new();
+        for (&b, &bloc) in self.blocks.range(lo >> BLOCK_BITS..=hi >> BLOCK_BITS) {
+            let cached = lock(&self.cache)
+                .get(b)
+                .map(|d| d.to_vec().into_boxed_slice());
+            let data = match cached {
+                Some(d) => d,
+                None => self.read_block(bloc)?,
+            };
+            for (i, l) in data.iter().enumerate() {
+                if l.segment != 0 {
+                    ids.insert(PageKey(b << BLOCK_BITS | i as u64).id());
+                }
+            }
+        }
+        for (k, v) in &self.overlay {
+            if k.table() != table {
+                continue;
+            }
+            if v.is_some() {
+                ids.insert(k.id());
+            } else {
+                ids.remove(&k.id());
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+
     pub fn try_keys(&self) -> Result<Vec<PageKey>> {
         let mut keys = std::collections::BTreeSet::new();
         for (&b, &bloc) in &self.blocks {
@@ -862,6 +901,11 @@ impl PageStore {
 
     #[doc(hidden)]
     pub fn inject_fault(&mut self, fault: Option<Fault>) {
+        let left = match fault {
+            Some(Fault::Read { after }) => u64::from(after),
+            _ => u64::MAX,
+        };
+        *self.reads_left.get_mut() = left;
         self.fault = fault;
     }
 
@@ -955,8 +999,22 @@ impl PageStore {
 
     /// The page's bytes, CRC-checked and decompressed, or `None` if the store has no such page.
     pub fn get(&mut self, key: PageKey) -> Result<Option<Vec<u8>>> {
+        self.get_shared(key)
+    }
+
+    /// [`PageStore::get`] through a shared reference, so a paged table can load through a store
+    /// it shares with the save path ([`crate::rows::PageSource`]).
+    pub fn get_shared(&self, key: PageKey) -> Result<Option<Vec<u8>>> {
         if self.poisoned {
             return Err(PageError::Poisoned);
+        }
+        use std::sync::atomic::Ordering;
+        let left = self.reads_left.load(Ordering::Relaxed);
+        if left != u64::MAX {
+            if left == 0 {
+                return Err(PageError::Injected);
+            }
+            self.reads_left.store(left - 1, Ordering::Relaxed);
         }
         let Some(loc) = self.lookup(key)? else {
             return Ok(None);
