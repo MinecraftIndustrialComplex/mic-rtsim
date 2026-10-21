@@ -3,10 +3,13 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.animal.IronGolem;
@@ -17,7 +20,11 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.common.util.BlockSnapshot;
+import net.neoforged.neoforge.common.util.FakePlayer;
+import net.neoforged.neoforge.common.util.FakePlayerFactory;
 import net.neoforged.neoforge.event.entity.living.FinalizeSpawnEvent;
+import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -324,6 +331,71 @@ public final class ThreatGameTests {
                     boolean griefing = helper.getLevel().getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_MOBGRIEFING);
                     check("the creeper broke blocks (mobGriefing " + griefing + ")", !griefing || siege.getInt(IndRecords.Fight.BLOCKS_DESTROYED) > 0);
                     ThreatConfig.setForTest(ThreatConfig.FIGHT_GAP, null);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * INDUSTRY.md §3.3: machine edits are no change. A Create deployer is a NeoForge FakePlayer and fires the
+     * place and break events a player does (on a stress world a busy district's glass compile restarted
+     * twice a second, every deployer swing journaled an IND_EDIT, and its defences were surveyed every 200
+     * ticks). A FakePlayer placing and breaking a furnace in a district makes no IND_EDIT, no seed and asks
+     * for no survey; the same events from a server player make all three.
+     */
+    @GameTest(template = YARD, batch = "threat_5", timeoutTicks = 400)
+    public static void machineEditsAreNoPlayerEdits(GameTestHelper helper) {
+        fastConfig();
+        forgetAll(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos chest = inChunk(helper, 1, 1);
+        BlockPos furnace = inChunk(helper, 8, 8);
+        BlockPos machine = inChunk(helper, 4, 4);
+        ServerPlayer player = FakePlayers.editor(level);
+        long[] id = {0};
+        int[] edits = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, chest, Blocks.CHEST.defaultBlockState());
+                    set(helper, furnace, Blocks.FURNACE.defaultBlockState());
+                    playerPlaced(helper, chest);
+                    playerPlaced(helper, furnace);
+                })
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, furnace);
+                    check("the district", d != null && d.chunks.contains(chunk(chest)) && d.chunks.contains(chunk(machine)));
+                    id[0] = d.id;
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    edits[0] = received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, id[0]).size();
+                    check("no survey asked before the edits", !ind().threats().surveyAsked(id[0]));
+                    set(helper, machine, Blocks.FURNACE.defaultBlockState());
+                    FakePlayer deployer = FakePlayerFactory.getMinecraft(level);
+                    NeoForge.EVENT_BUS.post(new BlockEvent.EntityPlaceEvent(BlockSnapshot.create(level.dimension(), level, machine),
+                            level.getBlockState(machine.below()), deployer));
+                    NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, machine, level.getBlockState(machine), deployer));
+                    check("a machine's edit asks for no survey", !ind().threats().surveyAsked(id[0]));
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("a machine's furnace is no seed", !level.getChunkAt(machine).getData(IndustryAttachments.SEEDS.get()).contains(machine.asLong()));
+                    NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, machine, level.getBlockState(machine), player));
+                    check("a player's edit asks for a survey", ind().threats().surveyAsked(id[0]));
+                    playerPlaced(helper, machine);
+                })
+                .thenWaitUntil(() -> {
+                    List<ByteBuffer> all = received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, id[0]);
+                    check("two new IND_EDITs", all.size() - edits[0] >= 2);
+                    List<ByteBuffer> fresh = all.subList(edits[0], all.size());
+                    int players = 0;
+                    for (ByteBuffer e : fresh)
+                        if (e.getLong(IndRecords.Edit.PLAYER_MOST) == player.getUUID().getMostSignificantBits()
+                                && e.getLong(IndRecords.Edit.PLAYER_LEAST) == player.getUUID().getLeastSignificantBits())
+                            players++;
+                    record("machineEditsAreNoPlayerEdits", "new edits (" + engineName() + ")", fresh.size() + ", the player's " + players);
+                    check("only the player's break and placement are edits: " + fresh.size() + " new, " + players + " the player's",
+                            fresh.size() == 2 && players == 2);
+                    check("a player's furnace is a seed", level.getChunkAt(machine).getData(IndustryAttachments.SEEDS.get()).contains(machine.asLong()));
                 })
                 .thenSucceed();
     }

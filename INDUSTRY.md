@@ -156,7 +156,9 @@ inventories only.
 | Ender Transmission channels, PowerGrid lines | plugins (§8.6) |
 
 **What is not a change:** machine edits (deployers, drills, saws, harvesters) and chunk loaders
-switching on and off. Only `BlockEvent`s with a player make a district stale.
+switching on and off. Only `BlockEvent`s with a player make a district stale; a NeoForge `FakePlayer`
+(`Player.isFakePlayer`: a Create deployer is one) is a machine, so its placements are no seed and its
+edits no `IND_EDIT` and no threat survey. A FakePlayer breaking boundary stock is still a port.
 
 ### 3.4 Steady state, cycles and confidence (I5)
 

@@ -153,6 +153,11 @@ public final class CreatePlugin implements IndustryPlugin {
     }
 
     @Override
+    public String perfLine() {
+        return TrainWatch.perfLine();
+    }
+
+    @Override
     public boolean expand(ItemStack stack, ItemSink out) {
         if (!PackageItem.isPackage(stack))
             return false;

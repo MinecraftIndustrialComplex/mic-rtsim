@@ -102,8 +102,14 @@ final class IndustryEvents {
             ind.districts.onChunkUnload(level, chunk);
     }
 
+    /*
+     * A FakePlayer (a Create deployer, a mod's block breaker) is a machine: its placements and breaks are
+     * no edit and no seed (INDUSTRY.md §3.3). A busy district's deployers otherwise restart its glass
+     * compile on every swing and journal an IND_EDIT for each.
+     */
     private static void onPlace(BlockEvent.EntityPlaceEvent event) {
-        if (!(event.getEntity() instanceof Player player) || !(event.getLevel() instanceof ServerLevel level) || IndustryApi.current() == null)
+        if (!(event.getEntity() instanceof Player player) || player.isFakePlayer() || !(event.getLevel() instanceof ServerLevel level)
+                || IndustryApi.current() == null)
             return;
         if (event instanceof BlockEvent.EntityMultiPlaceEvent multi) {
             for (BlockSnapshot snap : multi.getReplacedBlockSnapshots())
@@ -119,8 +125,9 @@ final class IndustryEvents {
         Industry ind = IndustryApi.current();
         if (ind == null)
             return;
-        ind.ports.breaking(event.getPlayer(), level, event.getPos());
-        ind.districts.playerBroke(level, event.getPos(), event.getPlayer().getUUID());
+        ind.ports.breaking(event.getPlayer(), level, event.getPos()); // a machine breaking boundary stock still moves goods
+        if (!event.getPlayer().isFakePlayer())
+            ind.districts.playerBroke(level, event.getPos(), event.getPlayer().getUUID());
     }
 
     private static void onRightClick(PlayerInteractEvent.RightClickBlock event) {

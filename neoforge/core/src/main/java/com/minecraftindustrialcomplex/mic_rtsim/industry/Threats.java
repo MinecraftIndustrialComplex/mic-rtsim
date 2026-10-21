@@ -107,6 +107,12 @@ public final class Threats {
         return s == null || s.lastSurvey == null ? null : s.lastSurvey.clone();
     }
 
+    /** Whether a new survey of the district was asked for (an edit, a fight, a command) and has not started (GameTests). */
+    public boolean surveyAsked(long district) {
+        State s = states.get(district);
+        return s != null && s.dirty;
+    }
+
     /** The standing heights around the first machine of the district's last survey (debugging). */
     public String lastAround(long district) {
         State s = states.get(district);
