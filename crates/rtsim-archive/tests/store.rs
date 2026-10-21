@@ -333,6 +333,34 @@ fn a_lost_or_damaged_index_is_rebuilt_from_the_chunks() {
 }
 
 #[test]
+fn the_reader_skips_a_chunk_damaged_after_indexing() {
+    let dir = Dir::new("skip");
+    let mut a = Archive::open(dir.path()).unwrap();
+    let mut dict = Dictionary::new();
+    for obs in 1..=3 {
+        let mut p = Pending::new();
+        fill(&mut p, &mut dict, obs * 1_000, 20);
+        p.push(&leg(&mut dict, obs * 1_000, 10, obs));
+        a.flush(p.take(), st(obs, obs * 7), Some(&dict)).unwrap();
+    }
+    drop(a);
+    // The index still names chunk 1, but its body no longer matches its CRC.
+    let c1 = dir.path().join(chunk_name(1));
+    let mut c = fs::read(&c1).unwrap();
+    let last = c.len() - 1;
+    c[last] ^= 0xFF;
+    fs::write(&c1, c).unwrap();
+    let r = ArchiveReader::open(dir.path(), None).unwrap().unwrap();
+    assert_eq!(r.entries().len(), 3);
+    assert!(r.read(&r.entries()[1]).is_err());
+    assert_eq!(r.rows(0, u64::MAX).unwrap().len(), 2 * 21);
+    assert_eq!(r.damaged(), 1);
+    assert!(r.legs_at(2_005).unwrap().is_empty());
+    assert_eq!(r.legs_at(3_005).unwrap().len(), 1);
+    assert_eq!(r.damaged(), 2);
+}
+
+#[test]
 fn a_damaged_dictionary_clears_the_archive() {
     let dir = Dir::new("dict");
     let mut a = Archive::open(dir.path()).unwrap();
