@@ -101,8 +101,8 @@ pub fn run(c: &MarketConfig) -> Measured {
             .unwrap_or_else(std::env::temp_dir)
             .join(format!("markets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let store = PageStore::open(&dir, Durability::NoSync)
-            .unwrap_or_else(|e| panic!("page store: {e}"));
+        let store =
+            PageStore::open(&dir, Durability::NoSync).unwrap_or_else(|e| panic!("page store: {e}"));
         let store = Arc::new(RwLock::new(store));
         w.attach_store(store.clone(), p.budget_bytes as usize);
         let mut pg = Paged {

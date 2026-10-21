@@ -678,7 +678,9 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
     }
 
     fn row_mut(&mut self, h: RegionId<M>) -> Option<&mut Region<M>> {
-        self.rows.get_mut(Self::row_handle(h)).map(|r| &mut r.region)
+        self.rows
+            .get_mut(Self::row_handle(h))
+            .map(|r| &mut r.region)
     }
 
     fn reschedule(&mut self, h: RegionId<M>) {
