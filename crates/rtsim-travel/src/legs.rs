@@ -440,7 +440,8 @@ impl LegIndex {
     }
 
     /// Drops the stale bookings (of legs replanned or removed since) in every window that ended at
-    /// or before `before`, and the cells they leave empty; returns how many it dropped.
+    /// or before `before`, and every cell there left empty (by this purge or by the reads, which
+    /// drop stale bookings but keep the cell); returns how many bookings it dropped.
     ///
     /// Exact (choice LP1): every read keeps only live bookings ([`LegIndex::sharing`],
     /// [`LegIndex::in_region`]), so no read can tell a purged index from an unpurged one, and a
@@ -461,13 +462,10 @@ impl LegIndex {
                 legs.get(s.leg)
                     .is_some_and(|r| r.generation == s.generation)
             });
-            if v.len() == n {
-                continue;
-            }
             dropped += (n - v.len()) as u64;
             if v.is_empty() {
                 empty.push(*cell);
-            } else {
+            } else if v.len() != n {
                 v.shrink_to_fit();
             }
         }
@@ -597,11 +595,17 @@ mod tests {
         assert_eq!(ix.live_bookings(), live, "every live booking stays");
         assert!(in_window(&ix, b, 0) > 0);
         assert!(in_window(&ix, a, 1) > 0, "window 1 has not ended");
-        // Once b is cancelled and every window has ended, a2's bookings are all that is left.
+        // Once b is cancelled and every window has ended, a2's bookings are all that is left, and
+        // a cell a read emptied goes too.
+        let only_b = *ix.cells.iter().find(|(_, v)| **v == [b]).unwrap().0;
         ix.cancel(b.leg);
+        let (w, frame, rx, rz) = only_b;
+        assert!(ix.in_region(frame, rx, rz, Tick(w * 1000)).is_empty());
+        assert!(ix.cells[&only_b].is_empty(), "the read keeps the cell");
         ix.purge_stale(Tick(10_000));
+        assert!(!ix.cells.contains_key(&only_b));
         let a2_cells = ix.cells_of(ix.get(a2.leg).unwrap().path).len();
-        assert_eq!(ix.booking_counts().0, a2_cells);
+        assert_eq!(ix.booking_counts(), (a2_cells, a2_cells));
         assert_eq!(ix.stats().stale_dropped, (all - a2_cells) as u64);
         assert_eq!(ix.in_region(0, 1, 0, Tick(1500)), vec![a2]);
     }

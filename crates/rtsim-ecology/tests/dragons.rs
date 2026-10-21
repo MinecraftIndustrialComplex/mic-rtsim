@@ -220,6 +220,62 @@ fn an_unobserved_dragon_costs_no_per_tick_work() {
     assert!(d1.stats.hunts > 0);
 }
 
+/// The leg index purges its past windows' stale bookings at fixed game-day boundaries
+/// (docs/choices-leg-purge.md LP1, LP2), whatever the stride: stepping 20 ticks at a time, in
+/// strides that end mid-day, in strides longer than a day and in one call all reach one state,
+/// and a run with the purge off reaches it too, with only stale bookings more. A player stays
+/// on the dragons' ground the whole time, so interest areas and their meetings read the index.
+#[test]
+fn strides_across_purge_boundaries_keep_one_state() {
+    let days = 6;
+    let end = Tick::from_days(days);
+    let run = |stride: u64, purge: bool| {
+        let (mut w, mut d) = populated(11);
+        if !purge {
+            w.legs.set_purge_every(0);
+        }
+        d.player_stays(&mut w, PLAYER, Pos::new(0, 0, 0), Tick::ZERO, end);
+        let mut t = Tick::ZERO;
+        while t < end {
+            t = (t + stride).min(end);
+            d.run_until(&mut w, &mut NoInfrastructure, t);
+        }
+        let cmds = d.take_commands().len();
+        (w, d, cmds)
+    };
+    let (w0, d0, c0) = run(20, true);
+    let bookings = w0.legs.live_bookings();
+    let (all, _) = w0.legs.booking_counts();
+    for (stride, purge) in [
+        (1_200, true),
+        (7_000, true),
+        (2 * TICKS_PER_DAY, true),
+        (end.0, true),
+        (20, false),
+    ] {
+        let (w, d, c) = run(stride, purge);
+        let why = format!("stride {stride}, purge {purge}");
+        assert_eq!(d.stats, d0.stats, "{why}");
+        assert_eq!(d.state_hash(), d0.state_hash(), "{why}");
+        assert_eq!(w.state_hash(), w0.state_hash(), "{why}");
+        assert_eq!(
+            w.legs.stats().booked_cells,
+            w0.legs.stats().booked_cells,
+            "{why}"
+        );
+        assert_eq!(w.legs.live_bookings(), bookings, "{why}");
+        assert_eq!(c, c0, "{why}");
+        if !purge {
+            let (unpurged, _) = w.legs.booking_counts();
+            assert!(
+                unpurged > all,
+                "the purge dropped stale bookings: {unpurged} unpurged, {all} purged"
+            );
+        }
+    }
+    assert!(d0.stats.events > 0 && !bookings.is_empty());
+}
+
 // ---- conservation -----------------------------------------------------------------------------
 
 proptest! {

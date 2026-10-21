@@ -311,7 +311,8 @@ impl<M: LazyModel> LazyTable<M> {
         self.stats = LazyStats::default();
     }
 
-    /// Pending wakes, stale ones included.
+    /// Pending wakes: one per region with a breakpoint booked, as a rebooking takes the wake it
+    /// replaces off the wheel (docs/choices-leg-purge.md LP7).
     pub fn pending_wakes(&self) -> usize {
         self.wheel.len()
     }
@@ -357,7 +358,19 @@ impl<M: LazyModel> LazyTable<M> {
     }
 
     pub fn remove(&mut self, h: RegionId<M>) -> Option<(u64, Lazy<M>)> {
-        self.rows.remove(h).map(|r| (r.key, r.cell))
+        let r = self.rows.remove(h)?;
+        if let Some(at) = r.wake {
+            self.cancel_wake(at, |w| w.region == h && w.stamp == r.stamp);
+        }
+        Some((r.key, r.cell))
+    }
+
+    /// Takes a superseded wake off the wheel, so a region booked again and again before it is
+    /// due leaves no trail (docs/choices-leg-purge.md LP7); counted as a stale wake.
+    fn cancel_wake(&mut self, at: Tick, is: impl FnMut(&Wake<M>) -> bool) {
+        if self.wheel.cancel(at, is) {
+            self.stats.stale_wakes += 1;
+        }
     }
 
     pub fn get(&self, h: RegionId<M>) -> Option<&Region<M>> {
@@ -368,16 +381,21 @@ impl<M: LazyModel> LazyTable<M> {
         self.rows.iter()
     }
 
+    /// Books region `h`'s next breakpoint, taking the wake it replaces off the wheel first.
     fn reschedule(&mut self, h: RegionId<M>) {
         let Some(row) = self.rows.get_mut(h) else {
             return;
         };
+        let old = row.wake.map(|at| (at, row.stamp));
         row.stamp = row.stamp.wrapping_add(1);
         let anchor = row.cell.anchor();
         row.wake = row.cell.model().next_breakpoint(anchor);
-        if let Some(at) = row.wake {
+        let new = row.wake.map(|at| (at, row.stamp));
+        if let Some((at, stamp)) = old {
+            self.cancel_wake(at, |w| w.region == h && w.stamp == stamp);
+        }
+        if let Some((at, stamp)) = new {
             debug_assert!(at > anchor, "breakpoint {at:?} not after anchor {anchor:?}");
-            let stamp = row.stamp;
             self.wheel
                 .schedule(at.max(self.wheel.now()), Wake { region: h, stamp });
         }
@@ -466,6 +484,8 @@ impl<M: LazyModel> LazyTable<M> {
             }
             let key = self.stream(row.key);
             let row = self.rows.get_mut(wake.region).expect("checked above");
+            // Popped: nothing left on the wheel for the reschedule to take off.
+            row.wake = None;
             self.stats.breakpoints += 1;
             self.stats.slot_commits += row.cell.catch_up(at, key);
             row.cell.settle_to(at);
@@ -764,9 +784,23 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
     }
 
     pub fn remove(&mut self, h: RegionId<M>) -> Option<(u64, Lazy<M>)> {
-        self.rows
-            .remove(Self::row_handle(h))
-            .map(|r| (r.region.key, r.region.cell))
+        let r = self.rows.remove(Self::row_handle(h))?.region;
+        if let Some(at) = r.wake {
+            self.cancel_wake(at, h, r.stamp);
+        }
+        Some((r.key, r.cell))
+    }
+
+    /// As [`LazyTable`]'s: takes region `h`'s superseded wake off the wheel. Paged handles are
+    /// never reused, so the index names the region.
+    fn cancel_wake(&mut self, at: Tick, h: RegionId<M>, stamp: u32) {
+        let i = h.index();
+        if self
+            .wheel
+            .cancel(at, |w| w.region.index() == i && w.stamp == stamp)
+        {
+            self.stats.stale_wakes += 1;
+        }
     }
 
     /// The region, loading its page through `&self`. Changes nothing.
@@ -790,6 +824,7 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
         let Some(row) = self.row_mut(h) else {
             return;
         };
+        let old = row.wake.map(|at| (at, row.stamp));
         row.stamp = row.stamp.wrapping_add(1);
         let anchor = row.cell.anchor();
         let bp = row.cell.model().next_breakpoint(anchor);
@@ -797,8 +832,11 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
             debug_assert!(at > anchor, "breakpoint {at:?} not after anchor {anchor:?}");
         }
         row.wake = bp.map(|at| at + phase);
-        if let Some(at) = row.wake {
-            let stamp = row.stamp;
+        let new = row.wake.map(|at| (at, row.stamp));
+        if let Some((at, stamp)) = old {
+            self.cancel_wake(at, h, stamp);
+        }
+        if let Some((at, stamp)) = new {
             self.wheel
                 .schedule(at.max(self.wheel.now()), Wake { region: h, stamp });
         }
@@ -901,6 +939,8 @@ impl<M: LazyModel, C: ModelCodec<M>> PagedLazyTable<M, C> {
             }
             let key = self.stream(row.key);
             let row = self.row_mut(wake.region).expect("checked above");
+            // Popped: nothing left on the wheel for the reschedule to take off.
+            row.wake = None;
             let commits = row.cell.catch_up(at, key);
             row.cell.settle_to(at);
             self.stats.breakpoints += 1;
