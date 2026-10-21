@@ -573,7 +573,11 @@ fn run(st: &mut State, c: &Counters, flush: bool, stop: &mut dyn FnMut() -> Opti
         src,
         specs: specs(),
     };
-    let now_game = *game_time;
+    // The state's time as the save viewer reads a save's (rtsim-view's `Saved::now`): the phase 1
+    // clock or the industry engine's, whichever is later; the last TICK when both are behind it.
+    let now_game = (phase1.world.now().0.saturating_sub(phase1.offset) as i64)
+        .max(industry.engine.now().0 as i64)
+        .max(*game_time);
     tap.mailbox.game_time = now_game;
     tap.mailbox.archive_serial = *archive_serial;
     loop {

@@ -280,6 +280,9 @@ pub struct PagedRows<T: Row> {
     remeasure: Vec<u64>,
     /// Rows in the table, resident or not.
     len: u64,
+    /// Rows on the resident pages: when it is `len`, no page that is not resident holds a row, so
+    /// a resident-only read that finds no page has missed nothing.
+    resident_rows: Cell<u64>,
     /// The last snapshot's number.
     snapshots: u64,
     _owns: PhantomData<Box<RowPage<T>>>,
@@ -326,6 +329,7 @@ impl<T: Row> PagedRows<T> {
             stats: Cell::new(RowStats::default()),
             remeasure: Vec::new(),
             len: 0,
+            resident_rows: Cell::new(0),
             snapshots: 0,
             _owns: PhantomData,
         }
@@ -389,6 +393,11 @@ impl<T: Row> PagedRows<T> {
         self.len == 0
     }
 
+    /// Whether every row is on a resident page (so a page that is not resident holds none).
+    pub fn all_resident(&self) -> bool {
+        self.resident_rows.get() >= self.len
+    }
+
     pub fn page_of(&self, key: u64) -> u64 {
         key / self.per
     }
@@ -447,6 +456,8 @@ impl<T: Row> PagedRows<T> {
         let id = page.id;
         page.used.set(self.tick());
         self.account(page.bytes(), 0);
+        self.resident_rows
+            .set(self.resident_rows.get() + page.rows.len() as u64);
         let p = NonNull::from(Box::leak(Box::new(page)));
         let old = self.pages.borrow_mut().insert(id, p);
         debug_assert!(old.is_none(), "page {id} installed twice");
@@ -469,7 +480,9 @@ impl<T: Row> PagedRows<T> {
             return Ok(None);
         };
         if resident_only {
-            note_miss();
+            if !self.all_resident() {
+                note_miss();
+            }
             return Ok(None);
         }
         assert!(pid < 1 << 48, "row page id {pid} past the page key range");
@@ -577,6 +590,7 @@ impl<T: Row> PagedRows<T> {
         let after = page.bytes();
         if old.is_none() {
             self.len += 1;
+            self.resident_rows.set(self.resident_rows.get() + 1);
         }
         self.account(after, before);
         Ok(old)
@@ -604,6 +618,7 @@ impl<T: Row> PagedRows<T> {
         page.dirty = true;
         let after = page.bytes();
         self.len -= 1;
+        self.resident_rows.set(self.resident_rows.get() - 1);
         self.account(after, before);
         Ok(Some(old))
     }
@@ -677,6 +692,8 @@ impl<T: Row> PagedRows<T> {
         // here, so it is freed once.
         let page = unsafe { Box::from_raw(p.as_ptr()) };
         self.account(0, page.bytes());
+        self.resident_rows
+            .set(self.resident_rows.get() - page.rows.len() as u64);
         let mut s = self.stats.get();
         s.evictions += 1;
         self.stats.set(s);
@@ -815,7 +832,7 @@ impl<T: Row> PagedRows<T> {
         let (p0, p1) = (self.page_of(keys.start), self.page_of(keys.end - 1));
         if is_resident_only() || self.source.is_none() {
             self.for_each_resident(keys.clone(), &mut f);
-            if is_resident_only() && self.source.is_some() {
+            if is_resident_only() && self.source.is_some() && !self.all_resident() {
                 let pages = self.pages.borrow();
                 if (p0..=p1).any(|pid| !pages.contains_key(&pid)) {
                     note_miss();
@@ -1357,6 +1374,47 @@ mod tests {
         }));
         assert!(r.is_err());
         assert!(!is_resident_only());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A paged table whose rows are all resident: a page that is not resident holds none, so a
+    /// range or a key on one has missed nothing (sparse keys: a lair id spans many pages).
+    #[test]
+    fn a_paged_table_with_every_row_resident_misses_nothing() {
+        let dir = tmpdir("resident-all");
+        let store = Arc::new(RwLock::new(
+            PageStore::open(&dir, Durability::NoSync).unwrap(),
+        ));
+        let mut t: PagedRows<R> = PagedRows::new(7, 16);
+        for k in [3, 1 << 20, 1 << 40] {
+            t.insert(k, row(k));
+        }
+        t.attach(store.clone(), usize::MAX);
+        save(&mut t, &store);
+        assert!(t.all_resident());
+        let (n, missed) = resident_only(|| {
+            let mut n = 0;
+            t.for_each_in(0..1 << 41, |_, _| n += 1);
+            assert_eq!(t.get(17), None);
+            n
+        });
+        assert_eq!(n, 3);
+        assert!(!missed);
+        // One page evicted: its rows are somewhere else, so absent pages may hold them.
+        t.set_budget(t.resident_bytes() - 1);
+        t.enforce_budget();
+        assert!(!t.all_resident());
+        let (_, missed) = resident_only(|| t.get(17).cloned());
+        assert!(missed);
+        // Read back and removed: every row resident again.
+        let resident: Vec<u64> = [3u64, 1 << 20, 1 << 40]
+            .into_iter()
+            .filter(|k| t.get(*k).is_some())
+            .collect();
+        assert_eq!(resident.len(), 3);
+        assert!(t.all_resident());
+        t.remove(1 << 20);
+        assert!(t.all_resident());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
