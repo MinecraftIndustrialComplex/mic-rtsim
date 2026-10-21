@@ -82,7 +82,9 @@ public final class ReconcileAheadGameTests {
         if (s != null) {
             com.minecraftindustrialcomplex.mic_rtsim.boundary.Handover h = s.boundary().handover();
             b.append(", session failed ").append(s.failed()).append(", submitted ").append(h.submitted()).append(", in flight ")
-                    .append(h.stepInFlight()).append(", commands pending ").append(h.commandsPending()).append(", ticks waiting ").append(h.ticksWaiting());
+                    .append(h.stepInFlight()).append(", commands pending ").append(h.commandsPending()).append(", ticks waiting ").append(h.ticksWaiting())
+                    .append(", stale skipped ").append(s.boundary().skippedStaleCommands()).append(", malformed ").append(s.boundary().malformed())
+                    .append(", last error ").append(s.boundary().lastError());
             if (s.engine() instanceof com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine st)
                 b.append(", stub steps ").append(st.steps()).append(", scripted pending ").append(st.scriptedPending()).append(", stub error ").append(st.protocolError());
         }
