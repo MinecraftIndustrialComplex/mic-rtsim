@@ -91,8 +91,25 @@ public final class NativeEngine implements ScriptedEngine {
     public static final int P1_SPAWNS_SENT = 14;
     /** The phase 1 world's tick. */
     public static final int P1_WORLD_TICK = 15;
+    /** Works the phase 1 world's villages bought (SINK.md). */
+    public static final int P1_WORKS_BOUGHT = 16;
+    /** Works Java answered as placed (APPLIED or a duplicate). */
+    public static final int P1_WORKS_PLACED = 17;
+    /** Works Java answered as refused (NOT_FREE or FAILED): the kind is full for that village. */
+    public static final int P1_WORKS_REFUSED = 18;
+    /** Tributes paid to raiding dragons. */
+    public static final int P1_TRIBUTES = 19;
     /** The length of the array {@link #phase1Stats} returns. */
-    public static final int PHASE1_STATS = 16;
+    public static final int PHASE1_STATS = 20;
+
+    /** {@link #phase1Works} indexes: works bought, kinds full, purse, census golems, tribute paid, spent. */
+    public static final int WORKS_BOUGHT = 0;
+    public static final int WORKS_FULL = 1;
+    public static final int WORKS_PURSE = 2;
+    public static final int WORKS_GOLEMS = 3;
+    public static final int WORKS_TRIBUTE = 4;
+    public static final int WORKS_SPENT = 5;
+    public static final int WORKS_VIEW = 6;
 
     private static final int RECEIVED_CAP = 10_000;
     private static final int CLOSE_TIMEOUT_MS = 5000;
@@ -136,6 +153,9 @@ public final class NativeEngine implements ScriptedEngine {
 
     /** A phase 1 village's sentiment toward a player (-128 to 127), Integer.MIN_VALUE when the engine knows no such village (TEST mode). */
     private static native int nPhase1Sentiment(long handle, long village, long most, long least);
+
+    /** A phase 1 village's works (WORKS_* indexes) as of the last step; false when unknown (TEST mode). */
+    private static native boolean nPhase1Works(long handle, long village, long[] out);
 
     private static native long nLedger(long handle, long store);
 
@@ -449,6 +469,22 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().phase1Advance(ticks), "P1_ADVANCE");
     }
 
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): coin, in thousandths of the village's own
+     * currency, put straight into a phase 1 village's works purse (SINK.md), at the next step.
+     */
+    public void worksGrant(long village, long thousandths) {
+        order(new NativeCodec.Orders().worksGrant(village, thousandths), "WORKS_GRANT");
+    }
+
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): a dragon raided a phase 1 village (SINK.md
+     * §4.6); with {@code tribute} the village pays it from its works purse.
+     */
+    public void worksRaid(long village, boolean tribute) {
+        order(new NativeCodec.Orders().worksRaid(village, tribute), "WORKS_RAID");
+    }
+
     @Override
     public synchronized String javaDictName(int id) {
         drain();
@@ -637,6 +673,16 @@ public final class NativeEngine implements ScriptedEngine {
      */
     public synchronized int phase1Sentiment(long village, UUID player) {
         return nPhase1Sentiment(live(), village, player.getMostSignificantBits(), player.getLeastSignificantBits());
+    }
+
+    /**
+     * A phase 1 village's works as of the last step ({@link #WORKS_VIEW} long, WORKS_* indexes), or
+     * null when the engine knows no such village or it has no works yet. An engine opened with
+     * {@link #FLAG_TEST} only.
+     */
+    public synchronized long[] phase1Works(long village) {
+        long[] out = new long[WORKS_VIEW];
+        return nPhase1Works(live(), village, out) ? out : null;
     }
 
     @Override
