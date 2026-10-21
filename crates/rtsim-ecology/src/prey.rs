@@ -119,6 +119,9 @@ pub struct PreyLedger {
     pub robbed: BTreeMap<Item, i128>,
     /// Valuables a dragon with no lair carried when it died: lost with it (consumption).
     pub lost: BTreeMap<Item, i128>,
+    /// Coin villages paid lairs as tribute (SINK.md §4.6): an inflow to the hoards beside what
+    /// dragons took, booked `tribute` in the world's books.
+    pub tribute: BTreeMap<Item, i128>,
 }
 
 impl PreyLedger {
@@ -152,6 +155,12 @@ impl PreyLedger {
         }
     }
 
+    pub fn pay_tribute(&mut self, item: Item, amount: i64) {
+        if amount > 0 {
+            *self.tribute.entry(item).or_default() += i128::from(amount);
+        }
+    }
+
     pub fn lose(&mut self, item: Item, amount: i64) {
         if amount > 0 {
             *self.lost.entry(item).or_default() += i128::from(amount);
@@ -173,9 +182,13 @@ impl PreyLedger {
         Ok(())
     }
 
-    /// What hoards (and lairless dragons) should hold per good: hoarded − robbed − lost.
+    /// What hoards (and lairless dragons) should hold per good: hoarded + tribute − robbed −
+    /// lost.
     pub fn in_hoards(&self) -> BTreeMap<Item, i128> {
         let mut out = self.hoarded.clone();
+        for (k, v) in &self.tribute {
+            *out.entry(*k).or_default() += v;
+        }
         for (k, v) in self.robbed.iter().chain(self.lost.iter()) {
             *out.entry(*k).or_default() -= v;
         }
