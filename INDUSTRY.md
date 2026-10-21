@@ -254,7 +254,8 @@ edge on belts, which C19 forbids; (c) Force-load the remainder, which is chunk-l
   (`ChunkSerializer`, `neoforge:attachments`), so the contents and "epoch e applied" reach disk together.
 - **Applying:** `ChunkEvent.Load` queues the chunk. On the next tick, under the bridge quota, every
   delta with an epoch above the chunk's is applied, removals first. A crash anywhere replays correctly,
-  because an older chunk also carries an older epoch.
+  because an older chunk also carries an older epoch, and the journal's file is written only after the
+  chunks it speaks for (docs/choices-repair.md R21).
 - **Shortfall:** a machine that ticked first may have taken an input. The missing amount then trims the
   outputs it funded, by the model's ratios. The reconcile record shows it to the operator (§10), and
   conservation holds.
