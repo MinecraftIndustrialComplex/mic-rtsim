@@ -1,0 +1,412 @@
+{
+ "base": "/home/greencheetah/mic-stress-worlds/create-issue7596-train-routing-newworld/world",
+ "world_root": "/home/greencheetah/mic-stress-worlds/create-issue7596-train-routing-newworld/world/New World",
+ "total_bytes": 28401501,
+ "level": {
+  "top_keys": [
+   "fml",
+   "Data"
+  ],
+  "data_keys": [
+   "WanderingTraderSpawnChance",
+   "BorderCenterZ",
+   "Difficulty",
+   "BorderSizeLerpTime",
+   "raining",
+   "Time",
+   "GameType",
+   "ServerBrands",
+   "BorderCenterX",
+   "BorderDamagePerBlock",
+   "BorderWarningBlocks",
+   "WorldGenSettings",
+   "DragonFight",
+   "BorderSizeLerpTarget",
+   "Version",
+   "DayTime",
+   "neoDayTimePerTick",
+   "initialized",
+   "WasModded",
+   "allowCommands",
+   "WanderingTraderSpawnDelay",
+   "CustomBossEvents",
+   "GameRules",
+   "Player",
+   "SpawnY",
+   "rainTime",
+   "thunderTime",
+   "neoDayTimeFraction",
+   "SpawnZ",
+   "hardcore",
+   "WanderingTraderId",
+   "DifficultyLocked",
+   "SpawnX",
+   "clearWeatherTime",
+   "confirmedExperimentalSettings",
+   "thundering",
+   "SpawnAngle",
+   "version",
+   "BorderSafeZone",
+   "LastPlayed",
+   "BorderWarningTime",
+   "ScheduledEvents",
+   "forgeLifecycle",
+   "LevelName",
+   "BorderSize",
+   "DataVersion",
+   "DataPacks"
+  ],
+  "LevelName": "New World",
+  "DataVersion": 3955,
+  "version": 19133,
+  "WasModded": 1,
+  "GameType": 1,
+  "DayTime": 11155,
+  "Time": 176137,
+  "LastPlayed": 1740961779310,
+  "Version": {
+   "Snapshot": 0,
+   "Series": "main",
+   "Id": 3955,
+   "Name": "1.21.1"
+  },
+  "ServerBrands": [
+   "neoforge"
+  ],
+  "DataPacks": {
+   "Disabled": [
+    "bundle",
+    "trade_rebalance"
+   ],
+   "Enabled": [
+    "create:dynamic_data",
+    "vanilla",
+    "mod_data"
+   ]
+  },
+  "seed": -6762429475632503471,
+  "dimensions": [
+   "minecraft:overworld",
+   "minecraft:the_nether",
+   "minecraft:the_end"
+  ],
+  "fml_keys": [
+   "LoadingModList"
+  ],
+  "forge_mod_list": [
+   [
+    "minecraft",
+    "1.21.1"
+   ],
+   [
+    "flywheel",
+    "1.0.1-11"
+   ],
+   [
+    "ponder",
+    "1.0.39"
+   ],
+   [
+    "create",
+    "6.0.1"
+   ],
+   [
+    "neoforge",
+    "21.1.127"
+   ]
+  ]
+ },
+ "tracks": {
+  "file_bytes": 2910,
+  "DataVersion": 3955,
+  "trains": 1,
+  "carriages": 1,
+  "trains_with_schedule": 1,
+  "schedule_entries": 3,
+  "trains_moving_at_save": 0,
+  "trains_derailed": 0,
+  "carriages_with_passengers": 0,
+  "bogey_types": {
+   "create:small_bogey": 1
+  },
+  "graphs": 1,
+  "nodes": 15,
+  "edges": 16,
+  "stations": 4,
+  "signals": 0,
+  "observers": 0,
+  "track_chord_length_blocks": 273,
+  "edge_materials": {
+   "create:andesite": 16
+  },
+  "curved_edges": 0,
+  "per_graph": [
+   {
+    "nodes": 15,
+    "edges": 16,
+    "stations": 4,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 273
+   }
+  ],
+  "signal_blocks": 1,
+  "signal_edge_groups": null,
+  "dimension_palette": [
+   "minecraft:overworld"
+  ],
+  "other_keys": [
+   "Trains",
+   "RailGraphs",
+   "DimensionPalette",
+   "SignalBlocks"
+  ]
+ },
+ "data_files": [
+  [
+   "create_logistics.dat",
+   304
+  ],
+  [
+   "create_tracks.dat",
+   2910
+  ],
+  [
+   "neoforge_data_attachments.dat",
+   48
+  ],
+  [
+   "raids.dat",
+   90
+  ],
+  [
+   "random_sequences.dat",
+   1040
+  ]
+ ],
+ "playerdata_files": 1,
+ "datapacks": [],
+ "top_level_entries": [
+  "DIM-1",
+  "DIM1",
+  "advancements",
+  "data",
+  "datapacks",
+  "entities",
+  "icon.png",
+  "level.dat",
+  "level.dat_old",
+  "playerdata",
+  "poi",
+  "region",
+  "serverconfig",
+  "session.lock",
+  "stats"
+ ],
+ "dimensions": {
+  "minecraft:overworld": {
+   "region_files": 11,
+   "region_bytes": 26906624,
+   "chunks": 4053,
+   "errors": 0,
+   "err_sample": null,
+   "inhabited_chunks_gt_1200": 245,
+   "inhabited_ticks": 21890739,
+   "dataversions": {
+    "3955": 4053
+   },
+   "block_entities_total": 443,
+   "block_entities_by_type": {
+    "minecraft:chest": 73,
+    "create:fake_track": 56,
+    "minecraft:mob_spawner": 54,
+    "minecraft:decorated_pot": 43,
+    "minecraft:dispenser": 42,
+    "minecraft:brushable_block": 30,
+    "minecraft:vault": 20,
+    "minecraft:trial_spawner": 15,
+    "minecraft:barrel": 14,
+    "create:item_vault": 13,
+    "create:track": 12,
+    "create:belt": 11,
+    "create:funnel": 8,
+    "minecraft:bed": 6,
+    "create:motor": 6,
+    "create:fluid_pipe": 6,
+    "create:factory_panel": 4,
+    "create:packager": 4,
+    "create:track_station": 4,
+    "create:package_postbox": 4,
+    "minecraft:sign": 3,
+    "create:creative_crate": 3,
+    "create:smart_chute": 3,
+    "create:packager_link": 2,
+    "create:saw": 2,
+    "create:pulse_repeater": 2,
+    "minecraft:beehive": 1,
+    "create:stock_ticker": 1,
+    "create:simple_kinetic": 1
+   },
+   "block_entities_by_namespace": {
+    "minecraft": 301,
+    "create": 142
+   },
+   "blocks_by_namespace": {
+    "minecraft": 398064875,
+    "create": 361237
+   },
+   "blocks_top_non_vanilla": {
+    "create:veridium": 70404,
+    "create:deepslate_zinc_ore": 58206,
+    "create:asurine": 51597,
+    "create:zinc_ore": 45541,
+    "create:limestone": 43836,
+    "create:ochrum": 38409,
+    "create:scoria": 33682,
+    "create:crimsite": 19342,
+    "create:track": 73,
+    "create:fake_track": 56,
+    "create:brass_casing": 16,
+    "create:item_vault": 13,
+    "create:belt": 11,
+    "create:creative_motor": 6,
+    "create:fluid_pipe": 6,
+    "create:andesite_funnel": 5,
+    "create:packager": 4,
+    "create:factory_gauge": 4,
+    "create:track_station": 4,
+    "create:white_postbox": 4,
+    "create:andesite_belt_funnel": 3,
+    "create:smart_chute": 3,
+    "create:creative_crate": 3,
+    "create:mechanical_saw": 2,
+    "create:stock_link": 2,
+    "create:pulse_repeater": 2,
+    "create:shaft": 1,
+    "create:white_seat": 1,
+    "create:stock_ticker": 1
+   },
+   "blocks_distinct_ids": 239,
+   "entities_by_type": {
+    "minecraft:item": 120,
+    "minecraft:chest_minecart": 33,
+    "minecraft:skeleton": 25,
+    "minecraft:creeper": 23,
+    "minecraft:chicken": 22,
+    "minecraft:bat": 15,
+    "minecraft:zombie": 14,
+    "minecraft:tropical_fish": 14,
+    "minecraft:wolf": 11,
+    "minecraft:enderman": 9,
+    "minecraft:frog": 8,
+    "minecraft:cod": 8,
+    "minecraft:drowned": 7,
+    "minecraft:glow_squid": 7,
+    "minecraft:parrot": 6,
+    "minecraft:falling_block": 6,
+    "minecraft:squid": 5,
+    "minecraft:axolotl": 5,
+    "minecraft:pig": 5,
+    "create:package": 4,
+    "minecraft:cow": 4,
+    "minecraft:spider": 4,
+    "minecraft:bee": 3,
+    "minecraft:dolphin": 3,
+    "minecraft:pufferfish": 3,
+    "minecraft:panda": 2,
+    "minecraft:turtle": 2,
+    "minecraft:sheep": 2,
+    "minecraft:armadillo": 1,
+    "create:seat": 1,
+    "minecraft:ocelot": 1
+   },
+   "entities_by_namespace": {
+    "minecraft": 368,
+    "create": 5
+   },
+   "contraption_entities": 0,
+   "contraption_blocks_total": 0,
+   "contraption_biggest": [],
+   "regions": {
+    "-1,-1": {
+     "chunks": 684,
+     "be": 47,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3969024
+    },
+    "-1,0": {
+     "chunks": 760,
+     "be": 147,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4403200
+    },
+    "-1,1": {
+     "chunks": 14,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 65536
+    },
+    "-2,-1": {
+     "chunks": 863,
+     "be": 30,
+     "create_be": 0,
+     "inhabited_chunks": 45,
+     "bytes": 6414336
+    },
+    "-2,0": {
+     "chunks": 1024,
+     "be": 219,
+     "create_be": 142,
+     "inhabited_chunks": 200,
+     "bytes": 8884224
+    },
+    "-2,1": {
+     "chunks": 32,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 139264
+    },
+    "-3,-1": {
+     "chunks": 162,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 675840
+    },
+    "-3,0": {
+     "chunks": 221,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 921600
+    },
+    "-3,1": {
+     "chunks": 5,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 28672
+    },
+    "0,-1": {
+     "chunks": 144,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 724992
+    },
+    "0,0": {
+     "chunks": 144,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 679936
+    }
+   }
+  }
+ },
+ "elapsed_s": 3.4
+}
