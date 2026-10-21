@@ -21,6 +21,7 @@
 pub mod bases;
 pub mod bridge;
 pub mod caravans;
+pub mod catalogue;
 pub mod check;
 pub mod config;
 pub mod flows;

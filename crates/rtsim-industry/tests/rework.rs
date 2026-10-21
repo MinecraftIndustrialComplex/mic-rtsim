@@ -735,8 +735,8 @@ fn level_pollution_reaches_the_level_while_away() {
 
 // ---- Peeks (VIEWER.md §5.3) --------------------------------------------------------------------
 
-/// A viewer's `inspect_peek` and `stock_peek` change none of the engine's pages, and agree with
-/// the committing `inspect` and `sim_stock`.
+/// A viewer's `inspect_peek`, `stock_peek` and `processes_peek` change none of the engine's pages,
+/// and agree with the committing `inspect` and `sim_stock`.
 #[test]
 fn peeks_change_nothing_and_agree_with_the_reads() {
     let mut w = works(2);
@@ -747,11 +747,23 @@ fn peeks_change_nothing_and_agree_with_the_reads() {
     let now = e.now();
     let peeked = e.inspect_peek(D, now).expect("a district");
     let stock = e.stock_peek(D).expect("simulated");
+    let procs = e.processes_peek(D).expect("simulated");
     // Past now is clamped to now, as inspect does.
     assert_eq!(e.inspect_peek(D, now + 50_000).as_ref(), Some(&peeked));
     assert_eq!(e.snapshot(), before);
     assert_eq!(e.stats, stats);
     assert_eq!(e.cluster_members(D).map(|m| m.contains(&D)), Some(true));
+    // The processes say what the inspection says: running if any box process runs, else the
+    // first one's stop.
+    let boxes: Vec<_> = procs.iter().filter(|p| p.fills.is_none()).collect();
+    assert!(!boxes.is_empty());
+    assert!(boxes.iter().all(|p| !p.goods.is_empty()));
+    assert_eq!(peeked.running, Some(boxes.iter().any(|p| p.running)));
+    if peeked.running == Some(false) {
+        assert_eq!(peeked.stop, boxes[0].stop);
+    }
+    assert_eq!(e.processes_peek(D), Some(procs));
+    assert_eq!(e.processes_peek(DistrictId(0xDEAD)), None);
     assert_eq!(e.inspect(D, now), Some(peeked));
     assert_eq!(e.sim_stock(D), Some(stock));
 }

@@ -365,6 +365,7 @@ impl View {
                     "detail": scrub(&m.detail),
                     "hash": m.hash.map(|(now, _)| format!("{now:016x}")),
                     "saved_hash": m.hash.and_then(|(_, h)| h).map(|h| format!("{h:016x}")),
+                    "hash_matches": m.hash_matches(),
                 })
             })
             .collect();
