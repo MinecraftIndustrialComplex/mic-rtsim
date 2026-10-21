@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "mic-viewer"
 version = "0.1.0"
-source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=01c95950ac72b44a991b7adcb84d2d9928060360#01c95950ac72b44a991b7adcb84d2d9928060360"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=cc213668d3fb65f8783d541b7457c6c106660dde#cc213668d3fb65f8783d541b7457c6c106660dde"
 dependencies = [
  "png",
  "serde",

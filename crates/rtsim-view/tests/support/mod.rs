@@ -13,7 +13,10 @@ use mic_viewer::http::{Handler, Reply, Request};
 use mic_viewer::viewer::App;
 use rtsim_view::View;
 
-/// Every file under `dir` with its bytes and modification time, and every folder.
+/// What a folder's entry holds in place of bytes.
+const DIR: &[u8] = b"\0folder";
+
+/// Every file under `dir` with its bytes and modification time, and every folder with its time.
 pub type Snapshot = BTreeMap<PathBuf, Option<(Vec<u8>, SystemTime)>>;
 
 pub fn snapshot(dir: &Path) -> Snapshot {
@@ -27,7 +30,12 @@ pub fn snapshot(dir: &Path) -> Snapshot {
             let rel = p.strip_prefix(root).unwrap().to_path_buf();
             let meta = std::fs::symlink_metadata(&p).expect("metadata");
             if meta.is_dir() {
-                out.insert(rel, None);
+                // A folder's time moves when a file in it is made or removed, even one that is
+                // gone again by the second snapshot.
+                out.insert(
+                    rel,
+                    Some((DIR.to_vec(), meta.modified().expect("an mtime"))),
+                );
                 walk(root, &p, out);
             } else {
                 let bytes = std::fs::read(&p).expect("read a file");

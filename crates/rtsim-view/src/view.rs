@@ -294,7 +294,7 @@ impl View {
             .map(|(id, n)| {
                 (
                     id.clone(),
-                    json!({ "marks": n, "empty": self.reasons.get(id) }),
+                    json!({ "marks": n, "empty": self.reasons.get(id).map(|r| scrub(r)) }),
                 )
             })
             .collect();
@@ -353,9 +353,22 @@ impl View {
                 ));
                 return Some((c, false));
             }
-            return crate::cards::district(&saved, id).map(|c| (c, true));
+            return crate::cards::district(&saved, id);
         }
         crate::cards::card(&Ctx::new(&saved), layer, id).map(|c| (c, true))
+    }
+
+    /// [`View::build_card`] with a panic answered as a card that says so (and is not kept), so a
+    /// bad page never reaches the server's connection thread.
+    fn guarded_card(&self, layer: &str, id: &str) -> Option<(Card, bool)> {
+        let r =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.build_card(layer, id)));
+        r.unwrap_or_else(|p| {
+            let why = lock(&self.saved).scrub(&crate::load::panic_text(p));
+            let c =
+                Card::new(layer, id, id).note(format!("this card's pages did not read ({why})"));
+            Some((c, false))
+        })
     }
 }
 
@@ -376,11 +389,15 @@ impl Backend for View {
     }
 
     fn card(&self, layer: &str, id: &str, _t: Option<Tick>) -> Option<Card> {
-        let key = (layer.to_owned(), id.to_owned());
+        // `3` and `03` are one district: a number is kept as its value.
+        let canon = id
+            .parse::<u64>()
+            .map_or_else(|_| id.to_owned(), |n| n.to_string());
+        let key = (layer.to_owned(), canon);
         if let Some(c) = lock(&self.cards).get(&key) {
             return Some(c);
         }
-        let (mut c, keep) = self.build_card(layer, id)?;
+        let (mut c, keep) = self.guarded_card(layer, &key.1)?;
         c.as_of = Some(self.now);
         if keep {
             lock(&self.cards).put(key, c.clone());

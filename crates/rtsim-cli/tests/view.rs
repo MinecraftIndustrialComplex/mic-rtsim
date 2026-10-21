@@ -125,6 +125,8 @@ fn split(out: &[u8]) -> (u16, Vec<u8>) {
 /// Every file under `dir` with its bytes and modification time.
 fn snapshot(dir: &Path) -> BTreeMap<PathBuf, (Vec<u8>, SystemTime)> {
     let mut out = BTreeMap::new();
+    let root = std::fs::metadata(dir).unwrap();
+    out.insert(dir.to_path_buf(), (Vec::new(), root.modified().unwrap()));
     let mut todo = vec![dir.to_path_buf()];
     while let Some(d) = todo.pop() {
         for e in std::fs::read_dir(&d).unwrap() {
@@ -207,7 +209,21 @@ fn the_sidecar_serves_loopback_reads_only_and_writes_nothing() {
             "POST /api/world HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\
              Connection: close\r\n\r\n{}",
         );
-        assert!(post == 405 || post == 403, "a POST is refused: {post}");
+        assert_eq!(post, 405, "a POST with a good Host is refused as a POST");
+        for method in ["PUT", "DELETE", "PATCH", "OPTIONS"] {
+            let (code, _) = raw(
+                port,
+                &format!(
+                    "{method} /api/world HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                ),
+            );
+            assert_eq!(code, 405, "{method}");
+        }
+        let (head, body) = raw(
+            port,
+            "HEAD /api/world HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!((head, body.len()), (200, 0), "HEAD answers without a body");
         let (page, body) = s.get("/");
         assert_eq!(page, 200);
         assert!(String::from_utf8_lossy(&body).contains("html"));
@@ -229,6 +245,42 @@ fn the_sidecar_refuses_a_public_bind() {
         err.contains("loopback") || err.contains("tailnet"),
         "says why: {err}"
     );
+    // Before reading the save: nothing about it was printed.
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("pages:"),
+        "{out:?}"
+    );
+    for public in ["::", "192.168.1.5"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_rtsim-cli"))
+            .args(["view"])
+            .arg(core_fixture())
+            .args(["--port", "0", "--bind", public])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{public}: {out:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_sidecar_refuses_a_socket_inside_the_world() {
+    let world = core_fixture();
+    let before = snapshot(&world);
+    for inside in [
+        world.join("viewer.sock"),
+        world.join("rtsim/../data/viewer.sock"),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_rtsim-cli"))
+            .args(["view"])
+            .arg(&world)
+            .arg("--socket")
+            .arg(&inside)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{inside:?}: {out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("inside the world folder"));
+    }
+    assert!(before == snapshot(&world), "the save's folder changed");
 }
 
 #[cfg(unix)]
