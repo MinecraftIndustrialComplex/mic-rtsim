@@ -1,0 +1,7 @@
+{
+  "group": "lamp",
+  "culture": "human",
+  "style": "minecraft:village_taiga",
+  "cap": { "per_residents": 3 },
+  "variants": [ { "template": "minecraft:village/taiga/taiga_lamp_post_1" } ]
+}

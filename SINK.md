@@ -229,8 +229,9 @@ TUNABLE).
   box with TRANSFER_TO_CONTAINER, one stack per command (B24), through the kernel's outbox so a crash
   never pays twice (J11). This is R23's deferred step, applied to tribute only. Caves have chests:
   `DragonCavePiece.setGoldPile` rolls each floor cell and places a chest on one roll in 99, with the
-  cave's loot table (`chest/fire_dragon_male_cave` and so on). Whether roosts have any container is
-  UNVERIFIED; a lair with none keeps its tribute abstract, as R23 keeps hoards today.
+  cave's loot table (`chest/fire_dragon_male_cave` and so on). Roosts have chests too (verified in the Ice and Fire jar,
+  about 5 to 13 a roost on average: docs/choices-money-sink.md MSC46); a lair with none keeps its
+  tribute abstract, as R23 keeps hoards today.
 - **Robbing it** is already a theft the lair remembers (R22, Z16: HOARD_ROBBED counts what left a
   container inside the lair box).
 

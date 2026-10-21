@@ -72,6 +72,8 @@ use crate::tunables::{DragonTunables, PreyKind};
 pub const SYS_DRAGON: SystemId = SystemId::named("ecology.dragon");
 const SYS_HUNT: SystemId = SystemId::named("ecology.hunt");
 const SYS_BREED: SystemId = SystemId::named("ecology.breed");
+/// The stream tribute stacks' op ids are drawn from, keyed by the lair's key.
+const SYS_TRIBUTE: SystemId = SystemId::named("ecology.tribute");
 
 /// A lair's actor: a group actor whose external id is the lair key under this tag.
 const LAIR_TAG: u64 = 0x4C41_4952 << 32; // "LAIR"
@@ -175,6 +177,12 @@ pub(crate) enum Ev {
     Death {
         d: DragonId,
     },
+    /// A tributary village's next season's payment to the lair that raided it (SINK.md §4.6),
+    /// stale unless `stamp` is still the village's tribute row's.
+    Tribute {
+        node: u32,
+        stamp: u32,
+    },
 }
 
 /// Counters for tests, the bench and the CLI.
@@ -211,7 +219,41 @@ pub struct DragonStats {
     /// Meetings not materialized because the dragon is across an edge_stop seam from the player
     /// (TP12): no body crosses one.
     pub seen_across_stop: u64,
+    /// Tribute payments a village made to a lair (SINK.md §4.6), the raid's first one included.
+    pub tributes: u64,
+    /// Tribute rows dropped: the purse dry or the lair vacant.
+    pub tribute_lapses: u64,
+    /// Stacks of tribute coin the plugin put in a lair's chest.
+    pub tribute_stacks: u64,
 }
+
+/// A village that pays a lair tribute (SINK.md §4.6): the lair whose dragon raided it last, the
+/// row's stamp (its `Ev::Tribute` is stale unless it matches) and when it last paid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TributeRow {
+    pub lair: LairId,
+    pub stamp: u32,
+    pub paid_at: Option<Tick>,
+}
+
+/// A lair's chest the plugin reported (LAIR_CHEST): a dimension dictionary id and a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chest {
+    pub dimension: u32,
+    pub pos: [i32; 3],
+}
+
+/// One stack of tribute coin sent to a lair's chest and not yet confirmed (keyed by its op id).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placing {
+    pub lair: LairId,
+    pub item: Item,
+    pub count: i64,
+    pub chest: Chest,
+}
+
+/// The most items one placing stack carries: a chest slot's.
+pub const TRIBUTE_STACK: i64 = 64;
 
 /// One line of what happened, for the CLI.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -318,6 +360,15 @@ pub struct Dragons {
     /// The herds, lent for the length of [`Dragons::run_until_with_herds`] (not saved: the
     /// caller owns and saves them).
     pub(crate) wild: Option<Herds>,
+    /// Villages that pay a lair tribute, by village node (SINK.md §4.6). Saved in the meta page.
+    pub(crate) tribute: BTreeMap<u32, TributeRow>,
+    /// The last tribute row's stamp: never reused, so an old row's event is stale. Saved.
+    pub(crate) tribute_stamp: u32,
+    /// Stacks of tribute coin sent to a lair's chest, by op id, until the plugin answers. Saved.
+    pub(crate) placing: BTreeMap<u64, Placing>,
+    /// Lairs' chests the plugin reported this session (LAIR_CHEST): not saved, cleared at a
+    /// session start, since a chest can be broken while nobody watches.
+    pub(crate) chests: BTreeMap<LairId, Chest>,
 }
 
 fn day_of(t: Tick) -> f64 {
@@ -413,6 +464,10 @@ impl Dragons {
             next_seed: 0,
             now,
             wild: None,
+            tribute: BTreeMap::new(),
+            tribute_stamp: 0,
+            placing: BTreeMap::new(),
+            chests: BTreeMap::new(),
         }
     }
 
@@ -532,6 +587,9 @@ impl Dragons {
             hoard: BTreeMap::new(),
             vacant_since: Some(at),
             plan: 1,
+            unplaced: BTreeMap::new(),
+            placed: 0,
+            stacks: 0,
         });
         debug_assert_eq!(self.lairs.get(id).map(|l| l.key), Some(key));
         self.track_lair(id);
@@ -1022,6 +1080,21 @@ impl Dragons {
                     "dies of age; its heir inherits".into(),
                 );
                 self.remove(w, d, at);
+            }
+            Ev::Tribute { node, stamp } => {
+                let Some(row) = self.tribute.get(&node).copied() else {
+                    self.stats.stale += 1;
+                    return;
+                };
+                if row.stamp != stamp {
+                    self.stats.stale += 1;
+                    return;
+                }
+                if self.vacant.contains(&row.lair) {
+                    self.tribute_lapse(w, node, "its lair stands empty", at);
+                } else {
+                    self.tribute_pay(w, node, at);
+                }
             }
         }
     }
@@ -1517,15 +1590,19 @@ impl Dragons {
         // Villages' livestock.
         let w_village = f64::from(self.tun.season_weight(season, PreyKind::Village)) / 100.0;
         // Bold dragons fear a village's defenders less (C25): twice the risk at boldness 0,
-        // none at 255.
-        let fear =
-            f64::from(self.tun.village_risk) * (2.0 - f64::from(temper.bold) / 128.0).max(0.0);
+        // none at 255. Its iron golems add to the risk (SINK.md §4.6).
+        let bend = (2.0 - f64::from(temper.bold) / 128.0).max(0.0);
         for node in self.index.villages_near(t, origin.frame, ox, oz, range) {
             let n = &w.nodes[node as usize];
             let dist = flight::dist(t, (ox, oz), (i64::from(n.pos.x), i64::from(n.pos.z)));
             if dist > range as f64 {
                 continue;
             }
+            // A village that paid this dragon's lair tribute within a season is left alone.
+            if x.lair.is_some_and(|l| self.pays(node, l, at)) {
+                continue;
+            }
+            let fear = self.village_risk(w, node as usize) as f64 * bend;
             let food = self
                 .village_food(w, node as usize, sp.village_share_milli)
                 .min(need);
@@ -2067,6 +2144,7 @@ impl Dragons {
                 place: place(p, y),
             });
             w.knowledge.witness(village, id, at);
+            self.raided(w, d, node, at);
             return (food, taken, vec![village]);
         }
         (food, taken, Vec::new())
@@ -2469,6 +2547,7 @@ impl Dragons {
             self.resume(w, d, at, true);
         }
         self.by_entity.clear();
+        self.chests.clear();
     }
 
     /// An observation from the plugin, at `at`.
@@ -2544,6 +2623,16 @@ impl Dragons {
             }
             Obs::HoardRobbed(h) => self.robbed(w, h, at),
             Obs::Ate(a) => self.ate(w, a, at),
+            Obs::LairChest(c) => {
+                if let Some(l) = self.lair_of_key(c.lair) {
+                    let chest = Chest {
+                        dimension: c.dimension,
+                        pos: [c.pos.0, c.pos.1, c.pos.2],
+                    };
+                    self.chests.insert(l, chest);
+                    self.place_tribute(l);
+                }
+            }
         }
     }
 
@@ -2570,7 +2659,220 @@ impl Dragons {
             self.stats.village_raids += 1;
             let name = format!("village {} (watched)", w.nodes[node].key);
             self.record_hunt(at, d, PreyKind::Village, name, food, names);
+            self.raided(w, d, node, at);
         }
+    }
+
+    // ---- tribute (SINK.md §4.6) ------------------------------------------------------------------
+
+    /// Dragon `d` raided village `node`. A lair dragon's raid makes the village its lair's
+    /// tributary; a lairless dragon's only frightens it (golems first for a season).
+    fn raided(&mut self, w: &mut World, d: DragonId, node: usize, at: Tick) {
+        match self.dragons[d].lair {
+            Some(l) => {
+                self.tribute_begin(w, node, l, at);
+            }
+            None => w.village_raided(node, false, at),
+        }
+    }
+
+    /// Village `node` becomes lair `lair`'s tributary: a new row (replacing another lair's) and
+    /// the first payment at once. A village already paying this lair keeps its row and its
+    /// season's clock. A village without a works purse pays nothing and keeps no row. Returns
+    /// whether the village pays the lair afterwards.
+    fn tribute_begin(&mut self, w: &mut World, node: usize, lair: LairId, at: Tick) -> bool {
+        w.village_raided(node, true, at);
+        let Ok(n) = u32::try_from(node) else {
+            return false;
+        };
+        if self.tribute.get(&n).is_some_and(|r| r.lair == lair) {
+            return true;
+        }
+        if !w.works_of(node).is_some_and(|s| s.tributary) {
+            return false;
+        }
+        self.tribute_stamp += 1;
+        let stamp = self.tribute_stamp;
+        self.tribute.insert(
+            n,
+            TributeRow {
+                lair,
+                stamp,
+                paid_at: None,
+            },
+        );
+        self.tribute_pay(w, n, at);
+        self.tribute.contains_key(&n)
+    }
+
+    /// TEST (TRIBUTE_START): village `village_key` becomes the tributary of lair `lair_key`, as
+    /// if a dragon of the lair had raided it at `at`. False for an unknown village or lair, or a
+    /// village that has no purse to pay from.
+    pub fn tribute_start(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        village_key: u64,
+        lair_key: u64,
+        at: Tick,
+    ) -> bool {
+        self.run_until(w, infra, at);
+        let (Some(node), Some(l)) = (w.node_of_key(village_key), self.lair_of_key(lair_key)) else {
+            return false;
+        };
+        self.tribute_begin(w, node, l, at)
+    }
+
+    /// Village `n` pays its lair a season's tribute (MS-5), or, its purse dry, the tribute
+    /// lapses. The coin joins the lair's hoard and waits there for its chest.
+    fn tribute_pay(&mut self, w: &mut World, n: u32, at: Tick) {
+        let Some(row) = self.tribute.get(&n).copied() else {
+            return;
+        };
+        let Some((g, a)) = w.pay_tribute(n as usize, self.tun.tribute_share_milli, at) else {
+            self.tribute_lapse(w, n, "its purse is dry", at);
+            return;
+        };
+        let item = Item::World(g);
+        self.ledger.pay_tribute(item, a);
+        if let Some(l) = self.lairs.get_mut(row.lair) {
+            *l.hoard.entry(item).or_default() += a;
+            *l.unplaced.entry(item).or_default() += a / item.unit();
+        }
+        if let Some(r) = self.tribute.get_mut(&n) {
+            r.paid_at = Some(at);
+        }
+        self.stats.tributes += 1;
+        if self.log_enabled {
+            let what = format!(
+                "village {} pays lair {} {} coin",
+                w.nodes[n as usize].key,
+                self.lairs.get(row.lair).map_or(0, |l| l.key),
+                a / item.unit()
+            );
+            self.note(at, "tribute", None, what);
+        }
+        self.place_tribute(row.lair);
+        let next = self.tun.calendar.next_change(at);
+        self.schedule(
+            next,
+            Ev::Tribute {
+                node: n,
+                stamp: row.stamp,
+            },
+        );
+    }
+
+    /// Village `n` pays no tribute any more: it buys works again, golems first.
+    fn tribute_lapse(&mut self, w: &mut World, n: u32, why: &str, at: Tick) {
+        if self.tribute.remove(&n).is_none() {
+            return;
+        }
+        self.stats.tribute_lapses += 1;
+        w.tribute_lapsed(n as usize, at);
+        if self.log_enabled {
+            let what = format!("village {} stops paying: {why}", w.nodes[n as usize].key);
+            self.note(at, "tribute", None, what);
+        }
+    }
+
+    /// Whether village `node` paid lair `l` tribute within a season of `at`: its dragons leave
+    /// it alone (SINK.md §4.6).
+    fn pays(&self, node: u32, l: LairId, at: Tick) -> bool {
+        self.tribute.get(&node).is_some_and(|r| {
+            r.lair == l
+                && r.paid_at
+                    .is_some_and(|p| at.0 < p.0.saturating_add(self.tun.calendar.season_ticks))
+        })
+    }
+
+    /// The fear of village `node`'s defenders before a dragon's boldness bends it, fullness
+    /// points: the tunable's base and its iron golems' (SINK.md §4.6, MS-8).
+    pub fn village_risk(&self, w: &World, node: usize) -> i64 {
+        i64::from(self.tun.village_risk)
+            + i64::from(w.golems(node)) * i64::from(self.tun.golem_risk)
+    }
+
+    /// Lair `l`'s unplaced coin, in stacks of at most [`TRIBUTE_STACK`], sent to its chest when
+    /// the plugin has reported one. Each stack's op id is drawn from the lair's key and a
+    /// per-lair counter, so a resent stack is the same op.
+    fn place_tribute(&mut self, l: LairId) {
+        let Some(&chest) = self.chests.get(&l) else {
+            return;
+        };
+        let seed = self.seed;
+        let Some(lair) = self.lairs.get_mut(l) else {
+            return;
+        };
+        if lair.unplaced.is_empty() {
+            return;
+        }
+        let key = StreamKey::new(seed, SYS_TRIBUTE, lair.key);
+        for (item, mut count) in std::mem::take(&mut lair.unplaced) {
+            while count > 0 {
+                let n = count.min(TRIBUTE_STACK);
+                let op = rtsim_world::ribbits::identity_op(key.block(lair.stacks, 0)[0], 0);
+                lair.stacks += 1;
+                self.placing.insert(
+                    op,
+                    Placing {
+                        lair: l,
+                        item,
+                        count: n,
+                        chest,
+                    },
+                );
+                count -= n;
+            }
+        }
+    }
+
+    /// Village `node`'s tribute row, if it pays a lair.
+    pub fn tribute_row(&self, node: usize) -> Option<TributeRow> {
+        u32::try_from(node)
+            .ok()
+            .and_then(|n| self.tribute.get(&n).copied())
+    }
+
+    /// Every village that pays a lair, by node.
+    pub fn tribute_rows(&self) -> impl Iterator<Item = (u32, TributeRow)> + '_ {
+        self.tribute.iter().map(|(&n, &r)| (n, r))
+    }
+
+    /// The stacks of tribute coin sent to lairs' chests and not yet answered, by op id.
+    pub fn placing(&self) -> impl Iterator<Item = (u64, &Placing)> + '_ {
+        self.placing.iter().map(|(&op, p)| (op, p))
+    }
+
+    /// Lair `l`'s chest, if the plugin reported one this session.
+    pub fn chest(&self, l: LairId) -> Option<Chest> {
+        self.chests.get(&l).copied()
+    }
+
+    /// The plugin put a stack in its chest (APPLIED, DUPLICATE_OP). False for an op that is not
+    /// a tribute stack.
+    pub fn tribute_placed(&mut self, op: u64) -> bool {
+        let Some(p) = self.placing.remove(&op) else {
+            return false;
+        };
+        if let Some(l) = self.lairs.get_mut(p.lair) {
+            l.placed += p.count;
+        }
+        self.stats.tribute_stacks += 1;
+        true
+    }
+
+    /// The plugin could not put a stack in its chest (FAILED): the coin waits as unplaced, and
+    /// the chest is forgotten until the plugin reports one again.
+    pub fn tribute_failed(&mut self, op: u64) -> bool {
+        let Some(p) = self.placing.remove(&op) else {
+            return false;
+        };
+        if let Some(l) = self.lairs.get_mut(p.lair) {
+            *l.unplaced.entry(p.item).or_default() += p.count;
+        }
+        self.chests.remove(&p.lair);
+        true
     }
 
     /// Back to abstract after a visit: a dragon that left (bored, hungry, wounded) flies home; one
@@ -3309,6 +3611,34 @@ impl Dragons {
                 self.embodied
             ));
         }
+        // Tribute: what the villages paid is what the ledger booked, and every coin of it is in a
+        // lair (unplaced or placed) or on its way to a chest.
+        let paid: BTreeMap<GoodId, i128> = w
+            .works_totals()
+            .1
+            .into_iter()
+            .filter(|(_, a)| *a != 0)
+            .collect();
+        let booked = self.ledger.total_world(&self.ledger.tribute);
+        if paid != booked {
+            return Err(format!(
+                "villages paid {paid:?} tribute but the dragons booked {booked:?}"
+            ));
+        }
+        let coins: i128 = booked.values().sum::<i128>() / i128::from(rtsim_trade::MILLI);
+        let mut kept: i128 = self.placing.values().map(|p| i128::from(p.count)).sum();
+        for (i, l) in self.lairs.iter().enumerate() {
+            kept +=
+                i128::from(l.placed) + l.unplaced.values().map(|&v| i128::from(v)).sum::<i128>();
+            if l.unplaced.values().any(|&v| v <= 0) || l.placed < 0 {
+                return Err(format!("lair {i} keeps a bad tribute count"));
+            }
+        }
+        if coins != kept {
+            return Err(format!(
+                "villages paid {coins} coins of tribute but the lairs keep {kept}"
+            ));
+        }
         held.retain(|_, v| *v != 0);
         if held != self.ledger.in_hoards() {
             return Err(format!(
@@ -3362,12 +3692,36 @@ impl Dragons {
                 wr.raw(k.key().as_bytes());
                 wr.raw(&v.to_le_bytes());
             }
+            for (k, v) in &l.unplaced {
+                wr.raw(k.key().as_bytes());
+                wr.raw(&v.to_le_bytes());
+            }
+            wr.raw(&l.placed.to_le_bytes());
+            wr.u64(l.stacks);
+        }
+        wr.u64(u64::from(self.tribute_stamp));
+        for (n, r) in &self.tribute {
+            wr.u64(u64::from(*n));
+            wr.u64(u64::from(r.lair));
+            wr.u64(u64::from(r.stamp));
+            wr.u64(r.paid_at.map_or(u64::MAX, |t| t.0));
+        }
+        for (op, p) in &self.placing {
+            wr.u64(*op);
+            wr.u64(u64::from(p.lair));
+            wr.raw(p.item.key().as_bytes());
+            wr.raw(&p.count.to_le_bytes());
+            wr.u64(u64::from(p.chest.dimension));
+            for v in p.chest.pos {
+                wr.raw(&v.to_le_bytes());
+            }
         }
         for m in [
             &self.ledger.taken,
             &self.ledger.eaten,
             &self.ledger.burnt,
             &self.ledger.hoarded,
+            &self.ledger.tribute,
         ] {
             for (k, v) in m {
                 wr.raw(k.key().as_bytes());

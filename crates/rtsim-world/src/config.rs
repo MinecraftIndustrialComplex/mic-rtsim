@@ -87,6 +87,21 @@ pub struct WorldConfig {
     /// A player base within this many blocks of a road becomes a stop on it (P30's
     /// recommendation). PLACEHOLDER: 256.
     pub base_stop_blocks: u32,
+    /// Villages spend their works purses (SINK.md, MS-1 to MS-11). Off, the purse still fills
+    /// (coin still leaves circulation at the ceiling) and nothing is bought.
+    pub works: bool,
+    /// Material labour per item of a work that is none of the world's goods, thousandths of a
+    /// worker-day. TUNABLE, PLACEHOLDER (SINK.md §4.3, overnight choice MSC2): 20.
+    pub works_material_wd_milli: i64,
+    /// Placement labour per block of a work, thousandths of a worker-day. TUNABLE, PLACEHOLDER
+    /// (SINK.md §4.3): 10.
+    pub works_place_wd_milli: i64,
+    /// Days after a raid (or a lapsed tribute) during which a village buys a golem first
+    /// (MS-6): one season, 24 days (P2's calendar).
+    pub works_threat_days: u64,
+    /// How far from the meeting point the bridge searches for a work's plot, in blocks.
+    /// PLACEHOLDER: 48, as a grown house's.
+    pub works_radius: u32,
 }
 
 impl WorldConfig {
@@ -123,6 +138,11 @@ impl WorldConfig {
             band_standing_at_or_above: 0,
             band_performance_delta: 5,
             base_stop_blocks: 256,
+            works: true,
+            works_material_wd_milli: 20,
+            works_place_wd_milli: 10,
+            works_threat_days: 24,
+            works_radius: 48,
         }
     }
 }
