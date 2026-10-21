@@ -358,6 +358,66 @@ fn the_reader_skips_a_chunk_damaged_after_indexing() {
     assert!(r.legs_at(2_005).unwrap().is_empty());
     assert_eq!(r.legs_at(3_005).unwrap().len(), 1);
     assert_eq!(r.damaged(), 2);
+    // The viewer's backend shares the reader between request threads.
+    fn sync<T: Send + Sync>(_: &T) {}
+    sync(&r);
+}
+
+#[test]
+fn the_newest_rows_read_only_the_chunks_they_need() {
+    let dir = Dir::new("newest");
+    let mut a = Archive::open(dir.path()).unwrap();
+    let mut dict = Dictionary::new();
+    for obs in 1..=3 {
+        let mut p = Pending::new();
+        fill(&mut p, &mut dict, obs * 1_000, 20);
+        a.flush(p.take(), st(obs, obs * 7), Some(&dict)).unwrap();
+    }
+    drop(a);
+    let tick = |r: &rtsim_archive::Record| match r.row {
+        Row::Event(e) => e.tick,
+        Row::Leg(l) => l.t0,
+    };
+    // Chunk 0 is damaged: a query the newer chunks answer never opens it.
+    let c0 = dir.path().join(chunk_name(0));
+    let mut c = fs::read(&c0).unwrap();
+    let last = c.len() - 1;
+    c[last] ^= 0xFF;
+    fs::write(&c0, c).unwrap();
+    let r = ArchiveReader::open(dir.path(), None).unwrap().unwrap();
+    let (rows, more) = r.newest(0, u64::MAX, 5, |_| true).unwrap();
+    assert_eq!(
+        rows.iter().map(tick).collect::<Vec<_>>(),
+        [3_019, 3_018, 3_017, 3_016, 3_015]
+    );
+    assert!(more);
+    assert_eq!(r.damaged(), 0);
+    // A filter and a span: trade deals (ticks divisible by 3) up to 2,010.
+    let deal = r
+        .dictionary()
+        .kinds()
+        .iter()
+        .position(|k| k == "trade.deal")
+        .unwrap() as u16;
+    let (rows, more) = r
+        .newest(
+            0,
+            2_010,
+            4,
+            |row| matches!(row, Row::Event(e) if e.kind == deal),
+        )
+        .unwrap();
+    assert_eq!(
+        rows.iter().map(tick).collect::<Vec<_>>(),
+        [2_010, 2_007, 2_004, 2_001]
+    );
+    assert!(more);
+    assert_eq!(r.damaged(), 0);
+    // Everything fits: no more, and the damaged chunk is skipped and counted.
+    let (rows, more) = r.newest(0, u64::MAX, 100, |_| true).unwrap();
+    assert_eq!(rows.len(), 40);
+    assert!(!more);
+    assert_eq!(r.damaged(), 1);
 }
 
 #[test]

@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use rtsim_kernel::codec::{CodecError, Reader, Writer};
 
@@ -440,7 +441,7 @@ pub struct ArchiveReader {
     dict: Dictionary,
     dropped: Dropped,
     /// Chunks [`ArchiveReader::rows`] and [`ArchiveReader::legs_at`] skipped as damaged.
-    damaged: std::cell::Cell<u32>,
+    damaged: AtomicU32,
 }
 
 /// A row as read, with where it came from.
@@ -490,7 +491,7 @@ impl ArchiveReader {
             entries,
             dict,
             dropped,
-            damaged: std::cell::Cell::new(0),
+            damaged: AtomicU32::new(0),
         }))
     }
 
@@ -508,7 +509,7 @@ impl ArchiveReader {
 
     /// How many damaged chunks reads have skipped so far (the page says so rather than failing).
     pub fn damaged(&self) -> u32 {
-        self.damaged.get()
+        self.damaged.load(Ordering::Relaxed)
     }
 
     /// The first and last tick any row touches.
@@ -592,7 +593,7 @@ impl ArchiveReader {
     fn read_or_skip(&self, e: &Entry) -> io::Result<Option<Chunk>> {
         match self.read(e) {
             Err(err) if err.kind() == io::ErrorKind::InvalidData => {
-                self.damaged.set(self.damaged.get().saturating_add(1));
+                self.damaged.fetch_add(1, Ordering::Relaxed);
                 Ok(None)
             }
             other => other,
@@ -619,6 +620,59 @@ impl ArchiveReader {
         Ok(out)
     }
 
+    /// The newest `limit` rows touching `t0..=t1` that `keep` accepts, newest first (by tick, a
+    /// leg by its start), and whether there may be more. Reads chunks newest first and stops at the
+    /// first chunk too old to hold a row among them, so a long span costs what the answer costs;
+    /// a stop with chunks left counts as more.
+    pub fn newest(
+        &self,
+        t0: u64,
+        t1: u64,
+        limit: usize,
+        keep: impl Fn(&Row) -> bool,
+    ) -> io::Result<(Vec<Record>, bool)> {
+        let mut order: Vec<&Entry> = self
+            .entries
+            .iter()
+            .filter(|e| e.header.overlaps(t0, t1))
+            .collect();
+        order.sort_by_key(|e| std::cmp::Reverse(e.header.last_tick));
+        let mut out: Vec<Record> = Vec::new();
+        let mut more = false;
+        for e in order {
+            if out.len() == limit
+                && out
+                    .last()
+                    .is_some_and(|r| e.header.last_tick < start(&r.row))
+            {
+                more = true;
+                break;
+            }
+            let Some(c) = self.read_or_skip(e)? else {
+                continue;
+            };
+            for (i, r) in c.rows.iter().enumerate() {
+                if crate::row::tick(r) > t1 || crate::row::end(r) < t0 {
+                    continue;
+                }
+                let row = Row::decode(r);
+                if keep(&row) {
+                    out.push(Record {
+                        row,
+                        payload: c.payload(i).map(<[u8]>::to_vec),
+                        tier: e.header.tier,
+                    });
+                }
+            }
+            out.sort_by_key(|r| std::cmp::Reverse(start(&r.row)));
+            if out.len() > limit {
+                out.truncate(limit);
+                more = true;
+            }
+        }
+        Ok((out, more))
+    }
+
     /// The legs covering `tick`: every mover's exact position then ([`Leg::at`]).
     pub fn legs_at(&self, tick: u64) -> io::Result<Vec<Leg>> {
         let mut out = Vec::new();
@@ -636,5 +690,13 @@ impl ArchiveReader {
             }));
         }
         Ok(out)
+    }
+}
+
+/// A row's tick: an event's, a leg's start.
+fn start(row: &Row) -> u64 {
+    match row {
+        Row::Event(e) => e.tick,
+        Row::Leg(l) => l.t0,
     }
 }
