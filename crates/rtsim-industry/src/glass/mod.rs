@@ -21,6 +21,7 @@ pub mod codec;
 pub mod graph;
 pub mod lp;
 pub mod q;
+pub mod replay;
 pub mod records;
 pub mod report;
 pub mod solve;

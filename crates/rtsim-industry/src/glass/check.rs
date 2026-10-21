@@ -231,6 +231,10 @@ pub struct Compiled {
     pub probe_set: Vec<u32>,
     pub probes: BTreeMap<u32, ProbeTrack>,
     pub events: VecDeque<GlassEvent>,
+    /// The glass replay's regimes, breakpoints and oscillation fallbacks since the compile.
+    pub replay_regimes: u32,
+    pub replay_breakpoints: u32,
+    pub replay_oscillations: u32,
 }
 
 /// One district's glass state.
@@ -247,6 +251,13 @@ pub struct DistrictGlass {
     pub ticking: BTreeSet<crate::ids::ChunkPos>,
     /// Model codes demoted to measured here (G-B14), kept across compiles.
     pub demoted: BTreeSet<u32>,
+    /// The glass replay running while the district is away (G2), if any.
+    pub replay: Option<super::replay::Replay>,
+    /// What replays the district now ([`report::replay_model`]) and since when.
+    pub replay_model: u32,
+    pub replay_since: Option<Tick>,
+    /// Why this compile's glass replay fell back (cleared by a new compile or a live district).
+    pub fallback: Option<super::replay::Fallback>,
 }
 
 /// What a sweep sees of the district.
@@ -374,6 +385,9 @@ impl Compiled {
             probe_set: Vec::new(),
             probes: BTreeMap::new(),
             events: VecDeque::new(),
+            replay_regimes: 0,
+            replay_breakpoints: 0,
+            replay_oscillations: 0,
         }
     }
 
@@ -1264,7 +1278,16 @@ impl Compiled {
             district_revision: self.district_revision,
             last_discard: dg.last_discard.map(|(t, r)| (t.0, r)),
             discards: dg.discards,
-            replay: report::ReplayReport::default(),
+            replay: report::ReplayReport {
+                model: dg.replay_model,
+                since: dg.replay_since.map(|t| t.0),
+                regimes: self.replay_regimes,
+                breakpoints: self.replay_breakpoints,
+                oscillations: self.replay_oscillations,
+                cut_edges: dg.replay.as_ref().map_or(0, |r| r.cut_edges()),
+                eligible: self.eligible(),
+                learned_sources: dg.replay.as_ref().map_or(0, |r| r.learned_sources()),
+            },
             goods: goods.into_values().collect(),
         }
     }
