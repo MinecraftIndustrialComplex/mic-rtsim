@@ -327,9 +327,9 @@ fn a_belt_fed_press_stays_on_the_glass_box() {
 /// Brass imported into a dry press line that replays on the glass box must reach the press.
 /// Found: `Engine::inject` (like a train's, a carriage's or a package's import) adds to the
 /// district's `PoolKey::Stock` pool, which no glass process reads, so the press never restarts
-/// and the brass sits inert in `sim_stock`.
+/// and the brass sits inert in `sim_stock`. Fixed: the replay's refresh moves it into the store
+/// that feeds the press (choice G2-14).
 #[test]
-#[ignore = "engine finding (G2 bench): an import into a glass replay lands in a pool no process reads"]
 fn an_import_restarts_a_dry_glass_replay() {
     let mut l = Line::default();
     let brass = l.store(BIG, &[]);
@@ -346,10 +346,13 @@ fn an_import_restarts_a_dry_glass_replay() {
     e.advance_to(Tick(UNLOAD + 2 * TICKS_PER_DAY));
     let st = e.sim_stock(D).unwrap_or_default();
     assert_eq!(model(&e), replay_model::GLASS);
-    assert_eq!(
-        (st.get(BRASS), st.get(SHEET)),
-        (0, 640),
-        "the imported brass is pressed"
+    // The last sheet stays in the press: a rise rounds down, so the output's carry holds the
+    // last unit of a part-made sheet when the input runs out.
+    assert_eq!(st.get(BRASS), 0, "the imported brass is pressed");
+    assert!(
+        (639..=640).contains(&st.get(SHEET)),
+        "{} sheets",
+        st.get(SHEET)
     );
 }
 

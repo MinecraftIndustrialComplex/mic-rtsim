@@ -540,6 +540,11 @@ impl Replay {
         self.learned_sources
     }
 
+    /// Does the replay book inventory `inv` per store?
+    pub fn covers(&self, inv: u32) -> bool {
+        self.stores.contains_key(&inv)
+    }
+
     /// Is a closed-form cycle running?
     pub fn in_cycle(&self) -> bool {
         self.cycle.is_some()
@@ -586,6 +591,7 @@ impl Replay {
             self.leave_cycle(at);
             self.steps = 0;
             self.marks.clear();
+            self.absorb_imports(comp, c, at);
         }
         for _ in 0..MAX_STEPS {
             self.fire = None;
@@ -696,6 +702,52 @@ impl Replay {
             }
         }
         Err(Fallback::Stuck)
+    }
+
+    /// Imports (a train's unload, a give-back, an injection) land in the district's `Stock` pool,
+    /// which no process reads. With no cut, each good moves into the covered store that feeds the
+    /// graph with it (one with room first, then the lowest inventory index), so the machines see
+    /// it; the store's change is written back to that store at the reconcile. A good no covered
+    /// store feeds waits in `Stock` for the reconcile, as does every import across a partial
+    /// load's cut, where `Stock` is the live side's supply (choice G2-14).
+    fn absorb_imports(&self, comp: &Compiled, c: &mut Cluster, at: Tick) {
+        if !self.cut.is_empty() {
+            return;
+        }
+        let d = self.d;
+        let waiting: Vec<(Good, i64)> = levels_of(c, d)
+            .iter()
+            .filter_map(|(k, &a)| match *k {
+                PoolKey::Stock(_, g) if a > 0 => Some((g, a)),
+                _ => None,
+            })
+            .collect();
+        for (g, a) in waiting {
+            let Some(inv) = self.landing(comp, g) else {
+                continue;
+            };
+            let took = -c.add_to_pool(PoolKey::Stock(d, g), -a, false, at);
+            if took > 0 {
+                c.add_to_pool(PoolKey::Store(d, inv, g), took, false, at);
+            }
+        }
+    }
+
+    /// The covered store an import of `g` lands in: one that feeds the graph with it.
+    fn landing(&self, comp: &Compiled, g: Good) -> Option<u32> {
+        let graph = &comp.graph;
+        let feeds = |inv: &u32| {
+            self.stores[inv]
+                .nodes
+                .iter()
+                .any(|&v| graph.out_g.of(v).iter().any(|&e| graph.allows(e, g)))
+        };
+        let mut cands = self.stores.keys().filter(|i| feeds(i));
+        let first = cands.clone().next().copied();
+        cands
+            .find(|i| !self.st.full.contains_key(i))
+            .copied()
+            .or(first)
     }
 
     /// What a store must hold of a good to supply it (the compile's holding rule).
