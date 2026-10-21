@@ -193,6 +193,15 @@ public final class GlassCalibrationKit {
      */
     public static void arm(GameTestHelper h, BlockPos abs, List<BlockPos> take, List<BlockPos> deposit, ArmBlockEntity.SelectionMode mode) {
         set(h, abs, AllBlocks.MECHANICAL_ARM.getDefaultState());
+        armTargets(h, abs, take, deposit, mode);
+    }
+
+    /**
+     * Sets the targets of the arm already at {@code abs}, as {@link #arm} does. A test that wants the arm
+     * early in the level's ticker order (block entities tick in the order they were created) places the
+     * arm block first and calls this once every target exists.
+     */
+    public static void armTargets(GameTestHelper h, BlockPos abs, List<BlockPos> take, List<BlockPos> deposit, ArmBlockEntity.SelectionMode mode) {
         Level level = h.getLevel();
         ListTag points = new ListTag();
         for (BlockPos p : take) {
