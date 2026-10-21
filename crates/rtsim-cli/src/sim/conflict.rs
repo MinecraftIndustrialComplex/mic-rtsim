@@ -308,12 +308,7 @@ fn main(o: Opts) -> i32 {
     let mut ignore_hashes = (0, 0);
     for v in [Variant::Ignore, Variant::Tribute, Variant::Converter] {
         let t0 = Instant::now();
-        let out = scenario::run(&Options {
-            seed: o.seed,
-            days: o.days,
-            variant: v,
-            restart_day: None,
-        });
+        let out = scenario::run(&Options::new(o.seed, o.days, v));
         if v == Variant::Ignore {
             ignore_hashes = out.hashes;
         }
@@ -322,10 +317,8 @@ fn main(o: Opts) -> i32 {
     }
     let day = OFFLINE_DAY + 1.3;
     let restarted = scenario::run(&Options {
-        seed: o.seed,
-        days: o.days,
-        variant: Variant::Ignore,
         restart_day: Some(day),
+        ..Options::new(o.seed, o.days, Variant::Ignore)
     });
     let restore = Check {
         name: "a restore continues with the same state",
