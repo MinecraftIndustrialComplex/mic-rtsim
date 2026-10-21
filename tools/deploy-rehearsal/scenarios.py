@@ -18,14 +18,22 @@ ADOPT_AT, VILLAGE_AT = [tuple(b) for b in B['adopt_at']], [tuple(b) for b in B['
 
 
 def forceload():
-    return [{'cmd': 'forceload add %d %d %d %d' % b} for b in STRIPS + VILLAGES + SMALL]
+    # one box at a time, 20 s apart: 1,400 chunks ticketed at once made the main thread spend over a
+    # minute promoting chunks in one tick (the 60 s watchdog fired); players arrive one at a time anyway
+    out = []
+    for b in STRIPS + VILLAGES + SMALL:
+        out += [{'cmd': 'forceload add %d %d %d %d' % b}, {'wait': 20}]
+    return out
 
 
 def main():
     kind, port, java, neo, seed, out = sys.argv[1:7]
     port = int(port)
     sc = {'port': port, 'rcon_port': port + 1, 'java': java, 'neoforge': neo, 'seed': seed, 'nice': 10,
-          'boot_timeout': 2400, 'jvm': ['-Xms2G', '-Xmx8G', '-XX:ActiveProcessorCount=4'],
+          'boot_timeout': 2400, 'jvm': ['-Xms2G', '-Xmx8G', '-XX:ActiveProcessorCount=4',
+                                    # the live host has 4 cores: mic_native's defaults there (P24) are a
+                                    # 4-thread foreground pool and a 2-thread background pool
+                                    '-Dmic_native.fgThreads=4', '-Dmic_native.bgThreads=2'],
           'props': {'simulation-distance': 16, 'view-distance': 16, 'motd': 'deploy rehearsal'}}
     if kind == 'reload':
         sc['jvm'].append('-Dmixin.debug.verbose=true')  # one "Mixing X into Y" line per applied mixin
@@ -33,7 +41,7 @@ def main():
     if kind in ('rtsim', 'reload', 'reset'):
         steps += [{'cmd': 'rtsim perf'}, {'cmd': 'rtsim district list'}]
     steps += forceload()
-    steps += [{'wait': 240}, {'cmd': 'forceload query'}]
+    steps += [{'wait': 120}, {'cmd': 'forceload query'}]
     if kind in ('rtsim', 'reload', 'reset'):
         steps += [{'cmd': 'rtsim perf'}, {'cmd': 'rtsim district list'}]
         steps += [{'cmd': 'execute positioned %d %d %d in minecraft:overworld run rtsim village' % v} for v in VILLAGE_AT]

@@ -88,7 +88,10 @@ def main():
     with open(os.path.join(sdir, 'user_jvm_args.txt'), 'w') as f:
         f.write('\n'.join(sc.get('jvm', ['-Xms6G', '-Xmx10G'])) + '\n')
     java = sc.get('java', 'java')
-    args = ['nice', '-n', str(sc.get('nice', 10)), java, '@user_jvm_args.txt',
+    # nice -n adds to the caller's niceness: aim at the absolute value (a nohup chain at 5 gave 15,
+    # which let every nice-0 and nice-10 neighbour starve the server thread)
+    inc = max(0, sc.get('nice', 10) - os.nice(0))
+    args = ['nice', '-n', str(inc), java, '@user_jvm_args.txt',
             '@libraries/net/neoforged/neoforge/%s/unix_args.txt' % sc['neoforge'], 'nogui']
     if sc.get('cpus'):
         # the live host has 4 cores and no SMT: pin to 4 physical cores so the JVM and mic_native size
