@@ -225,7 +225,7 @@ fn caravan(cx: &Ctx, bits: u64) -> Option<Card> {
     let x = w.caravans.get(h)?;
     let place = w.caravan_place(x, cx.wnow);
     let alive = x.members.iter().filter(|m| m.alive && m.present).count();
-    let mut c = Card::new("travel.caravans", bits, format!("Caravan {bits}"))
+    let mut c = Card::new("travel.caravans", bits, format!("Caravan {}", h.index()))
         .subtitle(format!("{:?} to {}", x.stage, village_title(w, x.leg.to)))
         .at(place.x as f64, place.z as f64)
         .link("Home", village_title(w, x.home), "settle.villages", x.home)
