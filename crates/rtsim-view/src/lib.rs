@@ -7,14 +7,17 @@
 //! - [`industry`]: the industry pages without every district decoded at once.
 //! - [`keys`]: where each module keeps its pages (mirrored from rtsim-jni).
 //! - [`journal`]: Java's dictionary from the world's `data/mic_rtsim_journal.dat`.
+//! - [`surveyor`]: Surveyor's terrain summaries as the base map over HABITAT (V5).
 
 pub mod cards;
+pub mod events;
 pub mod habitat;
 pub mod industry;
 pub mod journal;
 pub mod keys;
 pub mod layers;
 pub mod load;
+pub mod surveyor;
 pub mod view;
 
 pub use load::{Limits, Saved, Status, load_world};

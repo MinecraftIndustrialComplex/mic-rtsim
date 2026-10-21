@@ -50,8 +50,10 @@ mic-native-rt = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-nat
 mic-native-host = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
 # The shared world viewer (VIEWER.md, VW1): its HTTP server, viewer API, scenes, tile cache and page,
 # from the private repository MinecraftIndustrialComplex/mic-viewer at a pinned commit, as mic-native
-# is pinned. MPL-2.0. Only rtsim-view and rtsim-cli use it.
+# is pinned. MPL-2.0. Only rtsim-view and rtsim-cli use them.
 mic-viewer = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "cc213668d3fb65f8783d541b7457c6c106660dde" }
+# Surveyor's terrain summaries as a base map (VIEWER.md §9, V5), from the same repository and commit.
+mic-viewer-surveyor = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "cc213668d3fb65f8783d541b7457c6c106660dde" }
 # Gzip for Minecraft's NBT files (the viewer reads the Java journal's dimension names). Already in
 # the tree through mic-viewer's png. MIT OR Apache-2.0.
 flate2 = "1.1"

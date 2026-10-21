@@ -360,8 +360,9 @@ pub fn specs() -> Vec<Spec> {
     ]
 }
 
-/// The layer list `/api/layers` answers, with the save's empty reasons in each description.
-pub fn layers(specs: &[Spec], reasons: &BTreeMap<String, String>) -> Layers {
+/// The layer list `/api/layers` answers. A layer empty in this save says why through its marks
+/// (`/api/marks` `empty`, from the scene), which the page shows under the layer's name.
+pub fn layers(specs: &[Spec]) -> Layers {
     Layers {
         groups: GROUPS
             .iter()
@@ -370,16 +371,7 @@ pub fn layers(specs: &[Spec], reasons: &BTreeMap<String, String>) -> Layers {
                 label: (*label).into(),
             })
             .collect(),
-        layers: specs
-            .iter()
-            .map(|s| {
-                let mut d = s.desc.clone();
-                if let Some(r) = reasons.get(&d.id) {
-                    d.description = format!("{}. Empty in this save: {r}", d.description);
-                }
-                d
-            })
-            .collect(),
+        layers: specs.iter().map(|s| s.desc.clone()).collect(),
     }
 }
 
