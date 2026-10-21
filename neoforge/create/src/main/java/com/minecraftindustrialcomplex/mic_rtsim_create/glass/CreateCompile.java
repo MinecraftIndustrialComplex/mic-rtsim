@@ -953,10 +953,20 @@ final class CreateCompile implements GlassExtractor.Compile {
                 BlockPos p = start.relative(air.direction, d).below(off);
                 if (BlockEntityBehaviour.get(level, p, TransportedItemStackHandlerBehaviour.TYPE) != null) {
                     FanProcessingType t = FanProcessingType.getAt(level, p);
+                    BlockPos catalyst = t != null ? p : air.catalystAt((float) (d - 1));
                     if (t == null)
                         t = segType;
+                    // a blaze burner of the district as the catalyst: blasting while it burns (heat FADING
+                    // or more, BlastingType.isValidAt), smoking when it smoulders. Compiled as blasting
+                    // whatever its heat now (its heat is state, not structure, GB59), the zone's recipe
+                    // needs heat and a HEAT edge from the burner gates it (GB44); the smoking regime of
+                    // a burner out of fuel is not modelled (UNVERIFIED)
+                    BlockPos burner = catalyst != null && claimedPos.contains(catalyst.asLong())
+                            && level.getBlockEntity(catalyst) instanceof BlazeBurnerBlockEntity ? catalyst : null;
+                    if (burner != null)
+                        t = AllFanProcessingTypes.BLASTING;
                     if (t != null)
-                        fanAt.computeIfAbsent(p.asLong(), x -> new ArrayList<>()).add(new Object[] {fan, t});
+                        fanAt.computeIfAbsent(p.asLong(), x -> new ArrayList<>()).add(new Object[] {fan, t, burner});
                 }
                 if (air.direction.getAxis().isVertical())
                     break;
@@ -1248,7 +1258,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         List<Object[]> fans = fanAt.get(seg.asLong());
         if (fans != null)
             for (Object[] f : fans) {
-                int z = fanZone(seg, (EncasedFanBlockEntity) f[0], (FanProcessingType) f[1], belt);
+                int z = fanZone(seg, (EncasedFanBlockEntity) f[0], (FanProcessingType) f[1], belt, (BlockPos) f[2]);
                 belt.add(k, z);
             }
     }
@@ -1285,12 +1295,26 @@ final class CreateCompile implements GlassExtractor.Compile {
         return i.node.index;
     }
 
-    private int fanZone(BlockPos host, EncasedFanBlockEntity fan, FanProcessingType type, Belt belt) {
+    /** A fan zone at {@code host}; {@code burner} the blaze burner whose heat makes it blasting, or null. */
+    private int fanZone(BlockPos host, EncasedFanBlockEntity fan, FanProcessingType type, Belt belt, BlockPos burner) {
         Info i = info(K.FAN, fan, GlassRecords.Node.MACHINE, GlassRecords.Model.FAN_ZONE, host);
         i.pass = Pass.MACHINE;
         i.node.flag(GlassRecords.Node.PASS_THROUGH);
-        i.extra = new Object[] {type, belt, host};
+        i.extra = new Object[] {type, belt, host, burner};
         return i.node.index;
+    }
+
+    /** A burner-catalysed fan zone's HEAT edge from its burner (param: the burner's heat when lit). */
+    private void fanHeatEdge(Info i) {
+        if (!(i.extra instanceof Object[] x) || x.length < 4 || !(x[3] instanceof BlockPos burner))
+            return;
+        int h = acceptItem.get(burner.asLong());
+        Info hi = infos.get(h);
+        if (hi == null || hi.kind != K.BURNER)
+            return;
+        GraphBuilder.Edge e = edge(GlassRecords.Edge.HEAT, h, i.node.index);
+        if (e != null)
+            e.param((Integer) hi.extra);
     }
 
     private void depotStations(DepotBlockEntity depot) {
@@ -1303,7 +1327,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         List<Object[]> fans = fanAt.get(p.asLong());
         if (fans != null)
             for (Object[] f : fans)
-                chain.add(fanZone(p, (EncasedFanBlockEntity) f[0], (FanProcessingType) f[1], null));
+                chain.add(fanZone(p, (EncasedFanBlockEntity) f[0], (FanProcessingType) f[1], null, (BlockPos) f[2]));
         if (chain.isEmpty())
             return;
         // One node when one station works the depot (§9.3): the depot's edges are the station's.
@@ -1476,6 +1500,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                     edge(GlassRecords.Edge.ADJACENCY, i.node.index, to);
                 }
                 case BURNER -> heatEdges(i);
+                case FAN -> fanHeatEdge(i);
                 case FUNNEL -> funnelEdges(i);
                 case CHUTE -> chuteEdges(i);
                 case ARM -> armEdges(i);
@@ -1498,7 +1523,20 @@ final class CreateCompile implements GlassExtractor.Compile {
             beltOutlets(b);
         for (Belt b : belts)
             beltEdges(b);
+        // a brass tunnel whose front flap has a filter: its straight-on link is a filtered output too
+        for (GraphBuilder.Edge e : g.edges()) {
+            TunnelFront tf = brassFront.get(e.from);
+            if (tf == null || (e.kind != GlassRecords.Edge.BELT && e.kind != GlassRecords.Edge.DROP))
+                continue;
+            e.flag(GlassRecords.Edge.FILTERED_SIDE);
+            edgeTests.put(e, new EdgeTest(st -> tf.brass().testFlapFilter(tf.front(), st), null));
+        }
     }
+
+    /** Belt movers under a brass tunnel whose front flap has a filter (their straight-on link is filtered). */
+    private final Int2ObjectOpenHashMap<TunnelFront> brassFront = new Int2ObjectOpenHashMap<>();
+
+    private record TunnelFront(BrassTunnelBlockEntity brass, Direction front) {}
 
     private int supplyAtNotChute(BlockPos p) {
         return level.getBlockEntity(p) instanceof ChuteBlockEntity ? NONE : supplyAt(p);
@@ -1565,6 +1603,26 @@ final class CreateCompile implements GlassExtractor.Compile {
         }
     }
 
+    /**
+     * Whether a downward chute with no inventory under it drops its item into the world
+     * ({@code ChuteBlockEntity.handleDownwardOutput}): not when it cannot activate (a smart chute powered:
+     * {@code SmartChuteBlockEntity.canActivate}), faces sideways (a diagonal chute hands on to its target
+     * chute), sits on a funnel facing down, or sits on a block that can support a rigid block
+     * ({@code Block.canSupportRigidBlock}: a full floor). Otherwise the item waits in the chute for a
+     * taker (an arm, a funnel), and no DROP edge is emitted.
+     */
+    private boolean dropsBelow(ChuteBlockEntity c) {
+        BlockPos p = c.getBlockPos(), below = p.below();
+        if (c instanceof SmartChuteBlockEntity && redstonePowered(p))
+            return false;
+        if (com.simibubi.create.content.logistics.chute.AbstractChuteBlock.getChuteFacing(c.getBlockState()).getAxis().isHorizontal())
+            return false;
+        BlockState bs = level.getBlockState(below);
+        if (bs.getBlock() instanceof AbstractFunnelBlock && AbstractFunnelBlock.getFunnelFacing(bs) == Direction.DOWN)
+            return false;
+        return !net.minecraft.world.level.block.Block.canSupportRigidBlock(level, below);
+    }
+
     private void chuteEdges(Info i) {
         ChuteBlockEntity c = (ChuteBlockEntity) i.be;
         BlockPos p = c.getBlockPos();
@@ -1587,7 +1645,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             else if (below != null && (level.getCapability(Capabilities.ItemHandler.BLOCK, p.below(), Direction.UP) != null
                     || BlockEntityBehaviour.get(level, p.below(), DirectBeltInputBehaviour.TYPE) != null))
                 edge(GlassRecords.Edge.CHUTE, i.node.index, acceptAt(p.below()));
-            else
+            else if (dropsBelow(c))
                 edge(GlassRecords.Edge.DROP, i.node.index, dropAt(p.below()));
             int perBlock = Cycles.chuteTicksPerBlock(motion);
             ticks = top ? Cycles.chuteGrabPeriod(motion) : perBlock;
@@ -1999,7 +2057,10 @@ final class CreateCompile implements GlassExtractor.Compile {
                 rule = sm.ordinal() + 1;
             mi.node.rule(rule);
             int order = 0;
-            // own sides first (BrassTunnelBlockEntity.addValidOutputsOf with prioritizeSides), then onward
+            // own sides first (BrassTunnelBlockEntity.addValidOutputsOf with prioritizeSides), then onward.
+            // tick() puts each valid output in the filtered list when its flap has a filter
+            // (!flapFilterEmpty), else in the unfiltered one, and serves the filtered list first: only a
+            // side with a filter is FILTERED_SIDE; an unfiltered side shares the rule with straight on.
             for (Direction d : Direction.Plane.HORIZONTAL) {
                 if (d.getAxis() == movement.getAxis() || !t.sides.contains(d))
                     continue;
@@ -2009,10 +2070,15 @@ final class CreateCompile implements GlassExtractor.Compile {
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.ADJACENCY, m, acceptAt(out));
                 if (e != null) {
                     e.order(order++);
-                    e.flag(GlassRecords.Edge.FILTERED_SIDE);
-                    edgeTests.put(e, new EdgeTest(st -> brass.testFlapFilter(d, st), null));
+                    if (!brass.flapFilterEmpty(d)) {
+                        e.flag(GlassRecords.Edge.FILTERED_SIDE);
+                        edgeTests.put(e, new EdgeTest(st -> brass.testFlapFilter(d, st), null));
+                    }
                 }
             }
+            // straight on (the next segment or the belt's end): linked by beltEdges, flagged there
+            if (t.sides.contains(movement) && !brass.flapFilterEmpty(movement))
+                brassFront.put(m, new TunnelFront(brass, movement));
             bounded(mi.node); // the group's other tunnels (parallel belts) are not merged in G1
         } else {
             mi.node.rule(GlassRecords.Rule.ANDESITE_SPLIT);
@@ -2563,6 +2629,14 @@ final class CreateCompile implements GlassExtractor.Compile {
                 };
             }
         }
+        // A fan zone on a moving belt works in place: a stack of n is done after fanTicks(n) ticks in the
+        // zone, so it is BOUNDED only when the largest stack that can reach it leaves sooner (GB44).
+        int fanTime = fanProcessingTime();
+        for (Info i : infos.values())
+            if (i.kind == K.FAN && i.node != null && i.extra instanceof Object[] x && x.length > 1 && x[1] instanceof Belt b
+                    && i.crafts.stream().anyMatch(c -> c.cycle() == null)
+                    && fanExposure(i) < Cycles.fanTicks(stackAt(b, i.node.index), fanTime))
+                bounded(i.node);
         for (Info i : infos.values()) {
             if (i.node == null)
                 continue;
@@ -2636,6 +2710,125 @@ final class CreateCompile implements GlassExtractor.Compile {
         return n == Integer.MAX_VALUE ? 1 : Math.min(64, n);
     }
 
+    private static boolean goodsEdge(GraphBuilder.Edge e) {
+        return e.kind != GlassRecords.Edge.CONTROL && e.kind != GlassRecords.Edge.HEAT && e.kind != GlassRecords.Edge.OBSERVE;
+    }
+
+    /**
+     * The largest stack a whole-stack machine can be handed: the largest batch its feeders hand on, 64 for a
+     * feeder whose batch is not a mover's own (a belt, a machine, a drop); a saw takes one unless bulkCutting.
+     */
+    private int maxFeed(Info i) {
+        if (i.kind == K.SAW && !AllConfigs.server().recipes.bulkCutting.get())
+            return 1;
+        int n = 0;
+        for (GraphBuilder.Edge e : g.edges())
+            if (e.to == i.node.index && goodsEdge(e)) {
+                Info f = infos.get(e.from);
+                boolean own = f != null && f.kind != K.BELT && f.node != null && f.node.kind == GlassRecords.Node.MOVER
+                        && e.kind != GlassRecords.Edge.DROP && f.unitBatch > 0;
+                n = Math.max(n, own ? f.unitBatch : 64);
+            }
+        return n == 0 ? 1 : Math.min(64, n);
+    }
+
+    /**
+     * The largest stack that reaches element {@code z} of belt {@code b}'s chain (GB44): the largest any of
+     * its entries' feeders hands on ({@link #handOnPeak}), times the most of one good a craft makes at each
+     * machine with recipes before {@code z}; 64 at most.
+     */
+    private int stackAt(Belt b, int z) {
+        IntOpenHashSet chain = new IntOpenHashSet();
+        for (List<Integer> at : b.elements.values())
+            chain.addAll(at);
+        List<GraphBuilder.Edge> feeds = new ArrayList<>();
+        for (GraphBuilder.Edge e : g.edges())
+            if (b.movers.contains(e.to) && !chain.contains(e.from) && goodsEdge(e))
+                feeds.add(e);
+        long peak = 0;
+        for (List<Integer> at : b.elements.values())
+            for (int n : at) {
+                if (n == z)
+                    return (int) Math.max(1, peak);
+                if (b.movers.contains(n)) {
+                    for (GraphBuilder.Edge e : feeds)
+                        if (e.to == n)
+                            peak = Math.max(peak, handOnPeak(infos.get(e.from), e, feeds.size() > 1));
+                } else {
+                    Info s = infos.get(n);
+                    int grow = 1;
+                    if (s != null)
+                        for (Craft c : s.crafts)
+                            grow = Math.max(grow, recipePeak.getOrDefault(c.recipe(), 64));
+                    peak = Math.min(64, peak * grow);
+                }
+            }
+        return 64;
+    }
+
+    /**
+     * The largest stack feeder {@code f} hands onto a belt by edge {@code e} (GB44), 64 when unknown: a
+     * mover's batch, a machine's largest batch times the most of one good a craft makes. A hand-off that
+     * may come as item entities (a DROP, or any machine's output) can wait on the belt and merge with the
+     * next of its kind, so its stack counts only when it is the belt's one feeder and the belt takes an
+     * operation's stacks before the next operation ends, at every level of both domains.
+     */
+    private int handOnPeak(Info f, GraphBuilder.Edge e, boolean shared) {
+        if (f == null || f.node == null || f.kind == K.BELT)
+            return 64;
+        boolean mover = f.node.kind == GlassRecords.Node.MOVER;
+        if (!mover && (f.node.kind != GlassRecords.Node.MACHINE || (f.node.flags & GlassRecords.Node.PASS_THROUGH) != 0
+                || f.crafts.isEmpty()))
+            return 64;
+        int levels = f.domain == NONE ? 1 : g.domains().get(f.domain).levels.size();
+        long peak = 0;
+        int stacks = 0;
+        double fastest = Double.POSITIVE_INFINITY;
+        if (mover) {
+            peak = f.unitBatch <= 0 ? 64 : f.unitBatch;
+            if (e.kind != GlassRecords.Edge.DROP)
+                return (int) Math.min(64, peak); // put down whole: nothing to merge with
+            stacks = 1;
+            for (int l = 0; l < levels && f.mover != null && f.moverBatch > 0; l++) {
+                Rat t = safe(f.mover, rpmAt(f, l), f.moverBatch);
+                if (t != null)
+                    fastest = Math.min(fastest, t.toDouble());
+            }
+        } else {
+            int fed = maxFeed(f);
+            for (Craft c : f.crafts) {
+                if (c.cycle() == null)
+                    return 64; // in place or endless: no operation to count
+                int n = c.batch() == FEEDER_BATCH ? fed : c.batch();
+                peak = Math.max(peak, (long) n * recipePeak.getOrDefault(c.recipe(), 64));
+                stacks = Math.max(stacks, g.recipe(c.recipe()).outputs.size());
+                for (int l = 0; l < levels; l++) {
+                    float rpm = rpmAt(f, l);
+                    if (f.kinetic && rpm <= 0)
+                        continue;
+                    Rat t = safe(c.cycle(), rpm, n);
+                    if (t != null && f.handOff != null) {
+                        Rat h = f.handOff.apply(l);
+                        t = h == null ? null : t.add(h);
+                    }
+                    if (t != null)
+                        fastest = Math.min(fastest, t.toDouble());
+                }
+            }
+        }
+        if (shared)
+            return 64;
+        Info m = infos.get(e.to);
+        int ml = m.domain == NONE ? 1 : g.domains().get(m.domain).levels.size();
+        int intake = 0;
+        for (int l = 0; l < ml; l++) {
+            float rpm = rpmAt(m, l);
+            if (rpm > 0)
+                intake = Math.max(intake, Cycles.beltInsertMoves(rpm));
+        }
+        return (long) stacks * intake > fastest ? 64 : (int) Math.min(64, peak);
+    }
+
     /** The node's speed at its domain's level {@code l}: |ratio x level speed|, as Create's float. */
     float rpmAt(Info i, int l) {
         if (i.domain == NONE)
@@ -2666,8 +2859,41 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     // ---- shared with Recipes --------------------------------------------------------------------
 
+    /**
+     * Per recipe, per good: how much more than its mean count one craft can hand on (a chance output's
+     * count less its share; one of a saw's k averaged recipes). Read only by {@link #peakPerCraft}.
+     */
+    private final java.util.IdentityHashMap<GraphBuilder.Recipe, it.unimi.dsi.fastutil.ints.Int2DoubleOpenHashMap> outSlack = new java.util.IdentityHashMap<>();
+
+    /** Recipe index to the most of one item good one craft of it hands on (64 at most, 64 when unknown). */
+    private final it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap recipePeak = new it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap();
+
+    void outSlack(GraphBuilder.Recipe r, int good, double slack) {
+        outSlack.computeIfAbsent(r, x -> new it.unimi.dsi.fastutil.ints.Int2DoubleOpenHashMap()).addTo(good, slack);
+    }
+
+    /** The most of one item good a craft of {@code r} hands on: its mean count plus its slack, rounded up. */
+    private int peakPerCraft(GraphBuilder.Recipe r) {
+        it.unimi.dsi.fastutil.ints.Int2DoubleOpenHashMap slack = outSlack.get(r);
+        it.unimi.dsi.fastutil.ints.Int2DoubleOpenHashMap per = new it.unimi.dsi.fastutil.ints.Int2DoubleOpenHashMap();
+        for (GraphBuilder.Term t : r.outputs) {
+            if (fluidProto.get(t.good()) != null)
+                continue; // fluids never make a stack on a belt
+            if ((t.flags() & GlassRecords.Recipe.TERM_CHANCE) != 0 && (slack == null || !slack.containsKey(t.good())))
+                return 64; // a chance output whose count is not known
+            per.addTo(t.good(), t.num() / (double) t.den());
+        }
+        double peak = 0;
+        for (var en : per.int2DoubleEntrySet())
+            peak = Math.max(peak, en.getDoubleValue() + (slack == null ? 0 : slack.get(en.getIntKey())));
+        return (int) Math.min(64, Math.ceil(peak - 1e-9));
+    }
+
     void addCraft(Info i, GraphBuilder.Recipe r, int batch, Cyc cycle, int consumedGood) {
         int idx = g.recipe(r);
+        int peak = peakPerCraft(r);
+        if (!recipePeak.containsKey(idx) || recipePeak.get(idx) < peak)
+            recipePeak.put(idx, peak);
         for (Craft c : i.crafts)
             if (c.recipe() == idx)
                 return;

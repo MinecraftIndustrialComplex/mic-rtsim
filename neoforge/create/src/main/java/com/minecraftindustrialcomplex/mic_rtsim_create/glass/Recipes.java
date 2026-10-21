@@ -97,7 +97,10 @@ final class Recipes {
             if (p[0] == 0)
                 continue;
             int flags = p[0] == p[1] ? 0 : GlassRecords.Recipe.TERM_CHANCE;
-            r.out(c.good(s), per * s.getCount() * p[0], p[1], flags);
+            int good = c.good(s);
+            r.out(good, per * s.getCount() * p[0], p[1], flags);
+            if (flags != 0)
+                c.outSlack(r, good, per * s.getCount() * (1 - p[0] / (double) p[1]));
         }
     }
 
@@ -210,7 +213,10 @@ final class Recipes {
                     continue;
                 Rat w = Rat.ofFloat(o.getChance()).div(t);
                 int flags = w.num() == w.den() ? 0 : GlassRecords.Recipe.TERM_CHANCE;
-                out.out(c.good(st), w.num() * st.getCount(), w.den(), flags);
+                int good = c.good(st);
+                out.out(good, w.num() * st.getCount(), w.den(), flags);
+                if (flags != 0)
+                    c.outSlack(out, good, st.getCount() * (1 - w.toDouble()));
             }
             return;
         }
@@ -333,6 +339,8 @@ final class Recipes {
         StringBuilder name = new StringBuilder();
         GraphBuilder.Recipe r = new GraphBuilder.Recipe(GlassRecords.RecipeType.CUTTING, GlassRecords.Heat.NONE, 0, 0);
         int[] durations = new int[k];
+        // what one start can hand on above the mean (each start runs one of the k): for the stack bound (GB44)
+        it.unimi.dsi.fastutil.ints.Int2DoubleOpenHashMap slack = new it.unimi.dsi.fastutil.ints.Int2DoubleOpenHashMap();
         for (int j = 0; j < k; j++) {
             Recipe<?> rec = found.get(j).value();
             durations[j] = rec instanceof ProcessingRecipe<?, ?> p ? p.getProcessingDuration() : 50;
@@ -342,17 +350,24 @@ final class Recipes {
                     long[] q = keep(o.getChance());
                     if (q[0] == 0)
                         continue;
-                    r.out(c.good(st), st.getCount() * q[0], q[1] * k, q[0] == q[1] ? 0 : GlassRecords.Recipe.TERM_CHANCE);
+                    int good = c.good(st);
+                    r.out(good, st.getCount() * q[0], q[1] * k, q[0] == q[1] ? 0 : GlassRecords.Recipe.TERM_CHANCE);
+                    slack.addTo(good, st.getCount() * (1 - q[0] / (double) (q[1] * k)));
                 }
             } else {
                 ItemStack st = rec.getResultItem(level.registryAccess());
-                if (!st.isEmpty())
-                    r.out(c.good(st), st.getCount(), k);
+                if (!st.isEmpty()) {
+                    int good = c.good(st);
+                    r.out(good, st.getCount(), k);
+                    slack.addTo(good, st.getCount() * (1 - 1.0 / k));
+                }
             }
             name.append(j == 0 ? "" : "+").append(found.get(j).id());
         }
         r.in(gid, 1, 1);
         GraphBuilder.Recipe named = new GraphBuilder.Recipe(r.type, r.heat, durations[0], c.g.name(name.toString()));
+        for (var en : slack.int2DoubleEntrySet())
+            c.outSlack(named, en.getIntKey(), en.getDoubleValue());
         named.inputs.addAll(r.inputs);
         named.outputs.addAll(r.outputs);
         CreateCompile.Cyc cyc = (rpm, batch) -> {
@@ -433,7 +448,10 @@ final class Recipes {
             if (out == null)
                 return;
             int code = type == AllFanProcessingTypes.SMOKING ? GlassRecords.RecipeType.SMOKING : GlassRecords.RecipeType.BLASTING;
-            r = new GraphBuilder.Recipe(code, GlassRecords.Heat.NONE, 0,
+            // blasting through a blaze burner needs it burning (heat FADING or more: BlastingType.isValidAt);
+            // the zone has a HEAT edge from it (CreateCompile.fanHeatEdge, GB44)
+            boolean burner = x.length > 3 && x[3] != null;
+            r = new GraphBuilder.Recipe(code, code == GlassRecords.RecipeType.BLASTING && burner ? GlassRecords.Heat.NEEDS_HEATED : GlassRecords.Heat.NONE, 0,
                     c.g.name((code == GlassRecords.RecipeType.SMOKING ? "create:fan_smoking/" : "create:fan_blasting/") + c.g.goodName(one)));
             r.in(gid, 1, 1);
             for (ItemStack o : out)
@@ -446,8 +464,8 @@ final class Recipes {
         int fanTime = c.fanProcessingTime();
         if (exposure < Cycles.fanTicks(1, fanTime))
             return; // passes through unprocessed
-        if (exposure < Cycles.fanTicks(64, fanTime))
-            c.markBounded(i); // a large stack may leave before it is done
+        // a stack too large for the exposure leaves before it is done: BOUNDED then, decided in
+        // CreateCompile.rates once the largest stack the belt carries is known (GB44)
         CreateCompile.Cyc cyc = Double.isInfinite(exposure) ? (rpm, batch) -> Rat.of(Cycles.fanTicks(batch, fanTime), 1) : null;
         c.addCraft(i, r, CreateCompile.FEEDER_BATCH, cyc, gid);
         if (done != null)
