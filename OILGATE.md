@@ -61,7 +61,7 @@ and a bow can visit an oil field and run; holding one takes guns.
 | A lair placed near oil | vanilla `/place structure`'s code path (`Structure.generate` with every biome allowed, then `placeInChunk`) | minecraft, iceandfire |
 | Sensing | districts (I2), deposit samples, boundary goods, Destroy pollution by position (I14) | mic_rtsim industry, destroy |
 | Being raided | `Infrastructure::raid`, class Flying, Lanchester against the district's defence vector, theft and destroyed blocks capped (I22, I23) | mic_rtsim |
-| Dragons drinking from tanks | theft of boundary goods (I23): crude oil, diesel, gasoline | mic_rtsim industry |
+| Dragons drinking from tanks | theft of boundary goods (I23): crude oil (`destroy:crude_oil`, what the pack's Diesel pumpjack pumps), diesel, gasoline | mic_rtsim industry |
 | Grudges | rtsim-knowledge reports and sentiment; grudge raids at the player's home (P26) | mic_rtsim |
 | The underground threat | vanilla sculk: the `minecraft:sculk_patch_ancient_city` configured feature (catalysts, sensors, and shriekers that can summon), `WardenSpawnTracker`, the warden (500 health, 30 attack, sonic boom 10 through walls) | minecraft |
 | Today's desert danger, the yardstick | `pack/config/incontrol/spawner.json` and `spawn.json` | incontrol |
@@ -98,9 +98,14 @@ No new blocks, items or entities.
   `ServerLevel.getBiome`, which reads the biome source for a chunk not yet generated, so the amount of
   any chunk can be computed without generating it (verified in vanilla's `LevelReader.getNoiseBiome`).
   The loop samples every block column at 50 heights: 12,800 lookups per chunk.
-- **Destroy's crude oil is unreachable.** `kubejs/startup_scripts/voided_content.js` voids
-  `destroy:pumpjack` and `destroy:seismometer`, and `oilyunification.js` removes their recipes. The
-  Diesel pumpjack is the only way to oil. (Destroy's own field, `ChunkCrudeOil`, has no biome gate.)
+- **Destroy's pumpjack is unreachable, but Destroy's crude oil is what comes out.**
+  `kubejs/startup_scripts/voided_content.js` voids `destroy:pumpjack` and `destroy:seismometer`, and
+  `oilyunification.js` removes their recipes. The Diesel pumpjack is the only way to oil, and it pumps the
+  first entry of the fluid tag `#createdieselgenerators:pumpjack_output`. The pack overrides that tag
+  (`kubejs/data/createdieselgenerators/tags/fluid/pumpjack_output.json`, `replace: true`) to
+  `destroy:crude_oil`, so the fluid is Destroy's, not CDG's `createdieselgenerators:crude_oil`. The override
+  sat in a `tags/fluids` folder (plural) until 2026-10-21 and never loaded; a 1.21 tag folder is singular.
+  (Destroy's own field, `ChunkCrudeOil`, has no biome gate.)
 - **Deep Time** replaces the biome rule in its levels: oil sits only over petroleum traps, `round(charge
   × cdg_scale × the chunk's share of the trap)`, with CDG's infinite threshold applied. Traps are few per
   planet and known when the world is made.

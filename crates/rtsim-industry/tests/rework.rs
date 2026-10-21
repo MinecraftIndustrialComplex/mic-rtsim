@@ -732,3 +732,26 @@ fn level_pollution_reaches_the_level_while_away() {
         minted.get(greenhouse)
     );
 }
+
+// ---- Peeks (VIEWER.md §5.3) --------------------------------------------------------------------
+
+/// A viewer's `inspect_peek` and `stock_peek` change none of the engine's pages, and agree with
+/// the committing `inspect` and `sim_stock`.
+#[test]
+fn peeks_change_nothing_and_agree_with_the_reads() {
+    let mut w = works(2);
+    w.run_until(day(2.0));
+    let e = &mut w.engine;
+    let before = e.snapshot();
+    let stats = e.stats;
+    let now = e.now();
+    let peeked = e.inspect_peek(D, now).expect("a district");
+    let stock = e.stock_peek(D).expect("simulated");
+    // Past now is clamped to now, as inspect does.
+    assert_eq!(e.inspect_peek(D, now + 50_000).as_ref(), Some(&peeked));
+    assert_eq!(e.snapshot(), before);
+    assert_eq!(e.stats, stats);
+    assert_eq!(e.cluster_members(D).map(|m| m.contains(&D)), Some(true));
+    assert_eq!(e.inspect(D, now), Some(peeked));
+    assert_eq!(e.sim_stock(D), Some(stock));
+}

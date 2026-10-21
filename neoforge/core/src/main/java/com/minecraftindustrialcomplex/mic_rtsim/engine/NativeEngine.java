@@ -91,8 +91,25 @@ public final class NativeEngine implements ScriptedEngine {
     public static final int P1_SPAWNS_SENT = 14;
     /** The phase 1 world's tick. */
     public static final int P1_WORLD_TICK = 15;
+    /** Works the phase 1 world's villages bought (SINK.md). */
+    public static final int P1_WORKS_BOUGHT = 16;
+    /** Works Java answered as placed (APPLIED or a duplicate). */
+    public static final int P1_WORKS_PLACED = 17;
+    /** Works Java answered as refused (NOT_FREE or FAILED): the kind is full for that village. */
+    public static final int P1_WORKS_REFUSED = 18;
+    /** Tributes paid to raiding dragons. */
+    public static final int P1_TRIBUTES = 19;
     /** The length of the array {@link #phase1Stats} returns. */
-    public static final int PHASE1_STATS = 16;
+    public static final int PHASE1_STATS = 20;
+
+    /** {@link #phase1Works} indexes: works bought, kinds full, purse, census golems, tribute paid, spent. */
+    public static final int WORKS_BOUGHT = 0;
+    public static final int WORKS_FULL = 1;
+    public static final int WORKS_PURSE = 2;
+    public static final int WORKS_GOLEMS = 3;
+    public static final int WORKS_TRIBUTE = 4;
+    public static final int WORKS_SPENT = 5;
+    public static final int WORKS_VIEW = 6;
 
     private static final int RECEIVED_CAP = 10_000;
     private static final int CLOSE_TIMEOUT_MS = 5000;
@@ -137,12 +154,21 @@ public final class NativeEngine implements ScriptedEngine {
     /** A phase 1 village's sentiment toward a player (-128 to 127), Integer.MIN_VALUE when the engine knows no such village (TEST mode). */
     private static native int nPhase1Sentiment(long handle, long village, long most, long least);
 
+    /** A phase 1 village's works (WORKS_* indexes) as of the last step; false when unknown (TEST mode). */
+    private static native boolean nPhase1Works(long handle, long village, long[] out);
+
     private static native long nLedger(long handle, long store);
 
     private static native boolean nOpApplied(long handle, long opId);
 
     /** The herd behind a group's agent id: {@code HERD_INFO} values; false when there is none. */
     private static native boolean nHerdInfo(long handle, long agent, long[] out);
+
+    /** A phase 1 village's fear to the dragons, its golems' included; -1 for a village the world does not know. */
+    private static native long nDragonsVillageRisk(long handle, long village);
+
+    /** The dragons' tribute: {@code TRIBUTE_*} values. */
+    private static native void nDragonsTribute(long handle, long[] out);
 
     /** The world model at block (x, z) of Java's dimension {@code dim}: {@code HABITAT_INFO} values. */
     private static native void nHabitatInfo(long handle, int dim, int x, int z, long[] out);
@@ -449,6 +475,32 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().phase1Advance(ticks), "P1_ADVANCE");
     }
 
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): coin, in thousandths of the village's own
+     * currency, put straight into a phase 1 village's works purse (SINK.md), at the next step.
+     */
+    public void worksGrant(long village, long thousandths) {
+        order(new NativeCodec.Orders().worksGrant(village, thousandths), "WORKS_GRANT");
+    }
+
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): a dragon raided a phase 1 village (SINK.md
+     * §4.6); with {@code tribute} the village pays it from its works purse.
+     */
+    public void worksRaid(long village, boolean tribute) {
+        order(new NativeCodec.Orders().worksRaid(village, tribute), "WORKS_RAID");
+    }
+
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): phase 1 village {@code village} becomes the
+     * tributary of the dragons' lair {@code lair} (LAIR_FOUND's id), as if a dragon of the lair had raided
+     * it (SINK.md §4.6): it pays a season's tribute at once, which waits in the lair until the plugin
+     * reports its chest (LAIR_CHEST). At the next step.
+     */
+    public void tributeStart(long village, long lair) {
+        order(new NativeCodec.Orders().tributeStart(village, lair), "TRIBUTE_START");
+    }
+
     @Override
     public synchronized String javaDictName(int id) {
         drain();
@@ -523,6 +575,28 @@ public final class NativeEngine implements ScriptedEngine {
     public synchronized long[] herdInfo(long agent) {
         long[] out = new long[HERD_INFO];
         return nHerdInfo(live(), agent, out) ? out : null;
+    }
+
+    /**
+     * A phase 1 village's fear to the dragons before a dragon's boldness bends it (fullness points, its
+     * iron golems' included: SINK.md §4.6), as of the engine's last step; -1 for a village it does not know.
+     */
+    public synchronized long dragonsVillageRisk(long village) {
+        return nDragonsVillageRisk(live(), village);
+    }
+
+    /** {@link #dragonsTribute}'s fields. */
+    public static final int TRIBUTE_PAID = 0, TRIBUTE_PLACED = 1, TRIBUTE_WAITING = 2, TRIBUTE_SENDING = 3, TRIBUTE_INFO = 4;
+
+    /**
+     * The dragons' tribute in the whole world, as of the engine's last step (indexed by {@code TRIBUTE_*}):
+     * seasons paid, whole coins put in lairs' chests, whole coins waiting for a chest, and stacks sent to a
+     * chest and not yet answered.
+     */
+    public synchronized long[] dragonsTribute() {
+        long[] out = new long[TRIBUTE_INFO];
+        nDragonsTribute(live(), out);
+        return out;
     }
 
     /**
@@ -637,6 +711,16 @@ public final class NativeEngine implements ScriptedEngine {
      */
     public synchronized int phase1Sentiment(long village, UUID player) {
         return nPhase1Sentiment(live(), village, player.getMostSignificantBits(), player.getLeastSignificantBits());
+    }
+
+    /**
+     * A phase 1 village's works as of the last step ({@link #WORKS_VIEW} long, WORKS_* indexes), or
+     * null when the engine knows no such village or it has no works yet. An engine opened with
+     * {@link #FLAG_TEST} only.
+     */
+    public synchronized long[] phase1Works(long village) {
+        long[] out = new long[WORKS_VIEW];
+        return nPhase1Works(live(), village, out) ? out : null;
     }
 
     @Override

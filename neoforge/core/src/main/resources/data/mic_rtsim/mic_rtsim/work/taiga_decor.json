@@ -1,0 +1,14 @@
+{
+  "group": "decor",
+  "culture": "human",
+  "style": "minecraft:village_taiga",
+  "cap": { "fixed": 4 },
+  "variants": [
+    { "template": "minecraft:village/taiga/taiga_decoration_1" },
+    { "template": "minecraft:village/taiga/taiga_decoration_2" },
+    { "template": "minecraft:village/taiga/taiga_decoration_3" },
+    { "template": "minecraft:village/taiga/taiga_decoration_4" },
+    { "template": "minecraft:village/taiga/taiga_decoration_5" },
+    { "template": "minecraft:village/taiga/taiga_decoration_6" }
+  ]
+}

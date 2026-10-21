@@ -154,7 +154,7 @@ nothing flows from the viewer into the engine. Only someone with a shell on the 
 | Event rows | rtsim-knowledge `ReportRow` (32 bytes: who, whom, kind, severity, flags, 48-bit tick, frame, 24-bit x and z, y) | the archive's row layout | built |
 | Module loaders | `World::load`, `Dragons::load`, `Herds::load`, `Ships::load`, `Conflict::load`, industry and space `persist.rs` | decode a save without the JVM | built; the glue in rtsim-jni is private (§12) |
 | Fake Java | rtsim-jni `tests/common/mod.rs` (1,268 lines) with `mic_native_host::start` and `register_in_process` | drives the real engine on the real host in one process | built, for tests |
-| Base map, non Deep Time | Surveyor 1.2.4 (in the pack, both sides): `<world>/data/surveyor/c.<rx>.<rz>.dat`; rtsim HABITAT (`WorldModel::area`, `habitat_at`) | per-block terrain summaries with colour palettes; 64-block cells | built (Surveyor's layout decoded from one file; the depth convention is an ESTIMATE, §9) |
+| Base map, non Deep Time | Surveyor 1.2.4 (in the pack, both sides): `<world>/data/surveyor/c.<rx>.<rz>.dat`; rtsim HABITAT (`WorldModel::area`, `habitat_at`) | per-block terrain summaries with colour palettes; 64-block cells | built (Surveyor's layout read from its jar and checked against a world's region files, §9) |
 | Low priority | mic_native `platform::lower_current_thread` (nice 19, `THREAD_PRIORITY_LOWEST`) | the pattern; the sidecar goes lower (§5.5) | built |
 | JSON | `serde_json` (already in rtsim-cli and Deep Time) | API bodies | built |
 
@@ -519,8 +519,8 @@ length the header carries and the page shows per layer.
   no file open between reads, checks every record's CRC32, and on a missing file or a bad record
   reopens from the root and retries, three times (TUNABLE), then reports the store as busy. On
   Windows its files are opened with `FILE_SHARE_DELETE`, so the engine can still rename and delete
-  them; that this keeps every save working while a sidecar reads is UNVERIFIED, and V1 and V4 test it
-  on Windows.
+  them; that this keeps every save working while a sidecar reads is UNVERIFIED, and V4 tests it on
+  Windows.
 
 ### 5.4 The tests that prove it
 
@@ -623,7 +623,7 @@ overlay; at 16k, cold tiles take 3 to 26 ms on average by layer, 48 ms at worst,
 
 | Source | Resolution | Coverage | Cost | Notes |
 |---|---|---|---|---|
-| **Surveyor** (recommended, optional) | 1 block | every chunk Surveyor recorded (on load, unload and tick, server side) | gzip NBT per 512-block region, about 125 KB a region (measured: 39 region files, 4.88 MB, in the MICTest save); parsed and rendered in the sidecar, cached as tiles | `<world>/data/surveyor/c.<rx>.<rz>.dat` (decoded from one MICTest file, 568 chunks): region palettes `blocks` and `biomes` (ids) with `blockColors`, `biomeWater`, `biomeGrass` and `biomeFoliage` (colours); per chunk, `layers` keyed by a floor height (0, 61, 256, 319 in that file), each with `found` (a 256-bit column mask) and arrays holding one entry per found column: `block` and `depth` a byte each, `biome`, `light`, `water` and `glint` packed two to a byte when they fit, and any array a single integer when every column agrees. That the ground sits at the layer height minus `depth` is an ESTIMATE (values near 160 under layer 256 give y about 96); the reader spike in V5 settles it. |
+| **Surveyor** (recommended, optional) | 1 block | every chunk Surveyor recorded (on load, unload and tick, server side) | gzip NBT per 512-block region, about 125 KB a region (measured: 39 region files, 4.88 MB, in the MICTest save); parsed and rendered in the sidecar, cached as tiles | `<world>/data/surveyor/c.<rx>.<rz>.dat`, read from Surveyor 1.2.4's `ChunkSummary`, `LayerSummary` and `uints` classes and checked against the region files of a copy of the OmegaSrv world (V5 reader spike, 2026-10-21): region palettes `blocks` and `biomes` (ids) with `blockColors`, `biomeWater`, `biomeGrass` and `biomeFoliage` (colours); `chunks` keyed by absolute chunk coordinates `"cx,cz"`, each with `layers` keyed by the top of a height band (0, 61, 256, 319 in both saves; a band runs from its key down to the next key), each with `found` (a 256-bit column mask as a LongArray, trailing zero words dropped; column i is x = i / 16, z = i % 16 in the chunk) and arrays holding one entry per found column in mask order: `depth`, `biome`, `block`, `light`, `water` (water blocks above the floor) and `glint` (the light at the water's top). Each array takes the narrowest form that fits: a byte array (unsigned bytes; two entries a byte, high nibble first, when it is half the count long, rounded up), an int array (ints; two unsigned shorts an int, high half first, when it is shorter than the count), a single byte, short or int when every column agrees, and absent when every column is 0. The floor is at y = band key minus `depth` (MEASURED: 30,951 of 31,038 floors, 99.7 %, name the block the region file holds there; the other 87 changed after Surveyor saw them, melted ice and a felled tree), and the water's top block is the floor plus `water` (12,765 of 12,781). The floor is the first block, from the band's top down, that has a map colour and at least two air blocks above it (water between does not count against it); a plant, carpet or snow layer with a map colour standing on it is recorded in its place, with its own height. |
 | **HABITAT** (always there) | 64 blocks | every cell rtsim sampled (all 16 of its chunks loaded) | nothing extra: the engine already holds it (about 6 KB a region) | water, ice, biome, heights; coarse but always present with rtsim |
 | Region files | 1 block | every generated chunk | the whole `region/` folder (182 MB, 174 MiB, in the MICTest save) parsed with chunk NBT; colours need a table exported from the game, since region files hold block states, not colours | heavy; worth it only if Surveyor leaves the pack |
 
@@ -976,12 +976,59 @@ For Deep Time's coordinator to review.
 | Phase | Builds | Exit test |
 |---|---|---|
 | **V0 Shared core** (with Deep Time) | mic-viewer: map core, marks, server crate, tiles cache, API types; Deep Time's workbench moved onto it | Deep Time's four page tests pass unchanged; its workbench works over the SSH forward; the Host check refuses a forged Host on a GET |
-| **V1 Save viewer** | `open_read_only`, peeks, `load_world`, `rtsim-view` with every module's layers and cards, the part format, HABITAT base map, `rtsim-cli view` and `export` | on a GameTest world's save: every layer draws; the folder's bytes are identical after a session; at 100,000 synthetic districts a full-world request returns within the budget and the sidecar stays under its memory cap; on Windows, a world saves while the sidecar reads it |
+| **V1 Save viewer** | `open_read_only`, peeks, `load_world`, `rtsim-view` with every module's layers and cards, the part format, HABITAT base map, `rtsim-cli view` and `export` | on a GameTest world's save: every layer draws; the folder's bytes are identical after a session; at 100,000 synthetic districts a full-world request returns within the budget and the sidecar stays under its memory cap (the Windows test moved to V4: a V1 session holds no file open between reads, so V4's live reads are the harder case) |
 | **V2 Headless host** | `rtsim-cli run`: fork, driver, preamble, command answers, strides, saves, pacing, host source | a GameTest world's pages open with the same state hash; a 20-tick and a long-stride run agree on state hashes; 1,000 game days run at max speed with the viewer attached, with the engine's outbox bounded; the measured game days per second and the fixed cost per step are written into this document |
 | **V3 Archive and timeline** | the archive writer, tiers, compaction, rollback cut; the timeline strip | R (rows per game day) measured for every `rtsim-cli sim` scenario and written here; a 10,000 game day soak stays under the budget; a crash between page commits cuts the right chunks |
 | **V4 Live tap** | lease and focus, tap, view store, live source, SSE notices | the tests of §5.4 over 100 game days (lockstep, and under load: the tap stands down); with no lease, step time unchanged within noise; with a lease, the tap's time at or under its budget plus one part, and the encode time per part measured; the server thread's hand-over unchanged; on Windows, saves succeed while the sidecar reads |
-| **V5 Surveyor base map** | reader spike against the MICTest save, then the renderer | the MICTest save's explored area draws at 1 block per pixel; a world without Surveyor falls back to HABITAT |
+| **V5 Surveyor base map** | reader spike (done 2026-10-21, against a copy of the OmegaSrv world: §9), then the renderer | the MICTest save's explored area draws at 1 block per pixel; a world without Surveyor falls back to HABITAT |
 | **V6 Glass-box view** | after GLASSBOX G1: the compiled graph layer | the 12-factory corpus draws with rates matching the district's inspection |
+
+**V1 as built** (feat/viewer, 2026-10-21), where it differs from the sections above:
+- **No parts yet.** The save source draws mic-viewer scenes straight from the decoded save, once at
+  open (`rtsim-view` `layers.rs`); a request at any `t` gets the save's scene. The part format
+  (§4.3's `ViewSource`, `PartWriter`) comes with the live tap (V4), when a second producer first exists.
+- **`rtsim-cli export` moved to V2**, with `rtsim-cli run`.
+- **Flat frames.** The pages hold no topology, so every frame is flat with no wrap, a Deep Time
+  world's too, until the sidecar reads its `manifest.json` (§9).
+- **Names** come from Java's journal (`<world>/data/mic_rtsim_journal.dat`, its dictionary):
+  dimensions and district names. Without it, `dim<id>`.
+- **Messengers** are the news packets on roads (a packet with a band travels as the band); hunts are
+  their own layer, a line from the dragon to its target.
+- **Memory cap**: 1,024 MiB by default (`--mem-cap`, TUNABLE). A save whose decoded state is over it
+  is refused at open, and district cards are refused once the heap reaches it. Cards are cached
+  under 256 MiB, tiles under 64 MiB.
+- **`/api/status`** (an extra route): each module's load status and state hash, each layer's mark
+  count or why it is empty, the caches and the heap. An empty layer's reason also comes with its
+  marks (`LayerMarks.empty`), and the page shows it under the layer's name.
+- **Measured** (the laptop, `rtsim-cli/tests/view.rs`): at 100,000 synthetic districts (the industry
+  bench's, 100,001 pages, 20.3 MiB raw), the sidecar starts in 0.8 s, a full-world request returns
+  250 marks at 40 bpp and 2,000 at 0.25 bpp in 11 to 19 ms, a district card takes 3 to 4 ms, and the
+  process peaks at 52 MiB resident (heap 32 MiB). The Windows test is V4's now.
+
+**V5 as built** (feat/viewer-events, 2026-10-21):
+- **Surveyor over HABITAT.** Each frame named by a dimension gets a "Terrain (Surveyor)" tile layer
+  over HABITAT, both on by default: Surveyor leaves the columns it never recorded transparent, so
+  HABITAT's coarse cells show where nobody has been. Zoom 0 is a block a pixel. A frame known only
+  by number (`dim3`) has no folder to look in and keeps HABITAT; so does a world without Surveyor
+  (`rtsim-view/tests/surveyor.rs`). The reader and renderer are mic-viewer's
+  `mic-viewer-surveyor` crate (§9); Surveyor's pictures share `--surveyor-cache` (64 MiB, TUNABLE).
+- **The exit run.** No MICTest save with rtsim pages exists yet, so the run used the MICTest save's
+  Surveyor folders (39 region files, 4.88 MB) beside the core GameTest fixture's pages:
+  `rtsim-cli view <that folder>` drew the explored area at a block a pixel, light and dark, at
+  desktop and phone width. After five page sessions the sidecar held 62 MiB resident, 32 regions
+  parsed and 36 MiB of pictures cached. The rtsim marks sit wherever the GameTest world put them,
+  far from Surveyor's area, so the whole-frame view is mostly empty; a real world's pages and
+  Surveyor folders agree.
+
+  ![The MICTest save's explored area at a block a pixel, light theme](docs/viewer/mictest-one-block-light.png)
+  ![The whole explored area, dark theme](docs/viewer/mictest-explored-dark.png)
+  ![Phone width, dark theme](docs/viewer/mictest-phone-dark.png)
+- **The timeline** (V3's viewer side, built here ahead of V3's hooks): rtsim-view opens
+  `<world>/rtsim/archive` read only as of the save it read (`ArchiveReader::open(dir,
+  Some(obs_seq))`), so a chunk a later save flushed never shows beside older pages. `/api/events`,
+  the histogram and `has_events` come from it; the archive's frames (`dim<n>`) join the world's
+  frames under the journal's names. A save without an archive has no timeline
+  (`rtsim-view/tests/events.rs`).
 
 ---
 
