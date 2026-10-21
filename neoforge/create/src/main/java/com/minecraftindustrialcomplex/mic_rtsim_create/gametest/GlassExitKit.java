@@ -158,6 +158,19 @@ public final class GlassExitKit {
     }
 
     /**
+     * The engine's own log lines about the district from game time {@code from} on ("glass replay starts",
+     * "replay starts", "glass replay falls back: ...", breakpoints): the live engine's on the native engine,
+     * those of the offline engine over the recorder's records on the stub; empty when this run cannot judge.
+     */
+    public static List<String> notes(long district, long from, Recorder rec) {
+        if (IndustryKit.engine() instanceof NativeEngine n)
+            return n.industryNotes(district, from);
+        if (!canJudge())
+            return List.of();
+        return NativeEngine.glassNotesOffline(rec.stream(), district, from);
+    }
+
+    /**
      * The exit test's judgment of one completed window (GLASSBOX.md §11.3): every exact good within the
      * checksum tolerance and every bounded good inside [L, U] (both are the engine's verdicts, logged
      * with their numbers); unbounded goods are logged, never judged. Returns the failures, empty when

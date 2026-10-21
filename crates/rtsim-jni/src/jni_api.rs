@@ -510,6 +510,57 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native String nIndustryNotes(long handle, long district, long from)`: the industry
+/// engine's log lines about the district from tick `from` on, joined by newlines
+/// (`Engine::industry_notes`); "" when there are none. Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nIndustryNotes<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    district: jlong,
+    from: jlong,
+) -> JString<'l> {
+    env.with_env(|env| -> Result<JString<'l>, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let lines = e.industry_notes(district as u64, from.max(0) as u64);
+        JString::from_str(env, lines.join("\n"))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native String nGlassNotesOffline(byte[] records, long district, long from)`: the
+/// same lines from the fresh industry engine of `nGlassOffline` over a record stream
+/// (`engine::glass_notes_offline`, the stub engine's G2 exit GameTests). No handle: pure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nGlassNotesOffline<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    records: JByteArray<'l>,
+    district: jlong,
+    from: jlong,
+) -> JString<'l> {
+    env.with_env(|env| -> Result<JString<'l>, JniError> {
+        if records.is_null() {
+            return Err(JniError::NullPtr("records"));
+        }
+        let raw = env.convert_byte_array(&records)?;
+        match crate::engine::glass_notes_offline(&raw, district as u64, from.max(0) as u64) {
+            Ok(lines) => JString::from_str(env, lines.join("\n")),
+            Err(m) => {
+                set_last_error(&m);
+                Err(JniError::JniCall(jni::errors::JniError::InvalidArguments))
+            }
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 fn doubles<'l>(env: &mut Env<'l>, v: &[f64]) -> Result<JDoubleArray<'l>, JniError> {
     let arr = env.new_double_array(v.len())?;
     arr.set_region(env, 0, v)?;

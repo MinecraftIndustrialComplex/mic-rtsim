@@ -248,6 +248,8 @@ public final class GlassReplayGameTests {
         GlassReport cReport1, fReport1, away;
         boolean sawGlass;
         String awaySummary = "no report while away";
+        /** Why the far copy replayed the way it did: the engine's notes and the report's model. */
+        String why = "not read";
         int awayReports;
         int prefix = -1;
         final List<String> failures = new ArrayList<>();
@@ -769,11 +771,12 @@ public final class GlassReplayGameTests {
         if (!run.stub && results == 0)
             IndustryKit.record(test, "WARNING", "no IND_RECONCILE_RESULT for the far district after the snapshot");
 
-        // The replay model while away.
+        // The replay model while away, and the engine's own words for it.
         if (run.judge) {
             String model = run.away == null ? "no report" : run.away.replay().modelName();
+            run.why = why(run, GlassExitKit.notes(run.fd, run.t1, run.rec));
             IndustryKit.record(test, "replay model", (run.sawGlass ? "GLASS" : "NOT glass (" + model + ")") + "; " + run.awaySummary
-                    + (fReport2 == null ? "" : "; at the end " + fReport2.replay().summary()));
+                    + (fReport2 == null ? "" : "; at the end " + fReport2.replay().summary()) + "; why: " + run.why);
             if (!run.sawGlass)
                 run.failures.add(run.f.name() + ": the report while away does not say replay model GLASS (" + run.awaySummary + ")");
         }
@@ -845,12 +848,53 @@ public final class GlassReplayGameTests {
         // A control that moved nothing makes every row pass whatever the replay did: the run proves nothing.
         if (moved == 0)
             run.failures.add(run.f.name() + ": the control changed no good over the span (stalled or empty): nothing to compare");
-        MicRtsim.LOGGER.info(String.format(Locale.ROOT, "[gametest] %s: %d goods (%d moved in the control, %d weak %s) over %d ticks (%d away), engine %s, eligible by %s, replay %s, %s",
+        MicRtsim.LOGGER.info(String.format(Locale.ROOT, "[gametest] %s: %d goods (%d moved in the control, %d weak %s) over %d ticks (%d away), engine %s, eligible by %s, replay %s (why: %s), %s",
                 test, judged, moved, weak.size(), weak, span, run.forcedAt - run.unloadedAt, run.stub ? "stub (offline replay)" : "native", run.eligibleBy, run.awaySummary,
+                run.why,
                 !run.judge ? "not judged" : failed.isEmpty() && run.failures.isEmpty() ? "pass"
                         : "FAIL " + failed + (run.failures.isEmpty() ? "" : " and " + run.failures)));
         if (!failed.isEmpty())
             run.failures.add(run.f.name() + ": " + failed);
+    }
+
+    /** Engine notes logged per test at most; the rest are counted. */
+    static final int NOTES = 40;
+
+    /**
+     * Logs the engine's notes about the far district since the first snapshot and says why it replayed
+     * the way it did: the fallback's words when it fell back, else the model the report while away gave
+     * (no note says why a district stays on the black box for deposits, links, power, sinks or damage, or
+     * why it froze: the report's model and eligibility say that).
+     */
+    static String why(Run run, List<String> notes) {
+        Map<String, Integer> kinds = new TreeMap<>();
+        List<String> fallbacks = new ArrayList<>();
+        List<String> starts = new ArrayList<>();
+        for (int i = 0; i < notes.size(); i++) {
+            String n = notes.get(i);
+            if (i < NOTES)
+                IndustryKit.record(run.test, "engine note", n);
+            String words = n.replaceFirst("^\\d+ ", "");
+            kinds.merge(words.replaceFirst("[:(].*$", "").trim(), 1, Integer::sum);
+            if (words.startsWith("glass replay falls back"))
+                fallbacks.add(n);
+            if (words.startsWith("glass replay starts") || words.startsWith("replay starts"))
+                starts.add(n);
+        }
+        IndustryKit.record(run.test, "engine notes", notes.size() + " since " + run.t1 + (notes.size() > NOTES ? " (first " + NOTES + " logged)" : "")
+                + ": " + kinds);
+        String model = run.away == null ? "no report while away" : run.away.replay().modelName()
+                + (run.away.replay().eligible() ? ", eligible" : ", not eligible");
+        String started = starts.isEmpty() ? "no replay start noted" : "started " + starts;
+        if (!fallbacks.isEmpty())
+            return "fell back " + fallbacks + "; " + started + "; report " + model;
+        if (run.sawGlass)
+            return "glass; " + started;
+        if (run.away != null && run.away.replay().model() == GlassReport.REPLAY_BLACK_BOX)
+            return "black box with no fallback noted (deposits, links, power, sinks or damage keep it; G2-16); " + started;
+        if (run.away != null && !run.away.replay().eligible())
+            return "frozen: the report says not eligible (G-B4); " + started;
+        return "no replay: " + model + "; " + started;
     }
 
     // ---- reading the world ----------------------------------------------------------------------
