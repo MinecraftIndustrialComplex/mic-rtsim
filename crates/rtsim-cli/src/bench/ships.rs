@@ -138,9 +138,9 @@ pub fn grid_sweeps(quick: bool) -> Vec<Sweep> {
                 heap,
                 contract(
                     Metric::SaveIncr,
-                    0.35,
+                    0.15,
                     0.0,
-                    "a periodic save writes the pages the player and the pirates dirtied and a meta page without the network (written once, after it changed), not the ships",
+                    "a periodic save writes the pages the player and the pirates dirtied and a meta page without the network (written once, after it changed), not the ships; the store's compaction of the first full save's segment lands in some windows (up to 3x one save)",
                 ),
             ],
         },
