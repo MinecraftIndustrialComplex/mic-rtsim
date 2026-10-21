@@ -1473,7 +1473,14 @@ For Deep Time's coordinator to review.
   - The encode costs of districts, stations, lines, trains, herds and conflict at scale are not
     measured, so their caps are ESTIMATES.
   - The header's cycle time has millisecond resolution.
-  - No layer has samples yet.
+  - No layer has samples yet (`write_samples` is a no-op).
+  - The tap's timing tests (`tap.rs`: overrun, wait past the job, lease writes) flake when the
+    laptop's load is above about 50. They pass at normal load, and 4 of 4 combined runs passed at
+    load 53 to 61.
+  - Once, under load 72, the lockstep test found pages that differ between the leased and the
+    unleased run; the message was not captured and about 15 reruns did not repeat it.
+    `assert_lockstep` now prints the table, the row id, both lengths, the first differing byte and
+    both generations, so the next one can be traced. UNEXPLAINED.
 
 ---
 
