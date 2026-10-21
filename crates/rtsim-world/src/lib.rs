@@ -18,6 +18,7 @@
 //!   [`bridge`]: what the bridge reports, applied exactly as it happened in Minecraft.
 //! - [`World::take_stock`], [`World::prey_on_traveller`]: predators with no haven (PLAN.md §9).
 
+pub mod archive;
 pub mod bases;
 pub mod bridge;
 pub mod caravans;

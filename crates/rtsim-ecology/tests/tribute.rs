@@ -483,6 +483,90 @@ fn every_coin_of_tribute_is_in_the_books() {
     assert!(placed > 0, "coin reached the chests");
 }
 
+/// The tribute on the event archive (VIEWER.md §10.1): each payment is a notable row at the
+/// village, from its key to the lair's, with the coin as its magnitude; a lapse is a row of its
+/// own; the dragons' flights and hunts and the lair's claim are there as the run made them.
+#[test]
+fn the_archive_records_the_tribute() {
+    use rtsim_archive::record::{kinds_on, rows_on};
+    use rtsim_archive::{Row, Severity, kinds};
+    let mut r = scenario(11);
+    r.d.tape.set_on(true);
+    for k in 1..=DAYS {
+        day(&mut r, k);
+    }
+    let got = kinds_on(&r.d.tape);
+    for k in &got {
+        assert_eq!(k.group(), "dragons", "{}", k.name());
+    }
+    for want in [
+        kinds::DRAGONS_FLIGHT,
+        kinds::DRAGONS_HUNT,
+        kinds::DRAGONS_CLAIM,
+        kinds::DRAGONS_TRIBUTE,
+        kinds::DRAGONS_TRIBUTE_LAPSED,
+    ] {
+        assert!(got.contains(&want), "no {} in {got:?}", want.name());
+    }
+    let rows = rows_on(&r.d.tape);
+    let events = |kind| {
+        rows.iter()
+            .filter_map(|(k, _, row)| match row {
+                Row::Event(e) if *k == kind => Some(*e),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let lair_keys: Vec<u64> = synth::lairs().iter().map(|l| l.key).collect();
+    let s = r.d.stats;
+    let paid = events(kinds::DRAGONS_TRIBUTE);
+    assert_eq!(paid.len() as u64, s.tributes);
+    for e in &paid {
+        // The village's key is the subject, and its place the event's.
+        let i = node(&r.w, e.subject.value);
+        let p = r.w.nodes[i].pos;
+        assert_eq!((e.x, e.z), (p.x, p.z));
+        assert!(lair_keys.contains(&e.object.value), "{e:?}");
+        assert!(e.magnitude > 0 && e.payload);
+        assert_eq!(e.severity, Severity::Notable);
+    }
+    let lapsed = events(kinds::DRAGONS_TRIBUTE_LAPSED);
+    assert_eq!(lapsed.len() as u64, s.tribute_lapses);
+    for e in &lapsed {
+        node(&r.w, e.subject.value);
+        assert!(lair_keys.contains(&e.object.value), "{e:?}");
+        assert_eq!(e.magnitude, 0);
+    }
+    // The flights are one row per leg booked, each a notable row of a dragon.
+    let legs: Vec<_> = rows
+        .iter()
+        .filter_map(|(k, _, row)| match row {
+            Row::Leg(l) if *k == kinds::DRAGONS_FLIGHT => Some(*l),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(legs.len() as u64, s.legs);
+    assert!(legs.iter().all(|l| l.severity == Severity::Notable));
+    assert!(
+        legs.iter()
+            .all(|l| l.subject.value != 0 && l.t0 + u64::from(l.duration) >= l.t0)
+    );
+    // The hunts name what they were on: a village's key where it was one.
+    let villages: Vec<u64> = r.w.nodes.iter().map(|n| n.key).collect();
+    let hunts = events(kinds::DRAGONS_HUNT);
+    assert!(hunts.len() > 100);
+    assert!(
+        hunts
+            .iter()
+            .any(|e| villages.contains(&e.object.value) && e.magnitude > 0)
+    );
+    assert!(
+        hunts
+            .iter()
+            .all(|e| e.object.value == 0 || villages.contains(&e.object.value))
+    );
+}
+
 #[test]
 fn tribute_continues_exactly_after_a_restart_and_when_paged() {
     let seed = 11;

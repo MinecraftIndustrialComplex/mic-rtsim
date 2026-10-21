@@ -720,3 +720,372 @@ fn a_season_change_freezes_a_district_without_that_seasons_model() {
     assert!(r.net.get(BAR) >= before, "season 0's bars reconcile: {r:?}");
     w.conservation().unwrap();
 }
+
+/// The archive records the iron line (VIEWER.md §10.1): each district found at its centre when
+/// its chunks arrive, learned, edited and relearned, reconciled, raided, and each train line seen.
+#[test]
+fn the_iron_line_is_archived() {
+    use rtsim_archive::kinds::{self, Kind};
+    use rtsim_archive::record::{kinds_on, rows_on};
+    use rtsim_archive::{Row, Severity};
+    use rtsim_industry::scenario::{IronLine, iron_line_world, run_iron_line};
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: true,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let mut w = iron_line_world(cfg, Tunables::default());
+    w.engine.tape.set_on(true);
+    w.declare();
+    run_iron_line(&mut w, &cfg);
+    let got = kinds_on(&w.engine.tape);
+    for k in &got {
+        assert_eq!(k.group(), "industry", "{}", k.name());
+        assert_eq!(kinds::by_name(k.name()), Some(*k));
+    }
+    let main: [Kind; 6] = [
+        kinds::INDUSTRY_DETECTED,
+        kinds::INDUSTRY_LEARNED,
+        kinds::INDUSTRY_STALE,
+        kinds::INDUSTRY_RECONCILE,
+        kinds::INDUSTRY_ATTACK,
+        kinds::INDUSTRY_LINE,
+    ];
+    for k in main {
+        assert!(got.contains(&k), "no {} in {got:?}", k.name());
+    }
+    let rows = rows_on(&w.engine.tape);
+    for (k, dim, r) in &rows {
+        assert_eq!(*dim, 0, "{}: the iron line is in the overworld", k.name());
+        let Row::Event(e) = r else {
+            panic!("{} is a leg", k.name())
+        };
+        assert_ne!(e.subject.value, 0, "{} has no subject", k.name());
+        assert!(e.x != 0 || e.z != 0, "{} at the origin", k.name());
+    }
+    let of = |kind: Kind| {
+        rows.iter()
+            .filter(move |(k, _, _)| *k == kind)
+            .map(|(_, _, r)| match r {
+                Row::Event(e) => *e,
+                Row::Leg(_) => unreachable!(),
+            })
+            .collect::<Vec<_>>()
+    };
+    // Four districts found once each, at the centre of their chunks: the smelter's inventories
+    // are in chunks 200 to 208 on x (blocks 3,200 to 3,215 and 3,208 to 3,223), z 0 and 8.
+    let found = of(kinds::INDUSTRY_DETECTED);
+    let mut ids: Vec<u64> = found.iter().map(|e| e.subject.value).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2, 3, 4], "found {found:?}");
+    for e in &found {
+        assert_eq!(e.severity, Severity::Minor);
+        assert!(e.magnitude > 0, "its chunks are counted: {e:?}");
+    }
+    let smelter = found.iter().find(|e| e.subject.value == 2).unwrap();
+    assert!(
+        (3_200..3_240).contains(&smelter.x) && (0..24).contains(&smelter.z),
+        "{smelter:?}"
+    );
+    // Learned with its confidence in thousandths; the coast was edited and went stale once.
+    for e in of(kinds::INDUSTRY_LEARNED) {
+        assert!((1..=1_000).contains(&e.magnitude), "{e:?}");
+    }
+    let stale = of(kinds::INDUSTRY_STALE);
+    assert!(stale.iter().any(|e| e.subject.value == 1), "{stale:?}");
+    // Reconcile reports: routine, with the items they moved.
+    let reconciles = of(kinds::INDUSTRY_RECONCILE);
+    assert!(
+        reconciles
+            .iter()
+            .all(|e| e.severity == Severity::Routine && e.object.value == 0)
+    );
+    assert!(reconciles.iter().any(|e| e.magnitude > 0));
+    // Attacks: a landed one is major with its payload, and the train's is at a real place.
+    let attacks = of(kinds::INDUSTRY_ATTACK);
+    let landed = attacks
+        .iter()
+        .find(|e| e.severity == Severity::Major)
+        .expect("a landed attack");
+    assert!(landed.payload, "{landed:?}");
+    assert!(
+        attacks
+            .iter()
+            .any(|e| e.severity == Severity::Major && e.magnitude > 0),
+        "something was stolen: {attacks:?}"
+    );
+    assert!(attacks.iter().all(|e| e.object.value == 0));
+    // Train 1 runs along z 0 between its stations (x 1,604 and 3,202); its ambushes are there, and
+    // a district's rows are at the district's centre (z 8).
+    let ambush = attacks
+        .iter()
+        .find(|e| e.subject.value == 1 && e.z == 0 && e.severity == Severity::Major)
+        .expect("train 1 was ambushed");
+    assert!((1_604..=3_202).contains(&ambush.x), "{ambush:?}");
+    assert!(ambush.magnitude > 0 && ambush.payload, "{ambush:?}");
+    assert!(
+        attacks
+            .iter()
+            .filter(|e| e.z != 0)
+            .all(|e| e.z == 8 && (e.x == 1_600 || e.x == 3_200)),
+        "{attacks:?}"
+    );
+    // Lines: from a station to another, at the station it arrived at.
+    let lines = of(kinds::INDUSTRY_LINE);
+    let line = lines
+        .iter()
+        .find(|e| e.subject.value == 1 && e.object.value == 2)
+        .expect("the ore line");
+    assert_eq!((line.x, line.z), (3_202, 0), "at the smelter's station");
+    assert_eq!(line.severity, Severity::Minor);
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert!(lines.iter().all(|e| e.subject.value != e.object.value));
+    // The tape is not state: a run with it off reaches the same state.
+    let mut plain = iron_line_world(cfg, Tunables::default());
+    plain.declare();
+    run_iron_line(&mut plain, &cfg);
+    assert_eq!(plain.engine.stats.attacks, w.engine.stats.attacks);
+    assert_eq!(plain.engine.stats.reconciles, w.engine.stats.reconciles);
+    assert!(plain.engine.tape.is_empty());
+}
+
+/// What the archive records of a district's phases, one run each (VIEWER.md §10.1): a raid that
+/// breaks a machine, a learned district edited, one whose membership changes, and one declared
+/// not learnable before it has any chunks.
+#[test]
+fn phase_changes_are_archived() {
+    use rtsim_archive::kinds::{self, Kind};
+    use rtsim_archive::record::rows_on;
+    use rtsim_archive::{Event, Row, Severity};
+    use rtsim_industry::fake::{exposed, survey};
+    use rtsim_industry::obs::{BlockFlags, DistrictDecl, EditKind};
+    use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
+    let rows = |w: &FakeWorld| -> Vec<(Kind, Event)> {
+        rows_on(&w.engine.tape)
+            .into_iter()
+            .map(|(k, _, r)| match r {
+                Row::Event(e) => (k, e),
+                Row::Leg(_) => panic!("{} is a leg", k.name()),
+            })
+            .collect()
+    };
+    let of = |w: &FakeWorld, kind: Kind| -> Vec<Event> {
+        rows(w)
+            .into_iter()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, e)| e)
+            .collect()
+    };
+    let decl = |revision: u32, not_learnable| {
+        Obs::District(rtsim_industry::obs::DistrictDecl {
+            district: MILL,
+            revision,
+            dim: 0,
+            name: 1,
+            not_learnable,
+            inventory_count: 2,
+        })
+    };
+    // The mill's chunks are x 0, 1 and 2 on z 0: its centre is the middle of chunk 1.
+    let centre = (24, 8);
+
+    // A raid on a learned mill with one machine block exposed: through open gates (every gap in
+    // the perimeter) the bandits live to break it; through a perimeter of a hundred columns and
+    // one gap none survive.
+    let raided = |gaps: u32| {
+        let mut w = mill(20_000, vec![(0.0, true)], false);
+        w.districts[0].exposed = vec![exposed(
+            BlockPos::new(16, 64, 0),
+            11,
+            BlockFlags::MACHINE,
+            None,
+        )];
+        w.districts[0].survey = Some(survey(MILL, 0, gaps, 100, 0, 1, [0.0; 4]));
+        w.announce();
+        w.engine.tape.set_on(true);
+        w.run_until(day(0.9));
+        w.engine.ingest(&Timed {
+            at: w.t,
+            obs: Obs::Watched {
+                district: MILL,
+                watched: false,
+            },
+        });
+        w.engine.threat(&Threat {
+            id: 9,
+            source: ThreatSource::Bandit,
+            class: ThreatClass::Siege,
+            count: 3,
+            strength: 3.0,
+            target: ThreatTarget::District(MILL),
+            loads: None,
+            at: w.t,
+        });
+        w
+    };
+    let mut w = raided(100);
+    let learned = of(&w, kinds::INDUSTRY_LEARNED);
+    assert_eq!(learned.len(), 1, "{learned:?}");
+    assert_eq!((learned[0].x, learned[0].z), centre);
+    assert!((1..=1_000).contains(&learned[0].magnitude));
+    let attack = of(&w, kinds::INDUSTRY_ATTACK);
+    let damaged = of(&w, kinds::INDUSTRY_DAMAGED);
+    assert_eq!(attack.len(), 1, "{attack:?}");
+    assert_eq!(damaged.len(), 1, "{damaged:?}");
+    for e in attack.iter().chain(&damaged) {
+        assert_eq!((e.subject.value, e.object.value), (1, 0));
+        assert_eq!((e.x, e.z), centre);
+        assert!(e.payload, "{e:?}");
+    }
+    // Major, with what the bandits carried off as its magnitude.
+    assert_eq!(attack[0].severity, Severity::Major);
+    assert_eq!(attack[0].magnitude, w.engine.books.stolen.total() as i32);
+    assert_eq!(damaged[0].severity, Severity::Notable);
+    assert_eq!(damaged[0].magnitude, 1, "one machine block");
+    // Raided again at once: the cooldown skips it, a minor row with nothing in it.
+    w.engine.threat(&Threat {
+        id: 10,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::District(MILL),
+        loads: None,
+        at: w.t + 10,
+    });
+    let attack = of(&w, kinds::INDUSTRY_ATTACK);
+    assert_eq!(attack.len(), 2, "{attack:?}");
+    assert_eq!(attack[1].severity, Severity::Minor);
+    assert_eq!(attack[1].magnitude, 0);
+    assert!(!attack[1].payload);
+    // The same raid on a perimeter that holds: the attack landed and took nothing, so it is minor
+    // and nothing is damaged.
+    let held = raided(1);
+    let attack = of(&held, kinds::INDUSTRY_ATTACK);
+    assert_eq!(attack.len(), 1, "{attack:?}");
+    assert_eq!(attack[0].severity, Severity::Minor);
+    assert_eq!(held.engine.stats.attacks, 1, "it was not skipped");
+    assert!(of(&held, kinds::INDUSTRY_DAMAGED).is_empty());
+
+    // A player edit makes a learned district stale (reason 2); a new declaration of the same
+    // revision, not learnable, is recorded with its reason code.
+    let mut w = mill(20_000, vec![(0.0, true)], false);
+    w.engine.tape.set_on(true);
+    w.run_until(day(0.9));
+    let edit = Obs::Edit {
+        district: MILL,
+        kind: EditKind::Broken,
+        player: (1, 2),
+        pos: BlockPos::new(16, 64, 0),
+    };
+    w.engine.ingest(&Timed { at: w.t, obs: edit });
+    let stale = of(&w, kinds::INDUSTRY_STALE);
+    assert_eq!(stale.len(), 1, "{stale:?}");
+    assert_eq!((stale[0].x, stale[0].z), centre);
+    assert_eq!((stale[0].subject.value, stale[0].magnitude), (1, 2));
+    // Edited again: it is no longer learned, so it does not go stale twice.
+    let edit = Obs::Edit {
+        district: MILL,
+        kind: EditKind::Placed,
+        player: (1, 2),
+        pos: BlockPos::new(16, 64, 0),
+    };
+    w.engine.ingest(&Timed { at: w.t, obs: edit });
+    assert_eq!(of(&w, kinds::INDUSTRY_STALE).len(), 1);
+    let code = NotLearnable::MovingContraption.code();
+    w.engine.ingest(&Timed {
+        at: w.t,
+        obs: decl(1, Some(NotLearnable::MovingContraption)),
+    });
+    let unlearnable = of(&w, kinds::INDUSTRY_UNLEARNABLE);
+    assert_eq!(unlearnable.len(), 1, "{unlearnable:?}");
+    assert_eq!(unlearnable[0].magnitude, i32::try_from(code).unwrap());
+    assert_eq!((unlearnable[0].x, unlearnable[0].z), centre);
+    // The same declaration again changes nothing.
+    w.engine.ingest(&Timed {
+        at: w.t,
+        obs: decl(1, Some(NotLearnable::MovingContraption)),
+    });
+    assert_eq!(of(&w, kinds::INDUSTRY_UNLEARNABLE).len(), 1);
+
+    // A new revision of a learned district: stale for membership (reason 1), placed where the
+    // chunks were before the declaration cleared them.
+    let mut w = mill(20_000, vec![(0.0, true)], false);
+    w.engine.tape.set_on(true);
+    w.run_until(day(0.9));
+    w.engine.ingest(&Timed {
+        at: w.t,
+        obs: decl(2, None),
+    });
+    let stale = of(&w, kinds::INDUSTRY_STALE);
+    assert_eq!(stale.len(), 1, "{stale:?}");
+    assert_eq!((stale[0].x, stale[0].z), centre);
+    assert_eq!(stale[0].magnitude, 1);
+    // Its chunks come with the new revision: not a district seen for the first time.
+    w.engine.ingest(&Timed {
+        at: w.t,
+        obs: Obs::DistrictChunks {
+            district: MILL,
+            revision: 2,
+            part: 0,
+            chunks: vec![(0, 0)],
+        },
+    });
+    assert!(of(&w, kinds::INDUSTRY_DETECTED).is_empty());
+
+    // A district declared not learnable before it has chunks: found, and not learnable, at its
+    // first chunks, once.
+    let mut w = mill(20_000, vec![(0.0, true)], false);
+    w.engine.tape.set_on(true);
+    let other = DistrictId(7);
+    let new = |revision| {
+        Obs::District(DistrictDecl {
+            district: other,
+            revision,
+            dim: 0,
+            name: 9,
+            not_learnable: Some(NotLearnable::MovingContraption),
+            inventory_count: 0,
+        })
+    };
+    w.engine.ingest(&Timed {
+        at: w.t,
+        obs: new(1),
+    });
+    assert!(rows(&w).is_empty(), "no chunks, no place, no row yet");
+    w.engine.ingest(&Timed {
+        at: w.t + 5,
+        obs: Obs::DistrictChunks {
+            district: other,
+            revision: 1,
+            part: 0,
+            chunks: vec![(10, 20), (12, 20)],
+        },
+    });
+    let found = of(&w, kinds::INDUSTRY_DETECTED);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].subject.value, found[0].magnitude), (7, 2));
+    assert_eq!(
+        (found[0].x, found[0].z, found[0].tick),
+        (184, 328, w.t.0 + 5)
+    );
+    assert_eq!(of(&w, kinds::INDUSTRY_UNLEARNABLE).len(), 1);
+    w.engine.ingest(&Timed {
+        at: w.t + 6,
+        obs: new(1),
+    });
+    w.engine.ingest(&Timed {
+        at: w.t + 6,
+        obs: Obs::DistrictChunks {
+            district: other,
+            revision: 1,
+            part: 1,
+            chunks: vec![(14, 20)],
+        },
+    });
+    assert_eq!(of(&w, kinds::INDUSTRY_DETECTED).len(), 1);
+    assert_eq!(of(&w, kinds::INDUSTRY_UNLEARNABLE).len(), 1);
+}

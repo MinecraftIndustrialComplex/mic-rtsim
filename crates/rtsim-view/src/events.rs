@@ -433,6 +433,7 @@ mod tests {
                 p.take(),
                 Stamp {
                     obs_seq: obs,
+                    serial: obs,
                     tick: base + 100,
                     wall_ms: 1_000_000 + base,
                 },

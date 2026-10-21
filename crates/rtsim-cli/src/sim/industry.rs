@@ -17,6 +17,9 @@
 //! stale-tick race the approach removes: a boiler that burns already-replayed coal can power a
 //! neighbour's real batches, which no trim sees. Run 4 is the replay alone.
 //!
+//! Only the main run is measured for the event archive's rate (R, VIEWER.md §10.4): its engine's
+//! tape is on and drained every game day; the other four runs are comparisons and record nothing.
+//!
 //! It prints what each district learned, the replay's breakpoints, the reconcile deltas, the
 //! threat outcomes, the I-B comparison of simulated against control, and the conservation check,
 //! and writes all of it as JSON.
@@ -25,13 +28,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use rtsim_archive::record::Meter;
 use rtsim_industry::engine::{EngineEvent, Inspection, Stats};
 use rtsim_industry::fake::{Event, FakeWorld};
 use rtsim_industry::ids::{DistrictId, Good, GoodVec};
-use rtsim_industry::scenario::{IronLine, iron_line, run_iron_line};
+use rtsim_industry::scenario::{IronLine, iron_line_world, run_iron_line, run_iron_line_metered};
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use serde::Serialize;
+
+use super::archive::Rate;
 
 pub struct Options {
     pub days: u64,
@@ -101,6 +107,8 @@ struct Report {
     runs: Vec<RunOut>,
     comparison: Vec<Comparison>,
     passed: bool,
+    /// The main run's archive rows per game day.
+    archive: Rate,
 }
 
 fn names(w: &FakeWorld, v: &GoodVec) -> BTreeMap<String, i64> {
@@ -116,19 +124,37 @@ fn names(w: &FakeWorld, v: &GoodVec) -> BTreeMap<String, i64> {
         .collect()
 }
 
-fn run(name: &str, cfg: IronLine) -> (RunOut, FakeWorld) {
+/// One run of the iron line. With a `meter` the engine's archive tape is on from the start and
+/// drained into it every game day.
+fn run(name: &str, cfg: IronLine, mut meter: Option<&mut Meter>) -> (RunOut, FakeWorld) {
     let start = Instant::now();
-    let mut w = iron_line(cfg, Tunables::default());
+    let mut w = iron_line_world(cfg, Tunables::default());
+    if meter.is_some() {
+        w.engine.tape.set_on(true);
+    }
+    w.declare();
     // Stop just before the player heads back to the smelter, to read the engine's own view.
     let before = Tick(8 * TICKS_PER_DAY - 200);
-    w.run_until(before);
+    match meter.as_deref_mut() {
+        Some(m) => {
+            while w.t < before {
+                let next = Tick((w.t.0 / TICKS_PER_DAY + 1) * TICKS_PER_DAY).min(before);
+                w.run_until(next);
+                m.drain(&mut w.engine.tape);
+            }
+        }
+        None => w.run_until(before),
+    }
     let ids: Vec<(DistrictId, String)> =
         w.districts.iter().map(|d| (d.id, d.name.clone())).collect();
     let mut before_return = BTreeMap::new();
     for (id, _) in &ids {
         before_return.insert(*id, w.engine.inspect(*id, before));
     }
-    run_iron_line(&mut w, &cfg);
+    match meter {
+        Some(m) => run_iron_line_metered(&mut w, &cfg, m),
+        None => run_iron_line(&mut w, &cfg),
+    }
     let wall_ms = start.elapsed().as_secs_f64() * 1e3;
     let now = w.t;
     let mut districts = Vec::new();
@@ -188,13 +214,16 @@ pub fn main(opts: Options) -> i32 {
         tick_first: true,
         approach: true,
     };
-    let (main_run, w) = run("main", base);
+    let mut meter = Meter::new();
+    let (main_run, w) = run("main", base, Some(&mut meter));
+    let archive = Rate::new(&meter, base.days as f64);
     let (sim, ws) = run(
         "simulated",
         IronLine {
             threats: false,
             ..base
         },
+        None,
     );
     let (noapp, wa) = run(
         "without approach",
@@ -203,6 +232,7 @@ pub fn main(opts: Options) -> i32 {
             approach: false,
             ..base
         },
+        None,
     );
     let (ideal, wi) = run(
         "ideal",
@@ -212,6 +242,7 @@ pub fn main(opts: Options) -> i32 {
             approach: false,
             ..base
         },
+        None,
     );
     let (control, wc) = run(
         "control",
@@ -220,6 +251,7 @@ pub fn main(opts: Options) -> i32 {
             control: true,
             ..base
         },
+        None,
     );
 
     // I-B: the simulated world makes at most what the control does, and not much less.
@@ -302,6 +334,7 @@ pub fn main(opts: Options) -> i32 {
         }
         let _ = (&ws, &wc, &wa, &wi);
         println!("  {}", if passed { "PASSED" } else { "FAILED" });
+        archive.print(None);
     }
 
     let report = Report {
@@ -313,6 +346,7 @@ pub fn main(opts: Options) -> i32 {
         runs: vec![main_run, sim, noapp, ideal, control],
         comparison,
         passed,
+        archive,
     };
     if let Some(path) = opts.out {
         if let Some(dir) = path.parent() {

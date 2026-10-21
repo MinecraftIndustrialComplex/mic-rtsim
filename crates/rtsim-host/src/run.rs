@@ -38,6 +38,18 @@ pub const STRIDE_10X: i64 = 200;
 pub const STRIDE_FAST: i64 = 2_400;
 /// Game time between saves (TUNABLE, VIEWER.md §12.1): 10 game days.
 pub const SAVE_EVERY: i64 = 10 * DAY;
+/// Hand-overs after a save before the event archive's buffer may ask for another: the engine
+/// takes a save at the step after its request at the latest, and the buffer's stats show it at
+/// the hand-over after that.
+const ARCHIVE_SAVE_STEPS: u64 = 2;
+
+/// Rows and bytes in the engine's event archive buffer past which the host saves before
+/// `save_every`: half of either of the buffer's caps (`rtsim_archive::pending`). At max speed a
+/// busy world fills it in a few game days, and the buffer drops rows past its caps (VIEWER.md §12).
+pub const ARCHIVE_SAVE_AT: (u64, u64) = (
+    rtsim_archive::pending::MAX_PENDING_ROWS as u64 / 2,
+    rtsim_archive::pending::MAX_PENDING_BYTES as u64 / 2,
+);
 /// How long a step may run before the host gives up on it.
 const STEP_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -151,6 +163,8 @@ pub struct Options {
     pub durability: Durability,
     /// The host's foreground and background pool sizes; `None`: two and two, as the tests.
     pub threads: Option<(usize, usize)>,
+    /// Rows or bytes in the archive's buffer that bring a save forward ([`ARCHIVE_SAVE_AT`]).
+    pub archive_save_at: (u64, u64),
 }
 
 impl Default for Options {
@@ -164,6 +178,7 @@ impl Default for Options {
             test: false,
             durability: Durability::Fsync,
             threads: None,
+            archive_save_at: ARCHIVE_SAVE_AT,
         }
     }
 }
@@ -234,7 +249,11 @@ pub struct Host {
     pub last_handed: i64,
     pub steps: u64,
     pub saves: u64,
+    /// Saves the archive's buffer brought forward ([`Options::archive_save_at`]).
+    pub archive_saves: u64,
     last_save_at: i64,
+    /// `steps` at the last save.
+    saved_at_step: u64,
     world_saved: Option<u64>,
     season_days: Option<u32>,
     season: Option<u32>,
@@ -382,7 +401,9 @@ impl Host {
             last_handed: start,
             steps: 0,
             saves: 0,
+            archive_saves: 0,
             last_save_at: start,
+            saved_at_step: 0,
             world_saved: None,
             season_days: opts.season_days,
             season: None,
@@ -498,8 +519,18 @@ impl Host {
         // The game time last handed over, which `run` measures the next save from (the journal's
         // own clock has already moved on by a stride).
         self.last_save_at = self.last_handed;
+        self.saved_at_step = self.steps;
         self.saves += 1;
         Ok(())
+    }
+
+    /// Whether the archive's buffer holds `at` rows or bytes ([`Options::archive_save_at`]), with
+    /// the last save already taken.
+    fn archive_filling(&self, at: (u64, u64)) -> bool {
+        let s = &self.e.stats;
+        self.steps >= self.saved_at_step + ARCHIVE_SAVE_STEPS
+            && (s.archive_pending_rows.load(Ordering::Acquire) >= at.0
+                || s.archive_pending_bytes.load(Ordering::Acquire) >= at.1)
     }
 
     fn write_world(&self) -> Result<(), String> {
@@ -548,9 +579,10 @@ impl Host {
     }
 
     /// Runs until `opts.until`, `ctl.stop`, or an error; `report` gets a status line every
-    /// `every` of wall time. Saves every `opts.save_every` of game time, and when `ctl.save_now`
-    /// is set (a key, or the viewer's lease: [`crate::view`]); while paused, at the first step
-    /// after resuming.
+    /// `every` of wall time. Saves every `opts.save_every` of game time, sooner when the event
+    /// archive's buffer is past half full ([`Options::archive_save_at`]), and when `ctl.save_now` is set
+    /// (a key, or the viewer's lease: [`crate::view`]); while paused, at the first step after
+    /// resuming.
     pub fn run(
         &mut self,
         opts: &Options,
@@ -607,8 +639,10 @@ impl Host {
             self.step(stride, limit)?;
             ctl.game_time.store(self.last_handed, Ordering::Relaxed);
             let save_due = self.last_handed - self.last_save_at >= opts.save_every;
-            if save_due || ctl.save_now.swap(false, Ordering::Relaxed) {
+            let archive_due = !save_due && self.archive_filling(opts.archive_save_at);
+            if save_due || archive_due || ctl.save_now.swap(false, Ordering::Relaxed) {
                 self.save()?;
+                self.archive_saves += u64::from(archive_due);
             }
             if last_report.0.elapsed() >= every {
                 let rate = rate_since(last_report, self.last_handed);
