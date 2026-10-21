@@ -152,3 +152,26 @@ fn the_stagger_survives_a_save() {
     }
     assert_eq!(drain(&mut u, Tick(3 * Q)), drain(&mut t, Tick(3 * Q)));
 }
+
+/// A region booked again before its wake is due (a delivery and then an event, or an event on a
+/// held breakpoint) leaves one wake on the wheel, not a trail that grows with every event
+/// (docs/choices-leg-purge.md LP7).
+#[test]
+fn rebooking_leaves_one_wake_a_region() {
+    let (mut t, hs) = table(64);
+    for q in 1..=50 {
+        let at = Tick(q * Q + Q / 2);
+        drain(&mut t, at);
+        for &h in hs.iter().step_by(3) {
+            if t.is_held(h, at) {
+                assert!(t.take_held(h, at));
+            }
+            t.apply(h, at, |m, _| m.seen += 1);
+        }
+        assert_eq!(t.pending_wakes(), hs.len(), "after quantum {q}");
+    }
+    assert!(
+        t.stats().stale_wakes > 0,
+        "the superseded wakes are counted"
+    );
+}

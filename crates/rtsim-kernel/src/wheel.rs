@@ -15,8 +15,11 @@
 //! when it starts.
 //!
 //! **Cancelling** is lazy, as PLAN.md §4.3 books meetings: an entry carries the generations it
-//! depends on, and the consumer drops it when it fires stale. The wheel has no cancel operation, so
-//! it needs no back-pointers and its entries can move freely.
+//! depends on, and the consumer drops it when it fires stale. The wheel needs no back-pointers and
+//! its entries can move freely. A consumer that rebooks one entry many times before it is due (a
+//! lazy region's breakpoint, moved by every event) would pile up stale entries without bound, so
+//! [`TimingWheel::cancel`] removes one by the time it was scheduled for: an entry's slot follows
+//! from that time and `now` alone (docs/choices-leg-purge.md LP7).
 
 use std::collections::VecDeque;
 
@@ -113,6 +116,37 @@ impl<T> TimingWheel<T> {
         }
         v.push(e);
         self.occupied[level] |= 1 << slot;
+    }
+
+    /// Removes the latest-scheduled pending entry for `at` that `is` picks, and says whether
+    /// there was one (false if it popped already). The others keep their pop order. An entry sits
+    /// in the slot [`TimingWheel::place`] gives its time against the current `now`: the wheel
+    /// cascades a slot the moment `now` enters its range, so `now` never shares an uncascaded
+    /// entry's digit. One scheduled at or before `now` waits in `ready`. Costs that one slot at
+    /// worst; a slot holds its entries in schedule order and the search starts from the newest,
+    /// so cancelling a recent booking costs little.
+    pub fn cancel(&mut self, at: Tick, mut is: impl FnMut(&T) -> bool) -> bool {
+        if at.0 <= self.now {
+            let Some(i) = self.ready.iter().rposition(|e| is(&e.item)) else {
+                return false;
+            };
+            self.ready.remove(i);
+            self.len -= 1;
+            return true;
+        }
+        let diff = at.0 ^ self.now;
+        let level = ((63 - diff.leading_zeros()) / LEVEL_BITS) as usize;
+        let slot = ((at.0 >> (level as u32 * LEVEL_BITS)) as usize) & (SLOTS - 1);
+        let v = &mut self.slots[level * SLOTS + slot];
+        let Some(i) = v.iter().rposition(|e| e.at == at.0 && is(&e.item)) else {
+            return false;
+        };
+        v.remove(i);
+        self.len -= 1;
+        if v.is_empty() {
+            self.occupied[level] &= !(1 << slot);
+        }
+        true
     }
 
     /// The earliest non-empty slot: (level, slot, the tick its range starts at). Every entry on a
@@ -485,6 +519,53 @@ mod tests {
                 let pb: Vec<_> = std::iter::from_fn(|| b.pop_until(Tick(u64::MAX))).collect();
                 prop_assert_eq!(pa, pb);
             }
+        }
+
+        /// Cancelling any pending entry, or one already popped, leaves a wheel that pops exactly
+        /// what the sorted reference without it pops: cancel finds an entry by its time alone,
+        /// across cascades, and keeps the others' order.
+        #[test]
+        fn cancelling_matches_a_sorted_reference(
+            ops in prop::collection::vec(prop_oneof![3 => op().prop_map(Some), 1 => Just(None)], 1..300),
+            picks in prop::collection::vec(any::<prop::sample::Index>(), 300),
+            start in 0u64..1_000_000,
+        ) {
+            let mut w = TimingWheel::new(Tick(start));
+            let mut model: BTreeMap<(u64, u64), u64> = BTreeMap::new();
+            let mut booked: Vec<(u64, u64)> = Vec::new();
+            let mut seq = 0u64;
+            let mut now = start;
+            for (i, op) in ops.into_iter().enumerate() {
+                match op {
+                    Some(Op::Schedule(d)) => {
+                        let at = now + d;
+                        w.schedule(Tick(at), seq);
+                        model.insert((at, seq), seq);
+                        booked.push((at, seq));
+                        seq += 1;
+                    }
+                    Some(Op::Drain(d)) => {
+                        let limit = now + d;
+                        while let Some((t, item)) = w.pop_until(Tick(limit)) {
+                            let ((mt, ms), _) = model.pop_first().expect("wheel popped more than the model");
+                            prop_assert_eq!((t.0, item), (mt, ms));
+                        }
+                        now = limit;
+                    }
+                    None if !booked.is_empty() => {
+                        // Any entry ever booked: pending ones go, popped ones are not found.
+                        let (at, s) = booked[picks[i].index(booked.len())];
+                        let pending = model.remove(&(at, s)).is_some();
+                        prop_assert_eq!(w.cancel(Tick(at), |v| *v == s), pending);
+                    }
+                    None => {}
+                }
+                prop_assert_eq!(w.len(), model.len());
+                prop_assert_eq!(w.next_due(), model.first_key_value().map(|(&(t, _), _)| Tick(t)));
+            }
+            let rest: Vec<_> = std::iter::from_fn(|| w.pop_until(Tick(u64::MAX))).map(|(t, v)| (t.0, v)).collect();
+            let want: Vec<_> = model.into_keys().collect();
+            prop_assert_eq!(rest, want);
         }
 
         /// Pops undone with `rewind` leave a wheel that pops exactly what one that never popped
