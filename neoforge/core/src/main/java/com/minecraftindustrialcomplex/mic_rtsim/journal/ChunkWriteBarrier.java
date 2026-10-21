@@ -65,6 +65,8 @@ public final class ChunkWriteBarrier {
     long waits;
     /** Written on an IO thread. */
     private final AtomicLong late = new AtomicLong();
+    /** How long the last wait took, in ms (written on an IO thread). */
+    private final AtomicLong lastWaitMillis = new AtomicLong(-1);
 
     /**
      * A record just committed to the journal speaks for {@code chunk}'s contents: the chunk is written
@@ -86,6 +88,11 @@ public final class ChunkWriteBarrier {
 
     public long waits() {
         return waits;
+    }
+
+    /** The last wait for chunk writes, in ms; -1 before the first. */
+    public long lastWaitMillis() {
+        return lastWaitMillis.get();
     }
 
     /** Journal writes that went ahead without the chunk writes (a timeout or a failed chunk write). */
@@ -137,8 +144,13 @@ public final class ChunkWriteBarrier {
         CompletableFuture<Void> all = CompletableFuture.allOf(writes.toArray(CompletableFuture[]::new));
         // Never throws: an exception in a task of NeoForge's chain would skip every SavedData write after it.
         IOUtilities.withIOWorker(() -> {
+            long start = System.nanoTime();
             try {
                 all.get(WAIT_SECONDS, TimeUnit.SECONDS);
+                long ms = (System.nanoTime() - start) / 1_000_000;
+                lastWaitMillis.set(ms);
+                if (ms > 5_000)
+                    MicRtsim.LOGGER.info("[mic_rtsim] the journal's write waited {} ms for the chunk writes it depends on", ms);
             } catch (TimeoutException e) {
                 late.incrementAndGet();
                 MicRtsim.LOGGER.error("[mic_rtsim] the chunk writes the journal depends on took over {} s; the journal is written without them", WAIT_SECONDS);
