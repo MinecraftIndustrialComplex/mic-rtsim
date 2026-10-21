@@ -7,6 +7,7 @@ pub mod bsp;
 pub mod conflict;
 pub mod dragons;
 pub mod glass;
+pub mod glass_replay;
 pub mod herds;
 pub mod industry;
 pub mod market;
