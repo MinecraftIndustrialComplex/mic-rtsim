@@ -107,6 +107,7 @@ public final class JournalBarrierGameTests {
         AtomicReference<Peek> peek = new AtomicReference<>();
         Path[] file = {null};
         long[] started = {0};
+        boolean[] vanilla = {true};
         helper.startSequence()
                 .thenExecute(() -> {
                     level.setBlock(chestPos, Blocks.CHEST.defaultBlockState(), 3);
@@ -117,8 +118,11 @@ public final class JournalBarrierGameTests {
                     check("the arena chunk is unsaved", chunk.isUnsaved());
                     data.chunks().dependsOn(chunk);
                     data.setDirty();
-                    check("vanilla's chunk worker, not C2ME's", "vanilla".equals(data.chunks().strategy(level)));
                     IOWorker worker = (IOWorker) level.getChunkSource().chunkMap.chunkScanner();
+                    String expected = expectedStrategy(worker);
+                    check("the barrier uses the " + expected + " strategy for " + worker.getClass().getName() + ", not "
+                            + data.chunks().strategy(level), expected.equals(data.chunks().strategy(level)));
+                    vanilla[0] = "vanilla".equals(expected);
                     int base = BACKLOG_REGION * 32;
                     for (int i = 0; i < BACKLOG; i++) {
                         ChunkPos p = new ChunkPos(base + (i & 31), base + (i >> 5));
@@ -147,21 +151,51 @@ public final class JournalBarrierGameTests {
                     check("the journal's file was written, not held (" + b.lastHeld() + ")", p.journalOnDisk() && data.writes() == 1 && b.held() == 0);
                     check("and never ahead of its chunk: the chest on disk has " + p.diamonds() + " diamonds and " + p.emeralds() + " emeralds",
                             p.diamonds() == diamonds && p.emeralds() == emeralds);
-                    check("it went ahead of the chunk worker's queue: " + p.backlogDone() + " of " + BACKLOG + " queued writes were done",
-                            p.backlogDone() < BACKLOG);
+                    // C2ME writes each chunk as soon as it is compressed, in no queue order: nothing to go ahead of
+                    if (vanilla[0])
+                        check("it went ahead of the chunk worker's queue: " + p.backlogDone() + " of " + BACKLOG + " queued writes were done",
+                                p.backlogDone() < BACKLOG);
                     check("nothing late", b.late() == 0);
                 })
                 .thenExecute(() -> {
                     level.setBlock(chestPos, Blocks.AIR.defaultBlockState(), 3);
                     IOWorker worker = (IOWorker) level.getChunkSource().chunkMap.chunkScanner();
-                    for (ChunkPos p : backlogAt)
-                        worker.store(p, null); // the region file keeps its sectors free; the next run reuses them
+                    try {
+                        for (ChunkPos p : backlogAt)
+                            worker.store(p, null); // the region file keeps its sectors free; the next run reuses them
+                    } catch (RuntimeException e) {
+                        MicRtsim.LOGGER.warn("[gametest] clearing the backlog's chunks", e);
+                    }
                     try {
                         Files.deleteIfExists(file[0]);
                     } catch (IOException ignored) {
                     }
                 })
                 .thenSucceed();
+    }
+
+    /** The strategy {@link ChunkWriteBarrier#strategy} should pick for {@code worker} (JB2, JB3). */
+    private static String expectedStrategy(IOWorker worker) {
+        if (worker.getClass() == IOWorker.class)
+            return "vanilla";
+        if (worker.getClass().getName().equals("com.ishland.c2me.rewrites.chunkio.common.C2MEStorageVanillaInterface"))
+            return "c2me";
+        return "synchronize";
+    }
+
+    /**
+     * Detached chunks for the hold tests sit in the backlog's region, on its last row past the backlog's end, so
+     * their region file exists: C2ME's writes are not synchronous and the barrier forces each noted chunk's region
+     * file, and one that is missing holds the round. The anchor is written first.
+     */
+    private static ChunkPos spare(int i) {
+        int base = BACKLOG_REGION * 32;
+        return new ChunkPos(base + 20 + i, base + 31);
+    }
+
+    private static CompletableFuture<Void> writeAnchor(ServerLevel level) {
+        ChunkPos anchor = new ChunkPos(BACKLOG_REGION * 32 + 31, BACKLOG_REGION * 32 + 31);
+        return ((IOWorker) level.getChunkSource().chunkMap.chunkScanner()).store(anchor, filler(anchor));
     }
 
     /** On the IO chain, after everything queued on it so far (the test journal's write task). */
@@ -226,11 +260,13 @@ public final class JournalBarrierGameTests {
     public static void aChunkStillBeingUnloadedHoldsTheJournalsFileToTheNextSave(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         JournalSavedData data = JournalSavedData.fresh();
-        LevelChunk inFlight = new LevelChunk(level, new ChunkPos(BACKLOG_REGION * 32 + 40, BACKLOG_REGION * 32 + 40));
-        LevelChunk never = new LevelChunk(level, new ChunkPos(BACKLOG_REGION * 32 + 41, BACKLOG_REGION * 32 + 41));
+        LevelChunk inFlight = new LevelChunk(level, spare(0));
+        LevelChunk never = new LevelChunk(level, spare(1));
         AtomicReference<Round> round = new AtomicReference<>();
         Path[] file = {null};
+        CompletableFuture<Void> anchor = writeAnchor(level);
         var seq = helper.startSequence()
+                .thenWaitUntil(() -> check("the region file is there", anchor.isDone()))
                 .thenExecute(() -> {
                     try {
                         file[0] = testFile(level);
@@ -293,10 +329,12 @@ public final class JournalBarrierGameTests {
         ServerLevel level = helper.getLevel();
         RtsimSession s = RtsimTests.session();
         JournalSavedData data = s.journal();
-        LevelChunk inFlight = new LevelChunk(level, new ChunkPos(BACKLOG_REGION * 32 + 42, BACKLOG_REGION * 32 + 42));
+        LevelChunk inFlight = new LevelChunk(level, spare(2));
         AtomicReference<long[]> before = new AtomicReference<>();
         AtomicReference<long[]> after = new AtomicReference<>();
+        CompletableFuture<Void> anchor = writeAnchor(level);
         helper.startSequence()
+                .thenWaitUntil(() -> check("the region file is there", anchor.isDone()))
                 .thenExecute(() -> {
                     data.chunks().dependsOn(inFlight);
                     data.setDirty();
