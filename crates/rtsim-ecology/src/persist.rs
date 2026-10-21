@@ -17,7 +17,8 @@
 //! table 0x4410; lairs, 0x4411).
 //!
 //! - [`Dragons::save`] / [`Dragons::load`]: one blob, the meta then every row in key order
-//!   (`PagedRows::encode_all`), for a host without a page store (rtsim-jni today, page 0x4400).
+//!   (`PagedRows::encode_all`), for a host without a page store (the resident tests and tools;
+//!   rtsim-jni pages the dragons, from page 0x4400/0).
 //! - [`Dragons::save_paged`] / [`Dragons::open_paged`]: the meta as one page (with each table's
 //!   row count and next index) and each table's dirty pages, in the caller's batch; opening reads
 //!   the meta page and leaves every row page on disk until something reads it.
@@ -29,26 +30,30 @@ use rtsim_industry::ids::{Good, TrainId};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
 use rtsim_kernel::handle::Handle;
+use rtsim_kernel::meta_pages::{MapTicket, PagedMap, PagedWheel, WheelTicket};
 use rtsim_kernel::page::{PageError, PageKey, SaveBatch};
 use rtsim_kernel::paging::SaveTicket;
 use rtsim_kernel::rows::{PageSource, PagedArena, PagedRows, Row, RowStats};
-use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
 use rtsim_travel::legs::{Meeting, Path, Stamp};
 
 use crate::boundary::{self, SpeciesDict};
 use crate::dragon::{Dragon, FlightLeg, Lair, LairKind, Lairs, Purpose, State, Target};
-use crate::engine::{DRAGON_TABLE, DRAGONS_PER_PAGE, DragonStats, Dragons, Ev, PlayerView};
+use crate::engine::{
+    DRAGON_TABLE, DRAGONS_PER_PAGE, DragonStats, Dragons, Ev, LAIR_CELL_TABLE, LAIR_KEY_TABLE,
+    PlayerView, ROAD_CELL_TABLE, VILLAGE_CELL_TABLE, WHEEL_TABLE,
+};
 use crate::homes::{Entry, Homes, PlayerHome};
 use crate::index::PreyIndex;
 use crate::prey::{Item, PreyLedger};
 use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
 
-const MAGIC: u32 = u32::from_le_bytes(*b"RTDG");
-/// The meta page of a paged save.
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTDM");
+/// "RTDG" was the format before the indexes moved behind the meta (PF9); no older save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD2");
+/// The meta page of a paged save ("RTDM" before PF9).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN2");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -725,30 +730,46 @@ fn get_homes(r: &mut Reader<'_>) -> codec::Result<Homes> {
     })
 }
 
-type Cells<T> = BTreeMap<(u16, i64, i64), Vec<T>>;
+type Cell = (u16, i64, i64);
+type Cells<T> = PagedMap<Cell, Vec<T>>;
+
+fn put_cell(w: &mut Writer, &(f, x, z): &Cell) {
+    w.u16(f);
+    w.var_i64(x);
+    w.var_i64(z);
+}
+
+fn get_cell(r: &mut Reader<'_>) -> codec::Result<Cell> {
+    Ok((r.u16()?, r.var_i64()?, r.var_i64()?))
+}
+
+fn put_ids(w: &mut Writer, v: &[u32]) {
+    w.var_u64(v.len() as u64);
+    v.iter().for_each(|i| w.var_u64(u64::from(*i)));
+}
+
+fn get_ids(r: &mut Reader<'_>) -> codec::Result<Vec<u32>> {
+    let n = r.len_prefix(1)?;
+    (0..n)
+        .map(|_| r.var_u64().and_then(u32_of))
+        .collect::<codec::Result<Vec<_>>>()
+}
 
 fn put_cells(w: &mut Writer, m: &Cells<u32>) {
     w.var_u64(m.len() as u64);
-    for (&(f, x, z), v) in m {
-        w.u16(f);
-        w.var_i64(x);
-        w.var_i64(z);
-        w.var_u64(v.len() as u64);
-        v.iter().for_each(|i| w.var_u64(u64::from(*i)));
+    for (c, v) in m {
+        put_cell(w, c);
+        put_ids(w, v);
     }
 }
 
 fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     let mut m = BTreeMap::new();
     for _ in 0..r.len_prefix(5)? {
-        let cell = (r.u16()?, r.var_i64()?, r.var_i64()?);
-        let n = r.len_prefix(1)?;
-        let v = (0..n)
-            .map(|_| r.var_u64().and_then(u32_of))
-            .collect::<codec::Result<Vec<_>>>()?;
-        m.insert(cell, v);
+        let cell = get_cell(r)?;
+        m.insert(cell, get_ids(r)?);
     }
-    Ok(m)
+    Ok(m.into())
 }
 
 const STATS: usize = 28;
@@ -824,16 +845,35 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
 #[derive(Debug, Default)]
 #[must_use = "row pages stay pinned until the tickets come back through saved or save_failed"]
 pub struct DragonsTickets {
+    wheel: WheelTicket,
+    by_key: MapTicket,
+    /// Lairs by cell, the prey index's villages and its roads.
+    cells: [MapTicket; 3],
     dragons: SaveTicket,
     lairs: SaveTicket,
 }
 
 impl DragonsTickets {
-    /// Row pages the save wrote (or deleted), both tables.
+    /// Row and index pages the save wrote (or deleted, for the rows).
     pub fn pages(&self) -> usize {
-        self.dragons.pages() + self.lairs.pages()
+        self.dragons.pages()
+            + self.lairs.pages()
+            + self.wheel.pages()
+            + self.by_key.pages()
+            + self.cells.iter().map(MapTicket::pages).sum::<usize>()
     }
 }
+
+/// Every page table the dragons own when they page: a meta key in none of them.
+const TABLES: [u16; 7] = [
+    DRAGON_TABLE,
+    Lairs::TABLE,
+    WHEEL_TABLE,
+    LAIR_KEY_TABLE,
+    LAIR_CELL_TABLE,
+    VILLAGE_CELL_TABLE,
+    ROAD_CELL_TABLE,
+];
 
 /// The row tables' paging counters, for the bench.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -873,13 +913,6 @@ impl Dragons {
         w.u64(self.seed);
         w.u64(self.now.0);
         w.u64(self.next_seed);
-        w.var_u64(self.lair_by_key.len() as u64);
-        for (k, l) in &self.lair_by_key {
-            w.u64(*k);
-            w.u32(*l);
-        }
-        put_cells(w, &self.lair_cells);
-        self.wheel.encode_with(w, |e, w| put_ev(w, e));
         put_homes(w, &self.homes);
         let l = &self.ledger;
         for m in [&l.taken, &l.eaten, &l.burnt, &l.hoarded, &l.robbed, &l.lost] {
@@ -913,8 +946,6 @@ impl Dragons {
                 None => w.u8(0),
             }
         }
-        put_cells(w, &self.index.villages);
-        put_cells(w, &self.index.roads);
         w.var_u64(self.index.nodes as u64);
         w.var_u64(self.index.edges as u64);
         w.var_u64(self.by_entity.len() as u64);
@@ -953,12 +984,6 @@ impl Dragons {
         let next_seed = r.u64()?;
         let mut d = Dragons::new(seed, tun, now);
         d.next_seed = next_seed;
-        for _ in 0..r.len_prefix(12)? {
-            let k = r.u64()?;
-            d.lair_by_key.insert(k, r.u32()?);
-        }
-        d.lair_cells = get_cells(r)?;
-        d.wheel = TimingWheel::decode_with(r, get_ev)?;
         d.homes = get_homes(r)?;
         d.ledger = PreyLedger {
             taken: get_items128(r)?,
@@ -1003,8 +1028,8 @@ impl Dragons {
             d.players.insert(a, PlayerView { uuid, interest });
         }
         d.index = PreyIndex {
-            villages: get_cells(r)?,
-            roads: get_cells(r)?,
+            villages: PagedMap::new(),
+            roads: PagedMap::new(),
             nodes: r.var_u64()? as usize,
             edges: r.var_u64()? as usize,
         };
@@ -1041,6 +1066,15 @@ impl Dragons {
         let mut w = Writer::with_capacity(1024 + self.dragons.len() * 256);
         w.u32(MAGIC);
         self.put_meta(&mut w);
+        w.var_u64(self.lair_by_key.len() as u64);
+        for (k, l) in &self.lair_by_key {
+            w.u64(*k);
+            w.u32(*l);
+        }
+        put_cells(&mut w, &self.lair_cells);
+        self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
+        put_cells(&mut w, &self.index.villages);
+        put_cells(&mut w, &self.index.roads);
         self.dragons.encode_all(&mut w);
         self.lairs.rows().encode_all(&mut w);
         w.into_bytes()
@@ -1054,6 +1088,14 @@ impl Dragons {
             return bad("not a dragons page".into());
         }
         let mut d = Dragons::get_meta(tun, r)?;
+        for _ in 0..r.len_prefix(12)? {
+            let k = r.u64()?;
+            d.lair_by_key.insert(k, r.u32()?);
+        }
+        d.lair_cells = get_cells(r)?;
+        d.wheel = PagedWheel::decode_with(r, get_ev)?;
+        d.index.villages = get_cells(r)?;
+        d.index.roads = get_cells(r)?;
         d.dragons = PagedArena::decode_all(DRAGON_TABLE, DRAGONS_PER_PAGE, r)?;
         let lairs = PagedRows::decode_all(Lairs::TABLE, Lairs::PER_PAGE, r)?;
         // Keys in strictly rising order, the last `len - 1`: exactly `0..len`.
@@ -1093,18 +1135,45 @@ impl Dragons {
     /// The pages stay pinned until the tickets come back. `meta_key` must not be in a row table.
     pub fn save_paged(&mut self, batch: &mut SaveBatch, meta_key: PageKey) -> DragonsTickets {
         assert!(
-            meta_key.table() != DRAGON_TABLE && meta_key.table() != Lairs::TABLE,
-            "the dragons' meta page {meta_key:?} inside a row table"
+            !TABLES.contains(&meta_key.table()),
+            "the dragons' meta page {meta_key:?} inside a row or index table"
         );
-        let mut w = Writer::with_capacity(1024 + self.wheel.len() * 24);
+        let mut w = Writer::with_capacity(4096);
         w.u32(META_MAGIC);
         self.put_meta(&mut w);
         let (len, next) = self.dragons.meta();
         w.var_u64(len);
         w.u32(next);
         w.var_u64(self.lairs.rows().len());
+        let wheel = self
+            .wheel
+            .save_paged(batch, WHEEL_TABLE, &mut w, |e, w| put_ev(w, e));
+        let by_key = self.lair_by_key.save_paged(
+            batch,
+            LAIR_KEY_TABLE,
+            &mut w,
+            |k, w| w.u64(*k),
+            |l, w| w.u32(*l),
+        );
+        let cells = [
+            (&mut self.lair_cells, LAIR_CELL_TABLE),
+            (&mut self.index.villages, VILLAGE_CELL_TABLE),
+            (&mut self.index.roads, ROAD_CELL_TABLE),
+        ]
+        .map(|(m, table)| {
+            m.save_paged(
+                batch,
+                table,
+                &mut w,
+                |c, w| put_cell(w, c),
+                |v, w| put_ids(w, v),
+            )
+        });
         batch.put(meta_key, w.as_bytes());
         DragonsTickets {
+            wheel,
+            by_key,
+            cells,
             dragons: self.dragons.rows_mut().save_dirty(batch),
             lairs: self.lairs.rows_mut().save_dirty(batch),
         }
@@ -1112,13 +1181,25 @@ impl Dragons {
 
     /// The commit holding [`Dragons::save_paged`]'s batch is durable.
     pub fn saved(&mut self, t: DragonsTickets) {
+        self.wheel.saved(t.wheel);
+        self.lair_by_key.saved(t.by_key);
+        let [a, b, c] = t.cells;
+        self.lair_cells.saved(a);
+        self.index.villages.saved(b);
+        self.index.roads.saved(c);
         self.dragons.rows_mut().saved(t.dragons);
         self.lairs.rows_mut().saved(t.lairs);
     }
 
-    /// The commit failed: the row pages it held are dirty again (the meta is rewritten whole by
-    /// every save, so it needs nothing).
+    /// The commit failed: the row and index pages it held are dirty again (the rest of the meta
+    /// is rewritten whole by every save, so it needs nothing).
     pub fn save_failed(&mut self, t: DragonsTickets) {
+        self.wheel.save_failed(t.wheel);
+        self.lair_by_key.save_failed(t.by_key);
+        let [a, b, c] = t.cells;
+        self.lair_cells.save_failed(a);
+        self.index.villages.save_failed(b);
+        self.index.roads.save_failed(c);
         self.dragons.rows_mut().save_failed(t.dragons);
         self.lairs.rows_mut().save_failed(t.lairs);
     }
@@ -1142,6 +1223,16 @@ impl Dragons {
         let len = r.var_u64().map_err(format_err)?;
         let next = r.u32().map_err(format_err)?;
         let lairs = r.var_u64().map_err(format_err)?;
+        let src = &*source;
+        d.wheel = PagedWheel::open_paged(r, WHEEL_TABLE, src, get_ev).map_err(format_err)?;
+        d.lair_by_key = PagedMap::open_paged(r, LAIR_KEY_TABLE, src, |r| r.u64(), |r| r.u32())
+            .map_err(format_err)?;
+        d.lair_cells =
+            PagedMap::open_paged(r, LAIR_CELL_TABLE, src, get_cell, get_ids).map_err(format_err)?;
+        d.index.villages = PagedMap::open_paged(r, VILLAGE_CELL_TABLE, src, get_cell, get_ids)
+            .map_err(format_err)?;
+        d.index.roads =
+            PagedMap::open_paged(r, ROAD_CELL_TABLE, src, get_cell, get_ids).map_err(format_err)?;
         if !r.is_empty() {
             return Err(PageError::Format(format!(
                 "{} trailing bytes in the dragons' meta page",

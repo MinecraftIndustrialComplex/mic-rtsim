@@ -48,6 +48,7 @@ impl World {
             return Err(Refusal::Nothing);
         }
         self.run_until(at);
+        self.release(i, at);
         let region = self.nodes[i].region;
         let result = self
             .markets
@@ -181,6 +182,7 @@ impl World {
                 _ => 1.0,
             };
             let price = (unit as f64 * parity).round() as Price;
+            self.release(b, at);
             let region = self.nodes[b].region;
             self.markets
                 .apply(region, at, |m, at| m.record_base_trade(good, price, at));

@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use rtsim_ecology::herds::{Herds, synth};
 use rtsim_kernel::clock::Tick;
-use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_travel::legs::LegIndex;
 use serde::{Deserialize, Serialize};
 
@@ -76,7 +76,7 @@ impl Paged {
     fn save(&mut self, h: &mut Herds, pressure: bool) {
         let c0 = sys::thread_cpu_ns();
         let mut b = SaveBatch::new();
-        let t = h.save_paged(&mut b);
+        let t = h.save_paged(&mut b, PageKey::new(0x4800, 0));
         let st = self
             .store
             .write()

@@ -367,6 +367,7 @@ impl World {
             .kind
             .culture()
             .map_or(f64::INFINITY, |c| self.mint_cost[c.index()]);
+        self.release(node, at);
         let region = self.nodes[node].region;
         let (goods, tun) = (&self.goods, &self.cfg.trade);
         self.markets.apply(region, at, |m, _| {
