@@ -172,6 +172,10 @@ pub struct WorksState {
     pub tributary: bool,
     /// Golems the census counts (MS-8: dragons fear them).
     pub golems: u32,
+    /// Bought works the bridge has not answered yet: a village buys its next work only after the
+    /// last one was answered (choice MSC13), so a village with no plot loses one work's price,
+    /// not its cap's, and an unvisited one waits on one command.
+    pub in_flight: u32,
 }
 
 fn get(v: &[(GoodId, Amount)], g: GoodId) -> Amount {
@@ -310,7 +314,8 @@ impl World {
 
     /// A village's type (its structure's [`style_of`]): which styled works it buys.
     pub fn set_work_style(&mut self, node: usize, style: u64, at: Tick) {
-        if !self.works_village(node) {
+        // Kept for a village even before a catalogue arrives (a later session may bring one).
+        if !self.is_village(node) {
             return;
         }
         let s = self.works.entry(node).or_default();
@@ -322,7 +327,7 @@ impl World {
 
     /// The golems a village's census counts (MS-8).
     pub fn set_golems(&mut self, node: usize, golems: u32) {
-        if !self.works_village(node) {
+        if !self.is_village(node) {
             return;
         }
         self.works.entry(node).or_default().golems = golems;
@@ -371,6 +376,13 @@ impl World {
             }
         }
         (spent.into_iter().collect(), tribute.into_iter().collect())
+    }
+
+    fn is_village(&self, i: usize) -> bool {
+        matches!(
+            self.nodes.get(i).map(|n| n.kind),
+            Some(NodeKind::Village(_))
+        )
     }
 
     /// Whether node `i` keeps works: a village with a treasury, and a catalogue to buy from.
@@ -431,7 +443,7 @@ impl World {
             return Next::Nothing;
         };
         let s = self.works.get(&i).cloned().unwrap_or_default();
-        if s.tributary {
+        if s.tributary || s.in_flight > 0 {
             return Next::Nothing;
         }
         let threat = TICKS_PER_DAY * self.cfg.works_threat_days;
@@ -598,6 +610,7 @@ impl World {
         let kind = d.key();
         s.bump(kind);
         s.nth += 1;
+        s.in_flight += 1;
         let nth = s.nth;
         s.next = Next::Unknown;
         let node = &self.nodes[i];
@@ -640,13 +653,16 @@ impl World {
         let Some((i, kind)) = self.works_pending.remove(&op) else {
             return;
         };
-        if placed {
-            return;
-        }
-        self.stats.works_refused += 1;
         if let Some(s) = self.works.get_mut(&i) {
-            s.mark_full(kind);
+            s.in_flight = s.in_flight.saturating_sub(1);
+            if !placed {
+                s.mark_full(kind);
+            }
         }
+        if !placed {
+            self.stats.works_refused += 1;
+        }
+        // The next work, now that this one is answered (MSC13).
         self.works_touch(i, at.max(self.now));
     }
 
