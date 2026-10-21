@@ -1,0 +1,1763 @@
+{
+ "base": "/home/greencheetah/mic-stress-worlds/swedishpanda-alvedon-metro/world",
+ "world_root": "/home/greencheetah/mic-stress-worlds/swedishpanda-alvedon-metro/world/WorldCreateModCity",
+ "total_bytes": 704700040,
+ "level": {
+  "top_keys": [
+   "fml",
+   "Data"
+  ],
+  "data_keys": [
+   "WanderingTraderSpawnChance",
+   "BorderCenterZ",
+   "Difficulty",
+   "BorderSizeLerpTime",
+   "raining",
+   "Time",
+   "GameType",
+   "ServerBrands",
+   "BorderCenterX",
+   "BorderDamagePerBlock",
+   "BorderWarningBlocks",
+   "WorldGenSettings",
+   "DragonFight",
+   "BorderSizeLerpTarget",
+   "Version",
+   "DayTime",
+   "initialized",
+   "WasModded",
+   "allowCommands",
+   "WanderingTraderSpawnDelay",
+   "CustomBossEvents",
+   "GameRules",
+   "SpawnY",
+   "rainTime",
+   "thunderTime",
+   "SpawnZ",
+   "hardcore",
+   "DifficultyLocked",
+   "SpawnX",
+   "clearWeatherTime",
+   "confirmedExperimentalSettings",
+   "thundering",
+   "SpawnAngle",
+   "version",
+   "BorderSafeZone",
+   "LastPlayed",
+   "BorderWarningTime",
+   "ScheduledEvents",
+   "forgeLifecycle",
+   "LevelName",
+   "BorderSize",
+   "DataVersion",
+   "DataPacks"
+  ],
+  "LevelName": "WorldPaperCity",
+  "DataVersion": 3120,
+  "version": 19133,
+  "WasModded": 1,
+  "GameType": 2,
+  "DayTime": 295352,
+  "Time": 83179291,
+  "LastPlayed": 1767139518388,
+  "Version": {
+   "Snapshot": 0,
+   "Series": "main",
+   "Id": 3120,
+   "Name": "1.19.2"
+  },
+  "ServerBrands": [
+   "Paper",
+   "forge"
+  ],
+  "DataPacks": {
+   "Enabled": [
+    "vanilla",
+    "file/bukkit",
+    "mod:forge",
+    "mod:flywheel",
+    "mod:create",
+    "mod:worldedit",
+    "mod:journeymap",
+    "mod:car",
+    "mod:saros_road_signs_mod",
+    "mod:automobility",
+    "mod:framedblocks",
+    "mod:railways",
+    "mod:mixinextras",
+    "mod:botarium",
+    "mod:create_new_age",
+    "mod:coloredbricks",
+    "mod:mcwbridges",
+    "mod:mcwwindows",
+    "mod:mcwpaintings",
+    "mod:mcwroofs",
+    "mod:mcwdoors",
+    "mod:mcwfurnitures",
+    "mod:mcwpaths",
+    "mod:mcwlights",
+    "mod:twigs",
+    "mod:simpleplanes",
+    "mod:mcwtrpdoors",
+    "mod:mcwfences",
+    "mod:jei",
+    "mod:kotlinforforge",
+    "mod:reeses_sodium_options",
+    "mod:rubidium",
+    "mod:extendedgears",
+    "mod:ferritecore",
+    "mod:createindustry",
+    "mod:rubidium_extra",
+    "mod:createdeco",
+    "mod:dragonlib",
+    "mod:createrailwaysnavigator",
+    "mod:architectury",
+    "mod:immersive_aircraft",
+    "mod:immersive_paintings",
+    "mod:trafficcraft",
+    "mod:interiors",
+    "mod:mcwstairs",
+    "mod:createtrackmap"
+   ],
+   "Disabled": [
+    "create_new_age:create_new_age_monkey_edition"
+   ]
+  },
+  "seed": -8599008448481300133,
+  "dimensions": [
+   "minecraft:overworld",
+   "minecraft:the_nether",
+   "minecraft:the_end"
+  ],
+  "fml_keys": [
+   "LoadingModList",
+   "Registries"
+  ],
+  "forge_mod_list": [
+   [
+    "botarium",
+    "1.9.2"
+   ],
+   [
+    "jei",
+    "11.8.1.1034"
+   ],
+   [
+    "mcwwindows",
+    "2.3.0"
+   ],
+   [
+    "immersive_aircraft",
+    "0.7.11+1.19.2"
+   ],
+   [
+    "rubidium",
+    "0.6.2c"
+   ],
+   [
+    "mcwpaintings",
+    "1.0.5"
+   ],
+   [
+    "journeymap",
+    "5.9.8"
+   ],
+   [
+    "mcwstairs",
+    "1.0.1"
+   ],
+   [
+    "mixinextras",
+    "0.3.5"
+   ],
+   [
+    "twigs",
+    "1.19.2-3.0.1"
+   ],
+   [
+    "simpleplanes",
+    "1.19.2-5.2.3"
+   ],
+   [
+    "mcwdoors",
+    "1.1.2"
+   ],
+   [
+    "railways",
+    "1.6.6+forge-mc1.19.2"
+   ],
+   [
+    "saros_road_signs_mod",
+    "3.7"
+   ],
+   [
+    "create_new_age",
+    "1.1.2"
+   ],
+   [
+    "forge",
+    "43.4.0"
+   ],
+   [
+    "mcwpaths",
+    "1.1.0"
+   ],
+   [
+    "minecraft",
+    "1.19.2"
+   ],
+   [
+    "mcwbridges",
+    "3.0.1"
+   ],
+   [
+    "mcwtrpdoors",
+    "1.1.4"
+   ],
+   [
+    "mcwfences",
+    "1.1.2"
+   ],
+   [
+    "reeses_sodium_options",
+    "1.0.7-mc1.19.2"
+   ],
+   [
+    "car",
+    "1.19.2-1.0.32"
+   ],
+   [
+    "kotlinforforge",
+    "3.12.0"
+   ],
+   [
+    "flywheel",
+    "0.6.11-22"
+   ],
+   [
+    "immersive_paintings",
+    "0.6.7+1.19.2"
+   ],
+   [
+    "framedblocks",
+    "6.8.6"
+   ],
+   [
+    "coloredbricks",
+    "1.19-5.2"
+   ],
+   [
+    "worldedit",
+    "7.2.12+6240-87f4ae1"
+   ],
+   [
+    "mcwroofs",
+    "2.3.1"
+   ],
+   [
+    "createrailwaysnavigator",
+    "1.19.2-beta-0.8.4"
+   ],
+   [
+    "create",
+    "0.5.1.i"
+   ],
+   [
+    "createdeco",
+    "1.3.3-1.19.2"
+   ],
+   [
+    "interiors",
+    "0.5.6"
+   ],
+   [
+    "extendedgears",
+    "2.1.1-1.19.2-0.5.1.f-forge"
+   ],
+   [
+    "automobility",
+    "0.4.2+1.19.2-forge"
+   ],
+   [
+    "ferritecore",
+    "5.0.3"
+   ],
+   [
+    "createindustry",
+    "0.9.3-1.19.2"
+   ],
+   [
+    "mcwfurnitures",
+    "3.3.0"
+   ],
+   [
+    "trafficcraft",
+    "1.19.2-1.1.3"
+   ],
+   [
+    "dragonlib",
+    "1.19.2-2.2.24"
+   ],
+   [
+    "architectury",
+    "6.5.85"
+   ],
+   [
+    "createtrackmap",
+    "1.4"
+   ],
+   [
+    "rubidium_extra",
+    "0.4.19+mc1.19.2-build.105"
+   ],
+   [
+    "mcwlights",
+    "1.1.0"
+   ]
+  ]
+ },
+ "tracks": {
+  "file_bytes": 1101152,
+  "DataVersion": 3120,
+  "trains": 57,
+  "carriages": 190,
+  "trains_with_schedule": 18,
+  "schedule_entries": 170,
+  "trains_moving_at_save": 3,
+  "trains_derailed": 1,
+  "carriages_with_passengers": 0,
+  "bogey_types": {
+   "create:small_bogey": 249,
+   "railways:large_platform_doubleaxle_bogey": 86,
+   "railways:invisible_bogey": 14,
+   "railways:doubleaxle_bogey": 16,
+   "railways:tripleaxle_bogey": 2
+  },
+  "graphs": 74,
+  "nodes": 5691,
+  "edges": 5851,
+  "stations": 150,
+  "signals": 1023,
+  "observers": 2,
+  "track_chord_length_blocks": 130723,
+  "edge_materials": {
+   "railways:phantom": 2323,
+   "create:andesite": 2499,
+   "railways:tieless": 1029
+  },
+  "curved_edges": 0,
+  "per_graph": [
+   {
+    "nodes": 4164,
+    "edges": 4365,
+    "stations": 101,
+    "signals": 804,
+    "observers": 2,
+    "chord_length_blocks": 90352
+   },
+   {
+    "nodes": 906,
+    "edges": 929,
+    "stations": 27,
+    "signals": 188,
+    "observers": 0,
+    "chord_length_blocks": 26343
+   },
+   {
+    "nodes": 223,
+    "edges": 222,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 6289
+   },
+   {
+    "nodes": 155,
+    "edges": 163,
+    "stations": 13,
+    "signals": 30,
+    "observers": 0,
+    "chord_length_blocks": 4782
+   },
+   {
+    "nodes": 41,
+    "edges": 40,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 497
+   },
+   {
+    "nodes": 30,
+    "edges": 31,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 717
+   },
+   {
+    "nodes": 30,
+    "edges": 30,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 276
+   },
+   {
+    "nodes": 6,
+    "edges": 5,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 148
+   },
+   {
+    "nodes": 6,
+    "edges": 5,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 76
+   },
+   {
+    "nodes": 6,
+    "edges": 5,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 89
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 1,
+    "observers": 0,
+    "chord_length_blocks": 72
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 92
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 92
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 92
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 92
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 92
+   },
+   {
+    "nodes": 4,
+    "edges": 3,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 68
+   },
+   {
+    "nodes": 3,
+    "edges": 2,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 50
+   },
+   {
+    "nodes": 3,
+    "edges": 2,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 46
+   },
+   {
+    "nodes": 3,
+    "edges": 2,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 46
+   },
+   {
+    "nodes": 3,
+    "edges": 2,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 14
+   },
+   {
+    "nodes": 3,
+    "edges": 2,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 46
+   },
+   {
+    "nodes": 2,
+    "edges": 1,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 2
+   },
+   {
+    "nodes": 2,
+    "edges": 1,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 2
+   },
+   {
+    "nodes": 2,
+    "edges": 1,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 2
+   }
+  ],
+  "signal_blocks": 5409,
+  "signal_edge_groups": null,
+  "dimension_palette": [
+   "minecraft:overworld"
+  ],
+  "other_keys": [
+   "Trains",
+   "DimensionPalette",
+   "RailGraphs",
+   "SignalBlocks"
+  ]
+ },
+ "data_files": [
+  [
+   "JMPlayerSettings.dat",
+   170
+  ],
+  [
+   "WorldUUID.dat",
+   111
+  ],
+  [
+   "capabilities.dat",
+   48
+  ],
+  [
+   "chunks.dat",
+   115
+  ],
+  [
+   "create_tracks.dat",
+   1101152
+  ],
+  [
+   "createrailwaysnavigator_global_settings.nbt",
+   3954
+  ],
+  [
+   "createrailwaysnavigator_train_data.nbt",
+   5842
+  ],
+  [
+   "crn_usersettings_dc75848d-9876-44ba-9d8b-639dc0c91deb.nbt",
+   438
+  ],
+  [
+   "idcounts.dat",
+   56
+  ],
+  [
+   "immersive_paintings.dat",
+   1795
+  ],
+  [
+   "map_0.dat",
+   2739
+  ],
+  [
+   "raids.dat",
+   90
+  ],
+  [
+   "realtimemod_mapvars.dat",
+   490
+  ],
+  [
+   "realtimemod_worldvars.dat",
+   314
+  ],
+  [
+   "refurbished_furniture_delivery_service.dat",
+   62
+  ],
+  [
+   "scoreboard.dat",
+   250
+  ]
+ ],
+ "playerdata_files": 3,
+ "datapacks": [
+  "bukkit"
+ ],
+ "top_level_entries": [
+  "DIM-1",
+  "DIM1",
+  "advancements",
+  "data",
+  "datapacks",
+  "entities",
+  "level.dat",
+  "level.dat_old",
+  "paper-world.yml",
+  "playerdata",
+  "poi",
+  "region",
+  "serverconfig",
+  "session.lock",
+  "stats",
+  "uid.dat"
+ ],
+ "dimensions": {
+  "minecraft:overworld": {
+   "region_files": 105,
+   "region_bytes": 684855296,
+   "chunks": 80469,
+   "errors": 0,
+   "err_sample": null,
+   "inhabited_chunks_gt_1200": 13988,
+   "inhabited_ticks": 4196364017,
+   "dataversions": {
+    "3120": 79994,
+    "3117": 475
+   },
+   "block_entities_total": 243611,
+   "block_entities_by_type": {
+    "framedblocks:framed_tile": 132330,
+    "create:fake_track": 23893,
+    "framedblocks:framed_double_slab": 19334,
+    "minecraft:bed": 16276,
+    "create:sliding_door": 5327,
+    "minecraft:sculk_sensor": 5215,
+    "mcwfurnitures:furniture_storage": 3581,
+    "create:fluid_pipe": 3215,
+    "create:track": 3043,
+    "minecraft:chest": 2672,
+    "create:copycat": 2481,
+    "minecraft:furnace": 2032,
+    "createrailwaysnavigator:advanced_display_block_entity": 1959,
+    "car:blast_furnace": 1789,
+    "minecraft:mob_spawner": 1709,
+    "railways:casing_collision": 1536,
+    "minecraft:daylight_detector": 1530,
+    "minecraft:banner": 1360,
+    "minecraft:sculk_catalyst": 1272,
+    "create:track_signal": 1155,
+    "framedblocks:framed_inverse_double_slope_slab": 1046,
+    "createindustry:createindustry_pipe": 1042,
+    "trafficcraft:traffic_sign_block_entity": 897,
+    "create:schematic_table": 800,
+    "minecraft:hopper": 719,
+    "create:nixie_tube": 624,
+    "create:fluid_tank": 607,
+    "minecraft:sculk_shrieker": 501,
+    "framedblocks:framed_sign": 495,
+    "create:belt": 469,
+    "car:tank": 421,
+    "create:simple_kinetic": 390,
+    "framedblocks:framed_double_panel": 376,
+    "minecraft:sign": 328,
+    "create:encased_shaft": 303,
+    "trafficcraft:colored_block_entity": 282,
+    "createindustry:lockable_pipe": 212,
+    "create:display_link": 190,
+    "minecraft:beehive": 174,
+    "minecraft:barrel": 163,
+    "trafficcraft:street_lamp_block_entity": 163,
+    "create:track_station": 157,
+    "trafficcraft:traffic_light_block_entity": 114,
+    "framedblocks:framed_double_slope": 89,
+    "framedblocks:framed_double_stairs": 76,
+    "framedblocks:framed_stacked_slope_slab": 66,
+    "framedblocks:framed_divided_panel_horizontal": 64,
+    "create:mechanical_roller": 64,
+    "framedblocks:framed_elevated_double_slope_slab": 62,
+    "framedblocks:framed_vertical_double_stairs": 61,
+    "create:redstone_link": 52,
+    "createrailwaysnavigator:train_station_clock_block_entity": 50,
+    "railways:bogey": 48,
+    "create:bogey": 48,
+    "railways:diesel_smokestack": 44,
+    "framedblocks:framed_flat_ext_double_slope_panel_corner": 42,
+    "create:flap_display": 40,
+    "create:gearbox": 38,
+    "create:mechanical_pump": 37,
+    "create:blaze_heater": 34,
+    "create:glass_fluid_pipe": 31,
+    "DUMMY": 26,
+    "minecraft:comparator": 23,
+    "create:clutch": 21,
+    "railways:semaphore": 20,
+    "railways:track_buffer_wood_variant": 20,
+    "railways:fuel_tank": 20,
+    "createdeco:dyed_placard": 16,
+    "create:motor": 15,
+    "create:creative_crate": 15,
+    "railways:generic_crossing": 13,
+    "minecraft:lectern": 13,
+    "create:item_drain": 12,
+    "createindustry:createindustry_sliding_door": 12,
+    "createindustry:steel_fluid_tank": 12,
+    "framedblocks:framed_chest": 11,
+    "create:chute": 11,
+    "trafficcraft:street_sign_block_entity": 11,
+    "create:pulse_repeater": 10,
+    "create:toolbox": 10,
+    "create:encased_cogwheel": 9,
+    "create:fluid_valve": 9,
+    "create:valve_handle": 9,
+    "minecraft:skull": 9,
+    "trafficcraft:traffic_light_controller_block_entity": 8,
+    "create:crushing_wheel": 8,
+    "create:deployer": 6,
+    "create:smart_chute": 6,
+    "create_new_age:generator_coil": 6,
+    "car:gas_station": 6,
+    "minecraft:bell": 6,
+    "minecraft:blast_furnace": 5,
+    "automobility:automobile_assembler": 5,
+    "createindustry:fluid_valve": 5,
+    "railways:invisible_bogey": 4,
+    "framedblocks:framed_double_prism": 4,
+    "create:rotation_speed_controller": 4,
+    "create:basin": 4,
+    "create:funnel": 4,
+    "create:stockpile_switch": 4,
+    "create:brass_tunnel": 4,
+    "create:crushing_wheel_controller": 4,
+    "create:contraption_controls": 4,
+    "car:fluid_extractor": 3,
+    "car:car_workshop": 3,
+    "create:powered_shaft": 3,
+    "create:steam_engine": 3,
+    "create_new_age:electrical_connector": 3,
+    "create:track_observer": 2,
+    "railways:smokestack": 2,
+    "framedblocks:framed_double_threeway_corner": 2,
+    "trafficcraft:town_sign_block_entity": 2,
+    "minecraft:dispenser": 2,
+    "minecraft:dropper": 2,
+    "create:stressometer": 2,
+    "create:speedometer": 2,
+    "create:gearshift": 2,
+    "createindustry:energy_meter": 2,
+    "createindustry:smart_fluid_pipe": 2,
+    "framedblocks:framed_double_corner": 2
+   },
+   "block_entities_by_namespace": {
+    "framedblocks": 154067,
+    "create": 43183,
+    "minecraft": 34017,
+    "mcwfurnitures": 3581,
+    "car": 2222,
+    "createrailwaysnavigator": 2009,
+    "railways": 1707,
+    "trafficcraft": 1477,
+    "createindustry": 1289,
+    "DUMMY": 26,
+    "createdeco": 16,
+    "create_new_age": 12,
+    "automobility": 5
+   },
+   "blocks_by_namespace": {
+    "minecraft": 7885679597,
+    "create": 13950457,
+    "twigs": 8174998,
+    "createindustry": 1679959,
+    "create_new_age": 528653,
+    "framedblocks": 154067,
+    "createdeco": 53519,
+    "trafficcraft": 46979,
+    "car": 38365,
+    "mcwroofs": 24778,
+    "railways": 21886,
+    "mcwfurnitures": 15606,
+    "mcwlights": 11419,
+    "mcwpaths": 9977,
+    "mcwdoors": 8616,
+    "mcwwindows": 7560,
+    "mcwstairs": 5000,
+    "mcwbridges": 2480,
+    "mcwtrpdoors": 2375,
+    "engineersdecor": 2071,
+    "createrailwaysnavigator": 2009,
+    "interiors": 1409,
+    "saros_road_signs_mod": 1237,
+    "coloredbricks": 830,
+    "mcwfences": 588,
+    "automobility": 96,
+    "immersive_weathering": 37,
+    "refurbished_furniture": 8
+   },
+   "blocks_top_non_vanilla": {
+    "twigs:rhyolite": 7697569,
+    "create:limestone": 2399406,
+    "create:crimsite": 1707970,
+    "create:deepslate_zinc_ore": 1585004,
+    "create:scoria": 1561421,
+    "create:asurine": 1524274,
+    "create:veridium": 1453834,
+    "create:ochrum": 1412424,
+    "create:zinc_ore": 1185241,
+    "create:cut_tuff": 906835,
+    "create_new_age:magnetite_block": 271962,
+    "create_new_age:thorium_ore": 256607,
+    "createindustry:fossilstone": 240352,
+    "createindustry:bauxite": 238891,
+    "twigs:schist": 235257,
+    "createindustry:lignite": 231196,
+    "createindustry:fireclay": 173068,
+    "createindustry:crude_oil_fluid": 132028,
+    "createindustry:galena": 97813,
+    "createindustry:concrete": 85763,
+    "createindustry:deepslate_lead_ore": 82182,
+    "createindustry:deepslate_lithium_ore": 81506,
+    "createindustry:crude_oil": 75505,
+    "twigs:smooth_stone_bricks": 75032,
+    "createindustry:deepslate_nickel_ore": 65689,
+    "createindustry:lead_ore": 64350,
+    "framedblocks:framed_panel": 63149,
+    "createindustry:white_concrete": 56566,
+    "twigs:polished_tuff_bricks": 47320,
+    "twigs:silt_bricks": 31908,
+    "twigs:petrified_lichen": 26306,
+    "createdeco:worn_bricks": 25260,
+    "framedblocks:framed_wall_board": 24662,
+    "create:fake_track": 23893,
+    "create:track": 23163,
+    "trafficcraft:bitumen_ore": 21779,
+    "create:cut_limestone_bricks": 21243,
+    "framedblocks:framed_double_slab": 19334,
+    "createindustry:nickel_ore": 15356,
+    "createindustry:rebar_concrete": 14398,
+    "create:andesite_bars": 14273,
+    "car:line_middle": 13685,
+    "trafficcraft:asphalt": 12916,
+    "framedblocks:framed_slab": 12314,
+    "car:line_side_long": 11641,
+    "create:cut_dripstone_brick_slab": 11180,
+    "railways:track_phantom": 10884,
+    "create:polished_cut_tuff": 10426,
+    "create:framed_glass_door": 9841,
+    "mcwroofs:gray_roof_block": 9667,
+    "create:deepslate_pillar": 9619,
+    "twigs:silt_brick_slab": 9346,
+    "twigs:azalea_flowers": 8527,
+    "create:layered_limestone": 8476,
+    "create:industrial_iron_block": 7682,
+    "framedblocks:framed_slab_edge": 6736,
+    "createdeco:dean_bricks": 6042,
+    "mcwdoors:dark_oak_classic_door": 5854,
+    "twigs:gravel_bricks": 5816,
+    "mcwlights:sea_lantern_slab": 5768,
+    "create:small_deepslate_bricks": 5725,
+    "railways:track_tieless": 5592,
+    "framedblocks:framed_iron_trapdoor": 5509,
+    "create:oak_window": 4673,
+    "framedblocks:framed_vertical_stairs": 4541,
+    "twigs:cobblestone_bricks": 4327,
+    "create:polished_cut_deepslate_wall": 4199,
+    "createindustry:yellow_concrete": 4133,
+    "mcwfurnitures:stripped_mangrove_striped_chair": 3972,
+    "createdeco:cast_iron_sheet_slab": 3634,
+    "create:metal_girder": 3570,
+    "twigs:silt_brick_wall": 3499,
+    "createdeco:cast_iron_sheet_metal": 3491,
+    "mcwpaths:granite_running_bond": 3460,
+    "mcwpaths:brick_running_bond": 3423,
+    "createindustry:gray_concrete": 3419,
+    "twigs:polished_schist_slab": 3303,
+    "create:brass_bars": 3271,
+    "create:fluid_pipe": 3215,
+    "createdeco:pearl_bricks": 3214,
+    "car:arrow_zebras": 3072,
+    "trafficcraft:asphalt_slope": 2954,
+    "create:cut_scorchia_slab": 2926,
+    "trafficcraft:concrete": 2924,
+    "twigs:pebble": 2833,
+    "mcwroofs:gray_lower_roof": 2730,
+    "mcwroofs:gray_upper_lower_roof": 2640,
+    "mcwfurnitures:stripped_mangrove_coffee_table": 2624,
+    "mcwlights:redstone_lamp_slab": 2595,
+    "trafficcraft:traffic_sign_post": 2579,
+    "mcwwindows:light_blue_mosaic_glass_pane": 2558,
+    "createindustry:rebar_concrete_stairs": 2493,
+    "create:copycat_panel": 2481,
+    "twigs:mossy_cobblestone_bricks": 2410,
+    "create:small_deepslate_brick_slab": 2392,
+    "framedblocks:framed_trapdoor": 2384,
+    "framedblocks:framed_stairs": 2383,
+    "create:polished_cut_tuff_slab": 2292,
+    "create:cut_granite": 2289,
+    "twigs:tangerine_seashell": 2283,
+    "twigs:opaline_seashell": 2197,
+    "engineersdecor:clinker_brick_stained_block": 2068,
+    "mcwwindows:blackstone_window2": 1900,
+    "twigs:twig": 1839,
+    "create:small_diorite_bricks": 1835,
+    "framedblocks:framed_wall": 1824,
+    "createindustry:concrete_slab": 1820,
+    "car:line_long": 1796,
+    "car:blastfurnace": 1789,
+    "twigs:lime_packed_silt": 1712,
+    "twigs:roseate_seashell": 1677,
+    "mcwstairs:andesite_balcony": 1673,
+    "twigs:light_blue_packed_silt": 1652,
+    "create:framed_glass": 1645,
+    "car:arrow_no_parking": 1623,
+    "mcwbridges:iron_bridge": 1610,
+    "twigs:cyan_packed_silt": 1602,
+    "railways:casing_collision": 1536,
+    "create:cut_scorchia_bricks": 1518,
+    "createindustry:hardened_planks": 1513,
+    "framedblocks:framed_slope": 1493,
+    "mcwtrpdoors:dark_oak_barn_trapdoor": 1492,
+    "createindustry:gray_concrete_slab": 1458,
+    "createdeco:zinc_sheet_metal": 1428,
+    "twigs:paper_lantern": 1427,
+    "framedblocks:framed_corner_pillar": 1420,
+    "create:black_seat": 1383,
+    "create:polished_cut_diorite": 1360,
+    "framedblocks:framed_slope_slab": 1340,
+    "createdeco:cast_iron_bars": 1329,
+    "createdeco:iron_sheet_metal": 1322,
+    "mcwpaths:stone_running_bond": 1304,
+    "createdeco:pearl_short_bricks": 1300,
+    "create:cut_tuff_wall": 1283,
+    "mcwfurnitures:stripped_mangrove_bookshelf": 1248,
+    "mcwfurnitures:stripped_mangrove_double_drawer_counter": 1248,
+    "createindustry:steel_block": 1186,
+    "framedblocks:framed_elevated_slope_slab": 1184,
+    "createindustry:concrete_stairs": 1176,
+    "create:track_signal": 1155,
+    "createdeco:blue_bricks": 1114,
+    "mcwroofs:gray_roof_slab": 1107,
+    "mcwwindows:light_blue_mosaic_glass": 1106,
+    "create:cut_deepslate_bricks": 1101,
+    "trafficcraft:concrete_slope": 1085,
+    "mcwstairs:andesite_railing": 1073,
+    "mcwfurnitures:birch_chair": 1066,
+    "framedblocks:framed_inv_double_slope_slab": 1046,
+    "createindustry:cast_iron_pipe": 1037,
+    "railways:white_flat_riveted_locometal": 1026
+   },
+   "blocks_distinct_ids": 1451,
+   "entities_by_type": {
+    "minecraft:falling_block": 461,
+    "minecraft:painting": 413,
+    "minecraft:chest_minecart": 409,
+    "immersive_paintings:graffiti": 288,
+    "automobility:automobile": 153,
+    "car:car": 118,
+    "minecraft:sheep": 79,
+    "minecraft:pig": 63,
+    "create:super_glue": 54,
+    "minecraft:armor_stand": 51,
+    "minecraft:rabbit": 35,
+    "immersive_paintings:painting": 30,
+    "minecraft:chicken": 30,
+    "minecraft:cow": 30,
+    "minecraft:wolf": 16,
+    "minecraft:bat": 13,
+    "minecraft:horse": 8,
+    "minecraft:villager": 7,
+    "minecraft:cat": 5,
+    "minecraft:iron_golem": 3,
+    "minecraft:donkey": 3,
+    "minecraft:drowned": 3,
+    "minecraft:fox": 2,
+    "immersive_paintings:glow_painting": 2,
+    "minecraft:turtle": 2,
+    "minecraft:item": 1
+   },
+   "entities_by_namespace": {
+    "minecraft": 1634,
+    "immersive_paintings": 320,
+    "automobility": 153,
+    "car": 118,
+    "create": 54
+   },
+   "contraption_entities": 0,
+   "contraption_blocks_total": 0,
+   "contraption_biggest": [],
+   "regions": {
+    "-1,-1": {
+     "chunks": 1024,
+     "be": 62818,
+     "create_be": 12781,
+     "inhabited_chunks": 1024,
+     "bytes": 10276864
+    },
+    "-1,-2": {
+     "chunks": 1024,
+     "be": 10372,
+     "create_be": 5031,
+     "inhabited_chunks": 928,
+     "bytes": 9838592
+    },
+    "-1,-3": {
+     "chunks": 1024,
+     "be": 109,
+     "create_be": 0,
+     "inhabited_chunks": 204,
+     "bytes": 9195520
+    },
+    "-1,-4": {
+     "chunks": 1024,
+     "be": 69,
+     "create_be": 0,
+     "inhabited_chunks": 79,
+     "bytes": 8916992
+    },
+    "-1,-5": {
+     "chunks": 1024,
+     "be": 65,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 7995392
+    },
+    "-1,-6": {
+     "chunks": 120,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 499712
+    },
+    "-1,0": {
+     "chunks": 1024,
+     "be": 25827,
+     "create_be": 6712,
+     "inhabited_chunks": 956,
+     "bytes": 9461760
+    },
+    "-1,1": {
+     "chunks": 1024,
+     "be": 7348,
+     "create_be": 1233,
+     "inhabited_chunks": 602,
+     "bytes": 8392704
+    },
+    "-1,2": {
+     "chunks": 1024,
+     "be": 56,
+     "create_be": 0,
+     "inhabited_chunks": 257,
+     "bytes": 8740864
+    },
+    "-1,3": {
+     "chunks": 1024,
+     "be": 88,
+     "create_be": 0,
+     "inhabited_chunks": 31,
+     "bytes": 9465856
+    },
+    "-1,4": {
+     "chunks": 1024,
+     "be": 432,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 9342976
+    },
+    "-1,5": {
+     "chunks": 436,
+     "be": 6,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2232320
+    },
+    "-2,-1": {
+     "chunks": 1024,
+     "be": 29884,
+     "create_be": 5870,
+     "inhabited_chunks": 1003,
+     "bytes": 9494528
+    },
+    "-2,-2": {
+     "chunks": 1024,
+     "be": 13339,
+     "create_be": 1897,
+     "inhabited_chunks": 945,
+     "bytes": 9867264
+    },
+    "-2,-3": {
+     "chunks": 1024,
+     "be": 262,
+     "create_be": 215,
+     "inhabited_chunks": 374,
+     "bytes": 9551872
+    },
+    "-2,-4": {
+     "chunks": 1024,
+     "be": 56,
+     "create_be": 0,
+     "inhabited_chunks": 4,
+     "bytes": 8691712
+    },
+    "-2,-5": {
+     "chunks": 979,
+     "be": 28,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 6619136
+    },
+    "-2,-6": {
+     "chunks": 94,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 393216
+    },
+    "-2,0": {
+     "chunks": 1024,
+     "be": 45733,
+     "create_be": 8809,
+     "inhabited_chunks": 888,
+     "bytes": 9416704
+    },
+    "-2,1": {
+     "chunks": 1024,
+     "be": 11775,
+     "create_be": 3478,
+     "inhabited_chunks": 753,
+     "bytes": 8450048
+    },
+    "-2,10": {
+     "chunks": 0,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 0
+    },
+    "-2,11": {
+     "chunks": 0,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 0
+    },
+    "-2,2": {
+     "chunks": 1024,
+     "be": 47,
+     "create_be": 0,
+     "inhabited_chunks": 231,
+     "bytes": 8953856
+    },
+    "-2,3": {
+     "chunks": 1024,
+     "be": 53,
+     "create_be": 0,
+     "inhabited_chunks": 44,
+     "bytes": 9752576
+    },
+    "-2,4": {
+     "chunks": 1024,
+     "be": 78,
+     "create_be": 0,
+     "inhabited_chunks": 22,
+     "bytes": 9199616
+    },
+    "-2,5": {
+     "chunks": 543,
+     "be": 22,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3584000
+    },
+    "-2,6": {
+     "chunks": 0,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 0
+    },
+    "-2,7": {
+     "chunks": 0,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 0
+    },
+    "-2,8": {
+     "chunks": 0,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 0
+    },
+    "-2,9": {
+     "chunks": 0,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 0
+    },
+    "-3,-1": {
+     "chunks": 1024,
+     "be": 538,
+     "create_be": 19,
+     "inhabited_chunks": 431,
+     "bytes": 11337728
+    },
+    "-3,-2": {
+     "chunks": 1024,
+     "be": 20067,
+     "create_be": 637,
+     "inhabited_chunks": 644,
+     "bytes": 11677696
+    },
+    "-3,-3": {
+     "chunks": 1024,
+     "be": 46,
+     "create_be": 0,
+     "inhabited_chunks": 97,
+     "bytes": 9428992
+    },
+    "-3,-4": {
+     "chunks": 823,
+     "be": 33,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 5824512
+    },
+    "-3,-5": {
+     "chunks": 75,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 315392
+    },
+    "-3,0": {
+     "chunks": 1024,
+     "be": 1171,
+     "create_be": 0,
+     "inhabited_chunks": 339,
+     "bytes": 9805824
+    },
+    "-3,1": {
+     "chunks": 1024,
+     "be": 105,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 8560640
+    },
+    "-3,2": {
+     "chunks": 1024,
+     "be": 75,
+     "create_be": 0,
+     "inhabited_chunks": 15,
+     "bytes": 9494528
+    },
+    "-3,3": {
+     "chunks": 1024,
+     "be": 59,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 9781248
+    },
+    "-3,4": {
+     "chunks": 980,
+     "be": 30,
+     "create_be": 0,
+     "inhabited_chunks": 8,
+     "bytes": 7196672
+    },
+    "-3,5": {
+     "chunks": 480,
+     "be": 13,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2748416
+    },
+    "-4,-1": {
+     "chunks": 1024,
+     "be": 1023,
+     "create_be": 0,
+     "inhabited_chunks": 61,
+     "bytes": 9854976
+    },
+    "-4,-2": {
+     "chunks": 1024,
+     "be": 667,
+     "create_be": 0,
+     "inhabited_chunks": 38,
+     "bytes": 10678272
+    },
+    "-4,-3": {
+     "chunks": 1024,
+     "be": 148,
+     "create_be": 0,
+     "inhabited_chunks": 2,
+     "bytes": 9629696
+    },
+    "-4,-4": {
+     "chunks": 462,
+     "be": 16,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2707456
+    },
+    "-4,0": {
+     "chunks": 1024,
+     "be": 325,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 8757248
+    },
+    "-4,1": {
+     "chunks": 1024,
+     "be": 55,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 9199616
+    },
+    "-4,2": {
+     "chunks": 1024,
+     "be": 120,
+     "create_be": 0,
+     "inhabited_chunks": 1,
+     "bytes": 9351168
+    },
+    "-4,3": {
+     "chunks": 998,
+     "be": 153,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 7532544
+    },
+    "-4,4": {
+     "chunks": 164,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 700416
+    },
+    "-5,-1": {
+     "chunks": 1024,
+     "be": 257,
+     "create_be": 0,
+     "inhabited_chunks": 14,
+     "bytes": 8708096
+    },
+    "-5,-2": {
+     "chunks": 1024,
+     "be": 530,
+     "create_be": 0,
+     "inhabited_chunks": 17,
+     "bytes": 9588736
+    },
+    "-5,-3": {
+     "chunks": 1024,
+     "be": 81,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 8589312
+    },
+    "-5,-4": {
+     "chunks": 270,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1118208
+    },
+    "-5,0": {
+     "chunks": 1024,
+     "be": 63,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 7970816
+    },
+    "-5,1": {
+     "chunks": 876,
+     "be": 49,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 5992448
+    },
+    "-5,2": {
+     "chunks": 433,
+     "be": 3,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2179072
+    },
+    "-5,3": {
+     "chunks": 171,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 708608
+    },
+    "-6,-1": {
+     "chunks": 492,
+     "be": 12,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2609152
+    },
+    "-6,-2": {
+     "chunks": 512,
+     "be": 4,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2945024
+    },
+    "-6,-3": {
+     "chunks": 364,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1675264
+    },
+    "-6,-4": {
+     "chunks": 12,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 57344
+    },
+    "-6,0": {
+     "chunks": 180,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 749568
+    },
+    "-6,1": {
+     "chunks": 3,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 20480
+    },
+    "0,-1": {
+     "chunks": 1024,
+     "be": 4475,
+     "create_be": 1283,
+     "inhabited_chunks": 976,
+     "bytes": 10309632
+    },
+    "0,-2": {
+     "chunks": 1024,
+     "be": 756,
+     "create_be": 71,
+     "inhabited_chunks": 674,
+     "bytes": 10723328
+    },
+    "0,-3": {
+     "chunks": 1024,
+     "be": 91,
+     "create_be": 0,
+     "inhabited_chunks": 256,
+     "bytes": 9007104
+    },
+    "0,-4": {
+     "chunks": 1010,
+     "be": 50,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 8282112
+    },
+    "0,-5": {
+     "chunks": 680,
+     "be": 24,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4055040
+    },
+    "0,-6": {
+     "chunks": 7,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 36864
+    },
+    "0,0": {
+     "chunks": 1024,
+     "be": 375,
+     "create_be": 180,
+     "inhabited_chunks": 593,
+     "bytes": 10264576
+    },
+    "0,1": {
+     "chunks": 1024,
+     "be": 52,
+     "create_be": 0,
+     "inhabited_chunks": 71,
+     "bytes": 8871936
+    },
+    "0,2": {
+     "chunks": 1024,
+     "be": 67,
+     "create_be": 0,
+     "inhabited_chunks": 271,
+     "bytes": 8728576
+    },
+    "0,3": {
+     "chunks": 1024,
+     "be": 111,
+     "create_be": 0,
+     "inhabited_chunks": 36,
+     "bytes": 8777728
+    },
+    "0,4": {
+     "chunks": 818,
+     "be": 83,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4882432
+    },
+    "1,-1": {
+     "chunks": 1024,
+     "be": 529,
+     "create_be": 0,
+     "inhabited_chunks": 181,
+     "bytes": 10895360
+    },
+    "1,-2": {
+     "chunks": 1024,
+     "be": 221,
+     "create_be": 0,
+     "inhabited_chunks": 28,
+     "bytes": 10113024
+    },
+    "1,-3": {
+     "chunks": 1024,
+     "be": 101,
+     "create_be": 0,
+     "inhabited_chunks": 41,
+     "bytes": 10129408
+    },
+    "1,-4": {
+     "chunks": 800,
+     "be": 38,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 5656576
+    },
+    "1,0": {
+     "chunks": 1024,
+     "be": 602,
+     "create_be": 0,
+     "inhabited_chunks": 383,
+     "bytes": 10657792
+    },
+    "1,1": {
+     "chunks": 1024,
+     "be": 58,
+     "create_be": 0,
+     "inhabited_chunks": 115,
+     "bytes": 8785920
+    },
+    "1,2": {
+     "chunks": 1024,
+     "be": 63,
+     "create_be": 0,
+     "inhabited_chunks": 40,
+     "bytes": 8802304
+    },
+    "1,3": {
+     "chunks": 1024,
+     "be": 63,
+     "create_be": 0,
+     "inhabited_chunks": 65,
+     "bytes": 8937472
+    },
+    "1,4": {
+     "chunks": 461,
+     "be": 5,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2519040
+    },
+    "2,-1": {
+     "chunks": 1024,
+     "be": 502,
+     "create_be": 0,
+     "inhabited_chunks": 69,
+     "bytes": 9433088
+    },
+    "2,-2": {
+     "chunks": 1024,
+     "be": 96,
+     "create_be": 0,
+     "inhabited_chunks": 3,
+     "bytes": 10129408
+    },
+    "2,-3": {
+     "chunks": 1024,
+     "be": 68,
+     "create_be": 0,
+     "inhabited_chunks": 32,
+     "bytes": 8880128
+    },
+    "2,-4": {
+     "chunks": 679,
+     "be": 13,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4628480
+    },
+    "2,0": {
+     "chunks": 1024,
+     "be": 487,
+     "create_be": 0,
+     "inhabited_chunks": 83,
+     "bytes": 10309632
+    },
+    "2,1": {
+     "chunks": 1024,
+     "be": 51,
+     "create_be": 0,
+     "inhabited_chunks": 59,
+     "bytes": 8953856
+    },
+    "2,2": {
+     "chunks": 1024,
+     "be": 77,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 9031680
+    },
+    "2,3": {
+     "chunks": 851,
+     "be": 45,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 5947392
+    },
+    "2,4": {
+     "chunks": 27,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 122880
+    },
+    "3,-1": {
+     "chunks": 1013,
+     "be": 44,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 8032256
+    },
+    "3,-2": {
+     "chunks": 930,
+     "be": 46,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 7684096
+    },
+    "3,-3": {
+     "chunks": 928,
+     "be": 68,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 6651904
+    },
+    "3,-4": {
+     "chunks": 471,
+     "be": 12,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2547712
+    },
+    "3,0": {
+     "chunks": 1024,
+     "be": 50,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 8740864
+    },
+    "3,1": {
+     "chunks": 1024,
+     "be": 58,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 9162752
+    },
+    "3,2": {
+     "chunks": 778,
+     "be": 47,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 5062656
+    },
+    "3,3": {
+     "chunks": 321,
+     "be": 1,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1630208
+    },
+    "4,-1": {
+     "chunks": 443,
+     "be": 19,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2543616
+    },
+    "4,0": {
+     "chunks": 704,
+     "be": 23,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4825088
+    },
+    "4,1": {
+     "chunks": 616,
+     "be": 30,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3964928
+    },
+    "4,2": {
+     "chunks": 73,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 307200
+    }
+   }
+  }
+ },
+ "elapsed_s": 44.2
+}
