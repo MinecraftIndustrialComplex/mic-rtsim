@@ -70,8 +70,11 @@ fn bought(w: &World, i: usize, group: WorkGroup) -> u32 {
 fn rich(w: &World) -> usize {
     (0..w.nodes.len())
         .find(|&i| {
-            w.works_of(i).is_some_and(|s| s.next == Next::Nothing && !s.tributary)
-                && w.works_purse(i, w.now()).iter().any(|&(_, a)| a >= 10 * MILLI)
+            w.works_of(i)
+                .is_some_and(|s| s.next == Next::Nothing && !s.tributary)
+                && w.works_purse(i, w.now())
+                    .iter()
+                    .any(|&(_, a)| a >= 10 * MILLI)
         })
         .expect("a village has bought out the catalogue by now")
 }
@@ -122,7 +125,12 @@ fn a_village_above_its_ceiling_buys_works_of_its_own_culture() {
             placed += 1;
             let i = w.node_of_key(p.village).expect("a known village");
             let d = &w.works_catalog[def_of_template(&w, &p.template)];
-            assert_eq!(Some(d.culture), culture(&w, i), "{} at node {i}", p.template);
+            assert_eq!(
+                Some(d.culture),
+                culture(&w, i),
+                "{} at node {i}",
+                p.template
+            );
             assert_eq!(p.radius, w.cfg.works_radius);
             assert!(p.rotation < 4);
         }
@@ -147,7 +155,11 @@ fn a_village_above_its_ceiling_buys_works_of_its_own_culture() {
     }
     // Every works event bought something: a purse that cannot pay books no event.
     assert_eq!(w.stats.works_events, w.stats.works);
-    assert_eq!(bought(&w, 0, WorkGroup::Golem), 0, "no golems without a threat");
+    assert_eq!(
+        bought(&w, 0, WorkGroup::Golem),
+        0,
+        "no golems without a threat"
+    );
     w.check_conserved(w.now()).unwrap();
 }
 
@@ -178,7 +190,10 @@ fn a_raid_buys_golems_first() {
         .filter(|c| matches!(c, Command::SpawnWork(s) if s.village == key && s.body == "minecraft:iron_golem"))
         .count() as u32;
     let cap = w.nodes[i].local.pop / 5;
-    assert!(spawned > 0 && spawned <= cap, "{spawned} golems for a cap of {cap}");
+    assert!(
+        spawned > 0 && spawned <= cap,
+        "{spawned} golems for a cap of {cap}"
+    );
     assert_eq!(bought(&w, i, WorkGroup::Golem), spawned);
     w.check_conserved(w.now()).unwrap();
 }
@@ -289,7 +304,10 @@ fn works_are_deterministic_and_survive_a_reload() {
             let i = rich(&a);
             a.village_raided(i, true, a.now());
             b.village_raided(i, true, b.now());
-            assert_eq!(a.pay_tribute(i, 250, a.now()), b.pay_tribute(i, 250, b.now()));
+            assert_eq!(
+                a.pay_tribute(i, 250, a.now()),
+                b.pay_tribute(i, 250, b.now())
+            );
         }
         if day == 130 {
             let i = rich(&a);
@@ -377,8 +395,7 @@ fn a_granted_purse_buys_at_once() {
     let _ = w.take_commands();
     let i = (0..w.nodes.len())
         .find(|&i| {
-            culture(&w, i) == Some(Culture::Human)
-                && w.works_of(i).is_some_and(|s| s.nth == 0)
+            culture(&w, i) == Some(Culture::Human) && w.works_of(i).is_some_and(|s| s.nth == 0)
         })
         .expect("a human village that bought nothing yet");
     let key = w.nodes[i].key;

@@ -136,7 +136,11 @@ pub enum Next {
     /// Nothing to buy: every kind capped or full, or the purse is the dragon's (tribute).
     Nothing,
     /// Catalogue index, variant, price in home-coin thousandths.
-    Work { def: u32, variant: u16, price: Amount },
+    Work {
+        def: u32,
+        variant: u16,
+        price: Amount,
+    },
 }
 
 /// A village's works: its purse's outflows, its counters and its booking (SINK.md §7: a purse
@@ -373,7 +377,10 @@ impl World {
     pub(crate) fn works_village(&self, i: usize) -> bool {
         self.cfg.works
             && !self.works_catalog.is_empty()
-            && matches!(self.nodes.get(i).map(|n| n.kind), Some(NodeKind::Village(_)))
+            && matches!(
+                self.nodes.get(i).map(|n| n.kind),
+                Some(NodeKind::Village(_))
+            )
     }
 
     /// Whether a market event at `i` must hand its currency lines to [`World::works_rebook`]:
@@ -407,7 +414,8 @@ impl World {
                 milli += i128::from(p) * i128::from(n.max(0)) / i128::from(PRICE_ONE / MILLI);
             } else {
                 // A good the market has no anchor for is material like any other item.
-                labour_milli_wd += i128::from(n.max(0)) * i128::from(self.cfg.works_material_wd_milli);
+                labour_milli_wd +=
+                    i128::from(n.max(0)) * i128::from(self.cfg.works_material_wd_milli);
             }
         }
         let l_mint = self.mint_cost[c.index()];
@@ -427,7 +435,9 @@ impl World {
             return Next::Nothing;
         }
         let threat = TICKS_PER_DAY * self.cfg.works_threat_days;
-        let threatened = s.threat_at.is_some_and(|t| at.0 < t.0.saturating_add(threat));
+        let threatened = s
+            .threat_at
+            .is_some_and(|t| at.0 < t.0.saturating_add(threat));
         let pop = self.nodes[i].local.pop;
         let key = self.nodes[i].key;
         let mut best: Option<(u8, Amount, u64, Next)> = None;
@@ -690,7 +700,11 @@ impl World {
         if amount <= 0 || !self.works_village(node) {
             return false;
         }
-        let Some(g) = self.nodes[node].kind.culture().and_then(|c| self.goods.currency(c)) else {
+        let Some(g) = self.nodes[node]
+            .kind
+            .culture()
+            .and_then(|c| self.goods.currency(c))
+        else {
             return false;
         };
         add(&mut self.works.entry(node).or_default().granted, g, amount);
