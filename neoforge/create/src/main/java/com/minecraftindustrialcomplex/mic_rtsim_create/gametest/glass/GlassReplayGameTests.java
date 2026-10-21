@@ -124,9 +124,13 @@ import java.util.stream.Collectors;
  * A factory in {@link #KNOWN_GAPS} is judged on the at or below half only: every row is marked KNOWN GAP
  * with what is missing, and a within miss prints without failing the test.
  *
- * <p>Once one {@link #WINDOW} of samples is in, the warm-up check runs the copy check's window test early:
- * a far copy that does not move its goods as the control does is dead, and both copies are built again
- * once (logged "far copy dead at warm-up, rebuilt", with both copies' kinetics). Dead again, INVALID COPY.
+ * <p>Both copies are built, and built again, only once every far chunk and every yard chunk would tick
+ * block entities ({@link #notTicking}: entities loaded, neighbours FULL, not just block-ticking by its
+ * ticket; G2-68), and the reload waits on the same. Once one {@link #WINDOW} of samples is in, the
+ * warm-up check runs the copy check's window test early: a far copy that does not move its goods as the
+ * control does, or does not move them at all while the control moves a stack (G2-70), is dead, and both
+ * copies are built again once (logged "far copy dead at warm-up, rebuilt", with both copies' kinetics).
+ * Dead again, INVALID COPY. The unjudged stub runs it too (G2-71).
  *
  * <p>The report while the far copy is away must say replay model GLASS: on the native engine any report
  * read while it is unloaded; on the stub the offline report of the records up to the reload. Its replay
@@ -484,6 +488,16 @@ public final class GlassReplayGameTests {
             return "not loaded";
         if (!Districts.blockTicking(level, k))
             return "not block-ticking by its ticket";
+        if (!level.getWorldBorder().isWithinBounds(c))
+            return "outside the world border";
+        if (!level.areEntitiesLoaded(k))
+            return "its entities not loaded";
+        if (!level.getChunkSource().isPositionTicking(k))
+            return "its neighbours not FULL (no scheduled ticks)";
+        if (!level.isPositionEntityTicking(c.getWorldPosition()))
+            return "not entity-ticking";
+        if (TickGate.holds(ch))
+            return "held by the tick gate";
         return null;
     }
 
@@ -612,15 +626,26 @@ public final class GlassReplayGameTests {
     /**
      * The warm-up verdict over the goods' changes since the first sample: null when the far copy lives,
      * else why it is dead. Dead when a good's change is off the control's by more than its tolerance (the
-     * copy check's window test).
+     * copy check's window test), or (G2-70) when no good of the far copy changed at all while the control
+     * moved at least a stack of one: a tolerance wide with a batch in flight (press_sheets' 124 against
+     * the control's 126 sheets) must not pass a copy that never started.
      */
     static String warmVerdict(List<WarmGood> goods) {
         List<String> off = new ArrayList<>();
-        for (WarmGood w : goods)
+        boolean farMoved = false;
+        WarmGood moved = null;
+        for (WarmGood w : goods) {
             if (w.off())
                 off.add(w.good() + " (control " + w.control() + ", far " + w.far() + ")");
+            farMoved |= w.far() != 0;
+            if (moved == null && Math.abs(w.control()) >= w.stack())
+                moved = w;
+        }
         if (!off.isEmpty())
             return "the far copy's stores do not move as the control's: " + off;
+        if (!farMoved && moved != null)
+            return "the far copy's stores did not change at all while the control's moved a stack or more (" + moved.good() + " "
+                    + String.format(Locale.ROOT, "%+d", moved.control()) + ")";
         return null;
     }
 
