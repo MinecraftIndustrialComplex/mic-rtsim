@@ -10,6 +10,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -69,6 +73,41 @@ public final class GlassFanLinkGameTests {
     }
 
     /**
+     * Removes the fans and their motors when the test ends, passed or failed (G2-77). These tests put fans
+     * near the yard's east edge, so a fan's chunk can hold the west end of the next batch's yard. Left
+     * there, the fan is in that test's district and its link pulls this test's chunks in too. Once this
+     * batch ends they are no longer forced, so they are loaded but not block-ticking, and that district's
+     * compile waits for them (G2-63): in one stub gate the arm_burners_depots exit test never compiled.
+     * A host links only to a fan, so without the fans nothing of this test reaches out; the motors go too,
+     * as they share the fans' chunk.
+     */
+    static void removeAtEnd(GameTestHelper helper, BlockPos... blocks) {
+        ServerLevel level = helper.getLevel();
+        Runnable remove = () -> {
+            for (BlockPos p : blocks)
+                if (level.isLoaded(p))
+                    level.setBlock(p, Blocks.AIR.defaultBlockState(), 3);
+        };
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                remove.run();
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                remove.run();
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo oldTest, GameTestInfo newTest, GameTestRunner runner) {}
+        });
+    }
+
+    /**
      * The bug as the G2 exit test met it: crushing_wash_blast built with its fans (x14) at chunk-local x 0
      * (and the whole build in one chunk row), seeded as the harness seeds it (its stores and its anchor,
      * every one in the belts' chunk). Nothing of the build touches across the border at x13 to x14 (the
@@ -87,6 +126,7 @@ public final class GlassFanLinkGameTests {
         GlassReplayGameTests.seed(h, b);
         int za = CrushingWashBlastFactory.LINE_A_Z, zb = CrushingWashBlastFactory.LINE_B_Z;
         BlockPos fanA = at(h, 14, 3, za), fanB = at(h, 14, 3, zb);
+        removeAtEnd(helper, fanA, fanB, at(h, 15, 3, za), at(h, 15, 3, zb));
         long fans = chunk(fanA), belts = chunk(at(h, 12, 2, za));
         String t = "glass fan border";
         record(t, "build", "yard origin " + o.toShortString() + ", shifted " + shift.toShortString() + "; fans at " + fanA.toShortString()
@@ -141,6 +181,7 @@ public final class GlassFanLinkGameTests {
         set(helper, water.south(), Blocks.GLASS.defaultBlockState());
         set(helper, water.west(), Blocks.IRON_BARS.defaultBlockState());
         set(helper, water, Blocks.WATER.defaultBlockState());
+        removeAtEnd(helper, fan, fan.east());
         return new Gap(depot, fan, chunk(depot), chunk(new BlockPos(bx, y, z)), chunk(fan));
     }
 
