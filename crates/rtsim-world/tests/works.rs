@@ -38,6 +38,26 @@ fn reload(w: &World, seed: u64, genesis: Genesis) -> World {
     World::load(cfg(seed, genesis), goods, book, &w.save()).expect("the snapshot reads back")
 }
 
+/// Runs to `until` an hour at a time as the bridge would: every bought work answered `placed`
+/// (a village buys its next work once the last one is answered, MSC13). Returns every command,
+/// in order.
+fn run(w: &mut World, until: Tick, placed: bool) -> Vec<Command> {
+    let mut out = Vec::new();
+    while w.now() < until {
+        let next = Tick((w.now().0 + 1_000).min(until.0));
+        w.run_until(next);
+        let cmds = w.take_commands();
+        for c in &cmds {
+            if let Some(op) = c.work_op() {
+                let now = w.now();
+                w.work_result(op, placed, now);
+            }
+        }
+        out.extend(cmds);
+    }
+    out
+}
+
 fn culture(w: &World, i: usize) -> Option<Culture> {
     match w.nodes[i].kind {
         NodeKind::Village(c) => Some(c),
@@ -71,7 +91,7 @@ fn rich(w: &World) -> usize {
     (0..w.nodes.len())
         .find(|&i| {
             w.works_of(i)
-                .is_some_and(|s| s.next == Next::Nothing && !s.tributary)
+                .is_some_and(|s| s.next == Next::Nothing && !s.tributary && s.in_flight == 0)
                 && w.works_purse(i, w.now())
                     .iter()
                     .any(|&(_, a)| a >= 10 * MILLI)
@@ -90,13 +110,12 @@ fn works_leave_every_market_as_it_was() {
         for day in [30u64, 120, 300] {
             let t = Tick(day * TICKS_PER_DAY);
             a.run_until(t);
-            b.run_until(t);
+            let cb = run(&mut b, t, true);
             for i in 0..a.nodes.len() {
                 assert_eq!(a.market(i), b.market(i), "seed {seed} day {day} node {i}");
             }
             let ca = a.take_commands();
-            let cb: Vec<Command> = b
-                .take_commands()
+            let cb: Vec<Command> = cb
                 .into_iter()
                 .filter(|c| !matches!(c, Command::PlaceWork(_) | Command::SpawnWork(_)))
                 .collect();
@@ -117,8 +136,7 @@ fn works_leave_every_market_as_it_was() {
 #[test]
 fn a_village_above_its_ceiling_buys_works_of_its_own_culture() {
     let mut w = world(7, Genesis::AtTarget, true);
-    w.run_until(Tick::from_days(120));
-    let cmds = w.take_commands();
+    let cmds = run(&mut w, Tick::from_days(120), true);
     let mut placed = 0;
     for c in &cmds {
         if let Command::PlaceWork(p) = c {
@@ -168,8 +186,7 @@ fn a_village_above_its_ceiling_buys_works_of_its_own_culture() {
 #[test]
 fn a_raid_buys_golems_first() {
     let mut w = world(7, Genesis::AtTarget, true);
-    w.run_until(Tick::from_days(120));
-    let _ = w.take_commands();
+    let _ = run(&mut w, Tick::from_days(120), true);
     let i = rich(&w);
     let key = w.nodes[i].key;
     w.village_raided(i, false, w.now());
@@ -183,9 +200,7 @@ fn a_raid_buys_golems_first() {
         "a raided village wants a golem: {:?}",
         w.works_of(i).unwrap().next
     );
-    w.run_until(Tick::from_days(126));
-    let spawned = w
-        .take_commands()
+    let spawned = run(&mut w, Tick::from_days(126), true)
         .into_iter()
         .filter(|c| matches!(c, Command::SpawnWork(s) if s.village == key && s.body == "minecraft:iron_golem"))
         .count() as u32;
@@ -204,8 +219,7 @@ fn a_raid_buys_golems_first() {
 #[test]
 fn a_tributary_village_buys_nothing_and_pays_whole_coins() {
     let mut w = world(7, Genesis::AtTarget, true);
-    w.run_until(Tick::from_days(120));
-    let _ = w.take_commands();
+    let _ = run(&mut w, Tick::from_days(120), true);
     let i = rich(&w);
     let key = w.nodes[i].key;
     let now = w.now();
@@ -224,22 +238,18 @@ fn a_tributary_village_buys_nothing_and_pays_whole_coins() {
     assert_eq!(w.works_of(i).unwrap().tribute(g), a);
     w.check_conserved(now).unwrap();
 
-    w.run_until(Tick::from_days(160));
+    let cmds = run(&mut w, Tick::from_days(160), true);
     let mine = |c: &Command| match c {
         Command::PlaceWork(p) => p.village == key,
         Command::SpawnWork(s) => s.village == key,
         _ => false,
     };
-    assert!(
-        !w.take_commands().iter().any(mine),
-        "a tributary buys nothing"
-    );
+    assert!(!cmds.iter().any(mine), "a tributary buys nothing");
 
     w.tribute_lapsed(i, w.now());
     assert!(!w.works_of(i).unwrap().tributary);
-    w.run_until(Tick::from_days(166));
     assert!(
-        w.take_commands()
+        run(&mut w, Tick::from_days(166), true)
             .iter()
             .any(|c| mine(c) && matches!(c, Command::SpawnWork(_))),
         "a lapsed tributary buys golems first"
@@ -253,14 +263,20 @@ fn a_tributary_village_buys_nothing_and_pays_whole_coins() {
 fn a_refused_work_marks_its_kind_full() {
     let mut w = world(7, Genesis::AtTarget, true);
     w.run_until(Tick::from_days(60));
-    let first = w
-        .take_commands()
-        .into_iter()
+    let cmds = w.take_commands();
+    let first = cmds
+        .iter()
         .find_map(|c| match c {
-            Command::PlaceWork(p) => Some(p),
+            Command::PlaceWork(p) => Some(p.clone()),
             _ => None,
         })
         .expect("a work was bought in 60 days");
+    // One work in flight per village (MSC13): unanswered, the village bought only this one.
+    let theirs = cmds
+        .iter()
+        .filter(|c| matches!(c, Command::PlaceWork(p) if p.village == first.village))
+        .count();
+    assert_eq!(theirs, 1, "one work in flight");
     let i = w.node_of_key(first.village).unwrap();
     let kind = w.works_catalog[def_of_template(&w, &first.template)].key();
     let spent: i64 = w.works_of(i).unwrap().spent.iter().map(|x| x.1).sum();
@@ -271,8 +287,14 @@ fn a_refused_work_marks_its_kind_full() {
     assert!(s.is_full(kind));
     assert_eq!(s.spent.iter().map(|x| x.1).sum::<i64>(), spent, "no refund");
     assert_eq!(w.stats.works_refused, 1);
-    w.run_until(Tick::from_days(300));
-    for c in w.take_commands() {
+    // The others are placed.
+    for c in &cmds {
+        if let Some(op) = c.work_op() {
+            let now = w.now();
+            w.work_result(op, true, now);
+        }
+    }
+    for c in run(&mut w, Tick::from_days(300), true) {
         if let Command::PlaceWork(p) = c
             && p.village == first.village
         {
@@ -318,12 +340,12 @@ fn works_are_deterministic_and_survive_a_reload() {
         let (ca, cb) = (a.take_commands(), b.take_commands());
         assert_eq!(ca, cb, "day {day}");
         for c in ca {
-            if let Command::PlaceWork(p) = c {
-                ops.push(p.op);
+            if let Some(op) = c.work_op() {
+                ops.push(op);
                 // Every other work finds no plot.
                 let placed = ops.len() % 2 == 0;
-                a.work_result(p.op, placed, a.now());
-                b.work_result(p.op, placed, b.now());
+                a.work_result(op, placed, a.now());
+                b.work_result(op, placed, b.now());
             }
         }
     }
@@ -375,7 +397,14 @@ fn a_paged_world_with_works_runs_as_a_resident_one() {
             b.village_raided(i, false, b.now());
         }
         assert_eq!(a.state_hash(), b.state_hash(), "day {day}");
-        assert_eq!(a.take_commands(), b.take_commands(), "day {day}");
+        let (ca, cb) = (a.take_commands(), b.take_commands());
+        assert_eq!(ca, cb, "day {day}");
+        for c in ca {
+            if let Some(op) = c.work_op() {
+                a.work_result(op, true, a.now());
+                b.work_result(op, true, b.now());
+            }
+        }
     }
     assert!(b.markets.rows().stats().loads > 0, "the markets paged");
     assert!(a.stats.works > 0);

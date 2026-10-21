@@ -225,6 +225,8 @@ pub struct Inspect {
     pub phase1_sentiments: std::collections::BTreeMap<u64, Vec<(u64, u64, i8)>>,
     /// The phase 1 world's villages and bases.
     pub phase1_villages: std::collections::BTreeSet<u64>,
+    /// Every phase 1 village's works (`phase1::works_view`).
+    pub phase1_works: std::collections::BTreeMap<u64, [i64; phase1::WORKS_VIEW]>,
     /// Every frame's topology as the TOPOLOGY records left it, and the records refused.
     pub topologies: rtsim_space::SharedTopologies,
     pub topology_refused: u64,
@@ -708,6 +710,15 @@ impl Engine {
         )
     }
 
+    /// A phase 1 village's works as of the last step (TEST mode; `phase1::works`): `None` when
+    /// the engine knows no such village or it has no works state.
+    pub fn phase1_works(&self, village: u64) -> Option<[i64; phase1::WORKS_VIEW]> {
+        if !self.cfg.test {
+            return None;
+        }
+        self.inspect().phase1_works.get(&village).copied()
+    }
+
     fn set_protocol_error(&self, msg: String) {
         log_error(&format!("engine protocol error: {msg}"));
         self.protocol_error.publish(Some(msg));
@@ -1169,6 +1180,7 @@ impl Engine {
             counters: st.world.counters,
             phase1_sentiments: phase1::sentiments(st),
             phase1_villages: phase1::villages(st),
+            phase1_works: phase1::works_view(st),
             topologies: st.topology.shared.clone(),
             topology_refused: st.topology.refused,
         });

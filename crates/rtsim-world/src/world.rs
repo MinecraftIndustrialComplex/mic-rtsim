@@ -246,6 +246,17 @@ pub enum Command {
     SpawnWork(crate::works::SpawnWork),
 }
 
+impl Command {
+    /// A bought work's op id, which the bridge answers ([`World::work_result`]).
+    pub fn work_op(&self) -> Option<u64> {
+        match self {
+            Command::PlaceWork(p) => Some(p.op),
+            Command::SpawnWork(s) => Some(s.op),
+            _ => None,
+        }
+    }
+}
+
 pub struct World {
     pub cfg: WorldConfig,
     pub goods: Goods,
