@@ -41,7 +41,7 @@ def main():
                     # shared laptop, and 2 of 4 servers of attempt 4 died to the 60 s watchdog; the
                     # longest ticks are read from the "Can't keep up" lines instead
                     'max-tick-time': 300000}}
-    if kind == 'reload':
+    if kind in ('reload', 'reset'):
         sc['jvm'].append('-Dmixin.debug.verbose=true')  # one "Mixing X into Y" line per applied mixin
     steps = [{'wait': 20}, {'cmd': 'neoforge tps'}]
     if kind in ('rtsim', 'reload', 'reset'):
@@ -62,6 +62,8 @@ def main():
         steps += [{'cmd': 'rtsim perf'}, {'cmd': 'rtsim district perf'}, {'cmd': 'rtsim district list'}]
         for name in ('info', 'debug'):
             steps += [{'cmd': 'execute positioned %d %d %d in minecraft:overworld run rtsim district %s' % (ADOPT_AT[0] + (name,))}]
+        # the main base's district by id (district 1 in every run here): its glass compile and sweeps
+        steps += [{'cmd': 'rtsim district %s 1' % name} for name in ('info', 'debug')]
     # entity census and the one gamerule rtsim changes (it turns doTraderSpawning off while it owns traders)
     steps += [{'cmd': 'execute if entity @e[type=%s]' % t} for t in
               ('minecraft:villager', 'minecraft:wandering_trader', 'ribbits:ribbit', 'minecraft:iron_golem')]
