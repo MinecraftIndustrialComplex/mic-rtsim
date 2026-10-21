@@ -56,10 +56,11 @@ usage:
       --rules sets the markets' decision rules for comparisons: round1, or name=value pairs
       (slack, money, band, up, ask, div; see rtsim_trade::tunables::Rules).
   rtsim-cli sim quiet [--markets N] [--days D] [--every E] [--seed S] [--genesis G] [--rules LIST]
-                     [--trace D] [--grow] [--no-growth] [--no-bands]
+                     [--trace D] [--grow] [--no-growth] [--no-bands] [--works]
       Runs a closed world with no player (the phase 1 world, or a grid of N villages) and prints
       market events per market per day for each E-day window: does it go quiet? --grow builds
-      the phase 1 world by joining its villages one a day (C22).
+      the phase 1 world by joining its villages one a day (C22). --works loads the synthetic
+      works catalogue (SINK.md) and adds works bought and coin spent per window.
   rtsim-cli sim memory [--markets N] [--days D]
       Builds a grid of N villages (default 1,024), runs D days (default 20) and prints where the
       memory goes, per market, by component, next to the counting allocator's total.
@@ -254,6 +255,7 @@ fn main() -> ExitCode {
                 grow: false,
                 growth: true,
                 bands: true,
+                works: false,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -282,6 +284,7 @@ fn main() -> ExitCode {
                     "--grow" => o.grow = true,
                     "--no-growth" => o.growth = false,
                     "--no-bands" => o.bands = false,
+                    "--works" => o.works = true,
                     "--genesis" => match num(it.next()) {
                         Some(n) => o.genesis = n as i64,
                         None => return usage("--genesis needs thousandths of target"),

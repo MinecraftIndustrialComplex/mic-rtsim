@@ -56,9 +56,9 @@ import java.util.UUID;
  * puppet of one body; prey it carries goes with it as one unit (C25, choice Z8).
  *
  * <p><b>Per tick</b>, after the core's own work and before the hand-over ({@link #endOfTick}): lairs from
- * loaded chunks, untagged dragons that joined, wounds summed over the tick, deaths confirmed, the
- * puppet pass (captures, the ticking test, departures, steering, DRAGON_STATE every 100 ticks), meals
- * and robbed hoards summed over the tick.
+ * loaded chunks, their chests (LAIR_CHEST, looked for every 100 ticks), untagged dragons that joined,
+ * wounds summed over the tick, deaths confirmed, the puppet pass (captures, the ticking test, departures,
+ * steering, DRAGON_STATE every 100 ticks), meals and robbed hoards summed over the tick.
  */
 public final class DragonBridge implements SessionPlugin {
     public static final DragonBridge INSTANCE = new DragonBridge();
@@ -579,6 +579,7 @@ public final class DragonBridge implements SessionPlugin {
         if (s != session || s.failed())
             return;
         lairs.drain(now);
+        lairs.scanChests(now);
         reportUntagged(now);
         endOfTickRecords(now);
         pass(now);
