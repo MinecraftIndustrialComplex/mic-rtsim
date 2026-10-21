@@ -67,7 +67,9 @@ impl Regime {
         };
         for (v, held) in self.held.iter().enumerate() {
             mix(v as u64);
-            mix(u64::from(self.room[v]) | u64::from(self.read[v]) << 1 | u64::from(self.gate_off[v]) << 2);
+            mix(u64::from(self.room[v])
+                | u64::from(self.read[v]) << 1
+                | u64::from(self.gate_off[v]) << 2);
             for g in held {
                 mix(u64::from(g.0));
             }
@@ -600,7 +602,11 @@ impl<'a> Solver<'a> {
             let ratio = f64::from(m.ratio_num) / f64::from(m.ratio_den.max(1));
             stress += f64::from(m.count) * (ratio * speed).abs() * m.impact;
         }
-        if lv.capacity < stress { None } else { Some(level) }
+        if lv.capacity < stress {
+            None
+        } else {
+            Some(level)
+        }
     }
 
     /// The node's level index (its domain's, 0 outside one) and whether it runs at all.
@@ -983,9 +989,12 @@ impl<'a> Solver<'a> {
             return true;
         }
         let good = self.goods[gi as usize];
-        recipes
-            .iter()
-            .any(|&r| self.g.recipes[r as usize].inputs.iter().any(|t| t.good == good))
+        recipes.iter().any(|&r| {
+            self.g.recipes[r as usize]
+                .inputs
+                .iter()
+                .any(|t| t.good == good)
+        })
     }
 
     /// Each recipe's crafts per tick allowed by capacity, heat and (with ANY_OUTPUT_BLOCKS) its
@@ -1021,8 +1030,9 @@ impl<'a> Solver<'a> {
 
     fn machine_accept(&mut self, v: u32, list: &[u32], dl: &[Option<u32>]) {
         let g = self.g;
-        let duty = self.duty_assumed.clone();
+        let duty = std::mem::take(&mut self.duty_assumed);
         self.recipe_limits(v, dl, &duty, true);
+        self.duty_assumed = duty;
         let pass = g.node(v).flags & node_flags::PASS_THROUGH != 0;
         let recipes = g.node_recipes.of(v);
         for &gi in list {
@@ -1139,13 +1149,7 @@ impl<'a> Solver<'a> {
         }
         self.settle_pushes(v);
         let room = self.rg.room[v as usize];
-        self.use_proportional(v, |s, gi| {
-            if room {
-                Q::INF
-            } else {
-                s.s_push.get(gi)
-            }
-        });
+        self.use_proportional(v, |s, gi| if room { Q::INF } else { s.s_push.get(gi) });
     }
 
     /// Buffers, movers, junctions and sinks: conserve each good under a shared capacity, taking
@@ -1281,45 +1285,52 @@ impl<'a> Solver<'a> {
     /// Machines and sources: crafts per recipe, time-shared, limited by inputs, capacity, heat and
     /// (ANY_OUTPUT_BLOCKS) outputs; PASS_THROUGH goods go on unchanged.
     fn fwd_machine(&mut self, v: u32, dl: &[Option<u32>]) {
+        // No clone of the duties per machine: they are only read here.
+        let duty = std::mem::take(&mut self.duty);
+        self.fwd_machine_with(v, dl, &duty);
+        self.duty = duty;
+    }
+
+    fn fwd_machine_with(&mut self, v: u32, dl: &[Option<u32>], duty: &[Q]) {
         let g = self.g;
         let node = g.node(v);
         let source = node.kind == NodeKind::Source;
         let blocks = node.flags & node_flags::ANY_OUTPUT_BLOCKS != 0 || source;
         let pass = node.flags & node_flags::PASS_THROUGH != 0;
         let recipes = g.node_recipes.of(v);
-        let duty = self.duty.clone();
         // A source without recipes emits its out-edges' goods as accepted, under its capacity.
-        if recipes.is_empty() {
-            if source {
-                let cap = self.shared_cap_with(v, dl);
-                self.s_out.clear();
-                for &e in g.out_g.of(v) {
-                    for s in self.slots_of(e) {
-                        self.s_out.set(self.slot_good[s], Q::ZERO);
-                    }
+        if recipes.is_empty() && source {
+            let cap = self.shared_cap_with(v, dl);
+            self.s_out.clear();
+            for &e in g.out_g.of(v) {
+                for s in self.slots_of(e) {
+                    self.s_out.set(self.slot_good[s], Q::ZERO);
                 }
-                let outs = self.s_out.list.clone();
-                let mut rem = cap;
-                for gi in outs {
-                    let a = self.out_accept(v, gi).min(rem);
-                    let p = self.push(v, gi, a);
-                    rem = rem.sub_sat(p);
-                }
-                if !cap.is_inf() && rem.is_zero() {
-                    self.saturated[v as usize] = true;
-                }
-                self.settle_pushes(v);
-                self.crafts[v as usize] = cap.sub_sat(rem);
-                return;
             }
+            let outs = self.s_out.list.clone();
+            let mut rem = cap;
+            for gi in outs {
+                let a = self.out_accept(v, gi).min(rem);
+                let p = self.push(v, gi, a);
+                rem = rem.sub_sat(p);
+            }
+            if !cap.is_inf() && rem.is_zero() {
+                self.saturated[v as usize] = true;
+            }
+            self.settle_pushes(v);
+            self.crafts[v as usize] = cap.sub_sat(rem);
+            return;
         }
         // Demand per recipe: capacity, heat, outputs, then inputs.
-        self.recipe_limits(v, dl, &duty, blocks);
+        self.recipe_limits(v, dl, duty, blocks);
         let caps: Vec<Q> = recipes
             .iter()
             .map(|&r| {
-                self.recipe_cap_with(v, r, dl)
-                    .mul(self.heat_factor_with(v, g.recipes[r as usize].heat, &duty))
+                self.recipe_cap_with(v, r, dl).mul(self.heat_factor_with(
+                    v,
+                    g.recipes[r as usize].heat,
+                    duty,
+                ))
             })
             .collect();
         let mut c = std::mem::take(&mut self.rbuf2);
@@ -1432,7 +1443,9 @@ impl<'a> Solver<'a> {
             for (k, &r) in recipes.iter().enumerate() {
                 let mut fr = Q::ONE;
                 for t in &g.recipes[r as usize].outputs {
-                    let Some(gi) = self.gidx(t.good) else { continue };
+                    let Some(gi) = self.gidx(t.good) else {
+                        continue;
+                    };
                     let o = self.s_out.get(gi);
                     let p = self.s_push.get(gi);
                     if p < o && o.is_pos() {
@@ -1480,11 +1493,12 @@ impl<'a> Solver<'a> {
     /// Whether one of the machine's recipes takes the good (as an input or a catalyst).
     fn taken(&self, v: u32, gi: u32) -> bool {
         let good = self.goods[gi as usize];
-        self.g
-            .node_recipes
-            .of(v)
-            .iter()
-            .any(|&r| self.g.recipes[r as usize].inputs.iter().any(|t| t.good == good))
+        self.g.node_recipes.of(v).iter().any(|&r| {
+            self.g.recipes[r as usize]
+                .inputs
+                .iter()
+                .any(|t| t.good == good)
+        })
     }
 
     /// Scales recipes down where their inputs together need more of a good than arrived.
@@ -1575,14 +1589,14 @@ impl<'a> Solver<'a> {
         let Some(d) = g.drives[v as usize] else {
             return;
         };
-        let level = self.boiler_level(v, w, &self.duty.clone(), false);
+        let duty = std::mem::take(&mut self.duty);
+        let level = self.boiler_level(v, w, &duty, false);
+        self.duty = duty;
         self.dom_next[d as usize] = self.select_level(d, level);
         // Heaters at part duty make the boiler's goods bounded (§9.3).
         for &e in g.heat_in.of(v) {
             let h = g.edge(e).from as usize;
-            if g.nodes[h].kind == NodeKind::Heater
-                && self.duty[h].is_pos()
-                && self.duty[h] < Q::ONE
+            if g.nodes[h].kind == NodeKind::Heater && self.duty[h].is_pos() && self.duty[h] < Q::ONE
             {
                 self.taint[v as usize] = self.taint[v as usize].max(BOUNDED);
             }
@@ -1662,7 +1676,7 @@ impl<'a> Solver<'a> {
                 self.dom_level = self.dom_next.clone();
                 changed = true;
             }
-            self.duty_assumed = self.duty.clone();
+            self.duty_assumed.clone_from(&self.duty);
             if !changed {
                 converged = true;
                 break;
@@ -1745,10 +1759,11 @@ pub(crate) fn classes(s: &Solver<'_>, converged: bool) -> (Vec<u8>, Uf, Vec<bool
             continue;
         }
         let full = !s.rg.room[v as usize];
-        let passes = g.out_g.of(v).iter().any(|&e| {
-            s.slots_of(e)
-                .any(|sl| !s.held(v, s.slot_good[sl]))
-        });
+        let passes = g
+            .out_g
+            .of(v)
+            .iter()
+            .any(|&e| s.slots_of(e).any(|sl| !s.held(v, s.slot_good[sl])));
         if full || passes {
             uf.union(v, n as u32 + v);
         }
@@ -1921,8 +1936,8 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
             }
         }
     }
-    let has_unbounded = (0..n as u32)
-        .any(|v| matches!(s.kind(v), NodeKind::BlackBox | NodeKind::Port));
+    let has_unbounded =
+        (0..n as u32).any(|v| matches!(s.kind(v), NodeKind::BlackBox | NodeKind::Port));
     // U.
     let mut sol = Solution {
         goods: Vec::new(),

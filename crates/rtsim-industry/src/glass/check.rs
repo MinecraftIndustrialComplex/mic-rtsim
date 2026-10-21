@@ -346,8 +346,8 @@ impl Compiled {
             for &e in self.graph.control_in.of(v) {
                 let ed = self.graph.edge(e);
                 let c = ed.from as usize;
-                let signal = self.ctrl_on[c]
-                    ^ (self.graph.nodes[c].params[2] & CONTROLLER_INVERTED != 0);
+                let signal =
+                    self.ctrl_on[c] ^ (self.graph.nodes[c].params[2] & CONTROLLER_INVERTED != 0);
                 let off = match ed.param {
                     CONTROL_STOP_WHEN_ON => signal,
                     CONTROL_RUN_WHEN_ON => !signal,
@@ -546,20 +546,20 @@ impl Compiled {
             let sigma = se.max(model);
             let q = if w > 0.0 { cum.batch.max(1.0) / w } else { 0.0 };
             let tol = z * sigma + q;
-            let verdict = if win.n < 3 || cum.class == report::class::UNBOUNDED || !measured.is_finite()
-            {
-                report::verdict::NONE
-            } else if cum.class == report::class::EXACT {
-                if (measured - predicted).abs() <= tol {
+            let verdict =
+                if win.n < 3 || cum.class == report::class::UNBOUNDED || !measured.is_finite() {
+                    report::verdict::NONE
+                } else if cum.class == report::class::EXACT {
+                    if (measured - predicted).abs() <= tol {
+                        report::verdict::PASS
+                    } else {
+                        report::verdict::FAIL
+                    }
+                } else if lo - tol <= measured && measured <= hi + tol {
                     report::verdict::PASS
                 } else {
                     report::verdict::FAIL
-                }
-            } else if lo - tol <= measured && measured <= hi + tol {
-                report::verdict::PASS
-            } else {
-                report::verdict::FAIL
-            };
+                };
             any_fail |= verdict == report::verdict::FAIL;
             goods.push(GoodResult {
                 good: *g,
@@ -619,7 +619,11 @@ impl Compiled {
             if machine.is_none() && node.kind == NodeKind::Machine {
                 machine = Some(v);
             }
-            let row = if produced { g.in_g.of(v) } else { g.out_g.of(v) };
+            let row = if produced {
+                g.in_g.of(v)
+            } else {
+                g.out_g.of(v)
+            };
             for &e in row {
                 if self.sol.edge_flow.get(e as usize).copied().unwrap_or(0.0) <= 0.0 {
                     continue;
@@ -632,7 +636,10 @@ impl Compiled {
                 }
             }
         }
-        machine.or(queue.first().copied().filter(|&v| g.node(v).kind != NodeKind::Store))
+        machine.or(queue
+            .first()
+            .copied()
+            .filter(|&v| g.node(v).kind != NodeKind::Store))
     }
 
     /// The buffers (and machines, whose basins and depots are part of them) upstream of a node,
@@ -669,11 +676,7 @@ impl Compiled {
     /// On a failed window: derate the limiting node of the most optimistic good, probe upstream of
     /// it, and after `glass.mismatchStrikes` failed windows demote its kind (G-B14). Returns the
     /// probe set to send and a newly demoted model, if any.
-    fn act(
-        &mut self,
-        res: &WindowResult,
-        tun: &GlassTunables,
-    ) -> (Option<Vec<u32>>, Option<u32>) {
+    fn act(&mut self, res: &WindowResult, tun: &GlassTunables) -> (Option<Vec<u32>>, Option<u32>) {
         if res.verdict != report::verdict::FAIL {
             self.strikes = 0;
             return (None, None);
@@ -682,7 +685,8 @@ impl Compiled {
         // The most optimistic failing good: the model predicts more throughput than measured.
         let mut worst: Option<(f64, Good, bool)> = None;
         for r in &res.goods {
-            if r.verdict != report::verdict::FAIL || r.predicted == 0.0 || !r.predicted.is_finite() {
+            if r.verdict != report::verdict::FAIL || r.predicted == 0.0 || !r.predicted.is_finite()
+            {
                 continue;
             }
             let s = r.predicted.signum();
@@ -700,8 +704,15 @@ impl Compiled {
         let Some(v) = self.limiting(good, produced) else {
             return (None, None);
         };
-        let eta_q = Q::floor_f64(eta).min(Q::ONE);
-        let d = self.regime.derate.get(&v).copied().unwrap_or(Q::ONE).mul(eta_q);
+        // η is a measurement: a relative 1e-9 up keeps a float slope of 0.4999999999 at 1/2.
+        let eta_q = Q::floor_f64(eta * (1.0 + 1e-9)).min(Q::ONE);
+        let d = self
+            .regime
+            .derate
+            .get(&v)
+            .copied()
+            .unwrap_or(Q::ONE)
+            .mul(eta_q);
         self.regime.derate.insert(v, d);
         self.event(GlassEvent::Derated {
             node: v,
@@ -712,7 +723,10 @@ impl Compiled {
         let mut demote = None;
         if self.strikes >= tun.mismatch_strikes {
             let m = self.graph.node(v).model;
-            if !matches!(m, model::STORE_ITEMS | model::STORE_FLUID | model::STORE_ENERGY) {
+            if !matches!(
+                m,
+                model::STORE_ITEMS | model::STORE_FLUID | model::STORE_ENERGY
+            ) {
                 demote = Some(m);
                 self.regime.demoted.insert(m);
                 self.event(GlassEvent::Demoted { model: m, node: v });
@@ -889,7 +903,10 @@ impl Compiled {
             window_ticks_done: done,
             window_ticks_target: self.window_target,
             windows_completed: self.windows_completed,
-            verdict: self.last.as_ref().map_or(report::verdict::NONE, |r| r.verdict),
+            verdict: self
+                .last
+                .as_ref()
+                .map_or(report::verdict::NONE, |r| r.verdict),
             strikes: self.strikes,
             solves: self.solves,
             demoted: demoted as u32,

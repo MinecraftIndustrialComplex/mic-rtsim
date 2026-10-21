@@ -22,6 +22,9 @@ use super::q::Q;
 use super::records::{NodeKind, node_flags, term_flags};
 use super::solve::{Solver, UNBOUNDED};
 
+/// One LP constraint before it is handed to microlp: terms, sense, right-hand side.
+type Row = (Vec<(u32, f64)>, ComparisonOp, f64);
+
 /// The bounds per dense good.
 pub struct Upper {
     pub in_u: Vec<Q>,
@@ -412,10 +415,12 @@ fn div_up(a: Q, b: Q) -> Q {
 
 fn taken(s: &Solver<'_>, v: u32, gi: u32) -> bool {
     let good = s.goods[gi as usize];
-    s.g.node_recipes
-        .of(v)
-        .iter()
-        .any(|&r| s.g.recipes[r as usize].inputs.iter().any(|t| t.good == good))
+    s.g.node_recipes.of(v).iter().any(|&r| {
+        s.g.recipes[r as usize]
+            .inputs
+            .iter()
+            .any(|t| t.good == good)
+    })
 }
 
 /// The cone of one good and direction: which nodes get constraints. `into`: ancestors of the read
@@ -472,9 +477,11 @@ fn cone(
         let store = s.kind(v) == NodeKind::Store;
         if into {
             if store {
-                let passes = g.out_g.of(v).iter().any(|&e| {
-                    s.slots_of(e).any(|sl| !holds(v, s.slot_good[sl]))
-                });
+                let passes = g
+                    .out_g
+                    .of(v)
+                    .iter()
+                    .any(|&e| s.slots_of(e).any(|sl| !holds(v, s.slot_good[sl])));
                 if !passes {
                     // Holds all it sends: a free supply, no constraint, nothing above it.
                     continue;
@@ -561,22 +568,34 @@ fn lp(
     let mut used_slots: Vec<usize> = Vec::new();
     for &e in &edges {
         let ed = g.edge(e);
-        let objective = if into { is_store(ed.to) } else { is_store(ed.from) };
+        let objective = if into {
+            is_store(ed.to)
+        } else {
+            is_store(ed.from)
+        };
         let dead = matches!(s.kind(ed.to), NodeKind::BlackBox | NodeKind::Port)
             || matches!(s.kind(ed.from), NodeKind::BlackBox | NodeKind::Port);
         for sl in s.slots_of(e) {
-            let obj = if objective && s.slot_good[sl] == gi { 1.0 } else { 0.0 };
+            let obj = if objective && s.slot_good[sl] == gi {
+                1.0
+            } else {
+                0.0
+            };
             var_of[sl] = defs.len() as u32;
             used_slots.push(sl);
-            defs.push((obj, if dead { (0.0, 0.0) } else { (0.0, f64::INFINITY) }));
+            defs.push((
+                obj,
+                if dead {
+                    (0.0, 0.0)
+                } else {
+                    (0.0, f64::INFINITY)
+                },
+            ));
         }
     }
-    let mut cons: Vec<(Vec<(u32, f64)>, ComparisonOp, f64)> = Vec::new();
+    let mut cons: Vec<Row> = Vec::new();
     let mut terms: BTreeMap<u32, f64> = BTreeMap::new();
-    let push = |cons: &mut Vec<(Vec<(u32, f64)>, ComparisonOp, f64)>,
-                terms: &mut BTreeMap<u32, f64>,
-                op: ComparisonOp,
-                rhs: f64| {
+    let push = |cons: &mut Vec<Row>, terms: &mut BTreeMap<u32, f64>, op: ComparisonOp, rhs: f64| {
         terms.retain(|_, c| *c != 0.0);
         if !terms.is_empty() {
             cons.push((terms.iter().map(|(&i, &c)| (i, c)).collect(), op, rhs));

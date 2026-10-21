@@ -574,7 +574,12 @@ mod tests {
     fn a_loop_is_one_component_with_one_back_edge() {
         // 0 -> 1 -> 2 -> 1 (return), 2 -> 3
         let nodes = (0..4).map(node).collect();
-        let edges = vec![edge(0, 0, 1, 5), edge(1, 1, 2, 7), edge(2, 2, 1, 3), edge(3, 2, 3, 1)];
+        let edges = vec![
+            edge(0, 0, 1, 5),
+            edge(1, 1, 2, 7),
+            edge(2, 2, 1, 3),
+            edge(3, 2, 3, 1),
+        ];
         let g = Graph::build(end(4, 4), nodes, edges, vec![], vec![]).expect("valid");
         assert_eq!(g.order, vec![0, 1, 2, 3]);
         assert_eq!(g.back, vec![false, false, true, false]);

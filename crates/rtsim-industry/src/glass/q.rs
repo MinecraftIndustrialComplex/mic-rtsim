@@ -85,7 +85,7 @@ fn lower_approx(r: i128, d: i128, maxq: i128) -> (i128, i128) {
             a <= (maxq - k0) / k1
         };
         if !fits {
-            if i % 2 == 0 && k1 != 0 {
+            if i.is_multiple_of(2) && k1 != 0 {
                 let t = (maxq - k0) / k1;
                 if t >= 1 {
                     best = (t * h1 + h0, t * k1 + k0);
@@ -97,7 +97,7 @@ fn lower_approx(r: i128, d: i128, maxq: i128) -> (i128, i128) {
         if rem == 0 {
             return (h2, k2);
         }
-        if i % 2 == 0 {
+        if i.is_multiple_of(2) {
             best = (h2, k2);
         }
         h0 = h1;
@@ -110,6 +110,9 @@ fn lower_approx(r: i128, d: i128, maxq: i128) -> (i128, i128) {
     }
 }
 
+// The arithmetic is named methods, not `std::ops`: every operation rounds a named way on
+// overflow (down unless `_up`), which an operator would hide.
+#[allow(clippy::should_implement_trait)]
 impl Q {
     pub const ZERO: Q = Q { n: 0, d: 1 };
     pub const ONE: Q = Q { n: 1, d: 1 };
@@ -145,7 +148,10 @@ impl Q {
         if ticks_den == 0 {
             return Q::ZERO;
         }
-        Q::ratio_u64(u64::from(batch) * u64::from(ticks_den), u64::from(ticks_num))
+        Q::ratio_u64(
+            u64::from(batch) * u64::from(ticks_den),
+            u64::from(ticks_num),
+        )
     }
 
     pub fn numer(self) -> i64 {
@@ -382,7 +388,8 @@ impl Ord for Q {
                 if self.d == o.d {
                     self.n.cmp(&o.n)
                 } else {
-                    (i128::from(self.n) * i128::from(o.d)).cmp(&(i128::from(o.n) * i128::from(self.d)))
+                    (i128::from(self.n) * i128::from(o.d))
+                        .cmp(&(i128::from(o.n) * i128::from(self.d)))
                 }
             }
         }

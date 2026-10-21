@@ -25,6 +25,8 @@ pub mod records;
 pub mod report;
 pub mod solve;
 pub mod store;
+#[cfg(test)]
+mod tests;
 
 use std::collections::BTreeMap;
 
@@ -67,7 +69,10 @@ pub struct Glass {
 }
 
 /// An empty view, for a compile whose district the engine does not know yet.
-fn empty_view<'a>(inv: &'a VecMap<u32, crate::district::Inventory>, ports: &'a GoodVec) -> View<'a> {
+fn empty_view<'a>(
+    inv: &'a VecMap<u32, crate::district::Inventory>,
+    ports: &'a GoodVec,
+) -> View<'a> {
     View {
         revision: u32::MAX,
         inventories: inv,

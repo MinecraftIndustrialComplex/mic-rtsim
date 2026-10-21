@@ -165,8 +165,12 @@ impl Assembler {
             && end.records == end.nodes + end.edges + end.recipes + end.domains
             && exact(asm.nodes.len(), end.nodes, &|i| asm.nodes[i].is_some())
             && exact(asm.edges.len(), end.edges, &|i| asm.edges[i].is_some())
-            && exact(asm.recipes.len(), end.recipes, &|i| asm.recipes[i].is_some())
-            && exact(asm.domains.len(), end.domains, &|i| asm.domains[i].is_some());
+            && exact(asm.recipes.len(), end.recipes, &|i| {
+                asm.recipes[i].is_some()
+            })
+            && exact(asm.domains.len(), end.domains, &|i| {
+                asm.domains[i].is_some()
+            });
         if !ok {
             return (EndOutcome::Dropped, None);
         }
@@ -177,8 +181,16 @@ impl Assembler {
                 end: *end,
                 nodes: unwrap(asm.nodes),
                 edges: asm.edges.into_iter().map(|x| x.expect("checked")).collect(),
-                recipes: asm.recipes.into_iter().map(|x| x.expect("checked")).collect(),
-                domains: asm.domains.into_iter().map(|x| x.expect("checked")).collect(),
+                recipes: asm
+                    .recipes
+                    .into_iter()
+                    .map(|x| x.expect("checked"))
+                    .collect(),
+                domains: asm
+                    .domains
+                    .into_iter()
+                    .map(|x| x.expect("checked"))
+                    .collect(),
             }),
         )
     }
