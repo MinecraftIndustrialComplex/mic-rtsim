@@ -173,6 +173,9 @@ pub struct Solution {
     pub edge_flow: Vec<f64>,
     /// Read-store edges with their good and L flow: (edge, good, flow, into the store).
     pub store_edges: Vec<(u32, Good, f64, bool)>,
+    /// Every goods edge's exact L flow per good, nonzero only, by edge then good: what the glass
+    /// replay books per store and across a partial load's cut (G2).
+    pub edge_goods: Vec<(u32, Good, Q)>,
     /// Per domain: the running level index under L (None: stopped or overstressed).
     pub dom_level: Vec<Option<u32>>,
     /// Per node: a heater's duty under L.
@@ -2410,6 +2413,14 @@ pub(crate) fn solve_with(
             .map(|e| s.slots_of(e).map(|sl| s.used[sl].to_f64()).sum())
             .collect(),
         store_edges,
+        edge_goods: (0..g.edges.len() as u32)
+            .flat_map(|e| {
+                let s = &s;
+                s.slots_of(e)
+                    .filter(|&sl| !s.used[sl].is_zero())
+                    .map(move |sl| (e, s.goods[s.slot_good[sl] as usize], s.used[sl]))
+            })
+            .collect(),
         dom_level: s.dom_level.clone(),
         duty: s.duty.clone(),
         fed: s.fed.iter().map(|q| q.to_f64()).collect(),
