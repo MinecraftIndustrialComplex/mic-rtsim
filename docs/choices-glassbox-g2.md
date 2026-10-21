@@ -128,6 +128,8 @@ Not built: spreading the remaining rounds over later steps. The solver's state i
 
 ## Known bugs
 
+None open.
+
 Fixed before landing: `glassreplay.crushing_wash_blast` on native 86b1369 (fresh world, the lead's gate) was not a dead copy. Both copies' compiles had 12 nodes and 10 edges, without the 14 belt processing nodes (MACHINE model 16, the fan zones), against 26 and 24 in other runs. Both checksums failed 5 strikes, and the far copy was never eligible. The cause was district detection, not the compile or the harness: with the fans at chunk-local x 0, nothing joined their chunk to the district. G2-73 fixes it and G2-76 tests it.
 
 Fixed before landing: the cut from a simulated sender into a live store or machine was not capped (I7, G-B2). A live receiver's room was a flag from the compile's regime, not an amount, so a sender with any room downstream carried everything it made and the reload owed what did not fit (1,000 brass pressed into 312 sheets of room in the unit test; about 96,000 mB of water booked into a live boiler in the m7 straddle smoke, 10,000 placed). G2-66 caps it and G2-67 lands it where it crossed.
