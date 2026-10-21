@@ -378,7 +378,7 @@ or three rounds (ESTIMATE; the G1 corpus measures it, §11.3).
 | Arm ROUND_ROBIN | starts after the last used index, skips refusing ones | equal shares, water-filling | exact in rate |
 | Arm FORCED_ROUND_ROBIN | only the next index | equal shares limited by the slowest | exact in rate |
 | Pipe branches | even split with remainder, refusing outputs drop out (`FluidNetwork.tick`) | water-filling | exact |
-| Belt side insertion | waits only for its own side's last insertion; items carried along the belt never block it (`canInsertAtFromSide`, `isBlocking`) | side inputs first, the main line takes the rest (GB72, pending Ben) | exact in rate; bounded when the segment is full |
+| Belt side insertion | waits only for its own side's last insertion; items carried along the belt never block it (`canInsertAtFromSide`, `isBlocking`) | side inputs first, the main line takes the rest (GB72) | exact in rate; bounded when the segment is full |
 | Belt funnel on the side | takes what matches its filter and fits; the rest passes | filter split, acceptance-limited | exact |
 | Saw with several recipes | rotates `recipeIndex` at each start | equal shares among matching recipes, unless filtered | exact in rate |
 | Package routing | address match | deterministic | exact |
@@ -386,7 +386,7 @@ or three rounds (ESTIMATE; the G1 corpus measures it, §11.3).
 
 "Exact in rate" means the long-run rate is exact; the order of individual stacks is not modelled.
 
-**Changed by the lead, pending Ben (GB72, 2026-10-21):** belt side insertion is modelled as Create has
+**Changed by Ben (GB72, 2026-10-21):** belt side insertion is modelled as Create has
 it. `BeltInventory.canInsertAtFromSide` refuses an insertion only while an earlier insertion at the same
 segment from the same side is within reach (`isBlocking`: inserted at 0.4375 along the segment, it blocks
 until it has moved more than 1.0625 blocks); the items carried along the belt are never checked, so a
@@ -402,10 +402,10 @@ through    = min(t, c - sum(inserted))        (the rest of the segment)
 
 Below capacity both are exact. When the segment is full, which gaps each side wins is sub-tick timing,
 so the merge is bounded (shared capacity) once more than one input flows. U is unchanged: it is
-routing-free and contains both orders. The alternative is the row's old text, "only into gaps; items
-already on the belt pass first (`canInsertAtFromSide`)" with the model "main line first, side inputs
-share the rest", class bounded; the solver keeps it behind `solve::BELT_INSERTIONS_FIRST` (false gives
-it back).
+routing-free and contains both orders. The rejected design is the row's old text, "only into gaps;
+items already on the belt pass first (`canInsertAtFromSide`)" with the model "main line first, side
+inputs share the rest", class bounded; the solver keeps it behind `solve::BELT_INSERTIONS_FIRST` (false
+gives it back).
 
 ### 3.4 Cycles
 
@@ -416,7 +416,7 @@ it back).
 - **Any other SCC** is one node solved as a small LP. That optimum is only an upper bound, so its replay
   rate is `min(LP bound, measured)` and it waits for a measurement before replaying (§3.5).
 
-**Changed by the lead, pending Ben (GB72, 2026-10-21):** an over-fed sequenced-assembly loop is stalled,
+**Changed by Ben (GB72, 2026-10-21):** an over-fed sequenced-assembly loop is stalled,
 not settled at capacity. Let mu be the host's rate of finished products (one per cycle, the cycle being
 the slowest machine's work per product) and f the rate at which the product's base good comes onto the
 loop from outside. A side insertion never waits for the items going round (§3.3), so while f > mu the
@@ -429,12 +429,13 @@ jam is absorbing, so the end state does not depend on tick order. Corpus 6 measu
 L has converged, each saturated SEQUENCED host on a cycle whose loop (the goods edges' strongly connected
 component around it) holds no store gets its feed measured by a probe solve with the loop as a sink. If
 f > mu for any of its base goods, L is 0 on every goods edge into the loop and the fixed point is solved
-again. f = mu runs. U keeps the capacity, and the goods stay bounded (cycle), so the checksum window
-`[0, U]` holds either outcome. Not verified: once the jam reaches the feed point, the feed shares slots
+again. f = mu runs. U keeps the capacity (the LP passes goods through the loop's recipe-less
+deployers, as L does), and the goods stay bounded (cycle), so the checksum window `[0, U]` holds either
+outcome. Not verified: once the jam reaches the feed point, the feed shares slots
 with the queue (about one per two queue advances), so its rate falls to about half the head machine's
 pass rate s; with mu = s / P (P passes per product at the head machine) the jam needs P > 2, and a loop of
-one or two passes may settle at capacity instead. The alternative is the old reading, which the solver
-keeps behind `solve::OVERFED_LOOPS_STALL` (false gives it back): the loop settles at its machines'
+one or two passes may settle at capacity instead. The rejected design is the old reading, which the
+solver keeps behind `solve::OVERFED_LOOPS_STALL` (false gives it back): the loop settles at its machines'
 capacity, the feed held back to mu.
 
 ### 3.5 Bounds, and never more than reality

@@ -42,16 +42,16 @@ pub fn chance_variance(e: f64) -> f64 {
     }
 }
 
-/// GB72 (GLASSBOX.md §3.3, changed by the lead, pending Ben): belt side insertion as Create has
-/// it. `BeltInventory.canInsertAtFromSide` (`isBlocking`) stops an insertion only while an earlier
+/// GB72 (GLASSBOX.md §3.3, changed by Ben 2026-10-21): belt side insertion as Create has it.
+/// `BeltInventory.canInsertAtFromSide` (`isBlocking`) stops an insertion only while an earlier
 /// insertion at the same segment from the same side is within a block of it, never for the items
 /// passing, so at a belt segment the insertions go first, sharing the segment's capacity among
 /// themselves, and the through traffic (in-edges flagged `THROUGH`) takes what is left. `false`
 /// restores the earlier rule: the main line first, the side inputs sharing the rest.
 pub const BELT_INSERTIONS_FIRST: bool = true;
 
-/// GB72 (GLASSBOX.md §3.4, changed by the lead, pending Ben): a sequenced-assembly loop fed faster
-/// than its machines finish items stalls ([`Solver::shut_overfed_loops`]). `false` restores
+/// GB72 (GLASSBOX.md §3.4, changed by Ben 2026-10-21): a sequenced-assembly loop fed faster than
+/// its machines finish items stalls ([`Solver::shut_overfed_loops`]). `false` restores
 /// settling at the machines' capacity.
 pub const OVERFED_LOOPS_STALL: bool = true;
 
