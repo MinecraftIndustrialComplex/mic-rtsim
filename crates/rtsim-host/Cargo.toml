@@ -23,6 +23,9 @@ mic-native-rt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
+# The host source (`--view`): the save viewer's backend over the fork, served by mic-viewer.
+rtsim-view.workspace = true
+mic-viewer.workspace = true
 
 [dev-dependencies]
 rtsim-travel.workspace = true

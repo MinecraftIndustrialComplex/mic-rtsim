@@ -89,7 +89,8 @@ usage:
       then runs the engine on the fork with the Java side of a server where nobody is online.
       1x and 10x follow the wall clock, max runs flat out; --until stops after N ticks or N game
       days (@ for a game time), with a save every 10 game days and a final one. --season-days
-      gives the industry module Serene Seasons' calendar. --view serves the viewer from the host
+      gives the industry module Serene Seasons' calendar. --view [IP:PORT] serves the viewer page
+      from the fork's saves, reread after each one, and saves every 2 s while a page is open
       (loopback 127.0.0.1:8740 by default; tailnet addresses need --allow-tailnet). Ctrl-C stops
       with a final save; p, s, 1x, 10x, max and q (then Enter) pause, save, set the speed, quit.
   rtsim-cli export <world> <dir>

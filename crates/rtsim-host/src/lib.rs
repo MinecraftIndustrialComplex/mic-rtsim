@@ -7,8 +7,10 @@
 //! - [`save`]: the Java side's files of a world (journal, `level.dat`, config, Deep Time layout).
 //! - [`java`]: the fake Java side rtsim-jni's tests and the host share.
 //! - [`nbt`]: Minecraft's NBT, read and written whole.
+//! - [`view`]: the host source, the viewer served from the host's own saves.
 pub mod fork;
 pub mod java;
 pub mod nbt;
 pub mod run;
 pub mod save;
+pub mod view;

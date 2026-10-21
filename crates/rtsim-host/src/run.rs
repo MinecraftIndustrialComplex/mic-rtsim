@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use rtsim_industry::obs::{Conditions, Obs, Timed};
@@ -185,6 +185,8 @@ pub struct Control {
     pub paused: AtomicBool,
     /// 0: as the options say; else a [`Speed`] code.
     speed: AtomicU8,
+    /// The game time of the last hand-over, as the loop left it (the viewer's clock).
+    pub game_time: AtomicI64,
 }
 
 impl Default for Control {
@@ -201,6 +203,7 @@ impl Control {
             save_now: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             speed: AtomicU8::new(0),
+            game_time: AtomicI64::new(0),
         }
     }
 
@@ -208,7 +211,8 @@ impl Control {
         self.speed.store(s.code(), Ordering::Relaxed);
     }
 
-    fn speed(&self, default: Speed) -> Speed {
+    /// The speed set by a key, else `default` (the options').
+    pub fn speed(&self, default: Speed) -> Speed {
         Speed::of_code(self.speed.load(Ordering::Relaxed)).unwrap_or(default)
     }
 }
@@ -542,7 +546,8 @@ impl Host {
     }
 
     /// Runs until `opts.until`, `ctl.stop`, or an error; `report` gets a status line every
-    /// `every` of wall time and at each save. Saves every `opts.save_every` of game time.
+    /// `every` of wall time. Saves every `opts.save_every` of game time, and when `ctl.save_now`
+    /// is set (a key, or the viewer's lease: [`crate::view`]), paused or not.
     pub fn run(
         &mut self,
         opts: &Options,
@@ -560,6 +565,7 @@ impl Host {
         let mut origin = (Instant::now(), self.j.game_time);
         let mut last_report = (Instant::now(), self.j.game_time);
         let mut stopped = false;
+        ctl.game_time.store(self.last_handed, Ordering::Relaxed);
         loop {
             if target.is_some_and(|t| self.j.game_time > t) {
                 break;
@@ -569,6 +575,9 @@ impl Host {
                 break;
             }
             if ctl.paused.load(Ordering::Relaxed) {
+                if ctl.save_now.swap(false, Ordering::Relaxed) {
+                    self.save()?;
+                }
                 std::thread::sleep(Duration::from_millis(50));
                 origin = (Instant::now(), self.j.game_time);
                 continue;
@@ -593,13 +602,12 @@ impl Host {
             }
             let stride = opts.stride_for(speed);
             self.step(stride, limit)?;
+            ctl.game_time.store(self.last_handed, Ordering::Relaxed);
             let save_due = self.last_handed - self.last_save_at >= opts.save_every;
             if save_due || ctl.save_now.swap(false, Ordering::Relaxed) {
                 self.save()?;
-                let rate = rate_since(last_report, self.last_handed);
-                report(&self.status(speed, stride, rate, false));
-                last_report = (Instant::now(), self.last_handed);
-            } else if last_report.0.elapsed() >= every {
+            }
+            if last_report.0.elapsed() >= every {
                 let rate = rate_since(last_report, self.last_handed);
                 report(&self.status(speed, stride, rate, false));
                 last_report = (Instant::now(), self.last_handed);

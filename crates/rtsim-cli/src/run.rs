@@ -2,17 +2,24 @@
 //! `rtsim-cli run <world> --fork <dir> ...`: the headless host (VIEWER.md §12; rtsim_host::run).
 //! The world is exported into `<dir>` first (or a fork already there resumes), then the engine
 //! runs on the fork's pages with the Java side of a server where nobody is online. Ctrl-C (or
-//! `q` and Enter) stops it with a final save.
+//! `q` and Enter) stops it with a final save. `--view` serves the viewer page from the fork's
+//! saves as the run makes them (the host source, rtsim_host::view).
 
 use std::io::BufRead;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use mic_viewer::http::{Config, Server};
+use mic_viewer::viewer::App;
 use rtsim_host::fork;
 use rtsim_host::run::{Control, DAY, Host, Options, Speed, Until};
+use rtsim_host::view::{HostView, LEASE_SAVE_EVERY};
 use rtsim_kernel::page::Durability;
+use rtsim_view::Limits;
 
 static CTL: Control = Control::new();
 
@@ -30,7 +37,7 @@ struct Args {
     world: PathBuf,
     dir: PathBuf,
     opts: Options,
-    view: Option<String>,
+    view: Option<SocketAddr>,
     allow_tailnet: bool,
     every: Duration,
 }
@@ -76,13 +83,15 @@ fn parse(args: &[&str]) -> Result<Args, String> {
                 );
             }
             "--view" => {
-                // The address is optional (host:port): 127.0.0.1:8740 without one.
+                // The address is optional (IP:port): loopback at the viewer's port without one.
                 match args.get(i + 1) {
                     Some(a) if !a.starts_with("--") && a.contains(':') => {
-                        view = Some(a.to_string());
+                        view = Some(a.parse().map_err(|_| {
+                            format!("--view {a}: an IP address and port (127.0.0.1:8740)")
+                        })?);
                         i += 1;
                     }
-                    _ => view = Some("127.0.0.1:8740".to_string()),
+                    _ => view = Some(SocketAddr::from(([127, 0, 0, 1], mic_viewer::DEFAULT_PORT))),
                 }
             }
             "--allow-tailnet" => allow_tailnet = true,
@@ -140,11 +149,13 @@ pub fn cli(args: &[&str]) -> ExitCode {
 }
 
 fn run(a: &Args) -> Result<(), String> {
-    if let Some(addr) = &a.view {
-        let _ = a.allow_tailnet;
+    // Where the viewer will listen, checked before the export: never a public address (VWD-7).
+    if let Some(addr) = a.view
+        && !mic_viewer::http::address_allowed(addr.ip(), a.allow_tailnet)
+    {
         return Err(format!(
-            "--view {addr}: the host source (VIEWER.md §4.1) is not built yet; `rtsim-cli view {}` shows the fork as saved",
-            a.dir.display()
+            "--view {addr}: not a loopback address (reach the viewer with `ssh -L`; tailnet \
+             addresses need --allow-tailnet)"
         ));
     }
     fork::check_apart(&a.world, &a.dir)?;
@@ -172,6 +183,10 @@ fn run(a: &Args) -> Result<(), String> {
         let t = u.target(host.start_time);
         println!("until game time {t} (day {:.2})", t as f64 / DAY as f64);
     }
+    let viewer = match a.view {
+        Some(addr) => Some(serve(a, addr)?),
+        None => None,
+    };
     // SAFETY: the handler only stores to atomics and calls _exit.
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
@@ -186,6 +201,17 @@ fn run(a: &Args) -> Result<(), String> {
     let refused = host.j.refused.clone();
     let (peak_journal, peak_flight, waited) = (host.peak_journal, host.peak_in_flight, host.wait);
     let closed = host.close();
+    if let Some((hv, mut server, reader)) = viewer {
+        hv.stop();
+        server.stop();
+        let _ = reader.join();
+        let (n, unchanged) = hv.rereads();
+        println!(
+            "the viewer reread the fork {n} times ({unchanged} found nothing newer), the longest in {:.1} ms; the lease asked for {} saves",
+            hv.longest_reread().as_secs_f64() * 1e3,
+            hv.lease_saves()
+        );
+    }
     let out = out?;
     closed?;
     println!(
@@ -208,6 +234,40 @@ fn run(a: &Args) -> Result<(), String> {
             .join(", ")
     );
     Ok(())
+}
+
+/// The host source on `addr`: the fork as last saved, reread after each save (rtsim_host::view).
+fn serve(
+    a: &Args,
+    addr: SocketAddr,
+) -> Result<(Arc<HostView>, Server, std::thread::JoinHandle<()>), String> {
+    let heap: rtsim_view::view::HeapProbe = Arc::new(|| crate::sys::heap_live() as u64);
+    let hv = HostView::open(&a.dir, &CTL, a.opts.speed, Limits::default(), Some(heap))
+        .map_err(|e| format!("the viewer: {e}"))?;
+    let reader = hv
+        .start()
+        .map_err(|e| format!("the viewer's reader: {e}"))?;
+    let config = Config {
+        allow_tailnet: a.allow_tailnet,
+        name: "rtsim-host".into(),
+    };
+    let server = Server::start(addr, config, Arc::new(App::new(Arc::clone(&hv))))
+        .map_err(|e| format!("the viewer on {addr}: {e}"))?;
+    let bound = server.addr().unwrap_or(addr);
+    let scope = if bound.ip().is_loopback() {
+        "loopback only"
+    } else {
+        "tailnet"
+    };
+    println!(
+        "viewer: http://{bound}/ ({scope}): the fork's last save, reread after each one; saved every {} s while a page is open",
+        LEASE_SAVE_EVERY.as_secs()
+    );
+    println!(
+        "  from another machine: ssh -L {p}:127.0.0.1:{p} <this host>, then open http://localhost:{p}/",
+        p = bound.port()
+    );
+    Ok((hv, server, reader))
 }
 
 /// Terminal keys, a line at a time (cheap: no raw mode). Ends at end of input.

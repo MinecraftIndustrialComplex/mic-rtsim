@@ -2,8 +2,8 @@
 //! The headless host's exit test (VIEWER.md §12, §16 row V2): a world's pages open in the host
 //! with the state hash they were saved with; long strides against 20-tick hand-overs; exports from
 //! a world whose server is saving underneath; a world the host never writes into; and a soak of a
-//! thousand game days at max with Java's journal, the commands in flight and the kept outboxes
-//! bounded.
+//! thousand game days at max, with the viewer attached and a page reading it, with Java's journal,
+//! the commands in flight and the kept outboxes bounded.
 //!
 //! The populated world is made here by the fake Java side, as a server with a player about would
 //! leave it: villages with roads and caravans, sea ports and a haven, a dragon's lair with its
@@ -12,10 +12,16 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
+
+use mic_viewer::http::{Config, Server};
+use mic_viewer::viewer::App;
 
 use rtsim_conflict::boundary as cb;
 use rtsim_ecology::boundary::{self as db, SpawnKind};
@@ -26,10 +32,12 @@ use rtsim_host::java::{self, Java, OVERWORLD, PLAYER, WorldSave};
 use rtsim_host::nbt::{self, Tag};
 use rtsim_host::run::{Control, DAY, Host, Options, STRIDE_FAST, Speed, Until, state_hashes};
 use rtsim_host::save::{self, Journal};
+use rtsim_host::view::HostView;
 use rtsim_jni::engine::Engine;
 use rtsim_jni::wire;
 use rtsim_kernel::page::{Durability, PageStore};
 use rtsim_ships::boundary as sb;
+use rtsim_view::Limits;
 
 // ---- the populated world ------------------------------------------------------------------------
 
@@ -615,6 +623,9 @@ struct Soak {
     samples: Vec<Sample>,
     /// Bytes and pages by table on the first sampled day and the last.
     tables: Vec<(i64, Tables)>,
+    /// The game time the run ended at.
+    end: i64,
+    viewer: Option<Viewed>,
 }
 
 impl Soak {
@@ -663,6 +674,19 @@ impl Soak {
                 s.agents
             );
         }
+        if let Some(v) = &self.viewer {
+            eprintln!(
+                "viewer: {} rereads ({} found nothing newer, the longest {:.1} ms), {} lease saves; the page got {} frame notices and {} answers ({} not 200), and saw the map reach day {:.1}",
+                v.rereads,
+                v.unchanged,
+                v.longest_reread.as_secs_f64() * 1e3,
+                v.lease_saves,
+                v.frames,
+                v.answers,
+                v.failures.len(),
+                v.last_tick as f64 / DAY as f64
+            );
+        }
         if let [(d0, a), .., (d1, b)] = &self.tables[..] {
             eprintln!("table   bytes (pages) on day {d0}   on day {d1}");
             for (t, (n1, p1)) in b {
@@ -675,9 +699,219 @@ impl Soak {
     }
 }
 
+/// What the viewer did over a soak, and what a page reading it saw.
+#[derive(Debug, Default)]
+struct Viewed {
+    rereads: u64,
+    unchanged: u64,
+    longest_reread: Duration,
+    lease_saves: u64,
+    /// Frame notices on the page's stream.
+    frames: u64,
+    /// Answers to the page's requests, and the ones that were not 200.
+    answers: u64,
+    failures: Vec<String>,
+    /// The newest tick `/api/world` showed.
+    last_tick: i64,
+    error: Option<String>,
+}
+
+/// One GET on loopback: (status, body).
+fn get(addr: SocketAddr, path: &str) -> (u16, Vec<u8>) {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    s.write_all(
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes(),
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).unwrap();
+    let end = out
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a response head");
+    let status = String::from_utf8_lossy(&out[..end])
+        .split(' ')
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap();
+    (status, out[end + 4..].to_vec())
+}
+
+/// Occurrences of `m` in `tail`; leaves only what could start a cut one.
+fn count(tail: &mut Vec<u8>, m: &[u8]) -> u64 {
+    let (mut n, mut i, mut after) = (0, 0, 0);
+    while i + m.len() <= tail.len() {
+        if &tail[i..i + m.len()] == m {
+            n += 1;
+            i += m.len();
+            after = i;
+        } else {
+            i += 1;
+        }
+    }
+    let keep = after.max(tail.len().saturating_sub(m.len() - 1));
+    tail.drain(..keep);
+    n
+}
+
+/// The host source on loopback, with a page reading it: one stream held open (counting its frame
+/// notices) and, every 100 ms, the world, the marks of every layer over the whole frame, the
+/// status and a base map tile.
+struct Page {
+    hv: Arc<HostView>,
+    server: Server,
+    reader: JoinHandle<()>,
+    stop: Arc<AtomicBool>,
+    frames: Arc<AtomicU64>,
+    threads: Vec<JoinHandle<(u64, Vec<String>, i64)>>,
+}
+
+impl Page {
+    fn open(dir: &Path, ctl: &'static Control) -> Page {
+        let heap: rtsim_view::view::HeapProbe =
+            Arc::new(|| mic_native_rt::memory::in_use().max(0) as u64);
+        let hv = HostView::open(dir, ctl, Speed::Max, Limits::default(), Some(heap)).unwrap();
+        let reader = hv.start().unwrap();
+        let config = Config {
+            allow_tailnet: false,
+            name: "rtsim-host-test".into(),
+        };
+        let server = Server::start(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            config,
+            Arc::new(App::new(Arc::clone(&hv))),
+        )
+        .unwrap();
+        let addr = server.addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let frames = Arc::new(AtomicU64::new(0));
+        let stream = {
+            let (stop, frames) = (Arc::clone(&stop), Arc::clone(&frames));
+            std::thread::spawn(move || {
+                let mut s = TcpStream::connect(addr).unwrap();
+                s.set_read_timeout(Some(Duration::from_millis(200)))
+                    .unwrap();
+                s.write_all(b"GET /api/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                    .unwrap();
+                let mut buf = vec![0u8; 1 << 16];
+                let mut tail = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    match s.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            tail.extend_from_slice(&buf[..n]);
+                            frames.fetch_add(count(&mut tail, b"event: frame"), Ordering::Relaxed);
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                (0, Vec::new(), 0)
+            })
+        };
+        let poller = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut answers = 0u64;
+                let mut failures = Vec::new();
+                let mut last_tick = i64::MIN;
+                let mut check = |path: &str| -> Option<serde_json::Value> {
+                    let (status, body) = get(addr, path);
+                    answers += 1;
+                    if status != 200 && status != 204 {
+                        failures.push(format!(
+                            "{path}: {status} {}",
+                            String::from_utf8_lossy(&body)
+                        ));
+                        return None;
+                    }
+                    serde_json::from_slice(&body).ok()
+                };
+                let layers: Vec<String> = check("/api/layers")
+                    .and_then(|l| {
+                        l["layers"].as_array().map(|a| {
+                            a.iter()
+                                .filter_map(|d| d["id"].as_str().map(str::to_owned))
+                                .collect()
+                        })
+                    })
+                    .unwrap_or_default();
+                while !stop.load(Ordering::Relaxed) {
+                    if let Some(w) = check("/api/world") {
+                        assert_eq!(w["source"], "host");
+                        let t = w["time"]["tick"].as_i64().unwrap();
+                        assert!(
+                            t >= last_tick,
+                            "the map never goes back: {t} after {last_tick}"
+                        );
+                        last_tick = t;
+                        let f = &w["frames"][0];
+                        let b: Vec<f64> =
+                            (0..4).map(|i| f["bounds"][i].as_f64().unwrap()).collect();
+                        let bpp = ((b[2] - b[0]) / 1000.0).max(0.25);
+                        check(&format!(
+                            "/api/marks?frame={}&x0={}&z0={}&x1={}&z1={}&bpp={bpp}&layers={}",
+                            f["id"].as_str().unwrap(),
+                            b[0],
+                            b[1],
+                            b[2],
+                            b[3],
+                            layers.join(",")
+                        ));
+                        if let Some(url) = f["tiles"][0]["url"].as_str() {
+                            let z = f["tiles"][0]["pyramid"]["max_zoom"].as_i64().unwrap_or(0);
+                            let path = url
+                                .replace("{z}", &z.to_string())
+                                .replace("{x}", "0")
+                                .replace("{y}", "0");
+                            check(&format!("/{path}"));
+                        }
+                    }
+                    if let Some(s) = check("/api/status") {
+                        assert!(s["host"]["error"].is_null(), "{}", s["host"]["error"]);
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                (answers, failures, last_tick)
+            })
+        };
+        Page {
+            hv,
+            server,
+            reader,
+            stop,
+            frames,
+            threads: vec![stream, poller],
+        }
+    }
+
+    fn close(mut self) -> Viewed {
+        // One more look, so the last save is shown.
+        self.hv.poll();
+        std::thread::sleep(Duration::from_millis(300));
+        self.stop.store(true, Ordering::Relaxed);
+        let mut v = Viewed::default();
+        for t in self.threads {
+            let (answers, failures, last) = t.join().unwrap();
+            v.answers += answers;
+            v.failures.extend(failures);
+            v.last_tick = v.last_tick.max(last);
+        }
+        self.hv.stop();
+        self.server.stop();
+        self.reader.join().unwrap();
+        (v.rereads, v.unchanged) = self.hv.rereads();
+        v.longest_reread = self.hv.longest_reread();
+        v.lease_saves = self.hv.lease_saves();
+        v.frames = self.frames.load(Ordering::Relaxed);
+        v.error = self.hv.error();
+        v
+    }
+}
+
 /// `days` game days at max on a fork of a populated world, the default stride, real fsyncs,
-/// sampled after every save.
-fn soak(tag: &str, days: i64) -> Soak {
+/// sampled every 10 game days; `viewer`: with the host source served and a page reading it.
+fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
     let world = populated(tag, 3);
     let parent = scratch(&format!("{tag}-fork"));
     let dir = parent.join("fork");
@@ -688,7 +922,8 @@ fn soak(tag: &str, days: i64) -> Soak {
     };
     let mut host = Host::open(&dir, &o).unwrap();
     let start = host.start_time;
-    let ctl = Control::new();
+    let ctl: &'static Control = Box::leak(Box::new(Control::new()));
+    let page = viewer.then(|| Page::open(&dir, ctl));
     let mut samples = Vec::new();
     let mut tables = Vec::new();
     let t0 = Instant::now();
@@ -699,7 +934,7 @@ fn soak(tag: &str, days: i64) -> Soak {
             until: Some(Until::At(start + ran * DAY)),
             ..o.clone()
         };
-        host.run(&oc, &ctl, Duration::from_secs(3600), |_| {})
+        host.run(&oc, ctl, Duration::from_secs(3600), |_| {})
             .unwrap();
         let by_table = table_bytes(&dir.join(save::PAGES));
         samples.push(Sample {
@@ -716,7 +951,10 @@ fn soak(tag: &str, days: i64) -> Soak {
             tables.push((ran, by_table));
         }
     }
+    let viewer = page.map(Page::close);
     let out = Soak {
+        viewer,
+        end: host.last_handed,
         days: ran,
         steps: host.steps,
         wall: t0.elapsed(),
@@ -747,13 +985,34 @@ fn soak_days() -> i64 {
         .unwrap_or(1_000)
 }
 
-/// A thousand game days at max (`RTSIM_HOST_SOAK_DAYS` for another length) with the outboxes
-/// bounded: Java's journal is trimmed, the commands in flight are answered, the industry outbox
-/// and the core's kept command outbox do not grow. The measured rate and cost per step are
-/// printed for VIEWER.md §12.4.
+/// A thousand game days at max (`RTSIM_HOST_SOAK_DAYS` for another length) with the viewer
+/// attached and a page reading it, and the outboxes bounded: Java's journal is trimmed, the
+/// commands in flight are answered, the industry outbox and the core's kept command outbox do not
+/// grow. Every answer the page got was good, its stream got frame notices, and its map kept up
+/// with the run. The measured rate and cost per step are printed for VIEWER.md §12.4.
+#[test]
+fn a_thousand_days_at_max_with_the_viewer_attached_keeps_the_outboxes_bounded() {
+    let s = soak("soak", soak_days(), true);
+    let v = s.viewer.as_ref().unwrap();
+    assert_eq!(v.failures, Vec::<String>::new(), "every answer was good");
+    assert_eq!(v.error, None, "every reread read");
+    assert!(v.answers > 10, "the page asked: {v:?}");
+    assert!(v.frames > 2, "the stream got frame notices: {v:?}");
+    assert!(v.rereads > 10, "the fork was reread after its saves: {v:?}");
+    assert!(
+        v.last_tick >= s.end - 20 * DAY,
+        "the map kept up with the run: {v:?}"
+    );
+    outboxes_bounded(&s);
+}
+
+/// The same soak with no viewer: the host's own rate, for VIEWER.md §12.4.
 #[test]
 fn a_thousand_days_at_max_keeps_the_outboxes_bounded() {
-    let s = soak("soak", soak_days());
+    outboxes_bounded(&soak("soak-bare", soak_days(), false));
+}
+
+fn outboxes_bounded(s: &Soak) {
     assert!(s.days >= 100, "a soak of at least 100 game days");
     assert!(
         s.peak_journal < 2_000,
@@ -784,7 +1043,7 @@ fn a_thousand_days_at_max_keeps_the_outboxes_bounded() {
 #[test]
 #[ignore = "the leg index never purges its past windows (VIEWER.md §12.4)"]
 fn a_thousand_days_at_max_keeps_the_state_bounded() {
-    let s = soak("soak-state", soak_days());
+    let s = soak("soak-state", soak_days(), false);
     let pages = s.early_late(|x| x.pages);
     assert!(
         pages.1 <= 2 * pages.0 + (64 << 10),
