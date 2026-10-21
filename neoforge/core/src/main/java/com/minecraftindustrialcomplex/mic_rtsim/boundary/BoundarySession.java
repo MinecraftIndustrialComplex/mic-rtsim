@@ -219,6 +219,11 @@ public final class BoundarySession {
             durablePending = durableObsSeq;
     }
 
+    /** The latest world save known to be on disk, not yet or already reported (the GameTests read it). */
+    public long durablePending() {
+        return durablePending;
+    }
+
     private void reportDurable(long gameTime) {
         long d = durablePending;
         if (d <= durableReported)

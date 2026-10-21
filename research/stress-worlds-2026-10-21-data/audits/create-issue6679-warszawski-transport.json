@@ -1,0 +1,1213 @@
+{
+ "base": "/home/greencheetah/mic-stress-worlds/create-issue6679-warszawski-transport/world",
+ "world_root": "/home/greencheetah/mic-stress-worlds/create-issue6679-warszawski-transport/world/Warszawski Transport Publiczny",
+ "total_bytes": 167943282,
+ "level": {
+  "top_keys": [
+   "Data",
+   "fml"
+  ],
+  "data_keys": [
+   "Difficulty",
+   "thunderTime",
+   "BorderSize",
+   "LastPlayed",
+   "allowCommands",
+   "BorderCenterX",
+   "initialized",
+   "confirmedExperimentalSettings",
+   "BorderWarningBlocks",
+   "hardcore",
+   "version",
+   "ServerBrands",
+   "SpawnX",
+   "GameType",
+   "BorderSafeZone",
+   "SpawnAngle",
+   "LevelName",
+   "forgeLifecycle",
+   "Time",
+   "ScheduledEvents",
+   "clearWeatherTime",
+   "BorderDamagePerBlock",
+   "WanderingTraderSpawnDelay",
+   "thundering",
+   "WasModded",
+   "BorderWarningTime",
+   "WanderingTraderSpawnChance",
+   "SpawnY",
+   "SpawnZ",
+   "BorderSizeLerpTime",
+   "raining",
+   "WorldGenSettings",
+   "rainTime",
+   "DataPacks",
+   "DataVersion",
+   "GameRules",
+   "DragonFight",
+   "Player",
+   "DifficultyLocked",
+   "DayTime",
+   "BorderCenterZ",
+   "BorderSizeLerpTarget",
+   "Version",
+   "CustomBossEvents"
+  ],
+  "LevelName": "Warszawski Transport Publiczny",
+  "DataVersion": 3465,
+  "version": 19133,
+  "WasModded": 1,
+  "GameType": 1,
+  "DayTime": 93838,
+  "Time": 2053847,
+  "LastPlayed": 1720639067356,
+  "Version": {
+   "Id": 3465,
+   "Name": "1.20.1",
+   "Series": "main",
+   "Snapshot": 0
+  },
+  "ServerBrands": [
+   "forge"
+  ],
+  "DataPacks": {
+   "Enabled": [
+    "vanilla",
+    "mod:borderlesswindow",
+    "mod:bellsandwhistles",
+    "mod:fullbrightnesstoggle",
+    "mod:supermartijn642configlib",
+    "mod:rechiseled",
+    "mod:createdeco",
+    "mod:acedium",
+    "mod:copycats",
+    "mod:jei",
+    "mod:architects_palette",
+    "mod:dynamiclights",
+    "mod:mixinextras",
+    "mod:rechiseledcreate",
+    "mod:create_dragon_lib",
+    "mod:railways",
+    "mod:fusion",
+    "mod:cloth_config",
+    "mod:forge",
+    "mod:tfmg",
+    "mod:embeddium",
+    "mod:farmersdelight",
+    "mod:terrablender",
+    "mod:biomesoplenty",
+    "mod:supermartijn642corelib",
+    "mod:kotlinforforge",
+    "mod:flywheel",
+    "mod:create",
+    "mod:create_central_kitchen",
+    "mod:createunlimited",
+    "mod:ias",
+    "mod:create_sa",
+    "mod:collective",
+    "mod:storagedrawers",
+    "mod:immersive_paintings",
+    "mod:framedblocks",
+    "mod:worldedit",
+    "mod:architectury",
+    "mod:dragonlib",
+    "mod:createrailwaysnavigator",
+    "mod:connectedglass",
+    "mod:computercraft",
+    "mod:betterf3",
+    "mod:create_enchantment_industry",
+    "mod:createaddition",
+    "create_central_kitchen:farmersdelight",
+    "mod:mcef",
+    "mod:scena",
+    "mod:sophisticatedcore",
+    "mod:journeymap",
+    "mod:travelersbackpack",
+    "mod:design_decor",
+    "mod:sophisticatedbackpacks",
+    "mod:webdisplays",
+    "mod:irisflw",
+    "mod:create_dd",
+    "mod:xaerominimap",
+    "mod:oculus",
+    "mod:trafficcraft",
+    "mod:createtrackmap",
+    "mod:chiselsandbits",
+    "mod:essential",
+    "mod:createbigcannons",
+    "mod:create_things_and_misc",
+    "mod:botarium",
+    "mod:mcwwindows",
+    "mod:ritchiesprojectilelib",
+    "mod:everycomp",
+    "mod:create_new_age",
+    "mod:interiors",
+    "mod:athena",
+    "mod:mcwpaths",
+    "mod:create_connected",
+    "mod:chipped",
+    "mod:moonlight",
+    "mod:mcwtrpdoors",
+    "mod:zeta",
+    "mod:quark",
+    "mod:resourcefullib",
+    "mod:mcwroofs",
+    "mod:trainutilities",
+    "mod:mcwfurnitures",
+    "mod:trainperspectivefix",
+    "mod:mcwlights",
+    "Everycomp Generated Pack",
+    "mod:dynamic_fps",
+    "mod:starlight",
+    "mod:canary",
+    "mod:creativecore"
+   ],
+   "Disabled": [
+    "bundle",
+    "create_new_age:create_new_age_monkey_edition"
+   ]
+  },
+  "seed": -6274837027710211394,
+  "dimensions": [
+   "minecraft:the_nether",
+   "minecraft:overworld",
+   "minecraft:the_end"
+  ],
+  "fml_keys": [
+   "Registries",
+   "LoadingModList"
+  ],
+  "forge_mod_list": [
+   [
+    "create_things_and_misc",
+    "1.0.0"
+   ],
+   [
+    "supermartijn642configlib",
+    "1.1.8"
+   ],
+   [
+    "createdeco",
+    "2.0.2-1.20.1-forge"
+   ],
+   [
+    "acedium",
+    "0.2.7-beta"
+   ],
+   [
+    "nvidium",
+    "0.2.7-beta"
+   ],
+   [
+    "scena",
+    "1.0.103"
+   ],
+   [
+    "botarium",
+    "2.3.4"
+   ],
+   [
+    "architects_palette",
+    "1.3.6.1"
+   ],
+   [
+    "mcwwindows",
+    "2.2.1"
+   ],
+   [
+    "dynamiclights",
+    "1.20.1.2"
+   ],
+   [
+    "sophisticatedcore",
+    "0.6.22.611"
+   ],
+   [
+    "ritchiesprojectilelib",
+    "1.0.0-369e88d+1.20.1-forge"
+   ],
+   [
+    "mixinextras",
+    "0.2.0"
+   ],
+   [
+    "sophisticatedbackpacks",
+    "3.20.5.1044"
+   ],
+   [
+    "create_dragon_lib",
+    "1.4.3"
+   ],
+   [
+    "railways",
+    "1.6.4+forge-mc1.20.1"
+   ],
+   [
+    "create_new_age",
+    "1.1.2"
+   ],
+   [
+    "interiors",
+    "0.5.3+forge-mc1.20.1"
+   ],
+   [
+    "cloth_config",
+    "11.1.118"
+   ],
+   [
+    "embeddium",
+    "0.3.19+mc1.20.1"
+   ],
+   [
+    "rubidium",
+    "0.7.1"
+   ],
+   [
+    "athena",
+    "3.1.2"
+   ],
+   [
+    "webdisplays",
+    "2.0.1-1.20.1"
+   ],
+   [
+    "create_connected",
+    "0.8.2-mc1.20.1"
+   ],
+   [
+    "chipped",
+    "3.0.6"
+   ],
+   [
+    "farmersdelight",
+    "1.20.1-1.2.3"
+   ],
+   [
+    "mcwtrpdoors",
+    "1.1.3"
+   ],
+   [
+    "supermartijn642corelib",
+    "1.1.17"
+   ],
+   [
+    "oculus",
+    "1.7.0"
+   ],
+   [
+    "ias",
+    "9.0.0-beta.5"
+   ],
+   [
+    "collective",
+    "7.61"
+   ],
+   [
+    "framedblocks",
+    "9.2.2"
+   ],
+   [
+    "resourcefullib",
+    "2.1.25"
+   ],
+   [
+    "worldedit",
+    "7.2.15+6463-5ca4dff"
+   ],
+   [
+    "mcwroofs",
+    "2.3.0"
+   ],
+   [
+    "architectury",
+    "9.2.14"
+   ],
+   [
+    "computercraft",
+    "1.110.3"
+   ],
+   [
+    "mcwfurnitures",
+    "3.2.2"
+   ],
+   [
+    "trafficcraft",
+    "1.0.4-1.20.1"
+   ],
+   [
+    "dynamic_fps",
+    "3.4.3"
+   ],
+   [
+    "mcwlights",
+    "1.1.0"
+   ],
+   [
+    "essential",
+    "1.3.2.8"
+   ],
+   [
+    "borderlesswindow",
+    "1.20-1.6.0"
+   ],
+   [
+    "bellsandwhistles",
+    "0.4.3-1.20.x"
+   ],
+   [
+    "fullbrightnesstoggle",
+    "4.0"
+   ],
+   [
+    "mcef",
+    "2.1.4-1.20.1"
+   ],
+   [
+    "createbigcannons",
+    "0.5.4-nightly-8b9cea6"
+   ],
+   [
+    "trainutilities",
+    "2.0.1"
+   ],
+   [
+    "rechiseled",
+    "1.1.6"
+   ],
+   [
+    "copycats",
+    "1.3.8+mc.1.20.1-forge"
+   ],
+   [
+    "jei",
+    "15.3.0.4"
+   ],
+   [
+    "journeymap",
+    "5.10.0"
+   ],
+   [
+    "travelersbackpack",
+    "9.1.14"
+   ],
+   [
+    "design_decor",
+    "0.4.0"
+   ],
+   [
+    "rechiseledcreate",
+    "1.0.2"
+   ],
+   [
+    "starlight",
+    "1.1.2+forge.1cda73c"
+   ],
+   [
+    "everycomp",
+    "1.20-2.6.64"
+   ],
+   [
+    "fusion",
+    "1.1.1"
+   ],
+   [
+    "forge",
+    "47.2.32"
+   ],
+   [
+    "tfmg",
+    "0.8.0b"
+   ],
+   [
+    "mcwpaths",
+    "1.0.5"
+   ],
+   [
+    "minecraft",
+    "1.20.1"
+   ],
+   [
+    "dragonlib",
+    "1.20.1-2.1.8"
+   ],
+   [
+    "terrablender",
+    "3.0.1.6"
+   ],
+   [
+    "biomesoplenty",
+    "18.0.0.598"
+   ],
+   [
+    "moonlight",
+    "1.20-2.12.6"
+   ],
+   [
+    "creativecore",
+    "2.11.31"
+   ],
+   [
+    "kotlinforforge",
+    "4.3.0"
+   ],
+   [
+    "flywheel",
+    "0.6.10-7"
+   ],
+   [
+    "irisflw",
+    "1.20.1-0.2.5"
+   ],
+   [
+    "create",
+    "0.5.1.f"
+   ],
+   [
+    "create_dd",
+    "0.1b.Release-Early-Dev"
+   ],
+   [
+    "create_central_kitchen",
+    "1.3.12"
+   ],
+   [
+    "createrailwaysnavigator",
+    "0.5.3-beta-1.20.1-forge"
+   ],
+   [
+    "createunlimited",
+    "0.6.2"
+   ],
+   [
+    "xaerominimap",
+    "24.2.0"
+   ],
+   [
+    "create_sa",
+    "2.0.4."
+   ],
+   [
+    "storagedrawers",
+    "12.0.3"
+   ],
+   [
+    "zeta",
+    "1.0-19"
+   ],
+   [
+    "quark",
+    "4.0-458"
+   ],
+   [
+    "immersive_paintings",
+    "0.6.7+1.20.1"
+   ],
+   [
+    "canary",
+    "0.3.3"
+   ],
+   [
+    "connectedglass",
+    "1.1.11"
+   ],
+   [
+    "createtrackmap",
+    "1.4"
+   ],
+   [
+    "betterf3",
+    "7.0.2"
+   ],
+   [
+    "trainperspectivefix",
+    "0.0NONE"
+   ],
+   [
+    "chiselsandbits",
+    "1.4.148"
+   ],
+   [
+    "create_enchantment_industry",
+    "1.2.9.d"
+   ],
+   [
+    "createaddition",
+    "1.20.1-1.2.4c"
+   ]
+  ]
+ },
+ "tracks": {
+  "file_bytes": 135463,
+  "DataVersion": 3465,
+  "trains": 3,
+  "carriages": 3,
+  "trains_with_schedule": 1,
+  "schedule_entries": 3,
+  "trains_moving_at_save": 0,
+  "trains_derailed": 0,
+  "carriages_with_passengers": 1,
+  "bogey_types": {
+   "create:small_bogey": 6
+  },
+  "graphs": 2,
+  "nodes": 572,
+  "edges": 625,
+  "stations": 10,
+  "signals": 12,
+  "observers": 0,
+  "track_chord_length_blocks": 21011,
+  "edge_materials": {
+   "railways:phantom": 625
+  },
+  "curved_edges": 0,
+  "per_graph": [
+   {
+    "nodes": 571,
+    "edges": 625,
+    "stations": 10,
+    "signals": 12,
+    "observers": 0,
+    "chord_length_blocks": 21011
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   }
+  ],
+  "signal_blocks": 11,
+  "signal_edge_groups": null,
+  "dimension_palette": [
+   "minecraft:overworld"
+  ],
+  "other_keys": [
+   "RailGraphs",
+   "SignalBlocks",
+   "DimensionPalette",
+   "Trains"
+  ]
+ },
+ "data_files": [
+  [
+   "JMPlayerSettings.dat",
+   174
+  ],
+  [
+   "WorldUUID.dat",
+   110
+  ],
+  [
+   "capabilities.dat",
+   49
+  ],
+  [
+   "create_tracks.dat",
+   135463
+  ],
+  [
+   "createrailwaysnavigator_global_settings.dat",
+   282
+  ],
+  [
+   "immersive_paintings.dat",
+   511
+  ],
+  [
+   "mfix_strongholds.dat",
+   668
+  ],
+  [
+   "raids.dat",
+   90
+  ],
+  [
+   "random_sequences.dat",
+   867
+  ],
+  [
+   "ritchiesprojectilelib_chunk_manager.dat",
+   64
+  ],
+  [
+   "sophisticatedbackpacks.dat",
+   2627
+  ]
+ ],
+ "playerdata_files": 2,
+ "datapacks": [],
+ "top_level_entries": [
+  "DIM-1",
+  "DIM1",
+  "advancements",
+  "backpacks",
+  "data",
+  "datapacks",
+  "entities",
+  "icon.png",
+  "level.dat",
+  "level.dat_old",
+  "playerdata",
+  "poi",
+  "region",
+  "serverconfig",
+  "session.lock",
+  "spsSettings.json",
+  "stats",
+  "xaeromap.txt"
+ ],
+ "dimensions": {
+  "minecraft:overworld": {
+   "region_files": 61,
+   "region_bytes": 165789696,
+   "chunks": 40275,
+   "errors": 0,
+   "err_sample": null,
+   "inhabited_chunks_gt_1200": 1391,
+   "inhabited_ticks": 102466389,
+   "dataversions": {
+    "3465": 40275
+   },
+   "block_entities_total": 4689,
+   "block_entities_by_type": {
+    "create:fake_track": 2871,
+    "framedblocks:framed_double_slope": 918,
+    "chiselsandbits:chiseled_block": 364,
+    "create:track": 145,
+    "create:copycat": 120,
+    "copycats:multistate_copycat": 96,
+    "create_dd:item_stockpile": 78,
+    "createrailwaysnavigator:advanced_display_block_entity": 36,
+    "create:track_signal": 12,
+    "create:sliding_door": 12,
+    "framedblocks:framed_vertical_double_stairs": 12,
+    "create:track_station": 10,
+    "design_decor:mmb_crushing_wheel": 4,
+    "trafficcraft:traffic_sign_block_entity": 4,
+    "copycats:copycat_shaft": 3,
+    "create:bogey": 2,
+    "railways:track_switch_andesite": 1,
+    "travelersbackpack:travelers_backpack": 1
+   },
+   "block_entities_by_namespace": {
+    "create": 3172,
+    "framedblocks": 930,
+    "chiselsandbits": 364,
+    "copycats": 99,
+    "create_dd": 78,
+    "createrailwaysnavigator": 36,
+    "design_decor": 4,
+    "trafficcraft": 4,
+    "railways": 1,
+    "travelersbackpack": 1
+   },
+   "blocks_by_namespace": {
+    "minecraft": 3959111934,
+    "architects_palette": 67677,
+    "railways": 5948,
+    "create": 3516,
+    "framedblocks": 930,
+    "rechiseled": 909,
+    "createdeco": 810,
+    "biomesoplenty": 788,
+    "chiselsandbits": 364,
+    "quark": 234,
+    "copycats": 219,
+    "design_decor": 148,
+    "create_dd": 78,
+    "createrailwaysnavigator": 36,
+    "trafficcraft": 8,
+    "travelersbackpack": 1
+   },
+   "blocks_top_non_vanilla": {
+    "architects_palette:hadaline_tiles": 59063,
+    "architects_palette:tuff_bricks": 7721,
+    "railways:track_phantom": 5880,
+    "create:fake_track": 2871,
+    "framedblocks:framed_double_slope": 918,
+    "architects_palette:oak_boards": 893,
+    "rechiseled:andesite_diagonal_bricks": 885,
+    "createdeco:copper_mesh_fence": 810,
+    "biomesoplenty:orange_autumn_leaves": 480,
+    "create:polished_cut_limestone": 396,
+    "chiselsandbits:chiseled": 364,
+    "biomesoplenty:maple_leaves": 282,
+    "quark:limestone": 234,
+    "create:framed_glass_pane": 180,
+    "design_decor:tinted_framed_glass": 144,
+    "copycats:copycat_beam": 120,
+    "create_dd:item_stockpile": 78,
+    "copycats:copycat_slab": 68,
+    "railways:white_slashed_locometal": 67,
+    "create:andesite_door": 24,
+    "createrailwaysnavigator:advanced_display_panel": 24,
+    "rechiseled:glowstone_smooth": 22,
+    "create:blue_seat": 20,
+    "copycats:copycat_byte": 18,
+    "biomesoplenty:hellbark_fence": 18,
+    "create:track_signal": 12,
+    "framedblocks:framed_vertical_double_stairs": 12,
+    "create:track_station": 10,
+    "copycats:copycat_board": 10,
+    "createrailwaysnavigator:advanced_display_block": 6,
+    "design_decor:scorchia_crushing_wheel": 4,
+    "biomesoplenty:redwood_fence": 4,
+    "biomesoplenty:jacaranda_fence": 4,
+    "trafficcraft:traffic_sign_post": 4,
+    "trafficcraft:traffic_sign": 4,
+    "copycats:copycat_shaft": 3,
+    "createrailwaysnavigator:advanced_display_small": 3,
+    "createrailwaysnavigator:advanced_display": 3,
+    "create:small_bogey": 2,
+    "rechiseled:andesite_diagonal_bricks_connecting": 2,
+    "railways:track_switch_andesite": 1,
+    "create:controls": 1,
+    "travelersbackpack:diamond": 1
+   },
+   "blocks_distinct_ids": 80,
+   "entities_by_type": {
+    "immersive_paintings:painting": 15,
+    "create:super_glue": 7
+   },
+   "entities_by_namespace": {
+    "immersive_paintings": 15,
+    "create": 7
+   },
+   "contraption_entities": 0,
+   "contraption_blocks_total": 0,
+   "contraption_biggest": [],
+   "regions": {
+    "-1,-1": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "-1,-2": {
+     "chunks": 448,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1847296
+    },
+    "-1,0": {
+     "chunks": 1024,
+     "be": 558,
+     "create_be": 294,
+     "inhabited_chunks": 139,
+     "bytes": 4300800
+    },
+    "-1,1": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "-1,2": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "-1,3": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4202496
+    },
+    "-1,4": {
+     "chunks": 800,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3284992
+    },
+    "-1,58592": {
+     "chunks": 800,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3284992
+    },
+    "-1,58593": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 21,
+     "bytes": 4206592
+    },
+    "-1,58594": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4202496
+    },
+    "-1,58595": {
+     "chunks": 160,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 663552
+    },
+    "-2,-1": {
+     "chunks": 608,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2502656
+    },
+    "-2,-2": {
+     "chunks": 234,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 970752
+    },
+    "-2,0": {
+     "chunks": 608,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2502656
+    },
+    "-2,1": {
+     "chunks": 606,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2494464
+    },
+    "-2,2": {
+     "chunks": 412,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1699840
+    },
+    "-2,3": {
+     "chunks": 384,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1581056
+    },
+    "-2,4": {
+     "chunks": 300,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1236992
+    },
+    "-2,58592": {
+     "chunks": 373,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1536000
+    },
+    "-2,58593": {
+     "chunks": 480,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1974272
+    },
+    "-2,58594": {
+     "chunks": 480,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1974272
+    },
+    "-2,58595": {
+     "chunks": 75,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 315392
+    },
+    "0,-1": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 10,
+     "bytes": 4206592
+    },
+    "0,-2": {
+     "chunks": 762,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3133440
+    },
+    "0,-3": {
+     "chunks": 29,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 131072
+    },
+    "0,0": {
+     "chunks": 1024,
+     "be": 1217,
+     "create_be": 999,
+     "inhabited_chunks": 385,
+     "bytes": 4280320
+    },
+    "0,1": {
+     "chunks": 1024,
+     "be": 432,
+     "create_be": 432,
+     "inhabited_chunks": 106,
+     "bytes": 4206592
+    },
+    "0,2": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "0,3": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4202496
+    },
+    "0,4": {
+     "chunks": 800,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3284992
+    },
+    "0,58592": {
+     "chunks": 800,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3284992
+    },
+    "0,58593": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 14,
+     "bytes": 4206592
+    },
+    "0,58594": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4202496
+    },
+    "0,58595": {
+     "chunks": 160,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 663552
+    },
+    "1,-1": {
+     "chunks": 1024,
+     "be": 325,
+     "create_be": 324,
+     "inhabited_chunks": 148,
+     "bytes": 4206592
+    },
+    "1,-2": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "1,-3": {
+     "chunks": 499,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2056192
+    },
+    "1,0": {
+     "chunks": 1024,
+     "be": 1538,
+     "create_be": 951,
+     "inhabited_chunks": 333,
+     "bytes": 4206592
+    },
+    "1,1": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "1,2": {
+     "chunks": 783,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3219456
+    },
+    "1,3": {
+     "chunks": 480,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1974272
+    },
+    "1,4": {
+     "chunks": 375,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1544192
+    },
+    "1,58592": {
+     "chunks": 349,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1437696
+    },
+    "1,58593": {
+     "chunks": 448,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1843200
+    },
+    "1,58594": {
+     "chunks": 448,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1843200
+    },
+    "1,58595": {
+     "chunks": 69,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 290816
+    },
+    "2,-1": {
+     "chunks": 1024,
+     "be": 564,
+     "create_be": 232,
+     "inhabited_chunks": 203,
+     "bytes": 4206592
+    },
+    "2,-2": {
+     "chunks": 1024,
+     "be": 55,
+     "create_be": 55,
+     "inhabited_chunks": 32,
+     "bytes": 4206592
+    },
+    "2,-3": {
+     "chunks": 544,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2240512
+    },
+    "2,0": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "2,1": {
+     "chunks": 957,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3932160
+    },
+    "2,2": {
+     "chunks": 237,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 978944
+    },
+    "3,-1": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "3,-2": {
+     "chunks": 1024,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 4206592
+    },
+    "3,-3": {
+     "chunks": 544,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2240512
+    },
+    "3,0": {
+     "chunks": 920,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3780608
+    },
+    "3,1": {
+     "chunks": 170,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 708608
+    },
+    "4,-1": {
+     "chunks": 192,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 798720
+    },
+    "4,-2": {
+     "chunks": 192,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 798720
+    },
+    "4,-3": {
+     "chunks": 101,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 425984
+    },
+    "4,0": {
+     "chunks": 96,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 405504
+    }
+   }
+  }
+ },
+ "elapsed_s": 7.0
+}
