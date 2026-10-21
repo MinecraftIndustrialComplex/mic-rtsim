@@ -204,7 +204,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     f.write_all(bytes)
         .and_then(|_| f.sync_all())
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    rtsim_kernel::page::rename_over(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// `level.dat`'s root, when the world has one.

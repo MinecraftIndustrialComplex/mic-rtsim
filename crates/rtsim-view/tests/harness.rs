@@ -8,6 +8,12 @@
 //! Two worlds: one with every phase 1 and phase 2 module (villages, ports, a haven, a dragon's lair,
 //! a herd, a goblin camp with a feud and its envoy out, HABITAT cells), and the industry engine's
 //! iron line (districts, stations, lines, trains).
+//!
+//! The live source (V4) on the same worlds: a viewer's lease and the engine's tap flushed just
+//! before the final save, so the view store and the save hold one state. Every layer must draw the
+//! save viewer's marks in every frame, and every card must have the save card's sections (with the
+//! live fields as a "Now" section first). A third world evicts rows, so units the tap met evicted
+//! are drawn from the save.
 
 #[path = "../../rtsim-jni/tests/common/mod.rs"]
 mod common;
@@ -19,6 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
+use mic_viewer::api::{Card, EventsAnswer, Histogram, WorldInfo};
+use mic_viewer::viewer::{Backend, EventQuery};
 use rtsim_conflict::boundary::{self as cb, Cmd as C, Obs as CO};
 use rtsim_ecology::boundary::{self as db, Obs as DO, SpawnKind};
 use rtsim_ecology::dragon::LairKind;
@@ -38,6 +46,7 @@ use rtsim_ships::boundary::{self as sb, Obs as SO};
 use rtsim_space::HabitatRecord;
 use rtsim_space::synth::{Painter, land, sea};
 use rtsim_view::industry::DistrictPeek;
+use rtsim_view::live::{LiveApp, LiveView};
 use rtsim_view::{Limits, Status, View, keys};
 use support::*;
 
@@ -89,6 +98,7 @@ fn the_mirrored_page_keys_are_the_links() {
     assert_eq!(keys::CONFLICT, m::KEY_CONFLICT);
     assert_eq!(keys::WORLD_MODEL, m::WORLD_MODEL_META);
     assert_eq!(keys::HASH_MAGIC, m::HASH_MAGIC);
+    assert_eq!(keys::ARCHIVE_SERIAL, m::ARCHIVE_SERIAL);
     for k in [m::KEY_DRAGONS, m::KEY_HERDS, m::phase1::KEY_META] {
         assert_eq!(keys::hash_key(k), m::hash_key(k));
     }
@@ -149,7 +159,19 @@ fn write_journal(world: &Path, dict: &[(u32, String)]) {
     std::fs::write(&path, rtsim_view::journal::write_dictionary(dict)).unwrap();
 }
 
-/// Every phase 1 and phase 2 module through the link, saved and closed.
+/// A viewer's lease (this process's), and the tap's whole pass committed: called just before the
+/// final save, so the view store and the save hold the same state.
+fn tap_flush(world: &Path, e: &Arc<Engine>) {
+    rtsim_parts::store::Lease {
+        pid: std::process::id(),
+        focus: Vec::new(),
+    }
+    .write(&world.join("rtsim"))
+    .unwrap();
+    e.view_tap_flush().unwrap();
+}
+
+/// Every phase 1 and phase 2 module through the link, the tap flushed, saved and closed.
 fn every_module_world(world: &Path) {
     let e = engine(&world.join("rtsim"), 256 * 1024);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -321,6 +343,7 @@ fn every_module_world(world: &Path) {
         j.game_time += 200;
     }
     assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    tap_flush(world, &e);
     write_journal(world, &j.dict);
     e.close(true, Duration::from_secs(5)).unwrap();
 }
@@ -384,6 +407,7 @@ fn iron_line(world: &Path, days: u64) -> BTreeMap<u64, DistrictPeek> {
             })
             .collect()
     });
+    tap_flush(world, &e);
     write_journal(world, &j.dict);
     e.close(true, Duration::from_secs(5)).unwrap();
     engine
@@ -504,5 +528,334 @@ fn the_iron_line_saved_by_the_link_draws_its_industry_layers() {
         replaying.iter().any(|p| p.members.len() == 2),
         "{engine:#?}"
     );
+    let _ = std::fs::remove_dir_all(&world);
+}
+
+// ---- the live source (V4) -----------------------------------------------------------------------
+
+/// An events query over all time, as the routes ask one with no `from` or `to`.
+fn all_time(frame: Option<String>, limit: usize) -> EventQuery {
+    EventQuery {
+        frame,
+        from: i64::MIN,
+        to: i64::MAX,
+        limit,
+        ..EventQuery::default()
+    }
+}
+
+/// Marks as sorted JSON: the same marks, whatever order each source drew them in.
+fn sorted(rows: Option<&mic_viewer::scene::LayerRows>) -> Vec<String> {
+    let mut v: Vec<String> = rows
+        .map(|r| r.marks())
+        .unwrap_or(&[])
+        .iter()
+        .map(|m| serde_json::to_string(m).unwrap())
+        .collect();
+    v.sort();
+    v
+}
+
+/// What the live source's comparison with the save saw.
+#[derive(Debug, Default)]
+struct LiveSeen {
+    marks: usize,
+    cards: usize,
+    /// Cards with a "Now" section (the live row's fields).
+    now: usize,
+    /// Section titles over every card.
+    sections: BTreeMap<String, usize>,
+}
+
+/// The live source over `world` (the tap flushed at the save's state) against the save viewer:
+/// every layer draws the same marks in every frame, every card the same sections, the timeline the
+/// same rows; every route answers; and opening it without a lease writer writes nothing.
+fn live_matches_save(name: &str, world: &Path) -> LiveSeen {
+    let before = snapshot(world);
+    let save = Arc::new(View::open(world, Limits::default()).expect("the save opens"));
+    let live = LiveView::open(world, Limits::default(), None, None).expect("the live view opens");
+    let h = live.header().expect("the tap's header");
+    assert!(h.cycles >= 1, "{name}: a whole pass");
+    assert_eq!(h.game_time, save.saved().now(), "{name}: one state");
+    let w: WorldInfo = live.world();
+    assert_eq!(w.source, "live");
+    assert!(w.stream);
+    assert_eq!(w.time.tick, h.game_time);
+    let layers = save.layers();
+    let mut seen = LiveSeen::default();
+    let frames: Vec<String> = save.frames().map(str::to_owned).collect();
+    assert!(!frames.is_empty());
+    for f in &frames {
+        let a = save.scene(f, None).expect("a save scene");
+        let b = live.scene(f, None).expect("a live scene");
+        assert_eq!(b.t, h.game_time);
+        for d in &layers.layers {
+            let (ra, rb) = (a.layers.get(&d.id), b.layers.get(&d.id));
+            assert!(rb.is_some(), "{name}: {} has rows in {f}", d.id);
+            assert_eq!(
+                sorted(ra),
+                sorted(rb),
+                "{name}: layer {} in frame {f} draws the save's marks",
+                d.id
+            );
+            if ra.is_some_and(|r| r.is_empty()) {
+                assert!(
+                    rb.is_some_and(|r| r.is_empty()),
+                    "{name}: {} is empty live too",
+                    d.id
+                );
+            }
+            let Some(ra) = ra else { continue };
+            seen.marks += ra.len();
+            if !d.has_cards {
+                continue;
+            }
+            for m in ra.marks() {
+                let Some(id) = m.id() else { continue };
+                let cs: Card = save.card(&d.id, id, None).expect("a save card");
+                let cl: Card = live.card(&d.id, id, None).expect("a live card");
+                seen.cards += 1;
+                assert_eq!(cl.title, cs.title, "{name}: {} {id}", d.id);
+                assert_eq!(cl.subtitle, cs.subtitle, "{name}: {} {id}", d.id);
+                let json = |x: &[mic_viewer::api::Field]| serde_json::to_value(x).unwrap();
+                assert_eq!(json(&cl.fields), json(&cs.fields), "{name}: {} {id}", d.id);
+                let mut sl = cl.sections.clone();
+                if sl.first().is_some_and(|s| s.title == "Now") {
+                    let now = sl.remove(0);
+                    assert!(!now.fields.is_empty(), "{name}: {} {id}", d.id);
+                    seen.now += 1;
+                }
+                assert_eq!(
+                    serde_json::to_value(&sl).unwrap(),
+                    serde_json::to_value(&cs.sections).unwrap(),
+                    "{name}: the card of {} {id} has the save card's sections",
+                    d.id
+                );
+                for s in &cs.sections {
+                    *seen.sections.entry(s.title.clone()).or_default() += 1;
+                }
+            }
+        }
+        // The timeline: nothing pending is newer than the save, so the save's own answers.
+        let q = all_time(Some(f.clone()), 500);
+        let (ea, eb): (EventsAnswer, EventsAnswer) = (save.events(&q), live.events(&q));
+        assert_eq!(
+            serde_json::to_value(&ea).unwrap(),
+            serde_json::to_value(&eb).unwrap(),
+            "{name}: events in {f}"
+        );
+        let q = EventQuery {
+            frame: Some(f.clone()),
+            limit: 120,
+            to: h.game_time + 1,
+            ..EventQuery::default()
+        };
+        let (ha, hb): (Histogram, Histogram) = (save.histogram(&q), live.histogram(&q));
+        assert_eq!(ha.series, hb.series, "{name}: the histogram in {f}");
+    }
+    // Every route, as a page asks them, through the live handler; the base map is the save's.
+    let app = LiveApp::new(Arc::clone(&live));
+    let s = session_on(&app, &*live, &sampled_regions(&save));
+    eprintln!("{name} live: {s:?}; {seen:?}");
+    let st: serde_json::Value = get_json(&app, "/api/status", "");
+    assert_eq!(st["source"], "live");
+    assert!(st["live"]["error"].is_null(), "{}", st["live"]["error"]);
+    eprintln!("{name} live layers: {}", st["live"]["layers"]);
+    drop(app);
+    drop(live);
+    assert_same(&before, &snapshot(world));
+    seen
+}
+
+#[test]
+fn the_live_source_draws_every_modules_save_and_its_cards() {
+    let world = tmpdir("view-live-every");
+    every_module_world(&world);
+    let seen = live_matches_save("every module", &world);
+    assert!(seen.marks > 20, "{seen:?}");
+    assert!(seen.cards > 10, "{seen:?}");
+    assert!(seen.now > 0, "live fields reach the cards: {seen:?}");
+    let _ = std::fs::remove_dir_all(&world);
+}
+
+#[test]
+fn the_live_source_draws_the_iron_lines_districts_with_their_processes_and_clusters() {
+    let world = tmpdir("view-live-iron");
+    iron_line(&world, 3);
+    let seen = live_matches_save("iron line", &world);
+    for s in ["Processes", "Replays with (one cluster)"] {
+        assert!(
+            seen.sections.get(s).is_some_and(|n| *n > 0),
+            "live district cards have \"{s}\": {seen:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&world);
+}
+
+/// Rows evicted under a tiny row budget: the tap publishes the units that met them as not
+/// resident, and the live source draws those from the save, the same marks the save viewer draws.
+/// A fresh world keeps its rows in memory; ships reopened from their pages read them lazily.
+#[test]
+fn units_the_tap_met_evicted_are_drawn_from_the_save() {
+    let world = tmpdir("view-live-evicted");
+    let mask = 0b1111 | MODULE_SHIPS;
+    let e = engine(&world.join("rtsim"), 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = mask;
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    for (v, structure, x, z) in VILLAGES {
+        adopt(&mut j, v, structure, "human", 90, x, z);
+    }
+    j.idle();
+    for (v, _, x, z) in VILLAGES {
+        j.ship_obs(&SO::PortFound(sb::PortFound {
+            village: v,
+            medium: rtsim_travel::Medium::Sea,
+            dimension: dim,
+            structure: 0,
+            dock: (x + 8, 63, z + 8),
+            berths: 4,
+        }));
+    }
+    j.idle();
+    j.idle();
+    let ws = j.world_save();
+    e.close(true, Duration::from_secs(5)).unwrap();
+    // Reopened with a budget of one byte: the start's restore check reads every row, and the
+    // steps' budget checks evict the ones nothing changed.
+    let e = engine_with(&world.join("rtsim"), 256 * 1024, |c| c.row_budget = 1);
+    let mut j = Java::open(e.clone(), ws);
+    j.module_mask = mask;
+    j.idle();
+    j.idle();
+    tap_flush(&world, &e);
+    let evicted = e
+        .stats
+        .tap
+        .not_resident
+        .load(std::sync::atomic::Ordering::Acquire);
+    write_journal(&world, &j.dict);
+    e.close(true, Duration::from_secs(5)).unwrap();
+    assert!(evicted > 0, "the tap met evicted rows");
+    let seen = live_matches_save("evicted", &world);
+    assert!(seen.marks > 0, "{seen:?}");
+    let live = LiveView::open(&world, Limits::default(), None, None).unwrap();
+    let from_save: usize = live.layer_sources().values().map(|(_, _, n)| n).sum();
+    eprintln!(
+        "evicted: {evicted} units not resident; {:?}",
+        live.layer_sources()
+    );
+    assert!(from_save > 0, "units drawn from the save");
+    let _ = std::fs::remove_dir_all(&world);
+}
+
+/// The live timeline past the save: events the engine recorded after the last save are the view
+/// store's pending rows (§10.3), shown after the save's own and streamed once; the map and cards
+/// are the state now, with a card of the live fields for a thing newer than the save.
+#[test]
+fn the_live_timeline_and_map_run_past_the_save() {
+    use std::sync::atomic::Ordering::Acquire;
+    let world = tmpdir("view-live-past");
+    let e = engine(&world.join("rtsim"), 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = 0b1111;
+    for (v, structure, x, z) in &VILLAGES[..2] {
+        adopt(&mut j, *v, structure, "human", 90, *x, *z);
+    }
+    j.idle();
+    // A save: the two adoptions are in the archive.
+    let saves = e.stats.saves_done.load(Acquire);
+    e.order(vec![rtsim_jni::orders::Order::SaveAtNextStep])
+        .unwrap();
+    j.idle();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while e.stats.saves_done.load(Acquire) == saves {
+        assert!(std::time::Instant::now() < deadline, "the save committed");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    write_journal(&world, &j.dict);
+    // A day on, a third village: after the save, so only the view store has it.
+    j.game_time += TICKS_PER_DAY as i64;
+    j.idle();
+    let (v, structure, x, z) = VILLAGES[2];
+    adopt(&mut j, v, structure, "human", 90, x, z);
+    j.idle();
+    j.idle();
+    assert!(e.stats.archive_pending_rows.load(Acquire) > 0);
+    tap_flush(&world, &e);
+    // The server stops without another save.
+    e.close(false, Duration::from_secs(5)).unwrap();
+
+    let save = View::open(&world, Limits::default()).unwrap();
+    let live = LiveView::open(&world, Limits::default(), None, None).unwrap();
+    let save_now = save.saved().now();
+    let w = live.world();
+    assert!(w.time.tick > save_now, "{} after {save_now}", w.time.tick);
+    // Map: three villages now, two in the save.
+    let frame = save.frames().next().unwrap().to_owned();
+    let n = |b: &dyn Backend| {
+        b.scene(&frame, None)
+            .and_then(|s| s.layers.get("settle.villages").map(|r| r.len()))
+            .unwrap_or(0)
+    };
+    assert_eq!((n(&save), n(&*live)), (2, 3));
+    // The new village's card: its live fields, said to be newer than the save.
+    let ids = |b: &dyn Backend| -> std::collections::BTreeSet<String> {
+        b.scene(&frame, None)
+            .and_then(|s| s.layers.get("settle.villages").cloned())
+            .map(|r| {
+                r.marks()
+                    .iter()
+                    .filter_map(|m| m.id().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (old, now) = (ids(&save), ids(&*live));
+    let new: Vec<&String> = now.difference(&old).collect();
+    assert_eq!(new.len(), 1, "{old:?} {now:?}");
+    let c = live
+        .card("settle.villages", new[0], None)
+        .expect("a card of the live fields");
+    assert_eq!(c.sections[0].title, "Now");
+    assert!(
+        c.note
+            .as_deref()
+            .unwrap_or("")
+            .contains("new since the last save")
+    );
+    // Timeline: the save's rows and the pending rows past it.
+    let q = all_time(Some(frame.clone()), 500);
+    let (a, b) = (save.events(&q), live.events(&q));
+    let past: Vec<_> = b.rows.iter().filter(|r| r.t > save_now).collect();
+    assert!(!past.is_empty(), "pending rows past the save");
+    assert_eq!(b.rows.len(), a.rows.len() + past.len());
+    assert!(a.rows.iter().all(|r| r.t <= save_now));
+    assert!(b.rows.windows(2).all(|p| p[0].t >= p[1].t), "newest first");
+    for r in &past {
+        assert!(
+            w.event_kinds.iter().any(|k| k.id == r.kind),
+            "kind {} is listed",
+            r.kind
+        );
+    }
+    let h = live.histogram(&all_time(Some(frame.clone()), 50));
+    let total: u64 = h.series.values().flatten().sum();
+    let saved: u64 = save
+        .histogram(&EventQuery {
+            to: w.time.tick + 1,
+            ..all_time(Some(frame.clone()), 50)
+        })
+        .series
+        .values()
+        .flatten()
+        .copied()
+        .sum();
+    assert_eq!(total, saved + past.len() as u64, "{h:?}");
+    // The stream sends each pending event once.
+    let mut cursor = 0;
+    let first = live.events_since(&mut cursor);
+    assert_eq!(first.len(), past.len());
+    assert!(live.events_since(&mut cursor).is_empty());
     let _ = std::fs::remove_dir_all(&world);
 }

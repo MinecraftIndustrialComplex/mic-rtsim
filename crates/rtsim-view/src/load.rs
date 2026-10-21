@@ -144,6 +144,15 @@ impl Saved {
         phase1.max(industry).unwrap_or(0)
     }
 
+    /// The serial of the last save that took the event recorder's rows (0 when none did): this
+    /// save's archive holds every row of a serial below it and none after.
+    pub fn archive_serial(&self) -> u64 {
+        match self.source.read(keys::ARCHIVE_SERIAL) {
+            Ok(Some(b)) if b.len() == 8 => u64::from_le_bytes(b[..].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        }
+    }
+
     /// The game tick of a world tick (the phase 1 clock the other modules share).
     pub fn game(&self, t: Tick) -> i64 {
         self.phase1.as_ref().map_or(t.0 as i64, |p| p.game(t.0))

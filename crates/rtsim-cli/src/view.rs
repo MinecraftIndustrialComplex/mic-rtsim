@@ -2,14 +2,21 @@
 //! `rtsim-cli view <world>`: the save viewer sidecar (VIEWER.md §2, §4.1). Opens the world's
 //! `rtsim/` pages read only, draws them with rtsim-view and serves mic-viewer's page on loopback
 //! (or a Unix socket), at idle priority, under a memory cap. It writes nothing anywhere.
+//!
+//! `--live` (V4, VIEWER.md §11) serves a running server's world instead: the sidecar writes one
+//! file, `rtsim/view.lease`, while a page holds a stream open, and reads the view store the
+//! server's tap commits beside it (rtsim_view::live). Ctrl-C removes the lease.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
-use mic_viewer::http::{Config, Server};
+use mic_viewer::http::{Config, Handler, Server};
 use mic_viewer::viewer::App;
+use rtsim_view::live::{LeaseWriter, LiveApp, LiveView};
 use rtsim_view::{Limits, Status, View};
 
 const MIB: u64 = 1 << 20;
@@ -27,19 +34,37 @@ struct Options {
     card_cache_mib: Option<u64>,
     tile_cache_mib: Option<u64>,
     surveyor_cache_mib: Option<u64>,
+    live: bool,
+}
+
+/// Ctrl-C and SIGTERM so far (--live): the first removes the lease and exits, a second exits at
+/// once.
+static SIGNALS: AtomicU8 = AtomicU8::new(0);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    if SIGNALS.fetch_add(1, Ordering::Relaxed) >= 1 {
+        // SAFETY: _exit is async-signal-safe.
+        unsafe { libc::_exit(130) };
+    }
 }
 
 const USAGE: &str = "\
   rtsim-cli view <world> [--port N] [--bind ADDR] [--allow-tailnet] [--socket PATH]
                          [--mem-cap MiB] [--card-cache MiB] [--tile-cache MiB]
-                         [--surveyor-cache MiB]
+                         [--surveyor-cache MiB] [--live]
       Serves a saved world (its folder, or its rtsim/ folder) to the viewer page at
       http://127.0.0.1:8740/ (VIEWER.md). Reads the pages, data/mic_rtsim_journal.dat,
       the event archive (rtsim/archive) and Surveyor's terrain (data/surveyor) when there;
       writes nothing. --bind takes a loopback address (a tailnet one with --allow-tailnet);
       --socket serves a Unix socket instead. Runs at idle CPU and IO priority. --mem-cap
       (default 1024) refuses a save that does not fit and district cards once the heap
-      reaches it; --port 0 picks a free port.";
+      reaches it; --port 0 picks a free port.
+      --live serves the running server's world as it is now (VIEWER.md §11): while a page
+      holds a stream open it writes rtsim/view.lease (its process id and the regions the
+      page looks at closely), and the server's tap then commits a view store under
+      rtsim/view/ every 2 s, which this reads; cards, evicted things and the archive come
+      from the last save. Ctrl-C removes the lease (the server deletes rtsim/view/ a minute
+      after the lease ends).";
 
 pub fn cli(args: &[&str]) -> ExitCode {
     let mut o = Options {
@@ -52,6 +77,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
         card_cache_mib: None,
         tile_cache_mib: None,
         surveyor_cache_mib: None,
+        live: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -70,6 +96,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "--allow-tailnet" => o.allow_tailnet = true,
+            "--live" => o.live = true,
             "--socket" => match it.next() {
                 Some(p) => o.socket = Some(PathBuf::from(p)),
                 None => return bad("--socket takes a path"),
@@ -115,7 +142,27 @@ pub fn cli(args: &[&str]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    // Before any thread starts, so every thread inherits it.
+    // The lease writer's thread first, at normal priority (VIEWER.md §11: its renewals must come
+    // on a busy server); on Linux the idle class is per thread and it keeps its own.
+    let lease = if o.live {
+        let Some((_, rtsim)) = rtsim_view::load::pages_dir(&world) else {
+            eprintln!(
+                "rtsim-cli view: {} holds no rtsim pages (give the world folder)",
+                world.display()
+            );
+            return ExitCode::from(1);
+        };
+        match LeaseWriter::start(&rtsim) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("rtsim-cli view: the lease thread: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        None
+    };
+    // Before any other thread starts, so every thread inherits it.
     let priority = idle_priority();
 
     let mut limits = Limits {
@@ -132,7 +179,13 @@ pub fn cli(args: &[&str]) -> ExitCode {
         limits.surveyor_cache = m * MIB;
     }
     crate::sys::reset_heap_peak();
-    let view = match View::open(&world, limits) {
+    let probe: rtsim_view::view::HeapProbe = Arc::new(|| crate::sys::heap_live() as u64);
+    let opened = match lease {
+        Some(l) => LiveView::open(&world, limits, Some(Arc::clone(&probe)), Some(l))
+            .map(|v| (None, Some(v))),
+        None => View::open(&world, limits).map(|v| (Some(v), None)),
+    };
+    let (view, live) = match opened {
         Ok(v) => v,
         Err(e) => {
             eprintln!("rtsim-cli view: {e}");
@@ -151,16 +204,56 @@ pub fn cli(args: &[&str]) -> ExitCode {
             heap / MIB,
             cap / MIB
         );
+        if let Some(l) = &live {
+            l.stop();
+        }
         return ExitCode::from(1);
     }
-    let view = view.with_heap(Arc::new(|| crate::sys::heap_live() as u64));
-    describe(&view, (heap, peak), limits, &priority);
 
     let config = Config {
         allow_tailnet: o.allow_tailnet,
         name: "rtsim-view".into(),
     };
-    let app = Arc::new(App::new(Arc::new(view)));
+    let app: Arc<dyn Handler> = match (view, live) {
+        (Some(view), _) => {
+            let view = view.with_heap(probe);
+            describe(&view, (heap, peak), limits, &priority);
+            Arc::new(App::new(Arc::new(view)))
+        }
+        (None, Some(live)) => {
+            describe(&live.save(), (heap, peak), limits, &priority);
+            describe_live(&live);
+            if let Err(e) = live.start() {
+                eprintln!("rtsim-cli view: the reader thread: {e}");
+                live.stop();
+                return ExitCode::from(1);
+            }
+            // SAFETY: the handler only counts in an atomic and calls _exit.
+            unsafe {
+                libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+                libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+            }
+            let l = Arc::clone(&live);
+            let watch = std::thread::Builder::new()
+                .name("rtsim-view-signals".into())
+                .spawn(move || {
+                    while SIGNALS.load(Ordering::Relaxed) == 0 {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    // The lease goes first: the server ends the epoch at its next stat.
+                    l.stop();
+                    println!("lease removed; stopped");
+                    std::process::exit(0);
+                });
+            if let Err(e) = watch {
+                eprintln!("rtsim-cli view: the signal thread: {e}");
+                live.stop();
+                return ExitCode::from(1);
+            }
+            Arc::new(LiveApp::new(live))
+        }
+        (None, None) => unreachable!("one source opened"),
+    };
     let server = match &o.socket {
         #[cfg(unix)]
         Some(path) => Server::start_unix(path, config, app),
@@ -320,6 +413,20 @@ fn describe(view: &View, (heap, peak): (u64, u64), limits: Limits, priority: &st
         limits.surveyor_cache / MIB
     );
     println!("priority: {priority}");
+}
+
+fn describe_live(live: &LiveView) {
+    match live.header() {
+        Some(h) => println!(
+            "live: view store epoch {:016x} commit {} at game tick {} ({} whole passes); the \
+             lease is written while a page holds a stream open",
+            h.epoch, h.commit, h.game_time, h.cycles
+        ),
+        None => println!(
+            "live: no view store yet; the lease is written when a page opens, and the server \
+             starts tapping within 200 steps (about 10 s)"
+        ),
+    }
 }
 
 fn hostname() -> Option<String> {

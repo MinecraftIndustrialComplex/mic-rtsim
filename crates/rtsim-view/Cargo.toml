@@ -20,6 +20,9 @@ rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
 rtsim-space.workspace = true
+# The layers and their part format, shared with the engine's tap (VIEWER.md §4.3).
+rtsim-parts.workspace = true
+rtsim-layers.workspace = true
 # The event archive, read only (VIEWER.md §10.6).
 rtsim-archive = { path = "../rtsim-archive" }
 mic-viewer.workspace = true
