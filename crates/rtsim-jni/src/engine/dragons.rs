@@ -42,14 +42,15 @@ use rtsim_ecology::dragon::LairKind;
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
 use rtsim_ecology::prey::Item;
 use rtsim_ecology::species::Species;
-use rtsim_ecology::{DragonStats, DragonTunables, Dragons, DragonsTickets};
+use rtsim_ecology::{DragonStats, DragonTunables, Dragons, DragonsTickets, Placing};
 use rtsim_kernel::clock::Tick;
+use rtsim_kernel::journal::OpId;
 use rtsim_kernel::page::{PageKey, SaveBatch};
 use rtsim_kernel::rows::PageSource;
 
 use super::paging::{self, Live, Pager};
-use super::{State, log_error, log_info, shared};
-use crate::wire::{self, Rec, RecordWriter, obs};
+use super::{State, TransferCmd, log_error, log_info, shared};
+use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 /// The dragons' pages: table 0x4400 ('D'), next to the industry engine's 0x4900 and phase 1's
 /// 0x5000.
@@ -380,6 +381,66 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     ingest(st, &o, gt);
 }
 
+/// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a
+/// stack of tribute coin sent to a lair's chest (SINK.md §4.6). Applied or a duplicate, the
+/// coin is in the chest; failed, it waits for the chest to be reported again.
+pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
+    if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
+        return;
+    }
+    if !st.dragons.enabled {
+        // U10: ignored. The stack left the outbox, so it goes again once they are back on and
+        // Java answers it DUPLICATE_OP if it is already in the chest (`answered_again`).
+        return;
+    }
+    let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+    match rec.aux {
+        obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
+            st.dragons.engine.tribute_placed(op);
+        }
+        obs::command_result::FAILED => {
+            st.dragons.engine.tribute_failed(op);
+        }
+        _ => {}
+    }
+}
+
+/// A COMMAND_RESULT for an op `Replay` already admitted: a tribute stack sent again after the
+/// pages lost its first answer (the dragons were off, or a crash came before a save). Java
+/// answered it DUPLICATE_OP: it is in the chest.
+pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
+    if rec.kind != obs::COMMAND_RESULT
+        || rec.size() < obs::command_result::SIZE
+        || !st.dragons.enabled
+    {
+        return;
+    }
+    let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+    if st.dragons.engine.tribute_placed(op) {
+        st.outbox.complete(OpId(op));
+    }
+}
+
+/// TRIBUTE_START (a test's order, applied at step start): village `village` becomes the
+/// tributary of lair `lair` (keys), as if a dragon of the lair had raided it now.
+pub(super) fn tribute_start(st: &mut State, village: u64, lair: u64) {
+    if !running(st) {
+        return; // U10: switched off, the order waits for nothing
+    }
+    let at = Tick(super::phase1::world_tick(st, st.game_time));
+    let at = at.max(st.dragons.engine.now()).max(st.phase1.world.now());
+    let started = with_infra(st, |d, w, infra| {
+        d.tribute_start(w, infra, village, lair, at)
+    });
+    if !started {
+        super::log_warn(&format!(
+            "TRIBUTE_START: village {village} and lair {lair:#x} started no tribute (unknown, or no purse to pay from)"
+        ));
+    }
+    st.phase1.taint();
+    take_commands(st);
+}
+
 fn ingest(st: &mut State, o: &Obs, game_time: i64) {
     st.dragons.records += 1;
     let at = Tick(super::phase1::world_tick(st, game_time));
@@ -509,7 +570,10 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         st.dragons.queue.clear();
         return (0, false);
     }
-    let mut highest = 0;
+    let (mut highest, more) = write_tribute(st, w);
+    if more {
+        return (highest, true);
+    }
     while let Some(c) = st.dragons.queue.front().cloned() {
         // The engine's dictionary: the species bodies, and a materialization's dimension (the
         // dragon's frame is Java's dimension id).
@@ -567,6 +631,63 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         highest = highest.max(seq);
         st.dragons.commands_written += 1;
         st.dragons.queue.pop_front();
+    }
+    (highest, false)
+}
+
+/// Writes the tribute stacks the dragons send to lairs' chests (SINK.md §4.6) that are not in
+/// the core outbox yet. Each joins it under its own op id, so a restart sends it again and Java
+/// answers a stack it already put DUPLICATE_OP. Returns the highest sequence written and whether
+/// some wait for the next buffer.
+fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    let sent: BTreeSet<u64> = st.outbox.after(0).map(|(_, op, _)| op.0).collect();
+    let todo: Vec<(u64, Placing)> = st
+        .dragons
+        .engine
+        .placing()
+        .filter(|(op, _)| !sent.contains(op))
+        .map(|(op, p)| (op, *p))
+        .collect();
+    let mut highest = 0;
+    for (op, p) in todo {
+        let dimension = st
+            .world
+            .java_dict
+            .get(&(wire::DICT_DIMENSION, p.chest.dimension))
+            .cloned();
+        let item = match p.item {
+            Item::World(g) => super::phase1::catalog_item(st, g),
+            Item::Industry(_) => None,
+        };
+        let (Some(dimension), Some(item)) = (dimension, item) else {
+            // Never written: the coin waits for the chest to be reported again.
+            log_error(&format!(
+                "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; back to its lair",
+                p.chest.dimension
+            ));
+            st.dragons.engine.tribute_failed(op);
+            continue;
+        };
+        let t = TransferCmd {
+            dimension,
+            item: item.to_string(),
+            pos: p.chest.pos,
+            count: p.count as i32,
+        };
+        let need = st.dict_bytes(&[
+            (wire::DICT_DIMENSION, &t.dimension),
+            (wire::DICT_ITEM, &t.item),
+        ]) + cmd::transfer_to_container::SIZE;
+        if need > w.remaining() {
+            return (highest, true);
+        }
+        // The DICT records go first, and the sequence is taken only now, so the buffer's
+        // sequences rise in buffer order.
+        st.dict_id(w, wire::DICT_DIMENSION, &t.dimension);
+        st.dict_id(w, wire::DICT_ITEM, &t.item);
+        let seq = st.outbox.push_with_op(t.clone(), OpId(op));
+        super::write_transfer(st, w, seq, OpId(op), &t);
+        highest = highest.max(seq);
     }
     (highest, false)
 }
@@ -630,5 +751,31 @@ impl super::Engine {
     /// How many dragon records the link ignored while the dragons were switched off (U10).
     pub fn dragons_ignored(&self) -> u64 {
         super::lock(&self.state).dragons.ignored
+    }
+
+    /// Phase 1 village `village`'s fear to the dragons before a dragon's boldness bends it
+    /// (fullness points, its iron golems' included: SINK.md §4.6), or -1 for a village the world
+    /// does not know.
+    pub fn dragons_village_risk(&self, village: u64) -> i64 {
+        let st = super::lock(&self.state);
+        match st.phase1.world.node_of_key(village) {
+            Some(n) => st.dragons.engine.village_risk(&st.phase1.world, n),
+            None => -1,
+        }
+    }
+
+    /// The dragons' tribute (SINK.md §4.6): seasons paid, whole coins put in lairs' chests,
+    /// whole coins waiting for a chest, and stacks sent and not yet answered.
+    pub fn dragons_tribute(&self) -> [i64; 4] {
+        let st = super::lock(&self.state);
+        let d = &st.dragons.engine;
+        let placed = d.lairs.iter().map(|l| l.placed).sum();
+        let unplaced = d.lairs.iter().flat_map(|l| l.unplaced.values()).sum();
+        [
+            d.stats.tributes as i64,
+            placed,
+            unplaced,
+            d.placing().count() as i64,
+        ]
     }
 }
