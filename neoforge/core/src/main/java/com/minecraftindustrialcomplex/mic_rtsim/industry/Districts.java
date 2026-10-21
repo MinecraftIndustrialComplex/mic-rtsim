@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
@@ -8,6 +9,7 @@ import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
@@ -18,6 +20,7 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -43,13 +46,23 @@ import java.util.UUID;
  * membership (IND_DISTRICT, IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_STATION, IND_DISTRICT_REMOVED),
  * load states (IND_LOAD_STATE), watching (IND_WATCHED), edits (IND_EDIT) and approach signals.
  *
- * <p><b>Detection.</b> A chunk is industrial when it holds a <i>seed</i>, a block entity a player placed
- * that has an item, fluid or energy capability or that a plugin recognises, or when an industrial
- * block entity in it touches one in a member chunk across the chunk border (belts, pipes, shafts:
- * closed under physical connection), or a plugin links it (chain conveyors). A district is a connected
- * group of industrial chunks, 8-neighbour, plus the merge links of {@code /rtsim district merge};
- * chunks a {@code split} pinned belong to their pinned district only, and excluded chunks to none.
- * Unloaded member chunks keep their membership (nothing new can be known about them).
+ * <p><b>Detection (DS-10).</b> Only <i>machines</i> start a district. A chunk is industrial when it holds a
+ * <i>seed</i>: a block entity a player placed that {@link #seed} calls a machine, or when an industrial
+ * block entity in it touches one in a member chunk across the chunk border (belts, pipes, shafts, and
+ * storage or a hopper next to a machine: closed under physical connection), or a plugin links it (chain
+ * conveyors). A district is a connected group of industrial chunks, 8-neighbour, plus the merge links of
+ * {@code /rtsim district merge}, that holds at least one seed; a group with none dissolves. Chunks a
+ * {@code split} pinned belong to their pinned district only, and excluded chunks to none.
+ * Unloaded member chunks keep their membership (nothing new can be known about them), and their seed
+ * counts, recorded per chunk in {@link District#seedCounts}, let a district whose machines are gone dissolve
+ * without loading them.
+ *
+ * <p><b>What a machine is.</b> Never a block of the {@code minecraft} namespace (a player's furnace and
+ * hopper sorter is a home, not a factory), never a block in {@code #mic_rtsim:district_stock} (chests,
+ * barrels, vaults, tanks: boundary stock, I3) or {@code #mic_rtsim:district_not_seed} (other ticking storage
+ * and the like). Else a block in {@code #mic_rtsim:district_seed}; else what a plugin says
+ * ({@link IndustryPlugin#seed}); else, for a modded block entity nobody knows, one that ticks on the server
+ * and has an item, fluid or energy capability.
  *
  * <p>Detection runs after edits, at most every {@code rescanIntervalTicks}, over every member chunk of
  * the dimension: the edits are rare and the recompute is O(member chunks) plus the block entities of
@@ -60,6 +73,14 @@ public final class Districts {
     /** {@code #mic_rtsim:district_stock}: the blocks whose inventories are boundary stock (I3). */
     public static final TagKey<Block> STOCK_TAG = TagKey.create(Registries.BLOCK,
             ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "district_stock"));
+
+    /** {@code #mic_rtsim:district_seed}: blocks that are machines whatever the generic rule would say (DS-10). */
+    public static final TagKey<Block> SEED_TAG = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "district_seed"));
+
+    /** {@code #mic_rtsim:district_not_seed}: blocks that never start a district: ticking storage and the like (DS-10). */
+    public static final TagKey<Block> NOT_SEED_TAG = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "district_not_seed"));
 
     private final Industry ind;
     private final IndustryData data;
@@ -230,7 +251,7 @@ public final class Districts {
             return;
         BlockEntity be = chunk.getBlockEntities().get(pos);
         District d = at(level.dimension(), chunk.getPos().toLong());
-        if (be != null && industrial(level, be, new HashMap<>())) {
+        if (be != null && seed(level, be, new HashMap<>())) {
             IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
             chunk.setData(IndustryAttachments.SEEDS.get(), s.plus(pos.asLong()));
             chunk.setUnsaved(true);
@@ -271,7 +292,7 @@ public final class Districts {
         ind.commit(r);
     }
 
-    /** Adopts every industrial block entity in the chunks around {@code centre} as seeds (worlds made before the mod). */
+    /** Adopts every machine in the chunks around {@code centre} as a seed (worlds made before the mod). */
     public int adopt(ServerLevel level, ChunkPos centre, int radius) {
         int n = 0;
         Map<BlockPos, Boolean> cache = new HashMap<>();
@@ -283,7 +304,7 @@ public final class Districts {
                 IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
                 IndustryAttachments.Seeds before = s;
                 for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    if (industrial(level, be, cache)) {
+                    if (seed(level, be, cache)) {
                         s = s.plus(be.getBlockPos().asLong());
                     }
                 }
@@ -315,7 +336,7 @@ public final class Districts {
         if (now - lastPeriodic >= IndustryConfig.get(IndustryConfig.PERIODIC_RESCAN)) {
             lastPeriodic = now;
             for (District d : data.districts.values())
-                if (loadedChunks(d) > 0) {
+                if (loadedChunks(d) > 0 || seedless(d)) {
                     dirty.computeIfAbsent(d.dim, k -> new LongOpenHashSet());
                     fullDims.add(d.dim);
                 }
@@ -337,6 +358,11 @@ public final class Districts {
         }
         if (IndustryConfig.approachSignal() && ticks % 20 == 0)
             approach(now);
+    }
+
+    /** A district with no recorded seed that no operator pinned: detection dissolves it, loaded or not (DS-10). */
+    private boolean seedless(District d) {
+        return d.seedCounts.isEmpty() && !data.pins(d.dim).containsValue(d.id);
     }
 
     private void updateLoadState(District d, long now) {
@@ -516,6 +542,9 @@ public final class Districts {
         final List<Touch> touches = new ArrayList<>();
         final List<long[]> links = new ArrayList<>();
         final Map<BlockPos, Boolean> industrialCache = new HashMap<>();
+        final Map<BlockPos, Boolean> seedCache = new HashMap<>();
+        /** Live seeds of each loaded chunk the detection looked at (every candidate and every reached chunk). */
+        final Long2IntOpenHashMap seedCounts = new Long2IntOpenHashMap();
     }
 
     /**
@@ -569,7 +598,7 @@ public final class Districts {
                 LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
                 if (chunk == null)
                     continue;
-                if (hasSeeds(level, chunk) || pins.containsKey(c) || (index.containsKey(c) && touchesUnloadedMember(level, chunk, index, scan))) {
+                if (seedsIn(level, chunk, scan) > 0 || pins.containsKey(c) || (index.containsKey(c) && touchesUnloadedMember(level, chunk, index, scan))) {
                     if (visited.add(c))
                         queue.enqueue(c);
                 }
@@ -651,6 +680,26 @@ public final class Districts {
             else
                 groups.computeIfAbsent(find(parent, c), k -> new LongArrayList()).add(c);
         }
+
+        // Seeds (DS-10): a district holds at least one machine a player placed. A loaded chunk counts what it
+        // holds now, an unloaded one what its district recorded; a group with none is not a district (its
+        // old district, if any, has no successor and is removed below). A pinned group is the operator's.
+        Long2IntOpenHashMap counts = new Long2IntOpenHashMap();
+        for (long c : members) {
+            if (visited.contains(c))
+                counts.put(c, seedsIn(level, c, scan));
+            else {
+                District old = index.get(c);
+                if (old != null)
+                    counts.put(c, old.seedCounts.get(c));
+            }
+        }
+        groups.values().removeIf(g -> {
+            for (long c : g)
+                if (counts.get(c) > 0)
+                    return false;
+            return true;
+        });
 
         // Ids: a pinned group keeps its pin; an automatic one the old district it overlaps most (each
         // old id once, the biggest group first); the rest get new ids (never reused, F3).
@@ -762,6 +811,10 @@ public final class Districts {
                     || !java.util.Objects.equals(d.stationName, stationName) || d.notLearnable != notLearnable;
             d.chunks.clear();
             d.chunks.addAll(chunks);
+            d.seedCounts.clear();
+            for (long c : chunks)
+                if (counts.get(c) > 0)
+                    d.seedCounts.put(c, counts.get(c));
             d.inventories = invs;
             d.stations = stations;
             d.stationName = stationName;
@@ -828,23 +881,44 @@ public final class Districts {
         return r;
     }
 
-    private boolean hasSeeds(ServerLevel level, LevelChunk chunk) {
+    /**
+     * The live seeds of a loaded chunk, counted once per detection: the positions its attachment lists whose
+     * block entity is still there and still a machine (a seed broken since, or one an older rule took for a
+     * machine, is dropped here, so a world saved with chests as seeds sheds them at its next detection).
+     */
+    private int seedsIn(ServerLevel level, long c, Scan scan) {
+        if (scan.seedCounts.containsKey(c))
+            return scan.seedCounts.get(c);
+        LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+        int n = chunk == null ? 0 : seedsIn(level, chunk, scan);
+        scan.seedCounts.put(c, n);
+        return n;
+    }
+
+    private int seedsIn(ServerLevel level, LevelChunk chunk, Scan scan) {
+        long c = chunk.getPos().toLong();
+        if (scan.seedCounts.containsKey(c))
+            return scan.seedCounts.get(c);
+        int n = 0;
         IndustryAttachments.Seeds s = chunk.getExistingDataOrNull(IndustryAttachments.SEEDS.get());
-        if (s == null || s.isEmpty())
-            return false;
-        // Seeds whose block entity is gone (broken) are dropped here.
-        IndustryAttachments.Seeds kept = s;
-        for (long p : s.positions())
-            if (chunk.getBlockEntities().get(BlockPos.of(p)) == null)
-                kept = kept.minus(p);
-        if (kept != s) {
-            if (kept.isEmpty())
-                chunk.removeData(IndustryAttachments.SEEDS.get());
-            else
-                chunk.setData(IndustryAttachments.SEEDS.get(), kept);
-            chunk.setUnsaved(true);
+        if (s != null && !s.isEmpty()) {
+            IndustryAttachments.Seeds kept = s;
+            for (long p : s.positions()) {
+                BlockEntity be = chunk.getBlockEntities().get(BlockPos.of(p));
+                if (be == null || be.isRemoved() || !seed(level, be, scan.seedCache))
+                    kept = kept.minus(p);
+            }
+            if (kept != s) {
+                if (kept.isEmpty())
+                    chunk.removeData(IndustryAttachments.SEEDS.get());
+                else
+                    chunk.setData(IndustryAttachments.SEEDS.get(), kept);
+                chunk.setUnsaved(true);
+            }
+            n = kept.positions().length;
         }
-        return !kept.isEmpty();
+        scan.seedCounts.put(c, n);
+        return n;
     }
 
     /**
@@ -927,6 +1001,10 @@ public final class Districts {
                     BlockEntity nbe = nchunk.getBlockEntities().get(n);
                     if (nbe == null || !industrial(level, nbe, scan.industrialCache))
                         continue;
+                    // Two stores side by side carry no work from one chunk to the other (a chest wall along a
+                    // border does not annex the next chunk); a machine, belt or hopper next to one does.
+                    if (isStorage(state) && isStorage(nbe.getBlockState()))
+                        continue;
                     scan.touches.add(new Touch(c, nc, p, n));
                     if (!excluded.contains(nc))
                         reach.accept(nc);
@@ -965,7 +1043,11 @@ public final class Districts {
         return best;
     }
 
-    /** Industrial: a plugin recognises it, or it has an item, fluid or energy capability. */
+    /**
+     * Industrial: part of a district once there is one (it joins the chunks it touches, its inventory may
+     * be boundary stock): a machine, a plugin recognises it, or it has an item, fluid or energy capability.
+     * Industrial is wider than a seed: a chest, a furnace and a shaft are industrial and seed nothing.
+     */
     boolean industrial(ServerLevel level, BlockEntity be, Map<BlockPos, Boolean> cache) {
         BlockPos p = be.getBlockPos();
         Boolean known = cache.get(p);
@@ -978,21 +1060,68 @@ public final class Districts {
                 break;
             }
         }
-        if (!result) {
-            BlockState s = be.getBlockState();
-            result = level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, null) != null
-                    || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, null) != null
-                    || level.getCapability(Capabilities.EnergyStorage.BLOCK, p, s, be, null) != null;
-            if (!result)
-                for (Direction d : Direction.values())
-                    if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, d) != null
-                            || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, d) != null) {
-                        result = true;
-                        break;
-                    }
-        }
+        if (!result)
+            result = hasCapability(level, be) || seed(level, be, new HashMap<>());
         cache.put(p.immutable(), result);
         return result;
+    }
+
+    private static boolean hasCapability(ServerLevel level, BlockEntity be) {
+        BlockPos p = be.getBlockPos();
+        BlockState s = be.getBlockState();
+        if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, null) != null
+                || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, null) != null
+                || level.getCapability(Capabilities.EnergyStorage.BLOCK, p, s, be, null) != null)
+            return true;
+        for (Direction d : Direction.values())
+            if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, d) != null
+                    || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, d) != null)
+                return true;
+        return false;
+    }
+
+    /** True when the block entity's block ticks it on the server (an {@code EntityBlock} with a server ticker). */
+    private static boolean ticksOnServer(ServerLevel level, BlockEntity be) {
+        BlockState s = be.getBlockState();
+        return s.getBlock() instanceof EntityBlock eb && eb.getTicker(level, s, be.getType()) != null;
+    }
+
+    /** Storage by tag: its inventory is boundary stock, or a block that never starts a district. */
+    public static boolean isStorage(BlockState s) {
+        return s.is(STOCK_TAG) || s.is(NOT_SEED_TAG);
+    }
+
+    /**
+     * A seed: a machine, the block entity that starts a district when a player places it (DS-10). In order:
+     * a block of the {@code minecraft} namespace never is; nor is storage ({@code #mic_rtsim:district_stock},
+     * {@code #mic_rtsim:district_not_seed}); a block in {@code #mic_rtsim:district_seed} is; else the first
+     * plugin with an opinion ({@link IndustryPlugin#seed}) decides; else a block entity that ticks on the
+     * server and has an item, fluid or energy capability is.
+     */
+    public boolean seed(ServerLevel level, BlockEntity be, Map<BlockPos, Boolean> cache) {
+        BlockPos p = be.getBlockPos();
+        Boolean known = cache.get(p);
+        if (known != null)
+            return known;
+        boolean result = isSeed(level, be);
+        cache.put(p.immutable(), result);
+        return result;
+    }
+
+    private static boolean isSeed(ServerLevel level, BlockEntity be) {
+        BlockState s = be.getBlockState();
+        if ("minecraft".equals(BuiltInRegistries.BLOCK.getKey(s.getBlock()).getNamespace()))
+            return false;
+        if (isStorage(s))
+            return false;
+        if (s.is(SEED_TAG))
+            return true;
+        for (IndustryPlugin plugin : IndustryApi.PLUGINS) {
+            Boolean v = plugin.seed(be);
+            if (v != null)
+                return v;
+        }
+        return ticksOnServer(level, be) && hasCapability(level, be);
     }
 
     /**

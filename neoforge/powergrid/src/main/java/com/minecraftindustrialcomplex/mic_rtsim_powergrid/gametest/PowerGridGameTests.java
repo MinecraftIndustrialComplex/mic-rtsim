@@ -50,6 +50,10 @@ public final class PowerGridGameTests {
                 .thenExecute(() -> {
                     set(helper, bat, block("powergrid:battery").defaultBlockState());
                     playerPlaced(helper, bat);
+                    // A battery is storage and never seeds: a machine beside it makes the district.
+                    BlockPos machine = inChunk(helper, 3, 3);
+                    set(helper, machine, com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MACHINE.get().defaultBlockState());
+                    playerPlaced(helper, machine);
                 })
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, bat);
@@ -109,6 +113,8 @@ public final class PowerGridGameTests {
                 .thenExecute(() -> {
                     set(helper, src, block("powergrid:creative_voltage_source").defaultBlockState());
                     set(helper, res, block("powergrid:creative_resistor").defaultBlockState());
+                    playerPlaced(helper, src);
+                    playerPlaced(helper, res);
                     check("two chunks", chunk(src) != chunk(res));
                     ids[0] = ind().districts().createForTest(helper.getLevel(), chunk(src)).id;
                     ids[1] = ind().districts().createForTest(helper.getLevel(), chunk(res)).id;

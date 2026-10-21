@@ -53,7 +53,7 @@ public final class OreExcavationGameTests {
         helper.startSequence()
                 .thenExecute(() -> {
                     Config.defaultInfinite = false;
-                    set(helper, chest, Blocks.CHEST.defaultBlockState());
+                    set(helper, chest, com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                     set(helper, drill, block("createoreexcavation:drilling_machine").defaultBlockState());
                     LevelChunk chunk = helper.getLevel().getChunkAt(drill);

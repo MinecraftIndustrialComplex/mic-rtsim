@@ -47,7 +47,7 @@ public final class DieselGameTests {
                 .thenExecute(() -> {
                     OilChunksSavedData.setChunkOilAmount(helper.getLevel(), cp, 5_000_000);
                     OilChunksSavedData.setChunkOilAmount(helper.getLevel(), far, 6_000_000);
-                    set(helper, chest, Blocks.CHEST.defaultBlockState());
+                    set(helper, chest, com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                     set(helper, hole, block("createdieselgenerators:pumpjack_hole").defaultBlockState());
                 })

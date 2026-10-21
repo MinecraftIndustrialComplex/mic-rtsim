@@ -38,7 +38,7 @@ public final class RadarGameTests {
         NetworkData.Group[] group = {null};
         helper.startSequence()
                 .thenExecute(() -> {
-                    set(helper, chest, Blocks.CHEST.defaultBlockState());
+                    set(helper, chest, com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                     set(helper, mount, block("createbigcannons:cannon_mount").defaultBlockState());
                     set(helper, radar, block("create_radar:plane_radar").defaultBlockState());
