@@ -4,9 +4,10 @@
 //!
 //! - On a GameTest save: loopback only, a forged Host refused, anything but GET refused, a public
 //!   bind refused at start, a Unix socket served, and the folder left byte for byte.
-//! - At 100,000 synthetic districts (the industry benches' world, through the real persist path):
-//!   a full-world request returns within the mark budget, and the process's peak resident size
-//!   stays under its memory cap.
+//! - At 100,000 synthetic districts (the industry benches' world, through the real persist path,
+//!   joined four to a replay cluster by power lines, half of them packing mail, one in ten with a
+//!   station): a full-world request returns within the mark budget, the process's peak resident
+//!   size stays under its memory cap, and a district's card shows what the engine would inspect.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -15,10 +16,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use rtsim_industry::engine::Engine;
-use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec};
-use rtsim_industry::learn::Learned;
-use rtsim_industry::obs::{DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, SweepEnd, Timed};
+use rtsim_industry::engine::{Engine, ProcessPeek};
+use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StationId};
+use rtsim_industry::learn::{Learned, LinkKey};
+use rtsim_industry::obs::{
+    DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, StationDecl, SweepEnd, Timed,
+};
+use rtsim_industry::persist::CLUSTER_TABLE;
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
@@ -391,8 +395,16 @@ const DISTRICTS: u64 = 100_000;
 const ORE: Good = Good(1);
 const BAR: Good = Good(2);
 
+/// The first district of `id`'s group of four: its power source, and its replay cluster's.
+fn group_head(id: u64) -> u64 {
+    id - (id - 1) % 4
+}
+
 /// rtsim-cli's industry bench's district (bench/industry.rs), with two chunks so it has a box on
-/// the map: two chests, a learned model, loaded once and unloaded (so it replays).
+/// the map: two chests, a learned model, loaded once and unloaded (so it replays). The other three
+/// of each group of four take power from its first ([`group_head`]), so the four replay as one
+/// cluster (I13); an even one also packs bars into its second chest for address 7 (a link
+/// process); one in ten has a station.
 fn add_district(e: &mut Engine, id: u64) {
     let d = DistrictId(id);
     let at = e.now();
@@ -445,13 +457,40 @@ fn add_district(e: &mut Engine, id: u64) {
         creative: false,
         overstressed: false,
     }));
+    if group_head(id) != id {
+        send(Obs::PowerLink {
+            sink: d,
+            source: Some(DistrictId(group_head(id))),
+        });
+    }
+    if id.is_multiple_of(10) {
+        send(Obs::Station(StationDecl {
+            station: StationId(id),
+            district: Some(d),
+            dim: 0,
+            pos: BlockPos::new(x + 16, 64, z + 8),
+            name: 0,
+        }));
+    }
+    let links = if id.is_multiple_of(2) {
+        vec![(
+            LinkKey::Mail {
+                inventory: 1,
+                address: 7,
+                good: BAR,
+            },
+            -0.02,
+        )]
+    } else {
+        vec![]
+    };
     e.adopt_model(
         d,
         Learned {
             at,
             window_ticks: 12_000,
             rates: vec![(ORE, -0.08), (BAR, 0.08)],
-            links: vec![],
+            links,
             confidence: 1.0,
             points: 0,
             longest_gap: 100,
@@ -472,30 +511,162 @@ fn add_district(e: &mut Engine, id: u64) {
     }
 }
 
-/// A save holding only the industry engine's pages, `n` districts, committed as the link commits.
-fn many_districts(world: &Path, n: u64) -> (usize, usize) {
+/// The districts whose cards the test reads: a group's first, and two that take its power.
+const PROBES: [u64; 3] = [1, 50_000, DISTRICTS];
+
+/// What the engine itself says of a probed district before it is saved.
+struct Expected {
+    processes: Vec<ProcessPeek>,
+    members: Vec<u64>,
+    stock: GoodVec,
+}
+
+/// A save holding only the industry engine's pages, `n` districts, committed as the link commits:
+/// its page count and bytes, and the engine's own view of each of [`PROBES`].
+fn many_districts(world: &Path, n: u64) -> (usize, usize, BTreeMap<u64, Expected>) {
     let mut e = Engine::new(1, Tunables::default(), Tick(0));
     e.define_good(ORE, GoodInfo::item("ore", 64));
     e.define_good(BAR, GoodInfo::item("bar", 64));
     for id in 1..=n {
         add_district(&mut e, id);
     }
+    // The link advances the engine every tick; the replays start at the first advance (the
+    // unloads only mark the districts) and run for a tenth of a day.
+    e.advance_to(Tick(2_000));
+    let expected = PROBES
+        .iter()
+        .map(|&id| {
+            let d = DistrictId(id);
+            let x = Expected {
+                processes: e.processes_peek(d).expect("it replays"),
+                members: e
+                    .cluster_members(d)
+                    .expect("in a cluster")
+                    .into_iter()
+                    .map(|m| m.0)
+                    .collect(),
+                stock: e.stock_peek(d).expect("replay stock"),
+            };
+            (id, x)
+        })
+        .collect();
     let pages = e.snapshot();
     drop(e);
+    let clusters = pages
+        .iter()
+        .filter(|(k, _)| k.table() == CLUSTER_TABLE)
+        .count();
+    assert_eq!(
+        clusters as u64,
+        n.div_ceil(4),
+        "one cluster page per group of four"
+    );
     let mut store = PageStore::open(world.join("rtsim"), Durability::NoSync).unwrap();
     let mut batch = SaveBatch::new();
     for (k, raw) in &pages {
         batch.put(*k, raw);
     }
     store.commit(batch, 1).unwrap();
-    (pages.len(), pages.iter().map(|(_, p)| p.len()).sum())
+    (
+        pages.len(),
+        pages.iter().map(|(_, p)| p.len()).sum(),
+        expected,
+    )
+}
+
+/// A card section's rows by its title; none when the card leaves it out (a card drops empty
+/// sections).
+fn section<'a>(card: &'a serde_json::Value, title: &str) -> &'a [serde_json::Value] {
+    card["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["title"] == title)
+        .map_or(&[], |s| s["fields"].as_array().unwrap().as_slice())
+}
+
+/// A district card against the engine's own view of that district.
+fn check_district_card(id: u64, card: &serde_json::Value, want: &Expected) {
+    assert!(card.get("note").is_none(), "district {id}: {card}");
+    assert_eq!(card["title"], format!("District {id}"));
+    // Its processes: one row each, the box first, running exactly as the engine says.
+    let rows = section(card, "Processes");
+    assert_eq!(rows.len(), want.processes.len(), "district {id}: {rows:?}");
+    assert_eq!(want.processes.len(), 1 + usize::from(id.is_multiple_of(2)));
+    for (row, p) in rows.iter().zip(&want.processes) {
+        let (label, value) = (
+            row["label"].as_str().unwrap(),
+            row["value"].as_str().unwrap(),
+        );
+        assert_eq!(
+            value.starts_with("running"),
+            p.running,
+            "district {id}: {row}"
+        );
+        if let Some(stop) = &p.stop {
+            assert!(value.starts_with(stop.as_str()), "district {id}: {row}");
+        }
+        if p.fills.is_some() {
+            assert_eq!(label, "Packager: bar for address 7, postbox 1");
+        } else {
+            assert_eq!(label, format!("Process {}: ore, bar", p.id + 1));
+        }
+    }
+    let head = group_head(id);
+    if head != id {
+        let power = format!("on District {head}'s power");
+        assert!(
+            rows[0]["value"].as_str().unwrap().ends_with(&power),
+            "district {id}: {rows:?}"
+        );
+    }
+    // Its cluster: the other three of its group, linked.
+    let others: Vec<u64> = want.members.iter().copied().filter(|&m| m != id).collect();
+    assert_eq!(
+        others,
+        (head..head + 4).filter(|&m| m != id).collect::<Vec<_>>()
+    );
+    let linked: Vec<u64> = section(card, "Replays with (one cluster)")
+        .iter()
+        .map(|f| {
+            assert_eq!(f["link"]["layer"], "industry.districts");
+            f["link"]["id"].as_str().unwrap().parse().unwrap()
+        })
+        .collect();
+    assert_eq!(linked, others, "district {id}");
+    // Its station, if it has one; its two rates; its replay stock as the engine's.
+    assert_eq!(
+        section(card, "Stations").len(),
+        usize::from(id.is_multiple_of(10))
+    );
+    assert_eq!(section(card, "Rates").len(), 2);
+    let stock: Vec<(String, i64)> = section(card, "Replay stock")
+        .iter()
+        .map(|f| {
+            (
+                f["label"].as_str().unwrap().to_string(),
+                f["value"].as_f64().unwrap() as i64,
+            )
+        })
+        .collect();
+    let names = |g: Good| if g == ORE { "ore" } else { "bar" }.to_string();
+    let engine: Vec<(String, i64)> = want.stock.iter().map(|(g, n)| (names(g), n)).collect();
+    assert_eq!(stock, engine, "district {id}");
+    assert!(engine.iter().any(|(g, n)| g == "ore" && *n > 0));
+    // It made bars from ore since its replay began, and nothing attacked it.
+    let made = section(card, "Made since the replay began");
+    assert!(
+        made.iter()
+            .any(|f| f["label"] == "bar" && f["value"].as_f64().unwrap() > 0.0)
+    );
+    assert!(section(card, "Attacks").is_empty());
 }
 
 #[test]
 fn at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap() {
     let world = tmpdir("districts");
     let t = Instant::now();
-    let (pages, bytes) = many_districts(&world, DISTRICTS);
+    let (pages, bytes, expected) = many_districts(&world, DISTRICTS);
     eprintln!(
         "{DISTRICTS} districts: {pages} pages ({:.1} MiB raw) written in {:.1} s",
         bytes as f64 / (1u64 << 20) as f64,
@@ -561,13 +732,17 @@ fn at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its
         }
     }
     assert_eq!(districts_total, DISTRICTS, "every district counted");
-    // District cards: each restores an engine from three pages.
+    // District cards: each restores an engine from three pages (globals, the district, its
+    // cluster) and shows what the engine itself said before the save.
     let t = Instant::now();
-    for id in [1u64, 50_000, DISTRICTS] {
-        let c = s.json(&format!("/api/thing/industry.districts/{id}"));
-        assert!(!c["title"].as_str().unwrap().is_empty());
+    let cards: Vec<serde_json::Value> = PROBES
+        .iter()
+        .map(|id| s.json(&format!("/api/thing/industry.districts/{id}")))
+        .collect();
+    let card_time = t.elapsed() / PROBES.len() as u32;
+    for (id, c) in PROBES.iter().zip(&cards) {
+        check_district_card(*id, c, &expected[id]);
     }
-    let cards = t.elapsed() / 3;
     let status = s.json("/api/status");
     let heap = status["heap"].as_u64().unwrap_or(0);
     let (rss, hwm) = s.rss();
@@ -577,7 +752,7 @@ fn at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its
          heap {:.0} MiB, resident {:.0} MiB, peak resident {:.0} MiB, cap {cap_mib} MiB",
         started.as_secs_f64(),
         slowest.as_secs_f64() * 1e3,
-        cards.as_secs_f64() * 1e3,
+        card_time.as_secs_f64() * 1e3,
         mib(heap),
         mib(rss),
         mib(hwm)
