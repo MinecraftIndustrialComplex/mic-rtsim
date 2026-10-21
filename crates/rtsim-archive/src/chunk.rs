@@ -43,6 +43,17 @@ impl Tier {
     }
 }
 
+/// The save a chunk was flushed with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stamp {
+    /// The observation sequence the save's generation includes (`Generation::obs_seq`, §10.5).
+    pub obs_seq: u64,
+    /// The game tick at the save's snapshot.
+    pub tick: u64,
+    /// The wall clock at the flush, in milliseconds since the Unix epoch.
+    pub wall_ms: u64,
+}
+
 /// What the index keeps of a chunk.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChunkHeader {
@@ -55,32 +66,25 @@ pub struct ChunkHeader {
     /// The latest tick a row covers: a leg's end can pass `last_tick`, so a chunk may hold a leg
     /// covering tick `t` only when `first_tick <= t <= last_end`.
     pub last_end: u64,
-    /// The wall clock at the flush, in milliseconds since the Unix epoch.
-    pub wall_ms: u64,
     /// The observation sequence of the save the rows were flushed with (§10.5).
     pub obs_seq: u64,
+    /// The game tick at that save's snapshot: with `wall_ms`, a point pairing game time with dates.
+    pub save_tick: u64,
+    /// The wall clock at the flush, in milliseconds since the Unix epoch.
+    pub wall_ms: u64,
     /// min x, min z, max x, max z over every point the rows touch.
     pub bbox: [i32; 4],
-    /// The frames present, ascending.
-    pub frames: Vec<u8>,
-    /// Rows per kind, ascending by kind.
-    pub counts: Vec<(u16, u32)>,
+    /// Rows per frame and kind, ascending by (frame, kind).
+    pub counts: Vec<(u8, u16, u32)>,
     /// Bytes in the payload side block.
     pub payload_bytes: u32,
 }
 
 impl ChunkHeader {
     /// The header of rows sorted by tick.
-    fn of(
-        tier: Tier,
-        rows: &[RawRow],
-        payload_bytes: usize,
-        wall_ms: u64,
-        obs_seq: u64,
-    ) -> ChunkHeader {
+    fn of(tier: Tier, rows: &[RawRow], payload_bytes: usize, stamp: Stamp) -> ChunkHeader {
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
-        let mut frames = [false; 256];
-        let mut counts: std::collections::BTreeMap<u16, u32> = Default::default();
+        let mut counts: std::collections::BTreeMap<(u8, u16), u32> = Default::default();
         let mut last_end = 0;
         for r in rows {
             for (x, z) in row::points(r) {
@@ -91,8 +95,7 @@ impl ChunkHeader {
                     bbox[3].max(z),
                 ];
             }
-            frames[row::frame(r) as usize] = true;
-            *counts.entry(row::kind(r)).or_default() += 1;
+            *counts.entry((row::frame(r), row::kind(r))).or_default() += 1;
             last_end = last_end.max(row::end(r));
         }
         if rows.is_empty() {
@@ -104,11 +107,11 @@ impl ChunkHeader {
             first_tick: rows.first().map_or(0, row::tick),
             last_tick: rows.last().map_or(0, row::tick),
             last_end,
-            wall_ms,
-            obs_seq,
+            obs_seq: stamp.obs_seq,
+            save_tick: stamp.tick,
+            wall_ms: stamp.wall_ms,
             bbox,
-            frames: (0..=255u8).filter(|&f| frames[f as usize]).collect(),
-            counts: counts.into_iter().collect(),
+            counts: counts.into_iter().map(|((f, k), n)| (f, k, n)).collect(),
             payload_bytes: payload_bytes as u32,
         }
     }
@@ -118,11 +121,20 @@ impl ChunkHeader {
         self.first_tick <= t1 && self.last_end >= t0
     }
 
-    /// Rows of one kind.
+    /// Rows of one kind, in every frame.
     pub fn count(&self, kind: u16) -> u32 {
         self.counts
-            .binary_search_by_key(&kind, |c| c.0)
-            .map_or(0, |i| self.counts[i].1)
+            .iter()
+            .filter(|c| c.1 == kind)
+            .map(|c| c.2)
+            .sum()
+    }
+
+    /// The frames present, ascending.
+    pub fn frames(&self) -> Vec<u8> {
+        let mut f: Vec<u8> = self.counts.iter().map(|c| c.0).collect();
+        f.dedup();
+        f
     }
 
     pub(crate) fn write(&self, w: &mut Writer) {
@@ -131,18 +143,19 @@ impl ChunkHeader {
         w.var_u64(self.first_tick);
         w.var_u64(self.last_tick - self.first_tick);
         w.var_u64(self.last_end - self.first_tick);
-        w.var_u64(self.wall_ms);
         w.var_u64(self.obs_seq);
+        w.var_u64(self.save_tick);
+        w.var_u64(self.wall_ms);
         for v in self.bbox {
             w.var_i64(i64::from(v));
         }
-        w.bytes(&self.frames);
         w.var_u64(self.counts.len() as u64);
-        let mut prev = 0u16;
-        for &(k, n) in &self.counts {
-            w.var_u64(u64::from(k - prev));
+        let mut prev = 0u32;
+        for &(f, k, n) in &self.counts {
+            let key = u32::from(f) << 16 | u32::from(k);
+            w.var_u64(u64::from(key - prev));
             w.var_u64(u64::from(n));
-            prev = k;
+            prev = key;
         }
         w.var_u64(u64::from(self.payload_bytes));
     }
@@ -158,27 +171,26 @@ impl ChunkHeader {
         let last_end = first_tick
             .checked_add(r.var_u64()?)
             .ok_or_else(|| bad("last end"))?;
-        let wall_ms = r.var_u64()?;
         let obs_seq = r.var_u64()?;
+        let save_tick = r.var_u64()?;
+        let wall_ms = r.var_u64()?;
         let mut bbox = [0i32; 4];
         for v in &mut bbox {
             *v = i32::try_from(r.var_i64()?).map_err(|_| bad("bbox"))?;
-        }
-        let frames = r.bytes()?.to_vec();
-        if !frames.is_sorted_by(|a, b| a < b) {
-            return Err(bad("frames"));
         }
         let n = r.len_prefix(2)?;
         let mut counts = Vec::with_capacity(n);
         let mut prev = 0u64;
         for i in 0..n {
-            let k = prev + r.var_u64()?;
-            if k > u64::from(u16::MAX) || (i > 0 && k == prev) {
-                return Err(bad("kinds"));
+            let key = prev + r.var_u64()?;
+            if key > u64::from(u32::from(u8::MAX) << 16 | u32::from(u16::MAX))
+                || (i > 0 && key == prev)
+            {
+                return Err(bad("frames and kinds"));
             }
             let c = u32::try_from(r.var_u64()?).map_err(|_| bad("count"))?;
-            counts.push((k as u16, c));
-            prev = k;
+            counts.push(((key >> 16) as u8, key as u16, c));
+            prev = key;
         }
         let payload_bytes = u32::try_from(r.var_u64()?).map_err(|_| bad("payload bytes"))?;
         Ok(ChunkHeader {
@@ -187,10 +199,10 @@ impl ChunkHeader {
             first_tick,
             last_tick,
             last_end,
-            wall_ms,
             obs_seq,
+            save_tick,
+            wall_ms,
             bbox,
-            frames,
             counts,
             payload_bytes,
         })
@@ -233,8 +245,7 @@ impl Chunk {
         tier: Tier,
         mut rows: Vec<RawRow>,
         mut payloads: Vec<(u32, Vec<u8>)>,
-        wall_ms: u64,
-        obs_seq: u64,
+        stamp: Stamp,
     ) -> Chunk {
         assert!(rows.len() <= u32::MAX as usize);
         payloads.retain(|p| (p.0 as usize) < rows.len());
@@ -249,7 +260,7 @@ impl Chunk {
         }
         let payload_bytes = payloads.iter().map(|p| p.1.len()).sum();
         Chunk {
-            header: ChunkHeader::of(tier, &rows, payload_bytes, wall_ms, obs_seq),
+            header: ChunkHeader::of(tier, &rows, payload_bytes, stamp),
             rows,
             payloads,
         }
@@ -433,8 +444,11 @@ mod tests {
             Tier::Full,
             rows,
             vec![(0, b"loot".to_vec()), (9, b"gone".to_vec())],
-            1_700_000_000_000,
-            77,
+            Stamp {
+                obs_seq: 77,
+                tick: 400,
+                wall_ms: 1_700_000_000_000,
+            },
         );
         assert_eq!(
             c.rows.iter().map(row::tick).collect::<Vec<_>>(),
@@ -446,12 +460,19 @@ mod tests {
         assert_ne!(row::flags(&c.rows[3]) & PAYLOAD, 0);
         let h = &c.header;
         assert_eq!(
-            (h.rows, h.first_tick, h.last_tick, h.last_end, h.obs_seq),
-            (4, 50, 300, 1_050, 77)
+            (
+                h.rows,
+                h.first_tick,
+                h.last_tick,
+                h.last_end,
+                h.obs_seq,
+                h.save_tick
+            ),
+            (4, 50, 300, 1_050, 77, 400)
         );
         assert_eq!(h.bbox, [-100, -5, 5, 400]);
-        assert_eq!(h.frames, [0, 2]);
-        assert_eq!(h.counts, [(1, 2), (4, 1), (9, 1)]);
+        assert_eq!(h.frames(), [0, 2]);
+        assert_eq!(h.counts, [(0, 1, 2), (0, 4, 1), (2, 9, 1)]);
         assert_eq!((h.count(1), h.count(2)), (2, 0));
         assert!(h.overlaps(1_000, 2_000) && !h.overlaps(1_051, 2_000) && !h.overlaps(0, 49));
         let bytes = c.encode();
@@ -468,7 +489,13 @@ mod tests {
         let rows = (0..300)
             .map(|i| ev(i * 7, (i % 5) as u16, i as i32, Severity::Minor))
             .collect();
-        let bytes = Chunk::new(Tier::Notable, rows, vec![(4, vec![1, 2, 3])], 5, 6).encode();
+        let bytes = Chunk::new(
+            Tier::Notable,
+            rows,
+            vec![(4, vec![1, 2, 3])],
+            Stamp::default(),
+        )
+        .encode();
         for cut in 0..bytes.len() {
             assert!(Chunk::decode(&bytes[..cut]).is_err(), "cut at {cut}");
         }
@@ -484,7 +511,7 @@ mod tests {
 
     #[test]
     fn an_empty_chunk_round_trips() {
-        let c = Chunk::new(Tier::Full, vec![], vec![], 0, 0);
+        let c = Chunk::new(Tier::Full, vec![], vec![], Stamp::default());
         assert_eq!(Chunk::decode(&c.encode()).unwrap(), c);
         assert_eq!(c.header.bbox, [0; 4]);
     }

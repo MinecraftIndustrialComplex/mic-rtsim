@@ -16,14 +16,16 @@
 //!   dictionary would make every kind name a guess, so the writer clears the archive and says so
 //!   ([`Archive::was_reset`]); the reader shows kinds by number.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use rtsim_kernel::codec::{CodecError, Reader, Writer};
 
-use crate::chunk::{Chunk, ChunkHeader, PREFIX_BYTES, ROWS_PER_CHUNK, Tier, header_len, sort_rows};
+use crate::chunk::{
+    Chunk, ChunkHeader, PREFIX_BYTES, ROWS_PER_CHUNK, Stamp, Tier, header_len, sort_rows,
+};
 use crate::dict::{Dictionary, check_crc};
 use crate::pending::{Batch, Dropped};
 use crate::row::{Leg, RawRow, Row};
@@ -353,13 +355,13 @@ impl Archive {
     }
 
     /// Writes one save's rows (§10.3): the dictionary if given (pass it when it changed), the rows
-    /// sorted by tick in chunks of at most [`ROWS_PER_CHUNK`] tagged `obs_seq`, then the index.
-    /// Returns the new chunks' sequence numbers.
+    /// sorted by tick in chunks of at most [`ROWS_PER_CHUNK`] stamped with the save, then the index.
+    /// Returns the new chunks' sequence numbers. On the IO lane this must finish before the page
+    /// commit: open's deletion of unnamed chunk files relies on it.
     pub fn flush(
         &mut self,
         batch: Batch,
-        obs_seq: u64,
-        wall_ms: u64,
+        stamp: Stamp,
         dict: Option<&Dictionary>,
     ) -> io::Result<Vec<u64>> {
         if let Some(d) = dict {
@@ -383,13 +385,7 @@ impl Archive {
             while let Some(p) = payloads.next_if(|p| p.0 < end) {
                 mine.push((p.0 - base, p.1));
             }
-            chunks.push(Chunk::new(
-                Tier::Full,
-                part.to_vec(),
-                mine,
-                wall_ms,
-                obs_seq,
-            ));
+            chunks.push(Chunk::new(Tier::Full, part.to_vec(), mine, stamp));
         }
         let seqs = self.write_chunks(chunks)?;
         self.write_index()?;
@@ -514,16 +510,18 @@ impl ArchiveReader {
         Some((first, last))
     }
 
-    /// Rows per bin over `t0..t1` in `bins` equal bins, from the headers alone: a chunk's rows of
-    /// the kinds `kinds` accepts are spread evenly over its first to last tick.
+    /// Rows per kind per bin over `t0..t1` in `bins` equal bins, from the headers alone: a chunk's
+    /// rows are spread evenly over its first to last tick. `frame` keeps one frame's rows; `kinds`
+    /// says which kinds to count. Kinds with no rows in the span are left out.
     pub fn histogram(
         &self,
         t0: u64,
         t1: u64,
         bins: usize,
+        frame: Option<u8>,
         kinds: impl Fn(u16) -> bool,
-    ) -> Vec<f64> {
-        let mut out = vec![0.0; bins];
+    ) -> BTreeMap<u16, Vec<f64>> {
+        let mut out: BTreeMap<u16, Vec<f64>> = BTreeMap::new();
         if bins == 0 || t1 <= t0 {
             return out;
         }
@@ -533,29 +531,43 @@ impl ArchiveReader {
             if h.last_tick < t0 || h.first_tick >= t1 {
                 continue;
             }
-            let n: f64 = h
-                .counts
-                .iter()
-                .filter(|c| kinds(c.0))
-                .map(|c| f64::from(c.1))
-                .sum();
-            if n == 0.0 {
-                continue;
-            }
-            // The chunk as the ticks [first, last + 1).
+            // The chunk as the ticks [first, last + 1), and its share in each bin it touches.
             let (a, b) = (h.first_tick as f64, h.last_tick as f64 + 1.0);
-            let lo = (((a - t0 as f64) / width).floor().max(0.0)) as usize;
-            let hi = ((((b - t0 as f64) / width).ceil()) as usize).min(bins);
-            for (i, slot) in out.iter_mut().enumerate().take(hi).skip(lo) {
-                let (s, t) = (
-                    t0 as f64 + i as f64 * width,
-                    t0 as f64 + (i + 1) as f64 * width,
-                );
-                let overlap = (t.min(b) - s.max(a)).max(0.0);
-                *slot += n * overlap / (b - a);
+            let lo = ((a - t0 as f64) / width).floor().max(0.0) as usize;
+            let hi = (((b - t0 as f64) / width).ceil() as usize).min(bins);
+            let shares: Vec<(usize, f64)> = (lo..hi)
+                .map(|i| {
+                    let (s, t) = (
+                        t0 as f64 + i as f64 * width,
+                        t0 as f64 + (i + 1) as f64 * width,
+                    );
+                    (i, (t.min(b) - s.max(a)).max(0.0) / (b - a))
+                })
+                .collect();
+            for &(f, k, n) in &h.counts {
+                if frame.is_some_and(|want| want != f) || !kinds(k) {
+                    continue;
+                }
+                let series = out.entry(k).or_insert_with(|| vec![0.0; bins]);
+                for &(i, share) in &shares {
+                    series[i] += f64::from(n) * share;
+                }
             }
         }
         out
+    }
+
+    /// Game ticks paired with wall-clock milliseconds, one pair a save, ascending by tick: the page
+    /// writes dates under game days from them.
+    pub fn wall(&self) -> Vec<(u64, u64)> {
+        let mut v: Vec<(u64, u64)> = self
+            .entries
+            .iter()
+            .map(|e| (e.header.save_tick, e.header.wall_ms))
+            .collect();
+        v.sort_unstable();
+        v.dedup_by_key(|p| p.0);
+        v
     }
 
     /// A chunk; `None` when its file went (a cut or a compaction since open).
