@@ -22,7 +22,8 @@ public final class GlassCorpus {
             new BrassMixingFactory(),
             new PressSheetsFactory(),
             new MillstoneFlourFactory(),
-            new SawShaftsFactory()
+            new SawShaftsFactory(),
+            new BrassTunnelsFactory()
     );
 
     public static CorpusFactory byName(String name) {
