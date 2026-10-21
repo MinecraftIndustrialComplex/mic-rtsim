@@ -137,13 +137,6 @@ pub enum Body {
     Cycle(Box<CycleBody>),
 }
 
-/// The carry a watched pool restarts at: half a unit, so a piece rounds to nearest whichever way
-/// its net rate points. A restart at 0 would drain a falling pool's first unit at once and give a
-/// rising one its first unit a whole period late: a threshold switch's falling half would be a
-/// unit's time shorter than its rising half every cycle, and the upstream machine would run that
-/// much more than the downstream one takes (choice G2-12).
-pub const RESET_CARRY: u32 = 1 << 31;
-
 /// One piece of a cycle: a regime between two of the breakpoints it was found from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CyclePiece {
@@ -151,29 +144,106 @@ pub struct CyclePiece {
     pub len: u64,
     /// Per pool: the 32.32 rate.
     pub rates: Vec<i64>,
-    /// Per pool: its carry restarts at [`RESET_CARRY`] at the piece's start (a pool a breakpoint
-    /// watched there, so the piece emits exactly what it did when the cycle was found).
-    pub reset: Vec<bool>,
+    /// The breakpoints at the piece's start, in order: each pool that fired, with the carry its
+    /// time shift lands it on ([`shift_back`], choice G2-12).
+    pub fires: Vec<CycleFire>,
 }
 
-/// One period of pool `j` of `pieces` from carry `c0` at the first piece's start (its restart
-/// applied): (units emitted, carry at the next period's start). A pool restarted in any piece
-/// leaves every period at the same carry, whatever it entered with.
-pub fn cycle_period(pieces: &[CyclePiece], j: usize, c0: u32) -> (i128, u32) {
-    let mut c = i128::from(c0);
-    let mut e = 0i128;
-    for (i, p) in pieces.iter().enumerate() {
-        if i > 0 && p.reset[j] {
-            c = i128::from(RESET_CARRY);
+/// A breakpoint inside a cycle: pool `pool` (an index into the cycle's pools) fired, and the
+/// regime before it is shifted back in time until that pool's carry is `canon`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct CycleFire {
+    pub pool: u16,
+    pub canon: u32,
+}
+
+/// The carry a breakpoint's time shift lands its fired pool on: a rising pool (the crossing is a
+/// unit up) at the lowest carry from which a tick of `rate` makes the unit, a falling one at the
+/// highest from which a tick loses it. None for a pool not moving that way.
+pub fn fire_canon(rate: i64, rising: bool) -> Option<u32> {
+    let r = i128::from(rate);
+    match (rising, r) {
+        (true, r) if r > 0 => u32::try_from((U - r).max(0)).ok(),
+        (false, r) if r < 0 => u32::try_from((-r - 1).min(U - 1)).ok(),
+        _ => None,
+    }
+}
+
+/// A breakpoint's time shift (choice G2-12). The regime that just ended (its per-pool `rates`)
+/// stopped at the last tick before pool `f` crossed; its carry is somewhere within a tick's rate of
+/// the crossing. Shifting the whole regime back by `delta = (c[f] - canon) / rates[f]` ticks
+/// (`0 <= delta < 1`) puts that carry on `canon`, so a repeated regime sequence repeats exactly,
+/// and moves every other pool back by its own rate times `delta`, rounded so that no output gains
+/// and no input gets back more than it gave. Goods stay consistent with the recipes (every flow
+/// of the regime loses the same time), and nothing runs ahead of the control. Carries may leave
+/// `[0, U)`; the caller turns that into units. False if the carry is not at a crossing.
+fn shift_back(c: &mut [i128], rates: &[i64], f: usize, canon: u32) -> bool {
+    let rf = i128::from(rates[f]);
+    let mut num = c[f] - i128::from(canon);
+    let mut den = rf;
+    if den < 0 {
+        num = -num;
+        den = -den;
+    }
+    if den == 0 || num < 0 || num >= den {
+        return false;
+    }
+    if num == 0 {
+        return true;
+    }
+    for (k, ck) in c.iter_mut().enumerate() {
+        if k == f {
+            *ck = i128::from(canon);
+        } else {
+            *ck -= div_ceil(i128::from(rates[k]) * num, den);
         }
-        let total = c + i128::from(p.rates[j]) * i128::from(p.len);
-        e += total.div_euclid(U);
-        c = total.rem_euclid(U);
     }
-    if pieces.first().is_some_and(|p| p.reset[j]) {
-        c = i128::from(RESET_CARRY);
+    true
+}
+
+/// Applies `fires` in order to carries `c` after a regime of `rates`, adding the units they move
+/// to `e`.
+fn apply_fires(c: &mut [i128], e: &mut [i128], rates: &[i64], fires: &[CycleFire]) {
+    for fire in fires {
+        shift_back(c, rates, fire.pool as usize, fire.canon);
+        for (ck, ek) in c.iter_mut().zip(e.iter_mut()) {
+            *ek += ck.div_euclid(U);
+            *ck = ck.rem_euclid(U);
+        }
     }
-    (e, c as u32)
+}
+
+/// One period of `pieces` from carries `c0` at the first piece's start (its fires applied): per
+/// pool, the units emitted and the carry at the next period's start (the first piece's fires
+/// applied again).
+pub fn cycle_period(pieces: &[CyclePiece], c0: &[u32]) -> (Vec<i128>, Vec<u32>) {
+    let mut c: Vec<i128> = c0.iter().map(|&x| i128::from(x)).collect();
+    let mut e = vec![0i128; c.len()];
+    for (i, p) in pieces.iter().enumerate() {
+        if i > 0 {
+            apply_fires(&mut c, &mut e, &pieces[i - 1].rates, &p.fires);
+        }
+        for (j, (cj, ej)) in c.iter_mut().zip(e.iter_mut()).enumerate() {
+            let t = *cj + i128::from(p.rates[j]) * i128::from(p.len);
+            *ej += t.div_euclid(U);
+            *cj = t.rem_euclid(U);
+        }
+    }
+    if let (Some(first), Some(last)) = (pieces.first(), pieces.last()) {
+        apply_fires(&mut c, &mut e, &last.rates, &first.fires);
+    }
+    (e, c.into_iter().map(|x| x as u32).collect())
+}
+
+/// The pools some piece of `pieces` fires.
+pub fn cycle_fired(pieces: &[CyclePiece], pools: usize) -> Vec<bool> {
+    let mut out = vec![false; pools];
+    for f in pieces.iter().flat_map(|p| &p.fires) {
+        if let Some(x) = out.get_mut(f.pool as usize) {
+            *x = true;
+        }
+    }
+    out
 }
 
 /// One cycle of a [`Body::Cycle`]: every piece's rates over the same pools.
@@ -196,43 +266,64 @@ impl CycleBody {
         self.pieces.iter().map(|p| p.len).sum()
     }
 
-    /// Emissions per pool over `dt` ticks from where it is, advancing it. Exact: n whole cycles
-    /// are `floor((carry + n S) / U)` for a pool no piece restarts, and the first period plus
-    /// n - 1 of the steady one ([`cycle_period`]) for one a piece restarts.
+    /// Emissions per pool over `dt` ticks from where it is, advancing it. Exact: whole periods
+    /// step one at a time until every fired pool enters a period at the carry it entered the last
+    /// one with; from then on each period repeats ([`cycle_period`]), so n more of them are n
+    /// times the fired pools' emission and, for the others, `floor((carry + n M) / U)` with M a
+    /// period's move.
     fn advance(&mut self, dt: u64, out: &mut [i64]) {
         debug_assert_eq!(out.len(), self.pools.len());
         let period = self.period();
         if period == 0 || self.pieces.is_empty() {
             return;
         }
+        let m = self.pools.len();
+        let fired = cycle_fired(&self.pieces, m);
         let mut left = dt;
         while left > 0 {
             if self.piece == 0 && self.off == 0 && left >= period {
-                let n = left / period;
-                for (j, e) in out.iter_mut().enumerate() {
-                    let carry = if self.pieces.iter().any(|p| p.reset[j]) {
-                        let (first, c1) = cycle_period(&self.pieces, j, self.flows[j].carry());
-                        let mut total = first;
-                        if n > 1 {
-                            let (steady, c2) = cycle_period(&self.pieces, j, c1);
-                            debug_assert_eq!(c1, c2, "a restarted pool leaves every period alike");
-                            total += steady * i128::from(n - 1);
-                        }
-                        *e += i64::try_from(total).expect("cycle emission");
-                        c1
-                    } else {
-                        let s: i128 = self
-                            .pieces
-                            .iter()
-                            .map(|p| i128::from(p.rates[j]) * i128::from(p.len))
-                            .sum();
-                        let total = i128::from(self.flows[j].carry()) + s * i128::from(n);
-                        *e += i64::try_from(total.div_euclid(U)).expect("cycle emission");
-                        total.rem_euclid(U) as u32
-                    };
-                    self.flows[j] = Diffuser::with_carry(self.pieces[0].rates[j], carry);
-                }
+                let mut n = left / period;
                 left -= n * period;
+                let mut c: Vec<u32> = self.flows.iter().map(|f| f.carry()).collect();
+                let add = |e: &[i128], out: &mut [i64]| {
+                    for (o, &x) in out.iter_mut().zip(e) {
+                        *o += i64::try_from(x).expect("cycle emission");
+                    }
+                };
+                while n > 0 {
+                    let (e1, c1) = cycle_period(&self.pieces, &c);
+                    add(&e1, out);
+                    n -= 1;
+                    if n == 0 {
+                        c = c1;
+                        break;
+                    }
+                    let (e2, c2) = cycle_period(&self.pieces, &c1);
+                    let steady = (0..m).all(|j| !fired[j] || c1[j] == c2[j]);
+                    if !steady {
+                        c = c1;
+                        continue;
+                    }
+                    // Steady from c1: n more periods.
+                    let n128 = i128::from(n);
+                    let mut e = vec![0i128; m];
+                    for j in 0..m {
+                        if fired[j] {
+                            e[j] = e2[j] * n128;
+                            c[j] = c1[j];
+                        } else {
+                            let mv = e2[j] * U + i128::from(c2[j]) - i128::from(c1[j]);
+                            let t = i128::from(c1[j]) + mv * n128;
+                            e[j] = t.div_euclid(U);
+                            c[j] = t.rem_euclid(U) as u32;
+                        }
+                    }
+                    add(&e, out);
+                    n = 0;
+                }
+                for (j, f) in self.flows.iter_mut().enumerate() {
+                    *f = Diffuser::with_carry(self.pieces[0].rates[j], c[j]);
+                }
                 continue;
             }
             let len = self.pieces[self.piece as usize].len;
@@ -243,16 +334,16 @@ impl CycleBody {
             self.off += step;
             left -= step;
             if self.off >= len {
+                let before = self.piece as usize;
                 self.piece = (self.piece + 1) % self.pieces.len() as u32;
                 self.off = 0;
-                let p = &self.pieces[self.piece as usize];
-                for j in 0..self.pools.len() {
-                    let carry = if p.reset[j] {
-                        RESET_CARRY
-                    } else {
-                        self.flows[j].carry()
-                    };
-                    self.flows[j] = Diffuser::with_carry(p.rates[j], carry);
+                let mut c: Vec<i128> = self.flows.iter().map(|f| i128::from(f.carry())).collect();
+                let mut e = vec![0i128; m];
+                let (prev, p) = (&self.pieces[before], &self.pieces[self.piece as usize]);
+                apply_fires(&mut c, &mut e, &prev.rates, &p.fires);
+                for j in 0..m {
+                    out[j] += i64::try_from(e[j]).expect("cycle emission");
+                    self.flows[j] = Diffuser::with_carry(p.rates[j], c[j] as u32);
                 }
             }
         }
@@ -378,7 +469,8 @@ pub enum ProcSpecBody {
         batch: Option<i64>,
     },
     /// A cycle from its first piece: its pools, and its pieces over them. Carries come from the
-    /// process it replaces ([`Cluster::replace_procs`]), the first piece's restarts applied.
+    /// process it replaces ([`Cluster::replace_procs`]), the first piece's fires already applied
+    /// ([`Cluster::shift_back`]).
     Cycle {
         pools: Vec<PoolKey>,
         pieces: Vec<CyclePiece>,
@@ -748,7 +840,7 @@ impl Cluster {
                             .map(|p| {
                                 std::mem::size_of::<CyclePiece>()
                                     + p.rates.capacity() * 8
-                                    + p.reset.capacity()
+                                    + p.fires.capacity() * std::mem::size_of::<CycleFire>()
                             })
                             .sum::<usize>()
                 }
@@ -889,12 +981,7 @@ impl Cluster {
                     .map(|(j, &k)| {
                         let first = pieces.first();
                         let rate = first.and_then(|p| p.rates.get(j)).copied().unwrap_or(0);
-                        let c = if first.is_some_and(|p| p.reset[j]) {
-                            RESET_CARRY
-                        } else {
-                            carries.get(&k).copied().unwrap_or(0)
-                        };
-                        Diffuser::with_carry(rate, c)
+                        Diffuser::with_carry(rate, carries.get(&k).copied().unwrap_or(0))
                     })
                     .collect();
                 Body::Cycle(Box::new(CycleBody {
@@ -962,19 +1049,75 @@ impl Cluster {
         self.spaces.insert(pos, s);
     }
 
-    /// Replaces a district's processes and bounds in place, keeping its pools (a glass replay's
-    /// regime change, GLASSBOX.md §4.1). Each new diffuser keeps the carry its pool had in the
-    /// old processes, except on pools in `reset` (a pool a breakpoint watches restarts at
-    /// [`RESET_CARRY`], so a cycle repeats exactly). New pools start at 0. Callers settle the
-    /// cluster to `at` first.
-    pub fn replace_procs(
-        &mut self,
-        d: DistrictId,
-        procs: Vec<ProcSpec>,
-        bounds: Vec<(u32, SpaceSpec)>,
-        reset: &BTreeSet<PoolKey>,
-        at: Tick,
-    ) {
+    /// A glass replay's breakpoint time shift ([`shift_back`], choice G2-12): district `d`'s
+    /// running regime stopped because pool `key` would cross next tick (`rising`: a unit up);
+    /// every flow of the regime moves back by the same fraction of a tick, so `key`'s carry lands
+    /// on [`fire_canon`]. The units this moves are booked like the regime's own. Returns the
+    /// carry, or None (nothing changed) if `key` is not at a crossing, or a pool would go below 0.
+    /// Callers settle the cluster to the moment first.
+    pub fn shift_back(&mut self, d: DistrictId, key: PoolKey, rising: bool) -> Option<u32> {
+        let ix = self.pool_index(key)?;
+        let i = self
+            .procs
+            .iter()
+            .position(|p| p.owner == d && !matches!(p.body, Body::Link { .. }))?;
+        let (pools, mut c, rates): (Vec<u16>, Vec<i128>, Vec<i64>) = match &self.procs[i].body {
+            Body::Box { terms } => (
+                terms.iter().map(|t| t.pool).collect(),
+                terms.iter().map(|t| i128::from(t.flow.carry())).collect(),
+                terms.iter().map(|t| t.flow.rate_fixed()).collect(),
+            ),
+            Body::Cycle(cy) => (
+                cy.pools.clone(),
+                cy.flows.iter().map(|f| i128::from(f.carry())).collect(),
+                cy.flows.iter().map(|f| f.rate_fixed()).collect(),
+            ),
+            Body::Link { .. } => return None,
+        };
+        let f = pools.iter().position(|&p| p == ix)?;
+        let canon = fire_canon(rates[f], rising)?;
+        if !shift_back(&mut c, &rates, f, canon) {
+            return None;
+        }
+        let units: Vec<i64> = c
+            .iter()
+            .map(|x| i64::try_from(x.div_euclid(U)).unwrap_or(0))
+            .collect();
+        if pools
+            .iter()
+            .zip(&units)
+            .any(|(&p, &u)| self.pools[p as usize].level + u < 0)
+        {
+            return None;
+        }
+        for (&p, &u) in pools.iter().zip(&units) {
+            let pool = &mut self.pools[p as usize];
+            pool.level += u;
+            if u >= 0 {
+                pool.books.minted += u;
+            } else {
+                pool.books.burned -= u;
+            }
+        }
+        let carry = |j: usize| c[j].rem_euclid(U) as u32;
+        match &mut self.procs[i].body {
+            Body::Box { terms } => {
+                for (j, t) in terms.iter_mut().enumerate() {
+                    t.flow = Diffuser::with_carry(t.flow.rate_fixed(), carry(j));
+                }
+            }
+            Body::Cycle(cy) => {
+                for (j, fl) in cy.flows.iter_mut().enumerate() {
+                    *fl = Diffuser::with_carry(fl.rate_fixed(), carry(j));
+                }
+            }
+            Body::Link { .. } => {}
+        }
+        Some(canon)
+    }
+
+    /// Per pool of district `d`'s processes (not links): its diffuser's carry.
+    pub fn carries_of(&self, d: DistrictId) -> BTreeMap<PoolKey, u32> {
         let mut carries: BTreeMap<PoolKey, u32> = BTreeMap::new();
         for p in self.procs.iter().filter(|p| p.owner == d) {
             match &p.body {
@@ -991,8 +1134,52 @@ impl Cluster {
                 Body::Link { .. } => {}
             }
         }
-        for &k in reset {
-            carries.insert(k, RESET_CARRY);
+        carries
+    }
+
+    /// Replaces a district's processes and bounds in place, keeping its pools (a glass replay's
+    /// regime change, GLASSBOX.md §4.1). Each new diffuser keeps the carry its pool had in the
+    /// old processes; new pools start at 0. Callers settle the cluster to `at` first.
+    pub fn replace_procs(
+        &mut self,
+        d: DistrictId,
+        procs: Vec<ProcSpec>,
+        bounds: Vec<(u32, SpaceSpec)>,
+        at: Tick,
+    ) {
+        let carries = self.carries_of(d);
+        let mut procs = procs;
+        // A pool the new regime does not move keeps its carry at rate 0 (a stopped machine's
+        // part-used input or part-made output), so a stop and restart lose nothing.
+        let used: BTreeSet<PoolKey> = procs
+            .iter()
+            .flat_map(|ps| match &ps.body {
+                ProcSpecBody::Box(terms) => terms.iter().map(|t| t.0).collect::<Vec<_>>(),
+                ProcSpecBody::Cycle { pools, .. } => pools.clone(),
+                ProcSpecBody::Link { .. } => Vec::new(),
+            })
+            .collect();
+        let parked: Vec<PoolKey> = carries
+            .iter()
+            .filter(|&(k, &c)| c != 0 && !used.contains(k))
+            .map(|(&k, _)| k)
+            .collect();
+        if let Some(ps) = procs
+            .iter_mut()
+            .find(|ps| !matches!(ps.body, ProcSpecBody::Link { .. }))
+        {
+            match &mut ps.body {
+                ProcSpecBody::Box(terms) => {
+                    terms.extend(parked.iter().map(|&k| (k, Diffuser::from_fixed(0))));
+                }
+                ProcSpecBody::Cycle { pools, pieces } => {
+                    pools.extend(parked.iter().copied());
+                    for p in pieces.iter_mut() {
+                        p.rates.resize(pools.len(), 0);
+                    }
+                }
+                ProcSpecBody::Link { .. } => {}
+            }
         }
         self.procs.retain(|p| p.owner != d);
         self.spaces.retain(|s| s.owner != d);
@@ -2007,14 +2194,23 @@ mod tests {
         }
     }
 
-    fn piece(len: u64, rates: Vec<i64>, reset: Vec<bool>) -> CyclePiece {
-        CyclePiece { len, rates, reset }
+    fn piece(len: u64, rates: Vec<i64>, fires: &[(u16, u32)]) -> CyclePiece {
+        CyclePiece {
+            len,
+            rates,
+            fires: fires
+                .iter()
+                .map(|&(pool, canon)| CycleFire { pool, canon })
+                .collect(),
+        }
     }
 
-    fn cycle_of(pieces: &[(u64, Vec<i64>, Vec<bool>)], carries: &[u32]) -> CycleBody {
+    type PieceArgs = (u64, Vec<i64>, Vec<(u16, u32)>);
+
+    fn cycle_of(pieces: &[PieceArgs], carries: &[u32]) -> CycleBody {
         let pieces: Vec<CyclePiece> = pieces
             .iter()
-            .map(|(l, r, z)| piece(*l, r.clone(), z.clone()))
+            .map(|(l, r, z)| piece(*l, r.clone(), z))
             .collect();
         CycleBody {
             pools: (0..carries.len() as u16).collect(),
@@ -2022,8 +2218,7 @@ mod tests {
                 .rates
                 .iter()
                 .zip(carries)
-                .zip(&pieces[0].reset)
-                .map(|((&r, &c), &z)| Diffuser::with_carry(r, if z { RESET_CARRY } else { c }))
+                .map(|(&r, &c)| Diffuser::with_carry(r, c))
                 .collect(),
             pieces,
             piece: 0,
@@ -2039,7 +2234,7 @@ mod tests {
             pieces in prop::collection::vec((
                 1u64..300,
                 prop::collection::vec(-(3i64 << 32)..(3i64 << 32), 3),
-                prop::collection::vec(any::<bool>(), 3),
+                prop::collection::vec((0u16..3, any::<u32>()), 0..3),
             ), 1..5),
             carries in prop::collection::vec(any::<u32>(), 3),
             cuts in prop::collection::vec(1u64..2_000, 1..6),
@@ -2074,8 +2269,8 @@ mod tests {
         );
         // 10 ticks moving 1 per tick from a to b, then 30 ticks idle: 10 per 40 ticks.
         let pieces = vec![
-            piece(10, vec![-FIXED_ONE_I, FIXED_ONE_I], vec![true, true]),
-            piece(30, vec![0, 0], vec![true, true]),
+            piece(10, vec![-FIXED_ONE_I, FIXED_ONE_I], &[]),
+            piece(30, vec![0, 0], &[]),
         ];
         c.add_member(
             MemberSpec {
@@ -2123,48 +2318,84 @@ mod tests {
     }
 
     #[test]
-    fn replacing_processes_keeps_each_pools_carry_unless_reset() {
-        let run = |reset: bool| {
-            let mut c = Cluster::new(1);
-            let (src, out) = (
-                PoolKey::Store(d(1), 1, Good(1)),
-                PoolKey::Store(d(1), 2, Good(2)),
-            );
-            let body = || {
-                ProcSpecBody::Box(vec![
-                    (src, Diffuser::per(-3, 8)),
-                    (out, Diffuser::per(3, 8)),
-                ])
-            };
-            c.add_member(
-                MemberSpec {
-                    district: d(1),
-                    pools: vec![(src, 100, None), (out, 0, None)],
-                    procs: vec![glass_proc(body(), None)],
-                    space: None,
-                    bounds: Vec::new(),
-                },
-                Tick(0),
-            );
-            c.settle(Tick(0), Tick(2));
-            let set: BTreeSet<PoolKey> = if reset { [out].into() } else { BTreeSet::new() };
-            c.replace_procs(
-                d(1),
-                vec![glass_proc(body(), None)],
-                Vec::new(),
-                &set,
-                Tick(2),
-            );
-            c.settle(Tick(2), Tick(3));
-            c.check_books().unwrap();
-            c.level(out).unwrap()
-        };
-        assert_eq!(run(false), 1, "3/4 carried, 3/8 more makes a unit");
-        assert_eq!(
-            run(true),
-            0,
-            "a reset pool starts again at half a unit: 7/8"
+    fn replacing_processes_keeps_each_pools_carry() {
+        let mut c = Cluster::new(1);
+        let (src, out) = (
+            PoolKey::Store(d(1), 1, Good(1)),
+            PoolKey::Store(d(1), 2, Good(2)),
         );
+        let body = || {
+            ProcSpecBody::Box(vec![
+                (src, Diffuser::per(-3, 8)),
+                (out, Diffuser::per(3, 8)),
+            ])
+        };
+        c.add_member(
+            MemberSpec {
+                district: d(1),
+                pools: vec![(src, 100, None), (out, 0, None)],
+                procs: vec![glass_proc(body(), None)],
+                space: None,
+                bounds: Vec::new(),
+            },
+            Tick(0),
+        );
+        c.settle(Tick(0), Tick(2));
+        c.replace_procs(d(1), vec![glass_proc(body(), None)], Vec::new(), Tick(2));
+        c.settle(Tick(2), Tick(3));
+        c.check_books().unwrap();
+        assert_eq!(c.level(out), Some(1), "3/4 carried, 3/8 more makes a unit");
+    }
+
+    /// A breakpoint's time shift moves every flow of the regime back by the same fraction of a
+    /// tick: the fired pool lands on its canonical carry, the others keep their recipe ratio, and
+    /// nothing gains.
+    #[test]
+    fn a_time_shift_moves_every_flow_back_together() {
+        let mut c = Cluster::new(1);
+        let (src, out, side) = (
+            PoolKey::Store(d(1), 1, Good(1)),
+            PoolKey::Store(d(1), 2, Good(2)),
+            PoolKey::Store(d(1), 3, Good(3)),
+        );
+        // 3/8 in, 3/8 out, 3/16 of a by-product.
+        c.add_member(
+            MemberSpec {
+                district: d(1),
+                pools: vec![(src, 100, None), (out, 0, None), (side, 0, None)],
+                procs: vec![glass_proc(
+                    ProcSpecBody::Box(vec![
+                        (src, Diffuser::per(-3, 8)),
+                        (out, Diffuser::per(3, 8)),
+                        (side, Diffuser::per(3, 16)),
+                    ]),
+                    None,
+                )],
+                space: None,
+                bounds: Vec::new(),
+            },
+            Tick(0),
+        );
+        // At 2: out carries 6/8, within a tick (3/8) of its next unit.
+        c.settle(Tick(0), Tick(2));
+        let canon = c.shift_back(d(1), out, true).expect("at a crossing");
+        assert_eq!(i128::from(canon), U - U * 3 / 8);
+        // Shifted back by 1/3 tick: out 6/8 -> 5/8, src gets 1/8 back, side 6/16 -> 5/16.
+        let carry = |k: PoolKey| match &c.procs[0].body {
+            Body::Box { terms } => terms
+                .iter()
+                .find(|t| c.pools[t.pool as usize].key == k)
+                .map(|t| t.flow.carry()),
+            _ => None,
+        };
+        assert_eq!(carry(out), Some((U * 5 / 8) as u32));
+        assert_eq!(carry(side), Some((U * 5 / 16) as u32));
+        assert_eq!(c.level(src), Some(99));
+        assert_eq!(carry(src), Some((U * 3 / 8) as u32));
+        c.check_books().unwrap();
+        // Not at a crossing: nothing moves.
+        assert_eq!(c.shift_back(d(1), side, true), None);
+        assert_eq!(c.shift_back(d(1), out, false), None);
     }
 
     #[test]
@@ -2221,12 +2452,8 @@ mod tests {
                     ProcSpecBody::Cycle {
                         pools: vec![a, b],
                         pieces: vec![
-                            piece(
-                                7,
-                                vec![-(FIXED_ONE_I / 3), FIXED_ONE_I / 3],
-                                vec![false, true],
-                            ),
-                            piece(5, vec![0, 0], vec![false, false]),
+                            piece(7, vec![-(FIXED_ONE_I / 3), FIXED_ONE_I / 3], &[(1, 0)]),
+                            piece(5, vec![0, 0], &[]),
                         ],
                     },
                     Some(Tick(900)),
@@ -2367,7 +2594,9 @@ mod persist_impls {
         }
     }
 
-    persist_struct!(CyclePiece { len, rates, reset });
+    persist_struct!(CyclePiece { len, rates, fires });
+
+    persist_struct!(CycleFire { pool, canon });
 
     persist_struct!(CycleBody {
         pools,
