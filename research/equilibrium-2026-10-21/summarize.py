@@ -54,12 +54,18 @@ def main():
         out.append(f"| {r['mode']} | {r['player']} | {over_s(r['over'])} | {r['herd_N_over_K_by_decade']} |")
 
     out.append("\n## Kill all of one kind at year 20, then a peaceful player\n")
-    out.append("| mode | kind | over | pre | back to 50% | days to 50% | back to 90% | days to 90% | end/pre |")
-    out.append("|---|---|---|---|---|---|---|---|---|")
+    out.append("Pre is the mean in the year before the shock. The control is the same seed with no kill (the "
+               "player turns peaceful at the same day), so 'vs control' compares like with like while a "
+               "kind is still settling from its founding.\n")
+    out.append("| mode | kind | over | pre | back to 50% | days to 50% | back to 90% | days to 90% | end/pre | "
+               "back to 90% of control | days | end/control |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in sorted(d.get("killall", []), key=lambda r: (r["kind"], r["mode"], str(r["over"]))):
         out.append(f"| {r['mode']} | {r['kind']} | {over_s(r['over'])} | {r['pre_mean']} | "
                    f"{r.get('recovered50_share', float('nan')):.2f} | {b(r.get('recovery50_days'), 0)} | {r['recovered_share']:.2f} | "
-                   f"{b(r['recovery_days'], 0)} | {b(r['end_over_pre'])} |")
+                   f"{b(r['recovery_days'], 0)} | {b(r['end_over_pre'])} | "
+                   f"{r.get('recovered_ctrl_share', float('nan')):.2f} | {b(r.get('recovery_ctrl_days'), 0)} | "
+                   f"{b(r.get('end_over_control'))} |")
 
     out.append("\n## Farming one site every 2 days for 60 years\n")
     out.append("| mode | site | over | kills per year | pressure at the end |\n|---|---|---|---|---|")

@@ -98,6 +98,9 @@ def killall(args):
                         shock_kind=kind, shock_day=shock_year * YEAR)
     key = SHOCK_KEY[kind]
     x = series(hist, key)
+    _, hist_c = model.run(p, S=S, days=years * YEAR, seed=seed, player="roamer",
+                          shock_kind="control", shock_day=shock_year * YEAR)
+    xc = series(hist_c, key)
     ts = np.array([c["t"] for c in hist])
     pre = x[:, (ts >= (shock_year - 1) * YEAR) & (ts < shock_year * YEAR)].mean(1)
     post_idx = np.where(ts > shock_year * YEAR)[0]
@@ -107,6 +110,15 @@ def killall(args):
             hit = [i for i in post_idx if x[s, i] >= frac * pre[s]]
             out.append((ts[hit[0]] - shock_year * YEAR) if hit and pre[s] > 0 else (math.inf if pre[s] > 0 else math.nan))
         return np.array(out, float)
+    def rec_ctrl(frac):
+        out = []
+        for s in range(S):
+            hit = [i for i in post_idx if x[s, i] >= frac * xc[s, i]]
+            out.append((ts[hit[0]] - shock_year * YEAR) if hit and pre[s] > 0 else (math.inf if pre[s] > 0 else math.nan))
+        return np.array(out, float)
+    rc90 = rec_ctrl(0.9)
+    rc90f = rc90[np.isfinite(rc90)]
+    end_c = x[:, -24:].mean(1) / np.maximum(xc[:, -24:].mean(1), 1e-9)
     rec = rec_at(0.9)
     r50 = rec_at(0.5)
     fin = rec[np.isfinite(rec)]
@@ -117,7 +129,10 @@ def killall(args):
             "recovery_days": band(fin) if fin.size else None,
             "recovered50_share": round(float(np.isfinite(r50).sum() / max(1, np.sum(~np.isnan(r50)))), 3),
             "recovery50_days": band(f50) if f50.size else None,
-            "end_over_pre": band(end)}
+            "end_over_pre": band(end),
+            "recovered_ctrl_share": round(float(np.isfinite(rc90).sum() / max(1, np.sum(~np.isnan(rc90)))), 3),
+            "recovery_ctrl_days": band(rc90f) if rc90f.size else None,
+            "end_over_control": band(end_c)}
 
 
 def farm(args):
