@@ -101,9 +101,19 @@ impl World {
         };
         let st = self.bases.entry(node).or_default();
         let was_empty = st.players.is_empty();
-        st.players.insert(player);
+        let new = st.players.insert(player);
         if was_empty {
             self.add_stops(node);
+        }
+        if new {
+            let (place, id) = (self.node_at(node, at), self.node_id(node));
+            self.tape.event(
+                rtsim_archive::kinds::SETTLE_BASE,
+                place,
+                id,
+                u128::from(player.to_bits()),
+                0,
+            );
         }
         node
     }
@@ -117,7 +127,19 @@ impl World {
         let Some(st) = self.bases.get_mut(&node) else {
             return;
         };
-        st.players.remove(&player);
+        if st.players.remove(&player) {
+            let (place, id) = (self.node_at(node, self.now), self.node_id(node));
+            self.tape.event(
+                rtsim_archive::kinds::SETTLE_UNMARKED,
+                place,
+                id,
+                u128::from(player.to_bits()),
+                0,
+            );
+        }
+        let Some(st) = self.bases.get_mut(&node) else {
+            return;
+        };
         if st.players.is_empty() {
             for e in &mut self.edges {
                 e.stops.retain(|&s| s != node);

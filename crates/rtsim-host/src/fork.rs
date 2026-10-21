@@ -9,7 +9,7 @@
 //! <dir>/rtsim/                        the pages: the world's confirmed generation (what the
 //!                                     engine's start opens), page for page; then the host's saves
 //! <dir>/rtsim/archive/                the world's archive (§10.3), when it has one, less the chunks
-//!                                     above the copied generation (§10.5)
+//!                                     above the copied generation's save serial (§10.5)
 //! <dir>/**/data/surveyor/             Surveyor's terrain summaries of each dimension, when there
 //!                                     (§9): the base map; the host never changes them
 //! <dir>/data/mic_rtsim_journal.dat    the bridge's journal that pairs with those pages
@@ -23,11 +23,23 @@
 //! changed meanwhile or no longer covers the pages (a world save landed during the copy), so the
 //! pair is one the engine's start would accept. The view store (`rtsim/view/`) and its lease are
 //! not copied: they are the viewer's, rebuilt from the pages.
+//!
+//! The archive is copied after them, on its own: its index, the chunk files the index names, the
+//! dictionary, then the index again, and the archive is copied again from the start when the index
+//! changed or a chunk it named was gone (the server flushed, compacted or cut it meanwhile). A
+//! chunk file is never rewritten under its name, so the copy's index names exactly the chunks
+//! copied with it; the dictionary only grows and is written before the chunks that use it, so one
+//! read after the index covers them. The copy then loses its chunks above the save serial the
+//! copied pages hold, as the engine's start cuts a world's. The fork's host writes this copy, never
+//! the world's archive: the engine runs on the fork's pages folder (VWD-11).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use rtsim_archive::store::{DICT_FILE, INDEX_FILE, chunk_name};
+use rtsim_archive::{Archive, Index};
+use rtsim_jni::engine::{ARCHIVE_DIR, ARCHIVE_KEY};
 use rtsim_kernel::page::{Durability, PageError, PageStore, SaveBatch};
 use serde::{Deserialize, Serialize};
 
@@ -139,13 +151,23 @@ pub fn export(world: &Path, dir: &Path) -> Result<ForkInfo, String> {
     export_with(world, dir, |_| {})
 }
 
-/// `export`, with `mid_copy(attempt)` called after each copy of the pages and before the journal
-/// is read again: tests save the world there to force the race a live server makes by chance.
+/// Where [`export_with`]'s hook runs, with the copy's attempt (from 1).
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MidCopy {
+    /// After a copy of the pages, before the journal is read again.
+    Pages(u32),
+    /// After a first read of the archive's index, before the chunk files it names are copied.
+    Archive(u32),
+}
+
+/// `export`, with `mid_copy` called in the two races a live server makes by chance ([`MidCopy`]):
+/// tests save or compact the world there to force them.
 #[doc(hidden)]
 pub fn export_with(
     world: &Path,
     dir: &Path,
-    mut mid_copy: impl FnMut(u32),
+    mut mid_copy: impl FnMut(MidCopy),
 ) -> Result<ForkInfo, String> {
     let (world_abs, _) = check_apart(world, dir)?;
     let pages = world.join(save::PAGES);
@@ -179,8 +201,16 @@ pub fn export_with(
             std::thread::sleep(Duration::from_millis(50 << attempt.min(6)));
         }
         let _ = fs::remove_dir_all(&partial);
-        match copy_once(world, &pages, &partial, || mid_copy(attempt)) {
-            Ok(Copied::Done(c)) => return finish(world, &world_abs, dir, &partial, c, attempt),
+        match copy_once(world, &pages, &partial, || {
+            mid_copy(MidCopy::Pages(attempt))
+        }) {
+            Ok(Copied::Done(c)) => {
+                let done = finish(world, &world_abs, dir, &partial, c, attempt, &mut mid_copy);
+                if done.is_err() {
+                    let _ = fs::remove_dir_all(&partial);
+                }
+                return done;
+            }
             Ok(Copied::Again(reason)) => why.push(reason),
             Err(Retry::Moved(e)) => why.push(format!("the store moved under the copy ({e})")),
             Err(Retry::Fatal(e)) => {
@@ -362,6 +392,99 @@ fn copy_tree(from: &Path, to: &Path) -> Result<u64, String> {
     Ok(n)
 }
 
+/// What [`copy_archive`] copied: the files, and the copies it took.
+#[derive(Debug, PartialEq, Eq)]
+struct ArchiveCopy {
+    files: u64,
+    attempts: u32,
+}
+
+fn read_archive_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Copies the archive in `from`, which its server may be flushing and compacting, into `to`, so
+/// the copy's index names exactly the chunk files beside it (the module's doc). `mid_copy(attempt)`
+/// runs after each first read of the index, before the chunk files are copied.
+fn copy_archive(
+    from: &Path,
+    to: &Path,
+    mut mid_copy: impl FnMut(u32),
+) -> Result<ArchiveCopy, String> {
+    let index_path = from.join(INDEX_FILE);
+    let mut why = Vec::new();
+    for attempt in 1..=ATTEMPTS {
+        if attempt > 1 {
+            std::thread::sleep(Duration::from_millis(50 << attempt.min(6)));
+        }
+        let _ = fs::remove_dir_all(to);
+        if !from.is_dir() {
+            return Ok(ArchiveCopy {
+                files: 0,
+                attempts: attempt,
+            });
+        }
+        let read = read_archive_file(&index_path)?;
+        let Some((bytes, index)) = read.and_then(|b| Index::decode(&b).ok().map(|i| (b, i))) else {
+            // No index to hold the copy to (none written yet, or a damaged one): file by file,
+            // and the copy's open rebuilds its index from the chunks' own headers, as the world's
+            // own open would.
+            let files = copy_tree(from, to)?;
+            return Ok(ArchiveCopy {
+                files,
+                attempts: attempt,
+            });
+        };
+        fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+        mid_copy(attempt);
+        let mut gone = None;
+        for e in &index.entries {
+            let name = chunk_name(e.seq);
+            if !copy_loose(&from.join(&name), &to.join(&name))? {
+                gone = Some(name);
+                break;
+            }
+        }
+        if let Some(name) = gone {
+            why.push(format!("{name} went during the copy"));
+            continue;
+        }
+        let dict = copy_loose(&from.join(DICT_FILE), &to.join(DICT_FILE))?;
+        if read_archive_file(&index_path)?.as_ref() != Some(&bytes) {
+            why.push("the index changed during the copy".to_string());
+            continue;
+        }
+        let index_copy = to.join(INDEX_FILE);
+        fs::write(&index_copy, &bytes).map_err(|e| format!("{}: {e}", index_copy.display()))?;
+        return Ok(ArchiveCopy {
+            files: index.entries.len() as u64 + 1 + u64::from(dict),
+            attempts: attempt,
+        });
+    }
+    let _ = fs::remove_dir_all(to);
+    Err(format!(
+        "the archive in {} kept changing during {ATTEMPTS} copies; pause the world's saves (save-off) or try again: {}",
+        from.display(),
+        why.join("; ")
+    ))
+}
+
+/// The save serial the copied pages hold (`ARCHIVE_KEY`), read as the engine's start reads it: 0
+/// when they hold none.
+fn copied_serial(pages: &Path) -> Result<u64, String> {
+    let err = |e: PageError| format!("the copied pages {}: {e}", pages.display());
+    let mut s = PageStore::open_read_only(pages).map_err(err)?;
+    s.view_confirmed().map_err(err)?;
+    Ok(match s.get_shared(ARCHIVE_KEY).map_err(err)? {
+        Some(b) if b.len() == 8 => u64::from_le_bytes(b[..].try_into().expect("8 bytes")),
+        _ => 0,
+    })
+}
+
 /// Folders under a dimension's folder that never hold another dimension.
 const NOT_DIMENSIONS: [&str; 4] = ["region", "entities", "poi", "data"];
 /// How deep `dimensions/<namespace>/<path>` is searched (a path may have parts).
@@ -410,20 +533,30 @@ fn finish(
     partial: &Path,
     c: Taken,
     attempts: u32,
+    mid_copy: &mut impl FnMut(MidCopy),
 ) -> Result<ForkInfo, String> {
-    let archive_files = copy_tree(
-        &world.join(save::PAGES).join("archive"),
-        &partial.join("archive"),
+    let archive = copy_archive(
+        &world.join(save::PAGES).join(ARCHIVE_DIR),
+        &partial.join(ARCHIVE_DIR),
+        |attempt| mid_copy(MidCopy::Archive(attempt)),
     )?;
+    let archive_files = archive.files;
     let mut notes = Vec::new();
+    if archive.attempts > 1 {
+        notes.push(format!(
+            "the archive was copied {} times: the world wrote it during the copy",
+            archive.attempts
+        ));
+    }
     if archive_files > 0 {
         // The world's newest chunks may be from a save it never confirmed, which the fork's pages
-        // do not hold: cut them, as the engine's start does (§10.5), or the host's own later saves
-        // would bring them into view. Open also drops what a save in progress left half copied.
-        let mut a = rtsim_archive::Archive::open(partial.join("archive"))
+        // do not hold: cut them by the copied pages' save serial, as the engine's start does
+        // (§10.5), or the host's own later saves would bring them into view.
+        let serial = copied_serial(partial)?;
+        let mut a = Archive::open(partial.join(ARCHIVE_DIR))
             .map_err(|e| format!("the archive's copy: {e}"))?;
         let cut = a
-            .cut_above(c.generation.obs_seq)
+            .cut_above_serial(serial)
             .map_err(|e| format!("the archive's copy: {e}"))?;
         if cut > 0 {
             notes.push(format!(

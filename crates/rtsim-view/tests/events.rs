@@ -111,6 +111,7 @@ fn archive(world: &Path, obs_seq: u64, now: u64) {
         p.take(),
         Stamp {
             obs_seq,
+            serial: obs_seq,
             tick: now,
             wall_ms: 1_700_000_000_000,
         },
@@ -123,6 +124,7 @@ fn archive(world: &Path, obs_seq: u64, now: u64) {
         p.take(),
         Stamp {
             obs_seq: obs_seq + 1,
+            serial: obs_seq + 1,
             tick: now + 100,
             wall_ms: 1_700_000_005_000,
         },

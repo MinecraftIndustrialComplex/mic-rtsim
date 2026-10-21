@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 rtsim-kernel.workspace = true
+rtsim-archive.workspace = true
 rtsim-settle.workspace = true
 rtsim-trade.workspace = true
 rtsim-travel.workspace = true
