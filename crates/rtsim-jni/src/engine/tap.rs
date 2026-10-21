@@ -404,6 +404,10 @@ pub(super) fn after_step(e: &Arc<Engine>, h: u64, step_nanos: u64) {
     if epoch != st.tap.epoch {
         restart(&mut st.tap, epoch);
     }
+    // The header's time is the state's even when the tap encodes nothing this step (it stood down,
+    // or the next hand-over was already there): a commit never carries a stale or zero time.
+    st.tap.mailbox.game_time = state_now(st);
+    st.tap.mailbox.archive_serial = st.archive_serial;
     let t0 = Instant::now();
     if held > 1 || step_nanos > nanos(STAND_DOWN_STEP) {
         add(&c.stood_down, 1);
@@ -542,9 +546,18 @@ fn refill_focus(tap: &mut Tap, now: Instant) {
         .retain(|k, _| k.kind != part_kind::SAMPLES || focus.contains(&RegionKey::unpack(k.unit)));
 }
 
+/// The state's time as the save viewer reads a save's (rtsim-view's `Saved::now`): the phase 1
+/// clock or the industry engine's, whichever is later; the last TICK when both are behind it.
+fn state_now(st: &State) -> i64 {
+    (st.phase1.world.now().0.saturating_sub(st.phase1.offset) as i64)
+        .max(st.industry.engine.now().0 as i64)
+        .max(st.game_time)
+}
+
 /// Encodes jobs until `stop` says so (checked before each job) or, in a flush, until a whole
 /// cycle is done.
 fn run(st: &mut State, c: &Counters, flush: bool, stop: &mut dyn FnMut() -> Option<Stop>) -> Stop {
+    let now_game = state_now(st);
     let State {
         tap,
         phase1,
@@ -555,7 +568,6 @@ fn run(st: &mut State, c: &Counters, flush: bool, stop: &mut dyn FnMut() -> Opti
         industry,
         archive,
         archive_serial,
-        game_time,
         ..
     } = st;
     let src = Src {
@@ -573,11 +585,6 @@ fn run(st: &mut State, c: &Counters, flush: bool, stop: &mut dyn FnMut() -> Opti
         src,
         specs: specs(),
     };
-    // The state's time as the save viewer reads a save's (rtsim-view's `Saved::now`): the phase 1
-    // clock or the industry engine's, whichever is later; the last TICK when both are behind it.
-    let now_game = (phase1.world.now().0.saturating_sub(phase1.offset) as i64)
-        .max(industry.engine.now().0 as i64)
-        .max(*game_time);
     tap.mailbox.game_time = now_game;
     tap.mailbox.archive_serial = *archive_serial;
     loop {

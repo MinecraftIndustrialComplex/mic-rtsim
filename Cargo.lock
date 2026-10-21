@@ -738,6 +738,7 @@ name = "rtsim-host"
 version = "0.0.1"
 dependencies = [
  "flate2",
+ "libc",
  "mic-native-host",
  "mic-native-rt",
  "mic-viewer",
@@ -747,6 +748,7 @@ dependencies = [
  "rtsim-industry",
  "rtsim-jni",
  "rtsim-kernel",
+ "rtsim-parts",
  "rtsim-ships",
  "rtsim-space",
  "rtsim-travel",
