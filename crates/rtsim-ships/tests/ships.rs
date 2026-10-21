@@ -194,7 +194,7 @@ fn a_ship_crossing_a_players_view_enters_it_once() {
     let (mut sure, mut maybe) = (BTreeSet::new(), BTreeSet::new());
     let _ = lane;
     for sv in 0..s.services.len() as u32 {
-        for &id in s.service_ships(sv) {
+        for id in s.service_ships(sv) {
             let x = s.ship(id).unwrap();
             let mut u = t0.0;
             while u <= t1.0 {
@@ -247,12 +247,7 @@ fn raids_in_view_send_loot_to_the_haven_and_conserve_every_good() {
     let end = Tick::from_days(16);
     while t < end {
         // Follow the first hunted lane the pirates pick, standing at its middle.
-        let hunted = c
-            .ships
-            .threats
-            .iter()
-            .find(|(_, th)| !th.hunters.is_empty())
-            .map(|(l, _)| *l);
+        let hunted = c.ships.hunted_lanes().first().copied();
         if let Some(l) = hunted {
             let ln = &c.ships.lanes[l as usize];
             let mid = ln.path.at(ln.path.length() / 2);
@@ -319,7 +314,7 @@ fn patrols_and_escorts_lower_a_lanes_hazard() {
     assert!(!patrolled.is_empty());
     for &l in &patrolled {
         assert!(
-            c.ships.threats[&l].patrol_milli > 0,
+            c.ships.threat(l).unwrap().patrol_milli > 0,
             "lane {l} has a patrol"
         );
     }
@@ -331,7 +326,7 @@ fn patrols_and_escorts_lower_a_lanes_hazard() {
         .copied()
         .find(|&p| c.ships.ship(p).unwrap().medium == Medium::Sea)
         .unwrap();
-    c.ships.threats.get_mut(&l).unwrap().hunters.insert(p);
+    c.ships.threats.get_mut(u64::from(l)).unwrap().add_hunter(p);
     let with = c.ships.lane_share(l);
     let without = c.ships.lane_share_unprotected(l);
     assert!(with < without, "patrolled {with} < open {without}");
@@ -339,7 +334,11 @@ fn patrols_and_escorts_lower_a_lanes_hazard() {
     let before = c.ships.lane_share(l);
     c.ships.set_escort(&mut c.world, l, 42, 20.0, Tick::ZERO);
     assert!(c.ships.lane_share(l) < before || before == 0);
-    c.ships.threats.get_mut(&l).unwrap().hunters.remove(&p);
+    c.ships
+        .threats
+        .get_mut(u64::from(l))
+        .unwrap()
+        .remove_hunter(p);
 }
 
 #[test]
