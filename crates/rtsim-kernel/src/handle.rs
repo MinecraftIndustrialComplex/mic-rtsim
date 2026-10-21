@@ -123,14 +123,14 @@ impl<T> fmt::Debug for Handle<T> {
 
 /// A generational arena: insert returns a handle, and every lookup checks the generation.
 pub struct Arena<T> {
-    slots: Vec<Slot<T>>,
-    free: Vec<u32>,
-    len: usize,
+    pub(crate) slots: Vec<Slot<T>>,
+    pub(crate) free: Vec<u32>,
+    pub(crate) len: usize,
 }
 
-struct Slot<T> {
-    generation: u16,
-    value: Option<T>,
+pub(crate) struct Slot<T> {
+    pub(crate) generation: u16,
+    pub(crate) value: Option<T>,
 }
 
 impl<T> Default for Arena<T> {

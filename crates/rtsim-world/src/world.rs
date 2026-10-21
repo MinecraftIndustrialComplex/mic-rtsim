@@ -45,10 +45,9 @@ pub type MarketTable = rtsim_kernel::lazy::PagedLazyTable<Market, MarketCodec>;
 
 /// The page table of the market rows (docs/choices-paging-modules.md, "Page tables").
 pub const TABLE_MARKETS: u16 = 0x5010;
-/// The page table of a paged world's meta page (id 0): everything but the market rows.
-pub const TABLE_META: u16 = 0x5012;
-/// Markets per page. PLACEHOLDER 16: a market row is 1 to 7 KB resident (its goods).
-pub const MARKETS_PER_PAGE: u64 = 16;
+/// Markets per page. PLACEHOLDER 1: a market row is 1 to 7 KB resident (its goods), about a
+/// page already, and a market touched dirties only itself (docs/choices-paging-followups.md PF3).
+pub const MARKETS_PER_PAGE: u64 = 1;
 
 /// The markets' system id: keys their lazy table (they draw nothing, but the table wants one).
 pub const SYS_MARKET: SystemId = SystemId::named("trade.market");
@@ -379,13 +378,15 @@ impl World {
         let knowledge = Knowledge::with_tunables(cfg.seed, cfg.knowledge.clone());
         let window = cfg.trade.quantum.len();
         World {
+            // Wakes staggered by page over the quantum (docs/choices-paging-followups.md PF1).
             markets: MarketTable::new(
                 cfg.seed,
                 SYS_MARKET,
                 Tick::ZERO,
                 TABLE_MARKETS,
                 MARKETS_PER_PAGE,
-            ),
+            )
+            .staggered(window),
             wheel: TimingWheel::new(Tick::ZERO),
             cfg,
             goods,
@@ -604,6 +605,7 @@ impl World {
         let Some(g) = self.goods.currency(their) else {
             return;
         };
+        self.release(j, at);
         let region = self.nodes[j].region;
         let l_mint = self.mint_cost[mine.index()];
         let (goods, tun, mint_cost) = (&self.goods, &self.cfg.trade, self.mint_cost);
@@ -688,6 +690,24 @@ impl World {
             .get(self.nodes[i].region)
             .expect("every node has a market");
         r.cell().view_without_catch_up(self.now)
+    }
+
+    /// When market `i` acts on work due at the boundary `at`: its page's phase later, inside the
+    /// same quantum (docs/choices-paging-followups.md PF1). Markets decide per quantum, so the
+    /// phase moves no decision; it spreads the markets' boundary work, and so their changed
+    /// pages, over the quantum.
+    pub(crate) fn phased(&self, at: Tick, i: usize) -> Tick {
+        at + self.markets.phase(self.nodes[i].region)
+    }
+
+    /// Delivers market `i`'s breakpoint now if it is due and only its page's phase holds it back
+    /// (PF1), so that anything else reaching the market at `at` finds it acted on, as it would
+    /// have at the boundary. Call it before anything acts on or reads market `i` at `at`.
+    pub(crate) fn release(&mut self, i: usize, at: Tick) {
+        if self.markets.take_held(self.nodes[i].region, at) {
+            self.stats.breakpoints += 1;
+            self.market_event(i, at, Cause::Breakpoint);
+        }
     }
 
     pub(crate) fn schedule(&mut self, at: Tick, ev: Ev) {
