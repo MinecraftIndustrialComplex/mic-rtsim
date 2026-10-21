@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The phase 1 world's inputs, as a log (choice V6).
+//! The phase 1 world's inputs, as a log (choice V6). Moved here from rtsim-jni so a reader of the
+//! pages outside the JVM (rtsim-view's `load_world`) replays the log with the engine's own code.
 //!
 //! The phase 1 world (`rtsim_world::World`) is deterministic: given the same inputs at the same
 //! world ticks it reaches the same state, bit for bit (`state_hash`). Everything that changes it
@@ -11,6 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::works::WorkDef;
+use crate::{CaravanId, NodeData, Side, World};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Reader, Writer};
 use rtsim_kernel::handle::Handle;
@@ -19,8 +22,6 @@ use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::labour::ResourceId;
 use rtsim_trade::{Amount, GoodId};
 use rtsim_travel::caravan::CaravanKey;
-use rtsim_world::works::WorkDef;
-use rtsim_world::{CaravanId, NodeData, Side, World};
 
 /// A player by UUID halves.
 pub type Uuid = (u64, u64);
@@ -585,7 +586,7 @@ impl Logged {
                 w.u8(15);
                 w.var_u64(defs.len() as u64);
                 for d in defs {
-                    rtsim_world::persist::put_work_def(w, d);
+                    crate::persist::put_work_def(w, d);
                 }
             }
             Input::WorkStyle { key, style } => {
@@ -707,7 +708,7 @@ impl Logged {
                 }
                 Input::Works {
                     defs: (0..n)
-                        .map(|_| rtsim_world::persist::get_work_def(r))
+                        .map(|_| crate::persist::get_work_def(r))
                         .collect::<codec::Result<_>>()?,
                 }
             }
@@ -823,7 +824,7 @@ mod tests {
                 held: vec![(7, 3_000), (0, 1_000)],
             },
             Input::Works {
-                defs: rtsim_world::works::synthetic_catalog(&rtsim_world::synth::goods().0),
+                defs: crate::works::synthetic_catalog(&crate::synth::goods().0),
             },
             Input::WorkStyle { key: 7, style: 99 },
             Input::WorkResult {
