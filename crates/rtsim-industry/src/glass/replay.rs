@@ -616,7 +616,14 @@ impl Replay {
             if let Some(w) = why {
                 self.counts.breakpoints += 1;
                 comp.replay_breakpoints += 1;
-                self.steps += 1;
+                // A hold coming due is not an oscillation: a node holds at most once a rise of its
+                // potential, and a rise needs another breakpoint or an outside event.
+                let release = matches!(w, Stop::Timer)
+                    && self.cycle.is_none()
+                    && self.st.hold.values().any(|&t| t <= at);
+                if !release {
+                    self.steps += 1;
+                }
                 if self.steps > tun.breakpoints_per_event_max {
                     return Err(Fallback::Oscillating);
                 }
@@ -791,35 +798,36 @@ impl Replay {
         out
     }
 
-    /// The latency rule (§4.4, choice G2-6): a simulated node with a downstream latency that runs
-    /// faster under `sol` than it did is held off until its output could have arrived. Holding it
-    /// off is a solve of its own (the node gated), so every flow stays recipe-consistent, and what
-    /// it makes arrives no earlier than in Create. True if a node was newly held.
-    fn hold_rises(
-        &mut self,
-        comp: &Compiled,
-        sol: &Solution,
-        released: &BTreeSet<u32>,
-        at: Tick,
-    ) -> bool {
+    /// The latency rule (§4.4, choice G2-6): a simulated node with a downstream latency whose
+    /// potential (its flow in this regime with nothing held) is above its potential in the
+    /// regime before is held off until its output could have arrived. Holding it off is a solve
+    /// of its own (the node gated), so every flow stays recipe-consistent, and what it makes
+    /// arrives no earlier than in Create. Potentials do not depend on holds, so a hold coming due
+    /// never makes another node hold (a machine fed by two held paths, or a loop, would chain
+    /// holds forever). True if a node was newly held.
+    fn hold_rises(&mut self, comp: &Compiled, potential: &[f64], at: Tick) -> bool {
         let graph = &comp.graph;
-        let now = node_flows(graph, sol);
         let mut added = false;
-        for (v, &f) in now.iter().enumerate() {
+        for (v, &f) in potential.iter().enumerate() {
             let lat = graph.down_latency.get(v).copied().unwrap_or(0);
             let id = v as u32;
-            if lat == 0
-                || !self.sim[v]
-                || graph.node(id).kind == NodeKind::Store
-                || released.contains(&id)
-                || self.st.hold.contains_key(&id)
-            {
+            if lat == 0 || !self.sim[v] || graph.node(id).kind == NodeKind::Store {
                 continue;
             }
             let old = self.flow.get(v).copied().unwrap_or(0.0);
-            if f > old * (1.0 + 1e-9) + 1e-12 {
-                self.st.hold.insert(id, at + lat);
-                added = true;
+            if f <= old * (1.0 + 1e-9) + 1e-12 {
+                continue;
+            }
+            // A further rise while held waits from now; only a new hold changes the solve.
+            match self.st.hold.entry(id) {
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    let t = o.get_mut();
+                    *t = (*t).max(at + lat);
+                }
+                std::collections::btree_map::Entry::Vacant(o) => {
+                    o.insert(at + lat);
+                    added = true;
+                }
             }
         }
         added
@@ -1034,41 +1042,50 @@ impl Replay {
             .iter()
             .filter(|nd| nd.kind == NodeKind::Controller)
             .count();
-        // Holds that came due: those nodes rise now.
-        let released: BTreeSet<u32> = self
-            .st
-            .hold
-            .iter()
-            .filter(|&(_, &t)| t <= at)
-            .map(|(&v, _)| v)
-            .collect();
+        // Holds that came due: those nodes run now. Their potential did not change, so they are
+        // not held again.
         self.st.hold.retain(|_, t| *t > at);
         let cap = 2 * (lv.len() + self.stores.len() + n_ctrl) + 8 + comp.graph.nodes.len();
         let mut settled = false;
         let mut sol = Solution::default();
+        let mut potential = Vec::new();
         for _ in 0..cap {
             self.coupled = self.coupling(lv);
-            let mut rg = self.regime(comp, lv);
-            for &v in self.st.hold.keys() {
-                rg.gate_off[v as usize] = true;
-            }
-            sol = comp.solve_regime(&rg, tun);
-            // The start too: a belt may have been empty at the unload (G-B2's ceiling).
-            if self.hold_rises(comp, &sol, &released, at) {
+            let rg = self.regime(comp, lv);
+            sol = if self.st.hold.is_empty() {
+                comp.solve_regime(&rg, tun)
+            } else {
+                let mut held = rg.clone();
+                for &v in self.st.hold.keys() {
+                    held.gate_off[v as usize] = true;
+                }
+                comp.solve_regime(&held, tun)
+            };
+            self.nets = self.book(comp, &sol, self.coupled);
+            if self.settle_once(comp, lv, goods, tun) {
                 continue;
             }
-            self.nets = self.book(comp, &sol, self.coupled);
-            if !self.settle_once(comp, lv, goods, tun) {
-                settled = true;
-                break;
+            // Settled: what this regime runs with nothing held. A node whose potential rose waits
+            // its path latency; the start too, since a belt may have been empty at the unload
+            // (G-B2's ceiling).
+            potential = if self.st.hold.is_empty() {
+                node_flows(&comp.graph, &sol)
+            } else {
+                let free = comp.solve_regime(&rg, tun);
+                node_flows(&comp.graph, &free)
+            };
+            if self.hold_rises(comp, &potential, at) {
+                continue;
             }
+            settled = true;
+            break;
         }
         if !settled {
             return Err(Fallback::Unsettled);
         }
         self.counts.regimes += 1;
         comp.replay_regimes += 1;
-        self.flow = node_flows(&comp.graph, &sol);
+        self.flow = potential;
         self.fed = self
             .heaters
             .iter()
