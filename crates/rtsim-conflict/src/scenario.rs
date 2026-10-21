@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use rtsim_archive::record::Meter;
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink};
 use rtsim_industry::district::{AttackReport, Phase as DPhase};
 use rtsim_industry::fake::{FakeWorld, Visit};
@@ -55,6 +56,11 @@ pub struct Options {
     /// Page the conflict's row tables to a page store (A16), saving at every save point; a
     /// restart reopens the conflict from the store ([`Conflict::open_paged`]).
     pub paged: Option<Paging>,
+    /// Measure the event archive's rows (R, VIEWER.md §10.4): every tape the run has (the
+    /// world's two, the conflict engine's, the refinery's industry engine's) is on and drained
+    /// into [`Outcome::meter`] at each step, so [`Outcome::conflict`]'s own tape ends empty. Off,
+    /// only the conflict's tape records and it keeps its rows for the tests to read.
+    pub measure: bool,
 }
 
 impl Options {
@@ -66,6 +72,7 @@ impl Options {
             restart_day: None,
             save_every: None,
             paged: None,
+            measure: false,
         }
     }
 }
@@ -137,11 +144,31 @@ pub struct Outcome {
     pub trail: Vec<u64>,
     /// The row tables' counters (a paged run's loads and evictions), summed over restarts.
     pub rows: RowStats,
+    /// The archive rows every tape took ([`Options::measure`]); empty when not measured.
+    pub meter: Meter,
+}
+
+/// Counts and empties every tape the run has.
+fn drain_tapes(m: &mut Meter, w: &mut World, c: &mut Conflict, f: &mut FakeWorld) {
+    m.drain(&mut w.tape);
+    m.drain(&mut w.knowledge.tape);
+    m.drain(&mut c.tape);
+    m.drain(&mut f.engine.tape);
+}
+
+/// Turns on the world's two tapes.
+fn world_tapes_on(w: &mut World) {
+    w.tape.set_on(true);
+    w.knowledge.tape.set_on(true);
 }
 
 /// Runs the scenario.
 pub fn run(o: &Options) -> Outcome {
     let (mut w, _ids) = synth::world(o.seed);
+    let mut meter = Meter::new();
+    if o.measure {
+        world_tapes_on(&mut w);
+    }
     let mut c = synth::conflict(o.seed, &w);
     c.log_enabled = true;
     c.tape.set_on(true);
@@ -174,6 +201,7 @@ pub fn run(o: &Options) -> Outcome {
     ];
     let mut fake = synth::refinery(o.seed, visits);
     fake.engine.log_enabled = true;
+    fake.engine.tape.set_on(o.measure);
     let mut index = DistrictIndex::default();
     let mut plugin = FakeConflict::new(synth::PLAYER);
     plugin.answer = match o.variant {
@@ -351,12 +379,18 @@ pub fn run(o: &Options) -> Outcome {
             // The budget's save (every resident page changed; PM-C10): no save point.
             save_paged(&mut c, s);
         }
+        if o.measure {
+            drain_tapes(&mut meter, &mut w, &mut c, &mut fake);
+        }
         if restart == Some(next) {
             restarted = true;
             let wb = w.save();
             let (goods, ids) = rtsim_world::synth::goods();
             let book = rtsim_world::synth::recipes(&ids);
             w = World::load(synth::world_config(o.seed), goods, book, &wb).expect("world loads");
+            if o.measure {
+                world_tapes_on(&mut w);
+            }
             let log = std::mem::take(&mut c.log);
             let tun = c.tun.clone();
             let cultures = c.cultures.clone();
@@ -395,6 +429,9 @@ pub fn run(o: &Options) -> Outcome {
         c.run_until(&mut w, &mut link, settle);
     }
     plugin.apply(c.take_commands(), settle);
+    if o.measure {
+        drain_tapes(&mut meter, &mut w, &mut c, &mut fake);
+    }
     let attacks = fake
         .engine
         .district(synth::REFINERY)
@@ -419,6 +456,7 @@ pub fn run(o: &Options) -> Outcome {
         hashes,
         trail,
         rows,
+        meter,
     }
 }
 
@@ -428,4 +466,40 @@ fn add_stats(to: &mut RowStats, s: RowStats) {
     to.evictions += s.evictions;
     to.over_budget += s.over_budget;
     to.peak_resident_bytes = to.peak_resident_bytes.max(s.peak_resident_bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A measured run counts rows from every tape it has (the world's, the conflict's and the
+    /// refinery's), by kind, with none dropped, and ends in the state the plain run reaches: the
+    /// meter drains the tapes, it does not change what happens. The plain run keeps the conflict's
+    /// own rows on its tape; the measured run moves them to the meter.
+    #[test]
+    fn a_measured_run_counts_every_tapes_rows_and_changes_nothing() {
+        let plain = run(&Options::new(7, 24, Variant::Ignore));
+        let o = run(&Options {
+            measure: true,
+            ..Options::new(7, 24, Variant::Ignore)
+        });
+        assert_eq!(o.hashes, plain.hashes);
+        assert!(plain.meter.rows() == 0, "not measured, not counted");
+        assert!(o.conflict.tape.is_empty(), "drained");
+        let m = &o.meter;
+        assert!(m.rows() > 0 && m.dropped == 0, "{m:?}");
+        let groups = |g: &str| {
+            m.by_kind
+                .iter()
+                .filter(|(k, _)| rtsim_archive::kinds::group(k) == g)
+                .map(|(_, n)| n)
+                .sum::<u64>()
+        };
+        for g in ["conflict", "industry"] {
+            assert!(groups(g) > 0, "no {g} rows in {:?}", m.by_kind);
+        }
+        // The conflict's rows are the ones the plain run keeps on its tape.
+        let kept = rtsim_archive::record::rows_on(&plain.conflict.tape).len() as u64;
+        assert_eq!(groups("conflict"), kept);
+    }
 }

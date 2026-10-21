@@ -20,12 +20,16 @@
 //! ships' holds against the world's held goods), a ship seen by the player, a raid in view, stolen
 //! goods reaching the haven's market, a patrol lowering a lane's hazard, and a restart in the
 //! middle continuing with the same state hashes as the run that never stopped.
+//!
+//! It also counts the event archive's rows (R, VIEWER.md §10.4) of the main run: the world's two
+//! tapes and the ships' are on. The restored twin beside it records nothing.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
+use rtsim_archive::record::Meter;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_ships::engine::{LogEntry, ShipStats};
 use rtsim_ships::synth::{self, Coastal, FakeShips, Script};
@@ -34,6 +38,8 @@ use rtsim_ships::{Role, ShipTunables, Ships, fight};
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 use serde::Serialize;
+
+use super::archive::{Rate, drain_world, world_on};
 
 pub struct Options {
     pub days: u64,
@@ -165,6 +171,8 @@ struct Results {
     haven_market: Vec<(String, f64, f64, f64)>,
     plugin_commands: BTreeMap<String, u64>,
     checks: Vec<Check>,
+    /// The archive rows the main run's engines took per game day.
+    archive: Rate,
 }
 
 fn names(w: &World) -> Vec<&'static str> {
@@ -181,11 +189,23 @@ fn by_name(w: &World, m: &BTreeMap<GoodId, i128>) -> BTreeMap<String, f64> {
         .collect()
 }
 
+/// Counts and empties the main run's tapes. The script runs each half in one call (a run cut
+/// off the hour changes its steps once the player has logged off, and the restored twin must match
+/// it), so this runs at the half and at the end, not every game day; the ships make a handful of
+/// rows a day, far under a tape's cap, and `dropped` would show it if not.
+fn drain(m: &mut Meter, c: &mut Coastal) {
+    drain_world(m, &mut c.world);
+    m.drain(&mut c.ships.tape);
+}
+
 pub fn main(o: Options) -> i32 {
     let started = Instant::now();
     let tun = ShipTunables::default();
     let mut c = synth::coastal(o.seed, tun.clone());
     c.ships.log_enabled = true;
+    world_on(&mut c.world);
+    c.ships.tape.set_on(true);
+    let mut meter = Meter::new();
     let nm = names(&c.world);
     let haven_node = c.ships.havens[c.haven as usize].node;
     let start_haven = c.world.market(haven_node);
@@ -194,6 +214,7 @@ pub fn main(o: Options) -> i32 {
     let mid = Tick::from_days(o.days / 2);
     let mut script = Script::default();
     script.run(&mut c, &mut fake, Tick::ZERO, mid);
+    drain(&mut meter, &mut c);
     // A restart in the middle: a copy restored from the saves runs the rest of the script beside
     // the engine that never stopped.
     let (goods, ids) = rtsim_world::synth::goods();
@@ -223,6 +244,7 @@ pub fn main(o: Options) -> i32 {
         )
     });
     script.run(&mut c, &mut fake, mid, end);
+    drain(&mut meter, &mut c);
     let conserved = script.conserved;
     let mut twin_conserved = Vec::new();
     let restart_ok = match twin.as_mut() {
@@ -424,9 +446,11 @@ pub fn main(o: Options) -> i32 {
             .map(|(k, v)| (format!("{k:#06x}"), *v))
             .collect(),
         checks,
+        archive: Rate::new(&meter, o.days as f64),
     };
     if !o.quiet {
         print_report(&res, s);
+        res.archive.print(None);
     }
     if let Some(path) = &o.out {
         if let Some(dir) = path.parent() {
