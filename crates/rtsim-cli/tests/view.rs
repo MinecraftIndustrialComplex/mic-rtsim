@@ -313,6 +313,37 @@ fn the_sidecar_refuses_a_public_bind() {
     }
 }
 
+/// A tailnet address is refused without `--allow-tailnet`, before the save is read; with it the
+/// address passes and the save is read (binding then fails here: the address is not this host's).
+#[test]
+fn a_tailnet_bind_needs_allow_tailnet() {
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rtsim-cli"))
+            .args(["view"])
+            .arg(core_fixture())
+            .args(["--port", "0", "--bind", "100.64.0.1"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let out = run(&[]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--allow-tailnet"));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("pages:"));
+
+    if std::net::TcpListener::bind("100.64.0.1:0").is_ok() {
+        // This host holds the address: the sidecar would serve and never exit.
+        return;
+    }
+    let out = run(&["--allow-tailnet"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("pages:"),
+        "the save was read: {out:?}"
+    );
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("not a loopback address"));
+}
+
 #[cfg(unix)]
 #[test]
 fn the_sidecar_refuses_a_socket_inside_the_world() {
