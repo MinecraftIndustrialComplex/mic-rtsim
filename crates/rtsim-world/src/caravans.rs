@@ -8,7 +8,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_knowledge::{ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT};
 use rtsim_knowledge::{Temperament, Trait, witnesses};
 use rtsim_trade::units::mul_div_floor;
-use rtsim_trade::{Amount, GoodId, PRICE_ONE};
+use rtsim_trade::{Amount, GoodId, MILLI, PRICE_ONE};
 use rtsim_travel::caravan::{Caravan, CaravanKey, GroupKind, Leg, Stage, Traveller, load};
 use rtsim_travel::legs::{Owner, Path};
 
@@ -224,7 +224,21 @@ impl World {
             purse: BTreeMap::new(),
         };
         let path = self.path_of(&leg);
+        let units: i64 = cargo.values().sum::<Amount>() / MILLI;
         let id = self.caravans.insert(c);
+        let (place, home) = (self.node_at(from, at), self.node_id(from));
+        self.tape.event(
+            rtsim_archive::kinds::TRAVEL_CARAVAN,
+            place,
+            u128::from(id.to_bits()),
+            home,
+            units,
+        );
+        self.tape_leg(
+            rtsim_archive::kinds::TRAVEL_CARAVAN_LEG,
+            &path,
+            u128::from(id.to_bits()),
+        );
         self.promoted
             .retain(|k, _| k.departure + lag.max(ed) * 2 >= b || k.edge != key.edge);
         self.promoted.insert(key, id);
@@ -582,6 +596,11 @@ impl World {
             None => None,
         }
         .unwrap_or_else(|| self.legs.book(path, Owner(c.to_bits())));
+        self.tape_leg(
+            rtsim_archive::kinds::TRAVEL_CARAVAN_LEG,
+            &path,
+            u128::from(c.to_bits()),
+        );
         self.leg_ids.insert(c, stamp.leg);
         leg.generation = stamp.generation;
         let car = self.caravans.get_mut(c).expect("live");
@@ -703,6 +722,15 @@ impl World {
             }
         }
         let done = stage == Stage::Returning || node == home;
+        let (place, id) = (self.node_at(node, at), self.node_id(node));
+        let units: i64 = sold.values().sum::<Amount>() / MILLI;
+        self.tape.event(
+            rtsim_archive::kinds::TRAVEL_ARRIVED,
+            place,
+            u128::from(c.to_bits()),
+            id,
+            units,
+        );
         if done {
             self.dissolve(c, true);
         } else {
