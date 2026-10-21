@@ -891,7 +891,7 @@ struct Soak {
     tables: Vec<(i64, Tables)>,
     /// On the same days: the phase 1 world's meta page by section (raw bytes), and its leg
     /// index's legs, bookings and cells.
-    world: Vec<(Vec<(&'static str, usize)>, (usize, usize, usize))>,
+    world: Vec<(Vec<(&'static str, usize)>, [usize; 5])>,
     /// The game time the run ended at.
     end: i64,
     viewer: Option<Viewed>,
@@ -995,12 +995,21 @@ impl Soak {
                     eprintln!("{name:>24}{row}");
                 }
             }
-            let legs: String = self
-                .world
-                .iter()
-                .map(|(_, (l, b, c))| format!("  {l:>3} {b:>6} {c:>6}"))
-                .collect();
-            eprintln!("legs, bookings, cells{legs}");
+            let names = [
+                "legs",
+                "leg bookings",
+                "leg cells",
+                "market rows",
+                "market wakes",
+            ];
+            for (k, name) in names.iter().enumerate() {
+                let row: String = self
+                    .world
+                    .iter()
+                    .map(|(_, c)| format!("  {:>17}", c[k]))
+                    .collect();
+                eprintln!("{name:>24}{row}");
+            }
         }
     }
 }
@@ -1254,7 +1263,7 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
     let page = viewer.then(|| Page::open(&dir, ctl));
     let mut samples = Vec::new();
     let mut tables = Vec::new();
-    let mut world = Vec::new();
+    let mut sections = Vec::new();
     let t0 = Instant::now();
     let mut ran = 0;
     while ran + 10 <= days {
@@ -1278,9 +1287,11 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
         });
         if ran == 10 || ran == 100 || ran + 10 > days {
             tables.push((ran, by_table));
-            world.push(host.e.with_dragons(|_, w| {
+            sections.push(host.e.with_dragons(|_, w| {
                 let (bookings, cells) = w.legs.booking_counts();
-                (w.meta_sections(), (w.legs.len(), bookings, cells))
+                let markets = [w.markets.len(), w.markets.pending_wakes()];
+                let counts = [w.legs.len(), bookings, cells, markets[0], markets[1]];
+                (w.meta_sections(), counts)
             }));
         }
     }
@@ -1300,7 +1311,7 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
         refused: host.j.refused.clone(),
         samples,
         tables,
-        world,
+        world: sections,
     };
     assert!(
         host.e.protocol_error().is_none(),
