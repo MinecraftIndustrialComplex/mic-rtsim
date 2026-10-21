@@ -248,6 +248,8 @@ impl View {
             if let Some(b) = rail_bounds.get(&id) {
                 bounds = Some(union(bounds, *b));
             }
+            // The page opens on what was built, not on the base maps' whole 512-block regions.
+            let home = bounds.map(|b| [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD]);
             let mut tiles = Vec::new();
             if let Some(h) = &habitat
                 && let Ok(f16) = u16::try_from(f)
@@ -267,6 +269,7 @@ impl View {
                 id,
                 projection: ProjectionDesc::flat(),
                 bounds: [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD],
+                home,
                 tiles,
             });
         }
@@ -281,6 +284,7 @@ impl View {
                 id,
                 projection: ProjectionDesc::flat(),
                 bounds: [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD],
+                home: None,
                 tiles: Vec::new(),
             });
         }

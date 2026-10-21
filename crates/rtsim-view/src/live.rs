@@ -843,6 +843,7 @@ impl LiveView {
             if let Some(b) = bounds.get(&f.id) {
                 let p = [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD];
                 f.bounds = union(Some(f.bounds), p);
+                f.home = Some(union(f.home, p));
             }
         }
         for (f, b) in &bounds {
@@ -857,6 +858,7 @@ impl LiveView {
                     id: f.clone(),
                     projection: ProjectionDesc::flat(),
                     bounds: [b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD],
+                    home: None,
                     tiles: Vec::new(),
                 });
             }
