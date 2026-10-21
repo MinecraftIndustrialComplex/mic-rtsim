@@ -804,8 +804,10 @@ those tests (1,268 lines), lifted into a library.
 **Strides.** Each step is a hand-over whose TICK advances game time by a stride. Cost follows events
 and elapsed slots more than steps, because of the lazy regions and the timing wheel, but each step has
 a fixed cost too, and at 20 ticks a step a game day is 1,200 steps. So the stride is 20 ticks at 1x
-and, at higher speeds, the longest stride whose state hashes match a 20-tick run (that any longer
-stride does is UNVERIFIED; V2's exit test compares them).
+and, at higher speeds, the longest stride whose state hashes match a 20-tick run. Measured (V2): on
+the host test's populated world every stride from 20 to 48,000 ticks gives the same state hashes as a
+20-tick run after 24 game days, and on the core and create GameTest saves 2,400 and 48,000 match 20
+after 3 game days. The host uses 20 ticks at 1x, 200 at 10x and 2,400 at max (TUNABLE).
 
 **Commands are answered.** Java's commands get the answers Java gives when it cannot act:
 `COMMAND_RESULT` status 3, failed, and `SPAWN_REJECTED` reason 1, not ticking (boundary.md); and
@@ -820,8 +822,9 @@ buffer passes half full, so the archive flushes (§10.3) at any speed.
   topology layer reads it, TP10); flat otherwise.
 - **The session preamble Java would send:** dictionaries (dimension names and the rest) and the
   TOPOLOGY record. Whether every module's pages name what they hold without Java's dictionaries is
-  UNVERIFIED (phase 1 names its nine goods itself; dragons save their dictionary); the host's exit
-  test is that a GameTest world's save opens with the same state hash.
+  answered by V2's exit test: the core and create GameTest saves open in the host with every
+  restore check passing and every module's state hash the same as saved (phase 1 names its nine
+  goods itself; dragons save their dictionary).
 - **Seasons:** Serene Seasons' calendar is Java's. The host takes `--season-days <n>`; without it,
   every district stays in the season its pages were saved in.
 
@@ -856,7 +859,28 @@ buffer passes half full, so the archive flushes (§10.3) at any speed.
 
 ### 12.4 Speed
 
-A whole world's speed is UNVERIFIED; V2's exit test measures it and writes it here. What is measured:
+**Measured by V2** (the laptop, Ryzen 24 threads, under other sessions' load, about 10 runnable;
+`rtsim-host/tests/host.rs` and `rtsim-cli run` on the GameTest saves):
+- **The fixed cost of a step** is 5.7 to 6.1 µs at a 20-tick stride on the core and create GameTest
+  saves, 3.2 to 4.0 µs of it in the engine and the rest in the host's Java side: about 7 ms a game day
+  at 1,200 steps a day, so a 20-tick run tops out near 140 game days a second on a nearly empty world.
+- **At max** (2,400-tick strides, a save every 10 game days, 1,000 game days): the GameTest saves run
+  335 to 360 game days a second with real fsyncs (278 to 298 µs a step) and 715 to 867 with
+  `--no-fsync` (115 to 140 µs a step), so the fsyncs of a save cost about 16 ms each, more than the
+  simulation. The host test's populated world (nine villages, six ports, a haven, a fire dragon at its
+  roost, a goblin camp) runs 112 game days a second with real fsyncs (893 µs a step, 535 µs of it in
+  the engine), and 107 with the viewer attached and a page asking every 100 ms (the map reached day
+  999.2 of 1,000).
+- **Outboxes stay bounded** over those 1,000 days: Java's journal peaks at 254 records and no command
+  stays in flight; the industry and core outboxes do not grow.
+- **The state does not stay bounded yet**: phase 1's leg index (`rtsim_travel::legs`) never drops its
+  past time windows (`LegIndex::purge` has no caller), so its meta page (table 0x5001) grows from
+  62 KB on day 10 to 820 KB on day 1,000 with one dragon flying, about 0.8 KB a game day, and the heap
+  with it. It grows on a real server the same way. `a_thousand_days_at_max_keeps_the_state_bounded`
+  is ignored until it is fixed; the fix belongs to phase 1 (a purge at fixed game-time boundaries, so
+  strides still agree).
+
+Before V2, what was measured:
 - **The `rtsim-cli sim` scenarios** (scenario/results, on the laptop), one module each with its small
   synthetic world and setup included: dragons 109 ms for 48 game days (2.3 ms a day), ships 57 ms
   for 12 (4.7 ms a day), herds 809 ms for 200 (4.0 ms a day; a sim year is 96 game days, species.rs),
@@ -864,10 +888,10 @@ A whole world's speed is UNVERIFIED; V2's exit test measures it and writes it he
 - **The overnight benches at scale** (laptop under shared load): dragons 10 to 14 µs per dragon per
   game day (512 dragons: 5.1 to 7.2 ms a day, derived); ships 17 to 19 µs per game day for up to 814
   ships; quiet industry 13 to 14 µs per game day up to 100,000 districts.
-- **Steps:** the fixed cost of a step is unmeasured; at 1,200 steps a game day, 10 µs a step (an
-  illustration) would be 12 ms a game day by itself, which is why the host lengthens its stride.
+- **Steps:** the fixed cost of a step was unmeasured then (V2 measured 6 µs, above), which is why the
+  host lengthens its stride.
 
-An ESTIMATE for a world the size of the benches: dragons at 512 (5.1 to 7.2 ms), herds as in their
+The ESTIMATE made before V2, for a world the size of the benches (still unmeasured at that size): dragons at 512 (5.1 to 7.2 ms), herds as in their
 scenario (4.0 ms) and conflict as in its scenario (11 to 17 ms) come to about 20 to 28 ms a game
 day, so tens of game days a second, about 35 to 50 (derived), before phase 1, whose per-day cost is
 unmeasured. At 72 game days per real day, 40 game days a second is a real day of 24-hour play in
@@ -1026,6 +1050,47 @@ For Deep Time's coordinator to review.
   ![A district card, dark theme](docs/viewer/district-card-dark.png)
   ![The same card, light theme](docs/viewer/district-card-light.png)
   ![Phone width, dark theme](docs/viewer/district-card-phone.png)
+
+**V2 as built** (feat/viewer-host, 2026-10-21), where it differs from §12:
+- **`rtsim-cli export <world> <dir>`** copies the world's confirmed page generation through the
+  read-only open, page by page, then the Java journal, `level.dat`, the server config, the Deep Time
+  manifest, Surveyor's summaries of every dimension and the archive, cut above the copied generation
+  as the engine's start cuts it (§10.5). When the server moves on during the copy it starts again. It
+  never writes into the world and refuses a fork inside the world or the world inside the fork. A
+  journal already trimmed past the pages is accepted when it is the same before and after the copy
+  (the gap is the world's own, and the fork notes it).
+- **`rtsim-cli run <world> --fork <dir>`** exports, or resumes the fork already there, and runs the
+  engine on it in-process: the preamble and the layout's TOPOLOGY, commands answered as failed,
+  strides of 20, 200 and 2,400 ticks at 1x, 10x and max (`--stride` overrides), a save every 10 game
+  days into the fork's pages, journal and `level.dat`, `--no-fsync` for throwaway runs. Keys a line
+  at a time on stdin: `p` pause or resume, `s` save now, `1x`, `10x`, `max`, `q` quit.
+- **The fake Java** of rtsim-jni's tests is the library `rtsim_host::java`; rtsim-jni's tests and
+  rtsim-view's harness use it from there.
+- **The host source** (`--view [IP:PORT]`, loopback 8740 by default, a tailnet address only with
+  `--allow-tailnet`, checked before the export) has no parts yet (V4 brings them), so it shows the
+  fork's own saves: a reader thread looks at the page store's root and log every 200 ms, reopens the
+  fork read only through rtsim-view's `View` after each save or confirmation, swaps it in and sends
+  the open streams a frame notice. While a stream is open (the lease, §11) the host also saves every
+  2 s of wall time (TUNABLE), so the map trails the engine by about that plus one reread (13 to 24 ms
+  measured); with no page open nothing extra is written or read. `/api/world` says source `host`,
+  the engine's day, speed and ticks a second; `/api/status` adds the rereads, lease saves and errors.
+  Surveyor's terrain and the timeline work as over a save.
+- **After review:** `run --socket PATH` serves the viewer on a Unix socket, refused inside the
+  world as `view`'s is. A fork resumes only with the world it was exported from (its marker's
+  source path). A save asked for while paused waits for the first step after resuming. The first
+  SIGINT or SIGTERM stops with the final save, a second exits at once. The export reads `level.dat`
+  once after the journal check (or `level.dat_old` while vanilla swaps the two), since a live
+  server rewrites it every save even when the journal stands still. A Deep Time folder named in
+  `level.dat` is taken only as a plain relative path. A folder holding pages but no
+  `rtsim-fork.json` (an export that died) is refused with a message to delete it. The fake Java
+  was written for tests and panics on what it does not expect; under `run` a panic ends the run
+  as a server crash would, and the fork starts again from its last save. The export's race is
+  forced in a test (`fork::export_with`'s hook saves the world mid-copy, in the bridge's order).
+- **Found on the way:** a dragon's u8 fruitless count overflowed after 256 days with nothing in range
+  (a panic in the debug profile, a wrap in release); it saturates now. Phase 1's leg index grows
+  without bound (§12.4). That fix is phase 1's and is not in V2: the purge will run at fixed
+  game-time boundaries, and until it lands the test `a_thousand_days_at_max_keeps_the_state_bounded`
+  stays ignored; it is the regression test for the fix.
 
 **V5 as built** (feat/viewer-events, 2026-10-21):
 - **Surveyor over HABITAT.** Each frame named by a dimension gets a "Terrain (Surveyor)" tile layer
