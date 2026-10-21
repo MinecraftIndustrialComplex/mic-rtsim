@@ -1077,7 +1077,9 @@ For Deep Time's coordinator to review.
   Surveyor's terrain and the timeline work as over a save.
 - **Found on the way:** a dragon's u8 fruitless count overflowed after 256 days with nothing in range
   (a panic in the debug profile, a wrap in release); it saturates now. Phase 1's leg index grows
-  without bound (§12.4); that fix is phase 1's and is not in V2.
+  without bound (§12.4). That fix is phase 1's and is not in V2: the purge will run at fixed
+  game-time boundaries, and until it lands the test `a_thousand_days_at_max_keeps_the_state_bounded`
+  stays ignored; it is the regression test for the fix.
 
 **V5 as built** (feat/viewer-events, 2026-10-21):
 - **Surveyor over HABITAT.** Each frame named by a dimension gets a "Terrain (Surveyor)" tile layer
