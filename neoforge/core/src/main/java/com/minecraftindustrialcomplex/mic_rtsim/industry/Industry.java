@@ -106,6 +106,21 @@ public final class Industry {
 
     // ---- the tick -------------------------------------------------------------------------------
 
+    /**
+     * At the start of the server tick, before any level ticks: chunks that loaded since the last tick get
+     * their held reconciles, then their IND_CHUNK_LOADED (R2). Nothing else moves here.
+     */
+    public void startOfTick() {
+        if (RtsimSession.current() != session || session.failed() || !enabled() || !started)
+            return;
+        try {
+            IndustryEvents.drainLoads(this, gameTime());
+        } catch (RuntimeException e) {
+            TickGate.releaseAll();
+            fail("chunk loads at the start of the tick", e);
+        }
+    }
+
     public void endOfTick(long now) {
         // Only the server's own session observes the world: GameTests run private sessions next to it.
         if (RtsimSession.current() != session)
@@ -117,6 +132,7 @@ public final class Industry {
                 started = false;
                 wasOff = true;
             }
+            TickGate.releaseAll();
             return;
         }
         if (!started) {
@@ -463,6 +479,17 @@ public final class Industry {
                 r.putLong(e + 8, goods.get(ids[from + i]));
             }
             commit(r);
+        }
+    }
+
+    /** I1: a reconcile broke blocks; the plugins hear what the sim destroyed (repair schematics). */
+    void destroyed(ServerLevel level, District d, java.util.List<DestroyedBlock> blocks, long now) {
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            try {
+                p.destroyed(this, level, d, blocks, now);
+            } catch (RuntimeException e) {
+                fail("plugin destroyed " + p.getClass().getSimpleName(), e);
+            }
         }
     }
 
