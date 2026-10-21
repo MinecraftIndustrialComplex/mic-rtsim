@@ -373,6 +373,8 @@ impl World {
         self.markets.apply(region, at, |m, _| {
             rtsim_trade::build::repopulate(m, goods, tun, pop, l_mint)
         });
+        // Caps follow the residents; prices and ceilings follow the targets.
+        self.works_touch(node, at);
     }
 
     /// The bridge placed a booked house (HOUSE_PLACED): its residents may move in. Returns the

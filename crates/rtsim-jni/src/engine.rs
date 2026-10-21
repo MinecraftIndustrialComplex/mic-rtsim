@@ -74,6 +74,23 @@ mod topology;
 // The paged modules' saves, tickets and budgets (PF12 to PF21).
 mod paging;
 pub use paging::DEFAULT_ROW_BUDGET;
+/// The page layout rtsim-view mirrors in its `keys.rs` (it cannot link this crate); its test
+/// (`crates/rtsim-view/tests/harness.rs`) compares every value here with its own.
+pub mod mirrored {
+    pub use super::conflict::KEY_CONFLICT;
+    pub use super::dragons::KEY_DRAGONS;
+    pub use super::herds::KEY_HERDS;
+    pub use super::paging::{HASH_MAGIC, hash_key};
+    pub use super::ships::KEY_SHIPS;
+    pub use super::worldmodel::KEY_META as WORLD_MODEL_META;
+    /// Phase 1's pages.
+    pub mod phase1 {
+        pub use super::super::phase1::{
+            CHUNK, KEY_META, META_MAGIC, META_VERSION, PIECE, SNAP_MAGIC, SNAPSHOT_TABLE, TABLE,
+            WORLD_META, WORLD_SEED,
+        };
+    }
+}
 
 /// Record bytes per buffer when Java asks for the default. PLACEHOLDER (the stub's 256 KiB): the
 /// engine is to size buffers from the per-player puppet caps and per-tick quotas (PLAN.md §4.5).
@@ -225,6 +242,8 @@ pub struct Inspect {
     pub phase1_sentiments: std::collections::BTreeMap<u64, Vec<(u64, u64, i8)>>,
     /// The phase 1 world's villages and bases.
     pub phase1_villages: std::collections::BTreeSet<u64>,
+    /// Every phase 1 village's works (`phase1::works_view`).
+    pub phase1_works: std::collections::BTreeMap<u64, [i64; phase1::WORKS_VIEW]>,
     /// Every frame's topology as the TOPOLOGY records left it, and the records refused.
     pub topologies: rtsim_space::SharedTopologies,
     pub topology_refused: u64,
@@ -708,6 +727,15 @@ impl Engine {
         )
     }
 
+    /// A phase 1 village's works as of the last step (TEST mode; `phase1::works`): `None` when
+    /// the engine knows no such village or it has no works state.
+    pub fn phase1_works(&self, village: u64) -> Option<[i64; phase1::WORKS_VIEW]> {
+        if !self.cfg.test {
+            return None;
+        }
+        self.inspect().phase1_works.get(&village).copied()
+    }
+
     fn set_protocol_error(&self, msg: String) {
         log_error(&format!("engine protocol error: {msg}"));
         self.protocol_error.publish(Some(msg));
@@ -1169,6 +1197,7 @@ impl Engine {
             counters: st.world.counters,
             phase1_sentiments: phase1::sentiments(st),
             phase1_villages: phase1::villages(st),
+            phase1_works: phase1::works_view(st),
             topologies: st.topology.shared.clone(),
             topology_refused: st.topology.refused,
         });
@@ -1200,6 +1229,7 @@ impl Engine {
                 Order::ConflictCommand { names, record } => {
                     conflict::order_command(st, &names, &record)
                 }
+                Order::TributeStart { village, lair } => dragons::tribute_start(st, village, lair),
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
@@ -1383,6 +1413,7 @@ impl Engine {
                 st.world.apply_journaled(rec, replayed);
                 shared::catch_up(st, rec);
                 phase1::after_core(st, rec);
+                dragons::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1395,6 +1426,7 @@ impl Engine {
                 if industry::claims(rec) {
                     industry::answered_again(st, rec);
                 }
+                dragons::answered_again(st, rec);
                 st.world.refused_journaled(rec);
             }
             Verdict::Gap { .. } => {

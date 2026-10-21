@@ -698,7 +698,7 @@ pub fn run(o: Options) -> i32 {
                     ));
                     features.residents += w.house_placed(h.op);
                 }
-                Command::SpawnResident(_) => {}
+                Command::SpawnResident(_) | Command::PlaceWork(_) | Command::SpawnWork(_) => {}
             }
         }
         if day > 20 {

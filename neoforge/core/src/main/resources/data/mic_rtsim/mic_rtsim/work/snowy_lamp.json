@@ -1,0 +1,7 @@
+{
+  "group": "lamp",
+  "culture": "human",
+  "style": "minecraft:village_snowy",
+  "cap": { "per_residents": 3 },
+  "variants": [ { "template": "minecraft:village/snowy/snowy_lamp_post_01" }, { "template": "minecraft:village/snowy/snowy_lamp_post_02" }, { "template": "minecraft:village/snowy/snowy_lamp_post_03" } ]
+}

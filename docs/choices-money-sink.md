@@ -1,0 +1,100 @@
+# Choices: the village money sink (MSC)
+
+Reversible choices made on 2026-10-21 by the money sink agent (branch `feat/money-sink`), building
+SINK.md under Ben's decisions BR-ALL and BR-MS (DECISIONS.md: MS-1 to MS-11 as recommended in SINK.md
+§9; MS-5's tribute share stays a PLACEHOLDER). Each choice here can be undone. Ben's own calls are at
+the end, under "For Ben", recommended option first.
+
+## The works purse (rtsim-world `works.rs`)
+
+| # | Choice | Why |
+|---|---|---|
+| MSC1 | **The purse is a projection, not a stock.** A village's purse in a currency is `line.book.sunk - spent - tribute` of its currency line (home treasury or foreign exchange line). Nothing is credited at the ceiling: E43 already books `sunk`, so the purse is read from it. | MS-1 says the coin leaves circulation where E43 sinks it. Reading the purse from `sunk` means the market code is untouched: every market, price, caravan and quiescence result is the sink-free world's own (`works_leave_every_market_as_it_was`, and `sim quiet --works` prints the same event series as without). |
+| MSC2 | **One works event per village, booked at the quantum the purse reaches the next work's price.** `Line::steps_to_sink` (new, rtsim-trade) solves the line's plan in closed form; with foreign coin too, a doubling search over `Line::sunk_over`. The booking is redone after every market event at the village (its rates may change) and whenever what the village may buy changes; a stale event is dropped by stamp. Works events never call `market_event`. | SINK.md §4.4 and §7: nothing per tick, one wheel entry per village that can afford something. A village that never reaches its ceiling books nothing (`works_events == works` in the tests: every works event buys). |
+| MSC3 | **A work's price** is the anchors of the catalogue goods it uses (`Market::anchor`, the C13 labour anchor) plus labour for everything else at the culture's mint cost: material labour per item that is none of the world's goods (`works_material_wd_milli`, PLACEHOLDER 20 thousandths of a worker-day) and placement labour per block (`works_place_wd_milli`, PLACEHOLDER 10). | SINK.md §4.3 prices non-goods through the recipe graph; the phase 1 world trades nine placeholder goods, so a template's planks and lanterns have no labour cost there yet. A flat material labour per item stands in until the world's goods grow (see "For Ben"). |
+| MSC4 | **Caps count census residents, not houses.** Lamps: one per 3 residents; Ribbit lamps: one per 2; golems: one per 5 (vanilla's gossip threshold, as SINK.md says); decor: 4 a village. Caps count works ever bought, so a broken lamp is not rebought. | The world knows a village's population, not its houses (vanilla villages' houses are not in the sim). One per 3 residents is close to SINK.md's one per 3 houses for vanilla's two-bed houses. Never rebuying keeps a village from becoming a lamp vending machine for a player who breaks them. |
+| MSC5 | **Need first** (MS-6): a village paying tribute buys nothing (its purse is the dragon's); a village raided, or whose tribute lapsed, within the last `works_threat_days` (24, a season) buys golems first; then lamps and decor, cheapest first, ties by the village's seed. Golems are bought only under threat. | SINK.md §4.4's order. A golem with no threat would spend the purse on defenders nobody needs; a lapse is a threat because the dragon comes back (walkthrough B). |
+| MSC6 | **A work kind has variants** (decor 1 to 3 of `taiga_decoration_*`); the variant is the village's seed stream at (kind, works bought of it). | Different villages get different decor; a crash re-deciding the purchase picks the same one. |
+| MSC7 | **Foreign coin counts at the market's exchange anchor** (the line's own C13 parity), else the mint cost ratio. A purchase pays home coin first, then foreign coin in good order, rounding the foreign part up. | MS-10. The anchor is what the market itself believes the coin is worth. Rounding up never lets a village buy for less than the price. |
+| MSC8 | **Tribute is whole coins of the currency the purse holds most of** (ties to the lower good id), at least one coin, at most what the purse holds. Under one coin the tribute lapses. | MS-5 and MS-10. Whole coins are what a chest can hold. |
+| MSC9 | **No plot (NOT_FREE) and a failed placement (FAILED) both mark the kind full** for the village; the coin stays spent (MS-11). An unknown or repeated answer changes nothing. | A FAILED placement (a missing template) would fail again; treating it as full stops a loop. |
+| MSC10 | **A work's op id** is `identity_op` of the village's seed stream at its nth work, so a crash that re-decides the purchase sends the same op and the bridge's exactly-once rule applies. Works are placed with PLACE_HOUSE (SEARCH and Y_FROM_VILLAGE, radius `works_radius` 48, rotation from the seed) and golems with SPAWN_RESIDENT under a new flag, AT_VILLAGE (the meeting point). | The house path already does free plots, quotas, waiting for chunks and exactly-once. |
+| MSC11 | **Conservation:** a currency line's `sunk` is no longer burnt whole; the purse counts as seen and `spent + tribute` as burnt. A negative purse is an imbalance. | SINK.md §4.5's identity, asserted after every event in debug as before. |
+| MSC12 | **The snapshot carries the catalogue, every village's works state and the pending works** (world snapshot `RTW3`, was `RTW2`). | A reopened save continues exactly (tests: `works_are_deterministic_and_survive_a_reload`, `a_paged_world_with_works_runs_as_a_resident_one`, and the persist proptests, which now load the catalogue and raid, pay tribute, lapse and answer works). |
+| MSC13 | **One work in flight per village.** A village buys its next work only once Java answered the last (COMMAND_RESULT): `WorksState.in_flight`, saved and hashed. | Without it a village with no free plot bought its whole cap at once and lost all of it to NOT_FREE (MS-11 is no refund). One PLACE_HOUSE or SPAWN_RESIDENT pending per village also keeps an unloaded village's works to one parked command. A work waits while its plot's chunks are not loaded, so a village nobody visits buys one work and waits. |
+
+## Across the boundary (rtsim-jni, the bridge)
+
+| # | Choice | Why |
+|---|---|---|
+| MSC14 | **The catalogue is one Java-built record, WORK_CATALOG (0x0022, latest-wins), not a Rust loader plus TEMPLATE_BLOCKS.** Java reads the data files (`data/<ns>/mic_rtsim/work/<id>.json`, a reload listener) and each template's palette, and sends kinds, variants, blocks and items through its dictionary (new kind 9, work) as a preamble record once a session and after `/reload`. The engine maps items to its goods and counts the rest as material labour. | Only Java can read a template (the data pack and mods' jars are Java's); one record keeps the engine's input log and snapshot simple (the catalogue is part of the world). SINK.md §4.3's TEMPLATE_BLOCKS round trip would add a command and an answer per template for the same numbers. |
+| MSC15 | **Data format:** `group` (lamp, decor, golem), `culture` (Cultures' names), optional `style` (the village's structure id), `cap` (`per_residents` n or `fixed` n), `variants` (each a `template` with optional `processors`, or a `body` with its `items`). The Ribbit lamp ships in the Ribbits plugin's data, so it exists only with Ribbits. | The P15 body-kind pattern SINK.md asks for, kept to what the first catalogue needs. |
+| MSC16 | **A template's bill:** air and structure voids are not counted, a jigsaw counts as its final state (what the house builder places), a door or a bed counts once, a block that is no item (water) is a block placed but no item. A golem is 36 iron ingots and a carved pumpkin, placement 1. | What the builder actually puts in the world. Vanilla's plains lamp is 3 oak fences (one a jigsaw's final state), 4 torches and a stripped oak log. |
+| MSC17 | **Golems are counted by the census, latest wins** (VILLAGE_CENSUS's golems, sent as an input even when the census has no residents), not by the engine's own purchases. | A golem a player killed or built is the village's real defence; the census already counts them. |
+| MSC18 | **A golem stands beside the meeting point** (SPAWN_RESIDENT flag 2, AT_VILLAGE): in the first of 12 nearby columns, the height nearest the meeting point's (within 6 blocks) where the block below holds it up and the body fits out of liquid, else the meeting point itself. Not a heightmap: the first GameTest run stood the golem on the test area's barrier roof, as it would on a roof or a canopy over a village square. Not player made (it defends the village, as vanilla's own), persistent. | SINK.md's "at the meeting point" without spawning a golem inside the bell or a wall. |
+| MSC19 | **TEST orders and inspection:** 30 WORKS_GRANT (coin straight into a purse, ledgered as minted) and 31 WORKS_RAID (a raid, with or without tribute), both TEST mode and phase 1 switched on; `nPhase1Works` returns (bought, kinds full, purse, census golems, tribute, spent). Phase 1 stats 16 to 19: works bought, placed, refused, tributes (Java `PHASE1_STATS` 20). | GameTests cannot wait for a ceiling's slow surplus or a real dragon. |
+
+## Tribute to the dragons (rtsim-ecology, rtsim-jni, the Ice and Fire plugin)
+
+Made by the tribute agent (branch `feat/money-sink-tribute`): SINK.md §4.5, §4.6 and walkthrough B.
+
+| # | Choice | Why |
+|---|---|---|
+| MSC40 | **A raid starts the tribute and pays the first season at once;** later payments are one wheel event per tributary village at the calendar's next season change (`Ev::Tribute`), dropped as stale when its row's stamp changed (one counter for all rows, saved). | SINK.md's "once a season, one event": nothing per tick. Paying at the raid makes walkthrough B's protection start with the raid rather than up to a season later. |
+| MSC41 | **Only a lair dragon's raid makes a tributary** (a watched kill in the village's bounds or an abstract hunt that took its stock); a lairless dragon's raid only frightens the village (golems first, MSC5). | Tribute goes into "the raiding dragon's lair chest" (SINK.md §4.2): a wanderer has no chest. |
+| MSC42 | **A re-raid by the same lair keeps the row and pays nothing new;** a raid by another lair replaces the row and pays that lair at once. | One tribute row per village (SINK.md §4.2). While the tribute is current its lair's dragons do not hunt there (MSC44), so a raid by the same lair is a watched kill by a dragon passing through; it is not a new demand, and the season's clock stays. |
+| MSC43 | **No works purse, no row:** a village the world keeps no works for (`tributary` unset) pays nothing; a purse under one coin at the first payment lapses at once. | Tribute is a work: it comes out of the purse (MS-5). |
+| MSC44 | **"Current" means paid within the last season:** a lair's dragons give a village no utility in `weigh` while `at < paid_at + season_ticks`. | SINK.md §4.6's "paid within the last season", with the calendar's own season length. |
+| MSC45 | **A lapse:** at a payment the purse is dry, or the lair is vacant (in `Dragons::vacant`: no occupants and nobody flying to claim it). The row goes and the world books the lapse (golems first again, MSC5). | SINK.md: "a vacant lair takes no tribute". An heir that moves in (C24) clears the vacancy, so the arrangement passes to it. |
+| MSC46 | **The coin waits in the lair, unplaced, until the plugin reports a chest;** then it goes as stacks of at most 64 of the currency item (`TRIBUTE_STACK`). A lair with no chest keeps its tribute in its books, abstract, as R23 keeps hoards. | SINK.md §4.6, B24 (one stack per command). Verified in the CE 2.1-beta.1 jar (SINK.md had it UNVERIFIED): roosts have chests. `DragonRoostPiece.generateDecoration` rolls one in 500 (male) or 700 (female) for every block of its decoration volume within about 55% of the decoration radius (27 to 34 blocks; the squared distance under 0.3 of `getCircularArea`), several thousand rolls, and puts a chest with the roost loot table on the surface of each hit: on average about 5 to 13 chests near a roost's middle. Caves roll one in 99 per floor cell (SINK.md). So a lair with no chest is rare. |
+| MSC47 | **A stack's op id is drawn from the lair's key and a per-lair stack counter** (`identity_op` of stream `SYS_TRIBUTE`). A crash between a chest report and a page save can make a reused op id carry other contents, so the chest can differ from the books by up to a stack. Accepted. | A resent stack is the same op, so Java answers DUPLICATE and nothing is paid twice (J11). The mismatch needs a crash in a narrow window and is at most one stack. |
+| MSC48 | **The engine keeps chests for the session only** (never saved): cleared at session start and forgotten when a stack into it FAILED. | Java reports every chest again each session, and only a resident chest can take coin. |
+| MSC49 | **A FAILED stack goes again under a new op id** once a chest is reported again; APPLIED and DUPLICATE_OP count it placed. | The failed op was answered; a new op keeps exactly-once simple on Java's side. |
+| MSC50 | **Saves move to RTD3 and RTN3** (the dragons' snapshot and paged meta), carrying tribute rows, the stamp counter, each lair's hoard, unplaced coin and stack counter, and the stacks in flight; `Dragons::check` asserts the villages' tribute equals the dragons' `tribute` column and that every coin of it is placed, unplaced or in flight. | No backward compatibility before release: older dragon pages are dropped loudly and the dragons start afresh, as before. |
+| MSC51 | **Golems add fear:** `village_risk` plus `golem_risk` (PLACEHOLDER 5 fullness points) per golem the census counts, before boldness bends it. | MS-8 and SINK.md §4.6: a village that bought golems is a worse target. |
+| MSC52 | **Tribute stacks go through the core's outbox** (`push_with_op`, the core's TRANSFER_TO_CONTAINER writer), written first in the dragons' share of each step's command buffer. | The core's outbox already resends after a restart until answered, which is what J11 asks for. |
+| MSC53 | **A replayed DUPLICATE_OP answer for an op the replay already admitted still counts the stack placed** (the DuplicateOp verdict calls the dragons too). | Otherwise a stack answered before a crash and again after would sit "in flight" forever. |
+| MSC54 | **A stack whose dimension or item the engine cannot name fails at once** (logged as an error): the coin waits and the chest is forgotten. | It can never be written; failing it keeps the books whole. |
+| MSC55 | **COMMAND_RESULT is ignored by the dragons while they are switched off.** The stack stays in the outbox, goes again when they are on, and Java answers DUPLICATE_OP. | The switch (U10) means the dragons look at nothing; the outbox makes the answer come back. |
+| MSC56 | **TEST order 32, TRIBUTE_START** (u64 village, u64 lair): a raid by the lair without a dragon, at the later of game time's world tick and the dragons' and the world's clocks; ignored while the dragons are off. Inspection: `nDragonsVillageRisk` and `nDragonsTribute` (seasons paid, coins placed, coins waiting, stacks in flight, world-wide). On `NativeEngine` only, as the lead's `worksGrant`. | A GameTest cannot wait for a real raid. World-wide totals because the GameTest world is reused: tests compare before and after. |
+| MSC57 | **The plugin looks for a lair's chest every 100 ticks** (PLACEHOLDER `Lairs.CHEST_SCAN_TICKS`) over the loaded chunks of each lair it reported this session: a `ChestBlockEntity` inside the box with an empty slot, the nearest the lair's home, ties by block order. A chest whose loot is not rolled yet counts as having room. | Cheap (a lair's box covers a few chunks, their block entities only). Reading an unrolled chest's slots would roll its loot early; the transfer rolls it when it inserts. |
+| MSC58 | **LAIR_CHEST once per lair per session, and again** when that chest is gone, full, or its chunk was unloaded since the report (a different chunk object), and after `Module.ECOLOGY` is switched back on. | An unloaded chunk is what fails a transfer, and the engine forgets a chest whose transfer failed: re-reporting after every reload keeps the two in step without hearing the COMMAND_RESULT in the plugin. |
+
+## For Ben
+
+Each item is reversible and already built as the first option; say which to change.
+
+1. **Work prices are tiny until the world trades a template's goods.** With the placeholder labour
+   (MSC3: 20 thousandths of a worker-day per item, 10 per block placed) the plains lamp costs 0.08 coin
+   and a golem about 0.25 coin (GameTests: `spent` 80 for a lamp, 330 for a lamp and a golem). A village
+   at its ceiling therefore buys its whole catalogue within days of reaching it, and then the purse just
+   grows (MS-9).
+   - (a, recommended) Keep the placeholders until the world's goods include planks, iron and torches,
+     then price works by the recipe graph as SINK.md §4.3 says. The sink still removes every coin above
+     the ceiling either way: the price only sets how fast the works appear.
+   - (b) Raise the two labour tunables now (for example 1 worker-day per item) so a lamp costs a few
+     coins and a golem tens of coins.
+2. **Caps count census residents, not houses** (MSC4; SINK.md's table says houses). The sim does not know
+   a vanilla village's houses, only its residents.
+   - (a, recommended) Residents: one lamp per 3, one Ribbit lamp per 2, one golem per 5.
+   - (b) Count beds or houses from the village's structure pieces on the Java side and send them with
+     the census.
+3. **A broken work is never rebought** (MSC4: caps count works ever bought).
+   - (a, recommended) Never rebuy, so a player cannot farm a village's purse by breaking lamps.
+   - (b) Count standing works (a census of the village's work blocks) and rebuy what is gone.
+4. **One work in flight per village** (MSC13). A village whose chunks are never loaded buys one work and
+   waits; its purse keeps growing until a player comes by.
+   - (a, recommended) Keep it: no coin is spent on works nobody can place.
+   - (b) Allow a small queue (for example 3) so a visited village shows several new works at once.
+5. **Golems are bought only under threat** (MSC5: raided, or tribute lapsed, within the last season).
+   - (a, recommended) Only under threat.
+   - (b) Also up to the cap in peace time, as vanilla's own golem spawning does.
+6. **The tribute share is a quarter of the purse each season** (MS-5, PLACEHOLDER as you asked;
+   MSC40 to MSC46; `tribute_share_milli` 250). A tributary village buys no works while it pays
+   (MSC5), so the dragon's share is the only thing that draws its purse down.
+   - (a, recommended) Keep 250 thousandths until the work prices are real, then tune it against them.
+   - (b) A fixed number of coins a season per dragon (its age or size), independent of the purse.
+7. **A golem adds 5 fullness points of fear** (`golem_risk`, PLACEHOLDER, MSC51) against a base
+   `village_risk` of 15.
+   - (a, recommended) Keep it until dragons are seen choosing in a played world.
+   - (b) Scale it with the dragon's stage, so an old dragon ignores golems.

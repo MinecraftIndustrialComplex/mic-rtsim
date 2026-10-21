@@ -101,6 +101,10 @@ pub const LOG_MAX_BYTES: u64 = 4 << 20;
 /// Stored bytes one save moves out of segments being compacted, at most: compaction is streamed
 /// and spread over saves, so its memory stays bounded whatever a segment's size. PLACEHOLDER.
 pub const COMPACT_MAX_BYTES: u64 = 4 << 20;
+/// How many times [`PageStore::open_read_only`] reopens from the root after a missing file or a
+/// bad record (a writer moved the store under it) before it reports the store as busy. TUNABLE
+/// (VIEWER.md §5.3).
+pub const READ_ONLY_RETRIES: u32 = 3;
 
 /// A page's identity. The engine packs (table, region) into it; the store only orders by it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -146,6 +150,11 @@ pub enum PageError {
     Poisoned,
     /// A test-injected crash.
     Injected,
+    /// A write asked of a store opened with [`PageStore::open_read_only`].
+    ReadOnly,
+    /// [`PageStore::open_read_only`] found a missing file or a bad record on every try: a writer
+    /// is moving the store (or it is damaged). Holds the last error.
+    Busy(String),
 }
 
 impl fmt::Display for PageError {
@@ -165,6 +174,11 @@ impl fmt::Display for PageError {
                 write!(f, "a failed commit left the page store unusable; reopen it")
             }
             PageError::Injected => write!(f, "injected fault"),
+            PageError::ReadOnly => write!(f, "the page store is open read only"),
+            PageError::Busy(last) => write!(
+                f,
+                "the page store changed on every read-only open (or is damaged): {last}"
+            ),
         }
     }
 }
@@ -675,6 +689,9 @@ pub struct PageStore {
     fault: Option<Fault>,
     /// [`Fault::Read`]: reads left before they fail; `u64::MAX` when no read fault is set.
     reads_left: std::sync::atomic::AtomicU64,
+    /// Opened by [`PageStore::open_read_only`]: every write is refused, nothing on disk changes,
+    /// and no file is held open between reads.
+    read_only: bool,
 }
 
 impl PageStore {
@@ -683,7 +700,86 @@ impl PageStore {
     pub fn open(dir: impl Into<PathBuf>, durability: Durability) -> Result<PageStore> {
         let dir = dir.into();
         fs::create_dir_all(&dir).map_err(io(&dir))?;
-        let mut store = PageStore {
+        let mut store = PageStore::blank(dir, durability, false);
+        store.load_root()?;
+        store.replay_log()?;
+        store.remove_strays()?;
+        store.check_segments()?;
+        Ok(store)
+    }
+
+    /// Opens the store in `dir` at its current generation for reading only (VIEWER.md §5.3): it
+    /// writes, creates, renames, truncates and deletes nothing, so a viewer can read a store a
+    /// running engine is saving into. A log's torn last record is ignored, not cut off; files the
+    /// index does not name are left alone. Every write method returns [`PageError::ReadOnly`].
+    /// No file stays open between reads, so the writer can still delete what it compacts.
+    ///
+    /// A missing file or a bad record (a writer folded the log or compacted a segment while the
+    /// open read) reopens from the root, up to [`READ_ONLY_RETRIES`] times, then returns
+    /// [`PageError::Busy`]. A folder that does not exist is an error: nothing is created.
+    /// [`PageStore::view_confirmed`] then shows the generation [`PageStore::rollback`] would keep.
+    pub fn open_read_only(dir: impl Into<PathBuf>) -> Result<PageStore> {
+        let dir = dir.into();
+        let meta = fs::metadata(&dir).map_err(io(&dir))?;
+        if !meta.is_dir() {
+            return Err(PageError::Format(format!(
+                "{}: not a folder",
+                dir.display()
+            )));
+        }
+        let mut last = None;
+        for attempt in 0..=READ_ONLY_RETRIES {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(20 << attempt));
+            }
+            let mut store = PageStore::blank(dir.clone(), Durability::NoSync, true);
+            let opened = store.load_root().and_then(|root| {
+                store.replay_log()?;
+                store.check_segments()?;
+                // A log fold between reading the root and its log leaves the old log gone and
+                // reads as "no log": the root has changed, so this open is stale.
+                if store.read_root()? != root {
+                    return Err(PageError::Format("the root changed during the open".into()));
+                }
+                Ok(())
+            });
+            match opened {
+                Ok(()) => return Ok(store),
+                Err(e) if moved_under_reader(&e) => last = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(PageError::Busy(
+            last.map_or_else(String::new, |e| e.to_string()),
+        ))
+    }
+
+    /// Whether the store was opened with [`PageStore::open_read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// On a read-only store, shows the confirmed generation in memory only: what
+    /// [`PageStore::rollback`] would keep (the generation `Engine::start` opens), without writing
+    /// the rollback. Returns false when nothing was pending. Errors on a writable store, whose
+    /// disk would then disagree with its memory.
+    pub fn view_confirmed(&mut self) -> Result<bool> {
+        if !self.read_only {
+            return Err(PageError::Format(
+                "view_confirmed needs a store opened read only; use rollback".into(),
+            ));
+        }
+        if self.confirmed == self.current() {
+            return Ok(false);
+        }
+        let changes = self.rollback_changes()?;
+        // In memory only: the segments this leaves unnamed stay on disk.
+        let _unnamed = self.apply(&Rec::Rollback { changes });
+        Ok(true)
+    }
+
+    fn blank(dir: PathBuf, durability: Durability, read_only: bool) -> PageStore {
+        PageStore {
             dir,
             durability,
             save_seq: 0,
@@ -709,24 +805,36 @@ impl PageStore {
             poisoned: false,
             fault: None,
             reads_left: std::sync::atomic::AtomicU64::new(u64::MAX),
-        };
+            read_only,
+        }
+    }
+
+    /// Reads and parses the root; returns its bytes (`None`: there is none yet).
+    fn load_root(&mut self) -> Result<Option<Vec<u8>>> {
+        let root = self.read_root()?;
+        if let Some(bytes) = &root {
+            self.parse_root(&self.dir.join(MANIFEST_NAME), bytes)?;
+        }
+        Ok(root)
+    }
+
+    fn read_root(&self) -> Result<Option<Vec<u8>>> {
         // Only a root that is certainly absent means "start from empty". Any other failure to
         // read it must stop here: treating it as absent would make every segment a stray.
-        let manifest = store.dir.join(MANIFEST_NAME);
+        let manifest = self.dir.join(MANIFEST_NAME);
         match fs::read(&manifest) {
-            Ok(bytes) => store.parse_root(&manifest, &bytes)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(PageError::Io {
-                    path: manifest,
-                    source: e,
-                });
-            }
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(PageError::Io {
+                path: manifest,
+                source: e,
+            }),
         }
-        store.replay_log()?;
-        store.remove_strays()?;
-        for (&seq, info) in &store.segments {
-            let path = store.segment_path(seq);
+    }
+
+    fn check_segments(&self) -> Result<()> {
+        for (&seq, info) in &self.segments {
+            let path = self.segment_path(seq);
             let len = fs::metadata(&path).map_err(io(&path))?.len();
             if len != info.file_bytes {
                 return Err(PageError::Format(format!(
@@ -736,7 +844,18 @@ impl PageStore {
                 )));
             }
         }
-        Ok(store)
+        Ok(())
+    }
+
+    /// Refuses a write on a read-only or poisoned store.
+    fn writable(&self) -> Result<()> {
+        if self.read_only {
+            return Err(PageError::ReadOnly);
+        }
+        if self.poisoned {
+            return Err(PageError::Poisoned);
+        }
+        Ok(())
     }
 
     /// Opens the store at the newest generation that is not ahead of Minecraft's journal (P29):
@@ -940,6 +1059,11 @@ impl PageStore {
 
     /// Switches fsync on or off for later commits (a bulk build can skip it, then turn it on).
     pub fn set_durability(&mut self, durability: Durability) {
+        if self.read_only {
+            // Nothing was written, so nothing needs syncing.
+            self.durability = durability;
+            return;
+        }
         if self.durability == Durability::NoSync && durability == Durability::Fsync {
             // What NoSync wrote is not durable yet: sync it now, or a later fsynced root could
             // name segments whose bytes never reached the disk. Best effort; errors surface on
@@ -969,6 +1093,17 @@ impl PageStore {
 
     fn read_stored(&self, loc: PageLoc) -> Result<Vec<u8>> {
         let path = self.segment_path(loc.segment);
+        if self.read_only {
+            // No file stays open between reads: a writer may delete it (VIEWER.md §5.3). On
+            // Windows, std opens with FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so
+            // the writer's delete or rename over this file succeeds while a read is in flight.
+            // UNVERIFIED on a real Windows server: V4's exit test (§16) runs it.
+            let mut f = File::open(&path).map_err(io(&path))?;
+            f.seek(SeekFrom::Start(loc.offset)).map_err(io(&path))?;
+            let mut buf = vec![0; loc.stored_len as usize];
+            f.read_exact(&mut buf).map_err(io(&path))?;
+            return Ok(buf);
+        }
         let mut files = lock(&self.files);
         let f = match files.entry(loc.segment) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
@@ -1049,9 +1184,7 @@ impl PageStore {
     /// the confirmed one and the previous generation's superseded pages are dropped. Returns
     /// false (and does nothing) unless `save_seq` is the current, pending generation.
     pub fn confirm(&mut self, save_seq: u64) -> Result<bool> {
-        if self.poisoned {
-            return Err(PageError::Poisoned);
-        }
+        self.writable()?;
         if save_seq != self.save_seq || self.confirmed == self.current() {
             return Ok(false);
         }
@@ -1062,6 +1195,7 @@ impl PageStore {
     /// the world's save holds every observation through `world_obs_seq`, so the current generation
     /// is confirmed if it includes none past that. Returns whether it confirmed anything.
     pub fn confirm_through(&mut self, world_obs_seq: u64) -> Result<bool> {
+        self.writable()?;
         if self.obs_seq > world_obs_seq {
             return Ok(false);
         }
@@ -1073,6 +1207,7 @@ impl PageStore {
     /// world's save holds every observation it includes, else roll back to the confirmed one.
     /// Returns the generation the store is at; an error if both are ahead.
     pub fn select_for_journal(&mut self, world_obs_seq: u64) -> Result<Generation> {
+        self.writable()?;
         if self.obs_seq <= world_obs_seq {
             // The world's save holds this generation: it is confirmed, pending or not, so a later
             // crash can never roll back past it.
@@ -1095,12 +1230,17 @@ impl PageStore {
     /// Drops every pending generation and returns to the confirmed one. Returns false when
     /// nothing was pending.
     pub fn rollback(&mut self) -> Result<bool> {
-        if self.poisoned {
-            return Err(PageError::Poisoned);
-        }
+        self.writable()?;
         if self.confirmed == self.current() {
             return Ok(false);
         }
+        let changes = self.rollback_changes()?;
+        self.log_and_apply(Rec::Rollback { changes }).map(|_| true)
+    }
+
+    /// What a rollback changes: each page changed since the confirmed generation, from where it
+    /// is now back to where it was then.
+    fn rollback_changes(&self) -> Result<Vec<Change>> {
         let mut keys: Vec<PageKey> = self.prev.keys().copied().collect();
         keys.sort_unstable();
         let mut changes = Vec::with_capacity(keys.len());
@@ -1111,15 +1251,13 @@ impl PageStore {
                 new: self.prev[&key],
             });
         }
-        self.log_and_apply(Rec::Rollback { changes }).map(|_| true)
+        Ok(changes)
     }
 
     /// Folds the log into the index blocks and a new root now (a clean shutdown can call it so
     /// the next open replays nothing). Returns the bytes it wrote.
     pub fn checkpoint_now(&mut self) -> Result<u64> {
-        if self.poisoned {
-            return Err(PageError::Poisoned);
-        }
+        self.writable()?;
         self.poisoned = true;
         let (n, _) = self.checkpoint()?;
         self.poisoned = false;
@@ -1151,9 +1289,7 @@ impl PageStore {
         obs_seq: u64,
         pending: bool,
     ) -> Result<CommitStats> {
-        if self.poisoned {
-            return Err(PageError::Poisoned);
-        }
+        self.writable()?;
         let save_seq = self.last_seq + 1;
         let seg_seq = self.next_segment;
         let mut stats = CommitStats::default();
@@ -1821,8 +1957,11 @@ impl PageStore {
         };
         let len = bytes.len() as u64;
         if len < LOG_HEADER {
-            // A crash while the log was being created: it holds no record.
-            fs::remove_file(&path).map_err(io(&path))?;
+            // A crash while the log was being created: it holds no record. (A read-only open
+            // leaves it; a writer may be creating it now.)
+            if !self.read_only {
+                fs::remove_file(&path).map_err(io(&path))?;
+            }
             return Ok(());
         }
         let mut r = Reader::new(&bytes[..LOG_HEADER as usize]);
@@ -1893,7 +2032,7 @@ impl PageStore {
             self.apply(&rec);
             off += 8 + rlen;
         }
-        if torn {
+        if torn && !self.read_only {
             let f = OpenOptions::new()
                 .write(true)
                 .open(&path)
@@ -1939,6 +2078,19 @@ impl PageStore {
             }
         }
         Ok(())
+    }
+}
+
+/// Whether a read-only open's error may be a writer moving the store under it (a log folded, a
+/// segment compacted away, a record half written), so a fresh open from the root may succeed.
+fn moved_under_reader(e: &PageError) -> bool {
+    match e {
+        PageError::Io { source, .. } => matches!(
+            source.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::UnexpectedEof
+        ),
+        PageError::Crc { .. } | PageError::Format(_) => true,
+        _ => false,
     }
 }
 
@@ -2761,5 +2913,194 @@ mod tests {
             drop(s);
             fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    type Snapshot = (
+        std::time::SystemTime,
+        BTreeMap<String, (Vec<u8>, std::time::SystemTime)>,
+    );
+
+    /// Every name in a folder with its bytes and modification time, and the folder's own
+    /// modification time (it moves when an entry is created, renamed or removed).
+    fn snapshot(dir: &Path) -> Snapshot {
+        let mut files = BTreeMap::new();
+        for e in fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            let meta = e.metadata().unwrap();
+            files.insert(
+                e.file_name().to_string_lossy().into_owned(),
+                (fs::read(e.path()).unwrap(), meta.modified().unwrap()),
+            );
+        }
+        (fs::metadata(dir).unwrap().modified().unwrap(), files)
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for e in fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+    }
+
+    fn read_all(s: &PageStore) -> BTreeMap<PageKey, Vec<u8>> {
+        s.try_keys()
+            .unwrap()
+            .into_iter()
+            .map(|k| (k, s.get_shared(k).unwrap().unwrap()))
+            .collect()
+    }
+
+    /// The viewer's open (VIEWER.md §5.3): a store with several segments, a log holding a
+    /// confirmed and a pending save, a torn tail, `.tmp` files and an unnamed segment. Opening it
+    /// read only, reading every page, trying every write and viewing the confirmed generation
+    /// changes no byte, name or modification time, and reads what a writer's open (and its
+    /// rollback) reads on a copy.
+    #[test]
+    fn a_read_only_open_changes_nothing_on_disk() {
+        let dir = tmpdir("ro");
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        for round in 0..12u64 {
+            let mut b = SaveBatch::new();
+            for k in 0..40u64 {
+                if (k + round) % 3 == 0 {
+                    b.put(PageKey::new(1, k), &page(k * 100 + round, 300));
+                }
+            }
+            s.commit(b, round).unwrap();
+            if round == 5 {
+                s.checkpoint_now().unwrap();
+            }
+        }
+        let mut b = SaveBatch::new();
+        b.put(PageKey::new(1, 0), b"pending");
+        b.delete(PageKey::new(1, 3));
+        b.put(PageKey::new(2, 7), b"new");
+        s.commit_pending(b, 100).unwrap();
+        assert_ne!(s.confirmed(), s.current());
+        drop(s);
+        let log = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "rtl"))
+            .expect("a log after the checkpoint");
+        // A torn tail: a record header promising more bytes than follow.
+        let mut bytes = fs::read(&log).unwrap();
+        bytes.extend_from_slice(&200u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[7; 10]);
+        fs::write(&log, bytes).unwrap();
+        fs::write(dir.join("seg-00000000000000ff.rts.tmp"), b"half").unwrap();
+        fs::write(dir.join("manifest.rtm.tmp"), b"half").unwrap();
+        fs::write(dir.join("seg-00000000000000fe.rts"), b"unnamed").unwrap();
+        assert!(names(&dir).iter().filter(|n| n.ends_with(".rts")).count() > 3);
+
+        let before = snapshot(&dir);
+        let mut ro = PageStore::open_read_only(&dir).unwrap();
+        assert!(ro.is_read_only());
+        assert_eq!(ro.obs_seq(), 100);
+        let current = read_all(&ro);
+        assert_eq!(current[&PageKey::new(1, 0)], b"pending");
+        // Every write is refused with an error, and none panics.
+        let mut b = SaveBatch::new();
+        b.put(PageKey(9), b"x");
+        assert!(matches!(ro.commit(b, 200), Err(PageError::ReadOnly)));
+        let mut b = SaveBatch::new();
+        b.put(PageKey(9), b"x");
+        assert!(matches!(
+            ro.commit_pending(b, 200),
+            Err(PageError::ReadOnly)
+        ));
+        let seq = ro.save_seq();
+        assert!(matches!(ro.confirm(seq), Err(PageError::ReadOnly)));
+        assert!(matches!(
+            ro.confirm_through(u64::MAX),
+            Err(PageError::ReadOnly)
+        ));
+        assert!(matches!(ro.select_for_journal(0), Err(PageError::ReadOnly)));
+        assert!(matches!(
+            ro.select_for_journal(u64::MAX),
+            Err(PageError::ReadOnly)
+        ));
+        assert!(matches!(ro.rollback(), Err(PageError::ReadOnly)));
+        assert!(matches!(ro.checkpoint_now(), Err(PageError::ReadOnly)));
+        ro.set_durability(Durability::Fsync);
+        assert_eq!(read_all(&ro), current);
+        // The generation Engine::start's rollback keeps, in memory only.
+        assert!(ro.view_confirmed().unwrap());
+        assert!(!ro.view_confirmed().unwrap());
+        let confirmed = read_all(&ro);
+        assert_ne!(confirmed, current);
+        assert_eq!(ro.obs_seq(), 11);
+        drop(ro);
+        assert_eq!(snapshot(&dir), before);
+
+        // A writer's open reads the same pages, on a copy; its rollback the same confirmed ones.
+        let copy = tmpdir("ro-copy");
+        copy_dir(&dir, &copy);
+        let w = PageStore::open(&copy, Durability::NoSync).unwrap();
+        assert_eq!(read_all(&w), current);
+        drop(w);
+        let mut w = PageStore::open(&copy, Durability::NoSync).unwrap();
+        assert!(w.rollback().unwrap());
+        assert_eq!(read_all(&w), confirmed);
+        drop(w);
+        // The writer cleaned up what the read-only open left alone.
+        let left = names(&copy);
+        assert!(!left.iter().any(|n| n.ends_with(".tmp")));
+        assert!(!left.contains(&"seg-00000000000000fe.rts".to_string()));
+        fs::remove_dir_all(&copy).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_read_only_open_creates_nothing() {
+        let dir = tmpdir("ro-missing");
+        assert!(matches!(
+            PageStore::open_read_only(&dir),
+            Err(PageError::Io { .. })
+        ));
+        assert!(!dir.exists());
+        // An empty folder is an empty store, and stays empty.
+        fs::create_dir_all(&dir).unwrap();
+        let mut ro = PageStore::open_read_only(&dir).unwrap();
+        assert!(ro.is_empty());
+        assert!(matches!(ro.rollback(), Err(PageError::ReadOnly)));
+        drop(ro);
+        assert!(names(&dir).is_empty());
+        // A writable store refuses the in-memory view.
+        let mut w = PageStore::open(&dir, Durability::NoSync).unwrap();
+        assert!(w.view_confirmed().is_err());
+        drop(w);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A bad record with records after it fails every try, so the open reports the store busy
+    /// (or damaged) and leaves it as it was.
+    #[test]
+    fn a_read_only_open_of_a_bad_log_reports_busy() {
+        let dir = tmpdir("ro-busy");
+        let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+        for round in 0..3u64 {
+            let mut b = SaveBatch::new();
+            b.put(PageKey(round), b"x");
+            s.commit(b, round).unwrap();
+        }
+        drop(s);
+        let log = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "rtl"))
+            .unwrap();
+        let mut bytes = fs::read(&log).unwrap();
+        bytes[LOG_HEADER as usize + 9] ^= 0x01;
+        fs::write(&log, bytes).unwrap();
+        let before = snapshot(&dir);
+        assert!(matches!(
+            PageStore::open_read_only(&dir),
+            Err(PageError::Busy(_))
+        ));
+        assert_eq!(snapshot(&dir), before);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
