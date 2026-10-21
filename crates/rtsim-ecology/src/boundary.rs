@@ -27,12 +27,24 @@ pub const LAIR_FOUND: u16 = 0x0505;
 pub const HOARD_ROBBED: u16 = 0x0506;
 pub const DRAGON_UNTAGGED: u16 = 0x0507;
 pub const DRAGON_ATE: u16 = 0x0508;
+/// Oil chunks the plugin found (OILGATE.md §4.1, OG-2).
+pub const OIL_CHUNKS: u16 = 0x0509;
+/// An embodied dragon breathed fire (OILGATE.md §4.3, OG-4).
+pub const DRAGON_BREATHS: u16 = 0x050A;
+/// The oil gate's switches from the plugin's config (OILGATE.md §4.2, §4.8).
+pub const OIL_CONFIG: u16 = 0x050B;
 
 pub const DRAGON_MATERIALIZE: u16 = 0x8500;
 pub const DRAGON_STEER: u16 = 0x8501;
 pub const DRAGON_DEPART: u16 = 0x8502;
 pub const DRAGON_ADOPT: u16 = 0x8503;
 pub const DRAGON_DISCARD: u16 = 0x8504;
+/// Place a fire roost near an oil field with no lair in reach (OILGATE.md §4.4, OG-7).
+pub const PLACE_LAIR: u16 = 0x8505;
+/// Sample oil chunks around a point ahead of generation (OILGATE.md §4.1, OG-2).
+pub const OIL_SURVEY: u16 = 0x8506;
+// 0x8507 is reserved for the underground half (OILGATE.md §4.6, OG-9b): placing the deep layer's
+// sculk on an oil chunk's first load. Nothing sends it yet.
 
 pub type Uuid = (u64, u64);
 
@@ -47,6 +59,23 @@ pub const MAT_CLAMP_ABOVE_SURFACE: u32 = 1;
 pub const MAT_HAS_HOME: u32 = 2;
 pub const MAT_SLEEPING: u32 = 4;
 pub const MAT_HOSTILE: u32 = 8;
+/// The dragon carries an oil reserve (`Materialize::oil`): the plugin counts its breaths and
+/// cancels fire at zero (OILGATE.md §4.3, OG-4, OG-13). Without it the body breathes freely.
+pub const MAT_OIL: u32 = 16;
+
+/// OIL_CHUNKS sources.
+pub const OIL_SOURCE_DEEP_TIME: u32 = 1;
+pub const OIL_SOURCE_CDG: u32 = 2;
+pub const OIL_SOURCE_DEPOSIT: u32 = 3;
+/// An oil chunk whose amount never runs out (CDG's infinite deposits, a Deep Time trap's charge
+/// flagged so).
+pub const OIL_BOTTOMLESS: u32 = 1;
+/// OIL_CONFIG flags: field flights run (§4.2; off until §4.8 passes).
+pub const OIL_FIELD_FLIGHTS: u32 = 1;
+/// OIL_CONFIG flags: a field with no fire lair in reach gets one placed (§4.4, OG-7).
+pub const OIL_PLACE_LAIRS: u32 = 2;
+/// OIL_CHUNKS entries per record at most (the plugin batches so).
+pub const OIL_CHUNKS_MAX: usize = 1024;
 
 /// DRAGON_UNTAGGED flags.
 pub const UNTAGGED_TAMED: u32 = 1;
@@ -227,6 +256,39 @@ pub struct Ate {
     pub pos: (f64, f64, f64),
 }
 
+/// One oil chunk (OIL_CHUNKS): its chunk coordinates, the amount the source gives it (mB, CDG's
+/// `getBaseOilAmount` or a Deep Time trap's charge) and flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OilChunkRec {
+    pub cx: i32,
+    pub cz: i32,
+    pub amount: i32,
+    pub flags: u32,
+}
+
+/// Oil chunks the plugin found in one dimension. Idempotent: a chunk sent twice is one chunk.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OilChunks {
+    pub dimension: u32,
+    /// `OIL_SOURCE_*`.
+    pub source: u32,
+    pub chunks: Vec<OilChunkRec>,
+}
+
+/// Fire an embodied dragon breathed since its last report (`DragonFireEvent`s, summed).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Breaths {
+    pub agent: u64,
+    pub epoch: u32,
+    pub count: u32,
+}
+
+/// The oil gate's switches (`OIL_FIELD_FLIGHTS`, `OIL_PLACE_LAIRS`), sent at session start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OilConfig {
+    pub flags: u32,
+}
+
 /// An observation from the plugin.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Obs {
@@ -240,6 +302,9 @@ pub enum Obs {
     HoardRobbed(HoardRobbed),
     Untagged(Untagged),
     Ate(Ate),
+    OilChunks(OilChunks),
+    Breaths(Breaths),
+    OilConfig(OilConfig),
 }
 
 impl Obs {
@@ -255,6 +320,9 @@ impl Obs {
             Obs::HoardRobbed(_) => HOARD_ROBBED,
             Obs::Untagged(_) => DRAGON_UNTAGGED,
             Obs::Ate(_) => DRAGON_ATE,
+            Obs::OilChunks(_) => OIL_CHUNKS,
+            Obs::Breaths(_) => DRAGON_BREATHS,
+            Obs::OilConfig(_) => OIL_CONFIG,
         }
     }
 
@@ -285,6 +353,8 @@ pub struct Materialize {
     pub target: (f64, f64, f64),
     /// A player it attacks on sight (`MAT_HOSTILE`); zero for none.
     pub target_player: Uuid,
+    /// Its oil reserve, 0 to the capacity (`MAT_OIL`; 0 without the flag).
+    pub oil: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -324,6 +394,30 @@ pub struct Discard {
     pub reason: u32,
 }
 
+/// Place a lair structure near an oil field (`/place structure`'s code path, every biome allowed):
+/// on the first load of a free site within `radius` blocks of (x, z). At most one per field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaceLair {
+    /// The engine's field id, echoed in the LAIR_FOUND the placement makes (logs only).
+    pub field: u64,
+    pub dimension: u32,
+    pub species: Species,
+    pub kind: LairKind,
+    pub x: i32,
+    pub z: i32,
+    pub radius: u32,
+}
+
+/// Sample CDG's oil for the chunks within `radius` blocks of (x, z), generated or not, under the
+/// plugin's per-tick budget, and answer with OIL_CHUNKS (source 2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OilSurvey {
+    pub dimension: u32,
+    pub x: i32,
+    pub z: i32,
+    pub radius: u32,
+}
+
 /// A command to the plugin.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -332,6 +426,8 @@ pub enum Cmd {
     Depart(Depart),
     Adopt(Adopt),
     Discard(Discard),
+    PlaceLair(PlaceLair),
+    OilSurvey(OilSurvey),
 }
 
 impl Cmd {
@@ -342,6 +438,8 @@ impl Cmd {
             Cmd::Depart(_) => DRAGON_DEPART,
             Cmd::Adopt(_) => DRAGON_ADOPT,
             Cmd::Discard(_) => DRAGON_DISCARD,
+            Cmd::PlaceLair(_) => PLACE_LAIR,
+            Cmd::OilSurvey(_) => OIL_SURVEY,
         }
     }
 
@@ -351,7 +449,29 @@ impl Cmd {
             Cmd::Steer(s) => Some(s.agent),
             Cmd::Depart(d) => Some(d.agent),
             Cmd::Adopt(a) => Some(a.agent),
-            Cmd::Discard(_) => None,
+            Cmd::Discard(_) | Cmd::PlaceLair(_) | Cmd::OilSurvey(_) => None,
+        }
+    }
+
+    /// The record's size in bytes.
+    pub fn size(&self) -> usize {
+        match self {
+            Cmd::Materialize(_) => 136,
+            Cmd::Steer(_) | Cmd::Depart(_) => 56,
+            Cmd::Adopt(_) => 64,
+            Cmd::Discard(_) | Cmd::OilSurvey(_) => 32,
+            Cmd::PlaceLair(_) => 48,
+        }
+    }
+
+    /// Where the record holds a dimension id (the engine's frame, which the link maps to its
+    /// own dictionary id), and the frame.
+    pub fn dimension(&self) -> Option<(usize, u32)> {
+        match self {
+            Cmd::Materialize(m) => Some((32, m.dimension)),
+            Cmd::PlaceLair(p) => Some((24, p.dimension)),
+            Cmd::OilSurvey(s) => Some((16, s.dimension)),
+            _ => None,
         }
     }
 }
@@ -646,6 +766,25 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.pos(48, a.pos);
             w.finish(DRAGON_ATE, a.count, 72);
         }
+        Obs::OilChunks(o) => {
+            w.u32(24, o.dimension);
+            w.u32(28, o.source);
+            for (k, c) in o.chunks.iter().enumerate() {
+                w.i32(32 + 16 * k, c.cx);
+                w.i32(36 + 16 * k, c.cz);
+                w.i32(40 + 16 * k, c.amount);
+                w.u32(44 + 16 * k, c.flags);
+            }
+            w.finish(OIL_CHUNKS, o.chunks.len() as u32, 32 + 16 * o.chunks.len());
+        }
+        Obs::Breaths(b) => {
+            w.u64(24, b.agent);
+            w.u32(32, b.epoch);
+            w.finish(DRAGON_BREATHS, b.count, 40);
+        }
+        Obs::OilConfig(c) => {
+            w.finish(OIL_CONFIG, c.flags, 24);
+        }
     }
 }
 
@@ -772,6 +911,37 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             village: r.u64(40)?,
             pos: r.pos(48)?,
         }),
+        OIL_CHUNKS => {
+            let n = aux as usize;
+            if 32 + 16 * n > size {
+                return Err(CodecError::BadSize);
+            }
+            let mut chunks = Vec::with_capacity(n);
+            for k in 0..n {
+                chunks.push(OilChunkRec {
+                    cx: r.i32(32 + 16 * k)?,
+                    cz: r.i32(36 + 16 * k)?,
+                    amount: r.i32(40 + 16 * k)?,
+                    flags: r.u32(44 + 16 * k)?,
+                });
+            }
+            Obs::OilChunks(OilChunks {
+                dimension: r.u32(24)?,
+                source: r.u32(28)?,
+                chunks,
+            })
+        }
+        DRAGON_BREATHS => Obs::Breaths(Breaths {
+            agent: r.u64(24)?,
+            epoch: r.u32(32)?,
+            count: aux,
+        }),
+        OIL_CONFIG => {
+            if size < 24 {
+                return Err(CodecError::BadSize);
+            }
+            Obs::OilConfig(OilConfig { flags: aux })
+        }
         k => return Err(CodecError::Unknown(k)),
     };
     Ok((size, seq, time, o))
@@ -796,6 +966,7 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.f32(76, m.health);
             w.ipos(80, m.home);
             w.pos(96, m.target);
+            w.i32(92, m.oil);
             w.uuid(120, m.target_player);
             w.finish(DRAGON_MATERIALIZE, m.flags, 136);
         }
@@ -823,6 +994,22 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
         Cmd::Discard(d) => {
             w.uuid(16, d.entity);
             w.finish(DRAGON_DISCARD, d.reason, 32);
+        }
+        Cmd::PlaceLair(p) => {
+            w.u64(16, p.field);
+            w.u32(24, p.dimension);
+            w.u32(28, dict.structure_of(p.species, p.kind));
+            w.i32(32, p.x);
+            w.i32(36, p.z);
+            w.u32(40, p.radius);
+            w.finish(PLACE_LAIR, 0, 48);
+        }
+        Cmd::OilSurvey(o) => {
+            w.u32(16, o.dimension);
+            w.i32(20, o.x);
+            w.i32(24, o.z);
+            w.u32(28, o.radius);
+            w.finish(OIL_SURVEY, 0, 32);
         }
     }
 }
@@ -856,6 +1043,7 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             home: r.ipos(80)?,
             target: r.pos(96)?,
             target_player: r.uuid(120)?,
+            oil: r.i32(92)?,
         }),
         DRAGON_STEER => Cmd::Steer(Steer {
             agent: r.u64(16)?,
@@ -880,6 +1068,26 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
         DRAGON_DISCARD => Cmd::Discard(Discard {
             entity: r.uuid(16)?,
             reason: aux,
+        }),
+        PLACE_LAIR => {
+            let (species, kind) = dict
+                .lair_of(r.u32(28)?)
+                .ok_or(CodecError::BadValue("structure"))?;
+            Cmd::PlaceLair(PlaceLair {
+                field: r.u64(16)?,
+                dimension: r.u32(24)?,
+                species,
+                kind,
+                x: r.i32(32)?,
+                z: r.i32(36)?,
+                radius: r.u32(40)?,
+            })
+        }
+        OIL_SURVEY => Cmd::OilSurvey(OilSurvey {
+            dimension: r.u32(16)?,
+            x: r.i32(20)?,
+            z: r.i32(24)?,
+            radius: r.u32(28)?,
         }),
         k => return Err(CodecError::Unknown(k)),
     };
@@ -983,6 +1191,26 @@ mod tests {
                 village: 1 << 50 | 12,
                 pos: p,
             }),
+            Obs::OilChunks(OilChunks {
+                dimension: 1,
+                source: OIL_SOURCE_CDG,
+                chunks: (0..n)
+                    .map(|i| OilChunkRec {
+                        cx: i as i32 - 7,
+                        cz: -(i as i32),
+                        amount: 1_000 * i as i32 + 5,
+                        flags: i % 2,
+                    })
+                    .collect(),
+            }),
+            Obs::Breaths(Breaths {
+                agent: 9,
+                epoch: 2,
+                count: 17,
+            }),
+            Obs::OilConfig(OilConfig {
+                flags: OIL_FIELD_FLIGHTS | OIL_PLACE_LAIRS,
+            }),
         ]
     }
 
@@ -1003,6 +1231,7 @@ mod tests {
                 home: (5, 70, 9),
                 target: (300.0, 120.0, 0.0),
                 target_player: (11, 12),
+                oil: 63,
             }),
             Cmd::Steer(Steer {
                 agent: 9,
@@ -1027,6 +1256,21 @@ mod tests {
             Cmd::Discard(Discard {
                 entity: (8, 9),
                 reason: 1,
+            }),
+            Cmd::PlaceLair(PlaceLair {
+                field: 42,
+                dimension: 1,
+                species: Species::Fire,
+                kind: LairKind::Roost,
+                x: -900,
+                z: 4_000,
+                radius: 100,
+            }),
+            Cmd::OilSurvey(OilSurvey {
+                dimension: 1,
+                x: 12,
+                z: -34,
+                radius: 1_024,
             }),
         ]
     }
@@ -1053,8 +1297,10 @@ mod tests {
         assert_eq!(at, buf.len());
         let mut buf = Vec::new();
         for (i, c) in all_cmds().iter().enumerate() {
+            let before = buf.len();
             encode_cmd(i as u64 + 1, c, &dict, &mut buf);
             assert_eq!(buf.len() % 8, 0);
+            assert_eq!(buf.len() - before, c.size(), "{c:?}");
         }
         let mut at = 0;
         for (i, c) in all_cmds().iter().enumerate() {
@@ -1086,6 +1332,17 @@ mod tests {
         fn hoard_records_of_any_length_round_trip(n in 0u32..200) {
             let dict = SpeciesDict::default();
             let o = all_obs(n).remove(7);
+            let mut buf = Vec::new();
+            encode_obs(1, 2, &o, &dict, &mut buf);
+            prop_assert!(buf.len() <= 65_528);
+            let (_, _, _, back) = decode_obs(&buf, &dict).unwrap();
+            prop_assert_eq!(back, o);
+        }
+
+        #[test]
+        fn oil_chunk_records_of_any_length_round_trip(n in 0u32..=OIL_CHUNKS_MAX as u32) {
+            let dict = SpeciesDict::default();
+            let o = all_obs(n).remove(10);
             let mut buf = Vec::new();
             encode_obs(1, 2, &o, &dict, &mut buf);
             prop_assert!(buf.len() <= 65_528);

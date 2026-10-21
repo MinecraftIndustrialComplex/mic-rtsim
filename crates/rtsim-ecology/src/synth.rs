@@ -669,7 +669,9 @@ impl FakeIaf {
                         entity: a.entity,
                     }),
                 ),
-                Cmd::Discard(_) => {}
+                // The oil gate's asks go to the world (a structure placed, chunks sampled): the
+                // synthetic plugin has neither, and its scenarios hand over oil directly.
+                Cmd::Discard(_) | Cmd::PlaceLair(_) | Cmd::OilSurvey(_) => {}
             }
         }
     }

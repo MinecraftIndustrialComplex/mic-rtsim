@@ -21,6 +21,7 @@ use rtsim_space::topology::Topologies;
 use rtsim_travel::legs::{Path, Stamp};
 use serde::Serialize;
 
+use crate::oil::OilTunables;
 use crate::prey::Item;
 use crate::species::{Gender, Species, SpeciesData, Stage};
 use crate::tunables::DragonTunables;
@@ -180,6 +181,14 @@ pub enum Target {
         x: i32,
         z: i32,
     },
+    /// A district it holds a grudge against (OILGATE.md §4.5, OG-8): industry near an oil field
+    /// it drinks at. Raided through the industry threat interface, as a home's districts are.
+    District {
+        district: u64,
+        frame: u16,
+        x: i32,
+        z: i32,
+    },
 }
 
 /// Why a dragon is flying.
@@ -190,6 +199,14 @@ pub enum Purpose {
     /// Moving to a roost: a young dragon leaving its parents, a respawned one arriving, or a
     /// starved one migrating (all claim it on arrival).
     Claim(LairId),
+    /// To an oil field to drink (OILGATE.md §4.3, OG-5): `field` is the field's id when the
+    /// flight began, (x, z) the oil chunk's centre it lands on.
+    Refuel {
+        field: u32,
+        frame: u16,
+        x: i32,
+        z: i32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -271,7 +288,20 @@ pub struct Dragon {
     pub carried: BTreeMap<Item, i64>,
     /// Where it last was when it stopped flying (a captured position).
     pub rest: Option<(Pos, i32)>,
+    /// Its oil reserve at `oil_at` (OILGATE.md §4.3, OG-4): it falls one point every
+    /// `oil.tick_rate` ticks and one per breath. Only species with `uses_oil` read it.
+    pub oil: i32,
+    pub oil_at: Tick,
+    /// A field flight's dragon (OILGATE.md §4.2): the field it was drawn for. It leaves the sim
+    /// after it drinks unless it carries something.
+    pub visitor: Option<u32>,
+    /// Districts it sensed lately and the day it did (OG-8: one report per district per day),
+    /// newest last, at most [`SENSED_KEPT`].
+    pub sensed: Vec<(u64, u32)>,
 }
+
+/// Districts a dragon remembers sensing (for the once-a-day rule).
+pub const SENSED_KEPT: usize = 8;
 
 impl Dragon {
     pub fn temperament(&self) -> Temperament {
@@ -335,6 +365,47 @@ impl Dragon {
     pub fn set_health(&mut self, h: f32, at: Tick) {
         self.health = h.max(0.0);
         self.health_at = at;
+    }
+
+    /// Its oil reserve at `at`: one point lost every `tick_rate` ticks since the anchor.
+    pub fn oil_level(&self, tun: &OilTunables, at: Tick) -> i32 {
+        let lost = at.since(self.oil_at) / tun.tick_rate.max(1);
+        (i64::from(self.oil) - lost.min(i64::MAX as u64) as i64).max(0) as i32
+    }
+
+    /// When the reserve falls to `level` (now if it already has).
+    pub fn oil_low_at(&self, tun: &OilTunables, level: i32, now: Tick) -> Tick {
+        if self.oil <= level {
+            return now.max(self.oil_at);
+        }
+        let t = self.oil_at + (self.oil - level) as u64 * tun.tick_rate.max(1);
+        t.max(now)
+    }
+
+    /// Sets the reserve at `at`, within 0 and the capacity.
+    pub fn set_oil(&mut self, tun: &OilTunables, v: i32, at: Tick) {
+        self.oil = v.clamp(0, tun.capacity);
+        self.oil_at = at;
+    }
+
+    /// Burns up to `n` points; returns the points burnt.
+    pub fn burn_oil(&mut self, tun: &OilTunables, n: i32, at: Tick) -> i32 {
+        let have = self.oil_level(tun, at);
+        let b = n.clamp(0, have);
+        if b > 0 {
+            self.set_oil(tun, have - b, at);
+        }
+        b
+    }
+
+    /// Adds up to `n` points, capped at the capacity; returns the points added.
+    pub fn refill_oil(&mut self, tun: &OilTunables, n: i32, at: Tick) -> i32 {
+        let have = self.oil_level(tun, at);
+        let add = n.clamp(0, tun.capacity - have);
+        if add > 0 {
+            self.set_oil(tun, have + add, at);
+        }
+        add
     }
 
     pub fn is_embodied(&self) -> bool {
@@ -405,6 +476,10 @@ mod tests {
             last_grudge: None,
             carried: BTreeMap::new(),
             rest: None,
+            oil: 100,
+            oil_at: Tick(0),
+            visitor: None,
+            sensed: Vec::new(),
         }
     }
 
@@ -420,6 +495,22 @@ mod tests {
         d.eat(&tun, 50, Tick(60_000));
         assert_eq!(d.fullness_at(&tun, Tick(60_000)), 100);
         assert_eq!(d.fullness_at(&tun, Tick(10_000_000)), 0);
+    }
+
+    #[test]
+    fn oil_is_closed_form() {
+        let tun = OilTunables::default();
+        let mut d = dragon();
+        assert_eq!(d.oil_level(&tun, Tick(2_999)), 100);
+        assert_eq!(d.oil_level(&tun, Tick(3_000)), 99);
+        assert_eq!(d.oil_low_at(&tun, 40, Tick(0)), Tick(180_000));
+        assert_eq!(d.burn_oil(&tun, 5, Tick(3_000)), 5);
+        assert_eq!(d.oil_level(&tun, Tick(3_000)), 94);
+        assert_eq!(d.burn_oil(&tun, 500, Tick(3_000)), 94);
+        assert_eq!(d.oil_level(&tun, Tick(3_000)), 0);
+        assert_eq!(d.refill_oil(&tun, 30, Tick(9_000)), 30);
+        assert_eq!(d.refill_oil(&tun, 500, Tick(9_000)), 70);
+        assert_eq!(d.oil_level(&tun, Tick(9_000)), 100);
     }
 
     #[test]
