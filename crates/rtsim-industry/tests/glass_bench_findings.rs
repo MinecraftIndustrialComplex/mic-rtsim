@@ -358,14 +358,12 @@ fn an_import_restarts_a_dry_glass_replay() {
 
 /// Two independent switched loops (sharing only a source that never runs dry) are each strictly
 /// periodic, so G-B8/G-B9 promise closed-form cycles whose cost does not grow with elapsed time.
-/// Found: the cycle search looks for a period of the whole district's state, which two loops of
-/// unequal periods never repeat (here 3,200 and 6,400 ticks by rates; feab04d ran them at
-/// about 3,157 and 6,359), so the district passes `breakpointsPerEventMax` (64) breakpoints and
-/// falls back as oscillating. Loops of equal period find their cycle. On 20b740a a loop's
-/// period also depends on its press's cycle (the latency hold), so even equal rates in other
-/// batches (a press of 1 per 10 ticks beside one of 2 per 20) fall back the same way.
+/// Found on the bench: the cycle search looked for a period of the whole district's state, which
+/// two loops of unequal periods never repeat (here 3,200 and 6,400 ticks by rates), so the
+/// district passed `breakpointsPerEventMax` (64) breakpoints and fell back as oscillating. Fixed
+/// by parts (choice G2-22): each loop is its own process with its own cycle, the source a hub
+/// both draw on.
 #[test]
-#[ignore = "engine finding (G2 bench): two switched loops of unequal periods fall back as oscillating"]
 fn two_switched_loops_of_unequal_periods_stay_on_the_glass_box() {
     let mut l = Line::default();
     let brass = l.store(BIG, &[(BRASS, 1_000_000_000)]);
@@ -381,12 +379,51 @@ fn two_switched_loops_of_unequal_periods_stay_on_the_glass_box() {
     let r = e.glass.report(D).expect("a glass report");
     assert_eq!(r.replay.oscillations, 0, "fell back as oscillating");
     assert_eq!(r.replay.model, replay_model::GLASS);
+    // A cycle per loop: the cost does not grow with the 30 days (about 450 breakpoints if not).
+    assert!(
+        r.replay.breakpoints < 64,
+        "{} breakpoints",
+        r.replay.breakpoints
+    );
     // Each consumer burns 1 per 20 ticks all the way.
     let coal = e.sim_stock(D).unwrap_or_default().get(COAL);
     let want = 2 * (30 * TICKS_PER_DAY as i64) / 20;
     assert!(
         (coal - want).abs() <= want / 100,
         "coal {coal}, want {want}"
+    );
+}
+
+/// Parts sharing a source that runs dry (choice G2-22): each loop's cycle stops safely on the
+/// shared pool (its steepest drain is its envelope there), the source never goes below 0, and
+/// every unit made came out of it.
+#[test]
+fn two_loops_drain_a_shared_source_dry_without_overdrawing_it() {
+    let mut l = Line::default();
+    let brass = l.store(BIG, &[(BRASS, 20_000)]);
+    l.switched_loop(brass, (1, 10), (1, 20), (100, 20), 80);
+    l.switched_loop(brass, (1, 10), (1, 20), (180, 20), 50);
+    let total = 20_000 + 80 + 50;
+    let mut e = replaying(&l);
+    for day in 1..=15 {
+        e.advance_to(Tick(UNLOAD + day * TICKS_PER_DAY));
+        let st = e.sim_stock(D).unwrap_or_default();
+        assert!(st.get(BRASS) >= 0, "day {day}: brass {}", st.get(BRASS));
+        let sum = st.get(BRASS) + st.get(SHEET) + st.get(COAL);
+        assert!(sum <= total, "day {day}: {sum} units out of {total}");
+    }
+    let r = e.glass.report(D).expect("a glass report");
+    assert_eq!(r.replay.oscillations, 0, "fell back as oscillating");
+    assert_eq!(r.replay.model, replay_model::GLASS);
+    let st = e.sim_stock(D).unwrap_or_default();
+    // A part stops on the hub when the parts together cannot run a tick: at most a unit each
+    // stays behind (at or below the control). The rest is the last units in the machines.
+    assert!(st.get(BRASS) <= 2, "brass {}", st.get(BRASS));
+    assert!(st.get(COAL) >= total - 8, "coal {}", st.get(COAL));
+    assert!(
+        r.replay.breakpoints < 64,
+        "{} breakpoints",
+        r.replay.breakpoints
     );
 }
 
