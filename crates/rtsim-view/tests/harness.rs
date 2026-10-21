@@ -840,7 +840,7 @@ fn the_live_timeline_and_map_run_past_the_save() {
         );
     }
     let h = live.histogram(&all_time(Some(frame.clone()), 50));
-    let total: u64 = h.series.values().flatten().map(|n| *n as u64).sum();
+    let total: u64 = h.series.values().flatten().sum();
     let saved: u64 = save
         .histogram(&EventQuery {
             to: w.time.tick + 1,
@@ -849,7 +849,7 @@ fn the_live_timeline_and_map_run_past_the_save() {
         .series
         .values()
         .flatten()
-        .map(|n| *n as u64)
+        .copied()
         .sum();
     assert_eq!(total, saved + past.len() as u64, "{h:?}");
     // The stream sends each pending event once.
