@@ -47,6 +47,11 @@ fn a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one() {
     println!("the page: {seen:?}");
 
     assert_lockstep(&a, &b, &a_dir, &b_dir);
+    assert!(
+        a.tap.get("units").copied().unwrap_or(0) > 0,
+        "the leased run encoded units: {:?}",
+        a.tap
+    );
     assert_budget(&a.tap);
     let g = |r: &Run, k: &str| r.tap.get(k).copied().unwrap_or(0);
     // The leased run's tap worked: a lease, cycles, commits; the unleased one's never encoded.
@@ -112,6 +117,11 @@ fn the_server_threads_hand_over_keeps_its_timing_class() {
     print_served("unleased at a server's pace", &b);
     println!("the page: {seen:?}");
 
+    assert!(
+        a.tap.get("units").copied().unwrap_or(0) > 0,
+        "the leased run encoded units: {:?}",
+        a.tap
+    );
     assert_budget(&a.tap);
     assert!(seen.failures.is_empty(), "{:#?}", seen.failures);
     let g = |r: &Served, k: &str| r.tap.get(k).copied().unwrap_or(0);
