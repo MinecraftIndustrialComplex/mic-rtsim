@@ -37,8 +37,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::{self, Decode, Encode, Reader, Writer};
-use rtsim_kernel::rows::{PagedArena, PagedRows, cell_key};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::rows::{PagedArena, PagedRows, cell_key};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
 use rtsim_space::topology::{CONE_CLEARANCE, Iso, STOP_MARGIN, SharedTopologies, Topology};
@@ -336,7 +336,9 @@ impl Decode for RegionHerds {
         for k in 0..n {
             let d = r.var_u64()?;
             if k > 0 && d == 0 {
-                return Err(codec::CodecError::Invalid("region herds out of order".into()));
+                return Err(codec::CodecError::Invalid(
+                    "region herds out of order".into(),
+                ));
             }
             last += d;
             out.push(
