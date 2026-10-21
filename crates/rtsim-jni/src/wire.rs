@@ -635,6 +635,8 @@ pub mod cmd {
         pub const HOUSE: usize = 72;
         pub const SIZE: usize = 80;
         pub const FLAG_AT_HOUSE: u32 = 1;
+        /// At the village's meeting point (a work's body: SINK.md's golems).
+        pub const FLAG_AT_VILLAGE: u32 = 2;
     }
 }
 

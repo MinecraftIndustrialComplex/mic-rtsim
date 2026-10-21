@@ -35,6 +35,7 @@ pub mod ribbits;
 pub mod synth;
 pub mod topology;
 pub mod world;
+pub mod works;
 
 pub use caravans::{Attack, CaravanOutcome};
 pub use config::WorldConfig;
