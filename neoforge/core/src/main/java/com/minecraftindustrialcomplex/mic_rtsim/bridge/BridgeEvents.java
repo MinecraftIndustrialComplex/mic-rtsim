@@ -179,7 +179,7 @@ public final class BridgeEvents {
         net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> s.boundary().worldSaveDurable(Math.min(through, file.writtenThrough())));
     }
 
-    /** A chunk's last write is on its way: the journal's barrier stops waiting for its unload (JB1). */
+    /** A chunk's last write is on its way: the journal's barrier stops waiting for its unload (JB5). */
     private static void onChunkUnload(net.neoforged.neoforge.event.level.ChunkEvent.Unload event) {
         if (event.getLevel().isClientSide() || !(event.getChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk))
             return;

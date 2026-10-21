@@ -528,8 +528,11 @@ public final class ReconcileAheadGameTests {
 
     /**
      * Exactly once across a crash after the journal's file is written and before the chunk's is (I8;
-     * docs/choices-repair.md R21, "For Ben" 1 before it). Two reconciles into a chest in a far chunk, each
-     * followed by a world save and a look at the files right after the journal's write:
+     * docs/choices-repair.md R21, "For Ben" 1 before it; docs/choices-journal-barrier.md). Two reconciles into a
+     * chest in a far chunk, each followed by a world save and a look at the files right after the journal's
+     * write. A write the barrier held (JB1: its chunk not on disk in time) leaves the file as it was, so the
+     * world saves again and the files are looked at again until the journal's file holds the reconcile; I8 is
+     * checked on that file, whatever the IO latency, and no write may have gone ahead of its chunk (late):
      * <ol>
      *   <li>held and applied at the chunk's load (+7 gold, epoch 1), the world saved: the chunk on disk already
      *       holds epoch 1;</li>
