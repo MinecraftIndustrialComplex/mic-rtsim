@@ -356,7 +356,7 @@ fn an_import_restarts_a_dry_glass_replay() {
 /// Two independent switched loops (sharing only a source that never runs dry) are each strictly
 /// periodic, so G-B8/G-B9 promise closed-form cycles whose cost does not grow with elapsed time.
 /// Found: the cycle search looks for a period of the whole district's state, which two loops of
-/// unequal periods never repeat (here 3,200 and 6,400 ticks by rates; the replay runs them at
+/// unequal periods never repeat (here 3,200 and 6,400 ticks by rates; feab04d ran them at
 /// about 3,157 and 6,359), so the district passes `breakpointsPerEventMax` (64) breakpoints and
 /// falls back as oscillating. Loops of equal period find their cycle. On 20b740a a loop's
 /// period also depends on its press's cycle (the latency hold), so even equal rates in other
