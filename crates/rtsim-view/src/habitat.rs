@@ -4,6 +4,7 @@
 //! `habitat-<frame slug>`; tiles are cached in memory only, so nothing reaches the world folder.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 use mic_viewer::api::{PyramidDesc, TileLayerDesc};
 use mic_viewer::tiles::{Rendered, TILE, TileError, TileSource};
@@ -24,11 +25,18 @@ pub struct HabitatTiles {
     layers: BTreeMap<String, u16>,
     /// Sampled regions per frame.
     regions: BTreeMap<u16, BTreeSet<(i32, i32)>>,
+    /// The view's one worker: a tile renders while it holds this (VWD-15).
+    worker: Arc<Mutex<()>>,
 }
 
 impl HabitatTiles {
     /// `slugs`: frame to the slug its layer is named by.
-    pub fn new(world: WorldHandle, slugs: &BTreeMap<u16, String>) -> HabitatTiles {
+    /// `worker`: the lock every expensive answer holds, so the view does one thing at a time.
+    pub fn new(
+        world: WorldHandle,
+        slugs: &BTreeMap<u16, String>,
+        worker: Arc<Mutex<()>>,
+    ) -> HabitatTiles {
         let mut regions: BTreeMap<u16, BTreeSet<(i32, i32)>> = BTreeMap::new();
         if let Some(s) = world.read().sampled_ref() {
             for (k, _) in s.regions() {
@@ -43,7 +51,13 @@ impl HabitatTiles {
             world,
             layers,
             regions,
+            worker,
         }
+    }
+
+    /// The base map layer names.
+    pub fn layer_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.layers.keys().map(String::as_str)
     }
 
     /// The frames that have cells.
@@ -132,6 +146,7 @@ impl TileSource for HabitatTiles {
         if !x0.is_finite() || !z0.is_finite() || !self.touches(frame, x0, z0, size) {
             return Ok(Rendered::Empty);
         }
+        let _one = self.worker.lock().unwrap_or_else(|e| e.into_inner());
         let guard = self.world.read();
         let Some(world) = guard.sampled_ref() else {
             return Ok(Rendered::Empty);

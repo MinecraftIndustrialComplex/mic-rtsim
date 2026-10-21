@@ -391,7 +391,15 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn game(&self, t: Tick) -> i64 {
+    pub fn new(saved: &Saved) -> Ctx<'_> {
+        let wnow = saved
+            .phase1
+            .as_ref()
+            .map_or_else(|| Tick(saved.now().max(0) as u64), |p| p.world.now());
+        Ctx { saved, wnow }
+    }
+
+    pub fn game(&self, t: Tick) -> i64 {
         self.saved.game(t)
     }
 }
@@ -441,11 +449,7 @@ impl Drawn {
 
 /// Runs every builder over the save. A layer whose builder panics draws nothing at all.
 pub fn build(saved: &Saved, specs: &[Spec]) -> Drawn {
-    let wnow = saved
-        .phase1
-        .as_ref()
-        .map_or_else(|| Tick(saved.now().max(0) as u64), |p| p.world.now());
-    let cx = Ctx { saved, wnow };
+    let cx = Ctx::new(saved);
     let mut drawn = Drawn::default();
     for s in specs {
         let id = s.desc.id.clone();

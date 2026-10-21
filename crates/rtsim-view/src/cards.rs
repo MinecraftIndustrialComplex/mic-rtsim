@@ -9,7 +9,6 @@ use mic_viewer::api::{Card, Field, Section, TICKS_PER_DAY};
 use rtsim_ecology::dragon::{LairKind, Purpose, State, Target};
 use rtsim_ecology::herds::HerdId;
 use rtsim_ecology::species::SpeciesData;
-use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::Handle;
 use rtsim_settle::{Culture, NodeKind};
 use rtsim_ships::engine::{Role, Status as ShipStatus};
