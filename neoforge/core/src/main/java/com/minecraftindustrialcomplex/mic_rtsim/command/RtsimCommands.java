@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.mojang.brigadier.CommandDispatcher;
@@ -55,10 +56,22 @@ public final class RtsimCommands {
                         + ", removed by others " + s.removedByOther() + ", stale copies discarded " + s.staleDiscarded(),
                 "puppet pass: " + s.passNanos() / 1000 + " us last tick; dropped latest-wins records " + b.droppedRecords(),
                 "modules: " + Integer.toBinaryString(RtsimConfig.effectiveMask()),
-                "phase 1: " + s.phase1.describe(),
+                "phase 1: " + s.phase1.describe() + enginePhase1(s),
                 com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatSampler.INSTANCE.summary());
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
         return 1;
+    }
+
+    /**
+     * What the native engine's phase 1 world holds, beside what Java counts: after a sim reset the two
+     * village counts say whether the engine was told again (runbook 8.6 of docs/deploy-rehearsal-live.md).
+     */
+    private static String enginePhase1(RtsimSession s) {
+        if (!(s.engine() instanceof NativeEngine n))
+            return "";
+        long[] p = n.phase1Stats();
+        return "; in the engine: villages " + p[NativeEngine.P1_VILLAGES] + ", inputs " + p[NativeEngine.P1_INPUTS]
+                + ", world tick " + p[NativeEngine.P1_WORLD_TICK];
     }
 
     private static int stubCaravan(CommandContext<CommandSourceStack> ctx) {
