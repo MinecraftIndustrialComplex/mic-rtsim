@@ -786,7 +786,9 @@ impl Engine {
             // decides, or a crash before the first save would derive them again under another (W20).
             let mut batch = SaveBatch::new();
             let pages = link.pages();
-            for k in industry::deletions(&store, &pages) {
+            let stale = industry::deletions(&store, &pages)
+                .map_err(|e| format!("cannot read the industry pages' index: {e}"))?;
+            for k in stale {
                 batch.delete(k);
             }
             for (k, b) in &pages {
@@ -1529,7 +1531,7 @@ impl Engine {
         batch.put(KEY_WORLD, &world);
         // The paged modules' and phase 1's deletions read only their tables' index blocks.
         let deletions = (|| -> Result<Vec<PageKey>, rtsim_kernel::page::PageError> {
-            let mut out = industry::deletions(store, &whole);
+            let mut out = industry::deletions(store, &whole)?;
             for (table, l) in &live {
                 out.extend(l.deletions(store, *table)?);
             }
