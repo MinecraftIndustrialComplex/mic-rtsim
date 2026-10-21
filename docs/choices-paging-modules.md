@@ -443,14 +443,14 @@ each). Two reasons, both in the model, not the pages:
    (`Market::next_breakpoint` returns `quantum.at(..)`), so many markets wake in the same tick,
    and no save can come between them.
 
-The `markets-paged` sweep declares this honestly (resident slope 1.2, "not bounded yet"; the
-quick run after the reboot measured 1.107 from 256 to 4,096 markets: every row, plus the pages'
-own overhead). What it needs, in order: market wakes staggered by page within a quantum, as the herds' decisions are
-(PM6; a behaviour change, so Ben's call); then the other three quarters of a village's heap,
-which stay resident today: news rings (2.3 KB a village), pipelines (2.8 KB, the flow graph,
-resident by SCALE.md §8), the world wheel (2.3 KB) and knowledge holders (superlinear in the
-conflict world, 38.5 MiB of 104.5 at 2,048 nodes). Knowledge holders (planned table 0x5011) are
-the next module to page.
+The `markets-paged` sweep declares this honestly (resident slope 1.2, "not bounded yet"; the quick
+run after the reboot measured 1.107 from 256 to 4,096 markets: every row, plus the pages' own
+overhead). What it needs, in order: market wakes staggered by page within a quantum, as the herds'
+decisions are (PM6; a behaviour change, so Ben's call); then the other three quarters of a
+village's heap, which stay resident today: news rings (2.3 KB a village), pipelines (2.8 KB, the
+flow graph, resident by SCALE.md §8), the world wheel (2.3 KB) and knowledge holders (superlinear
+in the conflict world, 38.5 MiB of 104.5 at 2,048 nodes). Knowledge holders (planned table 0x5011)
+are the next module to page.
 
 ## Industry: not moved (the glass box has not merged)
 
