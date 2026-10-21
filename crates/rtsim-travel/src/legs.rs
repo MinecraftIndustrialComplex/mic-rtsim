@@ -12,6 +12,13 @@
 //! wheel cancels). A [`Meeting`] carries both legs' generations, so it cancels in cascade when
 //! either leg changes: first the leg's own bookings, then every meeting that depended on them.
 //!
+//! **Purges** (docs/choices-leg-purge.md LP1 to LP4): a replan leaves its old bookings behind, and
+//! nothing reads a window again once it is past, so stale bookings in past windows would stay
+//! forever. [`LegIndex::purge_due`], called by the index's owner as its clock moves (rtsim-world's
+//! `World::run_until`), drops them once a game day ([`PURGE_EVERY`]). It drops only stale bookings:
+//! every read keeps only live ones, so a purged index answers every read exactly as an unpurged
+//! one, whenever the purge runs, and strides of any length still agree.
+//!
 //! **Seams** (docs/choices-topology.md TP7 to TP9): on a wrapped or glued frame a leg starts at a
 //! canonical position and its end may lie past an edge (the image of its destination nearest the
 //! start); its position is the straight line's point folded ([`LegIndex::position`]). A booking
@@ -27,6 +34,10 @@ use rtsim_space::topology::{Move, Rect, SharedTopologies, Topology};
 
 /// Region edge in blocks, as Minecraft's region files (PLAN.md §5.2).
 pub const REGION_BLOCKS: i64 = 512;
+
+/// Game ticks between purges of the past windows' stale bookings ([`LegIndex::purge_due`]).
+/// PLACEHOLDER (choice LP2): one game day.
+pub const PURGE_EVERY: u64 = 24_000;
 
 /// A straight walk from `(x0, z0)` at `t0` to `(x1, z1)` at `t1` in one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -100,11 +111,17 @@ pub struct LegIndex {
     pub(crate) stats: LegStats,
     /// Every frame's topology (TP6): session state, set by the engine host; not saved.
     pub(crate) topo: SharedTopologies,
+    /// Ticks between purges, 0 for none ([`LegIndex::set_purge_every`]): session state, not saved.
+    pub(crate) purge_every: u64,
+    /// The last purge boundary passed ([`LegIndex::purge_due`]): session state, not saved, so the
+    /// first purge after a load runs at the first boundary the owner's clock passes.
+    pub(crate) purged_through: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LegStats {
     pub booked_cells: u64,
+    /// Stale bookings dropped, by the reads that met them and by the purges.
     pub stale_dropped: u64,
 }
 
@@ -116,6 +133,8 @@ impl LegIndex {
             window: window_ticks.max(1),
             stats: LegStats::default(),
             topo: rtsim_space::topology::all_flat(),
+            purge_every: PURGE_EVERY,
+            purged_through: 0,
         }
     }
 
@@ -420,10 +439,83 @@ impl LegIndex {
         })
     }
 
-    /// Drops every window that ended before `before`.
-    pub fn purge(&mut self, before: Tick) {
-        let w = before.0 / self.window;
-        self.cells = self.cells.split_off(&(w, 0, i64::MIN, i64::MIN));
+    /// Drops the stale bookings (of legs replanned or removed since) in every window that ended at
+    /// or before `before`, and the cells they leave empty; returns how many it dropped.
+    ///
+    /// Exact (choice LP1): every read keeps only live bookings ([`LegIndex::sharing`],
+    /// [`LegIndex::in_region`]), so no read can tell a purged index from an unpurged one, and a
+    /// purge may run at any time. Live bookings stay, however old: a leg booked with a start in
+    /// the past (a caravan or a herd booked when a player comes near, a module catching up after
+    /// a switch-off) still finds every live leg it crosses there. So the past windows hold at most
+    /// the live legs' own bookings. Only [`LegStats::stale_dropped`] and the save's size show it.
+    ///
+    /// Cost: the cells of the windows purged, live bookings kept from earlier purges included.
+    pub fn purge_stale(&mut self, before: Tick) -> u64 {
+        let end = (before.0 / self.window, 0, i64::MIN, i64::MIN);
+        let legs = &self.legs;
+        let mut dropped = 0u64;
+        let mut empty = Vec::new();
+        for (cell, v) in self.cells.range_mut(..end) {
+            let n = v.len();
+            v.retain(|s| {
+                legs.get(s.leg)
+                    .is_some_and(|r| r.generation == s.generation)
+            });
+            if v.len() == n {
+                continue;
+            }
+            dropped += (n - v.len()) as u64;
+            if v.is_empty() {
+                empty.push(*cell);
+            } else {
+                v.shrink_to_fit();
+            }
+        }
+        for cell in &empty {
+            self.cells.remove(cell);
+        }
+        self.stats.stale_dropped += dropped;
+        dropped
+    }
+
+    /// The owner's clock reached `now`: purges the past windows ([`LegIndex::purge_stale`]) when
+    /// `now` passed a purge boundary (a multiple of [`PURGE_EVERY`] game ticks) since the last
+    /// one. Boundaries of game time, not of the caller's steps, so the cost is the same at any
+    /// stride (choice LP2). Cheap when no boundary passed: one division.
+    pub fn purge_due(&mut self, now: Tick) {
+        if self.purge_every == 0 {
+            return;
+        }
+        let b = now.0 / self.purge_every * self.purge_every;
+        if b > self.purged_through {
+            self.purged_through = b;
+            self.purge_stale(Tick(b));
+        }
+    }
+
+    /// Ticks between the purges [`LegIndex::purge_due`] runs, 0 for none (tests compare a purged
+    /// index with an unpurged one). Session state, not saved.
+    pub fn set_purge_every(&mut self, ticks: u64) {
+        self.purge_every = ticks;
+    }
+
+    /// Bookings in the index, live or stale, and how many cells hold them (tests and
+    /// diagnostics: a pass over the whole index).
+    pub fn booking_counts(&self) -> (usize, usize) {
+        (self.cells.values().map(Vec::len).sum(), self.cells.len())
+    }
+
+    /// Every live booking, in cell order and then stamp order, as (window, frame, region x,
+    /// region z, stamp): what any read can see (tests: a purged index against an unpurged one).
+    pub fn live_bookings(&self) -> Vec<(u64, u16, i64, i64, Stamp)> {
+        let mut out = Vec::new();
+        for (&(w, f, x, z), v) in &self.cells {
+            let mut live: Vec<Stamp> = v.iter().copied().filter(|s| self.is_live(*s)).collect();
+            live.sort();
+            live.dedup();
+            out.extend(live.into_iter().map(|s| (w, f, x, z, s)));
+        }
+        out
     }
 
     pub fn heap_bytes(&self) -> usize {
@@ -480,8 +572,61 @@ mod tests {
         // The old path's booking for region 3 in the second window is found stale and dropped.
         assert!(ix.in_region(0, 3, 0, Tick(1500)).is_empty());
         assert!(ix.stats().stale_dropped >= 1);
-        ix.purge(Tick(10_000));
-        assert!(ix.in_region(0, 0, 0, Tick(500)).is_empty());
+    }
+
+    #[test]
+    fn a_purge_drops_only_the_past_windows_stale_bookings() {
+        let mut ix = LegIndex::new(1000);
+        let a = ix.book(path(0, 2000, 0, 2000), Owner(1));
+        let b = ix.book(path(2000, 0, 0, 2000), Owner(2));
+        let in_window = |ix: &LegIndex, s: Stamp, w: u64| {
+            ix.cells
+                .iter()
+                .filter(|(c, v)| c.0 == w && v.contains(&s))
+                .count()
+        };
+        let a_w0 = in_window(&ix, a, 0);
+        assert!(a_w0 > 0);
+        // a turns back at 1,000: every booking of its first path goes stale.
+        let a2 = ix.replan(a.leg, path(1000, 0, 1000, 2000)).unwrap();
+        let live = ix.live_bookings();
+        let (all, _) = ix.booking_counts();
+        // By 1,000 only window 0 has ended: a's stale bookings there go, b's live ones stay.
+        assert_eq!(ix.purge_stale(Tick(1000)), a_w0 as u64);
+        assert_eq!(ix.booking_counts().0, all - a_w0);
+        assert_eq!(ix.live_bookings(), live, "every live booking stays");
+        assert!(in_window(&ix, b, 0) > 0);
+        assert!(in_window(&ix, a, 1) > 0, "window 1 has not ended");
+        // Once b is cancelled and every window has ended, a2's bookings are all that is left.
+        ix.cancel(b.leg);
+        ix.purge_stale(Tick(10_000));
+        let a2_cells = ix.cells_of(ix.get(a2.leg).unwrap().path).len();
+        assert_eq!(ix.booking_counts().0, a2_cells);
+        assert_eq!(ix.stats().stale_dropped, (all - a2_cells) as u64);
+        assert_eq!(ix.in_region(0, 1, 0, Tick(1500)), vec![a2]);
+    }
+
+    #[test]
+    fn purges_run_at_game_time_boundaries() {
+        let mut ix = LegIndex::new(1000);
+        let a = ix.book(path(0, 2000, 0, 2000), Owner(1));
+        ix.replan(a.leg, path(0, 10, 3000, 4000)).unwrap();
+        let (before, _) = ix.booking_counts();
+        ix.purge_due(Tick(PURGE_EVERY - 1));
+        assert_eq!(ix.booking_counts().0, before, "no boundary passed");
+        ix.purge_due(Tick(PURGE_EVERY));
+        let (after, _) = ix.booking_counts();
+        assert!(after < before);
+        assert_eq!(after, ix.cells_of(ix.get(a.leg).unwrap().path).len());
+        // The same boundary again does nothing; turned off, nothing runs.
+        let stale = ix.stats().stale_dropped;
+        ix.purge_due(Tick(PURGE_EVERY + 500));
+        assert_eq!(ix.stats().stale_dropped, stale);
+        let b = ix.book(path(0, 10, 0, 1000), Owner(2));
+        ix.cancel(b.leg);
+        ix.set_purge_every(0);
+        ix.purge_due(Tick(10 * PURGE_EVERY));
+        assert_eq!(ix.stats().stale_dropped, stale);
     }
 
     #[test]

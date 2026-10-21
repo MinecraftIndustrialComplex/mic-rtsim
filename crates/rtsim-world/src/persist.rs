@@ -734,35 +734,69 @@ impl World {
 
     /// Everything but the market rows.
     fn save_meta(&self) -> Writer {
+        self.save_meta_marked(&mut None)
+    }
+
+    /// The meta page's raw bytes by section, in the order written (diagnostics and tests: what a
+    /// snapshot's meta page is made of).
+    pub fn meta_sections(&self) -> Vec<(&'static str, usize)> {
+        let mut marks = Some(Vec::new());
+        self.save_meta_marked(&mut marks);
+        let mut out = Vec::new();
+        let mut last = 0;
+        for (name, at) in marks.unwrap_or_default() {
+            out.push((name, at - last));
+            last = at;
+        }
+        out
+    }
+
+    /// [`World::save_meta`], noting where each section ends when `marks` is some.
+    fn save_meta_marked(&self, marks: &mut Option<Vec<(&'static str, usize)>>) -> Writer {
         let mut w = Writer::with_capacity(4096 + self.nodes.len() * 8192);
+        let mut mark = |name: &'static str, w: &Writer| {
+            if let Some(m) = marks.as_mut() {
+                m.push((name, w.len()));
+            }
+        };
         w.u32(MAGIC);
         put_usize(&mut w, self.goods.len());
         put_usize(&mut w, self.book.recipes.len());
         w.u64(self.now.0);
         self.settlements.encode(&mut w);
+        mark("header and settlements", &w);
         let mut snaps = SnapEnc::new();
         put_usize(&mut w, self.nodes.len());
         for n in &self.nodes {
             put_node(&mut w, n, &mut snaps);
         }
+        mark("nodes", &w);
         self.markets.encode_meta(&mut w);
+        mark("market table", &w);
         put_usize(&mut w, self.edges.len());
         self.edges.iter().for_each(|e| e.encode(&mut w));
+        mark("edges", &w);
         self.knowledge.save(&mut w);
+        mark("knowledge", &w);
         self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
+        mark("wheel", &w);
         put_usize(&mut w, self.packets.len());
         for (k, p) in &self.packets {
             w.var_u64(u64::from(*k));
             put_packet(&mut w, p, &mut snaps);
         }
+        mark("packets", &w);
         put_usize(&mut w, self.wakes.len());
         for (t, n) in &self.wakes {
             w.u64(t.0);
             put_usize(&mut w, *n);
         }
         w.u32(self.next_packet);
+        mark("wakes", &w);
         self.caravans.encode_with(&mut w, |c, w| c.encode(w));
+        mark("caravans", &w);
         self.legs.encode(&mut w);
+        mark("leg index", &w);
         put_usize(&mut w, self.leg_ids.len());
         for (c, l) in &self.leg_ids {
             w.u64(c.to_bits());
@@ -772,6 +806,7 @@ impl World {
         put_i128_map(&mut w, &self.outside.player_out);
         put_i128_map(&mut w, &self.outside.destroyed);
         put_i128_map(&mut w, &self.outside.held);
+        mark("leg ids and outside", &w);
         let s = &self.stats;
         for v in [
             s.market_events,
@@ -797,6 +832,7 @@ impl World {
         self.outbox.iter().for_each(|c| put_command(&mut w, c));
         put_usize(&mut w, self.lints.len());
         self.lints.iter().for_each(|l| l.encode(&mut w));
+        mark("stats, outbox and lints", &w);
         w.f64(self.mint_cost[0]);
         w.f64(self.mint_cost[1]);
         put_usize(&mut w, self.players.len());
@@ -814,9 +850,12 @@ impl World {
             }
             w.u64(p.interest.map_or(0, |l| l.to_bits()));
         }
+        mark("mint cost and players", &w);
         self.roads.encode(&mut w);
+        mark("roads", &w);
         put_usize(&mut w, self.bands.len());
         self.bands.iter().for_each(|b| put_band(&mut w, b));
+        mark("bands", &w);
         put_usize(&mut w, self.growth.len());
         for (n, g) in &self.growth {
             put_usize(&mut w, *n);
@@ -860,6 +899,7 @@ impl World {
             put_usize(&mut w, *n);
             w.u64(*k);
         }
+        mark("growth, bases and works", &w);
         w
     }
 
