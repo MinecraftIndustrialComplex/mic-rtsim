@@ -197,6 +197,31 @@ def set_props(path, kv):
     open(path, "w").write("\n".join(out) + "\n")
 
 
+def set_prometheus(d, port):
+    """Prometheus Exporter (TBSMP's pack) binds 0.0.0.0:19565 in every server, so the second server of a
+    pair dies with a BindException. Give each run its own loopback port; the [web] keys are rewritten in
+    place, or the file is written whole when the mod is present but has not made its config yet."""
+    if not any(f.lower().startswith("prometheus") and f.endswith(".jar") for f in os.listdir(f"{d}/mods")):
+        return
+    p = f"{d}/config/prometheus_exporter-server.toml"
+    want = {"listen_address": '"127.0.0.1"', "listen_port": str(port)}
+    if not os.path.exists(p):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").write('[collector]\n\tjvm = true\n\tmc = true\n\tmc_dimension_tick_errors = "LOG"\n\tmc_entities = true\n\n'
+                           "[web]\n" + "".join(f"\t{k} = {v}\n" for k, v in want.items()))
+        return
+    out, sect = [], None
+    for line in open(p).read().splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            sect = s.strip("[]")
+        k = s.split("=", 1)[0].strip()
+        if sect == "web" and "=" in s and k in want:
+            line = line[: len(line) - len(line.lstrip())] + f"{k} = {want[k]}"
+        out.append(line)
+    open(p, "w").write("\n".join(out) + "\n")
+
+
 def neoforge_version(d):
     vs = sorted(os.listdir(f"{d}/libraries/net/neoforged/neoforge"))
     vs = [v for v in vs if os.path.isfile(f"{d}/libraries/net/neoforged/neoforge/{v}/unix_args.txt")]
@@ -237,6 +262,7 @@ def prep(run, world, rtsim, slot, xmx="6G", world_from_run=None):
         "level-seed": "", "spawn-protection": 0})
     if os.path.exists(f"{d}/config/voicechat/voicechat-server.properties"):
         set_props(f"{d}/config/voicechat/voicechat-server.properties", {"port": 26300 + slot})
+    set_prometheus(d, 26400 + slot)
     open(f"{d}/user_jvm_args.txt", "w").write(
         f"-Xms2G\n-Xmx{xmx}\n-XX:+UseG1GC\n-Xlog:gc*:file=gc.log:time,uptime:filecount=2,filesize=20M\n")
     os.makedirs(f"{d}/kubejs/server_scripts", exist_ok=True)
