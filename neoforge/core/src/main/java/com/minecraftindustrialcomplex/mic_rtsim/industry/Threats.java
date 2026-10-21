@@ -495,10 +495,16 @@ public final class Threats {
                 break;
             // The wall block a walker meets: at the ground level, else the one above it.
             BlockPos p = new BlockPos(SurveyJob.colX(c), j.ground(), SurveyJob.colZ(c));
-            net.minecraft.world.level.block.state.BlockState st = j.level.getBlockState(p);
+            // Only a loaded chunk is read. A wall column can lie in a ring chunk that was never loaded, or in a
+            // chunk that unloaded while the walk ran off the thread; Level.getBlockState would load it again,
+            // synchronously, on the server thread (seconds behind a busy chunk IO queue).
+            net.minecraft.world.level.chunk.LevelChunk chunk = j.level.getChunkSource().getChunkNow(p.getX() >> 4, p.getZ() >> 4);
+            if (chunk == null)
+                continue;
+            net.minecraft.world.level.block.state.BlockState st = chunk.getBlockState(p);
             if (st.isAir()) {
                 p = p.above();
-                st = j.level.getBlockState(p);
+                st = chunk.getBlockState(p);
             }
             if (!st.isAir())
                 exposed.add(new SurveyJob.Exposed(p, st, IndRecords.SurveyBlocks.FLAG_PERIMETER, IndRecords.NO_INVENTORY));
