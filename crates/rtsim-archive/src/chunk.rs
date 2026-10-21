@@ -5,11 +5,13 @@
 //!
 //! Layout: `RTAC`, a version byte, the header's length (u32), the header, a CRC32 of everything so
 //! far, the body's raw length (u32), a CRC32 of the stored body, and the stored body. The body is
-//! the rows (32 bytes each) and then the payload side block: a count, then each payload's row index
-//! and bytes. The header has its own checksum so it can be read without the body.
+//! the rows (32 bytes each, or 16 for the count tiers, [`crate::counts`]) and then the payload side
+//! block: a count, then each payload's row index and bytes (always empty in the count tiers). The
+//! header has its own checksum so it can be read without the body.
 
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 
+use crate::counts::{COUNT_BYTES, Count, RawCount};
 use crate::row::{self, PAYLOAD, ROW_BYTES, RawRow};
 
 /// Rows a chunk holds at most (TUNABLE).
@@ -22,7 +24,8 @@ pub const PREFIX_BYTES: usize = 4 + 1 + 4;
 const MAGIC: &[u8; 4] = b"RTAC";
 const VERSION: u8 = 1;
 
-/// Which tier a chunk belongs to (§10.4). The count tier's 16-byte rows are a later addition.
+/// Which tier a chunk belongs to (§10.4). The count tier is two kinds of chunk, fine and coarse,
+/// so compaction knows which to coarsen from the index alone; they share the tier's budget.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Tier {
@@ -31,6 +34,10 @@ pub enum Tier {
     Full = 0,
     /// Rows at or above notable severity, named movers' legs among them.
     Notable = 1,
+    /// Count rows per 512-block region per game day.
+    Counts = 2,
+    /// Count rows per 4,096-block square per 7 game days.
+    Coarse = 3,
 }
 
 impl Tier {
@@ -38,7 +45,32 @@ impl Tier {
         match v {
             0 => Ok(Tier::Full),
             1 => Ok(Tier::Notable),
+            2 => Ok(Tier::Counts),
+            3 => Ok(Tier::Coarse),
             _ => Err(CodecError::Invalid(format!("tier {v}"))),
+        }
+    }
+
+    /// A count tier's chunk: 16-byte count rows, not events and legs.
+    pub fn is_counts(self) -> bool {
+        matches!(self, Tier::Counts | Tier::Coarse)
+    }
+
+    /// The tier whose budget share the chunk counts against: 0 full, 1 notable, 2 counts.
+    pub fn share(self) -> usize {
+        match self {
+            Tier::Full => 0,
+            Tier::Notable => 1,
+            Tier::Counts | Tier::Coarse => 2,
+        }
+    }
+
+    /// The size of the chunk's rows.
+    pub fn row_bytes(self) -> usize {
+        if self.is_counts() {
+            COUNT_BYTES
+        } else {
+            ROW_BYTES
         }
     }
 }
@@ -54,7 +86,9 @@ pub struct Stamp {
     pub wall_ms: u64,
 }
 
-/// What the index keeps of a chunk.
+/// What the index keeps of a chunk. In the count tiers `rows` is count rows, the ticks are the
+/// buckets' (a bucket's first tick, the latest bucket's last tick as `last_end`), and `counts` is
+/// the rows counted, so the histogram reads every tier alike.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChunkHeader {
     pub tier: Tier,
@@ -114,6 +148,55 @@ impl ChunkHeader {
             counts: counts.into_iter().map(|((f, k), n)| (f, k, n)).collect(),
             payload_bytes: payload_bytes as u32,
         }
+    }
+
+    /// The header of count rows sorted by key.
+    fn of_counts(tier: Tier, counts: &[Count], stamp: Stamp) -> ChunkHeader {
+        let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+        let mut per: std::collections::BTreeMap<(u8, u16), u32> = Default::default();
+        let mut last_end = 0;
+        for c in counts {
+            let b = c.bbox();
+            bbox = [
+                bbox[0].min(b[0]),
+                bbox[1].min(b[1]),
+                bbox[2].max(b[2]),
+                bbox[3].max(b[3]),
+            ];
+            let n = per.entry((c.frame, c.kind)).or_default();
+            *n = n.saturating_add(u32::from(c.count));
+            last_end = last_end.max(c.last_tick());
+        }
+        if counts.is_empty() {
+            bbox = [0; 4];
+        }
+        ChunkHeader {
+            tier,
+            rows: counts.len() as u32,
+            first_tick: counts.first().map_or(0, Count::first_tick),
+            last_tick: counts.last().map_or(0, Count::first_tick),
+            last_end,
+            obs_seq: stamp.obs_seq,
+            save_tick: stamp.tick,
+            wall_ms: stamp.wall_ms,
+            bbox,
+            counts: per.into_iter().map(|((f, k), n)| (f, k, n)).collect(),
+            payload_bytes: 0,
+        }
+    }
+
+    /// The save the chunk was flushed with.
+    pub fn stamp(&self) -> Stamp {
+        Stamp {
+            obs_seq: self.obs_seq,
+            tick: self.save_tick,
+            wall_ms: self.wall_ms,
+        }
+    }
+
+    /// Rows counted, every kind (in a count tier, the rows its count rows count).
+    pub fn counted(&self) -> u64 {
+        self.counts.iter().map(|c| u64::from(c.2)).sum()
     }
 
     /// Whether the chunk may hold rows touching ticks in `t0..=t1`.
@@ -209,14 +292,17 @@ impl ChunkHeader {
     }
 }
 
-/// A chunk's rows and payloads.
+/// A chunk's rows and payloads, or its count rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Chunk {
     pub header: ChunkHeader,
+    /// Empty in the count tiers.
     pub rows: Vec<RawRow>,
     /// Row index and bytes, ascending by index; a row has the [`PAYLOAD`] flag exactly when it has
     /// an entry here.
     pub payloads: Vec<(u32, Vec<u8>)>,
+    /// The count tiers' rows, ascending by key; empty otherwise.
+    pub counts: Vec<Count>,
 }
 
 /// Sorts rows by tick (stable: rows of one tick keep their order) and carries each payload to its
@@ -248,6 +334,7 @@ impl Chunk {
         stamp: Stamp,
     ) -> Chunk {
         assert!(rows.len() <= u32::MAX as usize);
+        assert!(!tier.is_counts(), "count rows go in Chunk::of_counts");
         payloads.retain(|p| (p.0 as usize) < rows.len());
         payloads.sort_by_key(|p| p.0);
         payloads.dedup_by_key(|p| p.0);
@@ -263,6 +350,19 @@ impl Chunk {
             header: ChunkHeader::of(tier, &rows, payload_bytes, stamp),
             rows,
             payloads,
+            counts: Vec::new(),
+        }
+    }
+
+    /// A count tier's chunk (coarse when `coarse`); the rows are sorted here by key.
+    pub fn of_counts(coarse: bool, mut counts: Vec<Count>, stamp: Stamp) -> Chunk {
+        counts.sort_by_key(Count::key);
+        let tier = if coarse { Tier::Coarse } else { Tier::Counts };
+        Chunk {
+            header: ChunkHeader::of_counts(tier, &counts, stamp),
+            rows: Vec::new(),
+            payloads: Vec::new(),
+            counts,
         }
     }
 
@@ -287,10 +387,16 @@ impl Chunk {
         let crc = crc32fast::hash(w.as_bytes());
         w.u32(crc);
         let mut body = Writer::with_capacity(
-            self.rows.len() * ROW_BYTES + self.header.payload_bytes as usize + 8,
+            self.rows.len() * ROW_BYTES
+                + self.counts.len() * COUNT_BYTES
+                + self.header.payload_bytes as usize
+                + 8,
         );
         for r in &self.rows {
             body.raw(r);
+        }
+        for c in &self.counts {
+            body.raw(&c.encode());
         }
         body.var_u64(self.payloads.len() as u64);
         for (i, p) in &self.payloads {
@@ -330,7 +436,11 @@ impl Chunk {
         if crc32fast::hash(stored).to_le_bytes() != crc.to_le_bytes() {
             return Err(CodecError::Invalid("chunk body checksum mismatch".into()));
         }
-        let need = header.rows as usize * ROW_BYTES + header.payload_bytes as usize;
+        let row_bytes = header.tier.row_bytes();
+        if header.tier.is_counts() && header.payload_bytes != 0 {
+            return Err(CodecError::Invalid("payloads in a count chunk".into()));
+        }
+        let need = header.rows as usize * row_bytes + header.payload_bytes as usize;
         if raw_len < need || raw_len > need + 16 * (header.rows as usize + 1) {
             return Err(CodecError::Invalid(format!(
                 "chunk body of {raw_len} bytes for its header"
@@ -346,11 +456,21 @@ impl Chunk {
             )));
         }
         let mut b = Reader::new(&body);
-        let rows: Vec<RawRow> = b
-            .take(header.rows as usize * ROW_BYTES)?
-            .as_chunks::<ROW_BYTES>()
-            .0
-            .to_vec();
+        let stored_rows = b.take(header.rows as usize * row_bytes)?;
+        let (rows, counts): (Vec<RawRow>, Vec<Count>) = if header.tier.is_counts() {
+            let counts: Vec<Count> = stored_rows
+                .as_chunks::<COUNT_BYTES>()
+                .0
+                .iter()
+                .map(|c: &RawCount| Count::decode(c))
+                .collect();
+            if !counts.is_sorted_by_key(Count::key) {
+                return Err(CodecError::Invalid("count rows out of order".into()));
+            }
+            (Vec::new(), counts)
+        } else {
+            (stored_rows.as_chunks::<ROW_BYTES>().0.to_vec(), Vec::new())
+        };
         let n = b.len_prefix(2)?;
         let mut payloads = Vec::with_capacity(n);
         for _ in 0..n {
@@ -369,6 +489,7 @@ impl Chunk {
             header,
             rows,
             payloads,
+            counts,
         };
         if chunk.payloads.iter().map(|p| p.1.len()).sum::<usize>()
             != chunk.header.payload_bytes as usize
@@ -507,6 +628,49 @@ mod tests {
         let mut huge = bytes.clone();
         huge[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Chunk::decode_header(&huge).is_err());
+    }
+
+    #[test]
+    fn a_count_chunk_reads_back_and_counts_what_it_counted() {
+        use crate::counts::Count;
+        let counts = vec![
+            Count {
+                day: 9,
+                kind: 4,
+                frame: 1,
+                rx: 2,
+                count: 7,
+                magnitude: 3,
+                ..Count::default()
+            },
+            Count {
+                day: 2,
+                kind: 4,
+                rx: -1,
+                rz: 3,
+                count: 40,
+                ..Count::default()
+            },
+        ];
+        let c = Chunk::of_counts(false, counts, Stamp::default());
+        assert_eq!(c.counts[0].day, 2);
+        let h = &c.header;
+        assert_eq!((h.tier, h.rows, h.counted()), (Tier::Counts, 2, 47));
+        assert_eq!(
+            (h.first_tick, h.last_tick, h.last_end),
+            (48_000, 216_000, 240_000 - 1)
+        );
+        assert_eq!(h.bbox, [-512, 0, 1_535, 2_047]);
+        assert_eq!(h.counts, [(0, 4, 40), (1, 4, 7)]);
+        let bytes = c.encode();
+        assert_eq!(Chunk::decode(&bytes).unwrap(), c);
+        for cut in 0..bytes.len() {
+            assert!(Chunk::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+        }
+        let coarse = Chunk::of_counts(true, vec![], Stamp::default());
+        assert_eq!(coarse.header.tier, Tier::Coarse);
+        assert_eq!(Chunk::decode(&coarse.encode()).unwrap(), coarse);
+        assert!(Tier::Coarse.is_counts() && !Tier::Notable.is_counts());
     }
 
     #[test]
