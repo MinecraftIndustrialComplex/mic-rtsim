@@ -13,6 +13,7 @@ plugins {
 //     -PnoTerraEntity          leave Terra Entity off the server (the start-time baseline)
 //     -PteSilence=datapack     run with a datapack that sets every Terra Entity biome modifier to neoforge:none
 //     -PteSilence=config       run with enemy_spawn_chance = 0 in Terra Entity's server config
+//     -PwithCreate             also load Create (the block-breaking test; no mock player may join the level on this server)
 //     -PteTests=<regex>        only the tests whose name matches (a system property the holder reads)
 evaluationDependsOn(':core')
 
@@ -37,6 +38,7 @@ repositories {
 def packMods = rootProject.file(project.findProperty('packMods') ?: rootProject.packMods).absolutePath
 def geckoJar = files("${packMods}/${te_geckolib_jar}")
 def noTerra = project.hasProperty('noTerraEntity')
+def createJar = files("${packMods}/${te_create_jar}")
 def silence = (project.findProperty('teSilence') ?: 'none').toString()
 
 neoForge {
@@ -89,6 +91,9 @@ tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn seed
 dependencies {
     implementation project(':core')
     runtimeOnly project(':core').micNativeFiles
+    // -PwithCreate: Create (the pack's own jar, which carries Ponder, Flywheel and Registrate jar-in-jar) for the block-breaking test, which places its
+    // machinery. Not on the other runs: Create answers a player joining the level with a payload a mock connection cannot take, which kills the tick loop.
+    if (project.hasProperty('withCreate')) runtimeOnly createJar
     compileOnly geckoJar
     runtimeOnly geckoJar
     compileOnly "maven.modrinth:BZKgbCzw:${terra_entity_version}"
