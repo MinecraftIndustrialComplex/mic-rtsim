@@ -60,8 +60,8 @@ off the rail. Trains that pass it while you are away lose cargo, and the next ti
 pulls into a station near you, you hear the roar again. Ride past it yourself and it swipes at the
 carriages as they go by, and throws an ice ball ahead of your train: if it hits you, you freeze, you
 are pulled off your seat, and you stand frozen in the snow beside an awake Frostmaw while your train
-leaves without you. Push it further and it comes back every few days, then camps by your nearest
-station. Run fewer trains and it calms down over days; lay your track around its range and it
+leaves without you. Push it further and it comes back every few days, then camps by the station
+nearest its den. Run fewer trains and it calms down over days; lay your track around its range and it
 forgets the line.
 
 You can kill it. Arrows and tridents bounce off it; swords and axes, fire, TaCZ bullets and Create Big
