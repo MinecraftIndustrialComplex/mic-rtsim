@@ -171,13 +171,46 @@ pub struct Report {
     pub last_discard: Option<(u64, u32)>,
     /// Discards and skips by [`discard`] reason (index 0 unused), since the district's glass began.
     pub discards: [u64; discard::COUNT],
+    /// The district's replay while unloaded (G2).
+    pub replay: ReplayReport,
     pub goods: Vec<GoodReport>,
+}
+
+/// Which model replays a district while it is unloaded (`ReplayReport::model`).
+pub mod replay_model {
+    /// Not replaying: live, frozen, or never unloaded since its last load.
+    pub const NONE: u32 = 0;
+    /// The learned boundary rates (C19's black box).
+    pub const BLACK_BOX: u32 = 1;
+    /// The compiled graph (G2).
+    pub const GLASS: u32 = 2;
+}
+
+/// The district's replay while unloaded (GLASSBOX.md §4, G2): header slots 33 to 40.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct ReplayReport {
+    /// [`replay_model`]: what replays the district now.
+    pub model: u32,
+    /// The tick its current replay started (None: not replaying).
+    pub since: Option<u64>,
+    /// Regimes the glass replay entered since the compile (each solve or cache hit at a breakpoint).
+    pub regimes: u32,
+    /// Breakpoints the glass replay handled since the compile.
+    pub breakpoints: u32,
+    /// Regimes that fell back to the black box as oscillating (§4.5) since the compile.
+    pub oscillations: u32,
+    /// Cut edges between live and simulated nodes in the current replay (I7, G-B6).
+    pub cut_edges: u32,
+    /// The compile may replay: a window of it passed (G-B4).
+    pub eligible: bool,
+    /// Goods the residual node replays as learned sources (§5.1, §5.3).
+    pub learned_sources: u32,
 }
 
 /// Values per good in [`Report::to_f64s`].
 pub const GOOD_STRIDE: usize = 16;
 /// Values before the first good in [`Report::to_f64s`].
-pub const HEADER: usize = 33;
+pub const HEADER: usize = 41;
 
 fn opt(x: Option<u64>) -> f64 {
     x.map_or(-1.0, |v| v as f64)
@@ -190,14 +223,16 @@ fn idx(x: u32) -> f64 {
 impl Report {
     /// The flat form the JNI inspection call returns (`NativeEngine.glassReport`); -1 is "none":
     ///
-    /// - header (33): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
+    /// - header (41): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
     ///   6 window start tick, 7 window ticks done, 8 window ticks target, 9 windows completed,
     ///   10 verdict, 11 strikes, 12 goods, 13 solves, 14 demoted kinds, 15 latency ticks,
     ///   16 accepted at (tick), 17 ready at (tick), 18 sweeps taken, 19 sweeps sampled,
     ///   20 heaters burning, 21 next burn breakpoint (tick), 22 compile revision, 23 district
     ///   revision at the last sweep, 24 last discard tick, 25 last discard reason ([`discard`]),
     ///   26 to 32 discards and skips by reason 1 to 7 (no sweep, dropped records, not live, edit,
-    ///   revision, recompile, session start);
+    ///   revision, recompile, session start), 33 replay model ([`replay_model`]), 34 replay since
+    ///   (tick), 35 regimes entered, 36 breakpoints handled, 37 oscillation fallbacks, 38 cut
+    ///   edges, 39 eligible (0 or 1), 40 learned sources;
     /// - then per good (16): 0 good, 1 class, 2 in L, 3 in U, 4 out L, 5 out U, 6 predicted,
     ///   7 measured, 8 sigma, 9 q, 10 verdict, 11 samples, 12 lo, 13 hi, 14 why ([`why`]),
     ///   15 why at (a node, or an edge for the edge reasons).
@@ -232,6 +267,17 @@ impl Report {
             self.last_discard.map_or(0.0, |d| f64::from(d.1)),
         ]);
         v.extend(self.discards[1..].iter().map(|&c| c as f64));
+        let r = &self.replay;
+        v.extend_from_slice(&[
+            f64::from(r.model),
+            opt(r.since),
+            f64::from(r.regimes),
+            f64::from(r.breakpoints),
+            f64::from(r.oscillations),
+            f64::from(r.cut_edges),
+            if r.eligible { 1.0 } else { 0.0 },
+            f64::from(r.learned_sources),
+        ]);
         debug_assert_eq!(v.len(), HEADER);
         for g in &self.goods {
             v.extend_from_slice(&[
@@ -298,6 +344,16 @@ mod tests {
             district_revision: None,
             last_discard: Some((900, discard::DROPPED)),
             discards: [0, 1, 2, 3, 4, 5, 6, 7],
+            replay: ReplayReport {
+                model: replay_model::GLASS,
+                since: Some(5000),
+                regimes: 3,
+                breakpoints: 9,
+                oscillations: 1,
+                cut_edges: 2,
+                eligible: true,
+                learned_sources: 4,
+            },
             ..Report::default()
         };
         let v = r.to_f64s();
@@ -311,6 +367,11 @@ mod tests {
             &[100.0, 1300.0, 9.0, 7.0, 2.0, 2000.0, 4.0, -1.0, 900.0, 2.0]
         );
         assert_eq!(&v[26..33], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(
+            &v[33..41],
+            &[2.0, 5000.0, 3.0, 9.0, 1.0, 2.0, 1.0, 4.0]
+        );
+        assert_eq!(Report::default().to_f64s()[34], -1.0);
         assert_eq!(v[HEADER], 7.0);
         assert_eq!(v[HEADER + 1], 1.0);
         assert_eq!(v[HEADER + 3], 0.1175);
