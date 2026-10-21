@@ -9,17 +9,21 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.saveddata.SavedData;
 
+import java.io.File;
+
 /**
  * The journal SavedData, {@code mic_rtsim:journal} (PLAN.md §4.9), in the overworld's data storage.
  * On disk it is {@code data/mic_rtsim_journal.dat}: Windows forbids the colon in a file name.
  *
  * <p>Vanilla writes it at its own save, from a copy, on its IO worker; the server thread never
- * waits for it. Appending only sets the dirty flag.
+ * waits for it. Appending only sets the dirty flag. Its write waits for the chunks its records speak
+ * for ({@link ChunkWriteBarrier}), so the file on disk never claims what a chunk on disk lacks.
  */
 public final class JournalSavedData extends SavedData {
     public static final String FILE = "mic_rtsim_journal";
 
     private final Journal journal;
+    private final ChunkWriteBarrier chunks = new ChunkWriteBarrier();
 
     private JournalSavedData(Journal journal) {
         this.journal = journal;
@@ -38,6 +42,23 @@ public final class JournalSavedData extends SavedData {
 
     public Journal journal() {
         return journal;
+    }
+
+    /** The chunks the journal's next file waits for (docs/choices-repair.md R21). */
+    public ChunkWriteBarrier chunks() {
+        return chunks;
+    }
+
+    /**
+     * Vanilla's write of this file ({@code DimensionDataStorage.save}, in {@code saveLevelData}, on the server
+     * thread): first the chunks the journal speaks for go on their way to disk, and a wait for them is queued
+     * on the SavedData IO chain, then {@code super} serializes the journal and queues its write after that wait.
+     */
+    @Override
+    public void save(File file, HolderLookup.Provider registries) {
+        if (isDirty())
+            chunks.beforeJournalWrite();
+        super.save(file, registries);
     }
 
     @Override
