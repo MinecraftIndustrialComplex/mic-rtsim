@@ -454,9 +454,11 @@ reads); NONE for a store the sampler does not read.
 
 **Rate entries.** A node in a domain uses the entries whose `level` is the domain's level index (into
 its Level24 list); a node without a domain uses level 0. An entry gives `batch` per `ticksNum/ticksDen`
-ticks: its capacity is `batch × ticksDen / ticksNum` per tick. A node with no entry for the level has
-capacity 0 there (a stopped or overstressed domain). FIRST_CYCLE entries are latency only, never rate.
-A node with no entries at all is unlimited (a junction, a buffer, a water source).
+ticks: its capacity is `batch × ticksDen / ticksNum` per tick (`ticksNum` 0: unlimited). A node with no
+entry for the level has capacity 0 there (a stopped or overstressed domain). FIRST_CYCLE entries are
+latency only, never rate. A node with no entries at all is unlimited (a junction, a buffer, a water
+source). An entry without a recipe (NONE), like a SHARED one, is the node's capacity across everything
+it does; a machine's recipes are exactly those its entries name (choice GB15).
 
 **Nodes.**
 - **Store:** supplies each good it held at its inventory's latest sweep and accepts while it had room;
@@ -470,24 +472,32 @@ A node with no entries at all is unlimited (a junction, a buffer, a water source
   (`c_r × out ≤ acceptance`). A machine fed from a basin or a depot is one node: the edges into the basin
   or depot are its inputs and the edges out of it its outputs. A machine on a line (PASS_THROUGH) passes
   goods none of its recipes takes. A recipe with `heat` above NONE runs only with a Heat edge in whose
-  heater's level is at least `heat`, at that heater's duty.
+  heater's level is at least `heat`, at that heater's duty. A sequenced assembly is one SEQUENCED
+  machine node: its recipe is the whole sequence unrolled (every step's inputs times the loops) and its
+  entry the time of one product through every step (GB15).
 - **Mover:** one SHARED entry: units per tick across every good. Its in-edges are tried in `order`, and
-  its outflow splits among its out-edges by its `rule` (an arm's selection mode; NONE is one output).
+  its outflow splits among its out-edges by its `rule` (an arm's selection mode; NONE with several
+  out-edges is priority in `order`, as PREFER_FIRST).
 - **Junction:** unlimited unless it has an entry; splits by its `rule` over out-edges in `order`
-  (GLASSBOX.md §3.3). Filtered sides (FILTERED_SIDE) are tried before the rest.
+  (GLASSBOX.md §3.3). Filtered sides (FILTERED_SIDE) are tried before the rest. ANDESITE_SPLIT's main
+  line is its first out-edge, and the entry size `n` is its first in-edge's `param`.
 - **Heater** (a blaze burner): `params` are remaining burn ticks, heat level when lit, burn ticks per
   fuel item (0: never runs out, a creative burner) and the insertion threshold. It burns while lit
   whatever it heats, so it accepts fuel up to `1 / burnTicks` items per tick, and its **duty** is
   `min(1, fuel accepted × burnTicks)`. L counts only the fuel supplied; U also counts remaining burn.
+  Any good on its in-edges is fuel at `params[2]` burn ticks, unless the heater has fuel recipes (rate
+  entries naming FUEL recipes): then their inputs are its fuels, at each recipe's `duration`.
 - **Boiler:** accepts all the water it is offered and voids it (`BoilerData`'s handler returns the
   amount). Its level is `min(activeHeat, min(18, ceil(w) / 10), min(18, tankBlocks / 4))` with `w` the
   water accepted in mB per tick and `activeHeat` the sum of its Heat edges' params over lit heaters. It
   drives its domain: the domain's `driver` is the boiler and each Level24's `selector` is a boiler level
-  (Java tabulates every level the engines can see, with each level's speed and capacity). A heater with
+  (Java tabulates every level the engines can see, with each level's speed and capacity); the domain runs
+  at the level with the largest selector at or below the boiler's level. A heater with
   duty strictly between 0 and 1 makes the boiler's goods bounded: L counts heaters at duty 1, U every
   heater with duty above 0.
 - **Source:** emits its recipe's outputs (no inputs) at its entries' rate; unlimited without entries
-  (a water source block under a pump: the pump limits it). An animal source (ANIMAL_SHEEP) is STOCHASTIC:
+  (a water source block under a pump: the pump limits it). A source without recipes emits the goods its
+  out-edges' filters allow (an unfiltered edge from it carries nothing). An animal source (ANIMAL_SHEEP) is STOCHASTIC:
   a craft is one shearing, its rate the closed form of vanilla's regrowth for `params[1]` eligible
   animals capped by the shearing deployer's cycle, and `params[2] / params[3]` the craft output's second
   moment (14/3 for wool's `1 + nextInt(3)`). A source that is not accepted waits (unsheared sheep keep
@@ -496,7 +506,8 @@ A node with no entries at all is unlimited (a junction, a buffer, a water source
 - **BlackBox:** a node the compiler could not model. L takes it as producing nothing; a good with a
   black box on its path has no U (it is reported unbounded).
 - **Controller** (a threshold switch, a factory gauge): `params` are on-above, off-below, flags (1
-  inverted) and the observed level at compile. Its Observe edges come from the stores it reads (a
+  inverted, 2 on at compile: the state while the level is between the thresholds) and the observed level
+  at compile. Its Observe edges come from the stores it reads (a
   filter on the edge limits the goods counted, empty counts all, in units); its Control edges go to
   the nodes it gates (`param` 1 stops the target while the switch is on, 2 runs it only while on). It
   is on when the observed level reaches on-above, off when it falls to off-below, else as before
