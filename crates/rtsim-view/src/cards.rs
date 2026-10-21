@@ -9,12 +9,16 @@ use mic_viewer::api::{Card, Field, Section, TICKS_PER_DAY};
 use rtsim_ecology::dragon::{LairKind, Purpose, State, Target};
 use rtsim_ecology::herds::HerdId;
 use rtsim_ecology::species::SpeciesData;
+use rtsim_industry::cluster::PoolKey;
+use rtsim_industry::engine::ProcessPeek;
+use rtsim_industry::ids::Good;
 use rtsim_kernel::handle::Handle;
 use rtsim_settle::{Culture, NodeKind};
 use rtsim_ships::engine::{Role, Status as ShipStatus};
 use rtsim_trade::{GoodId, MILLI, PRICE_ONE};
 use rtsim_world::{Via, World};
 
+use crate::industry::IndustryView;
 use crate::layers::{Ctx, hunt_target, party_target_pos, price_index, target_pos};
 use crate::load::Saved;
 
@@ -730,15 +734,40 @@ fn train(cx: &Ctx, id: u64) -> Option<Card> {
     Some(c.field("Carriages", l.cargo.len()).section(sec))
 }
 
-/// A district's card: decoded from its pages (the caller holds the worker).
+/// A district's name from Java's dictionary, or its number.
+fn district_name(saved: &Saved, v: &IndustryView, id: u64) -> String {
+    v.district(id)
+        .and_then(|d| saved.names.get(crate::keys::DICT_NAME, d.name))
+        .map_or_else(|| format!("District {id}"), str::to_owned)
+}
+
+/// A replay process's line: a box process by number and the goods it touches, a packager by what
+/// it packs and for whom.
+fn process_label(saved: &Saved, v: &IndustryView, p: &ProcessPeek) -> String {
+    let goods = |gs: &[Good]| {
+        gs.iter()
+            .map(|&g| v.good_name(g))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match p.fills {
+        Some(PoolKey::Mail(_, inventory, address, g)) => {
+            let to = saved
+                .names
+                .get(crate::keys::DICT_NAME, address)
+                .map_or_else(|| format!("address {address}"), str::to_owned);
+            format!("Packager: {} for {to}, postbox {inventory}", v.good_name(g))
+        }
+        Some(_) => format!("Link {}: {}", p.id, goods(&p.goods)),
+        None => format!("Process {}: {}", p.id + 1, goods(&p.goods)),
+    }
+}
+
 /// A district's card, and whether its pages read (a card that says they did not is not kept).
 pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
     let v = saved.industry.as_ref()?;
     let d = v.district(id)?;
-    let name = saved
-        .names
-        .get(crate::keys::DICT_NAME, d.name)
-        .map_or_else(|| format!("District {id}"), str::to_owned);
+    let name = district_name(saved, v, id);
     let (x, z) = d.centre();
     let mut c = Card::new("industry.districts", id, name)
         .subtitle(d.state)
@@ -753,7 +782,8 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
     }
     c = c.section(sec);
     match v.inspect(&*saved.source, id) {
-        Ok((ins, stock, _)) => {
+        Ok(peek) => {
+            let ins = &peek.inspection;
             if let Some(r) = &ins.reason {
                 c = c.field("Reason", r.clone());
             }
@@ -774,12 +804,32 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
                 sec = sec.field_unit(&v.good_name(*g), (r * 100.0).round() / 100.0, "per hour");
             }
             c = c.section(sec);
+            if !peek.processes.is_empty() {
+                let mut sec = Section::new("Processes");
+                for p in peek.processes.iter().take(ROWS) {
+                    let mut state = p.stop.clone().unwrap_or_else(|| "running".into());
+                    if let Some(src) = p.requires {
+                        state = format!("{state}, on {}'s power", district_name(saved, v, src.0));
+                    }
+                    sec = sec.field(&process_label(saved, v, p), state);
+                }
+                c = c.section(sec);
+            }
+            if peek.members.len() > 1 {
+                let mut sec = Section::new("Replays with (one cluster)");
+                for &m in peek.members.iter().filter(|&&m| m != id).take(ROWS) {
+                    sec.push(
+                        Field::new(&district_name(saved, v, m), "").link("industry.districts", m),
+                    );
+                }
+                c = c.section(sec);
+            }
             let mut sec = Section::new("Made since the replay began");
             for (g, n) in ins.made_since.iter().take(ROWS) {
                 sec = sec.field(&v.good_name(g), n);
             }
             c = c.section(sec);
-            if let Some(stock) = stock {
+            if let Some(stock) = &peek.stock {
                 let mut sec = Section::new("Replay stock");
                 for (g, n) in stock.iter().take(ROWS) {
                     sec = sec.field(&v.good_name(g), n);
