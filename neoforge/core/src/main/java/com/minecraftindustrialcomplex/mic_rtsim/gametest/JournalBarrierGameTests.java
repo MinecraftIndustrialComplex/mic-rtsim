@@ -186,16 +186,22 @@ public final class JournalBarrierGameTests {
     /**
      * Detached chunks for the hold tests sit in the backlog's region, on its last row past the backlog's end, so
      * their region file exists: C2ME's writes are not synchronous and the barrier forces each noted chunk's region
-     * file, and one that is missing holds the round. The anchor is written first.
+     * file, and one that is missing holds the round. The anchor is written first; on vanilla's worker through the
+     * barrier's own foreground write, since a plain store waits behind the server's whole backlog (JB2), longer
+     * than the test's timeout on an unthrottled GameTest server.
      */
     private static ChunkPos spare(int i) {
         int base = BACKLOG_REGION * 32;
         return new ChunkPos(base + 20 + i, base + 31);
     }
 
-    private static CompletableFuture<Void> writeAnchor(ServerLevel level) {
+    private static CompletableFuture<?> writeAnchor(ServerLevel level) {
         ChunkPos anchor = new ChunkPos(BACKLOG_REGION * 32 + 31, BACKLOG_REGION * 32 + 31);
-        return ((IOWorker) level.getChunkSource().chunkMap.chunkScanner()).store(anchor, filler(anchor));
+        IOWorker worker = (IOWorker) level.getChunkSource().chunkMap.chunkScanner();
+        CompletableFuture<Void> stored = worker.store(anchor, filler(anchor));
+        if (worker.getClass() == IOWorker.class && worker instanceof ChunkWriteBarrier.TargetedWrites t)
+            return t.mic_rtsim$writeNow(List.of(anchor));
+        return stored;
     }
 
     /** On the IO chain, after everything queued on it so far (the test journal's write task). */
@@ -264,7 +270,7 @@ public final class JournalBarrierGameTests {
         LevelChunk never = new LevelChunk(level, spare(1));
         AtomicReference<Round> round = new AtomicReference<>();
         Path[] file = {null};
-        CompletableFuture<Void> anchor = writeAnchor(level);
+        CompletableFuture<?> anchor = writeAnchor(level);
         var seq = helper.startSequence()
                 .thenWaitUntil(() -> check("the region file is there", anchor.isDone()))
                 .thenExecute(() -> {
@@ -332,7 +338,7 @@ public final class JournalBarrierGameTests {
         LevelChunk inFlight = new LevelChunk(level, spare(2));
         AtomicReference<long[]> before = new AtomicReference<>();
         AtomicReference<long[]> after = new AtomicReference<>();
-        CompletableFuture<Void> anchor = writeAnchor(level);
+        CompletableFuture<?> anchor = writeAnchor(level);
         helper.startSequence()
                 .thenWaitUntil(() -> check("the region file is there", anchor.isDone()))
                 .thenExecute(() -> {
