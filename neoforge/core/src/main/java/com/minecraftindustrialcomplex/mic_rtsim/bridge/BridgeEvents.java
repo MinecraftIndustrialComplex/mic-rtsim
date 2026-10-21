@@ -48,6 +48,7 @@ public final class BridgeEvents {
         bus.addListener(EventPriority.LOWEST, false, AnimalTameEvent.class, BridgeEvents::onTame);
         bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.entity.living.LivingDropsEvent.class, BridgeEvents::onDrops);
         bus.addListener(BridgeEvents::onChunkLoad);
+        bus.addListener(com.minecraftindustrialcomplex.mic_rtsim.village.WorkCatalog::onAddReloadListeners);
         bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.level.ChunkEvent.Unload.class, BridgeEvents::onChunkUnload);
         bus.addListener(BridgeEvents::onEntityInteract);
         bus.addListener(BridgeEvents::onRegisterCommands);

@@ -1,0 +1,7 @@
+{
+  "group": "lamp",
+  "culture": "human",
+  "style": "minecraft:village_desert",
+  "cap": { "per_residents": 3 },
+  "variants": [ { "template": "minecraft:village/desert/desert_lamp_1" } ]
+}
