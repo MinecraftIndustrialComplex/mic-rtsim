@@ -1041,6 +1041,59 @@ public final class Cycles {
     }
 
     /**
+     * Steps a parked stack takes to leave a downward chute once its target accepts: {@code ChuteBlockEntity.tick}
+     * holds a stack at 0.5 while {@code handleDownwardOutput(true)} fails; once it succeeds the stack moves on
+     * by {@code motion} a tick and is handed on in the step that takes it below 0. 3 under gravity (0.3, 0.1,
+     * then -0.1 hands it on).
+     *
+     * @param motion {@link #chuteMotion}, negative
+     */
+    public static int chuteParkedSteps(float motion) {
+        if (!(motion < 0.0F)) {
+            throw new IllegalArgumentException("downward motion must be negative: " + motion);
+        }
+        float position = 0.5F;
+        int ticks = 0;
+        while (true) {
+            guard(++ticks);
+            float nextOffset = position + motion;
+            if (nextOffset < 0.0F) {
+                return ticks;
+            }
+            position = nextOffset;
+        }
+    }
+
+    /**
+     * Ticks a hand-off loop adds to a machine's own cycle when its next input can only arrive after it has
+     * emptied (choice GB59). Each actor in the loop (the machine, the mover that empties it if not itself,
+     * the parked chute that refills it) acts on its own tick; a hand-off from one to the next costs a tick
+     * unless the receiver ticks after the giver in the level's ticker order, in which case it acts in the
+     * same tick. Around a loop of {@code actors} block entities that happens for at least one and at most
+     * {@code actors - 1} of the hand-offs, whatever the order:
+     * <ul>
+     *   <li>two actors (a saw or crushing wheels that empty themselves, and the parked chute above): exactly
+     *       one, so the cycle is the machine's own plus {@code chuteParkedSteps - 1}, in either order;</li>
+     *   <li>three (a depot station, the arm that empties it, the parked chute): one or two by the order,
+     *       which the compile does not read; this returns the mean over orders as a ratio
+     *       ({@code emptierTicks + chuteParkedSteps - 1 + 1/2}).</li>
+     * </ul>
+     * The machine's own cycle is the one {@link #saw}, {@link #crusher} and {@link #fanTicks} give: the
+     * always-ready feeder that ticks right after it (the calibration tests).
+     *
+     * @param emptierTicks ticks from the moment the emptier sees the outputs to the tick it takes them
+     *     ({@link #armMoveTicks}); 0 when the machine empties itself
+     * @param selfEmptying true for a machine that hands its outputs on in its own tick
+     */
+    public static Ratio chuteHandOff(float motion, int emptierTicks, boolean selfEmptying) {
+        int steps = chuteParkedSteps(motion);
+        if (selfEmptying) {
+            return new Ratio(steps - 1, 1);
+        }
+        return new Ratio(2L * (emptierTicks + steps - 1) + 1, 2);
+    }
+
+    /**
      * Smart chute extraction amount ({@code SmartChuteBlockEntity.getExtractionAmount}): the filter count when
      * the count is shown (extracting from a non-chute inventory) and not "any amount", else 64.
      */
