@@ -42,11 +42,12 @@ public final class CreateGlass implements GlassExtractor {
      * Block state properties that are the model's state, not its structure: redstone power, lit, a blaze
      * burner's heat, a hopper's enabled flag, a crushing controller's VALID (its wheels turn), and a threshold
      * switch's LEVEL (its gauge of the observed inventory, 0 to 5; not a general "level", which other blocks
-     * use for structure). A paused funnel or a burner running out is a regime the engine follows from the
-     * stores and sweeps, not a new graph.
+     * use for structure), and a brass diode's POWERING (a pulse timer's pulse, 2 ticks of every period:
+     * hashed, every fingerprint pass in a pulse recompiled package_loop; G2-72). A paused funnel or a burner
+     * running out is a regime the engine follows from the stores and sweeps, not a new graph.
      */
     private static final Set<String> VOLATILE = Set.of("powered", "lit", "blaze", "enabled", "triggered", "open", "power",
-            "waterlogged", "inverted_signal", "valid");
+            "waterlogged", "inverted_signal", "valid", "powering");
 
     @Override
     public long fingerprint(BlockEntity be) {
