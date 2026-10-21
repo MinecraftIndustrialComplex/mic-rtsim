@@ -1142,8 +1142,10 @@ impl PageStore {
         if self.read_only {
             // No file stays open between reads: a writer may delete it (VIEWER.md §5.3). On
             // Windows, std opens with FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so
-            // the writer's delete or rename over this file succeeds while a read is in flight.
-            // UNVERIFIED on a real Windows server: V4's exit test (§16) runs it.
+            // the writer's delete of this file succeeds while a read is in flight (run under
+            // Wine 11, tests/read_while_saving.rs). Replacing the root while a reader has it open
+            // needs std's POSIX-semantics rename, which Wine lacks: there a log fold fails
+            // (VIEWER.md §16, "V4 as built", exit test (e)). UNVERIFIED on a real Windows server.
             let mut f = File::open(&path).map_err(io(&path))?;
             f.seek(SeekFrom::Start(loc.offset)).map_err(io(&path))?;
             let mut buf = vec![0; loc.stored_len as usize];
