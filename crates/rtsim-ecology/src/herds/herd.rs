@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::Handle;
+use rtsim_space::topology::{Iso, Move, Rect, Topology};
 use rtsim_travel::legs::Stamp;
 use serde::Serialize;
 
@@ -136,6 +137,34 @@ impl Route {
         }
         best
     }
+
+    /// [`Route::closest`] through every seam: the route is a chart polyline, `p` a canonical
+    /// point; each segment walked within `[t0, t1]` is cut at seams and compared with `p`'s
+    /// nearby images (TP9).
+    pub fn closest_through(&self, t: &Topology, p: (i64, i64), t0: Tick, t1: Tick) -> (f64, Tick) {
+        let q = (p.0 as f64 + 0.5, p.1 as f64 + 0.5);
+        let start = self.pos(t0);
+        let mut best = (t.dist(start, p), t0);
+        let end = self.pos(t1);
+        let d1 = t.dist(end, p);
+        if d1 < best.0 {
+            best = (d1, t1);
+        }
+        for i in 0..self.points.len().saturating_sub(1) {
+            let (s0, s1) = (self.times[i], self.times[i + 1]);
+            let (lo, hi) = (s0.max(t0), s1.min(t1));
+            if hi < lo {
+                continue;
+            }
+            let (a, b) = (self.pos(lo), self.pos(hi));
+            let m = Move::of_cells(lo.0 as f64, hi.0 as f64, a, b);
+            let (d, at) = t.closest_to(&m, q);
+            if d < best.0 {
+                best = (d, Tick(at as u64));
+            }
+        }
+        best
+    }
 }
 
 /// A member a player has seen (PLAN.md §4.4): it never dies quietly off-screen while it is here.
@@ -158,6 +187,10 @@ pub struct Embodied {
     pub steer: (i32, i32),
     /// A despawn was sent; waiting for the capture.
     pub leaving: bool,
+    /// The motion from the route's chart to the bodies' frame (TP11): where the group was
+    /// materialized, the image on the player's side, so its waypoints stay on that side of any
+    /// seam the bodies have not crossed. The identity on the plane.
+    pub chart: Iso,
 }
 
 /// Every animal that entered or left a herd, as integers (SCALE.md §9).
@@ -241,7 +274,12 @@ pub struct Herd {
 }
 
 /// The regions (frame, region x, region z) a route covers, widened by `radius`.
-pub fn route_regions(route: &Route, frame: u16, radius: u32) -> Vec<(u16, i64, i64)> {
+pub fn route_regions(
+    route: &Route,
+    frame: u16,
+    radius: u32,
+    topo: &Topology,
+) -> Vec<(u16, i64, i64)> {
     use rtsim_travel::legs::REGION_BLOCKS;
     let radius = i64::from(radius);
     let pts = &route.points;
@@ -252,17 +290,18 @@ pub fn route_regions(route: &Route, frame: u16, radius: u32) -> Vec<(u16, i64, i
     };
     let mut out = BTreeSet::new();
     for (a, b) in segs {
-        let (x0, x1) = (
-            i64::from(a.0.min(b.0)) - radius,
-            i64::from(a.0.max(b.0)) + radius,
+        // The segment's box in the route's chart, folded onto canonical regions (TP8).
+        let r = Rect::spanning(
+            (i64::from(a.0), i64::from(a.1)),
+            (i64::from(b.0), i64::from(b.1)),
+            radius,
         );
-        let (z0, z1) = (
-            i64::from(a.1.min(b.1)) - radius,
-            i64::from(a.1.max(b.1)) + radius,
-        );
-        for rx in x0.div_euclid(REGION_BLOCKS)..=x1.div_euclid(REGION_BLOCKS) {
-            for rz in z0.div_euclid(REGION_BLOCKS)..=z1.div_euclid(REGION_BLOCKS) {
-                out.insert((frame, rx, rz));
+        for part in topo.fold_rect(r) {
+            let (x0, z0, x1, z1) = part.grid_cells(REGION_BLOCKS);
+            for rx in x0..=x1 {
+                for rz in z0..=z1 {
+                    out.insert((frame, rx, rz));
+                }
             }
         }
     }

@@ -17,10 +17,18 @@
 //!
 //! **Patrols** walk the lanes within a few hops of their base and back (a depth-first tree walk,
 //! so each patrolled lane is sailed both ways once a circuit).
+//!
+//! **Seams** (TP15): on a wrapped or glued world the docks are triangulated together with their
+//! images in the tiles that touch the domain (a periodic Delaunay triangulation), and an edge
+//! from a dock to an image of another is a lane across the seam: its path runs in the chart of
+//! its first dock, from that dock to the image, over the water mask read at canonical cells. A
+//! pair of docks keeps its shortest lane. On the plane nothing changes.
 
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use rtsim_travel::Medium;
+
+use rtsim_space::topology::{Iso, Topology};
 
 use crate::geom::{Polyline, delaunay_edges, dist};
 use crate::tunables::ShipTunables;
@@ -127,6 +135,7 @@ pub fn candidate_lanes(
     tun: &ShipTunables,
     mask: &dyn WaterMask,
     lints: &mut NetworkLints,
+    topo: &Topology,
 ) -> Vec<Candidate> {
     let pts: Vec<(i64, i64)> = group
         .iter()
@@ -138,16 +147,26 @@ pub fn candidate_lanes(
         })
         .collect();
     let mt = |d: u32| tun.medium(docks[d as usize].medium);
+    // The pairs to try: each with the chart end of its second dock (its image nearest the first).
+    let pairs: Vec<(u32, u32, (i32, i32))> = if topo.is_flat() {
+        delaunay_edges(&pts)
+            .into_iter()
+            .map(|(i, j)| (group[i], group[j], docks[group[j] as usize].xz()))
+            .collect()
+    } else {
+        periodic_pairs(docks, group, &pts, topo)
+    };
+    let chart = water::ChartMask { inner: mask, topo };
+    let mask: &dyn WaterMask = if topo.is_flat() { mask } else { &chart };
     let mut out = Vec::new();
-    for (i, j) in delaunay_edges(&pts) {
-        let (a, b) = (group[i], group[j]);
+    for (a, b, bxz) in pairs {
         let (da, db) = (&docks[a as usize], &docks[b as usize]);
         let m = mt(a);
-        let straight = dist(da.xz(), db.xz());
+        let straight = dist(da.xz(), bxz);
         let path = match da.medium {
             Medium::Sea => {
                 let ca = water::cell_of(mask, da.x, da.z);
-                let cb = water::cell_of(mask, db.x, db.z);
+                let cb = water::cell_of(mask, bxz.0, bxz.1);
                 match water::water_path(mask, da.frame, ca, cb, tun.max_search_cells) {
                     None => {
                         lints.no_water_path += 1;
@@ -158,7 +177,7 @@ pub fn candidate_lanes(
                         for c in cells.iter().skip(1).take(cells.len().saturating_sub(2)) {
                             pts.push(water::centre(mask, *c));
                         }
-                        pts.push(db.xz());
+                        pts.push(bxz);
                         let p = Polyline::new(pts);
                         if p.length() * 1000 > straight.max(1) * m.max_stretch_milli {
                             lints.too_roundabout += 1;
@@ -168,8 +187,9 @@ pub fn candidate_lanes(
                     }
                 }
             }
-            _ => Polyline::new(vec![da.xz(), db.xz()]),
+            _ => Polyline::new(vec![da.xz(), bxz]),
         };
+        let _ = db;
         if path.length() > m.max_lane_blocks {
             lints.too_long += 1;
             continue;
@@ -195,6 +215,59 @@ pub fn candidate_lanes(
     }
     kept.sort_by_key(|c| (c.a, c.b));
     kept
+}
+
+/// The Delaunay pairs of a periodic triangulation (TP15): the docks and their images under the
+/// motions of the tiles touching the domain, triangulated together; an edge from a dock (its own
+/// image) to any image of another is a pair, oriented from the lower dock id, with the other's
+/// image nearest it. Each pair once, by its shortest image.
+fn periodic_pairs(
+    docks: &[Dock],
+    group: &[u32],
+    pts: &[(i64, i64)],
+    topo: &Topology,
+) -> Vec<(u32, u32, (i32, i32))> {
+    let n = pts.len();
+    let images: Vec<Iso> = topo.adjacent().to_vec();
+    let mut all: Vec<(i64, i64)> = Vec::with_capacity(n * images.len());
+    let mut of: Vec<(usize, Iso)> = Vec::with_capacity(n * images.len());
+    for &h in &images {
+        for (i, p) in pts.iter().enumerate() {
+            all.push(h.cell(p.0, p.1));
+            of.push((i, h));
+        }
+    }
+    let mut best: BTreeMap<(u32, u32), (u64, (i32, i32))> = BTreeMap::new();
+    for (u, v) in delaunay_edges(&all) {
+        // An edge from a dock itself (the identity image) to an image of another dock.
+        let (own, img) = match (of[u].1.is_identity(), of[v].1.is_identity()) {
+            (true, _) => (u, v),
+            (false, true) => (v, u),
+            _ => continue,
+        };
+        let (i, (j, h)) = (of[own].0, of[img]);
+        if i == j {
+            continue;
+        }
+        let (a, b) = (group[i], group[j]);
+        // From the lower dock id: the image of the other nearest it.
+        let (a, b, end) = if a < b {
+            (a, b, h.cell(pts[j].0, pts[j].1))
+        } else {
+            let back = h.inverse();
+            (b, a, back.cell(pts[i].0, pts[i].1))
+        };
+        let da = &docks[a as usize];
+        let end = (end.0 as i32, end.1 as i32);
+        let len = dist(da.xz(), end);
+        let e = best.entry((a, b)).or_insert((u64::MAX, end));
+        if len < e.0 || (len == e.0 && end < e.1) {
+            *e = (len, end);
+        }
+    }
+    best.into_iter()
+        .map(|((a, b), (_, end))| (a, b, end))
+        .collect()
 }
 
 /// Shortest paths by lane length from `src` over `adj` (dock -> [(other, lane, length)]).

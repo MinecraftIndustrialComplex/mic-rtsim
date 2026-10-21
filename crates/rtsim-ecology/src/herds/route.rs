@@ -19,11 +19,18 @@
 //! closes every edge into the pass cell it blocks; the herd tries a neighbouring cell next, and
 //! once those are reported too it takes the long way round. The extra cost halves every
 //! half-life (PLACEHOLDER two sim years), so a fence taken down is forgotten in time.
+//!
+//! **Seams** (TP4, TP5, TP14): the flow field is a local grid in the chart of the herd's
+//! (canonical) position, so it runs straight across a seam: each chart cell reads the ground,
+//! forage, obstacles and claims of its canonical cell, and the route is a chart polyline whose
+//! folded points are where the herd walks (over a pole a herd heading north comes out heading
+//! south). Cells within [`CONE_CLEARANCE`] of a cone point are not entered.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_space::topology::{CONE_CLEARANCE, Topology};
 
 use super::climate::{Climate, Subs};
 use super::forage::{CELL_BLOCKS, CellKey, Forage, cell_of, centre_of};
@@ -94,6 +101,8 @@ pub struct Weights {
 
 /// One decision's inputs.
 pub struct Ask<'a> {
+    /// The frame's topology: chart cells are read at their canonical cells.
+    pub topo: &'a Topology,
     pub climate: &'a dyn Climate,
     pub subs: &'a Subs,
     pub forage: &'a Forage,
@@ -144,6 +153,27 @@ fn passable(t: f32) -> bool {
 /// Plans a herd's next sub-season (the flow field and its best target).
 pub fn plan(q: &Ask<'_>) -> Choice {
     let start = cell_of(q.from.0, q.from.1);
+    let grid = q.topo.grid(i64::from(CELL_BLOCKS));
+    let flat = q.topo.is_flat();
+    // The canonical cell of a chart cell (the cell itself on the plane).
+    let key = |c: (i32, i32)| -> (i32, i32) {
+        if flat {
+            return c;
+        }
+        let (x, z) = grid.canonical(i64::from(c.0), i64::from(c.1));
+        (x as i32, z as i32)
+    };
+    let near_cone = |c: (i32, i32)| {
+        !flat && {
+            let k = key(c);
+            let (x, z) = centre_of(k);
+            q.topo.near_cone(
+                i64::from(x),
+                i64::from(z),
+                CONE_CLEARANCE + i64::from(CELL_BLOCKS),
+            )
+        }
+    };
     let days = (q.until.0.saturating_sub(q.at.0)) as f64 / TICKS_PER_DAY as f64;
     let walk = q.sp.speed_blocks_per_day * days * q.w.travel_share;
     let horizon = walk * q.w.horizon.max(1.0);
@@ -167,8 +197,13 @@ pub fn plan(q: &Ask<'_>) -> Choice {
     let mut ground_at = |i: usize| {
         if ground[i].is_nan() {
             let c = cell(i);
-            let t = q.climate.terrain(q.frame, c.0, c.1);
-            ground[i] = if passable(t) { t } else { -1.0 };
+            let k = key(c);
+            let t = q.climate.terrain(q.frame, k.0, k.1);
+            ground[i] = if passable(t) && !near_cone(c) {
+                t
+            } else {
+                -1.0
+            };
         }
         ground[i]
     };
@@ -177,7 +212,7 @@ pub fn plan(q: &Ask<'_>) -> Choice {
         if !has_obstacles {
             return 0.0;
         }
-        let c = cell(i);
+        let c = key(cell(i));
         q.obstacles
             .extra((q.frame, c.0, c.1), q.at, q.w.obstacle_half_life)
     };
@@ -262,7 +297,8 @@ pub fn plan(q: &Ask<'_>) -> Choice {
         .map(|&(c, cost, len)| {
             let travel = (len / q.sp.speed_blocks_per_day.max(1.0) * TICKS_PER_DAY as f64) as u64;
             let arrive = Tick(q.at.0 + travel).max(q.at);
-            let f = q.forage.at(q.climate, q.subs, (q.frame, c.0, c.1), arrive);
+            let k = key(c);
+            let f = q.forage.at(q.climate, q.subs, (q.frame, k.0, k.1), arrive);
             (c, cost, len, arrive, f)
         })
         .collect();
@@ -271,12 +307,14 @@ pub fn plan(q: &Ask<'_>) -> Choice {
     for &(c, cost, _, arrive, f) in &scored {
         let food = (f / demand_cell.max(1e-9)).min(q.w.food_cap) + q.w.richness * f / best_f;
         let sub = Subs::in_year(q.subs.index(arrive));
-        let temp = q.climate.temperature(q.frame, c.0, c.1, sub);
+        let k = key(c);
+        let temp = q.climate.temperature(q.frame, k.0, k.1, sub);
         let outside = f64::from((lo - temp).max(temp - hi).max(0.0));
         let mut claim = 0.0;
         'near: for dx in -2..=2 {
             for dz in -2..=2 {
-                if let Some(&o) = q.claims.get(&(q.frame, c.0 + dx, c.1 + dz))
+                let n = key((c.0 + dx, c.1 + dz));
+                if let Some(&o) = q.claims.get(&(q.frame, n.0, n.1))
                     && o != q.me
                 {
                     claim = q.w.claim_penalty;
@@ -297,13 +335,10 @@ pub fn plan(q: &Ask<'_>) -> Choice {
         }
     }
     let sub0 = Subs::in_year(q.subs.index(q.at));
-    let (score, _, target, forage, temperature) = pick.unwrap_or((
-        0.0,
-        0,
-        start,
-        0.0,
-        q.climate.temperature(q.frame, start.0, start.1, sub0),
-    ));
+    let (score, _, target, forage, temperature) = pick.unwrap_or((0.0, 0, start, 0.0, {
+        let k = key(start);
+        q.climate.temperature(q.frame, k.0, k.1, sub0)
+    }));
     // Read the route back along the parents, then walk only this sub-season's share of it.
     let mut cells_back = vec![target];
     let mut c = target;
@@ -378,6 +413,8 @@ mod tests {
     use crate::herds::climate::ForageRates;
     use crate::herds::species::HerdSpecies;
 
+    static FLAT: Topology = Topology::flat();
+
     /// Warm in the south (+z, 10 °C a cell), a wall at cz = 0 with a gap at cx = 0: the comfort
     /// band holds only the gap and the two rows south of it.
     struct Valley;
@@ -410,6 +447,7 @@ mod tests {
         from: (i64, i64),
     ) -> Ask<'a> {
         Ask {
+            topo: &FLAT,
             climate: &Valley,
             subs,
             forage,

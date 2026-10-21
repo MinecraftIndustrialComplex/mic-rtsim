@@ -115,20 +115,24 @@ impl World {
     /// Where an individual caravan is now, on its leg.
     pub fn caravan_place(&self, c: &Caravan, at: Tick) -> Place {
         let (a, b) = (self.nodes[c.leg.from].pos, self.nodes[c.leg.to].pos);
-        let f = i64::from(c.progress_milli(at));
-        let lerp =
-            |x: i32, y: i32| (i64::from(x) + (i64::from(y) - i64::from(x)) * f / 1000) as i32;
-        Place::new(a.frame, lerp(a.x, b.x), 64, lerp(a.z, b.z))
+        // On the road the short way, canonical (topology choice TP21).
+        let (x, z) = self.road_point(a, b, i64::from(c.progress_milli(at)));
+        Place::new(a.frame, x as i32, 64, z as i32)
     }
 
     fn path_of(&self, leg: &Leg) -> Path {
         let (a, b) = (self.nodes[leg.from].pos, self.nodes[leg.to].pos);
+        // The short way: the leg ends at the image of `b` nearest `a` (TP7).
+        let (bx, bz) = self.topo(a.frame).toward(
+            (i64::from(a.x), i64::from(a.z)),
+            (i64::from(b.x), i64::from(b.z)),
+        );
         Path {
             frame: a.frame,
             x0: a.x,
             z0: a.z,
-            x1: b.x,
-            z1: b.z,
+            x1: bx as i32,
+            z1: bz as i32,
             t0: leg.start,
             t1: leg.end,
             radius: self.cfg.knowledge.witness_radius,
@@ -264,6 +268,7 @@ impl World {
         let near: Vec<(ActorId, Place)> = (0..self.nodes.len())
             .map(|i| (self.nodes[i].actor, self.place_of(i)))
             .collect();
+        let near = self.near_images(place, near);
         let seen = witnesses(place, self.cfg.knowledge.witness_radius, near);
         for h in seen {
             self.knowledge.witness(h, id, at);

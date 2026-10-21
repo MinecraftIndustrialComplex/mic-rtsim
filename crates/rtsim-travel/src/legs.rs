@@ -11,11 +11,19 @@
 //! the old bookings go stale without being found and removed (cancelling is lazy, as the kernel's
 //! wheel cancels). A [`Meeting`] carries both legs' generations, so it cancels in cascade when
 //! either leg changes: first the leg's own bookings, then every meeting that depended on them.
+//!
+//! **Seams** (docs/choices-topology.md TP7 to TP9): on a wrapped or glued frame a leg starts at a
+//! canonical position and its end may lie past an edge (the image of its destination nearest the
+//! start); its position is the straight line's point folded ([`LegIndex::position`]). A booking
+//! folds each window's box into canonical regions, so a leg crossing a seam is booked on both
+//! sides, and a meeting is found through the seams ([`Topology::first_within`]). On a flat frame
+//! every number is what it was before.
 
 use std::collections::BTreeMap;
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::{Arena, Handle};
+use rtsim_space::topology::{Move, Rect, SharedTopologies, Topology};
 
 /// Region edge in blocks, as Minecraft's region files (PLAN.md §5.2).
 pub const REGION_BLOCKS: i64 = 512;
@@ -90,6 +98,8 @@ pub struct LegIndex {
     /// quantum.
     pub(crate) window: u64,
     pub(crate) stats: LegStats,
+    /// Every frame's topology (TP6): session state, set by the engine host; not saved.
+    pub(crate) topo: SharedTopologies,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -105,7 +115,51 @@ impl LegIndex {
             cells: BTreeMap::new(),
             window: window_ticks.max(1),
             stats: LegStats::default(),
+            topo: rtsim_space::topology::all_flat(),
         }
+    }
+
+    /// Hands the index every frame's topology. When it changes, every live leg is booked again
+    /// under it (a world seen flat before and glued now).
+    pub fn set_topologies(&mut self, t: SharedTopologies) {
+        if std::sync::Arc::ptr_eq(&t, &self.topo) || *t == *self.topo {
+            self.topo = t;
+            return;
+        }
+        self.topo = t;
+        self.cells.clear();
+        let live: Vec<(Path, Stamp)> = self
+            .legs
+            .iter()
+            .map(|(id, r)| {
+                (
+                    r.path,
+                    Stamp {
+                        leg: id,
+                        generation: r.generation,
+                    },
+                )
+            })
+            .collect();
+        for (p, s) in live {
+            self.rasterize(p, s);
+        }
+    }
+
+    /// The frames' topologies, for modules that book here.
+    pub fn topologies(&self) -> &SharedTopologies {
+        &self.topo
+    }
+
+    /// The topology of `frame`.
+    pub fn topo(&self, frame: u16) -> &Topology {
+        self.topo.of(frame)
+    }
+
+    /// A leg's canonical position at `t`: its chart position folded (TP7).
+    pub fn position(&self, p: &Path, t: Tick) -> (i64, i64) {
+        let (x, z) = p.at(t);
+        self.topo(p.frame).canonical(x, z)
     }
 
     pub fn stats(&self) -> LegStats {
@@ -191,17 +245,40 @@ impl LegIndex {
         let (t0, t1) = (p.t0.0, p.t1.0.max(p.t0.0));
         let (w0, w1) = (t0 / self.window, t1 / self.window);
         let r = i64::from(p.radius);
+        let topo = self.topo(p.frame);
         let mut out = Vec::new();
         for w in w0..=w1 {
             let a = p.at(Tick((w * self.window).max(t0)));
             let b = p.at(Tick(((w + 1) * self.window).min(t1)));
-            let (xl, xh) = (a.0.min(b.0) - r, a.0.max(b.0) + r);
-            let (zl, zh) = (a.1.min(b.1) - r, a.1.max(b.1) + r);
-            for rx in xl.div_euclid(REGION_BLOCKS)..=xh.div_euclid(REGION_BLOCKS) {
-                for rz in zl.div_euclid(REGION_BLOCKS)..=zh.div_euclid(REGION_BLOCKS) {
-                    out.push((w, p.frame, rx, rz));
+            if topo.is_flat() {
+                let (xl, xh) = (a.0.min(b.0) - r, a.0.max(b.0) + r);
+                let (zl, zh) = (a.1.min(b.1) - r, a.1.max(b.1) + r);
+                for rx in xl.div_euclid(REGION_BLOCKS)..=xh.div_euclid(REGION_BLOCKS) {
+                    for rz in zl.div_euclid(REGION_BLOCKS)..=zh.div_euclid(REGION_BLOCKS) {
+                        out.push((w, p.frame, rx, rz));
+                    }
+                }
+                continue;
+            }
+            // The window's box in the leg's chart, folded onto canonical regions (TP8).
+            let start = out.len();
+            for part in topo.fold_rect(Rect::spanning(a, b, r)) {
+                let (x0, z0, x1, z1) = part.grid_cells(REGION_BLOCKS);
+                for rx in x0..=x1 {
+                    for rz in z0..=z1 {
+                        out.push((w, p.frame, rx, rz));
+                    }
                 }
             }
+            out[start..].sort_unstable();
+            let mut k = start;
+            for i in start..out.len() {
+                if i == start || out[i] != out[k - 1] {
+                    out[k] = out[i];
+                    k += 1;
+                }
+            }
+            out.truncate(k);
         }
         out
     }
@@ -284,6 +361,26 @@ impl LegIndex {
             return None;
         }
         let reach = f64::from(pa.radius) + f64::from(pb.radius);
+        let topo = self.topo(pa.frame);
+        if !topo.is_flat() {
+            // Through the seams (TP9): both walks cut at seams, compared under the images that
+            // touch the domain.
+            let mv = |p: &Path| {
+                Move::of_cells(
+                    p.t0.0 as f64,
+                    p.t1.0.max(p.t0.0) as f64,
+                    (i64::from(p.x0), i64::from(p.z0)),
+                    (i64::from(p.x1), i64::from(p.z1)),
+                )
+            };
+            let t = topo.first_within(&mv(&pa), &mv(&pb), reach)?;
+            let at = if t <= lo as f64 { lo } else { t.ceil() as u64 };
+            return Some(Meeting {
+                at: Tick(at.clamp(lo, hi)),
+                a,
+                b,
+            });
+        }
         // Relative position as a linear function of t over [lo, hi].
         let rel = |t: u64| {
             let (x, z) = pa.at(Tick(t));
@@ -409,5 +506,36 @@ mod tests {
         assert!(ix.sharing(b).is_empty());
         assert!(ix.sharing(b2).is_empty());
         assert_eq!(ix.window_ticks(), 1000);
+    }
+
+    fn seam_index() -> LegIndex {
+        // An x wrap of 4,096 blocks: the seam at x = -2,048 / 2,048.
+        let mut t = rtsim_space::Topologies::new();
+        t.set(0, Topology::x_wrap(-2_048, 4_096));
+        let mut ix = LegIndex::new(1000);
+        ix.set_topologies(std::sync::Arc::new(t));
+        ix
+    }
+
+    #[test]
+    fn a_leg_across_a_seam_is_booked_on_both_sides_and_meets_once() {
+        let mut ix = seam_index();
+        // East from x = 1,900 to the image of x = -1,900 (2,196): over the seam.
+        let a = ix.book(path(1900, 2196, 0, 1000), Owner(1));
+        // Regions 3 (x in [1536, 2048)) and -4 (x in [-2048, -1536)) both hold it, in the same
+        // window.
+        assert_eq!(ix.in_region(0, 3, 0, Tick(500)), vec![a]);
+        assert_eq!(ix.in_region(0, -4, 0, Tick(500)), vec![a]);
+        assert_eq!(
+            ix.position(&ix.get(a.leg).unwrap().path, Tick(1000)),
+            (-1900, 0)
+        );
+        // A player standing just past the seam, at x = -1,950.
+        let p = ix.book(path(-1950, -1950, 0, 1000), Owner(1 << 63));
+        assert_eq!(ix.sharing(p), vec![a]);
+        let m = ix.meeting(a, p).expect("they meet through the seam");
+        // Chart x 2,146 is -1,950: within 32 blocks from chart 2,114, a tenth of the way less.
+        assert!(m.at.0 > 700 && m.at.0 < 760, "{m:?}");
+        assert_eq!(ix.sharing(a), vec![p]);
     }
 }
