@@ -68,15 +68,20 @@ macro_rules! kinds {
 
 kinds! {
     // Conflict (rtsim-conflict). A party's legs are a named mover's when it is a war party.
+    CONFLICT_FACTION = "conflict.faction", "Camp founded", Minor;
     CONFLICT_STEP = "conflict.step", "Feud escalates", Notable;
     CONFLICT_CALM = "conflict.calm", "Feud calms", Minor;
     CONFLICT_DEMAND = "conflict.demand", "Tribute demanded", Notable;
     CONFLICT_TRIBUTE = "conflict.tribute", "Tribute paid", Notable;
+    CONFLICT_COMPLIED = "conflict.complied", "Demand met by stopping", Notable;
     CONFLICT_UNMET = "conflict.unmet", "Demand refused or expired", Notable;
-    CONFLICT_PARTY = "conflict.party", "Party sets out", Minor;
+    CONFLICT_PARTY = "conflict.party", "Party musters", Minor;
     CONFLICT_PARTY_LEG = "conflict.party_leg", "Party on the move", Minor;
     CONFLICT_RAID = "conflict.raid", "Raid", Major;
     CONFLICT_AMBUSH = "conflict.ambush", "Train ambushed", Notable;
+    CONFLICT_FIGHT = "conflict.fight", "Watched fight ends", Notable;
+    CONFLICT_CHIEF = "conflict.chief", "War chief falls", Major;
+    CONFLICT_HEIR = "conflict.heir", "Heir takes over", Notable;
     CONFLICT_PARTY_HOME = "conflict.party_home", "Party home", Minor;
     // Dragons (rtsim-ecology). Every dragon is named: its legs are notable.
     DRAGONS_FLIGHT = "dragons.flight", "Dragon flight", Notable;

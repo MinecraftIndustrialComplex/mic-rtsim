@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 rtsim-kernel.workspace = true
+rtsim-archive.workspace = true
 rtsim-industry.workspace = true
 rtsim-trade.workspace = true
 rtsim-settle.workspace = true
