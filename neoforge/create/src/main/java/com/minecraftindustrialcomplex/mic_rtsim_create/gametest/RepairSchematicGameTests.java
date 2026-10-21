@@ -35,7 +35,6 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
-import net.neoforged.neoforge.common.util.FakePlayerFactory;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -162,7 +161,7 @@ public final class RepairSchematicGameTests {
                 }))
                 .thenExecute(() -> {
                     // A player breaks the casing next to the one the raid will hit: that hole is the player's.
-                    FakePlayerFactory.getMinecraft(level).gameMode.destroyBlock(playerCasing);
+                    com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level).gameMode.destroyBlock(playerCasing);
                     check("the player's casing is gone", level.getBlockState(playerCasing).isAir());
                     for (BlockPos p : List.of(chestPos, beltStart, beltMid, beltEnd, casing, torch))
                         before.put(p, level.getBlockState(p));

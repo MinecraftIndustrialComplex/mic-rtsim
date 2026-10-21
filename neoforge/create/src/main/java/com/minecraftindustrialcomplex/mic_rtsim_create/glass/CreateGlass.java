@@ -48,19 +48,38 @@ public final class CreateGlass implements GlassExtractor {
     private static final Set<String> VOLATILE = Set.of("powered", "lit", "blaze", "enabled", "triggered", "open", "power",
             "waterlogged", "inverted_signal", "valid");
 
+    /**
+     * Per block entity type: is it Create's (by registry namespace)? Per block state: the hash of its
+     * structural properties. Both are pure functions of interned registry objects, cached because the
+     * fingerprint passes hash every block entity of every district chunk once per sweep period (the
+     * largest rtsim cost on the server thread in the Mysda stress world, docs/stress-worlds-results.md).
+     * Server thread only.
+     */
+    private final it.unimi.dsi.fastutil.objects.Reference2BooleanOpenHashMap<net.minecraft.world.level.block.entity.BlockEntityType<?>> createType =
+            new it.unimi.dsi.fastutil.objects.Reference2BooleanOpenHashMap<>();
+    private final it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<BlockState> stateHash =
+            new it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<>();
+
     @Override
     public long fingerprint(BlockEntity be) {
-        String ns = net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(be.getType()) == null ? ""
-                : net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(be.getType()).getNamespace();
-        if (!ns.equals("create") && !(be instanceof HopperBlockEntity) && !(be instanceof net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity))
+        net.minecraft.world.level.block.entity.BlockEntityType<?> type = be.getType();
+        boolean create;
+        if (createType.containsKey(type)) {
+            create = createType.getBoolean(type);
+        } else {
+            net.minecraft.resources.ResourceLocation key = net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type);
+            create = key != null && key.getNamespace().equals("create");
+            createType.put(type, create);
+        }
+        if (!create && !(be instanceof HopperBlockEntity) && !(be instanceof net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity))
             return 0;
-        long h = 0x51ED_2701L;
         BlockState s = be.getBlockState();
-        for (Property<?> p : s.getProperties()) {
-            if (VOLATILE.contains(p.getName())
-                    || p == com.simibubi.create.content.redstone.thresholdSwitch.ThresholdSwitchBlock.LEVEL)
-                continue;
-            h = mix(h, p.getName().hashCode() * 31L + s.getValue(p).toString().hashCode());
+        long h;
+        if (stateHash.containsKey(s)) {
+            h = stateHash.getLong(s);
+        } else {
+            h = structuralHash(s);
+            stateHash.put(s, h);
         }
         if (be instanceof SmartBlockEntity sbe)
             for (BlockEntityBehaviour b : sbe.getAllBehaviours()) {
@@ -151,6 +170,18 @@ public final class CreateGlass implements GlassExtractor {
         if (s.isEmpty())
             return 0;
         return ItemStack.hashItemAndComponents(s);
+    }
+
+    /** The hash of a block state's properties that are structure, not model state ({@link #VOLATILE}). */
+    static long structuralHash(BlockState s) {
+        long h = 0x51ED_2701L;
+        for (Property<?> p : s.getProperties()) {
+            if (VOLATILE.contains(p.getName())
+                    || p == com.simibubi.create.content.redstone.thresholdSwitch.ThresholdSwitchBlock.LEVEL)
+                continue;
+            h = mix(h, p.getName().hashCode() * 31L + s.getValue(p).toString().hashCode());
+        }
+        return h;
     }
 
     private static long mix(long h, long v) {
