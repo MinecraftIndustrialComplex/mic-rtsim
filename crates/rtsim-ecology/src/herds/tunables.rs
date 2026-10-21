@@ -42,8 +42,9 @@ pub struct HerdTunables {
     /// Body condition moves this share of the way toward what grazing met, each sub-season.
     /// PLACEHOLDER 0.5.
     pub condition_rate: f64,
-    /// Decisions are staggered by a hash of the herd over this many ticks after a sub-season
-    /// begins (PLAN.md §4.3: nothing spikes). PLACEHOLDER a quarter day.
+    /// Decisions are staggered over this many ticks after a sub-season begins (PLAN.md §4.3:
+    /// nothing spikes), by a hash of the herd's row page, page-mates on consecutive ticks
+    /// (docs/choices-paging-modules.md). PLACEHOLDER a quarter day.
     pub stagger_ticks: u64,
     /// A player's interest area for herds: roughly the entity-ticking distance, blocks.
     /// PLACEHOLDER 160 (as the dragons').

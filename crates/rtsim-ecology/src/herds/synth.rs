@@ -149,16 +149,29 @@ pub fn valley(seed: u64, tun: super::HerdTunables, at: Tick) -> Herds {
 
 /// `n` herds of `members` each spread over the valley, for the bench.
 pub fn bench_herds(seed: u64, n: usize, members: u64, at: Tick) -> Herds {
-    let mut h = Herds::new(
-        seed,
-        super::HerdTunables::default(),
-        Box::new(Valley::default()),
-        at,
-    );
+    bench_herds_in(seed, n, members, at, Valley::default())
+}
+
+/// The default valley widened east and west so that `n` herds stand at the density of
+/// [`WIDE_HERDS`] herds in the default one: a world that grows with its herds, for the bench.
+pub fn wide_valley(n: usize) -> Valley {
+    let v = Valley::default();
+    let half_x = (v.half_x as usize * n).div_ceil(WIDE_HERDS).max(v.half_x as usize);
+    Valley {
+        half_x: half_x as i32,
+        ..v
+    }
+}
+
+/// The herd count at which [`wide_valley`] is the default valley. PLACEHOLDER 64.
+pub const WIDE_HERDS: usize = 64;
+
+/// `n` herds of `members` each spread over `v`, for the bench.
+pub fn bench_herds_in(seed: u64, n: usize, members: u64, at: Tick, v: Valley) -> Herds {
+    let mut h = Herds::new(seed, super::HerdTunables::default(), Box::new(v), at);
     let key = StreamKey::new(seed, SystemId::named("synth.bench_herds"), 0);
     for i in 0..n {
         let mut r = key.slot(i as u64);
-        let v = Valley::default();
         let x = (r.below((2 * v.half_x - 4) as u64) as i32 - v.half_x + 2) * CELL_BLOCKS;
         let z = (r.below((2 * v.half_z - 4) as u64) as i32 - v.half_z + 2) * CELL_BLOCKS;
         let z = if v.is_ridge(x / CELL_BLOCKS, z / CELL_BLOCKS) {
