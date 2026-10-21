@@ -64,8 +64,9 @@ class Params:
     bh: bool = True                     # TUNABLE (rule): density term in births
     disperse_frac: float = 0.02         # TUNABLE: share of a herd above 0.8 K that leaves each spring
     frontier_rate: float = 0.25         # TUNABLE: wanderers found a fallow region, per region-year
-    loaded_regrow_rate: float = 2.0     # per region-year while loaded: vanilla spawns the census sees
-    founders: int = 12
+    loaded_regrow_rate: float = 0.0     # per region-year while loaded (not in the proposed rule; a sweep)
+    founders: int = 12                  # TUNABLE: a frontier herd's size
+    founders_frac: float = 0.0          # TUNABLE (sweep): founders scale with K when above `founders`
     refuge_frac: float = 0.10           # TUNABLE: share of K dragons cannot reach
     refuge_min: int = 8
     # ---- dragons
@@ -398,7 +399,8 @@ class World:
         fallow = self.founded & (self.hab > 0) & (self.Y + self.A == 0)
         rate = p.frontier_rate + np.where(loaded_year, p.loaded_regrow_rate, 0.0)
         hit = fallow & (self.rng.random(fallow.shape) < 1 - np.exp(-rate))
-        self.A = np.where(hit, p.founders, self.A)
+        n_found = np.maximum(p.founders, np.round(p.founders_frac * self.K)).astype(np.int64)
+        self.A = np.where(hit, n_found, self.A)
         self.herd_events += int(recol.sum() + hit.sum())
 
     def hunt(self, dt):
@@ -663,6 +665,7 @@ class World:
         return {
             "herd_animals": tot,
             "herd_k": Ksum,
+            "herd_local": np.where(cheb(CY, CX)[None] <= 1, N, 0).sum((1, 2)),
             "herds_alive": alive,
             "herds_founded": fh.sum((1, 2)),
             "herd_top_share": top,
@@ -808,7 +811,11 @@ def shock(w: World, kind, t):
     S = w.S
     kn = w.known
     one = np.ones((S, G, G), np.int64)
-    if kind == "herds":
+    if kind == "herds_local":           # a player clears every animal around spawn
+        m = np.broadcast_to(cheb(CY, CX) <= 1, kn.shape)
+        w.Y = np.where(m, 0, w.Y)
+        w.A = np.where(m, 0, w.A)
+    elif kind == "herds":
         gone = kn & ((w.Y + w.A) > 0)
         w.Y = np.where(kn, 0, w.Y)
         w.A = np.where(kn, 0, w.A)

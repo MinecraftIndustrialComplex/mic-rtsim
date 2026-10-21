@@ -36,7 +36,7 @@ RATIOS = {   # census key -> capacity key (None: a count already)
     "camps_live": "camps",
     "pirate_ships": "havens",     # two slots per haven: divided by 2 below
 }
-SHOCK_KEY = {"herds": "herd_animals", "dragons": "dragons", "villages": "village_pop",
+SHOCK_KEY = {"herds": "herd_animals", "herds_local": "herd_local", "dragons": "dragons", "villages": "village_pop",
              "ribbits": "ribbit_pop", "dens": "frostmaws", "groves": "umvuthana", "nests": "worms",
              "camps": "camp_pool", "pirates": "pirate_ships"}
 
@@ -78,6 +78,7 @@ def steady(args):
         out[k] = {"mean": band(np.nanmean(rl, axis=1)), "min": band(np.nanmin(rl, axis=1)),
                   "max": band(np.nanmax(rl, axis=1))}
     out["herd_extinctions_per_world"] = round(w.extinctions / S, 2)
+    out["camp_feud_raids_per_world_year"] = round(w.c_raids / S / years, 2)
     out["herd_top_share"] = band(series(hist, "herd_top_share")[:, late].mean(1))
     if mode == "baseline":
         sim = series(hist, "village_sim_pop")[:, late]
@@ -100,16 +101,22 @@ def killall(args):
     ts = np.array([c["t"] for c in hist])
     pre = x[:, (ts >= (shock_year - 1) * YEAR) & (ts < shock_year * YEAR)].mean(1)
     post_idx = np.where(ts > shock_year * YEAR)[0]
-    rec = []
-    for s in range(S):
-        hit = [i for i in post_idx if x[s, i] >= 0.9 * pre[s]]
-        rec.append((ts[hit[0]] - shock_year * YEAR) if hit and pre[s] > 0 else (math.inf if pre[s] > 0 else math.nan))
-    rec = np.array(rec, float)
+    def rec_at(frac):
+        out = []
+        for s in range(S):
+            hit = [i for i in post_idx if x[s, i] >= frac * pre[s]]
+            out.append((ts[hit[0]] - shock_year * YEAR) if hit and pre[s] > 0 else (math.inf if pre[s] > 0 else math.nan))
+        return np.array(out, float)
+    rec = rec_at(0.9)
+    r50 = rec_at(0.5)
     fin = rec[np.isfinite(rec)]
+    f50 = r50[np.isfinite(r50)]
     end = x[:, -24:].mean(1) / np.maximum(pre, 1e-9)
     return {"mode": mode, "kind": kind, "over": over, "pre_mean": round(float(np.nanmean(pre)), 1),
             "recovered_share": round(float(np.isfinite(rec).sum() / max(1, np.sum(~np.isnan(rec)))), 3),
             "recovery_days": band(fin) if fin.size else None,
+            "recovered50_share": round(float(np.isfinite(r50).sum() / max(1, np.sum(~np.isnan(r50)))), 3),
+            "recovery50_days": band(f50) if f50.size else None,
             "end_over_pre": band(end)}
 
 
@@ -218,8 +225,11 @@ def main():
                 jobs.append((steady, ("proposed", "roamer", S2, Y, 41, over)))
             jobs.append((steady, ("baseline", "roamer", S2, Y, 41, {"dragon_eat": 0.6 * mult})))
         for fr in (0.0, 0.05, 0.25, 1.0):
-            jobs.append((killall, ("proposed", "herds", S2, Y, 51, min(20, Y // 3),
-                                   {"frontier_rate": fr, "loaded_regrow_rate": 0.0})))
+            jobs.append((killall, ("proposed", "herds", S2, Y, 51, min(20, Y // 3), {"frontier_rate": fr})))
+        for ff in (0.05, 0.2):
+            jobs.append((killall, ("proposed", "herds", S2, Y, 51, min(20, Y // 3), {"founders_frac": ff})))
+            jobs.append((killall, ("proposed", "herds_local", S2, Y, 52, min(20, Y // 3), {"founders_frac": ff})))
+        jobs.append((killall, ("proposed", "herds", S2, Y, 51, min(20, Y // 3), {"loaded_regrow_rate": 2.0})))
         jobs.append((steady, ("proposed", "homebody", S2, Y, 61, {"bh": False})))
         for hd in (1.0, 1.5, 4.0):
             jobs.append((steady, ("proposed", "homebody", S2, Y, 62, {"msy_headroom": hd})))
