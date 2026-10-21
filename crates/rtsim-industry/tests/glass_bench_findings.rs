@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Engine findings of the G2 replay bench (`rtsim-cli bench industry`, GLASSBOX.md §9.3), as
-//! failing tests built only from public records through `Engine::ingest`. They are ignored so
-//! the workspace stays green until the engine handles them; run them with
-//! `cargo test -p rtsim-industry --test glass_bench_findings -- --ignored`.
+//! tests built only from public records through `Engine::ingest`. Findings the engine never
+//! handled are ignored so the workspace stays green until it does; run them with
+//! `cargo test -p rtsim-industry --test glass_bench_findings -- --ignored`. A regression is not
+//! ignored.
 
 use rtsim_industry::engine::Engine;
 use rtsim_industry::glass::check::WindowResult;
@@ -278,6 +279,50 @@ fn model(e: &Engine) -> u32 {
     e.glass.report(D).map_or(0, |r| r.replay.model)
 }
 
+/// A press fed by a belt from a store runs steadily on the glass box: one regime, no breakpoint
+/// after the start's latency hold. Passes on feab04d. Found on 20b740a ("latency holds nodes
+/// off"): the belt and the press hold each other off in turn (regime timers 10, 4, 10, 14, 10,
+/// 14, ... ticks apart), so the district passes `breakpointsPerEventMax` within about 600 ticks,
+/// falls back as oscillating and makes nothing. A store feeding the press directly, with or
+/// without a belt edge's latency, is fine; the Mover node between them is what it takes. The
+/// bench's factory cell (glass_elapsed, glass_quiet) falls back the same way.
+#[test]
+fn a_belt_fed_press_stays_on_the_glass_box() {
+    let mut l = Line::default();
+    let brass = l.store(BIG, &[(BRASS, 1 << 29)]);
+    let sheets = l.store(BIG, &[]);
+    let rate = RateEntry {
+        level: 0,
+        recipe: None,
+        batch: 1,
+        ticks_num: 4,
+        ticks_den: 1,
+        flags: rate_flags::SHARED,
+    };
+    let belt = l.node(NodeKind::Mover, model::BELT, 0, vec![rate]);
+    let press = l.machine(BRASS, SHEET, 1, 10);
+    l.edge(EdgeKind::Adjacency, brass, belt);
+    l.edge(EdgeKind::Adjacency, belt, press);
+    l.edge(EdgeKind::Adjacency, press, sheets);
+    let mut e = replaying(&l);
+    for day in 1..=2 {
+        e.advance_to(Tick(UNLOAD + day * TICKS_PER_DAY));
+        let _ = e.sim_stock(D);
+    }
+    let r = e.glass.report(D).expect("a glass report");
+    assert_eq!(r.replay.oscillations, 0, "fell back as oscillating");
+    assert_eq!(r.replay.model, replay_model::GLASS);
+    assert!(
+        r.replay.breakpoints <= 4,
+        "{} breakpoints",
+        r.replay.breakpoints
+    );
+    // 1 sheet per 10 ticks for two days, less the start's hold.
+    let made = e.sim_stock(D).unwrap_or_default().get(SHEET);
+    let want = 2 * TICKS_PER_DAY as i64 / 10;
+    assert!((want - made).abs() <= 10, "made {made}, want {want}");
+}
+
 /// Brass imported into a dry press line that replays on the glass box must reach the press.
 /// Found: `Engine::inject` (like a train's, a carriage's or a package's import) adds to the
 /// district's `PoolKey::Stock` pool, which no glass process reads, so the press never restarts
@@ -339,7 +384,8 @@ fn two_switched_loops_of_unequal_periods_stay_on_the_glass_box() {
     );
 }
 
-/// The control: two loops of equal period (one band, other phases) stay on the glass box.
+/// The control: two loops of equal period (one band, other phases) stay on the glass box, with
+/// one closed-form cycle. Passes on feab04d; falls back as oscillating on 20b740a.
 #[test]
 fn two_switched_loops_of_equal_periods_stay_on_the_glass_box() {
     let mut l = Line::default();
