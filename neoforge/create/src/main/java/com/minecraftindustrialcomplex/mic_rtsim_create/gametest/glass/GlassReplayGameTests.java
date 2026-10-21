@@ -115,7 +115,9 @@ import java.util.stream.Collectors;
  * <p>The <b>copy check</b> ({@link #copyCheck}): over the far copy's last {@link #WINDOW} ticks before the
  * unload, each good's change in its declared stores must be within one stack or batch in flight, the
  * control's checksum noise over that window and {@link #REL_TOL} of the control's change, of the control's.
- * Otherwise the far copy is not the factory the control is, and every row reads INVALID COPY, a failure.
+ * So must each good's level in those stores at the snapshot (the noise over the ticks since the first
+ * sample, the relative term of the control's change since then). Otherwise the far copy is not the factory
+ * the control is, and every row reads INVALID COPY, a failure.
  * A factory in {@link #KNOWN_GAPS} fails outright, every row marked KNOWN GAP with what is missing.
  *
  * <p>The report while the far copy is away must say replay model GLASS: on the native engine any report
@@ -297,6 +299,8 @@ public final class GlassReplayGameTests {
         long nextOfflineAt = -1;
         /** Both copies' declared stores every {@link #POLL} ticks while loaded, back to {@link #WINDOW} before now. */
         final ArrayDeque<Sample> samples = new ArrayDeque<>();
+        /** The first of them, soon after the build, for the copy check's levels. */
+        Sample firstSample;
         /** Why the far copy's last window before the unload does not match the control's (null: it does). */
         String invalidCopy;
         final List<String> failures = new ArrayList<>();
@@ -584,6 +588,8 @@ public final class GlassReplayGameTests {
     static void sample(Run run) {
         ServerLevel level = run.level();
         run.samples.addLast(new Sample(run.now(), stock(level, run.control.stores()), stock(level, run.copy.stores())));
+        if (run.firstSample == null)
+            run.firstSample = run.samples.peekLast();
         while (run.samples.size() > 1 && run.samples.stream().skip(1).findFirst().get().t() <= run.now() - WINDOW)
             run.samples.removeFirst();
     }
@@ -593,7 +599,9 @@ public final class GlassReplayGameTests {
      * samples), each good's change in its declared stores is within tolerance of the control's: one stack or
      * batch in flight, the checksum noise over the window, and {@link #REL_TOL} of the control's change.
      * Otherwise the far copy is not the factory the control is (a block that did not survive, a store that
-     * filled), and every row reads INVALID COPY.
+     * filled), and every row reads INVALID COPY. The same for each good's level in those stores at the
+     * snapshot, with the noise over the ticks since the first sample and the relative term of the control's
+     * change since then: a copy that stalled for a while and caught up holds what the control held earlier.
      */
     static void copyCheck(Run run, ServerLevel level) {
         Sample from = run.samples.peekFirst();
@@ -609,7 +617,9 @@ public final class GlassReplayGameTests {
         goods.addAll(from.far().keySet());
         goods.addAll(cNow.keySet());
         goods.addAll(fNow.keySet());
-        List<String> off = new ArrayList<>();
+        Sample first = run.firstSample;
+        long since = first == null ? 0 : run.t1 - first.t();
+        List<String> off = new ArrayList<>(), apart = new ArrayList<>();
         for (String g : goods) {
             long c = cNow.getOrDefault(g, 0L) - from.control().getOrDefault(g, 0L);
             long f = fNow.getOrDefault(g, 0L) - from.far().getOrDefault(g, 0L);
@@ -617,7 +627,8 @@ public final class GlassReplayGameTests {
             long stack = stackOf(g);
             double batch = batch(run.graph, g, cg, run.cReport1, stack).units();
             double inFlight = Math.max(stack, batch);
-            double noise = cg != null && Double.isFinite(cg.sigma()) ? CHECKSUM_Z * cg.sigma() * len : 0;
+            double sigma = cg != null && Double.isFinite(cg.sigma()) ? cg.sigma() : 0;
+            double noise = CHECKSUM_Z * sigma * len;
             double rel = REL_TOL * Math.abs(c);
             double tol = inFlight + noise + rel;
             boolean ok = Math.abs(f - c) <= tol;
@@ -626,9 +637,28 @@ public final class GlassReplayGameTests {
                     g, c, f, len, from.t(), tol, inFlight, noise, rel, ok ? "match" : "OFF"));
             if (!ok)
                 off.add(g + " (control " + c + ", far " + f + ")");
+            // The level: a copy that stalled and caught up moves alike in the last window but holds what the
+            // control held some time ago, so a store runs dry or fills at another point of the span.
+            if (first != null) {
+                long cl = cNow.getOrDefault(g, 0L), fl = fNow.getOrDefault(g, 0L);
+                long cSince = cl - first.control().getOrDefault(g, 0L);
+                double lNoise = CHECKSUM_Z * sigma * since, lRel = REL_TOL * Math.abs(cSince);
+                double lTol = inFlight + lNoise + lRel;
+                boolean lOk = Math.abs(fl - cl) <= lTol;
+                IndustryKit.record(run.test, "copy check level", String.format(Locale.ROOT,
+                        "%s: control %d, far %d at the snapshot (control %+d since %d); tolerance %.1f (in flight %.1f, noise %.1f, relative %.1f): %s",
+                        g, cl, fl, cSince, first.t(), lTol, inFlight, lNoise, lRel, lOk ? "match" : "APART"));
+                if (!lOk)
+                    apart.add(g + " (control " + cl + ", far " + fl + ")");
+            }
         }
+        List<String> why = new ArrayList<>();
         if (!off.isEmpty())
-            run.invalidCopy = "over the last " + len + " ticks before the unload the far copy's stores do not move as the control's: " + off;
+            why.add("over the last " + len + " ticks before the unload the far copy's stores do not move as the control's: " + off);
+        if (!apart.isEmpty())
+            why.add("at the snapshot the far copy's stores hold other amounts than the control's: " + apart);
+        if (!why.isEmpty())
+            run.invalidCopy = String.join("; ", why);
         IndustryKit.record(run.test, "copy check", run.invalidCopy == null
                 ? "match over the last " + len + " ticks before the unload (" + goods.size() + " goods)" + (len < WINDOW ? ", SHORT of " + WINDOW : "")
                 : "INVALID COPY: " + run.invalidCopy);
