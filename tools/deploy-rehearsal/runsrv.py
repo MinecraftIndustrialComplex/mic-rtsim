@@ -38,7 +38,7 @@ def set_props(path, updates):
     open(path, 'w').write('\n'.join(out) + '\n')
 
 
-TPS_RE = re.compile(r'([A-Za-z0-9_:./-]+):\s*([\d.,]+)\s*TPS\s*\(([\d.,]+)\s*ms/tick\)')
+TPS_RE = re.compile(r'^\s*(.+?):\s*([\d.,]+)\s*TPS\s*\(([\d.,]+)\s*ms/tick\)', re.M)
 
 
 def parse_tps(text):
@@ -79,6 +79,10 @@ def main():
         props['level-seed'] = sc['seed']
     props.update(sc.get('props', {}))
     set_props(os.path.join(sdir, 'server.properties'), props)
+    # Simple Voice Chat binds UDP 24454 by default; two servers side by side must not share it
+    vc = os.path.join(sdir, 'config', 'voicechat', 'voicechat-server.properties')
+    if os.path.exists(vc):
+        set_props(vc, {'port': sc.get('port', 25871)})
     with open(os.path.join(sdir, 'user_jvm_args.txt'), 'w') as f:
         f.write('\n'.join(sc.get('jvm', ['-Xms6G', '-Xmx10G'])) + '\n')
     java = sc.get('java', 'java')

@@ -36,10 +36,21 @@ class Rcon:
         return rid, typ, data[8:-2].decode('utf-8', 'replace')
 
     def cmd(self, command):
-        """Sends a command; reads responses until a marker packet echoes (multi-packet safe)."""
+        """Sends a command and returns its whole reply, however many packets it takes.
+
+        Vanilla's RconClient reads one packet per socket read and drops the connection when a read
+        holds two, so nothing is pipelined: the end-of-reply marker (an unknown request type, which
+        vanilla answers with the same id) goes out only after the first reply packet is back. The
+        server writes every packet of a reply before it reads the next request.
+        """
         rid = self._send(2, command)
-        marker = self._send(0, '')  # SERVERDATA_RESPONSE_VALUE echo trick
         out = []
+        while True:
+            r, typ, body = self._recv()
+            if r == rid:
+                out.append(body)
+                break
+        marker = self._send(0, '')
         while True:
             r, typ, body = self._recv()
             if r == marker:
