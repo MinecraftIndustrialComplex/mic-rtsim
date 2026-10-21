@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "mic-viewer"
 version = "0.1.0"
-source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=e3392c345dfc788ba57cc586bb7ff0815cc8072f#e3392c345dfc788ba57cc586bb7ff0815cc8072f"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=cc213668d3fb65f8783d541b7457c6c106660dde#cc213668d3fb65f8783d541b7457c6c106660dde"
 dependencies = [
  "png",
  "serde",
@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "mic-viewer-surveyor"
 version = "0.1.0"
-source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=e3392c345dfc788ba57cc586bb7ff0815cc8072f#e3392c345dfc788ba57cc586bb7ff0815cc8072f"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=cc213668d3fb65f8783d541b7457c6c106660dde#cc213668d3fb65f8783d541b7457c6c106660dde"
 dependencies = [
  "flate2",
  "mic-viewer",
