@@ -130,3 +130,12 @@ fn the_server_threads_hand_over_keeps_its_timing_class() {
     let _ = std::fs::remove_dir_all(a_dir.parent().unwrap());
     let _ = std::fs::remove_dir_all(b_dir.parent().unwrap());
 }
+
+/// Row V4 (b)'s world: writes the populated world for the A/B runs of `rtsim-cli run` (the base
+/// build against this one, side by side) and prints where it is. Run by hand.
+#[test]
+#[ignore = "writes a world for the A/B runs of rtsim-cli run, by hand"]
+fn write_the_populated_world_for_the_ab_runs() {
+    let world = populated("ab-world", 3);
+    println!("the populated world: {}", world.display());
+}
