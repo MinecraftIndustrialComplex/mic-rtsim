@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use rtsim_industry::cluster::Cluster;
 use rtsim_industry::district::{District, Phase, Presence};
-use rtsim_industry::engine::{Engine, Inspection, LineEdge};
+use rtsim_industry::engine::{Engine, Inspection, LineEdge, ProcessPeek};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::StationDecl;
 use rtsim_industry::persist::{self, CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE, Persist};
@@ -170,19 +170,16 @@ impl IndustryView {
             .map_or_else(|| format!("good {}", g.0), |i| i.name.clone())
     }
 
-    /// One district's inspection and replay stock, from an engine restored for it alone.
-    pub fn inspect(
-        &self,
-        source: &dyn PageSource,
-        id: u64,
-    ) -> Result<(Inspection, Option<GoodVec>, Option<District>), String> {
+    /// One district as the engine would inspect it, from an engine restored for it alone (its
+    /// cluster's other members' pages are not read: their pools and processes live in the cluster
+    /// page).
+    pub fn inspect(&self, source: &dyn PageSource, id: u64) -> Result<DistrictPeek, String> {
         let gkey = PageKey::new(GLOBAL_TABLE, 0);
         let dkey = PageKey::new(DISTRICT_TABLE, id);
         let db = source
             .read(dkey)
             .map_err(|e| format!("cannot read district page {id}: {e}"))?
             .ok_or_else(|| format!("no district {id}"))?;
-        let district: Option<District> = persist::from_bytes(&db).ok();
         let mut pages = vec![(gkey, self.globals.clone()), (dkey, db)];
         if let Some(c) = self.cluster_of.get(&id) {
             let ckey = PageKey::new(CLUSTER_TABLE, *c);
@@ -196,11 +193,31 @@ impl IndustryView {
         let e = Engine::restore(pages, Tunables::default())
             .map_err(|e| format!("district {id}'s pages: {e}"))?;
         let d = DistrictId(id);
-        let ins = e
+        let inspection = e
             .inspect_peek(d, Tick(self.now.max(0) as u64))
             .ok_or_else(|| format!("district {id} did not restore"))?;
-        Ok((ins, e.stock_peek(d), district))
+        Ok(DistrictPeek {
+            inspection,
+            stock: e.stock_peek(d),
+            members: e
+                .cluster_members(d)
+                .map(|m| m.into_iter().map(|m| m.0).collect())
+                .unwrap_or_default(),
+            processes: e.processes_peek(d).unwrap_or_default(),
+        })
     }
+}
+
+/// What a district's card shows beyond its summary ([`IndustryView::inspect`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DistrictPeek {
+    pub inspection: Inspection,
+    /// The replay's stock, if it replays.
+    pub stock: Option<GoodVec>,
+    /// Every district of its replay cluster, itself included (empty if it does not replay).
+    pub members: Vec<u64>,
+    /// Its replay processes, box processes first (empty if it does not replay).
+    pub processes: Vec<ProcessPeek>,
 }
 
 fn summarize(d: &District) -> DistrictSummary {

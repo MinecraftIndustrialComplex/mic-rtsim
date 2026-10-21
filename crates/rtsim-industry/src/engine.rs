@@ -2910,6 +2910,61 @@ impl Engine {
             })
             .collect()
     }
+
+    /// Every replay process of a simulated district at the engine's time, through `&self`, for a
+    /// viewer (VIEWER.md §5.3): the replay is peeked, never settled. Box processes come first (ids
+    /// from 0), then links (a packager filling a postbox, ids from `LINK_PROC_BASE`). `None` when
+    /// the district is not replaying.
+    pub fn processes_peek(&self, d: DistrictId) -> Option<Vec<ProcessPeek>> {
+        let h = *self.cluster_of.get(&d)?;
+        let view = self.clusters.peek(h, self.now)?.view;
+        let c = self.clusters.get(h)?.cell().model();
+        let key = |i: u16| c.pools()[i as usize].key;
+        Some(
+            c.procs()
+                .iter()
+                .filter(|p| p.owner == d)
+                .map(|p| {
+                    let (goods, fills) = match &p.body {
+                        crate::cluster::Body::Box { terms } => {
+                            (terms.iter().map(|t| key(t.pool).good()).collect(), None)
+                        }
+                        crate::cluster::Body::Link { from, to, .. } => {
+                            (vec![key(*from).good()], Some(key(*to)))
+                        }
+                    };
+                    let run = view.run_of(d, p.id).unwrap_or(p.run);
+                    ProcessPeek {
+                        id: p.id,
+                        goods,
+                        fills,
+                        running: run == Run::Running,
+                        stop: match run {
+                            Run::Running => None,
+                            Run::Stopped(why) => Some(stop_words(why, &self.goods)),
+                        },
+                        requires: p.requires,
+                    }
+                })
+                .collect(),
+        )
+    }
+}
+
+/// One replay process as a viewer sees it ([`Engine::processes_peek`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProcessPeek {
+    pub id: u16,
+    /// The goods it touches: a box process's inputs and outputs, a link's one good.
+    pub goods: Vec<Good>,
+    /// For a link, the pool it fills (a postbox's mail); `None` for a box process.
+    pub fills: Option<PoolKey>,
+    pub running: bool,
+    /// Why it is stopped, in words; `None` while it runs.
+    pub stop: Option<String>,
+    /// The district whose box processes must all run for this one to run (a PowerGrid source,
+    /// I13).
+    pub requires: Option<DistrictId>,
 }
 
 fn stock_of(v: &ClusterView, d: DistrictId) -> GoodVec {
