@@ -20,6 +20,7 @@ public final class GlassCorpus {
 
     public static final List<CorpusFactory> ALL = List.of(
             new MillstoneFlourFactory(),
+            new PrecisionMechanismFactory(),
             new CrafterGridFactory()
     );
 
