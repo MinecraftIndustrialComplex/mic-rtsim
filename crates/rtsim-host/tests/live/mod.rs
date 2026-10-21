@@ -298,6 +298,283 @@ pub fn assert_lockstep(a: &Run, b: &Run, a_dir: &Path, b_dir: &Path) {
     assert!(differ.is_empty(), "pages that differ: {differ:?}");
 }
 
+// ---- a server's pace ----------------------------------------------------------------------------
+
+/// What a run at a server's pace did.
+pub struct Served {
+    /// Server ticks, hand-overs submitted, and those holding more than one TICK record (Java
+    /// ticked again before the step it handed over last had published: the engine behind).
+    pub ticks: u64,
+    pub submitted: u64,
+    pub behind: u64,
+    /// Each server tick's own time (applying the commands, the hand-over and its submit), and
+    /// each step's time as the engine measured it, nanoseconds.
+    pub tick_nanos: Vec<u64>,
+    pub step_nanos: Vec<u64>,
+    pub tap: BTreeMap<String, u64>,
+    pub wall: Duration,
+}
+
+/// Runs the fork in `dir` for `days` game days as a server drives the engine (the bridge's
+/// pattern, `Java::tick`): every `tick_every` a server tick moves game time on by `stride`,
+/// applies what has come back and hands over; a hand-over the engine is not ready for stays open
+/// and the next tick's TICK record joins it. A save is asked for every 10 game days, and the
+/// session closes with its final save.
+pub fn serve(dir: &Path, days: i64, stride: i64, tick_every: Duration) -> Served {
+    let mut host = Host::open(dir, &opts()).unwrap();
+    let end = host.j.game_time + days * DAY;
+    let mut next_save = host.j.game_time + 10 * DAY;
+    let (mut ticks, mut submitted, mut behind, mut open) = (0u64, 0u64, 0u64, 0u64);
+    let mut tick_nanos = Vec::with_capacity((days * DAY / stride) as usize);
+    let mut step_nanos = Vec::with_capacity(tick_nanos.capacity());
+    let mut steps_seen = host.e.stats.steps_done.load(Ordering::Acquire);
+    let t0 = Instant::now();
+    let mut due = t0;
+    while host.j.game_time < end {
+        due += tick_every;
+        if let Some(rest) = due.checked_duration_since(Instant::now()) {
+            std::thread::sleep(rest);
+        }
+        if host.j.game_time >= next_save {
+            host.e.request_save(host.j.next_obs - 1);
+            next_save += 10 * DAY;
+        }
+        host.j.game_time += stride - 1;
+        let t = Instant::now();
+        let handed = host.j.tick();
+        tick_nanos.push(t.elapsed().as_nanos() as u64);
+        ticks += 1;
+        open += 1;
+        if handed {
+            submitted += 1;
+            if open > 1 {
+                behind += 1;
+            }
+            open = 0;
+        }
+        let done = host.e.stats.steps_done.load(Ordering::Acquire);
+        if done != steps_seen {
+            step_nanos.push(host.e.stats.last_step_nanos.load(Ordering::Acquire));
+            steps_seen = done;
+        }
+        assert!(
+            host.e.protocol_error().is_none(),
+            "{:?}",
+            host.e.protocol_error()
+        );
+    }
+    let wall = t0.elapsed();
+    let tap = host.e.stats.tap.snapshot().into_iter().collect();
+    host.close().unwrap();
+    Served {
+        ticks,
+        submitted,
+        behind,
+        tick_nanos,
+        step_nanos,
+        tap,
+        wall,
+    }
+}
+
+/// The 50th, 99th and 99.9th percentiles and the most of `v`, in microseconds.
+pub fn percentiles(v: &[u64]) -> [f64; 4] {
+    let mut s = v.to_vec();
+    s.sort_unstable();
+    let at = |q: f64| {
+        s.get(((s.len() as f64 * q) as usize).min(s.len().saturating_sub(1)))
+            .map_or(0.0, |n| *n as f64 / 1e3)
+    };
+    [
+        at(0.5),
+        at(0.99),
+        at(0.999),
+        s.last().map_or(0.0, |n| *n as f64 / 1e3),
+    ]
+}
+
+pub fn print_served(label: &str, r: &Served) {
+    let [t50, t99, t999, tmax] = percentiles(&r.tick_nanos);
+    let [s50, s99, s999, smax] = percentiles(&r.step_nanos);
+    println!(
+        "{label}: {} server ticks in {:.1} s, {} hand-overs, {} holding more than one TICK; a \
+         server tick's hand-over p50 {t50:.1} µs, p99 {t99:.1}, p99.9 {t999:.1}, most {tmax:.1}; \
+         a step p50 {s50:.1} µs, p99 {s99:.1}, p99.9 {s999:.1}, most {smax:.1} ({} sampled)",
+        r.ticks,
+        r.wall.as_secs_f64(),
+        r.submitted,
+        r.behind,
+        r.step_nanos.len(),
+    );
+    print_tap(label, &r.tap, None);
+}
+
+// ---- the tap's numbers --------------------------------------------------------------------------
+
+fn ms(n: u64) -> f64 {
+    n as f64 / 1e6
+}
+
+/// The tap's numbers from its counters (VIEWER.md §5.2), with a lockstep run's steps and waits.
+pub fn print_tap(label: &str, t: &BTreeMap<String, u64>, run: Option<&Run>) {
+    let g = |k: &str| t.get(k).copied().unwrap_or(0);
+    let units = g("units").max(1);
+    let steps = g("steps_tapped").max(1);
+    if let Some(r) = run {
+        println!(
+            "{label}: {} steps, {} saves, {:.1} s wall, {:.1} s waiting on steps ({:.3} ms a \
+             step)",
+            r.steps,
+            r.saves,
+            r.wall.as_secs_f64(),
+            r.waited.as_secs_f64(),
+            r.waited.as_secs_f64() * 1e3 / r.steps.max(1) as f64
+        );
+    }
+    println!(
+        "{label}: tap in {} steps (stood down {}, behind {}, next already there {}, cut by the \
+         next {}, state busy {}); {:.3} ms a tapped step, longest {:.3} ms, budget {:.3} ms; over \
+         budget {} times, by at most {:.3} ms",
+        g("steps_tapped"),
+        g("stood_down"),
+        g("behind"),
+        g("next_already"),
+        g("cut_by_next"),
+        g("lock_busy"),
+        ms(g("tap_nanos")) / steps as f64,
+        ms(g("tap_nanos_max")),
+        ms(g("budget_nanos")),
+        g("over_budget"),
+        ms(g("overrun_nanos_max")),
+    );
+    println!(
+        "{label}: {} units encoded ({} not resident), {} rows, {} bytes; {:.3} ms a unit \
+         ({:.1} rows), longest {:.3} ms; longest job {:.3} ms; a ready hand-over waited at most \
+         {:.3} ms",
+        g("units"),
+        g("not_resident"),
+        g("rows"),
+        g("bytes"),
+        ms(g("unit_nanos")) / units as f64,
+        g("rows") as f64 / units as f64,
+        ms(g("unit_nanos_max")),
+        ms(g("job_nanos_max")),
+        ms(g("ready_wait_nanos_max")),
+    );
+    println!(
+        "{label}: {} cycles, last {} ms; {} commits ({} deferred, longest {:.3} ms), {} parts \
+         written, {} unchanged; {} lease stats, epoch {}, {} deletes, {} failures",
+        g("cycles"),
+        g("cycle_ms"),
+        g("commits"),
+        g("commits_deferred"),
+        ms(g("commit_nanos_max")),
+        g("parts_written"),
+        g("parts_unchanged"),
+        g("lease_stats"),
+        g("epoch"),
+        g("deletes"),
+        g("failures"),
+    );
+    for (k, v) in t {
+        if let Some(id) = k.strip_prefix("unit_nanos_max.") {
+            println!(
+                "{label}: {id}: {} rows a unit, {} ns a row, longest unit {:.3} ms",
+                g(&format!("rows_per_unit.{id}")),
+                g(&format!("nanos_per_row.{id}")),
+                ms(*v)
+            );
+        }
+    }
+}
+
+/// The tap stayed within its budget plus one job (a unit's encode, or the archive's): the most a
+/// tapped step ran past the budget, and the most a ready hand-over waited, are each at most the
+/// longest job.
+pub fn assert_budget(t: &BTreeMap<String, u64>) {
+    let g = |k: &str| t.get(k).copied().unwrap_or(0);
+    assert!(g("units") > 0, "the leased run encoded units");
+    // The overrun and the wait are each measured over one job, so they cannot pass the longest
+    // (the clock reads around the job bound them); a millisecond's slack for the reads themselves.
+    assert!(
+        g("overrun_nanos_max") <= g("job_nanos_max") + 1_000_000,
+        "past the budget by more than a job: {t:?}"
+    );
+    assert!(
+        g("tap_nanos_max") <= g("budget_nanos") + g("job_nanos_max") + 1_000_000,
+        "a step's tap time is at most the budget and a job: {t:?}"
+    );
+    assert!(
+        g("ready_wait_nanos_max") <= g("job_nanos_max") + 1_000_000,
+        "a ready hand-over waited more than a job: {t:?}"
+    );
+}
+
+// ---- load ---------------------------------------------------------------------------------------
+
+/// Pins every thread of this process, and every thread it starts later (they inherit the mask),
+/// to the last `n` CPUs it may run on. Returns them.
+pub fn pin_process(n: usize) -> Vec<usize> {
+    // SAFETY: plain libc calls on a zeroed cpu_set_t of the right size.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        assert_eq!(
+            libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set),
+            0
+        );
+        let allowed: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
+            .filter(|&c| libc::CPU_ISSET(c, &set))
+            .collect();
+        let cpus: Vec<usize> = allowed[allowed.len().saturating_sub(n)..].to_vec();
+        let mut pin: libc::cpu_set_t = std::mem::zeroed();
+        for &c in &cpus {
+            libc::CPU_SET(c, &mut pin);
+        }
+        let size = std::mem::size_of::<libc::cpu_set_t>();
+        for t in fs::read_dir("/proc/self/task").unwrap().flatten() {
+            if let Some(tid) = t.file_name().to_str().and_then(|s| s.parse::<i32>().ok()) {
+                libc::sched_setaffinity(tid, size, &pin);
+            }
+        }
+        assert_eq!(libc::sched_setaffinity(0, size, &pin), 0);
+        cpus
+    }
+}
+
+/// Threads that spin until dropped, competing with the engine for the CPUs they share.
+pub struct Hogs {
+    stop: Arc<AtomicBool>,
+    threads: Vec<JoinHandle<u64>>,
+}
+
+impl Hogs {
+    pub fn start(n: usize) -> Hogs {
+        let stop = Arc::new(AtomicBool::new(false));
+        let threads = (0..n)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    let mut x = 0u64;
+                    while !stop.load(Ordering::Relaxed) {
+                        x = std::hint::black_box(x.wrapping_mul(6_364_136_223_846_793_005) + 1);
+                    }
+                    x
+                })
+            })
+            .collect();
+        Hogs { stop, threads }
+    }
+}
+
+impl Drop for Hogs {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
 // ---- the page -----------------------------------------------------------------------------------
 
 /// One GET on loopback: (status, body).

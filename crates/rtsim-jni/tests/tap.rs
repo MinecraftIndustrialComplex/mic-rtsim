@@ -236,10 +236,11 @@ fn a_flush_encodes_everything_and_unchanged_parts_are_not_rewritten() {
     e.close(false, Duration::from_secs(5)).unwrap();
 }
 
-/// The encode time of full units (VIEWER.md §5.2 item 2): 4,096 villages make two units of 2,000
-/// rows and one of 96, each written as one part per region its villages are in; a flush encodes
-/// every unit once and the counters time each. Prints the numbers (run with `--release
-/// --nocapture` for VIEWER.md's).
+/// The encode time of full units (VIEWER.md §5.2 item 2): 4,096 villages fill the villages layer's
+/// units (500 keys a unit, so eight full ones and one of 96), each written as one part per region
+/// its villages are in, and as many prices and messengers; a flush encodes every unit once and the
+/// counters time each, by layer. Prints the numbers (run with `--release --nocapture` for
+/// VIEWER.md's).
 #[test]
 fn full_units_encode_whole_and_their_time_is_measured() {
     let dir = tmpdir("tap-full-units");
@@ -269,19 +270,22 @@ fn full_units_encode_whole_and_their_time_is_measured() {
     e.view_tap_flush().unwrap();
     let (_, h, s) = store(&dir);
     assert_eq!(layer_rows(&h, "settle.villages"), N);
-    let villages = layer_index("settle.villages") as u16;
+    let villages = layer_index("settle.villages");
+    let per = rtsim_layers::specs()[villages].per_unit as u32;
     let units: Vec<_> = h
         .units
         .iter()
-        .filter(|u| u.key.kind == part_kind::MARKS && u.key.layer == villages)
+        .filter(|u| u.key.kind == part_kind::MARKS && usize::from(u.key.layer) == villages)
         .collect();
     let rows = |u: &vstore::UnitEntry| u.parts.iter().map(|p| p.rows).sum::<u32>();
     let mut sizes: Vec<u32> = units.iter().map(|u| rows(u)).collect();
     sizes.sort_unstable();
-    assert_eq!(sizes, vec![96, 2_000, 2_000], "the villages in whole units");
+    let mut want = vec![per; (N / u64::from(per)) as usize];
+    want.insert(0, (N % u64::from(per)) as u32);
+    assert_eq!(sizes, want, "the villages in whole units");
     let full_bytes: Vec<usize> = units
         .iter()
-        .filter(|u| rows(u) == 2_000)
+        .filter(|u| rows(u) == per)
         .map(|u| {
             u.parts
                 .iter()
@@ -298,7 +302,7 @@ fn full_units_encode_whole_and_their_time_is_measured() {
     let n = g("units").max(1);
     println!(
         "full units: {} units, {} rows, {} bytes; {:.3} ms a unit on average, longest {:.3} ms \
-         (a unit of 2,000 village rows, {:?} bytes each); {:.0} rows a ms, {:.0} MB/s",
+         (a unit of {per} village rows, {:?} bytes each); {:.0} rows a ms, {:.0} MB/s",
         g("units"),
         g("rows"),
         g("bytes"),
@@ -308,6 +312,28 @@ fn full_units_encode_whole_and_their_time_is_measured() {
         g("rows") as f64 / (g("unit_nanos").max(1) as f64 / 1e6),
         g("bytes") as f64 / (g("unit_nanos").max(1) as f64 / 1e9) / 1e6,
     );
+    // By layer: every layer with rows has its cost in the header, by id.
+    let snap = e.stats.tap.snapshot();
+    let mut by_layer = 0;
+    for (k, v) in &snap {
+        if let Some(id) = k.strip_prefix("unit_nanos_max.") {
+            let get = |p: &str| {
+                snap.iter()
+                    .find(|(k, _)| *k == format!("{p}.{id}"))
+                    .unwrap()
+                    .1
+            };
+            println!(
+                "full units: {id}: {} rows a unit, {} ns a row, longest unit {:.3} ms",
+                get("rows_per_unit"),
+                get("nanos_per_row"),
+                *v as f64 / 1e6
+            );
+            by_layer += 1;
+        }
+    }
+    assert!(by_layer >= 3, "the layers' costs: {snap:?}");
+    assert!(h.stat("unit_nanos_max.settle.villages").is_some());
     e.close(false, Duration::from_secs(5)).unwrap();
 }
 

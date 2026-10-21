@@ -28,7 +28,7 @@ pub const VIEW_DIR: &str = "view";
 pub const MAX_FOCUS: usize = 64;
 
 const HEADER_MAGIC: u32 = u32::from_le_bytes(*b"MICH");
-const HEADER_VERSION: u8 = 1;
+const HEADER_VERSION: u8 = 2;
 const LEASE_MAGIC: u32 = u32::from_le_bytes(*b"MICL");
 const LEASE_VERSION: u8 = 1;
 
@@ -62,6 +62,9 @@ pub struct LayerState {
     pub version: u64,
     /// Rows in its parts.
     pub rows: u64,
+    /// Keys a unit, as the engine bucketed the layer (0: not said). A reader whose own layer
+    /// buckets differently takes the units the engine evicted from the sim pages by this one.
+    pub per_unit: u64,
     /// Why it draws nothing at all (its module is off), if so.
     pub status: Option<String>,
     /// Why it would be empty, its builder's words (shown when it has no rows).
@@ -133,6 +136,7 @@ impl Header {
         for l in &self.layers {
             w.var_u64(l.version);
             w.var_u64(l.rows);
+            w.var_u64(l.per_unit);
             opt_str(&mut w, &l.status);
             opt_str(&mut w, &l.empty);
         }
@@ -192,6 +196,7 @@ impl Header {
             h.layers.push(LayerState {
                 version: r.var_u64()?,
                 rows: r.var_u64()?,
+                per_unit: r.var_u64()?,
                 status: get_str(&mut r)?,
                 empty: get_str(&mut r)?,
             });

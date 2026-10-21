@@ -125,6 +125,9 @@ pub struct Counters {
     /// `view/` deletes, and failures (a stat, a delete, a commit, a refused IO job).
     pub deletes: AtomicU64,
     pub failures: AtomicU64,
+    /// Encode cost by layer index (the archive's rows last): units, rows, total and longest
+    /// nanoseconds. The header names them by layer id, so a page shows which layer costs what.
+    by_layer: Mutex<Vec<[u64; 4]>>,
 }
 
 impl Counters {
@@ -167,7 +170,32 @@ impl Counters {
             .map(|(k, a)| ((*k).to_owned(), a.load(Ordering::Acquire)))
             .collect();
         out.push(("budget_nanos".into(), nanos(BUDGET)));
+        let by = self.by_layer.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = specs()
+            .iter()
+            .map(|s| s.desc.id.as_str())
+            .chain(["archive"]);
+        for (id, [units, rows, total, longest]) in ids.zip(by.iter()) {
+            if *units > 0 {
+                out.push((format!("unit_nanos_max.{id}"), *longest));
+                out.push((format!("nanos_per_row.{id}"), total / (*rows).max(1)));
+                out.push((format!("rows_per_unit.{id}"), rows / units));
+            }
+        }
         out
+    }
+
+    /// One unit of layer index `layer` (`specs().len()` for the archive's) took `took` for `rows`.
+    fn layer_cost(&self, layer: usize, rows: u64, took: u64) {
+        let mut by = self.by_layer.lock().unwrap_or_else(|e| e.into_inner());
+        if by.len() <= layer {
+            by.resize(specs().len().max(layer) + 1, [0; 4]);
+        }
+        let c = &mut by[layer];
+        c[0] += 1;
+        c[1] += rows;
+        c[2] += took;
+        c[3] = c[3].max(took);
     }
 
     /// Zeroes the measurements (not the lease's state): a bench measures a stretch of steps.
@@ -195,6 +223,10 @@ impl Counters {
         ] {
             a.store(0, Ordering::Release);
         }
+        self.by_layer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 
@@ -704,10 +736,9 @@ fn encode_unit(
     add(&c.units, 1);
     add(&c.unit_nanos, took);
     max(&c.unit_nanos_max, took);
-    add(
-        &c.rows,
-        parts.iter().map(|(_, p)| u64::from(p.rows)).sum::<u64>(),
-    );
+    let rows = parts.iter().map(|(_, p)| u64::from(p.rows)).sum::<u64>();
+    add(&c.rows, rows);
+    c.layer_cost(usize::from(key.layer), rows, took);
     add(
         &c.bytes,
         parts.iter().map(|(_, p)| p.bytes.len() as u64).sum::<u64>(),
@@ -868,6 +899,8 @@ fn put_archive(tap: &mut Tap, key: PartKey, w: PartWriter, now: i64, c: &Counter
     add(&c.units, 1);
     add(&c.unit_nanos, took);
     max(&c.unit_nanos_max, took);
+    let rows = parts.iter().map(|(_, p)| u64::from(p.rows)).sum::<u64>();
+    c.layer_cost(specs().len(), rows, took);
     tap.mailbox.units.insert(
         key,
         Encoded {
@@ -1172,8 +1205,10 @@ fn commit(e: &Engine, sh: &Shared, out: Mailbox) {
     }
     let mut layers: Vec<LayerState> = versions
         .iter()
-        .map(|v| LayerState {
+        .enumerate()
+        .map(|(i, v)| LayerState {
             version: *v,
+            per_unit: specs().get(i).map_or(0, |s| s.per_unit),
             ..LayerState::default()
         })
         .collect();

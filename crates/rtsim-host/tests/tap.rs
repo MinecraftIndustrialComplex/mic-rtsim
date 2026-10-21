@@ -7,111 +7,30 @@
 //! closed with are byte for byte the same. The leased run's tap stayed within its budget plus one
 //! unit, and its numbers are printed for VIEWER.md §5.2.
 //!
+//! The server thread's hand-over (row V4 (d)): the lockstep compares every record the hand-overs
+//! carried back, in order; `the_server_threads_hand_over_keeps_its_timing_class` runs the same
+//! world at a server's pace, leased and not, and compares what a server tick's hand-over costs.
+//!
 //! The under-load run is `tests/tap_load.rs` (it pins the whole process to two CPUs).
 
 mod live;
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use live::*;
 
 const DAYS: i64 = 100;
 
-fn ms(n: u64) -> f64 {
-    n as f64 / 1e6
-}
-
-/// The tap's numbers from its counters (VIEWER.md §5.2).
-pub fn print_tap(label: &str, r: &Run) {
-    let t = &r.tap;
-    let g = |k: &str| t.get(k).copied().unwrap_or(0);
-    let units = g("units").max(1);
-    let steps = g("steps_tapped").max(1);
-    println!(
-        "{label}: {} steps, {} saves, {:.1} s wall, {:.1} s waiting on steps ({:.3} ms a step)",
-        r.steps,
-        r.saves,
-        r.wall.as_secs_f64(),
-        r.waited.as_secs_f64(),
-        r.waited.as_secs_f64() * 1e3 / r.steps.max(1) as f64
-    );
-    println!(
-        "{label}: tap in {} steps (stood down {}, behind {}, next already there {}, cut by the \
-         next {}, state busy {}); {:.3} ms a tapped step, longest {:.3} ms, budget {:.3} ms; over \
-         budget {} times, by at most {:.3} ms",
-        g("steps_tapped"),
-        g("stood_down"),
-        g("behind"),
-        g("next_already"),
-        g("cut_by_next"),
-        g("lock_busy"),
-        ms(g("tap_nanos")) / steps as f64,
-        ms(g("tap_nanos_max")),
-        ms(g("budget_nanos")),
-        g("over_budget"),
-        ms(g("overrun_nanos_max")),
-    );
-    println!(
-        "{label}: {} units encoded ({} not resident), {} rows, {} bytes; {:.3} ms a unit \
-         ({:.1} rows), longest {:.3} ms; longest job {:.3} ms; a ready hand-over waited at most \
-         {:.3} ms",
-        g("units"),
-        g("not_resident"),
-        g("rows"),
-        g("bytes"),
-        ms(g("unit_nanos")) / units as f64,
-        g("rows") as f64 / units as f64,
-        ms(g("unit_nanos_max")),
-        ms(g("job_nanos_max")),
-        ms(g("ready_wait_nanos_max")),
-    );
-    println!(
-        "{label}: {} cycles, last {} ms; {} commits ({} deferred, longest {:.3} ms), {} parts \
-         written, {} unchanged; {} lease stats, epoch {}, {} deletes, {} failures",
-        g("cycles"),
-        g("cycle_ms"),
-        g("commits"),
-        g("commits_deferred"),
-        ms(g("commit_nanos_max")),
-        g("parts_written"),
-        g("parts_unchanged"),
-        g("lease_stats"),
-        g("epoch"),
-        g("deletes"),
-        g("failures"),
-    );
-}
-
-/// The tap stayed within its budget plus one job (a unit's encode, or the archive's): the most a
-/// tapped step ran past the budget, and the most a ready hand-over waited, are each at most the
-/// longest job.
-pub fn assert_budget(r: &Run) {
-    let g = |k: &str| r.tap.get(k).copied().unwrap_or(0);
-    assert!(g("units") > 0, "the leased run encoded units");
-    // The overrun and the wait are each measured over one job, so they cannot pass the longest
-    // (the clock reads around the job bound them); a millisecond's slack for the reads themselves.
-    assert!(
-        g("overrun_nanos_max") <= g("job_nanos_max") + 1_000_000,
-        "past the budget by more than a job: {:?}",
-        r.tap
-    );
-    assert!(
-        g("tap_nanos_max") <= g("budget_nanos") + g("job_nanos_max") + 1_000_000,
-        "a step's tap time is at most the budget and a job: {:?}",
-        r.tap
-    );
-    assert!(
-        g("ready_wait_nanos_max") <= g("job_nanos_max") + 1_000_000,
-        "a ready hand-over waited more than a job: {:?}",
-        r.tap
-    );
-}
+/// One test at a time: each measures time, and the other's engine and page would be its load.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 /// 100 game days leased with a page hammering the live source, against 100 unleased: the same
 /// state every day, the same records handed back, the same pages at the end; the leased tap
 /// within budget and the page answered on every route.
 #[test]
 fn a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let world = populated("lockstep", 3);
     let (a_dir, b_dir) = (
         fork_of(&world, "lockstep-leased"),
@@ -123,12 +42,12 @@ fn a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one() {
     let seen = page.close();
     let b = run(&b_dir, DAYS, Duration::ZERO);
 
-    print_tap("leased", &a);
-    print_tap("unleased", &b);
+    print_tap("leased", &a.tap, Some(&a));
+    print_tap("unleased", &b.tap, Some(&b));
     println!("the page: {seen:?}");
 
     assert_lockstep(&a, &b, &a_dir, &b_dir);
-    assert_budget(&a);
+    assert_budget(&a.tap);
     let g = |r: &Run, k: &str| r.tap.get(k).copied().unwrap_or(0);
     // The leased run's tap worked: a lease, cycles, commits; the unleased one's never encoded.
     assert!(g(&a, "epoch") >= 1 && g(&a, "cycles") >= 1, "{:?}", a.tap);
@@ -164,6 +83,48 @@ fn a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one() {
     assert!(
         seen.lease_writes >= 3,
         "focus changes rewrote the lease: {seen:?}"
+    );
+    let _ = std::fs::remove_dir_all(&world);
+    let _ = std::fs::remove_dir_all(a_dir.parent().unwrap());
+    let _ = std::fs::remove_dir_all(b_dir.parent().unwrap());
+}
+
+/// Row V4 (d), the timing: the same world for 100 game days at a server's pace (a server tick a
+/// millisecond, a hundredth of a game day each), unleased and then leased with the page hammering.
+/// The tap runs on the engine's pool after the step has published, the hand-over never waits for
+/// a step (a submit the engine is not ready for leaves the buffer open), so a server tick costs
+/// the same leased: the same class, its median and its 99th percentile within twice the unleased
+/// run's and a little noise.
+#[test]
+fn the_server_threads_hand_over_keeps_its_timing_class() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let world = populated("timing", 3);
+    let (a_dir, b_dir) = (
+        fork_of(&world, "timing-leased"),
+        fork_of(&world, "timing-bare"),
+    );
+    let (stride, every) = (240, Duration::from_millis(1));
+    let b = serve(&b_dir, DAYS, stride, every);
+    let page = Hammer::open(&a_dir);
+    let a = serve(&a_dir, DAYS, stride, every);
+    let seen = page.close();
+    print_served("leased at a server's pace", &a);
+    print_served("unleased at a server's pace", &b);
+    println!("the page: {seen:?}");
+
+    assert_budget(&a.tap);
+    assert!(seen.failures.is_empty(), "{:#?}", seen.failures);
+    let g = |r: &Served, k: &str| r.tap.get(k).copied().unwrap_or(0);
+    assert_eq!(g(&b, "units"), 0);
+    assert!(g(&a, "commits") >= 3, "{:?}", a.tap);
+    let ([a50, a99, ..], [b50, b99, ..]) = (percentiles(&a.tick_nanos), percentiles(&b.tick_nanos));
+    assert!(
+        a50 <= 2.0 * b50 + 20.0,
+        "a server tick's median: {a50:.1} µs leased, {b50:.1} unleased"
+    );
+    assert!(
+        a99 <= 2.0 * b99 + 200.0,
+        "a server tick's 99th percentile: {a99:.1} µs leased, {b99:.1} unleased"
     );
     let _ = std::fs::remove_dir_all(&world);
     let _ = std::fs::remove_dir_all(a_dir.parent().unwrap());
