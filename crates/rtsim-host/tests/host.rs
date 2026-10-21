@@ -458,6 +458,32 @@ fn gametest_worlds_open_in_the_host_with_their_saved_state() {
             "{}: the fast stride agrees with 20 ticks",
             world.display()
         );
+        // With a season a game day (`--season-days 1`), three days cross two seasons: the season
+        // reaches industry at the first hand-over after it turns, up to a stride late, and the
+        // fast stride must still agree.
+        let mut seasons = Vec::new();
+        for (i, s) in [20, STRIDE_FAST].into_iter().enumerate() {
+            let copy = dir.parent().unwrap().join(format!("season{i}"));
+            fork::export(&dir, &copy).unwrap();
+            let o = Options {
+                stride: Some(s),
+                season_days: Some(1),
+                ..opts(false)
+            };
+            let (h, host) = run_days(&copy, &o, 3);
+            host.close().unwrap();
+            seasons.push(h);
+        }
+        eprintln!(
+            "  with a season a day, against none: {:?} differ",
+            differing(&runs[0].1, &seasons[0])
+        );
+        assert_eq!(
+            differing(&seasons[0], &seasons[1]),
+            Vec::<&str>::new(),
+            "{}: with seasons turning, the fast stride agrees with 20 ticks",
+            world.display()
+        );
         let _ = fs::remove_dir_all(dir.parent().unwrap());
     }
 }

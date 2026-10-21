@@ -242,8 +242,25 @@ pub fn set_level_time(dir: &Path, time: i64) -> Result<(), String> {
 }
 
 /// Deep Time's world-data folder, as the overworld's generator in `level.dat` names it (its
-/// `folder`), else [`DEEP_TIME_FOLDER`].
+/// `folder`), else [`DEEP_TIME_FOLDER`]. Only a plain relative path is taken: an absolute one, or
+/// one with `..`, would let the export read and write a manifest outside the world and the fork
+/// (it could even name the world's own file), so it falls back to [`DEEP_TIME_FOLDER`].
 pub fn deep_time_folder(level: Option<&Tag>) -> String {
+    deep_time_folder_named(level)
+        .filter(|f| is_plain_relative(f))
+        .unwrap_or_else(|| DEEP_TIME_FOLDER.to_string())
+}
+
+/// Whether `f` is a relative path of plain names only (no root, prefix, `.` or `..`).
+fn is_plain_relative(f: &str) -> bool {
+    let p = Path::new(f);
+    !f.is_empty()
+        && p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// The `folder` the overworld's generator names, unchecked.
+fn deep_time_folder_named(level: Option<&Tag>) -> Option<String> {
     fn find(t: &Tag) -> Option<String> {
         match t {
             Tag::Compound(es) => es
@@ -257,7 +274,6 @@ pub fn deep_time_folder(level: Option<&Tag>) -> String {
         .and_then(|d| d.get("minecraft:overworld"))
         .and_then(|o| o.get("generator"))
         .and_then(find)
-        .unwrap_or_else(|| DEEP_TIME_FOLDER.to_string())
 }
 
 /// The module mask the world's server config gives (`effectiveMask`): every `[modules]` switch,
@@ -408,6 +424,45 @@ mod tests {
         );
         assert_eq!(deep_time_folder(Some(&l)), DEEP_TIME_FOLDER);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn only_a_plain_relative_deep_time_folder_is_taken() {
+        let with = |folder: &str| {
+            Tag::Compound(vec![(
+                b"Data".to_vec(),
+                Tag::Compound(vec![(
+                    b"WorldGenSettings".to_vec(),
+                    Tag::Compound(vec![(
+                        b"dimensions".to_vec(),
+                        Tag::Compound(vec![(
+                            b"minecraft:overworld".to_vec(),
+                            Tag::Compound(vec![(
+                                b"generator".to_vec(),
+                                Tag::Compound(vec![(b"folder".to_vec(), Tag::string(folder))]),
+                            )]),
+                        )]),
+                    )]),
+                )]),
+            )])
+        };
+        assert_eq!(
+            deep_time_folder(Some(&with("planet/deeptime"))),
+            "planet/deeptime"
+        );
+        for bad in [
+            "/srv/world/deeptime",
+            "../elsewhere",
+            "a/../../b",
+            "./deeptime",
+            "",
+        ] {
+            assert_eq!(
+                deep_time_folder(Some(&with(bad))),
+                DEEP_TIME_FOLDER,
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
