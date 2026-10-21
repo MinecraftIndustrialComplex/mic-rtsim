@@ -8,9 +8,10 @@
 //! and drops it.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use rtsim_industry::cluster::Cluster;
-use rtsim_industry::district::{District, Phase, Presence};
+use rtsim_industry::district::District;
 use rtsim_industry::engine::{Engine, Inspection, LineEdge, ProcessPeek};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::StationDecl;
@@ -21,6 +22,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::Reader;
 use rtsim_kernel::page::PageKey;
 use rtsim_kernel::rows::PageSource;
+use rtsim_layers::{DistrictMark, IndustrySource, Table};
 
 /// What a district's map mark needs, kept for every district.
 #[derive(Clone, Debug)]
@@ -52,13 +54,7 @@ impl DistrictSummary {
 
     /// Its chunk box in blocks: x0, z0, x1, z1.
     pub fn block_box(&self) -> [f64; 4] {
-        let (x0, z0, x1, z1) = self.chunk_box;
-        [
-            x0 as f64 * 16.0,
-            z0 as f64 * 16.0,
-            (x1 as f64 + 1.0) * 16.0,
-            (z1 as f64 + 1.0) * 16.0,
-        ]
+        rtsim_layers::industry::block_box(self.chunk_box)
     }
 }
 
@@ -221,33 +217,88 @@ pub struct DistrictPeek {
 }
 
 fn summarize(d: &District) -> DistrictSummary {
-    let mut b = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-    for &(x, z) in &d.chunks {
-        b = (b.0.min(x), b.1.min(z), b.2.max(x), b.3.max(z));
-    }
-    if d.chunks.is_empty() {
-        b = (0, 0, 0, 0);
-    }
-    let state = match (d.presence, d.phase) {
-        (Presence::Live, _) => "live",
-        (Presence::Partial, _) => "suspended",
-        (_, Phase::Damaged) => "damaged",
-        (_, Phase::Learning) => "learning",
-        (_, Phase::Stale) => "stale",
-        (_, Phase::NotLearnable(_)) => "not learnable",
-        (_, Phase::Learned) => "learned",
-    };
     DistrictSummary {
         id: d.id.0,
         dim: d.dim,
         name: d.name,
         chunks: d.chunks.len() as u32,
-        chunk_box: b,
-        state,
+        chunk_box: rtsim_layers::industry::chunk_box(d),
+        // "learned" until the clusters are read (`IndustryView::load`).
+        state: rtsim_layers::industry::district_state(d, None),
         stations: d.stations.iter().map(|s| s.0).collect(),
         attacks: d.attacks.len() as u32,
         inventories: d.inventories.len() as u32,
         watched: d.watched,
+    }
+}
+
+/// The save's industry as the layers read it: every table is held sorted by key.
+impl IndustrySource for IndustryView {
+    fn districts(&self, ids: Range<u64>, f: &mut dyn FnMut(DistrictMark)) {
+        let lo = self.districts.partition_point(|d| d.id < ids.start);
+        for d in self.districts[lo..].iter().take_while(|d| d.id < ids.end) {
+            f(DistrictMark {
+                id: d.id,
+                dim: d.dim,
+                name: d.name,
+                chunks: d.chunks,
+                chunk_box: d.chunk_box,
+                state: d.state,
+            });
+        }
+    }
+
+    fn stations(&self, ids: Range<u64>, f: &mut dyn FnMut(&StationDecl)) {
+        let lo = self.stations.partition_point(|s| s.station.0 < ids.start);
+        for s in self.stations[lo..]
+            .iter()
+            .take_while(|s| s.station.0 < ids.end)
+        {
+            f(s);
+        }
+    }
+
+    fn station(&self, id: u64) -> Option<&StationDecl> {
+        let i = self.stations.partition_point(|s| s.station.0 < id);
+        self.stations.get(i).filter(|s| s.station.0 == id)
+    }
+
+    fn lines(&self, ids: Range<u64>, f: &mut dyn FnMut((u64, u64), &LineEdge)) {
+        let lo = self.lines.partition_point(|((a, _), _)| *a < ids.start);
+        for (k, l) in self.lines[lo..]
+            .iter()
+            .take_while(|((a, _), _)| *a < ids.end)
+        {
+            f(*k, l);
+        }
+    }
+
+    fn legs(&self, ids: Range<u64>, f: &mut dyn FnMut(u64, &Leg)) {
+        let lo = self.legs.partition_point(|(id, _)| *id < ids.start);
+        for (id, l) in self.legs[lo..].iter().take_while(|(id, _)| *id < ids.end) {
+            f(*id, l);
+        }
+    }
+
+    fn next_key(&self, t: Table, from: u64) -> Option<u64> {
+        match t {
+            Table::Districts => {
+                let i = self.districts.partition_point(|d| d.id < from);
+                self.districts.get(i).map(|d| d.id)
+            }
+            Table::Stations => {
+                let i = self.stations.partition_point(|s| s.station.0 < from);
+                self.stations.get(i).map(|s| s.station.0)
+            }
+            Table::Lines => {
+                let i = self.lines.partition_point(|((a, _), _)| *a < from);
+                self.lines.get(i).map(|((a, _), _)| *a)
+            }
+            Table::Legs => {
+                let i = self.legs.partition_point(|(id, _)| *id < from);
+                self.legs.get(i).map(|(id, _)| *id)
+            }
+        }
     }
 }
 

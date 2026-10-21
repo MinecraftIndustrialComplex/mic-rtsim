@@ -811,6 +811,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsim-layers"
+version = "0.0.1"
+dependencies = [
+ "rtsim-conflict",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-parts",
+ "rtsim-settle",
+ "rtsim-ships",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+]
+
+[[package]]
 name = "rtsim-parts"
 version = "0.0.1"
 dependencies = [
@@ -896,6 +912,8 @@ dependencies = [
  "rtsim-jni",
  "rtsim-kernel",
  "rtsim-knowledge",
+ "rtsim-layers",
+ "rtsim-parts",
  "rtsim-settle",
  "rtsim-ships",
  "rtsim-space",

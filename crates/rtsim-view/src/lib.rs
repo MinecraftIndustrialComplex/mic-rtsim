@@ -8,6 +8,8 @@
 //! - [`keys`]: where each module keeps its pages (mirrored from rtsim-jni).
 //! - [`journal`]: Java's dictionary from the world's `data/mic_rtsim_journal.dat`.
 //! - [`surveyor`]: Surveyor's terrain summaries as the base map over HABITAT (V5).
+//! - [`layers`], [`parts`]: rtsim-layers' builders over a save, and the one reader that draws
+//!   parts (a save's or the live view store's) into scenes.
 
 pub mod cards;
 pub mod events;
@@ -17,6 +19,7 @@ pub mod journal;
 pub mod keys;
 pub mod layers;
 pub mod load;
+pub mod parts;
 pub mod surveyor;
 pub mod view;
 

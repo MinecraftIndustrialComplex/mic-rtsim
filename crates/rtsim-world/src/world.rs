@@ -736,6 +736,14 @@ impl World {
         self.nodes.iter().position(|n| n.key == key)
     }
 
+    /// Market `i` as [`World::market`] reads it, or `None` when there is no such node or its page
+    /// is not resident inside the kernel's resident-only reads (`rtsim_kernel::rows::resident_only`,
+    /// the viewer's tap), where [`World::market`] would panic.
+    pub fn try_market(&self, i: usize) -> Option<Market> {
+        let r = self.markets.get(self.nodes.get(i)?.region)?;
+        Some(r.cell().view_without_catch_up(self.now))
+    }
+
     /// The market at node `i` as it stands at the world's time (a projection; changes nothing).
     pub fn market(&self, i: usize) -> Market {
         let r = self
