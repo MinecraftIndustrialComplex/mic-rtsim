@@ -46,6 +46,9 @@ microlp = { version = "=0.6.0", default-features = false }
 # the private repository MinecraftIndustrialComplex/mic-native at a pinned commit (choice J1). MPL-2.0.
 mic-native-rt = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
 mic-native-host = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
+# Gzip for Minecraft's NBT files (the Java journal, level.dat; the viewer reads the journal too).
+# MIT OR Apache-2.0.
+flate2 = "1.1"
 # The JNI binding, pinned as mic-native and Deep Time pin it. Only rtsim-jni uses it. MIT OR Apache-2.0.
 jni = "=0.22.4"
 

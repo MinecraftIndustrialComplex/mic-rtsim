@@ -1,0 +1,25 @@
+[package]
+name = "rtsim-host"
+description = "The headless host: the engine (rtsim-jni) run on a copy of a world's pages with no Minecraft, and the fake Java side its tests and the host share (VIEWER.md §12)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+rtsim-jni = { path = "../rtsim-jni" }
+rtsim-kernel.workspace = true
+rtsim-industry.workspace = true
+rtsim-world.workspace = true
+rtsim-ecology.workspace = true
+rtsim-ships.workspace = true
+rtsim-conflict.workspace = true
+rtsim-space.workspace = true
+# The host in this process: the engine's steps on its pools, its saves on its IO lane.
+mic-native-host.workspace = true
+mic-native-rt.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
