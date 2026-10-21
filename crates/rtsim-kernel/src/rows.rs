@@ -731,6 +731,14 @@ impl<T: Row> PagedRows<T> {
         }
     }
 
+    /// Removes every row: a whole-table pass (every page becomes an empty, dirty page that the
+    /// next save deletes).
+    pub fn clear(&mut self) {
+        for k in self.keys() {
+            self.remove(k);
+        }
+    }
+
     /// Every key, in order.
     pub fn keys(&self) -> Vec<u64> {
         let mut out = Vec::with_capacity(self.len as usize);
@@ -824,6 +832,41 @@ impl<T: Row> PagedRows<T> {
         }
         Ok(t)
     }
+}
+
+/// The row key of a cell `(x, z)` of a grid in `frame`: the frame in bits 40..52 over the z-order
+/// (Morton) interleave of the coordinates offset by 2^19, so a page of 4^k keys is a square block
+/// of cells and neighbours share pages. Coordinates must lie in `[-2^19, 2^19)` (a cell of 64
+/// blocks covers 33 million blocks either way: past Minecraft's 30-million world border) and the
+/// frame below 4,096; anything else panics, because two cells must never share a key.
+pub fn cell_key(frame: u16, x: i64, z: i64) -> u64 {
+    const LIM: i64 = 1 << 19;
+    assert!(
+        (-LIM..LIM).contains(&x) && (-LIM..LIM).contains(&z) && frame < 1 << 12,
+        "cell ({frame}, {x}, {z}) outside the packed key range"
+    );
+    let bias = |v: i64| (v + LIM) as u32;
+    u64::from(frame) << 40 | crate::paging::morton2(bias(x), bias(z))
+}
+
+/// The cell [`cell_key`] packed.
+pub fn cell_of_key(key: u64) -> (u16, i64, i64) {
+    fn squash(mut v: u64) -> u32 {
+        v &= 0x5555_5555_5555_5555;
+        v = (v | (v >> 1)) & 0x3333_3333_3333_3333;
+        v = (v | (v >> 2)) & 0x0f0f_0f0f_0f0f_0f0f;
+        v = (v | (v >> 4)) & 0x00ff_00ff_00ff_00ff;
+        v = (v | (v >> 8)) & 0x0000_ffff_0000_ffff;
+        v = (v | (v >> 16)) & 0x0000_0000_ffff_ffff;
+        v as u32
+    }
+    let m = key & ((1 << 40) - 1);
+    let unbias = |u: u32| i64::from(u) - (1 << 19);
+    (
+        (key >> 40) as u16,
+        unbias(squash(m)),
+        unbias(squash(m >> 1)),
+    )
 }
 
 /// [`PagedRows`] behind the [`crate::handle::Arena`] interface: `insert` hands out handles and
@@ -1165,6 +1208,27 @@ mod tests {
         assert_eq!(t.get(40), Some(&row(40)));
         assert_eq!(t.len(), 64);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cell_keys_round_trip_and_keep_neighbours_together() {
+        for &(f, x, z) in &[
+            (0u16, 0i64, 0i64),
+            (3, -1, 0),
+            (4095, (1 << 19) - 1, -(1 << 19)),
+            (7, 12_345, -54_321),
+        ] {
+            assert_eq!(cell_of_key(cell_key(f, x, z)), (f, x, z));
+        }
+        // An aligned 2 x 2 block shares a page of 4, on both sides of zero.
+        for (x0, z0) in [(2, 2), (-2, -4), (-2, 0)] {
+            let p: Vec<u64> = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                .iter()
+                .map(|&(dx, dz)| cell_key(1, x0 + dx, z0 + dz) / 4)
+                .collect();
+            assert!(p.iter().all(|&k| k == p[0]), "{x0},{z0}: {p:?}");
+        }
+        assert!(std::panic::catch_unwind(|| cell_key(0, 1 << 19, 0)).is_err());
     }
 
     #[test]
