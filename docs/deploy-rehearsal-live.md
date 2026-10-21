@@ -122,3 +122,79 @@ string in the world's chunk and entity NBT.
 - A pack export made from a checkout that lacks the three raw jars the pack keeps in `mods/` (gitignored,
   among them Destroy) silently omits them; export from a checkout that has them (`sha256` against
   `index.toml`).
+
+<!-- RUNBOOK DRAFT START -->
+## 8. Runbook
+
+For Ben, or an agent Ben gives sudo on LiveSrv (the rehearsal had read access only). Facts it relies on:
+the service is `minecraft-server`, runs as `mcserver` in `/var/lib/mc/server`, has `Restart=always`
+with `RestartSec=10`, and the world's `level.dat`, `playerdata/` and `data/*.dat` are readable by
+`mcserver` only. The disk had 347 GB free on 2026-10-21. Never stop the server with `/stop` in
+its console for maintenance: systemd starts it again 10 seconds later. Use `systemctl`.
+
+### 8.1 Build on the laptop
+
+1. Pack: export the mrpack from a pack checkout that has the raw jars `index.toml` lists (Destroy among
+   them; check each with `sha256sum` against `index.toml`), and copy `scripts/setup_server.py` with it.
+2. rtsim: in the mic-rtsim repository, `tools/natives/build-natives.sh --only linux-x86_64-gnu` in
+   mic-native's dev shell, then `cd neoforge && ./gradlew -Prelease :core:jar` plus one `:<plugin>:jar`
+   for each of the eleven plugins (carryon, climate, create, destroy, dieselgenerators,
+   endertransmission, iceandfire, oreexcavation, powergrid, radar, ribbits). Terra Entity and Sandworms
+   are not in the pack: leave them out.
+3. mic_native: its jar from mic-native (`mic_native-1.21.1-0.1.0.jar`); it carries baseline and
+   x86-64-v3 builds and picks v3 on the host's AVX2 CPU.
+4. Copy the mrpack, `setup_server.py` and the 13 jars to the host (`scp -P 23 ... carol@host:/tmp/`).
+
+### 8.2 Back up
+
+1. Wait for an empty server: `grep -E 'joined the game|left the game' /var/lib/mc/server/logs/latest.log | tail`.
+2. `sudo systemctl stop minecraft-server`, then check `systemctl is-active minecraft-server` says
+   `inactive` and `pgrep -u mcserver java` finds nothing.
+3. `sudo cp -a /var/lib/mc/server /var/lib/mc/server-backup-$(date +%F)`: a full copy, as root,
+   so the owner-only files come along (about 2.5 GB plus the Distant Horizons database). This is the
+   rollback for everything below.
+
+### 8.3 Upgrade the pack (no rtsim yet)
+
+1. `cd /var/lib/mc/server && sudo -u mcserver nix shell nixpkgs#python3 -c python3
+   /tmp/setup_server.py --mrpack /tmp/<pack>.mrpack --output /var/lib/mc/server -y`, with the
+   service's JDK first on `PATH` for the NeoForge installer. `-y` deletes the 72 old jars and the
+   override files that left the pack, and overwrites 23 changed overrides (section 4).
+2. Check `run.sh` now names `neoforge/21.1.249/unix_args.txt`.
+3. Re-apply the two live KubeJS edits if Ben still wants them (diff
+   `kubejs/server_scripts/destroy_metallurgy_integration.js` and `overgeared_mechanical_forging.js`
+   against the backup).
+4. JVM arguments: replace `user_jvm_args.txt` (section 8.5). The installer leaves it alone.
+5. `sudo systemctl start minecraft-server`; follow `logs/latest.log` to `Done`, then compare it with
+   section 6.2's list of expected errors. Let one player log in and check an inventory, an ender
+   chest, the Cobblemon party and PC, a train and a Sable ship: the rehearsal could not check any of
+   them (section 2).
+
+### 8.4 Install rtsim
+
+1. `sudo systemctl stop minecraft-server`.
+2. Copy the 13 jars into `mods/` as `mcserver`.
+3. Start. In `logs/latest.log` look for `mic_native natives: status=OK ... build=x86-64-v3`,
+   `plugin mic_rtsim 0.1.0 loaded`, `session started: native engine`, `6 structures are villages the
+   sim adopts`, and `the sim owns wandering traders now: doTraderSpawning false`. No line may say
+   `Mixin apply` or `InvalidInjectionException` (every rtsim mixin is required, so a failed one stops
+   the server with a crash report).
+4. Districts: from the console (`sudo -u mcserver screen -r minecraft`, detach with Ctrl-A D),
+   `execute positioned <x> <y> <z> in minecraft:overworld run rtsim district adopt 16` at each factory.
+5. Watch for a day: `/neoforge tps`, `/rtsim perf`, the size of `world/rtsim/`.
+
+### 8.5 JVM arguments
+
+JVMARGS-PLACEHOLDER
+
+### 8.6 Rollback
+
+- **rtsim only** (keep the new pack): stop; delete `mods/mic_rtsim*.jar` and `mods/mic_native-*.jar`;
+  start; run `gamerule doTraderSpawning true` (rtsim turned it off and nothing turns it back on once
+  rtsim is gone); `world/rtsim/` can stay (nothing reads it) or go. Expect section 6.6's one-off
+  `unknown or non-serializable data attachment mic_rtsim:*` errors.
+- **Everything**: stop; `sudo mv /var/lib/mc/server /var/lib/mc/server-failed`; `sudo mv
+  /var/lib/mc/server-backup-<date> /var/lib/mc/server`; start.
+- **Sim reset** (SRV2, when a save format change has no migration): stop; delete `world/rtsim/`;
+  start. Section 6.7 says what a reset leaves behind.
+<!-- RUNBOOK DRAFT END -->
