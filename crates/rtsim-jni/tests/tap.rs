@@ -337,6 +337,38 @@ fn full_units_encode_whole_and_their_time_is_measured() {
     e.close(false, Duration::from_secs(5)).unwrap();
 }
 
+/// A small world's whole cycle fits in one step's slack; the next cycle waits for the next period
+/// (the commit takes the mailbox once a period, so encoding again sooner would be wasted).
+#[test]
+fn a_cycle_runs_at_most_once_a_period() {
+    let (_dir, e, mut j) = world("tap-one-cycle", true);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while stat(&e, "cycles") == 0 {
+        assert!(Instant::now() < deadline, "a first cycle");
+        j.flush();
+    }
+    let first = Instant::now();
+    let units = stat(&e, "units");
+    for _ in 0..100 {
+        j.flush();
+    }
+    if first.elapsed() < tap::PERIOD {
+        assert_eq!(stat(&e, "cycles"), 1, "one cycle within its period");
+        // Only the archive's and the focus pass's jobs, a period apart, may have run since.
+        assert!(
+            stat(&e, "units") <= units + 2,
+            "{units} then {}",
+            stat(&e, "units")
+        );
+    }
+    std::thread::sleep(tap::PERIOD.saturating_sub(first.elapsed()));
+    while stat(&e, "cycles") < 2 {
+        assert!(Instant::now() < deadline, "a second cycle a period later");
+        j.flush();
+    }
+    e.close(false, Duration::from_secs(5)).unwrap();
+}
+
 #[test]
 fn a_hand_over_holding_two_ticks_stands_the_tap_down() {
     let (_dir, e, mut j) = world("tap-behind", true);
