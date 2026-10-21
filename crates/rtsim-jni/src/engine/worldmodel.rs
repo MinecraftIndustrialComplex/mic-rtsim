@@ -96,6 +96,7 @@ fn when_pages_unreadable(why: &str, store: &mut PageStore) -> Link {
         log_error(&format!(
             "cannot delete the unreadable world-model pages: {e}"
         ));
+        super::recover_store(store);
     }
     let mut l = Link::empty();
     l.dropped_pages = true;

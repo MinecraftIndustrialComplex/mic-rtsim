@@ -825,6 +825,9 @@ impl World {
         // table's wheel got there in the last `next_due`).
         let _ = self.wheel.pop_until(to);
         self.now = self.now.max(to);
+        // The leg index every module books in is the world's: its past windows' stale bookings go
+        // once a game day (docs/choices-leg-purge.md LP1, LP2), exactly, so at any stride.
+        self.legs.purge_due(self.now);
         self.markets.rows_mut().enforce_budget();
     }
 

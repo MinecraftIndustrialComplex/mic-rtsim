@@ -1,6 +1,6 @@
 # Glass box: compiled Create factories
 
-**Status:** design for Ben's review, 2026-10-20. Nothing is built. Ben approves this design before code.
+**Status:** design of 2026-10-20. G1 (compile and solve, a read-only check against measurement) is on main; see docs/choices-glassbox-g1.md. G2 (the glass box drives the replay) is on feat/glassbox-g2, not yet on main.
 
 **Decided, and binding here:**
 - **C28:** distant factories are a compiled glass box. The real Create graph is compiled into a rate

@@ -776,10 +776,9 @@ impl LiveView {
                     .chain(save_only.iter().copied())
                     .collect();
                 for u in &wanted {
-                    if !r.save_units.contains_key(&(si, s.per_unit, *u)) {
-                        let built = save_unit(s, si as u16, &src, &saved, *u);
-                        r.save_units.insert((si, s.per_unit, *u), built);
-                    }
+                    r.save_units
+                        .entry((si, s.per_unit, *u))
+                        .or_insert_with(|| save_unit(s, si as u16, &src, &saved, *u));
                 }
                 for u in units {
                     if u.resident {
@@ -1402,8 +1401,8 @@ impl Backend for LiveView {
         }
         a.rows.extend(more_rows);
         a.legs.extend(more_legs);
-        a.rows.sort_by(|x, y| y.t.cmp(&x.t));
-        a.legs.sort_by(|x, y| y.t0.cmp(&x.t0));
+        a.rows.sort_by_key(|x| std::cmp::Reverse(x.t));
+        a.legs.sort_by_key(|x| std::cmp::Reverse(x.t0));
         if a.rows.len() > q.limit || a.legs.len() > q.limit {
             a.truncated = true;
             a.rows.truncate(q.limit);

@@ -43,8 +43,9 @@ public final class RtsimConfig {
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
         b.comment("One switch per engine module (C25). A module that is off registers no systems and takes no",
-                        "observations; its saved pages stay on disk untouched. Switching off trade or travel gives",
-                        "wandering traders back to vanilla: doTraderSpawning is restored.")
+                        "observations; its saved pages stay on disk untouched. While trade and travel are both on, rtsim",
+                        "cancels vanilla's wandering trader spawner (the doTraderSpawning gamerule is never written);",
+                        "switching either off gives wandering traders back to vanilla.")
                 .push("modules");
         for (Module m : Module.values())
             MODULES.put(m, b.define(m.key, true));
