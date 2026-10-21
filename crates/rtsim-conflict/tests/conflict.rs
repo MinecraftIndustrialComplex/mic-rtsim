@@ -56,7 +56,7 @@ fn p14_pollution_goes_to_the_player_who_spends_the_most_time_in_its_chunk() {
         Tick(10),
     );
     assert!(
-        c.feuds[&(f, s)].g.rate[smog] > 0.0,
+        c.feud(f, s).unwrap().g.rate[smog] > 0.0,
         "nobody there: the settlers'"
     );
     // The player works at the refinery for two hours, reported every minute.
@@ -71,9 +71,9 @@ fn p14_pollution_goes_to_the_player_who_spends_the_most_time_in_its_chunk() {
         p,
         "the player's now"
     );
-    assert!(c.feuds[&(f, p)].g.rate[smog] > 0.0);
+    assert!(c.feud(f, p).unwrap().g.rate[smog] > 0.0);
     assert_eq!(
-        c.feuds[&(f, s)].g.rate[smog],
+        c.feud(f, s).unwrap().g.rate[smog],
         0.0,
         "the settlers' feud lost it"
     );
@@ -86,8 +86,8 @@ fn p14_pollution_goes_to_the_player_who_spends_the_most_time_in_its_chunk() {
     }
     let q = c.player(&mut w, q_uuid);
     assert_eq!(c.sources[&(1, SignalKind::Smog)].actor, q);
-    assert!(c.feuds[&(f, q)].g.rate[smog] > 0.0);
-    assert_eq!(c.feuds[&(f, p)].g.rate[smog], 0.0);
+    assert!(c.feud(f, q).unwrap().g.rate[smog] > 0.0);
+    assert_eq!(c.feud(f, p).unwrap().g.rate[smog], 0.0);
     // A district's source spans its chunks: time anywhere in them counts.
     let far = Pos::new(0, synth::REFINERY_POS.x + 64, synth::REFINERY_POS.z);
     let chunks = [chunk_of(synth::REFINERY_POS), chunk_of(far)];
@@ -133,12 +133,12 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
         30.0,
         Tick(10),
     );
-    let sf = &c.feuds[&(f, s)];
+    let sf = &c.feud(f, s).unwrap();
     assert!(
         sf.g.rate[SignalKind::Smog.index()] > 0.0,
         "pollution is the settlers'"
     );
-    assert!(!c.feuds.contains_key(&(f, p)));
+    assert!(c.feud(f, p).is_none());
     let log = |actor, kind, pos| Signal {
         faction: None,
         kind,
@@ -152,15 +152,21 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
         log(p, SignalKind::Logging, synth::FOREST_POS),
         Tick(20),
     );
-    assert!(c.feuds[&(f, p)].g.level[SignalKind::Logging.index()] > 0.0);
-    assert_eq!(c.feuds[&(f, s)].g.level[SignalKind::Logging.index()], 0.0);
+    assert!(c.feud(f, p).unwrap().g.level[SignalKind::Logging.index()] > 0.0);
+    assert_eq!(
+        c.feud(f, s).unwrap().g.level[SignalKind::Logging.index()],
+        0.0
+    );
     c.signal(
         &mut w,
         log(q, SignalKind::Building, synth::FOREST_POS),
         Tick(25),
     );
-    assert!(c.feuds[&(f, q)].g.level[SignalKind::Building.index()] > 0.0);
-    assert_eq!(c.feuds[&(f, p)].g.level[SignalKind::Building.index()], 0.0);
+    assert!(c.feud(f, q).unwrap().g.level[SignalKind::Building.index()] > 0.0);
+    assert_eq!(
+        c.feud(f, p).unwrap().g.level[SignalKind::Building.index()],
+        0.0
+    );
     // An unowned act reported by the plugin, (0, 0): the settlers'.
     let o = Obs::Signal(boundary::TerritorySignal {
         faction: synth::CAMP,
@@ -171,15 +177,21 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
         pos: (880, 64, 900),
     });
     c.ingest(&mut w, &mut NoInfrastructure, &o, Tick(30));
-    assert!(c.feuds[&(f, s)].g.level[SignalKind::Mining.index()] > 0.0);
-    assert_eq!(c.feuds[&(f, p)].g.level[SignalKind::Mining.index()], 0.0);
+    assert!(c.feud(f, s).unwrap().g.level[SignalKind::Mining.index()] > 0.0);
+    assert_eq!(
+        c.feud(f, p).unwrap().g.level[SignalKind::Mining.index()],
+        0.0
+    );
     // Far from any territory nothing is held against anyone.
     c.signal(
         &mut w,
         log(p, SignalKind::Mining, Pos::new(0, 9_000, 9_000)),
         Tick(40),
     );
-    assert_eq!(c.feuds[&(f, p)].g.level[SignalKind::Mining.index()], 0.0);
+    assert_eq!(
+        c.feud(f, p).unwrap().g.level[SignalKind::Mining.index()],
+        0.0
+    );
 }
 
 #[test]
@@ -209,7 +221,7 @@ fn grievance_catch_up_is_flat_in_elapsed_time() {
         assert_eq!(v.step, Step::None);
         if days == 100_000 {
             let lambda = c.cultures.get(c.factions[f as usize].culture).lambda;
-            let eq = c.feuds[&(f, s)].g.equilibrium(lambda);
+            let eq = c.feud(f, s).unwrap().g.equilibrium(lambda);
             assert!((v.grievance - eq).abs() < 1e-6, "{} vs {eq}", v.grievance);
         }
     }
@@ -485,7 +497,7 @@ fn killing_the_war_chief_routs_the_band_and_the_heir_takes_over() {
         )
         .unwrap();
     {
-        let x = c.feuds.get_mut(&(f, p)).unwrap();
+        let x = c.feud_mut(f, p).unwrap();
         x.step = Step::Raid;
     }
     assert!(c.parties[band].chief);
@@ -501,7 +513,7 @@ fn killing_the_war_chief_routs_the_band_and_the_heir_takes_over() {
         "and the heir holds the grudge"
     );
     assert!(c.factions[f as usize].cowed_until > Tick::from_days(2));
-    assert!(c.feuds[&(f, p)].step <= Step::Envoy, "two rungs down");
+    assert!(c.feud(f, p).unwrap().step <= Step::Envoy, "two rungs down");
     assert_eq!(c.parties[band].phase, rtsim_conflict::engine::Phase::Home);
     assert_eq!(c.stats.chiefs_killed, 1);
 }

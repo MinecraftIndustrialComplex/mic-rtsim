@@ -345,3 +345,95 @@ Single-threaded numbers match within noise: one fast core is one fast core. The 
 close to 2x on two cores when there is work per event. The potato scale check failed one bound: the
 latent sweep's CPU max/min was 4.11 against the PLACEHOLDER 4.0 (the binomial sampler's switch from
 inversion to BTRS, see the 08:30 notes); every slope and every invariant held.
+
+## 2026-10-21 06:11 to 06:50 UTC, the modules on paging: before and after, full machine and potato
+
+**Runs.**
+- `scale-2026-10-21-0639-full-full-before` and `scale-2026-10-21-0640-full-full-after`: the full
+  machine.
+- `scale-2026-10-21-0641-full-potato-before` and `scale-2026-10-21-0640-full-potato-after`: the
+  potato profile.
+- `scale-2026-10-21-0646-full-potato-swap-*`: the potato pair again, with the cores swapped.
+- `scale-2026-10-21-0611-quick-paged-after`: the new paged sweeps.
+- `scale-2026-10-21-0625-quick-markets-paged-recheck`: markets-paged after its contract changed.
+
+Each `.txt` is the printed table.
+
+**Conditions.**
+- **Builds.** Before is commit 1c43097: both kernel review bugs fixed, every module resident. It
+  ran from outside the repository, so its JSON has no commit. After is a804324:
+  `feat/paging-modules` with origin/main 3ba14e5 merged. Its JSON reads 5c02276 because two
+  doc-only commits landed while it ran. Both are release builds at nice 10.
+- **Machine.** The laptop had rebooted after a power loss. The 1-minute load average was 23 at the
+  start and 50 to 59 at the end, from other sessions.
+- **Pairing.** Before and after ran side by side on the 13 sweeps both binaries have, three
+  repeats each, keeping the median:
+  - full machine: before pinned to CPUs 12-17, after to 18-23 (each scale point is one thread);
+  - potato: before on CPUs 2,4, after on 6,8 (two physical cores each).
+- **New sweeps.** The paged sweeps ran once, in quick mode, on CPUs 10,11.
+- **Void run.** An earlier attempt (01:55 to 05:00 UTC) ran at a load of 100 to 130 and was cut
+  off by the power loss. Its numbers are void.
+
+**Checks.** No contract fails after the change that did not fail before:
+
+| Run | Before | After |
+|---|---|---|
+| full | factions heap 1.188 (1.1) | factions heap 1.147 (1.1) |
+| potato | paged cpu 0.391 (0.35); markets cpu 1.305 (1.30); factions heap 1.188 | paged cpu 0.390; elapsed dyadic catch-up max/min 4.04 (bound 4.0; before 3.64, code untouched); factions heap 1.147 |
+| paged sweeps | | markets-paged resident 1.107 (1.1): redeclared at 1.2 as "not bounded yet", recheck passed |
+
+The factions heap slope is the phase 1 world under the camps, before and after.
+
+**Live heap** (the same on both machines), before and after:
+
+| Point | Before | After |
+|---|---|---|
+| events, 100,000 a day | 50.8 MiB | 10.1 MiB (the wheel's freed burst vectors, PM8) |
+| markets, 4,096 | 67.4 MiB | 45.8 MiB |
+| edges, 16 | 24.7 MiB | 13.5 MiB |
+| factions, 1,024 | 200.9 MiB | 156.1 MiB |
+| dragons, 512 | 23.1 MiB | 19.5 MiB |
+| ships, 16 a service | 4.0 MiB | 2.2 MiB |
+| herds, 256 | 1.3 MiB | 1.0 MiB |
+| paged regions, 10^8 | 7.8 MiB | 7.6 MiB |
+
+**CPU per sim day** (after over before):
+- **Full pair.** Most points are within 10%. Exceptions:
+  - markets below 1,024 villages: 0.73 to 1.46 (all under 25 ms a day); 1.17 at 1,024 and 0.97
+    at 4,096;
+  - dragons: 0.97 to 1.18;
+  - factions: 0.57 to 1.09;
+  - edges: 0.79 to 0.99.
+- **Potato pair.**
+  - The first pair read dragons and ships at 2x after. With the cores swapped (before on 6,8,
+    after on 2,4) they read 0.83 to 1.04 and 0.90 to 1.15, and markets 0.97 to 1.11. So the 2x
+    was core placement on a loaded machine, not the change.
+  - Everything else was within 13% on the first pair.
+
+**State hashes.**
+- **The same before and after:** age, dragons, edges, events, latent, markets, paged and regions.
+- **Different:** factions, herds, members and ships. Their save blobs changed format (conflict
+  RTC2, herds version 2, ships RTS2), and herds also decide by page now (PM6).
+- Paged against resident within the after build is the same at every point (each module's tests,
+  and the paged sweeps).
+
+**The new paged sweeps** (quick, after only). Row pages resident at peak, as a slope over the
+world's size:
+
+| Sweep | Slope | Contract |
+|---|---|---|
+| herds-paged | 0.137 | 0.15 |
+| dragons_paged | 0.226 | 0.3 |
+| ships-paged | 0.019 | 0.1 |
+| factions-paged | -0.001 | 0.1 |
+| markets-paged | 1.107 | 1.2, not bounded yet |
+
+Live heap at the top point, resident against paged:
+
+| Point | Resident | Paged | What dominates |
+|---|---|---|---|
+| herds, 4,096 | 22.8 MiB | 2.5 MiB | |
+| ships, 6,400 ports | 139.7 MiB | 127.2 MiB | the phase 1 world and the port network, resident by design |
+| dragons, 32,768 | 753.7 MiB | 735.2 MiB | the phase 1 world under the dragons |
+
+docs/choices-paging-modules.md has the per-module tables.

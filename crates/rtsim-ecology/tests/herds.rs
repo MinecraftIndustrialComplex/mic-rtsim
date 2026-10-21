@@ -13,8 +13,10 @@ use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_ecology::tunables::PreyKind;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::{Decode, Encode};
+use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
 use rtsim_settle::Pos;
 use rtsim_travel::legs::LegIndex;
+use std::sync::{Arc, RwLock};
 
 const PLAYER: (u64, u64) = (7, 11);
 
@@ -401,6 +403,105 @@ proptest! {
         }
         prop_assert_eq!(&b.fake.history, &a.fake.history);
     }
+}
+
+fn tmpdir(tag: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("rtsim-herds-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+type Store = Arc<RwLock<PageStore>>;
+
+fn store(tag: &str) -> (Store, std::path::PathBuf) {
+    let dir = tmpdir(tag);
+    let s = PageStore::open(&dir, Durability::NoSync).expect("store");
+    (Arc::new(RwLock::new(s)), dir)
+}
+
+/// A paged save: the meta and the changed row pages in one commit, then the budget.
+fn save_paged(h: &mut Herds, store: &Store) {
+    let mut b = SaveBatch::new();
+    let t = h.save_paged(&mut b);
+    store.write().unwrap().commit(b, 0).expect("commit");
+    h.saved(t);
+    h.enforce_budget();
+}
+
+/// Row bytes a paged rig keeps resident: less than one page of herd rows.
+const BUDGET: usize = 6_000;
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
+
+    /// Paged: an engine whose rows page through a store under a budget smaller than one page of
+    /// herds (saved after every op, then evicted down to the budget) runs exactly as a resident
+    /// one, and an engine opened from those pages at any point continues exactly.
+    #[test]
+    fn a_paged_engine_runs_and_restores_exactly(seed in 0u64..100, ops in prop::collection::vec(op(), 1..10), cut in 0usize..10) {
+        let (st, dir) = store("prop");
+        let mut a = Rig::valley(seed);
+        let mut b = Rig::valley(seed);
+        b.h.attach_store(st.clone(), BUDGET);
+        let cut = cut % ops.len();
+        let (mut la, mut lb) = (Vec::new(), Vec::new());
+        for o in &ops[..cut] {
+            apply(&mut a, o, &mut la);
+            apply(&mut b, o, &mut lb);
+            save_paged(&mut b.h, &st);
+            prop_assert_eq!(b.h.state_hash(), a.h.state_hash(), "after {:?}", o);
+        }
+        save_paged(&mut b.h, &st);
+        let mut c = Rig {
+            legs: LegIndex::from_bytes(&b.legs.to_bytes()).expect("legs load"),
+            h: Herds::open_paged(HerdTunables::default(), Box::new(Valley::default()), st.clone(), BUDGET)
+                .expect("herds open"),
+            fake: b.fake.clone(),
+        };
+        drop(b);
+        prop_assert_eq!(c.h.state_hash(), a.h.state_hash());
+        for o in &ops[cut..] {
+            apply(&mut a, o, &mut la);
+            apply(&mut c, o, &mut lb);
+            save_paged(&mut c.h, &st);
+            prop_assert_eq!(c.h.state_hash(), a.h.state_hash(), "after {:?}", o);
+        }
+        prop_assert_eq!(&c.fake.history, &a.fake.history);
+        drop(c);
+        drop(st);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// The paged rig really pages: after a save, the rows held are within the budget, and the next
+/// year's decisions load the herds back.
+#[test]
+fn a_paged_engine_keeps_to_its_budget() {
+    let (st, dir) = store("budget");
+    let mut a = Rig::valley(5);
+    let mut b = Rig::valley(5);
+    b.h.attach_store(st.clone(), BUDGET);
+    let year = u64::from(a.h.year_days()) * TICKS_PER_DAY;
+    let mut t = Tick::ZERO;
+    for _ in 0..8 {
+        t += year / 8;
+        a.run(t, 6_000, None);
+        b.run(t, 6_000, None);
+        save_paged(&mut b.h, &st);
+        assert!(
+            b.h.rows_resident_bytes() <= BUDGET,
+            "{} resident",
+            b.h.rows_resident_bytes()
+        );
+    }
+    let s = b.h.row_stats();
+    assert!(s.loads > 8 && s.evictions > 8, "{s:?}");
+    assert_eq!(b.h.state_hash(), a.h.state_hash());
+    drop(b);
+    drop(st);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
