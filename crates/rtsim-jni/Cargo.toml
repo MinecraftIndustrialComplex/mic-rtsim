@@ -38,3 +38,5 @@ jni.workspace = true
 proptest.workspace = true
 # The host, started in the test process: the protocol test runs steps on its real pools.
 mic-native-host.workspace = true
+# The fake Java side the tests drive the engine with, shared with the headless host.
+rtsim-host = { path = "../rtsim-host" }
