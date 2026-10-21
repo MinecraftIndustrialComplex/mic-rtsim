@@ -1017,6 +1017,15 @@ For Deep Time's coordinator to review.
   `stock_peek` taken before the save. (The first version of this test never advanced the engine,
   so its districts never started replaying and read as out of season.) The Windows test is V4's
   now.
+- **The save's time** in the header is the later of the two clocks, Phase 1's and the industry
+  engine's, so a world that only ran industry (the iron line) shows its day, not day 0.
+- **A district card** on the harness's iron line, two days in: its rates, its replay process with
+  the district whose power it needs, and the other district of its cluster. A long label wraps at
+  60% of the row (mic-viewer 58c66c6) instead of squeezing its value to a letter a line.
+
+  ![A district card, dark theme](docs/viewer/district-card-dark.png)
+  ![The same card, light theme](docs/viewer/district-card-light.png)
+  ![Phone width, dark theme](docs/viewer/district-card-phone.png)
 
 **V5 as built** (feat/viewer-events, 2026-10-21):
 - **Surveyor over HABITAT.** Each frame named by a dimension gets a "Terrain (Surveyor)" tile layer
