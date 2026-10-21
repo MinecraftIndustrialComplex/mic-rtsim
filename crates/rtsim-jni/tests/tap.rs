@@ -206,14 +206,15 @@ fn a_flush_encodes_everything_and_unchanged_parts_are_not_rewritten() {
     let (dir, e, mut j) = world("tap-flush", true);
     e.view_tap_flush().unwrap();
     let (_, h1, _) = store(&dir);
-    assert_eq!(h1.commit, 1);
+    // The steps of the world's setup may have committed already (the lease was there first).
+    assert!(h1.commit >= 1);
     assert!(h1.cycles >= 1);
     let villages = layer_index("settle.villages");
     assert_eq!(layer_rows(&h1, "settle.villages"), 3);
     // Nothing changed: every part is dropped as unchanged, no layer moves.
     e.view_tap_flush().unwrap();
     let (_, h2, _) = store(&dir);
-    assert_eq!(h2.commit, 2);
+    assert_eq!(h2.commit, h1.commit + 1);
     assert_eq!(h2.stat("parts_written_now"), Some(0));
     let versions = |h: &Header| h.layers.iter().map(|l| l.version).collect::<Vec<_>>();
     assert_eq!(versions(&h1), versions(&h2));
