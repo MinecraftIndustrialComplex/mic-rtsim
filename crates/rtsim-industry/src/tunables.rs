@@ -207,6 +207,26 @@ pub struct GlassTunables {
     pub rounds_per_multi_input: u32,
     /// TUNABLE, PLACEHOLDER 2.
     pub rounds_base: u32,
+    /// `glass.solveWorkMax`: the work one solve's rounds may do, in work units (per round, each
+    /// node's slots in and out plus, per good arriving, its out-edges and its recipes' terms; per
+    /// edge, one), over-fed loops' probes included. A solve whose next round does not fit stops
+    /// there, as at `solveRoundsMax`, and the parts still moving are bounded with L = 0 (choices
+    /// G2-58 and G2-60). The first round always runs. A count, not a clock, so a journal replay
+    /// stops where the live run did. Measured on the laptop: 20 to 60 ns a unit at a load of 12 to
+    /// 17, up to 170 at heavier load. TUNABLE, PLACEHOLDER 200,000 (4 to 12 ms at a load of 12 to
+    /// 17).
+    pub solve_work_max: u64,
+    /// `glass.lpWorkMax`: the LPs for U (G-B15) one solve may run, in LP work units: per LP,
+    /// `LP_WORK_FIXED` (50,000, its set-up) plus its variables squared. A good whose LPs do not
+    /// all fit in what is left runs none and keeps the linear bound, which is valid but looser;
+    /// each cone walked costs its nodes too (choices G2-59 and G2-62). Measured on the laptop: a
+    /// small LP about 25 us, a unit of a large one 0.25 to 1 ns. TUNABLE, PLACEHOLDER 20,000,000
+    /// (about 400 small LPs or two of `lp_vars_max`: 10 to 20 ms).
+    pub lp_work_max: u64,
+    /// Solves past the regime cache one glass replay regime change may run while its flags and
+    /// holds settle; past them the district falls back as unsettled (choice G2-61). The unit tests
+    /// need at most 4. TUNABLE, PLACEHOLDER 16.
+    pub build_solves_max: u32,
     /// `glass.mismatchStrikes`: failed windows in a row before the limiting node's kind is demoted
     /// to measured (§5.3, G-B14). TUNABLE, PLACEHOLDER 3.
     pub mismatch_strikes: u32,
@@ -240,6 +260,9 @@ impl Default for GlassTunables {
             warmup_ticks: 1_200,
             rounds_per_multi_input: 2,
             rounds_base: 2,
+            solve_work_max: 200_000,
+            lp_work_max: 20_000_000,
+            build_solves_max: 16,
             mismatch_strikes: 3,
             holding_stacks: 1,
             lp_vars_max: 3_000,
