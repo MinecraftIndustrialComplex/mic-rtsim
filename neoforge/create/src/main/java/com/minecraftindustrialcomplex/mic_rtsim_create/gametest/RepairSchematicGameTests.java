@@ -191,7 +191,7 @@ public final class RepairSchematicGameTests {
                     check("the torch popped off", level.getBlockState(torch).isAir() && level.getBlockState(casing).isAir());
                 }))
                 .thenWaitUntil(io(() -> {
-                    got[0] = RepairSchematics.delivered().stream().filter(x -> x.district() == id[0]).reduce((x, y) -> y).orElse(null);
+                    got[0] = RepairSchematics.delivered().stream().filter(r -> r.district() == id[0]).reduce((p, q) -> q).orElse(null);
                     check("a repair schematic is delivered for the district", got[0] != null);
                 }))
                 .thenExecute(() -> {
