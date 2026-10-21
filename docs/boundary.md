@@ -142,7 +142,8 @@ A reader that meets an unknown kind skips `size` bytes. A malformed size ends th
   kinds and member bodies share it; residents' entity types too, e.g. `minecraft:villager`), and for
   phase 1 (§4): 4 structure (`minecraft:village_plains`), 5 culture (`human`, `ribbit`: rtsim-settle's
   `Culture::name`), 6 profession (`minecraft:farmer`, `ribbits:merchant`), 7 structure template
-  (`ribbits:houses/small_house_red_1`), 8 processor list (`ribbits:main`). Ids start at 1.
+  (`ribbits:houses/small_house_red_1`), 8 processor list (`ribbits:main`), 9 work kind
+  (`mic_rtsim:plains_lamp`, SINK.md §4.2). Ids start at 1.
   - Java's dictionary is per **world**: it is saved in the journal, because a journaled observation
     replayed in a later session must mean the same thing. Java sends the whole of it again at every
     session start. A `DICT` always comes before, in the same or an earlier hand-over, any record that
@@ -193,7 +194,7 @@ an operation id at most once.
 | 0x0105 | DIED | member index | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0110 | TRANSFER | transfer kind | 24 u64 opId, 32 u64 from, 40 u64 to, 48 u32 item, 52 reserved, 56 i64 amount | 64 |
 | 0x0111 | COMMAND_RESULT | status | 24 u64 cmdSeq, 32 u64 opId | 40 |
-| 0x0020 to 0x0021, 0x0120 to 0x0126 | phase 1 | | §4.1 | |
+| 0x0020 to 0x0022, 0x0120 to 0x0126 | phase 1 | | §4.1 | |
 
 **MEMBER_STATE** (what a body adapter captured):
 
@@ -372,6 +373,7 @@ dictionary id).
 |---|---|---|---|---|
 | 0x0020 | VILLAGE_CENSUS (latest-wins) | 0 | 8 u64 village, 16 u32 dimension, 20 u32 flags (1 the meeting point is a meeting POI), 24 i32 meetX, 28 meetY, 32 meetZ, 36 u32 residents, 40 u32 beds, 44 u32 workstations, 48 u32 golems, 52 u32 n, 56 n × (u32 profession, u32 count) | 56 + 8n |
 | 0x0021 | VILLAGE_GOSSIP (latest-wins) | 0 | 8 u64 village, 16 u32 n, 20 u32 residents, 24 n × (u64 playerMost, u64 playerLeast, i32 major_negative, i32 minor_negative, i32 minor_positive, i32 major_positive, i32 trading, u32 reserved): vanilla's own gossip about each player, summed over the census's villagers | 24 + 40n |
+| 0x0022 | WORK_CATALOG (latest-wins) | 0 | 8 u32 kinds n, 12 reserved, 16 n × kind: 0 u32 id (dictionary 9), 4 u32 group (0 lamp, 1 decor, 2 golem), 8 u32 culture, 12 u32 style (structure; 0 every village of the culture), 16 u32 cap (1 one per capN residents, 2 capN a village), 20 u32 capN, 24 u32 variants v, 28 reserved, then v × variant: 0 u32 place (1 template, 2 body), 4 u32 what (template or body), 8 u32 processors (0 none), 12 u32 blocks, 16 u32 items m, 20 reserved, then m × (u32 item, u32 count) | 16 + Σ(32 + Σ(24 + 8m)) |
 | 0x0120 | VILLAGE_ADOPTED | flags (1 LATE) | 24 u64 village, 32 u32 dimension, 36 u32 structure, 40 u32 culture, 44 u32 pieces, 48 i32 minX, 52 minY, 56 minZ, 60 maxX, 64 maxY, 68 maxZ, 72 i32 meetX, 76 meetY, 80 meetZ, 84 reserved | 88 |
 | 0x0121 | TRADE | side | 24 u64 opId, 32 u64 node, 40 u64 agent, 48 u32 epoch, 52 u32 member, 56 u64 playerMost, 64 u64 playerLeast, 72 u64 merchantMost, 80 u64 merchantLeast, 88 u32 costA item, 92 i32 costA count, 96 u32 costB item (0 none), 100 i32 costB count, 104 u32 result item, 108 i32 result count, 112 u32 merchant body, 116 u32 profession (0 none) | 120 |
 | 0x0122 | HURT | what | 24 u64 agent, 32 u32 epoch, 36 u32 member, 40 u64 victimMost, 48 u64 victimLeast, 56 u64 attackerMost, 64 u64 attackerLeast, 72 u32 attacker kind, 76 f32 amount, 80 u64 node, 88 u32 victim body, 92 u32 flags, 96 u32 hits, 100 u32 profession | 104 |
@@ -416,7 +418,17 @@ All of 0x0120 to 0x0126 are journaled (the 24-byte prefix of §2.3).
 - **HOUSE_PLACED**: a PLACE_HOUSE finished; the slot is where a resident of the house stands (above the
   template's resident-pool jigsaw, else the floor's middle). Its COMMAND_RESULT(APPLIED) follows.
 - **VILLAGE_CENSUS / VILLAGE_GOSSIP**: one loaded village every 100 ticks (PLACEHOLDER), round robin, from
-  loaded chunks only; puppets are never residents.
+  loaded chunks only; puppets are never residents. The census's golems are what the engine counts as
+  the village's defenders (SINK.md MS-8), latest wins.
+- **WORK_CATALOG** (SINK.md §4.2, the money sink): what a village's works purse buys, from the data at
+  `data/<ns>/mic_rtsim/work/<id>.json` (`village/WorkCatalog.java`). A template's blocks and items are
+  read from its palette (air and structure voids not counted, a jigsaw as its final state, a door or a
+  bed once); a body's items are the data's. Sent as a preamble record once a session and again after a
+  data reload; the engine takes it while phase 1 is switched off too. A work the engine buys comes
+  back as a PLACE_HOUSE (a template, SEARCH and Y_FROM_VILLAGE around the meeting point) or a
+  SPAWN_RESIDENT with AT_VILLAGE (a body); its COMMAND_RESULT tells the engine whether it stands:
+  APPLIED or DUPLICATE placed it, NOT_FREE or FAILED mark the kind full for that village, with no
+  refund (MS-11). HOUSE_PLACED for a work changes nothing in the engine.
 
 ### 4.2 Commands
 
@@ -427,7 +439,7 @@ All of 0x0120 to 0x0126 are journaled (the 24-byte prefix of §2.3).
 | 0x8012 | WRITE_GOSSIP | 0 | 16 u64 opId, 24 u64 village, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gossip type, 52 i32 amount, 56 u32 report kind, 60 u32 flags (1 FIRST_HAND) | 64 | COMMAND_RESULT |
 | 0x8013 | SENTIMENT | entries n | 16 u64 holder (village), 24 i32 dislikeAtOrBelow, 28 i32 friendAtOrAbove, 32 u32 flags (1 REPLACE), 36 reserved, 40 n × (u64 playerMost, u64 playerLeast, i32 sentiment, u32 reserved) | 40 + 24n | |
 | 0x8014 | PLACE_HOUSE | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 template, 40 u32 processors (0 none), 44 i32 x, 48 i32 y, 52 i32 z, 56 u8 rotation, 57 u8 mirror, 58 u16 flags (1 SEARCH, 2 Y_FROM_VILLAGE), 60 u32 radius, 64 u64 seed, 72 i32 yOffset, 76 reserved | 80 | HOUSE_PLACED, then COMMAND_RESULT |
-| 0x8015 | SPAWN_RESIDENT | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 body (entity type), 40 u32 profession (0 the body's default), 44 u32 flags (1 AT_HOUSE), 48 f64 x, 56 f64 y, 64 f64 z, 72 u64 house (the PLACE_HOUSE op id) | 80 | COMMAND_RESULT |
+| 0x8015 | SPAWN_RESIDENT | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 body (entity type), 40 u32 profession (0 the body's default), 44 u32 flags (1 AT_HOUSE, 2 AT_VILLAGE), 48 f64 x, 56 f64 y, 64 f64 z, 72 u64 house (the PLACE_HOUSE op id) | 80 | COMMAND_RESULT |
 
 **MARKET good** (16 + 16LD bytes): 0 u32 item, 4 u32 reserved, 8 i64 stock (where its ladders start),
 16 two ladders, the market's sales (the player buys) then its purchases, each L levels × D steps of
@@ -506,7 +518,10 @@ killing).
   journal or the village's house list has is DUPLICATE; one still being built gets no second answer.
 - **SPAWN_RESIDENT** (C7). Made by the factory a plugin registered for the body
   (`mic_rtsim_ribbits` for `ribbits:ribbit`), at the house's slot (AT_HOUSE, waiting while the house is
-  being built) or at (x, y, z), once its chunk is entity-ticking, under the spawn quota. Residents are
+  being built), beside the village's meeting point (AT_VILLAGE: in the first of a few nearby columns,
+  the height nearest the meeting point's, within 6 blocks, where the block below holds it up and the
+  body fits out of liquid, else the meeting point itself; a bought golem, SINK.md) or at (x, y, z), once its chunk is
+  entity-ticking, under the spawn quota. Residents are
   ordinary entities (C2): the spawn chunk and the resident carry the COMMAND_RESULT (§3.1) so a crash
   cannot spawn it twice.
 
@@ -609,7 +624,11 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **Tests.** Orders 16 to 21 script the phase 1 commands (the stub's `market`, `merchantOffers`
      and so on); order 22 marks a village as a test's own, which the engine then leaves alone; orders
      23 (`P1_SPAWN_NEAR`) and 24 (`P1_ADVANCE`) materialize a caravan off the flows at a chosen place
-     and run the world ahead of game time (TEST mode only).
+     and run the world ahead of game time (TEST mode only); orders 30 (`WORKS_GRANT`: u64 village,
+     i64 thousandths of its own coin, ledgered as minted) and 31 (`WORKS_RAID`: u64 village, u32
+     tribute) fill a village's works purse and stand in for a dragon's raid (SINK.md; TEST mode, phase
+     1 switched on), and `nPhase1Works` reads a village's works back (bought, kinds full, purse,
+     census golems, tribute paid, spent).
 
 11. **Dragons** (`engine/dragons.rs`, §6, choices S8 to S14 in docs/overnight-choices-persist.md):
    rtsim-ecology's engine runs inside the step, in the phase 1 world (its knowledge holds the

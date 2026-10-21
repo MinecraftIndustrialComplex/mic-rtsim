@@ -136,26 +136,31 @@ public final class ResidentSpawner {
     private static final int[][] AROUND = {
             {2, 0}, {-2, 0}, {0, 2}, {0, -2}, {3, 3}, {-3, 3}, {3, -3}, {-3, -3}, {5, 0}, {-5, 0}, {0, 5}, {0, -5}};
 
+    /** Heights tried in each column, nearest the meeting point's first (a roof or a canopy above is never the ground). */
+    private static final int[] DY = {0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6};
+
     /**
      * Stands {@code e} on the ground beside the meeting point {@code meet} (a bell has a post or a
-     * roof over it): the first column whose ground is within 6 blocks of the meeting point's height
-     * and where it fits, else on top of the meeting point's own column.
+     * roof over it): in the first of a few nearby columns, the height nearest the meeting point's,
+     * within 6 blocks, where the block below holds it up, the body fits and stands in no liquid;
+     * else at the meeting point itself.
      */
     static void standNear(ServerLevel level, Entity e, BlockPos meet) {
-        var ground = net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES;
         for (int[] d : AROUND) {
             BlockPos c = meet.offset(d[0], 0, d[1]);
             if (!level.isLoaded(c))
                 continue;
-            BlockPos top = level.getHeightmapPos(ground, c);
-            if (Math.abs(top.getY() - meet.getY()) > 6)
-                continue;
-            e.moveTo(top.getX() + 0.5, top.getY(), top.getZ() + 0.5, e.getYRot(), e.getXRot());
-            if (level.noCollision(e) && !level.containsAnyLiquid(e.getBoundingBox()))
-                return;
+            for (int dy : DY) {
+                BlockPos at = c.above(dy);
+                BlockPos below = at.below();
+                if (!level.getBlockState(below).isFaceSturdy(level, below, net.minecraft.core.Direction.UP))
+                    continue;
+                e.moveTo(at.getX() + 0.5, at.getY(), at.getZ() + 0.5, e.getYRot(), e.getXRot());
+                if (level.noCollision(e) && !level.containsAnyLiquid(e.getBoundingBox()))
+                    return;
+            }
         }
-        BlockPos top = level.getHeightmapPos(ground, meet);
-        e.moveTo(top.getX() + 0.5, top.getY(), top.getZ() + 0.5, e.getYRot(), e.getXRot());
+        e.moveTo(meet.getX() + 0.5, meet.getY(), meet.getZ() + 0.5, e.getYRot(), e.getXRot());
     }
 
     private void finish(VillageRegistry.ResidentOrder o, int status, LevelChunk chunk, Entity resident, long now) {
