@@ -52,7 +52,9 @@ use crate::wire::{self, Rec, RecordWriter, obs};
 pub const TABLE: u16 = 0x4800;
 pub const KEY_HERDS: PageKey = PageKey::new(TABLE, 0);
 const MAGIC: u32 = u32::from_le_bytes(*b"RTHL");
-const VERSION: u16 = 1;
+/// 2: `Herds::save` writes its rows as row tables' blobs after the resident meta
+/// (docs/choices-paging-modules.md, Herds).
+const VERSION: u16 = 2;
 
 /// Java's module bit the herds run under: `Module.ECOLOGY` (ordinal 4), as the dragons (Y2).
 pub const MODULE_HERDS: u32 = 1 << 4;
