@@ -212,7 +212,8 @@ Sizes are estimates by analogy with code that exists; they are not measured.
 
 No new blocks, items or entities.
 
-**Boundary records** (next to §9 of `docs/boundary.md`; field layouts are written with the code):
+**Boundary records** (next to §9 of `docs/boundary.md`; field layouts are written with the code, and
+the kinds are provisional: taken when the code lands, after checking other branches for the same ids):
 
 | Kind | Name | Direction | What it carries |
 |---|---|---|---|
@@ -223,8 +224,10 @@ No new blocks, items or entities.
 | 0x0810 | TRADED | Java to engine | faction, player, gold nuggets that changed hands (the engine values them in coins at the grove market's price, as `Conflict::traded` takes coins), op id |
 | 0x0811 | NOTICE_SHOWN | Java to engine | faction, player |
 | 0x0091 | CHIEF_STATE (latest-wins) | Java to engine | faction, health, crystal held |
+| 0x0092 | HAVEN_CHEST (latest-wins) | Java to engine | faction, dimension, a grove chest's position, its free slots (as `LAIR_CHEST`) |
+| 0x0093 | DIFFICULTY (latest-wins) | Java to engine | the world's difficulty, sent at session start and on change |
 | 0x8807 | AMBUSH_SPOT | engine to Java | agent, epoch, faction, dimension, the track point, the body's spot, reach; flag removed |
-| 0x8808 | HOME_SPAWN | engine to Java | faction, bodies by kind, chief flag, crystal |
+| 0x8808 | HOME_SPAWN | engine to Java | the answer to a census: faction, bodies to remove by kind (left behind, §4.9), bodies to spawn by kind, chief flag, crystal |
 | 0x8809 | TRAIN_ROBBED | engine to Java | faction, train id |
 
 FACTION_FOUND's reserved word (`docs/boundary.md:1363`) carries the census at discovery: the count
@@ -668,20 +671,23 @@ in code (P15 as built).
 ### 4.9 Bodies, saves and uninstall (UR-1)
 
 UR-1 lets Ben remove rtsim at any time and lets a reset lose only the sim's own state. Puppets are
-never saved by vanilla (the core's `EntitySaveMixin`, `core/puppet/AgentTag.java:10-12`), so a den whose Frostmaw were a puppet would be empty after an
-uninstall, and a grove of puppets would lose its warriors. So:
+never saved by vanilla (the core's `EntitySaveMixin`, `core/puppet/AgentTag.java:10-12`), so a den
+whose Frostmaw were a puppet would be empty after an uninstall, and a grove of puppets would lose its
+warriors. So:
 - **Bodies at home stay vanilla:** saved by vanilla, untagged, with their own health, crystal, mask and
   weapon. Remove rtsim and every den and grove looks as the jar left it, give or take what players
   did.
 - **A body is tagged only while it is away.** When a party leaves a loaded camp, the plugin takes the
   home body, removes it, and spawns the puppet with its state. When the camp is unloaded, the vanilla
-  body stays in the saved chunk; the next time the camp loads while that member is still away, the
-  census discards it (it is out raiding).
+  body stays in the saved chunk and the engine counts it as left behind; the next time the camp
+  loads, the census first removes one vanilla body of that kind for each member left behind, whether
+  that member is still away or has died since. So a Frostmaw killed by a line does not reappear in its
+  den, and one still out is not in two places.
 - **Coming home.** A party that reaches a loaded camp dematerializes into saved vanilla bodies there
   (the tag removed, `PersistenceRequired` set). One that reaches an unloaded camp returns to the pool,
   and the next load's census spawns the bodies.
-- **The census** (HOME_CENSUS, every camp load; ledger 7) compares the vanilla bodies at home with the
-  engine's home count. Fewer than the engine expects and not ordered: the missing ones died unseen,
+- **The census** (HOME_CENSUS, every camp load; ledger 7), after those removals, compares the vanilla
+  bodies at home with the engine's home count. Fewer than the engine expects and not ordered: the missing ones died unseen,
   and the pool loses them. Fewer because the pool refilled: the deficit is spawned (HOME_SPAWN), the
   Frostmaw asleep at the den's template spot, warriors at the grove's edge farthest from any player,
   restricted to its centre as `UmvuthanaGrovePieces.java:494-507` does. More (the Umvuthi summoned
@@ -689,8 +695,10 @@ uninstall, and a grove of puppets would lose its warriors. So:
 - **A reset** recreates each faction from FACTION_FOUND, which carries the census: a robbed den comes
   back robbed (the body's `has_crystal` is 0), a grove comes back with the warriors standing in it, a
   den found empty starts with an empty pool (§4.10).
-- **What an uninstall or reset loses:** members away at that moment (puppets), and the grudges, which
-  are the sim's own.
+- **What an uninstall or reset loses:** members away from a loaded camp at that moment (puppets), and
+  the grudges, which are the sim's own. The other way round, a member that left an unloaded camp and
+  died away comes back with an uninstall, since its vanilla body was still in the saved den: the jar's
+  state wins, which UR-1 allows.
 
 ### 4.10 Renewal: heirs, migrants and regrowth
 
@@ -890,7 +898,8 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 
 **D. Clearing a range, and what comes back.**
 1. Iva kills the Frostmaw by her line on day 9.5, as in A. The den is empty.
-2. She visits the den on day 12: the ruin, no Frostmaw. The pool is at 0.4.
+2. She visits the den on day 12. It loads, and the census removes the vanilla body left behind when
+   the Frostmaw marched (§4.9): she finds the ruin and no Frostmaw. The pool is at 0.4.
 3. On day 15.5 the pool reaches 1. Nothing shows yet: the den is unloaded.
 4. On day 17 she flies over the den; it loads, the census finds no Frostmaw where the engine expects
    one, and the plugin places it asleep in the ruin. If her trains still run, it is already angry:
@@ -995,6 +1004,8 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Old age | `chief_lifespan_days` 1,000,000 for both cultures | §4.2. |
 | Envoy party | Targeting stripped and golems kept off while a demand is open | §4.5. |
 | Peaceful | No war parties leave | §4.12. |
+| Kills | A chief killed at its camp steps down the killer's feud only; a killer with no feud steps none down; a third player's kill on a raid steps down the raided player's feud, as today | §4.2: a stranger's kill should not clear another player's grudge, but breaking a raid should end it. |
+| Den node | A market-less world node (`NodeKind::Lair`), not a haven | Ledger 13: a Frostmaw trades nothing, and a haven costs about 17 KB. |
 | Robbed Frostmaw | Kept persistent in its den | The steal should disarm it, not remove it; otherwise stealing and leaving farms a crystal every six days without a fight. |
 
 **Questions** (recommended option first):
@@ -1007,4 +1018,4 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | MZ-13 | Whom a line's grudge falls on | (a) the train's owner (Create's `Train.owner`; who sets it is checked in the hash-matched jar before code), with P14 at the line's stations when it has none | (b) P14 at the stations: whoever spends most time in their chunks, which in multiplayer can be a bystander |
 | MZ-11 | The grove's people | (a) the real warriors, saved as vanilla at home, counted by a census on each load, tagged only while away (§4.9): killing them at the grove shrinks raids, and an uninstall leaves the grove as it was | (b) left vanilla, with a separate abstract pool: the grove looks the same whatever happens |
 | MZ-3 | Which bosses leave home | the Frostmaw only; the Umvuthi is fought at its grove | (b) the Umvuthi also leads the Invasion in person (it then needs a puppet form, and its trade memory moves into the engine); (c) neither |
-| MZ-6 | The tribe's tribute | (a) gold nuggets, a new phase 1 good, priced by value: 0.5 emerald's worth a point, 9 nuggets an emerald until the market has a price (135 nuggets at the Envoy threshold) | (b) emeralds, as goblins (no new good); (c) gold ingots, 1 per emerald's worth, with no new good beyond the ingot |
+| MZ-6 | The tribe's tribute | (a) gold nuggets, a new phase 1 good, priced by value: 0.5 emerald's worth a point, 9 nuggets an emerald until the market has a price (135 nuggets at the Envoy threshold) | (b) emeralds, as goblins (no new good); (c) gold ingots, priced the same way (also a new phase 1 good: 15 ingots at the Envoy threshold, in coarser steps) |
