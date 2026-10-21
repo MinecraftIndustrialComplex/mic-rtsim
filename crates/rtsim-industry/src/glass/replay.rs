@@ -10,9 +10,10 @@
 //! regime cache answers most of these) and replaces the process in place (choices G2-4, G2-10).
 //!
 //! **Time.** Heater phases and latency (§4.4) are timers, the process's deadline. A simulated
-//! node that would run faster than it did is held off for its downstream latency (the time its
-//! output takes to reach a store), then runs: what it makes arrives no earlier than in Create,
-//! and every flow stays a solve's, so goods are conserved (G2-6). A fall is at once.
+//! node whose potential rises (its flow in the regime with nothing held) is held off for its
+//! downstream latency (the time its output takes to reach a store; a loop counts whole), then
+//! runs: what it makes arrives no earlier than in Create, and every flow stays a solve's, so
+//! goods are conserved (G2-6). A fall is at once.
 //!
 //! **Cycles.** A regime sequence that repeats exactly (same flags, same watched levels, zero
 //! drift on every pool that decides a breakpoint) becomes one `Body::Cycle` over as many whole
