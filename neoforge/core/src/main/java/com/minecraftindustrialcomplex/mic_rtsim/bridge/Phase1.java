@@ -68,6 +68,8 @@ public final class Phase1 {
     long puppetTrades;
     long tradesShort;
     long gossipCommands;
+    /** The works catalogue's data generation last sent (SINK.md §4.2); sent again after a reload. */
+    private int worksSent = -1;
     long marketCommands;
     long offerCommands;
 
@@ -105,6 +107,13 @@ public final class Phase1 {
         // GameTests run their own) must not adopt, count or build into its journal.
         if (RtsimSession.current() != session)
             return;
+        guard("works catalogue", () -> {
+            int g = com.minecraftindustrialcomplex.mic_rtsim.village.WorkCatalog.generation();
+            if (g != worksSent) {
+                worksSent = g;
+                com.minecraftindustrialcomplex.mic_rtsim.village.WorkCatalog.send(session);
+            }
+        });
         guard("adoption", () -> VillageAdoption.drain(session, villages, now));
         guard("census", () -> census.tick(ticks, now));
         guard("houses", () -> houses.tick(now));

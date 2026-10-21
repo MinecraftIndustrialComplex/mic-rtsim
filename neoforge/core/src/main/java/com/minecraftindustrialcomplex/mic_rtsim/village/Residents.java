@@ -47,6 +47,16 @@ public final class Residents {
                 e -> ((Villager) e).getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.MEETING_POINT)
                         .map(net.minecraft.core.GlobalPos::pos).orElse(null),
                 true));
+        // A bought work's body (SINK.md: one iron golem at the meeting point). Not player made, so it
+        // defends the village as vanilla's own village golems do; the spawner makes it persistent.
+        registerFactory("minecraft:iron_golem", (level, pos, profession) -> {
+            var g = EntityType.IRON_GOLEM.create(level);
+            if (g == null)
+                return null;
+            g.moveTo(pos.x, pos.y, pos.z, level.random.nextFloat() * 360f, 0f);
+            g.setPlayerCreated(false);
+            return g;
+        });
     }
 
     public static synchronized void register(EntityType<?> type, Kind kind) {
