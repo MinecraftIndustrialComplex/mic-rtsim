@@ -14,11 +14,15 @@
 //! and the feud steps back down.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink};
 use rtsim_industry::district::{AttackReport, Phase as DPhase};
 use rtsim_industry::fake::{FakeWorld, Visit};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
+use rtsim_kernel::rows::RowStats;
 use rtsim_knowledge::ActorId;
 use rtsim_world::World;
 use serde::Serialize;
@@ -45,6 +49,50 @@ pub struct Options {
     pub variant: Variant,
     /// Save the conflict engine and the world on this day, load them, and go on (the restore).
     pub restart_day: Option<f64>,
+    /// Stop every this many ticks: a save point, where [`Outcome::trail`] records the conflict's
+    /// state hash (and a paged run saves). The same stops paged or not, so runs compare.
+    pub save_every: Option<u64>,
+    /// Page the conflict's row tables to a page store (A16), saving at every save point; a
+    /// restart reopens the conflict from the store ([`Conflict::open_paged`]).
+    pub paged: Option<Paging>,
+}
+
+impl Options {
+    pub fn new(seed: u64, days: u64, variant: Variant) -> Self {
+        Options {
+            seed,
+            days,
+            variant,
+            restart_day: None,
+            save_every: None,
+            paged: None,
+        }
+    }
+}
+
+/// Where and under what budget a paged run keeps its pages.
+#[derive(Clone, Debug)]
+pub struct Paging {
+    /// The store's folder (emptied first).
+    pub dir: PathBuf,
+    /// The row tables' budget, bytes.
+    pub budget: usize,
+}
+
+/// The conflict's meta page in a paged run (rtsim-jni's conflict page key).
+pub const META_KEY: PageKey = PageKey::new(0x4300, 0);
+
+/// A paged save: the meta page and the dirty row pages in one commit, then the tickets.
+fn save_paged(c: &mut Conflict, store: &RwLock<PageStore>) {
+    let mut b = SaveBatch::new();
+    let t = c.save_paged(&mut b, META_KEY);
+    store
+        .write()
+        .expect("store")
+        .commit(b, 0)
+        .expect("conflict pages commit");
+    c.saved(t);
+    c.enforce_budget();
 }
 
 /// The refinery's smog, units a day (Destroy's, PLACEHOLDER), and with the converter.
@@ -85,6 +133,10 @@ pub struct Outcome {
     pub smog_owner: String,
     /// State hashes at the end: the conflict engine's and the world's.
     pub hashes: (u64, u64),
+    /// The conflict's state hash at each save point ([`Options::save_every`]).
+    pub trail: Vec<u64>,
+    /// The row tables' counters (a paged run's loads and evictions), summed over restarts.
+    pub rows: RowStats,
 }
 
 /// Runs the scenario.
@@ -92,6 +144,17 @@ pub fn run(o: &Options) -> Outcome {
     let (mut w, _ids) = synth::world(o.seed);
     let mut c = synth::conflict(o.seed, &w);
     c.log_enabled = true;
+    let store = o.paged.as_ref().map(|p| {
+        let _ = std::fs::remove_dir_all(&p.dir);
+        let s = Arc::new(RwLock::new(
+            PageStore::open(&p.dir, Durability::NoSync).expect("page store"),
+        ));
+        c.attach_store(s.clone(), p.budget);
+        s
+    });
+    let mut trail = Vec::new();
+    let mut rows = RowStats::default();
+    let mut next_save = o.save_every.map(Tick);
     let player = c.player(&mut w, synth::PLAYER);
     let mut smog_owner: Option<ActorId> = None;
     let visits = vec![
@@ -158,6 +221,7 @@ pub fn run(o: &Options) -> Outcome {
             Some(presence).filter(|&p| p > t),
             online.then_some(next_obs),
             restart,
+            next_save,
         ]
         .into_iter()
         .flatten()
@@ -215,7 +279,7 @@ pub fn run(o: &Options) -> Outcome {
             && let Some(owner) = smog_owner
         {
             let f = c.faction_of_key(synth::CAMP).expect("camp");
-            if let Some(d) = c.feuds.get(&(f, owner)).and_then(|x| x.demand) {
+            if let Some(d) = c.feud(f, owner).and_then(|x| x.demand) {
                 converter_at = Some(d.made + TICKS_PER_DAY / 2);
             }
         }
@@ -262,9 +326,10 @@ pub fn run(o: &Options) -> Outcome {
             next_obs = next + 1_200;
         }
         plugin.apply(c.take_commands(), next);
-        // The ladder, for the timeline.
-        for (&(_, a), feud) in &c.feuds {
-            let k = a.to_bits();
+        // The ladder, for the timeline (the one faction's feuds).
+        let camp = c.faction_of_key(synth::CAMP).expect("camp");
+        for (a, feud) in c.feuds_of(camp) {
+            let (a, k) = (*a, a.to_bits());
             if last_steps.get(&k) != Some(&feud.step) {
                 last_steps.insert(k, feud.step);
                 rungs.push(Rung {
@@ -274,16 +339,37 @@ pub fn run(o: &Options) -> Outcome {
                 });
             }
         }
+        if next_save == Some(next) {
+            if let Some(s) = &store {
+                save_paged(&mut c, s);
+            }
+            trail.push(c.state_hash());
+            c.enforce_budget();
+            next_save = o.save_every.map(|e| next + e);
+        } else if let Some(s) = store.as_ref().filter(|_| c.needs_save()) {
+            // The budget's save (every resident page changed; PM-C10): no save point.
+            save_paged(&mut c, s);
+        }
         if restart == Some(next) {
             restarted = true;
-            let (cb, wb) = (c.save(), w.save());
+            let wb = w.save();
             let (goods, ids) = rtsim_world::synth::goods();
             let book = rtsim_world::synth::recipes(&ids);
             w = World::load(synth::world_config(o.seed), goods, book, &wb).expect("world loads");
             let log = std::mem::take(&mut c.log);
             let tun = c.tun.clone();
             let cultures = c.cultures.clone();
-            c = Conflict::load(tun, cultures, &cb).expect("conflict loads");
+            c = match (&store, &o.paged) {
+                (Some(s), Some(p)) => {
+                    save_paged(&mut c, s);
+                    add_stats(&mut rows, c.row_stats());
+                    drop(c);
+                    Conflict::open_paged(s.clone(), p.budget, META_KEY, tun, cultures)
+                        .expect("conflict pages read")
+                        .expect("a meta page")
+                }
+                _ => Conflict::load(tun, cultures, &c.save()).expect("conflict loads"),
+            };
             c.log = log;
             c.log_enabled = true;
         }
@@ -314,6 +400,8 @@ pub fn run(o: &Options) -> Outcome {
     let blocks_broken = fake.districts[0].broken.len();
     let smog_owner = smog_owner.map_or_else(|| "nobody".to_string(), |a| c.actor_name(&w, a));
     let hashes = (c.state_hash(), w.state_hash());
+    c.enforce_budget();
+    add_stats(&mut rows, c.row_stats());
     Outcome {
         world: w,
         conflict: c,
@@ -326,5 +414,15 @@ pub fn run(o: &Options) -> Outcome {
         converter_day,
         smog_owner,
         hashes,
+        trail,
+        rows,
     }
+}
+
+fn add_stats(to: &mut RowStats, s: RowStats) {
+    to.loads += s.loads;
+    to.load_bytes += s.load_bytes;
+    to.evictions += s.evictions;
+    to.over_budget += s.over_budget;
+    to.peak_resident_bytes = to.peak_resident_bytes.max(s.peak_resident_bytes);
 }

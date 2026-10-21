@@ -341,8 +341,8 @@ public final class HabitatGameTests {
                     int y = top(level, (int) hx, (int) hz) + 1;
                     player[0] = FakePlayers.add(level, new Vec3(hx + 0.5, y, hz + 0.5), "habitat_watcher");
                 })
-                .thenWaitUntil(() -> check("the herd materialized", HerdBridge.INSTANCE.group(agent[0]) != null
-                        && !HerdBridge.INSTANCE.bodies(agent[0]).isEmpty()))
+                .thenWaitUntil(RtsimTests.io(() -> check("the herd materialized", HerdBridge.INSTANCE.group(agent[0]) != null
+                        && !HerdBridge.INSTANCE.bodies(agent[0]).isEmpty())))
                 .thenExecute(() -> {
                     watching[0] = true;
                     record(test, "materialized", HerdBridge.INSTANCE.bodies(agent[0]).size() + " animals, all on land");

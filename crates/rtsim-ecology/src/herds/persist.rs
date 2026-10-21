@@ -6,16 +6,27 @@
 //! ids applied, so [`Herds::load`] gives back an engine that continues exactly as the saved one
 //! (the same `state_hash`, the same events in the same order).
 //!
-//! **Not saved:** the tunables and the climate provider (the caller's), the region index and the
-//! predator → herd map (derived from the routes and followers, rebuilt on load), and the CLI's
-//! diagnostics (`log`, `trace`). The leg index the herds book into is the caller's (the phase 1
-//! world's), saved beside them.
+//! **Not saved:** the tunables and the climate provider (the caller's), the region index (derived
+//! from each herd's own list, rebuilt on load), and the CLI's diagnostics (`log`, `trace`). The
+//! leg index the herds book into is the caller's (the phase 1 world's), saved beside them.
+//!
+//! # Paged (docs/choices-paging-modules.md)
+//!
+//! The same state in two parts: the **meta** (everything but the rows: the wheel, players,
+//! claims, obstacles, ops, the active set, the predator map and each row table's count) and the
+//! **rows** (herds, forage cells, and the region index). [`Herds::save`] writes the meta then
+//! every row in key order: one page, as before. [`Herds::save_paged`] writes the meta as one page
+//! of [`TABLE_META`] and only the row pages changed since the last save; [`Herds::open_paged`]
+//! reads the meta and leaves every row page where it is. Both give the same `state_hash`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
-use rtsim_kernel::handle::Arena;
+use rtsim_kernel::page::{PageKey, SaveBatch};
+use rtsim_kernel::paging::SaveTicket;
+use rtsim_kernel::rows::{PageSource, PagedArena, PagedRows, RowStats};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_settle::Pos;
 use rtsim_travel::legs::{Meeting, Stamp};
@@ -23,15 +34,23 @@ use rtsim_travel::legs::{Meeting, Stamp};
 use super::boundary::{self, HerdDict};
 use super::climate::Climate;
 use super::cohort::Class;
-use super::engine::{Ev, HerdStats, Herds, PlayerView, player_key};
-use super::forage::Row;
+use super::engine::{
+    Ev, HERDS_PER_PAGE, HerdStats, Herds, PlayerView, REGIONS_PER_PAGE, TABLE_HERDS, TABLE_META,
+    TABLE_REGIONS, player_key,
+};
+use super::forage::{FORAGE_PER_PAGE, TABLE_FORAGE};
 use super::herd::{Embodied, Herd, HerdId, HerdLedger, Route, Seen};
 use super::route::Obstacle;
 use super::species::HerdSpecies;
 use super::tunables::HerdTunables;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"RTHD");
-const VERSION: u8 = 1;
+/// 2: the rows moved to row tables (key order, the herd's regions in its row), the active set and
+/// the predator map are saved.
+const VERSION: u8 = 2;
+
+/// The meta page of a paged engine.
+pub const META_PAGE: PageKey = PageKey::new(TABLE_META, 0);
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -196,6 +215,12 @@ fn put_herd(w: &mut Writer, x: &Herd) {
         w.var_u64(u64::from(*slot));
         s.encode(w);
     }
+    w.var_u64(x.regions.len() as u64);
+    for r in &x.regions {
+        w.u16(r.0);
+        w.var_i64(r.1);
+        w.var_i64(r.2);
+    }
 }
 
 fn get_herd(r: &mut Reader<'_>) -> codec::Result<Herd> {
@@ -270,6 +295,10 @@ fn get_herd(r: &mut Reader<'_>) -> codec::Result<Herd> {
         let slot = u32_of(r.var_u64()?)?;
         clips.insert(slot, Stamp::decode(r)?);
     }
+    let mut regions = Vec::new();
+    for _ in 0..r.len_prefix(4)? {
+        regions.push((r.u16()?, r.var_i64()?, r.var_i64()?));
+    }
     Ok(Herd {
         name,
         species,
@@ -292,7 +321,26 @@ fn get_herd(r: &mut Reader<'_>) -> codec::Result<Herd> {
         followers,
         ledger,
         clips,
+        regions,
     })
+}
+
+impl Encode for Herd {
+    fn encode(&self, w: &mut Writer) {
+        put_herd(w, self);
+    }
+}
+
+impl Decode for Herd {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        get_herd(r)
+    }
+}
+
+impl rtsim_kernel::rows::Row for Herd {
+    fn heap_bytes(&self) -> usize {
+        Herd::heap_bytes(self)
+    }
 }
 
 fn put_ev(w: &mut Writer, e: &Ev) {
@@ -398,24 +446,46 @@ fn stats_of(v: [u64; 23]) -> HerdStats {
     }
 }
 
+/// Row counts the meta records, so a paged engine opens its tables without reading them.
+struct Counts {
+    herds: (u64, u32),
+    forage: u64,
+    regions: u64,
+}
+
+/// The tickets of one paged save: one per row table.
+#[derive(Debug)]
+pub struct HerdsTicket {
+    herds: SaveTicket,
+    forage: SaveTicket,
+    regions: SaveTicket,
+}
+
+/// How a budget of row bytes splits over the herds' tables: herd rows, forage cells, the region
+/// index. PLACEHOLDER shares (docs/choices-paging-modules.md).
+fn split(budget: usize) -> (usize, usize, usize) {
+    let herds = budget / 2;
+    let forage = budget / 100 * 35;
+    (herds, forage, budget.saturating_sub(herds + forage))
+}
+
+fn page_err(e: rtsim_kernel::page::PageError) -> CodecError {
+    CodecError::Invalid(format!("herds page: {e}"))
+}
+
 impl Herds {
-    /// The whole state as one page.
-    pub fn save(&self) -> Vec<u8> {
-        let mut w = Writer::with_capacity(1024 + self.herds.len() * 512);
+    /// Everything but the rows.
+    fn put_meta(&self, w: &mut Writer) {
         w.u32(MAGIC);
         w.u8(VERSION);
         w.u64(self.seed);
         w.u64(self.now.0);
         w.u64(self.next_seed);
-        self.herds.encode_with(&mut w, |x, w| put_herd(w, x));
-        w.var_u64(self.forage.rows.len() as u64);
-        for (k, row) in &self.forage.rows {
-            w.u16(k.0);
-            w.var_i64(i64::from(k.1));
-            w.var_i64(i64::from(k.2));
-            w.u64(row.anchor.0);
-            w.f64(row.forage);
-        }
+        let (len, next) = self.herds.meta();
+        w.var_u64(len);
+        w.u32(next);
+        w.var_u64(self.forage.rows.len());
+        w.var_u64(self.regions.len());
         let fs = &self.forage.stats;
         for v in [fs.reads, fs.grazed, fs.folded] {
             w.var_u64(v);
@@ -429,7 +499,7 @@ impl Herds {
             w.u64(o.at.0);
             w.var_u64(u64::from(o.reports));
         }
-        self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
+        self.wheel.encode_with(w, |e, w| put_ev(w, e));
         w.var_u64(self.players.len() as u64);
         for p in &self.players {
             w.u64(p.uuid.0);
@@ -448,7 +518,7 @@ impl Herds {
             match p.interest {
                 Some(s) => {
                     w.u8(1);
-                    s.encode(&mut w);
+                    s.encode(w);
                 }
                 None => w.u8(0),
             }
@@ -474,18 +544,27 @@ impl Herds {
             w.u64(*op);
             w.u64(t.0);
         }
+        w.var_u64(self.active.len() as u64);
+        for h in &self.active {
+            w.u32(h.index());
+        }
+        w.var_u64(self.follows.len() as u64);
+        for (p, hs) in &self.follows {
+            w.u64(*p);
+            w.var_u64(hs.len() as u64);
+            for h in hs {
+                w.u32(h.index());
+            }
+        }
         stats_array(&self.stats).iter().for_each(|v| w.var_u64(*v));
-        w.into_bytes()
     }
 
-    /// Reads [`Herds::save`]'s page with the caller's tunables and climate.
-    pub fn load(
+    /// An engine with the meta's state and empty row tables, and the tables' counts.
+    fn get_meta(
         tun: HerdTunables,
         climate: Box<dyn Climate>,
-        bytes: &[u8],
-    ) -> codec::Result<Herds> {
-        let mut rd = Reader::new(bytes);
-        let r = &mut rd;
+        r: &mut Reader<'_>,
+    ) -> codec::Result<(Herds, Counts)> {
         if r.u32()? != MAGIC {
             return bad("not a herds page".into());
         }
@@ -498,18 +577,11 @@ impl Herds {
         let next_seed = r.u64()?;
         let mut h = Herds::new(seed, tun, climate, now);
         h.next_seed = next_seed;
-        h.herds = Arena::decode_with(r, get_herd)?;
-        for _ in 0..r.len_prefix(14)? {
-            let k = (r.u16()?, i32_of(r.var_i64()?)?, i32_of(r.var_i64()?)?);
-            let anchor = Tick(r.u64()?);
-            h.forage.rows.insert(
-                k,
-                Row {
-                    anchor,
-                    forage: r.f64()?,
-                },
-            );
-        }
+        let counts = Counts {
+            herds: (r.var_u64()?, r.u32()?),
+            forage: r.var_u64()?,
+            regions: r.var_u64()?,
+        };
         h.forage.stats.reads = r.var_u64()?;
         h.forage.stats.grazed = r.var_u64()?;
         h.forage.stats.folded = r.var_u64()?;
@@ -575,22 +647,171 @@ impl Herds {
             let op = r.u64()?;
             h.ops.insert(op, Tick(r.u64()?));
         }
+        for _ in 0..r.len_prefix(4)? {
+            h.active.insert(PagedArena::<Herd>::handle(r.u32()?));
+        }
+        for _ in 0..r.len_prefix(9)? {
+            let p = r.u64()?;
+            let mut hs = BTreeSet::new();
+            for _ in 0..r.len_prefix(4)? {
+                hs.insert(PagedArena::<Herd>::handle(r.u32()?));
+            }
+            h.follows.insert(p, hs);
+        }
         let mut s = [0u64; 23];
         for v in &mut s {
             *v = r.var_u64()?;
         }
         h.stats = stats_of(s);
+        Ok((h, counts))
+    }
+
+    /// The whole state as one page: the meta, then every row in key order.
+    pub fn save(&self) -> Vec<u8> {
+        let mut w = Writer::with_capacity(1024 + self.herds.len() * 512);
+        self.put_meta(&mut w);
+        self.herds.encode_all(&mut w);
+        self.forage.rows.encode_all(&mut w);
+        w.into_bytes()
+    }
+
+    /// Reads [`Herds::save`]'s page with the caller's tunables and climate. The region index is
+    /// rebuilt from the herds' own lists.
+    pub fn load(
+        tun: HerdTunables,
+        climate: Box<dyn Climate>,
+        bytes: &[u8],
+    ) -> codec::Result<Herds> {
+        let mut rd = Reader::new(bytes);
+        let r = &mut rd;
+        let (mut h, counts) = Self::get_meta(tun, climate, r)?;
+        h.herds = PagedArena::decode_all(TABLE_HERDS, HERDS_PER_PAGE, r)?;
+        h.forage.rows = PagedRows::decode_all(TABLE_FORAGE, FORAGE_PER_PAGE, r)?;
         rd.finish()?;
-        // Derived indexes.
-        h.rebuild_regions();
-        let pairs: Vec<(u64, HerdId)> = h
-            .herds
-            .iter()
-            .flat_map(|(id, x)| x.followers.iter().map(move |(p, _)| (*p, id)))
-            .collect();
-        for (p, id) in pairs {
-            h.follows.entry(p).or_default().insert(id);
+        if h.herds.meta() != counts.herds || h.forage.rows.len() != counts.forage {
+            return bad("row counts differ from the meta's".into());
+        }
+        h.index_regions();
+        if h.regions.len() != counts.regions {
+            return bad("region index differs from the meta's count".into());
         }
         Ok(h)
+    }
+
+    // ---- paged ----------------------------------------------------------------------------------
+
+    /// Starts paging the row tables through `source`, keeping about `budget` bytes of rows
+    /// resident (split over the tables). Every row stays until a save writes it.
+    pub fn attach_store(&mut self, source: Arc<dyn PageSource>, budget: usize) {
+        let (a, b, c) = split(budget);
+        self.herds.rows_mut().attach(source.clone(), a);
+        self.forage.rows.attach(source.clone(), b);
+        self.regions.attach(source, c);
+    }
+
+    /// Opens an engine saved by [`Herds::save_paged`]: the meta is read, no row is.
+    pub fn open_paged(
+        tun: HerdTunables,
+        climate: Box<dyn Climate>,
+        source: Arc<dyn PageSource>,
+        budget: usize,
+    ) -> codec::Result<Herds> {
+        let raw = source
+            .read(META_PAGE)
+            .map_err(page_err)?
+            .ok_or_else(|| CodecError::Invalid("no herds meta page".into()))?;
+        let mut rd = Reader::new(&raw);
+        let (mut h, counts) = Self::get_meta(tun, climate, &mut rd)?;
+        rd.finish()?;
+        let (a, b, c) = split(budget);
+        h.herds = PagedArena::open(TABLE_HERDS, HERDS_PER_PAGE, source.clone(), a, counts.herds);
+        h.forage.rows = PagedRows::open(
+            TABLE_FORAGE,
+            FORAGE_PER_PAGE,
+            source.clone(),
+            b,
+            counts.forage,
+        );
+        h.regions = PagedRows::open(TABLE_REGIONS, REGIONS_PER_PAGE, source, c, counts.regions);
+        Ok(h)
+    }
+
+    /// The meta page and every row page changed since the last save, into `batch`. The pages
+    /// stay pinned until the ticket comes back ([`Herds::saved`] once the commit is durable,
+    /// [`Herds::save_failed`] if it failed).
+    pub fn save_paged(&mut self, batch: &mut SaveBatch) -> HerdsTicket {
+        let mut w = Writer::with_capacity(1024 + self.wheel.len() * 16);
+        self.put_meta(&mut w);
+        batch.put(META_PAGE, w.as_bytes());
+        HerdsTicket {
+            herds: self.herds.rows_mut().save_dirty(batch),
+            forage: self.forage.rows.save_dirty(batch),
+            regions: self.regions.save_dirty(batch),
+        }
+    }
+
+    pub fn saved(&mut self, t: HerdsTicket) {
+        self.herds.rows_mut().saved(t.herds);
+        self.forage.rows.saved(t.forage);
+        self.regions.saved(t.regions);
+    }
+
+    pub fn save_failed(&mut self, t: HerdsTicket) {
+        self.herds.rows_mut().save_failed(t.herds);
+        self.forage.rows.save_failed(t.forage);
+        self.regions.save_failed(t.regions);
+    }
+
+    /// Evicts saved row pages down to the budget (a step boundary). Nothing in a resident engine.
+    pub fn enforce_budget(&mut self) -> usize {
+        self.herds.rows_mut().enforce_budget()
+            + self.forage.rows.enforce_budget()
+            + self.regions.enforce_budget()
+    }
+
+    /// Bytes of row pages resident now, over every row table: what the budget bounds.
+    pub fn rows_resident_bytes(&self) -> usize {
+        self.herds.rows().resident_bytes()
+            + self.forage.rows.resident_bytes()
+            + self.regions.resident_bytes()
+    }
+
+    /// The row budget over every table (`usize::MAX` resident).
+    pub fn rows_budget(&self) -> usize {
+        self.herds
+            .rows()
+            .budget()
+            .saturating_add(self.forage.rows.budget())
+            .saturating_add(self.regions.budget())
+    }
+
+    /// Whether the rows are over their budget with nothing left to evict: every resident page is
+    /// changed since the last save. The host should save (an extra, pending save is a generation
+    /// like any other, P29): the pages it writes can go.
+    pub fn needs_save(&self) -> bool {
+        self.herds.rows().is_paged() && self.rows_resident_bytes() > self.rows_budget()
+    }
+
+    pub fn reset_row_stats(&mut self) {
+        self.herds.rows_mut().reset_stats();
+        self.forage.rows.reset_stats();
+        self.regions.reset_stats();
+    }
+
+    /// The row tables' counters, summed.
+    pub fn row_stats(&self) -> RowStats {
+        let mut out = RowStats::default();
+        for s in [
+            self.herds.rows().stats(),
+            self.forage.rows.stats(),
+            self.regions.stats(),
+        ] {
+            out.loads += s.loads;
+            out.load_bytes += s.load_bytes;
+            out.evictions += s.evictions;
+            out.over_budget += s.over_budget;
+            out.peak_resident_bytes += s.peak_resident_bytes;
+        }
+        out
     }
 }

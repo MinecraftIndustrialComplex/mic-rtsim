@@ -46,6 +46,7 @@ use crate::boundary::{self, Cmd, Obs, Uuid};
 use crate::culture::{Culture, Cultures, PartyKind, SignalKind, Step, days_to_ticks};
 use crate::grievance::{Grievance, K};
 use crate::presence::{ChunkKey, Presence, chunk_of};
+use crate::tables::{FactionTable, PlaceIndex, SourceTable};
 use crate::tunables::ConflictTunables;
 
 /// Leg owner bit of a conflict party (the registry is in `rtsim_world::interest::Viewer`).
@@ -127,6 +128,23 @@ pub struct Feud {
     /// No escalation before this (a band could not be mustered).
     pub wait_until: Tick,
     pub raids: u32,
+}
+
+impl Feud {
+    pub fn new(at: Tick) -> Self {
+        Feud {
+            g: Grievance::new(at),
+            raw: [0.0; K],
+            step: Step::None,
+            since: at,
+            demand: None,
+            party: None,
+            stamp: 0,
+            focus: None,
+            wait_until: Tick::ZERO,
+            raids: 0,
+        }
+    }
 }
 
 /// A continuous source with no direct actor: a district's or a chunk's emissions. P14 as Ben
@@ -365,12 +383,24 @@ pub(crate) struct NodeIndex {
 const NODE_CELL: i32 = 1_024;
 
 impl NodeIndex {
+    /// Bytes held: one B-tree entry per cell (about 40) and its vector of node indexes.
+    fn heap_bytes(&self) -> usize {
+        self.cells.values().map(|v| 40 + v.capacity() * 8).sum()
+    }
+
+    /// Nodes only join, at the end, and never move: a refresh adds the newcomers (a faction's
+    /// camp joining costs its own node, never the world's).
     fn refresh(&mut self, w: &World) {
         if w.nodes.len() == self.known {
             return;
         }
-        self.cells.clear();
-        for (i, n) in w.nodes.iter().enumerate() {
+        if w.nodes.len() < self.known {
+            // Another world: start again.
+            self.cells.clear();
+            self.known = 0;
+        }
+        for (k, n) in w.nodes[self.known..].iter().enumerate() {
+            let i = self.known + k;
             self.cells
                 .entry((
                     n.pos.frame,
@@ -381,6 +411,32 @@ impl NodeIndex {
                 .push(i);
         }
         self.known = w.nodes.len();
+    }
+
+    /// Every node within `r` blocks of `pos` (same frame), in index order: the cells the circle
+    /// covers, never every node.
+    fn within(&self, w: &World, t: &Topology, pos: Pos, r: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        for part in t.rects_near(i64::from(pos.x), i64::from(pos.z), r.ceil() as i64) {
+            let (x0, z0, x1, z1) = part.grid_cells(i64::from(NODE_CELL));
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    for &i in self
+                        .cells
+                        .get(&(pos.frame, x as i32, z as i32))
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                    {
+                        if tdist(t, pxz(w.nodes[i].pos), pxz(pos)) <= r {
+                            out.push(i);
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The nearest node to `pos` within `reach` blocks that `ok` accepts (ties to the lower
@@ -466,11 +522,24 @@ pub struct Conflict {
     pub seed: u64,
     pub tun: ConflictTunables,
     pub cultures: Cultures,
-    pub factions: Vec<Faction>,
+    /// Factions by index, each with its feuds and the sources that reach it (paged rows, table
+    /// 0x4310: [`crate::tables`]).
+    pub factions: FactionTable,
+    /// Factions by key (resident, saved: an index from id to row).
     pub(crate) by_key: BTreeMap<u64, u32>,
-    pub(crate) cells: BTreeMap<(u16, i32, i32), Vec<u32>>,
-    pub feuds: BTreeMap<(u32, ActorId), Feud>,
-    pub sources: BTreeMap<(u64, SignalKind), Source>,
+    /// Factions by cell of their camp (resident, saved: an index from position to id).
+    pub(crate) cells: BTreeSet<((u16, i32, i32), u32)>,
+    /// Feuds in every faction's row.
+    pub(crate) feud_count: u64,
+    /// Continuous sources (paged rows, table 0x4312, through a resident index by key).
+    pub sources: SourceTable,
+    /// Which sources are where, by chunk (paged rows, table 0x4313).
+    pub(crate) places: PlaceIndex,
+    /// The page store the row tables page to, when paged.
+    pub(crate) store: Option<std::sync::Arc<dyn rtsim_kernel::rows::PageSource>>,
+    /// Pages loaded when a budget check last ended over budget with nothing it could evict:
+    /// until a load or a save makes a page evictable, another check would find nothing either.
+    pub(crate) budget_mark: Option<u64>,
     pub parties: Arena<Party>,
     pub(crate) wheel: TimingWheel<Ev>,
     /// Players seen through the interest areas: their UUIDs.
@@ -486,12 +555,8 @@ pub struct Conflict {
     pub log: Vec<LogEntry>,
     pub log_enabled: bool,
     pub(crate) nodes: NodeIndex,
-    /// Sources reaching each (faction, kind): derived from `sources`, rebuilt on load.
-    pub(crate) source_index: BTreeMap<(u32, SignalKind), BTreeSet<u64>>,
     /// Time spent per chunk (P14): whom an unowned source counts against.
     pub presence: Presence,
-    /// Sources by chunk: derived from `sources`, rebuilt on load.
-    pub(crate) source_chunks: BTreeMap<ChunkKey, BTreeSet<(u64, SignalKind)>>,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
     pub topo: SharedTopologies,
 }
@@ -549,11 +614,14 @@ impl Conflict {
             seed,
             tun,
             cultures,
-            factions: Vec::new(),
+            factions: FactionTable::default(),
             by_key: BTreeMap::new(),
-            cells: BTreeMap::new(),
-            feuds: BTreeMap::new(),
-            sources: BTreeMap::new(),
+            cells: BTreeSet::new(),
+            feud_count: 0,
+            sources: SourceTable::default(),
+            places: PlaceIndex::default(),
+            store: None,
+            budget_mark: None,
             parties: Arena::new(),
             wheel: TimingWheel::new(now),
             players: BTreeMap::new(),
@@ -567,9 +635,7 @@ impl Conflict {
             log: Vec::new(),
             log_enabled: false,
             nodes: NodeIndex::default(),
-            source_index: BTreeMap::new(),
             presence,
-            source_chunks: BTreeMap::new(),
             topo: rtsim_space::topology::all_flat(),
         }
     }
@@ -762,7 +828,6 @@ impl Conflict {
                 at,
             ),
         };
-        let f = self.factions.len() as u32;
         let actor = w.knowledge.actors_mut().register(ActorKind::Group, key);
         let home = w.nodes[node].actor;
         let mut x = Faction {
@@ -796,20 +861,31 @@ impl Conflict {
             .knowledge
             .create_notable(x.chief_seed, home, x.heir, at, lifespan);
         x.chiefs = 2;
-        self.factions.push(x);
+        let f = self.factions.push(x);
         self.by_key.insert(key, f);
         let cell = self.cell_of(pos);
-        self.cells.entry(cell).or_default().push(f);
+        self.cells.insert((cell, f));
         let t = self.territory(f);
         self.outbox.push(t);
         self.schedule_plunder(f, at);
-        // Sources already emitting reach the newcomer (only the newcomer's feud changes).
+        // Sources already emitting reach the newcomer (only the newcomer's feud changes). The
+        // place index's regions around the camp hold every source whose position is in reach.
         let reach = f64::from(cu.def.territory_radius) + f64::from(cu.def.reach_blocks);
-        let near: Vec<((u64, SignalKind), f64)> = self
-            .sources
-            .iter()
-            .filter_map(|(k, s)| {
-                let d = tdist(self.topo.of(pos.frame), pxz(s.pos), pxz(pos));
+        let topo = self.topo.clone();
+        let t = topo.of(pos.frame);
+        let mut ids = Vec::new();
+        for part in t.rects_near(i64::from(pos.x), i64::from(pos.z), reach.ceil() as i64) {
+            let (x0, z0, x1, z1) = part.grid_cells(16);
+            ids.extend(self.places.in_rect(pos.frame, x0, z0, x1, z1));
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        let mut near: Vec<((u64, SignalKind), u32, f64)> = ids
+            .into_iter()
+            .filter_map(|id| {
+                let row = self.sources.by_id(id)?;
+                let s = &row.s;
+                let d = tdist(t, pxz(s.pos), pxz(pos));
                 (s.pos.frame == pos.frame && d <= reach).then(|| {
                     let r = f64::from(cu.def.territory_radius);
                     let fall = if d <= r {
@@ -817,26 +893,28 @@ impl Conflict {
                     } else {
                         (1.0 - (d - r) / f64::from(cu.def.reach_blocks.max(1))).max(0.0)
                     };
-                    (*k, fall)
+                    ((row.key, row.kind), id, fall)
                 })
             })
-            .filter(|e| e.1 > 0.0)
+            .filter(|e| e.2 > 0.0)
             .collect();
+        near.sort_by_key(|e| e.0);
         if !near.is_empty() {
             // Each source counts against its own actor (P14): one refresh per (actor, kind).
             let mut feeds: Vec<(ActorId, SignalKind)> = Vec::new();
-            for (k, fall) in near {
-                if let Some(s) = self.sources.get_mut(&k) {
+            for (k, id, fall) in near {
+                if let Some(row) = self.sources.by_id_mut(id) {
+                    let s = &mut row.s;
                     s.affects.push((f, fall));
                     s.affects.sort_by_key(|e| e.0);
                     if !feeds.contains(&(s.actor, k.1)) {
                         feeds.push((s.actor, k.1));
                     }
                 }
-                self.source_index.entry((f, k.1)).or_default().insert(k.0);
+                self.factions.row_mut(f).add_reach(k.1, id);
             }
             for (a, kind) in feeds {
-                self.refresh_rates(w, f, a, kind, at);
+                self.refresh_rates(f, a, kind, at);
             }
         }
         self.note(
@@ -904,13 +982,9 @@ impl Conflict {
         cells.dedup();
         let mut out = Vec::new();
         for (cx, cz) in cells {
+            let c = (pos.frame, cx, cz);
             {
-                for &f in self
-                    .cells
-                    .get(&(pos.frame, cx, cz))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                {
+                for &(_, f) in self.cells.range((c, 0)..=(c, u32::MAX)) {
                     let x = &self.factions[f as usize];
                     let d = tdist(t, pxz(x.pos), pxz(pos));
                     let r = f64::from(x.radius);
@@ -1019,7 +1093,7 @@ impl Conflict {
             }
         }
         for &(p, g) in &grudges {
-            let feud = self.feud_mut(w, f, p, at);
+            let feud = self.feud_entry(f, p, at);
             feud.g.add(SignalKind::Killing, g, at, lambda);
         }
         let what = match killer {
@@ -1035,38 +1109,73 @@ impl Conflict {
             format!("{what} ({} grudges)", grudges.len()),
         );
         // Thresholds follow the new chief's temperament: every feud of the faction replans.
-        let actors: Vec<ActorId> = self
-            .feuds
-            .range((f, Handle::NULL)..)
-            .take_while(|(k, _)| k.0 == f)
-            .map(|(k, _)| k.1)
-            .collect();
-        for a in actors {
+        for a in self.feud_actors(f) {
             self.plan_feud(f, a, at, false);
         }
     }
 
     // ---- signals --------------------------------------------------------------------------
 
-    fn feud_mut(&mut self, w: &World, f: u32, a: ActorId, at: Tick) -> &mut Feud {
-        let _ = w;
-        self.feuds.entry((f, a)).or_insert_with(|| Feud {
-            g: Grievance::new(at),
-            raw: [0.0; K],
-            step: Step::None,
-            since: at,
-            demand: None,
-            party: None,
-            stamp: 0,
-            focus: None,
-            wait_until: Tick::ZERO,
-            raids: 0,
-        })
+    /// One faction's feud against one actor (in the faction's row, PM-C2).
+    pub fn feud(&self, f: u32, a: ActorId) -> Option<&Feud> {
+        let r = self.factions.rows.get(u64::from(f))?;
+        r.feud_at(a).ok().map(|i| &r.feuds[i].1)
+    }
+
+    /// The feud to change. A miss changes nothing (the faction's page stays clean).
+    pub fn feud_mut(&mut self, f: u32, a: ActorId) -> Option<&mut Feud> {
+        self.feud(f, a)?;
+        let r = self.factions.rows.get_mut(u64::from(f))?;
+        let i = r.feud_at(a).ok()?;
+        Some(&mut r.feuds[i].1)
+    }
+
+    /// Every feud of one faction, by actor.
+    pub fn feuds_of(&self, f: u32) -> &[(ActorId, Feud)] {
+        self.factions
+            .rows
+            .get(u64::from(f))
+            .map_or(&[], |r| r.feuds.as_slice())
+    }
+
+    /// Feuds held by every faction (resident count).
+    pub fn feud_count(&self) -> u64 {
+        self.feud_count
+    }
+
+    fn feud_actors(&self, f: u32) -> Vec<ActorId> {
+        self.feuds_of(f).iter().map(|e| e.0).collect()
+    }
+
+    /// The feud, begun now if there was none.
+    fn feud_entry(&mut self, f: u32, a: ActorId, at: Tick) -> &mut Feud {
+        let r = self.factions.row_mut(f);
+        let i = match r.feud_at(a) {
+            Ok(i) => i,
+            Err(i) => {
+                r.feuds.insert(i, (a, Feud::new(at)));
+                self.feud_count += 1;
+                i
+            }
+        };
+        &mut r.feuds[i].1
+    }
+
+    fn remove_feud(&mut self, f: u32, a: ActorId) {
+        if self.feud(f, a).is_none() {
+            return;
+        }
+        let r = self.factions.row_mut(f);
+        if let Ok(i) = r.feud_at(a) {
+            r.feuds.remove(i);
+            self.feud_count -= 1;
+        }
     }
 
     /// A direct act or an observed impulse (a block broken in a territory, ore drained, a member
     /// killed): grievance jumps by its weight in every faction whose territory it is in.
     pub fn signal(&mut self, w: &mut World, s: Signal, at: Tick) {
+        let _ = w;
         self.run_to(at);
         self.stats.signals += 1;
         let pollution = matches!(s.kind, SignalKind::Smog | SignalKind::Radiation);
@@ -1082,7 +1191,7 @@ impl Conflict {
             }
             let lambda = c.lambda;
             let amount = s.amount * wgt * fall;
-            let feud = self.feud_mut(w, f, s.actor, at);
+            let feud = self.feud_entry(f, s.actor, at);
             feud.g.add(s.kind, amount, at, lambda);
             if let Some(d) = feud.demand.as_mut()
                 && d.kind == s.kind
@@ -1165,6 +1274,17 @@ impl Conflict {
         }
     }
 
+    /// The chunks a source is filed under in the place index: its own chunks and its position's
+    /// (canonical, so a new camp's search around itself finds it), sorted.
+    fn places_of(&self, chunks: &[ChunkKey], pos: Pos) -> Vec<ChunkKey> {
+        let (x, z) = self.topo(pos.frame).canonical_i32(pos.x, pos.z);
+        let mut v = chunks.to_vec();
+        v.push(chunk_of(Pos::new(pos.frame, x, z)));
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn set_emission_inner(
         &mut self,
@@ -1177,64 +1297,79 @@ impl Conflict {
         at: Tick,
     ) {
         let actor = self.owner_of(w, &chunks, at);
-        let old: Vec<u32> = self
-            .sources
-            .get(&key)
-            .map(|s| s.affects.iter().map(|a| a.0).collect())
-            .unwrap_or_default();
-        let old_actor = self.sources.get(&key).map(|s| s.actor);
-        if let Some(s) = self.sources.get(&key) {
-            for c in &s.chunks {
-                if let Some(v) = self.source_chunks.get_mut(c) {
-                    v.remove(&key);
-                    if v.is_empty() {
-                        self.source_chunks.remove(c);
-                    }
-                }
-            }
-        }
+        let old_id = self.sources.id_of(&key);
+        let (old, old_actor, old_places) = match self.sources.get(&key) {
+            Some(s) => (
+                s.affects.iter().map(|a| a.0).collect::<Vec<u32>>(),
+                Some(s.actor),
+                self.places_of(&s.chunks, s.pos),
+            ),
+            None => (Vec::new(), None, Vec::new()),
+        };
         let affects = if rate > 0.0 {
             self.factions_near(pos, true)
         } else {
             Vec::new()
         };
-        let mut touched: Vec<u32> = old;
+        let mut touched: Vec<u32> = old.clone();
         touched.extend(affects.iter().map(|a| a.0));
         touched.sort();
         touched.dedup();
-        for f in &touched {
-            if let Some(v) = self.source_index.get_mut(&(*f, key.1)) {
-                v.remove(&key.0);
-            }
-        }
+        let new_places = if rate > 0.0 {
+            self.places_of(&chunks, pos)
+        } else {
+            Vec::new()
+        };
         if rate > 0.0 {
-            for (f, _) in &affects {
-                self.source_index
-                    .entry((*f, key.1))
-                    .or_default()
-                    .insert(key.0);
-            }
-            for c in &chunks {
-                self.source_chunks.entry(*c).or_default().insert(key);
-            }
-            self.sources.insert(
+            let id = self.sources.insert(
                 key,
                 Source {
                     pos,
                     district,
                     rate,
-                    affects,
+                    affects: affects.clone(),
                     actor,
                     chunks,
                 },
             );
-        } else {
-            self.sources.remove(&key);
+            // Only the factions and places that changed are touched (their pages dirtied).
+            let kept = old_id == Some(id);
+            for f in &old {
+                if (!kept || !affects.iter().any(|a| a.0 == *f))
+                    && let Some(o) = old_id
+                {
+                    self.factions.row_mut(*f).remove_reach(key.1, o);
+                }
+            }
+            for (f, _) in &affects {
+                if !kept || !old.contains(f) {
+                    self.factions.row_mut(*f).add_reach(key.1, id);
+                }
+            }
+            for c in &old_places {
+                if (!kept || new_places.binary_search(c).is_err())
+                    && let Some(o) = old_id
+                {
+                    self.places.remove(*c, o);
+                }
+            }
+            for c in &new_places {
+                if !kept || old_places.binary_search(c).is_err() {
+                    self.places.add(*c, id);
+                }
+            }
+        } else if let Some((o, _)) = self.sources.remove(&key) {
+            for f in &old {
+                self.factions.row_mut(*f).remove_reach(key.1, o);
+            }
+            for c in &old_places {
+                self.places.remove(*c, o);
+            }
         }
         for f in touched {
-            self.refresh_rates(w, f, actor, key.1, at);
+            self.refresh_rates(f, actor, key.1, at);
             if let Some(o) = old_actor.filter(|o| *o != actor) {
-                self.refresh_rates(w, f, o, key.1, at);
+                self.refresh_rates(f, o, key.1, at);
             }
         }
     }
@@ -1252,43 +1387,53 @@ impl Conflict {
 
     /// The sources in `chunk` follow its new leading player.
     fn reattribute(&mut self, w: &mut World, chunk: ChunkKey, at: Tick) {
-        let keys: Vec<(u64, SignalKind)> = self
-            .source_chunks
-            .get(&chunk)
-            .map(|s| s.iter().copied().collect())
-            .unwrap_or_default();
+        // The place index holds each source under its chunks and its position's chunk: only
+        // those with the chunk among their own count here, in key order.
+        let mut keys: Vec<((u64, SignalKind), u32)> = self
+            .places
+            .at(chunk)
+            .into_iter()
+            .filter_map(|id| {
+                let r = self.sources.by_id(id)?;
+                r.s.chunks
+                    .binary_search(&chunk)
+                    .is_ok()
+                    .then_some(((r.key, r.kind), id))
+            })
+            .collect();
         if keys.is_empty() {
             return;
         }
+        keys.sort_unstable_by_key(|e| e.0);
         self.run_to(at);
-        for key in keys {
-            let Some(s) = self.sources.get(&key) else {
+        for (key, id) in keys {
+            let Some(r) = self.sources.by_id(id) else {
                 continue;
             };
-            let chunks = s.chunks.clone();
-            let old = s.actor;
-            let factions: Vec<u32> = s.affects.iter().map(|a| a.0).collect();
+            let chunks = r.s.chunks.clone();
+            let old = r.s.actor;
+            let factions: Vec<u32> = r.s.affects.iter().map(|a| a.0).collect();
             let new = self.owner_of(w, &chunks, at);
             if new == old {
                 continue;
             }
-            self.sources.get_mut(&key).expect("listed").actor = new;
+            self.sources.by_id_mut(id).expect("listed").s.actor = new;
             self.stats.reattributed += 1;
             for f in factions {
-                self.refresh_rates(w, f, old, key.1, at);
-                self.refresh_rates(w, f, new, key.1, at);
+                self.refresh_rates(f, old, key.1, at);
+                self.refresh_rates(f, new, key.1, at);
             }
         }
     }
 
     /// Recomputes a feud's raw rate of one kind from the sources that count against its actor
     /// (exact, no drift) and its focus (the strongest source with a district).
-    fn refresh_rates(&mut self, w: &World, f: u32, a: ActorId, kind: SignalKind, at: Tick) {
+    fn refresh_rates(&mut self, f: u32, a: ActorId, kind: SignalKind, at: Tick) {
         let mut raw = 0.0;
         let mut best: Option<Focus> = None;
-        // Only the sources that reach this faction (the index), in key order.
-        for &key in self.source_index.get(&(f, kind)).into_iter().flatten() {
-            let Some(s) = self.sources.get(&(key, kind)) else {
+        // Only the sources that reach this faction (its row's list), in id order.
+        for id in self.factions.row(f).reach_of(kind) {
+            let Some(s) = self.sources.by_id(id).map(|r| &r.s) else {
                 continue;
             };
             if s.actor != a {
@@ -1310,10 +1455,10 @@ impl Conflict {
         let sd = c.signals[kind.index()];
         let lambda = c.lambda;
         let eff = (raw - sd.tolerance_per_day / TICKS_PER_DAY as f64).max(0.0) * sd.weight;
-        if raw <= 0.0 && !self.feuds.contains_key(&(f, a)) {
+        if raw <= 0.0 && self.feud(f, a).is_none() {
             return;
         }
-        let feud = self.feud_mut(w, f, a, at);
+        let feud = self.feud_entry(f, a, at);
         feud.raw[kind.index()] = raw;
         feud.g.set_rate(kind, eff, at, lambda);
         if let Some(b) = best
@@ -1340,7 +1485,7 @@ impl Conflict {
     /// Books the feud's next event: the earliest of its next rung (after the dwell), its fall
     /// below the current rung, its demand's deadline. A new stamp makes the older booking stale.
     fn plan_feud(&mut self, f: u32, a: ActorId, at: Tick, from_wake: bool) {
-        let Some(feud) = self.feuds.get(&(f, a)) else {
+        let Some(feud) = self.feud(f, a) else {
             return;
         };
         let lambda = self.culture(f).lambda;
@@ -1368,7 +1513,7 @@ impl Conflict {
                 take(feud.g.crossing_down(self.tun.forget_below, lambda));
             }
         }
-        let feud = self.feuds.get_mut(&(f, a)).expect("checked");
+        let feud = self.feud_mut(f, a).expect("checked");
         feud.stamp = feud.stamp.wrapping_add(1);
         let stamp = feud.stamp;
         if let Some(t) = next {
@@ -1388,7 +1533,7 @@ impl Conflict {
         self.stats.feud_wakes += 1;
         self.ensure_chief(w, f, at);
         let lambda = self.culture(f).lambda;
-        let Some(feud) = self.feuds.get_mut(&(f, a)) else {
+        let Some(feud) = self.feud_mut(f, a) else {
             return;
         };
         feud.g.commit(at, lambda);
@@ -1413,7 +1558,7 @@ impl Conflict {
             }) {
                 self.escalate(w, f, a, up, at);
             } else if step > Step::None && g < self.down_theta(f, step) {
-                let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+                let feud = self.feud_mut(f, a).expect("exists");
                 feud.step = step.down();
                 feud.since = at;
                 self.stats.calmed += 1;
@@ -1430,9 +1575,14 @@ impl Conflict {
                 );
             } else if step == Step::None
                 && g < self.tun.forget_below
-                && self.feuds[&(f, a)].raw.iter().all(|r| *r <= 0.0)
+                && self
+                    .feud(f, a)
+                    .expect("exists")
+                    .raw
+                    .iter()
+                    .all(|r| *r <= 0.0)
             {
-                self.feuds.remove(&(f, a));
+                self.remove_feud(f, a);
                 self.stats.feuds_forgotten += 1;
                 return;
             }
@@ -1452,7 +1602,7 @@ impl Conflict {
     /// Climbs to rung `to`, doing what it says.
     fn escalate(&mut self, w: &mut World, f: u32, a: ActorId, to: Step, at: Tick) {
         let lambda = self.culture(f).lambda;
-        let feud = self.feuds.get(&(f, a)).expect("exists");
+        let feud = self.feud(f, a).expect("exists");
         let g = feud.g.total_at(at, lambda);
         let kind = feud.g.dominant(at, lambda);
         let focus = feud.focus;
@@ -1463,11 +1613,11 @@ impl Conflict {
                 // Not enough warriors: wait for the pool (closed form).
                 let need = self.party_size(f, pk) as f64 / 2.0;
                 let ready = self.pool_ready(f, need, at);
-                let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+                let feud = self.feud_mut(f, a).expect("exists");
                 feud.wait_until = ready;
                 return;
             };
-            let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+            let feud = self.feud_mut(f, a).expect("exists");
             feud.party = Some(p);
             if to == Step::Envoy {
                 let good = self.tribute_good(w, f);
@@ -1475,7 +1625,7 @@ impl Conflict {
                 let bend = self.temper(f).bend(Trait::Aggressive, 1000, 50);
                 let tribute = ((base * f64::from(bend) / 1000.0).ceil() as i64).max(1);
                 let deadline = at + days_to_ticks(self.culture(f).def.demand_days);
-                let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+                let feud = self.feud_mut(f, a).expect("exists");
                 feud.demand = Some(Demand {
                     kind,
                     good,
@@ -1505,11 +1655,11 @@ impl Conflict {
                 if w.knowledge.actors().is_player(a) {
                     w.knowledge.adjust(chief, a, self.tun.raid_grudge, at);
                 }
-                let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+                let feud = self.feud_mut(f, a).expect("exists");
                 feud.raids += 1;
             }
         }
-        let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+        let feud = self.feud_mut(f, a).expect("exists");
         feud.step = to;
         feud.since = at;
         feud.wait_until = Tick::ZERO;
@@ -1574,7 +1724,7 @@ impl Conflict {
     }
 
     fn demand_due(&mut self, w: &mut World, f: u32, a: ActorId, at: Tick) {
-        let feud = self.feuds.get(&(f, a)).expect("exists");
+        let feud = self.feud(f, a).expect("exists");
         let Some(d) = feud.demand else {
             return;
         };
@@ -1606,8 +1756,8 @@ impl Conflict {
             self.stats.expired += 1;
             self.settle_outbox(w, f, a, d, outcome);
             self.envoy_home(w, d.envoy, at);
-            let g = self.feuds[&(f, a)].g.total_at(at, lambda);
-            let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+            let g = self.feud(f, a).expect("exists").g.total_at(at, lambda);
+            let feud = self.feud_mut(f, a).expect("exists");
             feud.demand = None;
             feud.party = None;
             self.note(
@@ -1622,11 +1772,11 @@ impl Conflict {
             if g >= self.theta(f, Step::Scouts) * (1.0 - 1e-9) {
                 self.escalate(w, f, a, Step::Scouts, at);
             } else if g < self.down_theta(f, Step::Envoy) {
-                let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+                let feud = self.feud_mut(f, a).expect("exists");
                 feud.step = Step::Notice;
                 feud.since = at;
             } else {
-                let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+                let feud = self.feud_mut(f, a).expect("exists");
                 feud.since = at;
             }
         }
@@ -1654,7 +1804,7 @@ impl Conflict {
             c.def.cut_relief
         };
         let respite = days_to_ticks(c.def.respite_days);
-        let feud = self.feuds.get_mut(&(f, a)).expect("exists");
+        let feud = self.feud_mut(f, a).expect("exists");
         let Some(d) = feud.demand.take() else {
             return;
         };
@@ -1736,13 +1886,13 @@ impl Conflict {
         let who = by_envoy
             .into_iter()
             .chain([payer, settlers])
-            .find(|a| self.feuds.get(&(f, *a)).is_some_and(|x| x.demand.is_some()));
+            .find(|a| self.feud(f, *a).is_some_and(|x| x.demand.is_some()));
         let Some(a) = who else {
             // No demand open: a tribute is a gift.
             self.gift_value(w, f, payer, goods, at);
             return false;
         };
-        let feud = self.feuds.get_mut(&(f, a)).expect("found");
+        let feud = self.feud_mut(f, a).expect("found");
         let d = feud.demand.as_mut().expect("found");
         d.paid += goods.get(&d.good).copied().unwrap_or(0) / MILLI;
         if d.paid >= d.tribute {
@@ -1800,7 +1950,7 @@ impl Conflict {
         let f = *self.by_key.get(&faction)?;
         let p = self.send_party(w, f, feud, kind, target, at)?;
         if let Some(a) = feud
-            && let Some(x) = self.feuds.get_mut(&(f, a))
+            && let Some(x) = self.feud_mut(f, a)
         {
             x.party = Some(p);
         }
@@ -1834,7 +1984,7 @@ impl Conflict {
         let lambda = c.lambda;
         let bend = self.temper(f).bend(Trait::Sociable, 1000, 50);
         let amount = coins * c.def.gift_relief_per_coin * f64::from(bend) / 1000.0;
-        if let Some(feud) = self.feuds.get_mut(&(f, a)) {
+        if let Some(feud) = self.feud_mut(f, a) {
             feud.g.relieve(amount, at, lambda);
             self.note(
                 at,
@@ -2445,7 +2595,7 @@ impl Conflict {
             PartyKind::Envoy => {
                 let deadline = self.parties[p]
                     .feud
-                    .and_then(|a| self.feuds.get(&(f, a)))
+                    .and_then(|a| self.feud(f, a))
                     .and_then(|x| x.demand)
                     .map_or(at, |d| d.deadline);
                 self.wait(w, p, deadline.max(at + 1), at);
@@ -2588,7 +2738,7 @@ impl Conflict {
             let v = c.def.vengeance_per_item
                 * (stolen as f64 + blocks as f64 * self.tun.block_value_items);
             let cap = self.tun.vengeance_cap_share;
-            if let Some(feud) = self.feuds.get_mut(&(f, a)) {
+            if let Some(feud) = self.feud_mut(f, a) {
                 let g = feud.g.total_at(at, lambda);
                 feud.g.relieve(v.min(g * cap), at, lambda);
             }
@@ -2806,7 +2956,7 @@ impl Conflict {
         self.schedule(t1, Ev::Party { party: p, plan });
         // The feud it served may move on while it walks home.
         if let Some(a) = self.parties[p].feud {
-            if let Some(feud) = self.feuds.get_mut(&(f, a))
+            if let Some(feud) = self.feud_mut(f, a)
                 && feud.party == Some(p)
             {
                 feud.party = None;
@@ -2879,7 +3029,7 @@ impl Conflict {
             w.legs.cancel(l.leg);
         }
         if let Some(a) = self.parties[p].feud
-            && let Some(feud) = self.feuds.get_mut(&(f, a))
+            && let Some(feud) = self.feud_mut(f, a)
             && feud.party == Some(p)
         {
             feud.party = None;
@@ -3200,7 +3350,11 @@ impl Conflict {
         let camp = self.factions[f as usize].pos;
         let r = f64::from(self.tun.rescue_news_blocks);
         let mut heard = 0;
-        for i in 0..w.nodes.len() {
+        // The villages in news range: the node index's cells around the camp, in node order.
+        self.nodes.refresh(w);
+        let topo = self.topo.clone();
+        let near = self.nodes.within(w, topo.of(camp.frame), camp, r);
+        for i in near {
             let n = &w.nodes[i];
             let NodeKind::Village(cu) = n.kind else {
                 continue;
@@ -3297,7 +3451,7 @@ impl Conflict {
         let here = self.party_pos(p, at);
         let demand = x
             .feud
-            .and_then(|a| self.feuds.get(&(f, a)))
+            .and_then(|a| self.feud(f, a))
             .and_then(|fd| fd.demand);
         let whom = x.feud.map_or((0, 0), |a| self.uuid_of(w, a));
         let members: Vec<(u32, u32)> = x
@@ -3352,14 +3506,20 @@ impl Conflict {
     }
 
     /// Runs every event up to and including `to`, the world run to each event's time first.
+    /// Paged: each event is a step boundary (no row is lent between events), so the row tables
+    /// keep to their budget after each one ([`Conflict::enforce_budget`]).
     pub fn run_until(&mut self, w: &mut World, infra: &mut dyn Infrastructure, to: Tick) {
         while let Some((at, ev)) = self.wheel.pop_until(to) {
             self.now = self.now.max(at);
             w.run_until(at);
             self.stats.events += 1;
             self.handle(w, infra, at, ev);
+            if self.store.is_some() {
+                self.enforce_budget();
+            }
         }
         self.now = self.now.max(to);
+        self.enforce_budget();
     }
 
     fn handle(&mut self, w: &mut World, infra: &mut dyn Infrastructure, at: Tick, ev: Ev) {
@@ -3369,11 +3529,7 @@ impl Conflict {
                 actor,
                 stamp,
             } => {
-                if self
-                    .feuds
-                    .get(&(faction, actor))
-                    .is_none_or(|f| f.stamp != stamp)
-                {
+                if self.feud(faction, actor).is_none_or(|f| f.stamp != stamp) {
                     self.stats.stale += 1;
                     return;
                 }
@@ -3449,10 +3605,16 @@ impl Conflict {
         }
         self.outbox
             .retain(|c| c.agent().is_none() && !matches!(c, Cmd::Territory(_)));
+        // Every faction, once a session: page by page, keeping to the budget (PM-C8).
+        let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
             let t = self.territory(f);
             self.outbox.push(t);
+            if (f + 1) % per == 0 {
+                self.enforce_budget();
+            }
         }
+        self.enforce_budget();
     }
 
     // ---- observations (docs/boundary.md §9) --------------------------------------------------
@@ -3667,7 +3829,7 @@ impl Conflict {
     /// The player refused the demand or attacked the envoy: unmet now (DEMAND_SETTLED refused),
     /// unless it was paid in full already.
     fn refuse(&mut self, w: &mut World, f: u32, a: ActorId, at: Tick, _insult: f64) {
-        if let Some(feud) = self.feuds.get_mut(&(f, a))
+        if let Some(feud) = self.feud_mut(f, a)
             && let Some(d) = feud.demand.as_mut()
         {
             d.deadline = at;
@@ -3790,7 +3952,7 @@ impl Conflict {
         self.factions[f as usize].cowed_until = at + cowed;
         if let Some(a) = self.parties[p].feud.or(killer) {
             let steps = self.tun.chief_rout_steps;
-            if let Some(feud) = self.feuds.get_mut(&(f, a)) {
+            if let Some(feud) = self.feud_mut(f, a) {
                 for _ in 0..steps {
                     feud.step = feud.step.down();
                 }
@@ -3816,13 +3978,7 @@ impl Conflict {
                 cowed as f64 / TICKS_PER_DAY as f64
             ),
         );
-        let actors: Vec<ActorId> = self
-            .feuds
-            .range((f, Handle::NULL)..)
-            .take_while(|(k, _)| k.0 == f)
-            .map(|(k, _)| k.1)
-            .collect();
-        for a in actors {
+        for a in self.feud_actors(f) {
             self.plan_feud(f, a, at, false);
         }
     }
@@ -3832,7 +3988,7 @@ impl Conflict {
     /// A feud as it stands at the engine's time (a projection).
     pub fn feud_view(&self, faction: u64, actor: ActorId) -> Option<FeudView> {
         let f = *self.by_key.get(&faction)?;
-        let x = self.feuds.get(&(f, actor))?;
+        let x = self.feud(f, actor)?;
         let lambda = self.culture(f).lambda;
         let v = x.g.project(self.now, lambda);
         Some(FeudView {
@@ -3900,24 +4056,68 @@ impl Conflict {
         w.check_conserved(w.now()).map_err(|e| e.to_string())
     }
 
+    /// Bytes the engine holds: the row tables' resident pages and page indexes (bounded by the
+    /// budget when paged), the resident indexes ([`Conflict::index_bytes`]), presence, parties,
+    /// the wheel, the node index and the op set. Estimates; [`Conflict::memory`] splits them.
     pub fn heap_bytes(&self) -> usize {
-        self.factions.len() * (std::mem::size_of::<Faction>() + 16 * 16)
-            + self.feuds.len() * (std::mem::size_of::<Feud>() + 48)
-            + self
-                .sources
-                .values()
-                .map(|s| 64 + s.affects.len() * 16 + s.chunks.len() * 12)
-                .sum::<usize>()
-            + self.presence.heap_bytes()
-            + self
-                .parties
-                .iter()
-                .map(|(_, x)| std::mem::size_of::<Party>() + x.route.len() * 16 + x.units.len() * 8)
-                .sum::<usize>()
-            + self.wheel.heap_bytes()
-            + self.applied_ops.len() * 16
+        self.memory().values().sum()
+    }
+
+    /// [`Conflict::heap_bytes`] by part, in bytes (as `World::memory`): what a bench reports to
+    /// say where the resident bytes per faction go.
+    pub fn memory(&self) -> BTreeMap<&'static str, usize> {
+        let party =
+            |x: &Party| std::mem::size_of::<Party>() + x.route.len() * 16 + x.units.len() * 8;
+        BTreeMap::from([
+            ("factions", self.factions.rows.heap_bytes()),
+            ("sources", self.sources.rows.heap_bytes()),
+            ("places", self.places.rows.heap_bytes()),
+            ("index by key", self.by_key.len() * BTREE_KEY_BYTES),
+            ("index by cell", self.cells.len() * BTREE_CELL_BYTES),
+            (
+                "index of sources",
+                self.sources.ids.len() * BTREE_SOURCE_BYTES,
+            ),
+            ("presence", self.presence.heap_bytes()),
+            (
+                "parties",
+                self.parties.heap_bytes()
+                    + self.parties.iter().map(|(_, x)| party(x)).sum::<usize>(),
+            ),
+            ("wheel", self.wheel.heap_bytes()),
+            ("nodes", self.nodes.heap_bytes()),
+            ("applied ops", self.applied_ops.len() * BTREE_U64_BYTES),
+            ("players", self.players.len() * BTREE_PLAYER_BYTES),
+        ])
+    }
+
+    /// The resident indexes that grow with the world: factions by key, factions by cell, and
+    /// sources by key (PM-C4, PM-C6): about 60 bytes per faction and 64 per source (measured
+    /// B-tree costs per entry).
+    pub fn index_bytes(&self) -> usize {
+        self.by_key.len() * BTREE_KEY_BYTES
+            + self.cells.len() * BTREE_CELL_BYTES
+            + self.sources.ids.len() * BTREE_SOURCE_BYTES
+    }
+
+    /// The row tables' resident page bytes (what the budget bounds).
+    pub fn resident_bytes(&self) -> usize {
+        self.factions.rows.resident_bytes()
+            + self.sources.rows.resident_bytes()
+            + self.places.rows.resident_bytes()
     }
 }
+
+/// B-tree bytes per entry (see [`Conflict::index_bytes`]), measured with a counting allocator
+/// over 100,000 entries on 2026-10-20 (std's B-tree, leaves of 11): factions by key (u64 to u32,
+/// 26.3 inserted in order, 20.7 at random), by cell ((u16, i32, i32), u32: 33.6), sources by key
+/// ((u64, kind) to id and rate: 63.6), the op set (u64 at random: 15.4) and the players (u64 to
+/// two u64, estimated).
+const BTREE_KEY_BYTES: usize = 26;
+const BTREE_CELL_BYTES: usize = 34;
+const BTREE_SOURCE_BYTES: usize = 64;
+const BTREE_U64_BYTES: usize = 16;
+const BTREE_PLAYER_BYTES: usize = 48;
 
 /// A raid on a village's or a haven's market (I22's rule applied to residents): Lanchester's
 /// linear law of the band's strength against the defence, floored by the faction's real fights at

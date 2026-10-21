@@ -13,6 +13,8 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -21,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
@@ -75,6 +78,19 @@ public final class TopologyGameTests {
         return out;
     }
 
+    /**
+     * Checks (inside an {@link RtsimTests#io} wait) that every chunk is at entity-ticking status with its
+     * entities loaded: a chunk is FULL as soon as {@code getChunk} returns, but its entities come in from
+     * the entity storage's own IO afterwards, and entities tick only once they have.
+     */
+    static void chunksReady(ServerLevel level, List<ChunkPos> chunks) {
+        for (ChunkPos p : chunks) {
+            LevelChunk c = level.getChunkSource().getChunkNow(p.x, p.z);
+            check("chunk " + p + " is entity-ticking with its entities loaded",
+                    c != null && c.getFullStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING) && level.areEntitiesLoaded(p.toLong()));
+        }
+    }
+
     static void unforce(ServerLevel level, List<ChunkPos> chunks) {
         for (ChunkPos c : chunks)
             level.setChunkForced(c.x, c.z, false);
@@ -114,7 +130,7 @@ public final class TopologyGameTests {
      * wrap folds it back into the lap (as Toroidal World does at the end of a tick, with no event), it is
      * steered on from where it is: still the same live puppet, never captured, never a stale copy (TP11).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_topology_steer")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "mic_rtsim_topology_steer")
     public static void aLeaderFoldedAcrossTheSeamIsSteeredOnNotCaptured(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         var session = RtsimTests.session();
@@ -122,14 +138,20 @@ public final class TopologyGameTests {
         long cx = (long) Math.floor(c.x);
         long x0 = cx - 40; // the lap [cx - 40, cx + 24): the east edge 24 blocks east of the arena
         List<ChunkPos> forced = forceLoad(level, (int) (x0 - 16), (int) (x0 + PERIOD + 16), (int) Math.floor(c.z), (int) cx);
-        TopologySources.setToroidalProbe(fakeWrap(level, x0, level.getGameTime() + 400));
-        RtsimApi.topologyChanged();
         long agent = RtsimTests.newAgent();
-        RtsimTests.engine().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), c.x, c.y, c.z,
-                List.of(ScriptedEngine.MemberSpec.plain(0)));
         long[] before = new long[3];
         double target = x0 + 4.5; // canonical, at the lap's west end: 28 blocks east of the arena, through the seam
         helper.startSequence()
+                // The strip's chunks load their entities on the world's IO, which the unthrottled tick can
+                // outrun (a timeout in ticks passes in under a second): wait for them before the wrap is
+                // installed (it lapses by game time) and the group is spawned.
+                .thenWaitUntil(io(() -> chunksReady(level, forced)))
+                .thenExecute(() -> {
+                    TopologySources.setToroidalProbe(fakeWrap(level, x0, level.getGameTime() + 1200));
+                    RtsimApi.topologyChanged();
+                    RtsimTests.engine().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), c.x, c.y, c.z,
+                            List.of(ScriptedEngine.MemberSpec.plain(0)));
+                })
                 .thenWaitUntil(() -> RtsimTests.embodied(agent))
                 .thenWaitUntil(() -> check("the wrap is in force", session.topology(level).kind == LevelTopology.Kind.X_WRAP))
                 .thenExecute(() -> {
@@ -145,8 +167,8 @@ public final class TopologyGameTests {
                     check("toward the target's image on the leader's side, east through the seam: " + g.steerImage,
                             Math.abs(g.steerImage.x - (target + PERIOD)) < 1e-6);
                 })
-                .thenWaitUntil(() -> check("the lap's west end ticks entities",
-                        level.isPositionEntityTicking(net.minecraft.core.BlockPos.containing(x0 + 1.5, c.y, c.z))))
+                .thenWaitUntil(io(() -> check("the lap's west end ticks entities",
+                        level.isPositionEntityTicking(net.minecraft.core.BlockPos.containing(x0 + 1.5, c.y, c.z)))))
                 .thenExecute(() -> {
                     // The leader crosses the east edge and the wrap folds it into the lap's west end.
                     Entity leader = RtsimTests.member(RtsimTests.group(agent), 0);
