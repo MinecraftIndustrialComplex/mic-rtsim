@@ -77,7 +77,7 @@ are in docs/choices-glassbox-g1.md (GB1 to GB111). Code comments cite these ids.
 | Id | Choice |
 |---|---|
 | G2-25 | The harness credits an input's work in progress (goods inside machines at the end) as yield within tolerance only, never toward "at or below the control"; the stub engine applies the offline reconcile as the native one does. |
-| G2-55 | Each corpus factory runs as two copies, one kept loaded and one far away and unloaded; each copy gets its own Create frequency ids so the two cannot talk, and a copy whose build does not match the template fails as INVALID COPY instead of counting as a result. |
+| G2-55 | Each corpus factory runs as two copies, one kept loaded (the control) and one far away and unloaded (simulated). The far place is laid out as vanilla's `StructureUtils` lays out the yard (relative y -2..-1 stone, y 0 air, y 1 polished andesite, air above, vanilla's clear margin), so blocks that need support (a diode on the floor, a boiler's channel dug into it) stand as in the control. Each copy draws its own package frequency at build. While both are loaded, the harness samples both copies' declared stores every 100 ticks; if any good's change over the last 2400 ticks differs by more than one stack or batch in flight, plus 3 control sigma over the window, plus a tenth of the control's change, every row of that factory reads INVALID COPY and fails. |
 | G2-56 | `package_loop` is marked KNOWN GAP in the table and still counts as a failure (package routing by address is not modelled, see For Ben). |
 
 ## For Ben
@@ -93,7 +93,7 @@ Recommended option first in each.
 7. **A fallback with nothing learned freezes (G2-7).** (a) Freeze until the district is live again or recompiles (never above the control); (b) replay a black box from the compile's predicted rates.
 8. **A whole node is held on movers (G2-6).** (a) Keep holding the whole node (conservative); (b) hold per out-edge, closer to Create on a belt that splits.
 9. **A dead factory is eligible.** A compile whose model predicts 0 for everything still passes and replays exactly (nothing). (a) Keep it eligible; (b) refuse zero models.
-10. **Native recompile churn on package loops.** The native control recompiled the package loop repeatedly while loaded (a D1 cost on the server thread). (a) Look at it with the package routing work in item 1; (b) rate-limit recompiles per district now.
+10. **Native recompile churn on package loops.** The native control recompiled the package loop repeatedly while loaded (184 compiles in one run; not a frequency collision between the copies), a D1 cost on the server thread. (a) Look at it with the package routing work in item 1; (b) rate-limit recompiles per district now.
 11. **Exit test on native alone.** The stub engine reaches the same table except where its offline reconcile timing differs. (a) Count native as the exit verdict and the stub as a smoke check; (b) require both.
 
 ## UNVERIFIED
