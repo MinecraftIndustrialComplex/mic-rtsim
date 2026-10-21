@@ -18,7 +18,7 @@ pub mod pending;
 pub mod row;
 pub mod store;
 
-pub use chunk::{Chunk, ChunkHeader, ROWS_PER_CHUNK, Tier};
+pub use chunk::{Chunk, ChunkHeader, ROWS_PER_CHUNK, Stamp, Tier};
 pub use dict::Dictionary;
 pub use pending::{Batch, Dropped, Pending};
 pub use row::{Event, Handle, Leg, RawRow, Row, Severity};

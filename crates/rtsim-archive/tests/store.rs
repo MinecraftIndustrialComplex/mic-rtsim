@@ -6,10 +6,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use rtsim_archive::chunk::{Chunk, ROWS_PER_CHUNK, Tier};
+use rtsim_archive::chunk::{Chunk, ROWS_PER_CHUNK, Stamp, Tier};
 use rtsim_archive::row::{self, Event, Handle, Leg, Row, Severity};
 use rtsim_archive::store::{DICT_FILE, INDEX_FILE, chunk_name};
 use rtsim_archive::{Archive, ArchiveReader, Dictionary, Pending};
+
+/// A save's stamp: its game tick a thousand times its observation sequence.
+fn st(obs_seq: u64, wall_ms: u64) -> Stamp {
+    Stamp {
+        obs_seq,
+        tick: obs_seq * 1_000,
+        wall_ms,
+    }
+}
 
 struct Dir(PathBuf);
 
@@ -150,7 +159,7 @@ fn a_flush_reads_back_after_reopening() {
     let mut p = Pending::new();
     let rows = fill(&mut p, &mut dict, 1_000, 10_000);
     let seqs = a
-        .flush(p.take(), 5, 1_700_000_000_000, Some(&dict))
+        .flush(p.take(), st(5, 1_700_000_000_000), Some(&dict))
         .unwrap();
     assert_eq!(seqs, [0, 1, 2]);
     assert_eq!(
@@ -205,7 +214,7 @@ fn rollback_cuts_chunks_above_the_selected_generation() {
     for (i, obs) in [10, 20, 30].into_iter().enumerate() {
         let mut p = Pending::new();
         fill(&mut p, &mut dict, i as u64 * 100, 100);
-        a.flush(p.take(), obs, 0, dict.is_dirty().then_some(&dict))
+        a.flush(p.take(), st(obs, 0), dict.is_dirty().then_some(&dict))
             .unwrap();
         dict.mark_saved();
     }
@@ -234,7 +243,7 @@ fn rollback_cuts_chunks_above_the_selected_generation() {
     // New chunks never reuse a cut number.
     let mut p = Pending::new();
     fill(&mut p, &mut dict, 200, 10);
-    assert_eq!(a.flush(p.take(), 25, 0, None).unwrap(), [3]);
+    assert_eq!(a.flush(p.take(), st(25, 0), None).unwrap(), [3]);
 }
 
 #[test]
@@ -244,7 +253,7 @@ fn crash_leftovers_are_cleared_on_open() {
     let mut dict = Dictionary::new();
     let mut p = Pending::new();
     fill(&mut p, &mut dict, 0, 50);
-    a.flush(p.take(), 1, 0, Some(&dict)).unwrap();
+    a.flush(p.take(), st(1, 0), Some(&dict)).unwrap();
     let entries = a.entries().to_vec();
     drop(a);
     // A chunk the index does not name (a flush cut short before its index), a temporary file, and
@@ -253,8 +262,7 @@ fn crash_leftovers_are_cleared_on_open() {
         Tier::Full,
         vec![event(&mut dict, 9, "x", Severity::Major, 1).encode()],
         vec![],
-        0,
-        2,
+        st(2, 0),
     );
     fs::write(dir.path().join(chunk_name(7)), orphan.encode()).unwrap();
     fs::write(dir.path().join("index.rtai.tmp"), b"half").unwrap();
@@ -279,7 +287,7 @@ fn crash_leftovers_are_cleared_on_open() {
     let mut a = Archive::open(dir.path()).unwrap();
     let mut p = Pending::new();
     fill(&mut p, &mut dict, 100, 5);
-    assert_eq!(a.flush(p.take(), 3, 0, None).unwrap(), [8]);
+    assert_eq!(a.flush(p.take(), st(3, 0), None).unwrap(), [8]);
 }
 
 #[test]
@@ -290,7 +298,7 @@ fn a_lost_or_damaged_index_is_rebuilt_from_the_chunks() {
     for obs in 1..=3 {
         let mut p = Pending::new();
         fill(&mut p, &mut dict, obs * 1_000, 20);
-        a.flush(p.take(), obs, obs * 7, Some(&dict)).unwrap();
+        a.flush(p.take(), st(obs, obs * 7), Some(&dict)).unwrap();
     }
     let entries = a.entries().to_vec();
     drop(a);
@@ -331,7 +339,7 @@ fn a_damaged_dictionary_clears_the_archive() {
     let mut dict = Dictionary::new();
     let mut p = Pending::new();
     fill(&mut p, &mut dict, 0, 10);
-    a.flush(p.take(), 1, 0, Some(&dict)).unwrap();
+    a.flush(p.take(), st(1, 0), Some(&dict)).unwrap();
     drop(a);
     fs::write(dir.path().join(DICT_FILE), b"RTAD broken").unwrap();
     // The reader still opens, naming kinds by number.
@@ -352,7 +360,7 @@ fn the_reader_works_on_a_read_only_copy() {
     let mut dict = Dictionary::new();
     let mut p = Pending::new();
     fill(&mut p, &mut dict, 0, 5_000);
-    a.flush(p.take(), 1, 0, Some(&dict)).unwrap();
+    a.flush(p.take(), st(1, 0), Some(&dict)).unwrap();
     drop(a);
     for f in dir.files() {
         set_mode(&dir.path().join(f), 0o444).unwrap();
@@ -378,23 +386,38 @@ fn the_histogram_reads_headers_only() {
     let mut p = Pending::new();
     // 1,000 rows, one a tick from 0: kinds alternate by tick % 3.
     fill(&mut p, &mut dict, 0, 1_000);
-    a.flush(p.take(), 1, 0, Some(&dict)).unwrap();
+    a.flush(p.take(), st(1, 0), Some(&dict)).unwrap();
     let mut p = Pending::new();
     fill(&mut p, &mut dict, 5_000, 100);
-    a.flush(p.take(), 2, 0, None).unwrap();
+    a.flush(p.take(), st(2, 0), None).unwrap();
     let r = ArchiveReader::open(dir.path(), None).unwrap().unwrap();
-    let all = r.histogram(0, 10_000, 10, |_| true);
+    let sum = |m: &std::collections::BTreeMap<u16, Vec<f64>>| -> Vec<f64> {
+        let bins = m.values().next().map_or(0, Vec::len);
+        (0..bins).map(|i| m.values().map(|v| v[i]).sum()).collect()
+    };
+    let all = sum(&r.histogram(0, 10_000, 10, None, |_| true));
     assert!((all[0] - 1_000.0).abs() < 1e-9, "{all:?}");
     assert!((all[5] - 100.0).abs() < 1e-9, "{all:?}");
     assert!((all.iter().sum::<f64>() - 1_100.0).abs() < 1e-9);
     // Finer bins split a chunk by its span.
-    let fine = r.histogram(0, 1_000, 4, |_| true);
+    let fine = sum(&r.histogram(0, 1_000, 4, None, |_| true));
     assert!(fine.iter().all(|&v| (v - 250.0).abs() < 1e-9), "{fine:?}");
+    // By kind: 334 deals in ticks 0 to 999, 33 in 5,000 to 5,099.
     let deals = dict.kinds().iter().position(|k| k == "trade.deal").unwrap() as u16;
-    let only = r.histogram(0, 10_000, 1, |k| k == deals);
-    // 334 of ticks 0 to 999, 33 of 5,000 to 5,099.
-    assert!((only[0] - (334.0 + 33.0)).abs() < 1e-9, "{only:?}");
-    assert_eq!(r.histogram(0, 0, 3, |_| true), [0.0; 3]);
+    let by_kind = r.histogram(0, 10_000, 1, None, |_| true);
+    assert_eq!(by_kind.len(), 2);
+    assert!(
+        (by_kind[&deals][0] - (334.0 + 33.0)).abs() < 1e-9,
+        "{by_kind:?}"
+    );
+    let only = r.histogram(0, 10_000, 1, None, |k| k == deals);
+    assert_eq!(only.keys().copied().collect::<Vec<_>>(), [deals]);
+    // By frame: every row is in the overworld, frame 0.
+    assert_eq!(r.histogram(0, 10_000, 1, Some(0), |_| true), by_kind);
+    assert!(r.histogram(0, 10_000, 1, Some(1), |_| true).is_empty());
+    assert!(r.histogram(0, 0, 3, None, |_| true).is_empty());
+    // One pair of game tick and wall clock a save.
+    assert_eq!(r.wall(), [(1_000, 0), (2_000, 0)]);
 }
 
 #[test]
@@ -406,12 +429,12 @@ fn legs_place_movers_at_any_tick_across_chunks() {
     // Powers of two keep the positions exact.
     p.push(&leg(&mut dict, 100, 1_024, 1));
     p.push(&leg(&mut dict, 150, 8, 2));
-    a.flush(p.take(), 1, 0, Some(&dict)).unwrap();
+    a.flush(p.take(), st(1, 0), Some(&dict)).unwrap();
     let mut p = Pending::new();
     // A busy later save whose chunks start after the first dragon's leg began.
     fill(&mut p, &mut dict, 500, 5_000);
     p.push(&leg(&mut dict, 900, 512, 3));
-    a.flush(p.take(), 2, 0, Some(&dict)).unwrap();
+    a.flush(p.take(), st(2, 0), Some(&dict)).unwrap();
     let r = ArchiveReader::open(dir.path(), None).unwrap().unwrap();
     let at = |t| {
         let mut v: Vec<_> = r
@@ -445,7 +468,7 @@ fn a_replacement_swaps_chunks_in_one_index_write() {
     for obs in 1..=2 {
         let mut p = Pending::new();
         fill(&mut p, &mut dict, obs * 100, 50);
-        a.flush(p.take(), obs, 0, Some(&dict)).unwrap();
+        a.flush(p.take(), st(obs, 0), Some(&dict)).unwrap();
     }
     // Keep the notable rows of both, as the notable tier would.
     let mut rows = Vec::new();
@@ -458,7 +481,7 @@ fn a_replacement_swaps_chunks_in_one_index_write() {
                 .filter(|r| row::severity(r) >= Severity::Notable),
         );
     }
-    let merged = Chunk::new(Tier::Notable, rows, vec![], 0, 2);
+    let merged = Chunk::new(Tier::Notable, rows, vec![], st(2, 0));
     assert_eq!(a.replace(&[0, 1], vec![merged]).unwrap(), [2]);
     assert_eq!(
         dir.files(),
