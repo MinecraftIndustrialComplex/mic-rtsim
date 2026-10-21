@@ -1216,7 +1216,9 @@ impl Ships {
         let next = u64::from(self.ships.meta().1);
         for (s, r) in self.service_ships.iter().enumerate() {
             if u64::from(r.first) + u64::from(r.n) > next {
-                return bad(format!("service {s}'s ships {r:?} past the table's end {next}"));
+                return bad(format!(
+                    "service {s}'s ships {r:?} past the table's end {next}"
+                ));
             }
         }
         Ok(())
@@ -1254,7 +1256,10 @@ impl Ships {
     /// is rewritten under the new layout). Saved in the meta page, so [`Ships::open_paged`]
     /// reads the same layout back.
     pub fn set_page_layout(&mut self, ships_per_page: u64, threats_per_page: u64) {
-        assert!(!self.is_paged(), "the page layout is set before paging starts");
+        assert!(
+            !self.is_paged(),
+            "the page layout is set before paging starts"
+        );
         let mut w = Writer::new();
         self.ships.encode_all(&mut w);
         self.threats.encode_all(&mut w);
@@ -1310,7 +1315,9 @@ impl Ships {
             return Err(PageError::Format("not a ships meta page".into()));
         }
         if r.u8().map_err(&fmt)? != ROWS_PAGED {
-            return Err(PageError::Format("a whole ships save, not a meta page".into()));
+            return Err(PageError::Format(
+                "a whole ships save, not a meta page".into(),
+            ));
         }
         let per = |r: &mut Reader<'_>| -> codec::Result<u64> {
             let v = r.var_u64()?;

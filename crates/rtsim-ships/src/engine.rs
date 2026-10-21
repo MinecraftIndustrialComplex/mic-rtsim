@@ -46,8 +46,8 @@ use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::paging::SaveTicket;
-use rtsim_kernel::rows::{PagedArena, PagedRows};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::rows::{PagedArena, PagedRows};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament};
 use rtsim_knowledge::{Trait, witnesses};
@@ -1121,7 +1121,11 @@ impl Ships {
             });
         }
         let _ = at;
-        debug_assert_eq!(self.ships.meta().1, first + n, "a service's ships are consecutive");
+        debug_assert_eq!(
+            self.ships.meta().1,
+            first + n,
+            "a service's ships are consecutive"
+        );
         self.service_ships[s as usize] = ShipRange { first, n };
     }
 
@@ -3749,7 +3753,9 @@ impl Ships {
                 && x.is_active()
                 && !self.threat(lane).is_some_and(|t| t.hunters.contains(&id))
             {
-                return Err(format!("pirate {id:?} hunts lane {lane} but is not its hunter"));
+                return Err(format!(
+                    "pirate {id:?} hunts lane {lane} but is not its hunter"
+                ));
             }
             if let Some(s) = x.service {
                 let r = self
@@ -3769,7 +3775,11 @@ impl Ships {
         }
         for (l, t) in self.lane_threats() {
             for &h in &t.hunters {
-                let hunting = self.ships.get(h).and_then(|x| x.pirate.as_ref()).map(|p| p.state);
+                let hunting = self
+                    .ships
+                    .get(h)
+                    .and_then(|x| x.pirate.as_ref())
+                    .map(|p| p.state);
                 if !matches!(hunting, Some(PState::Hunting { lane, .. }) if lane == l) {
                     return Err(format!("lane {l}'s hunter {h:?} is {hunting:?}"));
                 }
@@ -3828,13 +3838,23 @@ impl Ships {
         let docks = self.docks.capacity() * size_of::<Dock>()
             + self.dock_of.len() * btree(size_of::<(usize, Medium)>(), 4);
         let lanes = self.lanes.capacity() * size_of::<Lane>()
-            + self.lanes.iter().map(|l| l.path.heap_bytes()).sum::<usize>()
+            + self
+                .lanes
+                .iter()
+                .map(|l| l.path.heap_bytes())
+                .sum::<usize>()
             + self.lane_hops.capacity() * size_of::<Vec<(u32, u32)>>()
-            + self.lane_hops.iter().map(|v| v.capacity() * 8).sum::<usize>()
+            + self
+                .lane_hops
+                .iter()
+                .map(|v| v.capacity() * 8)
+                .sum::<usize>()
             + self
                 .lane_cells
                 .values()
-                .map(|v| btree(size_of::<(u16, i64, i64)>(), size_of::<Vec<u32>>()) + v.capacity() * 4)
+                .map(|v| {
+                    btree(size_of::<(u16, i64, i64)>(), size_of::<Vec<u32>>()) + v.capacity() * 4
+                })
                 .sum::<usize>();
         let services = self.services.capacity() * size_of::<Service>()
             + self.services.iter().map(|s| s.heap_bytes()).sum::<usize>()
@@ -3856,7 +3876,11 @@ impl Ships {
                 .map(|h| h.ships.capacity() * 8 + h.lanes.capacity() * 4)
                 .sum::<usize>()
             + self.navies.capacity() * size_of::<Navy>()
-            + self.navies.iter().map(|n| n.ships.capacity() * 8).sum::<usize>()
+            + self
+                .navies
+                .iter()
+                .map(|n| n.ships.capacity() * 8)
+                .sum::<usize>()
             + self.players.len() * btree(8, size_of::<PlayerView>())
             + self
                 .booked
@@ -3868,7 +3892,11 @@ impl Ships {
             + self.embodied.len() * btree(8, 0)
             + self.applied_ops.capacity() * 8
             + self.applied_set.len() * btree(8, 0)
-            + self.observed.iter().map(|v| v.capacity() * 16).sum::<usize>()
+            + self
+                .observed
+                .iter()
+                .map(|v| v.capacity() * 16)
+                .sum::<usize>()
     }
 
     /// The timetable of a service from `from`: each ship's next `n` departures (hop, dock node,
