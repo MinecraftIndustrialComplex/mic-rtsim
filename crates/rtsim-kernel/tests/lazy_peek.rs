@@ -7,7 +7,12 @@ use rtsim_kernel::codec::{Reader, Writer};
 use rtsim_kernel::lazy::{
     LazyModel, LazyTable, ModelCodec, PEEK_MAX_SLOTS, PagedLazyTable, RegionId,
 };
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_kernel::rng::{SlotRng, SystemId};
+use rtsim_kernel::rows::PageSource;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const P: u64 = 100;
 
@@ -127,4 +132,69 @@ fn a_paged_peek_agrees_with_a_read_and_leaves_pages_clean() {
             assert_eq!(Some(peek.view), t.read(h, at));
         }
     }
+}
+
+fn files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let p = e.unwrap().path();
+            let bytes = std::fs::read(&p).unwrap();
+            (p, bytes)
+        })
+        .collect()
+}
+
+/// The viewer's case: a table the engine saved, opened over a read-only store with no row
+/// resident. Each peek loads its page through `&self`, agrees with what the engine saw, leaves the
+/// loaded pages clean (a save would write nothing) and the folder as it was.
+#[test]
+fn a_peek_over_a_read_only_store_loads_saved_pages_clean() {
+    type Table = PagedLazyTable<Walk, Codec>;
+    const TABLE: u16 = 0x7002;
+    const META: PageKey = PageKey::new(0x7001, 0);
+    let dir = std::env::temp_dir().join(format!("rtsim-lazy-peek-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut t = Table::new(7, SystemId::named("test.peek"), Tick::ZERO, TABLE, 4);
+    let hs: Vec<RegionId<Walk>> = (0..13)
+        .map(|k| t.insert(k, Walk::default(), Tick(k * 11)))
+        .collect();
+    let at = Tick(2_750);
+    while t.next_due(at).is_some() {}
+    let seen: Vec<_> = hs.iter().map(|&h| t.peek(h, at).unwrap()).collect();
+
+    // The engine's save: its rows' pages and its meta page.
+    let store = Arc::new(Mutex::new(
+        PageStore::open(&dir, Durability::NoSync).unwrap(),
+    ));
+    t.rows_mut()
+        .attach(Arc::clone(&store) as Arc<dyn PageSource>, 1 << 20);
+    let mut batch = SaveBatch::new();
+    let ticket = t.rows_mut().save_dirty(&mut batch);
+    let mut w = Writer::new();
+    t.encode_meta(&mut w);
+    batch.put(META, &w.into_bytes());
+    store.lock().unwrap().commit(batch, 1).unwrap();
+    t.rows_mut().saved(ticket);
+    drop(t);
+    drop(store);
+
+    // The viewer's open: read only, meta first, rows on demand.
+    let before = files(&dir);
+    let ro = Arc::new(PageStore::open_read_only(&dir).unwrap());
+    let meta = ro.get_shared(META).unwrap().expect("the meta page");
+    let (mut v, counts) = Table::decode_meta(&mut Reader::new(&meta), TABLE, 4).unwrap();
+    v.open_rows(Arc::clone(&ro) as Arc<dyn PageSource>, 1 << 20, counts);
+    assert_eq!(v.rows().resident_pages(), 0, "nothing resident at open");
+    for (&h, want) in hs.iter().zip(&seen) {
+        assert_eq!(v.peek(h, at).as_ref(), Some(want), "row {}", h.index());
+    }
+    assert!(v.rows().resident_pages() > 1, "the peeks loaded pages");
+    let (dirty, _) = v.rows_mut().snapshot_dirty();
+    assert!(dirty.is_empty(), "a peek leaves its pages clean: {dirty:?}");
+    drop(v);
+    drop(ro);
+    assert!(before == files(&dir), "the store's folder changed");
+    let _ = std::fs::remove_dir_all(&dir);
 }

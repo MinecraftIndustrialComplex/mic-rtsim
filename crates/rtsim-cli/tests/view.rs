@@ -231,6 +231,58 @@ fn the_sidecar_serves_loopback_reads_only_and_writes_nothing() {
     assert!(before == snapshot(&world), "the save's folder changed");
 }
 
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let p = e.unwrap().path();
+        let dest = to.join(p.file_name().unwrap());
+        if p.is_dir() {
+            copy_dir(&p, &dest);
+        } else {
+            std::fs::copy(&p, &dest).unwrap();
+        }
+    }
+}
+
+#[test]
+fn the_sidecar_draws_surveyor_terrain_and_refuses_a_stream() {
+    let world = tmpdir("surveyor");
+    copy_dir(&core_fixture(), &world);
+    std::fs::create_dir_all(world.join("data/surveyor")).unwrap();
+    std::fs::copy(
+        core_fixture().join("../surveyor/c.2.0.dat"),
+        world.join("data/surveyor/c.2.0.dat"),
+    )
+    .unwrap();
+    let before = snapshot(&world);
+    {
+        let s = Sidecar::start(&world, &["--port", "0", "--surveyor-cache", "8"]);
+        assert!(
+            s.said.iter().any(|l| l.starts_with("terrain: Surveyor")),
+            "{:#?}",
+            s.said
+        );
+        assert!(
+            s.said
+                .iter()
+                .any(|l| l.contains("Surveyor pictures up to 8 MiB")),
+            "{:#?}",
+            s.said
+        );
+        let status = s.json("/api/status");
+        assert_eq!(status["limits"]["surveyor_cache"], 8 << 20, "{status}");
+        let (code, body) = s.get("/tiles/surveyor-minecraft-overworld/0/4/0.png");
+        assert!(code == 200 || code == 204, "{code}");
+        if code == 200 {
+            assert_eq!(&body[1..4], b"PNG");
+        }
+        // A save never publishes: the stream is a 204, not a thread held on pings.
+        assert_eq!(s.get("/api/stream").0, 204);
+    }
+    assert!(before == snapshot(&world), "the save's folder changed");
+    let _ = std::fs::remove_dir_all(&world);
+}
+
 #[test]
 fn the_sidecar_refuses_a_public_bind() {
     let out = Command::new(env!("CARGO_BIN_EXE_rtsim-cli"))
@@ -259,6 +311,37 @@ fn the_sidecar_refuses_a_public_bind() {
             .unwrap();
         assert_eq!(out.status.code(), Some(2), "{public}: {out:?}");
     }
+}
+
+/// A tailnet address is refused without `--allow-tailnet`, before the save is read; with it the
+/// address passes and the save is read (binding then fails here: the address is not this host's).
+#[test]
+fn a_tailnet_bind_needs_allow_tailnet() {
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rtsim-cli"))
+            .args(["view"])
+            .arg(core_fixture())
+            .args(["--port", "0", "--bind", "100.64.0.1"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let out = run(&[]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--allow-tailnet"));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("pages:"));
+
+    if std::net::TcpListener::bind("100.64.0.1:0").is_ok() {
+        // This host holds the address: the sidecar would serve and never exit.
+        return;
+    }
+    let out = run(&["--allow-tailnet"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("pages:"),
+        "the save was read: {out:?}"
+    );
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("not a loopback address"));
 }
 
 #[cfg(unix)]

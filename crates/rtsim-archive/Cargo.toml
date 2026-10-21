@@ -1,0 +1,16 @@
+[package]
+name = "rtsim-archive"
+description = "mic-rtsim's event archive: 32-byte event and leg rows in LZ4 chunks with a header index, for the world viewer's timeline (VIEWER.md §10)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+rtsim-kernel.workspace = true
+# Chunk bodies, as the page store compresses pages. MIT.
+lz4_flex.workspace = true
+# Chunk, header and index checksums. MIT OR Apache-2.0.
+crc32fast.workspace = true

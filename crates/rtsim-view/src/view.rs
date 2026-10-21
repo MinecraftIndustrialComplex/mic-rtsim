@@ -13,15 +13,18 @@ use mic_viewer::api::{
     Card, Frame, Freshness, Layers, MARK_BUDGET, ProjectionDesc, TICKS_PER_DAY, Tick, TimeInfo,
     WorldInfo,
 };
+use mic_viewer::api::{EventsAnswer, Histogram};
 use mic_viewer::http::{Reply, Request, Response};
 use mic_viewer::scene::Scene;
 use mic_viewer::tiles::{TileCache, Tiles};
-use mic_viewer::viewer::Backend;
+use mic_viewer::viewer::{Backend, EventQuery};
 use serde_json::json;
 
+use crate::events::Events;
 use crate::habitat::HabitatTiles;
 use crate::layers::{self, Ctx};
 use crate::load::{Limits, Saved, Status, load_world};
+use crate::surveyor::SurveyorTiles;
 
 /// Heap bytes live now, from the host's allocator (rtsim-cli's counting allocator).
 pub type HeapProbe = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -44,10 +47,18 @@ pub struct View {
     reasons: BTreeMap<String, String>,
     tiles: Option<Tiles>,
     tile_layers: BTreeSet<String>,
+    /// Surveyor's terrain, over HABITAT where it has both (VIEWER.md §9).
+    surveyor: Option<Tiles>,
+    surveyor_layers: BTreeSet<String>,
+    surveyor_parses: Option<Arc<SurveyorTiles>>,
     /// The one worker (VWD-15): a card's build and a tile's render hold it.
     worker: Arc<Mutex<()>>,
     cards: Mutex<CardCache>,
     heap: Option<HeapProbe>,
+    /// The save's event archive as of its generation (VIEWER.md §10.6), if it has one.
+    events: Option<Events>,
+    /// Why the archive did not open, when it is there but unreadable.
+    events_error: Option<String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -71,6 +82,11 @@ pub fn frame_id(saved: &Saved, frame: u32) -> String {
         .names
         .get(crate::keys::DICT_DIMENSION, frame)
         .map_or_else(|| format!("dim{frame}"), str::to_owned)
+}
+
+/// The engine's dimension number in an archive frame name (`dim3`).
+fn archive_frame(name: &str) -> Option<u32> {
+    name.strip_prefix("dim")?.parse().ok()
 }
 
 /// "minecraft:the_nether" as "The Nether".
@@ -120,6 +136,18 @@ impl View {
         let drawn = layers::build(&saved, &specs);
         let worker = Arc::new(Mutex::new(()));
         let mut frames: BTreeSet<u32> = drawn.frames.keys().copied().collect();
+        // The archive names frames as the engine numbers them (`dim<n>`); a frame with events but
+        // no marks still gets a page frame, so its timeline can be read.
+        let (events, events_error) =
+            match Events::open(&saved.world_dir, saved.generation.obs_seq, |name| {
+                archive_frame(name).map_or_else(|| name.to_owned(), |n| frame_id(&saved, n))
+            }) {
+                Ok(e) => (e, None),
+                Err(e) => (None, Some(e.to_string())),
+            };
+        if let Some(e) = &events {
+            frames.extend(e.frame_numbers().filter_map(archive_frame));
+        }
         let mut slugs: BTreeMap<u16, String> = BTreeMap::new();
         let habitat = saved.world_model.clone().map(|w| {
             let probe = HabitatTiles::new(w.clone(), &BTreeMap::new(), Arc::clone(&worker));
@@ -134,6 +162,21 @@ impl View {
         if frames.is_empty() {
             frames.insert(0);
         }
+        let named: Vec<(String, String)> = frames
+            .iter()
+            .map(|&f| {
+                let id = frame_id(&saved, f);
+                let s = slug(&id);
+                (id, s)
+            })
+            .collect();
+        let surveyor = SurveyorTiles::open(
+            &saved.world_dir,
+            &named,
+            usize::try_from(saved.limits.surveyor_cache).unwrap_or(usize::MAX),
+            Arc::clone(&worker),
+        )
+        .map(Arc::new);
         let t: Tick = saved.now();
         let mut writers = drawn.frames;
         let mut scenes = BTreeMap::new();
@@ -142,7 +185,10 @@ impl View {
             let id = frame_id(&saved, f);
             let mut w = writers.remove(&f).unwrap_or_default();
             for s in &specs {
-                w.layer(&s.desc.id);
+                match drawn.reasons.get(&s.desc.id) {
+                    Some(why) => w.empty(&s.desc.id, why.clone()),
+                    None => w.layer(&s.desc.id),
+                }
             }
             scenes.insert(id.clone(), Arc::new(w.finish(t, 0.0)));
             let mut bounds = drawn.bounds.get(&f).copied();
@@ -151,6 +197,11 @@ impl View {
                 && let Ok(f16) = u16::try_from(f)
                 && let Some(d) = h.desc(&slugs, f16)
             {
+                bounds = Some(union(bounds, d.bounds));
+                tiles.push(d);
+            }
+            // Over HABITAT: Surveyor's unrecorded columns are transparent.
+            if let Some(d) = surveyor.as_ref().and_then(|s| s.desc(&slug(&id))) {
                 bounds = Some(union(bounds, d.bounds));
                 tiles.push(d);
             }
@@ -196,14 +247,33 @@ impl View {
                 note: "a save: nothing moves".into(),
             },
             budget: MARK_BUDGET,
+            event_kinds: events
+                .as_ref()
+                .map(|e| e.kinds().to_vec())
+                .unwrap_or_default(),
+            has_events: events.as_ref().is_some_and(Events::any),
             ..WorldInfo::default()
         };
-        let layers = Arc::new(layers::layers(&specs, &drawn.reasons));
+        let layers = Arc::new(layers::layers(&specs));
+        // The tile cache's bytes are shared when both base maps are there.
+        let tile_cache = match (&habitat, &surveyor) {
+            (Some(_), Some(_)) => saved.limits.tile_cache / 2,
+            _ => saved.limits.tile_cache,
+        };
         let (tiles, tile_layers) = match habitat {
             Some(h) => {
                 let names = h.layer_names().map(str::to_owned).collect();
-                let cache = TileCache::in_memory(saved.limits.tile_cache);
+                let cache = TileCache::in_memory(tile_cache);
                 (Some(Tiles::new(Arc::new(h), cache, false)), names)
+            }
+            None => (None, BTreeSet::new()),
+        };
+        let (surveyor_tiles, surveyor_layers) = match &surveyor {
+            Some(s) => {
+                let names = s.layer_names().map(str::to_owned).collect();
+                let cache = TileCache::in_memory(tile_cache);
+                let source: Arc<SurveyorTiles> = Arc::clone(s);
+                (Some(Tiles::new(source, cache, false)), names)
             }
             None => (None, BTreeSet::new()),
         };
@@ -220,9 +290,14 @@ impl View {
             reasons: drawn.reasons,
             tiles,
             tile_layers,
+            surveyor: surveyor_tiles,
+            surveyor_layers,
+            surveyor_parses: surveyor,
             worker,
             cards: Mutex::new(CardCache::new(cap)),
             heap: None,
+            events,
+            events_error,
         }
     }
 
@@ -252,9 +327,14 @@ impl View {
         self.scenes.keys().map(String::as_str)
     }
 
-    /// The base map layer names.
+    /// The HABITAT base map layer names.
     pub fn tile_layers(&self) -> &BTreeSet<String> {
         &self.tile_layers
+    }
+
+    /// The Surveyor base map layer names (none when the world has no Surveyor summaries).
+    pub fn surveyor_layers(&self) -> &BTreeSet<String> {
+        &self.surveyor_layers
     }
 
     fn over_cap(&self) -> Option<(u64, u64)> {
@@ -305,6 +385,7 @@ impl View {
             .map(|(m, h)| (m, format!("{h:016x}")))
             .collect();
         let tiles = self.tiles.as_ref().map(|t| t.cache.stats());
+        let surveyor = self.surveyor.as_ref().map(|t| t.cache.stats());
         json!({
             "world": self.world.name,
             "pages": s
@@ -324,13 +405,33 @@ impl View {
                 "row_budget": s.limits.row_budget,
                 "card_cache": s.limits.card_cache,
                 "tile_cache": s.limits.tile_cache,
+                "surveyor_cache": s.limits.surveyor_cache,
                 "heap_cap": s.limits.heap_cap,
             },
             "caches": {
                 "cards": { "bytes": cards.0, "entries": cards.1, "cap": cards.2 },
                 "tiles": tiles.map(|(b, n, c)| json!({ "bytes": b, "entries": n, "cap": c })),
+                "surveyor_tiles": surveyor.map(|(b, n, c)| json!({ "bytes": b, "entries": n, "cap": c })),
             },
+            "surveyor": self.surveyor_parses.as_ref().map(|s| json!({
+                "layers": self.surveyor_layers,
+                "regions_parsed": s.parses(),
+                "picture_bytes": s.cached_bytes(),
+            })),
             "heap": self.heap.as_ref().map(|h| h()),
+            "events": match &self.events {
+                Some(e) => {
+                    let (dropped, damaged) = e.losses();
+                    json!({
+                        "kinds": e.kinds().len(),
+                        "chunks": e.chunks(),
+                        "span": e.span(),
+                        "dropped_rows": dropped,
+                        "damaged_chunks": damaged,
+                    })
+                }
+                None => json!({ "error": self.events_error.as_deref().map(|t| t.replace(&root, &self.world.name)) }),
+            },
         })
     }
 
@@ -405,7 +506,29 @@ impl Backend for View {
         Some(c)
     }
 
+    fn events(&self, q: &EventQuery) -> EventsAnswer {
+        self.events
+            .as_ref()
+            .map(|e| e.events(q))
+            .unwrap_or_default()
+    }
+
+    fn histogram(&self, q: &EventQuery) -> Histogram {
+        match &self.events {
+            Some(e) => e.histogram(q, self.now),
+            None => Histogram {
+                from: q.from,
+                to: q.to,
+                buckets: q.limit,
+                ..Histogram::default()
+            },
+        }
+    }
+
     fn tiles(&self, source: &str) -> Option<&Tiles> {
+        if self.surveyor_layers.contains(source) {
+            return self.surveyor.as_ref();
+        }
         if self.tile_layers.contains(source) {
             self.tiles.as_ref()
         } else {
