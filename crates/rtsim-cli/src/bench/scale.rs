@@ -118,6 +118,9 @@ pub struct Measured {
     /// dragon sweep: per dragon).
     #[serde(default)]
     pub cpu_ns_per_unit_day: Option<f64>,
+    /// The ships' port network (resident, growing with the world while rows page).
+    #[serde(default)]
+    pub network_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +140,8 @@ pub enum Vary {
     Dragons,
     /// Merchant ships per service over a fixed ocean grid (PLAN.md §10.1).
     Ships,
+    /// Ports in the ships' ocean grid at sixteen ships a service, a player touring it (A16).
+    ShipPorts,
     /// Herds in the valley, members per herd fixed (PLAN.md §10.2).
     Herds,
     /// Members per herd, herd count fixed (PLAN.md §10.2).
@@ -293,7 +298,14 @@ impl Baseline {
                 // days, so each point times enough of them to be read above noise.
                 days: self.days * 5,
                 seed: self.seed,
+                observer: false,
+                paged: None,
             });
+        }
+        if sweep.vary == Vary::ShipPorts {
+            let (days, save) = (self.days, self.save_every_ticks);
+            let c = super::ships::grid_config(value, sweep.paged, days, self.seed, save);
+            return Spec::Ships(c);
         }
         if sweep.vary == Vary::Dragons {
             return Spec::Dragons(super::dragons::DragonConfig {
@@ -350,6 +362,7 @@ impl Baseline {
             | Vary::Edges
             | Vary::Dragons
             | Vary::Ships
+            | Vary::ShipPorts
             | Vary::Herds
             | Vary::Members
             | Vary::Factions => {
@@ -368,7 +381,7 @@ impl Baseline {
 }
 
 /// A contract; ones that declare flat growth (slope 0.15 or less) also get the ratio bound.
-fn contract(metric: Metric, declared: f64, scale_md: f64, note: &str) -> Contract {
+pub(super) fn contract(metric: Metric, declared: f64, scale_md: f64, note: &str) -> Contract {
     Contract {
         metric,
         declared,
@@ -706,10 +719,12 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "ships are resident rows (paging, A16, is not built yet)",
+                    "ships are resident rows here; the paged form is the ships-paged sweep",
                 ),
             ],
         },
+        super::ships::grid_sweeps(quick).remove(0),
+        super::ships::grid_sweeps(quick).remove(1),
         // Herds (rtsim-ecology's herds), nobody watching: herd count at 5,000 members each.
         Sweep {
             name: "herds".into(),
@@ -1540,7 +1555,10 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
     }
     let paged: Vec<&Run> = runs
         .iter()
-        .filter(|r| matches!(r.spec, Spec::Paged(_)))
+        .filter(|r| {
+            matches!(&r.spec, Spec::Paged(_))
+                || matches!(&r.spec, Spec::Ships(c) if c.paged.is_some())
+        })
         .collect();
     if !paged.is_empty() {
         println!();
