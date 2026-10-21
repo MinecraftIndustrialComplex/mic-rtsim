@@ -58,6 +58,8 @@ public final class Industry {
     final DistrictDiagnostics diagnostics;
     final Conditions conditions;
     final Threats threats;
+    /** The glass box's compiler (GLASSBOX.md §1.4, G1 read only). */
+    final com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassCompiler glass;
     private final Map<String, Integer> goodIds = new HashMap<>();
     private long ticks;
     private boolean started;
@@ -81,6 +83,7 @@ public final class Industry {
         this.diagnostics = new DistrictDiagnostics(this);
         this.conditions = new Conditions(this);
         this.threats = new Threats(this);
+        this.glass = new com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassCompiler(this);
     }
 
     /** The industry module switch (C25): off restores vanilla, nothing is observed or applied. */
@@ -140,6 +143,7 @@ public final class Industry {
         districts.tick(now, ticks);
         reconciler.tick(now);
         sampler.tick(now);
+        glass.tick(now);
         conditions.tick(now);
         threats.tick(now, ticks);
         for (IndustryPlugin p : IndustryApi.PLUGINS) {
@@ -162,6 +166,7 @@ public final class Industry {
         conditions.resend();
         threats.forgetAnnounced();
         reconciler.forgetAnnounced();
+        glass.forgetAnnounced();
     }
 
     /** An industry command from the engine. Returns false to leave it for a later tick. */
@@ -174,6 +179,10 @@ public final class Industry {
         switch (kind) {
             case IndRecords.IND_CHUNK_RECONCILE -> {
                 return reconciler.accept(b, at, size, aux, cmdSeq, gameTime());
+            }
+            case com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords.IND_PROBE_SET -> {
+                glass.probeSet(b, at, size, aux);
+                return true;
             }
             case IndRecords.IND_DEPOSIT_DELTA -> {
                 depositDelta(b, at, size, aux, cmdSeq);
@@ -405,6 +414,10 @@ public final class Industry {
 
     public Conditions conditions() {
         return conditions;
+    }
+
+    public com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassCompiler glass() {
+        return glass;
     }
 
     public Threats threats() {

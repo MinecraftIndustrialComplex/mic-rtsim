@@ -457,7 +457,9 @@ its Level24 list); a node without a domain uses level 0. An entry gives `batch` 
 ticks: its capacity is `batch × ticksDen / ticksNum` per tick (`ticksNum` 0: unlimited). A node with no
 entry for the level has capacity 0 there (a stopped or overstressed domain). FIRST_CYCLE entries are
 latency only, never rate. A node with no entries at all is unlimited (a junction, a buffer, a water
-source). An entry without a recipe (NONE), like a SHARED one, is the node's capacity across everything
+source). An entry with `batch` 0 has capacity 0: Java writes one at level 0 for a limited node that runs
+at no level (a powered funnel, a machine whose domain is stopped), so that it is not read as unlimited
+(GB45). An entry without a recipe (NONE), like a SHARED one, is the node's capacity across everything
 it does; a machine's recipes are exactly those its entries name (choice GB15).
 
 **Nodes.**
@@ -470,11 +472,15 @@ it does; a machine's recipes are exactly those its entries name (choice GB15).
   Each craft takes the recipe's inputs (catalysts are needed, not consumed) and makes its outputs, chance
   outputs at their expectation. With ANY_OUTPUT_BLOCKS every output must be accepted in full
   (`c_r × out ≤ acceptance`). A machine fed from a basin or a depot is one node: the edges into the basin
-  or depot are its inputs and the edges out of it its outputs. A machine on a line (PASS_THROUGH) passes
+  or depot are its inputs and the edges out of it its outputs. A depot worked by two (a press and a fan
+  zone) is a BUFFER whose LINE edges run through each in turn, BOUNDED (GB37). A machine on a line (PASS_THROUGH) passes
   goods none of its recipes takes. A recipe with `heat` above NONE runs only with a Heat edge in whose
   heater's level is at least `heat`, at that heater's duty. A sequenced assembly is one SEQUENCED
   machine node: its recipe is the whole sequence unrolled (every step's inputs times the loops) and its
-  entry the time of one product through every step (GB15).
+  entry one product per the busiest machine's work, the sum of the cycles of the steps that machine does
+  (items on a loop pipeline, so with one machine per step type it is not the time through every step;
+  with one machine doing every step the two agree) (GB15, GB40). The machine doing step 0 is that node;
+  the line's other machines are PASS_THROUGH with no steps, and their other feeders feed it.
 - **Mover:** one SHARED entry: units per tick across every good. Its in-edges are tried in `order`, and
   its outflow splits among its out-edges by its `rule` (an arm's selection mode; NONE with several
   out-edges is priority in `order`, as PREFER_FIRST).
@@ -482,7 +488,9 @@ it does; a machine's recipes are exactly those its entries name (choice GB15).
   (GLASSBOX.md §3.3). Filtered sides (FILTERED_SIDE) are tried before the rest. ANDESITE_SPLIT's main
   line is its first out-edge, and the entry size `n` is its first in-edge's `param`.
 - **Heater** (a blaze burner): `params` are remaining burn ticks, heat level when lit, burn ticks per
-  fuel item (0: never runs out, a creative burner) and the insertion threshold. It burns while lit
+  fuel item (the shortest of the fuels that reach it; 0: never runs out, a creative burner; 1 while no
+  fuel reaches it) and the insertion threshold. Each fuel is a FUEL recipe whose `heat` is the level it
+  burns at and whose `duration` its burn ticks (GB49). It burns while lit
   whatever it heats, so it accepts fuel up to `1 / burnTicks` items per tick, and its **duty** is
   `min(1, fuel accepted × burnTicks)`. L counts only the fuel supplied; U also counts remaining burn.
   Any good on its in-edges is fuel at `params[2]` burn ticks, unless the heater has fuel recipes (rate
@@ -499,19 +507,23 @@ it does; a machine's recipes are exactly those its entries name (choice GB15).
   (a water source block under a pump: the pump limits it). A source without recipes emits the goods its
   out-edges' filters allow (an unfiltered edge from it carries nothing). An animal source (ANIMAL_SHEEP) is STOCHASTIC:
   a craft is one shearing, its rate the closed form of vanilla's regrowth for `params[1]` eligible
-  animals capped by the shearing deployer's cycle, and `params[2] / params[3]` the craft output's second
-  moment (14/3 for wool's `1 + nextInt(3)`). A source that is not accepted waits (unsheared sheep keep
+  animals among `params[0]` the deployer can pick, and `params[2] / params[3]` the craft output's second
+  moment (14/3 for wool's `1 + nextInt(3)`). Java writes the rate entry as one shearing per
+  `(2034 + params[0] × c) / params[1]` ticks, c the deployer's cycle: a sheared sheep eats after 2,034
+  ticks on average (`EatBlockGoal`) and each cycle shears a random entity of the deployer's box (GB53). A source that is not accepted waits (unsheared sheep keep
   their wool): nothing is lost.
 - **Sink:** accepts everything (burned or voided) up to its entries' rate, unlimited without.
 - **BlackBox:** a node the compiler could not model. L takes it as producing nothing; a good with a
   black box on its path has no U (it is reported unbounded).
 - **Controller** (a threshold switch, a factory gauge): `params` are on-above, off-below, flags (1
   inverted, 2 on at compile: the state while the level is between the thresholds) and the observed level
-  at compile. Its Observe edges come from the stores it reads (a
+  at compile, in items or mB. Its Observe edges come from the stores it reads (a
   filter on the edge limits the goods counted, empty counts all, in units); its Control edges go to
   the nodes it gates (`param` 1 stops the target while the switch is on, 2 runs it only while on). It
   is on when the observed level reaches on-above, off when it falls to off-below, else as before
-  (hysteresis). In G1 the engine evaluates it at every sweep from the observed stock, so each sweep
+  (hysteresis). "On" is the switch's state before inversion; the Control `param` already includes the
+  inversion (an inverted switch powers its targets while off, so it runs them only while on: 2), and the
+  inverted flag is for display only (GB51). In G1 the engine evaluates it at every sweep from the observed stock, so each sweep
   interval is predicted in the regime it was in; G2 turns a cycling switch into the closed form of G-B8.
 - **Port:** an exchange across the district (a station, a postbox): G1 reports its goods unbounded.
 
