@@ -34,9 +34,12 @@ pub const FEUD_TABLE: u16 = 0x4311;
 pub const SOURCE_TABLE: u16 = 0x4312;
 pub const PLACE_TABLE: u16 = 0x4313;
 
-/// Factions per page. PLACEHOLDER 16: a faction with two feuds is about 1 KB resident, so a page
-/// is about 16 KB; factions found together (a player's region) have neighbouring indices.
-pub const FACTIONS_PER_PAGE: u64 = 16;
+/// Factions per page. PLACEHOLDER 4: a faction with two feuds is about 450 bytes encoded (710
+/// resident), so a page is about 1.8 KB. An event dirties its faction's page, and dirty pages stay
+/// until a save (PM-C10), so the bytes an event pins grow with the page: at 1,024 factions under
+/// 256 KiB, 13 saves a day at 4 a page against 44 at 16, and a third less step CPU (PM-C12).
+/// Factions found together (a player's region) have neighbouring indices.
+pub const FACTIONS_PER_PAGE: u64 = 4;
 /// Sources per page. PLACEHOLDER 32 (a source is about 200 bytes with a district's chunks).
 pub const SOURCES_PER_PAGE: u64 = 32;
 /// Place regions per page: 4 x 4 regions of 16 x 16 chunks, a page 1,024 blocks square.
