@@ -472,17 +472,16 @@ pub fn build(saved: &Saved, specs: &[Spec]) -> Drawn {
             Ok(why) => {
                 drawn.counts.insert(id.clone(), n);
                 if n == 0 {
-                    let why = why.unwrap_or_else(|| "nothing of this kind in the save".into());
+                    let why = why.map_or_else(
+                        || "nothing of this kind in the save".into(),
+                        |w| saved.scrub(&w),
+                    );
                     drawn.reasons.insert(id.clone(), why);
                 }
                 drawn.take(&id, out);
             }
             Err(p) => {
-                let msg = p
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-                    .unwrap_or_else(|| "a panic".into());
+                let msg = saved.scrub(&crate::load::panic_text(p));
                 drawn.counts.insert(id.clone(), 0);
                 drawn
                     .reasons

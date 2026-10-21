@@ -5,7 +5,9 @@
 //! confirmed generation (what the next start would open), and a module whose pages do not read is
 //! reported and left out, never dropped or rewritten.
 
+use std::any::Any;
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -115,6 +117,11 @@ pub struct Saved {
 }
 
 impl Saved {
+    /// `text` with no filesystem path beyond the world's name (VIEWER.md §13).
+    pub fn scrub(&self, text: &str) -> String {
+        scrub_path(text, &self.world_dir, &world_name(&self.world_dir))
+    }
+
     /// The save's game tick: the phase 1 world's, else the industry engine's.
     pub fn now(&self) -> i64 {
         if let Some(p) = &self.phase1 {
@@ -200,7 +207,7 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
     let names = Names::read(&world_dir);
     let mut modules = Vec::new();
 
-    let phase1 = match read_phase1(&source, budget) {
+    let phase1 = match guarded(|| read_phase1(&source, budget)) {
         Ok(None) => {
             modules.push(module("phase1", Status::Absent, String::new(), None));
             None
@@ -232,7 +239,7 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
     let world_restored = phase1.is_some();
     let lives = "the phase 1 world they live in did not come back from its pages";
 
-    let world_model = match read_world_model(&*source) {
+    let world_model = match guarded(|| read_world_model(&*source)) {
         Ok(None) => {
             modules.push(module("world_model", Status::Absent, String::new(), None));
             None
@@ -274,12 +281,15 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
     let dragons = match paged("dragons", keys::DRAGONS) {
         Ok(false) => absent(&mut modules, "dragons"),
         Err(why) => unreadable(&mut modules, "dragons", why),
-        Ok(true) => match Dragons::open_paged(
-            source.clone(),
-            budget,
-            keys::DRAGONS,
-            DragonTunables::default(),
-        ) {
+        Ok(true) => match guarded(|| {
+            Dragons::open_paged(
+                source.clone(),
+                budget,
+                keys::DRAGONS,
+                DragonTunables::default(),
+            )
+            .map_err(|e| format!("the dragons' meta page: {e}"))
+        }) {
             Ok(d) => {
                 let saved = saved_hash(&*source, keys::DRAGONS);
                 let detail = format!("{} dragons, {} lairs", d.dragons.len(), d.lairs.len());
@@ -287,11 +297,7 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
                 modules.push(module("dragons", Status::Loaded, detail, hash));
                 Some(d)
             }
-            Err(e) => unreadable(
-                &mut modules,
-                "dragons",
-                format!("the dragons' meta page: {e}"),
-            ),
+            Err(why) => unreadable(&mut modules, "dragons", why),
         },
     };
 
@@ -299,13 +305,16 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
     let herds = match paged("herds", keys::HERDS) {
         Ok(false) => absent(&mut modules, "herds"),
         Err(why) => unreadable(&mut modules, "herds", why),
-        Ok(true) => match Herds::open_paged(
-            source.clone(),
-            budget,
-            keys::HERDS,
-            HerdTunables::default(),
-            Box::new(HabitatClimate::new(climate_world)),
-        ) {
+        Ok(true) => match guarded(|| {
+            Herds::open_paged(
+                source.clone(),
+                budget,
+                keys::HERDS,
+                HerdTunables::default(),
+                Box::new(HabitatClimate::new(climate_world)),
+            )
+            .map_err(|e| format!("the herds' meta page: {e}"))
+        }) {
             Ok(h) => {
                 let saved = saved_hash(&*source, keys::HERDS);
                 let detail = format!("{} herds", h.herds.len());
@@ -313,7 +322,7 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
                 modules.push(module("herds", Status::Loaded, detail, hash));
                 Some(h)
             }
-            Err(e) => unreadable(&mut modules, "herds", format!("the herds' meta page: {e}")),
+            Err(why) => unreadable(&mut modules, "herds", why),
         },
     };
 
@@ -321,7 +330,10 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         Ok(false) => absent(&mut modules, "ships"),
         Err(why) => unreadable(&mut modules, "ships", why),
         Ok(true) => {
-            match Ships::open_paged(source.clone(), budget, keys::SHIPS, ShipTunables::default()) {
+            match guarded(|| {
+                Ships::open_paged(source.clone(), budget, keys::SHIPS, ShipTunables::default())
+                    .map_err(|e| format!("the ships' meta page: {e}"))
+            }) {
                 Ok(s) => {
                     let saved = saved_hash(&*source, keys::SHIPS);
                     let detail = format!(
@@ -335,7 +347,7 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
                     modules.push(module("ships", Status::Loaded, detail, hash));
                     Some(s)
                 }
-                Err(e) => unreadable(&mut modules, "ships", format!("the ships' meta page: {e}")),
+                Err(why) => unreadable(&mut modules, "ships", why),
             }
         }
     };
@@ -343,13 +355,16 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
     let conflict = match paged("conflict", keys::CONFLICT) {
         Ok(false) => absent(&mut modules, "conflict"),
         Err(why) => unreadable(&mut modules, "conflict", why),
-        Ok(true) => match rtsim_conflict::Conflict::open_paged(
-            source.clone(),
-            budget,
-            keys::CONFLICT,
-            ConflictTunables::default(),
-            Cultures::builtin(),
-        ) {
+        Ok(true) => match guarded(|| {
+            rtsim_conflict::Conflict::open_paged(
+                source.clone(),
+                budget,
+                keys::CONFLICT,
+                ConflictTunables::default(),
+                Cultures::builtin(),
+            )
+            .map_err(|e| format!("the conflict's meta page: {e}"))
+        }) {
             Ok(Some(c)) => {
                 let saved = saved_hash(&*source, keys::CONFLICT);
                 let detail = format!(
@@ -363,15 +378,11 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
                 Some(c)
             }
             Ok(None) => absent(&mut modules, "conflict"),
-            Err(e) => unreadable(
-                &mut modules,
-                "conflict",
-                format!("the conflict's meta page: {e}"),
-            ),
+            Err(why) => unreadable(&mut modules, "conflict", why),
         },
     };
 
-    let industry = match IndustryView::load(&*source) {
+    let industry = match guarded(|| IndustryView::load(&*source)) {
         Ok(None) => absent(&mut modules, "industry"),
         Ok(Some(v)) => {
             let detail = format!(
@@ -386,6 +397,20 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         }
         Err(why) => unreadable(&mut modules, "industry", why),
     };
+
+    // No filesystem path beyond the world's name in anything served (VIEWER.md §13): errors from
+    // the page store carry the full path of the file that failed.
+    let name = world_name(&world_dir);
+    for m in &mut modules {
+        if let Status::Unreadable(e) = &mut m.status {
+            *e = scrub_path(e, &world_dir, &name);
+        }
+        m.detail = scrub_path(&m.detail, &world_dir, &name);
+    }
+    let mut names = names;
+    if let Some(m) = &mut names.missing {
+        *m = scrub_path(m, &world_dir, &name);
+    }
 
     Ok(Saved {
         world_dir,
@@ -405,6 +430,38 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         modules,
         limits,
     })
+}
+
+/// Runs one module's load, turning a panic (a page that failed a check deep in a paged table)
+/// into an error, so the other modules still draw.
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f))
+        .unwrap_or_else(|p| Err(format!("reading its pages failed ({})", panic_text(p))))
+}
+
+/// A panic's message.
+pub fn panic_text(p: Box<dyn Any + Send>) -> String {
+    p.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_else(|| "a panic".into())
+}
+
+/// The world folder's name, as answers name it.
+pub fn world_name(world_dir: &Path) -> String {
+    world_dir
+        .file_name()
+        .map_or_else(|| "world".into(), |n| n.to_string_lossy().into_owned())
+}
+
+/// `text` with the world folder's path said as its name (`/home/me/saves/Ashford/rtsim/seg-..`
+/// as `Ashford/rtsim/seg-..`).
+pub fn scrub_path(text: &str, world_dir: &Path, name: &str) -> String {
+    let root = world_dir.display().to_string();
+    if root.is_empty() || root == name {
+        return text.to_owned();
+    }
+    text.replace(&root, name)
 }
 
 fn module(

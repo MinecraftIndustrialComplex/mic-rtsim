@@ -1094,7 +1094,10 @@ impl PageStore {
     fn read_stored(&self, loc: PageLoc) -> Result<Vec<u8>> {
         let path = self.segment_path(loc.segment);
         if self.read_only {
-            // No file stays open between reads: a writer may delete it (VIEWER.md §5.3).
+            // No file stays open between reads: a writer may delete it (VIEWER.md §5.3). On
+            // Windows, std opens with FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so
+            // the writer's delete or rename over this file succeeds while a read is in flight.
+            // UNVERIFIED on a real Windows server: V4's exit test (§16) runs it.
             let mut f = File::open(&path).map_err(io(&path))?;
             f.seek(SeekFrom::Start(loc.offset)).map_err(io(&path))?;
             let mut buf = vec![0; loc.stored_len as usize];
