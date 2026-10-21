@@ -7,10 +7,10 @@
 
 use std::io::BufRead;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use mic_viewer::http::{Config, Server};
@@ -22,9 +22,13 @@ use rtsim_kernel::page::Durability;
 use rtsim_view::Limits;
 
 static CTL: Control = Control::new();
+/// Ctrl-C and SIGTERM so far: only the handler counts them, so a `q` before one still gets the
+/// final save.
+static SIGNALS: AtomicU8 = AtomicU8::new(0);
 
 extern "C" fn on_signal(_: libc::c_int) {
-    if CTL.stop.swap(true, Ordering::Relaxed) {
+    CTL.stop.store(true, Ordering::Relaxed);
+    if SIGNALS.fetch_add(1, Ordering::Relaxed) >= 1 {
         // A second one: stop now, without the final save.
         // SAFETY: _exit is async-signal-safe.
         unsafe { libc::_exit(130) };
@@ -38,6 +42,9 @@ struct Args {
     dir: PathBuf,
     opts: Options,
     view: Option<SocketAddr>,
+    /// Serve the viewer on this Unix socket instead of a TCP port (a server where others have
+    /// shells: only the socket's owner can reach it, VIEWER.md §13).
+    socket: Option<PathBuf>,
     allow_tailnet: bool,
     every: Duration,
 }
@@ -50,6 +57,7 @@ fn parse(args: &[&str]) -> Result<Args, String> {
         ..Options::default()
     };
     let mut view = None;
+    let mut socket = None;
     let mut allow_tailnet = false;
     let mut every = Duration::from_secs(5);
     let mut i = 0;
@@ -94,6 +102,7 @@ fn parse(args: &[&str]) -> Result<Args, String> {
                     _ => view = Some(SocketAddr::from(([127, 0, 0, 1], mic_viewer::DEFAULT_PORT))),
                 }
             }
+            "--socket" => socket = Some(PathBuf::from(value(&mut i, "--socket")?)),
             "--allow-tailnet" => allow_tailnet = true,
             "--test" => opts.test = true,
             "--no-fsync" => opts.durability = Durability::NoSync,
@@ -126,6 +135,7 @@ fn parse(args: &[&str]) -> Result<Args, String> {
         dir: dir.ok_or("--fork <dir> is required: the host runs on a copy, never on the world")?,
         opts,
         view,
+        socket,
         allow_tailnet,
         every,
     })
@@ -158,9 +168,25 @@ fn run(a: &Args) -> Result<(), String> {
              addresses need --allow-tailnet)"
         ));
     }
-    fork::check_apart(&a.world, &a.dir)?;
+    if let Some(sock) = &a.socket
+        && crate::view::under(sock, &a.world)
+    {
+        return Err(format!(
+            "--socket {}: inside the world folder, which the host never writes into; put it elsewhere",
+            sock.display()
+        ));
+    }
+    let (world_abs, _) = fork::check_apart(&a.world, &a.dir)?;
     if fork::is_fork(&a.dir) {
         let info = fork::ForkInfo::read(&a.dir)?;
+        if Path::new(&info.source) != world_abs {
+            return Err(format!(
+                "the fork {} was exported from {}, not {}: name that world to resume it, or export into a new folder",
+                a.dir.display(),
+                info.source,
+                world_abs.display()
+            ));
+        }
         println!(
             "resuming the fork {} (exported from {})",
             a.dir.display(),
@@ -183,9 +209,10 @@ fn run(a: &Args) -> Result<(), String> {
         let t = u.target(host.start_time);
         println!("until game time {t} (day {:.2})", t as f64 / DAY as f64);
     }
-    let viewer = match a.view {
-        Some(addr) => Some(serve(a, addr)?),
-        None => None,
+    let viewer = match (&a.socket, a.view) {
+        (Some(path), _) => Some(serve(a, Listen::Socket(path))?),
+        (None, Some(addr)) => Some(serve(a, Listen::Tcp(addr))?),
+        (None, None) => None,
     };
     // SAFETY: the handler only stores to atomics and calls _exit.
     unsafe {
@@ -236,10 +263,16 @@ fn run(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The host source on `addr`: the fork as last saved, reread after each save (rtsim_host::view).
+/// Where the host source listens.
+enum Listen<'a> {
+    Tcp(SocketAddr),
+    Socket(&'a Path),
+}
+
+/// The host source on `at`: the fork as last saved, reread after each save (rtsim_host::view).
 fn serve(
     a: &Args,
-    addr: SocketAddr,
+    at: Listen,
 ) -> Result<(Arc<HostView>, Server, std::thread::JoinHandle<()>), String> {
     let heap: rtsim_view::view::HeapProbe = Arc::new(|| crate::sys::heap_live() as u64);
     let hv = HostView::open(&a.dir, &CTL, a.opts.speed, Limits::default(), Some(heap))
@@ -251,8 +284,29 @@ fn serve(
         allow_tailnet: a.allow_tailnet,
         name: "rtsim-host".into(),
     };
-    let server = Server::start(addr, config, Arc::new(App::new(Arc::clone(&hv))))
-        .map_err(|e| format!("the viewer on {addr}: {e}"))?;
+    let app = Arc::new(App::new(Arc::clone(&hv)));
+    let addr = match at {
+        Listen::Tcp(addr) => addr,
+        #[cfg(unix)]
+        Listen::Socket(path) => {
+            let server = Server::start_unix(path, config, app)
+                .map_err(|e| format!("the viewer on {}: {e}", path.display()))?;
+            println!(
+                "viewer: on the Unix socket {}: the fork's last save, reread after each one; saved every {} s while a page is open",
+                path.display(),
+                LEASE_SAVE_EVERY.as_secs()
+            );
+            println!(
+                "  from your machine: ssh -L 8740:{} <this host>, then open http://localhost:8740/",
+                path.display()
+            );
+            return Ok((hv, server, reader));
+        }
+        #[cfg(not(unix))]
+        Listen::Socket(_) => return Err("--socket needs a Unix system".into()),
+    };
+    let server =
+        Server::start(addr, config, app).map_err(|e| format!("the viewer on {addr}: {e}"))?;
     let bound = server.addr().unwrap_or(addr);
     let scope = if bound.ip().is_loopback() {
         "loopback only"
@@ -277,7 +331,12 @@ fn keys() {
         let Ok(line) = line else { return };
         match line.trim() {
             "q" | "quit" => CTL.stop.store(true, Ordering::Relaxed),
-            "s" | "save" => CTL.save_now.store(true, Ordering::Relaxed),
+            "s" | "save" => {
+                CTL.save_now.store(true, Ordering::Relaxed);
+                if CTL.paused.load(Ordering::Relaxed) {
+                    println!("paused: the save is taken at the first step after resuming");
+                }
+            }
             "p" | "pause" => {
                 let was = CTL.paused.fetch_xor(true, Ordering::Relaxed);
                 println!("{}", if was { "resumed" } else { "paused" });
@@ -291,5 +350,61 @@ fn keys() {
                 Err(_) => println!("{KEYS}"),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../rtsim-view/tests/data")
+            .join(name)
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("rtsim-cli-run-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn socket_implies_the_viewer_and_must_be_outside_the_world() {
+        let world = fixture("core");
+        let a = parse(&[
+            world.to_str().unwrap(),
+            "--fork",
+            "/tmp/x",
+            "--socket",
+            "/tmp/v.sock",
+        ])
+        .unwrap();
+        assert_eq!(a.socket.as_deref(), Some(Path::new("/tmp/v.sock")));
+        let inside = world.join("viewer.sock");
+        let fork = scratch("socket");
+        let a = parse(&[
+            world.to_str().unwrap(),
+            "--fork",
+            fork.to_str().unwrap(),
+            "--socket",
+            inside.to_str().unwrap(),
+        ])
+        .unwrap();
+        let e = run(&a).unwrap_err();
+        assert!(e.contains("inside the world folder"), "{e}");
+        assert!(!fork.exists(), "refused before the export");
+        assert!(!inside.exists());
+    }
+
+    #[test]
+    fn a_fork_resumes_only_with_the_world_it_came_from() {
+        let fork = scratch("resume").join("fork");
+        fork::export(&fixture("core"), &fork).unwrap();
+        let other = fixture("create");
+        let a = parse(&[other.to_str().unwrap(), "--fork", fork.to_str().unwrap()]).unwrap();
+        let e = run(&a).unwrap_err();
+        assert!(e.contains("was exported from"), "{e}");
+        let _ = std::fs::remove_dir_all(fork.parent().unwrap());
     }
 }

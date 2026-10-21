@@ -147,6 +147,12 @@ pub fn export(world: &Path, dir: &Path) -> Result<ForkInfo, String> {
     }
     if dir.exists() {
         let mut entries = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        if dir.join(save::PAGES).exists() && !is_fork(dir) {
+            return Err(format!(
+                "{} holds an export that did not finish (pages but no {MARKER}): delete the folder and export again",
+                dir.display()
+            ));
+        }
         if entries.next().is_some() {
             return Err(format!(
                 "{} is not empty: export writes a new fork into an empty folder",
@@ -186,6 +192,8 @@ struct Taken {
     bytes: u64,
     journal: Option<Vec<u8>>,
     parsed: Journal,
+    /// `level.dat` as read once after the copy: the bytes the fork gets and its info describes.
+    level: Option<Vec<u8>>,
     /// Observations neither the pages nor the journal hold.
     lost: Option<(u64, u64)>,
 }
@@ -220,7 +228,20 @@ fn page_err(e: PageError) -> Retry {
     }
 }
 
+/// `level.dat`, or `level.dat_old` while the server is between the two renames of its save
+/// (vanilla's `Util.safeReplaceFile` moves the old file aside before the new one goes in, and
+/// falls back to `level.dat_old` itself when `level.dat` is missing).
+fn read_level(world: &Path) -> Result<Option<Vec<u8>>, Retry> {
+    match read_opt(&world.join(save::LEVEL))? {
+        Some(b) => Ok(Some(b)),
+        None => read_opt(&world.join(format!("{}_old", save::LEVEL))),
+    }
+}
+
 /// One copy of the confirmed generation into `partial`, and the journal read before and after.
+/// `level.dat` is read once, after: it only gives the game time and the Deep Time folder, and a
+/// server writes it at every save, so a level.dat a save newer than the pages is what a crash
+/// leaves too (the engine starts from its pages either way).
 fn copy_once(world: &Path, pages: &Path, partial: &Path) -> Result<Copied, Retry> {
     let journal_path = world.join(save::JOURNAL);
     let before = read_opt(&journal_path)?;
@@ -256,6 +277,7 @@ fn copy_once(world: &Path, pages: &Path, partial: &Path) -> Result<Copied, Retry
             "the journal was written during the copy".into(),
         ));
     }
+    let level = read_level(world)?;
     let parsed = match &after {
         Some(b) => Journal::parse(b)
             .map_err(|e| Retry::Fatal(format!("{}: {e}", journal_path.display())))?,
@@ -273,6 +295,7 @@ fn copy_once(world: &Path, pages: &Path, partial: &Path) -> Result<Copied, Retry
         bytes,
         journal: after,
         parsed,
+        level,
         lost,
     }))
 }
@@ -400,12 +423,21 @@ fn finish(
     if let Some(b) = &c.journal {
         save::write_atomic(&dir.join(save::JOURNAL), b)?;
     }
-    copy_file(&world.join(save::LEVEL), &dir.join(save::LEVEL))?;
+    let level = match &c.level {
+        Some(b) => {
+            save::write_atomic(&dir.join(save::LEVEL), b)?;
+            Some(
+                crate::nbt::read_gz(b)
+                    .map(|(_, t)| t)
+                    .map_err(|e| format!("{}: {e}", world.join(save::LEVEL).display()))?,
+            )
+        }
+        None => None,
+    };
     copy_file(
         &world.join(save::SERVER_CONFIG),
         &dir.join(save::SERVER_CONFIG),
     )?;
-    let level = save::level(world)?;
     let folder = save::deep_time_folder(level.as_ref());
     let manifest = Path::new(&folder).join("manifest.json");
     let deep_time_folder =

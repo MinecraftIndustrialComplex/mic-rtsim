@@ -495,7 +495,9 @@ impl Host {
         self.e.request_save(through);
         self.write_world()?;
         self.world_saved = Some(through);
-        self.last_save_at = self.j.game_time;
+        // The game time last handed over, which `run` measures the next save from (the journal's
+        // own clock has already moved on by a stride).
+        self.last_save_at = self.last_handed;
         self.saves += 1;
         Ok(())
     }
@@ -547,7 +549,8 @@ impl Host {
 
     /// Runs until `opts.until`, `ctl.stop`, or an error; `report` gets a status line every
     /// `every` of wall time. Saves every `opts.save_every` of game time, and when `ctl.save_now`
-    /// is set (a key, or the viewer's lease: [`crate::view`]), paused or not.
+    /// is set (a key, or the viewer's lease: [`crate::view`]); while paused, at the first step
+    /// after resuming.
     pub fn run(
         &mut self,
         opts: &Options,
@@ -575,9 +578,9 @@ impl Host {
                 break;
             }
             if ctl.paused.load(Ordering::Relaxed) {
-                if ctl.save_now.swap(false, Ordering::Relaxed) {
-                    self.save()?;
-                }
+                // A save asked for while paused waits for the first step after resuming: the
+                // engine takes a save at a step, so saving now would write the journal and
+                // `level.dat` while the pages stayed as they were until then.
                 std::thread::sleep(Duration::from_millis(50));
                 origin = (Instant::now(), self.j.game_time);
                 continue;

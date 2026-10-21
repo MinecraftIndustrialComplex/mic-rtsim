@@ -213,7 +213,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
 
 /// Whether `path` would sit inside `folder` (both made absolute, `..` and links resolved as far
 /// as they exist).
-fn under(path: &std::path::Path, folder: &std::path::Path) -> bool {
+pub(crate) fn under(path: &std::path::Path, folder: &std::path::Path) -> bool {
     let abs = |p: &std::path::Path| {
         let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
         // The socket itself does not exist yet: resolve its folder.

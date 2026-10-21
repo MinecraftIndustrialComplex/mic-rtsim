@@ -85,14 +85,15 @@ usage:
       restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
       Exits 1 if a check fails.
   rtsim-cli run <world> --fork <dir> [--speed 1x|10x|max] [--until N|Nd|@N|@Nd] [--season-days N]
-                [--view [addr]] [--allow-tailnet] [--stride N] [--test] [--no-fsync]
+                [--view [addr]] [--socket PATH] [--allow-tailnet] [--stride N] [--test] [--no-fsync]
       The headless host (VIEWER.md §12): exports <world> into <dir> (or resumes the fork there),
       then runs the engine on the fork with the Java side of a server where nobody is online.
       1x and 10x follow the wall clock, max runs flat out; --until stops after N ticks or N game
       days (@ for a game time), with a save every 10 game days and a final one. --season-days
       gives the industry module Serene Seasons' calendar. --view [IP:PORT] serves the viewer page
       from the fork's saves, reread after each one, and saves every 2 s while a page is open
-      (loopback 127.0.0.1:8740 by default; tailnet addresses need --allow-tailnet). Ctrl-C stops
+      (loopback 127.0.0.1:8740 by default; tailnet addresses need --allow-tailnet; --socket PATH
+      serves a Unix socket instead, for a server where others have shells). Ctrl-C stops
       with a final save; p, s, 1x, 10x, max and q (then Enter) pause, save, set the speed, quit.
   rtsim-cli export <world> <dir>
       Copies <world>'s rtsim state (pages through the read-only open, journal, level.dat) into a
