@@ -99,7 +99,8 @@ import java.util.stream.Collectors;
  *       {@code input WIP yield + }{@link #REL_TOL}{@code  x |c|}.</li>
  * </ul>
  * {@code slack} is one batch or stack in flight (the larger of the good's stack size, {@link #FLUID_IN_FLIGHT}
- * for a fluid, and the control report's quantum times its window) plus the control's noise over the span
+ * for a fluid, and the control report's quantum times its window, capped at 2 x stack when a mover's
+ * capacity and not a recipe batch makes it: {@link #batch}) plus the control's noise over the span
  * ({@link #CHECKSUM_Z} x the control report's sigma per tick x span). {@code latency} is the far report's
  * line latency plus the ticks neither copy ran: from the snapshot to the first record telling the engine
  * the district left LIVE, and from the first IND_CHUNK_LOADED to the tick every far chunk ticks again.
@@ -115,7 +116,7 @@ import java.util.stream.Collectors;
  * unload, each good's change in its declared stores must be within one stack or batch in flight, the
  * control's checksum noise over that window and {@link #REL_TOL} of the control's change, of the control's.
  * Otherwise the far copy is not the factory the control is, and every row reads INVALID COPY, a failure.
- * A factory in {@link #KNOWN_GAPS} still fails, its failing rows marked KNOWN GAP with what is missing.
+ * A factory in {@link #KNOWN_GAPS} fails outright, every row marked KNOWN GAP with what is missing.
  *
  * <p>The report while the far copy is away must say replay model GLASS: on the native engine any report
  * read while it is unloaded; on the stub the offline report of the records up to the reload. Its replay
@@ -164,8 +165,8 @@ public final class GlassReplayGameTests {
     /** The yard template's width and depth ({@code yard.nbt}: 34 x 6 x 34, a polished andesite floor at its y 0). */
     static final int YARD_SIZE = 34;
     /**
-     * Factories whose failing rows are a gap the lead knows of, by what is missing: the rows say KNOWN GAP and
-     * still count as failures.
+     * Factories with a gap the lead knows of, by what is missing: every row says KNOWN GAP and fails, whatever
+     * the slack, so the factory never passes by accident.
      */
     static final Map<String, String> KNOWN_GAPS = Map.of("package_loop", "package addresses not modelled");
 
@@ -614,7 +615,7 @@ public final class GlassReplayGameTests {
             long f = fNow.getOrDefault(g, 0L) - from.far().getOrDefault(g, 0L);
             GlassReport.Good cg = cGoods.get(g);
             long stack = stackOf(g);
-            double batch = cg != null && Double.isFinite(cg.q()) ? cg.q() * run.cReport1.windowTicksTarget() : 0;
+            double batch = batch(run.graph, g, cg, run.cReport1, stack).units();
             double inFlight = Math.max(stack, batch);
             double noise = cg != null && Double.isFinite(cg.sigma()) ? CHECKSUM_Z * cg.sigma() * len : 0;
             double rel = REL_TOL * Math.abs(c);
@@ -965,7 +966,8 @@ public final class GlassReplayGameTests {
             int cls = fg != null ? fg.cls() : cg != null ? cg.cls() : -1;
             String clsName = fg != null ? fg.className() : cg != null ? cg.className() : "unreported";
             long stack = stackOf(g);
-            double batch = cg != null && Double.isFinite(cg.q()) && cr != null ? cg.q() * cr.windowTicksTarget() : 0;
+            Batch b = batch(run.graph, g, cg, cr, stack);
+            double batch = b.units();
             double inFlight = Math.max(stack, batch);
             double noise = cg != null && Double.isFinite(cg.sigma()) ? CHECKSUM_Z * cg.sigma() * span : 0;
             double slack = inFlight + noise;
@@ -987,13 +989,16 @@ public final class GlassReplayGameTests {
                 verdict = "INVALID COPY: " + verdict;
                 pass = false;
             }
+            // A known gap fails outright, whatever the slack: its rows never pass by accident (the lead's call, m5).
             String gap = KNOWN_GAPS.get(run.f.name());
-            if (gap != null && !pass)
+            if (gap != null && run.judge) {
                 verdict += "; KNOWN GAP (" + gap + ")";
+                pass = false;
+            }
             IndustryKit.record(test, "row", String.format(Locale.ROOT, "%s | %s | %s | control %+d | simulated %+d (world %+d, reconcile %+d) | slack %.1f | tolerance %.1f | %s",
                     run.f.name(), g, clsName, c, s, world, run.stub ? applied.getOrDefault(g, 0L) + rec : reconciled.getOrDefault(g, 0L), slack, tol, verdict));
-            IndustryKit.record(test, "terms", String.format(Locale.ROOT, "%s: in flight %.1f (stack %d, batch %.1f), noise %.1f (z %.1f x sigma %.6f/t x %d), latency %d x %.5f/t = %.1f, WIP %d, %s, relative %.1f",
-                    g, inFlight, stack, batch, noise, CHECKSUM_Z, cg == null ? 0 : cg.sigma(), span, latency, rate, lat, wip,
+            IndustryKit.record(test, "terms", String.format(Locale.ROOT, "%s: in flight %.1f (stack %d, batch %.1f%s), noise %.1f (z %.1f x sigma %.6f/t x %d), latency %d x %.5f/t = %.1f, WIP %d, %s, relative %.1f",
+                    g, inFlight, stack, batch, b.note(), noise, CHECKSUM_Z, cg == null ? 0 : cg.sigma(), span, latency, rate, lat, wip,
                     inputs > 0 ? String.format(Locale.ROOT, "input WIP yield %.1f ADDED (within only; G2-25) from far machine inputs %s", inputs, run.inputFrom1.get(g))
                             : "input WIP yield 0",
                     rel));
@@ -1023,6 +1028,45 @@ public final class GlassReplayGameTests {
             run.failures.add(run.f.name() + ": " + (run.invalidCopy != null ? "INVALID COPY (" + run.invalidCopy + "): " : "")
                     + failed + (KNOWN_GAPS.containsKey(run.f.name()) ? "; KNOWN GAP (" + KNOWN_GAPS.get(run.f.name()) + "), still a failure" : ""));
     }
+
+    /** A good's batch in flight, in units, and how it was capped (empty: not capped). */
+    record Batch(double units, String note) {}
+
+    /**
+     * A good's batch in flight: the control report's quantum over its window ({@code check.rs}: q is the
+     * larger batch on each side of the good's edges, in and out added, over the window's ticks). A mover's
+     * batch is its per-transfer amount ({@code graph.rs batch_units}: a rate with no recipe), which can be
+     * far more than travels at once (a packager's 9 stacks for packages of 2): when the recipes' batches of
+     * the good in the compile (in and out, twice the largest) do not reach the quantum, it comes from a
+     * mover and is capped at 2 x stack, the recipes' part kept whole (the lead's call on G2 exit run m5).
+     */
+    static Batch batch(GlassKit.Graph g, String good, GlassReport.Good cg, GlassReport cr, long stack) {
+        double q = cg != null && Double.isFinite(cg.q()) && cr != null ? cg.q() * cr.windowTicksTarget() : 0;
+        if (g == null || q <= 2 * stack)
+            return new Batch(q, "");
+        Map<Integer, GlassKit.Recipe> recipes = new TreeMap<>();
+        for (GlassKit.Recipe r : g.recipes())
+            recipes.put(r.index(), r);
+        double recipe = 1;
+        for (GlassKit.Node n : g.nodes())
+            for (GlassKit.Rate r : n.rates()) {
+                GlassKit.Recipe rec = recipes.get(r.recipe());
+                if (rec == null || (r.flags() & FIRST_CYCLE) != 0)
+                    continue;
+                for (List<GlassKit.Term> ts : List.of(rec.inputs(), rec.outputs()))
+                    for (GlassKit.Term t : ts)
+                        if (t.den() > 0 && key(t.good()).equals(good))
+                            recipe = Math.max(recipe, Math.ceil(r.batch() * (double) t.num() / t.den()));
+            }
+        // Rounding: q is batch / window ticks in f64, back to units here.
+        if (q <= 2 * recipe + 1e-6)
+            return new Batch(q, "");
+        double capped = Math.max(2.0 * stack, 2 * recipe);
+        return new Batch(Math.min(q, capped), String.format(Locale.ROOT, ", capped from %.1f: a mover's capacity, the recipes' largest batch %.0f", q, recipe));
+    }
+
+    /** {@code rate_flags::FIRST_CYCLE} (records.rs): a rate for the first cycle only, not a batch in flight. */
+    static final int FIRST_CYCLE = 2;
 
     /**
      * G2-25: per output good, what the far machines' held inputs at the first snapshot make at the compile's
