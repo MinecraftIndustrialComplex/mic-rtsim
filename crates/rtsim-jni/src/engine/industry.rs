@@ -38,7 +38,7 @@ use rtsim_industry::wire as iw;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{CodecError, Reader, Writer};
 use rtsim_kernel::journal::OpId;
-use rtsim_kernel::page::{PageKey, PageStore};
+use rtsim_kernel::page::{PageError, PageKey, PageStore};
 
 use super::{Config, Engine, State, lock, log_error, log_info, log_warn};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
@@ -211,10 +211,8 @@ impl Link {
             // made; I18 (Ben's correction) removed that, and the mode with it. The flag is ignored.
             log_warn("the industry read-only flag is retired (I18); the industry engine applies");
         }
-        let keys: Vec<PageKey> = store
-            .keys()
-            .filter(|k| TABLES.contains(&k.table()))
-            .collect();
+        let keys = stored_keys(store)
+            .map_err(|e| format!("cannot read the industry pages' index: {e}"))?;
         let mut pages = Vec::with_capacity(keys.len());
         for k in keys {
             if let Some(b) = store
@@ -928,12 +926,31 @@ pub(super) fn snapshot(st: &State) -> Vec<(PageKey, Vec<u8>)> {
 
 /// The industry pages the store holds that a snapshot no longer has (a district removed, a replay
 /// cluster merged or dissolved): deleted in the same commit, or a restore would bring them back.
-pub(super) fn deletions(store: &PageStore, snapshot: &[(PageKey, Vec<u8>)]) -> Vec<PageKey> {
+/// Reads only the industry tables' index blocks, like the paged modules' deletions, never the
+/// whole index (docs/choices-leg-purge.md LP6).
+pub(super) fn deletions(
+    store: &PageStore,
+    snapshot: &[(PageKey, Vec<u8>)],
+) -> Result<Vec<PageKey>, PageError> {
     let keep: HashSet<PageKey> = snapshot.iter().map(|(k, _)| *k).collect();
-    store
-        .keys()
-        .filter(|k| TABLES.contains(&k.table()) && !keep.contains(k))
-        .collect()
+    Ok(stored_keys(store)?
+        .into_iter()
+        .filter(|k| !keep.contains(k))
+        .collect())
+}
+
+/// Every industry page key the store holds, reading only the industry tables' index blocks.
+fn stored_keys(store: &PageStore) -> Result<Vec<PageKey>, PageError> {
+    let mut out = Vec::new();
+    for table in TABLES {
+        out.extend(
+            store
+                .table_ids(table)?
+                .into_iter()
+                .map(|id| PageKey::new(table, id)),
+        );
+    }
+    Ok(out)
 }
 
 // ---- the glass box (G1, read only) ------------------------------------------------------------

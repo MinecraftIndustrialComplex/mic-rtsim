@@ -529,6 +529,71 @@ fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// A save whose write fails partway poisons the page store; the store reopens in place from its
+/// files and the engine runs on (docs/choices-leg-purge.md LP10): the failed save is never
+/// acknowledged, the next one is, and the world restarts from those pages. A torn log record
+/// leaves the store at the save before; a failed cleanup, at the failed save itself.
+#[test]
+fn a_save_failing_partway_costs_that_save_not_the_engine() {
+    use rtsim_kernel::page::Fault;
+    for fault in [Fault::TornLog, Fault::BeforeCleanup] {
+        let dir = tmpdir(&format!("poisoned-{fault:?}"));
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        for i in 0..5 {
+            j.transfer(wire::JAVA_OP_BIT | (100 + i), 1, 2, 1);
+        }
+        j.idle();
+        j.idle();
+        let first = j.next_obs - 1;
+        e.inject_store_fault(Some(fault));
+        e.request_save(first);
+        j.run_until("the failed save", |j| j.e.stats_array()[15] >= 1);
+        assert_eq!(
+            e.durable_obs_seq(),
+            0,
+            "{fault:?}: a failed save is not acknowledged"
+        );
+        assert!(!j.acks.contains(&first), "{fault:?}");
+        for i in 0..5 {
+            j.transfer(wire::JAVA_OP_BIT | (200 + i), 1, 2, 1);
+        }
+        j.idle();
+        j.idle();
+        assert!(
+            e.protocol_error().is_none(),
+            "{fault:?}: {:?}",
+            e.protocol_error()
+        );
+        let world = j.world_save();
+        let through = j.next_obs - 1;
+        e.request_save(through);
+        j.run_until("the next save", |j| j.e.durable_obs_seq() >= through);
+        j.run_until("its acknowledgement", |j| j.acks.contains(&through));
+        assert_eq!(e.stats_array()[15], 1, "{fault:?}: one failure");
+        assert!(
+            e.protocol_error().is_none(),
+            "{fault:?}: {:?}",
+            e.protocol_error()
+        );
+        e.close(false, Duration::from_secs(5)).unwrap();
+        let e2 = engine(&dir, wire::MIN_CAPACITY);
+        let mut j2 = Java::open(e2.clone(), world);
+        j2.idle();
+        assert!(
+            e2.protocol_error().is_none(),
+            "{fault:?}: {:?}",
+            e2.protocol_error()
+        );
+        assert_eq!(
+            e2.durable_obs_seq(),
+            through,
+            "{fault:?}: the pages restart at the save"
+        );
+        e2.close(true, Duration::from_secs(5)).unwrap();
+    }
+}
+
 // ---- phase 1 (docs/boundary.md §4) ----------------------------------------------------------------
 
 const EMERALD: &str = "minecraft:emerald";
