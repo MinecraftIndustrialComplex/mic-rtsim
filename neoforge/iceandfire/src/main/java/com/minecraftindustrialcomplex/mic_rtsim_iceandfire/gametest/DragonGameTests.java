@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest;
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
@@ -41,6 +42,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -549,5 +551,138 @@ public final class DragonGameTests {
                     RtsimTests.forget(v);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * Tribute lands in a lair's chest when the lair loads (SINK.md §4.6, docs/boundary.md §6.3). A lair
+     * with no chest is reported (LAIR_FOUND) and nothing more; a chest placed in its box is reported once
+     * (LAIR_CHEST: the lair, its dimension, the chest's block), and again at the new block when it is
+     * broken and another placed. On the native engine a live village with coin in its works purse becomes
+     * the lair's tributary (WORKS_GRANT, TRIBUTE_START): the season's tribute waits in the lair while it has
+     * no chest, then lands in the chest as emeralds, as the village's books say. On the stub, a scripted
+     * TRANSFER_TO_CONTAINER into the reported chest lands.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "dragon_tribute")
+    public static void tributeLandsInALairChestWhenTheLairLoads(GameTestHelper helper) {
+        String test = "tributeLandsInALairChestWhenTheLairLoads";
+        ServerLevel level = helper.getLevel();
+        BoundingBox box = BoundingBox.fromCorners(helper.absolutePos(BlockPos.ZERO), helper.absolutePos(new BlockPos(10, 5, 10)));
+        BlockPos home = BlockPos.containing(DragonKit.centre(helper));
+        long lairId = 0x0E00_0000_0000_0000L | (ThreadLocalRandom.current().nextLong() & 0xFFFF_FFFF_FFFFL);
+        BlockPos chestPos = helper.absolutePos(new BlockPos(8, 2, 8));
+        BlockPos movedPos = helper.absolutePos(new BlockPos(2, 2, 2));
+        int dim = DragonKit.session().dimId(level.dimension());
+        NativeEngine e = engine() instanceof NativeEngine n ? n : null;
+        // A live village far from everything (the engine drives it), on the native engine only.
+        int ox = -2_000_000 - ThreadLocalRandom.current().nextInt(0, 1_000) * 2_000;
+        int oz = 2_000_000 + ThreadLocalRandom.current().nextInt(0, 1_000) * 2_000;
+        Village v = e == null ? null : RtsimTests.adoptArenaLive(helper, "human", "minecraft:village_plains", new BlockPos(ox, 64, oz), 20, 90);
+        long[] before = e == null ? null : e.dragonsTribute(); // world-wide totals: the GameTest world is reused
+        long[] coins = {5}; // the stub's scripted stack
+        long op = (1L << 40) | (ThreadLocalRandom.current().nextLong() & 0xFF_FFFF_FFFFL); // an engine op, new each run
+        bridge().lairs.declareForTest(level, lairId, "iceandfire:fire_dragon_roost", box, home, level.getGameTime());
+        if (e == null)
+            record(test, "tribute", "skipped on the stub (it decides nothing): a scripted TRANSFER_TO_CONTAINER instead");
+
+        helper.startSequence()
+                .thenWaitUntil(() -> check("LAIR_FOUND reached the engine",
+                        !DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, lairId).isEmpty()))
+                .thenWaitUntil(() -> check("the engine knows the village and its works",
+                        e == null || (e.dragonsVillageRisk(v.id) >= 0 && e.phase1Works(v.id) != null)))
+                .thenExecute(() -> {
+                    if (e == null)
+                        return;
+                    e.worksGrant(v.id, 400_000);
+                    e.tributeStart(v.id, lairId);
+                })
+                .thenWaitUntil(() -> {
+                    if (e == null)
+                        return;
+                    long[] t = e.dragonsTribute();
+                    check("the village paid the lair a season's tribute (" + Arrays.toString(t) + " from " + Arrays.toString(before) + ")",
+                            t[NativeEngine.TRIBUTE_PAID] > before[NativeEngine.TRIBUTE_PAID]
+                                    && t[NativeEngine.TRIBUTE_WAITING] > before[NativeEngine.TRIBUTE_WAITING]);
+                })
+                .thenExecute(() -> {
+                    if (e == null)
+                        return;
+                    long[] t = e.dragonsTribute();
+                    coins[0] = t[NativeEngine.TRIBUTE_WAITING] - before[NativeEngine.TRIBUTE_WAITING];
+                    long books = e.phase1Works(v.id)[NativeEngine.WORKS_TRIBUTE];
+                    check("the village's books: " + books + " thousandths paid for " + coins[0] + " coins", books == coins[0] * 1000);
+                    record(test, "paid", coins[0] + " emeralds of village " + v.id + " wait in lair " + Long.toHexString(lairId));
+                })
+                .thenIdle(Lairs.CHEST_SCAN_TICKS + 20)
+                .thenExecute(() -> {
+                    check("a lair with no chest sends no LAIR_CHEST",
+                            DragonKit.received(DragonRecords.LAIR_CHEST, DragonRecords.LairChest.LAIR, lairId).isEmpty()
+                                    && bridge().lairs.chestOf(lairId) == null);
+                    if (e != null) {
+                        long[] t = e.dragonsTribute();
+                        check("and the tribute waits (" + Arrays.toString(t) + ")",
+                                t[NativeEngine.TRIBUTE_SENDING] == before[NativeEngine.TRIBUTE_SENDING]
+                                        && t[NativeEngine.TRIBUTE_PLACED] == before[NativeEngine.TRIBUTE_PLACED]
+                                        && t[NativeEngine.TRIBUTE_WAITING] - before[NativeEngine.TRIBUTE_WAITING] == coins[0]);
+                    }
+                    level.setBlockAndUpdate(chestPos, Blocks.CHEST.defaultBlockState());
+                })
+                .thenWaitUntil(() -> check("LAIR_CHEST reached the engine",
+                        !DragonKit.received(DragonRecords.LAIR_CHEST, DragonRecords.LairChest.LAIR, lairId).isEmpty()))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> r = DragonKit.received(DragonRecords.LAIR_CHEST, DragonRecords.LairChest.LAIR, lairId);
+                    check("once (" + r.size() + ")", r.size() == 1);
+                    check("at the chest", at(r.get(0)).equals(chestPos));
+                    check("in the lair's dimension", r.get(0).view().getInt(DragonRecords.LairChest.DIM) == dim);
+                    check("remembered", chestPos.equals(bridge().lairs.chestOf(lairId)));
+                    if (e == null)
+                        engine().transferToContainer(op, DragonKit.dimension(helper), chestPos.getX(), chestPos.getY(), chestPos.getZ(),
+                                "minecraft:emerald", (int) coins[0]);
+                })
+                .thenWaitUntil(() -> {
+                    int got = emeralds(level, chestPos);
+                    if (e == null) {
+                        check("the scripted transfer landed (" + got + " emeralds)", got == coins[0]);
+                        return;
+                    }
+                    long[] t = e.dragonsTribute();
+                    check("the tribute landed (" + got + " of " + coins[0] + " emeralds, " + Arrays.toString(t) + ")", got == coins[0]
+                            && t[NativeEngine.TRIBUTE_PLACED] - before[NativeEngine.TRIBUTE_PLACED] == coins[0]
+                            && t[NativeEngine.TRIBUTE_WAITING] == before[NativeEngine.TRIBUTE_WAITING]
+                            && t[NativeEngine.TRIBUTE_SENDING] == before[NativeEngine.TRIBUTE_SENDING]);
+                })
+                .thenExecute(() -> {
+                    record(test, "landed", coins[0] + " emeralds in the chest at " + chestPos.toShortString()
+                            + (e == null ? " (scripted)" : " (the engine's tribute)"));
+                    // The chest is broken and another placed elsewhere in the lair.
+                    ((ChestBlockEntity) level.getBlockEntity(chestPos)).clearContent();
+                    level.setBlockAndUpdate(chestPos, Blocks.AIR.defaultBlockState());
+                    level.setBlockAndUpdate(movedPos, Blocks.CHEST.defaultBlockState());
+                })
+                .thenWaitUntil(() -> check("LAIR_CHEST again for the new chest",
+                        DragonKit.received(DragonRecords.LAIR_CHEST, DragonRecords.LairChest.LAIR, lairId).size() == 2))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> r = DragonKit.received(DragonRecords.LAIR_CHEST, DragonRecords.LairChest.LAIR, lairId);
+                    check("at the new chest", at(r.get(1)).equals(movedPos) && movedPos.equals(bridge().lairs.chestOf(lairId)));
+                    record(test, "moved", "LAIR_CHEST at " + at(r.get(0)).toShortString() + ", then " + at(r.get(1)).toShortString());
+                    if (v != null)
+                        RtsimTests.forget(v);
+                })
+                .thenSucceed();
+    }
+
+    /** A LAIR_CHEST record's block. */
+    private static BlockPos at(ScriptedEngine.Received r) {
+        return new BlockPos(r.view().getInt(DragonRecords.LairChest.X), r.view().getInt(DragonRecords.LairChest.Y),
+                r.view().getInt(DragonRecords.LairChest.Z));
+    }
+
+    private static int emeralds(ServerLevel level, BlockPos pos) {
+        if (!(level.getBlockEntity(pos) instanceof ChestBlockEntity c))
+            return -1;
+        int n = 0;
+        for (int i = 0; i < c.getContainerSize(); i++)
+            if (c.getItem(i).is(Items.EMERALD))
+                n += c.getItem(i).getCount();
+        return n;
     }
 }

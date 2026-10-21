@@ -84,6 +84,12 @@ pub struct DragonTunables {
     /// A village's defenders (iron golems, guards): utility lost before temperament, in fullness
     /// points. Bold dragons discount it (C25). PLACEHOLDER 15.
     pub village_risk: i32,
+    /// More fear of a village's defenders per iron golem its census counts, fullness points,
+    /// added to `village_risk` before boldness bends it (SINK.md §4.6). PLACEHOLDER 5.
+    pub golem_risk: i32,
+    /// The share of its works purse a tributary village pays its raider's lair each season,
+    /// thousandths (SINK.md §4.6, MS-5). PLACEHOLDER 250: a quarter.
+    pub tribute_share_milli: i64,
     /// Sentiment at or below which a dragon holds a grudge (rtsim-knowledge's scale, -127 to
     /// 127). PLACEHOLDER -40.
     pub grudge_below: i8,
@@ -163,6 +169,8 @@ impl Default for DragonTunables {
             season_percent,
             distance_cost_per_kblock: 4,
             village_risk: 15,
+            golem_risk: 5,
+            tribute_share_milli: 250,
             grudge_below: -40,
             grudge_weight: 60,
             grudge_cooldown_ticks: 3 * TICKS_PER_DAY,

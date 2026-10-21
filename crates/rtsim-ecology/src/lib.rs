@@ -40,7 +40,7 @@ pub mod synth;
 pub mod tunables;
 
 pub use dragon::{Dragon, DragonId, Lair, LairId, LairKind, Lairs};
-pub use engine::{DragonStats, Dragons, NewDragon};
+pub use engine::{Chest, DragonStats, Dragons, NewDragon, Placing, TRIBUTE_STACK, TributeRow};
 pub use persist::{DragonsPaging, DragonsTickets};
 pub use species::{Gender, Species};
 pub use tunables::{DragonTunables, PreyKind};
