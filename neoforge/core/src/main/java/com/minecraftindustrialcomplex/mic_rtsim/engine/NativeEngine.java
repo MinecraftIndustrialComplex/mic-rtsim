@@ -164,6 +164,12 @@ public final class NativeEngine implements ScriptedEngine {
     /** The herd behind a group's agent id: {@code HERD_INFO} values; false when there is none. */
     private static native boolean nHerdInfo(long handle, long agent, long[] out);
 
+    /** A phase 1 village's fear to the dragons, its golems' included; -1 for a village the world does not know. */
+    private static native long nDragonsVillageRisk(long handle, long village);
+
+    /** The dragons' tribute: {@code TRIBUTE_*} values. */
+    private static native void nDragonsTribute(long handle, long[] out);
+
     /** The world model at block (x, z) of Java's dimension {@code dim}: {@code HABITAT_INFO} values. */
     private static native void nHabitatInfo(long handle, int dim, int x, int z, long[] out);
 
@@ -485,6 +491,16 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().worksRaid(village, tribute), "WORKS_RAID");
     }
 
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): phase 1 village {@code village} becomes the
+     * tributary of the dragons' lair {@code lair} (LAIR_FOUND's id), as if a dragon of the lair had raided
+     * it (SINK.md §4.6): it pays a season's tribute at once, which waits in the lair until the plugin
+     * reports its chest (LAIR_CHEST). At the next step.
+     */
+    public void tributeStart(long village, long lair) {
+        order(new NativeCodec.Orders().tributeStart(village, lair), "TRIBUTE_START");
+    }
+
     @Override
     public synchronized String javaDictName(int id) {
         drain();
@@ -559,6 +575,28 @@ public final class NativeEngine implements ScriptedEngine {
     public synchronized long[] herdInfo(long agent) {
         long[] out = new long[HERD_INFO];
         return nHerdInfo(live(), agent, out) ? out : null;
+    }
+
+    /**
+     * A phase 1 village's fear to the dragons before a dragon's boldness bends it (fullness points, its
+     * iron golems' included: SINK.md §4.6), as of the engine's last step; -1 for a village it does not know.
+     */
+    public synchronized long dragonsVillageRisk(long village) {
+        return nDragonsVillageRisk(live(), village);
+    }
+
+    /** {@link #dragonsTribute}'s fields. */
+    public static final int TRIBUTE_PAID = 0, TRIBUTE_PLACED = 1, TRIBUTE_WAITING = 2, TRIBUTE_SENDING = 3, TRIBUTE_INFO = 4;
+
+    /**
+     * The dragons' tribute in the whole world, as of the engine's last step (indexed by {@code TRIBUTE_*}):
+     * seasons paid, whole coins put in lairs' chests, whole coins waiting for a chest, and stacks sent to a
+     * chest and not yet answered.
+     */
+    public synchronized long[] dragonsTribute() {
+        long[] out = new long[TRIBUTE_INFO];
+        nDragonsTribute(live(), out);
+        return out;
     }
 
     /**

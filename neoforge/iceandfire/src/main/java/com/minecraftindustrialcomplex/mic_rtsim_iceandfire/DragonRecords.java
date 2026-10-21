@@ -12,6 +12,7 @@ public final class DragonRecords {
     // ---- kinds (docs/boundary.md §6.1) ----------------------------------------------------------
 
     public static final int DRAGON_STATE = 0x0060;
+    public static final int LAIR_CHEST = 0x0061;
     public static final int DRAGON_MATERIALIZED = 0x0500;
     public static final int DRAGON_SPAWN_REJECTED = 0x0501;
     public static final int DRAGON_DEMATERIALIZED = 0x0502;
@@ -46,6 +47,11 @@ public final class DragonRecords {
         public static final int AGENT = 8, EPOCH = 16, DIM = 20, HEALTH = 24, MAX_HEALTH = 28, HUNGER = 32,
                 AGE_TICKS = 36, X = 40, Y = 48, Z = 56, SIZE = 64;
         public static final int FLAG_SLEEPING = 1, FLAG_FLYING = 2, FLAG_HAS_TARGET = 4, FLAG_TICKING = 8;
+    }
+
+    /** LAIR_CHEST (latest-wins, aux 0): the chest a lair's tribute goes into (SINK.md §4.6). */
+    public static final class LairChest {
+        public static final int LAIR = 8, DIM = 16, X = 20, Y = 24, Z = 28, SIZE = 32;
     }
 
     /** DRAGON_MATERIALIZED (aux 0). */
