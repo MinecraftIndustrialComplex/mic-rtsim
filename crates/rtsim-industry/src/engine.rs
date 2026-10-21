@@ -2439,7 +2439,7 @@ impl Engine {
             loads: None,
             at,
         };
-        self.attack_district(&t);
+        self.attack_district(&t, &[], 0);
         // The next one, for this class only (the stamp is shared, so reschedule all classes).
         self.schedule_pressure(d, at + 1);
     }
@@ -2469,16 +2469,24 @@ impl Engine {
 
     /// An attack from another system (I19). Advances to its time first.
     pub fn threat(&mut self, t: &Threat) {
+        self.threat_drinking(t, &[], 0);
+    }
+
+    /// An attack that also drinks (OILGATE.md §4.3, OG-5): on a district, before anything else,
+    /// the survivors take the `fuels` goods in order, up to `room` units in all (scaled by the
+    /// surviving share), from the district's boundary stock. What they take is theft like any
+    /// other: it leaves the stock and enters `books.stolen` and the attack's report.
+    pub fn threat_drinking(&mut self, t: &Threat, fuels: &[Good], room: i64) {
         let at = t.at.max(self.now);
         self.advance_to(at);
         let t = Threat { at, ..*t };
         match t.target {
-            ThreatTarget::District(_) => self.attack_district(&t),
+            ThreatTarget::District(_) => self.attack_district(&t, fuels, room),
             ThreatTarget::Train(train) => self.attack_train(&t, train),
         }
     }
 
-    fn attack_district(&mut self, t: &Threat) {
+    fn attack_district(&mut self, t: &Threat, fuels: &[Good], room: i64) {
         let ThreatTarget::District(d) = t.target else {
             return;
         };
@@ -2533,7 +2541,23 @@ impl Engine {
             .iter()
             .filter(|(g, _)| self.goods.get(g).is_none_or(|i| i.class == GoodClass::Item))
             .collect();
-        let dmg = threat::damage(t, &outcome, &items, &dist.defence, &tun);
+        let mut dmg = threat::damage(t, &outcome, &items, &dist.defence, &tun);
+        // Drinking (OG-5): fuel first, up to the surviving share of the room, all of a good's stock
+        // if the room allows (choices-oilgate.md OGC8: not held to the item theft cap).
+        if dmg.survivors > 0 && room > 0 {
+            let mut left = (i128::from(room) * i128::from(dmg.survivors)
+                / i128::from(t.count.max(1))) as i64;
+            for &g in fuels {
+                if left <= 0 {
+                    break;
+                }
+                let n = (stock.get(g) - dmg.stolen.get(g)).max(0).min(left);
+                if n > 0 {
+                    dmg.stolen.add(g, n);
+                    left -= n;
+                }
+            }
+        }
         report.outcome = Some(outcome);
         report.survivors = dmg.survivors;
         report.stolen = dmg.stolen.clone();
