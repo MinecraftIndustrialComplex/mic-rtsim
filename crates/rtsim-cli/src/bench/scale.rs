@@ -705,7 +705,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "dragons are resident rows (paging, A16, is not built yet)",
+                    "this sweep runs the rows resident; dragons_paged pages them",
                 ),
             ],
         },
@@ -723,7 +723,7 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Resident,
                     flat,
                     0.0,
-                    "dragon and lair rows page under a fixed budget (256 KiB); between saves the rows changed since the last one are pinned too",
+                    "dragon and lair rows page under a fixed budget (256 KiB); rows changed since the last save are pinned until it, and a step boundary over the budget saves (needs_save, PM7), so the peak is the budget plus what one 20-tick step changes",
                 ),
                 contract(
                     Metric::Heap,
