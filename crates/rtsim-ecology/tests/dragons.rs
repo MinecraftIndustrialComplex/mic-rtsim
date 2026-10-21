@@ -27,7 +27,10 @@ const PLAYER: (u64, u64) = (5, 6);
 
 fn world(seed: u64) -> (World, Dragons) {
     let (w, _) = synth::world(seed);
-    (w, Dragons::new(seed, DragonTunables::default(), Tick::ZERO))
+    let mut d = Dragons::new(seed, DragonTunables::default(), Tick::ZERO);
+    // Every scenario here is on the event archive's tape (VIEWER.md §10.1).
+    d.tape.set_on(true);
+    (w, d)
 }
 
 /// A seed whose temperament is aggressive (C25): a grudge pulls it hardest.
@@ -259,6 +262,11 @@ fn embodied_at_home(
 /// over.
 #[test]
 fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
+    grudge_line();
+}
+
+/// The scenario of the test above, and the engine it ends with.
+fn grudge_line() -> Dragons {
     let (mut w, mut d) = world(5);
     let lp = Pos::new(0, 4000, 4000);
     let l = d.add_lair(
@@ -366,13 +374,14 @@ fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
         felt <= grudge,
         "the newcomer takes the lair's grudge over ({felt})"
     );
+    d
 }
 
 // ---- threats get bored (C24) ----------------------------------------------------------------------
 
 /// The time and reason of the first departure after a grudge visit to the player's home, with
 /// and without a wound right after it materializes.
-fn grudge_visit(wound: bool) -> (Tick, boundary::Depart, Tick) {
+fn grudge_visit(wound: bool) -> (Tick, boundary::Depart, Tick, Dragons) {
     let (mut w, mut d) = world(9);
     let home = Pos::new(0, 3000, 5000);
     let l = d.add_lair(
@@ -435,16 +444,16 @@ fn grudge_visit(wound: bool) -> (Tick, boundary::Depart, Tick) {
     }
     let (tm, _) = mat.expect("it came for the player");
     let (td, dp) = dep.expect("it left");
-    (tm, dp, td)
+    (tm, dp, td, d)
 }
 
 #[test]
 fn threats_get_bored_and_wounds_bring_the_departure_forward() {
-    let (m0, d0, t0) = grudge_visit(false);
+    let (m0, d0, t0, _) = grudge_visit(false);
     assert_eq!(d0.reason, 1, "bored");
     let stay = t0.0 - m0.0;
     assert!((2_000..=10_000).contains(&stay), "a visit of {stay} ticks");
-    let (m1, d1, t1) = grudge_visit(true);
+    let (m1, d1, t1, _) = grudge_visit(true);
     assert_eq!(d1.reason, 3, "wounded");
     assert!(t1.0 - m1.0 < stay, "the wound shortened the visit");
 }
@@ -734,101 +743,290 @@ fn natural_and_spawner_dragons_are_discarded_with_the_setting_on() {
 
 // ---- trains (INDUSTRY.md §13.3, I24) -------------------------------------------------------------
 
+/// The train scenario's goods: beef and gold, in two carriages' worth.
+const BEEF: rtsim_industry::ids::Good = rtsim_industry::ids::Good(2);
+const GOLD: rtsim_industry::ids::Good = rtsim_industry::ids::Good(3);
+const TRAIN: rtsim_industry::ids::TrainId = rtsim_industry::ids::TrainId(7);
+
+/// A dragon with `fullness` flies from lair A to lair B across a train booked between two
+/// stations, to tick 30,000. Returns the world, the dragons, the flier and the industry engine.
+fn train_run(fullness: i32) -> (World, Dragons, DragonId, rtsim_industry::engine::Engine) {
+    use rtsim_industry::engine::Engine;
+    use rtsim_industry::ids::{BlockPos, DistrictId, GoodInfo, GoodVec, StationId};
+    use rtsim_industry::obs::{Carriage, StationDecl, TrainDeparture};
+    let (mut w, mut d) = world(19);
+    let mut tun = rtsim_industry::tunables::Tunables::default();
+    tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
+    let mut e = Engine::new(19, tun, Tick::ZERO);
+    let (beef, gold) = (BEEF, GOLD);
+    e.define_good(beef, GoodInfo::item("minecraft:beef", 64));
+    e.define_good(gold, GoodInfo::item("minecraft:gold_ingot", 64));
+    let station = |id: u64, x: i32| {
+        IndObs::Station(StationDecl {
+            station: StationId(id),
+            district: None,
+            dim: 0,
+            pos: BlockPos::new(x, 64, 6_000),
+            name: id as u32,
+        })
+    };
+    e.ingest(&Timed {
+        at: Tick(1),
+        obs: station(1, -2_000),
+    });
+    e.ingest(&Timed {
+        at: Tick(1),
+        obs: station(2, 2_000),
+    });
+    e.ingest(&Timed {
+        at: Tick(1_000),
+        obs: IndObs::TrainDeparted(TrainDeparture {
+            train: TRAIN,
+            station: StationId(1),
+            district: DistrictId(0),
+            destination: Some(StationId(2)),
+            eta_ticks: 20_000,
+            carriages: vec![Carriage {
+                index: 0,
+                item_slots: 27,
+                fluid_capacity: 0,
+                goods: GoodVec::from_pairs([(beef, 640), (gold, 64)]),
+            }],
+        }),
+    });
+    let a = d.add_lair(
+        &mut w,
+        1,
+        "A",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 0, 3_000),
+        100,
+        Tick(0),
+    );
+    let b = d.add_lair(
+        &mut w,
+        2,
+        "B",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 0, 9_000),
+        100,
+        Tick(0),
+    );
+    let x = d.add_dragon(&mut w, adult("x", a, fullness, Gender::Female), Tick(0));
+    let mut index = DistrictIndex::default();
+    let t0 = Tick(1_500);
+    {
+        let mut link = IndustryLink {
+            engine: &mut e,
+            index: &mut index,
+        };
+        d.run_until(&mut w, &mut link, t0);
+    }
+    d.relocate(&mut w, x, b, t0);
+    let mut link = IndustryLink {
+        engine: &mut e,
+        index: &mut index,
+    };
+    d.run_until(&mut w, &mut link, Tick(30_000));
+    (w, d, x, e)
+}
+
 /// A hungry dragon whose flight crosses a booked train leg meets the train while both are under
 /// way: the industry engine loots the carriages within its caps, and the books agree with the
 /// dragons' ledger. A fed dragon flies on.
 #[test]
 fn a_hungry_dragon_raids_a_train_it_crosses() {
-    use rtsim_industry::engine::Engine;
-    use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StationId, TrainId};
-    use rtsim_industry::obs::{Carriage, StationDecl, TrainDeparture};
     for (fullness, raids) in [(40, 1), (100, 0)] {
-        let (mut w, mut d) = world(19);
-        let mut tun = rtsim_industry::tunables::Tunables::default();
-        tun.threat.carry_per_attacker[ThreatClass::Flying.index()] = 32;
-        let mut e = Engine::new(19, tun, Tick::ZERO);
-        let (beef, gold) = (Good(2), Good(3));
-        e.define_good(beef, GoodInfo::item("minecraft:beef", 64));
-        e.define_good(gold, GoodInfo::item("minecraft:gold_ingot", 64));
-        let station = |id: u64, x: i32| {
-            IndObs::Station(StationDecl {
-                station: StationId(id),
-                district: None,
-                dim: 0,
-                pos: BlockPos::new(x, 64, 6_000),
-                name: id as u32,
-            })
-        };
-        e.ingest(&Timed {
-            at: Tick(1),
-            obs: station(1, -2_000),
-        });
-        e.ingest(&Timed {
-            at: Tick(1),
-            obs: station(2, 2_000),
-        });
-        e.ingest(&Timed {
-            at: Tick(1_000),
-            obs: IndObs::TrainDeparted(TrainDeparture {
-                train: TrainId(7),
-                station: StationId(1),
-                district: DistrictId(0),
-                destination: Some(StationId(2)),
-                eta_ticks: 20_000,
-                carriages: vec![Carriage {
-                    index: 0,
-                    item_slots: 27,
-                    fluid_capacity: 0,
-                    goods: GoodVec::from_pairs([(beef, 640), (gold, 64)]),
-                }],
-            }),
-        });
-        let a = d.add_lair(
-            &mut w,
-            1,
-            "A",
-            Species::Fire,
-            LairKind::Roost,
-            Pos::new(0, 0, 3_000),
-            100,
-            Tick(0),
-        );
-        let b = d.add_lair(
-            &mut w,
-            2,
-            "B",
-            Species::Fire,
-            LairKind::Roost,
-            Pos::new(0, 0, 9_000),
-            100,
-            Tick(0),
-        );
-        let x = d.add_dragon(&mut w, adult("x", a, fullness, Gender::Female), Tick(0));
-        let mut index = DistrictIndex::default();
-        let t0 = Tick(1_500);
-        {
-            let mut link = IndustryLink {
-                engine: &mut e,
-                index: &mut index,
-            };
-            d.run_until(&mut w, &mut link, t0);
-        }
-        d.relocate(&mut w, x, b, t0);
-        let mut link = IndustryLink {
-            engine: &mut e,
-            index: &mut index,
-        };
-        d.run_until(&mut w, &mut link, Tick(30_000));
+        let (w, d, x, e) = train_run(fullness);
         assert_eq!(d.stats.train_raids, raids, "fullness {fullness}");
         if raids > 0 {
             let stolen = &e.books.stolen;
             // I23's per-good cap: a tenth of the carriage, whatever the carry.
-            assert!(stolen.get(beef) > 0 && stolen.get(beef) <= 64);
-            assert!(stolen.get(gold) <= 6);
+            assert!(stolen.get(BEEF) > 0 && stolen.get(BEEF) <= 64);
+            assert!(stolen.get(GOLD) <= 6);
             d.check(&w, Some(stolen)).unwrap();
             assert!(d.dragon(x).unwrap().fullness_at(&d.tun, Tick(30_000)) > 0);
         } else {
             assert!(e.books.stolen.is_empty());
         }
     }
+}
+
+// ---- the event archive (VIEWER.md §10.1) ----------------------------------------------------------
+
+/// The tape's events of `kind`.
+fn events_of(d: &Dragons, kind: rtsim_archive::Kind) -> Vec<rtsim_archive::Event> {
+    rtsim_archive::record::rows_on(&d.tape)
+        .into_iter()
+        .filter_map(|(k, _, r)| match r {
+            rtsim_archive::Row::Event(e) if k == kind => Some(e),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The tape's legs of `kind`.
+fn legs_of(d: &Dragons, kind: rtsim_archive::Kind) -> Vec<rtsim_archive::Leg> {
+    rtsim_archive::record::rows_on(&d.tape)
+        .into_iter()
+        .filter_map(|(k, _, r)| match r {
+            rtsim_archive::Row::Leg(l) if k == kind => Some(l),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every kind on the tape is a dragons kind, named in the registry; returns them.
+fn dragon_kinds(d: &Dragons) -> Vec<rtsim_archive::Kind> {
+    let got = rtsim_archive::record::kinds_on(&d.tape);
+    for k in &got {
+        assert_eq!(k.group(), "dragons", "{}", k.name());
+        assert_eq!(rtsim_archive::kinds::by_name(k.name()), Some(*k));
+    }
+    got
+}
+
+/// The dragons' archive rows over the scenarios above: flights and hunts everywhere, a raid on a
+/// district and on a train, a visit that ends in a departure, kills, a newcomer's arrival and
+/// claim, and a hatching. Subjects are dragon handles, objects the real ids of what they met.
+#[test]
+fn the_archive_records_the_dragons() {
+    use rtsim_archive::Severity;
+    use rtsim_archive::kinds as k;
+    let mut seen = Vec::new();
+
+    // A grudge raid on an unwatched district, with strong turrets (it takes and breaks nothing:
+    // minor) and with none (major).
+    for (turrets, severity) in [(200.0, Severity::Minor), (0.0, Severity::Major)] {
+        let (d, _, mut w) = grudge_raid(false, turrets, None);
+        let mut d = d;
+        let x = d.by_name("x").unwrap().to_bits();
+        let player = d.player(&mut w, PLAYER);
+        seen.extend(dragon_kinds(&d));
+        let raids = events_of(&d, k::DRAGONS_RAID);
+        assert_eq!(raids.len(), 1, "turrets {turrets}");
+        let r = raids[0];
+        assert_eq!((r.subject.value, r.object.value), (x, synth::FARM.0));
+        assert_eq!(r.severity, severity, "turrets {turrets}");
+        assert_eq!(r.payload, severity == Severity::Major);
+        // At the district's centre, near the farm.
+        assert!((r.x - 302).abs() < 100 && (r.z - 1301).abs() < 100, "{r:?}");
+        // The grudge hunt it ends: on the player's home, an actor.
+        let hunts = events_of(&d, k::DRAGONS_HUNT);
+        let home = hunts
+            .iter()
+            .find(|h| h.object.value == player.to_bits())
+            .expect("a hunt of the player's home");
+        assert_eq!((home.x, home.z, home.subject.value), (302, 1301, x));
+        // Its flights are a named mover's: notable, one per leg booked, ending at the home.
+        let legs = legs_of(&d, k::DRAGONS_FLIGHT);
+        assert_eq!(legs.len() as u64, d.stats.legs, "one leg per booking");
+        assert!(legs.iter().all(|l| l.subject.value == x));
+        assert!(legs.iter().all(|l| l.severity == Severity::Notable));
+        assert!(legs.iter().any(|l| (l.x1, l.z1) == (302, 1301)), "{legs:?}");
+    }
+
+    // A grudge visit, wounded: it leaves for the reason 3.
+    let (_, _, _, d) = grudge_visit(true);
+    seen.extend(dragon_kinds(&d));
+    let x = d.by_name("x").unwrap().to_bits();
+    let departs = events_of(&d, k::DRAGONS_DEPART);
+    assert_eq!(departs.len(), 1);
+    let dep = departs[0];
+    assert_eq!((dep.subject.value, dep.magnitude), (x, 3));
+    assert_eq!((dep.severity, dep.payload), (Severity::Notable, true));
+    // Where the body was: the player's home.
+    assert_eq!((dep.x, dep.z), (3000, 5000));
+
+    // A hungry dragon falls on a train: the train's id is the object, the loot the magnitude.
+    let (_, d, x, e) = train_run(40);
+    seen.extend(dragon_kinds(&d));
+    let raids = events_of(&d, k::DRAGONS_RAID);
+    assert_eq!(raids.len(), 1);
+    let r = raids[0];
+    let loot = e.books.stolen.get(BEEF) + e.books.stolen.get(GOLD);
+    assert_eq!((r.subject.value, r.object.value), (x.to_bits(), TRAIN.0));
+    assert_eq!((r.magnitude, r.severity), (loot as i32, Severity::Major));
+    assert!(loot > 0 && r.payload);
+    // On its flight across the train's line (z = 6,000).
+    assert_eq!(r.z, 6_000);
+    let hunts = events_of(&d, k::DRAGONS_HUNT);
+    let train_hunt = hunts.iter().find(|h| h.object.value == TRAIN.0).unwrap();
+    assert!(train_hunt.magnitude > 0 && !train_hunt.payload);
+
+    // Two kills by a player, then a newcomer flies in and claims the lair.
+    let d = grudge_line();
+    seen.extend(dragon_kinds(&d));
+    let deaths = events_of(&d, k::DRAGONS_DEATH);
+    assert_eq!(deaths.len(), 2);
+    for death in &deaths {
+        assert_eq!(death.severity, Severity::Major);
+        assert_ne!(death.object.value, 0, "the killer's actor");
+        assert_eq!((death.x, death.z), (4000, 4000));
+        assert!(death.payload);
+    }
+    assert_eq!(deaths[0].object, deaths[1].object);
+    let newcomer = d.lairs[0].occupants[0];
+    let arrive = events_of(&d, k::DRAGONS_ARRIVE);
+    assert_eq!(arrive.len(), 1);
+    assert_eq!(arrive[0].subject.value, newcomer.to_bits());
+    // The lair's key (9) is the object; it appears where it flies in from, not at the lair.
+    assert_eq!(arrive[0].object.value, 9);
+    assert!((arrive[0].x, arrive[0].z) != (4000, 4000));
+    let claims = events_of(&d, k::DRAGONS_CLAIM);
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].subject.value, newcomer.to_bits());
+    assert_eq!(
+        (claims[0].object.value, claims[0].x, claims[0].z),
+        (9, 4000, 4000)
+    );
+    assert!(claims[0].tick > arrive[0].tick);
+
+    // A mated pair hatches a young one at its lair.
+    let (mut w, mut d) = world(23);
+    let l = d.add_lair(
+        &mut w,
+        8,
+        "Nest",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 2_000, 2_100),
+        100,
+        Tick(0),
+    );
+    let mother = d.add_dragon(&mut w, adult("mother", l, 100, Gender::Female), Tick(0));
+    let father = d.add_dragon(&mut w, adult("father", l, 100, Gender::Male), Tick(0));
+    d.pair(&mut w, mother, father, Tick(0));
+    d.run_until(&mut w, &mut NoInfrastructure, Tick::from_days(70));
+    seen.extend(dragon_kinds(&d));
+    let young = d.by_name("mother's young 1").expect("a hatching");
+    let births = events_of(&d, k::DRAGONS_BIRTH);
+    assert_eq!(births.len(), 1);
+    let b = births[0];
+    assert_eq!(
+        (b.subject.value, b.object.value),
+        (young.to_bits(), mother.to_bits())
+    );
+    assert_eq!((b.x, b.z, b.severity), (2_000, 2_100, Severity::Notable));
+
+    seen.sort();
+    seen.dedup();
+    for want in [
+        k::DRAGONS_FLIGHT,
+        k::DRAGONS_HUNT,
+        k::DRAGONS_RAID,
+        k::DRAGONS_CLAIM,
+        k::DRAGONS_DEPART,
+        k::DRAGONS_BIRTH,
+        k::DRAGONS_DEATH,
+        k::DRAGONS_ARRIVE,
+    ] {
+        assert!(seen.contains(&want), "no {} in {seen:?}", want.name());
+    }
+    // Off by default: a run whose tape is never turned on records nothing.
+    let (mut w, mut d) = populated(11);
+    d.run_until(&mut w, &mut NoInfrastructure, Tick::from_days(5));
+    assert!(d.stats.hunts > 0 && d.tape.is_empty());
 }

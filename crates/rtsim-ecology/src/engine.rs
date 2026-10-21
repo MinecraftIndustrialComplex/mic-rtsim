@@ -37,6 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rtsim_archive::{At, Severity, Tape, kinds};
 use rtsim_industry::ids::DistrictId;
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -333,6 +334,8 @@ pub struct Dragons {
     pub stats: DragonStats,
     pub log_enabled: bool,
     pub log: Vec<LogEntry>,
+    /// The event archive's recorder (VIEWER.md §10.1): off until the host turns it on; not state.
+    pub tape: Tape,
     pub hunts: Vec<HuntRecord>,
     /// Hunts that found food, per [season][prey kind].
     pub prey_by_season: [[u64; PreyKind::COUNT]; 4],
@@ -382,6 +385,40 @@ fn place(p: Pos, y: i32) -> Place {
         y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
         p.z,
     )
+}
+
+/// Where and when an event happened, for the event archive.
+fn spot(at: Tick, pos: Pos) -> At {
+    At::new(at.0, u32::from(pos.frame), pos.x, pos.z)
+}
+
+/// An actor's archive id: its knowledge handle, as every module records actors.
+fn aid(a: ActorId) -> u128 {
+    u128::from(a.to_bits())
+}
+
+/// A dragon's archive id: its handle's plain bits.
+fn did(d: DragonId) -> u128 {
+    u128::from(d.to_bits())
+}
+
+/// Goods as a payload line: `"iron ingot 12, bread 3"`.
+fn items_text(items: &[(String, i64)]) -> String {
+    items
+        .iter()
+        .map(|(n, a)| format!("{n} {a}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What a hunt was on, for the event archive: the prey's place where the caller knows it (else
+/// the dragon's own), and its id where it has a real one (a herd, a village's key, a player's
+/// actor; 0 for a road or nothing).
+struct Quarry {
+    kind: PreyKind,
+    name: String,
+    pos: Option<Pos>,
+    id: u128,
 }
 
 /// The same 64-bit stand-in for a player's UUID the phase 1 world uses (its `uuid_hash`), so one
@@ -449,6 +486,7 @@ impl Dragons {
             stats: DragonStats::default(),
             log_enabled: false,
             log: Vec::new(),
+            tape: Tape::new(),
             hunts: Vec::new(),
             prey_by_season: [[0; PreyKind::COUNT]; 4],
             food_by_season: [[0; PreyKind::COUNT]; 4],
@@ -1015,14 +1053,13 @@ impl Dragons {
                 self.feed(d, at, food, &victims);
                 if food > 0 || !taken.is_empty() {
                     let name = self.road_name(w, edge);
-                    self.record_hunt(
-                        at,
-                        d,
-                        PreyKind::Road,
-                        format!("{name} (crossing)"),
-                        food,
-                        taken,
-                    );
+                    let quarry = Quarry {
+                        kind: PreyKind::Road,
+                        name: format!("{name} (crossing)"),
+                        pos: None,
+                        id: 0,
+                    };
+                    self.record_hunt(at, d, quarry, food, taken);
                 }
             }
             Ev::Seen { d, player, meeting } => self.seen(w, d, player, meeting, at),
@@ -1073,6 +1110,8 @@ impl Dragons {
                     w.knowledge.die(x.actor, at);
                 }
                 self.stats.deaths_age += 1;
+                let here = x.position(&self.topo, &self.lairs, at).0;
+                self.tape_death(d, here, None, at);
                 self.note(
                     at,
                     "death",
@@ -1134,6 +1173,14 @@ impl Dragons {
 
     fn book_leg(&mut self, w: &mut World, d: DragonId, path: Path, y: i32) {
         self.stats.legs += 1;
+        // Every dragon is named: a flight or a stay at prey is a named mover's leg.
+        self.tape.leg(
+            kinds::DRAGONS_FLIGHT,
+            u32::from(path.frame),
+            (path.t0.0, path.x0, path.z0),
+            (path.t1.0, path.x1, path.z1),
+            did(d),
+        );
         let old = self.dragons[d].leg.map(|l| l.stamp.leg);
         let stamp = match old.and_then(|l| w.legs.replan(l, path)) {
             Some(s) => s,
@@ -1311,15 +1358,33 @@ impl Dragons {
             }
             taken.push((name, n));
         }
+        if self.tape.is_on() {
+            let here = self.dragons[d].position(&self.topo, &self.lairs, at).0;
+            let stolen: i64 = taken.iter().map(|(_, n)| *n).sum();
+            let severity = if stolen > 0 {
+                Severity::Major
+            } else {
+                Severity::Minor
+            };
+            self.tape
+                .event_as(
+                    kinds::DRAGONS_RAID,
+                    severity,
+                    spot(at, here),
+                    did(d),
+                    u128::from(train.0),
+                    stolen,
+                )
+                .text(|| format!("falls on train {}, took {}", train.0, items_text(&taken)));
+        }
         self.feed(d, at, food, &[]);
-        self.record_hunt(
-            at,
-            d,
-            PreyKind::Train,
-            format!("train {}", train.0),
-            food,
-            taken,
-        );
+        let quarry = Quarry {
+            kind: PreyKind::Train,
+            name: format!("train {}", train.0),
+            pos: None,
+            id: u128::from(train.0),
+        };
+        self.record_hunt(at, d, quarry, food, taken);
     }
 
     fn book_crossings(
@@ -1495,7 +1560,9 @@ impl Dragons {
                 self.fly(w, d, Purpose::Hunt(t), at);
             }
             None => {
-                self.dragons.get_mut(d).expect("live").fruitless += 1;
+                // Once a day with nothing in range: a u8 that would overflow in 256 days.
+                let x = self.dragons.get_mut(d).expect("live");
+                x.fruitless = x.fruitless.saturating_add(1);
                 self.stats.fruitless += 1;
                 if chain > 0 {
                     self.fly(w, d, Purpose::Home, at);
@@ -1888,7 +1955,8 @@ impl Dragons {
         };
         self.feed(d, at, food, &victims);
         let name = self.target_name(w, target);
-        self.record_hunt(at, d, kind, name, food, taken);
+        let quarry = self.quarry(w, target, kind, name);
+        self.record_hunt(at, d, quarry, food, taken);
         self.after_hunt(w, d, at, food);
     }
 
@@ -1930,19 +1998,63 @@ impl Dragons {
         }
     }
 
+    /// The archive's description of a hunt on `target`: its place, and its id where it has one.
+    fn quarry(&self, w: &World, target: Target, kind: PreyKind, name: String) -> Quarry {
+        let id = match target {
+            Target::Herd { herd, .. } => u128::from(herd),
+            Target::Village { node } => u128::from(w.nodes[node as usize].key),
+            Target::Home { player, .. } => aid(player),
+            Target::Road { .. } => 0,
+        };
+        Quarry {
+            kind,
+            name,
+            pos: Some(self.target_pos(w, target)),
+            id,
+        }
+    }
+
     fn record_hunt(
         &mut self,
         at: Tick,
         d: DragonId,
-        kind: PreyKind,
-        target: String,
+        quarry: Quarry,
         food: i32,
         taken: Vec<(String, i64)>,
     ) {
+        let Quarry {
+            kind,
+            name: target,
+            pos,
+            id,
+        } = quarry;
         let season = self.tun.calendar.season_at(at);
         if food > 0 {
             self.prey_by_season[season.index()][kind.index()] += 1;
             self.food_by_season[season.index()][kind.index()] += i64::from(food);
+        }
+        if self.tape.is_on() {
+            let here =
+                pos.unwrap_or_else(|| self.dragons[d].position(&self.topo, &self.lairs, at).0);
+            self.tape
+                .event(
+                    kinds::DRAGONS_HUNT,
+                    spot(at, here),
+                    did(d),
+                    id,
+                    i64::from(food),
+                )
+                .text(|| {
+                    format!(
+                        "{} at {target}: +{food} fullness{}",
+                        kind.name(),
+                        if taken.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", took {}", items_text(&taken))
+                        }
+                    )
+                });
         }
         if !self.log_enabled {
             return;
@@ -2180,8 +2292,13 @@ impl Dragons {
                 // already ate at unwatched districts on the way (the ledger has it).
                 if any {
                     self.feed(d, at, food, &[]);
-                    let name = format!("the home of player {}", player.to_bits());
-                    self.record_hunt(at, d, PreyKind::Grudge, name, food, taken);
+                    let quarry = Quarry {
+                        kind: PreyKind::Grudge,
+                        name: format!("the home of player {}", player.to_bits()),
+                        pos: Some(site.pos),
+                        id: aid(player),
+                    };
+                    self.record_hunt(at, d, quarry, food, taken);
                 }
                 let p = site.pos;
                 self.materialize(w, d, player, true, Some((p, sp.cruise_y)), at);
@@ -2211,6 +2328,7 @@ impl Dragons {
             any = true;
             self.stats.district_raids += 1;
             let mut gained = 0;
+            let first = taken.len();
             for (g, n) in o.stolen.iter() {
                 let name = infra
                     .good_name(g)
@@ -2223,6 +2341,36 @@ impl Dragons {
                 taken.push((name, n));
             }
             food += gained;
+            let loot = &taken[first..];
+            let stolen: i64 = loot.iter().map(|(_, n)| *n).sum();
+            // A raid that took nothing and broke nothing is a minor row.
+            let severity = if stolen > 0 || o.destroyed_blocks > 0 {
+                Severity::Major
+            } else {
+                Severity::Minor
+            };
+            self.tape
+                .event_as(
+                    kinds::DRAGONS_RAID,
+                    severity,
+                    spot(at, site.pos),
+                    did(d),
+                    u128::from(site.id.0),
+                    stolen,
+                )
+                .text(|| {
+                    format!(
+                        "{} blocks destroyed, took {}{}",
+                        o.destroyed_blocks,
+                        if loot.is_empty() {
+                            "nothing".to_string()
+                        } else {
+                            items_text(loot)
+                        },
+                        o.skipped
+                            .map_or(String::new(), |s| format!(" (skipped: {s})"))
+                    )
+                });
             // Defences that stopped passes wound it; an abstract raid never kills a dragon (a
             // death needs a real fight), so it keeps at least a tenth of its health.
             let max = self.dragons[d].max_health(&sp, at);
@@ -2256,10 +2404,16 @@ impl Dragons {
             );
         }
         self.feed(d, at, food, &[]);
-        let name = format!("the home of player {}", player.to_bits());
-        self.record_hunt(at, d, PreyKind::Grudge, name, food, taken);
+        let quarry = Quarry {
+            kind: PreyKind::Grudge,
+            name: format!("the home of player {}", player.to_bits()),
+            pos: Some(Pos::new(frame, x, z)),
+            id: aid(player),
+        };
+        self.record_hunt(at, d, quarry, food, taken);
         if !any {
-            self.dragons.get_mut(d).expect("live").fruitless += 1;
+            let x = self.dragons.get_mut(d).expect("live");
+            x.fruitless = x.fruitless.saturating_add(1);
         }
         self.fly(w, d, Purpose::Home, at);
     }
@@ -2511,6 +2665,20 @@ impl Dragons {
         .get(reason as usize)
         .copied()
         .unwrap_or("?");
+        self.tape
+            .event(
+                kinds::DRAGONS_DEPART,
+                spot(at, here),
+                did(d),
+                0,
+                i64::from(reason),
+            )
+            .text(|| {
+                format!(
+                    "leaves ({why}) after {:.2} days in view",
+                    day_of(Tick(at.0 - since.0))
+                )
+            });
         self.note(
             at,
             "depart",
@@ -2654,8 +2822,13 @@ impl Dragons {
         self.feed(d, at, food, &[village]);
         if taken > 0 {
             self.stats.village_raids += 1;
-            let name = format!("village {} (watched)", w.nodes[node].key);
-            self.record_hunt(at, d, PreyKind::Village, name, food, names);
+            let quarry = Quarry {
+                kind: PreyKind::Village,
+                name: format!("village {} (watched)", w.nodes[node].key),
+                pos: Some(w.nodes[node].pos),
+                id: u128::from(w.nodes[node].key),
+            };
+            self.record_hunt(at, d, quarry, food, names);
             self.raided(w, d, node, at);
         }
     }
@@ -2740,6 +2913,25 @@ impl Dragons {
             r.paid_at = Some(at);
         }
         self.stats.tributes += 1;
+        let (village, lair_key) = (
+            &w.nodes[n as usize],
+            self.lairs.get(row.lair).map_or(0, |l| l.key),
+        );
+        self.tape
+            .event(
+                kinds::DRAGONS_TRIBUTE,
+                spot(at, village.pos),
+                u128::from(village.key),
+                u128::from(lair_key),
+                a / item.unit(),
+            )
+            .text(|| {
+                format!(
+                    "village {} pays lair {lair_key} {} coin",
+                    village.key,
+                    a / item.unit()
+                )
+            });
         if self.log_enabled {
             let what = format!(
                 "village {} pays lair {} {} coin",
@@ -2762,11 +2954,27 @@ impl Dragons {
 
     /// Village `n` pays no tribute any more: it buys works again, golems first.
     fn tribute_lapse(&mut self, w: &mut World, n: u32, why: &str, at: Tick) {
-        if self.tribute.remove(&n).is_none() {
+        let Some(row) = self.tribute.remove(&n) else {
             return;
-        }
+        };
         self.stats.tribute_lapses += 1;
         w.tribute_lapsed(n as usize, at);
+        let village = &w.nodes[n as usize];
+        let lair_key = self.lairs.get(row.lair).map_or(0, |l| l.key);
+        self.tape
+            .event(
+                kinds::DRAGONS_TRIBUTE_LAPSED,
+                spot(at, village.pos),
+                u128::from(village.key),
+                u128::from(lair_key),
+                0,
+            )
+            .text(|| {
+                format!(
+                    "village {} stops paying lair {lair_key}: {why}",
+                    village.key
+                )
+            });
         if self.log_enabled {
             let what = format!("village {} stops paying: {why}", w.nodes[n as usize].key);
             self.note(at, "tribute", None, what);
@@ -3002,6 +3210,7 @@ impl Dragons {
     ) {
         self.stats.deaths_violent += 1;
         let x = self.dragons[d].clone();
+        self.tape_death(d, at_pos.0, killer, at);
         if let Some(p) = killer {
             let id = w.knowledge.record(Report {
                 who: p,
@@ -3077,6 +3286,28 @@ impl Dragons {
         self.dying_by_body = true;
         self.remove(w, d, at);
         self.dying_by_body = false;
+    }
+
+    /// Writes a dragon's death on the archive's tape: where it fell, who killed it (none when it
+    /// died of age), and how old it was in days.
+    fn tape_death(&mut self, d: DragonId, pos: Pos, killer: Option<ActorId>, at: Tick) {
+        if !self.tape.is_on() {
+            return;
+        }
+        let x = &self.dragons[d];
+        let days = x.age(at) / TICKS_PER_DAY;
+        self.tape
+            .event(
+                kinds::DRAGONS_DEATH,
+                spot(at, pos),
+                did(d),
+                killer.map_or(0, aid),
+                days as i64,
+            )
+            .text(|| match killer {
+                Some(p) => format!("{} killed by player {}", x.name, p.to_bits()),
+                None => format!("{} dies of age", x.name),
+            });
     }
 
     /// Takes a dead dragon out: its lair may stand empty (the respawn clock starts), its kin
@@ -3195,6 +3426,22 @@ impl Dragons {
         self.stats.claims += 1;
         let occupants = self.lairs[l as usize].occupants.clone();
         let name = self.lairs[l as usize].name.clone();
+        let (lair_pos, lair_key) = (self.lairs[l as usize].pos, self.lairs[l as usize].key);
+        self.tape
+            .event(
+                kinds::DRAGONS_CLAIM,
+                spot(at, lair_pos),
+                did(d),
+                u128::from(lair_key),
+                occupants.len() as i64,
+            )
+            .text(|| {
+                if occupants.is_empty() {
+                    format!("claims {name}")
+                } else {
+                    format!("claims {name}, shared with {}", occupants.len())
+                }
+            });
         self.occupy(w, d, l, at, occupants.is_empty());
         let me = &self.dragons[d];
         let sp = self.tun.species(me.species).clone();
@@ -3266,6 +3513,20 @@ impl Dragons {
         );
         self.stats.births += 1;
         self.set_parent(w, child, d, at);
+        self.tape
+            .event(
+                kinds::DRAGONS_BIRTH,
+                spot(at, self.lairs[l as usize].pos),
+                did(child),
+                did(d),
+                1,
+            )
+            .text(|| {
+                format!(
+                    "{} hatches at {}",
+                    self.dragons[child].name, self.lairs[l as usize].name
+                )
+            });
         self.note(
             at,
             "birth",
@@ -3350,7 +3611,17 @@ impl Dragons {
         lair.plan += 1;
         lair.vacant_since = None;
         let name = lair.name.clone();
+        let lair_key = lair.key;
         self.track_lair(l);
+        self.tape
+            .event(
+                kinds::DRAGONS_ARRIVE,
+                spot(at, from),
+                did(d),
+                u128::from(lair_key),
+                0,
+            )
+            .text(|| format!("a young dragon flies in to claim {name}"));
         self.note(
             at,
             "respawn",

@@ -2,12 +2,14 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.glass;
 
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongSet;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.TickingBlockEntity;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The glass box's only reads of vanilla's non-public members (P7, one accessor class for Minecraft; PATCHES.md
@@ -45,22 +47,20 @@ public final class MinecraftGlassAccess {
     public static Long2IntOpenHashMap tickOrder(Level level, LongSet wanted) {
         if (TICKERS == null || PENDING_TICKERS == null || level == null)
             return null;
-        Long2IntOpenHashMap out = new Long2IntOpenHashMap();
+        List<TickingBlockEntity> tickers = (List<TickingBlockEntity>) TICKERS.get(level),
+                pending = (List<TickingBlockEntity>) PENDING_TICKERS.get(level);
+        if (tickers == null || pending == null)
+            return null;
+        // A ticker with no position (Lithium's SleepingBlockEntity.SLEEPING_BLOCK_ENTITY_TICKER stands in for
+        // a sleeping block entity's ticker: not removed, getPos() null) keeps its place but gives no order;
+        // the compile takes the mean over orders for its block entity.
+        Map<Long, Integer> places = TickOrder.places(List.of(tickers, pending), TickingBlockEntity::isRemoved, t -> {
+            BlockPos at = t.getPos();
+            return at == null ? TickOrder.NO_POS : at.asLong();
+        }, wanted::contains);
+        Long2IntOpenHashMap out = new Long2IntOpenHashMap(places.size());
         out.defaultReturnValue(-1);
-        int i = 0;
-        for (List<TickingBlockEntity> list : new List[] {(List<TickingBlockEntity>) TICKERS.get(level),
-                (List<TickingBlockEntity>) PENDING_TICKERS.get(level)}) {
-            if (list == null)
-                return null;
-            for (TickingBlockEntity t : list) {
-                if (!t.isRemoved()) {
-                    long p = t.getPos().asLong();
-                    if (wanted.contains(p) && !out.containsKey(p))
-                        out.put(p, i);
-                }
-                i++;
-            }
-        }
+        places.forEach(out::put);
         return out;
     }
 }

@@ -92,15 +92,15 @@ final class ThreatEvents {
     }
 
     private static void onPlace(BlockEvent.EntityPlaceEvent event) {
-        if (!(event.getEntity() instanceof Player) || !(event.getLevel() instanceof ServerLevel level))
-            return;
+        if (!(event.getEntity() instanceof Player player) || player.isFakePlayer() || !(event.getLevel() instanceof ServerLevel level))
+            return; // a machine's placement (a Create deployer) changes no defences worth a survey
         Threats t = threats();
         if (t != null)
             t.edited(level, event.getPos());
     }
 
     private static void onBreak(BlockEvent.BreakEvent event) {
-        if (event.getPlayer() == null || !(event.getLevel() instanceof ServerLevel level))
+        if (event.getPlayer() == null || event.getPlayer().isFakePlayer() || !(event.getLevel() instanceof ServerLevel level))
             return;
         Threats t = threats();
         if (t != null)

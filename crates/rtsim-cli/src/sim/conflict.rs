@@ -16,6 +16,10 @@
 //! day after the demand). A fourth run of **ignore** is saved and restored in the middle and must
 //! end with the same state hashes.
 //!
+//! It also counts the event archive's rows (R, VIEWER.md §10.4) in each of the three variants
+//! (every tape of the run on, see `Options::measure`); the saved and restored fourth run is a
+//! comparison and records nothing. The summary R is the largest variant's.
+//!
 //! Exit 1 if a check fails.
 
 use std::collections::BTreeMap;
@@ -32,6 +36,8 @@ use rtsim_kernel::clock::TICKS_PER_DAY;
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 use serde::Serialize;
+
+use super::archive::Rate;
 
 struct Opts {
     days: u64,
@@ -107,6 +113,8 @@ struct RunOut {
     plugin_commands: Vec<(f64, String)>,
     wire_bytes: u64,
     state_hashes: (String, String),
+    /// The archive rows every tape of the run took per game day.
+    archive: Rate,
 }
 
 #[derive(Serialize)]
@@ -117,6 +125,9 @@ struct Results {
     back_day: f64,
     runs: Vec<RunOut>,
     restore: Check,
+    /// The largest variant's archive rate, the scenario's R.
+    archive: Rate,
+    archive_variant: Variant,
 }
 
 fn by_name(w: &World, m: &BTreeMap<GoodId, i128>) -> BTreeMap<String, f64> {
@@ -242,7 +253,7 @@ fn checks_for(o: &Outcome, v: Variant) -> Vec<Check> {
     out
 }
 
-fn run_out(o: Outcome, v: Variant, wall_ms: f64) -> RunOut {
+fn run_out(o: Outcome, v: Variant, wall_ms: f64, days: u64) -> RunOut {
     let checks = checks_for(&o, v);
     let c = &o.conflict;
     let w = &o.world;
@@ -300,6 +311,7 @@ fn run_out(o: Outcome, v: Variant, wall_ms: f64) -> RunOut {
             format!("{:016x}", o.hashes.0),
             format!("{:016x}", o.hashes.1),
         ),
+        archive: Rate::new(&o.meter, days as f64),
     }
 }
 
@@ -308,12 +320,15 @@ fn main(o: Opts) -> i32 {
     let mut ignore_hashes = (0, 0);
     for v in [Variant::Ignore, Variant::Tribute, Variant::Converter] {
         let t0 = Instant::now();
-        let out = scenario::run(&Options::new(o.seed, o.days, v));
+        let out = scenario::run(&Options {
+            measure: true,
+            ..Options::new(o.seed, o.days, v)
+        });
         if v == Variant::Ignore {
             ignore_hashes = out.hashes;
         }
         let ms = t0.elapsed().as_secs_f64() * 1e3;
-        runs.push(run_out(out, v, ms));
+        runs.push(run_out(out, v, ms, o.days));
     }
     let day = OFFLINE_DAY + 1.3;
     let restarted = scenario::run(&Options {
@@ -328,6 +343,11 @@ fn main(o: Opts) -> i32 {
             restarted.hashes.0, restarted.hashes.1, ignore_hashes.0, ignore_hashes.1
         ),
     };
+    let largest = runs
+        .iter()
+        .max_by(|a, b| a.archive.rows_per_day.total_cmp(&b.archive.rows_per_day))
+        .expect("three runs");
+    let (archive, archive_variant) = (largest.archive.clone(), largest.variant);
     let res = Results {
         seed: o.seed,
         days: o.days,
@@ -335,6 +355,8 @@ fn main(o: Opts) -> i32 {
         back_day: BACK_DAY,
         runs,
         restore,
+        archive,
+        archive_variant,
     };
     let failed = res.runs.iter().flat_map(|r| &r.checks).any(|c| !c.ok) || !res.restore.ok;
     if !o.quiet {
@@ -390,4 +412,12 @@ fn print_report(r: &Results) {
         r.restore.name,
         r.restore.detail
     );
+    for run in &r.runs {
+        run.archive
+            .print(Some(&format!("{:?}", run.variant).to_lowercase()));
+    }
+    r.archive.print(Some(&format!(
+        "largest, {}",
+        format!("{:?}", r.archive_variant).to_lowercase()
+    )));
 }

@@ -21,6 +21,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rtsim_archive::kinds::{self, Kind};
+use rtsim_archive::{At, Severity, Tape};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::journal::OpId;
 use rtsim_kernel::lazy::{LazyTable, RegionId};
@@ -42,8 +44,8 @@ use crate::ids::{
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
-    Carriage, CarriageResult, Conditions, Direction, LoadState, NotLearnable, Obs, PackageEvent,
-    ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    BlockFlags, Carriage, CarriageResult, Conditions, Direction, LoadState, NotLearnable, Obs,
+    PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -68,6 +70,10 @@ const REPLAY: SystemId = SystemId::named("industry.replay");
 /// The tick of each game day natural attacks land on. TUNABLE, PLACEHOLDER 18,000 (`dayTime`
 /// midnight; gameTime and dayTime drift apart when players sleep, INDUSTRY.md §0).
 pub const NIGHT_ATTACK_TICK: u64 = 18_000;
+
+/// The magnitudes of an archive "district changed" row: why the learned district went stale.
+const STALE_REVISION: i64 = 1;
+const STALE_EDIT: i64 = 2;
 
 /// One natural mob's strength in fight units. TUNABLE, PLACEHOLDER 1.0.
 pub const NATURAL_STRENGTH: f64 = 1.0;
@@ -208,6 +214,43 @@ struct PendingExchange {
     loot: bool,
 }
 
+/// A fraction as an archive magnitude: thousandths.
+fn per_mille(f: f64) -> i64 {
+    (f * 1000.0).round() as i64
+}
+
+/// Where a district's rows go at `at`: its centre, in its dimension.
+fn place_of(topo: &rtsim_space::Topologies, d: &District, at: Tick) -> Option<At> {
+    let (x, z) = d.centre(topo)?;
+    Some(At::new(at.0, d.dim, x, z))
+}
+
+/// Items in `v` by absolute amount, for an archive magnitude: fluids, energy and deposits are not
+/// items. A good the dictionary does not know counts as one.
+fn item_count(goods: &BTreeMap<Good, GoodInfo>, v: &GoodVec) -> i64 {
+    v.iter()
+        .filter(|(g, _)| goods.get(g).is_none_or(|i| i.class == GoodClass::Item))
+        .fold(0i64, |a, (_, n)| a.saturating_add(n.saturating_abs()))
+}
+
+/// `v` as a short line for an archive payload: `64 iron ingot, 12 coal`.
+fn counts(goods: &BTreeMap<Good, GoodInfo>, v: &GoodVec) -> String {
+    let parts: Vec<String> = v
+        .iter()
+        .map(|(g, n)| {
+            let name = goods
+                .get(&g)
+                .map_or_else(|| format!("good {}", g.0), |i| i.name.clone());
+            format!("{n} {name}")
+        })
+        .collect();
+    if parts.is_empty() {
+        "nothing".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 pub struct Engine {
     pub tun: Tunables,
     world_seed: u64,
@@ -260,6 +303,11 @@ pub struct Engine {
     /// again whatever is still pending and was not sent in this session (docs/choices-repair.md
     /// R4). Not saved: a restore starts a session.
     sent_this_session: BTreeSet<OpId>,
+    /// The event archive's recorder (VIEWER.md §10.1): off until the host turns it on; not state.
+    pub tape: Tape,
+    /// Districts declared while the tape was on that have no chunks yet: their "found" row waits
+    /// for the first chunks, which give it a place. Not saved.
+    undetected: BTreeSet<DistrictId>,
 }
 
 impl Engine {
@@ -303,6 +351,8 @@ impl Engine {
             glass: crate::glass::Glass::default(),
             topo: rtsim_space::topology::all_flat(),
             sent_this_session: BTreeSet::new(),
+            tape: Tape::new(),
+            undetected: BTreeSet::new(),
         }
     }
 
@@ -318,6 +368,84 @@ impl Engine {
             district: d.0,
             what,
         });
+    }
+
+    // ---- the archive (VIEWER.md §10.1) -------------------------------------------------------
+
+    /// Where `d`'s rows go: its centre at `at`. `None` while the tape is off, or the district has
+    /// no chunks yet.
+    fn place(&self, d: DistrictId, at: Tick) -> Option<At> {
+        if !self.tape.is_on() {
+            return None;
+        }
+        place_of(&self.topo, self.districts.get(&d)?, at)
+    }
+
+    /// A district's event at its centre, with no object.
+    fn district_event(&mut self, kind: Kind, d: DistrictId, at: Tick, magnitude: i64) {
+        if let Some(p) = self.place(d, at) {
+            self.tape.event(kind, p, u128::from(d.0), 0, magnitude);
+        }
+    }
+
+    /// A district's first chunks: its "found" row, at the centre of what has arrived, and its
+    /// "not learnable" row if it was declared so (the declaration came before it had a place).
+    /// Every later declaration of the same district is not a first sight.
+    fn detected(&mut self, d: DistrictId, at: Tick) {
+        if !self.undetected.contains(&d) {
+            return;
+        }
+        let Some(p) = self.place(d, at) else {
+            return;
+        };
+        self.undetected.remove(&d);
+        let dist = &self.districts[&d];
+        let (chunks, phase) = (dist.chunks.len() as i64, dist.phase);
+        let id = u128::from(d.0);
+        self.tape.event(kinds::INDUSTRY_DETECTED, p, id, 0, chunks);
+        if let Phase::NotLearnable(code) = phase {
+            self.tape
+                .event(kinds::INDUSTRY_UNLEARNABLE, p, id, 0, i64::from(code));
+        }
+    }
+
+    /// Where a train is at `at` on its booked `leg`: along the straight line between its stations,
+    /// the short way across a seam, as the leg was booked. `None` while the tape is off or the
+    /// leg's departure station is unknown.
+    fn leg_spot(&self, leg: &Leg, at: Tick) -> Option<At> {
+        if !self.tape.is_on() {
+            return None;
+        }
+        let from = &self.stations.get(&leg.from)?.decl;
+        let to = leg
+            .to
+            .and_then(|s| self.stations.get(&s))
+            .map_or(from, |s| &s.decl);
+        let topo = self.topo.of(from.dim as u16);
+        let a = topo.canonical(i64::from(from.pos.x), i64::from(from.pos.z));
+        let b = topo.toward(a, (i64::from(to.pos.x), i64::from(to.pos.z)));
+        let span = leg.eta.0.saturating_sub(leg.depart.0).max(1) as f64;
+        let f = (at.0.saturating_sub(leg.depart.0) as f64 / span).clamp(0.0, 1.0);
+        let x = a.0 + ((b.0 - a.0) as f64 * f).round() as i64;
+        let z = a.1 + ((b.1 - a.1) as f64 * f).round() as i64;
+        let (x, z) = topo.canonical(x, z);
+        Some(At::new(at.0, from.dim, x as i32, z as i32))
+    }
+
+    /// Where a train is at `at` for the archive: on its booked leg, else at the station it last
+    /// left. `None` while the tape is off or nothing is known of it.
+    fn train_spot(&self, train: TrainId, at: Tick) -> Option<At> {
+        if !self.tape.is_on() {
+            return None;
+        }
+        if let Some(id) = self.legs.leg_of(train, at)
+            && let Some(leg) = self.legs.get(id)
+        {
+            return self.leg_spot(leg, at);
+        }
+        let (station, ..) = self.last_departure.get(&train)?;
+        let d = &self.stations.get(station)?.decl;
+        Some(At::new(at.0, d.dim, d.pos.x, d.pos.z))
     }
 
     fn good_name(&self, g: Good) -> String {
@@ -523,10 +651,27 @@ impl Engine {
                 }
             }
             Obs::District(decl) => {
-                let dist = self.district_mut(decl.district);
+                let dist = self
+                    .districts
+                    .entry(decl.district)
+                    .or_insert_with(|| District::new(decl.district));
+                // The archive's place for what this declaration changes: taken before a new
+                // revision clears the chunks.
+                let spot = self
+                    .tape
+                    .is_on()
+                    .then(|| place_of(&self.topo, dist, at))
+                    .flatten();
+                let mut stale = false;
                 if dist.revision != decl.revision {
                     if dist.revision != 0 && dist.phase == Phase::Learned {
                         dist.phase = Phase::Stale;
+                        stale = true;
+                    }
+                    // A district seen for the first time has no chunks yet: it is recorded when
+                    // they arrive.
+                    if dist.revision == 0 && self.tape.is_on() {
+                        self.undetected.insert(decl.district);
                     }
                     dist.revision = decl.revision;
                     dist.chunks.clear();
@@ -543,10 +688,25 @@ impl Engine {
                     .not_learnable
                     .filter(|n| *n != NotLearnable::SpawnFedFarm);
                 dist.not_learnable = not_learnable;
+                let mut unlearnable = None;
                 if let Some(n) = not_learnable {
+                    if dist.phase != Phase::NotLearnable(n.code()) {
+                        unlearnable = Some(n.code());
+                    }
                     dist.phase = Phase::NotLearnable(n.code());
                 } else if matches!(dist.phase, Phase::NotLearnable(_)) {
                     dist.phase = Phase::Learning;
+                }
+                if let Some(p) = spot {
+                    let id = u128::from(decl.district.0);
+                    if stale {
+                        self.tape
+                            .event(kinds::INDUSTRY_STALE, p, id, 0, STALE_REVISION);
+                    }
+                    if let Some(code) = unlearnable {
+                        self.tape
+                            .event(kinds::INDUSTRY_UNLEARNABLE, p, id, 0, i64::from(code));
+                    }
                 }
             }
             Obs::DistrictChunks {
@@ -558,6 +718,7 @@ impl Engine {
                 let dist = self.district_mut(*district);
                 if dist.revision == *revision {
                     dist.chunks.extend(chunks.iter().copied());
+                    self.detected(*district, at);
                 }
             }
             Obs::Inventory(decl) => {
@@ -587,6 +748,7 @@ impl Engine {
                 }
             }
             Obs::DistrictRemoved { district } => {
+                self.undetected.remove(district);
                 if self.districts.contains_key(district) {
                     self.stop_sim(*district, at);
                     self.districts.remove(district);
@@ -600,7 +762,8 @@ impl Engine {
                 let dist = self.district_mut(*district);
                 dist.learner.discard();
                 dist.learner.coupling.reset();
-                if dist.phase == Phase::Learned {
+                let went_stale = dist.phase == Phase::Learned;
+                if went_stale {
                     dist.phase = Phase::Stale;
                 }
                 // The compile no longer matches the blocks until Java recompiles (G-B3).
@@ -611,6 +774,9 @@ impl Engine {
                     &self.tun.glass,
                 );
                 self.mark(*district);
+                if went_stale {
+                    self.district_event(kinds::INDUSTRY_STALE, *district, at, STALE_EDIT);
+                }
             }
             Obs::Discard { district, .. } => self.district_mut(*district).learner.discard(),
             Obs::LoadState {
@@ -740,14 +906,19 @@ impl Engine {
         targets: Vec<crate::learn::LearnedTarget>,
     ) {
         let season = self.season_at(self.now);
+        let confidence = per_mille(learned.confidence);
         let dist = self.district_mut(d);
         let batches = dist.batches.clone();
         dist.models.insert(
             season,
             Model::from_learned(learned, targets, season, batches),
         );
-        dist.phase = Phase::Learned;
+        let was = std::mem::replace(&mut dist.phase, Phase::Learned);
         self.stats.models_adopted += 1;
+        if was != Phase::Learned {
+            let now = self.now;
+            self.district_event(kinds::INDUSTRY_LEARNED, d, now, confidence);
+        }
     }
 
     /// An import into a simulated district's stock at the engine's time, as an emulated station
@@ -929,9 +1100,13 @@ impl Engine {
                     rates.join(", ")
                 }
             );
+            let confidence = per_mille(m.learned.confidence);
             self.stats.models_adopted += 1;
             if changed {
                 self.note(e.district, at, what);
+            }
+            if was != Phase::Learned {
+                self.district_event(kinds::INDUSTRY_LEARNED, e.district, at, confidence);
             }
         } else if let Some(m) = current {
             // Targets keep improving between windows.
@@ -1981,6 +2156,10 @@ impl Engine {
                 String::new()
             }
         );
+        if self.tape.is_on() {
+            let items = item_count(&self.goods, &report.net);
+            self.district_event(kinds::INDUSTRY_RECONCILE, d, at, items);
+        }
         let dist = self.districts.get_mut(&d).expect("exists");
         dist.push_report(report);
         let send: Vec<ChunkPos> = if round == Round::Ahead {
@@ -2256,13 +2435,32 @@ impl Engine {
         // Line edges (§8.8).
         if let Some((from, depart, cargo)) = self.last_departure.remove(&c.train) {
             let e = self.lines.entry((from, c.station)).or_default();
-            if e.trips == 0 {
+            let first = e.trips == 0;
+            if first {
                 e.first = at;
             }
             e.trips += 1;
             e.cargo.merge(&cargo);
             e.travel_ticks += at.since(depart);
             e.last = at;
+            if first && self.tape.is_on() {
+                // At the station it arrived at, or where it left from if that one was not declared.
+                let station = self
+                    .stations
+                    .get(&c.station)
+                    .or_else(|| self.stations.get(&from));
+                if let Some(s) = station {
+                    let p = At::new(at.0, s.decl.dim, s.decl.pos.x, s.decl.pos.z);
+                    let items = item_count(&self.goods, &cargo);
+                    self.tape.event(
+                        kinds::INDUSTRY_LINE,
+                        p,
+                        u128::from(from.0),
+                        u128::from(c.station.0),
+                        items,
+                    );
+                }
+            }
         }
         if !c.simulated {
             self.arrivals
@@ -2895,6 +3093,17 @@ impl Engine {
             self.stats.attacks_skipped += 1;
             let what = format!("{:?} {:?} x{} skipped: {why}", t.source, t.class, t.count);
             self.note(d, at, what);
+            if let Some(p) = self.place(d, at) {
+                // Nothing happened: a minor row with no object, as an attack that took nothing.
+                self.tape.event_as(
+                    kinds::INDUSTRY_ATTACK,
+                    Severity::Minor,
+                    p,
+                    u128::from(d.0),
+                    0,
+                    0,
+                );
+            }
             self.district_mut(d).push_attack(report);
             return;
         }
@@ -3037,6 +3246,51 @@ impl Engine {
             }
         );
         self.note(d, at, what);
+        if let Some(p) = self.place(d, at) {
+            // The threat's id is a hash of the attack, not an entity: no object. An attack that
+            // took nothing (the defenders held, or there was nothing to carry) is minor.
+            let stolen = item_count(&self.goods, &dmg.stolen);
+            let blocks = dmg.destroyed.len();
+            let (source, class, count, survivors) = (t.source, t.class, t.count, dmg.survivors);
+            let severity = if stolen > 0 || blocks > 0 {
+                Severity::Major
+            } else {
+                Severity::Minor
+            };
+            let goods = &self.goods;
+            self.tape
+                .event_as(
+                    kinds::INDUSTRY_ATTACK,
+                    severity,
+                    p,
+                    u128::from(d.0),
+                    0,
+                    stolen,
+                )
+                .text(|| {
+                    format!(
+                        "{source:?} {class:?} x{count}: stole {}, destroyed {blocks} blocks, \
+                         {survivors} survived",
+                        counts(goods, &dmg.stolen)
+                    )
+                });
+            if dmg.machine_lost {
+                let machines = dmg
+                    .destroyed
+                    .iter()
+                    .filter(|b| b.flags & BlockFlags::MACHINE != 0)
+                    .count();
+                self.tape
+                    .event(
+                        kinds::INDUSTRY_DAMAGED,
+                        p,
+                        u128::from(d.0),
+                        0,
+                        machines as i64,
+                    )
+                    .text(|| format!("{machines} machine blocks lost of {blocks} destroyed"));
+            }
+        }
         let dist = self.districts.get_mut(&d).expect("exists");
         if dmg.machine_lost {
             dist.phase = Phase::Damaged;
@@ -3053,6 +3307,16 @@ impl Engine {
             .or_insert([Tick::ZERO; ThreatClass::COUNT]);
         if t.at < cd[t.class.index()] {
             self.stats.attacks_skipped += 1;
+            if let Some(p) = self.train_spot(train, t.at) {
+                self.tape.event_as(
+                    kinds::INDUSTRY_ATTACK,
+                    Severity::Minor,
+                    p,
+                    u128::from(train.0),
+                    0,
+                    0,
+                );
+            }
             return;
         }
         let Some(id) = self.legs.leg_of(train, t.at) else {
@@ -3094,6 +3358,19 @@ impl Engine {
             self.goods_words(&loot)
         );
         self.note(DistrictId(0), t.at, what);
+        if let Some(p) = self.leg_spot(&leg, t.at) {
+            let items = item_count(&self.goods, &loot);
+            let (source, class, count) = (t.source, t.class, t.count);
+            let goods = &self.goods;
+            self.tape
+                .event(kinds::INDUSTRY_ATTACK, p, u128::from(train.0), 0, items)
+                .text(|| {
+                    format!(
+                        "train ambushed ({source:?} {class:?} x{count}): looted {}",
+                        counts(goods, &loot)
+                    )
+                });
+        }
         let mut cmd = Cmd::CarriageDelta(CarriageDelta {
             op: OpId(0),
             train,

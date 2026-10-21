@@ -1,6 +1,6 @@
 # Glass box: compiled Create factories
 
-**Status:** design decided by Ben on 2026-10-20 (§12). G1 (compile and solve, read only) and G2 (glass-box replay) are built; their reversible choices are in docs/choices-glassbox-g1.md and docs/choices-glassbox-g2.md.
+**Status:** design of 2026-10-20. G1 (compile and solve, a read-only check against measurement) and G2 (the glass box drives the replay) are on main; see docs/choices-glassbox-g1.md and docs/choices-glassbox-g2.md.
 
 **Decided, and binding here:**
 - **C28:** distant factories are a compiled glass box. The real Create graph is compiled into a rate

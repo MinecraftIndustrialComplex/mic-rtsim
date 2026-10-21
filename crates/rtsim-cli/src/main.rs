@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `rtsim-cli`: the engine's command line (PLAN.md §4.11). Only `bench scale` exists so far; `run`,
-//! `replay` and `inspect` come with the modules they drive.
+//! `rtsim-cli`: the engine's command line (PLAN.md §4.11): the benches and sims, and the headless
+//! host (`run`, `export`; VIEWER.md §12). `replay` and `inspect` come with the modules they drive.
 
 mod bench;
+mod export;
+mod run;
 mod sim;
 mod sys;
 mod view;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-
-#[global_allocator]
-static ALLOC: sys::Counting = sys::Counting;
 
 const USAGE: &str = "\
 usage:
@@ -87,6 +86,21 @@ usage:
       player is offline, applied on load), tribute and converter (de-escalation), and a save and
       restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
       Exits 1 if a check fails.
+  rtsim-cli run <world> --fork <dir> [--speed 1x|10x|max] [--until N|Nd|@N|@Nd] [--season-days N]
+                [--view [addr]] [--socket PATH] [--allow-tailnet] [--stride N] [--test] [--no-fsync]
+      The headless host (VIEWER.md §12): exports <world> into <dir> (or resumes the fork there),
+      then runs the engine on the fork with the Java side of a server where nobody is online.
+      1x and 10x follow the wall clock, max runs flat out; --until stops after N ticks or N game
+      days (@ for a game time), with a save every 10 game days and a final one. --season-days
+      gives the industry module Serene Seasons' calendar. --view [IP:PORT] serves the viewer page
+      from the fork's saves, reread after each one, and saves every 2 s while a page is open
+      (loopback 127.0.0.1:8740 by default; tailnet addresses need --allow-tailnet; --socket PATH
+      serves a Unix socket instead, for a server where others have shells). Ctrl-C stops
+      with a final save; p, s, 1x, 10x, max and q (then Enter) pause, save, set the speed, quit.
+  rtsim-cli export <world> <dir>
+      Copies <world>'s rtsim state (pages through the read-only open, journal, level.dat) into a
+      new fork in <dir>: one whole generation even from a running server; nothing is written
+      into the world.
   rtsim-cli view <world> [options]
       Serves a saved world to the viewer page on loopback (VIEWER.md); --help for options.";
 
@@ -423,6 +437,8 @@ fn main() -> ExitCode {
             println!("{}", serde_json::to_string(&m).expect("serialize"));
             ExitCode::SUCCESS
         }
+        ["run", rest @ ..] => run::cli(rest),
+        ["export", rest @ ..] => export::cli(rest),
         ["view", rest @ ..] => view::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");

@@ -35,6 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rtsim_archive::{At, Tape, kinds};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::{self, Decode, Encode, Reader, Writer};
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel};
@@ -251,6 +252,8 @@ pub struct Herds {
     pub trace_enabled: bool,
     pub trace: Vec<Decision>,
     pub predations: Vec<PreyRecord>,
+    /// The event archive's recorder (VIEWER.md §10.1): off until the host turns it on; not state.
+    pub tape: Tape,
     pub(crate) next_seed: u64,
     pub(crate) now: Tick,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
@@ -358,6 +361,11 @@ impl rtsim_kernel::rows::Row for RegionHerds {
     }
 }
 
+/// A herd's archive id: its handle's plain bits, without the leg index's owner namespace.
+fn hid(h: HerdId) -> u128 {
+    u128::from(h.to_bits())
+}
+
 fn herd_at(i: u32) -> HerdId {
     PagedArena::<Herd>::handle(i)
 }
@@ -387,6 +395,7 @@ impl Herds {
             trace_enabled: false,
             trace: Vec::new(),
             predations: Vec::new(),
+            tape: Tape::new(),
             next_seed: 0,
             now,
             topo: rtsim_space::topology::all_flat(),
@@ -683,6 +692,14 @@ impl Herds {
         let id = self.herds.insert(herd);
         self.herds[id].next_decide = at;
         self.schedule(at, Ev::Decide { h: id });
+        let start = self.herds[id].route.start();
+        self.tape.event(
+            kinds::HERDS_FOUNDED,
+            At::new(at.0, u32::from(n.frame), start.0, start.1),
+            hid(id),
+            0,
+            n.count as i64,
+        );
         self.note(
             at,
             "herd",
@@ -771,6 +788,16 @@ impl Herds {
             x.route = Route::stay(end, at, at);
             x.next_decide = Tick(u64::MAX);
             self.set_regions(h, Vec::new());
+            let frame = self.herds[h].frame;
+            self.tape
+                .event(
+                    kinds::HERDS_EXTINCT,
+                    At::new(at.0, u32::from(frame), end.0, end.1),
+                    hid(h),
+                    0,
+                    0,
+                )
+                .text(|| format!("the last of {} died", self.herds[h].name));
             self.note(at, "extinct", Some(h), "the last animal died".into());
             return;
         }
@@ -852,6 +879,17 @@ impl Herds {
             if let Some(e) = x.embodied.as_mut() {
                 e.chart = e.chart.compose(folded.iso.inverse());
             }
+        }
+        // One leg per straight piece of the route just decided.
+        let route = &self.herds[h].route;
+        for (p, t) in route.points.windows(2).zip(route.times.windows(2)) {
+            self.tape.leg(
+                kinds::HERDS_MIGRATION,
+                u32::from(frame),
+                (t[0].0, p[0].0, p[0].1),
+                (t[1].0, p[1].0, p[1].1),
+                hid(h),
+            );
         }
         let regions = route_regions(&self.herds[h].route, frame, radius, topo.of(frame));
         self.set_regions(h, regions);
@@ -1044,6 +1082,13 @@ impl Herds {
             x.ledger.starved += starved;
             if starved > 0 {
                 self.stats.starvations += 1;
+                self.tape.event(
+                    kinds::HERDS_STARVATION,
+                    At::new(at.0, u32::from(frame), centre.0 as i32, centre.1 as i32),
+                    hid(h),
+                    0,
+                    starved as i64,
+                );
                 self.note(
                     at,
                     "starve",
@@ -2035,6 +2080,17 @@ impl Herds {
             });
         }
         let food = (given as i64 * i64::from(food_each)).min(i64::from(i32::MAX)) as i32;
+        if self.tape.is_on() {
+            let x = &self.herds[h];
+            let (hx, hz) = self.at_pos(x, at);
+            self.tape.event(
+                kinds::HERDS_PREDATION,
+                At::new(at.0, u32::from(x.frame), hx as i32, hz as i32),
+                hid(h),
+                u128::from(predator),
+                given as i64,
+            );
+        }
         self.note(
             at,
             "predation",
