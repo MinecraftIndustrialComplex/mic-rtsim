@@ -8,9 +8,14 @@
 //! - [`keys`]: where each module keeps its pages (mirrored from rtsim-jni).
 //! - [`journal`]: Java's dictionary from the world's `data/mic_rtsim_journal.dat`.
 
+pub mod cards;
+pub mod habitat;
 pub mod industry;
 pub mod journal;
 pub mod keys;
+pub mod layers;
 pub mod load;
+pub mod view;
 
 pub use load::{Limits, Saved, Status, load_world};
+pub use view::View;
