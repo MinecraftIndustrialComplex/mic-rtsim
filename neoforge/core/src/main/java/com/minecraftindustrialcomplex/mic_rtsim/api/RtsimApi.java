@@ -42,6 +42,14 @@ public final class RtsimApi {
     }
 
     /**
+     * Registers an oil source (a mod that knows where oil is: Create: Diesel Generators' plugin) for the oil
+     * gate (OILGATE.md §4.1, OG-2). Call during mod construction.
+     */
+    public static void registerOilSource(OilSource source) {
+        com.minecraftindustrialcomplex.mic_rtsim.oil.OilSources.register(source);
+    }
+
+    /**
      * Registers a topology source (a world mod that glues a level's edges, Deep Time's layout) asked
      * before Toroidal World's shape and the world border (TP18). Call during mod construction.
      */
