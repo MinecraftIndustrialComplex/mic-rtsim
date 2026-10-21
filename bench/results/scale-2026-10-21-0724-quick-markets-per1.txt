@@ -1,0 +1,11 @@
+bench scale (quick): 1 sweeps, load 23.09 18.71 22.55 23/6014 641416
+  markets-paged Closed = 256 ... 0.5 s
+  markets-paged Closed = 4e3 ... 37.4 s
+sweep    model    value | cpu ms/day catchup us  commits |  heap MiB   rss MiB  peak MiB |   save KiB   incr KiB | slots/day conserved
+markets-paged closed     256 |      21.95          -        - |       3.4      11.3      11.3 |          -          - |         0 ok
+markets-paged closed     4e3 |    1086.34          -        - |      41.5      77.1      84.3 |          -          - |         0 ok
+
+sweep    model  metric       slope  declared  SCALE.md  max/min  bound  verdict
+markets-paged closed resident     0.620      1.20      0.00     5.59      -  ok  (declared above SCALE.md; see note)
+markets-paged closed heap         0.905      1.10      1.00    12.29      -  ok
+wrote bench/results/scale-2026-10-21-0724-quick-markets-per1.json

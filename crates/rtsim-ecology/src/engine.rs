@@ -41,9 +41,9 @@ use rtsim_industry::ids::DistrictId;
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::Writer;
+use rtsim_kernel::meta_pages::{PagedMap, PagedWheel};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::rows::PagedArena;
-use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{
     ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT, Trait,
 };
@@ -96,6 +96,13 @@ const MAX_CROSSINGS: usize = 4;
 /// The dragons' row table (A16): next to the module's own page table 0x4400, which rtsim-jni's
 /// per-table deletion owns.
 pub const DRAGON_TABLE: u16 = 0x4410;
+/// The page tables of the resident indexes when the dragons page (docs/choices-paging-followups.md
+/// PF9): the wheel's log, lairs by key, lairs by cell, and the prey index's villages and roads.
+pub const WHEEL_TABLE: u16 = 0x4412;
+pub const LAIR_KEY_TABLE: u16 = 0x4413;
+pub const LAIR_CELL_TABLE: u16 = 0x4414;
+pub const VILLAGE_CELL_TABLE: u16 = 0x4415;
+pub const ROAD_CELL_TABLE: u16 = 0x4416;
 
 /// Dragons per page. PLACEHOLDER 1, measured (docs/choices-paging-modules.md, PM-D3): most of a
 /// dragon's events change it, and a changed page is pinned until the next save, so a page that
@@ -264,12 +271,12 @@ pub struct Dragons {
     /// Every lair (page table 0x4411, keyed by lair index), paged with the dragons.
     pub lairs: Lairs,
     /// Lairs by their structure key (LAIR_FOUND, DRAGON_UNTAGGED, HOARD_ROBBED name a lair so):
-    /// an index from id to id, resident (SCALE.md §8) and saved in the meta page.
-    pub(crate) lair_by_key: BTreeMap<u64, LairId>,
+    /// an index from id to id, resident (SCALE.md §8) and saved in pages of its own (PF9).
+    pub(crate) lair_by_key: PagedMap<u64, LairId>,
     /// Lairs by region, so an interest area finds roosting dragons without the leg index: a
     /// dragon at rest books nothing there. An index from place to id, resident (SCALE.md §8) and
-    /// saved in the meta page.
-    pub(crate) lair_cells: BTreeMap<(u16, i64, i64), Vec<LairId>>,
+    /// saved in pages of its own (PF9).
+    pub(crate) lair_cells: PagedMap<(u16, i64, i64), Vec<LairId>>,
     /// The dragons that are bodies in the game now (embodied or leaving): bounded by what players
     /// watch, so a session start and the checks find them without a pass over every dragon.
     /// Saved in the meta page.
@@ -278,7 +285,7 @@ pub struct Dragons {
     /// young or starving dragon looks for a roost among these, so the search loads only vacant
     /// lairs' rows, not every lair in range. Saved in the meta page.
     pub(crate) vacant: BTreeSet<LairId>,
-    pub(crate) wheel: TimingWheel<Ev>,
+    pub(crate) wheel: PagedWheel<Ev>,
     pub homes: Homes,
     pub ledger: PreyLedger,
     pub stats: DragonStats,
@@ -341,7 +348,7 @@ impl Dragons {
         }
         if *t != *self.topo {
             self.topo = t;
-            self.index = PreyIndex::default();
+            self.index.reset();
         }
     }
 
@@ -381,11 +388,11 @@ impl Dragons {
             seed,
             dragons: PagedArena::new(DRAGON_TABLE, DRAGONS_PER_PAGE),
             lairs: Lairs::new(),
-            lair_by_key: BTreeMap::new(),
-            lair_cells: BTreeMap::new(),
+            lair_by_key: PagedMap::new(),
+            lair_cells: PagedMap::new(),
             embodied: BTreeSet::new(),
             vacant: BTreeSet::new(),
-            wheel: TimingWheel::new(now),
+            wheel: PagedWheel::new(now),
             homes,
             ledger: PreyLedger::default(),
             stats: DragonStats::default(),
@@ -530,10 +537,7 @@ impl Dragons {
         self.track_lair(id);
         self.lair_by_key.insert(key, id);
         let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(pos.x), i64::from(pos.z));
-        self.lair_cells
-            .entry((pos.frame, rx, rz))
-            .or_default()
-            .push(id);
+        self.lair_cells.get_or_default((pos.frame, rx, rz)).push(id);
         let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
         self.schedule(at + delay, Ev::Respawn { lair: id, plan: 1 });
         id

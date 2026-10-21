@@ -1,0 +1,44 @@
+bench scale (quick): 4 sweeps, load 36.02 27.39 23.08 27/6638 1025250
+  dragons_paged Closed = 512 ... 1.9 s
+  dragons_paged Closed = 4e3 ... 13.5 s
+  dragons_paged Closed = 33e3 ... 163.1 s
+  ships-paged Closed = 49 ... 2.6 s
+  ships-paged Closed = 784 ... 4.9 s
+  ships-paged Closed = 6e3 ... 22.4 s
+  herds-paged Dyadic = 256 ... 2.0 s
+  herds-paged Dyadic = 1e3 ... 8.4 s
+  herds-paged Dyadic = 4e3 ... 58.0 s
+  factions-paged Closed = 1e3 ... 28.0 s
+  factions-paged Closed = 4e3 ... 108.7 s
+sweep    model    value | cpu ms/day catchup us  commits |  heap MiB   rss MiB  peak MiB |   save KiB   incr KiB | slots/day conserved
+dragons_paged closed     512 |     189.47          -        - |      10.5      18.3      18.3 |      258.9          - |         0 ok
+dragons_paged closed     4e3 |    3155.89          -        - |      88.5     102.8     102.8 |     2737.9          - |         0 ok
+dragons_paged closed    33e3 |   33788.09          -        - |     730.9     803.2     803.2 |    17083.8          - |         0 ok
+ships-paged closed      49 |       6.72          -        - |       3.3      10.0      10.0 |       23.9          - |         0 ok
+ships-paged closed     784 |       8.58          -        - |      18.4      27.0      27.5 |      337.8          - |         0 ok
+ships-paged closed     6e3 |      14.86          -        - |     129.9     155.1     161.4 |     2850.4          - |         0 ok
+herds-paged dyadic     256 |     107.97      0.146        - |       1.2       8.7       8.7 |      666.1          - |         0 ok
+herds-paged dyadic     1e3 |     471.52      0.088        - |       1.5      10.2      10.5 |     2651.2          - |         0 ok
+herds-paged dyadic     4e3 |    3979.52      0.161        - |       2.5      22.3      24.4 |    10709.8          - |         0 ok
+factions-paged closed     1e3 |      64.35          -        - |      97.9     111.8     111.8 |      627.2          - |         0 ok
+factions-paged closed     4e3 |     210.75          -        - |     323.1     366.7     368.1 |     2513.2          - |         0 ok
+
+paged    model  regions |  step ms/d heap MiB  res MiB   budget  idx KiB | loads/day evict/day prefetch/hit | save cpu/d  KiB/save    log B
+ships-paged closed      49 |       6.72      3.3      0.1      0.1       38 |       127       127         -/- |       7.2      12.1        -
+ships-paged closed     784 |       8.58     18.4      0.1      0.1       54 |       169       169         -/- |      10.5      11.9        -
+ships-paged closed     6e3 |      14.86    129.9      0.1      0.1      253 |       189       189         -/- |      11.1      13.1        -
+
+sweep    model  metric       slope  declared  SCALE.md  max/min  bound  verdict
+dragons_paged closed resident     0.226      0.30      0.00     2.56      -  ok  (declared above SCALE.md; see note)
+dragons_paged closed heap         1.020      1.10      0.00    69.47      -  ok  (declared above SCALE.md; see note)
+ships-paged closed resident     0.019      0.10      0.00     1.10    4.0  ok
+ships-paged closed cpu          0.159      0.20      0.00     2.21      -  ok  (declared above SCALE.md; see note)
+ships-paged closed heap         0.745      1.10      1.00    39.06      -  ok
+ships-paged closed saveincr     0.016      0.15      0.00     1.10    4.0  ok
+herds-paged dyadic resident     0.137      0.15      0.00     1.46    4.0  ok
+herds-paged dyadic heap         0.271      0.40      0.00     2.12      -  ok  (declared above SCALE.md; see note)
+herds-paged dyadic cpuperunit     0.301      0.10      0.00     2.30    4.0  FAIL
+factions-paged closed resident    -0.001      0.10      0.00     1.00    4.0  ok
+factions-paged closed eventsperunit    -0.009      0.10      0.00     1.01    4.0  ok
+factions-paged closed cpuperunit    -0.144      0.20      0.00     1.22      -  ok  (declared above SCALE.md; see note)
+wrote bench/results/scale-2026-10-21-0824-quick-wheel-before.json

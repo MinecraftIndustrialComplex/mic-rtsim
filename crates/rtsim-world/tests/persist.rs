@@ -8,12 +8,12 @@ use std::sync::{Arc, RwLock};
 
 use proptest::prelude::*;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::build::Genesis;
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::synth::{self, SynthGoods};
-use rtsim_world::world::NodeData;
+use rtsim_world::world::{MARKETS_PER_PAGE, NodeData};
 use rtsim_world::{Side, World, WorldConfig};
 
 fn cfg(seed: u64) -> WorldConfig {
@@ -272,10 +272,13 @@ fn tmpdir(tag: &str) -> std::path::PathBuf {
 
 type Store = Arc<RwLock<PageStore>>;
 
+/// The meta page's key: where rtsim-jni keeps the world's (table 0x5001, id 0, PF12).
+const META: PageKey = PageKey::new(0x5001, 0);
+
 /// A paged save: the meta page and the changed market pages in one commit, then the budget.
 fn save_paged(w: &mut World, store: &Store) {
     let mut b = SaveBatch::new();
-    let t = w.save_paged(&mut b);
+    let t = w.save_paged(&mut b, META);
     store.write().unwrap().commit(b, 0).expect("commit");
     w.saved(t);
     w.enforce_budget();
@@ -311,7 +314,7 @@ proptest! {
                 save_paged(&mut b, &store);
                 let (goods, gids) = synth::goods();
                 let book = synth::recipes(&gids);
-                b = World::open_paged(cfg(seed), goods, book, store.clone(), BUDGET)
+                b = World::open_paged(store.clone(), BUDGET, META, cfg(seed), goods, book)
                     .expect("the pages open");
                 a.run_until(Tick(t.0 - 1));
                 prop_assert_eq!(b.state_hash(), a.state_hash());
@@ -388,4 +391,59 @@ fn a_wrong_or_truncated_snapshot_is_an_error() {
     let mut more = bytes.clone();
     more.push(0);
     assert!(World::load(cfg(3), goods, book, &more).is_err());
+}
+
+/// Paged and stepped tick by tick as a server steps it, a grid of markets stays within its row
+/// budget plus a tick's work (docs/choices-paging-followups.md PF1): every market books its
+/// breakpoints on the same trade boundaries, so without staggered wakes one tick changes every
+/// market page, and a page changed since the last save cannot leave.
+#[test]
+fn a_paged_grid_stepped_tick_by_tick_stays_within_its_budget() {
+    let (goods, ids) = synth::goods();
+    let book = synth::recipes(&ids);
+    let mut c = cfg(11);
+    c.edge_rule.nearest = 4;
+    // A conservation check reads every market: a whole-table pass, so not after every event.
+    c.check_every_event = false;
+    let mut w = World::build(c, goods, book, synth::grid(128, 11));
+    w.run_until(Tick::from_days(1));
+    let dir = tmpdir("stagger");
+    let store: Store = Arc::new(RwLock::new(
+        PageStore::open(&dir, Durability::NoSync).unwrap(),
+    ));
+    // A quarter of the rows: every save after the first must evict.
+    let all = w.markets.rows().resident_bytes();
+    let budget = all / 4;
+    w.attach_store(store.clone(), budget);
+    save_paged(&mut w, &store);
+    w.markets.rows_mut().reset_stats();
+    let pages = 128usize.div_ceil(MARKETS_PER_PAGE as usize);
+    let (mut saves, mut pressure) = (0, 0);
+    let end = Tick::from_days(2);
+    let mut t = w.now();
+    while t < end {
+        t += 1;
+        w.run_until(t);
+        if w.needs_save() {
+            save_paged(&mut w, &store);
+            pressure += 1;
+        } else if t.0.is_multiple_of(6_000) {
+            save_paged(&mut w, &store);
+            saves += 1;
+        }
+    }
+    let s = w.markets.rows().stats();
+    assert!(s.loads > 0, "the markets paged");
+    // A tick's work is a page or two; allow two pages over the budget.
+    let slack = 2 * all / pages;
+    assert!(
+        s.peak_resident_bytes as usize <= budget + slack,
+        "peak {} bytes against a budget of {budget} (+{slack}) over {pages} pages; {saves} \
+         autosaves, {pressure} pressure saves",
+        s.peak_resident_bytes
+    );
+    w.check_conserved(end).unwrap();
+    drop(w);
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
 }

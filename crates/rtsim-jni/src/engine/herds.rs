@@ -20,10 +20,12 @@
 //!   core's counter after every other module's: all per session (puppets never outlive one, as
 //!   the dragons' S11 and the ships' U4), so nothing is kept or resent. None carries an op id.
 //!   Species and the dimension go through the engine's dictionary.
-//! - **Pages** ([`Link::load`], [`snapshot`]): table 0x4800 ('H'), one page with `Herds::save`
-//!   and its state hash, checked on load. The herds book legs in the phase 1 world, so while
-//!   they run the phase 1 link snapshots at every save (S4), in the same commit; a page without
-//!   the world it was saved with is dropped loudly.
+//! - **Pages** ([`Link::load`], [`save`]): the herds page through the engine's store
+//!   (`engine/paging.rs`, PF12): their meta page at table 0x4800 ('H') id 0, their row and index
+//!   tables at 0x4810 to 0x4815, a save writing the pages changed since the last one; in TEST
+//!   mode their state hash beside the meta page, checked on load. The herds book legs in the
+//!   phase 1 world, so while they run the phase 1 link snapshots at every save (S4), in the same
+//!   commit; pages without the world they were saved with are dropped loudly.
 //! - **The switch** (C25, U10): `Module.ECOLOGY` (bit 4), as the dragons. Off, the herds ignore
 //!   their records, run nothing, write nothing and keep the page they had; on again, the bodies
 //!   of before are gone (their session reset) and they run on from where they stopped.
@@ -35,26 +37,26 @@
 //! grassland of Y3 (X2-6), where a test's HERD_FOUND order ([`order_found`], Y4) founds herds.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
+use rtsim_ecology::herds::HerdsTicket;
 use rtsim_ecology::herds::boundary::{self, Cmd, HerdDict, Obs, SpawnRejected};
 use rtsim_ecology::herds::habitat::HabitatClimate;
 use rtsim_ecology::herds::herd::herd_of;
 use rtsim_ecology::herds::{HerdSpecies, HerdStats, HerdTunables, Herds, NewHerd};
 use rtsim_kernel::clock::Tick;
-use rtsim_kernel::codec::{CodecError, Reader, Writer};
-use rtsim_kernel::page::{PageKey, PageStore};
+use rtsim_kernel::page::{PageKey, SaveBatch};
+use rtsim_kernel::rows::PageSource;
 use rtsim_space::WorldHandle;
 
+use super::paging::{self, Live, Pager};
 use super::{State, log_error, log_info, log_warn, phase1, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The herds' pages: table 0x4800 ('H'), next to the dragons' 0x4400 and the ships' 0x5300.
+/// Their meta page is id 0 (PF12); their own tables are 0x4810 and up (`Herds` TABLES).
 pub const TABLE: u16 = 0x4800;
 pub const KEY_HERDS: PageKey = PageKey::new(TABLE, 0);
-const MAGIC: u32 = u32::from_le_bytes(*b"RTHL");
-/// 2: `Herds::save` writes its rows as row tables' blobs after the resident meta
-/// (docs/choices-paging-modules.md, Herds).
-const VERSION: u16 = 2;
 
 /// Java's module bit the herds run under: `Module.ECOLOGY` (ordinal 4), as the dragons (Y2).
 pub const MODULE_HERDS: u32 = 1 << 4;
@@ -75,12 +77,12 @@ pub(super) struct Link {
     pub(super) engine: Herds,
     /// Commands not written yet (per session).
     queue: VecDeque<Cmd>,
-    enabled: bool,
+    pub(super) enabled: bool,
     /// The herds' session reset (bodies of an earlier session or of before a switch-off are gone)
     /// is due the next time they run.
     reset_due: bool,
-    /// The page as last written or read: what a save keeps while the herds are switched off.
-    last_page: Option<Vec<u8>>,
+    /// What the saves owe the herds' pages (a save while switched off, a purge at start).
+    pub(super) pager: Pager,
     /// The last load dropped pages it could not read ([`when_pages_unreadable`]).
     pub(super) dropped_pages: bool,
     /// The last load read back herds whose state hash is not the one saved: (saved, read).
@@ -110,12 +112,19 @@ fn new_engine(world: &WorldHandle) -> Herds {
 
 /// **The policy for herd pages this build cannot read** (as the dragons' S12 and the ships' U1):
 /// dropped with a loud log, the herds start afresh, and the next save replaces them.
-fn when_pages_unreadable(why: &str, world: &WorldHandle) -> Result<Link, String> {
+/// Their pages are deleted at start (`Pager::purge`), before a fresh table could read them.
+fn when_pages_unreadable(
+    why: &str,
+    source: &Arc<dyn PageSource>,
+    budget: usize,
+    world: &WorldHandle,
+) -> Result<Link, String> {
     log_error(&format!(
         "HERD PAGES DROPPED: {why}. The herds start afresh and the next save replaces them"
     ));
-    let mut l = Link::empty(world);
+    let mut l = Link::fresh(source, budget, world);
     l.dropped_pages = true;
+    l.pager.purge = true;
     Ok(l)
 }
 
@@ -126,7 +135,7 @@ impl Link {
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
-            last_page: None,
+            pager: Pager::default(),
             dropped_pages: false,
             restore_diverged: None,
             records: 0,
@@ -136,72 +145,62 @@ impl Link {
         }
     }
 
-    /// Loads the herds' page. `world_restored` says the phase 1 world came back from its pages:
-    /// the herds' legs and the players' areas they hold are that world's, so without it their
-    /// page is dropped too.
+    /// New herds paging through the engine's store under `budget` row bytes.
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize, world: &WorldHandle) -> Link {
+        let mut l = Link::empty(world);
+        l.engine.attach_store(source.clone(), budget);
+        l
+    }
+
+    /// Opens the herds' pages (their meta page; the rows are read as they are needed), paging
+    /// under `budget` row bytes. `world_restored` says the phase 1 world came back from its
+    /// pages: the herds' legs and the players' areas they hold are that world's, so without it
+    /// their pages are dropped too. `test`: check the state hash the save wrote (PF16).
     pub(super) fn load(
-        store: &mut PageStore,
+        source: &Arc<dyn PageSource>,
+        budget: usize,
+        test: bool,
         world_restored: bool,
         world: &WorldHandle,
     ) -> Result<Link, String> {
-        let page = match store.get(KEY_HERDS) {
-            Ok(p) => p,
-            Err(e) => {
-                return when_pages_unreadable(&format!("cannot read the herds' page: {e}"), world);
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget, world);
+        match source.read(KEY_HERDS) {
+            Err(e) => return unreadable(&format!("cannot read the herds' meta page: {e}")),
+            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+                return unreadable("herd pages without their meta page");
             }
-        };
-        let Some(b) = page else {
-            return Ok(Link::empty(world));
-        };
+            Ok(None) => return Ok(Link::fresh(source, budget, world)),
+            Ok(Some(_)) => {}
+        }
         if !world_restored {
-            return when_pages_unreadable(
-                "the phase 1 world they live in did not come back from its pages",
-                world,
-            );
+            return unreadable("the phase 1 world they live in did not come back from its pages");
         }
-        let mut r = Reader::new(&b);
-        let head = (|| -> Result<(), CodecError> {
-            if r.u32()? != MAGIC {
-                return Err(CodecError::Invalid("not a herds page".into()));
-            }
-            let v = r.u16()?;
-            if v != VERSION {
-                return Err(CodecError::Invalid(format!(
-                    "herds page version {v}, this build reads {VERSION}"
-                )));
-            }
-            Ok(())
-        })();
-        if let Err(e) = head {
-            return when_pages_unreadable(&format!("the herds' page: {e}"), world);
-        }
-        let Ok(saved_hash) = r.u64() else {
-            return when_pages_unreadable("the herds' page is cut short", world);
+        let tun = HerdTunables::default();
+        let engine = match Herds::open_paged(source.clone(), budget, KEY_HERDS, tun, climate(world))
+        {
+            Ok(e) => e,
+            Err(e) => return unreadable(&format!("the herds' meta page: {e}")),
         };
-        let rest = r.take(r.remaining()).unwrap_or_default();
-        match Herds::load(HerdTunables::default(), climate(world), rest) {
-            Ok(engine) => {
-                let hash = engine.state_hash();
-                let diverged = (hash != saved_hash).then_some((saved_hash, hash));
-                if diverged.is_some() {
-                    log_warn(&format!(
-                        "the herds read back to state {hash:016x}, the save had {saved_hash:016x}"
-                    ));
-                }
-                log_info(&format!(
-                    "herds restored: {} herds, {} events booked, state {:016x}",
-                    engine.herds.len(),
-                    engine.pending_events(),
-                    hash
-                ));
-                let mut l = Link::empty(world);
-                l.engine = engine;
-                l.restore_diverged = diverged;
-                l.last_page = Some(b);
-                Ok(l)
-            }
-            Err(e) => when_pages_unreadable(&format!("the herds' page: {e}"), world),
+        let saved = test
+            .then(|| paging::saved_hash(&**source, KEY_HERDS))
+            .flatten();
+        let hash = saved.map(|_| engine.state_hash());
+        let diverged = saved.zip(hash).filter(|(s, h)| s != h);
+        if let Some((s, h)) = diverged {
+            log_warn(&format!(
+                "the herds read back to state {h:016x}, the save had {s:016x}"
+            ));
         }
+        log_info(&format!(
+            "herds restored: {} herds, {} events booked{}",
+            engine.herds.len(),
+            engine.pending_events(),
+            hash.map_or(String::new(), |h| format!(", state {h:016x}"))
+        ));
+        let mut l = Link::empty(world);
+        l.engine = engine;
+        l.restore_diverged = diverged;
+        Ok(l)
     }
 
     /// Whether the herds are in the world at all: no herd means nothing to run and nothing that
@@ -260,7 +259,7 @@ pub(super) fn running(st: &State) -> bool {
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.herds.queue.clear();
     // The first record of the engine's only session: what it holds is its pages as read, so a
-    // switch that is off from the start keeps exactly those (`last_page`).
+    // switch that is off from the start keeps exactly those (no save writes them).
     st.herds.enabled = module_mask & MODULE_HERDS != 0;
     st.herds.reset_due = true;
     reset_if_due(st);
@@ -275,9 +274,7 @@ fn set_enabled(st: &mut State, on: bool) {
     if was && !on {
         let _ = st.herds.engine.take_commands();
         st.herds.queue.clear();
-        if st.herds.active() {
-            st.herds.last_page = Some(encode_page(&st.herds.engine));
-        }
+        st.herds.pager.save_due = true;
     }
     if on && !was {
         st.herds.reset_due = true;
@@ -574,45 +571,31 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 
 // ---- saves --------------------------------------------------------------------------------------
 
-fn encode_page(h: &Herds) -> Vec<u8> {
-    let body = h.save();
-    let mut w = Writer::with_capacity(body.len() + 16);
-    w.u32(MAGIC);
-    w.u16(VERSION);
-    w.u64(h.state_hash());
-    w.raw(&body);
-    w.into_bytes()
-}
-
-/// The herds' page, taken at this step boundary with the phase 1 world's snapshot. Commands the
-/// herds decided and the link has not taken go to the queue first. Switched off, the page they
-/// had (U10).
-pub(super) fn snapshot(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
-    if !st.herds.enabled {
-        return st
-            .herds
-            .last_page
-            .clone()
-            .map(|b| vec![(KEY_HERDS, b)])
-            .unwrap_or_default();
+/// The herds' part of a save at this step boundary (PF13): their meta page and the pages
+/// changed since the last save, into `batch`. Commands the herds decided and the link has not
+/// taken go to the queue first. Switched off, nothing unless a save is due (U10: the pages stay
+/// as they were).
+pub(super) fn save(
+    st: &mut State,
+    batch: &mut SaveBatch,
+    test: bool,
+) -> (Option<HerdsTicket>, Live) {
+    if st.herds.enabled {
+        take_commands(st);
     }
-    take_commands(st);
-    if !st.herds.active() && !st.herds.dropped_pages {
-        st.herds.last_page = None;
-        return Vec::new();
+    let l = &mut st.herds;
+    let out = paging::save(
+        &mut l.engine,
+        &mut l.pager,
+        l.enabled,
+        KEY_HERDS,
+        batch,
+        test,
+    );
+    if out.0.is_some() {
+        l.dropped_pages = false;
     }
-    st.herds.dropped_pages = false;
-    let page = encode_page(&st.herds.engine);
-    st.herds.last_page = Some(page.clone());
-    vec![(KEY_HERDS, page)]
-}
-
-/// Herd pages a save no longer writes (dropped pages, or no herds any more).
-pub(super) fn deletions(store: &PageStore, pages: &[(PageKey, Vec<u8>)]) -> Vec<PageKey> {
-    store
-        .keys()
-        .filter(|k| k.table() == TABLE && !pages.iter().any(|(p, _)| p == k))
-        .collect()
+    out
 }
 
 // ---- inspection ---------------------------------------------------------------------------------

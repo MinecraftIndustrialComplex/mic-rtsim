@@ -28,6 +28,7 @@ impl World {
         if i >= self.nodes.len() {
             return out;
         }
+        self.release(i, at);
         let region = self.nodes[i].region;
         self.markets.apply(region, at, |m, _| {
             if !m.is_storehouse() {

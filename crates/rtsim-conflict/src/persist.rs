@@ -8,8 +8,8 @@
 //! Two forms (docs/choices-paging-modules.md, section Conflict):
 //!
 //! - **The blob** ([`Conflict::save`], [`Conflict::load`]): the resident part, then each row
-//!   table ([`crate::tables`]) in key order. What rtsim-jni writes as page 0x4300/0 while it does
-//!   not page the conflict, and what [`Conflict::state_hash`] hashes.
+//!   table ([`crate::tables`]) in key order. What the resident tests and tools save, and what
+//!   [`Conflict::state_hash`] hashes (rtsim-jni pages the conflict, from page 0x4300/0).
 //! - **Paged** ([`Conflict::save_paged`], [`Conflict::open_paged`]): the resident part and the row
 //!   tables' counts as one meta page, and each row table's dirty pages.
 //!
@@ -26,11 +26,13 @@ use rtsim_industry::ids::DistrictId;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
 use rtsim_kernel::handle::{Arena, Handle};
+use rtsim_kernel::meta_pages::{
+    ArenaTicket, MapTicket, PagedMap, PagedWheel, ResidentArena, WheelTicket,
+};
 use rtsim_kernel::page::{PageError, PageKey, Result as PageResult, SaveBatch};
 use rtsim_kernel::paging::SaveTicket;
 use rtsim_kernel::rng::fnv1a64;
 use rtsim_kernel::rows::{PageSource, PagedRows, RowStats};
-use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
@@ -45,17 +47,68 @@ use crate::engine::{
 use crate::grievance::{Grievance, K};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
 use crate::tables::{
-    FACTION_TABLE, FACTIONS_PER_PAGE, FactionRow, PLACE_TABLE, PLACES_PER_PAGE, PlaceRow,
-    SOURCE_TABLE, SOURCES_PER_PAGE, SourceRef, SourceRow,
+    FACTION_CELL_TABLE, FACTION_KEY_TABLE, FACTION_TABLE, FACTIONS_PER_PAGE, FEUD_TABLE,
+    FactionRow, PARTY_TABLE, PLACE_TABLE, PLACES_PER_PAGE, PlaceRow, SOURCE_KEY_TABLE,
+    SOURCE_TABLE, SOURCES_PER_PAGE, SourceRef, SourceRow, WHEEL_TABLE,
 };
 use crate::tunables::ConflictTunables;
 
 /// The blob ([`Conflict::save`]). RTC2: rows by `PagedRows::encode_all` (RTC1 held a vector of
-/// factions and maps of feuds and sources).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC2");
-/// The meta page of a paged save ([`Conflict::save_paged`]).
+/// factions and maps of feuds and sources). RTC3: the indexes, parties and wheel follow the rest
+/// of the resident state (docs/choices-paging-followups.md PF10).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC3");
+/// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
+/// are in pages of their own, their headers after the row counts (PF10).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 1;
+const META_VERSION: u16 = 2;
+
+/// Every page table the conflict owns when it pages: a meta key in none of them.
+const TABLES: [u16; 9] = [
+    FACTION_TABLE,
+    FEUD_TABLE,
+    SOURCE_TABLE,
+    PLACE_TABLE,
+    WHEEL_TABLE,
+    PARTY_TABLE,
+    FACTION_KEY_TABLE,
+    FACTION_CELL_TABLE,
+    SOURCE_KEY_TABLE,
+];
+
+type CellOf = ((u16, i32, i32), u32);
+
+fn put_cell_of(w: &mut Writer, ((frame, cx, cz), f): &CellOf) {
+    w.u16(*frame);
+    w.var_i64(i64::from(*cx));
+    w.var_i64(i64::from(*cz));
+    w.var_u64(u64::from(*f));
+}
+
+fn get_cell_of(r: &mut Reader<'_>) -> codec::Result<CellOf> {
+    let cell = (r.u16()?, get_i32(r)?, get_i32(r)?);
+    Ok((cell, get_u32(r)?))
+}
+
+fn put_source_key(w: &mut Writer, (k, kind): &(u64, SignalKind)) {
+    w.u64(*k);
+    w.u8(*kind as u8);
+}
+
+fn get_source_key(r: &mut Reader<'_>) -> codec::Result<(u64, SignalKind)> {
+    Ok((r.u64()?, get_kind(r)?))
+}
+
+fn put_source_ref(w: &mut Writer, s: &SourceRef) {
+    w.var_u64(u64::from(s.id));
+    w.f64(s.rate);
+}
+
+fn get_source_ref(r: &mut Reader<'_>) -> codec::Result<SourceRef> {
+    Ok(SourceRef {
+        id: get_u32(r)?,
+        rate: r.f64()?,
+    })
+}
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -832,15 +885,27 @@ impl Decode for PlaceRow {
 /// commit is durable or [`Conflict::save_failed`] if it failed.
 #[derive(Debug)]
 pub struct ConflictTickets {
+    wheel: WheelTicket,
+    parties: ArenaTicket,
+    by_key: MapTicket,
+    cells: MapTicket,
+    source_keys: MapTicket,
     factions: SaveTicket,
     sources: SaveTicket,
     places: SaveTicket,
 }
 
 impl ConflictTickets {
-    /// Row pages the save wrote (the meta page aside).
+    /// Row and index pages the save wrote (the meta page aside).
     pub fn pages(&self) -> usize {
-        self.factions.pages() + self.sources.pages() + self.places.pages()
+        self.factions.pages()
+            + self.sources.pages()
+            + self.places.pages()
+            + self.wheel.pages()
+            + self.parties.pages()
+            + self.by_key.pages()
+            + self.cells.pages()
+            + self.source_keys.pages()
     }
 }
 
@@ -860,29 +925,8 @@ impl Conflict {
         w.u64(self.cultures.fingerprint());
         w.u64(self.seed);
         w.u64(self.now.0);
-        put_usize(w, self.by_key.len());
-        for (k, f) in &self.by_key {
-            w.u64(*k);
-            w.var_u64(u64::from(*f));
-        }
-        put_usize(w, self.cells.len());
-        for ((frame, cx, cz), f) in &self.cells {
-            w.u16(*frame);
-            w.var_i64(i64::from(*cx));
-            w.var_i64(i64::from(*cz));
-            w.var_u64(u64::from(*f));
-        }
         w.var_u64(self.feud_count);
-        put_usize(w, self.sources.ids.len());
-        for ((k, kind), r) in &self.sources.ids {
-            w.u64(*k);
-            w.u8(*kind as u8);
-            w.var_u64(u64::from(r.id));
-            w.f64(r.rate);
-        }
         w.var_u64(u64::from(self.sources.next));
-        self.parties.encode_with(w, |x, w| put_party(w, x));
-        self.wheel.encode_with(w, |e, w| put_ev(w, e));
         put_usize(w, self.players.len());
         for (a, u) in &self.players {
             w.u64(a.to_bits());
@@ -923,28 +967,8 @@ impl Conflict {
         let seed = r.u64()?;
         let now = Tick(r.u64()?);
         let mut c = Conflict::new(seed, tun, cultures, now);
-        let n = r.len_prefix(9)?;
-        for _ in 0..n {
-            let k = r.u64()?;
-            c.by_key.insert(k, get_u32(r)?);
-        }
-        let n = r.len_prefix(5)?;
-        for _ in 0..n {
-            let cell = (r.u16()?, get_i32(r)?, get_i32(r)?);
-            c.cells.insert((cell, get_u32(r)?));
-        }
         c.feud_count = r.var_u64()?;
-        let n = r.len_prefix(18)?;
-        for _ in 0..n {
-            let k = r.u64()?;
-            let kind = get_kind(r)?;
-            let id = get_u32(r)?;
-            let rate = r.f64()?;
-            c.sources.ids.insert((k, kind), SourceRef { id, rate });
-        }
         c.sources.next = get_u32(r)?;
-        c.parties = Arena::decode_with(r, get_party)?;
-        c.wheel = TimingWheel::decode_with(r, get_ev)?;
         let n = r.len_prefix(24)?;
         for _ in 0..n {
             let a = handle(r)?;
@@ -982,6 +1006,41 @@ impl Conflict {
         Ok(c)
     }
 
+    /// The structures saved in pages of their own when paged (PF10), as one blob.
+    fn put_structures(&self, w: &mut Writer) {
+        put_usize(w, self.by_key.len());
+        for (k, f) in &self.by_key {
+            w.u64(*k);
+            w.var_u64(u64::from(*f));
+        }
+        put_usize(w, self.cells.len());
+        self.cells.keys().for_each(|c| put_cell_of(w, c));
+        put_usize(w, self.sources.ids.len());
+        for (k, s) in &self.sources.ids {
+            put_source_key(w, k);
+            put_source_ref(w, s);
+        }
+        self.parties.encode_with(w, |x, w| put_party(w, x));
+        self.wheel.encode_with(w, |e, w| put_ev(w, e));
+    }
+
+    fn get_structures(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        for _ in 0..r.len_prefix(9)? {
+            let k = r.u64()?;
+            self.by_key.insert(k, get_u32(r)?);
+        }
+        for _ in 0..r.len_prefix(5)? {
+            self.cells.insert(get_cell_of(r)?, ());
+        }
+        for _ in 0..r.len_prefix(18)? {
+            let k = get_source_key(r)?;
+            self.sources.ids.insert(k, get_source_ref(r)?);
+        }
+        self.parties = Arena::decode_with(r, get_party)?.into();
+        self.wheel = PagedWheel::decode_with(r, get_ev)?;
+        Ok(())
+    }
+
     /// The resident indexes agree with the row tables' counts (no row is read).
     fn check_indexes(&self) -> codec::Result<()> {
         let n = self.factions.len();
@@ -993,7 +1052,7 @@ impl Conflict {
             ));
         }
         if self.by_key.values().any(|f| *f as usize >= n)
-            || self.cells.iter().any(|e| e.1 as usize >= n)
+            || self.cells.keys().any(|e| e.1 as usize >= n)
         {
             return bad("an index names a faction past the table".into());
         }
@@ -1013,6 +1072,7 @@ impl Conflict {
         let mut w = Writer::with_capacity(4096 + self.feud_count as usize * 160);
         w.u32(MAGIC);
         self.put_resident(&mut w);
+        self.put_structures(&mut w);
         self.factions.rows.encode_all(&mut w);
         self.sources.rows.encode_all(&mut w);
         self.places.rows.encode_all(&mut w);
@@ -1031,6 +1091,7 @@ impl Conflict {
             return bad("not a conflict save".into());
         }
         let mut c = Self::get_resident(r, tun, cultures)?;
+        c.get_structures(r)?;
         c.factions.rows = PagedRows::decode_all(FACTION_TABLE, FACTIONS_PER_PAGE, r)?;
         c.sources.rows = PagedRows::decode_all(SOURCE_TABLE, SOURCES_PER_PAGE, r)?;
         c.places.rows = PagedRows::decode_all(PLACE_TABLE, PLACES_PER_PAGE, r)?;
@@ -1137,6 +1198,10 @@ impl Conflict {
     /// the tickets come back through [`Conflict::saved`] (the commit is durable) or
     /// [`Conflict::save_failed`].
     pub fn save_paged(&mut self, batch: &mut SaveBatch, meta_key: PageKey) -> ConflictTickets {
+        assert!(
+            !TABLES.contains(&meta_key.table()),
+            "the conflict's meta page {meta_key:?} inside a row or index table"
+        );
         let mut w = Writer::with_capacity(4096);
         w.u32(META_MAGIC);
         w.u16(META_VERSION);
@@ -1144,8 +1209,40 @@ impl Conflict {
         w.var_u64(self.factions.rows.len());
         w.var_u64(self.sources.rows.len());
         w.var_u64(self.places.rows.len());
+        let wheel = self
+            .wheel
+            .save_paged(batch, WHEEL_TABLE, &mut w, |e, w| put_ev(w, e));
+        let parties = self
+            .parties
+            .save_paged(batch, PARTY_TABLE, &mut w, |x, w| put_party(w, x));
+        let by_key = self.by_key.save_paged(
+            batch,
+            FACTION_KEY_TABLE,
+            &mut w,
+            |k, w| w.u64(*k),
+            |f, w| w.var_u64(u64::from(*f)),
+        );
+        let cells = self.cells.save_paged(
+            batch,
+            FACTION_CELL_TABLE,
+            &mut w,
+            |c, w| put_cell_of(w, c),
+            |(), _| {},
+        );
+        let source_keys = self.sources.ids.save_paged(
+            batch,
+            SOURCE_KEY_TABLE,
+            &mut w,
+            |k, w| put_source_key(w, k),
+            |s, w| put_source_ref(w, s),
+        );
         batch.put(meta_key, w.as_bytes());
         ConflictTickets {
+            wheel,
+            parties,
+            by_key,
+            cells,
+            source_keys,
             factions: self.factions.rows.save_dirty(batch),
             sources: self.sources.rows.save_dirty(batch),
             places: self.places.rows.save_dirty(batch),
@@ -1154,6 +1251,11 @@ impl Conflict {
 
     pub fn saved(&mut self, t: ConflictTickets) {
         self.budget_mark = None;
+        self.wheel.saved(t.wheel);
+        self.parties.saved(t.parties);
+        self.by_key.saved(t.by_key);
+        self.cells.saved(t.cells);
+        self.sources.ids.saved(t.source_keys);
         self.factions.rows.saved(t.factions);
         self.sources.rows.saved(t.sources);
         self.places.rows.saved(t.places);
@@ -1161,6 +1263,11 @@ impl Conflict {
 
     pub fn save_failed(&mut self, t: ConflictTickets) {
         self.budget_mark = None;
+        self.wheel.save_failed(t.wheel);
+        self.parties.save_failed(t.parties);
+        self.by_key.save_failed(t.by_key);
+        self.cells.save_failed(t.cells);
+        self.sources.ids.save_failed(t.source_keys);
         self.factions.rows.save_failed(t.factions);
         self.sources.rows.save_failed(t.sources);
         self.places.rows.save_failed(t.places);
@@ -1196,6 +1303,17 @@ impl Conflict {
         let mut c = Self::get_resident(r, tun, cultures).map_err(fmt)?;
         let (nf, ns, np) = (|| -> codec::Result<(u64, u64, u64)> {
             Ok((r.var_u64()?, r.var_u64()?, r.var_u64()?))
+        })()
+        .map_err(fmt)?;
+        let src = &*source;
+        (|| -> codec::Result<()> {
+            c.wheel = PagedWheel::open_paged(r, WHEEL_TABLE, src, get_ev)?;
+            c.parties = ResidentArena::open_paged(r, PARTY_TABLE, src, get_party)?;
+            c.by_key = PagedMap::open_paged(r, FACTION_KEY_TABLE, src, |r| r.u64(), get_u32)?;
+            c.cells = PagedMap::open_paged(r, FACTION_CELL_TABLE, src, get_cell_of, |_| Ok(()))?;
+            c.sources.ids =
+                PagedMap::open_paged(r, SOURCE_KEY_TABLE, src, get_source_key, get_source_ref)?;
+            Ok(())
         })()
         .map_err(fmt)?;
         r.finish_check().map_err(fmt)?;
