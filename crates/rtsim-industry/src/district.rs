@@ -172,7 +172,9 @@ pub struct SimSpan {
     /// The inventories the replay covers (I7): those whose chunks were unloaded at its start.
     pub invs: BTreeSet<u32>,
     /// A glass replay (GLASSBOX.md §4): it books per store (`PoolKey::Store`); `base` is the
-    /// stores' total at the start, and its `Stock` pools start at 0 (events only).
+    /// stores' total at the start. Its `Stock` pools hold the cut's supply (I7: what the live
+    /// part holds and the district owes, when goods cross from it) and the events (imports wait
+    /// there, G2-14); their change from their start is owed.
     pub glass: bool,
 }
 

@@ -269,9 +269,16 @@ fn to_fixed(q: Q) -> i64 {
     i64::try_from(v).unwrap_or(if n < 0 { i64::MIN / 4 } else { i64::MAX / 4 })
 }
 
-/// Units a pool can move in one tick at `net` (an upper bound, the carry included).
-fn per_tick(net: i64) -> i64 {
-    i64::try_from((i128::from(net).abs() + U - 1) / U).unwrap_or(i64::MAX / 4) + 1
+/// The most a pool moves in one tick at `net`: a diffuser's carry is below a unit, so one tick
+/// emits at most `ceil(|net|)` (a fall's front-loaded first tick included).
+fn reach(net: i64) -> i64 {
+    i64::try_from((i128::from(net).abs() + U - 1) / U).unwrap_or(i64::MAX / 4)
+}
+
+/// A controller's lookahead per pool: a tick's move and a unit more, so a share it is given
+/// (at least this much) always runs a tick before its bound fires.
+fn ctrl_reach(net: i64) -> i64 {
+    reach(net) + 1
 }
 
 /// Splits `total` by weights: floors, the rest to the heaviest.
@@ -1121,7 +1128,7 @@ impl Replay {
             }
             // Each pool first gets a tick's move (the settle switched the controller if the
             // distance were less), the rest by rate, so no share fires before a tick runs.
-            let base: Vec<i64> = moving.iter().map(|&(_, m, r)| m * per_tick(r)).collect();
+            let base: Vec<i64> = moving.iter().map(|&(_, m, r)| m * ctrl_reach(r)).collect();
             let rest = (dist - base.iter().sum::<i64>()).max(0);
             let w: Vec<f64> = moving.iter().map(|&(_, m, r)| (r as f64) * m as f64).collect();
             for (j, s) in split(rest, &w).into_iter().enumerate() {
@@ -1221,7 +1228,7 @@ impl Replay {
         for (&(inv, g), &l0) in &self.st.empty {
             let k = PoolKey::Store(d, inv, g);
             let r = net(k);
-            let ahead = if r > 0 { per_tick(r) } else { 0 };
+            let ahead = if r > 0 { reach(r) } else { 0 };
             if level(lv, k) + ahead >= l0 + self.hold(comp, inv, g, goods, tun) {
                 unflag.push((inv, g));
             }
@@ -1240,14 +1247,14 @@ impl Replay {
                     }
                     let l = level(lv, k);
                     let r = net(k);
-                    if l <= 0 || (r < 0 && l < per_tick(r)) {
+                    if l <= 0 || (r < 0 && l < reach(r)) {
                         self.st.empty.insert((inv, g), l.max(0));
                         changed = true;
                     }
                 }
                 PoolKey::Stock(_, g) => {
                     let r = net(k);
-                    if r < 0 && !self.st.dry.contains(&g) && level(lv, k) < per_tick(r) {
+                    if r < 0 && !self.st.dry.contains(&g) && level(lv, k) < reach(r) {
                         self.st.dry.insert(g);
                         changed = true;
                     }
@@ -1273,7 +1280,7 @@ impl Replay {
             let sh = self.shares(inv, lv, &arriving, goods);
             if sh
                 .iter()
-                .any(|&(k, s)| s < per_tick(net(k)))
+                .any(|&(k, s)| s < reach(net(k)))
             {
                 newly_full.push(inv);
             }
@@ -1293,7 +1300,7 @@ impl Replay {
                 .range(PoolKey::Store(d, inv, Good(0))..=PoolKey::Store(d, inv, Good(u32::MAX)))
                 .any(|(&k, &a)| {
                     let r = net(k);
-                    let ahead = if r < 0 { per_tick(r) } else { 0 };
+                    let ahead = if r < 0 { reach(r) } else { 0 };
                     let f = flv.get(&k.good()).copied().unwrap_or(a);
                     a - ahead <= f - self.step_of(inv, k.good(), goods)
                 })
@@ -1327,7 +1334,7 @@ impl Replay {
             let ahead: i64 = pools
                 .iter()
                 .filter(|&&(k, _)| net(k) * sign > 0)
-                .map(|&(k, m)| m * per_tick(net(k)))
+                .map(|&(k, m)| m * ctrl_reach(net(k)))
                 .sum();
             if dist <= 0 || (ahead > 0 && dist <= ahead) {
                 self.st.ctrl_on[v as usize] = !on;
@@ -1339,7 +1346,7 @@ impl Replay {
         for &g in &self.st.dry {
             let k = PoolKey::Stock(d, g);
             let r = net(k);
-            let ahead = if r > 0 { per_tick(r) } else { 0 };
+            let ahead = if r > 0 { reach(r) } else { 0 };
             if level(lv, k) + ahead >= holding_threshold(goods, g, tun.holding_stacks, true).max(1) {
                 undry.push(g);
             }
@@ -1556,7 +1563,7 @@ impl Replay {
         let tick_max: i64 = ms
             .iter()
             .flat_map(|m| m.nets.values())
-            .map(|&r| per_tick(r))
+            .map(|&r| reach(r))
             .max()
             .unwrap_or(1);
         let check = |n: u64| -> bool {
