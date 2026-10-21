@@ -369,18 +369,25 @@ fn a_populated_world_opens_in_the_host_with_its_saved_state() {
 
 /// GameTest worlds (made by real servers with the mods in) open in the host with the state hash
 /// their saves wrote, and three game days there come out the same at 20 ticks a hand-over and at
-/// the host's fast stride.
+/// the host's fast stride. Always the core and create GameTest saves rtsim-view keeps as fixtures,
+/// plus any GameTest world in this checkout (or `RTSIM_HOST_WORLDS` instead of both).
 #[test]
 fn gametest_worlds_open_in_the_host_with_their_saved_state() {
     let worlds: Vec<PathBuf> = match std::env::var("RTSIM_HOST_WORLDS") {
         Ok(v) if !v.is_empty() => v.split(':').map(PathBuf::from).collect(),
         _ => {
-            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../neoforge");
-            fs::read_dir(&root)
+            let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let fixtures = ["core", "create"]
+                .map(|w| here.join("../rtsim-view/tests/data").join(w))
+                .into_iter();
+            let root = here.join("../../neoforge");
+            let checkout = fs::read_dir(&root)
                 .into_iter()
                 .flatten()
                 .flatten()
-                .map(|e| e.path().join("run-gametest/world"))
+                .map(|e| e.path().join("run-gametest/world"));
+            fixtures
+                .chain(checkout)
                 .filter(|w| w.join(save::PAGES).is_dir())
                 .collect()
         }
