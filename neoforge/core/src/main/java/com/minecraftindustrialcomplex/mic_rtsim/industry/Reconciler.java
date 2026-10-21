@@ -9,6 +9,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 
 import java.nio.ByteBuffer;
@@ -17,6 +18,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -26,12 +28,15 @@ import java.util.Set;
  * Exactly-once reconciliation on load (I8, docs/industry-boundary.md §4.1), and damage (C18, I23).
  *
  * <ol>
- *   <li>At {@code ChunkEvent.Load} of a district chunk, IND_CHUNK_LOADED goes out with the epoch in the
- *       chunk's {@code mic_rtsim:reconcile} attachment (0 if none). The engine answers with the pending
- *       IND_CHUNK_RECONCILE commands above it.</li>
  *   <li>A command for a chunk that is not loaded is held (in memory: the engine keeps every pending
- *       delta until a result says it is applied, so a restart resends them) and applied, in epoch
- *       order, on the first tick the chunk is loaded.</li>
+ *       delta until a result says it is applied, so a restart resends them). The engine sends them ahead
+ *       of a player's arrival (IND_APPROACH), so they are usually here before the chunk loads.</li>
+ *   <li>At {@code ChunkEvent.Load} of a chunk with held commands, its block entities and those of its
+ *       district's other loaded chunks stop ticking ({@link TickGate}) until the next drain of loads (the
+ *       start of the next tick, or the end of this one). There the held commands are applied in epoch
+ *       order, whatever the quota, and then IND_CHUNK_LOADED goes out with the epoch now in the chunk's
+ *       {@code mic_rtsim:reconcile} attachment (0 if none), after their results (R1 to R3,
+ *       docs/choices-repair.md). The engine answers with the pending commands above that epoch.</li>
  *   <li>A command whose epoch the chunk already holds, or whose op id the journal holds as applied, is
  *       answered DUPLICATE and changes nothing.</li>
  *   <li>Every removal first, then the additions, through the inventory's capability (or its plugin's
@@ -85,18 +90,39 @@ public final class Reconciler {
         recommitted.clear();
     }
 
+    /**
+     * GameTests: what a crash and a restart lose on the Java side. Held commands live in memory only (the
+     * engine sends them again, ahead or at the chunk's next IND_CHUNK_LOADED, F27), a result a chunk still
+     * carries is journaled again in the new session, and the journal, rolled back to the last save, no
+     * longer has the op ids applied after it ({@code rolledBack}).
+     */
+    public void restartForTest(long... rolledBack) {
+        held.clear();
+        recommitted.clear();
+        for (long op : rolledBack)
+            ind.boundary.journal().forgetAppliedForTest(op);
+    }
+
+    /** True while a command waits for this chunk to load (R2: its load gates ticking until it lands). */
+    boolean holdsFor(ResourceKey<Level> dim, long chunk) {
+        return !held.isEmpty() && held.containsKey(new ChunkKey(dim, chunk));
+    }
+
     // ---- loads ----------------------------------------------------------------------------------
 
-    /** A district chunk loaded: re-journal an unacknowledged result it carries, report its epoch. */
+    /**
+     * A district chunk loaded (R1, R3): re-journal an unacknowledged result it carries, apply the commands
+     * held for it in epoch order (whatever the block quota: nothing of the chunk has ticked yet), then
+     * report the epoch it now holds. So every IND_RECONCILE_RESULT of the load comes before its
+     * IND_CHUNK_LOADED, and the engine never takes a reconcile applied at the load for one the chunk
+     * lost (engine.rs, ChunkLoaded: an epoch at or below the reported one counts as applied as asked).
+     */
     void chunkLoaded(ServerLevel level, LevelChunk chunk, District d, long now) {
         if (chunk == null)
             return;
         IndustryAttachments.Epochs epochs = chunk.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
-        int applied = 0;
         if (epochs != null) {
             for (IndustryAttachments.EpochEntry e : epochs.entries()) {
-                if (e.district() == d.id)
-                    applied = e.epoch();
                 // A result saved with the chunk but maybe not with the journal (a crash): journaled
                 // again (same bytes, same op id, a new sequence); the engine skips it by op id.
                 if (e.pendingResult().isPresent()) {
@@ -108,6 +134,15 @@ public final class Reconciler {
                 }
             }
         }
+        List<Held> list = held.remove(new ChunkKey(level.dimension(), chunk.getPos().toLong()));
+        if (list != null) {
+            refreshQuota(now);
+            list.sort(Comparator.comparingInt(Held::epoch));
+            for (Held h : list)
+                apply(level, chunk, ByteBuffer.wrap(h.bytes).order(Layout.ORDER), h.cmdSeq, now, true);
+            epochs = chunk.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
+        }
+        int applied = epochs == null ? 0 : epochs.epoch(d.id);
         ByteBuffer r = ind.journal(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.SIZE, 0);
         r.putLong(IndRecords.ChunkLoaded.DISTRICT, d.id);
         r.putInt(IndRecords.ChunkLoaded.DIM, ind.dimId(level.dimension()));
@@ -161,7 +196,7 @@ public final class Reconciler {
             held.get(key).add(new Held(bytes, cmdSeq, epoch));
             return true;
         }
-        return apply(level, chunk, ByteBuffer.wrap(bytes).order(Layout.ORDER), cmdSeq, now);
+        return apply(level, chunk, ByteBuffer.wrap(bytes).order(Layout.ORDER), cmdSeq, now, false);
     }
 
     void tick(long now) {
@@ -180,7 +215,7 @@ public final class Reconciler {
             list.sort(Comparator.comparingInt(Held::epoch));
             while (!list.isEmpty()) {
                 Held h = list.get(0);
-                if (!apply(level, chunk, ByteBuffer.wrap(h.bytes).order(Layout.ORDER), h.cmdSeq, now))
+                if (!apply(level, chunk, ByteBuffer.wrap(h.bytes).order(Layout.ORDER), h.cmdSeq, now, false))
                     return; // the quota is spent: the rest next tick
                 list.remove(0);
             }
@@ -188,8 +223,11 @@ public final class Reconciler {
         }
     }
 
-    /** Applies one IND_CHUNK_RECONCILE record (at offset 0 of {@code r}). Returns false to defer it (quota). */
-    private boolean apply(ServerLevel level, LevelChunk chunk, ByteBuffer r, long cmdSeq, long now) {
+    /**
+     * Applies one IND_CHUNK_RECONCILE record (at offset 0 of {@code r}). Returns false to defer it (quota);
+     * {@code atLoad} applies it whatever the quota (it spends the quota all the same).
+     */
+    private boolean apply(ServerLevel level, LevelChunk chunk, ByteBuffer r, long cmdSeq, long now, boolean atLoad) {
         long opId = r.getLong(IndRecords.ChunkReconcile.OP_ID);
         long districtId = r.getLong(IndRecords.ChunkReconcile.DISTRICT);
         int epoch = r.getInt(IndRecords.ChunkReconcile.EPOCH);
@@ -203,7 +241,7 @@ public final class Reconciler {
             return true;
         }
         int ops = n + m;
-        if (ops > opsLeft && opsLeft < quota)
+        if (!atLoad && ops > opsLeft && opsLeft < quota)
             return false;
         opsLeft -= ops;
 
@@ -252,6 +290,8 @@ public final class Reconciler {
 
         List<BlockPos> broken = new ArrayList<>();
         int skipped = 0;
+        // I1: the states before of everything a break may remove, to tell the plugins what the sim destroyed.
+        Map<BlockPos, DestroyedBlock> before = m > 0 ? new LinkedHashMap<>() : null;
         int b0 = IndRecords.ChunkReconcile.DELTAS + n * IndRecords.ChunkReconcile.DELTA_SIZE;
         for (int i = 0; i < m; i++) {
             int e = b0 + i * IndRecords.ChunkReconcile.DESTROY_SIZE;
@@ -262,6 +302,7 @@ public final class Reconciler {
                 skipped++;
                 continue;
             }
+            snapshotAround(level, pos, before);
             // Broken with drops (C18, I23): containers spill their contents as recoverable items. The
             // engine books the spill as a port (engine.rs reconcile_result), so the drops are marked:
             // a player picking them up is not a second outflow. Another mod's onRemove may throw; the
@@ -279,6 +320,14 @@ public final class Reconciler {
         }
         blocksBroken += broken.size();
         blocksSkipped += skipped;
+        List<DestroyedBlock> removed = List.of();
+        if (before != null && !broken.isEmpty()) {
+            removed = new ArrayList<>();
+            for (DestroyedBlock b : before.values())
+                if (level.getChunkSource().getChunkNow(b.pos().getX() >> 4, b.pos().getZ() >> 4) != null
+                        && !level.getBlockState(b.pos()).is(b.state().getBlock()))
+                    removed.add(b);
+        }
 
         // The result, then the epoch in the same tick (the chunk carries the result until acknowledged).
         ByteBuffer res = ind.journal(IndRecords.IND_RECONCILE_RESULT, IndRecords.ReconcileResult.size(n, broken.size()), n);
@@ -312,7 +361,50 @@ public final class Reconciler {
         applied++;
         if (d != null)
             ind.diagnostics.noteReconcile(d, results, broken.size(), skipped);
+        if (d != null && !removed.isEmpty())
+            ind.destroyed(level, d, removed, now);
         return true;
+    }
+
+    /**
+     * Before a reconcile breaks {@code pos}: the states of the block, its six neighbours (what is attached
+     * to it pops off) and whatever a plugin says goes with it, each once per command, in loaded chunks only
+     * (reading an unloaded one would load it). After the breaks, those whose block changed are what the sim
+     * destroyed (I1).
+     */
+    private void snapshotAround(ServerLevel level, BlockPos pos, Map<BlockPos, DestroyedBlock> before) {
+        BlockState state = level.getBlockState(pos);
+        snapshot(level, pos, before);
+        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values())
+            snapshot(level, pos.relative(dir), before);
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            try {
+                p.alsoBroken(level, pos, state, q -> snapshot(level, q.immutable(), before));
+            } catch (RuntimeException ex) {
+                ind.fail("plugin alsoBroken " + p.getClass().getSimpleName(), ex);
+            }
+        }
+    }
+
+    private void snapshot(ServerLevel level, BlockPos pos, Map<BlockPos, DestroyedBlock> before) {
+        if (before.containsKey(pos) || level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null)
+            return;
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir())
+            return;
+        net.minecraft.nbt.CompoundTag data = null;
+        net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
+        if (be != null)
+            for (IndustryPlugin p : IndustryApi.PLUGINS) {
+                try {
+                    data = p.rebuildData(level, pos, state, be);
+                } catch (RuntimeException ex) {
+                    ind.fail("plugin rebuildData " + p.getClass().getSimpleName(), ex);
+                }
+                if (data != null)
+                    break;
+            }
+        before.put(pos, new DestroyedBlock(pos, state, data));
     }
 
     private void dropResultWhenAcked(ServerLevel level, ChunkPos cp, long district, int epoch, long seq) {

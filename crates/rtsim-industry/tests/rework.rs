@@ -476,6 +476,60 @@ fn a_player_who_turns_away_lets_the_replay_go_on() {
     w.engine.check_books().unwrap();
 }
 
+/// Java holds a reconcile sent ahead in memory only, so a server restart loses it. The engine
+/// sends every pending command again at the next closing record after a session start, not only
+/// once the chunk has loaded and its machines may have ticked (docs/choices-repair.md R4). Within
+/// one session a command goes once.
+#[test]
+fn after_a_restart_the_next_approach_sends_the_held_reconciles_again() {
+    let mut w = short_mill(false);
+    w.run_until(day(1.0));
+    let t = w.t;
+    let closing = |at: Tick| Timed {
+        at,
+        obs: Obs::Approach {
+            district: D,
+            distance: 200,
+            eta_ticks: Some(400),
+            closing: true,
+        },
+    };
+    let reconciles = |cmds: Vec<Cmd>| -> Vec<u64> {
+        let mut ops: Vec<u64> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::ChunkReconcile(r) => Some(r.op.0),
+                _ => None,
+            })
+            .collect();
+        ops.sort_unstable();
+        ops
+    };
+    w.engine.ingest(&closing(t));
+    w.engine.advance_to(t);
+    let first = reconciles(w.engine.drain_commands());
+    assert!(!first.is_empty(), "sent ahead");
+    // Held by Java, never delivered: the player is still on the way.
+    w.engine.ingest(&closing(t + 20));
+    w.engine.advance_to(t + 20);
+    assert!(
+        reconciles(w.engine.drain_commands()).is_empty(),
+        "once a session"
+    );
+    // The server restarts; Java's held commands are gone with it.
+    w.engine.session_start(t + 40);
+    w.engine.ingest(&closing(t + 60));
+    w.engine.advance_to(t + 60);
+    assert_eq!(
+        reconciles(w.engine.drain_commands()),
+        first,
+        "every pending command again"
+    );
+    w.engine.ingest(&closing(t + 80));
+    w.engine.advance_to(t + 80);
+    assert!(reconciles(w.engine.drain_commands()).is_empty());
+}
+
 // ---- I14: level-wide pollution live --------------------------------------------------------------
 
 /// I14 (Ben): Destroy's level-wide pollution from an unloaded district is applied live, chunk
