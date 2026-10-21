@@ -156,6 +156,9 @@ public final class NativeEngine implements ScriptedEngine {
     /** The glass check of a record stream on a fresh industry engine; null without a complete compile. */
     private static native double[] nGlassOffline(byte[] records, long district);
 
+    /** The chunk reconciles a fresh industry engine would send a district over a record stream: (inventory, good, delta) triples. */
+    private static native long[] nGlassReplayOffline(byte[] records, long district);
+
     /** A hold on the engine's buffer memory for one Java buffer; {@link #nReleaseBuffers} gives it back. */
     private static native long nHoldBuffers(long handle);
 
@@ -542,6 +545,19 @@ public final class NativeEngine implements ScriptedEngine {
     public static double[] glassOffline(byte[] records, long district) {
         ensureLoaded();
         return nGlassOffline(records, district);
+    }
+
+    /**
+     * The replay of a record stream (as {@link #glassOffline} takes it) on a fresh industry engine: every
+     * IND_CHUNK_RECONCILE that engine would send {@code district}, once per op id, flattened to triples
+     * {@code (inventory, good, delta)} at indices {@code 3i, 3i + 1, 3i + 2}: the inventory's index in the
+     * district, the good's dictionary id (Java's DICT_GOOD id, as {@code Industry.goodName} reads it) and the
+     * signed count. Empty when there are none. Nothing applies them: the stub engine's G2 exit GameTests add
+     * them to what the world did. Loads the natives; throws IllegalStateException when they cannot load.
+     */
+    public static long[] glassReplayOffline(byte[] records, long district) {
+        ensureLoaded();
+        return nGlassReplayOffline(records, district);
     }
 
     /** {@link #habitatInfo}'s fields (docs/boundary.md §10, {@code Engine::habitat_info}). */
