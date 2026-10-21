@@ -34,7 +34,10 @@ pub struct Upper {
     pub in_lin: Vec<Q>,
     pub out_lin: Vec<Q>,
     pub lp_solves: u32,
+    /// LPs not run: more than `glass.lpVarsMax` variables (the linear bound stands).
     pub lp_skipped: u32,
+    /// LPs not needed: the linear bound already equals L.
+    pub lp_tight: u32,
 }
 
 /// The U-side capacities: every domain level a node could run at in the regime, heaters at the
@@ -534,22 +537,12 @@ fn lp(
     let g = s.g;
     const NO: u32 = u32::MAX;
     let is_store = |v: u32| s.kind(v) == NodeKind::Store;
-    // Edges with an end in the cone, and every objective edge.
+    // Edges with an end in the part (objective edges with no end in the cone are summed by the
+    // caller, [`free_objective`]).
     let mut edges: Vec<u32> = Vec::new();
     for &v in list {
         edges.extend_from_slice(g.in_g.of(v));
         edges.extend_from_slice(g.out_g.of(v));
-    }
-    for v in 0..g.nodes.len() as u32 {
-        if !is_store(v) {
-            continue;
-        }
-        let row = if into { g.in_g.of(v) } else { g.out_g.of(v) };
-        for &e in row {
-            if s.slot_of(e, gi).is_some() {
-                edges.push(e);
-            }
-        }
     }
     edges.sort_unstable();
     edges.dedup();
@@ -818,10 +811,118 @@ fn lp(
     }
 }
 
+/// The objective edges of a good with neither end in the cone (a store handing straight to a
+/// store): each carries at most its capacity.
+fn free_objective(s: &Solver<'_>, gi: u32, into: bool, mark: &[bool]) -> f64 {
+    let g = s.g;
+    let mut total = 0.0;
+    for v in 0..g.nodes.len() as u32 {
+        if s.kind(v) != NodeKind::Store {
+            continue;
+        }
+        let row = if into { g.in_g.of(v) } else { g.out_g.of(v) };
+        for &e in row {
+            let ed = g.edge(e);
+            if s.slot_of(e, gi).is_none() || mark[ed.from as usize] || mark[ed.to as usize] {
+                continue;
+            }
+            if matches!(s.kind(ed.to), NodeKind::BlackBox | NodeKind::Port)
+                || matches!(s.kind(ed.from), NodeKind::BlackBox | NodeKind::Port)
+            {
+                continue;
+            }
+            let cap = g.edge_cap(e);
+            total += if cap.is_inf() {
+                f64::INFINITY
+            } else {
+                cap.to_f64()
+            };
+        }
+    }
+    total
+}
+
+fn find(p: &mut [u32], mut x: u32) -> u32 {
+    while p[x as usize] != x {
+        let up = p[p[x as usize] as usize];
+        p[x as usize] = up;
+        x = up;
+    }
+    x
+}
+
+/// The LP of one good and direction, one per connected part of its cone (goods and heat edges
+/// inside the cone join nodes; stores outside it are free and join nothing), summed. Independent
+/// lines of a district solve as small LPs, so the cost stays linear in their number. None when a
+/// part is too big or microlp fails.
+#[allow(clippy::too_many_arguments)]
+fn lp_parts(
+    s: &Solver<'_>,
+    caps: &UCaps,
+    gi: u32,
+    into: bool,
+    mark: &mut [bool],
+    list: &mut [u32],
+    var_of: &mut [u32],
+    parent: &mut [u32],
+) -> Option<f64> {
+    let g = s.g;
+    let mut total = free_objective(s, gi, into, mark);
+    for &v in list.iter() {
+        parent[v as usize] = v;
+    }
+    for &v in list.iter() {
+        for &e in g.in_g.of(v).iter().chain(g.heat_in.of(v)) {
+            let u = g.edge(e).from;
+            if mark[u as usize] {
+                let (a, b) = (find(parent, u), find(parent, v));
+                if a != b {
+                    parent[a.max(b) as usize] = a.min(b);
+                }
+            }
+        }
+    }
+    let mut keyed: Vec<(u32, u32)> = list.iter().map(|&v| (find(parent, v), v)).collect();
+    keyed.sort_unstable();
+    for &v in list.iter() {
+        mark[v as usize] = false;
+    }
+    let mut out = Some(0.0);
+    let mut i = 0;
+    while i < keyed.len() {
+        let root = keyed[i].0;
+        let mut j = i;
+        while j < keyed.len() && keyed[j].0 == root {
+            j += 1;
+        }
+        let part: Vec<u32> = keyed[i..j].iter().map(|&(_, v)| v).collect();
+        for &v in &part {
+            mark[v as usize] = true;
+        }
+        let r = lp(s, caps, gi, into, mark, &part, var_of);
+        for &v in &part {
+            mark[v as usize] = false;
+        }
+        match r {
+            None => {
+                out = None;
+                break;
+            }
+            Some(x) => total += x,
+        }
+        i = j;
+    }
+    // The caller unmarks the cone: mark it again as it was.
+    for &v in list.iter() {
+        mark[v as usize] = true;
+    }
+    out.map(|_| total)
+}
+
 /// U per dense good, for the goods on read-store edges whose class is not unbounded.
 pub fn upper(
     s: &Solver<'_>,
-    _comp_taint: &[u8],
+    (in_l, out_l): (&[Q], &[Q]),
     cyc_good: &[bool],
     on_store: &[bool],
     cls: &[u8],
@@ -864,19 +965,41 @@ pub fn upper(
         out_lin,
         lp_solves: 0,
         lp_skipped: 0,
+        lp_tight: 0,
     };
     let mut mark = vec![false; g.nodes.len()];
     let mut seen = vec![false; g.nodes.len()];
     let mut list = Vec::new();
     let mut var_of = vec![u32::MAX; s.f.len()];
+    let mut parent = vec![0u32; g.nodes.len()];
     let margin = s.tun.lp_margin_rel;
     for gi in 0..gn as u32 {
         if !on_store[gi as usize] || cls[gi as usize] == UNBOUNDED {
             continue;
         }
         for into in [true, false] {
+            // The linear bound already meets L: U is L, the LP cannot change it (U = max(L,
+            // min(LP, linear))). Most goods of a factory without routing slack end here.
+            let (lin, l) = if into {
+                (up.in_lin[gi as usize], in_l[gi as usize])
+            } else {
+                (up.out_lin[gi as usize], out_l[gi as usize])
+            };
+            if lin <= l {
+                up.lp_tight += 1;
+                continue;
+            }
             cone(s, gi, into, &mut mark, &mut seen, &mut list);
-            let r = lp(s, &caps, gi, into, &mark, &list, &mut var_of);
+            let r = lp_parts(
+                s,
+                &caps,
+                gi,
+                into,
+                &mut mark,
+                &mut list,
+                &mut var_of,
+                &mut parent,
+            );
             for &v in &list {
                 mark[v as usize] = false;
             }

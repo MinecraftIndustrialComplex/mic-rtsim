@@ -128,8 +128,10 @@ pub struct Solution {
     pub duty: Vec<Q>,
     /// Graph-wide: a black box or port (or a demoted node) exists.
     pub has_unbounded: bool,
+    /// LPs run, LPs skipped as too big (`glass.lpVarsMax`), LPs not needed (linear bound = L).
     pub lp_solves: u32,
     pub lp_skipped: u32,
+    pub lp_tight: u32,
 }
 
 /// A per-good scratch array that clears only what it touched.
@@ -1954,10 +1956,12 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
         has_unbounded,
         lp_solves: 0,
         lp_skipped: 0,
+        lp_tight: 0,
     };
-    let ub = super::lp::upper(&s, &comp_taint, &cyc_good, &on_store, &cls);
+    let ub = super::lp::upper(&s, (&in_l, &out_l), &cyc_good, &on_store, &cls);
     sol.lp_solves = ub.lp_solves;
     sol.lp_skipped = ub.lp_skipped;
+    sol.lp_tight = ub.lp_tight;
     for gi in 0..gn {
         if !on_store[gi] {
             continue;
