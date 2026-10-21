@@ -1777,6 +1777,274 @@ fn a_belt_merge_below_its_capacity_is_exact() {
     }
 }
 
+// ---- a large base (the OmegaSrv rehearsal, docs/deploy-rehearsal-omegasrv.md 6.7) ------------------
+
+/// A base shaped like the rehearsal's main one (1,258 nodes, 1,790 edges, 138 multi-input
+/// machines): `cells` overflow loops, each a store feeding a belt loop through a funnel, a tunnel
+/// on the loop that gives a press what it takes and sends the rest round again, and the press's
+/// output funnelled into its own store. Each cell has its own goods, and its feed runs a little
+/// above its press, so the loop fills a little each round (`feed` ticks per item against the
+/// press's 10).
+fn base_shaped(cells: u32, feed: u32) -> B {
+    let mut b = B::default();
+    let shared = |batch: u32, ticks: u32| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    for c in 0..cells {
+        let (a, o) = (Good(100 + 2 * c), Good(101 + 2 * c));
+        let input = b.store(2 * c);
+        let out = b.store(2 * c + 1);
+        let r = b.recipe(&[(a, 1)], &[(o, 1)]);
+        let f_in = b.node(
+            NodeKind::Mover,
+            model::FUNNEL_ANDESITE,
+            0,
+            vec![shared(1, feed)],
+        );
+        let l1 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(64, 2)]);
+        let j = b.junction(rule::PREFER_FIRST);
+        let l2 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(64, 2)]);
+        let p = b.machine(model::PRESS, r, 1, 10);
+        let f_out = b.node(
+            NodeKind::Mover,
+            model::FUNNEL_ANDESITE,
+            0,
+            vec![shared(1, 2)],
+        );
+        b.edge(input, f_in);
+        b.edge(f_in, l1);
+        b.edge(l1, j);
+        b.edge(j, p);
+        b.edge(j, l2);
+        b.edge(l2, l1);
+        b.edge(p, f_out);
+        b.edge(f_out, out);
+    }
+    b
+}
+
+fn base_regime(b: &B, g: &Graph, cells: u32) -> Regime {
+    let held: Vec<(u32, Vec<Good>)> = (0..cells)
+        .map(|c| {
+            let v = b
+                .nodes
+                .iter()
+                .position(|n| n.inventory == Some(2 * c))
+                .expect("store") as u32;
+            (v, vec![Good(100 + 2 * c)])
+        })
+        .collect();
+    let held: Vec<(u32, &[Good])> = held.iter().map(|(v, g)| (*v, g.as_slice())).collect();
+    regime(g, &held)
+}
+
+/// A plain line beside the base, its own part: a store of good 900 (inventory 900), a funnel an item
+/// per 20 ticks, a press, a funnel, a store (inventory 901) for good 901. Returns the input store.
+fn add_line(b: &mut B) -> u32 {
+    let shared = |batch: u32, ticks: u32| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    let input = b.store(900);
+    let out = b.store(901);
+    let r = b.recipe(&[(Good(900), 1)], &[(Good(901), 1)]);
+    let f_in = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_ANDESITE,
+        0,
+        vec![shared(1, 20)],
+    );
+    let p = b.machine(model::PRESS, r, 1, 10);
+    let f_out = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_ANDESITE,
+        0,
+        vec![shared(1, 2)],
+    );
+    b.edge(input, f_in);
+    b.edge(f_in, p);
+    b.edge(p, f_out);
+    b.edge(f_out, out);
+    input
+}
+
+#[test]
+fn a_base_sized_solve_stops_within_its_work() {
+    // The rehearsal's main base ran every solve to its 278-round cap, 2.4 to 5.4 s inside the
+    // engine's step (docs/deploy-rehearsal-omegasrv.md 6.7, DR9). Its shape here: 138 over-fed
+    // loops, each needing 8,614 rounds to settle (its belt fills at 1/90 an item a round, then
+    // the funnel is squeezed back to the press). The solve stops at `glass.solveWorkMax`, a count
+    // and not a clock (choice G2-58), and every part, still moving, has L = 0 and is bounded
+    // (choice G2-60): at or below the 1/10 a tick each press runs at.
+    let cells = 138;
+    let b = base_shaped(cells, 9);
+    let g = b.graph();
+    let rg = base_regime(&b, &g, cells);
+    let tun = GlassTunables::default();
+    let per = solve::Solver::new(&g, &rg, &tun).round_work();
+    let s = solve::solve(&g, &rg, &tun);
+    assert_eq!(g.multi_input, cells);
+    assert!(!s.converged && s.starved);
+    assert_eq!(s.work, u64::from(s.rounds) * per);
+    assert!(s.work <= tun.solve_work_max && s.work + per > tun.solve_work_max);
+    assert!(s.rounds < tun.rounds_per_multi_input * cells + tun.rounds_base);
+    assert!(s.lp_work <= tun.lp_work_max);
+    for c in 0..cells {
+        let (a, o) = (bound(&s, Good(100 + 2 * c)), bound(&s, Good(101 + 2 * c)));
+        assert_eq!((a.class, o.class), (class::BOUNDED, class::BOUNDED));
+        assert_eq!((a.out_l, o.in_l), (Q::ZERO, Q::ZERO), "cell {c}");
+        assert!(
+            a.out_u >= Q::new(1, 10) && o.in_u >= Q::new(1, 10),
+            "cell {c}"
+        );
+    }
+    // One cell, given the rounds: the fixed point the bounds hold.
+    let one = base_shaped(1, 9);
+    let g1 = one.graph();
+    let rg1 = base_regime(&one, &g1, 1);
+    let all = GlassTunables {
+        rounds_base: 20_000,
+        solve_work_max: u64::MAX / 4,
+        ..GlassTunables::default()
+    };
+    let full = solve::solve(&g1, &rg1, &all);
+    assert!(full.converged && !full.starved, "{} rounds", full.rounds);
+    assert_eq!(full.rounds, 8_614);
+    assert_eq!(bound(&full, Good(100)).out_l, Q::new(1, 10));
+    assert_eq!(bound(&full, Good(101)).in_l, Q::new(1, 10));
+}
+
+#[test]
+fn a_base_with_more_lps_than_its_work_keeps_the_linear_bound_for_the_rest() {
+    // 400 cells: 1,600 goods and directions to bound, each a small LP that costs its set-up
+    // (`LP_WORK_FIXED`, choice G2-62). The LP work stops them part way; the goods past it keep
+    // the linear bound, which is above the LP's and never below L.
+    let cells = 400;
+    let b = base_shaped(cells, 9);
+    let g = b.graph();
+    let rg = base_regime(&b, &g, cells);
+    let tun = GlassTunables::default();
+    let s = solve::solve(&g, &rg, &tun);
+    let all = solve::solve(
+        &g,
+        &rg,
+        &GlassTunables {
+            lp_work_max: u64::MAX / 4,
+            ..GlassTunables::default()
+        },
+    );
+    assert!(s.lp_work <= tun.lp_work_max);
+    assert!(s.lp_skipped > 0 && all.lp_skipped == 0, "{}", s.lp_skipped);
+    assert!(s.lp_solves < all.lp_solves);
+    assert_eq!((s.rounds, s.work), (all.rounds, all.work));
+    for c in 0..cells {
+        for good in [Good(100 + 2 * c), Good(101 + 2 * c)] {
+            let (a, f) = (bound(&s, good), bound(&all, good));
+            assert_eq!((a.class, a.in_l, a.out_l), (f.class, f.in_l, f.out_l));
+            assert!(a.in_u >= f.in_u && a.out_u >= f.out_u, "cell {c}");
+        }
+    }
+}
+
+/// `cargo test --release -p rtsim-industry --lib base_solve_cpu -- --ignored --nocapture`: the
+/// base-shaped solve's CPU with the work budget and without it (the rounds cap alone, as before
+/// choice G2-58), 5 runs each, side by side.
+#[test]
+#[ignore]
+fn base_solve_cpu() {
+    let unbounded = GlassTunables {
+        solve_work_max: u64::MAX / 4,
+        lp_work_max: u64::MAX / 4,
+        ..GlassTunables::default()
+    };
+    for cells in [10u32, 138, 400] {
+        let b = base_shaped(cells, 9);
+        let g = b.graph();
+        let rg = base_regime(&b, &g, cells);
+        let mut rows = Vec::new();
+        for (name, tun) in [
+            ("budget", GlassTunables::default()),
+            ("cap only", unbounded.clone()),
+        ] {
+            let mut t = Vec::new();
+            let mut sol = Solution::default();
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                sol = solve::solve(&g, &rg, &tun);
+                t.push(t0.elapsed().as_secs_f64() * 1e3);
+            }
+            t.sort_by(f64::total_cmp);
+            rows.push(format!(
+                "{name}: median {:.2} ms (min {:.2}, max {:.2}), rounds {}, work {}, lp work {}",
+                t[2], t[0], t[4], sol.rounds, sol.work, sol.lp_work
+            ));
+        }
+        println!(
+            "cells {cells} ({} nodes): {}",
+            g.nodes.len(),
+            rows.join("; ")
+        );
+    }
+}
+
+#[test]
+fn an_unconverged_solve_bounds_only_the_parts_still_moving() {
+    // A line beside an over-fed loop: the loop stops at `glass.solveRoundsMax` (4 rounds) still
+    // filling, the line settled in its first. The line keeps its exact L; the loop's part is
+    // bounded at L = 0 (choice G2-60).
+    let mut b = base_shaped(1, 9);
+    let input = add_line(&mut b);
+    let g = b.graph();
+    let mut rg = base_regime(&b, &g, 1);
+    rg.held[input as usize] = vec![Good(900)];
+    let s = run(&g, &rg);
+    assert!(!s.converged && !s.starved);
+    assert_eq!(s.rounds, 4);
+    let (lin, lout) = (bound(&s, Good(900)), bound(&s, Good(901)));
+    assert_eq!((lin.class, lout.class), (class::EXACT, class::EXACT));
+    assert_eq!((lin.out_l, lout.in_l), (Q::new(1, 20), Q::new(1, 20)));
+    let (a, o) = (bound(&s, Good(100)), bound(&s, Good(101)));
+    assert_eq!((a.class, o.class), (class::BOUNDED, class::BOUNDED));
+    assert_eq!((a.out_l, o.in_l), (Q::ZERO, Q::ZERO));
+    // The line alone: the same bounds.
+    let mut alone = B::default();
+    let input = add_line(&mut alone);
+    let g2 = alone.graph();
+    let rg2 = regime(&g2, &[(input, &[Good(900)])]);
+    let s2 = run(&g2, &rg2);
+    assert!(s2.converged);
+    assert_eq!(bound(&s2, Good(900)), lin);
+    assert_eq!(bound(&s2, Good(901)), lout);
+}
+
+#[test]
+fn an_overfed_loop_probe_out_of_work_leaves_its_part_unsettled() {
+    // GB72's stall check runs a probe solve once L settles. With work for L's rounds and none
+    // for the probe, whether the loop jams is not known: the solve is not converged and the
+    // loop's part has L = 0 (choice G2-60), where the full solve finds the jam (L = 0) too.
+    let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+    let (g, stores) = precision_mechanisms_fed(&identity, 9, 8);
+    let rg = precision_regime(&g, stores);
+    let free = solve::solve_with(&g, &rg, &GlassTunables::default(), true, false);
+    assert!(free.converged);
+    let tun = GlassTunables {
+        solve_work_max: free.work,
+        ..GlassTunables::default()
+    };
+    let s = solve::solve(&g, &rg, &tun);
+    assert!(!s.converged && s.starved);
+    assert_eq!(s.rounds, free.rounds);
+    for good in [BRASS, SHEET, ZINC, COPPER, COAL] {
+        let b = bound(&s, good);
+        assert_eq!((b.in_l, b.out_l), (Q::ZERO, Q::ZERO), "{good:?}");
+        assert_eq!(b.class, class::BOUNDED, "{good:?}");
+    }
+    // With the work: the jam itself.
+    let full = run(&g, &rg);
+    assert!(full.converged && full.work > free.work);
+}
+
 // ---- the graph store (F5) and the engine path -------------------------------------------------------
 
 fn glass_with(records: &[GlassObs]) -> Glass {
@@ -2223,13 +2491,9 @@ proptest! {
         let s = run(&g, &rg);
         for b in &s.goods {
             prop_assert!(b.in_u >= b.in_l && b.out_u >= b.out_l);
-            // Stopped at `glass.solveRoundsMax`, L is not a fixed point (its flows need not fit the
-            // capacities: five parallel edges into one funnel take more rounds) and only the guard
-            // above holds.
-            if !s.converged {
-                continue;
-            }
-            // The guards aside, the relaxation and the LP must contain L's flow.
+            // Stopped at `glass.solveRoundsMax`, the parts still moving have L = 0 and the rest
+            // are at their fixed point (choice G2-60): the relaxation and the LP must contain L's
+            // flow either way.
             prop_assert!(b.in_u_lin >= b.in_l, "linear in {:?} < L {:?}", b.in_u_lin, b.in_l);
             prop_assert!(b.out_u_lin >= b.out_l, "linear out {:?} < L {:?}", b.out_u_lin, b.out_l);
             let l_in = b.in_l.to_f64();
@@ -2241,9 +2505,9 @@ proptest! {
                 prop_assert!(x >= l_out - 1e-9 * (1.0 + l_out), "LP out {x} < L {l_out}");
             }
         }
-        // Conservation: converged, every mover, junction and buffer passes on what it takes
-        // (a belt merge included, GB72).
-        if s.converged {
+        // Conservation: every mover, junction and buffer passes on what it takes (a belt merge
+        // included, GB72); unconverged, a part still moving takes and passes nothing.
+        {
             for (v, node) in g.nodes.iter().enumerate() {
                 if !matches!(node.kind, NodeKind::Mover | NodeKind::Junction | NodeKind::Buffer) {
                     continue;
@@ -2258,6 +2522,35 @@ proptest! {
                 };
                 let (i, o) = (flow(true), flow(false));
                 prop_assert!((i - o).abs() <= 1e-9 * (1.0 + i), "node {v}: in {i} out {o}");
+            }
+        }
+    }
+}
+
+proptest! {
+    /// A solve cut short by its work (one round) never has an L above the full solve's: the parts
+    /// that settled are at the same fixed point, the rest at 0 (choices G2-58, G2-60); and U
+    /// stays above the full L.
+    #[test]
+    fn a_solve_out_of_work_is_never_above_the_full_one(
+        kinds in prop::collection::vec((0u8..10, 0u8..16, 0u8..64), 1..10),
+        edges in prop::collection::vec((0usize..10, 0usize..10, any::<bool>()), 0..16),
+        held in prop::array::uniform3(any::<bool>()),
+    ) {
+        let (g, rg) = random_dag(&kinds, &edges, &held);
+        let full = run(&g, &rg);
+        prop_assume!(full.converged);
+        let short = GlassTunables { solve_work_max: 1, ..GlassTunables::default() };
+        let s = solve::solve(&g, &rg, &short);
+        prop_assert_eq!(s.rounds, 1);
+        prop_assert!(s.converged || s.starved || full.rounds == 1);
+        for b in &s.goods {
+            let f = full.goods.iter().find(|x| x.good == b.good).expect("same goods");
+            prop_assert!(b.in_l <= f.in_l, "{:?}: in L {:?} above {:?}", b.good, b.in_l, f.in_l);
+            prop_assert!(b.out_l <= f.out_l, "{:?}: out L {:?} above {:?}", b.good, b.out_l, f.out_l);
+            prop_assert!(b.in_u >= f.in_l && b.out_u >= f.out_l, "{:?}: U below the full L", b.good);
+            if !s.converged {
+                prop_assert!(b.class >= f.class || b.in_l == f.in_l && b.out_l == f.out_l);
             }
         }
     }
