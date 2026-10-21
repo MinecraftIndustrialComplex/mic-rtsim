@@ -2535,11 +2535,35 @@ impl Engine {
                 inv.known.add(g, (sign * n).max(-inv.known.get(g)));
             }
         }
+        let glass_span = dist.sim.as_ref().is_some_and(|s| s.glass);
         let h = self.cluster_of[&d];
         let goods = p.goods.clone();
         let out = p.direction == Direction::Out;
         let inv = p.inventory;
         let address = p.address;
+        // A glass replay books the world's own change on the store it landed in, as already
+        // written (choice G2-14): its reconcile writes each store's change, not a stock's.
+        if glass_span {
+            let covered = self
+                .glass
+                .districts
+                .get(&d)
+                .and_then(|g| g.replay.as_ref())
+                .is_some_and(|r| r.covers(inv));
+            self.clusters.apply(h, at, |c, at| {
+                for (g, n) in goods.iter() {
+                    let key = if covered {
+                        PoolKey::Store(d, inv, g)
+                    } else {
+                        PoolKey::Stock(d, g)
+                    };
+                    c.rebase(key, sign * n, at);
+                }
+            });
+            self.after_cluster(h, at);
+            self.glass_touch(d, at);
+            return;
+        }
         let moved = self.clusters.apply(h, at, |c, at| {
             let mut moved = GoodVec::new();
             for (g, n) in goods.iter() {

@@ -2449,6 +2449,70 @@ mod replay_path {
         e.check_books().expect("books");
     }
 
+    /// A package written into the brass store's offline buffer while away is the world's own
+    /// change: the press uses it, and the load writes the store's change once (choice G2-14).
+    #[test]
+    fn a_package_into_a_replaying_store_feeds_it_and_is_written_once() {
+        use crate::obs::{Direction, PackageEvent};
+        let (b, _) = press_line();
+        let mut s = setup(&b, 2);
+        for k in 1..=35u32 {
+            let t = u64::from(k) * 100;
+            let m = (t / 10) as i64;
+            sweep(&mut s, k, t, &[&[(BRASS, 1000 - m)], &[(SHEET, m)]]);
+        }
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        feed(&mut e, &load_state(3500, LoadState::Unloaded));
+        e.advance_to(Tick(4000));
+        assert_eq!(model(&e), replay_model::GLASS);
+        feed(
+            &mut e,
+            &at(
+                4000,
+                Obs::Package(PackageEvent {
+                    district: D,
+                    inventory: 0,
+                    direction: Direction::In,
+                    address: 0,
+                    packages: 1,
+                    op: None,
+                    goods: GoodVec::from_pairs([(BRASS, 64)]),
+                }),
+            ),
+        );
+        assert_eq!(model(&e), replay_model::GLASS);
+        // 650 + 64 brass at a sheet per 10 ticks: gone by about 11,000.
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 0, "{st:?}");
+        assert!((1063..=1064).contains(&st.get(SHEET)), "{st:?}");
+        let mut cmds = feed(&mut e, &load_state(20_000, LoadState::Live));
+        cmds.extend(feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: BlockPos::default().chunk(0),
+                    applied_epoch: 0,
+                },
+            ),
+        ));
+        // The world holds the 650 and the package: the load takes all 714 and adds the sheets.
+        let d = deltas(&cmds);
+        assert_eq!(d.get(&(0, BRASS)), Some(&-714), "{d:?}");
+        let made = d.get(&(1, SHEET)).copied().unwrap_or(0);
+        assert!((713..=714).contains(&made), "{d:?}");
+        e.check_books().expect("books");
+    }
+
+    fn model(e: &Engine) -> u32 {
+        e.glass.report(D).map_or(0, |r| r.replay.model)
+    }
+
     /// No window passed yet: the compiled district freezes while away (G-B4), with no replay.
     #[test]
     fn a_compile_with_no_passed_window_freezes_while_away() {

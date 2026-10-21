@@ -1314,6 +1314,21 @@ impl Cluster {
         applied
     }
 
+    /// A change the world already made (a package written into or taken from an offline buffer
+    /// while a glass replay runs): the level and its start move together, so the reconcile,
+    /// which writes `level - initial`, does not write it again. A take is limited to the level.
+    /// Returns what was applied.
+    pub fn rebase(&mut self, key: PoolKey, delta: i64, at: Tick) -> i64 {
+        let i = self.ensure_pool(key, 0, None) as usize;
+        let p = &mut self.pools[i];
+        let applied = delta.max(-p.level);
+        p.level += applied;
+        p.books.initial += applied;
+        p.pushed += applied;
+        self.evaluate(at);
+        applied
+    }
+
     /// What a stock pool gained since it was last pushed to the world, now marked as pushed (I14:
     /// level pollution applied live while unloaded). 0 for a pool that does not exist.
     pub fn take_unpushed(&mut self, key: PoolKey) -> i64 {
