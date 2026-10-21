@@ -3093,6 +3093,104 @@ mod replay_path {
         e.check_books().expect("books");
     }
 
+    /// [`precision_builder`]'s line with chests of 27 slots, the output one already holding
+    /// mechanisms and a stack's worth of `kinds` other goods: what the exit run's
+    /// precision_mechanisms held when it unloaded.
+    fn precision_in_chests(kinds: i64) -> (Engine, [u32; 5]) {
+        let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+        let (mut b, stores) = precision_builder(&identity, 9, 64);
+        for v in stores {
+            b.nodes[v as usize].capacity = 27;
+        }
+        let mut s = setup(&b, 5);
+        let mut out = vec![(BRASS, 39)];
+        out.extend([(WOOL, 64), (ORE, 64), (CRUSHED, 64), (XP, 64)].iter().take(kinds as usize));
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[
+                &[(ZINC, 688)],
+                &[(SHEET, 202)],
+                &[(COAL, 688)],
+                &[(COPPER, 688)],
+                &out,
+            ],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        (e, stores)
+    }
+
+    /// The exit run's precision_mechanisms took 688 of each part and made nothing: the output
+    /// chest's free slots were split by rate, a byproduct's share floored to no slot, and the
+    /// chest read full at the unload. Each good arriving now has a slot before the rest is split
+    /// by rate (choice G2-26), so the line makes what it does in an empty chest.
+    #[test]
+    fn a_sequenced_loop_replays_into_a_chest_with_free_slots() {
+        let (mut e, _) = precision_in_chests(3);
+        e.advance_to(Tick(6600));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        let st = e.sim_stock(D).expect("replaying");
+        // 6,400 ticks less the start's hold: about 78 mechanisms, 5 parts a sequence.
+        let made = st.get(BRASS) - 39;
+        assert!((77..=79).contains(&made), "{st:?}");
+        assert!((487..=490).contains(&(688 - st.get(ZINC))), "{st:?}");
+        assert!((490..=493).contains(&(688 - st.get(COAL))), "{st:?}");
+        e.check_books().expect("books");
+    }
+
+    /// A loop whose only exit is a full chest jams: what it makes circles until the belts are
+    /// full. The solve has no fixed point there (the loop's population grows round by round), and
+    /// a replay booked on an unsettled solve took parts it never delivered. It falls back instead
+    /// (choice G2-27), and takes nothing.
+    #[test]
+    fn a_sequenced_loop_into_a_full_chest_takes_nothing() {
+        // 27 slots: the 39 mechanisms' one, 26 kinds of a stack each... the builder's goods give
+        // four, so a chest of 5 slots stands in.
+        let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+        let (mut b, stores) = precision_builder(&identity, 9, 64);
+        b.nodes[stores[4] as usize].capacity = 5;
+        let mut s = setup(&b, 5);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[
+                &[(ZINC, 688)],
+                &[(SHEET, 202)],
+                &[(COAL, 688)],
+                &[(COPPER, 688)],
+                &[(BRASS, 64), (WOOL, 64), (ORE, 64), (CRUSHED, 64), (XP, 64)],
+            ],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(6600));
+        let r = e.glass.report(D).expect("a compile");
+        assert_ne!(r.replay.model, replay_model::GLASS, "{:?}", r.replay);
+        if let Some(st) = e.sim_stock(D) {
+            for (g, was) in [(ZINC, 688), (SHEET, 202), (COAL, 688), (COPPER, 688), (BRASS, 64)] {
+                assert_eq!(st.get(g), was, "{st:?}");
+            }
+        }
+        e.check_books().expect("books");
+    }
+
     /// Corpus 3, arm_burners_depots as the exit run compiled it: two fan-blasted depots, each fed
     /// ore by a chute, each heated by a blaze burner; one arm feeds the burners coal from a smart
     /// chute and carries what the depots make to a chest. The arm closes a loop through the heat

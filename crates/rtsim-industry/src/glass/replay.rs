@@ -1271,12 +1271,31 @@ impl Part {
                 .iter()
                 .map(|&(k, r)| r as f64 / goods.max_stack(k.good()).max(1) as f64)
                 .collect();
-            for (j, s) in split(free, &w).into_iter().enumerate() {
+            // A good with no part-filled stack takes a slot of its own with its first unit, so
+            // each has one first, the heaviest first while they last; the rest split by rate. By
+            // rate alone a rare byproduct's share floors to no slot and the store reads full at
+            // once (choice G2-26).
+            let mut base = vec![0i64; fits.len()];
+            let mut left = free;
+            let mut order: Vec<usize> = (0..fits.len()).collect();
+            order.sort_by(|&a, &b| w[b].total_cmp(&w[a]).then(a.cmp(&b)));
+            for j in order {
+                if left == 0 {
+                    break;
+                }
+                let k = fits[j].0;
+                let ms = goods.max_stack(k.good()).max(1);
+                if level(lv, k).max(0) % ms == 0 {
+                    base[j] = 1;
+                    left -= 1;
+                }
+            }
+            for (j, s) in split(left, &w).into_iter().enumerate() {
                 let k = fits[j].0;
                 let ms = goods.max_stack(k.good()).max(1);
                 let a = level(lv, k).max(0);
                 let partial = if a % ms == 0 { 0 } else { ms - a % ms };
-                out.push((k, partial + s * ms));
+                out.push((k, partial + (base[j] + s) * ms));
             }
         }
         out
@@ -1386,7 +1405,10 @@ impl Part {
             settled = true;
             break;
         }
-        if !settled {
+        // A solve that did not settle books flows that do not balance at its nodes (a loop whose
+        // only exit is full grows round by round): goods would leave the stores and arrive
+        // nowhere (choice G2-27).
+        if !settled || !sol.converged {
             return Err(Fallback::Unsettled);
         }
         self.counts.regimes += 1;
