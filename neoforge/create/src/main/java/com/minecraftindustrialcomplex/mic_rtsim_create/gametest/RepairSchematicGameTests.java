@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.DestroyedBlock;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
+import com.minecraftindustrialcomplex.mic_rtsim_create.RepairFiles;
 import com.minecraftindustrialcomplex.mic_rtsim_create.RepairSchematics;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.AllDataComponents;
@@ -266,6 +267,101 @@ public final class RepairSchematicGameTests {
                         level.setBlock(p, Blocks.AIR.defaultBlockState(), 2 | 16);
                     for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new net.minecraft.world.phys.AABB(chestPos).inflate(24)))
                         it.discard();
+                    ind().districts().forgetArea(level, fx - 1, fz - 1, fx + 1, fz + 1);
+                    level.setChunkForced(fx, fz, false);
+                })
+                .thenSucceed();
+    }
+
+    /** The district's {@code n}-th schematic delivered in this server run (0 first), or null. */
+    private static RepairSchematics.Delivered nth(long district, int n) {
+        List<RepairSchematics.Delivered> mine = RepairSchematics.delivered().stream().filter(r -> r.district() == district).toList();
+        return mine.size() > n ? mine.get(n) : null;
+    }
+
+    /**
+     * Retention (R25): three waves of damage on one loaded district, a casing each. The first is printed
+     * back (set again, as the cannon would) before the second wave: the second's delivery deletes the first
+     * file. The second is left a hole: the third's delivery keeps the second file. Only this world's listed
+     * files are candidates.
+     */
+    @GameTest(template = YARD, batch = "repair_2", timeoutTicks = 12000)
+    public static void aRepairSchematicIsDeletedOnceItsBlocksAreBackAndANewWaveComes(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        int fx = farChunk(helper, true, 3700), fz = farChunk(helper, false, 3700);
+        int x0 = fx * 16, z0 = fz * 16, y = 100;
+        BlockPos chestPos = new BlockPos(x0 + 2, y, z0 + 2);
+        BlockPos[] casing = {new BlockPos(x0 + 6, y, z0 + 6), new BlockPos(x0 + 8, y, z0 + 6), new BlockPos(x0 + 10, y, z0 + 6)};
+        long[] ops = {engineOp(), engineOp(), engineOp()};
+        long[] id = {0};
+        int[] base = {0};
+        RepairSchematics.Delivered[] got = new RepairSchematics.Delivered[3];
+        String state = BlockStateParser.serialize(AllBlocks.ANDESITE_CASING.getDefaultState());
+        helper.startSequence()
+                .thenExecute(() -> level.setChunkForced(fx, fz, true))
+                .thenWaitUntil(io(() -> check("the far chunk loads", level.getChunkSource().getChunkNow(fx, fz) != null)))
+                .thenExecute(() -> {
+                    ind().districts().forgetArea(level, fx - 1, fz - 1, fx + 1, fz + 1);
+                    for (BlockPos q : BlockPos.betweenClosed(x0, y, z0, x0 + 15, y + 2, z0 + 15))
+                        level.setBlock(q, Blocks.AIR.defaultBlockState(), 2 | 16);
+                    for (BlockPos q : BlockPos.betweenClosed(x0, y - 1, z0, x0 + 15, y - 1, z0 + 15))
+                        level.setBlock(q, Blocks.STONE.defaultBlockState(), 2 | 16);
+                    level.setBlock(chestPos, Blocks.CHEST.defaultBlockState(), 3);
+                    for (BlockPos c : casing)
+                        level.setBlock(c, AllBlocks.ANDESITE_CASING.getDefaultState(), 3);
+                    playerPlaced(helper, chestPos);
+                })
+                .thenWaitUntil(io(() -> {
+                    District d = ind().districtAt(level, chestPos);
+                    check("district", d != null);
+                    id[0] = d.id;
+                    base[0] = (int) RepairSchematics.delivered().stream().filter(r -> r.district() == d.id).count();
+                }))
+                // Wave 1: casing 0.
+                .thenExecute(() -> reconcile(ops[0], id[0], 1, level, fx, fz, List.of(), List.of(new Destroy(casing[0], state))))
+                .thenWaitUntil(io(() -> {
+                    got[0] = nth(id[0], base[0]);
+                    check("wave 1 delivered" + ReconcileAheadGameTests.pipeline(ops[0]), got[0] != null && Files.isRegularFile(got[0].path()));
+                    check("listed for this world", RepairFiles.get(level.getServer()).entries().stream().anyMatch(e -> e.file().equals(got[0].file())));
+                }))
+                .thenExecute(() -> {
+                    got[0].item().discard();
+                    level.setBlock(casing[0], AllBlocks.ANDESITE_CASING.getDefaultState(), 3); // printed back
+                    reconcile(ops[1], id[0], 2, level, fx, fz, List.of(), List.of(new Destroy(casing[1], state)));
+                })
+                // Wave 2: casing 1. Wave 1's blocks are all back: its file goes.
+                .thenWaitUntil(io(() -> {
+                    got[1] = nth(id[0], base[0] + 1);
+                    check("wave 2 delivered" + ReconcileAheadGameTests.pipeline(ops[1]), got[1] != null && Files.isRegularFile(got[1].path()));
+                    check("wave 1's file is deleted: every block is back", !Files.exists(got[0].path()));
+                    check("and no longer listed", RepairFiles.get(level.getServer()).entries().stream().noneMatch(e -> e.file().equals(got[0].file())));
+                }))
+                .thenExecute(() -> {
+                    got[1].item().discard();
+                    reconcile(ops[2], id[0], 3, level, fx, fz, List.of(), List.of(new Destroy(casing[2], state)));
+                })
+                // Wave 3: casing 2. Wave 2's casing is still a hole: its file stays.
+                .thenWaitUntil(io(() -> {
+                    got[2] = nth(id[0], base[0] + 2);
+                    check("wave 3 delivered" + ReconcileAheadGameTests.pipeline(ops[2]), got[2] != null && Files.isRegularFile(got[2].path()));
+                    check("wave 2's file stays: its casing is still missing", Files.isRegularFile(got[1].path()));
+                    check("both listed", RepairFiles.get(level.getServer()).entries().stream().filter(e -> e.district() == id[0]).count() == 2);
+                    record("aRepairSchematicIsDeletedOnceItsBlocksAreBackAndANewWaveComes", "files",
+                            got[0].file() + " deleted, " + got[1].file() + " kept, " + got[2].file() + " new");
+                }))
+                .thenExecute(() -> {
+                    got[2].item().discard();
+                    try {
+                        Files.deleteIfExists(got[1].path());
+                        Files.deleteIfExists(got[2].path());
+                    } catch (IOException e) {
+                        throw new net.minecraft.gametest.framework.GameTestAssertException("cleaning up: " + e);
+                    }
+                    for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new net.minecraft.world.phys.AABB(chestPos).inflate(24)))
+                        it.discard();
+                    for (BlockPos q : BlockPos.betweenClosed(x0, y, z0, x0 + 15, y + 2, z0 + 15))
+                        level.setBlock(q, Blocks.AIR.defaultBlockState(), 2 | 16);
                     ind().districts().forgetArea(level, fx - 1, fz - 1, fx + 1, fz + 1);
                     level.setChunkForced(fx, fz, false);
                 })

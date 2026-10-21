@@ -5,8 +5,10 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "AbstractHorseInvoker",
+    "ChunkMapInvoker",
     "EntitySaveMixin",
     "EntitySectionManagerAccessor",
+    "LevelChunkAccessor",
     "LevelChunkTickGateMixin",
     "LlamaInvoker",
     "MerchantOfferAccessor",
