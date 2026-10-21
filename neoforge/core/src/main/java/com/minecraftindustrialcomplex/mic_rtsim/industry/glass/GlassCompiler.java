@@ -41,7 +41,10 @@ import java.util.Map;
  * <p><b>When.</b> A district compiles when first seen (each session), on every IND_EDIT, on a new revision,
  * and when its <b>fingerprint</b> changes: a 64-bit hash over each block entity's position, type, block and
  * compile-relevant configuration ({@link GlassExtractor#fingerprint}), recomputed round-robin one chunk at a
- * time once per sweep period (G-B3). It compiles only while every chunk of the district is loaded.
+ * time once per sweep period (G-B3). It compiles only while every chunk of the district is block-ticking,
+ * and a pass hashes only block-ticking chunks: in a chunk that is loaded but not ticking (a view-distance
+ * border) the block entities have not run their first tick, so a generator has no network and a deployer
+ * no player yet, and the graph and hash would differ from the running factory's (choice G2-63).
  *
  * <p><b>Slicing.</b> Extraction runs under {@code glass.compileSliceMicros} per tick, one district at a
  * time; an edit, a new revision, an unloaded chunk or a chunk whose hash changed under it restarts it.
@@ -302,7 +305,7 @@ public final class GlassCompiler {
                 return;
             }
             if (!fullyLoaded(j.level, d)) {
-                abort("a chunk unloaded");
+                abort("a chunk unloaded or stopped ticking");
                 return;
             }
             while (j.visiting && System.nanoTime() < deadline) {
@@ -354,11 +357,12 @@ public final class GlassCompiler {
         return null;
     }
 
+    /** Every chunk of {@code d} loaded and block-ticking (choice G2-63). */
     private boolean fullyLoaded(ServerLevel level, District d) {
         if (ind.districts().loadedChunks(d) < d.chunks.size())
             return false;
         for (long c : d.chunks)
-            if (level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)) == null)
+            if (!Districts.blockTicking(level, c))
                 return false;
         return true;
     }
@@ -655,7 +659,8 @@ public final class GlassCompiler {
             }
             long c = st.passChunks[st.passCursor++];
             LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
-            if (chunk == null)
+            // Loaded but not ticking: its block entities have not run their first tick (choice G2-63).
+            if (chunk == null || !Districts.blockTicking(level, c))
                 continue;
             long acc = 0;
             for (BlockEntity be : chunk.getBlockEntities().values()) {
