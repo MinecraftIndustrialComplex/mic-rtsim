@@ -136,6 +136,17 @@ pub fn check_apart(world: &Path, dir: &Path) -> Result<(PathBuf, PathBuf), Strin
 
 /// Copies the world in `world` into a new fork in `dir` (which must not exist or be empty).
 pub fn export(world: &Path, dir: &Path) -> Result<ForkInfo, String> {
+    export_with(world, dir, |_| {})
+}
+
+/// `export`, with `mid_copy(attempt)` called after each copy of the pages and before the journal
+/// is read again: tests save the world there to force the race a live server makes by chance.
+#[doc(hidden)]
+pub fn export_with(
+    world: &Path,
+    dir: &Path,
+    mut mid_copy: impl FnMut(u32),
+) -> Result<ForkInfo, String> {
     let (world_abs, _) = check_apart(world, dir)?;
     let pages = world.join(save::PAGES);
     if !pages.is_dir() {
@@ -168,7 +179,7 @@ pub fn export(world: &Path, dir: &Path) -> Result<ForkInfo, String> {
             std::thread::sleep(Duration::from_millis(50 << attempt.min(6)));
         }
         let _ = fs::remove_dir_all(&partial);
-        match copy_once(world, &pages, &partial) {
+        match copy_once(world, &pages, &partial, || mid_copy(attempt)) {
             Ok(Copied::Done(c)) => return finish(world, &world_abs, dir, &partial, c, attempt),
             Ok(Copied::Again(reason)) => why.push(reason),
             Err(Retry::Moved(e)) => why.push(format!("the store moved under the copy ({e})")),
@@ -242,7 +253,12 @@ fn read_level(world: &Path) -> Result<Option<Vec<u8>>, Retry> {
 /// `level.dat` is read once, after: it only gives the game time and the Deep Time folder, and a
 /// server writes it at every save, so a level.dat a save newer than the pages is what a crash
 /// leaves too (the engine starts from its pages either way).
-fn copy_once(world: &Path, pages: &Path, partial: &Path) -> Result<Copied, Retry> {
+fn copy_once(
+    world: &Path,
+    pages: &Path,
+    partial: &Path,
+    mid_copy: impl FnOnce(),
+) -> Result<Copied, Retry> {
     let journal_path = world.join(save::JOURNAL);
     let before = read_opt(&journal_path)?;
     let mut src = PageStore::open_read_only(pages).map_err(page_err)?;
@@ -271,6 +287,7 @@ fn copy_once(world: &Path, pages: &Path, partial: &Path) -> Result<Copied, Retry
     dst.commit(batch, generation.obs_seq)
         .map_err(|e| Retry::Fatal(format!("{}: {e}", partial.display())))?;
     drop(dst);
+    mid_copy();
     let after = read_opt(&journal_path)?;
     if before != after {
         return Ok(Copied::Again(
