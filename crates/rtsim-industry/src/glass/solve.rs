@@ -25,6 +25,22 @@ use super::report::why;
 use crate::ids::Good;
 use crate::tunables::GlassTunables;
 
+/// The variance of one roll of a chance output whose expectation is `e`: a Bernoulli for `e <= 1`,
+/// else `ceil(e)` units each at `e / ceil(e)` (a binomial), as `ProcessingOutput.rollOutput` rolls a
+/// count at a chance (GB111).
+pub fn chance_variance(e: f64) -> f64 {
+    if e.is_nan() || e <= 0.0 || e.is_infinite() {
+        return 0.0;
+    }
+    if e <= 1.0 {
+        e * (1.0 - e)
+    } else {
+        let k = e.ceil();
+        let p = e / k;
+        k * p * (1.0 - p)
+    }
+}
+
 /// Taint levels, ordered: a good takes the worst on its paths (`report::class`).
 pub const EXACT: u8 = 0;
 pub const BOUNDED: u8 = 1;
@@ -119,7 +135,8 @@ pub struct GoodBound {
     /// The linear relaxation bound.
     pub in_u_lin: Q,
     pub out_u_lin: Q,
-    /// `λ × E[X²]` of stochastic sources emitting it, per tick (the checksum's model variance).
+    /// The checksum's model variance per tick: `λ × E[X²]` of stochastic sources emitting it, plus
+    /// the roll variance of chance outputs reaching the read stores (GB111).
     pub var_rate: f64,
     /// The largest batch into plus out of the read stores, in units (q = batch / W).
     pub batch: f64,
@@ -364,6 +381,8 @@ pub struct Solver<'a> {
     pub fed: Vec<Q>,
     /// Per node: crafts per tick it ran under L (sources, for the stochastic variance).
     pub crafts: Vec<Q>,
+    /// Per node: the variance per tick of its chance outputs under L, by good (GB111).
+    pub chance_var: Vec<Vec<(u32, f64)>>,
     s_in: Scratch,
     s_out: Scratch,
     s_acc: Scratch,
@@ -416,6 +435,7 @@ impl<'a> Solver<'a> {
             taint_why: vec![why::NONE; n],
             fed: vec![Q::ZERO; n],
             crafts: vec![Q::ZERO; n],
+            chance_var: vec![Vec::new(); n],
             s_in: Scratch::new(gn),
             s_out: Scratch::new(gn),
             s_acc: Scratch::new(gn),
@@ -1517,6 +1537,28 @@ impl<'a> Solver<'a> {
             total = total.add(*x);
         }
         self.crafts[v as usize] = total;
+        // Create rolls every chance output of every craft (`ProcessingOutput.rollOutput`; a
+        // sequenced assembly's pool picks one entry a sequence): a random walk the checksum allows
+        // for (GB111). A stochastic source's own moment already covers its output.
+        let mut cv = std::mem::take(&mut self.chance_var[v as usize]);
+        cv.clear();
+        if node.flags & node_flags::STOCHASTIC == 0 {
+            for (k, &r) in recipes.iter().enumerate() {
+                if !c[k].is_pos() || c[k].is_inf() {
+                    continue;
+                }
+                for t in &g.recipes[r as usize].outputs {
+                    if t.flags & term_flags::CHANCE == 0 {
+                        continue;
+                    }
+                    if let Some(gi) = self.gidx(t.good) {
+                        let var = chance_variance(term_amount(t.num, t.den).to_f64());
+                        cv.push((gi, c[k].to_f64() * var));
+                    }
+                }
+            }
+        }
+        self.chance_var[v as usize] = cv;
         let cons_of = |s: &Self, gi: u32| -> Q {
             let good = s.goods[gi as usize];
             let mut need = Q::ZERO;
@@ -2078,6 +2120,35 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
             if lambda.is_finite() {
                 var_rate[gi as usize] += lambda * ex2;
             }
+        }
+    }
+    // Chance outputs: each machine's roll variance, netted by the share of the good's production
+    // that reaches the read stores under L (a randomly thinned walk keeps that share of its
+    // variance; a good made and consumed upstream adds none) (GB111).
+    let mut made = vec![Q::ZERO; gn];
+    let mut roll = vec![0.0f64; gn];
+    for v in 0..n as u32 {
+        if !matches!(s.kind(v), NodeKind::Machine | NodeKind::Source) {
+            continue;
+        }
+        for &(gi, x) in &s.chance_var[v as usize] {
+            roll[gi as usize] += x;
+        }
+        if s.chance_var[v as usize].is_empty() {
+            continue;
+        }
+        // What the node made of each good, chance or not.
+        for &e in g.out_g.of(v) {
+            for sl in s.slots_of(e) {
+                let gi = s.slot_good[sl] as usize;
+                made[gi] = made[gi].add(s.used[sl]);
+            }
+        }
+    }
+    for gi in 0..gn {
+        if roll[gi] > 0.0 && made[gi].is_pos() {
+            let share = (in_l[gi].to_f64() / made[gi].to_f64()).clamp(0.0, 1.0);
+            var_rate[gi] += share * roll[gi];
         }
     }
     let has_unbounded =
