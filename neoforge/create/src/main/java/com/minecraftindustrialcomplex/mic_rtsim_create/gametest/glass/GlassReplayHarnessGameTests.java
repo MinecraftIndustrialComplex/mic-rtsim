@@ -27,6 +27,8 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import it.unimi.dsi.fastutil.longs.LongSet;
+
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,16 +52,43 @@ public final class GlassReplayHarnessGameTests {
     static final int HOLD_CHUNKS = 6000;
     /** Ticks the entity IO is held once the chunk is block-ticking with its neighbours FULL. */
     static final int HOLD_TICKS = 40;
-    /** The blocker's own limit: it lets the IO go however the test ends. */
-    static final long HOLD_SECONDS = 30;
+    /**
+     * A backstop only (G2-78): the blocker lets go when the test releases it, when the test is done and when
+     * the server stops, so it never ends on its own while the test runs. The chunk takes 17 to 44 s to be
+     * ready on a loaded laptop; the old 30 s limit ended the hold before that once.
+     */
+    static final long HOLD_SECONDS = 600;
+    /** How often the blocker looks whether the test or the server is done. */
+    static final long HOLD_POLL_MS = 100;
 
     /**
-     * Holds the level's entity IOWorker: a task at its foreground priority that waits for {@code release}.
+     * A hold on the level's entity IOWorker ({@link #holdEntityIo}). {@code ended} is null while the blocker
+     * holds, or waits its turn on the mailbox (every entity load queued after it waits either way), and says
+     * why it let go once it has.
+     */
+    static final class IoHold {
+        final CountDownLatch release = new CountDownLatch(1);
+        final long postedNanos = System.nanoTime();
+        volatile long engagedNanos = -1;
+        volatile String ended;
+
+        String state() {
+            long now = System.nanoTime();
+            return ended != null ? "let go: " + ended
+                    : engagedNanos < 0 ? "queued for " + (now - postedNanos) / 1_000_000 + " ms"
+                    : "on for " + (now - engagedNanos) / 1_000_000 + " ms";
+        }
+    }
+
+    /**
+     * Holds the level's entity IOWorker: a task at its foreground priority that waits for the hold's release.
      * Every entity load queued after it (a chunk's entities, read when the chunk reaches FULL) waits too,
-     * as one does behind a slow queue on a loaded GameTest server.
+     * as one does behind a slow queue on a loaded GameTest server. It also lets go once the test is done or
+     * the server stops: {@code IOWorker.close} waits on the mailbox.
      */
     @SuppressWarnings("unchecked")
-    static void holdEntityIo(ServerLevel level, CountDownLatch release) {
+    static IoHold holdEntityIo(ServerLevel level, GameTestInfo info) {
+        IoHold hold = new IoHold();
         try {
             Object manager = field(ServerLevel.class, "entityManager").get(level);
             Object storage = field(manager.getClass(), "permanentStorage").get(manager);
@@ -67,14 +96,43 @@ public final class GlassReplayHarnessGameTests {
             Object worker = field(region.getClass(), "worker").get(region);
             ProcessorMailbox<StrictQueue.IntRunnable> mailbox = (ProcessorMailbox<StrictQueue.IntRunnable>) field(worker.getClass(), "mailbox").get(worker);
             mailbox.tell(new StrictQueue.IntRunnable(0, () -> {
+                hold.engagedNanos = System.nanoTime();
+                long limit = hold.engagedNanos + TimeUnit.SECONDS.toNanos(HOLD_SECONDS);
+                String why = null;
                 try {
-                    release.await(HOLD_SECONDS, TimeUnit.SECONDS);
+                    while (why == null) {
+                        if (hold.release.await(HOLD_POLL_MS, TimeUnit.MILLISECONDS))
+                            why = "released";
+                        else if (info.isDone())
+                            why = "the test is done";
+                        else if (!level.getServer().isRunning())
+                            why = "the server stops";
+                        else if (System.nanoTime() > limit)
+                            why = "the backstop, " + HOLD_SECONDS + " s";
+                    }
                 } catch (InterruptedException e) {
+                    why = "interrupted";
                     Thread.currentThread().interrupt();
                 }
+                hold.ended = why;
             }));
         } catch (ReflectiveOperationException e) {
             throw new GameTestAssertException("cannot reach the entity IOWorker: " + e);
+        }
+        return hold;
+    }
+
+    /**
+     * Whether the level's {@code EntityStorage} already knows the chunk has no entities: then its entity
+     * load completes at once and never queues on the IOWorker, so the hold cannot hold it.
+     */
+    static boolean knownEmpty(ServerLevel level, long chunk) {
+        try {
+            Object manager = field(ServerLevel.class, "entityManager").get(level);
+            Object storage = field(manager.getClass(), "permanentStorage").get(manager);
+            return ((LongSet) field(storage.getClass(), "emptyChunks").get(storage)).contains(chunk);
+        } catch (ReflectiveOperationException e) {
+            throw new GameTestAssertException("cannot reach the entity storage: " + e);
         }
     }
 
@@ -101,7 +159,8 @@ public final class GlassReplayHarnessGameTests {
      * ticket ({@link Districts#blockTicking}, the harness's old readiness) with its neighbours FULL, and
      * ticks no block entity: a shaft placed there keeps {@code needsSpeedUpdate} (cleared at its first
      * tick). The harness's readiness ({@link GlassReplayGameTests#notTicking}) must say it does not tick;
-     * once the entities load it must say it does, and the shaft ticks.
+     * once the entities load it must say it does, and the shaft ticks. The hold must hold until the test
+     * lets it go (G2-78): each held tick checks it first, so a hold that let go says so.
      */
     @GameTest(template = YARD, batch = "glass_harness_01", timeoutTicks = 12000)
     public static void aChunkWithItsEntitiesUnloadedTicksNoBlockEntity(GameTestHelper helper) {
@@ -111,10 +170,12 @@ public final class GlassReplayHarnessGameTests {
         BlockPos at = helper.absolutePos(new BlockPos(8, 2, 8)).offset(16 * HOLD_CHUNKS, 0, 0);
         ChunkPos c = new ChunkPos(at);
         long k = c.toLong();
-        CountDownLatch hold = new CountDownLatch(1);
+        check("the held chunk " + c + " is not loaded before the test forces it", level.getChunkSource().getChunkNow(c.x, c.z) == null);
+        check("the held chunk " + c + " is not known empty (its entity load would skip the IOWorker)", !knownEmpty(level, k));
+        IoHold hold = holdEntityIo(level, helper.testInfo);
         boolean[] done = {false};
         Runnable release = () -> {
-            hold.countDown();
+            hold.release.countDown();
             if (!done[0]) {
                 done[0] = true;
                 level.setChunkForced(c.x, c.z, false);
@@ -137,8 +198,9 @@ public final class GlassReplayHarnessGameTests {
             @Override
             public void testAddedForRerun(GameTestInfo oldTest, GameTestInfo newTest, GameTestRunner runner) {}
         });
-        holdEntityIo(level, hold);
+        long forcing = System.nanoTime();
         level.setChunkForced(c.x, c.z, true);
+        long forced = System.nanoTime();
         String test = "glass harness entities";
         List<String> reasons = new ArrayList<>();
         helper.startSequence()
@@ -152,11 +214,15 @@ public final class GlassReplayHarnessGameTests {
                 })
                 .thenExecute(() -> {
                     set(helper, at, AllBlocks.SHAFT.getDefaultState());
+                    long now = System.nanoTime();
                     record(test, "held", "chunk " + c + " block-ticking with its neighbours FULL, entities loaded " + level.areEntitiesLoaded(k)
-                            + "; a shaft at " + at.toShortString());
+                            + "; forced in " + (forced - forcing) / 1_000_000 + " ms, ready " + (now - forced) / 1_000_000
+                            + " ms later; the hold " + hold.state() + "; a shaft at " + at.toShortString());
                 })
                 .thenExecuteFor(HOLD_TICKS, () -> {
-                    check("the held chunk's entities are not loaded", !level.areEntitiesLoaded(k));
+                    check("the entity IO hold holds (" + hold.state() + ")", hold.ended == null);
+                    check("the held chunk's entities are not loaded although the hold holds: a load skipped the entity IOWorker",
+                            !level.areEntitiesLoaded(k));
                     check("the held chunk is still block-ticking by its ticket", Districts.blockTicking(level, k));
                     check("the shaft in the held chunk did not tick (needsSpeedUpdate)", kinetic(level, at).needsSpeedUpdate());
                     String why = GlassReplayGameTests.notTicking(level, c);
@@ -165,8 +231,8 @@ public final class GlassReplayHarnessGameTests {
                         reasons.add(why);
                 })
                 .thenExecute(() -> {
-                    record(test, "while held", "the readiness said: " + reasons);
-                    hold.countDown();
+                    record(test, "while held", "the readiness said: " + reasons + "; the hold " + hold.state());
+                    hold.release.countDown();
                 })
                 .thenWaitUntil(() -> {
                     String why = GlassReplayGameTests.notTicking(level, c);
