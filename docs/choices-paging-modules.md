@@ -167,7 +167,7 @@ dragon, and that the rows stay under a budget however many there are (D6).
 | PM-D2 | **Two save forms, one meta.** The meta (magic `RTDM`) is everything resident: seed, clock, the lair indexes, the wheel, homes, the prey ledger, stats, the outbox, players, the prey index, the body maps, the embodied and vacant sets, and each table's row count and next index. `save()` stays one blob: `RTDG`, the meta, then both tables' `encode_all` in key order; `load()` reads it back and checks the lair keys are exactly `0..len`, no trailing bytes, then `check_resident` and `check_rows`. Paged: `save_paged(batch, meta_key)` puts the meta page and each table's dirty pages, `saved` and `save_failed` take the tickets, `open_paged` reads the meta page only and runs `check_resident` (indexes, the vacant set and wheel entries against the lair count, embodied handles against the next index), which reads no row. The meta key is the host's (the tests and bench use (0x4400, 0), the page rtsim-jni writes the blob to; it must not be in a row table). | `PagedArena`'s blob is not `Arena`'s, so the 0x4400 page's format changed once: rtsim-jni's dragons page `VERSION` is now 2 (no compatibility before release). `check_rows` is a whole pass, so only the blob load runs it. |
 | PM-D3 | **One row a page for both tables** (`DRAGONS_PER_PAGE`, `Lairs::PER_PAGE`, PLACEHOLDER 1). Measured at 4,096 dragons, a save every 6,000 ticks, 256 KiB budget, before PM-D5's extra saves: resident rows peaked at 1.56 MB at 16 a page, 794 KB at 4, 322 KB at 1. | Most of a dragon's events change its row, and a changed page is pinned until the next save, so a page of 16 dragons was pinned whenever any of them acted. The cost of 1 is an entry a row in the store's index (2.76 MB at 32,768 dragons, measured). |
 | PM-D4 | **Budget split**: three quarters to dragon rows, a quarter to lair rows. PLACEHOLDER shares. | Every event reads its dragon; fewer read a lair. Resident, a dragon row is about 410 bytes and a lair row about 180 (measured below). |
-| PM-D5 | **The host enforces the budget and saves when it asks.** `enforce_budget` is the host's call at its step boundaries (the bench every 20 ticks); `run_until` calls it only while resident, to keep `heap_bytes` measured. `needs_save` (as herds' PM7) says the rows are over the budget with nothing left to evict, and the host saves: an extra pending save like any other (P29). | Calling it per event would pay the check (a pass over the resident pages when over budget) once an event. Without the extra save, rows changed between autosaves are pinned and grow with dragons times the autosave interval: 1.87 MB at 32,768 dragons in the run before it, slope 0.47 against the 0.1 declared. |
+| PM-D5 | **The host enforces the budget and saves when it asks.** `enforce_budget` is the host's call at its step boundaries (the bench every 20 ticks); `run_until` calls it only while resident, to keep `heap_bytes` measured. `needs_save` (as herds' PM7) says the rows are over the budget with nothing left to evict, and the host saves: an extra pending save like any other (P29). | Calling it per event would pay the check (a pass over the resident pages when over budget) once an event. Without the extra save, rows changed between autosaves are pinned and grow with dragons times the autosave interval: the peak was 1.87 MB at 32,768 dragons (slope 0.47); with it, 695 KB (slope 0.23). |
 | PM-D6 | **An embodied index** (`embodied`, the dragons with a body in the world, kept by `track` after every state change and saved in the meta) replaces `session_start`'s pass over every dragon. | A login loaded every dragon page. Bounded by activity: bodies exist only near players. |
 | PM-D7 | **A vacant-lair index** (`vacant`, lairs with no occupant and a `vacant_since`, kept by `track_lair` and saved in the meta). `vacant_lair` (a roost or migration search over the cells near a dragon) skips lairs not in it before reading their rows. | The search read every lair row in the regions within the dragon's grudge range, almost all occupied. Resident cost about 6 bytes a vacant lair; at most the lairs. |
 | PM-D8 | **`lair_by_key` and `lair_cells` stay resident** and are saved whole in the meta: about 60 bytes a lair resident (B-tree entries at two-thirds fill and each cell's vector) and about 20 bytes a lair in every save. Not built: page `lair_cells` by `rows::cell_key`, so a save writes only the cells that changed. | The task allows it, and lairs change rarely. It is the part of the meta that grows with lairs; the wheel is the larger part (PM-D13). |
@@ -177,6 +177,62 @@ dragon, and that the rows stay under a budget however many there are (D6).
 | PM-D12 | **`Dragons::memory()`**: resident bytes by part (dragon rows, lair rows, lair indexes with the embodied and vacant sets, wheel, homes, prey index, log and players); `heap_bytes` is its sum and reads no row. | The bench and the notes report the parts; the old `heap_bytes` walked every row. |
 | PM-D13 | **The bench** (`dragons_paged`, `dragons_resident`): a world that grows with the dragons (two dragons a village, `grown_villages`), a 256 KiB budget, an autosave every 6,000 ticks (fsynced after the first), the budget every 20 ticks and an extra save when it asks (PM-D5), the dragons' own CPU per dragon-day, and the same points resident beside it. The fixed-grid `dragons` sweep stays resident, for comparison with the runs before this branch. | A fixed world saturates its prey at 512 dragons; growing it keeps a dragon's life the same at every point, so the slopes are the engine's, not the prey's. |
 | PM-D14 | **`synth::FakeIaf` derives `Clone`** (the test plugin). | The restore test runs the restored engine beside the original in lockstep, each with its own copy of the plugin's state at the save. |
+| PM-D15 | **Kernel: a row page reserves room for its own rows only** (`PagedRows::try_insert` doubles a page's vector up to `rows_per_page` and stops; test `rows::tests::a_page_reserves_room_for_its_own_rows_only`). | A `Vec`'s first push reserves four, so a page of one row held room for four: a resident dragon row cost 1,534 bytes instead of 479 and a lair row 672 instead of 264 (pages loaded from the store were exact already). Memory only: page bytes, state and every hash are unchanged. It touches every module's row pages; herds' 32-row pages fill their doubling exactly, so only their partial pages shrink. |
+| PM-D16 | **The resident contract is declared at 0.3, not 0.1** (`DRAGONS_RESIDENT_SLOPE`; SCALE.md's 0 kept beside it). After every save the rows are at or under the budget (the bench fails otherwise); the declared slope is for the peak between saves. | Measured 0.23. The peak is the budget plus the rows one 20-tick step changes, and the events in a step grow with the dragons; nothing can leave memory before the save that ends the step. |
+
+**Measured** (quick sweeps, release, nice 10, load 31 to 38 from other sessions, commit a5b73a8;
+`bench/results/scale-2026-10-21-0122-quick-dragons-after.json`). The world grows with the
+dragons (two dragons a village); one lair a dragon; two days of warm-up, then the window. Paged:
+256 KiB budget, autosave every 6,000 ticks, the budget every 20 ticks, an extra save when it asks.
+Paged and resident give the same state hash and the same events at every point.
+
+| Dragons (villages) | resident: heap | resident: engine | paged: heap | paged: engine | paged: rows at peak | rows after the last save | saves a day (of them the budget's) | bytes a save | save CPU a day | CPU a dragon-day, resident / paged |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 512 (256) | 10.4 MiB | 0.71 MB | 10.4 MiB | 0.60 MB | 271 KB | 262 KB | 4.0 (0) | 37 KB | 7.6 ms | 31 / 41 us |
+| 4,096 (2,048) | 90.3 MiB | 4.68 MB | 88.7 MiB | 2.10 MB | 322 KB | 262 KB | 4.3 (0.3) | 282 KB | 21 ms | 46 / 54 us |
+| 32,768 (16,384) | 753.7 MiB | 34.5 MB | 735.2 MiB | 12.1 MB | 695 KB | 262 KB | 50 (46) | 1.95 MB | 1.36 s | 52 / 72 us |
+
+Slopes: paged rows at peak 0.23 (declared 0.3, PM-D16; max/min 2.56); paged heap 1.02 and
+resident heap 1.03, both the phase 1 world under the dragons (about 23 KB a dragon at two dragons
+a village); the dragons' own engine heap 0.72 paged, 0.93 resident. Page loads: 112, 1,708 and
+39,345 a day (about 1.4 an event); the store's index 111 KB, 799 KB and 2.76 MB (PM-D3).
+
+**Where a resident dragon's bytes go** (`Dragons::memory()` at 3 days, resident, one lair a
+dragon): dragon row 479, lair row 264, lair indexes with the embodied and vacant sets 60, prey index
+31, wheel 497 at 512 dragons falling to 213 at 32,768 (three events booked a dragon). Paged, the
+two rows leave memory and the rest stays (304 bytes a dragon at 32,768 by these parts; the paged
+engine measured 369). The meta a save
+writes is 63 to 65 bytes a dragon (2.1 MB at 32,768): the wheel and the lair indexes.
+
+**Before and after.**
+
+| Run | Points | Rows at peak | Engine heap | Heap |
+|---|---|---|---|---|
+| Before this branch (`Arena`, fixed 256-village grid, resident; side by side with the after run below, three runs each interleaved) | 8, 128, 512 | | 43, 175, 647 KB | 4.6, 7.6, 12.3 MiB |
+| After, same sweep | 8, 128, 512 | | 46, 216, 711 KB | 3.7, 5.7, 10.4 MiB |
+| This branch before PM-D5 and PM-D15 (grown world) | 512, 4,096, 32,768 | paged 270 KB, 322 KB, 1.87 MB | resident 1.54, 12.5, 100.3 MB; paged 0.69, 3.92, 29.9 MB | resident 13.1, 113.5, 938 MiB |
+| After (grown world, the table above) | 512, 4,096, 32,768 | paged 271 KB, 322 KB, 695 KB | resident 0.71, 4.68, 34.5 MB; paged 0.60, 2.10, 12.1 MB | resident 10.4, 90.3, 754 MiB |
+
+On the fixed grid the dragons' CPU a dragon-day is the same before and after (medians of three
+interleaved runs: 22.6, 16.5, 19.2 us before; 21.6, 16.9, 19.7 after) and so are the events
+(16, 245, 1,402). The engine estimate is 10% larger resident (124 bytes a dragon at 512, of which a
+row page's header and its index entry are about 90); the smaller heap after is the phase 1 world's changes
+merged from `feat/paging-modules`, not the dragons. CPU on this loaded machine reads about twice
+the 10 us of the quiet run in `scale-2026-10-20-1224-dragons.json`, so only side-by-side figures
+compare.
+
+**Not flat, and why.**
+- **Saves grow with the dragons.** The meta is rewritten whole by every save (the wheel and the
+  lair indexes, 65 bytes a dragon), and the extra saves the budget asks for grow with the dragons
+  too: 50 saves a day at 32,768, about 97 MB written and 1.36 s of CPU a sim day, against 2.35 s
+  of the dragons' own. At a few hundred dragons (a real game) it is 4 saves a day of under 40 KB.
+  Fix, not built: the wheel and `lair_cells` on pages of their own, so the meta stops growing.
+- **The wheel is the largest resident term** (213 to 497 bytes a dragon). It is SCALE.md §8's
+  "imminent events" working set; paging it is a kernel change for every module.
+- **Paged CPU is 17 to 37% over resident** at these points (page loads and decodes, and the budget
+  every 20 ticks), from one loaded run; worth a quiet pair before anyone tunes it.
+- **Whole passes stay for tools** (PM-D11), and rtsim-jni does not page the dragons yet (it saves
+  the version 2 blob).
 
 ## Phase 1 world: the market rows (moved, not bounded yet)
 
