@@ -34,7 +34,7 @@ esac
 # each pair splits A and B; rtsim and upgrade swap sets between p1 and p2
 scen plain 25871 21.1.230 control $A; scen plain 25881 21.1.249 upgrade $B; scen rtsim 25891 21.1.249 rtsim $A
 scen plain 25901 21.1.249 upgrade2 $A; scen rtsim 25911 21.1.249 rtsim2 $B
-scen reload 25891 21.1.249 reload $A; scen uninstall 25921 21.1.249 uninstall $A; scen reset 25931 21.1.249 reset $A
+scen reload 25891 21.1.249 reload $A; scen uninstall 25921 21.1.249 uninstall $A; scen reset 25941 21.1.249 reset $A; scen reload 25951 21.1.249 reload2 $A
 case $STEP in all|p0) pair r0-control control r0-upgrade upgrade;; esac
 case $STEP in all|p1) pair r1-upgrade upgrade r1-rtsim rtsim;; esac
 case $STEP in all|p2) pair r2-rtsim rtsim2 r2-upgrade upgrade2;; esac
@@ -48,5 +48,10 @@ case $STEP in all|reset)  # SRV2's sim reset: the rtsim world after reload, with
   log "reset start"
   [ -e $R/r-reset ] || { bash $T/prep.sh r-reset upgrade-base $R/r1-rtsim/world rtsim > /dev/null && rm -rf $R/r-reset/world/rtsim; }
   run r-reset reset;;
+esac
+case $STEP in reload2)  # the reset world booted again (a copy): a restored engine on the live world, with the main base compiled
+  log "reload2 start"
+  [ -e $R/r-reset-reload ] || cp -a --reflink=always $R/r-reset $R/r-reset-reload
+  run r-reset-reload reload2;;
 esac
 log "campaign $STEP finished"
