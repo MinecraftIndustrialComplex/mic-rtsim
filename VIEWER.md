@@ -587,7 +587,7 @@ count a bench has run, where one exists.
 | **Herds** (rtsim-ecology) | `Herd{species, classes, route, ...}`; latent members cost nothing | an area (`footprint`) with `count`; the route as a path; sampled animals below 4 bpp | species, count, cohorts, condition, ledger (born, died, eaten, taken) | 1,000,000 animals per herd (bench) |
 | **Ships** (rtsim-ships) | `Dock`, `Lane{path}`, `Service` timetables, `Ship{role, cargo, hull}`, `Haven`, `Navy`, `LaneThreat` | docks; lanes as paths tinted by threat; ships as points (`Service::fix`; pirates by `pirate_pos`, private today, so a public reader is new) | role, service, phase, cargo, crew, hull | 814 merchant ships (bench) |
 | **Conflict** (rtsim-conflict) | `Faction{pos, radius, pool}`, `Feud{grievance, step, demand, party}`, `Party{kind, route, times, phase, loot}` | faction areas; feuds as edges coloured by step (Notice to Siege); parties as legs and paths | faction, warriors now (`pool_at`), feuds with grievance by kind (`feud_view`), demands, parties | |
-| **Industry** (rtsim-industry) | `District{chunks, dim, presence, phase, ports, reports, attacks, ...}`; stations in the engine's private `stations` map (a public reader is new); `lines()` (`LineEdge`: trips, cargo, travel ticks); train `legs()` | districts as boxes of their chunks (a box and centre kept at detection: new, small); stations; train lines as edges; trains as legs | the inspection (`inspect_peek`, `Inspection`): state and reason, rates per hour, made since, running or stopped, learning ticks to go, last reconcile, attacks; later the glass-box graph | 100,000 districts (bench) |
+| **Industry** (rtsim-industry) | `District{chunks, dim, presence, phase, ports, reports, attacks, ...}`; stations in the engine's private `stations` map (a public reader is new); `lines()` (`LineEdge`: trips, cargo, travel ticks); train `legs()` | districts as boxes of their chunks (a box and centre kept at detection: new, small); stations; train lines as edges; trains as legs | the inspection (`inspect_peek`, `Inspection`): state and reason, rates per hour, made since, running or stopped, learning ticks to go, last reconcile, attacks; its replay processes (`processes_peek`) and its cluster's other districts (`cluster_members`); later the glass-box graph | 100,000 districts (bench) |
 | **World model** (rtsim-space) | HABITAT cells (64 blocks: water, ice, biome, tags, heights, temperatures, creatures) | the base map under everything (§9) | biome, heights, year-round degrees, creatures | about 6 KB per sampled region (overnight) |
 | **Players** (shared interest areas) | `PlayerState{uuid, pos}`, live only | points (ops only; live source only) | UUID; the name from the server's `usercache.json` when the sidecar is given the server folder | |
 
@@ -1000,10 +1000,23 @@ For Deep Time's coordinator to review.
 - **`/api/status`** (an extra route): each module's load status and state hash, each layer's mark
   count or why it is empty, the caches and the heap. An empty layer's reason also comes with its
   marks (`LayerMarks.empty`), and the page shows it under the layer's name.
+- **Checked against the engine.** Every module with a state hash in its TEST save reads back to it
+  (`rtsim-view/tests/hashes.rs`; a save whose hash differs is flagged in `/api/status` and at
+  start). Industry has no such hash, so the harness stops the iron line with three districts
+  replaying (two in one cluster) and checks that each district's card decode (inspection, replay
+  stock, cluster, processes) equals what the live engine held just before the save
+  (`rtsim-view/tests/harness.rs`).
 - **Measured** (the laptop, `rtsim-cli/tests/view.rs`): at 100,000 synthetic districts (the industry
-  bench's, 100,001 pages, 20.3 MiB raw), the sidecar starts in 0.8 s, a full-world request returns
-  250 marks at 40 bpp and 2,000 at 0.25 bpp in 11 to 19 ms, a district card takes 3 to 4 ms, and the
-  process peaks at 52 MiB resident (heap 32 MiB). The Windows test is V4's now.
+  bench's, joined four to a replay cluster by power lines, half of them packing mail, one in ten
+  with a station, replaying for 2,000 ticks: 125,001 pages, 34.4 MiB raw), the sidecar starts in
+  1.1 s, a full-world request returns 500 marks at 40 bpp and 1,434 at 0.25 bpp in 17 to 27 ms, a
+  district card takes 14 ms (it restores an engine from the globals page, which holds the 10,000
+  stations, its own page and its cluster's), and the process peaks at 59 MiB resident (heap
+  39 MiB). A district card lists its replay processes and the other districts of its cluster, and
+  the test checks the cards against the engine's own `processes_peek`, `cluster_members` and
+  `stock_peek` taken before the save. (The first version of this test never advanced the engine,
+  so its districts never started replaying and read as out of season.) The Windows test is V4's
+  now.
 
 **V5 as built** (feat/viewer-events, 2026-10-21):
 - **Surveyor over HABITAT.** Each frame named by a dimension gets a "Terrain (Surveyor)" tile layer
