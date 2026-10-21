@@ -14,9 +14,11 @@
 //! lairs' rows page to a page store in a scratch folder under that budget, with a save (meta page
 //! and dirty row pages, fsynced) every `save_every` ticks and the budget enforced every
 //! [`STEP_TICKS`], as a host would at its step boundaries. The run reports the rows' resident
-//! bytes at their peak (between saves, when the rows changed since the last save are pinned) and
-//! after the last save, and the whole heap, whose slope is what stays resident (the wheel, the
-//! lair indexes, and the phase 1 world under the dragons).
+//! bytes at their peak (between saves, when the rows changed since the last save are pinned, at
+//! most the budget plus what one step changes, because a step boundary over the budget saves)
+//! and after the last save, the saves a day (and of them the budget's), and the whole heap, whose
+//! slope is what stays resident (the wheel, the lair indexes, and the phase 1 world under the
+//! dragons).
 
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -143,6 +145,8 @@ pub fn run(c: &DragonConfig) -> Measured {
 #[derive(Default)]
 struct Saves {
     saves: u64,
+    /// Saves the budget asked for (`Dragons::needs_save`), beyond the autosaves.
+    pressure: u64,
     cpu_ns: u64,
     wall_ns: u64,
     bytes: u64,
@@ -151,9 +155,9 @@ struct Saves {
     checkpoints: u64,
 }
 
-/// One save as a paged host makes it at the autosave: the meta and the dirty rows in a batch, the
-/// commit (fsynced), the tickets back, the budget.
-fn save(d: &mut Dragons, store: &RwLock<PageStore>, s: &mut Saves) {
+/// One save as a paged host makes it at the autosave, or sooner when the budget asks (`pressure`):
+/// the meta and the dirty rows in a batch, the commit (fsynced), the tickets back, the budget.
+fn save(d: &mut Dragons, store: &RwLock<PageStore>, s: &mut Saves, pressure: bool) {
     let (c0, w0) = (sys::thread_cpu_ns(), Instant::now());
     let mut b = SaveBatch::new();
     let tickets = d.save_paged(&mut b, META);
@@ -165,6 +169,7 @@ fn save(d: &mut Dragons, store: &RwLock<PageStore>, s: &mut Saves) {
     d.saved(tickets);
     d.enforce_budget();
     s.saves += 1;
+    s.pressure += u64::from(pressure);
     s.wall_ns += w0.elapsed().as_nanos() as u64;
     if let Some(ns) = cpu_since(c0) {
         s.cpu_ns += ns as u64;
@@ -184,7 +189,8 @@ struct Window {
 }
 
 /// Runs to `end` as a paged host would: the world and the dragons stepped event by event, the
-/// budget at every step boundary, a save at every `save_every`.
+/// budget at every step boundary, a save at every `save_every`, and an extra save at a boundary
+/// where the rows changed since the last save fill the budget (`Dragons::needs_save`, PM7).
 fn step_paged(
     w: &mut World,
     d: &mut Dragons,
@@ -212,7 +218,9 @@ fn step_paged(
             None => win.have_cpu = false,
         }
         if next.0.is_multiple_of(save_every) {
-            save(d, store, saves);
+            save(d, store, saves, false);
+        } else if at_boundary && d.needs_save() {
+            save(d, store, saves, true);
         }
         t = next;
     }
@@ -236,7 +244,7 @@ fn run_paged(c: &DragonConfig, budget: usize, save_every: u64) -> Measured {
     d.attach_store(store.clone(), budget);
     let mut saves = Saves::default();
     // The first save writes every row (the world as built), then saves are real ones.
-    save(&mut d, &store, &mut saves);
+    save(&mut d, &store, &mut saves, false);
     store
         .write()
         .expect("the store")
@@ -277,7 +285,7 @@ fn run_paged(c: &DragonConfig, budget: usize, save_every: u64) -> Measured {
     let cpu = cpu_since(cpu0);
     // At a step boundary after a save the budget holds: nothing is dirty.
     if !end.0.is_multiple_of(save_every) {
-        save(&mut d, &store, &mut saves);
+        save(&mut d, &store, &mut saves, false);
     }
     let resident = d.resident_row_bytes();
     let ps = d.paging_stats();
@@ -342,6 +350,8 @@ fn run_paged(c: &DragonConfig, budget: usize, save_every: u64) -> Measured {
         save_log_bytes_per_save: Some(saves.log_bytes as f64 / n_saves),
         save_incremental_pages: Some(saves.pages / saves.saves.max(1)),
         checkpoints: Some(saves.checkpoints),
+        saves_per_day: Some(saves.saves as f64 / days),
+        pressure_saves_per_day: Some(saves.pressure as f64 / days),
         ..Measured::default()
     }
 }

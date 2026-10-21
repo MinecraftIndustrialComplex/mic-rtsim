@@ -1194,6 +1194,15 @@ impl Dragons {
             .saturating_add(self.lairs.rows().budget())
     }
 
+    /// Whether the rows are over their budget with nothing left to evict (asked right after
+    /// [`Dragons::enforce_budget`]): every resident page beyond the budget changed since the last
+    /// save. The host should save; an extra save is a pending generation like any other (P29),
+    /// as herds' `needs_save` (PM7). Over both tables, so either may use the other's unused share
+    /// until the save. Never while resident.
+    pub fn needs_save(&self) -> bool {
+        self.is_paged() && self.resident_row_bytes() > self.row_budget()
+    }
+
     pub fn paging_stats(&self) -> DragonsPaging {
         DragonsPaging {
             dragons: self.dragons.rows().stats(),

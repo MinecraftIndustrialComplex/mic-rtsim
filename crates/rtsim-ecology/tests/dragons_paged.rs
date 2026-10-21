@@ -168,17 +168,21 @@ fn paged_equals_unpaged() {
     let mut b = start(seed);
     page(&mut b, &dir);
     let mut t = Tick::ZERO;
-    let mut compared = 0;
+    let (mut compared, mut pressure) = (0, 0);
     while t < Tick::from_days(DAYS) {
         t += STEP;
         react(&mut a, t);
         react(&mut b, t);
         let (ca, cb) = (step(&mut a, t), step(&mut b, t));
         assert_eq!(ca, cb, "commands at {t:?}");
-        if t.0.is_multiple_of(SAVE_EVERY) {
+        assert!(!a.d.needs_save(), "a resident engine never asks for a save");
+        let autosave = t.0.is_multiple_of(SAVE_EVERY);
+        if autosave || b.d.needs_save() {
+            // The autosave, or the host's extra save when the rows changed past the budget.
+            pressure += u32::from(!autosave);
             save(&mut b);
             assert!(
-                b.d.resident_row_bytes() <= BUDGET,
+                b.d.resident_row_bytes() <= BUDGET && !b.d.needs_save(),
                 "{} resident row bytes after a save, budget {BUDGET}",
                 b.d.resident_row_bytes()
             );
@@ -191,6 +195,7 @@ fn paged_equals_unpaged() {
         }
     }
     assert_eq!(compared, DAYS / 2);
+    assert!(pressure > 0, "the budget never asked for a save");
     assert_exercised(&a, &b);
     assert_eq!(a.d.state_hash(), b.d.state_hash());
     assert_eq!(save_hash(&a.d), save_hash(&b.d), "the same save");
