@@ -8,6 +8,7 @@
     "ChunkMapInvoker",
     "EntitySaveMixin",
     "EntitySectionManagerAccessor",
+    "IOWorkerProbeMixin",
     "LevelChunkAccessor",
     "LevelChunkTickGateMixin",
     "LlamaInvoker",
