@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
@@ -28,15 +29,29 @@ public final class GlassExitKit {
     public static final class Recorder {
         private final List<ScriptedEngine.Received> kept = new ArrayList<>();
         private final Set<ScriptedEngine.Received> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        /** Records stamped before this game time are dropped (dictionary records never are); MIN_VALUE keeps all. */
+        private final long from;
+        private int dropped;
 
-        private Recorder() {
+        private Recorder(long from) {
+            this.from = from;
         }
 
         /** Takes what arrived since the last poll. Poll more often than 10,000 records arrive. */
         public synchronized void poll() {
             for (ScriptedEngine.Received r : IndustryKit.engine().received())
-                if (seen.add(r) && !r.skipped())
+                if (seen.add(r) && !r.skipped()) {
+                    if (r.kind() != Obs.DICT && r.bytes().length >= Obs.GAME_TIME + 8 && r.view().getLong(Obs.GAME_TIME) < from) {
+                        dropped++;
+                        continue;
+                    }
                     kept.add(r);
+                }
+        }
+
+        /** Records {@link #poll} dropped for their game time. */
+        public synchronized int dropped() {
+            return dropped;
         }
 
         /** The records kept, back to back (each sized by its header), for the offline check. */
@@ -69,7 +84,20 @@ public final class GlassExitKit {
 
     /** A recorder holding what the engine's log holds now (the session's dictionary among it, if still there). */
     public static Recorder start() {
-        Recorder r = new Recorder();
+        Recorder r = new Recorder(Long.MIN_VALUE);
+        r.poll();
+        return r;
+    }
+
+    /**
+     * A recorder like {@link #start()} that keeps only the dictionary and the records stamped at or after
+     * {@code fromGameTime}. On a reused world the stub resends, at every session start, the journal's
+     * unacknowledged records of an earlier session (it acknowledges nothing), stamped with that session's
+     * game time; one later than this session's moves the offline engine's clock past every record after it,
+     * and no checksum window ever opens.
+     */
+    public static Recorder start(long fromGameTime) {
+        Recorder r = new Recorder(fromGameTime);
         r.poll();
         return r;
     }

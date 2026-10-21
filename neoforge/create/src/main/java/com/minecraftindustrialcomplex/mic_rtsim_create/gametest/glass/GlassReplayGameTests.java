@@ -20,6 +20,9 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestGenerator;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.gametest.framework.TestFunction;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
@@ -183,7 +186,8 @@ public final class GlassReplayGameTests {
      * unchanged (positions through {@link #absolutePos}, entities through {@link #absoluteVec}).
      */
     static final class Far extends GameTestHelper {
-        final BlockPos offset;
+        /** Whole chunks, plus (the partial variant) the shift that puts a chunk border through the factory. */
+        BlockPos offset;
 
         Far(GameTestHelper yard, BlockPos offset) {
             super(yard.testInfo);
@@ -225,7 +229,8 @@ public final class GlassReplayGameTests {
         final boolean stub;
         /** The far copy's forced chunks: those its yard box intersects, as the framework forces the yard's. */
         final List<ChunkPos> farChunks = new ArrayList<>();
-        final BlockPos farMin, farMax;
+        /** The far copy's yard box (moved with the partial variant's shift once it is known). */
+        BlockPos farMin, farMax;
         Stage stage = Stage.LOAD_FAR;
         int ticks, stageTicks;
         long builtAt = -1;
@@ -234,6 +239,8 @@ public final class GlassReplayGameTests {
         /** Partial variant: the far chunk that keeps ticking. */
         ChunkPos ticking;
         long t1 = -1, unloadedAt = -1, forcedAt = -1, loadedAt = -1, quietSince = -1, t2 = -1;
+        /** Reconciles Java held at the first snapshot (an earlier test's, for chunks that never came back). */
+        int heldBase;
         boolean eligible;
         String eligibleBy = "";
         List<BlockPos> cPos, fPos;
@@ -252,13 +259,15 @@ public final class GlassReplayGameTests {
             this.partial = partial;
             this.far = new Far(helper, farOffset(slot));
             this.test = "glass replay " + (partial ? "partial " : "") + f.name();
-            this.rec = GlassExitKit.start();
+            this.rec = GlassExitKit.start(helper.getLevel().getGameTime());
             this.judge = GlassExitKit.canJudge();
             this.stub = !IndustryKit.nativeEngine();
             farMin = far.absolutePos(BlockPos.ZERO);
             farMax = far.absolutePos(new BlockPos(33, TOP, 33));
-            for (int cx = farMin.getX() >> 4; cx <= farMax.getX() >> 4; cx++)
-                for (int cz = farMin.getZ() >> 4; cz <= farMax.getZ() >> 4; cz++)
+            // The partial variant shifts the far copy by up to 15 blocks in x or z: its chunks cover that too.
+            BlockPos reach = partial ? farMax.offset(15, 0, 15) : farMax;
+            for (int cx = farMin.getX() >> 4; cx <= reach.getX() >> 4; cx++)
+                for (int cz = farMin.getZ() >> 4; cz <= reach.getZ() >> 4; cz++)
                     farChunks.add(new ChunkPos(cx, cz));
         }
 
@@ -286,6 +295,24 @@ public final class GlassReplayGameTests {
                 + (run.judge ? "" : ", NOT judged (no natives)"));
         for (ChunkPos c : run.farChunks)
             run.level().setChunkForced(c.x, c.z, true);
+        // However the test ends, the far copy stops ticking: later batches must not run it.
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                release(run);
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                release(run);
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo oldTest, GameTestInfo newTest, GameTestRunner runner) {}
+        });
         helper.onEachTick(() -> {
             try {
                 tick(run);
@@ -302,6 +329,16 @@ public final class GlassReplayGameTests {
             if (!run.failures.isEmpty())
                 throw new GameTestAssertException(String.join("; ", run.failures));
         });
+    }
+
+    /** Drops every ticket the test gave the far copy's chunks. */
+    static void release(Run run) {
+        ServerLevel level = run.level();
+        for (ChunkPos c : run.farChunks) {
+            level.setChunkForced(c.x, c.z, false);
+            level.getChunkSource().removeRegionTicket(FULL_ONLY, c, 0, c);
+            level.getChunkSource().removeRegionTicket(BLOCK_TICKING, c, 1, c);
+        }
     }
 
     /** A failed wait on chunk IO: the tick sleeps 5 ms so the chunk system gets time (ReconcileAheadGameTests.io). */
@@ -347,14 +384,45 @@ public final class GlassReplayGameTests {
         IndustryKit.forget(run.helper);
         ChunkPos lo = run.farChunks.get(0), hi = run.farChunks.get(run.farChunks.size() - 1);
         IndustryKit.ind().districts().forgetArea(level, lo.x - 1, lo.z - 1, hi.x + 1, hi.z + 1);
-        clear(level, run.farMin, run.farMax);
+        clear(level, run.farMin, run.partial ? run.farMax.offset(15, 0, 15) : run.farMax);
         run.control = run.f.build(run.helper);
         seed(run.helper, run.control);
+        if (run.partial)
+            split(run);
         run.copy = run.f.build(run.far);
         seed(run.far, run.copy);
         run.builtAt = run.now();
         GlassCorpusKit.log(run.f.name(), "replay built", run.copy.notes());
         run.stage(Stage.RUN);
+    }
+
+    /**
+     * The partial variant: shifts the far copy (0 to 15 blocks, along the axis its stores and anchor spread
+     * most) so that a chunk border runs between them, wherever the yard landed. The far district then has two
+     * chunks or more, the anchor's ticking and the others not.
+     */
+    static void split(Run run) {
+        List<BlockPos> ps = new ArrayList<>(run.control.stores());
+        ps.add(run.control.anchor());
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (BlockPos p : ps) {
+            minX = Math.min(minX, p.getX());
+            maxX = Math.max(maxX, p.getX());
+            minZ = Math.min(minZ, p.getZ());
+            maxZ = Math.max(maxZ, p.getZ());
+        }
+        boolean alongX = maxX - minX >= maxZ - minZ;
+        int min = alongX ? minX : minZ, max = alongX ? maxX : maxZ;
+        // The first column of the second chunk, in the control's coordinates: past the middle, never past max.
+        int border = min + Math.max(1, (max - min + 1) / 2);
+        int shift = Math.floorMod(-border, 16);
+        BlockPos by = alongX ? new BlockPos(shift, 0, 0) : new BlockPos(0, 0, shift);
+        run.far.offset = run.far.offset.offset(by);
+        run.farMin = run.farMin.offset(by);
+        run.farMax = run.farMax.offset(by);
+        IndustryKit.record(run.test, "split", "stores and anchor span " + (alongX ? "x " : "z ") + min + " to " + max + " in the control; the far copy moves "
+                + shift + " along " + (alongX ? "x" : "z") + " so a chunk border falls before control " + (alongX ? "x " : "z ") + border
+                + (max == min ? " (they do not spread: no border between them)" : ""));
     }
 
     static void seed(GameTestHelper h, CorpusFactory.Built b) {
@@ -397,6 +465,13 @@ public final class GlassReplayGameTests {
                 return;
             fr = report(run, run.fd);
             run.last = fr == null ? "far copy: no complete compile" : "far copy: " + fr.summary() + "; " + fr.replay().summary();
+            if (fr != null && fr.checksum().acceptedAt() > run.now() + WINDOW) {
+                // The GameTest server starts every run at game time 0 while the world's rtsim pages keep the
+                // engine's clock: no window opens until the game catches up. Not the glass box's fault.
+                fail(run, "the engine's clock is ahead of the game (compile accepted at " + fr.checksum().acceptedAt() + ", game time " + run.now()
+                        + "): a reused GameTest world; delete run-gametest/world");
+                return;
+            }
             if (run.stageTicks % 1200 == 0)
                 IndustryKit.record(run.test, "status", run.last);
             boolean passed = fr != null && fr.windowsCompleted() > 0 && fr.verdict() == GlassReport.PASS;
@@ -421,6 +496,7 @@ public final class GlassReplayGameTests {
     static void snapshot1(Run run, GlassReport fr) {
         ServerLevel level = run.level();
         run.t1 = run.now();
+        run.heldBase = IndustryKit.ind().reconciler().held();
         run.cPos = positions(run.control, IndustryKit.ind().district(run.cd));
         run.fPos = positions(run.copy, IndustryKit.ind().district(run.fd));
         run.c1 = stock(level, run.cPos);
@@ -495,10 +571,37 @@ public final class GlassReplayGameTests {
                 return;
             }
         }
-        run.unloadedAt = run.now();
-        run.rec.poll();
-        IndustryKit.record(run.test, run.partial ? "partial" : "unloaded", "at " + run.unloadedAt + ", " + (run.unloadedAt - run.t1)
-                + " ticks after the snapshot; Java load state " + (d == null ? "?" : d.loadState()) + "; engine records: " + loadRecords(run, run.t1));
+        if (run.unloadedAt < 0) {
+            run.unloadedAt = run.now();
+            IndustryKit.record(run.test, run.partial ? "partial (Java)" : "unloaded (Java)", "at " + run.unloadedAt + ", " + (run.unloadedAt - run.t1)
+                    + " ticks after the snapshot; Java load state " + (d == null ? "?" : d.loadState()));
+        }
+        // The engine must have seen it: the district's load state left LIVE, and every district chunk's
+        // IND_CHUNK_UNLOADED (the partial variant: IND_CHUNK_TICKING off for every chunk but the ticking one).
+        if (run.stageTicks % 10 != 0)
+            return;
+        List<ScriptedEngine.Received> recs = run.rec.records();
+        int want = d == null ? 0 : run.partial ? d.chunks.size() - (d.chunks.contains(run.ticking.toLong()) ? 1 : 0) : d.chunks.size();
+        int seen = 0;
+        if (run.partial) {
+            for (ScriptedEngine.Received r : of(recs, GlassRecords.IND_CHUNK_TICKING, GlassRecords.ChunkTicking.DISTRICT, run.fd, run.t1))
+                if (r.aux() == 0)
+                    seen++;
+        } else {
+            seen = count(recs, IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, run.fd, run.t1);
+        }
+        int wantState = run.partial ? IndRecords.LoadState.PARTIAL : IndRecords.LoadState.UNLOADED;
+        boolean state = false;
+        for (ScriptedEngine.Received r : of(recs, IndRecords.IND_LOAD_STATE, IndRecords.LoadState.DISTRICT, run.fd, run.t1))
+            state |= r.aux() == wantState;
+        if (seen < want || !state) {
+            run.last = "the engine has seen " + seen + " of " + want + (run.partial ? " IND_CHUNK_TICKING off" : " IND_CHUNK_UNLOADED") + ", load states "
+                    + loadStates(recs, run);
+            if (run.stageTicks > IO_TICKS)
+                fail(run, "the engine never saw the far copy leave (" + run.last + ")");
+            return;
+        }
+        IndustryKit.record(run.test, run.partial ? "partial" : "unloaded", "the engine saw it by " + run.now() + ": " + loadRecords(run, run.t1));
         run.stage(Stage.AWAY);
     }
 
@@ -566,7 +669,7 @@ public final class GlassReplayGameTests {
 
     static void settle(Run run) {
         ServerLevel level = run.level();
-        boolean busy = IndustryKit.ind().reconciler().held() > 0;
+        boolean busy = IndustryKit.ind().reconciler().held() > run.heldBase;
         for (ChunkPos c : run.farChunks) {
             LevelChunk ch = level.getChunkSource().getChunkNow(c.x, c.z);
             busy |= ch == null || TickGate.holds(ch);
@@ -620,7 +723,8 @@ public final class GlassReplayGameTests {
                 tickingOn++;
         }
         IndustryKit.record(test, "engine saw", unloads + " IND_CHUNK_UNLOADED, " + loads + " IND_CHUNK_LOADED (epochs "
-                + epochs(recs, run) + "), IND_CHUNK_TICKING " + tickingOff + " off / " + tickingOn + " on, load states " + loadStates(recs, run));
+                + epochs(recs, run) + "), IND_CHUNK_TICKING " + tickingOff + " off / " + tickingOn + " on, load states " + loadStates(recs, run)
+                + "; recorder kept " + recs.size() + " records, dropped " + run.rec.dropped() + " stamped before the test");
         District fd = IndustryKit.ind().district(run.fd);
         int districtChunks = fd == null ? -1 : fd.chunks.size();
         if (!run.partial && unloads < districtChunks)
@@ -698,7 +802,8 @@ public final class GlassReplayGameTests {
         goods.addAll(offline.keySet());
         goods.addAll(reconciled.keySet());
         List<String> failed = new ArrayList<>();
-        int judged = 0;
+        int judged = 0, moved = 0;
+        List<String> weak = new ArrayList<>();
         for (String g : goods) {
             long c = run.c1.containsKey(g) || c2.containsKey(g) ? c2.getOrDefault(g, 0L) - run.c1.getOrDefault(g, 0L) : 0;
             long world = f2.getOrDefault(g, 0L) - run.f1.getOrDefault(g, 0L);
@@ -721,19 +826,29 @@ public final class GlassReplayGameTests {
             boolean within = Math.abs(s - c) <= tol;
             boolean unbounded = cls == GlassReport.UNBOUNDED;
             boolean pass = run.judge ? below && (unbounded || within) : true;
-            String verdict = !run.judge ? "not judged"
-                    : (below ? "at or below pass" : "at or below FAIL") + ", " + (unbounded ? "within not judged (unbounded)" : within ? "within pass" : "within FAIL");
+            String verdict = (!run.judge ? "not judged"
+                    : (below ? "at or below pass" : "at or below FAIL") + ", " + (unbounded ? "within not judged (unbounded)" : within ? "within pass" : "within FAIL"))
+                    + (c != 0 && slack >= Math.abs(c) ? " (WEAK: the slack covers the control's change)" : "");
             IndustryKit.record(test, "row", String.format(Locale.ROOT, "%s | %s | %s | control %+d | simulated %+d (world %+d, reconcile %+d) | slack %.1f | tolerance %.1f | %s",
                     run.f.name(), g, clsName, c, s, world, run.stub ? rec : reconciled.getOrDefault(g, 0L), slack, tol, verdict));
             IndustryKit.record(test, "terms", String.format(Locale.ROOT, "%s: in flight %.1f (stack %d, batch %.1f), noise %.1f (z %.1f x sigma %.6f/t x %d), latency %d x %.5f/t = %.1f, WIP %d, relative %.1f",
                     g, inFlight, stack, batch, noise, CHECKSUM_Z, cg == null ? 0 : cg.sigma(), span, latency, rate, lat, wip, rel));
             judged++;
+            if (c != 0)
+                moved++;
+            // The slack alone covers the control's whole change: the row cannot tell a replay from none.
+            if (c != 0 && slack >= Math.abs(c))
+                weak.add(g);
             if (!pass)
                 failed.add(g + " (" + clsName + ": control " + c + ", simulated " + s + ", tolerance " + String.format(Locale.ROOT, "%.0f", tol) + ")");
         }
-        MicRtsim.LOGGER.info(String.format(Locale.ROOT, "[gametest] %s: %d goods over %d ticks (%d away), engine %s, eligible by %s, replay %s, %s",
-                test, judged, span, run.forcedAt - run.unloadedAt, run.stub ? "stub (offline replay)" : "native", run.eligibleBy, run.awaySummary,
-                !run.judge ? "not judged" : failed.isEmpty() ? "pass" : "FAIL " + failed));
+        // A control that moved nothing makes every row pass whatever the replay did: the run proves nothing.
+        if (moved == 0)
+            run.failures.add(run.f.name() + ": the control changed no good over the span (stalled or empty): nothing to compare");
+        MicRtsim.LOGGER.info(String.format(Locale.ROOT, "[gametest] %s: %d goods (%d moved in the control, %d weak %s) over %d ticks (%d away), engine %s, eligible by %s, replay %s, %s",
+                test, judged, moved, weak.size(), weak, span, run.forcedAt - run.unloadedAt, run.stub ? "stub (offline replay)" : "native", run.eligibleBy, run.awaySummary,
+                !run.judge ? "not judged" : failed.isEmpty() && run.failures.isEmpty() ? "pass"
+                        : "FAIL " + failed + (run.failures.isEmpty() ? "" : " and " + run.failures)));
         if (!failed.isEmpty())
             run.failures.add(run.f.name() + ": " + failed);
     }
