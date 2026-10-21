@@ -52,7 +52,9 @@ use crate::wire::{self, Rec, RecordWriter, obs};
 pub const TABLE: u16 = 0x4400;
 pub const KEY_DRAGONS: PageKey = PageKey::new(TABLE, 0);
 const MAGIC: u32 = u32::from_le_bytes(*b"RTDL");
-const VERSION: u16 = 1;
+/// 2: `Dragons::save` writes its rows as paged tables' blobs (`PagedArena`, `PagedRows`) after
+/// the resident meta (docs/choices-paging-modules.md, Dragons).
+const VERSION: u16 = 2;
 
 /// Java's module bit the dragons run under (`config/Module.java`: ECOLOGY is ordinal 4). With it
 /// off the dragons are frozen (U10): no records, no runs, no commands, their page kept.

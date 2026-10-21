@@ -44,8 +44,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use rtsim_ecology::infra::Infrastructure;
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_kernel::handle::{Arena, Handle};
+use rtsim_kernel::handle::Handle;
+use rtsim_kernel::paging::SaveTicket;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::rows::{PagedArena, PagedRows};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament};
 use rtsim_knowledge::{Trait, witnesses};
@@ -200,23 +202,105 @@ pub struct Navy {
 }
 
 /// What threatens a lane and what protects it. Strengths are thousandths, so they are exact in
-/// saves and hashes.
+/// saves and hashes. A paged row keyed by its lane (table [`THREAT_TABLE`]); its two small sets
+/// are sorted vectors, not B-trees (a B-tree with one entry allocates a node for eleven).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LaneThreat {
     /// The haven whose pirates hunt it (one at a time: its raids sail there).
     pub haven: Option<u32>,
-    pub hunters: BTreeSet<ShipId>,
+    /// The pirates hunting it, sorted.
+    pub hunters: Vec<ShipId>,
     /// Navy presence, thousandths of strength.
     pub patrol_milli: i64,
-    /// Players' escorts by key, thousandths of strength (to be fed by a future plugin).
-    pub escorts: BTreeMap<u64, i64>,
+    /// Players' escorts by key, thousandths of strength (to be fed by a future plugin), sorted by
+    /// key.
+    pub escorts: Vec<(u64, i64)>,
     /// The share last applied, thousandths.
     pub share: i64,
 }
 
 impl LaneThreat {
     fn defence(&self) -> f64 {
-        (self.patrol_milli + self.escorts.values().sum::<i64>()) as f64 / 1000.0
+        (self.patrol_milli + self.escorts_milli()) as f64 / 1000.0
+    }
+
+    /// Every escort's strength, thousandths.
+    pub fn escorts_milli(&self) -> i64 {
+        self.escorts.iter().map(|e| e.1).sum()
+    }
+
+    pub fn add_hunter(&mut self, s: ShipId) {
+        if let Err(i) = self.hunters.binary_search(&s) {
+            self.hunters.insert(i, s);
+        }
+    }
+
+    pub fn remove_hunter(&mut self, s: ShipId) {
+        if let Ok(i) = self.hunters.binary_search(&s) {
+            self.hunters.remove(i);
+        }
+    }
+
+    /// Sets escort `key`'s strength; 0 or less removes it.
+    pub fn set_escort(&mut self, key: u64, milli: i64) {
+        match self.escorts.binary_search_by_key(&key, |e| e.0) {
+            Ok(i) if milli <= 0 => {
+                self.escorts.remove(i);
+            }
+            Ok(i) => self.escorts[i].1 = milli,
+            Err(_) if milli <= 0 => {}
+            Err(i) => self.escorts.insert(i, (key, milli)),
+        }
+    }
+}
+
+/// The ship rows' page table (docs/choices-paging-modules.md: the module's table 0x5300 plus
+/// 0x10, so rtsim-jni's per-table deletion of 0x5300 never touches it).
+pub const SHIP_TABLE: u16 = 0x5310;
+/// The lane threats' page table.
+pub const THREAT_TABLE: u16 = 0x5311;
+/// Ship rows per page. PLACEHOLDER 16: a service's ships are consecutive keys (at most
+/// `max_ships_per_service`, 6 by default), so one or two pages hold a service, and an event that
+/// reads one ship loads about 16 × 50 encoded bytes.
+pub const SHIP_ROWS_PER_PAGE: u64 = 16;
+/// Lane threat rows per page. PLACEHOLDER 64 (a threat row is about 20 bytes encoded).
+pub const THREAT_ROWS_PER_PAGE: u64 = 64;
+/// The port network's page in a paged save: written only by saves after it changed.
+pub const NETWORK_KEY: rtsim_kernel::page::PageKey = rtsim_kernel::page::PageKey::new(0x5312, 0);
+
+/// A service's ships: `n` consecutive row keys from `first` (they are created together and
+/// handles are never reused, so the range is the whole index: nothing per ship).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ShipRange {
+    pub(crate) first: u32,
+    pub(crate) n: u32,
+}
+
+impl ShipRange {
+    pub(crate) fn ids(self) -> impl Iterator<Item = ShipId> + Clone {
+        (self.first..self.first + self.n).map(PagedArena::<Ship>::handle)
+    }
+}
+
+/// The save tickets of one [`Ships::save_paged`]: hand them back with [`Ships::saved`] once the
+/// commit is durable, or [`Ships::save_failed`].
+#[derive(Debug)]
+pub struct ShipTickets {
+    pub(crate) ships: SaveTicket,
+    pub(crate) threats: SaveTicket,
+    /// The save wrote the network's page.
+    pub(crate) network: bool,
+}
+
+impl ShipTickets {
+    /// Row pages the save wrote.
+    pub fn pages(&self) -> usize {
+        self.ships.pages() + self.threats.pages()
+    }
+
+    /// Whether the save wrote the network's page (it changed since the last).
+    pub fn wrote_network(&self) -> bool {
+        self.network
     }
 }
 
@@ -367,14 +451,20 @@ pub struct Ships {
     pub docks: Vec<Dock>,
     pub lanes: Vec<Lane>,
     pub services: Vec<Service>,
-    pub ships: Arena<Ship>,
+    /// Every ship, a paged row keyed by its handle's index ([`SHIP_TABLE`]): resident without a
+    /// store, paged under a budget with one ([`Ships::attach_store`], [`Ships::open_paged`]).
+    pub ships: PagedArena<Ship>,
     pub havens: Vec<Haven>,
     pub navies: Vec<Navy>,
-    pub threats: BTreeMap<u32, LaneThreat>,
+    /// Lanes' threats, paged rows keyed by lane ([`THREAT_TABLE`]).
+    pub threats: PagedRows<LaneThreat>,
     /// Per lane: the (service, hop) pairs that sail it.
     pub(crate) lane_hops: Vec<Vec<(u32, u32)>>,
-    /// Per service: its ships, by slot.
-    pub(crate) service_ships: Vec<Vec<ShipId>>,
+    /// Per service: its ships, by slot (consecutive keys).
+    pub(crate) service_ships: Vec<ShipRange>,
+    /// The ships embodied now (observed only): what a session start makes abstract again, without
+    /// a pass over every ship.
+    pub(crate) embodied: BTreeSet<ShipId>,
     /// Lanes by region, for interest areas.
     pub(crate) lane_cells: BTreeMap<(u16, i64, i64), Vec<u32>>,
     pub(crate) dock_of: BTreeMap<(usize, Medium), u32>,
@@ -401,6 +491,9 @@ pub struct Ships {
     pub log: Vec<LogEntry>,
     pub(crate) now: Tick,
     pub(crate) built: bool,
+    /// The network changed since a paged save last wrote it (not saved: a paged save clears it,
+    /// attaching a store sets it).
+    pub(crate) network_dirty: bool,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
     /// Lanes are built under the topology the network sees when it is built.
     pub topo: SharedTopologies,
@@ -466,12 +559,13 @@ impl Ships {
             docks: Vec::new(),
             lanes: Vec::new(),
             services: Vec::new(),
-            ships: Arena::new(),
+            ships: PagedArena::new(SHIP_TABLE, SHIP_ROWS_PER_PAGE),
             havens: Vec::new(),
             navies: Vec::new(),
-            threats: BTreeMap::new(),
+            threats: PagedRows::new(THREAT_TABLE, THREAT_ROWS_PER_PAGE),
             lane_hops: Vec::new(),
             service_ships: Vec::new(),
+            embodied: BTreeSet::new(),
             lane_cells: BTreeMap::new(),
             dock_of: BTreeMap::new(),
             wheel: TimingWheel::new(now),
@@ -491,6 +585,7 @@ impl Ships {
             log: Vec::new(),
             now,
             built: false,
+            network_dirty: false,
             topo: rtsim_space::topology::all_flat(),
         }
     }
@@ -675,6 +770,7 @@ impl Ships {
         if node >= w.nodes.len() || !w.nodes[node].kind.is_storehouse() || medium == Medium::Road {
             return None;
         }
+        self.network_dirty = true;
         let frame = w.nodes[node].pos.frame;
         let (mut x, mut y, mut z) = dock;
         if medium == Medium::Sea {
@@ -820,6 +916,7 @@ impl Ships {
             return;
         }
         self.built = true;
+        self.network_dirty = true;
         let mut groups: BTreeMap<(u16, Medium), Vec<u32>> = BTreeMap::new();
         for (i, d) in self.docks.iter().enumerate() {
             groups
@@ -939,7 +1036,7 @@ impl Ships {
             self.lane_hops[g.hop.lane as usize].push((id, j as u32));
         }
         self.services.push(s);
-        self.service_ships.push(Vec::new());
+        self.service_ships.push(ShipRange::default());
         id
     }
 
@@ -1010,7 +1107,7 @@ impl Ships {
             ServiceKind::Merchant => mt.merchant_crew,
             ServiceKind::Patrol => mt.navy_crew,
         };
-        let mut ids = Vec::new();
+        let first = self.ships.meta().1;
         for k in 0..n {
             let offset = sv.offset_of(phase, k, n);
             let seed = StreamKey::new(self.seed, SYS_SHIP, u64::from(s)).block(u64::from(k), 0)[0];
@@ -1018,7 +1115,7 @@ impl Ships {
                 Some(nv) => Role::Navy { navy: nv },
                 None => Role::Merchant,
             };
-            ids.push(self.ships.insert(Ship {
+            self.ships.insert(Ship {
                 role,
                 medium,
                 frame,
@@ -1036,10 +1133,15 @@ impl Ships {
                 promoted: None,
                 plan: 0,
                 pirate: None,
-            }));
+            });
         }
         let _ = at;
-        self.service_ships[s as usize] = ids;
+        debug_assert_eq!(
+            self.ships.meta().1,
+            first + n,
+            "a service's ships are consecutive"
+        );
+        self.service_ships[s as usize] = ShipRange { first, n };
     }
 
     /// A port that joined after the network was built: a shuttle to its nearest dock of the same
@@ -1052,6 +1154,7 @@ impl Ships {
         mask: &dyn WaterMask,
         at: Tick,
     ) -> Option<u32> {
+        self.network_dirty = true;
         let d = self.docks[dock as usize].clone();
         let mut others: Vec<(u64, u32)> = self
             .docks
@@ -1123,6 +1226,7 @@ impl Ships {
         if walk.hops.is_empty() {
             return None;
         }
+        self.network_dirty = true;
         let nv = self.navies.len() as u32;
         let index = self.services.len();
         let dock_ticks = self.tun.dock_ticks;
@@ -1144,7 +1248,7 @@ impl Ships {
         );
         self.over_berths.extend(over);
         self.man_service(sid, at);
-        let ships = self.service_ships[sid as usize].clone();
+        let ships: Vec<ShipId> = self.service_ships[sid as usize].ids().collect();
         self.navies.push(Navy {
             node,
             dock,
@@ -1189,8 +1293,8 @@ impl Ships {
             }
             let g = sv.legs[j as usize];
             let active: u32 = self.service_ships[s as usize]
-                .iter()
-                .filter_map(|&id| self.ships.get(id))
+                .ids()
+                .filter_map(|id| self.ships.get(id))
                 .filter(|x| x.is_active())
                 .map(|x| x.crew)
                 .sum();
@@ -1203,11 +1307,58 @@ impl Ships {
 
     fn refresh_patrol(&mut self, w: &mut World, l: u32, at: Tick) {
         let p = self.patrol_milli(l);
-        let t = self.threats.entry(l).or_default();
+        // Read first: a row lent mutably dirties its page.
+        if self.threat(l).is_some_and(|t| t.patrol_milli == p) {
+            return;
+        }
+        let t = self.threat_mut(l);
         if t.patrol_milli != p {
             t.patrol_milli = p;
             self.apply_hazard(w, l, at);
         }
+    }
+
+    /// Lane `l`'s threat row, if it has one.
+    pub fn threat(&self, l: u32) -> Option<&LaneThreat> {
+        self.threats.get(u64::from(l))
+    }
+
+    /// Lane `l`'s threat row to change, made empty if it has none.
+    fn threat_mut(&mut self, l: u32) -> &mut LaneThreat {
+        let k = u64::from(l);
+        if !self.threats.contains(k) {
+            self.threats.insert(k, LaneThreat::default());
+        }
+        self.threats.get_mut(k).expect("inserted")
+    }
+
+    /// The lanes pirates hunt now, in lane order: from the havens' pirates (a few per haven),
+    /// never a pass over every lane or ship.
+    pub fn hunted_lanes(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self
+            .havens
+            .iter()
+            .flat_map(|h| h.ships.iter())
+            .filter_map(|&p| {
+                let x = self.ships.get(p)?;
+                match x.pirate.as_ref()?.state {
+                    PState::Hunting { lane, .. } if x.is_active() => Some(lane),
+                    _ => None,
+                }
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Every lane's threat row, in lane order. A whole-table pass: tools and tests.
+    pub fn lane_threats(&self) -> Vec<(u32, &LaneThreat)> {
+        self.threats
+            .keys()
+            .into_iter()
+            .filter_map(|k| Some((k as u32, self.threats.get(k)?)))
+            .collect()
     }
 
     /// A player's escort on lane `l` (for a future plugin: players lowering hazard with their own
@@ -1217,12 +1368,7 @@ impl Ships {
             return;
         }
         let v = (strength * 1000.0).round() as i64;
-        let t = self.threats.entry(l).or_default();
-        if v <= 0 {
-            t.escorts.remove(&key);
-        } else {
-            t.escorts.insert(key, v);
-        }
+        self.threat_mut(l).set_escort(key, v);
         self.apply_hazard(w, l, at);
     }
 
@@ -1242,7 +1388,7 @@ impl Ships {
 
     /// The share of each consignment the lane's hunters take, cut by its defence.
     pub fn lane_share(&self, l: u32) -> i64 {
-        let Some(t) = self.threats.get(&l) else {
+        let Some(t) = self.threat(l) else {
             return 0;
         };
         let a: f64 = t.hunters.iter().map(|&h| self.strength(h)).sum();
@@ -1251,7 +1397,7 @@ impl Ships {
 
     /// What the share would be with no patrol or escort (for the CLI's comparison).
     pub fn lane_share_unprotected(&self, l: u32) -> i64 {
-        let Some(t) = self.threats.get(&l) else {
+        let Some(t) = self.threat(l) else {
             return 0;
         };
         let a: f64 = t.hunters.iter().map(|&h| self.strength(h)).sum();
@@ -1262,7 +1408,7 @@ impl Ships {
     /// hunting haven.
     fn apply_hazard(&mut self, w: &mut World, l: u32, at: Tick) {
         let share = self.lane_share(l);
-        let Some(t) = self.threats.get(&l) else {
+        let Some(t) = self.threat(l) else {
             return;
         };
         let Some(h) = t.haven else {
@@ -1287,7 +1433,7 @@ impl Ships {
             ok &= w.set_lane_hazard(edge, dir, node, share, delay, at);
         }
         if ok {
-            self.threats.get_mut(&l).expect("checked").share = share;
+            self.threats.get_mut(u64::from(l)).expect("checked").share = share;
             self.stats.hazard_changes += 1;
             self.note(
                 at,
@@ -1296,7 +1442,7 @@ impl Ships {
                 format!(
                     "lane {l} ({}): pirates of haven {h} now take {share}‰ (patrols and escorts {:.1})",
                     ln.medium.name(),
-                    self.threats[&l].defence()
+                    self.threat(l).expect("checked").defence()
                 ),
             );
         }
@@ -1442,7 +1588,7 @@ impl Ships {
         let mut want: Vec<(ShipId, u64)> = Vec::new();
         for l in lanes {
             for &(s, j) in &self.lane_hops[l as usize] {
-                for &id in &self.service_ships[s as usize] {
+                for id in self.service_ships[s as usize].ids() {
                     let Some(x) = self.ships.get(id) else {
                         continue;
                     };
@@ -1520,10 +1666,24 @@ impl Ships {
     /// voyage may enter a player's view again (its body is gone). For the native link; the
     /// engine's own runs have no sessions.
     pub fn session_start(&mut self) {
-        for (_, x) in self.ships.iter_mut() {
-            x.embodied = false;
+        for id in std::mem::take(&mut self.embodied) {
+            if let Some(x) = self.ships.get_mut(id) {
+                x.embodied = false;
+            }
         }
         self.seen_by.clear();
+    }
+
+    /// Marks a ship embodied or abstract, keeping the index of embodied ships.
+    fn set_embodied(&mut self, id: ShipId, on: bool) {
+        if let Some(x) = self.ships.get_mut(id) {
+            x.embodied = on;
+        }
+        if on {
+            self.embodied.insert(id);
+        } else {
+            self.embodied.remove(&id);
+        }
     }
 
     /// Whether [`Ships::build`] has made the network (ports added later get shuttles).
@@ -1634,7 +1794,8 @@ impl Ships {
     // ---- the step loop -------------------------------------------------------------------------
 
     /// Runs every ship event up to and including `to`, in time order, with the world caught up to
-    /// each event's time first. Nothing is ticked.
+    /// each event's time first. Nothing is ticked. Ends at a step boundary: paged row tables are
+    /// held to their budget there ([`Ships::enforce_budget`]).
     pub fn run_until(&mut self, w: &mut World, infra: &mut dyn Infrastructure, to: Tick) {
         while let Some((at, ev)) = self.wheel.pop_until(to) {
             w.run_until(at);
@@ -1644,6 +1805,7 @@ impl Ships {
         }
         w.run_until(to);
         self.now = self.now.max(to);
+        self.enforce_budget();
     }
 
     fn live(&mut self, s: ShipId, plan: u32) -> bool {
@@ -1752,7 +1914,7 @@ impl Ships {
             if u8::from(!g.hop.forward) != dir {
                 continue;
             }
-            for &o in &self.service_ships[s as usize] {
+            for o in self.service_ships[s as usize].ids() {
                 let Some(ox) = self.ships.get(o) else {
                     continue;
                 };
@@ -1847,8 +2009,8 @@ impl Ships {
         // chance (the same share the flow loses unobserved).
         if matches!(self.ships[id].role, Role::Merchant) && fix.phase != Phase::Dock {
             let lane = self.services[s as usize].legs[fix.leg].hop.lane;
-            let share = self.threats.get(&lane).map_or(0, |t| t.share);
-            let hunter = self.threats.get(&lane).and_then(|t| {
+            let share = self.threat(lane).map_or(0, |t| t.share);
+            let hunter = self.threat(lane).and_then(|t| {
                 t.hunters.iter().copied().max_by(|a, b| {
                     self.strength(*a)
                         .total_cmp(&self.strength(*b))
@@ -1967,9 +2129,8 @@ impl Ships {
         });
         self.outbox.push(cmd);
         let arrive = tick_of(fix.times.arrive);
-        let x = &mut self.ships[id];
-        x.epoch = epoch;
-        x.embodied = true;
+        self.ships[id].epoch = epoch;
+        self.set_embodied(id, true);
         self.stats.materialized += 1;
         let uuid = self.uuid_of(player);
         self.note(
@@ -2145,7 +2306,7 @@ impl Ships {
             return;
         };
         let lane = self.services[s as usize].legs[fix.leg].hop.lane;
-        let Some(t) = self.threats.get(&lane) else {
+        let Some(t) = self.threat(lane) else {
             return;
         };
         if t.share <= 0 {
@@ -2336,7 +2497,7 @@ impl Ships {
             if ln.medium != medium || ln.edge == u32::MAX {
                 continue;
             }
-            if let Some(t) = self.threats.get(&l)
+            if let Some(t) = self.threat(l)
                 && let Some(other) = t.haven
                 && other != h
                 && (!t.hunters.is_empty() || t.share > 0)
@@ -2347,7 +2508,7 @@ impl Ships {
             if vol <= 0 {
                 continue;
             }
-            let defence = self.threats.get(&l).map_or(0.0, |t| t.defence());
+            let defence = self.threat(l).map_or(0.0, |t| t.defence());
             let surv = fight::square_law(a, defence, &self.tun);
             if surv <= 0.0 {
                 continue;
@@ -2442,7 +2603,7 @@ impl Ships {
         };
         let h = self.haven_of(s).expect("a pirate");
         let tm = self.temperament(s);
-        let defence = self.threats.get(&lane).map_or(0.0, |t| t.defence());
+        let defence = self.threat(lane).map_or(0.0, |t| t.defence());
         let surv = fight::square_law(self.strength(s), defence, &self.tun);
         // Bored after the hunt's length, bent by boldness, cut by damage and by patrols driving
         // them off (C24: threats get bored).
@@ -2452,13 +2613,13 @@ impl Ships {
             (self.tun.pirate_hunt_ticks as f64 * base * hull * surv.max(0.25)).max(1.0) as u64;
         let until = at + len;
         let plan = self.ships[s].plan;
-        let t = self.threats.entry(lane).or_default();
+        let t = self.threat_mut(lane);
         if t.haven
             .is_none_or(|o| o == h || (t.hunters.is_empty() && t.share == 0))
         {
             t.haven = Some(h);
         }
-        t.hunters.insert(s);
+        t.add_hunter(s);
         if let Some(p) = self.ships[s].pirate.as_mut() {
             p.state = PState::Hunting {
                 lane,
@@ -2496,7 +2657,7 @@ impl Ships {
             format!(
                 "hunts lane {lane} until day {:.2}; the lane loses {}‰",
                 day_of(until),
-                self.threats[&lane].share
+                self.threat(lane).map_or(0, |t| t.share)
             ),
         );
         self.coast_raid(w, infra, s, lane, at, until);
@@ -2616,8 +2777,8 @@ impl Ships {
         else {
             return;
         };
-        if let Some(t) = self.threats.get_mut(&lane) {
-            t.hunters.remove(&s);
+        if let Some(t) = self.threats.get_mut(u64::from(lane)) {
+            t.remove_hunter(s);
         }
         self.apply_hazard(w, lane, at);
         if reason == 1 {
@@ -2791,9 +2952,8 @@ impl Ships {
             cargo: Self::items(&x.cargo),
             members,
         }));
-        let x = &mut self.ships[s];
-        x.epoch = epoch;
-        x.embodied = true;
+        self.ships[s].epoch = epoch;
+        self.set_embodied(s, true);
         self.stats.materialized += 1;
         let uuid = self.uuid_of(player);
         self.note(
@@ -2880,9 +3040,9 @@ impl Ships {
         let a = self.strength(p);
         let mut d = self.strength(victim);
         if let Some(l) = self.current_lane(victim, at)
-            && let Some(t) = self.threats.get(&l)
+            && let Some(t) = self.threat(l)
         {
-            d += t.escorts.values().sum::<i64>() as f64 / 1000.0;
+            d += t.escorts_milli() as f64 / 1000.0;
         }
         let out = fight::resolve(
             a,
@@ -3084,7 +3244,7 @@ impl Ships {
         x.promoted = None;
         x.quotes.clear();
         x.status = Status::Lost { since: at, back };
-        x.embodied = false;
+        self.set_embodied(s, false);
         self.schedule(back, Ev::Respawn { ship: s });
         if let Role::Navy { .. } = self.ships[s].role {
             let sv = self.ships[s].service.expect("timetabled");
@@ -3142,8 +3302,8 @@ impl Ships {
             return;
         };
         if let Some(PState::Hunting { lane, .. }) = self.ships[s].pirate.as_ref().map(|p| p.state) {
-            if let Some(t) = self.threats.get_mut(&lane) {
-                t.hunters.remove(&s);
+            if let Some(t) = self.threats.get_mut(u64::from(lane)) {
+                t.remove_hunter(s);
             }
             self.apply_hazard(w, lane, at);
         }
@@ -3189,8 +3349,8 @@ impl Ships {
             since: at,
             back: Tick(u64::MAX),
         };
-        x.embodied = false;
         x.plan = x.plan.wrapping_add(1);
+        self.set_embodied(s, false);
         self.stats.sinkings += 1;
         let medium = self.ships[s].medium;
         self.schedule(
@@ -3312,13 +3472,13 @@ impl Ships {
             Obs::State(_) | Obs::Materialized(_) => {}
             Obs::SpawnRejected(r) => {
                 if let Some(s) = self.ship_of(r.agent, r.epoch) {
-                    self.ships[s].embodied = false;
+                    self.set_embodied(s, false);
                 }
             }
             Obs::Dematerialized(d) => {
                 if let Some(s) = self.ship_of(d.agent, d.epoch) {
+                    self.set_embodied(s, false);
                     let x = &mut self.ships[s];
-                    x.embodied = false;
                     x.hull_milli = d.hull_milli.min(1000);
                     x.crew = d.crew;
                 }
@@ -3595,6 +3755,53 @@ impl Ships {
                 "ships hold {held:?}, the world counts {world:?} as held"
             ));
         }
+        self.check_indexes()
+    }
+
+    /// The resident indexes agree with the rows: embodied ships, services' key ranges, and the
+    /// lanes' hunters with the pirates hunting them. A whole-table pass.
+    pub fn check_indexes(&self) -> Result<(), String> {
+        let mut embodied = BTreeSet::new();
+        for (id, x) in self.ships.iter() {
+            if x.embodied {
+                embodied.insert(id);
+            }
+            if let Some(PState::Hunting { lane, .. }) = x.pirate.as_ref().map(|p| p.state)
+                && x.is_active()
+                && !self.threat(lane).is_some_and(|t| t.hunters.contains(&id))
+            {
+                return Err(format!(
+                    "pirate {id:?} hunts lane {lane} but is not its hunter"
+                ));
+            }
+            if let Some(s) = x.service {
+                let r = self
+                    .service_ships
+                    .get(s as usize)
+                    .ok_or_else(|| format!("ship {id:?} on service {s}, which does not exist"))?;
+                if !r.ids().any(|o| o == id) {
+                    return Err(format!("ship {id:?} is not in service {s}'s range {r:?}"));
+                }
+            }
+        }
+        if embodied != self.embodied {
+            return Err(format!(
+                "embodied ships {embodied:?}, the index has {:?}",
+                self.embodied
+            ));
+        }
+        for (l, t) in self.lane_threats() {
+            for &h in &t.hunters {
+                let hunting = self
+                    .ships
+                    .get(h)
+                    .and_then(|x| x.pirate.as_ref())
+                    .map(|p| p.state);
+                if !matches!(hunting, Some(PState::Hunting { lane, .. }) if lane == l) {
+                    return Err(format!("lane {l}'s hunter {h:?} is {hunting:?}"));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -3621,38 +3828,107 @@ impl Ships {
         m
     }
 
+    /// What the engine holds now: the row tables' resident pages, the network, and the rest of
+    /// its resident state. Never a pass over the rows (a paged table counts what is resident).
     pub fn heap_bytes(&self) -> usize {
-        self.ships.heap_bytes()
-            + self
-                .ships
-                .iter()
-                .map(|(_, x)| x.cargo.len() * 48)
-                .sum::<usize>()
+        self.rows_heap_bytes() + self.network_bytes() + self.resident_bytes_besides()
+    }
+
+    /// The row tables' resident pages and their id indexes.
+    pub fn rows_heap_bytes(&self) -> usize {
+        self.ships.rows().heap_bytes() + self.threats.heap_bytes()
+    }
+
+    /// The port network's bytes, the term that grows with the world while rows page (SCALE.md §8
+    /// keeps the flow graph resident): see [`Ships::network_breakdown`].
+    pub fn network_bytes(&self) -> usize {
+        self.network_breakdown().iter().map(|p| p.1).sum()
+    }
+
+    /// The network's bytes by part: docks (with the index from node to dock), lanes (with their
+    /// paths, their (service, hop) lists and the lane cells), services (with their legs and ship
+    /// ranges). Estimates from capacities and sizes, as `heap_bytes` everywhere.
+    pub fn network_breakdown(&self) -> [(&'static str, usize); 3] {
+        use std::mem::size_of;
+        // A B-tree entry with its share of a node (eleven slots, two thirds full).
+        let btree = |k: usize, v: usize| (k + v) * 3 / 2 + 8;
+        let docks = self.docks.capacity() * size_of::<Dock>()
+            + self.dock_of.len() * btree(size_of::<(usize, Medium)>(), 4);
+        let lanes = self.lanes.capacity() * size_of::<Lane>()
             + self
                 .lanes
                 .iter()
-                .map(|l| l.path.heap_bytes() + 64)
+                .map(|l| l.path.heap_bytes())
                 .sum::<usize>()
-            + self
-                .services
-                .iter()
-                .map(|s| s.heap_bytes() + 64)
-                .sum::<usize>()
+            + self.lane_hops.capacity() * size_of::<Vec<(u32, u32)>>()
             + self
                 .lane_hops
                 .iter()
-                .map(|v| v.capacity() * 8 + 24)
+                .map(|v| v.capacity() * 8)
                 .sum::<usize>()
             + self
-                .service_ships
+                .lane_cells
+                .values()
+                .map(|v| {
+                    btree(size_of::<(u16, i64, i64)>(), size_of::<Vec<u32>>()) + v.capacity() * 4
+                })
+                .sum::<usize>();
+        let services = self.services.capacity() * size_of::<Service>()
+            + self.services.iter().map(|s| s.heap_bytes()).sum::<usize>()
+            + self.service_ships.capacity() * size_of::<ShipRange>();
+        [("docks", docks), ("lanes", lanes), ("services", services)]
+    }
+
+    /// A copy of the resident network (docks, lanes, services and their indexes) for a bench to
+    /// weigh with its allocator, checking [`Ships::network_breakdown`]'s estimate.
+    #[doc(hidden)]
+    pub fn clone_network(&self) -> Box<dyn std::any::Any> {
+        Box::new((
+            self.docks.clone(),
+            self.lanes.clone(),
+            self.services.clone(),
+            self.lane_hops.clone(),
+            self.lane_cells.clone(),
+            self.dock_of.clone(),
+            self.service_ships.clone(),
+        ))
+    }
+
+    /// Resident state besides the rows and the network: the wheel, havens, navies, players, the
+    /// observed-only tables (booked voyages, their legs, crossings seen, embodied ships), applied
+    /// op ids, observed fights.
+    pub fn resident_bytes_besides(&self) -> usize {
+        use std::mem::size_of;
+        let btree = |k: usize, v: usize| (k + v) * 3 / 2 + 8;
+        self.wheel.heap_bytes()
+            + self.havens.capacity() * size_of::<Haven>()
+            + self
+                .havens
                 .iter()
-                .map(|v| v.capacity() * 8 + 24)
+                .map(|h| h.ships.capacity() * 8 + h.lanes.capacity() * 4)
                 .sum::<usize>()
-            + self.lane_cells.len() * 64
-            + self.wheel.heap_bytes()
-            + self.booked.len() * 96
-            + self.leg_voyage.len() * 48
-            + self.threats.len() * 96
+            + self.navies.capacity() * size_of::<Navy>()
+            + self
+                .navies
+                .iter()
+                .map(|n| n.ships.capacity() * 8)
+                .sum::<usize>()
+            + self.players.len() * btree(8, size_of::<PlayerView>())
+            + self
+                .booked
+                .values()
+                .map(|b| btree(16, size_of::<Booked>()) + b.legs.capacity() * 8)
+                .sum::<usize>()
+            + self.leg_voyage.len() * btree(8, 16)
+            + self.seen_by.len() * btree(24, 0)
+            + self.embodied.len() * btree(8, 0)
+            + self.applied_ops.capacity() * 8
+            + self.applied_set.len() * btree(8, 0)
+            + self
+                .observed
+                .iter()
+                .map(|v| v.capacity() * 16)
+                .sum::<usize>()
     }
 
     /// The timetable of a service from `from`: each ship's next `n` departures (hop, dock node,
@@ -3660,7 +3936,7 @@ impl Ships {
     pub fn departures(&self, s: u32, from: Tick, n: usize) -> Departures {
         let sv = &self.services[s as usize];
         let mut out = Vec::new();
-        for &id in &self.service_ships[s as usize] {
+        for id in self.service_ships[s as usize].ids() {
             let x = &self.ships[id];
             let f = sv.fix(&self.lanes, &self.docks, x.offset, from);
             let mut v = Vec::new();
@@ -3682,8 +3958,9 @@ impl Ships {
         out
     }
 
-    pub fn service_ships(&self, s: u32) -> &[ShipId] {
-        &self.service_ships[s as usize]
+    /// A service's ships, by slot.
+    pub fn service_ships(&self, s: u32) -> impl Iterator<Item = ShipId> + Clone + use<> {
+        self.service_ships[s as usize].ids()
     }
 
     pub fn lane_hops(&self, l: u32) -> &[(u32, u32)] {

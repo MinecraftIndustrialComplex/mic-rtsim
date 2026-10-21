@@ -66,7 +66,9 @@ use crate::wire::{self, Rec, RecordWriter, obs};
 pub const TABLE: u16 = 0x4300;
 pub const KEY_CONFLICT: PageKey = PageKey::new(TABLE, 0);
 const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
-const VERSION: u16 = 1;
+/// 2: the conflict's blob holds its row tables (factions with their feuds, sources, places) in
+/// key order (`Conflict::save`, RTC2).
+const VERSION: u16 = 2;
 
 /// Java's module bit the conflict runs under (`config/Module.java`: CONFLICT is ordinal 5).
 pub const MODULE_CONFLICT: u32 = 1 << 5;
@@ -285,7 +287,7 @@ impl Link {
                 log_info(&format!(
                     "conflict restored: {} factions, {} feuds, {} parties, {} events booked, state {:016x}",
                     engine.factions.len(),
-                    engine.feuds.len(),
+                    engine.feud_count(),
                     engine.parties.len(),
                     engine.pending_events(),
                     hash
@@ -640,12 +642,8 @@ fn feed_districts(st: &mut State, at: Tick) {
             for (i, kind) in FED_KINDS.iter().enumerate() {
                 // The rate as `Conflict::set_emission` keeps it, so equal means unchanged.
                 let want = per_day[i].max(0.0) / TICKS_PER_DAY as f64;
-                let have = st
-                    .conflict
-                    .engine
-                    .sources
-                    .get(&(d.id.0, *kind))
-                    .map_or(0.0, |s| s.rate);
+                // From the resident index: no source page is read.
+                let have = st.conflict.engine.sources.rate(&(d.id.0, *kind));
                 if want != have {
                     // P14 (changed): the district's emissions count against the player who spent
                     // the most time in its chunks (capped, PLACEHOLDER 64: a source's owner is

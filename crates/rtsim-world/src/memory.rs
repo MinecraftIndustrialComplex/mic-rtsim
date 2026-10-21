@@ -39,7 +39,14 @@ impl World {
         m.insert("market lines (stock, rates, books)", lines);
         m.insert("market goods (curves, recipes)", goods);
         m.insert("market other (order, base prices)", other);
-        m.insert("market table (regions, wheel)", self.markets.heap_bytes());
+        // The table's heap holds the resident rows' measured heap too: the rest is its index,
+        // region headers and wheel.
+        m.insert(
+            "market table (regions, wheel)",
+            self.markets
+                .heap_bytes()
+                .saturating_sub(lines + goods + other),
+        );
         // News: the snapshots alive (shared), and the rings that point at them.
         let mut seen: BTreeSet<*const Snapshot> = BTreeSet::new();
         let mut snaps = 0;

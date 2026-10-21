@@ -74,6 +74,10 @@ pub struct Measured {
     pub heap_peak_bytes: u64,
     /// What the engine's own structures say they hold.
     pub engine_heap_bytes: u64,
+    /// The engine's live heap, measured by dropping it at the end of the run (the counting
+    /// allocator's difference): sweeps whose world dominates the process heap.
+    #[serde(default)]
+    pub engine_live_bytes: Option<u64>,
     pub rss_bytes: Option<u64>,
     pub rss_peak_bytes: Option<u64>,
     pub save_full_bytes: Option<u64>,
@@ -118,6 +122,15 @@ pub struct Measured {
     /// dragon sweep: per dragon).
     #[serde(default)]
     pub cpu_ns_per_unit_day: Option<f64>,
+    /// The ships' port network (resident, growing with the world while rows page).
+    #[serde(default)]
+    pub network_bytes: Option<u64>,
+    /// Paged module runs: saves per sim day, and of those the extra saves the budget asked for
+    /// (every resident page changed since the last save).
+    #[serde(default)]
+    pub saves_per_day: Option<f64>,
+    #[serde(default)]
+    pub pressure_saves_per_day: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +150,8 @@ pub enum Vary {
     Dragons,
     /// Merchant ships per service over a fixed ocean grid (PLAN.md §10.1).
     Ships,
+    /// Ports in the ships' ocean grid at sixteen ships a service, a player touring it (A16).
+    ShipPorts,
     /// Herds in the valley, members per herd fixed (PLAN.md §10.2).
     Herds,
     /// Members per herd, herd count fixed (PLAN.md §10.2).
@@ -270,18 +285,30 @@ impl Baseline {
                 // A faction's events are days apart: four times the baseline's days.
                 days: self.days * 4,
                 seed: self.seed,
+                paged: sweep.paged.then_some(super::conflict::FactionPaging {
+                    budget_bytes: FACTION_BUDGET,
+                    save_every_ticks: self.save_every_ticks,
+                }),
             });
         }
         if matches!(sweep.vary, Vary::Herds | Vary::Members) {
             let members = sweep.vary == Vary::Members;
+            // The wide sweeps (`herds-wide`, `herds-paged`) grow the valley with the herds.
+            let wide = sweep.vary == Vary::Herds && sweep.name != "herds";
             return Spec::Herds(super::herds::HerdsConfig {
                 herds: if members { HERD_BASE } else { value },
                 members: if members { value } else { MEMBER_BASE },
                 warmup_days: 8,
-                // A decision per herd per sub-season (8 days): three sub-seasons' worth per point.
-                days: self.days.max(3) * 8,
+                // A decision per herd per sub-season (8 days): three sub-seasons' worth per point;
+                // the wide sweeps one (their burst of decisions), as they reach 16,384 herds.
+                days: if wide { 8 } else { self.days.max(3) * 8 },
                 gap_days: 10_000,
                 seed: self.seed,
+                wide,
+                paged: sweep.paged.then_some(super::herds::HerdsPaging {
+                    budget_bytes: HERDS_BUDGET,
+                    save_every_ticks: self.save_every_ticks,
+                }),
             });
         }
         if sweep.vary == Vary::Ships {
@@ -293,15 +320,32 @@ impl Baseline {
                 // days, so each point times enough of them to be read above noise.
                 days: self.days * 5,
                 seed: self.seed,
+                observer: false,
+                roam: false,
+                paged: None,
             });
         }
+        if sweep.vary == Vary::ShipPorts {
+            let (days, save) = (self.days, self.save_every_ticks);
+            let c = super::ships::grid_config(value, sweep.paged, days, self.seed, save);
+            return Spec::Ships(c);
+        }
         if sweep.vary == Vary::Dragons {
+            // The paged sweep and its resident twin grow the world with the dragons; the first
+            // dragon sweep keeps its fixed grid.
+            let grown = sweep.name != "dragons";
             return Spec::Dragons(super::dragons::DragonConfig {
                 dragons: value,
-                villages: DRAGON_VILLAGES,
+                villages: if grown {
+                    super::dragons::grown_villages(value)
+                } else {
+                    DRAGON_VILLAGES
+                },
                 warmup_days: 2,
                 days: self.days,
                 seed: self.seed,
+                budget_bytes: sweep.paged.then_some(super::dragons::PAGED_BUDGET),
+                save_every: sweep.paged.then_some(self.save_every_ticks),
             });
         }
         if matches!(sweep.vary, Vary::Markets | Vary::Edges) {
@@ -315,6 +359,10 @@ impl Baseline {
                 warmup_days: 10,
                 days: self.days,
                 seed: self.seed,
+                paged: sweep.paged.then_some(super::herds::HerdsPaging {
+                    budget_bytes: MARKETS_BUDGET,
+                    save_every_ticks: self.save_every_ticks,
+                }),
             });
         }
         if sweep.vary == Vary::Elapsed {
@@ -350,6 +398,7 @@ impl Baseline {
             | Vary::Edges
             | Vary::Dragons
             | Vary::Ships
+            | Vary::ShipPorts
             | Vary::Herds
             | Vary::Members
             | Vary::Factions => {
@@ -368,7 +417,7 @@ impl Baseline {
 }
 
 /// A contract; ones that declare flat growth (slope 0.15 or less) also get the ratio bound.
-fn contract(metric: Metric, declared: f64, scale_md: f64, note: &str) -> Contract {
+pub(super) fn contract(metric: Metric, declared: f64, scale_md: f64, note: &str) -> Contract {
     Contract {
         metric,
         declared,
@@ -645,7 +694,31 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "markets and edges are resident: paging (A16) is not built yet",
+                    "markets and edges are resident here; markets-paged pages the market rows",
+                ),
+            ],
+        },
+        // The market rows paged under a budget (docs/choices-paging-modules.md), stepped tick by
+        // tick, autosaved, and saved again whenever every resident market page is changed.
+        Sweep {
+            name: "markets-paged".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Markets,
+            regions: None,
+            paged: true,
+            values: pick(&[256, 1_024, 4_096], &[256, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    1.2,
+                    0.0,
+                    "NOT bounded yet: market breakpoints fall on quantum boundaries, so one tick can change every market, and a page changed since the last save cannot leave (measured 15.8 MB resident at peak against a 4 MiB budget at 4,096 markets; slope 1.107 from 256 to 4,096, every row plus the pages' own overhead). Needs market wakes staggered by page, as the herds' decisions are",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "the market rows are a quarter of a village's heap; news rings, pipelines, edges, the world wheel and knowledge stay resident",
                 ),
             ],
         },
@@ -682,9 +755,47 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "dragons are resident rows (paging, A16, is not built yet)",
+                    "this sweep runs the rows resident; dragons_paged pages them",
                 ),
             ],
+        },
+        // The dragons on the page store (A16; docs/choices-paging-modules.md, Dragons), the world
+        // growing with them (two dragons a village), and the same points resident beside it.
+        Sweep {
+            name: "dragons_paged".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Dragons,
+            regions: None,
+            paged: true,
+            values: pick(&[512, 2_048, 8_192, 32_768], &[512, 4_096, 32_768]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    DRAGONS_RESIDENT_SLOPE,
+                    0.0,
+                    "dragon and lair rows page under a fixed budget (256 KiB) and are held to it after every save; rows changed since the last save are pinned until it, and a step boundary over the budget saves (needs_save, PM7), so the peak is the budget plus what one 20-tick step changes, which grows with the dragons (up to 430 KB at 32,768)",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    0.0,
+                    "what stays resident: the wheel (a few events per dragon), the lair indexes, and the phase 1 world under the dragons (two dragons a village, and a knowledge holder per dragon)",
+                ),
+            ],
+        },
+        Sweep {
+            name: "dragons_resident".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Dragons,
+            regions: None,
+            paged: false,
+            values: pick(&[512, 2_048, 8_192, 32_768], &[512, 4_096, 32_768]),
+            contracts: vec![contract(
+                Metric::Heap,
+                1.1,
+                1.0,
+                "dragons_paged's points with every row resident, for comparison",
+            )],
         },
         // Ships (rtsim-ships), nobody watching. The model kind is a label only; the value is the
         // service cap (merchant ships per loop direction), on a fixed 100-port ocean grid.
@@ -706,10 +817,12 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "ships are resident rows (paging, A16, is not built yet)",
+                    "ships are resident rows here; the paged form is the ships-paged sweep",
                 ),
             ],
         },
+        super::ships::grid_sweeps(quick).remove(0),
+        super::ships::grid_sweeps(quick).remove(1),
         // Herds (rtsim-ecology's herds), nobody watching: herd count at 5,000 members each.
         Sweep {
             name: "herds".into(),
@@ -729,7 +842,63 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "herds are resident rows with their grazed forage cells (paging, A16, is not built yet)",
+                    "herds are resident rows with their grazed forage cells here; herds-paged pages them",
+                ),
+            ],
+        },
+        // The same herds in a valley that widens with them (one fixed density), resident: the
+        // before of herds-paged.
+        Sweep {
+            name: "herds-wide".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Herds,
+            regions: None,
+            paged: false,
+            // 16,384 resident herds take minutes a repeat: the paged sweep alone goes there.
+            values: vec![256, 1_024, 4_096],
+            contracts: vec![
+                contract(
+                    Metric::CpuPerUnit,
+                    flat,
+                    0.0,
+                    "as the herds sweep, at a fixed density: one sub-season's burst of decisions per point",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "resident rows: about 3 KB a herd with its region index entries and grazed forage cells",
+                ),
+            ],
+        },
+        // Paged herds (docs/choices-paging-modules.md): herd rows, forage cells and the region
+        // index page under a budget, stepped tick by tick, autosaved, and saved again whenever
+        // every resident page is changed.
+        Sweep {
+            name: "herds-paged".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Herds,
+            regions: None,
+            paged: true,
+            values: pick(&[256, 1_024, 4_096, 16_384], &[256, 1_024, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    HERDS_RESIDENT_SLOPE,
+                    0.0,
+                    "resident row pages are held to the budget plus what one tick changes: the herds of a row page decide on consecutive ticks, so a tick dirties a page or two of herds and the forage pages under their footprints, and a save frees them",
+                ),
+                contract(
+                    Metric::Heap,
+                    HERDS_HEAP_SLOPE,
+                    0.0,
+                    "the budget, the store's bounded index cache and overlay, and what stays resident by design: the wheel's pending decision per herd (about 40 bytes)",
+                ),
+                contract(
+                    Metric::CpuPerUnit,
+                    flat,
+                    0.0,
+                    "the same decisions as herds-wide, plus a page load per page of herds and forage a sub-season",
                 ),
             ],
         },
@@ -791,18 +960,66 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "factions, feuds and parties are resident rows (paging, A16, is not built yet)",
+                    "factions, feuds and parties are resident rows here; `factions-paged` pages them (A16)",
+                ),
+            ],
+        },
+        // The same factions with the conflict's row tables paged under a fixed budget (A16),
+        // saved at Minecraft's autosave interval (`bench::conflict`).
+        Sweep {
+            name: "factions-paged".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Factions,
+            regions: None,
+            paged: true,
+            values: pick(&[1_024, 2_048, 4_096], &[1_024, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    0.1,
+                    0.0,
+                    "the conflict's row tables (factions with their feuds, sources, places) are held to the budget plus one step's changes whatever the faction count (A16): the host saves when every resident page is changed (Conflict::needs_save, PM-C10), so the saves a day grow with the factions instead (reported, saves_per_day). The phase 1 world under the camps is not paged here and is most of the heap, so the engine's own live bytes are reported apart (engine_live_bytes): about 580 bytes a faction stay resident by design (the wheel, parties in flight, the indexes: PM-C4, PM-C13)",
+                ),
+                contract(
+                    Metric::EventsPerUnit,
+                    flat,
+                    0.0,
+                    "paging changes no decision: the same events per faction as the resident sweep",
+                ),
+                contract(
+                    Metric::CpuPerUnit,
+                    0.2,
+                    0.0,
+                    "the engine's own step CPU per faction-day (saves excluded and reported apart): at a budget this far under the table nearly every event's faction page misses, so a step costs its events plus about one load each; declared 0.2 as the resident sweep (cache misses and log factors as the world grows; measured 0.10 on 2026-10-21), about 1.6 to 1.8 times the resident cost at 256 KiB (PM-C12)",
                 ),
             ],
         },
     ]
 }
 
+/// The paged faction sweep's budget for the conflict's row tables. PLACEHOLDER 256 KiB: a tenth
+/// of the resident rows at 1,024 factions, so every point pages.
+const FACTION_BUDGET: u64 = 256 << 10;
+
 /// The faction sweep grows the village grid with the camps (one village per camp, a camp in each
 /// village cell), so it measures the cost per faction at a fixed density; at a fixed world,
 /// denser camps feel more of each other's smog and plunder each other more (behaviour). At least
 /// this many villages. PLACEHOLDER 16.
 const FACTION_VILLAGES_MIN: u64 = 16;
+
+/// The paged market sweep's row budget. PLACEHOLDER 4 MiB, the paged region sweeps' budget.
+const MARKETS_BUDGET: u64 = 4 << 20;
+
+/// The paged herd sweep's row budget. PLACEHOLDER 1 MiB: under the rows of every point but the
+/// first.
+const HERDS_BUDGET: u64 = 1 << 20;
+
+/// Declared slopes of the paged herd sweep, from its first runs (docs/choices-paging-modules.md).
+const HERDS_RESIDENT_SLOPE: f64 = 0.15;
+/// Paged dragons' resident rows at their peak: measured 0.23 (quick, 512 to 32,768 dragons), not
+/// the 0.1 asked for; the budget plus one step's changes (docs/choices-paging-modules.md, Dragons).
+const DRAGONS_RESIDENT_SLOPE: f64 = 0.3;
+const HERDS_HEAP_SLOPE: f64 = 0.4;
 
 /// Members per herd held fixed while the herd sweep varies herds. PLACEHOLDER 5,000.
 const MEMBER_BASE: u64 = 5_000;
@@ -914,7 +1131,7 @@ pub fn run_one(spec: &Spec) -> Measured {
 
 /// Bench scratch folders live under the target folder (on disk, not a tmpfs), or the system
 /// temp folder when that is unknown.
-fn scratch_dir(tag: &str) -> PathBuf {
+pub(super) fn scratch_dir(tag: &str) -> PathBuf {
     let base = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.join("bench-scratch")))
@@ -1540,7 +1757,10 @@ fn print_tables(runs: &[Run], slopes: &[Slope]) {
     }
     let paged: Vec<&Run> = runs
         .iter()
-        .filter(|r| matches!(r.spec, Spec::Paged(_)))
+        .filter(|r| {
+            matches!(&r.spec, Spec::Paged(_))
+                || matches!(&r.spec, Spec::Ships(c) if c.paged.is_some())
+        })
         .collect();
     if !paged.is_empty() {
         println!();

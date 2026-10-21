@@ -8,7 +8,10 @@
 //! 1. **Gather** (caller's thread): every wheel entry due by `to` and every message due by `to`,
 //!    grouped by region and page, in key order.
 //! 2. **Load** (caller's thread): the pages of those regions ([`PagedTable`] loads; prefetch should
-//!    have made most of them resident already).
+//!    have made most of them resident already). These loads are the step's only IO. If one fails,
+//!    the gathered wakes and mail go back where they were (the wheels are rewound) and the step
+//!    returns the error having changed nothing but which pages are resident: retrying the same
+//!    step gives the same world as one that never failed.
 //! 3. **Process** (in parallel on the [`Executor`]): each page is moved into a job, and each due
 //!    region handles its work in time order, interleaving its own breakpoints with its messages.
 //!    A breakpoint that falls inside the window after a message or another breakpoint fires in the
@@ -42,7 +45,7 @@ use crate::codec::{Decode, Encode, Reader, Writer};
 use crate::exec::{Executor, scope};
 use crate::lazy::LazyStats;
 use crate::page::{PageError, PageKey, PageStore, Result, SaveBatch};
-use crate::paging::{Page, PagedModel, PagedTable};
+use crate::paging::{Booked, Page, PagedModel, PagedTable};
 use crate::rng::{StreamKey, SystemId};
 use crate::wheel::TimingWheel;
 
@@ -336,19 +339,51 @@ impl<M: Actor> Bsp<M> {
             });
         }
         let start = Tick(from.0 + 1);
-        self.stats.steps += 1;
+        let per = table.cfg.regions_per_page;
 
-        // 1. Gather.
-        let mut due: Vec<u64> = table.due.drain(..).map(|b| b.key).collect();
-        while let Some((_, b)) = table.wheel.pop_until(to) {
-            due.push(b.key);
+        // 1. Gather. What is popped is kept as it came, so an IO error can put it all back.
+        let due_before = std::mem::take(&mut table.due);
+        let due_at_before = table.due_at;
+        let mut popped: Vec<(Tick, Booked)> = Vec::new();
+        while let Some(b) = table.wheel.pop_until(to) {
+            popped.push(b);
         }
-        due.sort_unstable();
-        due.dedup();
+        let mail_from = self.mail.now();
         let mut mail: Vec<(Tick, Envelope<M::Msg>)> = Vec::new();
         while let Some(m) = self.mail.pop_until(to) {
             mail.push(m);
         }
+
+        // 2. Load every page the step touches, before anything changes. The loads are the step's
+        // only IO: if one fails, the wakes, the due list and the mail go back exactly as they
+        // were and the step changed nothing but which pages are resident, so retrying it gives
+        // the same world as a step that never failed.
+        let mut pids: Vec<u64> = due_before
+            .iter()
+            .map(|b| b.key / per)
+            .chain(popped.iter().map(|(_, b)| b.key / per))
+            .chain(mail.iter().map(|(_, e)| e.to / per))
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        for &pid in &pids {
+            if let Err(e) = table.ensure(store, pid) {
+                table.wheel.rewind(from, popped);
+                table.due = due_before;
+                table.due_at = due_at_before;
+                self.mail.rewind(mail_from, mail);
+                return Err(e);
+            }
+        }
+        self.stats.steps += 1;
+
+        let mut due: Vec<u64> = due_before
+            .into_iter()
+            .map(|b| b.key)
+            .chain(popped.into_iter().map(|(_, b)| b.key))
+            .collect();
+        due.sort_unstable();
+        due.dedup();
         mail.sort_by(|a, b| {
             (a.1.to, a.0, a.1.from, a.1.sent_at, a.1.n).cmp(&(
                 b.1.to,
@@ -383,8 +418,7 @@ impl<M: Actor> Bsp<M> {
         }
         let n_regions = regions.len();
 
-        // 2. Load, page by page.
-        let per = table.cfg.regions_per_page;
+        // Group by page; every page that exists is resident now.
         let mut groups: Vec<(u64, Vec<RegionWork<M::Msg>>)> = Vec::new();
         for rw in regions {
             let pid = rw.key / per;
@@ -394,14 +428,10 @@ impl<M: Actor> Bsp<M> {
             }
         }
         let mut dead: Vec<Envelope<M::Msg>> = Vec::new();
-        let mut slabs: Vec<Option<u32>> = Vec::with_capacity(groups.len());
-        for (pid, _) in &groups {
-            slabs.push(table.ensure(store, *pid)?);
-        }
         let mut work: Vec<PageWork<M>> = Vec::with_capacity(groups.len());
         let mut weight = 0usize;
-        for ((_, rws), slab) in groups.into_iter().zip(slabs) {
-            let Some(slab) = slab else {
+        for (pid, rws) in groups {
+            let Some(&slab) = table.index.get(&pid) else {
                 for rw in rws {
                     self.stats.dead_letters += rw.mail.len() as u64;
                     dead.extend(rw.mail.into_iter().map(|(_, e)| e));
@@ -582,6 +612,22 @@ mod tests {
         budget: usize,
         tag: &str,
     ) -> (u32, u32, BspStats, u64) {
+        let r = run_faulty(regions, days, step, exec, budget, tag, 0);
+        (r.0, r.1, r.2, r.3)
+    }
+
+    /// [`run`], and every `fault_every`-th step (0: never) a page read fails partway through the
+    /// step's loads; the caller retries the same step once the fault is cleared. Also returns how
+    /// many steps failed.
+    fn run_faulty(
+        regions: u64,
+        days: u64,
+        step: u64,
+        exec: &dyn Executor,
+        budget: usize,
+        tag: &str,
+        fault_every: u64,
+    ) -> (u32, u32, BspStats, u64, u64) {
         let dir = tmpdir(tag);
         let mut store = PageStore::open(&dir, Durability::NoSync).unwrap();
         let cfg = PagingConfig {
@@ -612,10 +658,28 @@ mod tests {
         let mut bsp: Bsp<TradePost> = Bsp::new(Tick::ZERO);
         let end = Tick::from_days(days);
         let mut now = Tick::ZERO;
+        let (mut steps, mut failed) = (0u64, 0u64);
         while now < end {
             now = Tick((now.0 + step).min(end.0));
-            let r = bsp.step(&mut t, &mut store, exec, now).unwrap();
-            assert!(r.dead_letters.is_empty());
+            steps += 1;
+            if fault_every > 0 && steps % fault_every == 0 {
+                store.inject_fault(Some(crate::page::Fault::Read {
+                    after: (steps / fault_every % 3) as u32,
+                }));
+                let r = bsp.step(&mut t, &mut store, exec, now);
+                store.inject_fault(None);
+                if let Err(e) = r {
+                    assert!(matches!(e, PageError::Injected), "{e}");
+                    failed += 1;
+                    // Between the failure and the retry the caller may save and evict.
+                    t.enforce_budget();
+                    let r = bsp.step(&mut t, &mut store, exec, now).unwrap();
+                    assert!(r.dead_letters.is_empty());
+                }
+            } else {
+                let r = bsp.step(&mut t, &mut store, exec, now).unwrap();
+                assert!(r.dead_letters.is_empty());
+            }
             if now.0 % (TICKS_PER_DAY / 4) < step {
                 let mut b = SaveBatch::new();
                 let ticket = t.save_dirty(&mut b);
@@ -637,7 +701,7 @@ mod tests {
         let h = t.state_hash(&mut store, end).unwrap();
         let stats = bsp.stats();
         std::fs::remove_dir_all(&dir).unwrap();
-        (h, bsp.mail_hash(), stats, t.stats().evictions)
+        (h, bsp.mail_hash(), stats, t.stats().evictions, failed)
     }
 
     /// The determinism gate: 1 worker and N workers, resident or paged, give the same state.
@@ -674,6 +738,39 @@ mod tests {
                 if budget != usize::MAX {
                     assert!(n.3 > 0, "the small budget evicted pages");
                 }
+            }
+        }
+    }
+
+    /// An IO error while a step loads its pages (the review's finding) loses none of the step's
+    /// wakes or messages: the step changes nothing but which pages are resident, and the retried
+    /// step gives the same world as a step that never failed, at any worker count.
+    #[test]
+    fn an_io_error_in_a_step_loses_nothing() {
+        for (regions, step) in [(300u64, 200u64), (1_000, 4_800)] {
+            let clean = run(regions, 12, step, &Inline, usize::MAX, "io-clean");
+            for workers in [1usize, 4] {
+                let pool = ThreadPool::new(workers);
+                // A budget of one byte: every page not dirty is evicted at each step boundary,
+                // so most steps load pages from disk and can fail there.
+                let faulty = run_faulty(
+                    regions,
+                    12,
+                    step,
+                    &pool,
+                    1,
+                    &format!("io-{workers}-{step}"),
+                    3,
+                );
+                assert!(faulty.4 > 0, "some steps failed: {faulty:?}");
+                assert_eq!(
+                    (clean.0, clean.1),
+                    (faulty.0, faulty.1),
+                    "{regions} regions, step {step}, {workers} workers"
+                );
+                assert_eq!(clean.2.wakes, faulty.2.wakes);
+                assert_eq!(clean.2.messages, faulty.2.messages);
+                assert_eq!(clean.2.steps, faulty.2.steps);
             }
         }
     }
