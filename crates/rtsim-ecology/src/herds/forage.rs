@@ -19,9 +19,9 @@
 //! **Floor.** Grazing never takes a cell below a floor share of its best capacity (roots and seed
 //! bank), so a grazed cell always regrows.
 
-use std::collections::BTreeMap;
-
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::codec::{self, Decode, Encode, Reader, Writer};
+use rtsim_kernel::rows::{PagedRows, cell_key, cell_of_key};
 
 use super::climate::{Climate, ForageRates, SUB_SEASONS, Subs};
 
@@ -120,14 +120,58 @@ pub struct Row {
     pub forage: f64,
 }
 
+impl Encode for Row {
+    fn encode(&self, w: &mut Writer) {
+        w.u64(self.anchor.0);
+        w.f64(self.forage);
+    }
+}
+
+impl Decode for Row {
+    fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
+        Ok(Row {
+            anchor: Tick(r.u64()?),
+            forage: r.f64()?,
+        })
+    }
+}
+
+impl rtsim_kernel::rows::Row for Row {}
+
 /// Cell key: (frame, cell x, cell z).
 pub type CellKey = (u16, i32, i32);
 
-/// The field: rows for grazed cells only.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// The page table of the grazed cells (docs/choices-paging-modules.md).
+pub const TABLE_FORAGE: u16 = 0x4811;
+/// Cells per page: 8 x 8 cells of [`CELL_BLOCKS`] (an aligned square, 1,024 blocks a side).
+/// PLACEHOLDER: a row is 32 bytes, so a full page is about 2 KB resident.
+pub const FORAGE_PER_PAGE: u64 = 64;
+
+/// A cell's row key: neighbouring cells share pages.
+pub fn row_key(k: CellKey) -> u64 {
+    cell_key(k.0, i64::from(k.1), i64::from(k.2))
+}
+
+/// The cell of a row key.
+pub fn cell_of_row(key: u64) -> CellKey {
+    let (f, x, z) = cell_of_key(key);
+    (f, x as i32, z as i32)
+}
+
+/// The field: rows for grazed cells only, in pages (A16).
+#[derive(Debug)]
 pub struct Forage {
-    pub rows: BTreeMap<CellKey, Row>,
+    pub rows: PagedRows<Row>,
     pub stats: ForageStats,
+}
+
+impl Default for Forage {
+    fn default() -> Self {
+        Forage {
+            rows: PagedRows::new(TABLE_FORAGE, FORAGE_PER_PAGE),
+            stats: ForageStats::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -233,7 +277,7 @@ impl Forage {
     /// Forage in a cell at `t` (forage units). Pure: O(sub-seasons a year) whatever the time since
     /// the cell was grazed.
     pub fn at(&self, climate: &dyn Climate, subs: &Subs, k: CellKey, t: Tick) -> f64 {
-        match self.rows.get(&k) {
+        match self.rows.get(row_key(k)) {
             Some(r) if r.anchor <= t => {
                 let floor = Self::floor(climate, k);
                 let u = Self::map(climate, subs, k, r.anchor, t).apply(u_of(r.forage, floor));
@@ -263,7 +307,7 @@ impl Forage {
         let floor = Self::floor(climate, k);
         let take = want.clamp(0.0, (now - floor).max(0.0));
         self.rows.insert(
-            k,
+            row_key(k),
             Row {
                 anchor: t,
                 forage: now - take,
@@ -274,20 +318,28 @@ impl Forage {
 
     /// Drops rows back within [`CONVERGED_SHARE`] of the steady state at `t` (the yearly sweep:
     /// a deterministic moment, so the state never depends on when anything was read).
+    ///
+    /// A whole-field pass once a year: it loads every grazed cell's page (paged, the budget is
+    /// kept page by page).
     pub fn sweep(&mut self, climate: &dyn Climate, subs: &Subs, t: Tick) {
-        let keys: Vec<CellKey> = self.rows.keys().copied().collect();
-        for k in keys {
+        let mut gone = Vec::new();
+        let rows = &mut self.rows;
+        let pass = rows.for_each_bounded(|key, _| gone.push(key));
+        pass.unwrap_or_else(|e| panic!("forage sweep: page load failed: {e}"));
+        let keys = std::mem::take(&mut gone);
+        for key in keys {
+            let k = cell_of_row(key);
             let f = self.at(climate, subs, k, t);
             let s = Self::steady(climate, subs, k, t);
             if (f - s).abs() <= CONVERGED_SHARE * s.max(1e-9) {
-                self.rows.remove(&k);
+                self.rows.remove(key);
                 self.stats.folded += 1;
             }
         }
     }
 
     pub fn heap_bytes(&self) -> usize {
-        self.rows.len() * (std::mem::size_of::<CellKey>() + std::mem::size_of::<Row>() + 16)
+        self.rows.heap_bytes()
     }
 }
 
@@ -384,7 +436,7 @@ mod tests {
         let t0 = Tick::from_days(10);
         let s0 = Forage::steady(&c, &subs, k, t0);
         f.rows.insert(
-            k,
+            row_key(k),
             Row {
                 anchor: t0,
                 forage: s0,
