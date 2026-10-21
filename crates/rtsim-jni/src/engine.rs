@@ -83,6 +83,7 @@ pub mod tap;
 /// The page layout rtsim-view mirrors in its `keys.rs` (it cannot link this crate); its test
 /// (`crates/rtsim-view/tests/harness.rs`) compares every value here with its own.
 pub mod mirrored {
+    pub use super::archive::KEY as ARCHIVE_SERIAL;
     pub use super::conflict::KEY_CONFLICT;
     pub use super::dragons::KEY_DRAGONS;
     pub use super::herds::KEY_HERDS;

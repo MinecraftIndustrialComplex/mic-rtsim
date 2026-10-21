@@ -315,7 +315,7 @@ struct Live {
     /// The last header read (its directory dropped); none before the server's first commit.
     header: Option<Header>,
     error: Option<String>,
-    /// The save's tick when drawn: archive rows at or before it are in the save's archive.
+    /// The save's tick when drawn.
     save_now: Tick,
     scenes: BTreeMap<String, Arc<Scene>>,
     frames: Vec<Frame>,
@@ -384,7 +384,8 @@ struct PendingState {
     kinds: Vec<String>,
     frames: Vec<String>,
     units: BTreeMap<u64, (u32, Vec<LiveRow>)>,
-    rows: Vec<(u64, LiveRow)>,
+    /// (sequence number, the serial its part had, row), oldest first.
+    rows: Vec<(u64, u64, LiveRow)>,
 }
 
 /// The base map of whichever save is shown, behind one cache of the sidecar's.
@@ -881,7 +882,13 @@ impl LiveView {
         }
         // The pending archive rows (§10.3).
         let frame_of = |name: &str| archive_frame(name).map_or_else(|| name.to_owned(), &fid);
-        let pending = pending_rows(&mut r.pending, store, header.as_ref(), save_now, &frame_of);
+        let pending = pending_rows(
+            &mut r.pending,
+            store,
+            header.as_ref(),
+            saved.archive_serial(),
+            &frame_of,
+        );
         let known: BTreeSet<String> = save.world().event_kinds.into_iter().map(|k| k.id).collect();
         let pending_kinds: Vec<EventKind> = r
             .pending
@@ -1095,13 +1102,15 @@ fn canon(id: &str) -> String {
 }
 
 /// The pending archive rows of the store's ARCHIVE_ROWS parts, each given a sequence number the
-/// first time it is seen (the stream's `events`). Rows of an earlier serial (a save took them) are
-/// kept until the save shown covers their tick.
+/// first time it is seen (the stream's `events`). The parts hold the rows no save up to the
+/// header's `archive_serial` took, so the save shown (`save_serial`) holds a row exactly when its
+/// serial is above the row's. Rows of an earlier serial stay until the save shown is that late; a
+/// tick does not tell (a leg starts after the save that recorded it).
 fn pending_rows(
     p: &mut PendingState,
     store: Option<&PageStore>,
     header: Option<&Header>,
-    save_now: Tick,
+    save_serial: u64,
     frame_of: &dyn Fn(&str) -> String,
 ) -> Vec<(u64, LiveRow)> {
     if let (Some(st), Some(h)) = (store, header) {
@@ -1186,15 +1195,15 @@ fn pending_rows(
         if changed {
             let all: Vec<&LiveRow> = p.units.values().flat_map(|(_, r)| r).collect();
             for row in all.iter().skip(p.count) {
-                p.rows.push((p.next_seq, (*row).clone()));
+                p.rows.push((p.next_seq, p.serial, (*row).clone()));
                 p.next_seq += 1;
             }
             p.count = p.count.max(all.len());
         }
     }
-    // What the save shown covers is in its archive.
-    p.rows.retain(|(_, r)| r.t() > save_now);
-    p.rows.clone()
+    // What the save shown took is in its archive.
+    p.rows.retain(|(_, serial, _)| *serial >= save_serial);
+    p.rows.iter().map(|(seq, _, r)| (*seq, r.clone())).collect()
 }
 
 /// Whether a pending row answers `q` (its frame, area and kinds; the time is the caller's).
