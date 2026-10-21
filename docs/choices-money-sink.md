@@ -89,3 +89,12 @@ Each item is reversible and already built as the first option; say which to chan
 5. **Golems are bought only under threat** (MSC5: raided, or tribute lapsed, within the last season).
    - (a, recommended) Only under threat.
    - (b) Also up to the cap in peace time, as vanilla's own golem spawning does.
+6. **The tribute share is a quarter of the purse each season** (MS-5, PLACEHOLDER as you asked;
+   MSC40 to MSC46; `tribute_share_milli` 250). A tributary village buys no works while it pays
+   (MSC5), so the dragon's share is the only thing that draws its purse down.
+   - (a, recommended) Keep 250 thousandths until the work prices are real, then tune it against them.
+   - (b) A fixed number of coins a season per dragon (its age or size), independent of the purse.
+7. **A golem adds 5 fullness points of fear** (`golem_risk`, PLACEHOLDER, MSC51) against a base
+   `village_risk` of 15.
+   - (a, recommended) Keep it until dragons are seen choosing in a played world.
+   - (b) Scale it with the dragon's stage, so an old dragon ignores golems.
