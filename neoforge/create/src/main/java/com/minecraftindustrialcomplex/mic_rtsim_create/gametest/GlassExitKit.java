@@ -51,6 +51,12 @@ public final class GlassExitKit {
         public synchronized int size() {
             return kept.size();
         }
+
+        /** The records kept, oldest first. */
+        public synchronized List<ScriptedEngine.Received> records() {
+            poll();
+            return List.copyOf(kept);
+        }
     }
 
     /** A recorder holding what the engine's log holds now (the session's dictionary among it, if still there). */
@@ -103,5 +109,90 @@ public final class GlassExitKit {
                 failed.add((name == null ? "good " + g.good() : name) + " (" + g.className() + ")");
         }
         return failed;
+    }
+
+    private static final String[] NODE_KINDS = {"?", "STORE", "BUFFER", "MACHINE", "MOVER", "JUNCTION", "HEATER", "SOURCE", "SINK",
+            "BLACKBOX", "CONTROLLER", "PORT", "BOILER"};
+    private static final String[] EDGE_KINDS = {"?", "ADJ", "BELT", "CHUTE", "PIPE", "CHAIN", "AIR", "ARM", "HEAT", "CONTROL", "OBSERVE",
+            "LINE", "DROP"};
+
+    private static String name(int good) {
+        String n = IndustryKit.javaName(good);
+        return n == null ? "g" + good : n.replaceFirst("^[if]/\\d+/", "");
+    }
+
+    private static String q(long num, long den) {
+        return den == 1 ? Long.toString(num) : num + "/" + den;
+    }
+
+    /** One line per node, edge, recipe and domain of a compile, goods by name: what the solver was given. */
+    public static List<String> dump(GlassKit.Graph g) {
+        List<String> out = new ArrayList<>();
+        out.add(g.describe());
+        for (GlassKit.Node n : g.nodes()) {
+            StringBuilder sb = new StringBuilder("n" + n.index() + " " + NODE_KINDS[Math.min(n.kind(), NODE_KINDS.length - 1)] + " model "
+                    + n.model() + " at " + n.x() + "," + n.y() + "," + n.z() + " flags " + n.flags() + " rule " + n.rule());
+            if (n.domain() >= 0)
+                sb.append(" dom ").append(n.domain());
+            if (n.inventory() >= 0)
+                sb.append(" inv ").append(n.inventory());
+            if (n.capacity() != 0)
+                sb.append(" cap ").append(n.capacity());
+            if (n.params() != null && java.util.Arrays.stream(n.params()).anyMatch(v -> v != 0))
+                sb.append(" params ").append(java.util.Arrays.toString(n.params()));
+            for (GlassKit.Rate r : n.rates())
+                sb.append(" [l").append(r.level()).append(" r").append(r.recipe() < 0 ? "-" : Integer.toString(r.recipe())).append(' ')
+                        .append(r.batch()).append(" per ").append(q(r.ticksNum(), r.ticksDen())).append("t f").append(r.flags()).append(']');
+            out.add(sb.toString());
+        }
+        for (GlassKit.Edge e : g.edges()) {
+            StringBuilder sb = new StringBuilder("e" + e.index() + " " + EDGE_KINDS[Math.min(e.kind(), EDGE_KINDS.length - 1)] + " n" + e.from()
+                    + " -> n" + e.to() + " order " + e.order() + " flags " + e.flags());
+            if (e.capDen() != 0)
+                sb.append(" cap ").append(q(e.capNum(), e.capDen()));
+            if (e.latency() != 0)
+                sb.append(" lat ").append(e.latency());
+            if (e.param() != 0)
+                sb.append(" param ").append(e.param());
+            if (e.filter() != null && e.filter().length > 0) {
+                sb.append(" filter");
+                for (int f : e.filter())
+                    sb.append(' ').append(name(f));
+            }
+            out.add(sb.toString());
+        }
+        for (GlassKit.Recipe r : g.recipes()) {
+            StringBuilder sb = new StringBuilder("r" + r.index() + " type " + r.type() + " heat " + r.heat() + " "
+                    + (r.name() == 0 ? "" : IndustryKit.javaName(r.name())) + ":");
+            for (GlassKit.Term t : r.inputs())
+                sb.append(' ').append(q(t.num(), t.den())).append(' ').append(name(t.good())).append(t.flags() != 0 ? "(f" + t.flags() + ")" : "");
+            sb.append(" ->");
+            for (GlassKit.Term t : r.outputs())
+                sb.append(' ').append(q(t.num(), t.den())).append(' ').append(name(t.good())).append(t.flags() != 0 ? "(f" + t.flags() + ")" : "");
+            out.add(sb.toString());
+        }
+        for (GlassKit.Domain d : g.domains()) {
+            StringBuilder sb = new StringBuilder("d" + d.index() + " current " + d.current() + " driver " + d.driver() + " flags " + d.flags()
+                    + " live " + d.liveStress() + "/" + d.liveCapacity() + " levels");
+            for (GlassKit.Level l : d.levels())
+                sb.append(" [s").append(l.selector()).append(' ').append(l.rpm()).append("rpm ").append(l.capacity()).append("SU]");
+            sb.append(" members");
+            for (GlassKit.Member m : d.members())
+                sb.append(" n").append(m.node()).append('x').append(m.count()).append('@').append(m.ratioNum()).append('/').append(m.ratioDen())
+                        .append(" ").append(m.impact());
+            out.add(sb.toString());
+        }
+        return out;
+    }
+
+    /** Logs {@link #dump} of the district's latest compile in the recorder's records. */
+    public static void logGraph(String test, long district, Recorder rec) {
+        GlassKit.Graph g = GlassKit.latest(district, rec.records());
+        if (g == null) {
+            IndustryKit.record(test, "graph", "no compile received");
+            return;
+        }
+        for (String line : dump(g))
+            com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.info("[gametest] {}: graph {}", test, line);
     }
 }

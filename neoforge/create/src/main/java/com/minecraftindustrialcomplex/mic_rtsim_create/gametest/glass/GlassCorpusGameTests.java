@@ -47,6 +47,10 @@ public final class GlassCorpusGameTests {
 
     @GameTestGenerator
     public static Collection<TestFunction> glassCorpus() {
+        // MIC_GLASS_SUITE=smoke or exit runs only that suite of the corpus (iterating); unset, both run.
+        String suite = System.getenv("MIC_GLASS_SUITE");
+        if (suite != null && !suite.isBlank() && !suite.trim().equals("smoke"))
+            return List.of();
         String only = System.getenv("MIC_GLASS_ONLY");
         Set<String> filter = only == null || only.isBlank() ? Set.of()
                 : Arrays.stream(only.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet());
