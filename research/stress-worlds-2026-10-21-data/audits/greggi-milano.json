@@ -1,0 +1,585 @@
+{
+ "base": "/home/greencheetah/mic-stress-worlds/greggi-milano-centrale/world",
+ "world_root": "/home/greencheetah/mic-stress-worlds/greggi-milano-centrale/world/Milano Centrale Create",
+ "total_bytes": 203041328,
+ "level": {
+  "top_keys": [
+   "Data"
+  ],
+  "data_keys": [
+   "WanderingTraderSpawnChance",
+   "BorderCenterZ",
+   "Difficulty",
+   "BorderSizeLerpTime",
+   "raining",
+   "Time",
+   "GameType",
+   "ServerBrands",
+   "BorderCenterX",
+   "BorderDamagePerBlock",
+   "BorderWarningBlocks",
+   "WorldGenSettings",
+   "DragonFight",
+   "BorderSizeLerpTarget",
+   "Version",
+   "DayTime",
+   "initialized",
+   "WasModded",
+   "allowCommands",
+   "WanderingTraderSpawnDelay",
+   "CustomBossEvents",
+   "GameRules",
+   "Player",
+   "SpawnY",
+   "rainTime",
+   "thunderTime",
+   "SpawnZ",
+   "hardcore",
+   "DifficultyLocked",
+   "SpawnX",
+   "clearWeatherTime",
+   "thundering",
+   "SpawnAngle",
+   "version",
+   "BorderSafeZone",
+   "LastPlayed",
+   "BorderWarningTime",
+   "ScheduledEvents",
+   "LevelName",
+   "BorderSize",
+   "DataVersion",
+   "DataPacks"
+  ],
+  "LevelName": "world",
+  "DataVersion": 3120,
+  "version": 19133,
+  "WasModded": 1,
+  "GameType": 0,
+  "DayTime": 222000,
+  "Time": 4348586,
+  "LastPlayed": 1671114822418,
+  "Version": {
+   "Snapshot": 0,
+   "Series": "main",
+   "Id": 3120,
+   "Name": "1.19.2"
+  },
+  "ServerBrands": [
+   "fabric",
+   "Paper",
+   "forge"
+  ],
+  "DataPacks": {
+   "Enabled": [
+    "vanilla",
+    "file/bukkit",
+    "Fabric Mods"
+   ],
+   "Disabled": []
+  },
+  "seed": 22842967,
+  "dimensions": [
+   "minecraft:overworld",
+   "minecraft:the_nether",
+   "minecraft:the_end"
+  ]
+ },
+ "tracks": {
+  "file_bytes": 366956,
+  "DataVersion": 3120,
+  "trains": 18,
+  "carriages": 148,
+  "trains_with_schedule": 0,
+  "schedule_entries": 0,
+  "trains_moving_at_save": 1,
+  "trains_derailed": 0,
+  "carriages_with_passengers": 0,
+  "bogey_types": {
+   "create:small_bogey": 296
+  },
+  "graphs": 16,
+  "nodes": 829,
+  "edges": 817,
+  "stations": 9,
+  "signals": 0,
+  "observers": 0,
+  "track_chord_length_blocks": 24598,
+  "edge_materials": {
+   "create:andesite": 817
+  },
+  "curved_edges": 0,
+  "per_graph": [
+   {
+    "nodes": 756,
+    "edges": 759,
+    "stations": 6,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 22906
+   },
+   {
+    "nodes": 19,
+    "edges": 18,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 524
+   },
+   {
+    "nodes": 15,
+    "edges": 14,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 418
+   },
+   {
+    "nodes": 15,
+    "edges": 14,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 418
+   },
+   {
+    "nodes": 9,
+    "edges": 8,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 230
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 102
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   },
+   {
+    "nodes": 1,
+    "edges": 0,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 0
+   }
+  ],
+  "signal_blocks": 16,
+  "signal_edge_groups": null,
+  "dimension_palette": [
+   "minecraft:overworld"
+  ],
+  "other_keys": [
+   "Trains",
+   "DimensionPalette",
+   "RailGraphs",
+   "SignalBlocks"
+  ]
+ },
+ "data_files": [
+  [
+   "capabilities.dat",
+   48
+  ],
+  [
+   "create_tracks.dat",
+   366956
+  ],
+  [
+   "raids.dat",
+   90
+  ]
+ ],
+ "playerdata_files": 3,
+ "datapacks": [
+  "bukkit"
+ ],
+ "top_level_entries": [
+  "DIM-1",
+  "DIM1",
+  "advancements",
+  "data",
+  "datapacks",
+  "entities",
+  "icon.png",
+  "level.dat",
+  "level.dat_old",
+  "level6099337274938891174.dat",
+  "paper-world.yml",
+  "playerdata",
+  "poi",
+  "region",
+  "serverconfig",
+  "session.lock",
+  "stats",
+  "uid.dat"
+ ],
+ "dimensions": {
+  "minecraft:overworld": {
+   "region_files": 32,
+   "region_bytes": 191524864,
+   "chunks": 24843,
+   "errors": 0,
+   "err_sample": null,
+   "inhabited_chunks_gt_1200": 2573,
+   "inhabited_ticks": 339375911,
+   "dataversions": {
+    "3120": 24843
+   },
+   "block_entities_total": 1611,
+   "block_entities_by_type": {
+    "minecraft:chest": 456,
+    "create:fake_track": 430,
+    "minecraft:mob_spawner": 305,
+    "minecraft:sign": 162,
+    "minecraft:beehive": 82,
+    "create:track": 43,
+    "minecraft:comparator": 38,
+    "minecraft:skull": 34,
+    "minecraft:daylight_detector": 24,
+    "create:track_station": 23,
+    "minecraft:bed": 12,
+    "create:bogey": 2
+   },
+   "block_entities_by_namespace": {
+    "minecraft": 1113,
+    "create": 498
+   },
+   "blocks_by_namespace": {
+    "minecraft": 2442154160,
+    "create": 12112
+   },
+   "blocks_top_non_vanilla": {
+    "create:track": 11649,
+    "create:fake_track": 430,
+    "create:track_station": 23,
+    "create:white_seat": 8,
+    "create:small_bogey": 2
+   },
+   "blocks_distinct_ids": 298,
+   "entities_by_type": {
+    "minecraft:sheep": 627,
+    "minecraft:chicken": 554,
+    "minecraft:pig": 484,
+    "minecraft:cow": 335,
+    "minecraft:frog": 166,
+    "minecraft:wolf": 70,
+    "minecraft:llama": 32,
+    "minecraft:falling_block": 32,
+    "minecraft:bee": 29,
+    "minecraft:item": 24,
+    "minecraft:turtle": 10,
+    "create:super_glue": 9,
+    "minecraft:parrot": 4
+   },
+   "entities_by_namespace": {
+    "minecraft": 2367,
+    "create": 9
+   },
+   "contraption_entities": 0,
+   "contraption_blocks_total": 0,
+   "contraption_biggest": [],
+   "regions": {
+    "-1,-1": {
+     "chunks": 1024,
+     "be": 248,
+     "create_be": 222,
+     "inhabited_chunks": 323,
+     "bytes": 6402048
+    },
+    "-1,-2": {
+     "chunks": 1024,
+     "be": 56,
+     "create_be": 1,
+     "inhabited_chunks": 125,
+     "bytes": 8855552
+    },
+    "-1,-3": {
+     "chunks": 1024,
+     "be": 72,
+     "create_be": 0,
+     "inhabited_chunks": 159,
+     "bytes": 9142272
+    },
+    "-1,-4": {
+     "chunks": 928,
+     "be": 38,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 6909952
+    },
+    "-1,0": {
+     "chunks": 1024,
+     "be": 173,
+     "create_be": 24,
+     "inhabited_chunks": 478,
+     "bytes": 7016448
+    },
+    "-1,1": {
+     "chunks": 1024,
+     "be": 40,
+     "create_be": 2,
+     "inhabited_chunks": 219,
+     "bytes": 9379840
+    },
+    "-1,2": {
+     "chunks": 755,
+     "be": 30,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 7438336
+    },
+    "-2,-1": {
+     "chunks": 1024,
+     "be": 97,
+     "create_be": 2,
+     "inhabited_chunks": 0,
+     "bytes": 11890688
+    },
+    "-2,-2": {
+     "chunks": 949,
+     "be": 21,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 8232960
+    },
+    "-2,-3": {
+     "chunks": 583,
+     "be": 16,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3829760
+    },
+    "-2,-4": {
+     "chunks": 430,
+     "be": 3,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2084864
+    },
+    "-2,0": {
+     "chunks": 1024,
+     "be": 68,
+     "create_be": 0,
+     "inhabited_chunks": 1,
+     "bytes": 11386880
+    },
+    "-2,1": {
+     "chunks": 960,
+     "be": 53,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 11218944
+    },
+    "-2,2": {
+     "chunks": 521,
+     "be": 19,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3629056
+    },
+    "-3,-1": {
+     "chunks": 349,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1687552
+    },
+    "-3,-2": {
+     "chunks": 176,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 733184
+    },
+    "-3,0": {
+     "chunks": 352,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1867776
+    },
+    "-3,1": {
+     "chunks": 259,
+     "be": 0,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 1265664
+    },
+    "0,-1": {
+     "chunks": 1024,
+     "be": 224,
+     "create_be": 224,
+     "inhabited_chunks": 166,
+     "bytes": 4808704
+    },
+    "0,-2": {
+     "chunks": 1024,
+     "be": 46,
+     "create_be": 0,
+     "inhabited_chunks": 137,
+     "bytes": 8032256
+    },
+    "0,-3": {
+     "chunks": 1024,
+     "be": 83,
+     "create_be": 0,
+     "inhabited_chunks": 176,
+     "bytes": 9097216
+    },
+    "0,-4": {
+     "chunks": 928,
+     "be": 23,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 6897664
+    },
+    "0,0": {
+     "chunks": 1024,
+     "be": 120,
+     "create_be": 22,
+     "inhabited_chunks": 564,
+     "bytes": 6098944
+    },
+    "0,1": {
+     "chunks": 1024,
+     "be": 17,
+     "create_be": 1,
+     "inhabited_chunks": 225,
+     "bytes": 7397376
+    },
+    "0,2": {
+     "chunks": 759,
+     "be": 15,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 6668288
+    },
+    "1,-1": {
+     "chunks": 836,
+     "be": 49,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 5795840
+    },
+    "1,-2": {
+     "chunks": 642,
+     "be": 27,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 3792896
+    },
+    "1,-3": {
+     "chunks": 451,
+     "be": 14,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2674688
+    },
+    "1,-4": {
+     "chunks": 402,
+     "be": 6,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2080768
+    },
+    "1,0": {
+     "chunks": 892,
+     "be": 24,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 6422528
+    },
+    "1,1": {
+     "chunks": 847,
+     "be": 22,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 5791744
+    },
+    "1,2": {
+     "chunks": 536,
+     "be": 7,
+     "create_be": 0,
+     "inhabited_chunks": 0,
+     "bytes": 2994176
+    }
+   }
+  }
+ },
+ "elapsed_s": 5.7
+}
