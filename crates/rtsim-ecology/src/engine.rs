@@ -35,13 +35,13 @@
 //! Decisions look up cells of a static prey index; legs look up the cells they cover in the leg
 //! index. Nothing scans the world or every dragon.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_industry::ids::DistrictId;
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::Writer;
-use rtsim_kernel::handle::Arena;
+use rtsim_kernel::rows::PagedArena;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{
@@ -57,7 +57,7 @@ use serde::Serialize;
 use crate::boundary::{self, AttackerKind, Cmd, Obs, SpawnKind, Uuid};
 use crate::calendar::Season;
 use crate::dragon::{
-    Dragon, DragonId, FlightLeg, Lair, LairId, LairKind, Purpose, State, Target, agent_of,
+    Dragon, DragonId, FlightLeg, Lair, LairId, LairKind, Lairs, Purpose, State, Target, agent_of,
     dragon_of,
 };
 use crate::flight::{self, dragon_owner, owner_dragon, owner_player, player_owner};
@@ -92,6 +92,15 @@ const HOME_RADIUS: i64 = 512;
 
 /// Crossings looked at per leg at most (bounds a leg's cost). PLACEHOLDER 4.
 const MAX_CROSSINGS: usize = 4;
+
+/// The dragons' row table (A16): next to the module's own page table 0x4400, which rtsim-jni's
+/// per-table deletion owns.
+pub const DRAGON_TABLE: u16 = 0x4410;
+
+/// Dragons per page. PLACEHOLDER 4: a dragon is about 500 bytes resident and most of its events
+/// change it, so a page that held many would be dirty (pinned until the next save) when any of
+/// them hunted; small pages keep a save's dirty set close to the dragons that changed.
+pub const DRAGONS_PER_PAGE: u64 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ev {
@@ -246,12 +255,23 @@ pub(crate) struct PlayerView {
 pub struct Dragons {
     pub tun: DragonTunables,
     pub seed: u64,
-    pub dragons: Arena<Dragon>,
-    pub lairs: Vec<Lair>,
+    /// Every dragon (page table 0x4410, keyed by handle index; handles are never reused). Resident
+    /// until [`Dragons::attach_store`] or [`Dragons::open_paged`]; then rows page under a budget
+    /// (A16, docs/choices-paging-modules.md, Dragons).
+    pub dragons: PagedArena<Dragon>,
+    /// Every lair (page table 0x4411, keyed by lair index), paged with the dragons.
+    pub lairs: Lairs,
+    /// Lairs by their structure key (LAIR_FOUND, DRAGON_UNTAGGED, HOARD_ROBBED name a lair so):
+    /// an index from id to id, resident (SCALE.md §8) and saved in the meta page.
     pub(crate) lair_by_key: BTreeMap<u64, LairId>,
     /// Lairs by region, so an interest area finds roosting dragons without the leg index: a
-    /// dragon at rest books nothing there.
+    /// dragon at rest books nothing there. An index from place to id, resident (SCALE.md §8) and
+    /// saved in the meta page.
     pub(crate) lair_cells: BTreeMap<(u16, i64, i64), Vec<LairId>>,
+    /// The dragons that are bodies in the game now (embodied or leaving): bounded by what players
+    /// watch, so a session start and the checks find them without a pass over every dragon.
+    /// Saved in the meta page.
+    pub(crate) embodied: BTreeSet<DragonId>,
     pub(crate) wheel: TimingWheel<Ev>,
     pub homes: Homes,
     pub ledger: PreyLedger,
@@ -353,10 +373,11 @@ impl Dragons {
         Dragons {
             tun,
             seed,
-            dragons: Arena::new(),
-            lairs: Vec::new(),
+            dragons: PagedArena::new(DRAGON_TABLE, DRAGONS_PER_PAGE),
+            lairs: Lairs::new(),
             lair_by_key: BTreeMap::new(),
             lair_cells: BTreeMap::new(),
+            embodied: BTreeSet::new(),
             wheel: TimingWheel::new(now),
             homes,
             ledger: PreyLedger::default(),
@@ -413,6 +434,7 @@ impl Dragons {
         self.dragons.get(d)
     }
 
+    /// The first dragon with this name. A whole-table pass, for tools and tests only.
     pub fn by_name(&self, name: &str) -> Option<DragonId> {
         self.dragons
             .iter()
@@ -484,8 +506,7 @@ impl Dragons {
             .actors_mut()
             .register(ActorKind::Group, LAIR_TAG ^ key);
         w.knowledge.add_holder(actor, HolderKind::Notable);
-        let id = self.lairs.len() as LairId;
-        self.lairs.push(Lair {
+        let id = self.lairs.push(Lair {
             key,
             name: name.to_string(),
             species,
@@ -498,6 +519,7 @@ impl Dragons {
             vacant_since: Some(at),
             plan: 1,
         });
+        debug_assert_eq!(self.lairs.get(id).map(|l| l.key), Some(key));
         self.lair_by_key.insert(key, id);
         let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(pos.x), i64::from(pos.z));
         self.lair_cells
@@ -522,7 +544,7 @@ impl Dragons {
         let left = life.saturating_sub(n.age_ticks).max(TICKS_PER_DAY);
         let home = n
             .lair
-            .and_then(|l| self.lairs.get(l as usize))
+            .and_then(|l| self.lairs.get(l))
             .map_or(ActorId::NULL, |l| l.actor);
         let actor = w.knowledge.create_notable(seed, home, home, at, left);
         let max = sp.max_health_at(n.age_ticks);
@@ -978,6 +1000,15 @@ impl Dragons {
         }
     }
 
+    /// Keeps [`Dragons::embodied`] in step with `d`'s state: called after every change of state.
+    fn track(&mut self, d: DragonId) {
+        if self.dragons.get(d).is_some_and(Dragon::is_embodied) {
+            self.embodied.insert(d);
+        } else {
+            self.embodied.remove(&d);
+        }
+    }
+
     fn live(&mut self, d: DragonId, plan: u32) -> bool {
         let ok = self.dragons.get(d).is_some_and(|x| x.plan == plan);
         if !ok {
@@ -1063,6 +1094,7 @@ impl Dragons {
             x.state = State::Flying(purpose);
             x.rest = None;
         }
+        self.track(d);
         self.book_leg(w, d, path, sp.cruise_y);
         self.schedule(path.t1, Ev::LegEnd { d, plan });
         self.book_crossings(w, d, path, purpose, plan);
@@ -1250,6 +1282,7 @@ impl Dragons {
         let t = x.hungry_at(&self.tun, hunt_below, at).max(at + rest);
         // At rest it books nothing in the leg index: players find it through the lair.
         self.cancel_leg(w, d);
+        self.track(d);
         self.schedule(t, Ev::Hungry { d, plan });
         self.visitors_at_lair(w, d, at);
     }
@@ -1291,10 +1324,12 @@ impl Dragons {
             return;
         };
         let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
-        let lair = &mut self.lairs[l as usize];
+        // Read before changing: a change pins the lair's page until the next save.
+        let lair = &self.lairs[l as usize];
         if !lair.occupants.is_empty() || lair.vacant_since.is_some() {
             return;
         }
+        let lair = &mut self.lairs[l as usize];
         lair.vacant_since = Some(at);
         lair.plan += 1;
         let plan = lair.plan;
@@ -1674,6 +1709,7 @@ impl Dragons {
                 let plan = self.bump(d);
                 let pos = self.target_pos(w, t);
                 self.dragons.get_mut(d).expect("live").state = State::Hunting { target: t, until };
+                self.track(d);
                 self.book_leg(w, d, flight::stay(pos, at, until, BODY_RADIUS), sp.cruise_y);
                 self.schedule(until, Ev::HuntEnd { d, plan });
             }
@@ -1749,6 +1785,10 @@ impl Dragons {
     }
 
     fn feed(&mut self, d: DragonId, at: Tick, food: i32, victims: &[ActorId]) {
+        // Nothing to change: leave the row (and its page) clean.
+        if food <= 0 && victims.is_empty() {
+            return;
+        }
         let keep = self.tun.victims_kept;
         let tun = self.tun.clone();
         let x = self.dragons.get_mut(d).expect("live");
@@ -2269,6 +2309,7 @@ impl Dragons {
                 x.last_grudge = Some(at);
             }
         }
+        self.track(d);
         self.cancel_leg(w, d);
         let what = format!(
             "enters view of player {}: materializes ({}{})",
@@ -2352,6 +2393,7 @@ impl Dragons {
         );
         self.bump(d);
         self.dragons.get_mut(d).expect("live").state = State::Leaving { epoch, purpose };
+        self.track(d);
     }
 
     fn embodied(&self, agent: u64, epoch: u32) -> Option<DragonId> {
@@ -2368,12 +2410,7 @@ impl Dragons {
     /// A session starts: puppets never outlive one (docs/boundary.md §2.3), so every dragon the
     /// engine thought embodied is abstract again where it was last seen, and carries on.
     pub fn session_start(&mut self, w: &mut World, at: Tick) {
-        let embodied: Vec<DragonId> = self
-            .dragons
-            .iter()
-            .filter(|(_, x)| x.is_embodied())
-            .map(|(h, _)| h)
-            .collect();
+        let embodied: Vec<DragonId> = self.embodied.iter().copied().collect();
         for d in embodied {
             self.resume(w, d, at, true);
         }
@@ -2495,6 +2532,7 @@ impl Dragons {
             _ => Purpose::Home,
         };
         self.dragons.get_mut(d).expect("live").state = State::Flying(purpose);
+        self.track(d);
         let at_home = match (purpose, self.dragons[d].lair) {
             (Purpose::Home, Some(l)) => {
                 let (p, _) = self.dragons[d].position(&self.topo, &self.lairs, at);
@@ -2594,6 +2632,7 @@ impl Dragons {
             purpose,
             harass,
         };
+        self.track(d);
         self.schedule(new, Ev::Depart { d, plan, reason: 3 });
     }
 
@@ -2670,13 +2709,15 @@ impl Dragons {
             self.note(at, "death", Some(d), "killed".into());
         }
         let heir = w.knowledge.die(x.actor, at);
-        // Naming the heir looks through every dragon: only for the log.
+        // The heir is its youngest child, else its mate, else its lair (`refresh_heir`).
         if let Some(h) = heir.filter(|_| self.log_enabled) {
-            let who = self
-                .dragons
+            let who = x
+                .children
                 .iter()
-                .find(|(_, o)| o.actor == h)
-                .map(|(_, o)| o.name.clone())
+                .chain(x.mate.iter())
+                .filter_map(|k| self.dragons.get(*k))
+                .find(|o| o.actor == h)
+                .map(|o| o.name.clone())
                 .unwrap_or_else(|| "its lair".to_string());
             self.note(at, "heir", Some(d), format!("its grudges pass to {who}"));
         }
@@ -2714,7 +2755,11 @@ impl Dragons {
         let Some(x) = self.dragons.remove(d) else {
             return;
         };
+        self.embodied.remove(&d);
+        // Its bodies go from both maps (both hold only bodies in flight, so this is no pass over
+        // every dragon); an adopted entry left behind would name a dead dragon for good.
         self.by_entity.retain(|_, v| *v != d);
+        self.adopted.retain(|_, v| *v != d);
         let mut touched = Vec::new();
         if let Some(m) = x.mate
             && let Some(o) = self.dragons.get_mut(m)
@@ -2897,11 +2942,6 @@ impl Dragons {
                 self.leave_lair(w, d, at);
                 self.lairs[l as usize].plan += 1;
                 self.lairs[l as usize].vacant_since = None;
-                if let Some(p) = self.dragons[d].parent
-                    && let Some(o) = self.dragons.get_mut(p)
-                {
-                    let _ = o;
-                }
                 self.fly(w, d, Purpose::Claim(l), at);
             }
             None => self.schedule(at + 10 * TICKS_PER_DAY, Ev::Disperse { d }),
@@ -3054,6 +3094,7 @@ impl Dragons {
             purpose: Purpose::Home,
             harass: false,
         };
+        self.track(d);
     }
 
     /// An entity the engine adopted before, reported untagged again: the same dragon takes the
@@ -3076,6 +3117,7 @@ impl Dragons {
             harass: false,
         };
         let lair = x.lair;
+        self.track(d);
         let home = lair.map_or((0, 0, 0), |l| {
             let l = &self.lairs[l as usize];
             (l.pos.x, l.y, l.pos.z)
@@ -3106,11 +3148,17 @@ impl Dragons {
                 continue;
             };
             let units = i64::from(n.max(0)) * item.unit();
-            let lair = &mut self.lairs[l as usize];
-            let held = lair.hoard.get(&item).copied().unwrap_or(0);
+            let held = self.lairs[l as usize]
+                .hoard
+                .get(&item)
+                .copied()
+                .unwrap_or(0);
             let take = units.min(held);
             if take > 0 {
-                *lair.hoard.get_mut(&item).expect("held") -= take;
+                *self.lairs[l as usize]
+                    .hoard
+                    .get_mut(&item)
+                    .expect("held") -= take;
                 self.ledger.rob(item, take);
             }
         }
@@ -3176,15 +3224,25 @@ impl Dragons {
             ));
         }
         let mut held: BTreeMap<Item, i128> = BTreeMap::new();
-        for l in &self.lairs {
+        for l in self.lairs.iter() {
             for (k, v) in &l.hoard {
                 *held.entry(*k).or_default() += i128::from(*v);
             }
         }
-        for (_, x) in self.dragons.iter() {
+        let mut embodied = BTreeSet::new();
+        for (h, x) in self.dragons.iter() {
             for (k, v) in &x.carried {
                 *held.entry(*k).or_default() += i128::from(*v);
             }
+            if x.is_embodied() {
+                embodied.insert(h);
+            }
+        }
+        if embodied != self.embodied {
+            return Err(format!(
+                "the embodied index holds {:?} but the dragons say {embodied:?}",
+                self.embodied
+            ));
         }
         held.retain(|_, v| *v != 0);
         if held != self.ledger.in_hoards() {
@@ -3232,7 +3290,7 @@ impl Dragons {
                 wr.u64(l.path.t1.0);
             }
         }
-        for l in &self.lairs {
+        for l in self.lairs.iter() {
             wr.u64(l.key);
             wr.u64(l.occupants.len() as u64);
             for (k, v) in &l.hoard {
@@ -3254,20 +3312,30 @@ impl Dragons {
         fnv1a64(wr.as_bytes())
     }
 
+    /// What the engine holds, estimated: the row tables' resident pages (their rows' heap as last
+    /// measured, at [`Dragons::enforce_budget`]) and the resident state. No pass over the rows.
     pub fn heap_bytes(&self) -> usize {
-        self.dragons.heap_bytes()
-            + self
-                .dragons
-                .iter()
-                .map(|(_, x)| {
-                    x.children.capacity() * 8 + x.victims.capacity() * 8 + x.name.capacity()
-                })
-                .sum::<usize>()
-            + self.lairs.capacity() * std::mem::size_of::<Lair>()
+        self.dragons.rows().heap_bytes()
+            + self.lairs.rows().heap_bytes()
+            + self.index_bytes()
             + self.wheel.heap_bytes()
             + self.homes.heap_bytes()
             + self.index.heap_bytes()
             + self.log.capacity() * std::mem::size_of::<LogEntry>()
+    }
+
+    /// The resident lair indexes (`lair_by_key`, `lair_cells`) and the embodied set, estimated as
+    /// B-tree entries at two-thirds fill plus each cell's vector.
+    pub fn index_bytes(&self) -> usize {
+        let node = |entry: usize| entry * 3 / 2;
+        self.lair_by_key.len() * node(12)
+            + self.lair_cells.len() * node(24 + 24)
+            + self
+                .lair_cells
+                .values()
+                .map(|v| (v.capacity() * 4).max(16))
+                .sum::<usize>()
+            + self.embodied.len() * node(8)
     }
 
     /// The districts a player's home holds, for display.
