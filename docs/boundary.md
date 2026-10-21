@@ -240,8 +240,11 @@ pages shows up as `EngineAhead` (P29). Java's sequences in this session then sta
 
 **WORLD_SAVED and `Replay::forget_ops_through`.** The bridge records `nextObsSeq - 1` at the
 overworld's save event and chains a marker onto NeoForge's SavedData write chain
-(`IOUtilities.withIOWorker`), so the marker runs after the journal's file is written. The next
-hand-over carries the value; the engine may then forget op ids applied at or before it.
+(`IOUtilities.withIOWorker`), so the marker runs after the journal's write task. It reports the
+smaller of that value and the last sequence the journal's file on disk actually holds
+(`JournalSavedData.writtenThrough`): a write the chunk barrier held, or one that failed, does not
+count (docs/choices-journal-barrier.md JB1). The next hand-over carries the value; the engine may then
+forget op ids applied at or before it.
 
 **Idempotent events.** TAKEN, DIED and COMMAND_RESULT may arrive more than once (§3.1). The engine
 applies each at most once: by op id while it remembers it, and by state after that (a member that
@@ -345,13 +348,15 @@ its record into a player's inventory, where nothing carries it.
 before it serializes any chunk, and skips a chunk saved in the last 10 s, so a journal could say applied
 while the chunk on disk did not have it, and the engine would never send the command again. Every chunk
 a journaled record speaks for (the holders above, and a reconcile's chunk) is noted when the record is
-committed; at the journal's write those still unsaved are saved, and the journal's write waits on the IO
-chain for their levels' chunk writes (`ChunkWriteBarrier`, docs/choices-repair.md R21 to R24). Entities
-that carry records are not covered.
+committed; at the journal's write those still unsaved are saved, the levels' chunk storage writes those
+chunks ahead of its queue, and the journal's write waits on the IO chain for them. If they are not on disk
+in time (or one is still being unloaded), the file is held to the next world save, never written ahead of
+them (`ChunkWriteBarrier`, docs/choices-journal-barrier.md JB1 to JB5; first built as docs/choices-repair.md
+R21 to R24). Entities that carry records are not covered.
 
-**Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29), and a
-journal write that fails (`SavedData.save` logs the IOException and the IO chain goes on, so
-WORLD_SAVED still reports it).
+**Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29). A held or
+failed journal write widens that window to the next world save; WORLD_SAVED no longer reports it, so P29's
+`confirm_through` will keep the older page generation (docs/choices-journal-barrier.md JB1, JB6).
 
 ## 4. Phase 1: caravans and markets (PLAN.md §8)
 
