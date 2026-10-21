@@ -616,8 +616,10 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "mic-native-rt",
  "rtsim-conflict",
  "rtsim-ecology",
+ "rtsim-host",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",

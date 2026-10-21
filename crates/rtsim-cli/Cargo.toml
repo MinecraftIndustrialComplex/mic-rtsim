@@ -23,6 +23,10 @@ rtsim-world.workspace = true
 rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
+# The headless host: `run` and `export` (VIEWER.md §12).
+rtsim-host = { path = "../rtsim-host" }
+# The heap gauge of the allocator mic_native's runtime installs (rtsim-jni, through rtsim-host).
+mic-native-rt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # State hashes over pages. MIT OR Apache-2.0.
