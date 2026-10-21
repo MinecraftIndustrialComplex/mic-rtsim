@@ -137,16 +137,51 @@ pub enum Body {
     Cycle(Box<CycleBody>),
 }
 
+/// The carry a watched pool restarts at: half a unit, so a piece rounds to nearest whichever way
+/// its net rate points. A restart at 0 would drain a falling pool's first unit at once and give a
+/// rising one its first unit a whole period late: a threshold switch's falling half would be a
+/// unit's time shorter than its rising half every cycle, and the upstream machine would run that
+/// much more than the downstream one takes (choice G2-12).
+pub const RESET_CARRY: u32 = 1 << 31;
+
+/// One piece of a cycle: a regime between two of the breakpoints it was found from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CyclePiece {
+    /// Its length in ticks.
+    pub len: u64,
+    /// Per pool: the 32.32 rate.
+    pub rates: Vec<i64>,
+    /// Per pool: its carry restarts at [`RESET_CARRY`] at the piece's start (a pool a breakpoint
+    /// watched there, so the piece emits exactly what it did when the cycle was found).
+    pub reset: Vec<bool>,
+}
+
+/// One period of pool `j` of `pieces` from carry `c0` at the first piece's start (its restart
+/// applied): (units emitted, carry at the next period's start). A pool restarted in any piece
+/// leaves every period at the same carry, whatever it entered with.
+pub fn cycle_period(pieces: &[CyclePiece], j: usize, c0: u32) -> (i128, u32) {
+    let mut c = i128::from(c0);
+    let mut e = 0i128;
+    for (i, p) in pieces.iter().enumerate() {
+        if i > 0 && p.reset[j] {
+            c = i128::from(RESET_CARRY);
+        }
+        let total = c + i128::from(p.rates[j]) * i128::from(p.len);
+        e += total.div_euclid(U);
+        c = total.rem_euclid(U);
+    }
+    if pieces.first().is_some_and(|p| p.reset[j]) {
+        c = i128::from(RESET_CARRY);
+    }
+    (e, c as u32)
+}
+
 /// One cycle of a [`Body::Cycle`]: every piece's rates over the same pools.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CycleBody {
     /// The pools the pieces touch.
     pub pools: Vec<u16>,
-    /// Per pool: its carry restarts at 0 at each piece's start (a pool a breakpoint watches, so
-    /// each piece emits exactly what it did when the cycle was found).
-    pub reset: Vec<bool>,
-    /// (length in ticks, 32.32 rate per pool).
-    pub pieces: Vec<(u64, Vec<i64>)>,
+    pub pieces: Vec<CyclePiece>,
     /// The piece it is in and the ticks into it.
     pub piece: u32,
     pub off: u64,
@@ -158,12 +193,12 @@ pub struct CycleBody {
 impl CycleBody {
     /// The cycle's length in ticks.
     pub fn period(&self) -> u64 {
-        self.pieces.iter().map(|p| p.0).sum()
+        self.pieces.iter().map(|p| p.len).sum()
     }
 
-    /// Emissions per pool over `dt` ticks from where it is, advancing it. Exact: a whole cycle is
-    /// `floor((carry + S) / U)` for a pool that keeps its carry, the sum of each piece's own floor
-    /// for one that resets.
+    /// Emissions per pool over `dt` ticks from where it is, advancing it. Exact: n whole cycles
+    /// are `floor((carry + n S) / U)` for a pool no piece restarts, and the first period plus
+    /// n - 1 of the steady one ([`cycle_period`]) for one a piece restarts.
     fn advance(&mut self, dt: u64, out: &mut [i64]) {
         debug_assert_eq!(out.len(), self.pools.len());
         let period = self.period();
@@ -175,29 +210,32 @@ impl CycleBody {
             if self.piece == 0 && self.off == 0 && left >= period {
                 let n = left / period;
                 for (j, e) in out.iter_mut().enumerate() {
-                    if self.reset[j] {
-                        let per: i128 = self
-                            .pieces
-                            .iter()
-                            .map(|(len, r)| (i128::from(r[j]) * i128::from(*len)).div_euclid(U))
-                            .sum();
-                        *e += i64::try_from(per * i128::from(n)).expect("cycle emission");
+                    let carry = if self.pieces.iter().any(|p| p.reset[j]) {
+                        let (first, c1) = cycle_period(&self.pieces, j, self.flows[j].carry());
+                        let mut total = first;
+                        if n > 1 {
+                            let (steady, c2) = cycle_period(&self.pieces, j, c1);
+                            debug_assert_eq!(c1, c2, "a restarted pool leaves every period alike");
+                            total += steady * i128::from(n - 1);
+                        }
+                        *e += i64::try_from(total).expect("cycle emission");
+                        c1
                     } else {
                         let s: i128 = self
                             .pieces
                             .iter()
-                            .map(|(len, r)| i128::from(r[j]) * i128::from(*len))
+                            .map(|p| i128::from(p.rates[j]) * i128::from(p.len))
                             .sum();
                         let total = i128::from(self.flows[j].carry()) + s * i128::from(n);
                         *e += i64::try_from(total.div_euclid(U)).expect("cycle emission");
-                        self.flows[j] =
-                            Diffuser::with_carry(self.pieces[0].1[j], total.rem_euclid(U) as u32);
-                    }
+                        total.rem_euclid(U) as u32
+                    };
+                    self.flows[j] = Diffuser::with_carry(self.pieces[0].rates[j], carry);
                 }
                 left -= n * period;
                 continue;
             }
-            let (len, _) = self.pieces[self.piece as usize];
+            let len = self.pieces[self.piece as usize].len;
             let step = left.min(len - self.off);
             for (j, e) in out.iter_mut().enumerate() {
                 *e += self.flows[j].emit(step);
@@ -207,14 +245,14 @@ impl CycleBody {
             if self.off >= len {
                 self.piece = (self.piece + 1) % self.pieces.len() as u32;
                 self.off = 0;
-                let rates = &self.pieces[self.piece as usize].1;
+                let p = &self.pieces[self.piece as usize];
                 for j in 0..self.pools.len() {
-                    let carry = if self.reset[j] {
-                        0
+                    let carry = if p.reset[j] {
+                        RESET_CARRY
                     } else {
                         self.flows[j].carry()
                     };
-                    self.flows[j] = Diffuser::with_carry(rates[j], carry);
+                    self.flows[j] = Diffuser::with_carry(p.rates[j], carry);
                 }
             }
         }
@@ -339,11 +377,11 @@ pub enum ProcSpecBody {
         flow: Diffuser,
         batch: Option<i64>,
     },
-    /// A cycle from its first piece: pools with their reset flags, and (length, rate per pool)
-    /// pieces. Carries come from the process it replaces ([`Cluster::replace_procs`]).
+    /// A cycle from its first piece: its pools, and its pieces over them. Carries come from the
+    /// process it replaces ([`Cluster::replace_procs`]), the first piece's restarts applied.
     Cycle {
-        pools: Vec<(PoolKey, bool)>,
-        pieces: Vec<(u64, Vec<i64>)>,
+        pools: Vec<PoolKey>,
+        pieces: Vec<CyclePiece>,
     },
 }
 
@@ -704,10 +742,14 @@ impl Cluster {
                 Body::Link { .. } => 0,
                 Body::Cycle(c) => {
                     std::mem::size_of::<CycleBody>()
-                        + c.pools.capacity() * (2 + 1 + std::mem::size_of::<Diffuser>())
+                        + c.pools.capacity() * (2 + std::mem::size_of::<Diffuser>())
                         + c.pieces
                             .iter()
-                            .map(|p| 32 + p.1.capacity() * 8)
+                            .map(|p| {
+                                std::mem::size_of::<CyclePiece>()
+                                    + p.rates.capacity() * 8
+                                    + p.reset.capacity()
+                            })
                             .sum::<usize>()
                 }
             } + p.targets.capacity() * std::mem::size_of::<Target>())
@@ -809,7 +851,7 @@ impl Cluster {
         match &ps.body {
             ProcSpecBody::Box(terms) => keys.extend(terms.iter().map(|t| t.0)),
             ProcSpecBody::Link { from, to, .. } => keys.extend([*from, *to]),
-            ProcSpecBody::Cycle { pools, .. } => keys.extend(pools.iter().map(|p| p.0)),
+            ProcSpecBody::Cycle { pools, .. } => keys.extend(pools.iter().copied()),
         }
         for k in keys {
             self.ensure_pool(k, 0, None);
@@ -837,19 +879,18 @@ impl Cluster {
                 batch,
             },
             ProcSpecBody::Cycle { pools, pieces } => {
-                let first = pieces.first().map(|p| p.1.clone()).unwrap_or_default();
                 let idx = pools
                     .iter()
-                    .map(|&(k, _)| self.pool_index(k).expect("ensured"))
+                    .map(|&k| self.pool_index(k).expect("ensured"))
                     .collect();
-                let reset = pools.iter().map(|p| p.1).collect();
                 let flows = pools
                     .iter()
                     .enumerate()
-                    .map(|(j, &(k, r))| {
-                        let rate = first.get(j).copied().unwrap_or(0);
-                        let c = if r {
-                            0
+                    .map(|(j, &k)| {
+                        let first = pieces.first();
+                        let rate = first.and_then(|p| p.rates.get(j)).copied().unwrap_or(0);
+                        let c = if first.is_some_and(|p| p.reset[j]) {
+                            RESET_CARRY
                         } else {
                             carries.get(&k).copied().unwrap_or(0)
                         };
@@ -858,7 +899,6 @@ impl Cluster {
                     .collect();
                 Body::Cycle(Box::new(CycleBody {
                     pools: idx,
-                    reset,
                     pieces,
                     piece: 0,
                     off: 0,
@@ -924,8 +964,9 @@ impl Cluster {
 
     /// Replaces a district's processes and bounds in place, keeping its pools (a glass replay's
     /// regime change, GLASSBOX.md §4.1). Each new diffuser keeps the carry its pool had in the
-    /// old processes, except on pools in `reset` (a pool a breakpoint watches restarts at 0, so a
-    /// cycle repeats exactly). New pools start at 0. Callers settle the cluster to `at` first.
+    /// old processes, except on pools in `reset` (a pool a breakpoint watches restarts at
+    /// [`RESET_CARRY`], so a cycle repeats exactly). New pools start at 0. Callers settle the
+    /// cluster to `at` first.
     pub fn replace_procs(
         &mut self,
         d: DistrictId,
@@ -950,7 +991,9 @@ impl Cluster {
                 Body::Link { .. } => {}
             }
         }
-        carries.retain(|k, _| !reset.contains(k));
+        for &k in reset {
+            carries.insert(k, RESET_CARRY);
+        }
         self.procs.retain(|p| p.owner != d);
         self.spaces.retain(|s| s.owner != d);
         for ps in procs {
@@ -1964,20 +2007,27 @@ mod tests {
         }
     }
 
-    fn cycle_of(reset: &[bool], pieces: &[(u64, Vec<i64>)], carries: &[u32]) -> CycleBody {
+    fn piece(len: u64, rates: Vec<i64>, reset: Vec<bool>) -> CyclePiece {
+        CyclePiece { len, rates, reset }
+    }
+
+    fn cycle_of(pieces: &[(u64, Vec<i64>, Vec<bool>)], carries: &[u32]) -> CycleBody {
+        let pieces: Vec<CyclePiece> = pieces
+            .iter()
+            .map(|(l, r, z)| piece(*l, r.clone(), z.clone()))
+            .collect();
         CycleBody {
-            pools: (0..reset.len() as u16).collect(),
-            reset: reset.to_vec(),
-            pieces: pieces.to_vec(),
-            piece: 0,
-            off: 0,
+            pools: (0..carries.len() as u16).collect(),
             flows: pieces[0]
-                .1
+                .rates
                 .iter()
                 .zip(carries)
-                .zip(reset)
-                .map(|((&r, &c), &z)| Diffuser::with_carry(r, if z { 0 } else { c }))
+                .zip(&pieces[0].reset)
+                .map(|((&r, &c), &z)| Diffuser::with_carry(r, if z { RESET_CARRY } else { c }))
                 .collect(),
+            pieces,
+            piece: 0,
+            off: 0,
         }
     }
 
@@ -1986,21 +2036,24 @@ mod tests {
         /// split of the elapsed time gives the same emissions (the composition rule, §4.5).
         #[test]
         fn cycle_closed_form_equals_stepping(
-            pieces in prop::collection::vec((1u64..300, prop::collection::vec(-(3i64 << 32)..(3i64 << 32), 3)), 1..5),
-            reset in prop::collection::vec(any::<bool>(), 3),
+            pieces in prop::collection::vec((
+                1u64..300,
+                prop::collection::vec(-(3i64 << 32)..(3i64 << 32), 3),
+                prop::collection::vec(any::<bool>(), 3),
+            ), 1..5),
             carries in prop::collection::vec(any::<u32>(), 3),
             cuts in prop::collection::vec(1u64..2_000, 1..6),
         ) {
             let total: u64 = cuts.iter().sum();
-            let mut whole = cycle_of(&reset, &pieces, &carries);
+            let mut whole = cycle_of(&pieces, &carries);
             let mut a = vec![0i64; 3];
             whole.advance(total, &mut a);
-            let mut split = cycle_of(&reset, &pieces, &carries);
+            let mut split = cycle_of(&pieces, &carries);
             let mut b = vec![0i64; 3];
             for &c in &cuts {
                 split.advance(c, &mut b);
             }
-            let mut ticks = cycle_of(&reset, &pieces, &carries);
+            let mut ticks = cycle_of(&pieces, &carries);
             let mut t = vec![0i64; 3];
             for _ in 0..total {
                 ticks.advance(1, &mut t);
@@ -2020,14 +2073,17 @@ mod tests {
             PoolKey::Store(d(1), 2, Good(1)),
         );
         // 10 ticks moving 1 per tick from a to b, then 30 ticks idle: 10 per 40 ticks.
-        let pieces = vec![(10, vec![-FIXED_ONE_I, FIXED_ONE_I]), (30, vec![0, 0])];
+        let pieces = vec![
+            piece(10, vec![-FIXED_ONE_I, FIXED_ONE_I], vec![true, true]),
+            piece(30, vec![0, 0], vec![true, true]),
+        ];
         c.add_member(
             MemberSpec {
                 district: d(1),
                 pools: vec![(a, 1_000, None), (b, 0, None)],
                 procs: vec![glass_proc(
                     ProcSpecBody::Cycle {
-                        pools: vec![(a, true), (b, true)],
+                        pools: vec![a, b],
                         pieces,
                     },
                     Some(Tick(4_000)),
@@ -2076,8 +2132,8 @@ mod tests {
             );
             let body = || {
                 ProcSpecBody::Box(vec![
-                    (src, Diffuser::per(-1, 2)),
-                    (out, Diffuser::per(1, 2)),
+                    (src, Diffuser::per(-3, 8)),
+                    (out, Diffuser::per(3, 8)),
                 ])
             };
             c.add_member(
@@ -2090,21 +2146,25 @@ mod tests {
                 },
                 Tick(0),
             );
-            c.settle(Tick(0), Tick(1));
+            c.settle(Tick(0), Tick(2));
             let set: BTreeSet<PoolKey> = if reset { [out].into() } else { BTreeSet::new() };
             c.replace_procs(
                 d(1),
                 vec![glass_proc(body(), None)],
                 Vec::new(),
                 &set,
-                Tick(1),
+                Tick(2),
             );
-            c.settle(Tick(1), Tick(2));
+            c.settle(Tick(2), Tick(3));
             c.check_books().unwrap();
             c.level(out).unwrap()
         };
-        assert_eq!(run(false), 1, "a half carried, a half more makes a unit");
-        assert_eq!(run(true), 0, "a reset pool starts its fraction again");
+        assert_eq!(run(false), 1, "3/4 carried, 3/8 more makes a unit");
+        assert_eq!(
+            run(true),
+            0,
+            "a reset pool starts again at half a unit: 7/8"
+        );
     }
 
     #[test]
@@ -2159,10 +2219,14 @@ mod tests {
                 pools: vec![(a, 1_000, None), (b, 0, None)],
                 procs: vec![glass_proc(
                     ProcSpecBody::Cycle {
-                        pools: vec![(a, false), (b, true)],
+                        pools: vec![a, b],
                         pieces: vec![
-                            (7, vec![-(FIXED_ONE_I / 3), FIXED_ONE_I / 3]),
-                            (5, vec![0, 0]),
+                            piece(
+                                7,
+                                vec![-(FIXED_ONE_I / 3), FIXED_ONE_I / 3],
+                                vec![false, true],
+                            ),
+                            piece(5, vec![0, 0], vec![false, false]),
                         ],
                     },
                     Some(Tick(900)),
@@ -2303,9 +2367,10 @@ mod persist_impls {
         }
     }
 
+    persist_struct!(CyclePiece { len, rates, reset });
+
     persist_struct!(CycleBody {
         pools,
-        reset,
         pieces,
         piece,
         off,
