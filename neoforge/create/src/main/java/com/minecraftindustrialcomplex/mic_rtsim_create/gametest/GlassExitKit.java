@@ -42,8 +42,16 @@ public final class GlassExitKit {
         /** The records kept, back to back (each sized by its header), for the offline check. */
         public synchronized byte[] stream() {
             poll();
+            return stream(kept.size());
+        }
+
+        /**
+         * The first {@code upTo} records kept, back to back: the stream as it stood when {@link #size} was
+         * {@code upTo} (the G2 exit test's offline report while its far copy was away). No poll.
+         */
+        public synchronized byte[] stream(int upTo) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            for (ScriptedEngine.Received r : kept)
+            for (ScriptedEngine.Received r : kept.subList(0, Math.min(upTo, kept.size())))
                 out.writeBytes(r.bytes());
             return out.toByteArray();
         }
