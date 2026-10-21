@@ -533,9 +533,11 @@ impl Row for Ship {
     fn heap_bytes(&self) -> usize {
         small_map_bytes(self.cargo.len())
             + small_map_bytes(self.quotes.len())
-            + self.pirate.as_ref().map_or(0, |p| {
-                std::mem::size_of::<Pirate>() + small_map_bytes(p.district_loot.len())
-            })
+            // The pirate is inline (counted in the row's size); only its loot map is heap.
+            + self
+                .pirate
+                .as_ref()
+                .map_or(0, |p| small_map_bytes(p.district_loot.len()))
     }
 }
 
