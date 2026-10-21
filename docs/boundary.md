@@ -820,6 +820,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x0506 | HOARD_ROBBED | n | 24 u64 lair, 32 u64 opId, 40 u64 playerMost, 48 u64 playerLeast, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
 | 0x0507 | DRAGON_UNTAGGED | spawn: 1 structure, 2 natural, 3 spawner, 4 spawn egg, 5 command, 6 hatched, 7 other | 24 u64 entityMost, 32 u64 entityLeast, 40 u32 species (dictionary 3), 44 u32 dimension, 48 u32 flags (1 tamed, 2 has home, 4 sleeping, 8 aging disabled), 52 i32 ageTicks, 56 i32 hunger, 60 u32 gender (0 female, 1 male), 64 u32 variant (0 to 3 within the species), 68 i32 homeX, 72 homeY, 76 homeZ, 80 u64 lair (0: none), 88 f64 x, 96 f64 y, 104 f64 z | 112 |
 | 0x0508 | DRAGON_ATE | count | 24 u64 agent, 32 u32 epoch, 36 u32 prey (dictionary 3), 40 u64 village (0: none), 48 f64 x, 56 f64 y, 64 f64 z | 72 |
+| 0x0509 | OIL_CHUNKS | n | 24 u32 dimension, 28 u32 source (1 Deep Time, 2 CDG, 3 a deposit sample), 32 n × (i32 chunkX, i32 chunkZ, i32 amount mB, u32 flags: 1 bottomless). n at most 1024 per record | 32 + 16n |
+| 0x050A | DRAGON_BREATHS | count | 24 u64 agent, 32 u32 epoch, 36 reserved | 40 |
+| 0x050B | OIL_CONFIG | flags: 1 field flights, 2 place lairs | (none) | 24 |
 
 - **DRAGON_HURT** sums one attacker's hits on one dragon over a tick (PLACEHOLDER: over 20 ticks
   would also do). The engine turns a player's wound into an assault report the dragon and its lair
@@ -840,16 +843,28 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   drops for that player (verified: 2 nuggets a layer, layers 1 to 8; the plugin's hoard blocks are the
   tag `#mic_rtsim_iceandfire:hoard`, Z16).
 - **DRAGON_UNTAGGED**: an Ice and Fire dragon joined the level without the plugin's tag (§6.5).
+- **OIL_CHUNKS** (OILGATE.md §4.1, OG-2): chunks with base oil above zero. Idempotent (a chunk sent
+  twice is one chunk); a chunk with amount 0 is never sent. The engine keeps only that a chunk has
+  oil and whether it is bottomless; the amount is for logs. The first OIL_CHUNKS a session's engine
+  ever holds opens the oil gate (§6.8).
+- **DRAGON_BREATHS** (OG-4): the `DragonFireEvent`s of one embodied MAT_OIL dragon since its last
+  report, summed (PLACEHOLDER: per 20 ticks, and before its DEMATERIALIZED). Each costs one point of
+  the reserve.
+- **OIL_CONFIG** (OG-3, OG-7): the plugin's two switches, sent once per session before the first
+  PLAYER. Without it the engine keeps its defaults (field flights off, lair placement on).
 
 ### 6.4 Commands
 
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
-| 0x8500 | DRAGON_MATERIALIZE | flags: 1 clamp above the surface, 2 has a home, 4 sleeping, 8 hostile | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z, 64 i32 hunger, 68 u32 gender, 72 u32 variant, 76 f32 health (0 full), 80 i32 homeX, 84 homeY, 88 homeZ, 92 reserved, 96 f64 targetX, 104 targetY, 112 targetZ, 120 u64 targetPlayerMost, 128 u64 targetPlayerLeast | 136 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
+| 0x8500 | DRAGON_MATERIALIZE | flags: 1 clamp above the surface, 2 has a home, 4 sleeping, 8 hostile, 16 oil (the body carries a reserve) | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z, 64 i32 hunger, 68 u32 gender, 72 u32 variant, 76 f32 health (0 full), 80 i32 homeX, 84 homeY, 88 homeZ, 92 i32 oil (0 to the capacity; 0 without flag 16), 96 f64 targetX, 104 targetY, 112 targetZ, 120 u64 targetPlayerMost, 128 u64 targetPlayerLeast | 136 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8501 | DRAGON_STEER | flags: 1 settle at the target | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8502 | DRAGON_DEPART | reason: 1 bored, 2 hungry, 3 wounded, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | DRAGON_DEMATERIALIZED |
 | 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved | 64 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
+| 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flag 1 LATE) when placed; nothing when no site is found |
+| 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
+| 0x8507 | (reserved) | | for the underground half (OILGATE.md §4.6, OG-9b): placing the deep layer on an oil chunk's first load. Nothing sends it yet | | |
 
 ### 6.5 How Java applies them
 
@@ -946,6 +961,47 @@ What the bridge must do:
   boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
   P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
   best comparable observed fight, with capped damage applied on load (C18).
+
+### 6.8 The oil gate (OILGATE.md; choices OGC1 to OGC26 in `docs/choices-oilgate.md`)
+
+Fire dragons need oil, and the danger In Control's desert rule puts on deserts follows oil fields
+instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plugin in `synth.rs`
+(`FakeIaf`) answers the oil records as the plugin must.
+
+**What the plugin does:**
+- **Reports oil chunks** (OIL_CHUNKS): on a Deep Time level, every petroleum trap's chunks at world
+  load (source 1, Deep Time's `DeepTimeSites` and CDG bridge); elsewhere CDG's
+  `OilChunksSavedData.getBaseOilAmount` for each chunk as it first generates (source 2), under a
+  per-tick budget. CDG's infinite amount (`Integer.MAX_VALUE`) is flag 1.
+- **Answers OIL_SURVEY** by sampling CDG's amount for the chunks within `radius` of (x, z), generated
+  or not, under the same budget, and sending what it finds as OIL_CHUNKS (source 2).
+- **Answers PLACE_LAIR** by placing the structure through `/place structure`'s code path (every biome
+  allowed) on the first load of a free site within `radius` of (x, z), at most once per `field`, and
+  sending its LAIR_FOUND (flag 1). The roost's own dragon, if Ice and Fire spawns one, is reported
+  untagged as any lair's dragon is (§6.6), and the engine adopts it.
+- **Counts breaths:** a body materialized with flag 16 starts with `oil` points. Each
+  `DragonFireEvent` it posts costs one point and is summed into DRAGON_BREATHS; at zero the event is
+  cancelled, so the dragon fights with bite and claws only (OG-13). A body without flag 16 breathes
+  freely and is not counted.
+- **Sends OIL_CONFIG** from its config at session start: `fieldFlights` (default false until the
+  measurement of OILGATE.md §4.8 passes) and `placeLairs` (default true).
+- **Sends the player's y** in PLAYER (already there, §2.3): field flights roll only for players at or
+  above y 15 (In Control's `minheight`).
+
+**What the engine does with them:**
+- **The gate opens** on the first oil chunk it knows (OGC12): before that, no dragon is held to oil
+  (a world with no oil known plays as before). When it opens, every fire dragon starts on a full
+  reserve.
+- **The reserve** falls one point per `tick_rate` ticks and one per breath (embodied) or raid pass
+  (abstract); a dragon low on oil refuels by resting on a field or by drinking from a district's oil
+  stock (crude, diesel, gasoline goods) through the industry engine's threat interface, as theft.
+- **Field flights** (when OIL_CONFIG flag 1 is set): In Control's arrival process keyed to fields,
+  drawing fire dragons as flights that materialize with flags 8 and 16 at the edge of view.
+- **Lairs:** a field with no fire lair within reach gets one PLACE_LAIR (when flag 2 is set); every
+  new fire lair asks one OIL_SURVEY around itself.
+- **Sensing:** a district near a field that forms, drills, holds oil stock or pollutes becomes an
+  Encroachment report its drinking dragons witness, against the district and the players homed
+  near it; a grudge sends a raid.
 
 ## 7. Ships (PLAN.md §10.1; a future ships plugin)
 
