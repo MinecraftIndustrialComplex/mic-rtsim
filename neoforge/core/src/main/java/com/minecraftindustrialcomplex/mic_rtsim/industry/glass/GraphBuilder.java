@@ -161,6 +161,15 @@ public final class GraphBuilder {
             return rate(level, recipe, batch, Rat.of(ticks, 1), flags);
         }
 
+        /**
+         * A zero-capacity entry at {@code level}: a stopped machine or a paused mover whose other levels
+         * have no entry either is capacity 0, not unlimited (a node with no entries at all is unlimited).
+         */
+        public Node stopped(int level) {
+            rates.add(new int[] {level, NONE, 0, 1, 1, 0});
+            return this;
+        }
+
         public int rateCount() {
             return rates.size();
         }

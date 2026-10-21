@@ -79,6 +79,12 @@ public record Rat(long num, long den) {
         return new Rat(Math.multiplyExact(a, b), Math.multiplyExact(c, d));
     }
 
+    public Rat add(Rat o) {
+        long g = gcd(den, o.den);
+        long d = Math.multiplyExact(den / g, o.den);
+        return new Rat(Math.addExact(Math.multiplyExact(num, o.den / g), Math.multiplyExact(o.num, den / g)), d);
+    }
+
     public Rat abs() {
         return num < 0 ? new Rat(-num, den) : this;
     }

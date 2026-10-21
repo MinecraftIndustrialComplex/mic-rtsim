@@ -22,11 +22,22 @@ public final class CreateGlassAccess {
     private CreateGlassAccess() {}
 
     private static final VarHandle NETWORKS = find(TorquePropagator.class, "networks", Map.class, true);
-    private static final VarHandle DEPLOYER_MODE = find(DeployerBlockEntity.class, "mode", DeployerBlockEntity.Mode.class, false);
+    private static final VarHandle DEPLOYER_MODE = find(DeployerBlockEntity.class, "mode", modeClass(), false);
     private static final VarHandle ARM_INPUTS = find(ArmBlockEntity.class, "inputs", List.class, false);
     private static final VarHandle ARM_OUTPUTS = find(ArmBlockEntity.class, "outputs", List.class, false);
 
+    /** {@code DeployerBlockEntity.Mode} is package-private: its class by name. */
+    private static Class<?> modeClass() {
+        try {
+            return Class.forName("com.simibubi.create.content.kinetics.deployer.DeployerBlockEntity$Mode");
+        } catch (ClassNotFoundException | LinkageError e) {
+            return null;
+        }
+    }
+
     private static VarHandle find(Class<?> owner, String name, Class<?> type, boolean isStatic) {
+        if (type == null)
+            return null;
         try {
             MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(owner, MethodHandles.lookup());
             return isStatic ? lookup.findStaticVarHandle(owner, name, type) : lookup.findVarHandle(owner, name, type);
@@ -53,9 +64,15 @@ public final class CreateGlassAccess {
         return m == null ? null : m.get(id);
     }
 
-    /** {@code DeployerBlockEntity.mode} (protected; USE or PUNCH). Row 31. */
-    public static DeployerBlockEntity.Mode deployerMode(DeployerBlockEntity be) {
-        return DEPLOYER_MODE == null ? null : (DeployerBlockEntity.Mode) DEPLOYER_MODE.get(be);
+    /**
+     * {@code DeployerBlockEntity.mode} (protected, of a package-private enum): its constant's name, USE or
+     * PUNCH, or null. Row 31.
+     */
+    public static String deployerMode(DeployerBlockEntity be) {
+        if (DEPLOYER_MODE == null)
+            return null;
+        Object m = (Object) DEPLOYER_MODE.get(be);
+        return m instanceof Enum<?> e ? e.name() : null;
     }
 
     /** {@code ArmBlockEntity.inputs} (package-private; null until the arm's first tick). Row 32. */
