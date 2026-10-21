@@ -14,7 +14,7 @@ use mic_viewer::api::{
     WorldInfo,
 };
 use mic_viewer::http::{Reply, Request, Response};
-use mic_viewer::scene::{Scene, SceneWriter};
+use mic_viewer::scene::Scene;
 use mic_viewer::tiles::{TileCache, Tiles};
 use mic_viewer::viewer::Backend;
 use serde_json::json;
