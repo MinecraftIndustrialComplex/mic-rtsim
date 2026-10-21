@@ -42,7 +42,7 @@
 //! The running set is re-evaluated only in [`LazyModel::settle`] (at breakpoints and events) and
 //! after events, never in reads, so the kernel's composition rule holds trivially.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::{SlotPeriod, Tick};
 use rtsim_kernel::conserve::{Conserved, Diffuser, QuantityKind, Totals};
@@ -63,18 +63,22 @@ pub enum PoolKey {
     /// Goods a district's packager wrote into packages in a postbox offline buffer (inventory
     /// index), to one address (NAME id), not yet fetched by a train (INDUSTRY.md §8.2).
     Mail(DistrictId, u32, u32, Good),
+    /// One store's stock of a good in a glass replay (GLASSBOX.md §4.1): the store's IND_INVENTORY
+    /// index. A district replaying on its compiled graph books per store, never into `Stock`
+    /// pools except for events ([`Cluster::add_to_pool`]).
+    Store(DistrictId, u32, Good),
 }
 
 impl PoolKey {
     pub fn good(self) -> Good {
         match self {
-            PoolKey::Stock(_, g) | PoolKey::Mail(_, _, _, g) => g,
+            PoolKey::Stock(_, g) | PoolKey::Mail(_, _, _, g) | PoolKey::Store(_, _, g) => g,
         }
     }
 
     pub fn district(self) -> DistrictId {
         match self {
-            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _, _) => d,
+            PoolKey::Stock(d, _) | PoolKey::Mail(d, _, _, _) | PoolKey::Store(d, _, _) => d,
         }
     }
 }
@@ -126,6 +130,133 @@ pub enum Body {
         flow: Diffuser,
         batch: Option<i64>,
     },
+    /// A strictly periodic sequence of regimes (G-B8, G-B9; GLASSBOX.md §4.2, §4.3): one cycle of
+    /// pieces, repeated, in closed form. A settle over n whole cycles is one multiply per pool.
+    /// The engine found the cycle and bounds it with the process's deadline: the cluster checks no
+    /// constraint against it (its pieces are the breakpoints it was found from).
+    Cycle(Box<CycleBody>),
+}
+
+/// The carry a watched pool restarts at: half a unit, so a piece rounds to nearest whichever way
+/// its net rate points. A restart at 0 would drain a falling pool's first unit at once and give a
+/// rising one its first unit a whole period late: a threshold switch's falling half would be a
+/// unit's time shorter than its rising half every cycle, and the upstream machine would run that
+/// much more than the downstream one takes (choice G2-12).
+pub const RESET_CARRY: u32 = 1 << 31;
+
+/// One piece of a cycle: a regime between two of the breakpoints it was found from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CyclePiece {
+    /// Its length in ticks.
+    pub len: u64,
+    /// Per pool: the 32.32 rate.
+    pub rates: Vec<i64>,
+    /// Per pool: its carry restarts at [`RESET_CARRY`] at the piece's start (a pool a breakpoint
+    /// watched there, so the piece emits exactly what it did when the cycle was found).
+    pub reset: Vec<bool>,
+}
+
+/// One period of pool `j` of `pieces` from carry `c0` at the first piece's start (its restart
+/// applied): (units emitted, carry at the next period's start). A pool restarted in any piece
+/// leaves every period at the same carry, whatever it entered with.
+pub fn cycle_period(pieces: &[CyclePiece], j: usize, c0: u32) -> (i128, u32) {
+    let mut c = i128::from(c0);
+    let mut e = 0i128;
+    for (i, p) in pieces.iter().enumerate() {
+        if i > 0 && p.reset[j] {
+            c = i128::from(RESET_CARRY);
+        }
+        let total = c + i128::from(p.rates[j]) * i128::from(p.len);
+        e += total.div_euclid(U);
+        c = total.rem_euclid(U);
+    }
+    if pieces.first().is_some_and(|p| p.reset[j]) {
+        c = i128::from(RESET_CARRY);
+    }
+    (e, c as u32)
+}
+
+/// One cycle of a [`Body::Cycle`]: every piece's rates over the same pools.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CycleBody {
+    /// The pools the pieces touch.
+    pub pools: Vec<u16>,
+    pub pieces: Vec<CyclePiece>,
+    /// The piece it is in and the ticks into it.
+    pub piece: u32,
+    pub off: u64,
+    /// Per pool: the current piece's diffuser (rate and carry).
+    #[serde(skip)]
+    pub flows: Vec<Diffuser>,
+}
+
+impl CycleBody {
+    /// The cycle's length in ticks.
+    pub fn period(&self) -> u64 {
+        self.pieces.iter().map(|p| p.len).sum()
+    }
+
+    /// Emissions per pool over `dt` ticks from where it is, advancing it. Exact: n whole cycles
+    /// are `floor((carry + n S) / U)` for a pool no piece restarts, and the first period plus
+    /// n - 1 of the steady one ([`cycle_period`]) for one a piece restarts.
+    fn advance(&mut self, dt: u64, out: &mut [i64]) {
+        debug_assert_eq!(out.len(), self.pools.len());
+        let period = self.period();
+        if period == 0 || self.pieces.is_empty() {
+            return;
+        }
+        let mut left = dt;
+        while left > 0 {
+            if self.piece == 0 && self.off == 0 && left >= period {
+                let n = left / period;
+                for (j, e) in out.iter_mut().enumerate() {
+                    let carry = if self.pieces.iter().any(|p| p.reset[j]) {
+                        let (first, c1) = cycle_period(&self.pieces, j, self.flows[j].carry());
+                        let mut total = first;
+                        if n > 1 {
+                            let (steady, c2) = cycle_period(&self.pieces, j, c1);
+                            debug_assert_eq!(c1, c2, "a restarted pool leaves every period alike");
+                            total += steady * i128::from(n - 1);
+                        }
+                        *e += i64::try_from(total).expect("cycle emission");
+                        c1
+                    } else {
+                        let s: i128 = self
+                            .pieces
+                            .iter()
+                            .map(|p| i128::from(p.rates[j]) * i128::from(p.len))
+                            .sum();
+                        let total = i128::from(self.flows[j].carry()) + s * i128::from(n);
+                        *e += i64::try_from(total.div_euclid(U)).expect("cycle emission");
+                        total.rem_euclid(U) as u32
+                    };
+                    self.flows[j] = Diffuser::with_carry(self.pieces[0].rates[j], carry);
+                }
+                left -= n * period;
+                continue;
+            }
+            let len = self.pieces[self.piece as usize].len;
+            let step = left.min(len - self.off);
+            for (j, e) in out.iter_mut().enumerate() {
+                *e += self.flows[j].emit(step);
+            }
+            self.off += step;
+            left -= step;
+            if self.off >= len {
+                self.piece = (self.piece + 1) % self.pieces.len() as u32;
+                self.off = 0;
+                let p = &self.pieces[self.piece as usize];
+                for j in 0..self.pools.len() {
+                    let carry = if p.reset[j] {
+                        RESET_CARRY
+                    } else {
+                        self.flows[j].carry()
+                    };
+                    self.flows[j] = Diffuser::with_carry(p.rates[j], carry);
+                }
+            }
+        }
+    }
 }
 
 /// A learned target (I6): a stock level at which production was seen to stop while inputs were
@@ -150,6 +281,12 @@ pub enum Stop {
     SourceStopped(DistrictId),
     /// Never started: no restart has passed its check yet.
     Waiting,
+    /// A glass replay's bound (a store's space, or a watch on a threshold) with its tag
+    /// ([`Space::tag`]).
+    Bound(DistrictId, u32),
+    /// The process's deadline passed ([`Proc::deadline`]): a glass replay's timer (a heater's
+    /// phase, a latency's arrival, a cycle's end).
+    Timer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -178,12 +315,23 @@ pub struct Proc {
     pub armed: Option<Tick>,
     /// Has run at least once in this cluster.
     pub ran: bool,
+    /// Stops it ([`Stop::Timer`]) at this tick, and it does not restart past it (the engine
+    /// replaces it).
+    #[serde(serialize_with = "crate::ser::opt_tick")]
+    pub deadline: Option<Tick>,
+    /// The least run a restart must allow, in ticks; 0 takes the cluster's
+    /// `restart_min_run_ticks` (a glass replay's process uses 1: its breakpoints are exact).
+    pub min_run: u64,
 }
 
-/// A district's shared item space: `fixed + Σ weight × level ≤ cap`, in slot units.
+/// A district's shared item space: `fixed + Σ weight × level ≤ cap`, in slot units. A glass
+/// replay's bounds have the same form (a store's space, a watch on a threshold, with negative
+/// weights for a level that must not fall), each with its tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Space {
     pub owner: DistrictId,
+    /// 0: the black box's item space ([`Stop::SpaceFull`]); else a glass bound ([`Stop::Bound`]).
+    pub tag: u32,
     pub weights: Vec<(u16, i64)>,
     pub fixed: i64,
     pub cap: i64,
@@ -229,6 +377,12 @@ pub enum ProcSpecBody {
         flow: Diffuser,
         batch: Option<i64>,
     },
+    /// A cycle from its first piece: its pools, and its pieces over them. Carries come from the
+    /// process it replaces ([`Cluster::replace_procs`]), the first piece's restarts applied.
+    Cycle {
+        pools: Vec<PoolKey>,
+        pieces: Vec<CyclePiece>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,6 +396,10 @@ pub struct ProcSpec {
     pub latency: u64,
     /// False starts the process disabled (a jammed line, F20).
     pub enabled: bool,
+    /// [`Proc::deadline`].
+    pub deadline: Option<Tick>,
+    /// [`Proc::min_run`].
+    pub min_run: u64,
 }
 
 /// A district's item space as the engine describes it: (weights by pool, fixed units, cap units).
@@ -255,6 +413,8 @@ pub struct MemberSpec {
     pub pools: Vec<(PoolKey, i64, Option<i64>)>,
     pub procs: Vec<ProcSpec>,
     pub space: Option<SpaceSpec>,
+    /// A glass replay's tagged bounds ([`Space::tag`], never 0).
+    pub bounds: Vec<(u32, SpaceSpec)>,
 }
 
 /// What a district takes out of a cluster: its pools and their books.
@@ -512,8 +672,33 @@ impl Cluster {
         self.pool_index(key).map(|i| &self.pools[i as usize])
     }
 
+    /// A pool's level. A `Stock` key also counts the district's `Store` pools of that good (a
+    /// glass replay books per store): what an event sees as the district's stock.
     pub fn level(&self, key: PoolKey) -> Option<i64> {
-        self.pool(key).map(|p| p.level)
+        let own = self.pool(key).map(|p| p.level);
+        match key {
+            PoolKey::Stock(d, g) => {
+                let mut stores = self.store_pools(d, g).peekable();
+                if stores.peek().is_none() {
+                    return own;
+                }
+                Some(own.unwrap_or(0) + stores.map(|i| self.pools[i].level).sum::<i64>())
+            }
+            _ => own,
+        }
+    }
+
+    /// Indices of a district's `Store` pools of good `g`, in key order.
+    fn store_pools(&self, d: DistrictId, g: Good) -> impl Iterator<Item = usize> + '_ {
+        let lo = self
+            .pools
+            .partition_point(|p| p.key < PoolKey::Store(d, 0, Good(0)));
+        self.pools[lo..]
+            .iter()
+            .take_while(move |p| matches!(p.key, PoolKey::Store(o, _, _) if o == d))
+            .enumerate()
+            .filter(move |(_, p)| p.key.good() == g)
+            .map(move |(i, _)| lo + i)
     }
 
     /// A district's box processes together: running if any runs, else the first one's stop.
@@ -555,6 +740,18 @@ impl Cluster {
             .map(|p| match &p.body {
                 Body::Box { terms } => terms.capacity() * std::mem::size_of::<Term>(),
                 Body::Link { .. } => 0,
+                Body::Cycle(c) => {
+                    std::mem::size_of::<CycleBody>()
+                        + c.pools.capacity() * (2 + std::mem::size_of::<Diffuser>())
+                        + c.pieces
+                            .iter()
+                            .map(|p| {
+                                std::mem::size_of::<CyclePiece>()
+                                    + p.rates.capacity() * 8
+                                    + p.reset.capacity()
+                            })
+                            .sum::<usize>()
+                }
             } + p.targets.capacity() * std::mem::size_of::<Target>())
             .sum();
         self.pools.capacity() * std::mem::size_of::<Pool>()
@@ -609,6 +806,7 @@ impl Cluster {
                     fix(from);
                     fix(to);
                 }
+                Body::Cycle(c) => c.pools.iter_mut().for_each(&fix),
             }
             p.targets.iter_mut().for_each(|t| fix(&mut t.pool));
         }
@@ -627,76 +825,182 @@ impl Cluster {
         for &(k, lvl, cap) in &spec.pools {
             self.ensure_pool(k, lvl, cap);
         }
+        let none = BTreeMap::new();
         for ps in spec.procs {
-            let body = match ps.body {
-                ProcSpecBody::Box(terms) => Body::Box {
-                    terms: terms
-                        .into_iter()
-                        .map(|(k, flow)| Term {
-                            pool: self.ensure_pool(k, 0, None),
-                            flow,
-                        })
-                        .collect(),
-                },
-                ProcSpecBody::Link {
-                    from,
-                    to,
-                    flow,
-                    batch,
-                } => {
-                    let from = self.ensure_pool(from, 0, None);
-                    let to = self.ensure_pool(to, 0, None);
-                    Body::Link {
-                        from,
-                        to,
-                        flow,
-                        batch,
+            self.insert_proc(spec.district, ps, &none);
+        }
+        if let Some(sp) = spec.space {
+            self.insert_space(spec.district, 0, sp);
+        }
+        for (tag, sp) in spec.bounds {
+            debug_assert!(tag != 0, "tag 0 is the black box's space");
+            self.insert_space(spec.district, tag, sp);
+        }
+        self.evaluate(at);
+    }
+
+    /// Builds a process from its spec and inserts it in priority order. A diffuser on a pool in
+    /// `carries` starts from that carry (a glass replay's regime change keeps the fraction).
+    fn insert_proc(&mut self, owner: DistrictId, ps: ProcSpec, carries: &BTreeMap<PoolKey, u32>) {
+        let carried = |k: PoolKey, f: Diffuser| match carries.get(&k) {
+            Some(&c) => Diffuser::with_carry(f.rate_fixed(), c),
+            None => f,
+        };
+        // Every pool first: an insert moves the indices after it.
+        let mut keys: Vec<PoolKey> = ps.targets.iter().map(|t| t.0).collect();
+        match &ps.body {
+            ProcSpecBody::Box(terms) => keys.extend(terms.iter().map(|t| t.0)),
+            ProcSpecBody::Link { from, to, .. } => keys.extend([*from, *to]),
+            ProcSpecBody::Cycle { pools, .. } => keys.extend(pools.iter().copied()),
+        }
+        for k in keys {
+            self.ensure_pool(k, 0, None);
+        }
+        let ix = |me: &Cluster, k: PoolKey| me.pool_index(k).expect("ensured");
+        let body = match ps.body {
+            ProcSpecBody::Box(terms) => Body::Box {
+                terms: terms
+                    .into_iter()
+                    .map(|(k, flow)| Term {
+                        pool: ix(self, k),
+                        flow: carried(k, flow),
+                    })
+                    .collect(),
+            },
+            ProcSpecBody::Link {
+                from,
+                to,
+                flow,
+                batch,
+            } => Body::Link {
+                from: ix(self, from),
+                to: ix(self, to),
+                flow,
+                batch,
+            },
+            ProcSpecBody::Cycle { pools, pieces } => {
+                let idx = pools
+                    .iter()
+                    .map(|&k| self.pool_index(k).expect("ensured"))
+                    .collect();
+                let flows = pools
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &k)| {
+                        let first = pieces.first();
+                        let rate = first.and_then(|p| p.rates.get(j)).copied().unwrap_or(0);
+                        let c = if first.is_some_and(|p| p.reset[j]) {
+                            RESET_CARRY
+                        } else {
+                            carries.get(&k).copied().unwrap_or(0)
+                        };
+                        Diffuser::with_carry(rate, c)
+                    })
+                    .collect();
+                Body::Cycle(Box::new(CycleBody {
+                    pools: idx,
+                    pieces,
+                    piece: 0,
+                    off: 0,
+                    flows,
+                }))
+            }
+        };
+        let targets = ps
+            .targets
+            .iter()
+            .map(|&(k, stop_at, restart_at)| Target {
+                pool: ix(self, k),
+                stop_at,
+                restart_at,
+            })
+            .collect();
+        let proc_ = Proc {
+            owner,
+            id: ps.id,
+            body,
+            targets,
+            requires: ps.requires,
+            enabled: ps.enabled,
+            run: Run::Stopped(if ps.enabled {
+                Stop::Waiting
+            } else {
+                Stop::Disabled
+            }),
+            latency: ps.latency,
+            armed: None,
+            ran: false,
+            deadline: ps.deadline,
+            min_run: ps.min_run,
+        };
+        let pos = self
+            .procs
+            .binary_search_by_key(&(proc_.owner, proc_.id), |p| (p.owner, p.id))
+            .unwrap_or_else(|e| e);
+        self.procs.insert(pos, proc_);
+    }
+
+    fn insert_space(&mut self, owner: DistrictId, tag: u32, (weights, fixed, cap): SpaceSpec) {
+        for &(k, _) in &weights {
+            self.ensure_pool(k, 0, None);
+        }
+        let weights = weights
+            .into_iter()
+            .map(|(k, w)| (self.pool_index(k).expect("ensured"), w))
+            .collect();
+        let s = Space {
+            owner,
+            tag,
+            weights,
+            fixed,
+            cap,
+        };
+        let pos = self
+            .spaces
+            .binary_search_by_key(&(s.owner, s.tag), |x| (x.owner, x.tag))
+            .unwrap_or_else(|e| e);
+        self.spaces.insert(pos, s);
+    }
+
+    /// Replaces a district's processes and bounds in place, keeping its pools (a glass replay's
+    /// regime change, GLASSBOX.md §4.1). Each new diffuser keeps the carry its pool had in the
+    /// old processes, except on pools in `reset` (a pool a breakpoint watches restarts at
+    /// [`RESET_CARRY`], so a cycle repeats exactly). New pools start at 0. Callers settle the
+    /// cluster to `at` first.
+    pub fn replace_procs(
+        &mut self,
+        d: DistrictId,
+        procs: Vec<ProcSpec>,
+        bounds: Vec<(u32, SpaceSpec)>,
+        reset: &BTreeSet<PoolKey>,
+        at: Tick,
+    ) {
+        let mut carries: BTreeMap<PoolKey, u32> = BTreeMap::new();
+        for p in self.procs.iter().filter(|p| p.owner == d) {
+            match &p.body {
+                Body::Box { terms } => {
+                    for t in terms {
+                        carries.insert(self.pools[t.pool as usize].key, t.flow.carry());
                     }
                 }
-            };
-            let targets = ps
-                .targets
-                .iter()
-                .map(|&(k, stop_at, restart_at)| Target {
-                    pool: self.ensure_pool(k, 0, None),
-                    stop_at,
-                    restart_at,
-                })
-                .collect();
-            let proc_ = Proc {
-                owner: spec.district,
-                id: ps.id,
-                body,
-                targets,
-                requires: ps.requires,
-                enabled: ps.enabled,
-                run: Run::Stopped(if ps.enabled {
-                    Stop::Waiting
-                } else {
-                    Stop::Disabled
-                }),
-                latency: ps.latency,
-                armed: None,
-                ran: false,
-            };
-            let pos = self
-                .procs
-                .binary_search_by_key(&(proc_.owner, proc_.id), |p| (p.owner, p.id))
-                .unwrap_or_else(|e| e);
-            self.procs.insert(pos, proc_);
+                Body::Cycle(c) => {
+                    for (j, &k) in c.pools.iter().enumerate() {
+                        carries.insert(self.pools[k as usize].key, c.flows[j].carry());
+                    }
+                }
+                Body::Link { .. } => {}
+            }
         }
-        if let Some((weights, fixed, cap)) = spec.space {
-            let weights = weights
-                .into_iter()
-                .map(|(k, w)| (self.ensure_pool(k, 0, None), w))
-                .collect();
-            self.spaces.push(Space {
-                owner: spec.district,
-                weights,
-                fixed,
-                cap,
-            });
-            self.spaces.sort_by_key(|s| s.owner);
+        for &k in reset {
+            carries.insert(k, RESET_CARRY);
+        }
+        self.procs.retain(|p| p.owner != d);
+        self.spaces.retain(|s| s.owner != d);
+        for ps in procs {
+            self.insert_proc(d, ps, &carries);
+        }
+        for (tag, sp) in bounds {
+            self.insert_space(d, tag, sp);
         }
         self.evaluate(at);
     }
@@ -748,6 +1052,7 @@ impl Cluster {
                     *from = remap(*from, self);
                     *to = remap(*to, self);
                 }
+                Body::Cycle(c) => c.pools.iter_mut().for_each(|k| *k = remap(*k, self)),
             }
             for t in &mut p.targets {
                 t.pool = remap(t.pool, self);
@@ -764,7 +1069,7 @@ impl Cluster {
             }
             self.spaces.push(s);
         }
-        self.spaces.sort_by_key(|s| s.owner);
+        self.spaces.sort_by_key(|s| (s.owner, s.tag));
         self.events.extend(other.events);
         self.departed.0 += other.departed.0;
         self.departed.1 += other.departed.1;
@@ -781,10 +1086,15 @@ impl Cluster {
     /// `physical` change is one the world already made (a package a train fetched), so it is not
     /// pushed again. Returns the amount applied: an export never takes a
     /// pool below 0.
+    ///
+    /// On a district with `Store` pools (a glass replay), an export from its `Stock` key takes
+    /// what the `Stock` pool holds, then from the stores in key order; an import goes to the
+    /// `Stock` pool, which the replay's processes do not read: it waits for the next reconcile
+    /// (choice G2-14).
     pub fn add_to_pool(&mut self, key: PoolKey, delta: i64, physical: bool, at: Tick) -> i64 {
         let i = self.ensure_pool(key, 0, None) as usize;
         let p = &mut self.pools[i];
-        let applied = if delta < 0 {
+        let mut applied = if delta < 0 {
             delta.max(-p.level)
         } else {
             delta
@@ -793,6 +1103,25 @@ impl Cluster {
         p.books.events += applied;
         if physical {
             p.pushed += applied;
+        }
+        if let PoolKey::Stock(d, g) = key
+            && applied > delta
+        {
+            let stores: Vec<usize> = self.store_pools(d, g).collect();
+            for j in stores {
+                let want = delta - applied;
+                if want >= 0 {
+                    break;
+                }
+                let p = &mut self.pools[j];
+                let take = want.max(-p.level);
+                p.level += take;
+                p.books.events += take;
+                if physical {
+                    p.pushed += take;
+                }
+                applied += take;
+            }
         }
         self.evaluate(at);
         applied
@@ -906,6 +1235,8 @@ impl Cluster {
                 }
             }
             Body::Link { .. } => {}
+            // The engine bounds a cycle by its deadline; no constraint sees it.
+            Body::Cycle(_) => {}
         }
     }
 
@@ -1008,7 +1339,14 @@ impl Cluster {
             Con::Target(pi, ti) => {
                 Stop::Target(self.pools[self.procs[pi].targets[ti].pool as usize].key)
             }
-            Con::Space(si) => Stop::SpaceFull(self.spaces[si].owner),
+            Con::Space(si) => {
+                let s = &self.spaces[si];
+                if s.tag == 0 {
+                    Stop::SpaceFull(s.owner)
+                } else {
+                    Stop::Bound(s.owner, s.tag)
+                }
+            }
             Con::Batch(_) => Stop::Waiting,
         }
     }
@@ -1045,6 +1383,12 @@ impl Cluster {
         self.settles += 1;
         let cons = self.constraints();
         let mut ts = Vec::new();
+        // Deadlines first: the engine replaces what they stop.
+        for i in 0..self.procs.len() {
+            if self.is_running(i) && self.procs[i].deadline.is_some_and(|t| t <= at) {
+                self.set_run(i, Run::Stopped(Stop::Timer), at);
+            }
+        }
         // Stops, to a fixed point.
         'stops: loop {
             for i in 0..self.procs.len() {
@@ -1085,7 +1429,7 @@ impl Cluster {
             }
             for i in 0..self.procs.len() {
                 let p = &self.procs[i];
-                if !p.enabled || p.run == Run::Running {
+                if !p.enabled || p.run == Run::Running || p.deadline.is_some_and(|t| t <= at) {
                     continue;
                 }
                 if !self.requirement_met(i, &|j| self.is_running(j)) {
@@ -1116,8 +1460,16 @@ impl Cluster {
     }
 
     /// The first constraint that keeps stopped process `i` from starting, as a reason.
+    /// The least run a restart of process `i` must allow.
+    fn min_run_of(&self, i: usize) -> u64 {
+        match self.procs[i].min_run {
+            0 => self.restart_min_run.max(1),
+            n => n,
+        }
+    }
+
     fn blocking(&self, i: usize, cons: &[Con]) -> Option<Stop> {
-        let h = self.restart_min_run.max(1);
+        let h = self.min_run_of(i);
         if !self.requirement_met(i, &|j| self.is_running(j)) {
             return self.procs[i].requires.map(Stop::SourceStopped);
         }
@@ -1139,7 +1491,7 @@ impl Cluster {
 
     /// Could process `i` start now and run at least `restart_min_run_ticks`?
     fn can_restart(&self, i: usize, cons: &[Con]) -> bool {
-        let h = self.restart_min_run.max(1);
+        let h = self.min_run_of(i);
         let p = &self.procs[i];
         // A target stop restarts only at or below its restart level.
         if let Run::Stopped(Stop::Target(k)) = p.run
@@ -1170,7 +1522,7 @@ impl Cluster {
     /// When stopped process `i` could restart, if anything running moves its blocking
     /// constraints the right way.
     fn restart_time(&self, i: usize, cons: &[Con]) -> Option<u64> {
-        let h = self.restart_min_run.max(1);
+        let h = self.min_run_of(i);
         let p = &self.procs[i];
         let mut worst: u64 = 0;
         let running = |j: usize| self.is_running(j);
@@ -1235,6 +1587,11 @@ impl Cluster {
             }
         }
         for (i, p) in self.procs.iter().enumerate() {
+            if let Some(t) = p.deadline
+                && p.run == Run::Running
+            {
+                keep(t.since(anchor).max(1));
+            }
             if let Some(t) = p.armed
                 && p.run != Run::Running
             {
@@ -1243,6 +1600,7 @@ impl Cluster {
             if p.enabled
                 && p.run != Run::Running
                 && p.armed.is_none()
+                && !p.deadline.is_some_and(|t| t <= anchor)
                 && self.requirement_met(i, &running)
                 && let Some(n) = self.restart_time(i, &cons)
             {
@@ -1353,6 +1711,20 @@ impl LazyModel for Cluster {
                         self.pools[t].level += e;
                         self.pools[t].books.moved_in += e;
                     }
+                    Body::Cycle(c) => {
+                        let mut out = vec![0i64; c.pools.len()];
+                        c.advance(dt, &mut out);
+                        for (j, &k) in c.pools.iter().enumerate() {
+                            let e = out[j];
+                            let p = &mut self.pools[k as usize];
+                            p.level += e;
+                            if e >= 0 {
+                                p.books.minted += e;
+                            } else {
+                                p.books.burned -= e;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1396,6 +1768,14 @@ impl LazyModel for Cluster {
                         levels[*from as usize].1 -= e;
                         levels[*to as usize].1 += e;
                     }
+                    Body::Cycle(c) => {
+                        let mut c = c.clone();
+                        let mut out = vec![0i64; c.pools.len()];
+                        c.advance(dt, &mut out);
+                        for (j, &k) in c.pools.iter().enumerate() {
+                            levels[k as usize].1 += out[j];
+                        }
+                    }
                 }
             }
         }
@@ -1422,6 +1802,7 @@ impl Conserved for Cluster {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    const FIXED_ONE_I: i64 = rtsim_kernel::conserve::FIXED_ONE;
 
     fn brute_safe(v0: i64, bound: Bound, terms: &[(i64, Diffuser)], limit: u64) -> Option<u64> {
         let mut ds: Vec<(i64, Diffuser)> = terms.to_vec();
@@ -1512,8 +1893,11 @@ mod tests {
                 requires: None,
                 latency: 0,
                 enabled: true,
+                deadline: None,
+                min_run: 0,
             }],
             space: None,
+            bounds: Vec::new(),
         }
     }
 
@@ -1587,8 +1971,11 @@ mod tests {
                     requires: Some(d(1)),
                     latency: 0,
                     enabled: true,
+                    deadline: None,
+                    min_run: 0,
                 }],
                 space: None,
+                bounds: Vec::new(),
             },
             Tick(0),
         );
@@ -1605,6 +1992,261 @@ mod tests {
             Some(Run::Running),
             "the sink restarts with its source"
         );
+    }
+
+    fn glass_proc(body: ProcSpecBody, deadline: Option<Tick>) -> ProcSpec {
+        ProcSpec {
+            id: 0,
+            body,
+            targets: vec![],
+            requires: None,
+            latency: 0,
+            enabled: true,
+            deadline,
+            min_run: 1,
+        }
+    }
+
+    fn piece(len: u64, rates: Vec<i64>, reset: Vec<bool>) -> CyclePiece {
+        CyclePiece { len, rates, reset }
+    }
+
+    fn cycle_of(pieces: &[(u64, Vec<i64>, Vec<bool>)], carries: &[u32]) -> CycleBody {
+        let pieces: Vec<CyclePiece> = pieces
+            .iter()
+            .map(|(l, r, z)| piece(*l, r.clone(), z.clone()))
+            .collect();
+        CycleBody {
+            pools: (0..carries.len() as u16).collect(),
+            flows: pieces[0]
+                .rates
+                .iter()
+                .zip(carries)
+                .zip(&pieces[0].reset)
+                .map(|((&r, &c), &z)| Diffuser::with_carry(r, if z { RESET_CARRY } else { c }))
+                .collect(),
+            pieces,
+            piece: 0,
+            off: 0,
+        }
+    }
+
+    proptest! {
+        /// A cycle's closed form over whole periods equals stepping it tick by tick, and any
+        /// split of the elapsed time gives the same emissions (the composition rule, §4.5).
+        #[test]
+        fn cycle_closed_form_equals_stepping(
+            pieces in prop::collection::vec((
+                1u64..300,
+                prop::collection::vec(-(3i64 << 32)..(3i64 << 32), 3),
+                prop::collection::vec(any::<bool>(), 3),
+            ), 1..5),
+            carries in prop::collection::vec(any::<u32>(), 3),
+            cuts in prop::collection::vec(1u64..2_000, 1..6),
+        ) {
+            let total: u64 = cuts.iter().sum();
+            let mut whole = cycle_of(&pieces, &carries);
+            let mut a = vec![0i64; 3];
+            whole.advance(total, &mut a);
+            let mut split = cycle_of(&pieces, &carries);
+            let mut b = vec![0i64; 3];
+            for &c in &cuts {
+                split.advance(c, &mut b);
+            }
+            let mut ticks = cycle_of(&pieces, &carries);
+            let mut t = vec![0i64; 3];
+            for _ in 0..total {
+                ticks.advance(1, &mut t);
+            }
+            prop_assert_eq!(&a, &b);
+            prop_assert_eq!(&a, &t);
+            prop_assert_eq!((whole.piece, whole.off), (ticks.piece, ticks.off));
+            prop_assert_eq!(&whole.flows, &ticks.flows);
+        }
+    }
+
+    #[test]
+    fn a_cycle_replays_in_closed_form_until_its_deadline() {
+        let mut c = Cluster::new(1);
+        let (a, b) = (
+            PoolKey::Store(d(1), 1, Good(1)),
+            PoolKey::Store(d(1), 2, Good(1)),
+        );
+        // 10 ticks moving 1 per tick from a to b, then 30 ticks idle: 10 per 40 ticks.
+        let pieces = vec![
+            piece(10, vec![-FIXED_ONE_I, FIXED_ONE_I], vec![true, true]),
+            piece(30, vec![0, 0], vec![true, true]),
+        ];
+        c.add_member(
+            MemberSpec {
+                district: d(1),
+                pools: vec![(a, 1_000, None), (b, 0, None)],
+                procs: vec![glass_proc(
+                    ProcSpecBody::Cycle {
+                        pools: vec![a, b],
+                        pieces,
+                    },
+                    Some(Tick(4_000)),
+                )],
+                space: None,
+                bounds: Vec::new(),
+            },
+            Tick(0),
+        );
+        assert_eq!(c.run_of(d(1), 0), Some(Run::Running));
+        let bp = c.next_breakpoint(Tick(0)).unwrap();
+        assert_eq!(
+            bp,
+            Tick(4_000),
+            "no constraint sees a cycle; its deadline is the breakpoint"
+        );
+        c.settle(Tick(0), Tick(1_234));
+        // 30 whole cycles (300) and 34 ticks into the next: 10 more.
+        assert_eq!(c.level(b), Some(310));
+        c.settle(Tick(1_234), bp);
+        assert_eq!(c.level(b), Some(1_000));
+        assert_eq!(c.level(a), Some(0));
+        assert_eq!(c.run_of(d(1), 0), Some(Run::Stopped(Stop::Timer)));
+        assert!(c.take_events().iter().any(|e| matches!(
+            e,
+            ClusterEvent::Stopped {
+                why: Stop::Timer,
+                ..
+            }
+        )));
+        assert_eq!(
+            c.next_breakpoint(bp),
+            None,
+            "a timed-out process never restarts"
+        );
+        c.check_books().unwrap();
+    }
+
+    #[test]
+    fn replacing_processes_keeps_each_pools_carry_unless_reset() {
+        let run = |reset: bool| {
+            let mut c = Cluster::new(1);
+            let (src, out) = (
+                PoolKey::Store(d(1), 1, Good(1)),
+                PoolKey::Store(d(1), 2, Good(2)),
+            );
+            let body = || {
+                ProcSpecBody::Box(vec![
+                    (src, Diffuser::per(-3, 8)),
+                    (out, Diffuser::per(3, 8)),
+                ])
+            };
+            c.add_member(
+                MemberSpec {
+                    district: d(1),
+                    pools: vec![(src, 100, None), (out, 0, None)],
+                    procs: vec![glass_proc(body(), None)],
+                    space: None,
+                    bounds: Vec::new(),
+                },
+                Tick(0),
+            );
+            c.settle(Tick(0), Tick(2));
+            let set: BTreeSet<PoolKey> = if reset { [out].into() } else { BTreeSet::new() };
+            c.replace_procs(
+                d(1),
+                vec![glass_proc(body(), None)],
+                Vec::new(),
+                &set,
+                Tick(2),
+            );
+            c.settle(Tick(2), Tick(3));
+            c.check_books().unwrap();
+            c.level(out).unwrap()
+        };
+        assert_eq!(run(false), 1, "3/4 carried, 3/8 more makes a unit");
+        assert_eq!(
+            run(true),
+            0,
+            "a reset pool starts again at half a unit: 7/8"
+        );
+    }
+
+    #[test]
+    fn district_stock_counts_its_stores_and_exports_take_from_them() {
+        let mut c = Cluster::new(1);
+        let g = Good(5);
+        let (s1, s2, st) = (
+            PoolKey::Store(d(1), 1, g),
+            PoolKey::Store(d(1), 2, g),
+            PoolKey::Stock(d(1), g),
+        );
+        c.add_member(
+            MemberSpec {
+                district: d(1),
+                pools: vec![(s1, 5, None), (s2, 7, None), (st, 1, None)],
+                procs: vec![],
+                space: None,
+                bounds: Vec::new(),
+            },
+            Tick(0),
+        );
+        assert_eq!(c.level(st), Some(13));
+        assert_eq!(c.add_to_pool(st, -10, false, Tick(0)), -10);
+        assert_eq!(
+            (c.level(s1), c.level(s2), c.pool(st).map(|p| p.level)),
+            (Some(0), Some(3), Some(0))
+        );
+        assert_eq!(
+            c.add_to_pool(st, -10, false, Tick(0)),
+            -3,
+            "only what the stores hold"
+        );
+        assert_eq!(
+            c.add_to_pool(st, 4, false, Tick(0)),
+            4,
+            "imports wait in the district pool"
+        );
+        assert_eq!(c.pool(st).map(|p| p.level), Some(4));
+        c.check_books().unwrap();
+    }
+
+    #[test]
+    fn a_glass_cluster_round_trips_through_its_page() {
+        let mut c = Cluster::new(1);
+        let (a, b) = (
+            PoolKey::Store(d(1), 1, Good(1)),
+            PoolKey::Store(d(1), 2, Good(1)),
+        );
+        c.add_member(
+            MemberSpec {
+                district: d(1),
+                pools: vec![(a, 1_000, None), (b, 0, None)],
+                procs: vec![glass_proc(
+                    ProcSpecBody::Cycle {
+                        pools: vec![a, b],
+                        pieces: vec![
+                            piece(
+                                7,
+                                vec![-(FIXED_ONE_I / 3), FIXED_ONE_I / 3],
+                                vec![false, true],
+                            ),
+                            piece(5, vec![0, 0], vec![false, false]),
+                        ],
+                    },
+                    Some(Tick(900)),
+                )],
+                space: None,
+                bounds: vec![(3, (vec![(b, 1)], 0, 500))],
+            },
+            Tick(0),
+        );
+        c.settle(Tick(0), Tick(55));
+        c.take_events();
+        let bytes = crate::persist::to_bytes(&c);
+        let mut back: Cluster = crate::persist::from_bytes(&bytes).unwrap();
+        c.settles = 0;
+        assert_eq!(back, c);
+        c.settle(Tick(55), Tick(400));
+        back.settle(Tick(55), Tick(400));
+        c.settles = 0;
+        back.settles = 0;
+        assert_eq!(back, c);
     }
 }
 
@@ -1631,6 +2273,12 @@ mod persist_impls {
                     a.put(w);
                     g.put(w);
                 }
+                PoolKey::Store(d, i, g) => {
+                    w.u8(3);
+                    d.put(w);
+                    i.put(w);
+                    g.put(w);
+                }
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -1642,6 +2290,7 @@ mod persist_impls {
                     Persist::get(r)?,
                     Persist::get(r)?,
                 ),
+                3 => PoolKey::Store(Persist::get(r)?, Persist::get(r)?, Persist::get(r)?),
                 _ => return invalid("pool key"),
             })
         }
@@ -1670,6 +2319,7 @@ mod persist_impls {
     });
     persist_struct!(Space {
         owner,
+        tag,
         weights,
         fixed,
         cap
@@ -1694,6 +2344,10 @@ mod persist_impls {
                     flow.put(w);
                     batch.put(w);
                 }
+                Body::Cycle(c) => {
+                    w.u8(2);
+                    c.put(w);
+                }
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -1707,10 +2361,21 @@ mod persist_impls {
                     flow: Persist::get(r)?,
                     batch: Persist::get(r)?,
                 },
+                2 => Body::Cycle(Box::new(Persist::get(r)?)),
                 _ => return invalid("process body"),
             })
         }
     }
+
+    persist_struct!(CyclePiece { len, rates, reset });
+
+    persist_struct!(CycleBody {
+        pools,
+        pieces,
+        piece,
+        off,
+        flows
+    });
 
     impl Persist for Stop {
         fn put(&self, w: &mut Writer) {
@@ -1737,6 +2402,12 @@ mod persist_impls {
                     d.put(w);
                 }
                 Stop::Waiting => w.u8(6),
+                Stop::Bound(d, tag) => {
+                    w.u8(7);
+                    d.put(w);
+                    tag.put(w);
+                }
+                Stop::Timer => w.u8(8),
             }
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
@@ -1748,6 +2419,8 @@ mod persist_impls {
                 4 => Stop::Target(Persist::get(r)?),
                 5 => Stop::SourceStopped(Persist::get(r)?),
                 6 => Stop::Waiting,
+                7 => Stop::Bound(Persist::get(r)?, Persist::get(r)?),
+                8 => Stop::Timer,
                 _ => return invalid("stop reason"),
             })
         }
@@ -1782,7 +2455,9 @@ mod persist_impls {
         run,
         latency,
         armed,
-        ran
+        ran,
+        deadline,
+        min_run
     });
 
     /// Events are drained after every touch, so a saved cluster has none.

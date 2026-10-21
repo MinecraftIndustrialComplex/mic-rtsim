@@ -171,6 +171,11 @@ pub struct SimSpan {
     pub season: u32,
     /// The inventories the replay covers (I7): those whose chunks were unloaded at its start.
     pub invs: BTreeSet<u32>,
+    /// A glass replay (GLASSBOX.md §4): it books per store (`PoolKey::Store`); `base` is the
+    /// stores' total at the start. Its `Stock` pools hold the cut's supply (I7: what the live
+    /// part holds and the district owes, when goods cross from it) and the events (imports wait
+    /// there, G2-14); their change from their start is owed.
+    pub glass: bool,
 }
 
 /// A chunk's reconcile waiting for the chunk and then for Java's result.
@@ -551,6 +556,8 @@ impl District {
                 latency: p.latency,
                 // A jammed line does not run at all, whatever its net use of space (F20).
                 enabled: !dead,
+                deadline: None,
+                min_run: 0,
             });
         }
         let mut next_id = LINK_PROC_BASE;
@@ -591,6 +598,8 @@ impl District {
                         requires: None,
                         latency: 0,
                         enabled: true,
+                        deadline: None,
+                        min_run: 0,
                     });
                     next_id += 1;
                 }
@@ -658,6 +667,7 @@ impl District {
             pools,
             procs,
             space,
+            bounds: Vec::new(),
         })
     }
 }
@@ -735,7 +745,8 @@ mod persist_impls {
         started,
         base,
         season,
-        invs
+        invs,
+        glass
     });
     persist_struct!(PendingChunk { cmd, trim, sent });
     persist_struct!(ReconcileReport {

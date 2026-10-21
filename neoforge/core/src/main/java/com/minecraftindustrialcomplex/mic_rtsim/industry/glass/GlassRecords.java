@@ -91,6 +91,8 @@ public final class GlassRecords {
 
         // Flags.
         public static final int DENY = 1, FLUID = 2, BOUNDED = 4, FILTERED_SIDE = 8;
+        /** A belt's own link to its next element (the through traffic); insertions onto the belt do not wait for it (GB72). */
+        public static final int THROUGH = 16;
 
         // CONTROL edge params.
         public static final long CONTROL_STOP_WHEN_ON = 1, CONTROL_RUN_WHEN_ON = 2;

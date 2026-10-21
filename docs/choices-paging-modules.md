@@ -423,6 +423,8 @@ not prefetch pages: a row loads on demand on the step thread. Rows are not shrun
 
 ## Phase 1 world: the market rows (moved, not bounded yet)
 
+Bounded since 2026-10-21 by staggered wakes: docs/choices-paging-followups.md PF1 to PF4.
+
 | # | Choice | Why |
 |---|---|---|
 | PM10 | **`lazy::PagedLazyTable`**: a `LazyTable` whose regions live in a `PagedArena` (the same calls, handles in insertion order and never reused, the same wakes in the same order); its wake wheel stays resident. A `ModelCodec` says how rows are written, because a model's own `Encode` may be a hashing form (the market's is). | The markets are lazy regions; the kernel's `PagedTable` pages lazy regions too but takes the store in every call, and the world reaches its markets from twenty places. This keeps every call site. |
@@ -475,6 +477,10 @@ left alone (task rule). What it will need, from its `Engine` today:
   row, or in their own row table keyed by district if they are large.
 
 ## Not done here
+
+The first three items below (rtsim-jni paging the modules, one meta-page convention, the meta
+page growing with the entities) were taken up on 2026-10-21, with the market rows' budget
+(above, "not bounded yet"): docs/choices-paging-followups.md, PF1 to PF21.
 
 - **rtsim-jni does not page any module yet.** Each module still saves its `save()` blob as one
   page (herds 0x4800 version 2, dragons 0x4400 version 2, conflict 0x4300 version 2, ships
