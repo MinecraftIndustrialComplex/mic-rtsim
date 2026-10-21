@@ -27,10 +27,15 @@ use crate::save::{self, Journal};
 pub const DAY: i64 = 24_000;
 /// Hand-over stride at 1x: one second of game time, as the bridge hands over (VIEWER.md §12.1).
 pub const STRIDE_1X: i64 = 20;
-/// Hand-over stride at 10x and max: the longest stride whose state hashes matched a 20-tick run
-/// (VIEWER.md §12.4, `strides_agree` in tests/host.rs). Only 20 did: a longer stride moves when
-/// the answers to a step's commands arrive, and the modules' state follows.
-pub const STRIDE_FAST: i64 = 20;
+/// Hand-over stride at 10x: one wall second of game time, so a viewer still sees the world move
+/// every second. (`--stride` sets it, at the cost of that.)
+pub const STRIDE_10X: i64 = 200;
+/// Hand-over stride at max: the state hashes after any stride up to two game days matched a
+/// 20-tick run (VIEWER.md §12.4, `strides_agree` and the GameTest worlds in tests/host.rs), so
+/// this is chosen for cost, not exactness: a tenth of a game day keeps the host's fixed cost a
+/// step (a hand-over, its wait and its answers) far below the simulation's, while a stop, a
+/// save or `--until` still lands within it.
+pub const STRIDE_FAST: i64 = 2_400;
 /// Game time between saves (TUNABLE, VIEWER.md §12.1): 10 game days.
 pub const SAVE_EVERY: i64 = 10 * DAY;
 /// How long a step may run before the host gives up on it.
@@ -135,7 +140,7 @@ impl Until {
 #[derive(Clone, Debug)]
 pub struct Options {
     pub speed: Speed,
-    /// The stride at 10x and max; `None`: [`STRIDE_FAST`].
+    /// The stride at 10x and max; `None`: [`STRIDE_10X`] and [`STRIDE_FAST`].
     pub stride: Option<i64>,
     pub until: Option<Until>,
     /// Serene Seasons' calendar for the industry module: days per season (VIEWER.md §12.1).
@@ -167,7 +172,8 @@ impl Options {
     pub fn stride_for(&self, speed: Speed) -> i64 {
         match speed {
             Speed::X1 => STRIDE_1X,
-            _ => self.stride.unwrap_or(STRIDE_FAST),
+            Speed::X10 => self.stride.unwrap_or(STRIDE_10X),
+            Speed::Max => self.stride.unwrap_or(STRIDE_FAST),
         }
     }
 }
@@ -577,7 +583,9 @@ impl Host {
                     origin.0 + Duration::from_secs_f64((self.j.game_time - origin.1) as f64 / tps);
                 let now = Instant::now();
                 if due > now {
-                    std::thread::sleep(due - now);
+                    // In slices, so a stop, a pause or a new speed is seen at once.
+                    std::thread::sleep((due - now).min(Duration::from_millis(50)));
+                    continue;
                 } else if now - due > Duration::from_secs(5) {
                     // Too far behind to catch up: pace from here.
                     origin = (now, self.j.game_time);
