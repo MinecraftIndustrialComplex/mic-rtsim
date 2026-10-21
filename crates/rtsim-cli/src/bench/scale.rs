@@ -292,7 +292,7 @@ impl Baseline {
                 gap_days: 10_000,
                 seed: self.seed,
                 wide,
-                paged: sweep.paged.then(|| super::herds::HerdsPaging {
+                paged: sweep.paged.then_some(super::herds::HerdsPaging {
                     budget_bytes: HERDS_BUDGET,
                     save_every_ticks: self.save_every_ticks,
                 }),
@@ -338,6 +338,10 @@ impl Baseline {
                 warmup_days: 10,
                 days: self.days,
                 seed: self.seed,
+                paged: sweep.paged.then_some(super::herds::HerdsPaging {
+                    budget_bytes: MARKETS_BUDGET,
+                    save_every_ticks: self.save_every_ticks,
+                }),
             });
         }
         if sweep.vary == Vary::Elapsed {
@@ -668,7 +672,31 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "markets and edges are resident: paging (A16) is not built yet",
+                    "markets and edges are resident here; markets-paged pages the market rows",
+                ),
+            ],
+        },
+        // The market rows paged under a budget (docs/choices-paging-modules.md), stepped tick by
+        // tick, autosaved, and saved again whenever every resident market page is changed.
+        Sweep {
+            name: "markets-paged".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Markets,
+            regions: None,
+            paged: true,
+            values: pick(&[256, 1_024, 4_096], &[256, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    1.1,
+                    0.0,
+                    "NOT bounded yet: market breakpoints fall on quantum boundaries, so one tick can change every market, and a page changed since the last save cannot leave (measured 15.8 MB resident at peak against a 4 MiB budget at 4,096 markets). Needs market wakes staggered by page, as the herds' decisions are",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "the market rows are a quarter of a village's heap; news rings, pipelines, edges, the world wheel and knowledge stay resident",
                 ),
             ],
         },
@@ -920,6 +948,9 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
 /// denser camps feel more of each other's smog and plunder each other more (behaviour). At least
 /// this many villages. PLACEHOLDER 16.
 const FACTION_VILLAGES_MIN: u64 = 16;
+
+/// The paged market sweep's row budget. PLACEHOLDER 4 MiB, the paged region sweeps' budget.
+const MARKETS_BUDGET: u64 = 4 << 20;
 
 /// The paged herd sweep's row budget. PLACEHOLDER 1 MiB: under the rows of every point but the
 /// first.

@@ -14,9 +14,9 @@ use rtsim_ecology::tunables::PreyKind;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::{Decode, Encode};
 use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
-use std::sync::{Arc, RwLock};
 use rtsim_settle::Pos;
 use rtsim_travel::legs::LegIndex;
+use std::sync::{Arc, RwLock};
 
 const PLAYER: (u64, u64) = (7, 11);
 
@@ -486,7 +486,7 @@ fn a_paged_engine_keeps_to_its_budget() {
     let year = u64::from(a.h.year_days()) * TICKS_PER_DAY;
     let mut t = Tick::ZERO;
     for _ in 0..8 {
-        t = t + year / 8;
+        t += year / 8;
         a.run(t, 6_000, None);
         b.run(t, 6_000, None);
         save_paged(&mut b.h, &st);

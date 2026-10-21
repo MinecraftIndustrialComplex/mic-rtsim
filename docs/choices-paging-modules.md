@@ -177,3 +177,67 @@ dragon, and that the rows stay under a budget however many there are (D6).
 | PM-D12 | **`Dragons::memory()`**: resident bytes by part (dragon rows, lair rows, lair indexes with the embodied and vacant sets, wheel, homes, prey index, log and players); `heap_bytes` is its sum and reads no row. | The bench and the notes report the parts; the old `heap_bytes` walked every row. |
 | PM-D13 | **The bench** (`dragons_paged`, `dragons_resident`): a world that grows with the dragons (two dragons a village, `grown_villages`), a 256 KiB budget, an autosave every 6,000 ticks (fsynced after the first), the budget every 20 ticks and an extra save when it asks (PM-D5), the dragons' own CPU per dragon-day, and the same points resident beside it. The fixed-grid `dragons` sweep stays resident, for comparison with the runs before this branch. | A fixed world saturates its prey at 512 dragons; growing it keeps a dragon's life the same at every point, so the slopes are the engine's, not the prey's. |
 | PM-D14 | **`synth::FakeIaf` derives `Clone`** (the test plugin). | The restore test runs the restored engine beside the original in lockstep, each with its own copy of the plugin's state at the save. |
+
+## Phase 1 world: the market rows (moved, not bounded yet)
+
+| # | Choice | Why |
+|---|---|---|
+| PM10 | **`lazy::PagedLazyTable`**: a `LazyTable` whose regions live in a `PagedArena` (the same calls, handles in insertion order and never reused, the same wakes in the same order); its wake wheel stays resident. A `ModelCodec` says how rows are written, because a model's own `Encode` may be a hashing form (the market's is). | The markets are lazy regions; the kernel's `PagedTable` pages lazy regions too but takes the store in every call, and the world reaches its markets from twenty places. This keeps every call site. |
+| PM11 | **The world's markets are a `PagedLazyTable`** (table 0x5010, 16 markets a page; meta page 0x5012 id 0). `World::save` writes the market rows last, in key order (snapshot magic RTW2); `save_paged`, `open_paged`, `saved`, `save_failed`, `enforce_budget` and `needs_save` as the herds'. rtsim-jni's phase 1 meta page goes to version 3, so older pages are dropped (S5). | Market rows were the largest single per-village term in the market sweep. |
+
+**Tested:** `a_paged_world_runs_and_restores_exactly` (rtsim-world `tests/persist.rs`): a world
+paging its markets under a 12 KB budget, saved after every op of a random script, gives the
+resident world's state hash after every op and its exact snapshot at the end, and a world opened
+from its pages at any point continues exactly. Resident (no store), the world's state hash is
+unchanged from before (A/B at 1,024 markets against the binary at 1c43097: same hash, heap 12.5
+against 17.0 MiB, the wheel's freed vectors (PM8); CPU per day +5 to 8%, the row table's index
+lookups).
+
+**Measured, and why it is not done** (one pair side by side at 4,096 markets, 4 MiB budget, 3
+days after 10): heap 42.7 MiB paged against 49.1 resident, the same state hash; but the resident
+market rows peaked at 15.8 MB, four times the budget, CPU per day rose from 633 to 982 ms (4,310
+page loads a day) and saves took 2.5 s of CPU a day (24 saves, 20 of them for the budget, 4.8 MB
+each). Two reasons, both in the model, not the pages:
+
+1. **Every market is hot.** About five events per market per day, so between two autosaves every
+   market page changes, and a changed page cannot leave before a save.
+2. **One tick can change every market.** Market breakpoints fall on trade-quantum boundaries
+   (`Market::next_breakpoint` returns `quantum.at(..)`), so many markets wake in the same tick,
+   and no save can come between them.
+
+The `markets-paged` sweep declares this honestly (resident slope 1.1, "not bounded yet"). What
+it needs, in order: market wakes staggered by page within a quantum, as the herds' decisions are
+(PM6; a behaviour change, so Ben's call); then the other three quarters of a village's heap,
+which stay resident today: news rings (2.3 KB a village), pipelines (2.8 KB, the flow graph,
+resident by SCALE.md §8), the world wheel (2.3 KB) and knowledge holders (superlinear in the
+conflict world, 38.5 MiB of 104.5 at 2,048 nodes). Knowledge holders (planned table 0x5011) are
+the next module to page.
+
+## Industry: not moved (the glass box has not merged)
+
+`git log origin/main` on 2026-10-20 has no merge of `feat/glassbox-g1`, so rtsim-industry is
+left alone (task rule). What it will need, from its `Engine` today:
+
+- **Districts** (`districts: BTreeMap<DistrictId, District>`): a `PagedRows` keyed by the
+  district id, with `cluster_of` folded into the row (as the herds' regions, PM4).
+- **Clusters** (`clusters: LazyTable<Cluster>`): a `PagedLazyTable<Cluster, ClusterCodec>`
+  (PM10), the same change the markets took; wakes staggered by page if clusters share quantum
+  boundaries as markets do.
+- **Stations and lines** (`stations`, `lines`): the rail flow graph, resident (SCALE.md §8).
+- **Per train** (`last_departure`, `arrivals`, `train_cooldown`): resident while a train runs;
+  rows keyed by train id if train counts grow into the hundreds of thousands.
+- **Wakes and pressure** (`wakes`, `pressure`): resident, as every module's wheel.
+- The glass box's compiled machine graphs (G1) are per district: they belong in the district
+  row, or in their own row table keyed by district if they are large.
+
+## Not done here
+
+- **rtsim-jni does not page any module yet.** Each module still saves its `save()` blob as one
+  page (herds 0x4800 version 2, dragons 0x4400 version 2, phase 1 meta version 3). Wiring paging
+  in means: the engine's store shared as the modules' `PageSource` (it is a
+  `Mutex<Option<PageStore>>`, which implements it), the save path calling each module's
+  `save_paged` into the save's batch, the IO lane handing the tickets back once the commit is
+  durable (`saved`, or `save_failed`), `enforce_budget` after each step, an extra pending save
+  when any module `needs_save` (PM7), and `open_paged` on load. The per-module deletion lists
+  (`deletions`) must keep away from the row tables (they do: different table ids).
+- **Prefetch for row tables** (rows load on demand on the step thread).
