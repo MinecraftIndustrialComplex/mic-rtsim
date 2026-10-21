@@ -73,7 +73,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  *
  * <p>Layout (y {@value #Y}, the flat world's first air layer):
  * <pre>
- *   straight A   x 608..624, z 1604, XO; "Fixture Central" south of x 616, the train east or west of it
+ *   straight A   x 608..624, z 1604, XO; "Fixture Central" south of x 616, the train east of it (x 617..621)
  *   curve 1      90 degrees, (624,1604) leaving east to (634,1614) leaving north: legs 9.5, radius about 9.5
  *   straight B   x 634, z 1614..1634, ZO; signal west of z 1620, "Fixture Yard" east of z 1624
  *   S-bend       (634,1634) leaving south to (638,1648) leaving north
