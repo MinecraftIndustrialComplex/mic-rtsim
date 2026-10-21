@@ -78,9 +78,9 @@ impl Default for Lairs {
 impl Lairs {
     /// The lairs' page table, next to the dragons' rows (0x4410).
     pub const TABLE: u16 = 0x4411;
-    /// Lairs per page. PLACEHOLDER 8: a lair is about 200 bytes resident; small pages keep a
-    /// save's dirty set close to the lairs that changed.
-    pub const PER_PAGE: u64 = 8;
+    /// Lairs per page. PLACEHOLDER 1, as the dragons' rows (`engine::DRAGONS_PER_PAGE`): a lair
+    /// changes when a dragon claims, leaves or hoards, and pins its page until the next save.
+    pub const PER_PAGE: u64 = 1;
 
     pub fn new() -> Self {
         Lairs {

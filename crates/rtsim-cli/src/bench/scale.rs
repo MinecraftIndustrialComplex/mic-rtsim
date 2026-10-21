@@ -296,12 +296,21 @@ impl Baseline {
             });
         }
         if sweep.vary == Vary::Dragons {
+            // The paged sweep and its resident twin grow the world with the dragons; the first
+            // dragon sweep keeps its fixed grid.
+            let grown = sweep.name != "dragons";
             return Spec::Dragons(super::dragons::DragonConfig {
                 dragons: value,
-                villages: DRAGON_VILLAGES,
+                villages: if grown {
+                    super::dragons::grown_villages(value)
+                } else {
+                    DRAGON_VILLAGES
+                },
                 warmup_days: 2,
                 days: self.days,
                 seed: self.seed,
+                budget_bytes: sweep.paged.then_some(super::dragons::PAGED_BUDGET),
+                save_every: sweep.paged.then_some(self.save_every_ticks),
             });
         }
         if matches!(sweep.vary, Vary::Markets | Vary::Edges) {
@@ -686,6 +695,44 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                 ),
             ],
         },
+        // The dragons on the page store (A16; docs/choices-paging-modules.md, Dragons), the world
+        // growing with them (two dragons a village), and the same points resident beside it.
+        Sweep {
+            name: "dragons_paged".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Dragons,
+            regions: None,
+            paged: true,
+            values: pick(&[512, 2_048, 8_192, 32_768], &[512, 4_096, 32_768]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    flat,
+                    0.0,
+                    "dragon and lair rows page under a fixed budget (256 KiB); between saves the rows changed since the last one are pinned too",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    0.0,
+                    "what stays resident: the wheel (a few events per dragon), the lair indexes, and the phase 1 world under the dragons (two dragons a village, and a knowledge holder per dragon)",
+                ),
+            ],
+        },
+        Sweep {
+            name: "dragons_resident".into(),
+            model: ModelKind::Closed,
+            vary: Vary::Dragons,
+            regions: None,
+            paged: false,
+            values: pick(&[512, 2_048, 8_192, 32_768], &[512, 4_096, 32_768]),
+            contracts: vec![contract(
+                Metric::Heap,
+                1.1,
+                1.0,
+                "dragons_paged's points with every row resident, for comparison",
+            )],
+        },
         // Ships (rtsim-ships), nobody watching. The model kind is a label only; the value is the
         // service cap (merchant ships per loop direction), on a fixed 100-port ocean grid.
         Sweep {
@@ -914,7 +961,7 @@ pub fn run_one(spec: &Spec) -> Measured {
 
 /// Bench scratch folders live under the target folder (on disk, not a tmpfs), or the system
 /// temp folder when that is unknown.
-fn scratch_dir(tag: &str) -> PathBuf {
+pub(super) fn scratch_dir(tag: &str) -> PathBuf {
     let base = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.join("bench-scratch")))

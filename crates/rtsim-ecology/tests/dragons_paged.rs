@@ -65,10 +65,7 @@ fn start(seed: u64) -> Run {
 }
 
 fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "rtsim-dragons-paged-{tag}-{}",
-        std::process::id()
-    ));
+    let d = std::env::temp_dir().join(format!("rtsim-dragons-paged-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     d
 }
@@ -157,7 +154,10 @@ fn assert_exercised(a: &Run, paged: &Run) {
     let p = paged.d.paging_stats();
     assert!(p.evictions() > 0 && p.loads() > 0, "{p:?}");
     a.d.check(&a.w, None).expect("the resident run balances");
-    paged.d.check(&paged.w, None).expect("the paged run balances");
+    paged
+        .d
+        .check(&paged.w, None)
+        .expect("the paged run balances");
 }
 
 #[test]
@@ -240,7 +240,11 @@ fn a_paged_save_restores_and_continues_exactly() {
         store: Some(store_c),
     };
     assert_eq!(c.d.state_hash(), b.d.state_hash(), "restored");
-    assert_eq!(c.d.state_hash(), a.d.state_hash(), "restored, against the resident run");
+    assert_eq!(
+        c.d.state_hash(),
+        a.d.state_hash(),
+        "restored, against the resident run"
+    );
     c.d.enforce_budget();
     while t < Tick::from_days(DAYS) {
         t += STEP;
@@ -249,7 +253,11 @@ fn a_paged_save_restores_and_continues_exactly() {
         }
         let ca = step(&mut a, t);
         assert_eq!(ca, step(&mut b, t), "commands at {t:?}");
-        assert_eq!(ca, step(&mut c, t), "the restored engine's commands at {t:?}");
+        assert_eq!(
+            ca,
+            step(&mut c, t),
+            "the restored engine's commands at {t:?}"
+        );
         if t.0.is_multiple_of(SAVE_EVERY) {
             save(&mut b);
             save(&mut c);
@@ -258,7 +266,11 @@ fn a_paged_save_restores_and_continues_exactly() {
             let h = a.d.state_hash();
             assert_eq!(h, b.d.state_hash(), "at {t:?}");
             assert_eq!(h, c.d.state_hash(), "the restored engine at {t:?}");
-            assert_eq!(a.w.state_hash(), c.w.state_hash(), "the restored world at {t:?}");
+            assert_eq!(
+                a.w.state_hash(),
+                c.w.state_hash(),
+                "the restored world at {t:?}"
+            );
             b.d.enforce_budget();
             c.d.enforce_budget();
         }
@@ -300,10 +312,16 @@ fn a_failed_save_loses_nothing() {
         t += STEP;
         assert_eq!(step(&mut a, t), step(&mut r, t), "at {t:?}");
     }
-    assert_eq!(r.d.state_hash(), a.d.state_hash(), "the failed save lost a change");
+    assert_eq!(
+        r.d.state_hash(),
+        a.d.state_hash(),
+        "the failed save lost a change"
+    );
     save(&mut r);
     copy_dir(&dir, &dir2);
-    let store2 = Arc::new(RwLock::new(PageStore::open(&dir2, Durability::NoSync).unwrap()));
+    let store2 = Arc::new(RwLock::new(
+        PageStore::open(&dir2, Durability::NoSync).unwrap(),
+    ));
     let back = Dragons::open_paged(store2, BUDGET, META, DragonTunables::default()).unwrap();
     assert_eq!(back.state_hash(), a.d.state_hash());
     assert_eq!(save_hash(&back), save_hash(&a.d));

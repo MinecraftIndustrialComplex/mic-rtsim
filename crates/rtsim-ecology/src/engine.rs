@@ -41,8 +41,8 @@ use rtsim_industry::ids::DistrictId;
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::Writer;
-use rtsim_kernel::rows::PagedArena;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::rows::PagedArena;
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{
     ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT, Trait,
@@ -97,10 +97,12 @@ const MAX_CROSSINGS: usize = 4;
 /// per-table deletion owns.
 pub const DRAGON_TABLE: u16 = 0x4410;
 
-/// Dragons per page. PLACEHOLDER 4: a dragon is about 500 bytes resident and most of its events
-/// change it, so a page that held many would be dirty (pinned until the next save) when any of
-/// them hunted; small pages keep a save's dirty set close to the dragons that changed.
-pub const DRAGONS_PER_PAGE: u64 = 4;
+/// Dragons per page. PLACEHOLDER 1, measured (docs/choices-paging-modules.md, PM-D3): most of a
+/// dragon's events change it, and a changed page is pinned until the next save, so a page that
+/// held several dragons was pinned when any of them hunted. At 4,096 dragons and a save every
+/// 6,000 ticks the peak of resident rows was 1.56 MB at 16 a page, 794 KB at 4, 322 KB at 1 (with
+/// a page a lair), under a 256 KiB budget.
+pub const DRAGONS_PER_PAGE: u64 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ev {
@@ -845,6 +847,10 @@ impl Dragons {
 
     /// Runs every dragon event up to and including `to`, in time order, with the world caught up
     /// to each event's time first. Nothing is ticked.
+    ///
+    /// **Paged** ([`Dragons::attach_store`], [`Dragons::open_paged`]): rows load as events read
+    /// them and nothing is evicted here; the host calls [`Dragons::enforce_budget`] at its step
+    /// boundaries. Resident, the rows changed are measured here (no eviction).
     pub fn run_until(&mut self, w: &mut World, infra: &mut dyn Infrastructure, to: Tick) {
         self.index.refresh(w, &self.topo);
         while let Some((at, ev)) = self.wheel.pop_until(to) {
@@ -855,6 +861,15 @@ impl Dragons {
         }
         w.run_until(to);
         self.now = self.now.max(to);
+        self.measure_if_resident();
+    }
+
+    /// Resident tables evict nothing, so their only budget work is measuring the rows changed:
+    /// done at the end of every run, so a host that never pages needs no call of its own.
+    fn measure_if_resident(&mut self) {
+        if !self.is_paged() {
+            self.enforce_budget();
+        }
     }
 
     /// As [`Dragons::run_until`], with wild herds as prey (PLAN.md §10.2): the herds' events and
@@ -889,6 +904,7 @@ impl Dragons {
         w.run_until(to);
         self.now = self.now.max(to);
         *herds = self.wild.take().expect("lent");
+        self.measure_if_resident();
     }
 
     fn handle(&mut self, w: &mut World, infra: &mut dyn Infrastructure, at: Tick, ev: Ev) {
@@ -1045,6 +1061,10 @@ impl Dragons {
     }
 
     fn cancel_leg(&mut self, w: &mut World, d: DragonId) {
+        // Read first: a dragon with no leg keeps its row (and its page) clean.
+        if self.dragons.get(d).is_none_or(|x| x.leg.is_none()) {
+            return;
+        }
         if let Some(l) = self.dragons.get_mut(d).and_then(|x| x.leg.take()) {
             w.legs.cancel(l.stamp.leg);
         }
@@ -3155,10 +3175,7 @@ impl Dragons {
                 .unwrap_or(0);
             let take = units.min(held);
             if take > 0 {
-                *self.lairs[l as usize]
-                    .hoard
-                    .get_mut(&item)
-                    .expect("held") -= take;
+                *self.lairs[l as usize].hoard.get_mut(&item).expect("held") -= take;
                 self.ledger.rob(item, take);
             }
         }
@@ -3315,13 +3332,28 @@ impl Dragons {
     /// What the engine holds, estimated: the row tables' resident pages (their rows' heap as last
     /// measured, at [`Dragons::enforce_budget`]) and the resident state. No pass over the rows.
     pub fn heap_bytes(&self) -> usize {
-        self.dragons.rows().heap_bytes()
-            + self.lairs.rows().heap_bytes()
-            + self.index_bytes()
-            + self.wheel.heap_bytes()
-            + self.homes.heap_bytes()
-            + self.index.heap_bytes()
-            + self.log.capacity() * std::mem::size_of::<LogEntry>()
+        self.memory().values().sum()
+    }
+
+    /// [`Dragons::heap_bytes`] by component, for the bench and the notes.
+    pub fn memory(&self) -> BTreeMap<&'static str, usize> {
+        BTreeMap::from([
+            (
+                "dragon rows (resident pages)",
+                self.dragons.rows().heap_bytes(),
+            ),
+            ("lair rows (resident pages)", self.lairs.rows().heap_bytes()),
+            ("lair indexes and embodied set", self.index_bytes()),
+            ("wheel", self.wheel.heap_bytes()),
+            ("homes", self.homes.heap_bytes()),
+            ("prey index", self.index.heap_bytes()),
+            (
+                "log and players",
+                self.log.capacity() * std::mem::size_of::<LogEntry>()
+                    + self.players.len() * (std::mem::size_of::<(ActorId, PlayerView)>() + 16)
+                    + (self.by_entity.len() + self.adopted.len()) * 40,
+            ),
+        ])
     }
 
     /// The resident lair indexes (`lair_by_key`, `lair_cells`) and the embodied set, estimated as

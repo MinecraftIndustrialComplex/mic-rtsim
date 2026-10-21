@@ -1052,7 +1052,7 @@ impl Dragons {
         d.dragons = PagedArena::decode_all(DRAGON_TABLE, DRAGONS_PER_PAGE, r)?;
         let lairs = PagedRows::decode_all(Lairs::TABLE, Lairs::PER_PAGE, r)?;
         // Keys in strictly rising order, the last `len - 1`: exactly `0..len`.
-        if lairs.len() > 0 && lairs.get(lairs.len() - 1).is_none() {
+        if !lairs.is_empty() && lairs.get(lairs.len() - 1).is_none() {
             return bad("the lairs' keys are not 0..len".into());
         }
         d.lairs = Lairs::from_rows(lairs);
@@ -1168,10 +1168,10 @@ impl Dragons {
     }
 
     /// Evicts row pages whose state is on disk until each table fits its share of the budget,
-    /// and measures the rows changed since the last call. The caller calls it at its step
+    /// and measures the rows changed since the last call. A paged host calls it at its step
     /// boundaries (rtsim-jni once a step, the bench every second of sim time): `run_until` does
-    /// not, so a host stepping event by event pays the check once a step, not once an event.
-    /// Returns the pages evicted.
+    /// not, so a host stepping event by event pays the check (a pass over the resident pages
+    /// when over budget) once a step, not once an event. Returns the pages evicted.
     pub fn enforce_budget(&mut self) -> usize {
         self.dragons.rows_mut().enforce_budget() + self.lairs.rows_mut().enforce_budget()
     }
@@ -1222,9 +1222,11 @@ impl Dragons {
             }
         }
         let (_, next) = self.dragons.meta();
-        if let Some(d) = self.embodied.iter().find(|d| {
-            d.generation() != PagedArena::<Dragon>::GENERATION || d.index() >= next
-        }) {
+        if let Some(d) = self
+            .embodied
+            .iter()
+            .find(|d| d.generation() != PagedArena::<Dragon>::GENERATION || d.index() >= next)
+        {
             return bad(format!("the embodied index names {d:?}, past the dragons"));
         }
         Ok(())
