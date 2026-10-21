@@ -82,14 +82,14 @@ pub const TAIL_MAX_INPUTS: usize = CHUNK;
 /// ... or once the snapshot is this many world ticks old (S3, PLACEHOLDER: one world day): a
 /// start replays the world's time since its snapshot, inputs or not.
 pub const TAIL_MAX_TICKS: u64 = 24_000;
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
+pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
 /// Version 2: a snapshot and a tail (S1). Version 3: the snapshot's world writes its market rows
 /// as a row table (`World::save` RTW2, docs/choices-paging-modules.md). Version 4: the world pages
 /// through the store (`World::save_paged`, PF17), the snapshot pieces hold the link's part only,
 /// and the state hash is written in TEST mode only (0 otherwise, PF16). Before release a version
 /// this build does not read is dropped (S5, [`when_pages_unreadable`]); there is no migration.
-const META_VERSION: u16 = 4;
-const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
+pub const META_VERSION: u16 = 4;
+pub const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
 
 fn chunk_key(k: usize) -> PageKey {
     PageKey::new(TABLE, 1 + k as u64)

@@ -46,10 +46,10 @@ pub type Store = Arc<Mutex<Option<PageStore>>>;
 /// budget): five modules, 20 MiB of rows at most beside the resident indexes and wheels.
 pub const DEFAULT_ROW_BUDGET: usize = 4 << 20;
 
-const HASH_MAGIC: u32 = u32::from_le_bytes(*b"RTSH");
+pub const HASH_MAGIC: u32 = u32::from_le_bytes(*b"RTSH");
 
 /// The page beside a module's meta page that holds its state hash (TEST mode only).
-pub(super) fn hash_key(meta: PageKey) -> PageKey {
+pub fn hash_key(meta: PageKey) -> PageKey {
     PageKey::new(meta.table(), meta.id() + 1)
 }
 

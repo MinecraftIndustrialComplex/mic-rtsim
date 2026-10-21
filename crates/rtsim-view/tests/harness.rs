@@ -70,6 +70,26 @@ fn the_mirrored_page_keys_are_the_links() {
         Limits::default().row_budget,
         rtsim_jni::engine::DEFAULT_ROW_BUDGET
     );
+    use rtsim_jni::engine::mirrored as m;
+    assert_eq!(keys::phase1::SNAPSHOT_TABLE, m::phase1::SNAPSHOT_TABLE);
+    assert_eq!(keys::phase1::KEY_META, m::phase1::KEY_META);
+    assert_eq!(keys::phase1::WORLD_META, m::phase1::WORLD_META);
+    assert_eq!(keys::phase1::CHUNK, m::phase1::CHUNK);
+    assert_eq!(keys::phase1::PIECE, m::phase1::PIECE);
+    assert_eq!(keys::phase1::META_MAGIC, m::phase1::META_MAGIC);
+    assert_eq!(keys::phase1::META_VERSION, m::phase1::META_VERSION);
+    assert_eq!(keys::phase1::SNAP_MAGIC, m::phase1::SNAP_MAGIC);
+    assert_eq!(keys::phase1::WORLD_SEED, m::phase1::WORLD_SEED);
+    assert_eq!(keys::phase1::TABLE, m::phase1::TABLE);
+    assert_eq!(keys::DRAGONS, m::KEY_DRAGONS);
+    assert_eq!(keys::HERDS, m::KEY_HERDS);
+    assert_eq!(keys::SHIPS, m::KEY_SHIPS);
+    assert_eq!(keys::CONFLICT, m::KEY_CONFLICT);
+    assert_eq!(keys::WORLD_MODEL, m::WORLD_MODEL_META);
+    assert_eq!(keys::HASH_MAGIC, m::HASH_MAGIC);
+    for k in [m::KEY_DRAGONS, m::KEY_HERDS, m::phase1::KEY_META] {
+        assert_eq!(keys::hash_key(k), m::hash_key(k));
+    }
 }
 
 /// Java's VILLAGE_ADOPTED for a village meeting at (x, z) (rtsim-jni's protocol tests' `adopt`).

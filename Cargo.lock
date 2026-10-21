@@ -444,6 +444,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mic-viewer-surveyor"
+version = "0.1.0"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=cc213668d3fb65f8783d541b7457c6c106660dde#cc213668d3fb65f8783d541b7457c6c106660dde"
+dependencies = [
+ "flate2",
+ "mic-viewer",
+]
+
+[[package]]
 name = "microlp"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -653,6 +662,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rtsim-archive"
+version = "0.0.1"
+dependencies = [
+ "crc32fast",
+ "lz4_flex",
+ "rtsim-kernel",
+]
+
+[[package]]
 name = "rtsim-cli"
 version = "0.0.1"
 dependencies = [
@@ -826,6 +844,8 @@ dependencies = [
  "mic-native-host",
  "mic-native-rt",
  "mic-viewer",
+ "mic-viewer-surveyor",
+ "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
