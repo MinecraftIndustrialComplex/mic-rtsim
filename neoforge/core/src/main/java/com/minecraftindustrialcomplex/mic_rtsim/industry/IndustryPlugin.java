@@ -1,12 +1,15 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -142,6 +145,28 @@ public interface IndustryPlugin {
     default Long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta) {
         return null;
     }
+
+    // ---- damage (C18, I23) and repair (I1) -----------------------------------------------------
+
+    /**
+     * Positions besides {@code pos} and its six neighbours that breaking {@code pos} removes too (the other
+     * segments of a Create belt). Called before a reconcile breaks it, so their states are known before.
+     */
+    default void alsoBroken(ServerLevel level, BlockPos pos, BlockState state, Consumer<BlockPos> out) {}
+
+    /**
+     * The block-entity data a rebuild of this block may carry (what a Schematicannon places safely), or
+     * null for none. Asked before a reconcile breaks it; the first plugin with an answer gives it.
+     */
+    default CompoundTag rebuildData(ServerLevel level, BlockPos pos, BlockState state, BlockEntity be) {
+        return null;
+    }
+
+    /**
+     * A reconcile broke blocks (an unwatched attack's damage, C18, I23): every block it removed, the target
+     * and what went with it, with its state before. Only the sim's breaks: never a player's.
+     */
+    default void destroyed(Industry industry, ServerLevel level, District district, List<DestroyedBlock> blocks, long now) {}
 
     // ---- the defence survey (I21) ---------------------------------------------------------------
 
