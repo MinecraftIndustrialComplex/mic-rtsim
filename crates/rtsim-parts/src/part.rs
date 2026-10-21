@@ -226,6 +226,8 @@ pub struct Part {
     pub rows: u32,
     /// CRC32 of the bytes: the tap drops a part whose CRC matches the last one written.
     pub crc: u32,
+    /// The regions its rows fall in, sorted (the tap finds a focus region's units by these).
+    pub regions: Vec<RegionKey>,
 }
 
 #[derive(Default)]
@@ -311,6 +313,27 @@ impl PartWriter {
         self.rows += 1;
     }
 
+    /// A row that is not a mark (an archive row; V6's graph rows): its kind, the frame and place
+    /// it is counted in, and its body. Readers that do not know `kind` skip it.
+    pub fn push_raw(&mut self, key: u64, frame: u32, at: [f64; 2], kind: u8, body: &[u8]) {
+        let region = RegionKey::of(frame, at[0], at[1]);
+        self.row.clear();
+        self.row.var_u64(u64::from(frame));
+        self.row.raw(body);
+        let pk = PartKey {
+            kind: self.kind,
+            layer: self.layer,
+            unit: key / self.per_unit,
+            region: self.by_region.then_some(region),
+        };
+        let b = self.bufs.entry(pk).or_default();
+        b.body.u8(kind);
+        b.body.bytes(self.row.as_bytes());
+        b.rows += 1;
+        *b.counts.entry((region, kind)).or_default() += 1;
+        self.rows += 1;
+    }
+
     /// The parts written, by key; units with no rows write none.
     pub fn finish(self) -> Vec<(PartKey, Part)> {
         self.bufs
@@ -332,12 +355,15 @@ impl PartWriter {
                 w.raw(b.body.as_bytes());
                 let bytes = w.into_bytes();
                 let crc = crc32fast::hash(&bytes);
+                let mut regions: Vec<RegionKey> = b.counts.keys().map(|(r, _)| *r).collect();
+                regions.dedup();
                 (
                     k,
                     Part {
                         bytes,
                         rows: b.rows,
                         crc,
+                        regions,
                     },
                 )
             })
@@ -350,9 +376,11 @@ impl PartWriter {
 pub struct Row {
     pub kind: u8,
     pub frame: u32,
-    /// The mark, for the mark kinds; `None` for a kind this reader does not know.
+    /// The mark, for the mark kinds; `None` for any other kind.
     pub mark: Option<Mark>,
     pub fields: Vec<(u16, Value)>,
+    /// A row that is not a mark: its body after the frame (empty for a mark).
+    pub body: Vec<u8>,
 }
 
 /// A part read back: what the one reader in the core gives every consumer.
@@ -399,6 +427,7 @@ pub fn read_part(bytes: &[u8]) -> Result<PartView, String> {
                 frame,
                 mark: None,
                 fields: Vec::new(),
+                body: b.take(b.remaining()).map_err(bad)?.to_vec(),
             });
             continue;
         };
@@ -414,6 +443,7 @@ pub fn read_part(bytes: &[u8]) -> Result<PartView, String> {
             frame,
             mark: Some(mark),
             fields,
+            body: Vec::new(),
         });
     }
     r.finish().map_err(bad)?;
