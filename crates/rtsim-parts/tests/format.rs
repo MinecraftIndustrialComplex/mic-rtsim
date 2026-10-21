@@ -246,12 +246,14 @@ fn the_header_round_trips() {
             LayerState {
                 version: 4,
                 rows: 10,
+                per_unit: 500,
                 status: None,
                 empty: Some("nothing".into()),
             },
             LayerState {
                 version: 0,
                 rows: 0,
+                per_unit: 0,
                 status: Some("the ships module is off".into()),
                 empty: None,
             },

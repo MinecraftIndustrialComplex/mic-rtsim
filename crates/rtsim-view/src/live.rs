@@ -361,7 +361,7 @@ struct ReadState {
     store: Option<(u64, Stamp)>,
     layers_json: Option<(u64, Vec<String>)>,
     units: HashMap<PartKey, UnitMarks>,
-    save_units: HashMap<(usize, u64), (UnitMarks, Option<String>)>,
+    save_units: HashMap<(usize, u64, u64), (UnitMarks, Option<String>)>,
     drawn: HashMap<String, DrawnLayer>,
     pending: PendingState,
     polls: u64,
@@ -690,6 +690,18 @@ impl LiveView {
         for (si, s) in specs.iter().enumerate() {
             let id = &s.desc.id;
             let li = store_ids.iter().position(|x| x == id);
+            // Bucketed as the engine did, should its build differ from this one.
+            let rebucketed;
+            let s: &Spec = match li
+                .and_then(|li| header.as_ref()?.layers.get(li))
+                .map(|l| l.per_unit)
+            {
+                Some(p) if p != 0 && p != s.per_unit => {
+                    rebucketed = s.with_per_unit(p);
+                    &rebucketed
+                }
+                _ => s,
+            };
             let units: &[&rtsim_parts::UnitEntry] = li
                 .and_then(|li| by_layer.get(&(li as u16)))
                 .map_or(&[], Vec::as_slice);
@@ -764,9 +776,9 @@ impl LiveView {
                     .chain(save_only.iter().copied())
                     .collect();
                 for u in &wanted {
-                    if !r.save_units.contains_key(&(si, *u)) {
+                    if !r.save_units.contains_key(&(si, s.per_unit, *u)) {
                         let built = save_unit(s, si as u16, &src, &saved, *u);
-                        r.save_units.insert((si, *u), built);
+                        r.save_units.insert((si, s.per_unit, *u), built);
                     }
                 }
                 for u in units {
@@ -774,13 +786,13 @@ impl LiveView {
                         if let Some(m) = r.units.get(&u.key) {
                             ms.push(m);
                         }
-                    } else if let Some((m, _)) = r.save_units.get(&(si, u.key.unit)) {
+                    } else if let Some((m, _)) = r.save_units.get(&(si, s.per_unit, u.key.unit)) {
                         ms.push(m);
                         from_save += 1;
                     }
                 }
                 for u in &save_only {
-                    if let Some((m, _)) = r.save_units.get(&(si, *u)) {
+                    if let Some((m, _)) = r.save_units.get(&(si, s.per_unit, *u)) {
                         ms.push(m);
                         from_save += 1;
                     }

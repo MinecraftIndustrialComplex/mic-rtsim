@@ -167,6 +167,15 @@ impl Spec {
     pub fn keys(&self, u: u64) -> Range<u64> {
         u * self.per_unit..(u + 1).saturating_mul(self.per_unit)
     }
+
+    /// This layer bucketed `per_unit` keys a unit (as another build of the engine did).
+    pub fn with_per_unit(&self, per_unit: u64) -> Spec {
+        Spec {
+            desc: self.desc.clone(),
+            per_unit: per_unit.max(1),
+            ..*self
+        }
+    }
 }
 
 /// Units 0 up to the one holding key `bound - 1`.
@@ -231,7 +240,7 @@ pub fn specs() -> Vec<Spec> {
             ])
             .fields(&["Population"]),
             "phase1",
-            2_000,
+            500,
             true,
             villages,
             |s, per| world_units(|w| w.nodes.len())(s, per),
@@ -249,7 +258,7 @@ pub fn specs() -> Vec<Spec> {
                     ("Dear (over 1.1)", "#d0453a"),
                 ]),
             "phase1",
-            2_000,
+            64,
             true,
             prices,
             |s, per| world_units(|w| w.nodes.len())(s, per),
@@ -270,7 +279,7 @@ pub fn specs() -> Vec<Spec> {
                 ("Sky lane", "#a0a0d8"),
             ]),
             "phase1",
-            2_000,
+            500,
             true,
             roads,
             |s, per| world_units(|w| w.edges.len())(s, per),
@@ -284,7 +293,7 @@ pub fn specs() -> Vec<Spec> {
                 .legend(&[("Outbound", "#c98a3a"), ("Returning", "#7a5a2a")])
                 .fields(&["Stage"]),
             "phase1",
-            2_000,
+            64,
             false,
             caravans,
             |s, per| world_units(|w| w.caravans.capacity_slots())(s, per),
@@ -302,7 +311,7 @@ pub fn specs() -> Vec<Spec> {
             .zoom(0.0, 64.0)
             .glyph("circle", 3.0),
             "phase1",
-            2_000,
+            500,
             false,
             messengers,
             |s, per| {
@@ -328,7 +337,7 @@ pub fn specs() -> Vec<Spec> {
             .glyph("star", 5.0)
             .legend(&[("Staying", "#9b6bd6"), ("Walking", "#c7a8ef")]),
             "phase1",
-            2_000,
+            64,
             false,
             bands,
             |s, per| world_units(|w| w.bands.len())(s, per),
@@ -350,7 +359,7 @@ pub fn specs() -> Vec<Spec> {
                 ("Vacant", "#999999"),
             ]),
             "dragons",
-            256,
+            128,
             true,
             lairs,
             |s, per| {
@@ -407,7 +416,7 @@ pub fn specs() -> Vec<Spec> {
                 .priority(7)
                 .fields(&["Animals"]),
             "herds",
-            256,
+            8,
             false,
             herds,
             |s, per| {
@@ -428,7 +437,7 @@ pub fn specs() -> Vec<Spec> {
             .zoom(0.0, 256.0)
             .width(1.0),
             "herds",
-            256,
+            64,
             false,
             herd_routes,
             |s, per| {
@@ -443,7 +452,7 @@ pub fn specs() -> Vec<Spec> {
                 .glyph("square", 5.0)
                 .legend(&[("Sea dock", "#4a90c0"), ("Sky dock", "#a0a0d8")]),
             "ships",
-            2_000,
+            128,
             true,
             docks,
             |s, per| {
@@ -462,7 +471,7 @@ pub fn specs() -> Vec<Spec> {
                     ("Dangerous", "#d0453a"),
                 ]),
             "ships",
-            1_024,
+            256,
             true,
             lanes,
             |s, per| {
@@ -482,7 +491,7 @@ pub fn specs() -> Vec<Spec> {
                 ])
                 .fields(&["Role"]),
             "ships",
-            256,
+            128,
             false,
             ships,
             |s, per| {
@@ -501,7 +510,7 @@ pub fn specs() -> Vec<Spec> {
             .describe("Each faction's camp and reach")
             .priority(6),
             "conflict",
-            256,
+            64,
             true,
             factions,
             |s, per| {
@@ -523,7 +532,7 @@ pub fn specs() -> Vec<Spec> {
                     ("Siege", "#8b1a1a"),
                 ]),
             "conflict",
-            128,
+            64,
             true,
             feuds,
             |s, per| {
@@ -553,7 +562,7 @@ pub fn specs() -> Vec<Spec> {
             ])
             .fields(&["Kind"]),
             "conflict",
-            1_000,
+            64,
             false,
             parties,
             |s, per| {
@@ -581,7 +590,7 @@ pub fn specs() -> Vec<Spec> {
             ])
             .fields(&["State", "Chunks"]),
             "industry",
-            2_000,
+            256,
             true,
             districts,
             |s, per| industry_units(s, Table::Districts, per),
@@ -598,7 +607,7 @@ pub fn specs() -> Vec<Spec> {
             .priority(7)
             .glyph("square", 5.0),
             "industry",
-            2_000,
+            128,
             true,
             stations,
             |s, per| industry_units(s, Table::Stations, per),
@@ -614,7 +623,7 @@ pub fn specs() -> Vec<Spec> {
             .describe("Station pairs trains ran between, wider with more trips")
             .priority(3),
             "industry",
-            500,
+            64,
             true,
             lines,
             |s, per| industry_units(s, Table::Lines, per),
@@ -625,7 +634,7 @@ pub fn specs() -> Vec<Spec> {
                 .priority(6)
                 .glyph("square", 4.0),
             "industry",
-            2_000,
+            500,
             false,
             trains,
             |s, per| industry_units(s, Table::Legs, per),
@@ -1346,4 +1355,33 @@ fn trains(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
         );
     });
     Some("no train leg is booked".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every layer's unit holds at most `MAX_ROWS` keys, ids are unique, and a layer bucketed as
+    /// another build did covers its keys with the other build's units.
+    #[test]
+    fn units_are_capped_and_rebucket() {
+        let specs = specs();
+        let mut ids: Vec<&str> = specs.iter().map(|s| s.desc.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), specs.len(), "unique layer ids");
+        for s in &specs {
+            assert!(
+                (1..=u64::from(rtsim_parts::MAX_ROWS)).contains(&s.per_unit),
+                "{}: {} keys a unit",
+                s.desc.id,
+                s.per_unit
+            );
+            let other = s.with_per_unit(s.per_unit * 3);
+            assert_eq!(other.desc.id, s.desc.id);
+            assert_eq!(other.stay_put, s.stay_put);
+            assert_eq!(other.keys(1), s.per_unit * 3..s.per_unit * 6);
+            assert_eq!(s.with_per_unit(0).per_unit, 1);
+        }
+    }
 }
