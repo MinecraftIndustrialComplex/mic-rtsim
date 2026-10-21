@@ -442,3 +442,32 @@ fn a_granted_purse_buys_at_once() {
     let c = reload(&w, 7, Genesis::Share(500));
     assert_eq!(c.state_hash(), w.state_hash());
 }
+
+/// Nothing per tick (SINK.md §7): a works event runs only when a purse reaches a price. With a
+/// catalogue whose every cap is zero nothing is ever due, so years of trading run no works event
+/// at all while the purses fill; with the real catalogue every works event buys (above).
+#[test]
+fn a_sink_with_nothing_to_buy_runs_no_event() {
+    let mut w = world(7, Genesis::AtTarget, false);
+    let mut cat = synthetic_catalog(&w.goods);
+    for d in &mut cat {
+        d.cap = rtsim_world::works::WorkCap::Fixed(0);
+    }
+    w.set_works(cat, Tick::ZERO);
+    let cmds = run(&mut w, Tick::from_days(400), true);
+    assert!(w.stats.market_events > 0, "the markets traded");
+    assert_eq!(w.stats.works_events, 0, "no works event without a work to buy");
+    assert_eq!(w.stats.works, 0);
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::PlaceWork(_) | Command::SpawnWork(_))),
+        "nothing placed"
+    );
+    let purses: i64 = (0..w.nodes.len())
+        .flat_map(|i| w.works_purse(i, w.now()))
+        .map(|x| x.1)
+        .sum();
+    assert!(purses > 0, "the purses still fill (MS-9)");
+    w.check_conserved(w.now()).unwrap();
+}

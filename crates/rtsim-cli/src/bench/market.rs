@@ -35,6 +35,26 @@ pub struct MarketConfig {
     /// Page the market rows under a budget.
     #[serde(default)]
     pub paged: Option<super::herds::HerdsPaging>,
+    /// The village money sink's synthetic works catalogue (SINK.md): every bought work answered
+    /// as placed at the end of each day.
+    #[serde(default)]
+    pub works: bool,
+}
+
+/// Runs a resident world to `end` a day at a time, answering every bought work as placed (the
+/// bridge; a village buys its next work once the last is answered, MSC13). Other commands are
+/// dropped, as the bench drops them without works.
+fn run_with_works(w: &mut World, end: Tick) {
+    while w.now() < end {
+        let day = Tick(((w.now().0 / Tick::from_days(1).0) + 1) * Tick::from_days(1).0).min(end);
+        w.run_until(day);
+        for c in w.take_commands() {
+            if let Some(op) = c.work_op() {
+                let now = w.now();
+                w.work_result(op, true, now);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -94,6 +114,10 @@ pub fn run(c: &MarketConfig) -> Measured {
     cfg.genesis = Genesis::Share(500);
     cfg.edge_rule.nearest = c.nearest as usize;
     let mut w = World::build(cfg, goods, book, synth::grid(c.markets as usize, c.seed));
+    if c.works {
+        let cat = rtsim_world::works::synthetic_catalog(&w.goods);
+        w.set_works(cat, w.now());
+    }
     let mut paged = c.paged.as_ref().map(|p| {
         let dir = std::env::current_exe()
             .ok()
@@ -117,6 +141,7 @@ pub fn run(c: &MarketConfig) -> Measured {
     let warm = Tick::from_days(c.warmup_days);
     match &mut paged {
         Some(p) => p.run(&mut w, warm),
+        None if c.works => run_with_works(&mut w, warm),
         None => w.run_until(warm),
     }
     let before = w.stats;
@@ -127,6 +152,7 @@ pub fn run(c: &MarketConfig) -> Measured {
     let end = Tick::from_days(c.warmup_days + c.days);
     match &mut paged {
         Some(p) => p.run(&mut w, end),
+        None if c.works => run_with_works(&mut w, end),
         None => w.run_until(end),
     }
     let wall = wall0.elapsed().as_nanos() as f64;
@@ -192,6 +218,8 @@ pub fn run(c: &MarketConfig) -> Measured {
         events: w.stats.market_events - before.market_events,
         reads: w.stats.deliveries - before.deliveries,
         edges: Some(w.edges.len() as u64),
+        works: c.works.then(|| w.stats.works - before.works),
+        works_events: c.works.then(|| w.stats.works_events - before.works_events),
         conservation,
         failures,
         state_hash,
