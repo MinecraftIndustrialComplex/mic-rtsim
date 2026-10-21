@@ -19,7 +19,8 @@ public final class GlassCorpus {
     private GlassCorpus() {}
 
     public static final List<CorpusFactory> ALL = List.of(
-            new MillstoneFlourFactory()
+            new MillstoneFlourFactory(),
+            new ArmBurnersDepotsFactory()
     );
 
     public static CorpusFactory byName(String name) {
