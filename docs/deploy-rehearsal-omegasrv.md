@@ -13,8 +13,9 @@ private data in them; the base coordinates and the seed are read from private fi
 
 What booted: the July pack (the control), the upgraded pack (dc49fe7), the upgraded pack with rtsim
 (main at 689d311, the core and all eleven plugins the pack can load), the rtsim world booted again, the
-upgraded pack after rtsim was removed, and a sim reset. Every one of them booted, ran its scenario and
-stopped with exit 0, once the Ice and Fire crash (1.) was kept out of the upgraded pack.
+upgraded pack after rtsim was removed, and a sim reset, twice: with main's jars and with this branch's
+reset fix (4.), then that world booted again. Every one of them booted, ran its scenario and stopped
+with exit 0, once the Ice and Fire crash (1.) was kept out of the upgraded pack.
 
 1. **Blocker, the pack upgrade: Ice and Fire 2.1-beta.1 crashes the server within minutes** (6.1). A
    hippocampus with no water target throws a NullPointerException in `HippocampusExplorationGoal.tick`,
@@ -27,32 +28,50 @@ stopped with exit 0, once the Ice and Fire crash (1.) was kept out of the upgrad
    upward chute threw, so the main base ran on the black box alone; the fix's GameTest found a second
    bug (a chute's direction was not in the fingerprint). Deploy jars built at or after this branch's
    merge.
-4. **Medium, the pack: four bugs the upgrade brings** (6.2). `create_power_loader.js` does not load
+4. **High for SRV2, rtsim, fixed in this branch: a sim reset left the engine without the districts,
+   villages and base marks** (6.7). Deleting `world/rtsim/` keeps `world/data/mic_rtsim_*.dat`, where
+   Java remembers what it has told the engine, so nobody told the fresh engine again: the glass box
+   discarded every sweep (`revision`, the engine's district at revision 0) and no village was in the
+   engine. The bridge now sees the gap at the session start and announces everything again: with
+   the fix, the reset logged `55 districts are announced again` and `2 villages adopted again`, the
+   engine counted both villages, and the main base's sweeps were sampled. What a reset still loses is
+   what only the engine had: the sim's economy (6.7). For a page format change, reset the whole sim
+   (8.6): the bridge cannot see one module starting fresh on its own (6.9).
+5. **Medium, rtsim, not fixed: the main base's glass solve takes seconds and never converges** (6.7).
+   Once the glass box worked (the fix of 3.), each solve of the main base's graph ran 278 rounds, its
+   cap, in 2.4 s at a load of 13 and 5.4 s at a load of 82, without converging. It runs inside the
+   engine's step: the server thread does not wait, but the engine skipped 2 to 11 % of its hand-overs,
+   and a stop that came during a solve could not save the engine's pages (the journal replays them at
+   the next start). The glass box is a read-only checksum today, so switching it off on the host loses
+   only its diagnostics. DR9.
+6. **Medium, the pack: four bugs the upgrade brings** (6.2). `create_power_loader.js` does not load
    (its recipes are missing), `radar_integration.js` registers 2 recipes short, mic_petrochem 1.0.0's
    two thruster fuels do not parse (1.0.1 fixes them), and Sable's physics tag names a block the pack
    lacks. The world is not hurt. DR4.
-5. **Medium, rtsim: removing it leaves wandering traders off.** rtsim sets `doTraderSpawning` false
+7. **Medium, rtsim: removing it leaves wandering traders off.** rtsim sets `doTraderSpawning` false
    while it owns traders and only gives it back while it is installed; the rollback (8.6) gives it
    back first. Otherwise the uninstall is clean (6.6): 243 one-off attachment errors as the chunks
    that carry rtsim data load, no rtsim id left in the world after its save, no block entity lost, and
    nothing left on disk that anything reads.
-6. **Medium, rtsim: what the sim sees.** `district adopt 16` at the two factories made 55 districts:
+8. **Medium, rtsim: what the sim sees.** `district adopt 16` at the two factories made 55 districts:
    the main base (166 chunks, 278 inventories) and 54 one to four chunk districts of stray player
    blocks (6.5). The main base is too wide for the threat survey's perimeter cut (DR8). DR6.
-7. **Low, the pack upgrade loses nothing on this world** (6.3, 7). No id the world uses leaves the
+9. **Low, the pack upgrade loses nothing on this world** (6.3, 7). No id the world uses leaves the
    pack, the same 18,191 block entities before and after in every run, no chunk lost, no train, no
    Destroy mixture at risk; what the new pack drops (Ice and Fire's portal attachments, Cobblemon's old
    fossil starts) it drops by itself, harmlessly.
-8. **Low, rtsim's cost is below what the laptop resolves** (6.4). The mean tick moved +1.7 ms and
+10. **Low, rtsim's cost is below what the laptop resolves** (6.4). The mean tick moved +1.7 ms and
    -2.9 ms with rtsim in two side by side pairs, against a standard deviation of the paired difference
    of 38 to 41 ms; boot, stop, memory and the live set are the same. rtsim's own counters put its server
    thread time near 1 ms a second.
-9. **Save, stop, reload and reset work** (6.5, 6.7). The engine came back from its pages with every
-   journaled record; RESETITEM
-10. **Not checked**: a player login (inventories, ender chests, Cobblemon parties, a player who logged
+11. **Save, stop and reload work** (6.5, 6.7). The engine came back from its pages with every
+    journaled record, twice: after r1-rtsim (main's jars) and after the fixed reset, where the main
+    base's glass box carried on with its sweeps sampled.
+12. **Not checked**: a player login (inventories, ender chests, Cobblemon parties, a player who logged
     out aboard a Sable ship), puppets (rtsim embodies agents only near players), the host's own load (4
-    cores; the laptop's numbers are relative only), a run long enough for autosaves at 20 TPS, and the
-    22nd mixin (Diesel Generators, applied lazily). The first login after each step is the check (8.3).
+    cores; the laptop's numbers are relative only), a run long enough for autosaves at 20 TPS, the
+    mixin on Diesel Generators' oil data (applied lazily, at the first oil query), and the start after
+    a stop whose engine save failed (6.7: the journal replays it, by design). The first login after each step is the check (8.3).
 
 ## 1. The live server today (read-only baseline)
 
@@ -184,7 +203,11 @@ Every run is a reflink copy of one of two server folders (the July pack as on th
 installed by `setup_server.py -y` over a copy of it) with a fresh copy of the pruned world. The rtsim
 runs add the 12 mic-rtsim release jars (core and the 11 plugins the pack has mods for) built at 689d311,
 which includes main's 812009f (pages through rtsim-jni, the new page format), and mic_native's jar.
-No world an rtsim run started from had ever seen an older rtsim build.
+No world an rtsim run started from had ever seen an older rtsim build. The sim resets ran jars built
+later: r-reset at a6d7762, this branch's glass fixes (6.8) merged with main at b87d42e, which adds
+cc55edd's journal barrier (three new core mixins, among them one on vanilla's `IOWorker`, and a C2ME
+path) and OILGATE; r-reset2 and its reload at a0f86db, which adds the reset fix (6.8, 3.) and the
+engine's village count in `rtsim perf`. The natives are the same build in all of them.
 
 | Run | Pack | rtsim | Purpose |
 |---|---|---|---|
@@ -194,7 +217,9 @@ No world an rtsim run started from had ever seen an older rtsim build.
 | r2-rtsim, r2-upgrade | dc49fe7 | yes, no | the same pair in the other order |
 | r1-rtsim-reload | dc49fe7 | yes | r1-rtsim's world booted again: save, stop, reload |
 | r-uninstall | dc49fe7 | removed | r1-rtsim's world after the reload, booted without the rtsim and mic_native jars |
-| r-reset | dc49fe7 | yes | r1-rtsim's world with `world/rtsim/` deleted: SRV2's sim reset |
+| r-reset | dc49fe7 | yes, a6d7762 | r1-rtsim's world with `world/rtsim/` deleted: SRV2's sim reset |
+| r-reset2 | dc49fe7 | yes, a0f86db | the same reset with the reset fix |
+| r-reset2-reload | dc49fe7 | yes, a0f86db | a copy of r-reset2's world booted again: an engine restored on the live world |
 
 The two runs of a pair start 5 s apart and run side by side, so they share the laptop's load; the
 comparison is per sample (B minus A), and the order is swapped between p1 and p2.
@@ -211,6 +236,11 @@ A scenario (`tools/deploy-rehearsal/scenarios.py`, driven over RCON by `runsrv.p
    process's CPU and RSS, the laptop's load average;
 5. rtsim reports again, an entity census (villagers, wandering traders, ribbits, iron golems, every
    entity), `gamerule doTraderSpawning`, `save-all flush`, `stop`.
+
+The reload and reset runs also log every mixin they apply (`-Dmixin.debug.verbose=true`), and the
+three reset runs ask `rtsim district info 1` and `rtsim district debug 1` (the main base, district 1
+in every run) at the end, after the sampling. None of them adopts anything: their districts are the
+ones r1-rtsim adopted.
 
 Settings: `simulation-distance` and `view-distance` 16 (as on the host), `-Xms2G -Xmx8G`,
 `-XX:ActiveProcessorCount=4`, mic_native's pools fixed at the host's sizes (4 foreground threads,
@@ -251,11 +281,14 @@ Where the rehearsal differs from the host:
 | r2-rtsim | 104.3 s | 19.0 s | 4.8 s | 0 |
 | r1-rtsim-reload | 150.8 s | 23.9 s | 6.5 s | 0 |
 | r-uninstall | 118.3 s | 13.0 s | 3.9 s | 0 |
-RESETROW
+| r-reset | 64.2 s | 11.4 s | 3.9 s | 0 |
+| r-reset2 | 64.2 s | 14.6 s | 3.9 s | 0 |
+| r-reset2-reload | 58 s | 10.1 s | 13.0 s | 0 |
 
 The wall time is mostly the laptop: p0 ran first on a cold page cache and at a different load, p1 and
 p2 later. Within a pair, rtsim adds nothing measurable to the boot (2 s in p1, 0 in p2) or the stop. The
-host booted in 109 s on 2026-10-19.
+host booted in 109 s on 2026-10-19. r-reset2-reload's 13.0 s stop includes 5 s of waiting for the engine's
+final save, which a glass solve kept busy (6.7).
 
 What did not boot or did not finish:
 
@@ -368,12 +401,17 @@ Every rtsim run started cleanly and the same way:
   its natives into a new `mic_native/` folder in the server folder, which the service's user must be
   able to write;
 - `session started: native engine`, its pages in `world/rtsim/`;
-- **mixins**: 21 of the 22 declared mixins applied in the reload's verbose mixin log (core 13, create 2, destroy 1,
-  endertransmission 1, ribbits 4). The 22nd, `OilChunksSavedDataAccessor`, applies when Diesel
-  Generators' `OilChunksSavedData` first loads, which takes an oil query that no headless run made; its
-  target field `chunks` is in the pack's createdieselgenerators-1.21.1-1.3.15.jar (javap). Every rtsim
-  mixin config is `defaultRequire 1`, so a mixin that missed its target would stop the server when its
-  class loads, at the boot for the 21;
+- **mixins**: 21 of the 22 mixins the 689d311 jars declare applied in the reload's verbose mixin log
+  (core 13, create 2, destroy 1, endertransmission 1, ribbits 4). The 22nd, `OilChunksSavedDataAccessor`,
+  applies when Diesel Generators' `OilChunksSavedData` first loads, which takes an oil query that no
+  headless run made; its target field `chunks` is in the pack's createdieselgenerators-1.21.1-1.3.15.jar
+  (javap). The resets' later jars declare 25 (main's journal barrier adds three core mixins), and 23
+  applied: the two new ones that did are `IOWorkerMixin` and `RegionFileStorageAccessor`. The third,
+  `IOWorkerPendingStoreAccessor`, targets vanilla's `IOWorker$PendingStore`, which never loads in this
+  pack: C2ME 0.4.0-alpha.0.122 replaces each level's chunk storage, and the barrier takes its C2ME path
+  instead (no barrier warning in any reset run's log). Every rtsim mixin config is `defaultRequire 1`,
+  so a mixin that missed its target would stop the server when its class loads, at the boot for all
+  but those two;
 - **villages**: `6 structures are villages the sim adopts`; both kept villages were adopted by the
   first census after their chunks loaded (118 and 176 pieces); 12 censuses by the end of the settle, 35
   at the end. No market formed in the 13 minutes of a run (`no market snapshot yet`);
@@ -470,13 +508,96 @@ mic_native taken out:
 
 ### 6.7 Sim reset (SRV2)
 
-RESETSECTION
+SRV2's sim reset is: stop, delete `world/rtsim/`, start. The rehearsal ran it twice on r1-rtsim's world
+after its reload (55 districts, both villages, 1,051 records the pages had taken): r-reset with the
+jars at a6d7762, r-reset2 with this branch's fix (6.8, 3.), then r-reset2's world booted again
+(r-reset2-reload).
+
+**What a reset keeps and what it loses.** The world keeps what the bridge knows: the districts with
+their names, merges and exclusions (`mic_rtsim_industry.dat`), the village registry with the houses the
+sim built (`_villages.dat`), the bases' dwell counts and marks (`_bases.dat`), the gamerule memory
+(`_bridge.dat`), the journal (`_journal.dat`), and the chunks' rtsim attachments. The engine starts
+from nothing and logs it: `the journal starts at observation 1979 but the pages only include 0:
+observations 1 to 1978 are lost`, then `going on from 1979`. Everything the sim made is gone: the
+phase 1 world (its agents, markets, prices, caravans, gossip, sentiments toward players, and which
+houses it built), the herds (founded again from the world model within a minute: 49 sheep and 9 horses
+in r-reset, 57 and 8 in r-reset2, against r1-rtsim's 62 and 8, as many as the loaded chunks held), the industry engine's measurements
+and calibrations, the threats and the dragons' lairs (found again each session), the ships. On
+OmegaSrv today a reset loses nothing, because rtsim has never run there; after weeks of play it loses
+the sim's economy, which is why SRV2 keeps it for format changes with no migration.
+
+**r-reset, main's jars: the engine was never told again.** It booted in 64.2 s (`Done (11.4s)`),
+stopped in 3.9 s, exit 0, and Java had everything: 55 districts, both villages, 48 censuses. The main
+base's glass box compiled (1,258 nodes, 1,790 edges, converged in one round, 2,033 us: the upward chute
+fix on the real base), but its window never opened: `window 0/6000`, `0 sweeps (0 sampled)`,
+`revision 2 (district 0), last discard revision ... (revision 44)`. Java persists each district's
+declared revision and declares a district only when that is behind, so the fresh engine had no
+district at all (revision 0), and every sweep was discarded against it. The villages were the same:
+Java's registry knew them, so their starts were never adopted again, and the engine had none. A base
+marked before the reset would have stayed marked in Java and unknown to the engine. Nothing in the log
+said so beyond the engine's two lines above. The journal held 827 records at 84 s and 928 at the end
+(no autosave at the laptop's tick rate). Its MSPT (mean 129.9 ms, sd 40.5, p50 111.7, p90 212.3, at a
+load of 23, alone) is not a measurement.
+
+**r-reset2, with the fix: the engine was told again.** It booted in 64.2 s (`Done (14.6s)`), stopped
+in 3.9 s, exit 0. 12 s after `Done`, before the engine's own lines, the bridge logged:
+
+```
+[mic_rtsim] phase 1: the engine's pages lack observations the journal no longer holds (a sim reset?): 2 villages adopted again, 0 base marks to be made again
+[mic_rtsim] industry: the engine's pages lack observations the journal no longer holds (a sim reset?): 55 districts are announced again
+```
+
+- `rtsim perf` 20 s after `Done`: `phase 1: villages 2 ...; in the engine: villages 2` (the engine's own
+  count, new in this branch for this check);
+- the main base: `revision 2 (declared 2)`, and its glass checksum `revision 2 (district 2)`, `52 sweeps
+  (40 sampled)`, no discard, the window open (`3900/6000 ticks` at the end: 6,000 ticks is 10 minutes
+  at the laptop's 10 TPS, longer than the sampling);
+- against r-reset the log has only the two lines above that are new; the journal held 1,213 records
+  at 20 s and 1,327 at the end;
+- its MSPT (mean 101.1 ms, sd 16.6, p50 96.3, p90 125.5, at a load of 13, alone) is not a measurement.
+
+**What the working glass box showed next: its solve on the main base does not converge.** With sweeps
+sampled, the engine solved the main base's graph 6 times, and the last solve ran 278 rounds, its cap
+(`glass.solveRoundsMax`, GLASSBOX.md 2.10: two rounds a multi-input machine plus two, 138 of them
+here), in 2.40 s, about 8.6 ms a round, `NOT converged`; past the cap the solve falls back to its lower
+bound (3.2).
+One kind, flint at a black-box node, is predicted at -392.6 a minute (bounds minus to plus infinity)
+against 0.867 measured. The solve runs inside the engine's step, so the step stalls: `hand-overs: 5661
+submitted, 132 ticks waited on the engine`, against 0 in every earlier run, where the main base never
+compiled. The server thread does not wait (a tick that finds the step still running only keeps
+collecting), so players do not see it; the sim's own clock lags by the solve. On the host's 4 cores,
+with the engine's background pool at nice 19 beside Elasticsearch, a solve will take longer. Open item
+5 of 6.9, DR9.
+
+**r-reset2-reload: the reset world booted again, an engine restored on the live world.** It reached
+`Done (10.1s)` 58 s after the start and stopped with exit 0. (The rehearsal's tool took its boot from
+the copied run's old log, so its own boot numbers for this run are wrong; these are from the log.)
+
+- the engine came back from the reset's pages: `pages include observation 3305`, `phase 1 world
+  restored ...: 2 nodes`, `herds restored: 2 herds`; no `lack observations` line, as for any restart;
+- the main base's glass box worked on the restored engine: `revision 2 (district 2)`, 11 of 23 sweeps
+  sampled, no discard, the window open (`1000/6000`). So what failed on the reused GameTest world (6.9,
+  4.) does not happen on a real server's restart;
+- the solve again: 13 solves, the last 5.43 s, `NOT converged`, at a load of 82 from other agents'
+  builds; `257 ticks waited on the engine` of 2,315 hand-overs;
+- **the stop's final save failed**: `the native engine's final save failed (status -11): a step was
+  still running after 5000 ms; it finishes on its own, pages not saved; the journal replays what the
+  pages miss`. The stop took 13.0 s, the 5 s wait included. Nothing is lost by design (the journal,
+  saved with the world, holds what the pages miss, and the next start replays it: the path a crash
+  takes), but every stop that lands in a solve takes that path. The world was not booted a third time to
+  watch the replay.
+- its MSPT (mean 442.5 ms, sd 156.1, at a load of 82, 0.94 cores) is not a measurement.
+
+**For SRV2**: an agent with SSH and sudo can reset the sim (stop, delete `world/rtsim/`, start, 8.6),
+and with this branch's jars the engine is told again everything Java knows. What it cannot get back is
+what only the engine had, the sim's economy above.
 
 ### 6.8 rtsim fixes from the rehearsal
 
-Both are in the Create plugin's glass box, both are fixed in this branch with a GameTest
-(`GlassExtractionGameTests.anUpwardChuteCompiles`, batch `glass_extract_03`), and the rehearsal's runs
-used the jars from before the fixes (built at 689d311).
+The first two are in the Create plugin's glass box, fixed in this branch with a GameTest
+(`GlassExtractionGameTests.anUpwardChuteCompiles`, batch `glass_extract_03`); the rehearsal's main runs
+used the jars from before them (built at 689d311), the resets the jars after. The third is in the core,
+found by the first reset and checked by the second (6.7).
 
 1. **An upward chute made its whole district not compilable.** `CreateCompile.chuteEdges`'s upward
    branch (a fan pushing or pulling the air up) asked `Cycles.chuteGrabPeriod` for its period, which
@@ -491,6 +612,17 @@ used the jars from before the fixes (built at 689d311).
    handing down) for as long as nothing else in the district changed. A chunk that loads before its
    kinetic network settles does exactly this. `CreateGlass.fingerprint` now hashes the chute's
    direction (up or down, not its speed), so a fan starting, stopping or turning round recompiles.
+3. **A sim reset left the engine without what Java had announced** (6.7). Java keeps in the world's
+   data what it has told the engine: each district's declared revision (`mic_rtsim_industry.dat`), the
+   adopted villages (`mic_rtsim_villages.dat`) and the marked bases (`mic_rtsim_bases.dat`). Delete the
+   pages and the fresh engine never hears of them again. `BoundarySession.observationsLost()` now
+   applies the kernel's own gap rule (`Replay::reconcile`: the journal starts past the observation after
+   the pages) at the session start, and then the industry module takes U10's path (forget everything
+   announced, declare every district again), phase 1 adopts every known village again (the engine takes
+   a village it knows as a no-op) and the base tracker drops its marks, so each base is marked again the
+   next time its player dwells there (the engine refuses a mark for a player it does not know yet). Both
+   modules log a WARN when they do it. A unit test (`BoundaryProtocolTest.aSimResetIsSeenAsLostObservationsAndARestartIsNot`)
+   covers the rule against a restart, a reset and the edge cases; the GameTests were not rerun for it.
 
 ### 6.9 Open items (not fixed here)
 
@@ -512,7 +644,28 @@ used the jars from before the fixes (built at 689d311).
    257019`, as if the industry engine's clock stood still after the restore while the unthrottled
    server ran on. The first run (fresh) also failed `glassexit.crushing_wash_blast` (measured 0 against
    24.2 a minute) and `theDebugOutputShowsWhatJavaKnows` (industry_10) under a load near 40; both pass
-   in the fresh rerun. Whether a restored engine's glass windows open on a real server is RESTOREITEM
+   in the fresh rerun. On a real server a restored engine's glass windows do open (r-reset2-reload,
+   6.7), so the stalled clock is the reused GameTest world's; its cause was not found.
+5. **The glass solve on a large district** (6.7): 278 rounds, the cap, in 2.4 to 5.4 s, never
+   converged, inside the engine's step, on the main base's 1,258 nodes and 138 multi-input machines.
+   Two ways out, for the glass box's owners: a solve bounded in time (or spread over steps), or solved
+   off the step on the background pool with the step taking the last finished solution. Until then,
+   DR9. The graph is in the rehearsal's private runs (`rtsim district debug 1`), and a GameTest at
+   that size would reproduce it.
+6. **A module that starts fresh on its own is not seen by the bridge.** The fix of 6.8 (3.) sees a
+   reset of the whole engine. A single module whose pages the build cannot read starts fresh by itself
+   (the industry engine, W23; phase 1, the herds, the dragons, the ships and the conflict module,
+   PF18) while the other modules' pages and the observation sequence stay, so the bridge does not
+   announce again what that module lost: the industry engine would have no districts, phase 1 no
+   villages. The fix is the engine telling the bridge which modules started fresh at its start.
+   Until then, an rtsim update that changes a page format is done as a whole reset (8.6).
+7. **A reset forgets the houses the sim built.** The registry keeps them and the village is adopted
+   again with its grown box, but the engine no longer knows which houses it built, nor a build in
+   flight at the stop. No house was built in the rehearsal: this is from the code.
+8. **Phase 1 switched off and on loses the villages first seen while it was off.** The engine ignores
+   phase 1's records while it is off (U10), Java registers the village as adopted all the same, and
+   unlike the industry module nothing announces it again when phase 1 comes back. From the code; the
+   rehearsal never switched a module.
 
 ## 7. What a migration would need
 
@@ -533,9 +686,10 @@ nothing it is not told to: villages from their structure starts as they load, di
 **An rtsim update that changes the save format.** mic-rtsim is unreleased, and before a public release
 it carries no migration code (no backward compatibility before release). So an update that changes the
 format is SRV2's sim reset, which is all an agent with SSH and sudo needs to do (runbook 8.6): stop,
-delete `world/rtsim/`, start. A page format change resets the paged modules by itself: a module whose
-pages the engine cannot read (an older format among them) starts fresh, and its old pages are deleted
-at start (PF18). 6.7 says what a reset keeps and what it loses. When rtsim is
+delete `world/rtsim/`, start; 6.7 shows it working with this branch's jars. A page format change also
+resets a module by itself: a module whose pages the engine cannot read (an older format among them)
+starts fresh, and its old pages are deleted at start (PF18). But the bridge does not see that (6.9,
+6.), so the runbook resets the whole sim instead. 6.7 says what a reset keeps and what it loses. When rtsim is
 released and its saves start to matter, a migration is code in rtsim run at start, and the rehearsal's
 tools (a copy of the world, the scenario, `becompare.py`, the log groups) are how to rehearse it.
 
@@ -552,7 +706,7 @@ its console for maintenance: systemd starts it again 10 seconds later. Use `syst
 1. Pack: at cd019b2 or later, with the DR1 and DR4 fixes in (mic-petrochem 1.0.1 among them). Export
    the mrpack from a pack checkout that has the raw jars `index.toml` lists (Destroy among them; check
    each with `sha256sum` against `index.toml`), and copy `scripts/setup_server.py` with it.
-2. rtsim: from main at or after the merge of `feat/deploy-rehearsal` (the glass fixes, 6.8), in the
+2. rtsim: from main at or after the merge of `feat/deploy-rehearsal` (the fixes of 6.8), in the
    mic-rtsim repository, `tools/natives/build-natives.sh --only linux-x86_64-gnu` in
    mic-native's dev shell, then `cd neoforge && ./gradlew -Prelease :core:jar` plus one `:<plugin>:jar`
    for each of the eleven plugins (carryon, climate, create, destroy, dieselgenerators,
@@ -601,7 +755,13 @@ its console for maintenance: systemd starts it again 10 seconds later. Use `syst
 4. Districts: from the console (`sudo -u sistermcserver screen -r minecraft`, detach with Ctrl-A D),
    `execute positioned <x> <y> <z> in minecraft:overworld run rtsim district adopt 16` at each factory,
    then `rtsim district list` to see what it made (55 districts in the rehearsal, DR6) and `rtsim
-   district info <id>` on the main base: its glass status must not say `not compilable`.
+   district info <id>` on the main base. With the glass box on (DR9 recommends it off for now): its
+   `glass:` line must say `compile N: ... nodes`, the log must have no `glass: compiling district <id>
+   failed` and no `is not compilable`, and a few minutes on its `glass checksum:` line must show sweeps
+   sampled (`52 sweeps (40 sampled)`) and the same revision twice (`revision 2 (district 2)`). A
+   `(district 0)` there, or a last discard of `revision` over and over, is the reset bug of 6.8 (3.).
+   With it off, `rtsim district info` says nothing about the glass, and `rtsim perf` should show
+   few `ticks waited on the engine`.
 5. Watch for a day: `/neoforge tps`, `/rtsim perf`, `rtsim district perf` (the slowest inventory read,
    open item 2 of 6.9), the size of `world/rtsim/`, and the GC log's heap after young collections.
 
@@ -642,8 +802,15 @@ under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with
   `mic_native/` folder can stay or go.
 - **Everything**: stop; `sudo mv /var/lib/mc/server /var/lib/mc/server-failed`; `sudo mv
   /var/lib/mc/server-backup-<date> /var/lib/mc/server`; start.
-- **Sim reset** (SRV2, when a save format change has no migration): stop; delete `world/rtsim/`;
-  start. Section 6.7 says what a reset leaves behind.
+- **Sim reset** (SRV2, when a save format change has no migration): stop; delete `world/rtsim/` and
+  nothing else (the world's `data/mic_rtsim_*.dat` is how the bridge knows what to announce again);
+  start. The log must then say `the engine's pages lack observations the journal no longer holds` twice,
+  from the industry module and from phase 1, with the counts of districts and villages announced
+  again, and `rtsim perf`'s phase 1 line must count as many villages `in the engine` as before the
+  semicolon. Section 6.7 says what a reset keeps and what it loses. Only with jars at or after this
+  branch's merge: older ones leave the fresh engine without the districts and villages (6.8, 3.). Do
+  the same for an rtsim update that changes a page format: delete `world/rtsim/` rather than let the
+  engine drop one module's pages by itself, which the bridge does not see (6.9, 6.).
 - **Restoring a world from a backup**: `world/rtsim/` and `world/data/mic_rtsim_*.dat` belong to the
   world they were saved with. Restore them with it, from the same backup, never on their own; if in
   doubt, delete `world/rtsim/` (a sim reset).
@@ -663,3 +830,4 @@ recommended option is first.
 | DR6 | What the sim sees around the main base (6.5) | `rtsim district adopt 16` at the main base, as rehearsed, and keep the 54 small districts it makes | (b) `rtsim district exclude` the small ones, one command each where they stand. (c) A smaller adopt radius: may leave parts of the main base out | The 54 are real player blocks (0 to 3 inventories each) and cost next to nothing to sweep; whether the sim should count a lone furnace as a factory is a design question, and exclude is reversible |
 | DR7 | The two KubeJS edits made on the live server (section 4) | Re-apply both after the upgrade and put the `borax` tag edit in the pack, so the next upgrade keeps it | (b) Drop them | `setup_server.py -y` overwrites them; the tag edit changes recipes, the other is a comment |
 | DR8 | The threat survey's column cap (6.5) | Leave `surveyMaxColumns` at 40,000; measure the survey's cost on the host before raising it | (b) Raise it until the main base fits, unmeasured | The main base is surveyed without its perimeter cut today, which is a fallback, not an error |
+| DR9 | The glass box on the host (6.7) | `enabled = 0` under `[industry.glass]` in `config/mic_rtsim-industry-server.toml` until a solve of the main base is bounded in time (6.9, 5.) | (b) Leave it on and watch `ticks waited on the engine` in `rtsim perf`: the server thread does not wait, the sim lags by each solve, and a stop during one leaves the pages to the journal. (c) `maxNodes` (20,000) below 1,258, which leaves the main base out and compiles the small districts | The glass box is a read-only checksum today: off, the sim runs on the black box alone, as it did in every rehearsal run before the chute fix, and nothing a player sees changes |
