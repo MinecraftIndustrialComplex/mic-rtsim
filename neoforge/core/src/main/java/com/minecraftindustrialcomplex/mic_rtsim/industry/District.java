@@ -67,8 +67,8 @@ public final class District {
     boolean sweepLive;
     int sweepRevision;
     boolean queued;
-    long approachSentAt = Long.MIN_VALUE;
-    int lastApproachDistance = Integer.MAX_VALUE;
+    /** IND_APPROACH (R5): each player's last distance to the district's unloaded part, and when: {distance, gameTime}. */
+    final java.util.Map<java.util.UUID, long[]> approachSeen = new java.util.HashMap<>();
 
     public District(long id, ResourceKey<Level> dim) {
         this.id = id;

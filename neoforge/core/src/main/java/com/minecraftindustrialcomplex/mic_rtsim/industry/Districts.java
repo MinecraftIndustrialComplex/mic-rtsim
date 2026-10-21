@@ -165,6 +165,24 @@ public final class Districts {
         }
     }
 
+    /**
+     * ChunkEvent.Load of a chunk with a held reconcile (R2): it and the district's other loaded chunks
+     * tick no block entity until the next drain, where the reconcile lands. A machine next door would
+     * otherwise pull from or push into an inventory whose count the reconcile is about to set.
+     */
+    void holdTicking(ServerLevel level, LevelChunk chunk) {
+        TickGate.hold(chunk);
+        District d = at(level.dimension(), chunk.getPos().toLong());
+        LongOpenHashSet set = d == null ? null : loaded.get(d.id);
+        if (set == null)
+            return;
+        for (long c : set) {
+            LevelChunk other = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+            if (other != null && other != chunk)
+                TickGate.hold(other);
+        }
+    }
+
     void onChunkUnload(ServerLevel level, LevelChunk chunk) {
         long c = chunk.getPos().toLong();
         District d = at(level.dimension(), c);
@@ -404,49 +422,82 @@ public final class Districts {
     }
 
     /**
-     * IND_APPROACH (choice H23): a player within {@code approachRadiusBlocks} of an unloaded district's
-     * bounding box. The engine-agnostic half of the stale-tick race's option (d): what to do with it
-     * (sending reconciles ahead) is the engine's and Ben's call.
+     * IND_APPROACH (choice H23, R5): a player within {@code approachRadiusBlocks} of a district chunk that is
+     * not loaded, whether the district is unloaded or partly loaded (I7: the engine replays the unloaded
+     * part, so its reconcile can go ahead too). Every 20 ticks. The distance is to the nearest chunk that is
+     * not loaded. Closing is per player, from that player's own distance at the last check: a player who
+     * stands still or walks away is not closing, whoever else is near. When some player is closing, the
+     * record carries the closing player who arrives first (distance and ETA); else the nearest player's
+     * distance and an unknown ETA. Once every chunk is loaded, no more records.
      */
     private void approach(long now) {
         int radius = IndustryConfig.get(IndustryConfig.APPROACH_RADIUS);
         for (ServerLevel level : ind.server.getAllLevels()) {
-            if (level.players().isEmpty())
-                continue;
+            List<ServerPlayer> players = level.players();
             for (District d : data.districts.values()) {
-                if (d.dim != level.dimension() || d.loadState != IndRecords.LoadState.UNLOADED || d.chunks.isEmpty())
+                if (d.dim != level.dimension() || d.chunks.isEmpty())
                     continue;
+                LongOpenHashSet set = loaded.get(d.id);
+                if (players.isEmpty() || (set != null && set.size() >= d.chunks.size())) {
+                    d.approachSeen.clear();
+                    continue;
+                }
                 int best = Integer.MAX_VALUE;
-                for (ServerPlayer p : level.players()) {
-                    double dx = Math.max(0, Math.max(d.minCx * 16 - p.getX(), p.getX() - (d.maxCx * 16 + 16)));
-                    double dz = Math.max(0, Math.max(d.minCz * 16 - p.getZ(), p.getZ() - (d.maxCz * 16 + 16)));
-                    best = Math.min(best, (int) Math.sqrt(dx * dx + dz * dz));
-                }
-                if (best > radius) {
-                    d.lastApproachDistance = Integer.MAX_VALUE;
-                    continue;
-                }
-                // The rate of closing from the last check (every 20 ticks), for an ETA; unknown at first.
+                int closingDistance = Integer.MAX_VALUE;
                 long eta = 0xFFFF_FFFFL;
-                boolean closing = false;
-                if (d.lastApproachDistance != Integer.MAX_VALUE && now > d.approachSentAt) {
-                    double rate = (double) (d.lastApproachDistance - best) / (now - d.approachSentAt);
-                    closing = rate > 0;
-                    if (closing)
-                        eta = Math.min(0xFFFF_FFFEL, (long) Math.ceil(best / rate));
+                for (ServerPlayer p : players) {
+                    double px = p.getX(), pz = p.getZ();
+                    if (toBox(px, pz, d.minCx, d.maxCx, d.minCz, d.maxCz) > radius) {
+                        d.approachSeen.remove(p.getUUID());
+                        continue;
+                    }
+                    int dist = Integer.MAX_VALUE;
+                    for (long c : d.chunks)
+                        if (set == null || !set.contains(c))
+                            dist = Math.min(dist, (int) toBox(px, pz, ChunkPos.getX(c), ChunkPos.getX(c), ChunkPos.getZ(c), ChunkPos.getZ(c)));
+                    if (dist > radius) {
+                        d.approachSeen.remove(p.getUUID());
+                        continue;
+                    }
+                    long[] seen = d.approachSeen.get(p.getUUID());
+                    if (seen != null && now > seen[1] && seen[0] > dist) {
+                        double rate = (double) (seen[0] - dist) / (now - seen[1]);
+                        long e = Math.min(0xFFFF_FFFEL, (long) Math.ceil(dist / rate));
+                        if (closingDistance == Integer.MAX_VALUE || e < eta) {
+                            eta = e;
+                            closingDistance = dist;
+                        }
+                    }
+                    if (seen == null)
+                        d.approachSeen.put(p.getUUID(), new long[] {dist, now});
+                    else {
+                        seen[0] = dist;
+                        seen[1] = now;
+                    }
+                    best = Math.min(best, dist);
                 }
-                d.lastApproachDistance = best;
-                d.approachSentAt = now;
+                if (d.approachSeen.size() > players.size())
+                    d.approachSeen.keySet().removeIf(u -> level.getPlayerByUUID(u) == null);
+                if (best == Integer.MAX_VALUE)
+                    continue;
+                boolean closing = closingDistance != Integer.MAX_VALUE;
                 int at = ind.latest(IndRecords.IND_APPROACH, IndRecords.Approach.SIZE, closing ? IndRecords.Approach.FLAG_CLOSING : 0);
                 if (at < 0)
                     continue;
                 ByteBuffer b = ind.open();
                 b.putLong(at + IndRecords.Approach.GAME_TIME, now);
                 b.putLong(at + IndRecords.Approach.DISTRICT, d.id);
-                b.putInt(at + IndRecords.Approach.DISTANCE, best);
+                b.putInt(at + IndRecords.Approach.DISTANCE, closing ? closingDistance : best);
                 b.putInt(at + IndRecords.Approach.ETA_TICKS, (int) eta);
             }
         }
+    }
+
+    /** Horizontal blocks from (x, z) to the box of chunks [minCx, maxCx] x [minCz, maxCz]; 0 inside. */
+    private static double toBox(double x, double z, int minCx, int maxCx, int minCz, int maxCz) {
+        double dx = Math.max(0, Math.max(minCx * 16 - x, x - (maxCx * 16 + 16)));
+        double dz = Math.max(0, Math.max(minCz * 16 - z, z - (maxCz * 16 + 16)));
+        return Math.sqrt(dx * dx + dz * dz);
     }
 
     // ---- detection ------------------------------------------------------------------------------
