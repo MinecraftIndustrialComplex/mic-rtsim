@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standalone Create Addon</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --good: #2d6a3e;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 880px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; }
+h3 { font-size: 19px; margin: 22px 0 6px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.label { font-size: 15px; color: var(--muted); margin: 0 0 4px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.scroll { overflow-x: auto; margin: 12px 0 8px; -webkit-overflow-scrolling: touch; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 16px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 15px; border-bottom-color: #c9c9d1; }
+td.num, th.num { text-align: right; }
+tr.group td { padding-top: 18px; font-weight: 650; color: var(--ink); border-bottom-color: #c9c9d1; }
+.nowrap { white-space: nowrap; }
+.cap { font-size: 15px; color: var(--muted); margin: 6px 0 16px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.state { font-weight: 600; }
+.state.done { color: var(--good); }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 0 0 14px; }
+.decision h3 { margin-top: 0; }
+.decision .rec { font-weight: 600; }
+.decision .why { color: var(--muted); font-size: 16px; }
+.decision ul { margin-top: 4px; }
+.quote { font-size: 19px; margin: 16px 0; padding: 0; max-width: 34em; }
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#ships">What ships</a>
+  <a href="#licenses">Licenses</a>
+  <a href="#ready">Not ready</a>
+  <a href="#saves">Saves</a>
+  <a href="#create">Create</a>
+  <a href="#sites">Sites</a>
+  <a href="#support">Support</a>
+  <a href="#decide">Your decisions</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">The Create addon is easy to package and not yet ready to ship</h1>
+  <p class="dek" data-ss-id="dek">What releasing the shared native library and rtsim's factory sim as their own Create addon would involve. Checked against the repos, Modrinth's and CurseForge's rules and Create's release history on 21 October 2026.</p>
+  <p class="lead" data-ss-id="lead">It would be three mods in one download: <strong>mic_native</strong> (loads the Rust library), <strong>mic_rtsim</strong> (the engine, with only industry switched on) and <strong>mic_rtsim_create</strong> (the Create hooks). Both sites accept a jar with native code inside, and Sable, already in the MIC pack, ships its Rust physics that way. What stops a release is the product and the repos: the exact replay of Create machines is still on a branch, Create 6 package loops replay as making nothing, there is no Create-only build, and every repo it needs is private. UR-1 removes the save-format question: deleting and reinstalling only ever loses production owed to unloaded chunks.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-mods"><div class="n">3</div><div class="t">mods, one download through jar-in-jar</div></div>
+    <div class="tile" data-ss-id="kpi-platforms"><div class="n">2 <small>of 8</small></div><div class="t">platforms ever run: Linux x86-64, and Windows under Wine</div></div>
+    <div class="tile" data-ss-id="kpi-cost"><div class="n">0.5%</div><div class="t">of the server thread at most, on 3 public Create worlds</div></div>
+    <div class="tile" data-ss-id="kpi-private"><div class="n">4</div><div class="t">private repos the build needs today</div></div>
+    <div class="tile" data-ss-id="kpi-open"><div class="n">14</div><div class="t">items to finish before strangers run it</div></div>
+  </div>
+</header>
+
+<section id="pitch" data-ss-id="pitch" data-ss-section>
+  <h2 data-ss-id="pitch-h">Players would get factories that keep working with nobody near them</h2>
+  <p data-ss-id="pitch-p1">Create factories stop when their chunks unload, so servers either run chunk loaders or lose the output. rtsim learns each factory's inputs and outputs while it is loaded and keeps paying them out while it is unloaded: the items are in the chests when someone comes back. Create already moves trains through unloaded chunks; rtsim adds the station exchange there. On three public Create worlds rtsim's own work cost 0.2 to 0.5% of the server thread (about 0.1 to 0.25 ms a tick).</p>
+  <p data-ss-id="pitch-p2">I found nothing on Modrinth that simulates unloaded Create factories. The nearest neighbour, <strong>Create: Meta Logistics</strong> (GPL-3.0, 41,017 downloads, updated yesterday), reads remote storage and chunk-loads a 3x3 area for 5 minutes when a train arrives. It loads chunks; rtsim avoids loading them.</p>
+</section>
+
+<section id="ships" data-ss-id="ships" data-ss-section>
+  <h2 data-ss-id="ships-h">What ships is three jars and twelve native libraries</h2>
+  <div class="scroll" data-ss-id="ships-table-wrap">
+  <table data-ss-id="ships-table">
+    <thead><tr><th>Piece</th><th>What it does</th><th>License</th><th>Repo</th><th>Public</th></tr></thead>
+    <tbody>
+      <tr><td><strong>mic_native</strong></td><td>Loads native libraries for any mod and picks the build for the CPU</td><td>MPL-2.0 (A18)</td><td>mic-native</td><td>No</td></tr>
+      <tr><td><strong>mic_rtsim</strong></td><td>The engine's Java side: districts, journal, sampler, config, commands</td><td>AGPL-3.0+ (A2)</td><td>mic-rtsim</td><td>No</td></tr>
+      <tr><td><strong>mic_rtsim_create</strong></td><td>The Create hooks: glass compiler, stations, trains</td><td>AGPL-3.0+</td><td>mic-rtsim</td><td>No</td></tr>
+      <tr><td>librtsim_jni</td><td>The Rust engine, inside the mic_rtsim jar: 8 platforms plus 4 faster x86-64 builds</td><td>AGPL-3.0+, host crates MPL-2.0 (A7)</td><td>mic-rtsim</td><td>No</td></tr>
+      <tr><td>deeptime-format</td><td>Linked into the engine for world wrapping (C31)</td><td>LGPL-3.0+</td><td>deep-time</td><td>No</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="ships-cap">The viewer (mic-viewer) is only used by rtsim-cli, so it stays out.</p>
+  <h3 data-ss-id="ships-corr-h">Three things are different from how the question framed it</h3>
+  <ul data-ss-id="ships-corrections">
+    <li><strong>It is three mods, not one jar.</strong> NeoForge's jar-in-jar can nest them so players download one file, as Sable does.</li>
+    <li><strong>There is no industry-only engine.</strong> rtsim-jni links all 12 Rust module crates, and the workspace has no Cargo features. The module switches (C25) are runtime config, and all nine default to on, so a plain install would also veto wandering traders (C8a) and run herds.</li>
+    <li><strong>A fourth private repo comes along.</strong> The engine pulls in deeptime-format from Deep Time, through rtsim-space.</li>
+  </ul>
+</section>
+
+<section id="licenses" data-ss-id="licenses" data-ss-section>
+  <h2 data-ss-id="licenses-h">AGPL costs server owners nothing unless they change the code</h2>
+  <p class="quote" data-ss-id="agpl-plain">Running it unmodified costs a server owner nothing. If they change the code and let players connect, they must offer those players the changed source.</p>
+  <p data-ss-id="agpl-packs">A modpack that includes the jar has to say where the complete source is. That source includes everything linked into the engine, so deeptime-format has to be published or cut out.</p>
+  <div class="scroll" data-ss-id="license-table-wrap">
+  <table data-ss-id="license-table">
+    <thead><tr><th>Combination</th><th>Allowed</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>MPL-2.0 code (mic_native, host crates) with AGPL code</td><td class="state done">Yes</td><td>MPL 2.0 section 3.3 allows it</td></tr>
+      <tr><td>LGPL-3.0+ deeptime-format inside the AGPL engine</td><td class="state done">Yes</td><td>Its source must then be public</td></tr>
+      <tr><td>Apache-2.0 microlp (the solver)</td><td class="state done">Yes</td><td>Compatible with the GPL-3.0 family</td></tr>
+      <tr><td>Windows builds with Microsoft's CRT and SDK</td><td class="state done">Yes</td><td>Through cargo-xwin; you accepted its license for Deep Time on 2026-09-28</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="license-cap">Missing: a notices file crediting the Rust and Java dependencies, which CurseForge requires.</p>
+</section>
+
+<section id="ready" data-ss-id="ready" data-ss-section>
+  <h2 data-ss-id="ready-h">Fourteen items stand between today and a public release</h2>
+  <p data-ss-id="ready-intro">Six are the product, four are safety on strangers' servers, four are packaging. Main today replays learned rates (the black box); the exact replay of Create's own machines (the glass box) is the branch in the first row.</p>
+  <div class="scroll" data-ss-id="ready-table-wrap">
+  <table data-ss-id="ready-table">
+    <thead><tr><th>Item</th><th>Where it stands</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr class="group"><td colspan="3">Product</td></tr>
+      <tr><td>Exact Create replay (G2)</td><td>On a branch, 83 commits ahead of main, not merged</td><td>feat/glassbox-g2</td></tr>
+      <tr><td>Create 6 package loops</td><td>Replay as making nothing: package addresses are not modelled. Planned for G3</td><td>G2-56</td></tr>
+      <tr><td>Big bases</td><td>The solver is bounded, not solved, so they stay on learned rates. Splitting factories at links and stores (SEC-1) is designed, not built</td><td>G2-58, SEC-1</td></tr>
+      <tr><td>Accuracy evidence</td><td>The exit test (12 small factories, a far copy against a loaded copy in real Create) is on the branch; the fed-factory matrix is pending. The learned-rate replay's 99.71% comes from a synthetic Rust test</td><td>G2-55, indrework</td></tr>
+      <tr><td>Cargo trains</td><td>Station exchange seen on one passenger metro (67 arrivals, 13 simulated unloaded), never with cargo</td><td>stress worlds 4.4</td></tr>
+      <tr><td>Glass state across restarts</td><td>Not saved yet</td><td>G2-9</td></tr>
+      <tr class="group"><td colspan="3">Safety</td></tr>
+      <tr><td>Reinstall after playing without it</td><td>Not measured; an unacknowledged reconcile could replay. The fix and a rehearsal scenario are queued</td><td>UR-1</td></tr>
+      <tr><td>Lone chests become districts</td><td>Fix in progress on fix/district-seeds</td><td>DS-10</td></tr>
+      <tr><td>Clients without the mod</td><td>It registers no blocks, items or network messages, so it should be server-only, but nobody has tried a join</td><td>rehearsal 0.12</td></tr>
+      <tr><td>C2ME</td><td>The save barrier takes a reflection path under C2ME, never crash-tested on a C2ME world</td><td>JB3</td></tr>
+      <tr class="group"><td colspan="3">Packaging</td></tr>
+      <tr><td>Create-only build</td><td>Every module linked and on by default; deeptime-format private</td><td>Cargo.toml, RtsimConfig</td></tr>
+      <tr><td>Natives on real machines</td><td>12 libraries for 8 platforms build; macOS, ARM and musl never ran, Windows only under Wine. No full cross-build of the engine on record</td><td>mic-native README</td></tr>
+      <tr><td>Public source</td><td>All four repos private; REL-1 says nothing new goes public</td><td>REL-1</td></tr>
+      <tr><td>Third-party notices</td><td>None yet</td><td>CurseForge terms 4.1</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="ready-cap">Addon machines (Vintage, Metallurgy, Diesel and the rest) get one learned node each until G4. A limit, not a blocker.</p>
+</section>
+
+<section id="saves" data-ss-id="saves" data-ss-section>
+  <h2 data-ss-id="saves-h">UR-1 lets the description say: delete it any time</h2>
+  <p data-ss-id="saves-p1">No save-format promise is needed. A format change, a reinstall or a failed load resets rtsim's state (SRV2), and it re-learns from the world. A reset loses production owed to unloaded chunks and what the sim had learned. It never loses a player's items or blocks, because rtsim never holds the only copy.</p>
+  <p data-ss-id="saves-p2">Uninstalling was tested on two public stress worlds. Both boot and run normally. NeoForge logs one warning for the missing mods and one skipped-attachment line per seeded chunk on the first load (73 and 46), then stops. rtsim's files stay behind, inert. The trader gamerule left off there is fixed by the trader veto (C8a). The one path not yet measured is a reinstall after playing without it (first safety row above).</p>
+</section>
+
+<section id="create" data-ss-id="create" data-ss-section>
+  <h2 data-ss-id="create-h">Create coupling is one version range, three hooks and five private reads</h2>
+  <div class="scroll" data-ss-id="create-table-wrap">
+  <table data-ss-id="create-table">
+    <thead><tr><th>Contact</th><th>What it is</th><th>What breaks it</th></tr></thead>
+    <tbody>
+      <tr><td>Version range</td><td><code>[6.0.10, 6.1)</code></td><td>Create 6.1: NeoForge refuses to load the addon until it is re-released</td></tr>
+      <tr><td>3 mixins, required</td><td><code>Train.arriveAt</code>, <code>Train.leaveStation</code>, <code>GlobalStation.runMailTransfer</code></td><td>A moved method stops the server at boot</td></tr>
+      <tr><td>5 private reads</td><td><code>TorquePropagator.networks</code>, the deployer's mode, the arm's inputs and outputs, <code>getRotationSpeedModifier</code></td><td>A renamed field</td></tr>
+      <tr><td>Machine rules</td><td>The glass compiler's cycle times, belts, funnels, arms</td><td>A balance change: checks fail, and after 3 failed windows that machine kind falls back to learned rates (G-B14)</td></tr>
+      <tr><td>Loader</td><td>NeoForge 1.21.1 only</td><td>Create 6 also ships for Forge 1.20.1 (6.0.8, November 2025)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p data-ss-id="create-cadence">Create 6.0.x has had a release every 2 to 3 months since 6.0.6 (June 2025), and 6.0.10 (21 April 2026) is the latest. Each release means checking the hooks and reads and putting out a new build.</p>
+</section>
+
+<section id="sites" data-ss-id="sites" data-ss-section>
+  <h2 data-ss-id="sites-h">Both sites take a jar with native code inside; neither asks for source</h2>
+  <ul data-ss-id="sites-rules">
+    <li><strong>Modrinth.</strong> The Content Rules (13 August 2026) say nothing about native code. They require every dependency to be declared and the license and disclosures to be correct. Its malware scanner can send a file to manual review, which slows approval. An open request (modrinth/code#7631) asks for a native-code disclosure.</li>
+    <li><strong>CurseForge.</strong> External download links are banned, so the natives must sit inside the jar, as mic_native already does. Files pass automated checks and manual review, and the malware processor can take days. Open-source credits are required. CurseForge modpacks can only include mods hosted there.</li>
+  </ul>
+  <div class="scroll" data-ss-id="precedent-wrap">
+  <table data-ss-id="precedent-table">
+    <thead><tr><th>Precedent</th><th>Native code</th><th>How it ships</th></tr></thead>
+    <tbody>
+      <tr><td>Sable 2.0.5 (in the MIC pack)</td><td>Rust physics (Rapier)</td><td>A 9 MB compressed bundle in a nested jar, unpacked to <code>.sable/natives</code></td></tr>
+      <tr><td>Simple Voice Chat</td><td>Opus codec</td><td>Linux, macOS and Windows on x64 and ARM, with a Java fallback</td></tr>
+      <tr><td>spark</td><td>async-profiler</td><td>Bundled, used where the platform supports it</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="sites-cap">Simple Voice Chat is All Rights Reserved and on both sites: neither asks for source.</p>
+</section>
+
+<section id="support" data-ss-id="support" data-ss-section>
+  <h2 data-ss-id="support-h">Support means strangers' packs, Create updates and native crashes</h2>
+  <ul data-ss-id="support-list">
+    <li><strong>Other performance mods.</strong> It has only run inside the MIC pack (168 mods) with C2ME, Lithium, ModernFix, FerriteCore, ServerCore and Clumps. Lithium crashed the tick-order read on a stress world until 1ed1774 fixed it. Public packs mix differently, so expect a few such reports in the first weeks.</li>
+    <li><strong>Create updates.</strong> One check and possibly one release every 2 to 3 months, and a real port at 6.1.</li>
+    <li><strong>Native crashes.</strong> A crash inside the Rust engine does not give a Java stack trace, so each release's debug symbols need keeping.</li>
+    <li><strong>Bug reports.</strong> They arrive on the public repo. An issue template asking for the mod list, the log and <code>/rtsim district perf</code> keeps them readable. With a mirror, pull requests need porting back to the private repo.</li>
+  </ul>
+</section>
+
+<section id="decide" data-ss-id="decide" data-ss-section>
+  <h2 data-ss-id="decide-h">Four decisions are yours, recommendation first</h2>
+
+  <div class="decision" data-ss-id="d-public">
+    <h3 data-ss-id="d-public-h">1. What becomes public (REL-1 says nothing new does)</h3>
+    <p class="rec" data-ss-id="d-public-rec">Recommended: once the list is done, publish a source mirror of only what ships (mic-native, plus mic-rtsim's engine crates, core and Create hooks), exported each release without history. Deep Time and the viewer stay private.</p>
+    <p class="why" data-ss-id="d-public-why">The private repos' history and docs describe your server and the rest of the pack. A mirror ships the code without them.</p>
+    <ul data-ss-id="d-public-alts">
+      <li>Open mic-rtsim and mic-native whole, with history: simpler, and the history goes public.</li>
+      <li>Stay private: no public release; MIC keeps copying the jars (REL-1 as it is).</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="d-license">
+    <h3 data-ss-id="d-license-h">2. The license</h3>
+    <p class="rec" data-ss-id="d-license-rec">Recommended: keep AGPL-3.0-or-later for the engine, core and Create hooks, and MPL-2.0 for mic_native (A2, A7, A18).</p>
+    <ul data-ss-id="d-license-alts">
+      <li>GPL-3.0: no network clause, so a server could run a changed version without sharing it.</li>
+      <li>LGPL-3.0 or MPL-2.0: weaker; closed mods may build on it, and there is no network clause.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="d-name">
+    <h3 data-ss-id="d-name-h">3. The name</h3>
+    <p class="rec" data-ss-id="d-name-rec">Recommended: Create: Distant Factories. It says what players see, a far factory still working, without chunk jargon.</p>
+    <ul data-ss-id="d-name-alts">
+      <li>Create: Unloaded Factories (literal, for players who know chunks).</li>
+      <li>Create: Offline Factories (shorter, but reads as "no internet").</li>
+    </ul>
+    <p class="why" data-ss-id="d-name-why">No Modrinth project uses any of the three names. The mod ids can stay mic_rtsim and mic_rtsim_create.</p>
+  </div>
+
+  <div class="decision" data-ss-id="d-when">
+    <h3 data-ss-id="d-when-h">4. When</h3>
+    <p class="rec" data-ss-id="d-when-rec">Recommended: an alpha on Modrinth and CurseForge on the same day, once the 14 items are done. Addon machine models (G4) follow in updates.</p>
+    <ul data-ss-id="d-when-alts">
+      <li>Sooner: once the 8 safety and packaging items are done, release the learned-rate replay from main as an early alpha, and add the exact replay later. Feedback comes sooner, but players' first impression is the weaker model.</li>
+      <li>Later: wait for G4, so packs full of Create addons get the exact replay too.</li>
+    </ul>
+  </div>
+
+  <div class="box" data-ss-id="my-choices">
+    <p class="label" data-ss-id="my-choices-label">Choices I would make myself (all reversible)</p>
+    <ul data-ss-id="my-choices-list">
+      <li>One codebase: MIC runs the same jars, and its config turns the other modules on. The addon's defaults switch on industry only.</li>
+      <li>Cut deeptime-format with a Cargo feature rather than publish it.</li>
+      <li>Leave the viewer out of the first release.</li>
+      <li>Keep the natives inside the jar, and say so in the description, with links to the source and the build script.</li>
+    </ul>
+  </div>
+</section>
+
+<details data-ss-id="sources" data-ss-react="off">
+  <summary>Sources</summary>
+  <ul>
+    <li>mic-rtsim main at aca3c3a: DECISIONS.md rows A2, A7, A18, C8a, C25, C31, G-B14, REL-1, SEC-1, SRV2, UR-1; Cargo.toml and crates/rtsim-jni/Cargo.toml; crates/rtsim-space (deeptime-format); neoforge core RtsimConfig.java and Module.java; neoforge/create neoforge.mods.toml and mic_rtsim_create.mixins.json; PATCHES.md rows 18 to 20 and 30 to 34; tools/natives/build-natives.sh.</li>
+    <li>docs/stress-worlds-results.md sections 1, 3, 4.4, 5, 6 and 8 (PR #9513, Mysda, Greggi and Alvedon); docs/choices-indrework.md; docs/choices-journal-barrier.md (JB3); docs/deploy-rehearsal-omegasrv.md item 0.12.</li>
+    <li>Branch feat/glassbox-g2 at d3b4e5a: docs/choices-glassbox-g2.md (G2-9, G2-16, G2-55, G2-56, G2-58) and GLASSBOX.md sections 8.1 and 11.3. Branch fix/district-seeds at 9449891 (DS-10).</li>
+    <li>mic-native README (status of 2026-10-20), NOTICE.md and tools/natives/build-natives.sh. Repo visibility and licenses from GitHub (gh repo view).</li>
+    <li>Modrinth Content Rules, modrinth.com/legal/rules (modified 13 August 2026); Modrinth Terms, modrinth.com/legal/terms; support article on content disclosures; github.com/modrinth/code/issues/7631.</li>
+    <li>CurseForge Project Moderation Policies, support.curseforge.com article 9000197279 (modified 13 October 2026); CurseForge Mod Authors Terms, legal.overwolf.com (21 July 2025), sections 3.7 and 4.1.</li>
+    <li>Sable 2.0.5 jar checked locally in the MIC pack; github.com/ryanhcode/sable; Simple Voice Chat natives (github.com/henkelmax/simple-voice-chat); spark AsyncProfilerAccess (github.com/lucko/spark).</li>
+    <li>Modrinth API: Create versions for NeoForge 1.21.1 and Forge 1.20.1; searches for the candidate names, "chunkless", "far factories" and "factory simulation"; the Create: Meta Logistics project page.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">Built for Ben from the mic-rtsim repos on 21 October 2026. Private page.</footer>
+
+</body>
+</html>
