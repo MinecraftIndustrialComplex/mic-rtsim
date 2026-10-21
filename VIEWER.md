@@ -1000,6 +1000,12 @@ For Deep Time's coordinator to review.
 - **`/api/status`** (an extra route): each module's load status and state hash, each layer's mark
   count or why it is empty, the caches and the heap. An empty layer's reason also comes with its
   marks (`LayerMarks.empty`), and the page shows it under the layer's name.
+- **Checked against the engine.** Every module with a state hash in its TEST save reads back to it
+  (`rtsim-view/tests/hashes.rs`; a save whose hash differs is flagged in `/api/status` and at
+  start). Industry has no such hash, so the harness stops the iron line with three districts
+  replaying (two in one cluster) and checks that each district's card decode (inspection, replay
+  stock, cluster, processes) equals what the live engine held just before the save
+  (`rtsim-view/tests/harness.rs`).
 - **Measured** (the laptop, `rtsim-cli/tests/view.rs`): at 100,000 synthetic districts (the industry
   bench's, joined four to a replay cluster by power lines, half of them packing mail, one in ten
   with a station, replaying for 2,000 ticks: 125,001 pages, 34.4 MiB raw), the sidecar starts in
