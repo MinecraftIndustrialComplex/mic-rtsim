@@ -301,8 +301,6 @@ pub fn player_key(uuid: Uuid) -> u64 {
 pub const TABLE_HERDS: u16 = 0x4810;
 /// The page table of the region index.
 pub const TABLE_REGIONS: u16 = 0x4812;
-/// The page table of the herds' resident state when they page (one page, id 0).
-pub const TABLE_META: u16 = 0x4813;
 /// The page table of the wheel's log pages (docs/choices-paging-followups.md PF8).
 pub const TABLE_WHEEL: u16 = 0x4814;
 /// The page table of the claims map's pages (PF8).

@@ -20,7 +20,9 @@
 //!   sequences from the core's counter, after the core's, the industry's and phase 1's. All are per
 //!   session (S11): puppets never outlive a session, and a lost adoption or discard is decided
 //!   again when Java reports the body again.
-//! - **Pages** ([`Link::load`], [`snapshot`]): table 0x4400, one page with `Dragons::save`. The
+//! - **Pages** ([`Link::load`], [`save`]): the dragons page through the engine's store
+//!   (`engine/paging.rs`, PF12): their meta page at table 0x4400 id 0, their row and index tables
+//!   at 0x4410 to 0x4416, a save writing the pages changed since the last one. The
 //!   dragons share the phase 1 world, so while there is any dragon or lair the phase 1 link takes a
 //!   snapshot at every save (S4), and both are written in one commit.
 //! - **The switch** (C25, U10): `Module.ECOLOGY` (bit 4). Off, the dragons ignore their records,
@@ -33,28 +35,27 @@
 //! it for the protocol test.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use rtsim_ecology::boundary::{self, Cmd, Obs, SpeciesDict};
 use rtsim_ecology::dragon::LairKind;
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
 use rtsim_ecology::prey::Item;
 use rtsim_ecology::species::Species;
-use rtsim_ecology::{DragonStats, DragonTunables, Dragons};
+use rtsim_ecology::{DragonStats, DragonTunables, Dragons, DragonsTickets};
 use rtsim_kernel::clock::Tick;
-use rtsim_kernel::codec::{CodecError, Reader, Writer};
-use rtsim_kernel::page::{PageKey, PageStore};
+use rtsim_kernel::page::{PageKey, SaveBatch};
+use rtsim_kernel::rows::PageSource;
 
+use super::paging::{self, Live, Pager};
 use super::{State, log_error, log_info, shared};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The dragons' pages: table 0x4400 ('D'), next to the industry engine's 0x4900 and phase 1's
 /// 0x5000.
 pub const TABLE: u16 = 0x4400;
+/// Their meta page (PF12); their own tables are 0x4410 and up (`rtsim_ecology` TABLES).
 pub const KEY_DRAGONS: PageKey = PageKey::new(TABLE, 0);
-const MAGIC: u32 = u32::from_le_bytes(*b"RTDL");
-/// 2: `Dragons::save` writes its rows as paged tables' blobs (`PagedArena`, `PagedRows`) after
-/// the resident meta (docs/choices-paging-modules.md, Dragons).
-const VERSION: u16 = 2;
 
 /// Java's module bit the dragons run under (`config/Module.java`: ECOLOGY is ordinal 4). With it
 /// off the dragons are frozen (U10): no records, no runs, no commands, their page kept.
@@ -78,12 +79,12 @@ pub(super) struct Link {
     pub(super) index: DistrictIndex,
     /// Commands not written yet (per session).
     queue: VecDeque<Cmd>,
-    enabled: bool,
+    pub(super) enabled: bool,
     /// The dragons' session reset (bodies of an earlier session or of before a switch-off are
     /// gone) is due the next time they run.
     reset_due: bool,
-    /// The page as last written or read: what a save keeps while the dragons are switched off.
-    last_page: Option<Vec<u8>>,
+    /// What the saves owe the dragons' pages (a save while switched off, a purge at start).
+    pub(super) pager: Pager,
     /// The Java ids of the species bodies and lair structures, from Java's dictionary (built when
     /// first needed after a DICT).
     java_species: Option<SpeciesDict>,
@@ -106,13 +107,19 @@ fn new_engine() -> Dragons {
 /// **The policy for dragon pages this build cannot read** (S12, as phase 1's
 /// `when_pages_unreadable` and industry's W23): dropped with a loud log, the dragons start
 /// afresh (the plugin reports every lair and dragon body again as it loads), and the next save
-/// replaces them. Returning `Err` here would stop the engine instead.
-fn when_pages_unreadable(why: &str) -> Result<Link, String> {
+/// replaces them; they are deleted at start (`Pager::purge`), before a fresh table could read
+/// them. Returning `Err` here would stop the engine instead.
+fn when_pages_unreadable(
+    why: &str,
+    source: &Arc<dyn PageSource>,
+    budget: usize,
+) -> Result<Link, String> {
     log_error(&format!(
         "DRAGON PAGES DROPPED: {why}. The dragons start afresh (lairs and bodies are reported again as their chunks load) and the next save replaces them"
     ));
-    let mut l = Link::empty();
+    let mut l = Link::fresh(source, budget);
     l.dropped_pages = true;
+    l.pager.purge = true;
     Ok(l)
 }
 
@@ -124,7 +131,7 @@ impl Link {
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
-            last_page: None,
+            pager: Pager::default(),
             java_species: None,
             items_defined: BTreeSet::new(),
             dropped_pages: false,
@@ -135,66 +142,65 @@ impl Link {
         }
     }
 
-    /// Loads the dragons' page. `world_restored` says the phase 1 world came back from its pages:
-    /// the dragons live in that world (its knowledge and legs), so without it their page is
-    /// dropped too.
-    pub(super) fn load(store: &mut PageStore, world_restored: bool) -> Result<Link, String> {
-        let page = match store.get(KEY_DRAGONS) {
-            Ok(p) => p,
-            Err(e) => return when_pages_unreadable(&format!("cannot read the dragons' page: {e}")),
-        };
-        let Some(b) = page else {
-            return Ok(Link::empty());
-        };
+    /// New dragons paging through the engine's store under `budget` row bytes.
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize) -> Link {
+        let mut l = Link::empty();
+        l.engine.attach_store(source.clone(), budget);
+        l
+    }
+
+    /// Opens the dragons' pages (their meta page; the rows are read as they are needed), paging
+    /// under `budget` row bytes. `world_restored` says the phase 1 world came back from its
+    /// pages: the dragons live in that world (its knowledge and legs), so without it their pages
+    /// are dropped too. `test`: check the state hash the save wrote (PF16).
+    pub(super) fn load(
+        source: &Arc<dyn PageSource>,
+        budget: usize,
+        test: bool,
+        world_restored: bool,
+    ) -> Result<Link, String> {
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
+        match source.read(KEY_DRAGONS) {
+            Err(e) => return unreadable(&format!("cannot read the dragons' meta page: {e}")),
+            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+                return unreadable("dragon pages without their meta page");
+            }
+            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(Some(_)) => {}
+        }
         if !world_restored {
-            return when_pages_unreadable(
-                "the phase 1 world they live in did not come back from its pages",
-            );
+            return unreadable("the phase 1 world they live in did not come back from its pages");
         }
-        let mut r = Reader::new(&b);
-        let head = (|| -> Result<(), CodecError> {
-            if r.u32()? != MAGIC {
-                return Err(CodecError::Invalid("not a dragons page".into()));
-            }
-            let v = r.u16()?;
-            if v != VERSION {
-                return Err(CodecError::Invalid(format!(
-                    "dragons page version {v}, this build reads {VERSION}"
-                )));
-            }
-            Ok(())
-        })();
-        if let Err(e) = head {
-            return when_pages_unreadable(&format!("the dragons' page: {e}"));
-        }
-        let Ok(saved_hash) = r.u64() else {
-            return when_pages_unreadable("the dragons' page is cut short");
+        let engine = match Dragons::open_paged(
+            source.clone(),
+            budget,
+            KEY_DRAGONS,
+            DragonTunables::default(),
+        ) {
+            Ok(e) => e,
+            Err(e) => return unreadable(&format!("the dragons' meta page: {e}")),
         };
-        let rest = r.take(r.remaining()).unwrap_or_default();
-        match Dragons::load(DragonTunables::default(), rest) {
-            Ok(engine) => {
-                let hash = engine.state_hash();
-                let diverged = (hash != saved_hash).then_some((saved_hash, hash));
-                if diverged.is_some() {
-                    super::log_warn(&format!(
-                        "the dragons read back to state {hash:016x}, the save had {saved_hash:016x}"
-                    ));
-                }
-                log_info(&format!(
-                    "dragons restored: {} dragons, {} lairs, {} events booked, state {:016x}",
-                    engine.dragons.len(),
-                    engine.lairs.len(),
-                    engine.pending_events(),
-                    engine.state_hash()
-                ));
-                let mut l = Link::empty();
-                l.engine = engine;
-                l.restore_diverged = diverged;
-                l.last_page = Some(b);
-                Ok(l)
-            }
-            Err(e) => when_pages_unreadable(&format!("the dragons' page: {e}")),
+        let saved = test
+            .then(|| paging::saved_hash(&**source, KEY_DRAGONS))
+            .flatten();
+        let hash = saved.map(|_| engine.state_hash());
+        let diverged = saved.zip(hash).filter(|(s, h)| s != h);
+        if let Some((s, h)) = diverged {
+            super::log_warn(&format!(
+                "the dragons read back to state {h:016x}, the save had {s:016x}"
+            ));
         }
+        log_info(&format!(
+            "dragons restored: {} dragons, {} lairs, {} events booked{}",
+            engine.dragons.len(),
+            engine.lairs.len(),
+            engine.pending_events(),
+            hash.map_or(String::new(), |h| format!(", state {h:016x}"))
+        ));
+        let mut l = Link::empty();
+        l.engine = engine;
+        l.restore_diverged = diverged;
+        Ok(l)
     }
 
     /// Whether the dragons are in the world at all: no dragon and no lair means nothing to run
@@ -267,7 +273,7 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.dragons.java_species = None;
     st.dragons.items_defined.clear();
     // The first record of the engine's only session: what it holds is its pages as read, so a
-    // switch that is off from the start keeps exactly those (`last_page`).
+    // switch that is off from the start keeps exactly those (no save writes them).
     st.dragons.enabled = module_mask & MODULE_ECOLOGY != 0;
     st.dragons.reset_due = true;
     reset_if_due(st);
@@ -283,9 +289,7 @@ fn set_enabled(st: &mut State, on: bool) {
         // comes back on.
         let _ = st.dragons.engine.take_commands();
         st.dragons.queue.clear();
-        if st.dragons.active() {
-            st.dragons.last_page = Some(encode_page(&st.dragons.engine));
-        }
+        st.dragons.pager.save_due = true;
     }
     if on && !was {
         st.dragons.reset_due = true;
@@ -569,45 +573,31 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 
 // ---- saves --------------------------------------------------------------------------------------
 
-/// The dragons' page, taken at this step boundary with the phase 1 world's snapshot (S4).
-/// Commands the dragons decided and the link has not taken go to the queue first, as phase 1's.
-/// Switched off, the page they had (U10).
-pub(super) fn snapshot(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
-    if !st.dragons.enabled {
-        return st
-            .dragons
-            .last_page
-            .clone()
-            .map(|b| vec![(KEY_DRAGONS, b)])
-            .unwrap_or_default();
+/// The dragons' part of a save at this step boundary, with the phase 1 world's snapshot (S4,
+/// PF13): their meta page and the pages changed since the last save, into `batch`. Commands the
+/// dragons decided and the link has not taken go to the queue first, as phase 1's. Switched off,
+/// nothing unless a save is due (U10: the pages stay as they were).
+pub(super) fn save(
+    st: &mut State,
+    batch: &mut SaveBatch,
+    test: bool,
+) -> (Option<DragonsTickets>, Live) {
+    if st.dragons.enabled {
+        take_commands(st);
     }
-    take_commands(st);
-    if !st.dragons.active() && !st.dragons.dropped_pages {
-        st.dragons.last_page = None;
-        return Vec::new();
+    let l = &mut st.dragons;
+    let out = paging::save(
+        &mut l.engine,
+        &mut l.pager,
+        l.enabled,
+        KEY_DRAGONS,
+        batch,
+        test,
+    );
+    if out.0.is_some() {
+        l.dropped_pages = false;
     }
-    st.dragons.dropped_pages = false;
-    let page = encode_page(&st.dragons.engine);
-    st.dragons.last_page = Some(page.clone());
-    vec![(KEY_DRAGONS, page)]
-}
-
-fn encode_page(d: &Dragons) -> Vec<u8> {
-    let body = d.save();
-    let mut w = Writer::with_capacity(body.len() + 16);
-    w.u32(MAGIC);
-    w.u16(VERSION);
-    w.u64(d.state_hash());
-    w.raw(&body);
-    w.into_bytes()
-}
-
-/// Dragon pages a save no longer writes (dropped pages, or no dragons any more).
-pub(super) fn deletions(store: &PageStore, pages: &[(PageKey, Vec<u8>)]) -> Vec<PageKey> {
-    store
-        .keys()
-        .filter(|k| k.table() == TABLE && !pages.iter().any(|(p, _)| p == k))
-        .collect()
+    out
 }
 
 // ---- inspection ---------------------------------------------------------------------------------

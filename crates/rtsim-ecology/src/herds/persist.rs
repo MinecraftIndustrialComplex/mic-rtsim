@@ -16,8 +16,9 @@
 //! claims, obstacles, ops, the active set, the predator map and each row table's count) and the
 //! **rows** (herds, forage cells, and the region index). [`Herds::save`] writes the meta then
 //! every row in key order: one page, as before. [`Herds::save_paged`] writes the meta as one page
-//! of [`TABLE_META`] and only the row pages changed since the last save; [`Herds::open_paged`]
-//! reads the meta and leaves every row page where it is. Both give the same `state_hash`.
+//! under the caller's key and only the row pages changed since the last save;
+//! [`Herds::open_paged`] reads the meta and leaves every row page where it is. Both give the same
+//! `state_hash`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -36,7 +37,7 @@ use super::climate::Climate;
 use super::cohort::Class;
 use super::engine::{
     Ev, HERDS_PER_PAGE, HerdStats, Herds, PlayerView, REGIONS_PER_PAGE, TABLE_CLAIMS, TABLE_HERDS,
-    TABLE_META, TABLE_REGIONS, TABLE_WHEEL, player_key,
+    TABLE_REGIONS, TABLE_WHEEL, player_key,
 };
 use super::forage::{CellKey, FORAGE_PER_PAGE, TABLE_FORAGE};
 use super::herd::{Embodied, Herd, HerdId, HerdLedger, Route, Seen};
@@ -50,8 +51,14 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTHD");
 /// or as page headers (docs/choices-paging-followups.md PF8).
 const VERSION: u8 = 3;
 
-/// The meta page of a paged engine.
-pub const META_PAGE: PageKey = PageKey::new(TABLE_META, 0);
+/// The herds' page tables: the caller's meta key must be in none of them.
+pub const TABLES: [u16; 5] = [
+    TABLE_HERDS,
+    TABLE_FORAGE,
+    TABLE_REGIONS,
+    TABLE_WHEEL,
+    TABLE_CLAIMS,
+];
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -720,17 +727,18 @@ impl Herds {
         self.regions.attach(source, c);
     }
 
-    /// Opens an engine saved by [`Herds::save_paged`]: the meta is read, no row is.
+    /// Opens an engine [`Herds::save_paged`] saved under `meta_key`: the meta is read, no row is.
     pub fn open_paged(
-        tun: HerdTunables,
-        climate: Box<dyn Climate>,
         source: Arc<dyn PageSource>,
         budget: usize,
+        meta_key: PageKey,
+        tun: HerdTunables,
+        climate: Box<dyn Climate>,
     ) -> codec::Result<Herds> {
         let raw = source
-            .read(META_PAGE)
+            .read(meta_key)
             .map_err(page_err)?
-            .ok_or_else(|| CodecError::Invalid("no herds meta page".into()))?;
+            .ok_or_else(|| CodecError::Invalid(format!("no herds meta page at {meta_key:?}")))?;
         let mut rd = Reader::new(&raw);
         let (mut h, counts) = Self::get_meta(tun, climate, &mut rd)?;
         h.wheel = PagedWheel::open_paged(&mut rd, TABLE_WHEEL, &*source, get_ev)?;
@@ -749,10 +757,14 @@ impl Herds {
         Ok(h)
     }
 
-    /// The meta page and every row page changed since the last save, into `batch`. The pages
-    /// stay pinned until the ticket comes back ([`Herds::saved`] once the commit is durable,
-    /// [`Herds::save_failed`] if it failed).
-    pub fn save_paged(&mut self, batch: &mut SaveBatch) -> HerdsTicket {
+    /// The meta page (under `meta_key`, the caller's: in none of [`TABLES`]) and every row page
+    /// changed since the last save, into `batch`. The pages stay pinned until the ticket comes
+    /// back ([`Herds::saved`] once the commit is durable, [`Herds::save_failed`] if it failed).
+    pub fn save_paged(&mut self, batch: &mut SaveBatch, meta_key: PageKey) -> HerdsTicket {
+        assert!(
+            !TABLES.contains(&meta_key.table()),
+            "the herds' meta page {meta_key:?} inside one of their tables"
+        );
         let mut w = Writer::with_capacity(1024);
         self.put_meta(&mut w);
         let wheel = self
@@ -765,7 +777,7 @@ impl Herds {
             |k, w| put_claim(w, k),
             |v, w| w.u64(*v),
         );
-        batch.put(META_PAGE, w.as_bytes());
+        batch.put(meta_key, w.as_bytes());
         HerdsTicket {
             wheel,
             claims,
