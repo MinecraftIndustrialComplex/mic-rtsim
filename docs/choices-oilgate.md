@@ -156,6 +156,133 @@ compatibility before release).
 3 x 3 field per 8 villages known at t 0, under the same contracts (CPU per unit flat, heap slope
 1.1).
 
+## The plugin side (`neoforge/iceandfire`, `neoforge/dieselgenerators`, core)
+
+**OGC28. The switches and OIL_CONFIG.** The plugin's server config (`DragonConfig`,
+`mic_rtsim_iceandfire-server.toml`) has `fieldFlights` (false) and `placeLairs` (true); OIL_CONFIG
+carries them to the engine at each session start. On a GameTest server every side effect of the gate
+starts off (no flight, no lair placed, no chunk sampled, no survey answered) and a test switches on
+what it needs: the tests share one engine and a reused world.
+
+**OGC29. A breath is a fire event.** One point per `DragonFireEvent`, and per ground charge Ice and
+Fire shoots without an event; a charge inside a paid stream is not paid twice. Ice and Fire fires an
+event every tick of a stream, so a stream costs about 35 to 41 points (measured below) and a full
+reserve of 100 lasts about three streams. The other reading, a point a burst, is the test-only
+`breathPerBurst` switch (OG-10's arm C); it makes a reserve last about 40 times as long. See For Ben 2.
+
+**OGC30. A dry dragon fights with bite and claws.** At zero the plugin cancels its fire events and
+charges, stops a stream it began, and swaps its fire attacks: the air attack becomes the tackle, the
+ground fire a bite (`IafDragons.withoutFire`). Its reduced strength is the engine's (OGC13). In
+GameTests only, the melee nudge also sets the dragon down and turns a shake into a bite: a shake hurts
+its prey only as a passenger, and a guarded mock player never rides.
+
+**OGC31. The oil sampler's budget.** New chunks and surveys share 4 samples a tick (`samplesPerTick`)
+and 2 ms; one sample always runs, so a tick with work pays at least one source call. Only chunks with
+oil are sent, up to 1,024 to an OIL_CHUNKS record, at the end of the tick; a chunk is sampled at most
+once a session.
+
+**OGC32. Oil sources and the lair placer.** Oil mods answer base oil per chunk through
+`RtsimApi.registerOilSource` (`OilSource`, `OilSources.forLevel`); Create: Diesel Generators' plugin
+registers its `getBaseOilAmount` as source 2, and the Ice and Fire plugin never names the mod.
+PLACE_LAIR goes through vanilla's `/place structure` path with Ice and Fire's fire roost (every biome
+allowed), nearest the field first, on the first tick a site is free: its 3 x 3 chunks loaded, no
+lair structure there, no player within 48 blocks; 2 sites tried and 64 chunks looked at a tick (all
+PLACEHOLDER). Ice and Fire's own chance and spawn distance still decide each chunk. The fields asked
+for and the roosts placed are saved with the overworld, so a replayed request never places a second
+roost. The plugin writes the structure start and references itself (`/place` leaves none), so `Lairs`
+finds the roost and the engine adopts the dragon the roost spawns as it builds (DRAGON_UNTAGGED, kind
+STRUCTURE).
+
+**OGC33. MATERIALIZE carries a field flight's state** in its flags, so the body knows it is a visitor
+(it targets the nearest player at the field and is discarded, not captured, when let go).
+
+**OGC41. A district detected in loaded chunks tells the engine its chunks** (core, `Districts.java`).
+A chunk a district gains while loaded never loads for it, so its IND_CHUNK_LOADED never went, and the
+engine, which reconciles only into chunks it knows loaded, held every reconcile for a new factory until
+its chunks reloaded: a raid resolved and broke nothing. Detection now sends it for each chunk gained
+while loaded. This changes core behaviour outside the gate; core 62 of 62 and create 146 of 146 pass
+with it.
+
+**OGC43. A survey samples only chunks in memory; the rest when they load.** A sample of a chunk not in
+memory reads the biome source: on a real overworld Create: Diesel Generators then costs 79 ms a chunk
+(mean of 8, max 121 ms), against 3.2 ms in memory (the dieselgenerators GameTest), and a new lair's
+survey covers up to 13,000 chunks, so one survey would have added about 80 ms to every tick for over
+15 minutes. Now a survey samples a chunk in memory at once (`getChunkNow`, which never blocks) and
+notes any other; a noted chunk is sampled the first time it loads this session, under the same budget.
+The survey still covers its whole radius, as players reach it. A chunk saved before this session and
+never loaded again stays unknown, as it would without a survey.
+
+## GameTests (OGC34, OGC36 to OGC40, OGC42)
+
+**OGC34. Guarded players.** `Guard` logs every blow on a GameTest player and cancels it, and stops it
+riding. Dragons a test lets go are discarded; test sites sit on a far-apart grid.
+
+**OGC36. The OG-5 test lets its chunks go after 260 ticks,** so the dragon is captured and refuels out
+of view.
+
+**OGC37. The roof gate test (OG-11, core, native only).** One district: a chest and two furnaces, one
+under a stone roof. A flyer of strength 8, then a siege of 20, sent as INDUSTRY_THREAT orders.
+
+**OGC38. A GameTest server catches its clock up.** A GameTest server makes fresh level data (game time
+0) but keeps the world's pages, so a resumed engine stood ahead of the game and its wheel never turned.
+On GameTest servers only, the Ice and Fire plugin moves the game time up to the engine's clock before
+the first test (`GameTestClock`). The same stall made 7 glass exit tests fail on a reused create world;
+fresh worlds pass (OGC42).
+
+**OGC39. A mock player's spawn grace ends.** A mock player is never ticked, so its 60-tick spawn grace
+never ran out and `ServerPlayer.hurt` refused every bite, claw and fire before the damage event: no blow
+on a GameTest player was ever logged (earlier OG-10 tables undercounted). `Guard` ends it by
+reflection.
+
+**OGC40. Read-only diagnostic queries** for the tests: `dragons_oil` (26 slots: the gate's counters, a
+dragon's reserve, the switches, the clock and `flight_probe`), `industry_threat_probe` (25 slots) and
+their JNI exports `nDragonsOil` and `nIndustryThreatProbe`. Between steps; they change nothing.
+
+**OGC42. Verification on fresh worlds.** Every suite that counts here ran on a fresh GameTest world
+(the old ones moved aside or deleted).
+
+## OG-10's danger A/B (OGC35)
+
+**OGC35. The harness** (`OilDangerGameTests`, native only, `-Pog10`). Three far patches of the flat
+world dressed as desert (desert biome, a sandstone floor at y 64 out to 104 blocks): site 1 on the
+surface over oil, site 2 over oil in a sealed pocket at y 10 (below `flight_min_y` 15), site 3 on the
+surface with no oil. A probe is a mock player (In Control spawns around it and hostiles target it) with
+a still, invisible husk at its feet for the projectiles and area fire that only find entities in the
+level's sections; both guarded. Damage is summed as vanilla takes it (a hit within 10 ticks of the last
+counts only its excess), from blows with an attacker. Each arm runs 3,600 ticks from morning (fire
+dragons sleep at night). Arm A: the pack's own `spawner.json` and `spawn.json`, the gate off. Arm B:
+those files without their fire dragon entries, field flights on. In Control is reloaded between arms by
+reflection (its reload command's calls), with a watchdog. Ice and Fire's player targeting is emulated
+for the mock player in both arms. Arm C (B with a point per burst) is test-only; the sweep between B and
+C clears the bodies and the engine's puppets, but B's visitors stay in the engine's sim and come back at
+C's start, so C is not a clean measurement.
+
+**Results, 2026-10-21, two native samples per arm** (GameTest servers tick unthrottled; times are game
+ticks):
+
+| Site, arm | Dragon damage/min | First dragon hit | Distinct dragons hitting/h | Targeting or hitting/h |
+|---|---|---|---|---|
+| 1, A | 260.7, 334.0 | 676, 563 | 240, 360 | 440, 560 |
+| 1, B | 355.7, 350.3 | 1,023, 816 | 120, 120 | 180, 200 |
+| 2, A | 0, 0 | none | 0, 0 | 340, 200 |
+| 2, B | 0, 0 | none | 0, 0 | 0, 0 |
+| 3, A | 326.7, 293.7 | 43, 368 | 200, 260 | n/a, 360 |
+| 3, B | 0, 0 | none | 0, 0 | n/a, 0 |
+
+First hit by any hostile at site 1: A 165 and 291, B 185 and 184.
+
+**Verdict: B is not at least A at site 1.** Damage per minute holds (+36% and +5%), but the first
+dragon hit comes 40 to 50% later and B brings a third to a half of A's distinct dragons. Site 2 passes
+trivially (nothing reaches the sealed pocket in either arm); site 3 falls, as designed. OILGATE.md §4.8
+asks for medians over several runs by day and night; these are two runs by day, so the verdict is
+early, but both runs fail the same two measures. Field flights stay off (For Ben 1).
+
+**Fire events per stream** (a 30-day fire dragon, native): ground fire came in 14 bursts, mostly 33 to
+38 events over 40 to 44 ticks, with 2 charges inside them; scorch in 12 bursts of 41 events over 41
+ticks; hover fire none. The dry fight: 15 points went in 31 ticks (15 events); for 300 ticks after,
+no fire got through and none hit the player; the first bite or claw came 301 ticks after the reserve
+ran out; the engine got 2 DRAGON_BREATHS records for the 15 breaths.
+
 ## The seam for the underground half (OG-9b to OG-9d, not built)
 
 Nothing of the deep layer exists. What it will hang on:
@@ -172,13 +299,27 @@ Nothing of the deep layer exists. What it will hang on:
 
 Recommended option first in each.
 
-1. **Field flights stay off until OG-10 passes.** (a) Keep `fieldFlights` false in the shipped
-   config; flip it, then remove the fire dragon from In Control's `spawner.json` and both `spawn.json`
-   rules (the proposal files in `neoforge/iceandfire/pack-proposal/`), once B is at least A at sites 1
-   and 2. (b) Turn them on now alongside In Control (danger doubles at oil sites until the rule goes).
-2. **The reserve's numbers (OGC5, OGC18) are placeholders.** (a) Set the capacity from the measured
-   fire events per stream so a full reserve lasts 3 fights (OILGATE.md §4.3). (b) Keep 100.
+1. **OG-10 failed at site 1, so field flights stay off.** B matched A's damage per minute but its
+   first dragon hit came 40 to 50% later and it brought a third to a half of A's distinct dragons
+   (OGC35's table). (a) Keep `fieldFlights` false and In Control's fire dragon rules as they are; raise
+   the field flights' draw (`flight_chance_milli` 100 to 250 and `flight_cap_field` 8 to 12, both
+   PLACEHOLDER) and measure again as §4.8 asks (medians over at least 5 runs per site, by day and by
+   night); switch when B is at least A at sites 1 and 2. (b) Judge danger by damage per minute alone,
+   which B already meets, and switch now (remove the fire dragon from In Control's `spawner.json` and
+   both `spawn.json` rules; the proposal files are in `neoforge/iceandfire/pack-proposal/`). (c) Turn
+   flights on alongside In Control (danger roughly doubles at oil sites until the rule goes).
+2. **The reserve's numbers (OGC5, OGC18, OGC29) are placeholders.** A stream of fire costs 35 to 41
+   points at a point a fire event, so the reserve of 100 lasts about three streams. (a) Keep a point a
+   fire event and size the reserve from fights: if a fight is about five streams, three fights are
+   about 600 points (capacity 600, refuel below 240). (b) Charge a point a burst (the arm C switch) and
+   keep 100: about 100 streams, so a dragon is almost never dry. (c) Keep 100 at a point a fire event:
+   a dragon is dry after about three streams and finishes most fights with bite and claws.
 3. **Drinking ignores the theft cap (OGC8).** (a) Keep: a dry dragon may take up to 100,000 mB (its
    whole room) from one raid; the tank is the lure. (b) Hold drinking to the item theft cap (10%).
 4. **A visitor's lost body ends its visit (OGC11).** (a) Keep: after a restart the field flights
    draw again from fresh rolls. (b) Keep visitors through a session end as wanderers.
+5. **Sampling new chunks costs about 3 ms a tick while players explore (OGC31).** Diesel Generators'
+   `getBaseOilAmount` makes 12,800 biome lookups a chunk (3.2 ms mean in memory, 14.8 ms at most), and
+   one sample always runs in a tick with work. (a) Give the Diesel source a cheap first look (skip a
+   chunk none of whose biomes can hold oil under the pack's rule) and keep the exact call for the rest;
+   check it against `getBaseOilAmount` in the dieselgenerators GameTest. (b) Keep it as it is.
