@@ -702,8 +702,8 @@ public final class HerdGameTests {
                             ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE));
                     reporting[0] = true;
                 })
-                .thenWaitUntil(() -> check("the engine's group near the player", groupNear(bx, bz) != null))
-                .thenWaitUntil(() -> check("all of it", groupNear(bx, bz) != null && bridge().bodies(groupNear(bx, bz).agent).size() == 12))
+                .thenWaitUntil(RtsimTests.io(() -> check("the engine's group near the player", groupNear(bx, bz) != null)))
+                .thenWaitUntil(RtsimTests.io(() -> check("all of it", groupNear(bx, bz) != null && bridge().bodies(groupNear(bx, bz).agent).size() == 12)))
                 .thenExecute(() -> {
                     HerdBridge.Group g = groupNear(bx, bz);
                     agent[0] = g.agent;

@@ -316,6 +316,8 @@ pub struct FakeWorld {
     pub remote: bool,
     pub outgoing: Vec<Outgoing>,
     pub threats_out: Vec<Threat>,
+    /// Every IND_PROBE_SET the engine sent (GLASSBOX.md §5.3), oldest first.
+    pub probes: Vec<crate::glass::records::ProbeSet>,
     /// Every chunk reconcile applied: (op, district, epoch, chunk), oldest first.
     pub reconciled: Vec<(OpId, DistrictId, u32, ChunkPos)>,
     obs_seq: u64,
@@ -363,6 +365,7 @@ impl FakeWorld {
             fail_carriage_deltas: false,
             outgoing: Vec::new(),
             threats_out: Vec::new(),
+            probes: Vec::new(),
             reconciled: Vec::new(),
             obs_seq: 0,
             cmd_seq: 0,
@@ -1372,6 +1375,7 @@ impl FakeWorld {
                 };
                 self.answer(c.op, status);
             }
+            Cmd::ProbeSet(p) => self.probes.push(p),
         }
     }
 

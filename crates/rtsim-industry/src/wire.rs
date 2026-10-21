@@ -19,6 +19,7 @@ use crate::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
     WritePackage,
 };
+use crate::glass;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use crate::obs::{
     BlockFlags, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
@@ -227,7 +228,7 @@ codes!(reason_code, reason_from, CarriageReason, "carriage_reason",
 /// Appends one record to a buffer. Puts go at the current position; `finish` pads to 8 and patches
 /// the header's size. Bytes past [`MAX_RECORD`] are counted but not stored, so an oversize record
 /// costs no memory and `finish` removes whatever was written.
-struct W<'a> {
+pub(crate) struct W<'a> {
     out: &'a mut Vec<u8>,
     start: usize,
     pos: usize,
@@ -235,7 +236,7 @@ struct W<'a> {
 }
 
 impl<'a> W<'a> {
-    fn header(out: &'a mut Vec<u8>, kind: u16, aux: u32) -> Self {
+    pub(crate) fn header(out: &'a mut Vec<u8>, kind: u16, aux: u32) -> Self {
         let start = out.len();
         let mut w = W {
             out,
@@ -250,7 +251,13 @@ impl<'a> W<'a> {
     }
 
     /// Header, then `obsSeq` (journaled kinds only), then `gameTime`.
-    fn obs(out: &'a mut Vec<u8>, kind: u16, aux: u32, seq: Option<u64>, at: Tick) -> Self {
+    pub(crate) fn obs(
+        out: &'a mut Vec<u8>,
+        kind: u16,
+        aux: u32,
+        seq: Option<u64>,
+        at: Tick,
+    ) -> Self {
         debug_assert_eq!(seq.is_some(), kind >= 0x0400);
         let mut w = Self::header(out, kind, aux);
         if let Some(s) = seq {
@@ -261,58 +268,62 @@ impl<'a> W<'a> {
     }
 
     /// Header, then `cmdSeq`.
-    fn cmd(out: &'a mut Vec<u8>, kind: u16, aux: u32, seq: u64) -> Self {
+    pub(crate) fn cmd(out: &'a mut Vec<u8>, kind: u16, aux: u32, seq: u64) -> Self {
         let mut w = Self::header(out, kind, aux);
         w.put_u64(seq);
         w
     }
 
-    fn raw(&mut self, b: &[u8]) {
+    pub(crate) fn raw(&mut self, b: &[u8]) {
         self.pos += b.len();
         if self.pos <= MAX_RECORD {
             self.out.extend_from_slice(b);
         }
     }
 
-    fn put_u16(&mut self, v: u16) {
+    pub(crate) fn put_u16(&mut self, v: u16) {
         self.raw(&v.to_le_bytes());
     }
 
-    fn put_u32(&mut self, v: u32) {
+    pub(crate) fn put_u32(&mut self, v: u32) {
         self.raw(&v.to_le_bytes());
     }
 
-    fn put_u64(&mut self, v: u64) {
+    pub(crate) fn put_u64(&mut self, v: u64) {
         self.raw(&v.to_le_bytes());
     }
 
-    fn put_i32(&mut self, v: i32) {
+    pub(crate) fn put_i32(&mut self, v: i32) {
         self.raw(&v.to_le_bytes());
     }
 
-    fn put_i64(&mut self, v: i64) {
+    pub(crate) fn put_i64(&mut self, v: i64) {
         self.raw(&v.to_le_bytes());
     }
 
-    fn put_f32(&mut self, v: f32) {
+    pub(crate) fn put_f32(&mut self, v: f32) {
         self.raw(&v.to_le_bytes());
     }
 
-    fn zero(&mut self, n: usize) {
+    pub(crate) fn put_f64(&mut self, v: f64) {
+        self.raw(&v.to_le_bytes());
+    }
+
+    pub(crate) fn zero(&mut self, n: usize) {
         self.pos += n;
         if self.pos <= MAX_RECORD {
             self.out.resize(self.out.len() + n, 0);
         }
     }
 
-    fn pos3(&mut self, p: BlockPos) {
+    pub(crate) fn pos3(&mut self, p: BlockPos) {
         self.put_i32(p.x);
         self.put_i32(p.y);
         self.put_i32(p.z);
     }
 
     /// Entry16 list: `u32 good, u32 reserved, i64 amount` each.
-    fn goods(&mut self, goods: &GoodVec) {
+    pub(crate) fn goods(&mut self, goods: &GoodVec) {
         for (g, a) in goods.iter() {
             self.put_u32(g.0);
             self.zero(4);
@@ -321,7 +332,7 @@ impl<'a> W<'a> {
     }
 
     /// Result24 list: `u32 inventory (or carriage), u32 good, i64 requested, i64 applied`.
-    fn result(&mut self, first: u32, good: Good, requested: i64, applied: i64) {
+    pub(crate) fn result(&mut self, first: u32, good: Good, requested: i64, applied: i64) {
         self.put_u32(first);
         self.put_u32(good.0);
         self.put_i64(requested);
@@ -330,7 +341,7 @@ impl<'a> W<'a> {
 
     /// Carriage blocks: `u32 index, u32 itemSlots, i64 fluidCapacity, u32 entryCount,
     /// u32 reserved`, then the entries.
-    fn carriages(&mut self, carriages: &[Carriage]) {
+    pub(crate) fn carriages(&mut self, carriages: &[Carriage]) {
         for c in carriages {
             self.put_u32(c.index);
             self.put_u32(c.item_slots);
@@ -341,7 +352,7 @@ impl<'a> W<'a> {
         }
     }
 
-    fn finish(mut self) -> Result<(), WireError> {
+    pub(crate) fn finish(mut self) -> Result<(), WireError> {
         self.zero((8 - self.pos % 8) % 8);
         if self.pos > MAX_RECORD {
             self.out.truncate(self.start);
@@ -358,49 +369,53 @@ impl<'a> W<'a> {
 
 /// Reads fields of one record at absolute offsets. The caller has checked the record is long
 /// enough for every offset it reads.
-struct R<'a>(&'a [u8]);
+pub(crate) struct R<'a>(pub(crate) &'a [u8]);
 
 impl R<'_> {
-    fn arr<const N: usize>(&self, o: usize) -> [u8; N] {
+    pub(crate) fn arr<const N: usize>(&self, o: usize) -> [u8; N] {
         let mut a = [0u8; N];
         a.copy_from_slice(&self.0[o..o + N]);
         a
     }
 
-    fn get_u16(&self, o: usize) -> u16 {
+    pub(crate) fn get_u16(&self, o: usize) -> u16 {
         u16::from_le_bytes(self.arr(o))
     }
 
-    fn get_u32(&self, o: usize) -> u32 {
+    pub(crate) fn get_u32(&self, o: usize) -> u32 {
         u32::from_le_bytes(self.arr(o))
     }
 
-    fn get_u64(&self, o: usize) -> u64 {
+    pub(crate) fn get_u64(&self, o: usize) -> u64 {
         u64::from_le_bytes(self.arr(o))
     }
 
-    fn get_i32(&self, o: usize) -> i32 {
+    pub(crate) fn get_i32(&self, o: usize) -> i32 {
         i32::from_le_bytes(self.arr(o))
     }
 
-    fn get_i64(&self, o: usize) -> i64 {
+    pub(crate) fn get_i64(&self, o: usize) -> i64 {
         i64::from_le_bytes(self.arr(o))
     }
 
-    fn get_f32(&self, o: usize) -> f32 {
+    pub(crate) fn get_f32(&self, o: usize) -> f32 {
         f32::from_le_bytes(self.arr(o))
     }
 
-    fn pos3(&self, o: usize) -> BlockPos {
+    pub(crate) fn get_f64(&self, o: usize) -> f64 {
+        f64::from_le_bytes(self.arr(o))
+    }
+
+    pub(crate) fn pos3(&self, o: usize) -> BlockPos {
         BlockPos::new(self.get_i32(o), self.get_i32(o + 4), self.get_i32(o + 8))
     }
 
-    fn district(&self, o: usize) -> DistrictId {
+    pub(crate) fn district(&self, o: usize) -> DistrictId {
         DistrictId(self.get_u64(o))
     }
 
     /// `n` Entry16 at `o`.
-    fn goods(&self, o: usize, n: usize) -> GoodVec {
+    pub(crate) fn goods(&self, o: usize, n: usize) -> GoodVec {
         (0..n)
             .map(|i| {
                 let e = o + 16 * i;
@@ -410,7 +425,7 @@ impl R<'_> {
     }
 
     /// `n` carriage blocks from `o`; returns them and the offset after the last.
-    fn carriages(
+    pub(crate) fn carriages(
         &self,
         kind: u16,
         mut o: usize,
@@ -441,11 +456,11 @@ impl R<'_> {
 }
 
 /// `fixed + n * each`, saturating, so a hostile count never wraps to a matching size.
-fn sized(fixed: usize, n: usize, each: usize) -> usize {
+pub(crate) fn sized(fixed: usize, n: usize, each: usize) -> usize {
     fixed.saturating_add(n.saturating_mul(each))
 }
 
-fn check(kind: u16, size: usize, want: usize) -> Result<(), WireError> {
+pub(crate) fn check(kind: u16, size: usize, want: usize) -> Result<(), WireError> {
     if size == want {
         Ok(())
     } else {
@@ -455,7 +470,7 @@ fn check(kind: u16, size: usize, want: usize) -> Result<(), WireError> {
 
 /// A count as a header `aux`; a count too large for it is also too large for [`MAX_RECORD`], which
 /// `W::finish` reports.
-fn n32(n: usize) -> u32 {
+pub(crate) fn n32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
@@ -502,6 +517,7 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
     let seq = t.obs.is_journaled().then_some(obs_seq);
     let at = t.at;
     match &t.obs {
+        Obs::Glass(g) => glass::codec::encode_obs(obs_seq, at, g, out),
         Obs::StockSample {
             district,
             inventory,
@@ -815,7 +831,19 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
     if rec.len() < 8 {
         return Err(WireError::Truncated);
     }
-    if !OBS_KINDS.contains(&R(rec).get_u16(0)) {
+    let k = R(rec).get_u16(0);
+    if glass::codec::OBS_KINDS.contains(&k) {
+        let (kind, aux, rec) = header(rec)?;
+        let (seq, at, g) = glass::codec::decode_obs(kind, aux, rec)?;
+        return Ok(Some((
+            seq,
+            Timed {
+                at,
+                obs: Obs::Glass(g),
+            },
+        )));
+    }
+    if !OBS_KINDS.contains(&k) {
         return Ok(None);
     }
     let (kind, aux, rec) = header(rec)?;
@@ -1188,6 +1216,7 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
 /// Appends one command record with the bridge's `cmdSeq`. On error nothing is appended.
 pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), WireError> {
     match cmd {
+        Cmd::ProbeSet(p) => glass::codec::encode_probe_set(cmd_seq, p, out),
         Cmd::ChunkReconcile(c) => {
             let mut w = W::cmd(out, IND_CHUNK_RECONCILE, n32(c.deltas.len()), cmd_seq);
             w.put_u64(c.op.0);
@@ -1253,6 +1282,11 @@ pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), Wire
 pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
     if rec.len() < 8 {
         return Err(WireError::Truncated);
+    }
+    if R(rec).get_u16(0) == glass::codec::IND_PROBE_SET {
+        let (kind, aux, rec) = header(rec)?;
+        let (seq, p) = glass::codec::decode_probe_set(kind, aux, rec)?;
+        return Ok(Some((seq, Cmd::ProbeSet(p))));
     }
     if !CMD_KINDS.contains(&R(rec).get_u16(0)) {
         return Ok(None);
@@ -1936,7 +1970,20 @@ mod tests {
     fn spec_obs_size(o: &Obs) -> usize {
         let carriage_bytes =
             |cs: &[Carriage]| cs.iter().map(|c| 24 + 16 * c.goods.len()).sum::<usize>();
+        let pad8 = |n: usize| n.div_ceil(8) * 8;
         match o {
+            Obs::Glass(g) => {
+                use crate::glass::records::GlassObs as G;
+                match g {
+                    G::Node(n) => 112 + 24 * n.rates.len(),
+                    G::Edge(e) => pad8(72 + 4 * e.filter.len()),
+                    G::Recipe(r) => 56 + 24 * (r.inputs.len() + r.outputs.len()),
+                    G::Domain(d) => 72 + 24 * d.levels.len() + 24 * d.members.len(),
+                    G::End(_) => 80,
+                    G::ProbeSample(p) => 40 + 16 * p.goods.len(),
+                    G::ChunkTicking(_) => 48,
+                }
+            }
             Obs::StockSample { goods, .. } => 32 + 16 * goods.len(),
             Obs::SweepEnd(_) => 40,
             Obs::DepositSample(_) => 56,
@@ -1969,6 +2016,18 @@ mod tests {
 
     fn spec_obs_kind(o: &Obs) -> u16 {
         match o {
+            Obs::Glass(g) => {
+                use crate::glass::records::GlassObs as G;
+                match g {
+                    G::Node(_) => 0x0048,
+                    G::Edge(_) => 0x0049,
+                    G::Recipe(_) => 0x004A,
+                    G::Domain(_) => 0x004B,
+                    G::End(_) => 0x004C,
+                    G::ProbeSample(_) => 0x004D,
+                    G::ChunkTicking(_) => 0x040B,
+                }
+            }
             Obs::StockSample { .. } => 0x0040,
             Obs::SweepEnd(_) => 0x0041,
             Obs::DepositSample(_) => 0x0042,
@@ -2006,6 +2065,7 @@ mod tests {
             Cmd::CarriageDelta(c) => 40 + 16 * c.entries.len(),
             Cmd::DepositDelta(_) => 48,
             Cmd::WritePackage(c) => 56 + 16 * c.goods.len(),
+            Cmd::ProbeSet(p) => (32 + 4 * p.nodes.len()).div_ceil(8) * 8,
         }
     }
 
@@ -2015,6 +2075,7 @@ mod tests {
             Cmd::CarriageDelta(_) => 0x8401,
             Cmd::DepositDelta(_) => 0x8403,
             Cmd::WritePackage(_) => 0x8404,
+            Cmd::ProbeSet(_) => 0x8406,
         }
     }
 
@@ -2456,8 +2517,8 @@ mod tests {
     fn unknown_kinds_are_skipped_not_errors() {
         let mut rec = vec![0u8; 16];
         for kind in [
-            0x0001u16, 0x0043, 0x0044, 0x0047, 0x005F, 0x0060, 0x040B, 0x04FF, 0x0500, 0x8001,
-            0x8402, 0x8405, 0x8406, 0x84FF,
+            0x0001u16, 0x0043, 0x0044, 0x0047, 0x004E, 0x005F, 0x0060, 0x040C, 0x04FF, 0x0500,
+            0x8001, 0x8402, 0x8405, 0x8407, 0x84FF,
         ] {
             rec[0..2].copy_from_slice(&kind.to_le_bytes());
             rec[2..4].copy_from_slice(&16u16.to_le_bytes());

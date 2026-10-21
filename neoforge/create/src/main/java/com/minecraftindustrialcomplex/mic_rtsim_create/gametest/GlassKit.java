@@ -1,0 +1,216 @@
+package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
+
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.TreeMap;
+
+/**
+ * Decodes the glass box's graph records the engine received (docs/industry-boundary.md §9.2) back into a
+ * graph, for GameTests: the latest compile of a district whose END arrived, with every NODE, EDGE, RECIPE
+ * and DOMAIN record of that compile number. A compile is complete only when the records received match
+ * the END's count (the engine's own rule, F5). Works on either engine: both keep a received log.
+ */
+public final class GlassKit {
+    private GlassKit() {}
+
+    public record Rate(int level, int recipe, int batch, long ticksNum, long ticksDen, int flags) {
+        public double perTick() {
+            return ticksNum == 0 ? 0 : batch * (double) ticksDen / ticksNum;
+        }
+    }
+
+    public record Node(int index, int kind, int model, int domain, int inventory, int flags, int x, int y, int z, int rule,
+                       long capacity, long[] params, List<Rate> rates) {
+        public boolean has(int flag) {
+            return (flags & flag) != 0;
+        }
+    }
+
+    public record Edge(int index, int kind, int from, int to, int order, int flags, long capNum, long capDen, int latency, long param,
+                       int[] filter) {}
+
+    public record Term(int good, int flags, long num, long den) {}
+
+    public record Recipe(int index, int type, int heat, int duration, int name, List<Term> inputs, List<Term> outputs) {}
+
+    public record Level(int selector, int speedNum, long speedDen, double capacity) {
+        public double rpm() {
+            return speedNum / (double) speedDen;
+        }
+    }
+
+    public record Member(int node, int count, int ratioNum, long ratioDen, double impact) {}
+
+    public record Domain(int index, long network, int current, int driver, int flags, double liveStress, double liveCapacity,
+                         List<Level> levels, List<Member> members) {}
+
+    public record End(int compile, int flags, int window, int records, int nodes, int edges, int recipes, int domains, int reason,
+                      long fingerprint, long frame, int revision, int compileTicks) {}
+
+    /** One compile as received. */
+    public record Graph(long district, End end, List<Node> nodes, List<Edge> edges, List<Recipe> recipes, List<Domain> domains,
+                        int received) {
+        /** The END says COMPLETE and exactly its count of records arrived, each index once. */
+        public boolean complete() {
+            return (end.flags & GlassRecords.End.COMPLETE) != 0 && received == end.records
+                    && nodes.size() == end.nodes && edges.size() == end.edges && recipes.size() == end.recipes
+                    && domains.size() == end.domains;
+        }
+
+        public List<Node> nodes(int kind, int model) {
+            List<Node> out = new ArrayList<>();
+            for (Node n : nodes)
+                if ((kind < 0 || n.kind == kind) && (model < 0 || n.model == model))
+                    out.add(n);
+            return out;
+        }
+
+        public List<Edge> edgesFrom(int node) {
+            List<Edge> out = new ArrayList<>();
+            for (Edge e : edges)
+                if (e.from == node)
+                    out.add(e);
+            return out;
+        }
+
+        public List<Edge> edgesTo(int node) {
+            List<Edge> out = new ArrayList<>();
+            for (Edge e : edges)
+                if (e.to == node)
+                    out.add(e);
+            return out;
+        }
+
+        /** A recipe by its NAME dictionary text (Java's dictionary), or null. */
+        public Recipe recipeNamed(String name) {
+            for (Recipe r : recipes)
+                if (name.equals(IndustryKit.javaName(r.name)))
+                    return r;
+            return null;
+        }
+
+        public String describe() {
+            return "compile " + end.compile + " flags " + end.flags + ": " + nodes.size() + "/" + end.nodes + " nodes, " + edges.size() + "/"
+                    + end.edges + " edges, " + recipes.size() + "/" + end.recipes + " recipes, " + domains.size() + "/" + end.domains
+                    + " domains, " + received + "/" + end.records + " records, frame " + end.frame + ", " + end.compileTicks + " ticks";
+        }
+    }
+
+    /** The latest compile of {@code district} whose END the engine received, or null. */
+    public static Graph latest(long district) {
+        return latest(district, IndustryKit.engine().received());
+    }
+
+    /** As {@link #latest(long)} over the records a {@link GlassExitKit.Recorder}-style log kept. */
+    public static Graph latest(long district, List<ScriptedEngine.Received> log) {
+        ByteBuffer endRec = null;
+        int endFlags = 0;
+        for (ScriptedEngine.Received r : log) {
+            if (r.skipped() || r.kind() != GlassRecords.IND_GRAPH_END)
+                continue;
+            ByteBuffer v = r.view();
+            if (v.getLong(GlassRecords.DISTRICT) != district)
+                continue;
+            endRec = v;
+            endFlags = r.aux();
+        }
+        if (endRec == null)
+            return null;
+        End end = new End(endRec.getInt(GlassRecords.COMPILE), endFlags, endRec.getInt(GlassRecords.End.WINDOW), endRec.getInt(GlassRecords.End.RECORDS),
+                endRec.getInt(GlassRecords.End.NODES), endRec.getInt(GlassRecords.End.EDGES), endRec.getInt(GlassRecords.End.RECIPES),
+                endRec.getInt(GlassRecords.End.DOMAINS), endRec.getInt(GlassRecords.End.REASON), endRec.getLong(GlassRecords.End.FINGERPRINT),
+                endRec.getLong(GlassRecords.End.FRAME), endRec.getInt(GlassRecords.End.REVISION), endRec.getInt(GlassRecords.End.COMPILE_TICKS));
+        TreeMap<Integer, Node> nodes = new TreeMap<>();
+        TreeMap<Integer, Edge> edges = new TreeMap<>();
+        TreeMap<Integer, Recipe> recipes = new TreeMap<>();
+        TreeMap<Integer, Domain> domains = new TreeMap<>();
+        for (ScriptedEngine.Received r : log) {
+            if (r.skipped())
+                continue;
+            int k = r.kind();
+            if (k != GlassRecords.IND_GRAPH_NODE && k != GlassRecords.IND_GRAPH_EDGE && k != GlassRecords.IND_GRAPH_RECIPE && k != GlassRecords.IND_GRAPH_DOMAIN)
+                continue;
+            ByteBuffer v = r.view();
+            if (v.getLong(GlassRecords.DISTRICT) != district || v.getInt(GlassRecords.COMPILE) != end.compile)
+                continue;
+            int idx = v.getInt(GlassRecords.INDEX);
+            switch (k) {
+                case GlassRecords.IND_GRAPH_NODE -> nodes.put(idx, node(v, r.aux()));
+                case GlassRecords.IND_GRAPH_EDGE -> edges.put(idx, edge(v, r.aux()));
+                case GlassRecords.IND_GRAPH_RECIPE -> recipes.put(idx, recipe(v));
+                default -> domains.put(idx, domain(v, r.aux()));
+            }
+        }
+        int received = nodes.size() + edges.size() + recipes.size() + domains.size();
+        return new Graph(district, end, new ArrayList<>(nodes.values()), new ArrayList<>(edges.values()), new ArrayList<>(recipes.values()),
+                new ArrayList<>(domains.values()), received);
+    }
+
+    private static long u32(int v) {
+        return v & 0xFFFF_FFFFL;
+    }
+
+    private static Node node(ByteBuffer v, int kind) {
+        int n = v.getInt(GlassRecords.Node.N_RATES);
+        List<Rate> rates = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            int at = GlassRecords.Node.RATES + i * GlassRecords.Node.RATE;
+            rates.add(new Rate(v.getInt(at + GlassRecords.Node.R_LEVEL), v.getInt(at + GlassRecords.Node.R_RECIPE), v.getInt(at + GlassRecords.Node.R_BATCH),
+                    u32(v.getInt(at + GlassRecords.Node.R_TICKS_NUM)), u32(v.getInt(at + GlassRecords.Node.R_TICKS_DEN)), v.getInt(at + GlassRecords.Node.R_FLAGS)));
+        }
+        long[] params = {v.getLong(GlassRecords.Node.PARAM0), v.getLong(GlassRecords.Node.PARAM1), v.getLong(GlassRecords.Node.PARAM2),
+                v.getLong(GlassRecords.Node.PARAM3)};
+        return new Node(v.getInt(GlassRecords.INDEX), kind, v.getInt(GlassRecords.Node.MODEL), v.getInt(GlassRecords.Node.DOMAIN),
+                v.getInt(GlassRecords.Node.INVENTORY), v.getInt(GlassRecords.Node.FLAGS), v.getInt(GlassRecords.Node.X), v.getInt(GlassRecords.Node.Y),
+                v.getInt(GlassRecords.Node.Z), v.getInt(GlassRecords.Node.RULE), v.getLong(GlassRecords.Node.CAPACITY), params, rates);
+    }
+
+    private static Edge edge(ByteBuffer v, int kind) {
+        int n = v.getInt(GlassRecords.Edge.N_FILTER);
+        int[] filter = new int[n];
+        for (int i = 0; i < n; i++)
+            filter[i] = v.getInt(GlassRecords.Edge.FILTER + 4 * i);
+        return new Edge(v.getInt(GlassRecords.INDEX), kind, v.getInt(GlassRecords.Edge.FROM), v.getInt(GlassRecords.Edge.TO), v.getInt(GlassRecords.Edge.ORDER),
+                v.getInt(GlassRecords.Edge.FLAGS), u32(v.getInt(GlassRecords.Edge.CAP_NUM)), u32(v.getInt(GlassRecords.Edge.CAP_DEN)),
+                v.getInt(GlassRecords.Edge.LATENCY), v.getLong(GlassRecords.Edge.PARAM), filter);
+    }
+
+    private static Recipe recipe(ByteBuffer v) {
+        int ni = v.getInt(GlassRecords.Recipe.N_INPUTS), no = v.getInt(GlassRecords.Recipe.N_OUTPUTS);
+        List<Term> in = new ArrayList<>(ni), out = new ArrayList<>(no);
+        for (int i = 0; i < ni + no; i++) {
+            int at = GlassRecords.Recipe.TERMS + i * GlassRecords.Recipe.TERM;
+            Term t = new Term(v.getInt(at + GlassRecords.Recipe.T_GOOD), v.getInt(at + GlassRecords.Recipe.T_FLAGS), v.getLong(at + GlassRecords.Recipe.T_NUM),
+                    v.getLong(at + GlassRecords.Recipe.T_DEN));
+            (i < ni ? in : out).add(t);
+        }
+        return new Recipe(v.getInt(GlassRecords.INDEX), v.getInt(GlassRecords.Recipe.TYPE), v.getInt(GlassRecords.Recipe.HEAT),
+                v.getInt(GlassRecords.Recipe.DURATION), v.getInt(GlassRecords.Recipe.NAME), in, out);
+    }
+
+    /** A DOMAIN record; aux is its member count. */
+    private static Domain domain(ByteBuffer v, int nm) {
+        int nl = v.getInt(GlassRecords.Domain.N_LEVELS);
+        List<Level> levels = new ArrayList<>(nl);
+        for (int i = 0; i < nl; i++) {
+            int at = GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL;
+            levels.add(new Level(v.getInt(at + GlassRecords.Domain.L_SELECTOR), v.getInt(at + GlassRecords.Domain.L_SPEED_NUM),
+                    u32(v.getInt(at + GlassRecords.Domain.L_SPEED_DEN)), v.getDouble(at + GlassRecords.Domain.L_CAPACITY)));
+        }
+        List<Member> members = new ArrayList<>(nm);
+        int m0 = GlassRecords.Domain.members(nl);
+        for (int i = 0; i < nm; i++) {
+            int at = m0 + i * GlassRecords.Domain.MEMBER;
+            members.add(new Member(v.getInt(at + GlassRecords.Domain.M_NODE), v.getInt(at + GlassRecords.Domain.M_COUNT),
+                    v.getInt(at + GlassRecords.Domain.M_RATIO_NUM), u32(v.getInt(at + GlassRecords.Domain.M_RATIO_DEN)),
+                    v.getDouble(at + GlassRecords.Domain.M_IMPACT)));
+        }
+        return new Domain(v.getInt(GlassRecords.INDEX), v.getLong(GlassRecords.Domain.NETWORK), v.getInt(GlassRecords.Domain.CURRENT),
+                v.getInt(GlassRecords.Domain.DRIVER), v.getInt(GlassRecords.Domain.FLAGS), v.getDouble(GlassRecords.Domain.LIVE_STRESS),
+                v.getDouble(GlassRecords.Domain.LIVE_CAPACITY), levels, members);
+    }
+}

@@ -375,3 +375,194 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
 - **Tests** can order an industry command (`INDUSTRY_COMMAND`, W17): a record with Java's own ids,
   written as the industry engine's own, so the industry GameTests run on either engine.
 - **IND_APPROACH** reconciles ahead of arrival (§6.1).
+
+## 9. The glass box's records (GLASSBOX.md §1.4, G-B19)
+
+**Status:** phase G1, 2026-10-20 (branch `feat/glassbox-g1`). The Rust reference codec is
+`crates/rtsim-industry/src/glass/codec.rs` (types in `records.rs`); the Java mirror is
+`neoforge/core/.../industry/glass/GlassRecords.java`, pinned by `GlassWireContractTest` against
+`glass-wire-fixtures.txt` (printed by `neoforge/tools/industry-wire-fixtures` with the `glass`
+argument). Choices are GB# in `docs/choices-glassbox-g1.md`.
+
+### 9.1 Kinds
+
+| Kind | Name | Class | Direction |
+|---|---|---|---|
+| 0x0048 | IND_GRAPH_NODE | latest-wins | Java to engine |
+| 0x0049 | IND_GRAPH_EDGE | latest-wins | Java to engine |
+| 0x004A | IND_GRAPH_RECIPE | latest-wins | Java to engine |
+| 0x004B | IND_GRAPH_DOMAIN | latest-wins | Java to engine |
+| 0x004C | IND_GRAPH_END | latest-wins | Java to engine |
+| 0x004D | IND_PROBE_SAMPLE | latest-wins, not counted in a sweep | Java to engine |
+| 0x040B | IND_CHUNK_TICKING | journaled | Java to engine |
+| 0x8406 | IND_PROBE_SET | command | engine to Java |
+
+**A compile** is a district's graph: NODE, EDGE, RECIPE and DOMAIN records carrying the district's
+compile number (Java's counter, from 1), then IND_GRAPH_END saying how many records it sent. **The
+engine uses a compile only if it received exactly that many records with its number** (as sweeps,
+F5); a dropped record throws the compile away. Java resends the last compile every
+`glass.resendTicks` (flag RESEND), so a lost compile is redone without a request (GB4).
+
+### 9.2 Layouts
+
+Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 24 u32 compile, 28 u32 index`
+(the record's index within its kind). `NONE` is 0xFFFFFFFF.
+
+| Kind | aux | Fields from 32 | Size |
+|---|---|---|---|
+| IND_GRAPH_NODE | node kind | 32 u32 model, 36 u32 domain (NONE), 40 u32 inventory (NONE), 44 u32 flags, 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 reserved, 64 u32 rule, 68 u32 n rates, 72 i64 capacity, 80 i64 param0, 88 i64 param1, 96 i64 param2, 104 i64 param3, 112 n × Rate24 | 112 + 24n |
+| IND_GRAPH_EDGE | edge kind | 32 u32 from, 36 u32 to, 40 u32 order, 44 u32 flags, 48 u32 capNum, 52 u32 capDen (0/0 unlimited; units per tick), 56 u32 latency, 60 u32 n filter, 64 i64 param, 72 n × u32 good | 72 + 4n, padded to 8 |
+| IND_GRAPH_RECIPE | inputs + outputs | 32 u32 recipeType, 36 u32 heat (at least), 40 u32 n inputs, 44 u32 n outputs, 48 u32 duration, 52 u32 name (NAME, 0 none), 56 n × Term24 (inputs first) | 56 + 24n |
+| IND_GRAPH_DOMAIN | n members | 32 u64 network, 40 u32 n levels, 44 u32 current level, 48 u32 driver node (NONE), 52 u32 flags (1 overstressed now, 2 stress disabled), 56 f64 live stress, 64 f64 live capacity, 72 L × Level24, then n × Member24 | 72 + 24L + 24n |
+| IND_GRAPH_END | flags: 1 complete, 2 not compilable, 4 black box, 8 resend | 16 u64 district, 24 u32 compile, 28 u32 window (checksum window ticks; 0 the engine's `glass.checksumWindowMin`), 32 u32 records, 36 u32 nodes, 40 u32 edges, 44 u32 recipes, 48 u32 domains, 52 u32 reason, 56 u64 fingerprint, 64 u64 frame (0 the level; else a Sable sub-level id), 72 u32 revision, 76 u32 compileTicks | 80 |
+| IND_PROBE_SAMPLE | n entries | 16 u64 district, 24 u32 sweep, 28 u32 node, 32 u32 compile, 36 reserved, 40 n × Entry16 | 40 + 16n |
+| IND_CHUNK_TICKING | 1 ticking, 0 not | (journaled prefix) 24 u64 district, 32 u32 dim, 36 i32 chunkX, 40 i32 chunkZ, 44 reserved | 48 |
+| IND_PROBE_SET | n nodes | (cmdSeq at 8) 16 u64 district, 24 u32 compile, 28 reserved, 32 n × u32 node | 32 + 4n, padded to 8 |
+
+**Sub-records:**
+- **Rate24:** `0 u32 level, 4 u32 recipe (NONE: the transfer, or the only recipe), 8 u32 batch,
+  12 u32 ticksNum, 16 u32 ticksDen, 20 u32 flags (1 shared capacity, 2 first cycle)`: at speed level
+  `level`, one operation on `batch` crafts (machines) or units (movers) every `ticksNum/ticksDen`
+  ticks. Java ran the machine's own countdown for these numbers (G-B5).
+- **Term24:** `0 u32 good, 4 u32 flags (1 catalyst, 2 chance), 8 i64 num, 16 i64 den`: `num/den` of
+  the good per craft; chance outputs at their expectation (G-B11).
+- **Level24:** `0 u32 selector, 4 i32 speedNum, 8 u32 speedDen, 12 reserved, 16 f64 capacity`: the
+  root source's RPM as a rational and the domain's capacity in SU at that level; `selector` is the
+  driver's value that picks the level (a boiler's level, 0 to 18), 0 without a driver.
+- **Member24:** `0 u32 node (NONE), 4 u32 count, 8 i32 ratioNum, 12 u32 ratioDen, 16 f64 impact`:
+  `count` blocks at speed `ratio × root speed` and `impact` SU per RPM each.
+
+**Codes** (the Rust `records.rs` modules, mirrored in `GlassRecords`):
+- **Node kinds:** 1 store, 2 buffer, 3 machine, 4 mover, 5 junction, 6 heater, 7 source, 8 sink,
+  9 black box, 10 controller, 11 port, 12 boiler.
+- **Edge kinds:** 1 adjacency, 2 belt, 3 chute, 4 pipe, 5 chain, 6 air zone, 7 arm reach, 8 heat
+  (param: level), 9 control (param: 1 stop when on, 2 run when on), 10 observe, 11 line, 12 drop.
+- **Node flags:** 1 bounded, 2 any output blocks, 4 stochastic (params 2 and 3: a craft's output
+  second moment as a fraction), 8 fluid, 16 calibrated (TUNABLE), 32 on a moving frame, 64 pass-through (an in-place machine on a line passes goods no recipe matches).
+- **Edge flags:** 1 deny list, 2 fluid, 4 bounded, 8 a filtered side.
+- **Rules:** 1 to 7 the brass tunnel's modes (split, forced split, round robin, forced round robin,
+  prefer nearest, randomize, synchronize), 8 prefer first, 9 merge, 10 andesite split, 11 side insert.
+- **Models, recipe types, heat levels:** as `records.rs` lists them (`model::MILLSTONE` 10, ...).
+
+**Node params by kind:** heater: remaining burn ticks, heat level, burn ticks per fuel item,
+insertion threshold; boiler: tank blocks, engines, active heat, water supply (mB per tick × 1,000);
+controller: on-above, off-below, flags (1 inverted), level at compile; animal source: animals,
+eligible animals, a craft's output second moment as num/den.
+
+### 9.3 What the graph means (the contract both halves build to)
+
+GLASSBOX.md §2 gives Create's formulas and §3 the solve; this is how they map onto the records, so the
+extractor and the solver agree. All rates are **per tick**: items in units, fluids in millibuckets.
+
+**Indices.** Node, edge, recipe and domain indices are the records' `index` fields, 0 to count - 1 within
+the compile. A node's `inventory` is the IND_INVENTORY index of END's `revision` (stores the sampler
+reads); NONE for a store the sampler does not read.
+
+**Rate entries.** A node in a domain uses the entries whose `level` is the domain's level index (into
+its Level24 list); a node without a domain uses level 0. An entry gives `batch` per `ticksNum/ticksDen`
+ticks: its capacity is `batch × ticksDen / ticksNum` per tick (`ticksNum` 0: unlimited). A node with no
+entry for the level has capacity 0 there (a stopped or overstressed domain). FIRST_CYCLE entries are
+latency only, never rate. A node with no entries at all is unlimited (a junction, a buffer, a water
+source). An entry with `batch` 0 has capacity 0: Java writes one at level 0 for a limited node that runs
+at no level (a powered funnel, a machine whose domain is stopped), so that it is not read as unlimited
+(GB45). An entry without a recipe (NONE), like a SHARED one, is the node's capacity across everything
+it does; a machine's recipes are exactly those its entries name (choice GB15).
+
+**Nodes.**
+- **Store:** supplies each good it held at its inventory's latest sweep and accepts while it had room;
+  neither is rate-limited (edges and the next node limit them). Stores are the only nodes whose flows the
+  checksum measures.
+- **Buffer:** work in progress (a depot, a chute slot, a belt's contents): conserves each good, in
+  equals out.
+- **Machine:** crafts of recipe r per tick `c_r ≥ 0`, time-shared: `sum over r of c_r / capacity_r ≤ 1`.
+  Each craft takes the recipe's inputs (catalysts are needed, not consumed) and makes its outputs, chance
+  outputs at their expectation. With ANY_OUTPUT_BLOCKS every output must be accepted in full
+  (`c_r × out ≤ acceptance`). A machine fed from a basin or a depot is one node: the edges into the basin
+  or depot are its inputs and the edges out of it its outputs. A depot worked by two (a press and a fan
+  zone) is a BUFFER whose LINE edges run through each in turn, BOUNDED (GB37). A machine on a line (PASS_THROUGH) passes
+  goods none of its recipes takes. A recipe with `heat` above NONE runs only with a Heat edge in whose
+  heater's level is at least `heat`, at that heater's duty. A sequenced assembly is one SEQUENCED
+  machine node: its recipe is the whole sequence unrolled (every step's inputs times the loops) and its
+  entry one product per the busiest machine's work, the sum of the cycles of the steps that machine does
+  (items on a loop pipeline, so with one machine per step type it is not the time through every step;
+  with one machine doing every step the two agree) (GB15, GB40). The machine doing step 0 is that node;
+  the line's other machines are PASS_THROUGH with no steps, and their other feeders feed it.
+- **Mover:** one SHARED entry: units per tick across every good. Its in-edges are tried in `order`, and
+  its outflow splits among its out-edges by its `rule` (an arm's selection mode; NONE with several
+  out-edges is priority in `order`, as PREFER_FIRST).
+- **Junction:** unlimited unless it has an entry; splits by its `rule` over out-edges in `order`
+  (GLASSBOX.md §3.3). Filtered sides (FILTERED_SIDE) are tried before the rest. ANDESITE_SPLIT's main
+  line is its first out-edge, and the entry size `n` is its first in-edge's `param`.
+- **Heater** (a blaze burner): `params` are remaining burn ticks, heat level when lit, burn ticks per
+  fuel item (the shortest of the fuels that reach it; 0: never runs out, a creative burner; 1 while no
+  fuel reaches it) and the insertion threshold. Each fuel is a FUEL recipe whose `heat` is the level it
+  burns at and whose `duration` its burn ticks (GB49). It burns while lit
+  whatever it heats, so it accepts fuel up to `1 / burnTicks` items per tick, and its **duty** is
+  `min(1, fuel accepted × burnTicks)` once its remaining burn is spent. Until then it is lit at duty 1,
+  in L and U alike, from the compile on: while the remaining burn is above the insertion threshold it
+  refuses fuel (`tryUpdateFuel` takes the same fuel only at or below it), and from the threshold down
+  it takes fuel, each item adding `burnTicks`. The engine spends the remaining burn as Create does (one
+  a tick, less `burnTicks` for each item the heater takes under L) and solves again where a heater
+  changes phase, cutting the sweep interval there (GB105); `params[0]` 0 is a heater out at the compile.
+  Any good on its in-edges is fuel at `params[2]` burn ticks, unless the heater has fuel recipes (rate
+  entries naming FUEL recipes): then their inputs are its fuels, at each recipe's `duration`.
+- **Boiler:** accepts all the water it is offered and voids it (`BoilerData`'s handler returns the
+  amount). Its level is `min(activeHeat, min(18, ceil(w) / 10), min(18, tankBlocks / 4))` with `w` the
+  water accepted in mB per tick and `activeHeat` the sum of its Heat edges' params over lit heaters. It
+  drives its domain: the domain's `driver` is the boiler and each Level24's `selector` is a boiler level
+  (Java tabulates every level the engines can see, with each level's speed and capacity); the domain runs
+  at the level with the largest selector at or below the boiler's level. A heater with
+  duty strictly between 0 and 1 makes the boiler's goods bounded: L counts heaters at duty 1, U every
+  heater with duty above 0.
+- **Source:** emits its recipe's outputs (no inputs) at its entries' rate; unlimited without entries
+  (a water source block under a pump: the pump limits it). A source without recipes emits the goods its
+  out-edges' filters allow (an unfiltered edge from it carries nothing). An animal source (ANIMAL_SHEEP) is STOCHASTIC:
+  a craft is one shearing, its rate the closed form of vanilla's regrowth for `params[1]` eligible
+  animals among `params[0]` the deployer can pick, and `params[2] / params[3]` the craft output's second
+  moment (14/3 for wool's `1 + nextInt(3)`). Java writes the rate entry as one shearing per
+  `(2034 + params[0] × c) / params[1]` ticks, c the deployer's cycle: a sheared sheep eats after 2,034
+  ticks on average (`EatBlockGoal`) and each cycle shears a random entity of the deployer's box (GB53). A source that is not accepted waits (unsheared sheep keep
+  their wool): nothing is lost.
+- **Sink:** accepts everything (burned or voided) up to its entries' rate, unlimited without.
+- **BlackBox:** a node the compiler could not model. L takes it as producing nothing; a good with a
+  black box on its path has no U (it is reported unbounded).
+- **Controller** (a threshold switch, a factory gauge): `params` are on-above, off-below, flags (1
+  inverted, 2 on at compile: the state while the level is between the thresholds) and the observed level
+  at compile, in items or mB. Its Observe edges come from the stores it reads (a
+  filter on the edge limits the goods counted, empty counts all, in units); its Control edges go to
+  the nodes it gates (`param` 1 stops the target while the switch is on, 2 runs it only while on). It
+  is on when the observed level reaches on-above, off when it falls to off-below, else as before
+  (hysteresis). "On" is the switch's state before inversion; the Control `param` already includes the
+  inversion (an inverted switch powers its targets while off, so it runs them only while on: 2), and the
+  inverted flag is for display only (GB51). In G1 the engine evaluates it at every sweep from the observed stock, so each sweep
+  interval is predicted in the regime it was in; G2 turns a cycling switch into the closed form of G-B8.
+- **Port:** an exchange across the district (a station, a postbox): G1 reports its goods unbounded.
+
+**Edges.** `capacity` is `capNum / capDen` units per tick (0/0 unlimited); an edge carries only the goods
+its filter lets through. `order` ranks a node's out-edges for its rule (distance order for PREFER_NEAREST,
+the arm's output list, the tunnel's sides); `latency` is the ticks from tail to head. Heat edges carry
+`param` (for a basin, the heater's heat level when lit; for a boiler, its active heat when lit); Control
+and Observe edges carry no goods.
+
+**Kinetic domains.** At level `l`, the stress is `sum of count × |ratio × speed(l)| × impact` over
+members and the domain is overstressed when that exceeds the level's capacity, as Create's
+`KineticNetwork` does in floating point; then every member has capacity 0. STRESS_DISABLED domains are
+never overstressed. Without a driver the domain stays at its `current` level.
+
+**What is predicted and measured.** Per good, the solve gives the flow into stores and the flow out of
+stores, each as L (the fixed point of §3.2 with bounded rules taken against production) and U (the LP
+maximum with routing free). The predicted net change of the district's stock is `in - out`; the window
+measures the slope of the sampled stock. A good is **exact** when no bounded node, edge, rule or
+unconverged round lies on its paths: it passes when `|measured - (inL - outL)| ≤ z × σ + q`. A good is
+**bounded** otherwise: it passes when `inL - outU - tol ≤ measured ≤ inU - outL + tol` with
+`tol = z × σ + q`. A good is **unbounded** when a black box or a port lies on its paths.
+
+### 9.4 What the engine does with them (G1, read only)
+
+- Stores the latest complete compile per district, solves it (the floor L and the ceiling U per
+  good, G-B1, G-B15) and checks it against one window of live sweeps (G-B14). Nothing changes the
+  world: the replay still runs the C19 black box.
+- On a mismatch it derates the limiting node, sends IND_PROBE_SET for the buffers upstream of it, and
+  after `glass.mismatchStrikes` windows demotes the node's kind to measured, in its own state only.
+- IND_PROBE_SAMPLE feeds the localization; IND_CHUNK_TICKING is kept per district for G2's partial
+  loads (I7, G-B6).
