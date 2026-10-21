@@ -461,6 +461,16 @@ public final class ReconcileAheadGameTests {
         });
     }
 
+    private static com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier barrier() {
+        return com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current().journal().chunks();
+    }
+
+    private static String barrierLine() {
+        com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier b = barrier();
+        return "the journal's write waited " + b.lastWaitMillis() + " ms (max " + b.maxWaitMillis() + " ms; " + b.forcedSaves()
+                + " chunks saved early, " + b.held() + " writes held, " + b.late() + " late so far)";
+    }
+
     /** One chunk's NBT straight from its region file (the anvil format: a sector table, then length, compression, data). */
     private static CompoundTag readRegionChunk(Path regionDir, ChunkPos pos) throws java.io.IOException {
         Path file = regionDir.resolve("r." + pos.getRegionX() + "." + pos.getRegionZ() + ".mca");
@@ -489,6 +499,34 @@ public final class ReconcileAheadGameTests {
     }
 
     /**
+     * Waits for the peek of {@link #saveAndPeek} and checks I8 on it: a journal on disk that holds {@code op}
+     * never meets a chunk on disk without it ({@code epoch}, {@code gold}). A journal write the barrier held (its
+     * chunk not on disk yet, docs/choices-journal-barrier.md JB1) leaves the file as it was: the world saves
+     * again and is looked at again, until the file has {@code op}.
+     */
+    private static Runnable journalOnDiskHas(ServerLevel level, int cx, int cz, BlockPos chest, long op, long district, int epoch, int gold,
+                                             AtomicReference<OnDisk> disk, int[] saves) {
+        return io(() -> {
+            OnDisk d = disk.get();
+            check("the files are read after the journal's write", d != null);
+            if (d.journalHasOp()) {
+                check("read: " + d.error(), d.error() == null);
+                check("the journal on disk has op " + op + " applied, so the chunk on disk has it too: epoch "
+                        + d.epochs().epoch(district) + ", " + d.gold() + " gold", d.epochs().epoch(district) == epoch && d.gold() == gold);
+                return;
+            }
+            check("read: " + d.error(), d.error() == null || d.gold() >= 0);
+            com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier barrier =
+                    com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current().journal().chunks();
+            saves[0]++;
+            record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "journal write held",
+                    "save " + saves[0] + ": " + barrier.lastHeld() + "; the chunk on disk epoch " + d.epochs().epoch(district) + ", " + d.gold() + " gold");
+            saveAndPeek(level, cx, cz, chest, op, disk);
+            check("the journal's file was held (" + barrier.lastHeld() + "); the world saves again", false);
+        });
+    }
+
+    /**
      * Exactly once across a crash after the journal's file is written and before the chunk's is (I8;
      * docs/choices-repair.md R21, "For Ben" 1 before it). Two reconciles into a chest in a far chunk, each
      * followed by a world save and a look at the files right after the journal's write:
@@ -512,6 +550,8 @@ public final class ReconcileAheadGameTests {
         long[] id = {0};
         int[] mark = {0};
         AtomicReference<OnDisk> disk = new AtomicReference<>();
+        int[] saves = {0};
+        long[] late0 = {0};
         helper.startSequence()
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(io(() -> check("the far chunk loads", level.getChunkSource().getChunkNow(fx, fz) != null)))
@@ -539,17 +579,17 @@ public final class ReconcileAheadGameTests {
                     check("a applied at the load" + pipeline(a), result(a) != null && result(a).getLong(IndRecords.ReconcileResult.ENTRIES + 16) == 7);
                     check("7 gold, epoch 1", count(container(level, chestPos), Items.GOLD_INGOT) == 7 && epochIn(level, fx, fz, id[0]) == 1);
                 }))
-                .thenExecute(() -> saveAndPeek(level, fx, fz, chestPos, a, disk))
-                .thenWaitUntil(io(() -> {
+                .thenExecute(() -> {
+                    late0[0] = barrier().late();
+                    saveAndPeek(level, fx, fz, chestPos, a, disk);
+                })
+                .thenWaitUntil(journalOnDiskHas(level, fx, fz, chestPos, a, id[0], 1, 7, disk, saves))
+                .thenExecute(() -> {
                     OnDisk d = disk.get();
-                    check("the files are read after the journal's write", d != null);
-                    check("read: " + d.error(), d.error() == null);
                     record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "after the first save",
-                            "chunk on disk epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold; journal on disk has a: " + d.journalHasOp());
-                    check("the journal on disk has a applied", d.journalHasOp());
-                    check("so the chunk on disk has a too: epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold",
-                            d.epochs().epoch(id[0]) == 1 && d.gold() == 7);
-                }))
+                            "chunk on disk epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold; journal on disk has a: " + d.journalHasOp()
+                                    + "; " + barrierLine());
+                })
                 // 2. Applied to the loaded chunk right after that save (the chunk's eager-save cooldown), then saved.
                 .thenExecute(() -> reconcile(b, id[0], 2, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 5)), List.of()))
                 .thenWaitUntil(io(() -> {
@@ -557,18 +597,14 @@ public final class ReconcileAheadGameTests {
                     check("12 gold, epoch 2", count(container(level, chestPos), Items.GOLD_INGOT) == 12 && epochIn(level, fx, fz, id[0]) == 2);
                 }))
                 .thenExecute(() -> saveAndPeek(level, fx, fz, chestPos, b, disk))
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(journalOnDiskHas(level, fx, fz, chestPos, b, id[0], 2, 12, disk, saves))
+                .thenExecute(() -> {
                     OnDisk d = disk.get();
-                    check("the files are read after the journal's write", d != null);
-                    check("read: " + d.error(), d.error() == null);
-                    com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier barrier =
-                            com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current().journal().chunks();
                     record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "after the second save",
                             "chunk on disk epoch " + d.epochs().epoch(id[0]) + ", " + d.gold() + " gold; journal on disk has b: " + d.journalHasOp()
-                                    + "; the journal's write waited " + barrier.lastWaitMillis() + " ms (" + barrier.forcedSaves() + " chunks saved early, "
-                                    + barrier.late() + " writes late so far)");
-                    check("the journal on disk has b applied", d.journalHasOp());
-                }))
+                                    + "; " + barrierLine() + "; " + saves[0] + " saves held");
+                    check("no journal write went ahead of its chunks: " + (barrier().late() - late0[0]) + " late", barrier().late() == late0[0]);
+                })
                 .thenExecute(() -> {
                     // The crash right after the journal's write, and the restart: the chunk is what its region file
                     // held, the journal keeps b (nothing rolled back), and the engine, as old as the journal, has b's
