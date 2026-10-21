@@ -156,6 +156,21 @@ fn save_world(world: &Path, j: &mut Java) {
     write_level(world, j.game_time);
 }
 
+/// The bridge's save in the bridge's order (and `Host::save`'s): the journal and `level.dat`
+/// written now, the engine's pages at its next step. Returns the observation saved through.
+fn save_as_the_bridge(world: &Path, j: &mut Java) -> u64 {
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    Journal {
+        save: j.world_save(),
+        data_version: Some(3955),
+    }
+    .write(world)
+    .unwrap();
+    write_level(world, j.game_time);
+    through
+}
+
 fn write_level(world: &Path, time: i64) {
     let root = Tag::Compound(vec![(
         b"Data".to_vec(),
@@ -566,7 +581,7 @@ fn exports_from_a_live_world_open_clean() {
             let mut saves = 0;
             while !stop.load(Ordering::Relaxed) {
                 play(&mut j, 4 * 3_000, 3_000);
-                save_world(&world, &mut j);
+                save_as_the_bridge(&world, &mut j);
                 saves += 1;
             }
             j.crash();
@@ -579,6 +594,16 @@ fn exports_from_a_live_world_open_clean() {
         let dir = scratch(&format!("live-{k}")).join("fork");
         let info = fork::export(&world, &dir).unwrap();
         retried += info.attempts - 1;
+        // The pair copied: the journal starts no later than the observation after the pages.
+        assert!(
+            info.journal_first_obs <= info.pages_obs_seq + 1,
+            "fork {k}: {info:?}"
+        );
+        assert!(
+            info.notes.iter().all(|n| !n.contains("in neither")),
+            "fork {k}: {:?}",
+            info.notes
+        );
         let host = Host::open(&dir, &opts(true)).unwrap();
         assert_eq!(restore_failures(&host.e), Vec::<String>::new(), "fork {k}");
         host.close().unwrap();
@@ -590,6 +615,53 @@ fn exports_from_a_live_world_open_clean() {
     let saves = server.join().unwrap();
     eprintln!("{forks} exports while the server saved {saves} times: {retried} copies again");
     assert!(saves >= 2, "the server saved while the exports ran");
+    let _ = fs::remove_dir_all(&world);
+}
+
+/// A save landing between the copy of the pages and the second read of the journal (where a live
+/// server's save falls by chance in the test above) makes the export copy again, and the fork
+/// holds the pair the second copy read: the world's journal as it is now and the pages it
+/// confirms.
+#[test]
+fn a_save_during_the_copy_makes_the_export_copy_again() {
+    let world = populated("race", 2);
+    let e = java::engine(&world.join(save::PAGES), 1 << 20);
+    let mut j = Java::open(e, Journal::read(&world).unwrap().save);
+    j.module_mask = save::ALL_MODULES;
+    play(&mut j, 4 * 3_000, 3_000);
+    let before = fs::read(world.join(save::JOURNAL)).unwrap();
+    let dir = scratch("race-fork").join("fork");
+    let mut hooked = Vec::new();
+    let info = fork::export_with(&world, &dir, |attempt| {
+        hooked.push(attempt);
+        if attempt == 1 {
+            let through = save_as_the_bridge(&world, &mut j);
+            j.run_until("the pages of the save", |j| {
+                j.e.durable_obs_seq() >= through
+            });
+        }
+    })
+    .unwrap();
+    assert_eq!(hooked, [1, 2]);
+    assert_eq!(info.attempts, 2, "{info:?}");
+    let now = fs::read(world.join(save::JOURNAL)).unwrap();
+    assert_ne!(now, before, "the hook saved the world");
+    assert_eq!(fs::read(dir.join(save::JOURNAL)).unwrap(), now);
+    let mut src = PageStore::open_read_only(world.join(save::PAGES)).unwrap();
+    src.view_confirmed().unwrap();
+    assert_eq!(info.pages_obs_seq, src.confirmed().obs_seq);
+    assert!(info.journal_first_obs <= info.pages_obs_seq + 1, "{info:?}");
+    assert!(
+        info.notes.iter().all(|n| !n.contains("in neither")),
+        "{:?}",
+        info.notes
+    );
+    let host = Host::open(&dir, &opts(true)).unwrap();
+    assert_eq!(restore_failures(&host.e), Vec::<String>::new());
+    host.close().unwrap();
+    drop(src);
+    j.crash();
+    let _ = fs::remove_dir_all(dir.parent().unwrap());
     let _ = fs::remove_dir_all(&world);
 }
 
