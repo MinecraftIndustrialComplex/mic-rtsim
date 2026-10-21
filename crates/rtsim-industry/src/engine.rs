@@ -1473,7 +1473,10 @@ impl Engine {
         self.note(d, at, what);
         self.after_cluster(h, at);
         // A first regime blocked at once stops silently: take it as its breakpoint.
-        if let Some(Run::Stopped(w)) = self.clusters.get(h).and_then(|r| r.cell().model().run_of(d, 0))
+        if let Some(Run::Stopped(w)) = self
+            .clusters
+            .get(h)
+            .and_then(|r| r.cell().model().run_of(d, 0))
             && w != Stop::Disabled
         {
             self.glass_step(h, d, Some(w), at);

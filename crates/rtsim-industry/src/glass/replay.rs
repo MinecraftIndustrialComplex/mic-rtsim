@@ -32,7 +32,10 @@ use super::q::Q;
 use super::records::NodeKind;
 use super::report;
 use super::solve::{Regime, Solution, burn};
-use crate::cluster::{Cluster, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, Run, SpaceSpec, Stop};
+use crate::cluster::{
+    Cluster, CyclePiece, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, RESET_CARRY, Run, SpaceSpec,
+    Stop, cycle_period,
+};
 use crate::ids::{DistrictId, Good, GoodClass, GoodVec};
 use crate::reconcile::GoodLookup;
 use crate::tunables::GlassTunables;
@@ -195,7 +198,8 @@ struct Mark {
     room: bool,
     /// A heater's phase changed here.
     heater: bool,
-    resetting: usize,
+    /// The pools whose carries restarted here.
+    resetting: BTreeSet<PoolKey>,
     fed: Vec<f64>,
 }
 
@@ -236,8 +240,8 @@ pub struct Replay {
     /// The nets that run.
     nets: BTreeMap<PoolKey, i64>,
     watches: Vec<(Watch, SpaceSpec)>,
-    /// Pools whose carries restart at every breakpoint (every pool a non-room watch or an empty
-    /// input ever decided), so a repeated regime sequence repeats exactly.
+    /// Pools whose carries restart at this breakpoint (the pool that fired, and every pool a
+    /// non-room watch looks at), so a repeated regime sequence repeats exactly.
     resetting: BTreeSet<PoolKey>,
     /// The residual node (G-B13): per pool, 32.32 per tick; runs while coupled.
     residual: BTreeMap<PoolKey, i64>,
@@ -607,12 +611,10 @@ impl Replay {
                 match w {
                     Stop::InputEmpty(k @ PoolKey::Store(_, inv, g)) => {
                         self.st.empty.insert((inv, g), level(&lv, k));
-                        self.resetting.insert(k);
                         fired = Some(k);
                     }
                     Stop::InputEmpty(k @ PoolKey::Stock(_, g)) => {
                         self.st.dry.insert(g);
-                        self.resetting.insert(k);
                         fired = Some(k);
                     }
                     Stop::Bound(_, tag) => {
@@ -705,7 +707,10 @@ impl Replay {
             if let Some(inv) = self.inv_of[v] {
                 rg.read[v] = true;
                 rg.held[v] = lv
-                    .range(PoolKey::Store(self.d, inv, Good(0))..=PoolKey::Store(self.d, inv, Good(u32::MAX)))
+                    .range(
+                        PoolKey::Store(self.d, inv, Good(0))
+                            ..=PoolKey::Store(self.d, inv, Good(u32::MAX)),
+                    )
                     .filter(|&(k, &a)| a > 0 && !self.st.empty.contains_key(&(inv, k.good())))
                     .map(|(k, _)| k.good())
                     .collect();
@@ -851,7 +856,10 @@ impl Replay {
                     (x * FIXED_ONE as f64).floor() as i64
                 };
                 if f != 0 {
-                    *self.residual.entry(PoolKey::Store(d, i, gr.good)).or_default() += f;
+                    *self
+                        .residual
+                        .entry(PoolKey::Store(d, i, gr.good))
+                        .or_default() += f;
                 }
             }
             if r > 0.0 && s > 0.0 {
@@ -883,7 +891,8 @@ impl Replay {
     ) -> Vec<(PoolKey, i64)> {
         let st = &self.stores[&inv];
         let d = self.d;
-        let mine = || lv.range(PoolKey::Store(d, inv, Good(0))..=PoolKey::Store(d, inv, Good(u32::MAX)));
+        let mine =
+            || lv.range(PoolKey::Store(d, inv, Good(0))..=PoolKey::Store(d, inv, Good(u32::MAX)));
         let mut out = Vec::with_capacity(arriving.len());
         if st.cap <= 0 {
             return arriving.iter().map(|&(k, _)| (k, i64::MAX / 4)).collect();
@@ -1029,7 +1038,12 @@ impl Replay {
         self.counts.regimes += 1;
         comp.replay_regimes += 1;
         // The latency rule's history takes the new targets.
-        let keys: BTreeSet<PoolKey> = self.target.keys().chain(self.st.lag.keys()).copied().collect();
+        let keys: BTreeSet<PoolKey> = self
+            .target
+            .keys()
+            .chain(self.st.lag.keys())
+            .copied()
+            .collect();
         if self.lat > 0 {
             for k in keys {
                 let t = self.target.get(&k).copied().unwrap_or(0);
@@ -1091,7 +1105,9 @@ impl Replay {
             }
         }
         for (&inv, flv) in &self.st.full {
-            for (&k, &r) in nets.range(PoolKey::Store(d, inv, Good(0))..=PoolKey::Store(d, inv, Good(u32::MAX))) {
+            for (&k, &r) in
+                nets.range(PoolKey::Store(d, inv, Good(0))..=PoolKey::Store(d, inv, Good(u32::MAX)))
+            {
                 if r >= 0 {
                     continue;
                 }
@@ -1130,7 +1146,10 @@ impl Replay {
             // distance were less), the rest by rate, so no share fires before a tick runs.
             let base: Vec<i64> = moving.iter().map(|&(_, m, r)| m * ctrl_reach(r)).collect();
             let rest = (dist - base.iter().sum::<i64>()).max(0);
-            let w: Vec<f64> = moving.iter().map(|&(_, m, r)| (r as f64) * m as f64).collect();
+            let w: Vec<f64> = moving
+                .iter()
+                .map(|&(_, m, r)| (r as f64) * m as f64)
+                .collect();
             for (j, s) in split(rest, &w).into_iter().enumerate() {
                 let s = s + base[j];
                 let (k, m, _) = moving[j];
@@ -1151,14 +1170,12 @@ impl Replay {
                 watches.push((Watch::Undry { good: g }, (vec![(k, 1)], 0, h - 1)));
             }
         }
-        for (w, _) in &watches {
-            if !matches!(w, Watch::Room { .. }) {
-                self.resetting.insert(w.key(d));
-            }
-        }
-        if let Some(k) = fired {
-            self.resetting.insert(k);
-        }
+        self.resetting = watches
+            .iter()
+            .filter(|(w, _)| !matches!(w, Watch::Room { .. }))
+            .map(|(w, _)| w.key(d))
+            .chain(fired)
+            .collect();
         self.watches = watches;
         // The deadline: the next latency arrival or heater phase.
         let mut deadline: Option<Tick> = None;
@@ -1278,10 +1295,7 @@ impl Replay {
                 continue;
             }
             let sh = self.shares(inv, lv, &arriving, goods);
-            if sh
-                .iter()
-                .any(|&(k, s)| s < reach(net(k)))
-            {
+            if sh.iter().any(|&(k, s)| s < reach(net(k))) {
                 newly_full.push(inv);
             }
         }
@@ -1305,8 +1319,7 @@ impl Replay {
                     a - ahead <= f - self.step_of(inv, k.good(), goods)
                 })
                 || flv.iter().any(|(&g, &f)| {
-                    !lv.contains_key(&PoolKey::Store(d, inv, g))
-                        && f >= self.step_of(inv, g, goods)
+                    !lv.contains_key(&PoolKey::Store(d, inv, g)) && f >= self.step_of(inv, g, goods)
                 });
             if gone {
                 freed.push(inv);
@@ -1347,7 +1360,8 @@ impl Replay {
             let k = PoolKey::Stock(d, g);
             let r = net(k);
             let ahead = if r > 0 { reach(r) } else { 0 };
-            if level(lv, k) + ahead >= holding_threshold(goods, g, tun.holding_stacks, true).max(1) {
+            if level(lv, k) + ahead >= holding_threshold(goods, g, tun.holding_stacks, true).max(1)
+            {
                 undry.push(g);
             }
         }
@@ -1428,7 +1442,14 @@ impl Replay {
         h
     }
 
-    fn mark(&mut self, _comp: &Compiled, lv: &Levels, at: Tick, fired: Option<PoolKey>, room: bool) {
+    fn mark(
+        &mut self,
+        _comp: &Compiled,
+        lv: &Levels,
+        at: Tick,
+        fired: Option<PoolKey>,
+        room: bool,
+    ) {
         let sig = self.sig(lv, at);
         let watched = self
             .watches
@@ -1449,7 +1470,7 @@ impl Replay {
             fired,
             room,
             heater: false,
-            resetting: self.resetting.len(),
+            resetting: self.resetting.clone(),
             fed: self.fed.clone(),
         });
     }
@@ -1482,7 +1503,7 @@ impl Replay {
     ) -> Option<(ProcSpec, Tick)> {
         let (mi, mj) = (&self.marks[i], &self.marks[j]);
         let period = mj.at.0.checked_sub(mi.at.0)?;
-        if period == 0 || mi.resetting != mj.resetting || mi.resetting != self.resetting.len() {
+        if period == 0 || mi.resetting != mj.resetting || mj.resetting != self.resetting {
             return None;
         }
         let ms = &self.marks[i..=j];
@@ -1490,7 +1511,7 @@ impl Replay {
         // restarting its carry.
         if ms[1..]
             .iter()
-            .any(|m| m.room || m.heater || m.fired.is_some_and(|k| !self.resetting.contains(&k)))
+            .any(|m| m.room || m.heater || m.fired.is_some_and(|k| !m.resetting.contains(&k)))
         {
             return None;
         }
@@ -1532,33 +1553,91 @@ impl Replay {
             }
             n_max = n_max.min(n as u64);
         }
-        // The other pools: never below the margin, never past a store's room, over n periods.
-        // A pool that restarts its carry at each breakpoint repeats its measured drift exactly; one
-        // that keeps its carry moves its exact rate, within a unit.
-        let exact: BTreeMap<PoolKey, i128> = keys
+        // The cycle's pools and pieces. A piece of no length (two breakpoints at one tick) passes
+        // its restarts to the next.
+        let pools: Vec<PoolKey> = keys
             .iter()
-            .map(|&k| {
-                let s: i128 = ms
-                    .windows(2)
-                    .map(|w| {
-                        i128::from(w[0].nets.get(&k).copied().unwrap_or(0))
-                            * i128::from(w[1].at.0 - w[0].at.0)
-                    })
-                    .sum();
-                (k, s)
+            .copied()
+            .filter(|k| {
+                ms[..ms.len() - 1]
+                    .iter()
+                    .any(|m| m.nets.get(k).is_some_and(|&r| r != 0))
             })
             .collect();
-        let resetting = &self.resetting;
-        let change = |k: PoolKey, n: u64| -> (i64, i64) {
-            if resetting.contains(&k) {
-                let c = drift(k).saturating_mul(n as i64);
-                (c, c)
-            } else {
-                let s = exact[&k].saturating_mul(i128::from(n));
-                let lo = i64::try_from(s.div_euclid(U)).unwrap_or(i64::MIN / 4) - 1;
-                let hi = i64::try_from((s + U - 1).div_euclid(U)).unwrap_or(i64::MAX / 4) + 1;
-                (lo, hi)
+        if pools.is_empty() {
+            return None;
+        }
+        let mut pieces: Vec<CyclePiece> = Vec::new();
+        let mut pending: BTreeSet<PoolKey> = BTreeSet::new();
+        for w in ms.windows(2) {
+            pending.extend(w[0].resetting.iter().copied());
+            let len = w[1].at.0 - w[0].at.0;
+            if len == 0 {
+                continue;
             }
+            pieces.push(CyclePiece {
+                len,
+                rates: pools
+                    .iter()
+                    .map(|k| w[0].nets.get(k).copied().unwrap_or(0))
+                    .collect(),
+                reset: pools.iter().map(|k| pending.contains(k)).collect(),
+            });
+            pending.clear();
+        }
+        // Restarts at the period's last instant land with the first piece's.
+        if let Some(first) = pieces.first_mut() {
+            for (j, k) in pools.iter().enumerate() {
+                if pending.contains(k) {
+                    first.reset[j] = true;
+                }
+            }
+        } else {
+            return None;
+        }
+        // Per pool over n periods: a pool a piece restarts moves its steady period's emission n
+        // times, within a unit for the first period's entry carry; one no piece restarts moves its
+        // exact rate, within a unit. A pool a breakpoint decides must return exactly.
+        let steady: Vec<Option<i128>> = (0..pools.len())
+            .map(|j| {
+                pieces.iter().any(|p| p.reset[j]).then(|| {
+                    let (_, c1) = cycle_period(&pieces, j, RESET_CARRY);
+                    cycle_period(&pieces, j, c1).0
+                })
+            })
+            .collect();
+        let decides: BTreeSet<PoolKey> = ms
+            .iter()
+            .flat_map(|m| m.watched.iter().chain(m.fired.iter()))
+            .copied()
+            .collect();
+        for (j, k) in pools.iter().enumerate() {
+            if decides.contains(k) && steady[j] != Some(0) {
+                return None;
+            }
+        }
+        let index: BTreeMap<PoolKey, usize> =
+            pools.iter().enumerate().map(|(j, &k)| (k, j)).collect();
+        let change = |k: PoolKey, n: u64| -> (i64, i64) {
+            let Some(&j) = index.get(&k) else {
+                return (0, 0);
+            };
+            let n128 = i128::from(n);
+            let (lo, hi) = match steady[j] {
+                Some(e) => (e * n128 - 1, e * n128 + 1),
+                None => {
+                    let s: i128 = pieces
+                        .iter()
+                        .map(|p| i128::from(p.rates[j]) * i128::from(p.len))
+                        .sum::<i128>()
+                        .saturating_mul(n128);
+                    (s.div_euclid(U) - 1, (s + U - 1).div_euclid(U) + 1)
+                }
+            };
+            (
+                i64::try_from(lo).unwrap_or(i64::MIN / 4),
+                i64::try_from(hi).unwrap_or(i64::MAX / 4),
+            )
         };
         let tick_max: i64 = ms
             .iter()
@@ -1625,28 +1704,6 @@ impl Replay {
             }
         }
         let n = lo;
-        let pools: Vec<PoolKey> = keys
-            .iter()
-            .copied()
-            .filter(|k| ms[..ms.len() - 1].iter().any(|m| m.nets.get(k).is_some_and(|&r| r != 0)))
-            .collect();
-        let mut pieces = Vec::new();
-        for w in ms.windows(2) {
-            let len = w[1].at.0 - w[0].at.0;
-            if len == 0 {
-                continue;
-            }
-            pieces.push((
-                len,
-                pools
-                    .iter()
-                    .map(|k| w[0].nets.get(k).copied().unwrap_or(0))
-                    .collect::<Vec<i64>>(),
-            ));
-        }
-        if pieces.is_empty() || pools.is_empty() {
-            return None;
-        }
         let run = CycleRun {
             start: at,
             period,
@@ -1655,13 +1712,7 @@ impl Replay {
         };
         let proc = ProcSpec {
             id: 0,
-            body: ProcSpecBody::Cycle {
-                pools: pools
-                    .iter()
-                    .map(|&k| (k, self.resetting.contains(&k)))
-                    .collect(),
-                pieces,
-            },
+            body: ProcSpecBody::Cycle { pools, pieces },
             targets: Vec::new(),
             requires: None,
             latency: 0,
@@ -1682,7 +1733,11 @@ impl Replay {
         };
         let periods = (at.0 - run.start.0) / run.period;
         for (h, b) in self.heaters.iter_mut().enumerate() {
-            let floor = if b.phase() == burn::REFUSING { b.thr } else { 0.0 };
+            let floor = if b.phase() == burn::REFUSING {
+                b.thr
+            } else {
+                0.0
+            };
             b.left = (b.left - run.spend[h] * periods as f64).max(floor);
         }
         self.heat_at = at;
@@ -1718,7 +1773,11 @@ impl Replay {
                 spent += b.spend(f) * (w[1].at.0 - w[0].at.0) as f64;
             }
             spent += b.spend(ms[k].fed.get(h).copied().unwrap_or(0.0)) * off as f64;
-            let floor = if b.phase() == burn::REFUSING { b.thr } else { 0.0 };
+            let floor = if b.phase() == burn::REFUSING {
+                b.thr
+            } else {
+                0.0
+            };
             b.left = (b.left - spent).max(floor);
         }
         self.heat_at = at;
