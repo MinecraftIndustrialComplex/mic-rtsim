@@ -418,9 +418,9 @@ fn a_truncated_or_foreign_save_is_an_error() {
     assert!(Ships::load(ShipTunables::default(), b"nonsense").is_err());
 }
 
-#[test]
-fn lost_ships_come_back_in_their_own_slot() {
-    let mut c = coast(41);
+/// A player in view of a straight sea lane sinks the first merchant that comes into it: the ship
+/// and the time of the sinking.
+fn sink_a_merchant(c: &mut Coastal) -> (rtsim_ships::ShipId, Tick) {
     let mut fake = FakeShips::new(160.0);
     let (_, mid) = straight_lane_mid(&c.ships);
     fake.set_player(PLAYER, f64::from(mid.0), f64::from(mid.1));
@@ -450,7 +450,13 @@ fn lost_ships_come_back_in_their_own_slot() {
             sunk = Ship::id_of_agent(a);
         }
     }
-    let s = sunk.expect("a merchant came into view and was sunk");
+    (sunk.expect("a merchant came into view and was sunk"), t)
+}
+
+#[test]
+fn lost_ships_come_back_in_their_own_slot() {
+    let mut c = coast(41);
+    let (s, t) = sink_a_merchant(&mut c);
     let x = c.ships.ship(s).unwrap();
     let (offset, slot, service) = (x.offset, x.slot, x.service);
     assert!(!x.is_active());
@@ -771,4 +777,288 @@ fn a_ship_embodied_across_a_docking_gets_its_next_hold() {
     assert_eq!(ops.len(), sets.len(), "one op id per command");
     assert_eq!(run(), sets, "derived again, the same commands and op ids");
     eprintln!("U18: {} SHIP_CARGO in 3 days at a dock", sets.len());
+}
+
+/// The coastline whose raids find nothing to take.
+struct Dry(Coastline);
+
+impl rtsim_ecology::infra::Infrastructure for Dry {
+    fn districts_near(
+        &mut self,
+        frame: u16,
+        x: i64,
+        z: i64,
+        r: i64,
+    ) -> Vec<rtsim_ecology::infra::DistrictSite> {
+        self.0.districts_near(frame, x, z, r)
+    }
+    fn raid(
+        &mut self,
+        t: &rtsim_industry::threat::Threat,
+    ) -> Option<rtsim_ecology::infra::RaidOutcome> {
+        let mut o = self.0.raid(t)?;
+        o.stolen = rtsim_industry::ids::GoodVec::default();
+        Some(o)
+    }
+    fn good_name(&self, g: rtsim_industry::ids::Good) -> Option<String> {
+        self.0.good_name(g)
+    }
+}
+
+/// The tape's events of `kind`.
+fn events_of(s: &Ships, kind: rtsim_archive::Kind) -> Vec<rtsim_archive::Event> {
+    rtsim_archive::record::rows_on(&s.tape)
+        .into_iter()
+        .filter_map(|(k, _, r)| match r {
+            rtsim_archive::Row::Event(e) if k == kind => Some(e),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A ship's archive id (a handle's plain bits, which fit the id's 64 bits).
+fn sid(s: rtsim_ships::ShipId) -> u64 {
+    s.to_bits()
+}
+
+/// The ships' archive rows (VIEWER.md §10.1) on three existing scenarios: the scripted coast
+/// (pirates under way and hunting, raids in view and unwatched, a merchant taken, a pirate sunk
+/// by the player, both coming back, the haven's take of the lanes), the coastal-district raids,
+/// and a merchant sunk by a player.
+#[test]
+fn the_archive_records_the_ships() {
+    use rtsim_archive::{Row, Severity, kinds};
+
+    // The scripted coast, a month: the player's day 7 loot, day 9 sinking and the rest.
+    let mut c = synth::coastal(7, ShipTunables::default());
+    c.ships.tape.set_on(true);
+    let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
+    synth::Script::default().run(&mut c, &mut fake, Tick::ZERO, Tick::from_days(30));
+    // The tape is not state: the same month with it off ends in the same hashes.
+    let mut off = synth::coastal(7, ShipTunables::default());
+    let mut fake_off = FakeShips::new(f64::from(off.ships.tun.view_radius));
+    synth::Script::default().run(&mut off, &mut fake_off, Tick::ZERO, Tick::from_days(30));
+    assert!(off.ships.tape.is_empty());
+    assert_eq!(c.ships.state_hash(), off.ships.state_hash());
+    assert_eq!(c.world.state_hash(), off.world.state_hash());
+    for k in rtsim_archive::record::kinds_on(&c.ships.tape) {
+        assert_eq!(k.group(), "ships", "{}", k.name());
+        assert_eq!(kinds::by_name(k.name()), Some(k));
+    }
+    let player = c.ships.player(&mut c.world, synth::SCRIPT_PLAYER).to_bits();
+    let pirates: BTreeSet<u64> = c
+        .ships
+        .havens
+        .iter()
+        .flat_map(|h| h.ships.iter())
+        .map(|&p| sid(p))
+        .collect();
+    let merchants: BTreeSet<u64> = c
+        .ships
+        .ships
+        .iter()
+        .filter(|(_, x)| x.role == Role::Merchant)
+        .map(|(id, _)| sid(id))
+        .collect();
+    assert_eq!(c.ships.havens.len(), 1);
+    let haven = &c.ships.havens[c.haven as usize];
+    let haven_key = c.world.nodes[haven.node].key;
+    let mids: Vec<(i32, i32)> = c
+        .ships
+        .lanes
+        .iter()
+        .map(|ln| ln.path.at(ln.path.length() / 2))
+        .collect();
+
+    // Legs: a pirate's every booking, notable (named movers). The first sortie leaves the
+    // haven's dock, and a hunt is a leg that goes nowhere, at a lane's middle, which begins
+    // where the sortie's leg ended.
+    let legs: Vec<rtsim_archive::Leg> = rtsim_archive::record::rows_on(&c.ships.tape)
+        .into_iter()
+        .filter_map(|(k, dim, r)| match r {
+            Row::Leg(l) if k == kinds::SHIPS_PIRATE_LEG => {
+                assert_eq!(dim, 0);
+                Some(l)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(legs.len() > 20, "{} legs", legs.len());
+    assert!(
+        legs.iter()
+            .all(|l| l.severity == Severity::Notable && pirates.contains(&l.subject.value))
+    );
+    assert!(
+        legs.iter()
+            .any(|l| (l.x0, l.z0) == (haven.dock.0, haven.dock.2))
+    );
+    let stays: Vec<_> = legs
+        .iter()
+        .filter(|l| (l.x0, l.z0) == (l.x1, l.z1) && l.duration > 0)
+        .collect();
+    assert!(!stays.is_empty());
+    for l in &stays {
+        assert!(mids.contains(&(l.x0, l.z0)), "{l:?}");
+        assert!(
+            legs.iter()
+                .any(|p| p.subject == l.subject && p.end() == l.t0 && (p.x1, p.z1) == (l.x0, l.z0)),
+            "a hunt begins where the sortie ended: {l:?}"
+        );
+    }
+
+    // Raids: pirate on merchant. In view the plugin plays the fight, so nothing is known taken
+    // (magnitude 0) and it is notable for the watcher; a fight nobody watches knows what was
+    // taken, and one that took nothing would be minor.
+    let raids = events_of(&c.ships, kinds::SHIPS_RAID);
+    assert!(raids.len() >= 6, "{} raids", raids.len());
+    for e in &raids {
+        assert!(pirates.contains(&e.subject.value), "{e:?}");
+        assert!(merchants.contains(&e.object.value), "{e:?}");
+        assert!(e.severity == Severity::Notable || e.magnitude == 0, "{e:?}");
+        assert!(e.payload || e.severity == Severity::Minor, "{e:?}");
+    }
+    assert!(raids.iter().any(|e| e.magnitude == 0));
+    let taken = raids.iter().find(|e| e.magnitude > 0).expect("a raid took");
+    assert_eq!(taken.severity, Severity::Notable);
+
+    // Lost: the merchant that raid took (the same instant and place, by that pirate), and the
+    // pirate the player sank on day 9 (by the player's actor, at a lane's middle).
+    let lost = events_of(&c.ships, kinds::SHIPS_LOST);
+    assert_eq!(lost.len(), 2, "{lost:?}");
+    assert!(
+        lost.iter()
+            .all(|e| e.severity == Severity::Notable && e.payload)
+    );
+    let merchant = lost
+        .iter()
+        .find(|e| merchants.contains(&e.subject.value))
+        .expect("a merchant lost");
+    assert_eq!(
+        (merchant.tick, merchant.x, merchant.z, merchant.object),
+        (taken.tick, taken.x, taken.z, taken.subject)
+    );
+    assert_eq!(merchant.subject, taken.object);
+    let pirate = lost
+        .iter()
+        .find(|e| pirates.contains(&e.subject.value))
+        .expect("a pirate lost");
+    assert_eq!(pirate.object.value, player);
+    assert!(pirate.tick >= Tick::from_days(9).0);
+    assert!(mids.contains(&(pirate.x, pirate.z)), "{pirate:?}");
+
+    // Back: the pirate's replacement at its haven's dock, one rebuild delay later, and the
+    // merchant at its home village's dock, no sooner than the respawn delay.
+    let back = events_of(&c.ships, kinds::SHIPS_BACK);
+    assert_eq!(back.len(), 2, "{back:?}");
+    assert!(back.iter().all(|e| e.severity == Severity::Minor));
+    let rebuilt = back
+        .iter()
+        .find(|e| e.subject == pirate.subject)
+        .expect("the pirate was rebuilt");
+    assert_eq!(rebuilt.tick, pirate.tick + c.ships.tun.haven_rebuild_ticks);
+    assert_eq!((rebuilt.x, rebuilt.z), (haven.dock.0, haven.dock.2));
+    assert_eq!(rebuilt.object.value, haven_key);
+    assert_eq!(rebuilt.magnitude, c.ships.tun.sea.pirate_crew as i32);
+    let returned = back
+        .iter()
+        .find(|e| e.subject == merchant.subject)
+        .expect("the merchant relaunched");
+    assert!(returned.tick >= merchant.tick + c.ships.tun.respawn_ticks);
+    let x = c
+        .ships
+        .ship(rtsim_ships::ShipId::from_bits(returned.subject.value))
+        .unwrap();
+    assert!(x.is_active());
+    let sv = &c.ships.services[x.service.unwrap() as usize];
+    let home = c.ships.docks[sv.legs[0].from_dock as usize].node;
+    assert_eq!(returned.object.value, c.world.nodes[home].key);
+    assert_eq!(
+        returned.magnitude,
+        c.ships.tun.medium(x.medium).merchant_crew as i32
+    );
+
+    // The haven's take of the lanes: minor rows of the haven's key at a lane's middle. The first
+    // claims an unclaimed lane (nothing yet), and the hunt's share follows at once.
+    let hold = events_of(&c.ships, kinds::SHIPS_HAVEN);
+    assert!(hold.len() >= 4, "{} rows", hold.len());
+    for e in &hold {
+        assert_eq!(e.severity, Severity::Minor);
+        assert_eq!(e.subject.value, haven_key);
+        assert!(mids.contains(&(e.x, e.z)), "{e:?}");
+        assert!((0..=1000).contains(&e.magnitude), "{e:?}");
+    }
+    assert_eq!((hold[0].object.value, hold[0].magnitude), (0, 0));
+    assert_eq!(
+        (hold[1].tick, hold[1].x, hold[1].z),
+        (hold[0].tick, hold[0].x, hold[0].z)
+    );
+    assert!(hold[1].magnitude > 0);
+
+    // The coastal-district raids: every raid is a row, on the district the interface named,
+    // with what it stole (ten iron ingots and five of a good the world does not know).
+    let t = ShipTunables {
+        coast_raid_milli: 2_000,
+        ..ShipTunables::default()
+    };
+    let mut c = synth::coastal(61, t);
+    c.ships.tape.set_on(true);
+    let mut infra = Coastline { raids: 0 };
+    c.ships
+        .run_until(&mut c.world, &mut infra, Tick::from_days(12));
+    let pirates: BTreeSet<u64> = c
+        .ships
+        .havens
+        .iter()
+        .flat_map(|h| h.ships.iter())
+        .map(|&p| sid(p))
+        .collect();
+    let raids = events_of(&c.ships, kinds::SHIPS_RAID);
+    assert!(infra.raids > 0);
+    assert_eq!(raids.len(), infra.raids as usize);
+    for e in &raids {
+        assert!(pirates.contains(&e.subject.value), "{e:?}");
+        assert_eq!((e.object.value, e.magnitude), (77, 15), "{e:?}");
+        assert!(e.severity == Severity::Notable && e.payload, "{e:?}");
+    }
+
+    // A raid that found nothing is minor, with no payload.
+    let t = ShipTunables {
+        coast_raid_milli: 2_000,
+        ..ShipTunables::default()
+    };
+    let mut c = synth::coastal(61, t);
+    c.ships.tape.set_on(true);
+    let mut infra = Dry(Coastline { raids: 0 });
+    c.ships
+        .run_until(&mut c.world, &mut infra, Tick::from_days(12));
+    let raids = events_of(&c.ships, kinds::SHIPS_RAID);
+    assert_eq!(raids.len(), infra.0.raids as usize);
+    assert!(!raids.is_empty());
+    for e in &raids {
+        assert_eq!((e.object.value, e.magnitude), (77, 0), "{e:?}");
+        assert!(e.severity == Severity::Minor && !e.payload, "{e:?}");
+    }
+
+    // A merchant a player sank: lost by the player's actor where the ship was, and back at its
+    // home dock after the delay.
+    let mut c = coast(41);
+    c.ships.tape.set_on(true);
+    let (s, t) = sink_a_merchant(&mut c);
+    let at = c.ships.position(&c.world, s, t);
+    let actor = c.ships.player(&mut c.world, PLAYER).to_bits();
+    c.ships
+        .run_until(&mut c.world, &mut NoInfrastructure, t + 6 * TICKS_PER_DAY);
+    let lost = events_of(&c.ships, kinds::SHIPS_LOST);
+    assert_eq!(lost.len(), 1);
+    let e = &lost[0];
+    assert_eq!((e.subject.value, e.object.value), (sid(s), actor));
+    assert_eq!((e.tick, (e.x, e.z)), (t.0, at));
+    assert!(e.severity == Severity::Notable && e.payload);
+    let back = events_of(&c.ships, kinds::SHIPS_BACK);
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].subject.value, sid(s));
+    assert!(back[0].tick >= t.0 + c.ships.tun.respawn_ticks);
+    for k in rtsim_archive::record::kinds_on(&c.ships.tape) {
+        assert_eq!(k.group(), "ships", "{}", k.name());
+    }
 }

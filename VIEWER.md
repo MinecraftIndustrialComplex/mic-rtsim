@@ -700,19 +700,27 @@ Two 32-byte layouts, after `ReportRow`:
 
 - `<world>/rtsim/archive/`: chunk files of up to 4,096 rows (TUNABLE) sorted by time, LZ4 and CRC32
   with the kernel's codec, and an index of chunk headers: first and last tick, the wall-clock time at
-  the flush, the page save sequence, the bounding box, and a count per kind. The histogram route reads
+  the flush, the save's tag (below), the bounding box, and a count per kind. The histogram route reads
   only the headers.
 - **In the step**, an archived event is a push of 32 bytes into a pending buffer. The buffer is capped
   (1 MiB, 32,768 rows, TUNABLE); past the cap the lowest severity rows are dropped and counted, and the
   step never waits.
-- **At each save**, at the snapshot (`save_now`, on the step's thread), the pending buffer is swapped
-  for an empty one, so the swapped rows are exactly the events up to the state being saved. The IO
-  lane writes them as chunks before the page commit, with no fsync of their own: the archive is a
-  record, not the truth. Each chunk is tagged with that save's `obs_seq` (the observations the
-  generation includes, `Generation::obs_seq` in page.rs), not its save sequence: a save that fails
-  leaves its sequence to the next one (`last_seq + 1`), so a sequence can name two different
-  snapshots, while the observation sequence moves on with every tick's TICK record (UNVERIFIED that
-  `obs_seq` counts TICK records; if not, the tag is the hand-over number at the snapshot).
+- **At each save**, at the snapshot (`take_save`, on the step's thread), the pending buffer is
+  swapped for an empty one, so the swapped rows are exactly the events up to the state being saved.
+  The IO lane writes them as chunks before the page commit, with no fsync of their own: the archive
+  is a record, not the truth.
+- **The tag.** Each chunk carries two numbers from its save:
+  - **`obs_seq`**: the observations the generation includes (`Generation::obs_seq` in page.rs, the
+    replay's `applied_through()` at the snapshot). Readers that know only a generation use it.
+  - **The save serial**: one more at every save that records events, carried on across sessions.
+    The engine keeps it in its pages, at page (1, 0x41), 8 bytes. Rollback and compaction use it.
+  - **Why two.** The page store's own save sequence cannot tag a chunk: a save that fails leaves its
+    sequence to the next one (`last_seq + 1`), so one sequence can name two snapshots. `obs_seq`
+    alone cannot either. Only journaled records move it (kinds 0x0100 to 0x7fff, wire.rs
+    `is_journaled`). TICK (0x0003) is a preamble record that is not journaled. So two saves with no
+    journaled record between them share an `obs_seq`: the budget's pressure saves in a quiet world
+    do. (Checked 2026-10-21 in wire.rs and by rtsim-jni's pressure test. The V3 brief's note that
+    TICK is journaled was wrong.)
 - **Between saves**, while leased, the tap publishes the pending rows as one more part, so a live
   page sees an event within a tap period rather than at the next save (up to 300 s later).
 
@@ -728,23 +736,61 @@ Two 32-byte layouts, after `ReportRow`:
   chunks are demoted into the next tier (filtered, then aggregated, then coarsened, then dropped).
 - **What the cap buys** (derived, before compression): the full tier's 128 MiB holds 4,194,304 rows.
   A world that archives R rows a game day keeps 4,194,304 / R game days at full detail: 4,194 at
-  R = 1,000, 42 at R = 100,000. R is UNVERIFIED; §16's first archive test measures it per scenario.
-  A busier world keeps fewer days at full detail. Where rows arrive faster than 4 MiB of compaction a
+  R = 1,000, 42 at R = 100,000. R as measured is in the table below. A busier world keeps fewer
+  days at full detail. Where rows arrive faster than 4 MiB of compaction a
   save can move them, the flush drops the lowest-severity rows and counts them, so the cap holds at
   the cost of detail, and the page says how many were dropped.
 - **Compaction** runs on the IO lane after a save, at most 4 MiB read and written per save
   (TUNABLE, as the page store's `COMPACT_MAX_BYTES`), and never touches a chunk newer than the
   confirmed generation, which a rollback may still cut (P29).
 
+**R as measured** (V3, 2026-10-21). Each `rtsim-cli sim` scenario at its default size turns on
+every module engine's tape, drains them at least once a game day, prints R and puts it in its JSON's
+`"archive"` object.
+
+| Scenario | Game days | R (rows a game day) | Full-tier days at 128 MiB (4,194,304 / R) |
+|---|---|---|---|
+| industry (the iron line) | 10 | 3.80 | 1,103,764 |
+| phase1 | 120 | 5.21 | 805,306 |
+| quiet (11 nodes) | 400 | 4.86 | 863,026 |
+| quiet `--markets 1000` | 400 | 496 | 8,448 |
+| memory (1,024 markets) | 20 | 538 | 7,790 |
+| dragons | 48 | 11.0 | 381,300 |
+| ships | 12 | 5.58 | 751,219 |
+| herds | 200 | 3.42 | 1,224,614 |
+| conflict, ignore | 24 | 9.42 | 445,413 |
+| conflict, tribute | 24 | 7.79 | 538,306 |
+| conflict, converter | 24 | 7.12 | 588,674 |
+
+- **What it shows.** The scenario worlds are small, so R is a few rows a day, and no tape dropped a
+  row. Phase 1 is the scale probe: about 0.5 rows per market per game day, linear in markets,
+  almost all band legs (`travel.band_leg`).
+- **What ends the full tier.** At every measured R, the 504-day horizon ends the full tier before
+  its bytes do. The bytes come first only above about 8,300 rows a game day (4,194,304 / 504),
+  about 16,000 markets at phase 1's rate.
+- **The dragons figure.** `sim dragons` fails 4 of its 8 story checks (the wound, the grudge raid,
+  the slayer and heir, the heir's hunt). It fails them on main at 387bb85 too, with the same output,
+  so the V3 hooks did not cause it. Its R is for a story without those raids.
+
 ### 10.5 Rollback (P29)
 
-Each chunk carries the `obs_seq` of the save it was flushed with (§10.3). On open, before anything
-new is written, the engine cuts the chunks whose tag is above the `obs_seq` of the generation it
-selected (`select_for_journal`), so after a crash the archive never describes events the rolled-back
-sim will make differently, and the journal's replay records them once. A failed save's chunk stays
-and is consistent: the next save's generation includes everything up to its own snapshot. The sidecar
-never cuts anything: it ignores chunks above the generation it reads. Chunks lost to a power failure
-are lost: the archive misses those minutes.
+Each chunk carries the save serial and the `obs_seq` of the save it was flushed with (§10.3).
+
+- **The cut.** The engine opens the archive before anything new is written. It cuts every chunk
+  whose serial is above the serial in the pages of the generation it starts from
+  (`Archive::cut_above_serial`). That generation is the last one Java's journal was trimmed behind:
+  the start first rolls back the generations saved for the modules' budgets (PF15) with
+  `PageStore::rollback`.
+- **What the cut gives.** After a crash, the archive never describes events that the rolled-back
+  sim will make differently, and the journal's replay records them once.
+- **Failed and stale saves.** Their chunks stay, and they are consistent: the next save's generation
+  includes everything up to its own snapshot, and it has a higher serial.
+- **Compaction** never touches a chunk whose serial is above the confirmed generation's.
+- **Readers.** The sidecar never cuts anything. It ignores chunks above the generation it reads, by
+  `obs_seq`, because that is the number it knows (it does not read the serial page), so it may
+  show a rolled-back save's chunks that share the generation's `obs_seq`. A fork (§12) copies the
+  archive and cuts it by the serial in its copied pages, as the engine's start does.
+- **Power failures.** Chunks lost to a power failure are lost: the archive misses those minutes.
 
 ### 10.6 The timeline in the page
 
@@ -1118,6 +1164,168 @@ For Deep Time's coordinator to review.
   the histogram and `has_events` come from it; the archive's frames (`dim<n>`) join the world's
   frames under the journal's names. A save without an archive has no timeline
   (`rtsim-view/tests/events.rs`).
+
+**V3 as built** (feat/viewer-archive, 2026-10-21), the engine side, where it differs from §10:
+- **Tapes in the modules.** Each module engine owns a `rtsim_archive::Tape` and records at the sites
+  where it already logs or reports (no new scans).
+  - **Cost.** A row is a 32-byte push into the tape's buffer, with no allocation once the buffer
+    has grown. A payload is a closure (`Mark::text`) that runs only at notable and above.
+  - **Cap.** A tape holds at most 65,536 rows between drains (`MAX_TAPE_ROWS`) and counts what it
+    drops past that.
+  - **Off by default.** The engine turns every tape on once every module has loaded, so a module
+    restored by replaying its inputs records nothing twice.
+  - **The same rows everywhere.** `rtsim-cli sim` drains the same tapes, so the R it measures is
+    the engine's (§10.4).
+- **Kinds.** `rtsim-archive/src/kinds.rs` registers 60 kinds. Each module crate has a test that
+  every kind it records is registered.
+- **The recorder** lives in the engine's state. Each step it absorbs every tape: it turns
+  dimensions into `dim<n>` frames and ids over 48 bits into dictionary entries. `take_save` takes
+  its rows, and the dictionary when it changed.
+- **The flush** runs on the IO lane before the page commit, for stale saves too. A stale save's rows
+  have already left the recorder, and the next save takes only later ones, so skipping them would
+  lose them. Their chunks carry the stale save's serial, and the next good save has a higher one.
+- **The tag** is the save serial beside `obs_seq` (§10.3, §10.5). The serial page is (1, 0x41)
+  (`rtsim_jni::engine::ARCHIVE_KEY`). A pressure save writes its serial into its pending
+  generation, so a rollback takes the page back with the pages. A non-pending save confirms its
+  serial, and compaction is bounded by the confirmed one.
+- **Config and stats.**
+  - **`Config::archive`** is on by default. There is no Java flag for it yet (VWD-8's switch).
+  - **Stats**, none of them in Java's array: `archive_rows`, `archive_dropped`,
+    `archive_failures`, `archive_serial`, `archive_confirmed`, and `archive_pending_rows` and
+    `archive_pending_bytes` (the buffer waiting for the next save). A host that saves on its own
+    clock saves sooner once the buffer is past half of either cap (§12); `rtsim-cli run` does
+    (`Options::archive_save_at`, below).
+  - **A test hook.** In test mode, `Engine::crash_before_next_page_commit` makes the next commit
+    stop after its flush, as a process killed there would.
+- **`legs_at`.** A mover is its kind and subject. `legs_at` keeps only the leg that starts last by
+  the asked tick, so a replan passes over the rest of the old leg.
+- **What a row's fields mean**, kind by kind:
+
+| Kind | Subject | Object | Magnitude | Notes |
+|---|---|---|---|---|
+| `conflict.faction` | faction key | 0 | pool | |
+| `conflict.step`, `conflict.calm` | faction | actor (knowledge handle) | step index | the step's severity |
+| `conflict.demand` | faction | actor | tribute asked | payload |
+| `conflict.tribute` | faction | actor | tribute paid | |
+| `conflict.complied` | faction | actor | 0 | payload |
+| `conflict.unmet` | faction | actor | tribute owed | |
+| `conflict.party` | party handle | faction | units | notable for a war party |
+| `conflict.party_leg` | party handle | | | a leg per route decision |
+| `conflict.ambush` | party | train | goods got | |
+| `conflict.raid` | party | the feud's actor, or 0 | items stolen | minor when nothing was taken or broken; payload |
+| `conflict.fight` | party | who broke it, or 0 | units alive | |
+| `conflict.chief` | faction | killer | 0 | payload |
+| `conflict.heir` | faction | killer | grudges inherited | |
+| `conflict.party_home` | party | faction | items brought home | |
+| `settle.joined` | node key | 0 | population | none for bases |
+| `settle.base`, `settle.unmarked` | node | player | 0 | |
+| `settle.house` | node | 0 | houses | at the booking |
+| `travel.caravan` | caravan row handle | home node | units | promoted caravans only |
+| `travel.caravan_leg` | caravan | | | |
+| `travel.arrived` | caravan | node | units sold | |
+| `travel.band_leg` | band seed | | | |
+| `trade.shift` | node | 0 | price index x 1,000 | minor past 10%, notable past 30% (payload "price index a to b"); a market's first value is a baseline with no row |
+| `knowledge.*` | who | whom | the report's severity | at the report's place |
+| `dragons.flight` | dragon | | | a leg per flight |
+| `dragons.hunt` | dragon | prey | fullness gained | |
+| `dragons.raid` | dragon | district or train | items | major when anything was taken or broken, else minor |
+| `dragons.claim` | dragon | lair | occupants | |
+| `dragons.depart` | dragon | 0 | reason | |
+| `dragons.birth` | child | parent | 1 | |
+| `dragons.death` | dragon | killer | age | |
+| `dragons.arrive` | dragon | lair | | |
+| `dragons.tribute` | village | lair | coin | |
+| `dragons.tribute_lapsed` | village | lair | | |
+| `herds.founded` | herd | 0 | animals | |
+| `herds.migration` | herd | | | a leg per route piece |
+| `herds.predation` | herd | predator | animals eaten | |
+| `herds.starvation` | herd | 0 | animals starved | |
+| `herds.extinct` | herd | 0 | | |
+| `ships.pirate_leg` | pirate ship | | | |
+| `ships.haven` | haven node | the haven a lane was taken from, or 0 | share per mille | |
+| `ships.raid` | pirate | district, train or merchant | items | notable when anything was taken, else minor; in a player's view, notable with magnitude 0 |
+| `ships.lost` | ship | doer | cargo | |
+| `ships.back` | ship | home or haven node | crew | |
+| `industry.detected` | district | 0 | chunks | at its first chunks |
+| `industry.learned` | district | 0 | per mille | |
+| `industry.stale` | district | 0 | 1 a revision, 2 an edit | |
+| `industry.unlearnable` | district | 0 | code | |
+| `industry.damaged` | district | 0 | machine blocks lost | payload |
+| `industry.reconcile` | district | 0 | sum of the absolute amounts | |
+| `industry.attack` | district or train | 0 | goods stolen | minor when nothing was taken; payload when it is major |
+| `industry.line` | from station | to station | items | |
+
+- **Exit test (a), R:** the table in §10.4.
+- **Exit test (b), the soak** (`rtsim-archive/tests/soak.rs`, ignored by default):
+  - **The run.** 10,000 game days at 20,000 rows a day and 4 saves a day, with bursts of 10 times
+    the rows on day 500 of every 1,000 and 5 times on day 25 of every 50: 217.8 million rows. It
+    took 419 s on tmpfs (`RTSIM_SOAK_DIR=/dev/shm/...`). On the loaded btrfs disk it is IO-bound,
+    about 26 minutes (a run before the save serial, which agreed exactly with tmpfs at day 1,000).
+  - **Bytes per tier at the end**, against each share: full 129,918,399 of 134,217,728, notable
+    89,716,908 of 93,952,409, counts 36,067,625 of 40,265,318. The peak total was 255,851,249 of
+    268,435,456.
+  - **Chunks.** Full: 1,977, days 9,765 to 9,999, so at this R the share ends the full tier before
+    the 504-day horizon does. Notable: 1,200, days 8,402 to 9,765. Counts: 1,832, days 3,066 to
+    9,765. In all, 5,009 chunk files, a 990,307-byte index and a 1,746-byte dictionary.
+  - **Rows.** 7,753,369 are held as rows, and 66,835,327 expired with the oldest counts. The flush
+    dropped 796,641 routine rows and 138,813 minor ones, most of them in the 10x bursts, and no
+    notable or major row; none lacked a frame.
+  - **Compaction** read 9,355 MiB and wrote 4,338 MiB over the run. It moved 82,223 full and 7,321
+    notable chunks down a tier, coarsened 77,830 fine count chunks, dropped 940 coarse ones as the
+    oldest, and merged 144,361 small chunks into others.
+  - **The checks.** Every save checks each tier's share and the total. Every 25 days the rows are
+    accounted for: held, counted, expired and dropped add up to what was pushed. Every 1,000 days
+    `verify` checks every chunk file's header and size against the index. At the end the folder's
+    bytes equal the index's, and a reopen gives the same entries.
+- **Exit test (c), the crash** (`rtsim-jni/tests/archive.rs`, on the fake Java harness):
+  - **The run.** Village A joins and is saved. B and C join. The second save flushes, and the
+    process dies before its page commit. The restart selects the first save's generation and cuts
+    the second save's chunk: 3 events were on disk at the crash, 1 after the cut. The journal
+    replays B and C, the next save writes them, and the archive holds 3 events, equal to the
+    uncrashed run's.
+  - **The pressure test.** 3 pressure saves left 2 chunks above the confirmed save. Both had its
+    `obs_seq`, so only the serial could cut them, and the restart did; 1 chunk is left.
+- **Index writes.** The index is rewritten whole at every flush and again at every compaction step
+  that changes it. At the soak's 5,009 chunks that is about 1 MB each time and about 2 MB a save,
+  more than compaction itself writes. At a save every 5 minutes that is trivial. A log of index
+  changes would fix it if a host at max speed ever needs that.
+- **The headless host.** `rtsim-cli run` opens the engine on `<fork>/rtsim`, so its archive is
+  `<fork>/rtsim/archive`: the fork's own, never the world's (VWD-11). The host tests check it
+  with the engine's flush wired in: the world's files, its archive among them, are unchanged after
+  an export, a 12-day run on the fork and a second export, and the fork's saves write chunks above
+  the world's serial into the fork's archive. Three changes to V2's host:
+  - **The archive's copy is consistent.** A plain copy of the folder could catch a compaction
+    halfway: an index naming a chunk already deleted, or new chunks with the old index. The export
+    reads the index, copies the chunk files it names, reads the dictionary, then reads the index
+    again. When the index changed or a named chunk was gone, it copies the archive again, up to 8
+    times as the pages, and the fork notes how many. A chunk file is never rewritten under its
+    name, and the dictionary only grows and is written before its chunks, so the copy's index names
+    exactly the chunks beside it. Archives with no readable index are copied file by file, and the
+    copy's open rebuilds the index. The test forces both races through `fork::export_with`'s hook
+    (`MidCopy::Archive`): a compaction's replace on the first attempt and a flush on the second,
+    then a copy whose index equals the world's and names exactly its chunk files.
+  - **The cut is by serial.** The export reads the save serial from the copied pages and cuts the
+    copy's chunks above it, as the engine's start does, rather than by `obs_seq`.
+  - **Saves come sooner when the buffer fills.** Half the recorder's buffer is 16,384 rows: 10
+    game days of a world with about 3,300 markets (1,640 rows a game day at the R of §10.4), or
+    less with many payloads. The host saves when the buffer passes half of either cap
+    (`Options::archive_save_at`, from `archive_pending_rows` and `archive_pending_bytes`), at most
+    every second hand-over so a save is taken before the next is asked. The test sets the mark to
+    one row: every save of a three-day run comes from the buffer, and none at the default mark.
+- **Open from V3** (known gaps, not yet scheduled):
+  - Industry's `undetected` set is not saved across a restart; what that does to the
+    `industry.detected` rows after a restart is untested.
+  - `industry.attack` uses a district as its subject for some attacks and a train for others.
+  - Train lines get no legs, so trains do not move on the timeline.
+  - `CargoLooted`'s loot is not recorded (the row has no payload of what was taken).
+  - A captured merchant's player is 0, and `ships.haven` has no payload.
+  - Ship sinking and capture have no tests of their rows.
+  - A raid seen in view is notable with magnitude 0.
+  - One tribute-order assertion was dropped from the tribute test.
+  - The sidecar filters chunks by `obs_seq`, not the serial (§10.5), so it can show a rolled-back
+    save's chunks until the engine's next start cuts them.
+  - The index is rewritten whole at every flush and compaction step: about 2 MB a save at 5,000
+    chunks.
 
 ---
 

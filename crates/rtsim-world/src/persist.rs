@@ -1156,6 +1156,8 @@ impl World {
             mint_cost,
             now,
             trace: None,
+            tape: rtsim_archive::Tape::new(),
+            shift_seen: BTreeMap::new(),
             players,
             roads,
             bands,

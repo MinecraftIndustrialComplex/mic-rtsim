@@ -1,6 +1,6 @@
 # Industry: distant factories, supply lines and the threats to them
 
-**Status:** draft design for Ben's review, 2026-10-20. Nothing is built. This is workstream C15.
+**Status:** design of 2026-10-20 (workstream C15), since built on main as the black box: detection, sampling, learning, replay, approach and reconcile, threats and repair schematics. As built: docs/overnight-choices-industry*.md, docs/overnight-choices-indplugins.md, docs/choices-indrework.md and docs/choices-repair.md. Not built: contraption freezing (I10), gauge fulfilment (I16), the other not-learnable codes. No test yet compares an unloaded real Create factory with a loaded one.
 
 **Decided, and binding here:**
 - C15: simulate distant factories and supply lines across Create and the pack's addons, without

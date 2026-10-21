@@ -344,6 +344,15 @@ impl World {
             seed,
         }));
         self.houses_pending.insert(op, node);
+        // Archived as booked (the sim's decision); the bridge places it later.
+        let (place, id) = (self.node_at(node, at), self.node_id(node));
+        self.tape.event(
+            rtsim_archive::kinds::SETTLE_HOUSE,
+            place,
+            id,
+            0,
+            i64::from(houses),
+        );
         // The population steps up now (P17), so the market stays piecewise linear: only its
         // targets move.
         let pop = self.nodes[node].local.pop + self.cfg.growth_pop_per_house;
@@ -571,6 +580,9 @@ impl World {
         // After a new chart this is stop 1 of the new circuit.
         let next = (stop + 1) % self.bands[b].route.len();
         self.book_stay(b, next, nb);
+        if self.tape.is_on() {
+            self.tape_band_leg(b, next, nb);
+        }
     }
 
     /// Band `b` tours `route` from now on, its first stay at home beginning at boundary `nb`.

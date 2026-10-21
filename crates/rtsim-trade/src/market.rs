@@ -310,6 +310,29 @@ impl Market {
         self.goods[g.index()].curve.anchor
     }
 
+    /// The market's price index: its mean price over its goods' anchors, the currency left out.
+    /// `None` for a base market (it keeps no curves) or one with no anchored good. The viewer's
+    /// prices layer draws it, and the archive's trade shifts follow it (VIEWER.md §10.1).
+    pub fn price_index(&self) -> Option<f64> {
+        if !self.is_storehouse() {
+            return None;
+        }
+        let mut sum = 0.0;
+        let mut n = 0u32;
+        for g in 0..self.goods.len() {
+            let g = GoodId(g as u16);
+            if Some(g) == self.currency {
+                continue;
+            }
+            let a = self.anchor(g);
+            if a > 0 {
+                sum += self.price(g) as f64 / a as f64;
+                n += 1;
+            }
+        }
+        (n > 0).then(|| sum / f64::from(n))
+    }
+
     /// Whether the market takes payment in currency `cur` now: refused above twice its target.
     pub fn refuses(&self, cur: GoodId) -> bool {
         self.lines[cur.index()].level() == Level::Glut

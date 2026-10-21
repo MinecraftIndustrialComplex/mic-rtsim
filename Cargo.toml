@@ -27,6 +27,8 @@ rtsim-ships = { path = "crates/rtsim-ships" }
 rtsim-space = { path = "crates/rtsim-space" }
 # Conflict: factions, grievance, war bands and raids (PLAN.md §10.3).
 rtsim-conflict = { path = "crates/rtsim-conflict" }
+# The event archive: rows, tapes, chunks and tiers (VIEWER.md §10).
+rtsim-archive = { path = "crates/rtsim-archive" }
 # The save viewer: a saved world read only, served to the shared viewer page (VIEWER.md).
 rtsim-view = { path = "crates/rtsim-view" }
 # Deep Time's world-data format: its layout block (`projection::ProjectionSpec`, FORMAT.md "The
