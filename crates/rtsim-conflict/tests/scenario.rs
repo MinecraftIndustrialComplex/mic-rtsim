@@ -11,10 +11,8 @@ use rtsim_kernel::clock::TICKS_PER_DAY;
 
 fn run(variant: Variant, restart_day: Option<f64>) -> Outcome {
     scenario::run(&Options {
-        seed: 7,
-        days: 24,
-        variant,
         restart_day,
+        ..Options::new(7, 24, variant)
     })
 }
 
