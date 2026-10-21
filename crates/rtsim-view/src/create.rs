@@ -44,6 +44,8 @@ pub struct LineAsk {
     pub frame: String,
     pub a: [i32; 3],
     pub b: [i32; 3],
+    /// Its label on the map ("Ironworks to Docks: 42 trips").
+    pub label: String,
 }
 
 /// Create's layers for one opened world.
@@ -60,7 +62,7 @@ pub struct CreateLayers {
     /// The block layers per frame id, as of a survey version.
     block_rows: Mutex<HashMap<String, (u64, Arc<Rows>)>>,
     /// Routed train lines by mark id.
-    routes: HashMap<String, Vec<[f64; 2]>>,
+    routes: HashMap<String, (Vec<[f64; 2]>, String)>,
     /// Whether the world has region files (see [`CreateLayers::can_land`]).
     can_land: bool,
     /// The line layer composed per frame, keyed by the base layer's version.
@@ -234,7 +236,7 @@ impl CreateLayers {
             if let Some(line) = r.route(&r.stations[sa].place, &r.stations[sb].place)
                 && line.len() >= 2
             {
-                self.routes.insert(a.id.clone(), line);
+                self.routes.insert(a.id.clone(), (line, a.label.clone()));
             }
         }
     }
@@ -284,14 +286,14 @@ impl CreateLayers {
                     c,
                     ..
                 } => match self.routes.get(id) {
-                    Some(p) => Mark::Path {
+                    Some((p, l)) => Mark::Path {
                         id: Some(id.clone()),
                         p: p.clone(),
                         ci: *ci,
                         c: c.clone(),
                         w: *w,
                         st: None,
-                        l: None,
+                        l: Some(l.clone()),
                         arrow: false,
                         n: None,
                     },
@@ -331,9 +333,9 @@ impl CreateLayers {
         for l in draw::BLOCK_LAYERS {
             let rows = blocks.get(l).cloned().filter(|r| !r.is_empty()).unwrap_or_else(|| {
                 LayerRows::empty_because(if self.survey.stats().0 == 0 {
-                    "nothing read here yet: zoom in closer than 2 blocks a pixel to read the chunks shown"
+                    "nothing read here yet: zoom in (closer than 2.5 blocks a pixel) to read the chunks shown"
                 } else {
-                    "none in the chunks read so far: zoom in closer than 2 blocks a pixel to read more"
+                    "none in the chunks read so far: zoom in (closer than 2.5 blocks a pixel) to read more"
                 })
             });
             layers.insert(l.to_owned(), rows);
