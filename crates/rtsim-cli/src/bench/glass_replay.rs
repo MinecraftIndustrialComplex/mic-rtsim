@@ -250,10 +250,14 @@ pub fn switched_line(
     l
 }
 
+/// One switched loop of [`loops`]: press (batch, ticks), consumer (batch, ticks), `hi`, `lo` and
+/// the sheets at the compile.
+pub type Loop = ((u32, u32), (u32, u32), i64, i64, i64);
+
 /// Independent switched loops in one district, sharing one brass store: per loop a press of
 /// (batch, ticks), a store of sheets, a consumer of (batch, ticks) into its own coal store, and
 /// a switch on the sheets stopping the press at `hi` and restarting it at `lo` (from `sheets0`).
-pub fn loops(d: DistrictId, specs: &[((u32, u32), (u32, u32), i64, i64, i64)]) -> Line {
+pub fn loops(d: DistrictId, specs: &[Loop]) -> Line {
     let mut l = Line::new(d);
     let brass = l.store(BIG, &[(BRASS, 1_000_000_000)]);
     let press = l.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
@@ -732,7 +736,6 @@ pub struct OscillationCase {
 }
 
 /// The switched line's loop spec: press (batch, ticks), consumer (batch, ticks), on, off, start.
-type Loop = ((u32, u32), (u32, u32), i64, i64, i64);
 const LOOP_A: Loop = ((1, 10), (1, 20), 100, 20, 80);
 
 /// The adversarial graphs: (name, what, line).
@@ -909,6 +912,100 @@ mod tests {
             p.fallbacks,
             p.heap_bytes,
             p.engine_heap_bytes
+        );
+    }
+
+    /// `cargo test --release -p rtsim-cli heap_by_stage -- --ignored --nocapture`: what a
+    /// replaying factory cell keeps resident, by the step that added it (bytes per district over
+    /// 1,000 districts, the bench's counting allocator).
+    #[test]
+    #[ignore]
+    fn heap_by_stage() {
+        let n = 1_000u64;
+        let lines: Vec<Line> = (0..n)
+            .map(|i| factory_cell(DistrictId(1_000 + i)))
+            .collect();
+        let mut e = engine();
+        let h0 = sys::heap_live();
+        let mut marks = Vec::new();
+        for (slot, l) in lines.iter().enumerate() {
+            let mut bare = l.clone();
+            bare.nodes.clear();
+            bare.edges.clear();
+            bare.recipes.clear();
+            bare.domains.clear();
+            // The district, its inventories and a live load, without the compile.
+            let d = l.d;
+            send(
+                &mut e,
+                0,
+                Obs::District(DistrictDecl {
+                    district: d,
+                    revision: 1,
+                    dim: 0,
+                    name: 0,
+                    not_learnable: None,
+                    inventory_count: l.invs.len() as u32,
+                }),
+            );
+            for (index, &(slots, _)) in l.invs.iter().enumerate() {
+                send(
+                    &mut e,
+                    0,
+                    Obs::Inventory(InventoryDecl {
+                        district: d,
+                        revision: 1,
+                        index: index as u32,
+                        pos: BlockPos::new(slot as i32 * 64 + index as i32 * 2, 64, 0),
+                        kind: InvKind(InvKind::ITEMS),
+                        item_slots: slots,
+                        fluid_capacity: 0,
+                        energy_capacity: 0,
+                    }),
+                );
+            }
+            send(&mut e, 0, load_state(d, LoadState::Live));
+        }
+        marks.push(("district, inventories, live", sys::heap_live()));
+        for l in &lines {
+            for r in l.records() {
+                send(&mut e, 0, Obs::Glass(r));
+            }
+        }
+        marks.push(("compile accepted, first solve", sys::heap_live()));
+        for l in &lines {
+            sweep(&mut e, l, 100);
+            pass(&mut e, l.d);
+        }
+        marks.push(("a live sweep", sys::heap_live()));
+        for l in &lines {
+            send(&mut e, UNLOAD, load_state(l.d, LoadState::Unloaded));
+        }
+        e.advance_to(Tick(UNLOAD));
+        marks.push(("unloaded, replay started", sys::heap_live()));
+        e.advance_to(Tick(UNLOAD + 10 * TICKS_PER_DAY));
+        marks.push(("ten days on", sys::heap_live()));
+        let mut prev = h0;
+        for (what, h) in marks {
+            println!(
+                "{what:<32} {:>8} bytes per district (+{})",
+                (h - h0) as u64 / n,
+                (h - prev) as u64 / n
+            );
+            prev = h;
+        }
+        println!(
+            "Engine::heap_bytes {} per district",
+            e.heap_bytes() as u64 / n
+        );
+        let c = e.glass.districts[&DistrictId(1_000)]
+            .compiled
+            .as_ref()
+            .expect("compiled");
+        println!(
+            "graph: {} nodes, {} edges; regime cache and solution not measured apart",
+            c.graph.nodes.len(),
+            c.graph.edges.len()
         );
     }
 
