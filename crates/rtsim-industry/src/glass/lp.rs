@@ -20,7 +20,7 @@ use microlp::{ComparisonOp, LinearExpr, OptimizationDirection, Problem, Variable
 use super::graph::term_amount;
 use super::q::Q;
 use super::records::{NodeKind, node_flags, term_flags};
-use super::solve::{Solver, UNBOUNDED};
+use super::solve::{Solver, UNBOUNDED, burn};
 
 /// One LP constraint before it is handed to microlp: terms, sense, right-hand side.
 type Row = (Vec<(u32, f64)>, ComparisonOp, f64);
@@ -172,7 +172,7 @@ fn linear(s: &Solver<'_>, caps: &mut UCaps) -> Vec<Q> {
                 }
             }
             NodeKind::Heater => {
-                let on = !s.rg.gate_off[v as usize];
+                let on = !s.rg.gate_off[v as usize] && s.rg.burning[v as usize] != burn::REFUSING;
                 for &gi in &list {
                     let burn = s.burn_ticks(v, s.goods[gi as usize]);
                     a[gi as usize] = if on && burn > 0 {
@@ -250,9 +250,8 @@ fn linear(s: &Solver<'_>, caps: &mut UCaps) -> Vec<Q> {
     for &v in &g.order {
         list.clear();
         for &e in g.in_g.of(v) {
-            if g.back[e as usize] {
-                continue;
-            }
+            // A back edge's tail comes later: it may bring all its head accepts (GB110).
+            let back = g.back[e as usize];
             for sl in s.slots_of(e) {
                 let gi = s.slot_good[sl];
                 if !seen[gi as usize] {
@@ -260,7 +259,8 @@ fn linear(s: &Solver<'_>, caps: &mut UCaps) -> Vec<Q> {
                     inn[gi as usize] = Q::ZERO;
                     list.push(gi);
                 }
-                inn[gi as usize] = inn[gi as usize].add_up(fu[sl]);
+                let x = if back { acc[sl] } else { fu[sl] };
+                inn[gi as usize] = inn[gi as usize].add_up(x);
             }
         }
         let kind = s.kind(v);
@@ -303,7 +303,8 @@ fn linear(s: &Solver<'_>, caps: &mut UCaps) -> Vec<Q> {
                 let creative = node.params[2] <= 0 && g.node_recipes.of(v).is_empty();
                 caps.duty[v as usize] = if s.rg.gate_off[v as usize] {
                     Q::ZERO
-                } else if creative || node.params[0] > 0 || g.cyclic[v as usize] {
+                } else if creative || s.rg.burning[v as usize] != burn::OUT || g.cyclic[v as usize]
+                {
                     Q::ONE
                 } else {
                     load.min(Q::ONE)
@@ -664,7 +665,9 @@ fn lp(
                 let mut load: BTreeMap<u32, f64> = BTreeMap::new();
                 for (&gk, (ins, _)) in &per {
                     let burn = s.burn_ticks(v, s.goods[gk as usize]);
-                    if burn > 0 && !s.rg.gate_off[v as usize] {
+                    let takes =
+                        !s.rg.gate_off[v as usize] && s.rg.burning[v as usize] != burn::REFUSING;
+                    if burn > 0 && takes {
                         net(&mut load, ins, &[], burn as f64, 0.0);
                     } else {
                         net(&mut terms, ins, &[], 1.0, 0.0);

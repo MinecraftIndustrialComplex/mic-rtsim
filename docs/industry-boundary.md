@@ -492,7 +492,12 @@ it does; a machine's recipes are exactly those its entries name (choice GB15).
   fuel reaches it) and the insertion threshold. Each fuel is a FUEL recipe whose `heat` is the level it
   burns at and whose `duration` its burn ticks (GB49). It burns while lit
   whatever it heats, so it accepts fuel up to `1 / burnTicks` items per tick, and its **duty** is
-  `min(1, fuel accepted × burnTicks)`. L counts only the fuel supplied; U also counts remaining burn.
+  `min(1, fuel accepted × burnTicks)` once its remaining burn is spent. Until then it is lit at duty 1,
+  in L and U alike, from the compile on: while the remaining burn is above the insertion threshold it
+  refuses fuel (`tryUpdateFuel` takes the same fuel only at or below it), and from the threshold down
+  it takes fuel, each item adding `burnTicks`. The engine spends the remaining burn as Create does (one
+  a tick, less `burnTicks` for each item the heater takes under L) and solves again where a heater
+  changes phase, cutting the sweep interval there (GB105); `params[0]` 0 is a heater out at the compile.
   Any good on its in-edges is fuel at `params[2]` burn ticks, unless the heater has fuel recipes (rate
   entries naming FUEL recipes): then their inputs are its fuels, at each recipe's `duration`.
 - **Boiler:** accepts all the water it is offered and voids it (`BoilerData`'s handler returns the
