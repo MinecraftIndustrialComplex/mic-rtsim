@@ -50,7 +50,8 @@ type Uuid = (u64, u64);
 #[derive(Default)]
 pub(super) struct Link {
     /// This hand-over's PLAYER records, the latest per player: (frame, x, z).
-    pending: BTreeMap<Uuid, (u16, i32, i32)>,
+    /// (frame, x, z, y): the height for the dragons' field flights (OILGATE.md OG-3).
+    pending: BTreeMap<Uuid, (u16, i32, i32, i32)>,
     /// Players with an area this session: their actor and the game time last reported.
     present: BTreeMap<Uuid, (ActorId, i64)>,
     /// Areas booked or replanned and routed, this session.
@@ -197,7 +198,8 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
         wire::f64_at(b, obs::player::X).floor() as i32,
         wire::f64_at(b, obs::player::Z).floor() as i32,
     );
-    st.shared.pending.insert(uuid, (frame, x, z));
+    let y = wire::f64_at(b, obs::player::Y).floor() as i32;
+    st.shared.pending.insert(uuid, (frame, x, z, y));
 }
 
 /// The simulate point, after the modules ran to the hand-over's time: each reported player's
@@ -213,12 +215,13 @@ pub(super) fn simulate(st: &mut State) {
     }
     let at = Tick(phase1::world_tick(st, gt));
     let r = radius(st);
-    for (uuid, (frame, x, z)) in pending {
+    for (uuid, (frame, x, z, y)) in pending {
         let pos = Pos::new(frame, x, z);
         if dragons::running(st) {
-            // The dragons' home counter (P26) learns from every report, area or not.
+            // The dragons' home counter (P26) learns from every report, area or not, and the oil
+            // gate where players are (field flights, lairs near oil).
             let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
-            d.observe_home(w, uuid, pos, at.max(d.now()));
+            d.player_at(w, uuid, pos, y, at.max(d.now()));
         }
         if conflict::running(st) {
             // The conflict's time-spent counter per chunk (P14, changed): an unowned source

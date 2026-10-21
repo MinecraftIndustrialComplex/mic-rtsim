@@ -961,6 +961,18 @@ impl Java {
                 if kind == wire::DICT_BODY && name == s.entity_id() {
                     dict.body[i] = id;
                 }
+                for (j, k) in [
+                    rtsim_ecology::dragon::LairKind::Roost,
+                    rtsim_ecology::dragon::LairKind::Cave,
+                ]
+                .iter()
+                .enumerate()
+                {
+                    if kind == wire::DICT_STRUCTURE && *name == SpeciesDict::structure_name(*s, *k)
+                    {
+                        dict.structure[i][j] = id;
+                    }
+                }
             }
         }
         let (_, s, mut c) = db::decode_cmd(bytes, &dict).expect("a dragon command decodes");
@@ -996,6 +1008,9 @@ impl Java {
                     },
                 );
             }
+            // The oil gate's asks (a lair placed, a survey): recorded, in Java's dimension ids.
+            D::PlaceLair(p) => p.dimension = self.java_dim(p.dimension),
+            D::OilSurvey(o) => o.dimension = self.java_dim(o.dimension),
             D::Steer(_) | D::Depart(_) => {}
         }
         self.iaf.push((seq, c));

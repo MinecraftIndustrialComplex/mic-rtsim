@@ -131,6 +131,10 @@ pub struct SpeciesData {
     /// Days after hatching at which a young dragon leaves its parents' lair to claim a roost of
     /// its own. PLACEHOLDER 50 (it is then stage 3, a teen in Ice and Fire's terms).
     pub disperse_days: u64,
+    /// Breathes oil (OILGATE.md §4.3, OG-4): an oil reserve drains with time and per breath, and
+    /// it refuels on oil fields. Fire dragons only (docs/choices-oilgate.md OGC4): ice and
+    /// lightning breath has no fuel in the pack's story.
+    pub uses_oil: bool,
 }
 
 impl SpeciesData {
@@ -156,11 +160,15 @@ impl SpeciesData {
             strength_per_pass: [0.0, 1.0, 2.0, 3.0, 4.0],
             breed_days: 60,
             disperse_days: 50,
+            uses_oil: false,
         };
         match s {
             // No species differences are claimed as Ice and Fire facts; these only make two
             // species of the scenario behave differently. PLACEHOLDER.
-            Species::Fire => base,
+            Species::Fire => SpeciesData {
+                uses_oil: true,
+                ..base
+            },
             Species::Ice => SpeciesData {
                 speed: 0.45,
                 visit_ticks: 4_000,
