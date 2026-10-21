@@ -285,7 +285,8 @@ fn model(e: &Engine) -> u32 {
 /// 14, ... ticks apart), so the district passes `breakpointsPerEventMax` within about 600 ticks,
 /// falls back as oscillating and makes nothing. A store feeding the press directly, with or
 /// without a belt edge's latency, is fine; the Mover node between them is what it takes. The
-/// bench's factory cell (glass_elapsed, glass_quiet) falls back the same way.
+/// bench's factory cell (glass_elapsed, glass_quiet) fell back the same way. Fixed by d83ffd0
+/// (holds key on what a regime could run); kept as a guard.
 #[test]
 fn a_belt_fed_press_stays_on_the_glass_box() {
     let mut l = Line::default();
