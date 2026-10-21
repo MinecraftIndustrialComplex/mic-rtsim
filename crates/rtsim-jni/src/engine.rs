@@ -1339,9 +1339,12 @@ impl Engine {
         // the release store of `consumed = h`, which follows this read.
         let area = unsafe { o.area(used) };
         let mut recs = Records::new(area);
+        let mut ticks = 0;
         for rec in &mut recs {
+            ticks += u32::from(rec.kind == obs::TICK);
             self.observe(st, h, &rec);
         }
+        st.tap.ticks(ticks);
         if let Some(e) = recs.error() {
             self.set_protocol_error(format!("step {h}: {e}; the rest of the buffer was skipped"));
         }
