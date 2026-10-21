@@ -17,7 +17,8 @@
 //! table 0x4410; lairs, 0x4411).
 //!
 //! - [`Dragons::save`] / [`Dragons::load`]: one blob, the meta then every row in key order
-//!   (`PagedRows::encode_all`), for a host without a page store (rtsim-jni today, page 0x4400).
+//!   (`PagedRows::encode_all`), for a host without a page store (the resident tests and tools;
+//!   rtsim-jni pages the dragons, from page 0x4400/0).
 //! - [`Dragons::save_paged`] / [`Dragons::open_paged`]: the meta as one page (with each table's
 //!   row count and next index) and each table's dirty pages, in the caller's batch; opening reads
 //!   the meta page and leaves every row page on disk until something reads it.

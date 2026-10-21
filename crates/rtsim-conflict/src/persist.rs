@@ -8,8 +8,8 @@
 //! Two forms (docs/choices-paging-modules.md, section Conflict):
 //!
 //! - **The blob** ([`Conflict::save`], [`Conflict::load`]): the resident part, then each row
-//!   table ([`crate::tables`]) in key order. What rtsim-jni writes as page 0x4300/0 while it does
-//!   not page the conflict, and what [`Conflict::state_hash`] hashes.
+//!   table ([`crate::tables`]) in key order. What the resident tests and tools save, and what
+//!   [`Conflict::state_hash`] hashes (rtsim-jni pages the conflict, from page 0x4300/0).
 //! - **Paged** ([`Conflict::save_paged`], [`Conflict::open_paged`]): the resident part and the row
 //!   tables' counts as one meta page, and each row table's dirty pages.
 //!

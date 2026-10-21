@@ -11,7 +11,7 @@
 //!   host's IO lane; the acknowledgement (`ackedObsSeq`) only ever names pages already on disk.
 //!   The paged modules write only their pages changed since the last save, and a module over its
 //!   row budget gets an extra save at a step boundary, kept as a pending generation that a crash
-//!   rolls back (`paging`, docs/choices-paging-followups.md PF12 to PF19).
+//!   rolls back (`paging`, docs/choices-paging-followups.md PF12 to PF21).
 //!
 //! At most one step runs at a time (the bridge submits h only once step h - 1 published). The
 //! state lock is taken by the step and, outside any step, by `start` and `close`: no game thread
@@ -71,7 +71,7 @@ pub use shared::PLAYER_STALE;
 
 // Every level's topology (TOPOLOGY records; docs/boundary.md §11).
 mod topology;
-// The paged modules' saves, tickets and budgets (PF12 to PF19).
+// The paged modules' saves, tickets and budgets (PF12 to PF21).
 mod paging;
 pub use paging::DEFAULT_ROW_BUDGET;
 
@@ -114,7 +114,7 @@ pub struct Config {
     /// The world seed of a new industry engine (tests); None draws one (W5).
     pub industry_seed: Option<u64>,
     /// Row bytes each paged module (herds, dragons, conflict, ships, the phase 1 world's
-    /// markets) keeps resident (PF15).
+    /// markets) keeps resident (PF19).
     pub row_budget: usize,
 }
 

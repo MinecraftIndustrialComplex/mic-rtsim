@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The paged modules behind the boundary (docs/choices-paging-followups.md PF12 to PF19): the
+//! The paged modules behind the boundary (docs/choices-paging-followups.md PF12 to PF21): the
 //! herds, the dragons, the conflict, the ships and the phase 1 world page their rows through the
 //! engine's own store, under a budget each.
 //!
@@ -42,8 +42,8 @@ use super::State;
 /// The engine's page store, shared with the paged modules (`None` once closed).
 pub type Store = Arc<Mutex<Option<PageStore>>>;
 
-/// Row bytes each paged module keeps resident. PLACEHOLDER 4 MiB (the markets sweep's budget):
-/// five modules, 20 MiB of rows at most beside the resident indexes and wheels.
+/// Row bytes each paged module keeps resident (PF19). PLACEHOLDER 4 MiB (the markets sweep's
+/// budget): five modules, 20 MiB of rows at most beside the resident indexes and wheels.
 pub const DEFAULT_ROW_BUDGET: usize = 4 << 20;
 
 const HASH_MAGIC: u32 = u32::from_le_bytes(*b"RTSH");
