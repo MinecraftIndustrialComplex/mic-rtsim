@@ -880,7 +880,7 @@ const HERDS_BUDGET: u64 = 1 << 20;
 
 /// Declared slopes of the paged herd sweep, from its first runs (docs/choices-paging-modules.md).
 const HERDS_RESIDENT_SLOPE: f64 = 0.15;
-const HERDS_HEAP_SLOPE: f64 = 0.5;
+const HERDS_HEAP_SLOPE: f64 = 0.4;
 
 /// Members per herd held fixed while the herd sweep varies herds. PLACEHOLDER 5,000.
 const MEMBER_BASE: u64 = 5_000;
