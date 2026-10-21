@@ -1247,21 +1247,22 @@ impl Engine {
         };
         self.stats.cluster_settles += settles;
         let mut season_change = false;
-        let mut glass_stops: Vec<(DistrictId, Stop)> = Vec::new();
+        let mut glass_stops: Vec<(DistrictId, u16, Stop)> = Vec::new();
         for e in events {
             match e {
                 ClusterEvent::Stopped { at, owner, id, why }
                     if id < crate::district::LINK_PROC_BASE =>
                 {
-                    if id == 0
-                        && why != Stop::Disabled
+                    // A glass replay's parts are its processes 0, 1, ... (choice G2-22).
+                    if why != Stop::Disabled
                         && self
                             .glass
                             .districts
                             .get(&owner)
-                            .is_some_and(|g| g.replay.is_some())
+                            .and_then(|g| g.replay.as_ref())
+                            .is_some_and(|r| id < r.parts())
                     {
-                        glass_stops.push((owner, why));
+                        glass_stops.push((owner, id, why));
                     }
                     if let Some(dist) = self.districts.get_mut(&owner) {
                         dist.last_run = Some((at, Some(why)));
@@ -1299,8 +1300,8 @@ impl Engine {
                 _ => {}
             }
         }
-        for (d, why) in glass_stops {
-            self.glass_step(h, d, Some(why), at);
+        for (d, id, why) in glass_stops {
+            self.glass_step(h, d, Some((id, why)), at);
         }
         if season_change {
             self.season_boundary(h, at);
@@ -1444,6 +1445,7 @@ impl Engine {
             }
         };
         let cut = rp.cut_edges();
+        let parts = rp.parts();
         dg.replay = Some(rp);
         dg.replay_model = crate::glass::report::replay_model::GLASS;
         dg.replay_since = Some(at);
@@ -1473,19 +1475,27 @@ impl Engine {
         self.note(d, at, what);
         self.after_cluster(h, at);
         // A first regime blocked at once stops silently: take it as its breakpoint.
-        if let Some(Run::Stopped(w)) = self
-            .clusters
-            .get(h)
-            .and_then(|r| r.cell().model().run_of(d, 0))
-            && w != Stop::Disabled
-        {
-            self.glass_step(h, d, Some(w), at);
+        for id in 0..parts {
+            if let Some(Run::Stopped(w)) = self
+                .clusters
+                .get(h)
+                .and_then(|r| r.cell().model().run_of(d, id))
+                && w != Stop::Disabled
+            {
+                self.glass_step(h, d, Some((id, w)), at);
+            }
         }
     }
 
-    /// The glass replay of `d` at a breakpoint (`why`), or after an outside event changed its
-    /// pools (None): the next regime, or a fallback.
-    fn glass_step(&mut self, h: RegionId<Cluster>, d: DistrictId, why: Option<Stop>, at: Tick) {
+    /// The glass replay of `d` at a breakpoint of its part `why.0` (`why.1`), or after an outside
+    /// event changed its pools (None): the next regime, or a fallback.
+    fn glass_step(
+        &mut self,
+        h: RegionId<Cluster>,
+        d: DistrictId,
+        why: Option<(u16, Stop)>,
+        at: Tick,
+    ) {
         if self.cluster_of.get(&d) != Some(&h) {
             return;
         }
@@ -1509,7 +1519,7 @@ impl Engine {
             return;
         }
         let r = clusters.apply(h, at, |c, at| match why {
-            Some(w) => rp.on_stop(comp, c, w, at, goods, &tun.glass),
+            Some((id, w)) => rp.on_stop(comp, c, id, w, at, goods, &tun.glass),
             None => rp.refresh(comp, c, at, goods, &tun.glass),
         });
         match r {
@@ -2535,11 +2545,35 @@ impl Engine {
                 inv.known.add(g, (sign * n).max(-inv.known.get(g)));
             }
         }
+        let glass_span = dist.sim.as_ref().is_some_and(|s| s.glass);
         let h = self.cluster_of[&d];
         let goods = p.goods.clone();
         let out = p.direction == Direction::Out;
         let inv = p.inventory;
         let address = p.address;
+        // A glass replay books the world's own change on the store it landed in, as already
+        // written (choice G2-14): its reconcile writes each store's change, not a stock's.
+        if glass_span {
+            let covered = self
+                .glass
+                .districts
+                .get(&d)
+                .and_then(|g| g.replay.as_ref())
+                .is_some_and(|r| r.covers(inv));
+            self.clusters.apply(h, at, |c, at| {
+                for (g, n) in goods.iter() {
+                    let key = if covered {
+                        PoolKey::Store(d, inv, g)
+                    } else {
+                        PoolKey::Stock(d, g)
+                    };
+                    c.rebase(key, sign * n, at);
+                }
+            });
+            self.after_cluster(h, at);
+            self.glass_touch(d, at);
+            return;
+        }
         let moved = self.clusters.apply(h, at, |c, at| {
             let mut moved = GoodVec::new();
             for (g, n) in goods.iter() {

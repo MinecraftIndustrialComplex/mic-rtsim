@@ -20,6 +20,12 @@
 //! periods as provably change nothing else (G-B9, G2-13): a controller loop costs one process per
 //! stretch, not two breakpoints per period.
 //!
+//! **Parts.** A graph of pieces that share nothing but stores they only draw from (a source
+//! chest feeding two independent loops) replays as parts, each its own process with its own
+//! regimes and cycles, so two loops of unequal periods each find their cycle (choice G2-22). A
+//! shared store (a hub) is in every part it feeds; the cluster keeps it safe between them (a
+//! cycle's steepest drain is its envelope there). A cut or a residual keeps the district whole.
+//!
 //! **Fallback.** A regime with no fixed point, a process that stays blocked, or more than
 //! `glass.breakpointsPerEventMax` breakpoints between outside events ends the glass replay
 //! (§4.5, G2-7); the engine falls back to the black box or freezes.
@@ -36,7 +42,7 @@ use super::report;
 use super::solve::{Regime, Solution, burn};
 use crate::cluster::{
     Cluster, CycleFire, CyclePiece, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, Run, SpaceSpec,
-    Stop, cycle_fired, cycle_period,
+    Stop, bound_index, bound_part, bound_tag, cycle_fired, cycle_period,
 };
 use crate::ids::{DistrictId, Good, GoodClass, GoodVec};
 use crate::reconcile::GoodLookup;
@@ -202,12 +208,18 @@ struct CycleRun {
     spend: Vec<f64>,
 }
 
-/// One district's glass replay.
+/// One part of a district's glass replay: a connected piece of the graph with its own process
+/// (its id), regimes and cycles (choice G2-22). A district with one part is the whole graph.
 #[derive(Clone, Debug)]
-pub struct Replay {
+struct Part {
+    /// Its process id in the cluster; its bounds' tags carry it ([`bound_tag`]).
+    id: u16,
+    /// Per node: in this part (a hub store is in every part it feeds).
+    mine: Vec<bool>,
+    /// Hub inventories this part shares: how many parts draw on each.
+    hubs: BTreeMap<u32, u32>,
     d: DistrictId,
     compile: u32,
-    pub started: Tick,
     live: Vec<bool>,
     /// Per node: simulated (a store: its inventory covered; else not live).
     sim: Vec<bool>,
@@ -242,7 +254,7 @@ pub struct Replay {
     cycle: Option<CycleRun>,
     /// Breakpoints since the last outside event or cycle.
     steps: u32,
-    pub counts: ReplayCounts,
+    counts: ReplayCounts,
 }
 
 type Levels = BTreeMap<PoolKey, i64>;
@@ -360,9 +372,17 @@ pub fn levels_of(c: &Cluster, d: DistrictId) -> BTreeMap<PoolKey, i64> {
         .collect()
 }
 
+/// One district's glass replay: its parts, each its own process (choice G2-22).
+#[derive(Clone, Debug)]
+pub struct Replay {
+    pub started: Tick,
+    parts: Vec<Part>,
+    covered: BTreeSet<u32>,
+}
+
 impl Replay {
-    /// Starts a replay: its member (pools at the engine's levels, the first regime's process and
-    /// bounds) for a new cluster.
+    /// Starts a replay: its member (pools at the engine's levels, each part's first regime's
+    /// process and bounds) for a new cluster.
     pub fn start(
         comp: &mut Compiled,
         setup: Setup,
@@ -370,6 +390,252 @@ impl Replay {
         tun: &GlassTunables,
         at: Tick,
     ) -> Result<(Replay, MemberSpec), Fallback> {
+        let d = setup.district;
+        let (mut whole, levels) = Part::new(comp, &setup, goods, tun, at);
+        whole.residual(comp, tun);
+        let mut parts = Vec::new();
+        // A part runs apart only where nothing couples it to another: no cut (the live side's
+        // supply is one pool) and no residual (learned from the whole).
+        if whole.cut.is_empty() && whole.residual.is_empty() {
+            let (mines, hubs) = partition(comp, &whole);
+            if mines.len() > 1 {
+                for (i, mine) in mines.into_iter().enumerate() {
+                    parts.push(whole.split(i as u16, mine, hubs.clone()));
+                }
+            }
+        }
+        if parts.is_empty() {
+            parts.push(whole);
+        }
+        comp.cache_parts = parts.len();
+        let mut procs = Vec::with_capacity(parts.len());
+        let mut bounds = Vec::new();
+        for p in &mut parts {
+            let (proc, b) = p.build(comp, &levels, at, None, false, goods, tun)?;
+            procs.push(proc);
+            bounds.extend(b);
+        }
+        let spec = MemberSpec {
+            district: d,
+            pools: levels.iter().map(|(&k, &a)| (k, a, None)).collect(),
+            procs,
+            space: None,
+            bounds,
+        };
+        let rp = Replay {
+            started: at,
+            parts,
+            covered: setup.covered.keys().copied().collect(),
+        };
+        Ok((rp, spec))
+    }
+
+    pub fn compile(&self) -> u32 {
+        self.parts[0].compile
+    }
+
+    /// Per node: it ran in the world when this replay started.
+    pub fn live(&self) -> &[bool] {
+        &self.parts[0].live
+    }
+
+    /// Goods edges between live and simulated nodes.
+    pub fn cut_edges(&self) -> u32 {
+        self.parts[0].cut.len() as u32
+    }
+
+    /// Goods the residual node adds as learned sources (I9).
+    pub fn learned_sources(&self) -> u32 {
+        self.parts[0].learned_sources
+    }
+
+    /// Does the replay book inventory `inv` per store?
+    pub fn covers(&self, inv: u32) -> bool {
+        self.covered.contains(&inv)
+    }
+
+    /// Is a closed-form cycle running in some part?
+    pub fn in_cycle(&self) -> bool {
+        self.parts.iter().any(|p| p.cycle.is_some())
+    }
+
+    /// The parts, each its own process (ids 0, 1, ...).
+    pub fn parts(&self) -> u16 {
+        self.parts.len() as u16
+    }
+
+    /// Counters since the replay started, over its parts.
+    pub fn counts(&self) -> ReplayCounts {
+        let mut c = ReplayCounts::default();
+        for p in &self.parts {
+            c.regimes += p.counts.regimes;
+            c.breakpoints += p.counts.breakpoints;
+            c.cycles += p.counts.cycles;
+        }
+        c
+    }
+
+    /// Process `id` stopped (a breakpoint of that part): change its regime and replace its
+    /// process. A stop another part's change already lifted is nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_stop(
+        &mut self,
+        comp: &mut Compiled,
+        c: &mut Cluster,
+        id: u16,
+        why: Stop,
+        at: Tick,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+    ) -> Result<(), Fallback> {
+        let Some(p) = self.parts.get_mut(id as usize) else {
+            return Err(Fallback::Unexpected);
+        };
+        if c.run_of(p.d, id) != Some(Run::Stopped(why)) {
+            return Ok(());
+        }
+        p.run(comp, c, Some(why), at, goods, tun)
+    }
+
+    /// Something outside the replay changed its pools or the district (an import, an export, a
+    /// correction): imports land in the stores that feed the graph (choice G2-14), and every part
+    /// rebuilds its regime from the levels as they are.
+    pub fn refresh(
+        &mut self,
+        comp: &mut Compiled,
+        c: &mut Cluster,
+        at: Tick,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+    ) -> Result<(), Fallback> {
+        for p in &self.parts {
+            p.absorb_imports(comp, c, at);
+        }
+        for p in &mut self.parts {
+            p.run(comp, c, None, at, goods, tun)?;
+        }
+        Ok(())
+    }
+}
+
+/// The parts of a district's graph that run apart (choice G2-22): per part, its nodes; and the
+/// hub inventories, with how many parts draw on each. A hub is a covered store that only
+/// supplies (no goods edge into it, no other edge touching it, no kinetic domain): a source its
+/// parts draw on independently, which the cluster keeps safe between them. Anything else that
+/// touches joins: every edge, a kinetic domain and the boiler driving it, one inventory's nodes.
+/// A part has a simulated machine; what is in none (an idle store, a live piece) goes to the
+/// first.
+fn partition(comp: &Compiled, whole: &Part) -> (Vec<Vec<bool>>, BTreeMap<u32, u32>) {
+    let graph = &comp.graph;
+    let n = graph.nodes.len();
+    let mut hub_inv: BTreeSet<u32> = whole.stores.keys().copied().collect();
+    for ed in &graph.edges {
+        let goods = super::graph::carries_goods(ed.kind);
+        if let Some(inv) = whole.inv_of[ed.to as usize] {
+            hub_inv.remove(&inv);
+        }
+        if !goods && let Some(inv) = whole.inv_of[ed.from as usize] {
+            hub_inv.remove(&inv);
+        }
+    }
+    for v in 0..n {
+        if let Some(inv) = whole.inv_of[v]
+            && graph.node(v as u32).domain.is_some()
+        {
+            hub_inv.remove(&inv);
+        }
+    }
+    let hub = |v: u32| whole.inv_of[v as usize].is_some_and(|i| hub_inv.contains(&i));
+    let mut uf: Vec<u32> = (0..n as u32).collect();
+    fn find(uf: &mut [u32], mut x: u32) -> u32 {
+        while uf[x as usize] != x {
+            let up = uf[uf[x as usize] as usize];
+            uf[x as usize] = up;
+            x = up;
+        }
+        x
+    }
+    fn join(uf: &mut [u32], a: u32, b: u32) {
+        let (ra, rb) = (find(uf, a), find(uf, b));
+        if ra != rb {
+            uf[ra.max(rb) as usize] = ra.min(rb);
+        }
+    }
+    for ed in &graph.edges {
+        if !hub(ed.from) && !hub(ed.to) {
+            join(&mut uf, ed.from, ed.to);
+        }
+    }
+    let mut domain_first: BTreeMap<u32, u32> = BTreeMap::new();
+    for v in 0..n as u32 {
+        let node = graph.node(v);
+        for dm in node.domain.into_iter().chain(graph.drives[v as usize]) {
+            let f = *domain_first.entry(dm).or_insert(v);
+            join(&mut uf, f, v);
+        }
+    }
+    for (inv, st) in &whole.stores {
+        if hub_inv.contains(inv) {
+            continue;
+        }
+        for w in st.nodes.windows(2) {
+            join(&mut uf, w[0], w[1]);
+        }
+    }
+    // Parts in order of their first simulated machine.
+    let mut part_of_root: BTreeMap<u32, usize> = BTreeMap::new();
+    for v in 0..n as u32 {
+        if whole.sim[v as usize] && graph.node(v).kind != NodeKind::Store && !hub(v) {
+            let r = find(&mut uf, v);
+            let next = part_of_root.len();
+            part_of_root.entry(r).or_insert(next);
+        }
+    }
+    let parts = part_of_root.len().max(1);
+    let mut mines = vec![vec![false; n]; parts];
+    for v in 0..n as u32 {
+        if hub(v) {
+            continue;
+        }
+        let r = find(&mut uf, v);
+        let p = part_of_root.get(&r).copied().unwrap_or(0);
+        mines[p][v as usize] = true;
+    }
+    // A hub is in every part it supplies.
+    let mut sharers: BTreeMap<u32, BTreeSet<usize>> = BTreeMap::new();
+    for ed in &graph.edges {
+        if !hub(ed.from) || hub(ed.to) {
+            continue;
+        }
+        let r = find(&mut uf, ed.to);
+        let p = part_of_root.get(&r).copied().unwrap_or(0);
+        mines[p][ed.from as usize] = true;
+        if let Some(inv) = whole.inv_of[ed.from as usize] {
+            sharers.entry(inv).or_default().insert(p);
+        }
+    }
+    for v in 0..n {
+        if hub(v as u32) && !mines.iter().any(|m| m[v]) {
+            mines[0][v] = true;
+        }
+    }
+    let hubs = sharers
+        .into_iter()
+        .filter(|(_, ps)| ps.len() > 1)
+        .map(|(inv, ps)| (inv, ps.len() as u32))
+        .collect();
+    (mines, hubs)
+}
+
+impl Part {
+    /// The whole district as one part, at the engine's levels, its flags read from them.
+    fn new(
+        comp: &Compiled,
+        setup: &Setup,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+        at: Tick,
+    ) -> (Part, Levels) {
         let graph = &comp.graph;
         let d = setup.district;
         let n = graph.nodes.len();
@@ -465,10 +731,12 @@ impl Replay {
             .iter()
             .map(|b| comp.sol.fed.get(b.node as usize).copied().unwrap_or(0.0))
             .collect();
-        let mut rp = Replay {
+        let mut rp = Part {
+            id: 0,
+            mine: vec![true; n],
+            hubs: BTreeMap::new(),
             d,
             compile: graph.end.compile,
-            started: at,
             live,
             sim,
             inv_of,
@@ -509,67 +777,35 @@ impl Replay {
             }
         }
         rp.st.empty = empty;
-        rp.residual(comp, tun);
-        let (procs, bounds) = rp.build(comp, &levels, at, None, false, goods, tun)?;
-        let spec = MemberSpec {
-            district: d,
-            pools: levels.iter().map(|(&k, &a)| (k, a, None)).collect(),
-            procs: vec![procs],
-            space: None,
-            bounds,
-        };
-        Ok((rp, spec))
+        (rp, levels)
     }
 
-    pub fn compile(&self) -> u32 {
-        self.compile
-    }
-
-    /// Per node: it ran in the world when this replay started.
-    pub fn live(&self) -> &[bool] {
-        &self.live
-    }
-
-    /// Goods edges between live and simulated nodes.
-    pub fn cut_edges(&self) -> u32 {
-        self.cut.len() as u32
-    }
-
-    /// Goods the residual node adds as learned sources (I9).
-    pub fn learned_sources(&self) -> u32 {
-        self.learned_sources
-    }
-
-    /// Is a closed-form cycle running?
-    pub fn in_cycle(&self) -> bool {
-        self.cycle.is_some()
-    }
-
-    /// The replay's process stopped (a breakpoint): change the regime and replace the process.
-    #[allow(clippy::too_many_arguments)]
-    pub fn on_stop(
-        &mut self,
-        comp: &mut Compiled,
-        c: &mut Cluster,
-        why: Stop,
-        at: Tick,
-        goods: &dyn GoodLookup,
-        tun: &GlassTunables,
-    ) -> Result<(), Fallback> {
-        self.run(comp, c, Some(why), at, goods, tun)
-    }
-
-    /// Something outside the replay changed its pools or the district (an import, an export, a
-    /// correction): rebuild the regime from the levels as they are.
-    pub fn refresh(
-        &mut self,
-        comp: &mut Compiled,
-        c: &mut Cluster,
-        at: Tick,
-        goods: &dyn GoodLookup,
-        tun: &GlassTunables,
-    ) -> Result<(), Fallback> {
-        self.run(comp, c, None, at, goods, tun)
+    /// This part of the whole: the nodes in `mine`, the stores they touch, their heaters; the
+    /// flags of its own stores only.
+    fn split(&self, id: u16, mine: Vec<bool>, hubs: BTreeMap<u32, u32>) -> Part {
+        let mut p = self.clone();
+        p.id = id;
+        p.stores
+            .retain(|_, st| st.nodes.iter().any(|&v| mine[v as usize]));
+        p.hubs = hubs
+            .into_iter()
+            .filter(|(inv, _)| p.stores.contains_key(inv))
+            .collect();
+        let keep: Vec<bool> = p.heaters.iter().map(|b| mine[b.node as usize]).collect();
+        let mut j = 0;
+        p.heaters.retain(|_| {
+            j += 1;
+            keep[j - 1]
+        });
+        let mut j = 0;
+        p.fed.retain(|_| {
+            j += 1;
+            keep[j - 1]
+        });
+        let stores = &p.stores;
+        p.st.empty.retain(|&(inv, _), _| stores.contains_key(&inv));
+        p.mine = mine;
+        p
     }
 
     fn run(
@@ -586,6 +822,16 @@ impl Replay {
             self.leave_cycle(at);
             self.steps = 0;
             self.marks.clear();
+        } else if self.cycle.is_some()
+            && let Some(w) = why
+            && !matches!(w, Stop::Timer | Stop::Disabled)
+        {
+            // A hub's envelope stopped the cycle (another part drains the hub too, §4.2): leave it
+            // where it is and step on. A cycle that ran a whole period made progress.
+            if self.leave_cycle(at) >= 1 {
+                self.steps = 0;
+            }
+            self.marks.clear();
         }
         for _ in 0..MAX_STEPS {
             self.fire = None;
@@ -594,9 +840,9 @@ impl Replay {
             {
                 let crossing = match w {
                     Stop::InputEmpty(k) => Some((k, false)),
-                    Stop::Bound(_, tag) => self
+                    Stop::Bound(_, tag) if bound_part(tag) == self.id => self
                         .watches
-                        .get((tag as usize).wrapping_sub(1))
+                        .get((bound_index(tag) as usize).wrapping_sub(1))
                         .filter(|(watch, _)| !matches!(watch, Watch::Room { .. }))
                         .map(|(watch, spec)| {
                             let rising = spec.0.first().is_some_and(|&(_, w)| w > 0);
@@ -605,7 +851,7 @@ impl Replay {
                     _ => None,
                 };
                 if let Some((k, rising)) = crossing
-                    && let Some(canon) = c.shift_back(self.d, k, rising)
+                    && let Some(canon) = c.shift_back(self.d, self.id, k, rising)
                 {
                     self.fire = Some((k, canon));
                 }
@@ -638,7 +884,13 @@ impl Replay {
                         fired = Some(k);
                     }
                     Stop::Bound(_, tag) => {
-                        let Some(&(watch, _)) = self.watches.get(tag as usize - 1) else {
+                        let Some(&(watch, _)) = (bound_part(tag) == self.id)
+                            .then(|| {
+                                self.watches
+                                    .get((bound_index(tag) as usize).wrapping_sub(1))
+                            })
+                            .flatten()
+                        else {
                             return Err(Fallback::Unexpected);
                         };
                         fired = Some(watch.key(self.d));
@@ -678,15 +930,15 @@ impl Replay {
             if heater && let Some(m) = self.marks.last_mut() {
                 m.heater = true;
             }
-            let carries = c.carries_of(self.d);
+            let carries = c.carries_of_proc(self.d, self.id);
             if let Some((cp, deadline)) = self.detect(at, &carries, goods) {
                 proc = cp;
                 proc.deadline = Some(deadline);
                 bounds = Vec::new();
             }
-            c.replace_procs(self.d, vec![proc], bounds, at);
+            c.replace_proc(self.d, proc, bounds, at);
             self.built_at = at;
-            match c.run_of(self.d, 0) {
+            match c.run_of(self.d, self.id) {
                 Some(Run::Running) | None => return Ok(()),
                 Some(Run::Stopped(Stop::Waiting)) => return Err(Fallback::Stuck),
                 Some(Run::Stopped(w)) => {
@@ -696,6 +948,52 @@ impl Replay {
             }
         }
         Err(Fallback::Stuck)
+    }
+
+    /// Imports (a train's unload, a give-back, an injection) land in the district's `Stock` pool,
+    /// which no process reads. With no cut, each good moves into the covered store that feeds the
+    /// graph with it (one with room first, then the lowest inventory index), so the machines see
+    /// it; the store's change is written back to that store at the reconcile. A good no covered
+    /// store feeds waits in `Stock` for the reconcile, as does every import across a partial
+    /// load's cut, where `Stock` is the live side's supply (choice G2-14).
+    fn absorb_imports(&self, comp: &Compiled, c: &mut Cluster, at: Tick) {
+        if !self.cut.is_empty() {
+            return;
+        }
+        let d = self.d;
+        let waiting: Vec<(Good, i64)> = levels_of(c, d)
+            .iter()
+            .filter_map(|(k, &a)| match *k {
+                PoolKey::Stock(_, g) if a > 0 => Some((g, a)),
+                _ => None,
+            })
+            .collect();
+        for (g, a) in waiting {
+            let Some(inv) = self.landing(comp, g) else {
+                continue;
+            };
+            let took = -c.add_to_pool(PoolKey::Stock(d, g), -a, false, at);
+            if took > 0 {
+                c.add_to_pool(PoolKey::Store(d, inv, g), took, false, at);
+            }
+        }
+    }
+
+    /// The covered store an import of `g` lands in: one that feeds the graph with it.
+    fn landing(&self, comp: &Compiled, g: Good) -> Option<u32> {
+        let graph = &comp.graph;
+        let feeds = |inv: &u32| {
+            self.stores[inv]
+                .nodes
+                .iter()
+                .any(|&v| graph.out_g.of(v).iter().any(|&e| graph.allows(e, g)))
+        };
+        let mut cands = self.stores.keys().filter(|i| feeds(i));
+        let first = cands.clone().next().copied();
+        cands
+            .find(|i| !self.st.full.contains_key(i))
+            .copied()
+            .or(first)
     }
 
     /// What a store must hold of a good to supply it (the compile's holding rule).
@@ -740,6 +1038,12 @@ impl Replay {
             }
         }
         gates(graph, &self.st.ctrl_on, &mut rg.gate_off);
+        // Another part's nodes run in its own process.
+        for (v, &m) in self.mine.iter().enumerate() {
+            if !m && self.sim[v] && graph.node(v as u32).kind != NodeKind::Store {
+                rg.gate_off[v] = true;
+            }
+        }
         // A dry cut good stops the live node that would send it.
         if !self.st.dry.is_empty() {
             for &(e, from_sim) in &self.cut {
@@ -772,7 +1076,8 @@ impl Replay {
         for &(e, g, f) in &sol.edge_goods {
             let ed = graph.edge(e);
             let (a, b) = (ed.from as usize, ed.to as usize);
-            if !self.sim[a] && !self.sim[b] {
+            // Another part's edges are its own to book.
+            if (!self.sim[a] && !self.sim[b]) || !self.mine[a] || !self.mine[b] {
                 continue;
             }
             if let Some(inv) = self.inv_of[a] {
@@ -812,7 +1117,7 @@ impl Replay {
         for (v, &f) in potential.iter().enumerate() {
             let lat = graph.down_latency.get(v).copied().unwrap_or(0);
             let id = v as u32;
-            if lat == 0 || !self.sim[v] || graph.node(id).kind == NodeKind::Store {
+            if lat == 0 || !self.sim[v] || !self.mine[v] || graph.node(id).kind == NodeKind::Store {
                 continue;
             }
             let old = self.flow.get(v).copied().unwrap_or(0.0);
@@ -966,12 +1271,31 @@ impl Replay {
                 .iter()
                 .map(|&(k, r)| r as f64 / goods.max_stack(k.good()).max(1) as f64)
                 .collect();
-            for (j, s) in split(free, &w).into_iter().enumerate() {
+            // A good with no part-filled stack takes a slot of its own with its first unit, so
+            // each has one first, the heaviest first while they last; the rest split by rate. By
+            // rate alone a rare byproduct's share floors to no slot and the store reads full at
+            // once (choice G2-26).
+            let mut base = vec![0i64; fits.len()];
+            let mut left = free;
+            let mut order: Vec<usize> = (0..fits.len()).collect();
+            order.sort_by(|&a, &b| w[b].total_cmp(&w[a]).then(a.cmp(&b)));
+            for j in order {
+                if left == 0 {
+                    break;
+                }
+                let k = fits[j].0;
+                let ms = goods.max_stack(k.good()).max(1);
+                if level(lv, k).max(0) % ms == 0 {
+                    base[j] = 1;
+                    left -= 1;
+                }
+            }
+            for (j, s) in split(left, &w).into_iter().enumerate() {
                 let k = fits[j].0;
                 let ms = goods.max_stack(k.good()).max(1);
                 let a = level(lv, k).max(0);
                 let partial = if a % ms == 0 { 0 } else { ms - a % ms };
-                out.push((k, partial + s * ms));
+                out.push((k, partial + (base[j] + s) * ms));
             }
         }
         out
@@ -1081,7 +1405,10 @@ impl Replay {
             settled = true;
             break;
         }
-        if !settled {
+        // A solve that did not settle books flows that do not balance at its nodes (a loop whose
+        // only exit is full grows round by round): goods would leave the stores and arrive
+        // nowhere (choice G2-27).
+        if !settled || !sol.converged {
             return Err(Fallback::Unsettled);
         }
         self.counts.regimes += 1;
@@ -1143,7 +1470,7 @@ impl Replay {
         }
         for v in 0..comp.graph.nodes.len() as u32 {
             let node = comp.graph.node(v);
-            if node.kind != NodeKind::Controller {
+            if node.kind != NodeKind::Controller || !self.mine[v as usize] {
                 continue;
             }
             let Some((sum, pools)) = self.observed(comp, v, lv) else {
@@ -1208,7 +1535,7 @@ impl Replay {
             }
         }
         let proc = ProcSpec {
-            id: 0,
+            id: self.id,
             body: ProcSpecBody::Box(
                 nets.iter()
                     .filter(|&(_, &r)| r != 0)
@@ -1226,7 +1553,7 @@ impl Replay {
             .watches
             .iter()
             .enumerate()
-            .map(|(i, (_, s))| (i as u32 + 1, s.clone()))
+            .map(|(i, (_, s))| (bound_tag(self.id, i as u32 + 1), s.clone()))
             .collect();
         self.mark(comp, lv, at, fired, room_or_heater);
         Ok((proc, bounds))
@@ -1255,14 +1582,15 @@ impl Replay {
         let mut changed = false;
         // (a) Refills: a good flagged empty that reached its holding threshold, or one that holds
         // stock while nothing arrives (choice G2-19): a chest a funnel kept nearly empty is not a
-        // source while goods pass through it, but what is left in it drains once they stop.
+        // source while goods pass through it, but what is left in it drains once they stop. Not
+        // a hub's (choice G2-22): its other parts drain what is left, which this part cannot see.
         let mut unflag = Vec::new();
         for (&(inv, g), &l0) in &self.st.empty {
             let k = PoolKey::Store(d, inv, g);
             let r = net(k);
             let ahead = if r > 0 { reach(r) } else { 0 };
             if level(lv, k) + ahead >= l0 + self.hold(comp, inv, g, goods, tun)
-                || (r <= 0 && level(lv, k) >= 1)
+                || (r <= 0 && level(lv, k) >= 1 && !self.hubs.contains_key(&inv))
             {
                 unflag.push((inv, g));
             }
@@ -1350,7 +1678,7 @@ impl Replay {
         // (e) Controllers: hysteresis on the observed level, a tick ahead.
         for v in 0..comp.graph.nodes.len() as u32 {
             let node = comp.graph.node(v);
-            if node.kind != NodeKind::Controller {
+            if node.kind != NodeKind::Controller || !self.mine[v as usize] {
                 continue;
             }
             let Some((sum, pools)) = self.observed(comp, v, lv) else {
@@ -1670,7 +1998,13 @@ impl Replay {
                 if exact(k) {
                     continue;
                 }
-                let lo = ms.iter().map(|m| level(&m.levels, k)).min().unwrap_or(0);
+                let mut lo = ms.iter().map(|m| level(&m.levels, k)).min().unwrap_or(0);
+                // A hub's other parts drain it too: this cycle may count on its share.
+                if let PoolKey::Store(_, inv, _) = k
+                    && let Some(&n) = self.hubs.get(&inv)
+                {
+                    lo /= i64::from(n.max(1));
+                }
                 let drains = ms.iter().any(|m| m.nets.get(&k).is_some_and(|&r| r < 0));
                 if drains && lo + change(k, n).0.min(0) < CYCLE_MARGIN {
                     return false;
@@ -1738,7 +2072,7 @@ impl Replay {
             spend,
         };
         let proc = ProcSpec {
-            id: 0,
+            id: self.id,
             body: ProcSpecBody::Cycle { pools, pieces },
             targets: Vec::new(),
             requires: None,
@@ -1775,10 +2109,11 @@ impl Replay {
         self.marks.clear();
     }
 
-    /// Leaves a running cycle mid-way (an outside event): the state of the piece it is in.
-    fn leave_cycle(&mut self, at: Tick) {
+    /// Leaves a running cycle mid-way (an outside event, a hub's envelope): the state of the
+    /// piece it is in. Returns the whole periods it ran.
+    fn leave_cycle(&mut self, at: Tick) -> u64 {
         let Some(run) = self.cycle.take() else {
-            return;
+            return 0;
         };
         let el = at.0 - run.start.0;
         let periods = el / run.period;
@@ -1813,6 +2148,7 @@ impl Replay {
         let shift = at.0 - off - m.at.0;
         let s = m.state.clone();
         self.restore(&s, shift, at);
+        periods
     }
 
     /// The flags of a mark, its held nodes' rises moved forward by `shift` ticks.
