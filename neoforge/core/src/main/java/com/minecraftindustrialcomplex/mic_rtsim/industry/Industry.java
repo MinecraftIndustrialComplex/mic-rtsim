@@ -382,6 +382,7 @@ public final class Industry {
                 chunk.getData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
         chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, old.plus(java.util.List.of(r.array().clone())));
         chunk.setUnsaved(true);
+        journalDependsOn(chunk);
         ResourceKey<Level> dim = chunk.getLevel().dimension();
         ChunkPos pos = chunk.getPos();
         whenAcked(seq, () -> {
@@ -404,6 +405,14 @@ public final class Industry {
                         new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
             c.setUnsaved(true);
         });
+    }
+
+    /**
+     * A record just committed speaks for {@code chunk}'s contents: the journal's next file waits until the
+     * chunk is written (docs/choices-repair.md R21).
+     */
+    void journalDependsOn(net.minecraft.world.level.chunk.LevelChunk chunk) {
+        session.journal().chunks().dependsOn(chunk);
     }
 
     /** True when {@code chunk} still carries the COMMAND_RESULT of this op id (applied into it, not yet acknowledged). */

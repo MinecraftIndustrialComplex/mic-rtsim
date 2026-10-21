@@ -915,6 +915,7 @@ public final class RtsimSession {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
         chunk.setData(RtsimAttachments.PENDING, old.plus(java.util.List.of(commandResult.array())));
         chunk.setUnsaved(true);
+        journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
     }
 
