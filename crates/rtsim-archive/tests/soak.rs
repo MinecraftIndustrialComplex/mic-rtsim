@@ -73,7 +73,7 @@ impl World {
         let places = (0..3_000u64)
             .map(|i| {
                 let h = mix(i);
-                let dim = if h % 50 == 0 { 1 } else { 0 };
+                let dim = if h.is_multiple_of(50) { 1 } else { 0 };
                 let x = (h >> 8) % 26_112;
                 let z = (h >> 32) % 13_056;
                 (dim, x as i32 - 13_056, z as i32 - 6_528)
@@ -120,7 +120,7 @@ impl World {
             let kind = self.kind(h);
             let (dim, px, pz) = self.places[(h >> 20) as usize % self.places.len()];
             let (x, z) = (px + (h >> 40) as i32 % 64, pz + (h >> 48) as i32 % 64);
-            let subject = if h % 9 == 0 {
+            let subject = if h.is_multiple_of(9) {
                 self.players[(h >> 12) as usize % self.players.len()]
             } else {
                 u128::from((h >> 16) % 20_000 + 1)
@@ -130,7 +130,7 @@ impl World {
                 let duration = 1_200 + (h >> 36) % 12_000;
                 tape.leg(kind, dim, (tick, x, z), (tick + duration, qx, qz), subject);
             } else {
-                let object = if h % 3 == 0 {
+                let object = if h.is_multiple_of(3) {
                     u128::from((h >> 24) % 5_000)
                 } else {
                     0
