@@ -27,6 +27,8 @@ rtsim-ships = { path = "crates/rtsim-ships" }
 rtsim-space = { path = "crates/rtsim-space" }
 # Conflict: factions, grievance, war bands and raids (PLAN.md §10.3).
 rtsim-conflict = { path = "crates/rtsim-conflict" }
+# The save viewer: a saved world read only, served to the shared viewer page (VIEWER.md).
+rtsim-view = { path = "crates/rtsim-view" }
 # Deep Time's world-data format: its layout block (`projection::ProjectionSpec`, FORMAT.md "The
 # world's layout") is linked, not mirrored (docs/choices-topology.md TP10). Private, pinned like
 # mic-native; Deep Time master 3bf532d1. LGPL-3.0-or-later.
@@ -46,6 +48,13 @@ microlp = { version = "=0.6.0", default-features = false }
 # the private repository MinecraftIndustrialComplex/mic-native at a pinned commit (choice J1). MPL-2.0.
 mic-native-rt = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
 mic-native-host = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
+# The shared world viewer (VIEWER.md, VW1): its HTTP server, viewer API, scenes, tile cache and page,
+# from the private repository MinecraftIndustrialComplex/mic-viewer at a pinned commit, as mic-native
+# is pinned. MPL-2.0. Only rtsim-view and rtsim-cli use it.
+mic-viewer = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "01c95950ac72b44a991b7adcb84d2d9928060360" }
+# Gzip for Minecraft's NBT files (the viewer reads the Java journal's dimension names). Already in
+# the tree through mic-viewer's png. MIT OR Apache-2.0.
+flate2 = "1.1"
 # The JNI binding, pinned as mic-native and Deep Time pin it. Only rtsim-jni uses it. MIT OR Apache-2.0.
 jni = "=0.22.4"
 
