@@ -946,7 +946,7 @@ public final class IndustryGameTests {
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         playerPlaced(helper, vaultPos);
         long[] id = {0};
-        Object[][] sentBefore = {null};
+        Object[] mark = {null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, vaultPos);
@@ -955,7 +955,7 @@ public final class IndustryGameTests {
                 })
                 .thenWaitUntil(() -> check("its load state went to the engine", ind().district(id[0]).loadState() >= 0))
                 .thenExecute(() -> {
-                    sentBefore[0] = lastSentFor(id[0]);
+                    mark[0] = lastReceived();
                     ind().diagnostics().warn(id[0], "test", "a test warning");
                     District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
@@ -996,33 +996,41 @@ public final class IndustryGameTests {
                 .thenIdle(5)
                 // This district's records only: another test's district (a far chunk unloading after its test) may
                 // send its own load state meanwhile.
-                .thenExecute(() -> check("producing the output sent the engine nothing for the district",
-                        sameRecords(lastSentFor(id[0]), sentBefore[0])))
+                .thenExecute(() -> {
+                    int sent = sentSince(mark[0], id[0]);
+                    check("producing the output sent the engine nothing for the district (" + sent + " load state or district records since)",
+                            sent == 0);
+                })
                 .thenSucceed();
     }
 
-    /**
-     * The last IND_LOAD_STATE and IND_DISTRICT records the engine got for one district (both carry it at 24),
-     * null where none. Compared by identity, not counted: the received log is capped and evicts its oldest
-     * records, so a count drops while other districts' glass records arrive.
-     */
-    private static Object[] lastSentFor(long district) {
-        int[] kinds = {IndRecords.IND_LOAD_STATE, IndRecords.IND_DISTRICT};
-        Object[] last = new Object[kinds.length];
-        for (int i = 0; i < kinds.length; i++)
-            for (var r : engine().received(kinds[i]))
-                if (r.bytes().length >= 32 && r.view().getLong(IndRecords.LoadState.DISTRICT) == district)
-                    last[i] = r;
-        return last;
+    /** The newest record in the engine's received log, of any kind; null when it is empty. */
+    private static Object lastReceived() {
+        var all = engine().received();
+        return all.isEmpty() ? null : all.getLast();
     }
 
-    private static boolean sameRecords(Object[] a, Object[] b) {
-        if (a.length != b.length)
-            return false;
-        for (int i = 0; i < a.length; i++)
-            if (a[i] != b[i])
-                return false;
-        return true;
+    /**
+     * IND_LOAD_STATE and IND_DISTRICT records for one district (both carry it at 24) received after
+     * {@code mark} (a record of the log, found by identity). Not a count of the whole log: the log keeps the
+     * last 10,000 records, and while other districts' glass compiles arrive it evicts this district's older
+     * ones, so a count (or the district's last record) can change with nothing sent. A mark evicted in turn
+     * means every record in the log came after it.
+     */
+    private static int sentSince(Object mark, long district) {
+        var all = engine().received();
+        int from = 0;
+        for (int i = all.size() - 1; i >= 0; i--)
+            if (all.get(i) == mark) {
+                from = i + 1;
+                break;
+            }
+        int n = 0;
+        for (var r : all.subList(from, all.size()))
+            if ((r.kind() == IndRecords.IND_LOAD_STATE || r.kind() == IndRecords.IND_DISTRICT) && r.bytes().length >= 32
+                    && r.view().getLong(IndRecords.LoadState.DISTRICT) == district)
+                n++;
+        return n;
     }
 
     // ---- I7: IND_CHUNK_UNLOADED, U10: the module switch -----------------------------------------------
