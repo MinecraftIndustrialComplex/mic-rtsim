@@ -154,6 +154,16 @@ public final class Lairs {
         return c;
     }
 
+    /**
+     * A lair the plugin placed (OG-7, {@link LairPlacer}), its start already stored in its chunk: reported
+     * now, late (its chunk generated before it).
+     */
+    Lair placed(ServerLevel level, String structure, StructureStart start, long now) {
+        Lair l = lair(level, structure, start);
+        report(l, true, now);
+        return l;
+    }
+
     /** LAIR_FOUND, once per lair per session. */
     void report(Lair lair, boolean late, long now) {
         if (!reported.add(lair.id()) || !RtsimConfig.on(Module.ECOLOGY))
