@@ -271,6 +271,9 @@ pub struct Herd {
     pub ledger: HerdLedger,
     /// The legs booked for players who could see it, per player slot (A15, lazily).
     pub clips: BTreeMap<u32, Stamp>,
+    /// The regions (frame, region x, region z) its route is indexed under in the engine's region
+    /// index, kept in the row so a paged engine never recomputes them from every herd.
+    pub regions: Vec<(u16, i64, i64)>,
 }
 
 /// The regions (frame, region x, region z) a route covers, widened by `radius`.
@@ -348,6 +351,7 @@ impl Herd {
                 .map_or(0, |e| e.members.capacity() * 8)
             + self.followers.capacity() * 16
             + self.clips.len() * 40
+            + self.regions.capacity() * std::mem::size_of::<(u16, i64, i64)>()
     }
 }
 

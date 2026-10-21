@@ -13,10 +13,15 @@
 //! a plugin would: it materializes bodies, moves them along the waypoints and times it was given,
 //! lets them go when they leave every player's view, and plays fights: pirates beside a merchant
 //! fight it, and the stronger crew wins, the winner's crew losing a member.
+//!
+//! **The scripted player** ([`Script`]) of `rtsim-cli sim ships` and the paged tests: it watches a
+//! sea lane, follows the hunted lane, sends an escort, logs off before a raid, loots a hold and
+//! sinks a pirate.
 
 use std::collections::BTreeMap;
 
-use rtsim_kernel::clock::Tick;
+use rtsim_ecology::infra::NoInfrastructure;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::Amount;
 use rtsim_trade::MILLI;
@@ -418,7 +423,7 @@ impl Body {
 }
 
 /// What the fake does with what it is told, and what it saw, for the CLI.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FakeShips {
     pub bodies: BTreeMap<u64, Body>,
     pub players: BTreeMap<Uuid, (f64, f64)>,
@@ -675,4 +680,163 @@ impl FakeShips {
 /// Total thousandths held in a cargo map.
 pub fn total(c: &BTreeMap<rtsim_trade::GoodId, Amount>) -> Amount {
     c.values().sum()
+}
+
+// ---- the scripted player ------------------------------------------------------------------------
+
+/// The scripted player's UUID.
+pub const SCRIPT_PLAYER: Uuid = (0x5EA, 0x5A11);
+
+fn day(t: Tick) -> f64 {
+    t.0 as f64 / TICKS_PER_DAY as f64
+}
+
+/// A straight sea lane's middle (where the scripted player first watches).
+pub fn watch_point(s: &Ships) -> (i32, i32) {
+    let l = (0..s.lanes.len())
+        .find(|&l| {
+            let ln = &s.lanes[l];
+            ln.medium == Medium::Sea && ln.path.pts.len() == 2 && ln.path.length() > 1_000
+        })
+        .unwrap_or(0);
+    let ln = &s.lanes[l];
+    ln.path.at(ln.path.length() / 2)
+}
+
+/// The scripted player on the coast ([`coastal`]): it watches a straight sea lane for two days
+/// (ships enter its view), then follows the lane the pirates hunt (a raid in view, loot sailing to
+/// the haven); from day 5 its escort joins the hunted lane for a day; after day 7.2 it logs off
+/// for a quarter day when a raid is coming (the fight is resolved unobserved); on day 7 it loots
+/// half a merchant's hold, and after day 9 it sinks the first pirate in view. What it did so far
+/// is its state, so a run may stop and go on (the same steps, as long as each stop is on the
+/// hour), or be copied with the engine it drives.
+#[derive(Clone, Debug, Default)]
+pub struct Script {
+    pub looted: bool,
+    pub sank: bool,
+    /// The escort's lane and since when (`u32::MAX` once it has left).
+    pub escort: Option<(u32, Tick)>,
+    /// Logged off until then.
+    pub away: Option<Tick>,
+    /// Conservation failures, checked every hour.
+    pub conserved: Vec<String>,
+}
+
+impl Script {
+    /// The scripted run from `from` to `to`, hour by hour.
+    pub fn run(&mut self, c: &mut Coastal, fake: &mut FakeShips, from: Tick, to: Tick) {
+        const PLAYER: Uuid = SCRIPT_PLAYER;
+        let watch = watch_point(&c.ships);
+        let mut t = from;
+        while t < to {
+            let d = day(t);
+            if self.away.is_some_and(|u| t < u) {
+                let next = (t + 250).min(to);
+                drive(
+                    &mut c.world,
+                    &mut c.ships,
+                    fake,
+                    &mut NoInfrastructure,
+                    &c.mask,
+                    next,
+                    50,
+                );
+                t = next;
+                continue;
+            }
+            let at = if d < 2.0 {
+                Some(watch)
+            } else {
+                c.ships
+                    .hunted_lanes()
+                    .first()
+                    .map(|&l| {
+                        let ln = &c.ships.lanes[l as usize];
+                        ln.path.at(ln.path.length() / 2)
+                    })
+                    .or(Some(watch))
+            };
+            if let Some(p) = at {
+                fake.set_player(PLAYER, f64::from(p.0), f64::from(p.1));
+                c.ships
+                    .observe_player(&mut c.world, PLAYER, Pos::new(0, p.0, p.1), t);
+            }
+            let next = (t + 1_000).min(to);
+            while t < next {
+                let step = (t + 50).min(next);
+                drive(
+                    &mut c.world,
+                    &mut c.ships,
+                    fake,
+                    &mut NoInfrastructure,
+                    &c.mask,
+                    step,
+                    50,
+                );
+                t = step;
+                // From day 7: a raid is coming on a ship in view, and the player logs off before
+                // it strikes: the fight is resolved unobserved (Lanchester, never better than the
+                // fights seen).
+                if day(t) >= 7.2
+                    && self.away.is_none()
+                    && c.ships.pending_by_kind().contains_key("raid")
+                {
+                    fake.players.clear();
+                    let p = c.ships.player(&mut c.world, PLAYER);
+                    c.ships.player_left(&mut c.world, p);
+                    self.away = Some(t + TICKS_PER_DAY / 4);
+                    break;
+                }
+            }
+            if !self.looted && day(t) >= 7.0 {
+                let target = fake
+                    .bodies
+                    .iter()
+                    .find(|(_, b)| b.role == Role::Merchant && !b.cargo.is_empty())
+                    .map(|(a, _)| *a);
+                if let Some(a) = target
+                    && let Some(o) = fake.player_loots(a, PLAYER, 0.5)
+                {
+                    c.ships.ingest(&mut c.world, &o, &c.mask, t);
+                    self.looted = true;
+                }
+            }
+            // Day 5: the player's escort ships (for a future plugin) join the hunted lane for a
+            // day: its hazard falls while they are there.
+            if day(t) >= 5.0 && self.escort.is_none() {
+                let hunted = c
+                    .ships
+                    .hunted_lanes()
+                    .into_iter()
+                    .find(|&l| c.ships.threat(l).is_some_and(|th| th.share > 0));
+                if let Some(l) = hunted {
+                    c.ships.set_escort(&mut c.world, l, 1, 4.0, t);
+                    self.escort = Some((l, t));
+                }
+            }
+            if let Some((l, since)) = self.escort
+                && t.0 >= since.0 + TICKS_PER_DAY
+                && l != u32::MAX
+            {
+                c.ships.set_escort(&mut c.world, l, 1, 0.0, t);
+                self.escort = Some((u32::MAX, since));
+            }
+            if !self.sank && day(t) >= 9.0 {
+                let target = fake
+                    .bodies
+                    .iter()
+                    .find(|(_, b)| b.role == Role::Pirate)
+                    .map(|(a, _)| *a);
+                if let Some(a) = target
+                    && let Some(o) = fake.player_sinks(a, PLAYER)
+                {
+                    c.ships.ingest(&mut c.world, &o, &c.mask, t);
+                    self.sank = true;
+                }
+            }
+            if let Err(e) = c.ships.check(&c.world) {
+                self.conserved.push(format!("day {:.2}: {e}", day(t)));
+            }
+        }
+    }
 }

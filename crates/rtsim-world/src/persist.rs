@@ -6,19 +6,28 @@
 //! **Not written:** the configuration, the goods registry and the recipe book (the caller builds
 //! the world from them and passes the same ones to [`World::load`]; their sizes are checked), and
 //! the market trace (diagnostics, off in play).
+//!
+//! **Paged** (docs/choices-paging-modules.md): the market rows are a row table. [`World::save`]
+//! writes them at the end, in key order; [`World::save_paged`] writes everything before them as
+//! one meta page and only the market pages changed since the last save, and
+//! [`World::open_paged`] reads the meta and leaves the market pages where they are. Both give
+//! the same `state_hash`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
 use rtsim_kernel::handle::{Arena, Handle};
-use rtsim_kernel::lazy::LazyTable;
+use rtsim_kernel::lazy::PagedLazyTable;
+use rtsim_kernel::page::{PageKey, SaveBatch};
+use rtsim_kernel::paging::SaveTicket;
+use rtsim_kernel::rows::PageSource;
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::board::{BoardCursor, Packet};
 use rtsim_knowledge::{GossipType, Knowledge, ReportKind, VanillaGossip};
 use rtsim_settle::{NodeKind, Pos, Settlements};
 use rtsim_trade::labour::{Costs, Lint, Local, RecipeBook};
-use rtsim_trade::persist::{get_opt_good, load_market, put_opt_good, save_market};
+use rtsim_trade::persist::{get_opt_good, put_opt_good};
 use rtsim_trade::{GoodId, Goods};
 use rtsim_travel::caravan::{Body, Caravan, CaravanKey};
 use rtsim_travel::edge::{DirRef, Edge};
@@ -29,9 +38,16 @@ use crate::bases::BaseState;
 use crate::config::WorldConfig;
 use crate::interest::PlayerState;
 use crate::ribbits::{Band, Growth, PlaceHouse, SentimentSnapshot, SpawnResident};
-use crate::world::{Command, Ev, Node, Outside, PacketData, Stats, Via, World};
+use crate::world::{
+    Command, Ev, MARKETS_PER_PAGE, Node, Outside, PacketData, Stats, TABLE_MARKETS, TABLE_META,
+    Via, World,
+};
 
-const MAGIC: u32 = u32::from_le_bytes(*b"RTW1");
+/// The meta page of a paged world.
+pub const META_PAGE: PageKey = PageKey::new(TABLE_META, 0);
+
+/// RTW2: the market rows moved to the end, as a row table (paging).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTW2");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -474,6 +490,13 @@ fn get_i128_map(r: &mut Reader<'_>) -> codec::Result<BTreeMap<GoodId, i128>> {
 impl World {
     /// The whole world as bytes (see the module docs for what is left out).
     pub fn save(&self) -> Vec<u8> {
+        let mut w = self.save_meta();
+        self.markets.encode_rows(&mut w);
+        w.into_bytes()
+    }
+
+    /// Everything but the market rows.
+    fn save_meta(&self) -> Writer {
         let mut w = Writer::with_capacity(4096 + self.nodes.len() * 8192);
         w.u32(MAGIC);
         put_usize(&mut w, self.goods.len());
@@ -485,7 +508,7 @@ impl World {
         for n in &self.nodes {
             put_node(&mut w, n, &mut snaps);
         }
-        self.markets.encode_with(&mut w, |m, w| save_market(w, m));
+        self.markets.encode_meta(&mut w);
         put_usize(&mut w, self.edges.len());
         self.edges.iter().for_each(|e| e.encode(&mut w));
         self.knowledge.save(&mut w);
@@ -581,7 +604,56 @@ impl World {
             k.encode(&mut w);
             w.u64(c.to_bits());
         }
-        w.into_bytes()
+        w
+    }
+
+    /// Starts paging the market rows through `source`, keeping about `budget` bytes of them
+    /// resident. Every row stays until a save writes it.
+    pub fn attach_store(&mut self, source: std::sync::Arc<dyn PageSource>, budget: usize) {
+        self.markets.rows_mut().attach(source, budget);
+    }
+
+    /// The meta page and every market page changed since the last save, into `batch`; the pages
+    /// stay pinned until the ticket comes back ([`World::saved`], [`World::save_failed`]).
+    pub fn save_paged(&mut self, batch: &mut SaveBatch) -> SaveTicket {
+        let w = self.save_meta();
+        batch.put(META_PAGE, w.as_bytes());
+        self.markets.rows_mut().save_dirty(batch)
+    }
+
+    pub fn saved(&mut self, t: SaveTicket) {
+        self.markets.rows_mut().saved(t);
+    }
+
+    pub fn save_failed(&mut self, t: SaveTicket) {
+        self.markets.rows_mut().save_failed(t);
+    }
+
+    /// Evicts saved market pages down to the budget (a step boundary).
+    pub fn enforce_budget(&mut self) -> usize {
+        self.markets.rows_mut().enforce_budget()
+    }
+
+    /// Whether the market rows are over budget with every resident page changed since the last
+    /// save: the host should save (herds' `needs_save`, PM7).
+    pub fn needs_save(&self) -> bool {
+        let r = self.markets.rows();
+        r.is_paged() && r.resident_bytes() > r.budget()
+    }
+
+    /// Opens a world [`World::save_paged`] wrote: the meta page is read, no market page is.
+    pub fn open_paged(
+        cfg: WorldConfig,
+        goods: Goods,
+        book: RecipeBook,
+        source: std::sync::Arc<dyn PageSource>,
+        budget: usize,
+    ) -> codec::Result<World> {
+        let raw = source
+            .read(META_PAGE)
+            .map_err(|e| CodecError::Invalid(format!("world meta page: {e}")))?
+            .ok_or_else(|| CodecError::Invalid("no world meta page".into()))?;
+        Self::load_with(cfg, goods, book, &raw, Some((source, budget)))
     }
 
     /// Reads a world [`World::save`] wrote, with the configuration, goods and recipe book it was
@@ -591,6 +663,17 @@ impl World {
         goods: Goods,
         book: RecipeBook,
         bytes: &[u8],
+    ) -> codec::Result<World> {
+        Self::load_with(cfg, goods, book, bytes, None)
+    }
+
+    /// A snapshot, its market rows inline (`paged` none) or in pages.
+    fn load_with(
+        cfg: WorldConfig,
+        goods: Goods,
+        book: RecipeBook,
+        bytes: &[u8],
+        paged: Option<(std::sync::Arc<dyn PageSource>, usize)>,
     ) -> codec::Result<World> {
         let r = &mut Reader::new(bytes);
         if r.u32()? != MAGIC {
@@ -612,7 +695,8 @@ impl World {
         for _ in 0..n {
             nodes.push(get_node(r, &mut snaps)?);
         }
-        let markets = LazyTable::decode_with(r, load_market)?;
+        let (mut markets, market_meta) =
+            PagedLazyTable::decode_meta(r, TABLE_MARKETS, MARKETS_PER_PAGE)?;
         let n = r.len_prefix(40)?;
         let edges = (0..n)
             .map(|_| Edge::decode(r))
@@ -718,6 +802,10 @@ impl World {
         let mut promoted = BTreeMap::new();
         for _ in 0..r.len_prefix(11)? {
             promoted.insert(CaravanKey::decode(r)?, handle(r)?);
+        }
+        match paged {
+            None => markets.decode_rows(r, market_meta)?,
+            Some((source, budget)) => markets.open_rows(source, budget, market_meta),
         }
         if !r.is_empty() {
             return bad(format!(

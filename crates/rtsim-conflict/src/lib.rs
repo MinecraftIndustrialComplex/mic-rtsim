@@ -19,6 +19,9 @@
 //!   which every raid on a player district goes through: never better than observed, capped,
 //!   applied on load, C16 to C18, I22, I23).
 //! - [`boundary`]: the records and their reference codec (docs/boundary.md §9).
+//! - [`tables`]: the row tables (factions with their feuds, sources, the place index) on the
+//!   kernel's paged rows: resident without a page store, paged under a budget with one
+//!   ([`engine::Conflict::attach_store`], [`engine::Conflict::open_paged`]).
 //! - [`synth`]: a forest, a goblin camp and a fake plugin for tests, the CLI and the bench.
 //!   Scaffolding.
 //!
@@ -43,9 +46,11 @@ mod persist;
 pub mod presence;
 pub mod scenario;
 pub mod synth;
+pub mod tables;
 pub mod tunables;
 
 pub use culture::{CultureDef, Cultures, SignalKind, Step, UnitClass};
 pub use engine::{Conflict, ConflictStats, FeudView, Purpose};
 pub use grievance::Grievance;
+pub use persist::ConflictTickets;
 pub use tunables::ConflictTunables;
