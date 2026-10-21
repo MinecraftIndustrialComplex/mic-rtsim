@@ -334,7 +334,11 @@ fn patrols_and_escorts_lower_a_lanes_hazard() {
     let before = c.ships.lane_share(l);
     c.ships.set_escort(&mut c.world, l, 42, 20.0, Tick::ZERO);
     assert!(c.ships.lane_share(l) < before || before == 0);
-    c.ships.threats.get_mut(u64::from(l)).unwrap().remove_hunter(p);
+    c.ships
+        .threats
+        .get_mut(u64::from(l))
+        .unwrap()
+        .remove_hunter(p);
 }
 
 #[test]
