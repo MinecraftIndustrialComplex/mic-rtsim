@@ -539,6 +539,33 @@ fn log_error(msg: &str) {
     rt::error(&format!("[mic_rtsim] {msg}"));
 }
 
+/// A write that failed partway poisons the store, which then refuses every read and write: the
+/// next page miss would stop the engine. The store reopens in place from its files, under the
+/// lock the failed write held, so no reader sees it poisoned (docs/choices-leg-purge.md LP10).
+/// What the files hold is durable; the save that failed counts as failed whether or not its
+/// record made it, so `durable` stays and Java keeps its journal, and its modules write their
+/// pages again at the next save (PF14). False if the store is still poisoned: the next save
+/// tries again.
+fn recover_store(store: &mut PageStore) -> bool {
+    match store.recover() {
+        Ok(false) => true,
+        Ok(true) => {
+            log_warn(&format!(
+                "the page store reopened from its files after a failed write; it holds generation {} (observations through {}); the next save writes the pages again",
+                store.save_seq(),
+                store.obs_seq()
+            ));
+            true
+        }
+        Err(e) => {
+            log_error(&format!(
+                "the page store cannot reopen after a failed write: {e}; the next save tries again"
+            ));
+            false
+        }
+    }
+}
+
 /// One session of the engine.
 pub struct Engine {
     /// Observation buffers 0 and 1, then command buffers 0 and 1.
@@ -691,6 +718,15 @@ impl Engine {
             l(&s.commands_written),
             l(&s.save_failures),
         ]
+    }
+
+    /// Makes the page store's next writes fail at `fault` (tests only: a failed save, then the
+    /// store's recovery).
+    #[doc(hidden)]
+    pub fn inject_store_fault(&self, fault: Option<rtsim_kernel::page::Fault>) {
+        if let Some(s) = lock(&self.store).as_mut() {
+            s.inject_fault(fault);
+        }
     }
 
     /// The phase 1 world's determinism hash, and whether the last load replayed its log to the
@@ -1518,6 +1554,10 @@ impl Engine {
         }
         let mut guard = lock(&self.store);
         let Some(store) = guard.as_mut() else { return };
+        if !recover_store(store) {
+            self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
         if job.stale() {
             // Built before the step saw a save fail: its paged modules wrote only what changed
             // since that save, which never reached the disk (PF14).
@@ -1577,6 +1617,7 @@ impl Engine {
             Err(e) => {
                 self.stats.save_failures.fetch_add(1, Ordering::AcqRel);
                 log_error(&format!("saving the engine pages failed: {e}"));
+                recover_store(store);
             }
         }
     }

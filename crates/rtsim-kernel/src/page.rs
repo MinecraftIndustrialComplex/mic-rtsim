@@ -876,6 +876,33 @@ impl PageStore {
         &self.dir
     }
 
+    /// Whether a write failed partway: the store then refuses every read and write until
+    /// [`PageStore::recover`] reopens it.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Reopens a poisoned store from its files, as [`PageStore::open`] does after a crash, so a
+    /// write that failed partway costs that save and not the store (docs/choices-leg-purge.md
+    /// LP10). The files hold what is durable: the failed save if its log record made it, else the
+    /// generation before it, and the pending and confirmed generations as the log has them. Keeps
+    /// the durability and the index cache's size; drops an injected fault. A store that is not
+    /// poisoned is left as it is (false). On an error the store stays poisoned and a later call
+    /// tries again.
+    pub fn recover(&mut self) -> Result<bool> {
+        if !self.poisoned {
+            return Ok(false);
+        }
+        let cap = lock(&self.cache).cap;
+        // Every handle closes first: the open cuts a torn log record off and deletes strays.
+        self.log = None;
+        lock(&self.files).clear();
+        let mut fresh = PageStore::open(self.dir.clone(), self.durability)?;
+        fresh.set_index_cache_blocks(cap);
+        *self = fresh;
+        Ok(true)
+    }
+
     /// The number of the current generation's save; 0 before the first.
     pub fn save_seq(&self) -> u64 {
         self.save_seq
@@ -2371,6 +2398,76 @@ mod tests {
             drop(s);
             let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
             assert_eq!(s.get(PageKey(7)).unwrap().unwrap(), b"after");
+            fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    /// A write that fails partway poisons the store, and `recover` reopens it in place at what
+    /// the files hold: the failed save if its record is durable, the one before if not, with a
+    /// pending generation kept pending. The store then reads and saves as one opened afresh.
+    #[test]
+    fn a_poisoned_store_recovers_in_place() {
+        for fault in [
+            Fault::TornLog,
+            Fault::BeforeCleanup,
+            Fault::MidCheckpoint,
+            Fault::AfterCheckpoint,
+        ] {
+            let dir = tmpdir(&format!("recover-{fault:?}"));
+            let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+            s.set_index_cache_blocks(3);
+            for round in 0..3u64 {
+                let mut b = SaveBatch::new();
+                for k in 0..4 {
+                    b.put(PageKey(k), &page(k + 10 * round, 300));
+                }
+                s.commit(b, round + 1).unwrap();
+            }
+            // A pending save on top, which a recovery must keep pending.
+            let mut b = SaveBatch::new();
+            b.put(PageKey(2), &page(77, 300));
+            s.commit_pending(b, 4).unwrap();
+            assert!(!s.recover().unwrap(), "a healthy store is left alone");
+            let mut b = SaveBatch::new();
+            b.put(PageKey(0), &page(99, 300));
+            b.delete(PageKey(3));
+            let r = match fault {
+                Fault::MidCheckpoint | Fault::AfterCheckpoint => {
+                    s.commit_pending(b, 5).unwrap();
+                    s.inject_fault(Some(fault));
+                    s.checkpoint_now().map(|_| ())
+                }
+                _ => {
+                    s.inject_fault(Some(fault));
+                    s.commit_pending(b, 5).map(|_| ())
+                }
+            };
+            assert!(matches!(r, Err(PageError::Injected)), "{fault:?}");
+            assert!(s.is_poisoned(), "{fault:?}");
+            assert!(matches!(s.get(PageKey(0)), Err(PageError::Poisoned)));
+            assert!(s.recover().unwrap(), "{fault:?}");
+            assert!(!s.is_poisoned());
+            let new = fault != Fault::TornLog;
+            assert_eq!(s.obs_seq(), if new { 5 } else { 4 }, "{fault:?}");
+            assert_eq!(s.confirmed().obs_seq, 3, "{fault:?}: still pending");
+            let want0 = if new { page(99, 300) } else { page(20, 300) };
+            assert_eq!(s.get(PageKey(0)).unwrap().unwrap(), want0, "{fault:?}");
+            assert_eq!(s.get(PageKey(2)).unwrap().unwrap(), page(77, 300));
+            assert_eq!(s.get(PageKey(3)).unwrap().is_some(), !new, "{fault:?}");
+            assert_eq!(lock(&s.cache).cap, 3, "the settings stay");
+            assert!(
+                names(&dir).iter().all(|n| !n.ends_with(".tmp")),
+                "{fault:?}"
+            );
+            // It saves and confirms, and a fresh open sees the same.
+            let mut b = SaveBatch::new();
+            b.put(PageKey(7), b"after");
+            s.commit(b, 6).unwrap();
+            assert_eq!(s.confirmed().obs_seq, 6);
+            drop(s);
+            let mut s = PageStore::open(&dir, Durability::NoSync).unwrap();
+            assert_eq!(s.get(PageKey(7)).unwrap().unwrap(), b"after");
+            assert_eq!(s.get(PageKey(0)).unwrap().unwrap(), want0, "{fault:?}");
             fs::remove_dir_all(&dir).unwrap();
         }
     }
