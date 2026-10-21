@@ -64,6 +64,9 @@ public final class Phase1 {
     private final List<LivingEntity[]> residentDeaths = new ArrayList<>();
     private final List<Entity> residentKillers = new ArrayList<>();
 
+    /** False until the first end of tick in the server's session, which announces again what a sim reset lost. */
+    private boolean announced;
+
     long trades;
     long puppetTrades;
     long tradesShort;
@@ -105,6 +108,16 @@ public final class Phase1 {
         // GameTests run their own) must not adopt, count or build into its journal.
         if (RtsimSession.current() != session)
             return;
+        if (!announced) {
+            announced = true;
+            if (session.boundary().observationsLost())
+                guard("announcing again", () -> {
+                    int v = VillageAdoption.announceAgain(session, villages, now);
+                    int b = bases.forgetMarks();
+                    MicRtsim.LOGGER.warn("[mic_rtsim] phase 1: the engine's pages lack observations the journal no longer holds"
+                            + " (a sim reset?): {} villages adopted again, {} base marks to be made again", v, b);
+                });
+        }
         guard("adoption", () -> VillageAdoption.drain(session, villages, now));
         guard("census", () -> census.tick(ticks, now));
         guard("houses", () -> houses.tick(now));

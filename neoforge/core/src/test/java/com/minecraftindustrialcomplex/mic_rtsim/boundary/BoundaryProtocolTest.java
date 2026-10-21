@@ -156,6 +156,43 @@ class BoundaryProtocolTest {
     }
 
     @Test
+    void aSimResetIsSeenAsLostObservationsAndARestartIsNot() {
+        // Session 1: a record reaches the engine, its pages are saved and the journal trimmed behind them.
+        StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s1 = new BoundarySession(e1, new Journal(), 0, time);
+        assertFalse(s1.observationsLost(), "a first install: no pages and no journal lose nothing");
+        Sink k1 = new Sink(s1);
+        transfer(s1, 7, 5);
+        tick(s1, k1, e1);
+        e1.requestSaveAtNextStep();
+        tick(s1, k1, e1);
+        tick(s1, k1, e1);
+        assertEquals(0, s1.journal().size(), "acknowledged and trimmed");
+        Journal.Snapshot worldSave = s1.journal().snapshot();
+
+        // A restart on the same pages: nothing lost.
+        StubEngine e2 = stub(e1.pages(), StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s2 = new BoundarySession(e2, Journal.restore(worldSave), 0, time);
+        assertFalse(s2.observationsLost());
+
+        // SRV2's sim reset: the pages deleted, the world's journal kept. The record the journal
+        // trimmed is gone from both, which the bridge must answer by announcing again.
+        StubEngine e3 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s3 = new BoundarySession(e3, Journal.restore(worldSave), 0, time);
+        assertTrue(s3.observationsLost());
+
+        // The rule itself, as the kernel's Replay::reconcile has it.
+        assertFalse(BoundarySession.observationsLost(0, 0, 1), "first install");
+        assertFalse(BoundarySession.observationsLost(1051, 0, 1052), "empty journal, pages at the world save");
+        assertFalse(BoundarySession.observationsLost(1051, 1052, 1060), "the journal starts right after the pages");
+        assertFalse(BoundarySession.observationsLost(1051, 1000, 1060), "the journal overlaps the pages: a replay");
+        assertFalse(BoundarySession.observationsLost(1060, 1052, 1055), "pages ahead of the world save (P29)");
+        assertTrue(BoundarySession.observationsLost(0, 1979, 2010), "pages deleted, journal kept");
+        assertTrue(BoundarySession.observationsLost(0, 0, 2010), "pages deleted, journal empty");
+        assertTrue(BoundarySession.observationsLost(900, 1979, 2010), "pages older than the journal");
+    }
+
+    @Test
     void crashReplayAppliesExactlyOnceAndOneOpIdNeverTwice() {
         // Session 1: a transfer reaches the engine, which never saves its pages before the crash.
         StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);

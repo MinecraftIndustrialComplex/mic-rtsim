@@ -102,6 +102,10 @@ dependencies {
     // The mic_native API (MicNative.loadPlugin) at compile time, and the mod itself in the runs.
     compileOnly micNativeFiles
     localRuntime micNativeFiles
+    // -Pc2me: the GameTest server loads C2ME too, the pack's jar, for the journal barrier's C2ME path
+    // (docs/choices-journal-barrier.md JB3). Off by default: C2ME replaces the chunk IO of every suite.
+    if (project.hasProperty('c2me'))
+        localRuntime files("${rootProject.file(project.findProperty('packMods')).absolutePath}/${c2me_jar}")
 
     // Pure-Java unit tests: the boundary protocol, the journal and the stub engine. They touch no
     // Minecraft class, so they need no game on the classpath.
