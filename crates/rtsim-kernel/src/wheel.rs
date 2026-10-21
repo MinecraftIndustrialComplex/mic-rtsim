@@ -26,6 +26,12 @@ use crate::codec::{self, CodecError, Reader, Writer};
 const LEVEL_BITS: u32 = 6;
 const SLOTS: usize = 1 << LEVEL_BITS;
 const LEVELS: usize = 64usize.div_ceil(LEVEL_BITS as usize);
+/// Emptied slot vectors kept for reuse, and the most entries one may hold to be kept: a burst's
+/// big vectors are freed, not held for ever (docs/choices-paging-modules.md). PLACEHOLDERS.
+const SPARES: usize = 64;
+const SPARE_ENTRIES: usize = 256;
+/// The ready queue's capacity kept once it drains. PLACEHOLDER.
+const READY_KEEP: usize = 1_024;
 
 struct Entry<T> {
     at: u64,
@@ -191,10 +197,15 @@ impl<T> TimingWheel<T> {
                             self.place(e);
                         }
                     }
-                    self.spare.push(v);
+                    if v.capacity() <= SPARE_ENTRIES && self.spare.len() < SPARES {
+                        self.spare.push(v);
+                    }
                 }
                 _ => {
                     self.now = self.now.max(limit.0);
+                    if self.ready.capacity() > READY_KEEP {
+                        self.ready.shrink_to(READY_KEEP);
+                    }
                     return None;
                 }
             }
