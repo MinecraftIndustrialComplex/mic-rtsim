@@ -955,7 +955,7 @@ public final class IndustryGameTests {
                 })
                 .thenWaitUntil(() -> check("its load state went to the engine", ind().district(id[0]).loadState() >= 0))
                 .thenExecute(() -> {
-                    sentBefore[0] = engine().received(IndRecords.IND_LOAD_STATE).size() + engine().received(IndRecords.IND_DISTRICT).size();
+                    sentBefore[0] = sentFor(id[0]);
                     ind().diagnostics().warn(id[0], "test", "a test warning");
                     District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
@@ -994,9 +994,21 @@ public final class IndustryGameTests {
                     check("and the engine was not asked for anything (0x0044 is retired)", engine().received(0x0044).isEmpty());
                 })
                 .thenIdle(5)
-                .thenExecute(() -> check("producing the output sent the engine nothing",
-                        engine().received(IndRecords.IND_LOAD_STATE).size() + engine().received(IndRecords.IND_DISTRICT).size() == sentBefore[0]))
+                // This district's records only: another test's district (a far chunk unloading after its test) may
+                // send its own load state meanwhile.
+                .thenExecute(() -> check("producing the output sent the engine nothing for the district: " + sentBefore[0] + " then " + sentFor(id[0]),
+                        sentFor(id[0]) == sentBefore[0]))
                 .thenSucceed();
+    }
+
+    /** IND_LOAD_STATE and IND_DISTRICT records the engine got for one district (both carry it at 24). */
+    private static int sentFor(long district) {
+        int n = 0;
+        for (int kind : new int[] {IndRecords.IND_LOAD_STATE, IndRecords.IND_DISTRICT})
+            for (var r : engine().received(kind))
+                if (r.bytes().length >= 32 && r.view().getLong(IndRecords.LoadState.DISTRICT) == district)
+                    n++;
+        return n;
     }
 
     // ---- I7: IND_CHUNK_UNLOADED, U10: the module switch -----------------------------------------------
