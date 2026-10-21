@@ -998,12 +998,37 @@ For Deep Time's coordinator to review.
   is refused at open, and district cards are refused once the heap reaches it. Cards are cached
   under 256 MiB, tiles under 64 MiB.
 - **`/api/status`** (an extra route): each module's load status and state hash, each layer's mark
-  count or why it is empty, the caches and the heap. An empty layer's reason is also on its
-  description.
+  count or why it is empty, the caches and the heap. An empty layer's reason also comes with its
+  marks (`LayerMarks.empty`), and the page shows it under the layer's name.
 - **Measured** (the laptop, `rtsim-cli/tests/view.rs`): at 100,000 synthetic districts (the industry
   bench's, 100,001 pages, 20.3 MiB raw), the sidecar starts in 0.8 s, a full-world request returns
   250 marks at 40 bpp and 2,000 at 0.25 bpp in 11 to 19 ms, a district card takes 3 to 4 ms, and the
   process peaks at 52 MiB resident (heap 32 MiB). The Windows test is V4's now.
+
+**V5 as built** (feat/viewer-events, 2026-10-21):
+- **Surveyor over HABITAT.** Each frame named by a dimension gets a "Terrain (Surveyor)" tile layer
+  over HABITAT, both on by default: Surveyor leaves the columns it never recorded transparent, so
+  HABITAT's coarse cells show where nobody has been. Zoom 0 is a block a pixel. A frame known only
+  by number (`dim3`) has no folder to look in and keeps HABITAT; so does a world without Surveyor
+  (`rtsim-view/tests/surveyor.rs`). The reader and renderer are mic-viewer's
+  `mic-viewer-surveyor` crate (§9); Surveyor's pictures share `--surveyor-cache` (64 MiB, TUNABLE).
+- **The exit run.** No MICTest save with rtsim pages exists yet, so the run used the MICTest save's
+  Surveyor folders (39 region files, 4.88 MB) beside the core GameTest fixture's pages:
+  `rtsim-cli view <that folder>` drew the explored area at a block a pixel, light and dark, at
+  desktop and phone width. After five page sessions the sidecar held 62 MiB resident, 32 regions
+  parsed and 36 MiB of pictures cached. The rtsim marks sit wherever the GameTest world put them,
+  far from Surveyor's area, so the whole-frame view is mostly empty; a real world's pages and
+  Surveyor folders agree.
+
+  ![The MICTest save's explored area at a block a pixel, light theme](docs/viewer/mictest-one-block-light.png)
+  ![The whole explored area, dark theme](docs/viewer/mictest-explored-dark.png)
+  ![Phone width, dark theme](docs/viewer/mictest-phone-dark.png)
+- **The timeline** (V3's viewer side, built here ahead of V3's hooks): rtsim-view opens
+  `<world>/rtsim/archive` read only as of the save it read (`ArchiveReader::open(dir,
+  Some(obs_seq))`), so a chunk a later save flushed never shows beside older pages. `/api/events`,
+  the histogram and `has_events` come from it; the archive's frames (`dim<n>`) join the world's
+  frames under the journal's names. A save without an archive has no timeline
+  (`rtsim-view/tests/events.rs`).
 
 ---
 

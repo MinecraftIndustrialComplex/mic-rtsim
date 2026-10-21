@@ -104,6 +104,8 @@ pub struct Session {
     pub cards: usize,
     pub tiles: usize,
     pub tiles_drawn: usize,
+    /// Event rows and legs the timeline's first answers held, over every frame.
+    pub events: usize,
 }
 
 /// Every route a page uses, over everything the save holds: the world, layers and status; marks
@@ -119,6 +121,19 @@ pub fn session(view: Arc<View>) -> Session {
     let ids: Vec<&str> = layers.layers.iter().map(|l| l.id.as_str()).collect();
     let all = ids.join(",");
     for f in &world.frames {
+        // The timeline: the newest rows and the strip, as the page asks on opening it.
+        if world.has_events {
+            let a: mic_viewer::api::EventsAnswer =
+                get_json(&app, "/api/events", &format!("frame={}&limit=500", f.id));
+            let h: mic_viewer::api::Histogram = get_json(
+                &app,
+                "/api/events/histogram",
+                &format!("frame={}&buckets=120", f.id),
+            );
+            s.requests += 2;
+            s.events += a.rows.len() + a.legs.len();
+            assert!(h.buckets <= 120);
+        }
         let b = f.bounds;
         for bpp in [0.25, 4.0, 64.0, 1024.0] {
             let q = format!(

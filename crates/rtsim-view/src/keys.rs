@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Where each module keeps its pages, mirrored from the native link (`rtsim-jni`'s `engine/*.rs`),
 //! which this crate cannot link: rtsim-cli, which serves the viewer, sets its own global allocator,
-//! and rtsim-jni is a mic_native plugin. A test (`tests/keys.rs`) checks every value here against
-//! the link's own, and the populated-world test reads pages the link wrote.
+//! and rtsim-jni is a mic_native plugin. A test (`tests/harness.rs`, the first) checks every value
+//! here against the link's own (`rtsim_jni::engine::mirrored`), and the populated-world tests read
+//! pages the link wrote.
 
 use rtsim_kernel::page::PageKey;
 
