@@ -236,6 +236,81 @@ fn a_flush_encodes_everything_and_unchanged_parts_are_not_rewritten() {
     e.close(false, Duration::from_secs(5)).unwrap();
 }
 
+/// The encode time of full units (VIEWER.md §5.2 item 2): 4,096 villages make two units of 2,000
+/// rows and one of 96, each written as one part per region its villages are in; a flush encodes
+/// every unit once and the counters time each. Prints the numbers (run with `--release
+/// --nocapture` for VIEWER.md's).
+#[test]
+fn full_units_encode_whole_and_their_time_is_measured() {
+    let dir = tmpdir("tap-full-units");
+    let e = engine(&dir, 1 << 20);
+    write_lease(&dir, std::process::id(), Vec::new());
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = PHASE1;
+    const N: u64 = 4_096;
+    for i in 0..N {
+        let (x, z) = ((i % 64) as i32 * 200, (i / 64) as i32 * 200);
+        j.adopt(
+            0x0002_0000_0000_0000 + i,
+            "minecraft:village_plains",
+            "human",
+            90,
+            x,
+            z,
+        );
+        if i % 64 == 63 {
+            j.idle();
+        }
+    }
+    j.idle();
+    e.view_tap_flush().unwrap();
+    e.stats.tap.reset_measurements();
+    // A second flush, every unit warm: its counters are the encode alone.
+    e.view_tap_flush().unwrap();
+    let (_, h, s) = store(&dir);
+    assert_eq!(layer_rows(&h, "settle.villages"), N);
+    let villages = layer_index("settle.villages") as u16;
+    let units: Vec<_> = h
+        .units
+        .iter()
+        .filter(|u| u.key.kind == part_kind::MARKS && u.key.layer == villages)
+        .collect();
+    let rows = |u: &vstore::UnitEntry| u.parts.iter().map(|p| p.rows).sum::<u32>();
+    let mut sizes: Vec<u32> = units.iter().map(|u| rows(u)).collect();
+    sizes.sort_unstable();
+    assert_eq!(sizes, vec![96, 2_000, 2_000], "the villages in whole units");
+    let full_bytes: Vec<usize> = units
+        .iter()
+        .filter(|u| rows(u) == 2_000)
+        .map(|u| {
+            u.parts
+                .iter()
+                .map(|p| {
+                    s.get_shared(PageKey::new(vstore::PART_TABLE, p.page))
+                        .unwrap()
+                        .unwrap()
+                        .len()
+                })
+                .sum()
+        })
+        .collect();
+    let g = |k: &str| stat(&e, k);
+    let n = g("units").max(1);
+    println!(
+        "full units: {} units, {} rows, {} bytes; {:.3} ms a unit on average, longest {:.3} ms \
+         (a unit of 2,000 village rows, {:?} bytes each); {:.0} rows a ms, {:.0} MB/s",
+        g("units"),
+        g("rows"),
+        g("bytes"),
+        g("unit_nanos") as f64 / 1e6 / n as f64,
+        g("unit_nanos_max") as f64 / 1e6,
+        full_bytes,
+        g("rows") as f64 / (g("unit_nanos").max(1) as f64 / 1e6),
+        g("bytes") as f64 / (g("unit_nanos").max(1) as f64 / 1e9) / 1e6,
+    );
+    e.close(false, Duration::from_secs(5)).unwrap();
+}
+
 #[test]
 fn a_hand_over_holding_two_ticks_stands_the_tap_down() {
     let (_dir, e, mut j) = world("tap-behind", true);
@@ -257,6 +332,37 @@ fn a_hand_over_holding_two_ticks_stands_the_tap_down() {
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(stat(&e, "behind"), 1);
     assert_eq!(stat(&e, "steps_tapped"), 1, "{:?}", e.stats.tap.snapshot());
+    e.close(false, Duration::from_secs(5)).unwrap();
+}
+
+/// An epoch's first commit can come at a step the tap stood down (it encoded nothing): it still
+/// carries the state's time, never the empty mailbox's zero.
+#[test]
+fn a_commit_at_a_step_the_tap_stood_down_carries_the_states_time() {
+    let (dir, e, mut j) = world("tap-stood-down-time", false);
+    write_lease(&dir, std::process::id(), Vec::new());
+    let from = j.game_time;
+    // Every hand-over holds two TICK records, so every leased step stands down; the next lease
+    // stat (at most STAT_EVERY steps on) starts the epoch, and its first step commits.
+    let mut steps = 0;
+    while stat(&e, "commits") == 0 {
+        assert!(steps < 3 * tap::STAT_EVERY, "{:?}", e.stats.tap.snapshot());
+        j.apply_commands();
+        assert!(j.preamble());
+        j.game_time += 1;
+        j.flush();
+        steps += 1;
+    }
+    // The counter moves once the commit is on disk.
+    let (_, h, _) = store(&dir);
+    assert_eq!(stat(&e, "steps_tapped"), 0, "{:?}", e.stats.tap.snapshot());
+    assert!(stat(&e, "stood_down") > 0);
+    assert!(
+        h.game_time > from && h.game_time <= j.game_time,
+        "the header's time {} is the state's (Java at {}, from {from})",
+        h.game_time,
+        j.game_time
+    );
     e.close(false, Duration::from_secs(5)).unwrap();
 }
 

@@ -32,3 +32,6 @@ rtsim-archive = { path = "../rtsim-archive" }
 
 [dev-dependencies]
 rtsim-travel.workspace = true
+# The live tap's tests: the view store's names, and pinning the process for the under-load run.
+rtsim-parts.workspace = true
+libc = "0.2"
