@@ -79,15 +79,21 @@ def main():
         props['level-seed'] = sc['seed']
     props.update(sc.get('props', {}))
     set_props(os.path.join(sdir, 'server.properties'), props)
-    # Simple Voice Chat binds UDP 24454 by default; two servers side by side must not share it
+    # Simple Voice Chat binds UDP 24454 by default, and two servers side by side must not share it. Not the
+    # game port either: Sable binds its own UDP channel there. A failed voice chat bind ends the server
+    # (exit 1, no crash report) a few seconds after Done.
     vc = os.path.join(sdir, 'config', 'voicechat', 'voicechat-server.properties')
     if os.path.exists(vc):
-        set_props(vc, {'port': sc.get('port', 25871)})
+        set_props(vc, {'port': sc.get('port', 25871) + 2})
     with open(os.path.join(sdir, 'user_jvm_args.txt'), 'w') as f:
         f.write('\n'.join(sc.get('jvm', ['-Xms6G', '-Xmx10G'])) + '\n')
     java = sc.get('java', 'java')
     args = ['nice', '-n', str(sc.get('nice', 10)), java, '@user_jvm_args.txt',
             '@libraries/net/neoforged/neoforge/%s/unix_args.txt' % sc['neoforge'], 'nogui']
+    if sc.get('cpus'):
+        # the live host has 4 cores and no SMT: pin to 4 physical cores so the JVM and mic_native size
+        # their pools as they would there (mic_native reads the affinity mask, not the JVM's count)
+        args = ['taskset', '-c', sc['cpus']] + args
     os.makedirs(os.path.join(sdir, 'logs'), exist_ok=True)
     console = open(os.path.join(sdir, 'console.log'), 'ab')
     t0 = time.time()
