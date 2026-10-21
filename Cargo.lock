@@ -201,13 +201,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
 
@@ -425,6 +434,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mic-viewer"
+version = "0.1.0"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=cc213668d3fb65f8783d541b7457c6c106660dde#cc213668d3fb65f8783d541b7457c6c106660dde"
+dependencies = [
+ "png",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "microlp"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -433,6 +452,16 @@ dependencies = [
  "log",
  "sprs",
  "web-time",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
 ]
 
 [[package]]
@@ -498,6 +527,19 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
+]
 
 [[package]]
 name = "portable-atomic"
@@ -617,6 +659,7 @@ dependencies = [
  "crc32fast",
  "libc",
  "mic-native-rt",
+ "mic-viewer",
  "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-host",
@@ -625,8 +668,10 @@ dependencies = [
  "rtsim-knowledge",
  "rtsim-settle",
  "rtsim-ships",
+ "rtsim-space",
  "rtsim-trade",
  "rtsim-travel",
+ "rtsim-view",
  "rtsim-world",
  "serde",
  "serde_json",
@@ -794,6 +839,31 @@ dependencies = [
  "rtsim-settle",
  "rtsim-space",
  "rtsim-trade",
+]
+
+[[package]]
+name = "rtsim-view"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "mic-native-host",
+ "mic-native-rt",
+ "mic-viewer",
+ "rtsim-conflict",
+ "rtsim-ecology",
+ "rtsim-host",
+ "rtsim-industry",
+ "rtsim-jni",
+ "rtsim-kernel",
+ "rtsim-knowledge",
+ "rtsim-settle",
+ "rtsim-ships",
+ "rtsim-space",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

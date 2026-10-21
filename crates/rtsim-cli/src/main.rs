@@ -7,6 +7,7 @@ mod export;
 mod run;
 mod sim;
 mod sys;
+mod view;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -94,7 +95,9 @@ usage:
   rtsim-cli export <world> <dir>
       Copies <world>'s rtsim state (pages through the read-only open, journal, level.dat) into a
       new fork in <dir>: one whole generation even from a running server; nothing is written
-      into the world.";
+      into the world.
+  rtsim-cli view <world> [options]
+      Serves a saved world to the viewer page on loopback (VIEWER.md); --help for options.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -424,6 +427,7 @@ fn main() -> ExitCode {
         }
         ["run", rest @ ..] => run::cli(rest),
         ["export", rest @ ..] => export::cli(rest),
+        ["view", rest @ ..] => view::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS

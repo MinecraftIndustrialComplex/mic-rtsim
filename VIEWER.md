@@ -519,8 +519,8 @@ length the header carries and the page shows per layer.
   no file open between reads, checks every record's CRC32, and on a missing file or a bad record
   reopens from the root and retries, three times (TUNABLE), then reports the store as busy. On
   Windows its files are opened with `FILE_SHARE_DELETE`, so the engine can still rename and delete
-  them; that this keeps every save working while a sidecar reads is UNVERIFIED, and V1 and V4 test it
-  on Windows.
+  them; that this keeps every save working while a sidecar reads is UNVERIFIED, and V4 tests it on
+  Windows.
 
 ### 5.4 The tests that prove it
 
@@ -976,12 +976,34 @@ For Deep Time's coordinator to review.
 | Phase | Builds | Exit test |
 |---|---|---|
 | **V0 Shared core** (with Deep Time) | mic-viewer: map core, marks, server crate, tiles cache, API types; Deep Time's workbench moved onto it | Deep Time's four page tests pass unchanged; its workbench works over the SSH forward; the Host check refuses a forged Host on a GET |
-| **V1 Save viewer** | `open_read_only`, peeks, `load_world`, `rtsim-view` with every module's layers and cards, the part format, HABITAT base map, `rtsim-cli view` and `export` | on a GameTest world's save: every layer draws; the folder's bytes are identical after a session; at 100,000 synthetic districts a full-world request returns within the budget and the sidecar stays under its memory cap; on Windows, a world saves while the sidecar reads it |
+| **V1 Save viewer** | `open_read_only`, peeks, `load_world`, `rtsim-view` with every module's layers and cards, the part format, HABITAT base map, `rtsim-cli view` and `export` | on a GameTest world's save: every layer draws; the folder's bytes are identical after a session; at 100,000 synthetic districts a full-world request returns within the budget and the sidecar stays under its memory cap (the Windows test moved to V4: a V1 session holds no file open between reads, so V4's live reads are the harder case) |
 | **V2 Headless host** | `rtsim-cli run`: fork, driver, preamble, command answers, strides, saves, pacing, host source | a GameTest world's pages open with the same state hash; a 20-tick and a long-stride run agree on state hashes; 1,000 game days run at max speed with the viewer attached, with the engine's outbox bounded; the measured game days per second and the fixed cost per step are written into this document |
 | **V3 Archive and timeline** | the archive writer, tiers, compaction, rollback cut; the timeline strip | R (rows per game day) measured for every `rtsim-cli sim` scenario and written here; a 10,000 game day soak stays under the budget; a crash between page commits cuts the right chunks |
 | **V4 Live tap** | lease and focus, tap, view store, live source, SSE notices | the tests of §5.4 over 100 game days (lockstep, and under load: the tap stands down); with no lease, step time unchanged within noise; with a lease, the tap's time at or under its budget plus one part, and the encode time per part measured; the server thread's hand-over unchanged; on Windows, saves succeed while the sidecar reads |
 | **V5 Surveyor base map** | reader spike (done 2026-10-21, against a copy of the OmegaSrv world: §9), then the renderer | the MICTest save's explored area draws at 1 block per pixel; a world without Surveyor falls back to HABITAT |
 | **V6 Glass-box view** | after GLASSBOX G1: the compiled graph layer | the 12-factory corpus draws with rates matching the district's inspection |
+
+**V1 as built** (feat/viewer, 2026-10-21), where it differs from the sections above:
+- **No parts yet.** The save source draws mic-viewer scenes straight from the decoded save, once at
+  open (`rtsim-view` `layers.rs`); a request at any `t` gets the save's scene. The part format
+  (§4.3's `ViewSource`, `PartWriter`) comes with the live tap (V4), when a second producer first exists.
+- **`rtsim-cli export` moved to V2**, with `rtsim-cli run`.
+- **Flat frames.** The pages hold no topology, so every frame is flat with no wrap, a Deep Time
+  world's too, until the sidecar reads its `manifest.json` (§9).
+- **Names** come from Java's journal (`<world>/data/mic_rtsim_journal.dat`, its dictionary):
+  dimensions and district names. Without it, `dim<id>`.
+- **Messengers** are the news packets on roads (a packet with a band travels as the band); hunts are
+  their own layer, a line from the dragon to its target.
+- **Memory cap**: 1,024 MiB by default (`--mem-cap`, TUNABLE). A save whose decoded state is over it
+  is refused at open, and district cards are refused once the heap reaches it. Cards are cached
+  under 256 MiB, tiles under 64 MiB.
+- **`/api/status`** (an extra route): each module's load status and state hash, each layer's mark
+  count or why it is empty, the caches and the heap. An empty layer's reason is also on its
+  description.
+- **Measured** (the laptop, `rtsim-cli/tests/view.rs`): at 100,000 synthetic districts (the industry
+  bench's, 100,001 pages, 20.3 MiB raw), the sidecar starts in 0.8 s, a full-world request returns
+  250 marks at 40 bpp and 2,000 at 0.25 bpp in 11 to 19 ms, a district card takes 3 to 4 ms, and the
+  process peaks at 52 MiB resident (heap 32 MiB). The Windows test is V4's now.
 
 ---
 

@@ -27,6 +27,10 @@ rtsim-conflict.workspace = true
 rtsim-host = { path = "../rtsim-host" }
 # The heap gauge of the allocator mic_native's runtime installs (rtsim-jni, through rtsim-host).
 mic-native-rt.workspace = true
+rtsim-view.workspace = true
+rtsim-space.workspace = true
+# The viewer's HTTP server and page (rtsim-cli view). MPL-2.0.
+mic-viewer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # State hashes over pages. MIT OR Apache-2.0.
