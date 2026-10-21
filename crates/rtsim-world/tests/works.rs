@@ -456,7 +456,10 @@ fn a_sink_with_nothing_to_buy_runs_no_event() {
     w.set_works(cat, Tick::ZERO);
     let cmds = run(&mut w, Tick::from_days(400), true);
     assert!(w.stats.market_events > 0, "the markets traded");
-    assert_eq!(w.stats.works_events, 0, "no works event without a work to buy");
+    assert_eq!(
+        w.stats.works_events, 0,
+        "no works event without a work to buy"
+    );
     assert_eq!(w.stats.works, 0);
     assert!(
         !cmds
