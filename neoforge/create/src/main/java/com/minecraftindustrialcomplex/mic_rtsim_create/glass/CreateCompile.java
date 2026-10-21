@@ -509,6 +509,8 @@ final class CreateCompile implements GlassExtractor.Compile {
     private final it.unimi.dsi.fastutil.ints.Int2FloatOpenHashMap domainRoot = new it.unimi.dsi.fastutil.ints.Int2FloatOpenHashMap();
     /** Per switch-driven clutch: the district's kinetic block entities it turns (empty: something else drives them). */
     private final Long2ObjectOpenHashMap<LongOpenHashSet> clutchTurns = new Long2ObjectOpenHashMap<>();
+    /** The side the walk entered each block entity it put in a domain from: its source on the running line. */
+    private final Long2ObjectOpenHashMap<Direction> walkSource = new Long2ObjectOpenHashMap<>();
 
     /**
      * Puts the district's kinetic block entities that are in no live network into the domain of a
@@ -521,7 +523,6 @@ final class CreateCompile implements GlassExtractor.Compile {
      */
     private void walk() {
         java.util.ArrayDeque<KineticBlockEntity> queue = new java.util.ArrayDeque<>();
-        Long2ObjectOpenHashMap<Direction> walkSource = new Long2ObjectOpenHashMap<>();
         for (BlockEntity be : claimed)
             if (be instanceof KineticBlockEntity k && kin.containsKey(k.getBlockPos().asLong()))
                 queue.add(k);
@@ -564,7 +565,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             return out;
         out = new LongOpenHashSet();
         clutchTurns.put(clutch.getBlockPos().asLong(), out);
-        Direction src = KineticWalk.liveSource(clutch);
+        // the walk's source when it put the clutch in a domain (it had not joined its network at compile)
+        long cp = clutch.getBlockPos().asLong();
+        Direction src = walkSource.containsKey(cp) ? walkSource.get(cp) : KineticWalk.liveSource(clutch);
         if (src == null)
             return out;
         BlockPos upstream = clutch.getBlockPos().relative(src);
@@ -1053,8 +1056,12 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     // ---- sheep (G-B17, C32) ---------------------------------------------------------------------
 
-    /** Mean ticks from a shearing to the sheep's next {@code ate()}: 1/1000 per goal evaluation every 2 ticks, then 34. */
-    static final int SHEEP_REGROW_TICKS = 2 * 1000 + 34;
+    /**
+     * Mean ticks from a shearing to the sheep's next {@code ate()} (corpus 13): 1.5 to the first even tick
+     * ({@code Mob.serverAiStep} tries goals when {@code tickCount + id} is even), 2 (1/p - 1) more for
+     * {@code EatBlockGoal.canUse}'s 1 in 1000 per try, then 34 from the start to the eat.
+     */
+    static final double SHEEP_REGROW_TICKS = 1.5 + 2 * (1000 - 1) + 34;
 
     private void deployerSheep(DeployerBlockEntity d) {
         Direction facing = d.getBlockState().getValue(BlockStateProperties.FACING);
@@ -1098,9 +1105,11 @@ final class CreateCompile implements GlassExtractor.Compile {
         }
         int rec = g.recipe(r);
         final int tot = total, el = eligible;
+        // one craft per shearing; its period is the pen's renewal fixed point (Cycles.shearingPeriod), an
+        // expectation, rounded up to 1/1024 tick
         i.crafts.add(new Craft(rec, 1, (rpm, b) -> {
-            int c = Cycles.shearingDeployer(rpm);
-            return c <= 0 ? null : Rat.of(SHEEP_REGROW_TICKS + (long) tot * c, el);
+            double p = Cycles.shearingPeriod(rpm, el, tot, SHEEP_REGROW_TICKS);
+            return p <= 0 ? null : Rat.of((long) Math.ceil(p * 1024), 1024);
         }));
     }
 
@@ -2396,9 +2405,11 @@ final class CreateCompile implements GlassExtractor.Compile {
      * cycle ({@link Cycles#chuteHandOff}). A saw or crusher hands its outputs on in its own tick; a depot
      * station needs the arm that takes them, whose move to the depot is part of the loop. Only when the
      * chute is the machine's one feeder and, for a depot, arms are its only takers; any other feeder or
-     * taker (a funnel, a belt) is not modelled and leaves the cycle as it is (UNVERIFIED).
+     * taker (a funnel, a belt) is not modelled and leaves the cycle as it is (UNVERIFIED). A crafter grid
+     * filled by one chute is a loop too, by tick order ({@link #crafterLoops}).
      */
     private void handOffs() {
+        crafterLoops();
         for (Info i : infos.values()) {
             if (i.node == null || i.crafts.isEmpty())
                 continue;
@@ -2452,6 +2463,78 @@ final class CreateCompile implements GlassExtractor.Compile {
                 Cycles.Ratio h = Cycles.chuteHandOff(motion, Cycles.armMoveTicks(rpm), false);
                 return Rat.of(h.num(), h.den());
             };
+        }
+    }
+
+    /**
+     * Crafter grids whose one feeder is a downward chute directly above one of their crafters (choice GB43):
+     * the grid's cycle becomes the loop's ({@link Cycles#crafterChuteLoop}), from the crafters' arrows and
+     * the level's tick order ({@link MinecraftGlassAccess#tickOrder}, one pass over the level's tickers for
+     * every loop of the compile; unknown places count the mean). The order is the one in force at compile:
+     * it changes only when a block entity is replaced or its chunk reloads, which the fingerprint sees
+     * (a crafter's identity, GB59). Another feeder (a funnel, an arm, a second chute) leaves the grid's own
+     * cycle, which assumes the next batch is there at once (UNVERIFIED).
+     */
+    private void crafterLoops() {
+        record Loop(Info grid, Info chute, List<MechanicalCrafterBlockEntity> chain) {}
+        List<Loop> loops = new ArrayList<>();
+        LongOpenHashSet wanted = new LongOpenHashSet();
+        for (Info i : infos.values()) {
+            if (i.node == null || i.kind != K.CRAFTER || i.crafts.isEmpty() || !(i.extra instanceof List<?> raw))
+                continue;
+            List<MechanicalCrafterBlockEntity> chain = new ArrayList<>();
+            LongOpenHashSet above = new LongOpenHashSet();
+            for (Object o : raw)
+                if (o instanceof MechanicalCrafterBlockEntity m) {
+                    chain.add(m);
+                    above.add(m.getBlockPos().above().asLong());
+                }
+            Info chute = null;
+            boolean other = false;
+            for (GraphBuilder.Edge e : g.edges()) {
+                if (e.to != i.node.index || e.kind == GlassRecords.Edge.CONTROL || e.kind == GlassRecords.Edge.OBSERVE
+                        || e.kind == GlassRecords.Edge.HEAT)
+                    continue;
+                Info f = infos.get(e.from);
+                if (f != null && f.kind == K.CHUTE && chute == null && above.contains(f.be.getBlockPos().asLong())
+                        && f.extra instanceof Float m && m < 0)
+                    chute = f;
+                else
+                    other = true;
+            }
+            if (chute == null || other || !chain.contains(i.be))
+                continue;
+            loops.add(new Loop(i, chute, chain));
+            for (MechanicalCrafterBlockEntity m : chain)
+                wanted.add(m.getBlockPos().asLong());
+            wanted.add(chute.be.getBlockPos().asLong());
+        }
+        if (loops.isEmpty())
+            return;
+        Long2IntOpenHashMap order = MinecraftGlassAccess.tickOrder(level, wanted);
+        for (Loop lp : loops) {
+            int n = lp.chain().size();
+            Long2IntOpenHashMap index = new Long2IntOpenHashMap();
+            for (int k = 0; k < n; k++)
+                index.put(lp.chain().get(k).getBlockPos().asLong(), k);
+            int[][] preds = new int[n][];
+            int[] ord = new int[n];
+            for (int k = 0; k < n; k++) {
+                MechanicalCrafterBlockEntity m = lp.chain().get(k);
+                IntArrayList ps = new IntArrayList();
+                for (MechanicalCrafterBlockEntity q : RecipeGridHandler.getPrecedingCrafters(m))
+                    if (index.containsKey(q.getBlockPos().asLong()))
+                        ps.add(index.get(q.getBlockPos().asLong()));
+                preds[k] = ps.toIntArray();
+                ord[k] = order == null ? -1 : order.get(m.getBlockPos().asLong());
+            }
+            int fin = index.get(lp.grid().be.getBlockPos().asLong());
+            int chuteOrd = order == null ? -1 : order.get(lp.chute().be.getBlockPos().asLong());
+            float motion = (Float) lp.chute().extra;
+            lp.grid().crafts.replaceAll(c -> c.cycle() == null ? c : new Craft(c.recipe(), c.batch(), (rpm, b) -> {
+                Cycles.Ratio r = Cycles.crafterChuteLoop(preds, fin, ord, chuteOrd, motion, rpm);
+                return r == null ? c.cycle().ticks(rpm, b) : Rat.of(r.num(), r.den());
+            }));
         }
     }
 

@@ -39,8 +39,10 @@ public final class CreateGlass implements GlassExtractor {
 
     /**
      * Block state properties that are the model's state, not its structure: redstone power, lit, a blaze
-     * burner's heat, a hopper's enabled flag, a crushing controller's VALID (its wheels turn). A paused funnel or a burner running out is a regime the
-     * engine follows from the stores and sweeps, not a new graph.
+     * burner's heat, a hopper's enabled flag, a crushing controller's VALID (its wheels turn), and a threshold
+     * switch's LEVEL (its gauge of the observed inventory, 0 to 5; not a general "level", which other blocks
+     * use for structure). A paused funnel or a burner running out is a regime the engine follows from the
+     * stores and sweeps, not a new graph.
      */
     private static final Set<String> VOLATILE = Set.of("powered", "lit", "blaze", "enabled", "triggered", "open", "power",
             "waterlogged", "inverted_signal", "valid");
@@ -54,7 +56,8 @@ public final class CreateGlass implements GlassExtractor {
         long h = 0x51ED_2701L;
         BlockState s = be.getBlockState();
         for (Property<?> p : s.getProperties()) {
-            if (VOLATILE.contains(p.getName()))
+            if (VOLATILE.contains(p.getName())
+                    || p == com.simibubi.create.content.redstone.thresholdSwitch.ThresholdSwitchBlock.LEVEL)
                 continue;
             h = mix(h, p.getName().hashCode() * 31L + s.getValue(p).toString().hashCode());
         }
@@ -104,8 +107,13 @@ public final class CreateGlass implements GlassExtractor {
             FluidTankBlockEntity c = t.getControllerBE();
             h = mix(h, c == null || c.boiler == null ? 0 : c.boiler.attachedEngines);
         }
-        if (be instanceof MechanicalCrafterBlockEntity m)
+        if (be instanceof MechanicalCrafterBlockEntity m) {
             h = mix(h, m.craftingItemOrCoverPresent() && !m.craftingItemPresent() ? 1 : 0);
+            // the block entity itself: a grid's loop period depends on the level's tick order (GB43), which
+            // changes only when a block entity is replaced or its chunk reloads, both a new instance (a chute
+            // over the grid is in the same chunk column, so it reloads with it)
+            h = mix(h, System.identityHashCode(m));
+        }
         if (be instanceof PackagePortBlockEntity p) {
             h = mix(h, p.addressFilter == null ? 0 : p.addressFilter.hashCode());
             h = mix(h, p.target == null ? 0 : p.target.relativePos.asLong());

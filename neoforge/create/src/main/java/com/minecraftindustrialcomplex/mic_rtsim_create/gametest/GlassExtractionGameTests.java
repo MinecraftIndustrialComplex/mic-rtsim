@@ -46,13 +46,15 @@ public final class GlassExtractionGameTests {
      * the engine complete; its graph has the chest's STORE, the chute's MOVER (store to chute to
      * millstone), the millstone MACHINE in a one-level domain at 64 RPM with the milling recipe for wheat
      * and a rate entry of one item per {@code Cycles.millstone(150, 64)} ticks, and the domain's member for
-     * the millstone. The Create accessor resolved every member (a Create update fails here first).
+     * the millstone. The Create and Minecraft accessors resolved every member (an update fails here first).
      */
     @GameTest(template = YARD, batch = "glass_extract_01", timeoutTicks = 600)
     public static void aCompileReachesTheEngineComplete(GameTestHelper helper) {
         fastConfig();
         forget(helper);
         check("the Create accessor resolved TorquePropagator.networks, the deployer's mode and the arm's points", CreateGlassAccess.allResolved());
+        check("the Minecraft accessor resolved the level's block entity tickers",
+                com.minecraftindustrialcomplex.mic_rtsim_create.glass.MinecraftGlassAccess.allResolved());
         int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
         BlockPos motor = new BlockPos(bx + 3, y, z), mill = motor.above(), chute = mill.above(), chest = chute.above();
         set(helper, motor, AllBlocks.CREATIVE_MOTOR.getDefaultState().setValue(BlockStateProperties.FACING, Direction.UP));

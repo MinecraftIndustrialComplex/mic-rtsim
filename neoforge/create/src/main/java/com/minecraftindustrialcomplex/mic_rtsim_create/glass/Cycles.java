@@ -1094,6 +1094,101 @@ public final class Cycles {
     }
 
     /**
+     * A mechanical crafter grid in a hand-off loop with the one downward chute that fills it (choice GB43):
+     * ticks from one fill to the next, by the level's tick order. The grid takes items only while IDLE, so
+     * the chute's next batch waits parked at 0.5; the crafters run as {@link #crafter(int, float)} counts,
+     * but each hand-off (chute to the leaves that begin on the insertion, a crafter's export to its target,
+     * the final crafter's output that sets the grid IDLE to the chute's next step) acts in the same game tick
+     * when the receiver ticks after the giver, else in the next. In half ticks, with gap(x, y) = 2 when x
+     * ticks before y, 0 after, 1 unknown (the mean over orders):
+     * <ul>
+     *   <li>a leaf's ASSEMBLING tick, from the insertion: gap(leaf, chute);</li>
+     *   <li>a target's: the latest of its preceding crafters' {@code a + 2E + gap(target, pred)}, E =
+     *       {@code floor(1000/c) + 1} export ticks;</li>
+     *   <li>the output: the final crafter's {@code a + 2C}, C = {@code floor(2000/c) + 1} crafting ticks;</li>
+     *   <li>the next insertion: {@code chuteParkedSteps - 1} steps after the output, plus gap(chute, final).</li>
+     * </ul>
+     * Corpus 7 (3 x 3 at 64 RPM, the chute placed first, every target after its sources): 3 + 4 x 16 + 32 =
+     * 99. Empty cells (export countDown 0) are not modelled, as in {@link #crafter(int, float)}.
+     *
+     * @param preds preds[k]: the crafters whose export goes into crafter k ({@code getPrecedingCrafters})
+     * @param fin the final crafter (no target)
+     * @param order order[k]: crafter k's place in the level's ticker list, -1 unknown
+     * @param chuteOrder the chute's place, -1 unknown
+     * @return ticks per craft (den 2 when an order is unknown), or null when the arrows form a cycle
+     */
+    public static Ratio crafterChuteLoop(int[][] preds, int fin, int[] order, int chuteOrder, float motion, float rpm) {
+        int c = clamp((int) Math.abs(rpm), 4, 250);
+        int e = 1000 / c + 1, cr = 2000 / c + 1;
+        int n = preds.length;
+        long[] a = new long[n];
+        int[] state = new int[n]; // 0 new, 1 on the stack, 2 done
+        java.util.ArrayDeque<Integer> stack = new java.util.ArrayDeque<>();
+        stack.push(fin);
+        while (!stack.isEmpty()) {
+            int k = stack.peek();
+            if (state[k] == 2) {
+                stack.pop();
+                continue;
+            }
+            state[k] = 1;
+            boolean ready = true;
+            for (int p : preds[k]) {
+                if (state[p] == 1)
+                    return null; // the arrows form a cycle
+                if (state[p] == 0) {
+                    stack.push(p);
+                    ready = false;
+                }
+            }
+            if (!ready)
+                continue;
+            long t = preds[k].length == 0 ? gap(order[k], chuteOrder) : Long.MIN_VALUE;
+            for (int p : preds[k])
+                t = Math.max(t, a[p] + 2L * e + gap(order[k], order[p]));
+            a[k] = t;
+            state[k] = 2;
+            stack.pop();
+        }
+        long half = a[fin] + 2L * cr + 2L * (chuteParkedSteps(motion) - 1) + gap(chuteOrder, order[fin]);
+        return half % 2 == 0 ? new Ratio(half / 2, 1) : new Ratio(half, 2);
+    }
+
+    /** Half ticks a receiver at {@code to} waits for a giver at {@code from}'s act: 2 next tick, 0 same tick, 1 unknown. */
+    private static long gap(int to, int from) {
+        if (to < 0 || from < 0)
+            return 1;
+        return to < from ? 2 : 0;
+    }
+
+    /**
+     * Mean ticks between shearings at a deployer over a pen (corpus 13's renewal model, SheepWoolFactory):
+     * each of the {@code sheep} eligible adults alternates sheared, {@code regrow} ticks until it eats, and
+     * woolly, until the deployer picks it. Each activation picks one of the {@code entities} in its target
+     * block at random ({@code DeployerHandler}: {@code entities.get(random.nextInt(size))}), so a woolly
+     * sheep waits {@code (M - 1/2) D} for its pick, D the deployer's mean cycle: m = {@link #deployer} when
+     * the pick finds no wool (the shears do nothing), h when it shears ({@link #shearingDeployer} plus a
+     * third of {@link #DEPLOYER_OVERFLOW_WAIT}: with a hopper under the deployer, 8 ticks an item, the third
+     * wool of {@code 1 + nextInt(3)} is still in the overflow at the first check; UNVERIFIED for other
+     * drains). With R shearings per tick, R D of the cycles shear: D = m + R D (h - m) and
+     * R = N / (T + (M - 1/2) D). Eliminating D, {@code T k R^2 - (T + (M - 1/2) m + N k) R + N = 0} with
+     * k = h - m; its smaller root (R at most 1/h) is {@code 2N / (B + sqrt(B^2 - 4 T k N))}. Corpus 13
+     * (16 sheep, 256 RPM, T 2,033.5): 135.8 ticks, 17.68 wool a minute.
+     *
+     * @return ticks per shearing (1/R), or 0 when the deployer does not run or there is no sheep
+     */
+    public static double shearingPeriod(float rpm, int sheep, int entities, double regrow) {
+        int m = deployer(rpm);
+        if (m <= 0 || sheep <= 0)
+            return 0;
+        double h = shearingDeployer(rpm) + DEPLOYER_OVERFLOW_WAIT / 3.0, k = h - m;
+        double n = sheep, wait = Math.max(entities, sheep) - 0.5;
+        double b = regrow + wait * m + n * k;
+        double disc = Math.max(0, b * b - 4 * regrow * k * n);
+        return (b + Math.sqrt(disc)) / (2 * n);
+    }
+
+    /**
      * Smart chute extraction amount ({@code SmartChuteBlockEntity.getExtractionAmount}): the filter count when
      * the count is shown (extracting from a non-chute inventory) and not "any amount", else 64.
      */
