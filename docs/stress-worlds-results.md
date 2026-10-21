@@ -294,6 +294,10 @@ checked by dry runs, an idempotence rerun and a Create 6 boot of the result.
 GameTests after the fixes: core 58 of 58 and create 146 of 146 passed (at 7177451, on fresh GameTest
 worlds; on worlds reused from earlier runs six create window tests and two herd tests fail, SW28).
 
+After the merge with main (7e4042a), every suite: core 62, ribbits 5, carryon 2, create 147, Ice and
+Fire 8, and Ore Excavation, Diesel, Ender Transmission, Destroy, climate and radar 1 each, all passed.
+PowerGrid's server failed to boot once (below) and passed 2 of 2 on the rerun.
+
 ## 6. Uninstall
 
 Removing the rtsim and mic_native jars and booting the rtsim arm's save (StressC from pr1; StressB
@@ -345,6 +349,11 @@ compiled every glass box again on boot and logged no rtsim error.
   what it should add: scheduled cargo trains between districts, which no public world has.
 - **The GameTest servers have no Lithium,** so Lithium-only paths (1ed1774) are covered by a unit
   test, not a GameTest.
+- **The PowerGrid GameTest server failed to boot once and then passed.** Create's Registrate threw
+  "Found unused register callbacks" at the first `RegisterEvent`, but logged no unused entry. That
+  means its map counted entries it did not hold, which points to a race during parallel mod
+  construction, not to rtsim. The same branch passed on the rerun, and main passed it too. If it
+  comes back, look at which mod touches `Create.REGISTRATE` from its own constructor thread.
 
 ## 8. For Ben
 
@@ -426,3 +435,4 @@ Recommended option first in each.
 | SW34 | Detection spikes listed with a plan (section 7, section 8 item 10), not fixed | a scheduling change in detection, not a bug; the fix touches how districts are found |
 | SW35 | The al3 idle delta (+15.5 MSPT, before any district) read as noise | it ran just after boot at load 64 with an MSPT standard deviation of 36 ms; al2's was -2.2 |
 | SW36 | At the merge with main, main's upward chute fix (e1ff012) kept over this branch's 1672a3a, and `CyclesChuteTest` moved onto it | the same bug fixed twice; main's also puts a chute's direction in the fingerprint |
+| SW37 | The PowerGrid suite's one failed boot read as a flake, not a blocker for landing | Registrate's map said it was not empty but logged no entry (a race); the same tree passed on the rerun, and origin/main passed too |
