@@ -894,7 +894,8 @@ public final class IndustryGameTests {
                     check("the chest holds 7 gold", count((Container) level.getBlockEntity(chestPos), Items.GOLD_INGOT) == 7);
                     List<ByteBuffer> loads = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]);
                     check("IND_CHUNK_LOADED went out at the load", loads.size() > loadsBefore[0]);
-                    check("with epoch 0", loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 0);
+                    // R1, R3: the held reconcile lands at the load, before IND_CHUNK_LOADED, which carries its epoch.
+                    check("with epoch 1", loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 1);
                 })
                 .thenExecute(() -> {
                     unloadsBefore[0] = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size();

@@ -143,7 +143,8 @@ public final class ReconcileAheadGameTests {
                 .thenExecute(() -> level.getChunkSource().addRegionTicket(FULL_ONLY, cp, 0, cp))
                 .thenWaitUntil(() -> {
                     LevelChunk c = level.getChunkSource().getChunkNow(fx, fz);
-                    check("the far chunk is loaded and not block-ticking", c != null && !c.getFullStatus().isOrAfter(FullChunkStatus.BLOCK_TICKING));
+                    check("the far chunk is loaded and not block-ticking: " + (c == null ? "not loaded" : c.getFullStatus()),
+                            c != null && !c.getFullStatus().isOrAfter(FullChunkStatus.BLOCK_TICKING));
                 })
                 .thenExecute(() -> {
                     ind().districts().forgetArea(level, fx - 1, fz - 1, fx + 1, fz + 1);
@@ -280,7 +281,7 @@ public final class ReconcileAheadGameTests {
                 .thenExecute(() -> level.setChunkForced(fx, fz, false))
                 .thenWaitUntil(() -> check("unloads with epoch 2 on disk", unloaded(level, fx, fz, id[0])))
                 .thenExecute(() -> {
-                    ind().reconciler().restartForTest();
+                    ind().reconciler().restartForTest(b); // the journal rolled back past b: only the chunk's epoch knows
                     mark[0] = ind().reconciler().held();
                     reconcile(b, id[0], 2, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 5)), List.of());
                     reconcile(c, id[0], 2, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 5)), List.of());
@@ -312,7 +313,7 @@ public final class ReconcileAheadGameTests {
                     chunk.setData(IndustryAttachments.RECONCILE.get(), IndustryAttachments.Epochs.EMPTY
                             .with(new IndustryAttachments.EpochEntry(id[0], 2, java.util.Optional.empty())));
                     chunk.setUnsaved(true);
-                    ind().reconciler().restartForTest();
+                    ind().reconciler().restartForTest(d4); // the journal rolled back to the same save: d never happened
                     level.setChunkForced(fx, fz, false);
                 })
                 .thenWaitUntil(() -> check("unloads with the older chunk", unloaded(level, fx, fz, id[0])))
