@@ -1385,7 +1385,13 @@ impl Part {
         let mut settled = false;
         let mut sol = Solution::default();
         let mut potential = Vec::new();
+        // The solves this regime change may run past the regime cache (choice G2-61): each is
+        // bounded (`glass.solveWorkMax`), and so is their number.
+        let solves0 = comp.solves;
         for _ in 0..cap {
+            if comp.solves.saturating_sub(solves0) >= tun.build_solves_max {
+                return Err(Fallback::Unsettled);
+            }
             self.coupled = self.coupling(lv);
             let rg = self.regime(comp, lv);
             sol = if self.st.hold.is_empty() {
