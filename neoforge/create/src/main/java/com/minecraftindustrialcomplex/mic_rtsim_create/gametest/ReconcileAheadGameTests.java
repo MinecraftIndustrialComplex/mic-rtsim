@@ -73,6 +73,22 @@ public final class ReconcileAheadGameTests {
         };
     }
 
+    /** Where a scripted command is (a held check that fails says why). */
+    static String pipeline(long op) {
+        StringBuilder b = new StringBuilder();
+        b.append(": held ").append(ind().reconciler().held()).append(", result ").append(result(op) != null)
+                .append(", command results ").append(commandResults(op)).append(", industry on ").append(ind().enabled());
+        com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession s = com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current();
+        if (s != null) {
+            com.minecraftindustrialcomplex.mic_rtsim.boundary.Handover h = s.boundary().handover();
+            b.append(", session failed ").append(s.failed()).append(", submitted ").append(h.submitted()).append(", in flight ")
+                    .append(h.stepInFlight()).append(", commands pending ").append(h.commandsPending()).append(", ticks waiting ").append(h.ticksWaiting());
+            if (s.engine() instanceof com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine st)
+                b.append(", stub steps ").append(st.steps()).append(", scripted pending ").append(st.scriptedPending()).append(", stub error ").append(st.protocolError());
+        }
+        return b.toString();
+    }
+
     private static int count(Container c, Item item) {
         int n = 0;
         for (int i = 0; i < c.getContainerSize(); i++)
@@ -197,7 +213,7 @@ public final class ReconcileAheadGameTests {
                     heldBefore[0] = ind().reconciler().held();
                     reconcile(op, id[0], 1, level, fx, fz, List.of(new Delta(0, IRON, chestPos, -9)), List.of());
                 })
-                .thenWaitUntil(io(() -> check("the reconcile sent ahead is held", ind().reconciler().held() == heldBefore[0] + 1 && result(op) == null)))
+                .thenWaitUntil(io(() -> check("the reconcile sent ahead is held" + pipeline(op), ind().reconciler().held() == heldBefore[0] + 1 && result(op) == null)))
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(io(() -> {
                     ByteBuffer r = result(op);
@@ -283,7 +299,7 @@ public final class ReconcileAheadGameTests {
                     mark[0] = ind().reconciler().held();
                     reconcile(a, id[0], 1, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 7)), List.of());
                 })
-                .thenWaitUntil(io(() -> check("held", ind().reconciler().held() == mark[0] + 1)))
+                .thenWaitUntil(io(() -> check("held" + pipeline(a), ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> {
                     ind().reconciler().restartForTest(); // what a restart loses: the held commands live in memory
                     mark[0] = loadedCount(id[0], fx, fz);
@@ -307,7 +323,7 @@ public final class ReconcileAheadGameTests {
                     mark[0] = ind().reconciler().held();
                     reconcile(b, id[0], 2, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 5)), List.of());
                 })
-                .thenWaitUntil(io(() -> check("held", ind().reconciler().held() == mark[0] + 1)))
+                .thenWaitUntil(io(() -> check("held" + pipeline(b), ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(io(() -> {
                     check("b applied at the load", result(b) != null && result(b).getLong(IndRecords.ReconcileResult.ENTRIES + 16) == 5);
@@ -325,7 +341,7 @@ public final class ReconcileAheadGameTests {
                     reconcile(b, id[0], 2, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 5)), List.of());
                     reconcile(c, id[0], 2, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 5)), List.of());
                 })
-                .thenWaitUntil(io(() -> check("both held", ind().reconciler().held() == mark[0] + 2)))
+                .thenWaitUntil(io(() -> check("both held" + pipeline(c), ind().reconciler().held() == mark[0] + 2)))
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(io(() -> {
                     check("b again is a duplicate", commandResults(b).contains(Obs.CommandResult.DUPLICATE_OP));
@@ -340,7 +356,7 @@ public final class ReconcileAheadGameTests {
                     mark[0] = ind().reconciler().held();
                     reconcile(d4, id[0], 3, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 4)), List.of());
                 })
-                .thenWaitUntil(io(() -> check("held", ind().reconciler().held() == mark[0] + 1)))
+                .thenWaitUntil(io(() -> check("held" + pipeline(d4), ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(io(() -> check("d applied at the load: 16 gold", count(container(level, chestPos), Items.GOLD_INGOT) == 16 && epochIn(level, fx, fz, id[0]) == 3)))
                 .thenExecute(() -> {
@@ -360,7 +376,7 @@ public final class ReconcileAheadGameTests {
                     mark[0] = ind().reconciler().held();
                     reconcile(d4, id[0], 3, level, fx, fz, List.of(new Delta(0, GOLD, chestPos, 4)), List.of()); // the engine never had d's result
                 })
-                .thenWaitUntil(io(() -> check("held", ind().reconciler().held() == mark[0] + 1)))
+                .thenWaitUntil(io(() -> check("held" + pipeline(d4), ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(io(() -> {
                     check("the older chunk takes d once: 16 gold", count(container(level, chestPos), Items.GOLD_INGOT) == 16);
