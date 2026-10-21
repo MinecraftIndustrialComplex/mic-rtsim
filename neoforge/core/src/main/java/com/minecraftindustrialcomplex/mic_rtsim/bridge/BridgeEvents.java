@@ -49,6 +49,7 @@ public final class BridgeEvents {
         bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.entity.living.LivingDropsEvent.class, BridgeEvents::onDrops);
         bus.addListener(BridgeEvents::onChunkLoad);
         bus.addListener(com.minecraftindustrialcomplex.mic_rtsim.village.WorkCatalog::onAddReloadListeners);
+        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.level.ChunkEvent.Unload.class, BridgeEvents::onChunkUnload);
         bus.addListener(BridgeEvents::onEntityInteract);
         bus.addListener(BridgeEvents::onRegisterCommands);
         // Phase 1 (PLAN.md §8)
@@ -164,9 +165,10 @@ public final class BridgeEvents {
      * The overworld saved: ask the engine to save its pages, and report when this world save is on
      * disk. The journal was serialized in {@code saveLevelData}, before this event, and NeoForge
      * chains every SavedData write on one future ({@code IOUtilities.withIOWorker}); a marker chained
-     * now runs after the journal's write has finished. Not proof that the write succeeded:
-     * {@code SavedData.save} logs an IOException inside its task and the chain goes on, so a failed
-     * journal write is still reported as saved (a known gap; the log says so).
+     * now runs after the journal's write task has finished. That task may have held the file back
+     * (its chunks not on disk, docs/choices-journal-barrier.md JB1) or failed to write it, and records
+     * journaled during the chunk save (an unload's IND_CHUNK_UNLOADED at a flush save) are not in it:
+     * the marker reports what the file on disk holds, read on the chain.
      */
     private static void onLevelSave(LevelEvent.Save event) {
         RtsimSession s = RtsimSession.current();
@@ -174,7 +176,17 @@ public final class BridgeEvents {
             return;
         long through = s.boundary().journal().nextObsSeq() - 1;
         s.engine().requestSave(through);
-        net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> s.boundary().worldSaveDurable(through));
+        com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData file = s.journal();
+        net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> s.boundary().worldSaveDurable(Math.min(through, file.writtenThrough())));
+    }
+
+    /** A chunk's last write is on its way: the journal's barrier stops waiting for its unload (JB5). */
+    private static void onChunkUnload(net.neoforged.neoforge.event.level.ChunkEvent.Unload event) {
+        if (event.getLevel().isClientSide() || !(event.getChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk))
+            return;
+        RtsimSession s = RtsimSession.current();
+        if (s != null)
+            s.journal().chunks().onUnload(chunk);
     }
 
     /**
