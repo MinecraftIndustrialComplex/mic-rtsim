@@ -146,6 +146,26 @@ public final class BaseTracker extends SavedData {
         setDirty();
     }
 
+    /**
+     * For an engine whose pages lack observations the journal no longer holds (a sim reset,
+     * {@code BoundarySession#observationsLost}): every mark this world remembers is one the engine never
+     * got, so each base is unmarked here without a record and marked again, with its MARKED, the next
+     * time its player dwells there (the engine needs the player known by then). The counters stay.
+     * Returns how many marks were dropped.
+     */
+    public int forgetMarks() {
+        int n = 0;
+        for (List<Dwell> list : byPlayer.values())
+            for (Dwell d : list)
+                if (d.marked) {
+                    d.marked = false;
+                    n++;
+                }
+        if (n > 0)
+            setDirty();
+        return n;
+    }
+
     /** The marked base at a position, or 0: a trade there is the base's news (C26). */
     public long baseAt(RtsimSession session, ResourceKey<Level> dim, double x, double z) {
         int cx = Math.floorDiv((int) Math.floor(x), CELL), cz = Math.floorDiv((int) Math.floor(z), CELL);
