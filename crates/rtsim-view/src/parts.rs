@@ -153,7 +153,7 @@ pub fn viewer_layers(l: &rtsim_parts::Layers) -> Layers {
 
 /// A layer list from its JSON (the view store's layers page).
 pub fn layers_from_json(bytes: &[u8]) -> Result<rtsim_parts::Layers, String> {
-    serde_json::from_slice(bytes).map_err(|e| format!("view layers page: {e}"))
+    rtsim_parts::Layers::from_json(bytes)
 }
 
 #[cfg(test)]

@@ -784,6 +784,8 @@ dependencies = [
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
+ "rtsim-layers",
+ "rtsim-parts",
  "rtsim-settle",
  "rtsim-ships",
  "rtsim-space",

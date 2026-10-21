@@ -88,7 +88,10 @@ fn every_mark_kind_round_trips_with_its_fields() {
     // The counts add up to the rows, per region of each mark's anchor.
     let total: u32 = v.counts.iter().map(|c| c.2).sum();
     assert_eq!(total as usize, marks.len());
-    assert!(v.counts.contains(&(RegionKey::of(1, -700.0, 30.0), kind::AREA, 1)));
+    assert!(
+        v.counts
+            .contains(&(RegionKey::of(1, -700.0, 30.0), kind::AREA, 1))
+    );
     // The JSON is mic-viewer's: tagged by `k`.
     let j = serde_json::to_value(&marks[0]).unwrap();
     assert_eq!(j["k"], "point");
@@ -208,9 +211,24 @@ fn regions_pack_into_the_lease_form_and_back() {
         let r = RegionKey::of(f, x, z);
         assert_eq!(RegionKey::unpack(r.pack()), r);
     }
-    assert_eq!(RegionKey::of(0, -0.1, 512.0), RegionKey { frame: 0, rx: -1, rz: 1 });
+    assert_eq!(
+        RegionKey::of(0, -0.1, 512.0),
+        RegionKey {
+            frame: 0,
+            rx: -1,
+            rz: 1
+        }
+    );
     assert_eq!(RegionKey::of(0, f64::NAN, 0.0).rx, 0);
-    assert_eq!(RegionKey { frame: 0, rx: 1, rz: -1 }.bounds(), [512.0, -512.0, 1024.0, 0.0]);
+    assert_eq!(
+        RegionKey {
+            frame: 0,
+            rx: 1,
+            rz: -1
+        }
+        .bounds(),
+        [512.0, -512.0, 1024.0, 0.0]
+    );
 }
 
 #[test]
@@ -244,7 +262,11 @@ fn the_header_round_trips() {
             at: 120_000,
             parts: vec![
                 PartEntry {
-                    region: Some(RegionKey { frame: 1, rx: -3, rz: 4 }),
+                    region: Some(RegionKey {
+                        frame: 1,
+                        rx: -3,
+                        rz: 4,
+                    }),
                     page: 77,
                     crc: 0xdead_beef,
                     rows: 12,
@@ -268,7 +290,11 @@ fn the_header_round_trips() {
 #[test]
 fn the_lease_round_trips_and_keeps_at_most_64_regions() {
     let focus: Vec<RegionKey> = (0..100)
-        .map(|i| RegionKey { frame: 0, rx: i, rz: -i })
+        .map(|i| RegionKey {
+            frame: 0,
+            rx: i,
+            rz: -i,
+        })
         .collect();
     let l = Lease { pid: 4242, focus };
     let back = Lease::decode(&l.encode()).unwrap();
@@ -297,8 +323,21 @@ fn descriptors_carry_mic_viewers_json() {
         .fields(&["Speed"]);
     let j = serde_json::to_value(&d).unwrap();
     for k in [
-        "id", "group", "label", "description", "kinds", "priority", "default_on", "min_bpp",
-        "max_bpp", "style", "legend", "has_cards", "has_past", "animated", "fields",
+        "id",
+        "group",
+        "label",
+        "description",
+        "kinds",
+        "priority",
+        "default_on",
+        "min_bpp",
+        "max_bpp",
+        "style",
+        "legend",
+        "has_cards",
+        "has_past",
+        "animated",
+        "fields",
     ] {
         assert!(j.get(k).is_some(), "{k}");
     }

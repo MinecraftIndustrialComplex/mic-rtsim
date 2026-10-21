@@ -276,7 +276,7 @@ pub(super) struct Link {
     /// the tail alone no longer rebuilds it, so the next save takes a snapshot (S4).
     tainted: bool,
     /// World ticks ahead of game time (a test's P1_ADVANCE).
-    offset: u64,
+    pub(super) offset: u64,
     /// Commands the bridge answers by op id, kept until it does: (sequence, op, command).
     outbox: Vec<(u64, u64, P1Cmd)>,
     resend: VecDeque<(u64, u64, P1Cmd)>,
