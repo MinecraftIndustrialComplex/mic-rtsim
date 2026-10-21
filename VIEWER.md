@@ -1191,8 +1191,8 @@ For Deep Time's coordinator to review.
   - **Stats**, none of them in Java's array: `archive_rows`, `archive_dropped`,
     `archive_failures`, `archive_serial`, `archive_confirmed`, and `archive_pending_rows` and
     `archive_pending_bytes` (the buffer waiting for the next save). A host that saves on its own
-    clock saves sooner once the buffer is past half of either cap (§12). The engine gives the
-    numbers; the host's check is V2's to add once both are on main.
+    clock saves sooner once the buffer is past half of either cap (§12); `rtsim-cli run` does
+    (`Options::archive_save_at`, below).
   - **A test hook.** In test mode, `Engine::crash_before_next_page_commit` makes the next commit
     stop after its flush, as a process killed there would.
 - **`legs_at`.** A mover is its kind and subject. `legs_at` keeps only the leg that starts last by
