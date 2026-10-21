@@ -19,11 +19,11 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mic_viewer::api::{Card, Freshness, Layers, Tick, WorldInfo};
+use mic_viewer::api::{Card, EventsAnswer, Freshness, Histogram, Layers, Tick, WorldInfo};
 use mic_viewer::http::{Reply, Request, Response};
 use mic_viewer::scene::Scene;
 use mic_viewer::tiles::{Rendered, TileCache, TileError, TileSource, Tiles};
-use mic_viewer::viewer::{Backend, Changes};
+use mic_viewer::viewer::{Backend, Changes, EventQuery};
 use rtsim_kernel::page::Generation;
 use rtsim_view::view::HeapProbe;
 use rtsim_view::{Limits, View};
@@ -119,7 +119,12 @@ impl TileSource for CurrentTiles {
 
     fn version(&self) -> u32 {
         let v = current(&self.0);
-        let first = v.tile_layers().iter().next().cloned();
+        let first = v
+            .tile_layers()
+            .iter()
+            .chain(v.surveyor_layers())
+            .next()
+            .cloned();
         first
             .and_then(|l| v.tiles(&l).map(|t| t.source.version()))
             .unwrap_or(0)
@@ -412,11 +417,17 @@ impl Backend for HostView {
         self.view().card(layer, id, t)
     }
 
+    fn events(&self, q: &EventQuery) -> EventsAnswer {
+        self.view().events(q)
+    }
+
+    fn histogram(&self, q: &EventQuery) -> Histogram {
+        self.view().histogram(q)
+    }
+
     fn tiles(&self, source: &str) -> Option<&Tiles> {
-        self.view()
-            .tile_layers()
-            .contains(source)
-            .then_some(&self.tiles)
+        // HABITAT and Surveyor alike, through the host's one cache.
+        self.view().tiles(source).is_some().then_some(&self.tiles)
     }
 
     fn changes(&self) -> Option<&Changes> {

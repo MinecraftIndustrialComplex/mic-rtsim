@@ -26,7 +26,7 @@ pub fn cli(args: &[&str]) -> ExitCode {
 
 pub fn print_info(info: &ForkInfo, dir: &Path) {
     println!(
-        "fork {} from {}: {} pages ({:.1} MiB), the world's generation {} through observation {}; journal {}..{}; game time {}; Deep Time {}; {} archive files; {} cop{}",
+        "fork {} from {}: {} pages ({:.1} MiB), the world's generation {} through observation {}; journal {}..{}; game time {}; Deep Time {}; {} archive files; {} Surveyor files; {} cop{}",
         dir.display(),
         info.source,
         info.pages,
@@ -39,6 +39,7 @@ pub fn print_info(info: &ForkInfo, dir: &Path) {
             .map_or_else(|| "unknown (no level.dat)".to_string(), |t| t.to_string()),
         info.deep_time_folder.as_deref().unwrap_or("none"),
         info.archive_files,
+        info.surveyor_files,
         info.attempts,
         if info.attempts == 1 { "y" } else { "ies" },
     );

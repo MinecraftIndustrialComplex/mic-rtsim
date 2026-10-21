@@ -16,7 +16,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -595,6 +595,167 @@ fn the_world_is_never_written_and_overlaps_are_refused() {
     let _ = fs::remove_dir_all(&not_a_world);
 }
 
+/// An archive beside `world`'s pages: raids at x 100 to 104 in a flush tagged with the world's
+/// generation, and one at x 999 tagged with the save after it, which the world never confirmed.
+fn archive(world: &Path, obs_seq: u64, now: u64) {
+    use rtsim_archive::{Archive, Dictionary, Event, Handle, Pending, Row, Severity, Stamp};
+    let mut a = Archive::open(rtsim_archive::dir_for(world)).unwrap();
+    let mut d = Dictionary::new();
+    let raid = |d: &mut Dictionary, tick: u64, x: i32| {
+        Row::Event(Event {
+            tick,
+            kind: d.kind("conflict.raid").unwrap(),
+            frame: d.frame("dim0").unwrap(),
+            severity: Severity::Notable,
+            x,
+            z: 40,
+            subject: Handle::direct(12),
+            ..Event::default()
+        })
+    };
+    for (seq, rows) in [(obs_seq, 100..105), (obs_seq + 1, 999..1000)] {
+        let mut p = Pending::new();
+        for x in rows {
+            p.push(&raid(&mut d, now - 1_000 + x as u64, x));
+        }
+        let stamp = Stamp {
+            obs_seq: seq,
+            tick: now,
+            wall_ms: 1_700_000_000_000,
+        };
+        a.flush(p.take(), stamp, Some(&d)).unwrap();
+    }
+}
+
+/// A fork keeps the world's base map and timeline, and the host source serves them: Surveyor's
+/// summaries of every dimension are copied, and the archive is copied less the chunk of a save
+/// the world never confirmed, which the host's own later saves would otherwise bring into view.
+#[test]
+fn a_fork_keeps_the_worlds_terrain_and_its_confirmed_timeline() {
+    let world = populated("terrain", 2);
+    let summary =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../rtsim-view/tests/data/surveyor/c.2.0.dat");
+    for d in [
+        "data/surveyor",
+        "dimensions/mic_test/deep/below/data/surveyor",
+    ] {
+        fs::create_dir_all(world.join(d)).unwrap();
+        fs::copy(&summary, world.join(d).join("c.2.0.dat")).unwrap();
+    }
+    let (obs, now, overworld) = {
+        let v = rtsim_view::View::open(&world, Limits::default()).unwrap();
+        let s = v.saved();
+        (
+            s.generation.obs_seq,
+            s.now() as u64,
+            rtsim_view::view::frame_id(&s, 0),
+        )
+    };
+    archive(&world, obs, now);
+    let parent = scratch("terrain-fork");
+    let dir = parent.join("fork");
+    let info = fork::export(&world, &dir).unwrap();
+    assert_eq!(info.surveyor_files, 2, "{info:?}");
+    assert!(
+        info.notes.iter().any(|n| n.starts_with("1 archive chunks")),
+        "{:?}",
+        info.notes
+    );
+    assert!(
+        dir.join("dimensions/mic_test/deep/below/data/surveyor/c.2.0.dat")
+            .is_file()
+    );
+
+    let chunks = |d: &Path| {
+        fs::read_dir(rtsim_archive::dir_for(d))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".rtac")
+            })
+            .count()
+    };
+    assert_eq!((chunks(&world), chunks(&dir)), (2, 1));
+
+    // Two game days in the host with a player about (a fork run by hand may have one), so its
+    // saves go past the generation the cut chunk was tagged with.
+    let mut host = Host::open(&dir, &opts(false)).unwrap();
+    let dim = host.j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    host.j.players = vec![(PLAYER, dim, [10.0, 64.0, 0.0])];
+    let o = Options {
+        until: Some(Until::After(2 * DAY)),
+        ..opts(false)
+    };
+    host.run(&o, &Control::new(), Duration::from_secs(3600), |_| {})
+        .unwrap();
+    host.close().unwrap();
+    let ctl: &'static Control = Box::leak(Box::new(Control::new()));
+    let page = Page::open(&dir, ctl);
+    let shown = page.hv.generation().obs_seq;
+    assert!(
+        shown > obs + 1,
+        "the fork's saves went on: {shown} after {obs}"
+    );
+    let addr = page.server.addr().unwrap();
+    let (code, body) = get(addr, "/api/world");
+    assert_eq!(code, 200);
+    let w: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(w["has_events"], true, "{w}");
+    let (code, body) = get(addr, &format!("/api/events?frame={overworld}&limit=100"));
+    assert_eq!(code, 200);
+    let a: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let xs: Vec<f64> = a["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["x"].as_f64().unwrap())
+        .collect();
+    assert_eq!(xs.len(), 5, "the confirmed raids only: {a}");
+    assert!(!xs.contains(&999.0), "{xs:?}");
+    let (code, _) = get(
+        addr,
+        &format!("/api/events/histogram?frame={overworld}&limit=10"),
+    );
+    assert_eq!(code, 200);
+    // Region (2, 0): the four tiles over it at one block a pixel, and the ones above at -1 and -2.
+    let mut drawn = Vec::new();
+    for (z, x, y) in [
+        (0, 4, 0),
+        (0, 5, 0),
+        (0, 4, 1),
+        (0, 5, 1),
+        (-1, 2, 0),
+        (-2, 1, 0),
+    ] {
+        let (code, png) = get(
+            addr,
+            &format!("/tiles/surveyor-minecraft-overworld/{z}/{x}/{y}.png"),
+        );
+        assert!(
+            code == 200 || code == 204,
+            "{code}: {}",
+            String::from_utf8_lossy(&png)
+        );
+        if code == 200 {
+            assert!(png.starts_with(b"\x89PNG"));
+            drawn.push((z, x, y));
+        }
+    }
+    assert!(
+        !drawn.is_empty(),
+        "Surveyor's terrain is drawn from the fork"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let v = page.close();
+    assert_eq!(v.failures, Vec::<String>::new());
+    assert_eq!(v.error, None);
+    let _ = fs::remove_dir_all(&world);
+    let _ = fs::remove_dir_all(&parent);
+}
+
 /// One sample of a soak, after a save.
 #[derive(Clone, Copy, Debug, Default)]
 struct Sample {
@@ -757,13 +918,15 @@ fn count(tail: &mut Vec<u8>, m: &[u8]) -> u64 {
 
 /// The host source on loopback, with a page reading it: one stream held open (counting its frame
 /// notices) and, every 100 ms, the world, the marks of every layer over the whole frame, the
-/// status and a base map tile.
+/// status and a tile of each base map.
 struct Page {
     hv: Arc<HostView>,
     server: Server,
     reader: JoinHandle<()>,
     stop: Arc<AtomicBool>,
     frames: Arc<AtomicU64>,
+    /// The newest tick the page's `/api/world` showed.
+    seen: Arc<AtomicI64>,
     threads: Vec<JoinHandle<(u64, Vec<String>, i64)>>,
 }
 
@@ -786,6 +949,7 @@ impl Page {
         let addr = server.addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let frames = Arc::new(AtomicU64::new(0));
+        let seen = Arc::new(AtomicI64::new(i64::MIN));
         let stream = {
             let (stop, frames) = (Arc::clone(&stop), Arc::clone(&frames));
             std::thread::spawn(move || {
@@ -810,7 +974,7 @@ impl Page {
             })
         };
         let poller = {
-            let stop = Arc::clone(&stop);
+            let (stop, seen) = (Arc::clone(&stop), Arc::clone(&seen));
             std::thread::spawn(move || {
                 let mut answers = 0u64;
                 let mut failures = Vec::new();
@@ -845,6 +1009,7 @@ impl Page {
                             "the map never goes back: {t} after {last_tick}"
                         );
                         last_tick = t;
+                        seen.store(t, Ordering::Relaxed);
                         let f = &w["frames"][0];
                         let b: Vec<f64> =
                             (0..4).map(|i| f["bounds"][i].as_f64().unwrap()).collect();
@@ -858,8 +1023,11 @@ impl Page {
                             b[3],
                             layers.join(",")
                         ));
-                        if let Some(url) = f["tiles"][0]["url"].as_str() {
-                            let z = f["tiles"][0]["pyramid"]["max_zoom"].as_i64().unwrap_or(0);
+                        for t in f["tiles"].as_array().into_iter().flatten() {
+                            let Some(url) = t["url"].as_str() else {
+                                continue;
+                            };
+                            let z = t["pyramid"]["max_zoom"].as_i64().unwrap_or(0);
                             let path = url
                                 .replace("{z}", &z.to_string())
                                 .replace("{x}", "0")
@@ -881,14 +1049,20 @@ impl Page {
             reader,
             stop,
             frames,
+            seen,
             threads: vec![stream, poller],
         }
     }
 
     fn close(mut self) -> Viewed {
-        // One more look, so the last save is shown.
+        // One more look, so the last save is shown, and time for the page to ask again (a while,
+        // when the machine is loaded).
         self.hv.poll();
-        std::thread::sleep(Duration::from_millis(300));
+        let shown = self.hv.view().saved().now();
+        let t0 = Instant::now();
+        while self.seen.load(Ordering::Relaxed) < shown && t0.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         self.stop.store(true, Ordering::Relaxed);
         let mut v = Viewed::default();
         for t in self.threads {

@@ -738,6 +738,7 @@ dependencies = [
  "mic-native-host",
  "mic-native-rt",
  "mic-viewer",
+ "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
  "rtsim-industry",
