@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! The save viewer (VIEWER.md, stage V1): a saved world's `rtsim/` pages opened read only,
+//! every module decoded as the native link's start decodes it, and served to the shared viewer
+//! page (mic-viewer) as layers, cards and a HABITAT base map.
+//!
+//! - [`load`]: [`load::load_world`], the read-only open and every module's decode.
+//! - [`industry`]: the industry pages without every district decoded at once.
+//! - [`keys`]: where each module keeps its pages (mirrored from rtsim-jni).
+//! - [`journal`]: Java's dictionary from the world's `data/mic_rtsim_journal.dat`.
+
+pub mod industry;
+pub mod journal;
+pub mod keys;
+pub mod load;
+
+pub use load::{Limits, Saved, Status, load_world};
