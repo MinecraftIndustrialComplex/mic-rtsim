@@ -4,7 +4,7 @@ set -uo pipefail
 M=$HOME/mic-omegasrv; R=$M/runs; T=$M/tools
 J=/nix/store/x92dxglx7ziz2sc3wfvcyl6v2n34w4c4-openjdk-21.0.12.1+1/bin/java; S=$(cat $M/seed.txt)  # private
 log() { echo "$(date +%T) $*" >> $R/campaign.log; }
-scen() { python3 -I $T/scenarios.py "$1" "$2" $J "$3" $S "$R/scen-$4.json" "$5"; }
+scen() { python3 -I $T/scenarios.py "$1" "$2" $J "$3" $S "$R/scen-$4.json" "${5:-}"; }
 # Unpinned. Pinning each server to four physical cores (A=0,2,4,6, B=8,10,12,14) left it sharing those
 # cores with nice-0 and nice-10 neighbours it could not move away from, and every 21.1.249 server of
 # attempt 3 hit the 60 s watchdog while the bases loaded. -XX:ActiveProcessorCount=4 and the mic_native

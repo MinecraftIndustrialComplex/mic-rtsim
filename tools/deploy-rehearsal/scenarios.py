@@ -33,8 +33,14 @@ def main():
           'boot_timeout': 2400, 'jvm': ['-Xms2G', '-Xmx8G', '-XX:ActiveProcessorCount=4',
                                     # the live host has 4 cores: mic_native's defaults there (P24) are a
                                     # 4-thread foreground pool and a 2-thread background pool
-                                    '-Dmic_native.fgThreads=4', '-Dmic_native.bgThreads=2'],
-          'props': {'simulation-distance': 16, 'view-distance': 16, 'motd': 'deploy rehearsal'}}
+                                    '-Dmic_native.fgThreads=4', '-Dmic_native.bgThreads=2',
+                                    # the live set after each collection, for the heap size in the runbook
+                                    '-Xlog:gc:file=logs/gc.log:uptime'],
+          'props': {'simulation-distance': 16, 'view-distance': 16, 'motd': 'deploy rehearsal',
+                    # live has 60000. Loading the bases here makes single ticks of tens of seconds on a
+                    # shared laptop, and 2 of 4 servers of attempt 4 died to the 60 s watchdog; the
+                    # longest ticks are read from the "Can't keep up" lines instead
+                    'max-tick-time': 300000}}
     if kind == 'reload':
         sc['jvm'].append('-Dmixin.debug.verbose=true')  # one "Mixing X into Y" line per applied mixin
     steps = [{'wait': 20}, {'cmd': 'neoforge tps'}]

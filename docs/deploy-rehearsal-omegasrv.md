@@ -9,8 +9,6 @@ Private data stays private: the world copies, logs and player files live under `
 laptop and are not in this repository. The tools are in `tools/deploy-rehearsal/` (stdlib Python, no
 private data in them; the base coordinates and the seed are read from private files).
 
-STATUS: DRAFT, measurements pending.
-
 ## 1. The live server today (read-only baseline)
 
 | Fact | Value |
@@ -28,11 +26,11 @@ STATUS: DRAFT, measurements pending.
 The watchdog crashes look like memory, not one bad mod: a different top frame each time, a heap
 committed to 12 GiB on a 16 GB host that also runs Elasticsearch, and part of the heap in swap. A
 G1 collection that has to page heap back in can stall the server thread for tens of seconds. The JVM
-argument fix in the runbook (section 6) is worth doing whether or not rtsim goes in.
+argument fix in the runbook (section 8.5) is worth doing whether or not rtsim goes in.
 
 The 3,199 chunks that still carry `eclipticseasons:biome_holder` are the pattern any removed mod with
 chunk attachments leaves behind: an ERROR line each time such a chunk loads, until the chunk is
-saved again. rtsim's uninstall leaves the same kind of trace (section 4).
+saved again. rtsim's uninstall leaves the same kind of trace (section 6.6).
 
 ## 2. The copy and what it is missing
 
@@ -49,20 +47,26 @@ could not be read by the SSH account:
   and the rest;
 - some files under `DIM-1`, `DIM1`, `dimensions/` and `config/spark`.
 
-The rehearsal therefore ran on a synthesized `level.dat` (the server writes a fresh one from
-`level-seed`, recovered read-only as the seed the chunks were generated with). What that costs:
+Ben made a tarball of exactly those 264 files as root (`/tmp/mic-private.tgz` on the host, 0.8 MB,
+2026-10-21 05:51 server time), which was fetched read-only and extracted over the snapshot. One more
+rsync pass right after it changed only 9 files (four entity region files, the Distant Horizons database,
+`session.lock`, `kubejs_persistent_data.nbt`): nobody had played since 01:11, so the region files and
+the data files describe the same moment. The measured runs (sections 5 and 6) use the real `level.dat`
+and data files. An earlier attempt on a synthesized `level.dat` is not reported.
 
-- game time and day time restart at 0, world spawn is recomputed, game rules and the datapack list are
-  defaults, seasons restart;
-- trains: the carriage entities are in the world but Create's train registry is not, so trains do not
-  come back, and their absence says nothing about the upgrade;
-- Sable sub-levels: the `.slvlr` region files are present, but the occupancy, tracking and ticket
-  files are not, so a Sable failure in the rehearsal may be an artifact of the copy;
-- no player inventories, so nothing in a player's inventory or ender chest was checked, and
-  Cobblemon's party and PC stores (present in `world/pokemon/`) only load when their player joins,
-  which nobody did.
+What the real files say:
 
-A tarball of those files made by the owner (`/tmp/mic-private.tgz`) never appeared, so these gaps stand.
+- the seed matches the one recovered from the chunks; game time is 173.7 million ticks (100 days of
+  play), `doTraderSpawning` is true, `naturalRegeneration` false, `doImmediateRespawn` true;
+  datapacks `create:dynamic_data`, `tacz_resources`, `tectonic`, `create_dragons_plus:runtime` and the
+  defaults;
+- **there are no trains**: the host has no `create_tracks.dat`, and the world has no carriage
+  contraption entity, so the upgrade cannot break a train on this world;
+- Sable: 165 sub-level files, no force-load tickets, tracking points for players who logged out
+  aboard a sub-level (they reappear aboard it at login), one unloaded Aeronautics balloon;
+- Create's logistics network (one, nine links) and the player data (8 players, inventories and ender
+  chests) are now in the copy, but players only load when they join, which nobody did in the
+  rehearsal: inventories and Cobblemon parties stay a check for the first real login (runbook 8.3).
 
 ## 3. The prune
 
@@ -123,7 +127,6 @@ string in the world's chunk and entity NBT.
   among them Destroy) silently omits them; export from a checkout that has them (`sha256` against
   `index.toml`).
 
-<!-- RUNBOOK DRAFT START -->
 ## 8. Runbook
 
 For Ben, or an agent Ben gives sudo on OmegaSrv (the rehearsal had read access only). Facts it relies on:
@@ -197,4 +200,3 @@ JVMARGS-PLACEHOLDER
   /var/lib/mc/server-backup-<date> /var/lib/mc/server`; start.
 - **Sim reset** (SRV2, when a save format change has no migration): stop; delete `world/rtsim/`;
   start. Section 6.7 says what a reset leaves behind.
-<!-- RUNBOOK DRAFT END -->
