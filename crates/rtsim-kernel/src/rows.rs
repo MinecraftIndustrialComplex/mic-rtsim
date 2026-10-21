@@ -510,7 +510,8 @@ impl<T: Row> PagedRows<T> {
                 // four, so a page of one row held room for four (three idle dragons' worth).
                 let len = page.rows.len();
                 if len == page.rows.capacity() {
-                    page.rows.reserve_exact((len * 2).clamp(1, per).saturating_sub(len));
+                    page.rows
+                        .reserve_exact((len * 2).clamp(1, per).saturating_sub(len));
                 }
                 page.rows.insert(i, (slot, value));
                 page.heap += add;
