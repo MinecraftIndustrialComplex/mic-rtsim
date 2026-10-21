@@ -263,6 +263,16 @@ fn describe(view: &View, (heap, peak): (u64, u64), limits: Limits, priority: &st
         })
         .collect();
     println!("modules: {}", modules.join(", "));
+    for m in &s.modules {
+        if let (Some(false), Some((now, Some(saved)))) = (m.hash_matches(), m.hash) {
+            println!(
+                "WARNING: {} reads back to state hash {now:016x}, but its save wrote \
+                 {saved:016x}: the viewer decodes it differently from the engine, so what it \
+                 draws may be wrong",
+                m.name
+            );
+        }
+    }
     match s.world_model.as_ref().and_then(|w| {
         let g = w.read();
         g.sampled_ref().map(|m| (m.cell_count(), m.region_count()))
