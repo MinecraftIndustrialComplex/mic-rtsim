@@ -1,0 +1,15 @@
+[package]
+name = "rtsim-parts"
+description = "The viewer's part format: self-describing generic rows any source writes and one reader reads, the view store's header and the lease (VIEWER.md §4.3, §5.2)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+rtsim-kernel.workspace = true
+crc32fast.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -48,6 +48,9 @@ pub mod phase1 {
     }
 }
 
+/// The serial of the last save that took the event recorder's rows, a little-endian u64 (the
+/// link's `archive::KEY`): a save holds the archive rows of every serial up to its own.
+pub const ARCHIVE_SERIAL: PageKey = PageKey::new(1, 0x41);
 /// The dragons' meta page.
 pub const DRAGONS: PageKey = PageKey::new(0x4400, 0);
 /// The herds' meta page.
