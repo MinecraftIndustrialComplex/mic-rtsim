@@ -28,16 +28,24 @@ impl World {
         let mut book = Ledger::new();
         for i in 0..self.nodes.len() {
             let m = self.market_at(i, at);
+            let ws = self.works.get(&i);
             for (gi, l) in m.lines.iter().enumerate() {
-                let k = kind(GoodId(gi as u16));
+                let g = GoodId(gi as u16);
+                let k = kind(g);
                 seen.add(k, i128::from(l.stock));
                 let b = l.book;
                 let w = i128::from;
                 book.mint(k, w(b.genesis) + w(b.produced) + w(b.player_in));
-                book.burn(
-                    k,
-                    w(b.consumed) + w(b.player_out) + w(b.destroyed) + w(b.sunk),
-                );
+                book.burn(k, w(b.consumed) + w(b.player_out) + w(b.destroyed));
+                if m.goods[gi].currency {
+                    // Money above the ceiling is in the works purse (a holder) until it is spent
+                    // on works or paid as tribute (burns), SINK.md §4.5.
+                    let (spent, tribute) = ws.map_or((0, 0), |s| (s.spent(g), s.tribute(g)));
+                    seen.add(k, w(b.sunk) - w(spent) - w(tribute));
+                    book.burn(k, w(spent) + w(tribute));
+                } else {
+                    book.burn(k, w(b.sunk));
+                }
             }
         }
         let b = self.cfg.trade.quantum.index(at);
@@ -120,7 +128,25 @@ impl World {
 
     pub fn check_conserved(&self, at: Tick) -> Result<(), Imbalance> {
         let (seen, book) = self.conservation(at);
-        book.check(&seen)
+        book.check(&seen)?;
+        // No purse ever pays more than it holds.
+        for (&i, s) in &self.works {
+            let m = self.market_at(i, at);
+            for &(g, _) in s.spent.iter().chain(&s.tribute) {
+                let Some(l) = m.lines.get(g.index()) else {
+                    continue;
+                };
+                let purse = s.purse(g, l);
+                if purse < 0 {
+                    return Err(Imbalance {
+                        kind: kind(g),
+                        expected: 0,
+                        observed: i128::from(purse),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn assert_conserved(&self, at: Tick) {
@@ -209,6 +235,51 @@ impl World {
             w.u8(k.dir);
             w.u64(k.departure);
             w.u64(id.to_bits());
+        }
+        // The money sink's state (SINK.md): catalogue, purses' outflows, pointers, bookings.
+        for d in &self.works_catalog {
+            w.u64(d.key());
+            w.u32(d.variants.len() as u32);
+        }
+        for (n, s) in &self.works {
+            w.u64(*n as u64);
+            w.u64(s.style);
+            for (g, a) in s.spent.iter().chain(&s.tribute) {
+                w.u16(g.0);
+                w.i64(*a);
+            }
+            for (k, c) in &s.bought {
+                w.u64(*k);
+                w.u32(*c);
+            }
+            for k in &s.full {
+                w.u64(*k);
+            }
+            w.u32(s.nth);
+            w.u32(s.stamp);
+            w.u64(s.due.map_or(u64::MAX, |t| t.0));
+            w.u64(s.threat_at.map_or(u64::MAX, |t| t.0));
+            w.bool(s.tributary);
+            w.u32(s.golems);
+            match s.next {
+                crate::works::Next::Unknown => w.u8(0),
+                crate::works::Next::Nothing => w.u8(1),
+                crate::works::Next::Work {
+                    def,
+                    variant,
+                    price,
+                } => {
+                    w.u8(2);
+                    w.u32(def);
+                    w.u16(variant);
+                    w.i64(price);
+                }
+            }
+        }
+        for (op, (n, k)) in &self.works_pending {
+            w.u64(*op);
+            w.u64(*n as u64);
+            w.u64(*k);
         }
         for map in [
             &self.outside.player_in,

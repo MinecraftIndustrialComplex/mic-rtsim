@@ -1749,6 +1749,58 @@ fn take_world_commands(st: &mut State) {
                     house: r.house,
                 })
             }
+            // A bought work (SINK.md): its template on a free plot near the meeting point, as a
+            // house is placed, or its body at the meeting point. Kept by op like a house.
+            Command::PlaceWork(p) => {
+                if st.phase1.scripted.contains(&p.village) {
+                    continue;
+                }
+                let Some(dimension) = Link::java_dim(&st.world, p.frame) else {
+                    log_warn(&format!(
+                        "phase 1: no dimension for frame {} (work {:#x} dropped)",
+                        p.frame, p.op
+                    ));
+                    continue;
+                };
+                P1Cmd::PlaceHouse(PlaceHouseCmd {
+                    op: p.op,
+                    village: p.village,
+                    dimension,
+                    template: p.template,
+                    processors: p.processors,
+                    pos: [p.x, 0, p.z],
+                    rotation: u32::from(p.rotation),
+                    mirror: 0,
+                    flags: u32::from(
+                        cmd::place_house::FLAG_SEARCH | cmd::place_house::FLAG_Y_FROM_VILLAGE,
+                    ),
+                    radius: p.radius,
+                    seed: p.seed,
+                    y_offset: 0,
+                })
+            }
+            Command::SpawnWork(s) => {
+                let l = &st.phase1;
+                if l.scripted.contains(&s.village) {
+                    continue;
+                }
+                let Some(&i) = l.nodes.get(&s.village) else {
+                    continue;
+                };
+                let Some(dimension) = Link::java_dim(&st.world, l.world.nodes[i].pos.frame) else {
+                    continue;
+                };
+                P1Cmd::SpawnResident(SpawnResidentCmd {
+                    op: s.op,
+                    village: s.village,
+                    dimension,
+                    body: s.body,
+                    profession: String::new(),
+                    flags: cmd::spawn_resident::FLAG_AT_VILLAGE,
+                    pos: [0.0; 3],
+                    house: 0,
+                })
+            }
         };
         st.phase1.push(cmd);
     }

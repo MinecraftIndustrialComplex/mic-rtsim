@@ -38,12 +38,17 @@ use crate::bases::BaseState;
 use crate::config::WorldConfig;
 use crate::interest::PlayerState;
 use crate::ribbits::{Band, Growth, PlaceHouse, SentimentSnapshot, SpawnResident};
+use crate::works::{
+    Next, PlaceWork, SpawnWork, WorkCap, WorkDef, WorkGroup, WorkPlace, WorkVariant, WorksState,
+};
+use rtsim_settle::Culture;
 use crate::world::{
     Command, Ev, MARKETS_PER_PAGE, Node, Outside, PacketData, Stats, TABLE_MARKETS, Via, World,
 };
 
-/// RTW2: the market rows moved to the end, as a row table (paging).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTW2");
+/// RTW3: the money sink's works (SINK.md) joined the meta; RTW2 moved the market rows to the
+/// end, as a row table (paging).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTW3");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -212,6 +217,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u32(stop);
             w.u32(stamp);
         }
+        Ev::Works { node, stamp } => {
+            w.u8(5);
+            put_usize(w, node);
+            w.u32(stamp);
+        }
     }
 }
 
@@ -230,6 +240,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
         4 => Ev::BandPlays {
             band: r.u32()?,
             stop: r.u32()?,
+            stamp: r.u32()?,
+        },
+        5 => Ev::Works {
+            node: get_usize(r)?,
             stamp: r.u32()?,
         },
         t => return bad(format!("world event {t}")),
@@ -337,7 +351,211 @@ fn put_command(w: &mut Writer, c: &Command) {
             w.u64(s.house);
             put_body(w, s.body);
         }
+        Command::PlaceWork(p) => {
+            w.u8(4);
+            w.u64(p.op);
+            w.u64(p.village);
+            w.u16(p.frame);
+            w.bytes(p.template.as_bytes());
+            w.bytes(p.processors.as_bytes());
+            w.var_i64(i64::from(p.x));
+            w.var_i64(i64::from(p.z));
+            w.u32(p.radius);
+            w.u8(p.rotation);
+            w.u64(p.seed);
+        }
+        Command::SpawnWork(p) => {
+            w.u8(5);
+            w.u64(p.op);
+            w.u64(p.village);
+            w.bytes(p.body.as_bytes());
+        }
     }
+}
+
+fn get_string(r: &mut Reader<'_>) -> codec::Result<String> {
+    String::from_utf8(r.bytes()?.to_vec()).map_err(|e| CodecError::Invalid(format!("utf-8: {e}")))
+}
+
+fn put_work_def(w: &mut Writer, d: &WorkDef) {
+    w.bytes(d.id.as_bytes());
+    w.u8(d.group as u8);
+    w.u8(d.culture.index() as u8);
+    w.u64(d.style);
+    match d.cap {
+        WorkCap::PerResidents(n) => {
+            w.u8(0);
+            w.u32(n);
+        }
+        WorkCap::Fixed(n) => {
+            w.u8(1);
+            w.u32(n);
+        }
+    }
+    put_usize(w, d.variants.len());
+    for v in &d.variants {
+        match &v.place {
+            WorkPlace::Template {
+                template,
+                processors,
+            } => {
+                w.u8(0);
+                w.bytes(template.as_bytes());
+                w.bytes(processors.as_bytes());
+            }
+            WorkPlace::Spawn { body } => {
+                w.u8(1);
+                w.bytes(body.as_bytes());
+            }
+        }
+        put_usize(w, v.goods.len());
+        for (g, n) in &v.goods {
+            w.u16(g.0);
+            w.var_i64(*n);
+        }
+        w.var_i64(v.other_items);
+        w.var_i64(v.blocks);
+    }
+}
+
+fn get_work_def(r: &mut Reader<'_>) -> codec::Result<WorkDef> {
+    let id = get_string(r)?;
+    let group = WorkGroup::from_u32(u32::from(r.u8()?))
+        .map_or_else(|| bad("work group".into()), Ok)?;
+    let culture = match r.u8()? {
+        0 => Culture::Human,
+        1 => Culture::Ribbit,
+        t => return bad(format!("culture {t}")),
+    };
+    let style = r.u64()?;
+    let cap = match r.u8()? {
+        0 => WorkCap::PerResidents(r.u32()?),
+        1 => WorkCap::Fixed(r.u32()?),
+        t => return bad(format!("work cap {t}")),
+    };
+    let n = r.len_prefix(4)?;
+    let mut variants = Vec::with_capacity(n);
+    for _ in 0..n {
+        let place = match r.u8()? {
+            0 => WorkPlace::Template {
+                template: get_string(r)?,
+                processors: get_string(r)?,
+            },
+            1 => WorkPlace::Spawn {
+                body: get_string(r)?,
+            },
+            t => return bad(format!("work place {t}")),
+        };
+        let k = r.len_prefix(3)?;
+        let mut goods = Vec::with_capacity(k);
+        for _ in 0..k {
+            goods.push((GoodId(r.u16()?), r.var_i64()?));
+        }
+        variants.push(WorkVariant {
+            place,
+            goods,
+            other_items: r.var_i64()?,
+            blocks: r.var_i64()?,
+        });
+    }
+    Ok(WorkDef {
+        id,
+        group,
+        culture,
+        style,
+        cap,
+        variants,
+    })
+}
+
+fn put_amounts(w: &mut Writer, v: &[(GoodId, rtsim_trade::Amount)]) {
+    put_usize(w, v.len());
+    for (g, a) in v {
+        w.u16(g.0);
+        w.var_i64(*a);
+    }
+}
+
+fn get_amounts(r: &mut Reader<'_>) -> codec::Result<Vec<(GoodId, rtsim_trade::Amount)>> {
+    let n = r.len_prefix(3)?;
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..n {
+        v.push((GoodId(r.u16()?), r.var_i64()?));
+    }
+    Ok(v)
+}
+
+fn put_works(w: &mut Writer, s: &WorksState) {
+    w.u64(s.style);
+    put_amounts(w, &s.spent);
+    put_amounts(w, &s.tribute);
+    put_usize(w, s.bought.len());
+    for (k, c) in &s.bought {
+        w.u64(*k);
+        w.u32(*c);
+    }
+    put_usize(w, s.full.len());
+    s.full.iter().for_each(|k| w.u64(*k));
+    w.u32(s.nth);
+    w.u32(s.stamp);
+    put_opt_tick(w, s.due);
+    match s.next {
+        Next::Unknown => w.u8(0),
+        Next::Nothing => w.u8(1),
+        Next::Work {
+            def,
+            variant,
+            price,
+        } => {
+            w.u8(2);
+            w.u32(def);
+            w.u16(variant);
+            w.var_i64(price);
+        }
+    }
+    put_opt_tick(w, s.threat_at);
+    w.bool(s.tributary);
+    w.u32(s.golems);
+}
+
+fn get_works(r: &mut Reader<'_>) -> codec::Result<WorksState> {
+    let style = r.u64()?;
+    let spent = get_amounts(r)?;
+    let tribute = get_amounts(r)?;
+    let n = r.len_prefix(12)?;
+    let mut bought = Vec::with_capacity(n);
+    for _ in 0..n {
+        bought.push((r.u64()?, r.u32()?));
+    }
+    let n = r.len_prefix(8)?;
+    let full = (0..n).map(|_| r.u64()).collect::<codec::Result<_>>()?;
+    let nth = r.u32()?;
+    let stamp = r.u32()?;
+    let due = get_opt_tick(r)?;
+    let next = match r.u8()? {
+        0 => Next::Unknown,
+        1 => Next::Nothing,
+        2 => Next::Work {
+            def: r.u32()?,
+            variant: r.u16()?,
+            price: r.var_i64()?,
+        },
+        t => return bad(format!("works pointer {t}")),
+    };
+    Ok(WorksState {
+        style,
+        spent,
+        tribute,
+        bought,
+        full,
+        nth,
+        stamp,
+        due,
+        next,
+        threat_at: get_opt_tick(r)?,
+        tributary: r.bool()?,
+        golems: r.u32()?,
+    })
 }
 
 fn i32_of(v: i64) -> codec::Result<i32> {
@@ -407,6 +625,23 @@ fn get_command(r: &mut Reader<'_>) -> codec::Result<Command> {
             village: r.u64()?,
             house: r.u64()?,
             body: Body::decode(r)?,
+        }),
+        4 => Command::PlaceWork(PlaceWork {
+            op: r.u64()?,
+            village: r.u64()?,
+            frame: r.u16()?,
+            template: get_string(r)?,
+            processors: get_string(r)?,
+            x: i32_of(r.var_i64()?)?,
+            z: i32_of(r.var_i64()?)?,
+            radius: r.u32()?,
+            rotation: r.u8()?,
+            seed: r.u64()?,
+        }),
+        5 => Command::SpawnWork(SpawnWork {
+            op: r.u64()?,
+            village: r.u64()?,
+            body: get_string(r)?,
         }),
         t => return bad(format!("command {t}")),
     })
@@ -545,6 +780,10 @@ impl World {
             s.houses,
             s.band_packets,
             s.band_plays,
+            s.works,
+            s.works_events,
+            s.works_refused,
+            s.tributes,
         ] {
             w.var_u64(v);
         }
@@ -599,6 +838,21 @@ impl World {
         for (k, c) in &self.promoted {
             k.encode(&mut w);
             w.u64(c.to_bits());
+        }
+        put_usize(&mut w, self.works_catalog.len());
+        self.works_catalog
+            .iter()
+            .for_each(|d| put_work_def(&mut w, d));
+        put_usize(&mut w, self.works.len());
+        for (n, s) in &self.works {
+            put_usize(&mut w, *n);
+            put_works(&mut w, s);
+        }
+        put_usize(&mut w, self.works_pending.len());
+        for (op, (n, k)) in &self.works_pending {
+            w.u64(*op);
+            put_usize(&mut w, *n);
+            w.u64(*k);
         }
         w
     }
@@ -741,6 +995,10 @@ impl World {
             houses: r.var_u64()?,
             band_packets: r.var_u64()?,
             band_plays: r.var_u64()?,
+            works: r.var_u64()?,
+            works_events: r.var_u64()?,
+            works_refused: r.var_u64()?,
+            tributes: r.var_u64()?,
         };
         let n = r.len_prefix(2)?;
         let outbox = (0..n)
@@ -806,6 +1064,19 @@ impl World {
         for _ in 0..r.len_prefix(11)? {
             promoted.insert(CaravanKey::decode(r)?, handle(r)?);
         }
+        let n = r.len_prefix(16)?;
+        let works_catalog = (0..n)
+            .map(|_| get_work_def(r))
+            .collect::<codec::Result<_>>()?;
+        let mut works = BTreeMap::new();
+        for _ in 0..r.len_prefix(30)? {
+            let n = get_usize(r)?;
+            works.insert(n, get_works(r)?);
+        }
+        let mut works_pending = BTreeMap::new();
+        for _ in 0..r.len_prefix(17)? {
+            works_pending.insert(r.u64()?, (get_usize(r)?, r.u64()?));
+        }
         match paged {
             None => markets.decode_rows(r, market_meta)?,
             Some((source, budget)) => markets.open_rows(source, budget, market_meta),
@@ -848,6 +1119,9 @@ impl World {
             op_counter,
             bases,
             promoted,
+            works_catalog,
+            works,
+            works_pending,
         };
         world.check_indices()?;
         Ok(world)
@@ -903,7 +1177,16 @@ impl World {
             && self.houses_pending.values().all(|&n| node_ok(n))
             && self.sentiment_dirty.iter().all(|&n| node_ok(n))
             && self.bases.keys().all(|&n| node_ok(n))
-            && self.wakes.iter().all(|&(_, n)| node_ok(n));
+            && self.wakes.iter().all(|&(_, n)| node_ok(n))
+            && self.works.keys().all(|&n| node_ok(n))
+            && self.works_pending.values().all(|&(n, _)| node_ok(n))
+            && self.works.values().all(|s| match s.next {
+                Next::Work { def, variant, .. } => self
+                    .works_catalog
+                    .get(def as usize)
+                    .is_some_and(|d| (variant as usize) < d.variants.len()),
+                _ => true,
+            });
         if !keys_ok {
             return bad("a growth, house, base or wake entry refers past the world's nodes".into());
         }
@@ -918,7 +1201,7 @@ impl World {
         }
         for (_, e) in self.wheel.iter() {
             let ok = match *e {
-                Ev::Wake(n) | Ev::Grow { node: n, .. } => node_ok(n),
+                Ev::Wake(n) | Ev::Grow { node: n, .. } | Ev::Works { node: n, .. } => node_ok(n),
                 Ev::Deliver(_) | Ev::Arrive { .. } => true,
                 Ev::BandPlays { band, .. } => (band as usize) < self.bands.len(),
             };

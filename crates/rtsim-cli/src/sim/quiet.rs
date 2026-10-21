@@ -28,11 +28,22 @@ pub struct Options {
     pub growth: bool,
     /// Ribbit villages have touring bands (P16).
     pub bands: bool,
+    /// The synthetic works catalogue (SINK.md): villages spend the coin their treasuries sink
+    /// above the ceiling. Markets run exactly as without it (MS-1).
+    pub works: bool,
+}
+
+/// Works bought and home-coin thousandths spent on them in one window.
+#[derive(Clone, Copy, Default)]
+struct WorksWindow {
+    bought: u64,
+    spent: i128,
+    purses: i128,
 }
 
 /// Builds the world and returns events per market per day for each window, the conservation
 /// check, and the world.
-fn series_world(o: &Options) -> (Vec<f64>, Result<(), String>, World) {
+fn series_world(o: &Options) -> (Vec<f64>, Vec<WorksWindow>, Result<(), String>, World) {
     let mut cfg = WorldConfig::new(o.seed);
     cfg.check_every_event = false;
     cfg.genesis = if o.genesis >= 1000 {
@@ -66,24 +77,42 @@ fn series_world(o: &Options) -> (Vec<f64>, Result<(), String>, World) {
     if o.trace_days > 0 {
         w.enable_trace();
     }
+    if o.works {
+        let cat = rtsim_world::works::synthetic_catalog(&w.goods);
+        w.set_works(cat, w.now());
+    }
     let n = w.nodes.len() as f64;
     let mut out = Vec::new();
+    let mut works = Vec::new();
     let mut day = 0;
     let mut check = Ok(());
+    let spent = |w: &World| -> i128 { w.works_totals().0.iter().map(|x| x.1).sum() };
     while day < o.days {
         let before = w.stats.market_events;
+        let (bought0, spent0) = (w.stats.works, spent(&w));
         day += o.every;
         w.run_until(Tick::from_days(day));
         out.push((w.stats.market_events - before) as f64 / o.every as f64 / n);
+        let purses = (0..w.nodes.len())
+            .flat_map(|i| w.works_purse(i, w.now()))
+            .map(|x| i128::from(x.1))
+            .sum();
+        works.push(WorksWindow {
+            bought: w.stats.works - bought0,
+            spent: spent(&w) - spent0,
+            purses,
+        });
+        // Commands pile up with no bridge to take them.
+        let _ = w.take_commands();
         if let Err(e) = w.check_conserved(w.now()) {
             check = Err(format!("day {day}: {e}"));
         }
     }
-    (out, check, w)
+    (out, works, check, w)
 }
 
 pub fn run(o: Options) -> i32 {
-    let (s, check, w) = series_world(&o);
+    let (s, works, check, w) = series_world(&o);
     let label = if o.markets == 0 {
         "the phase 1 world (11 nodes)".to_string()
     } else {
@@ -97,6 +126,21 @@ pub fn run(o: Options) -> i32 {
     );
     let cells: Vec<String> = s.iter().map(|x| format!("{x:.2}")).collect();
     println!("{}", cells.join(" "));
+    if o.works {
+        println!("works bought / coin spent / coin in purses at the window's end, per window:");
+        let cells: Vec<String> = works
+            .iter()
+            .map(|x| {
+                format!(
+                    "{}/{:.0}/{:.0}",
+                    x.bought,
+                    x.spent as f64 / 1000.0,
+                    x.purses as f64 / 1000.0
+                )
+            })
+            .collect();
+        println!("{}", cells.join(" "));
+    }
     if o.trace_days > 0 {
         let names = if o.markets == 0 {
             synth::NAMES.iter().map(|s| s.to_string()).collect()

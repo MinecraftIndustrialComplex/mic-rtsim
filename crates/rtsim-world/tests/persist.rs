@@ -23,7 +23,11 @@ fn cfg(seed: u64) -> WorldConfig {
 }
 
 fn world(seed: u64) -> (World, SynthGoods) {
-    synth::build(cfg(seed), true)
+    let (mut w, ids) = synth::build(cfg(seed), true);
+    // The money sink's catalogue: works purses, bookings and pending works ride every snapshot.
+    let cat = rtsim_world::works::synthetic_catalog(&w.goods);
+    w.set_works(cat, Tick::ZERO);
+    (w, ids)
 }
 
 /// A world read back from its own snapshot, built from the same configuration and catalogue.
@@ -86,6 +90,23 @@ enum Op {
         node: usize,
         kind: u8,
     },
+    /// A dragon raids a village (with a lair: tribute from now on).
+    Raid {
+        node: usize,
+        tribute: bool,
+    },
+    Tribute {
+        node: usize,
+        share: i64,
+    },
+    Lapse {
+        node: usize,
+    },
+    Golems {
+        node: usize,
+        n: u32,
+    },
+    /// Takes the commands; every bought work is answered, every third one with no free plot.
     Commands,
 }
 
@@ -119,6 +140,10 @@ fn op() -> impl Strategy<Value = Op> {
             z
         }),
         (0usize..10, 1u8..9).prop_map(|(node, kind)| Op::Report { node, kind }),
+        (0usize..10, any::<bool>()).prop_map(|(node, tribute)| Op::Raid { node, tribute }),
+        (0usize..10, 0i64..=1000).prop_map(|(node, share)| Op::Tribute { node, share }),
+        (0usize..10).prop_map(|node| Op::Lapse { node }),
+        (0usize..10, 0u32..6).prop_map(|(node, n)| Op::Golems { node, n }),
         Just(Op::Commands),
     ]
 }
@@ -215,8 +240,21 @@ fn apply(w: &mut World, ids: &SynthGoods, o: &Op, t: Tick, joined: &mut u64) {
                 w.village_report(node % n, player, k, t);
             }
         }
+        Op::Raid { node, tribute } => w.village_raided(node % n, tribute, t),
+        Op::Tribute { node, share } => {
+            let _ = w.pay_tribute(node % n, share, t);
+        }
+        Op::Lapse { node } => w.tribute_lapsed(node % n, t),
+        Op::Golems { node, n: g } => w.set_golems(node % n, g),
         Op::Commands => {
-            let _ = w.take_commands();
+            for c in w.take_commands() {
+                let op = match c {
+                    rtsim_world::world::Command::PlaceWork(p) => p.op,
+                    rtsim_world::world::Command::SpawnWork(s) => s.op,
+                    _ => continue,
+                };
+                w.work_result(op, op % 3 != 0, t);
+            }
         }
     }
 }
