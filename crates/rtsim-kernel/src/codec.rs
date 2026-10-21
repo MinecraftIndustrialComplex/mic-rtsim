@@ -62,6 +62,11 @@ impl Writer {
         self.buf.is_empty()
     }
 
+    /// Empties the writer, keeping its allocation.
+    pub fn clear(&mut self) {
+        self.buf.clear();
+    }
+
     pub fn u8(&mut self, v: u8) {
         self.buf.push(v);
     }

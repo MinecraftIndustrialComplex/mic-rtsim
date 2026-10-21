@@ -31,6 +31,10 @@ rtsim-conflict = { path = "crates/rtsim-conflict" }
 rtsim-archive = { path = "crates/rtsim-archive" }
 # The save viewer: a saved world read only, served to the shared viewer page (VIEWER.md).
 rtsim-view = { path = "crates/rtsim-view" }
+# The viewer's part format and the layers every source draws (VIEWER.md §4.3, V4): reachable by the
+# engine without the viewer's server.
+rtsim-parts = { path = "crates/rtsim-parts" }
+rtsim-layers = { path = "crates/rtsim-layers" }
 # Deep Time's world-data format: its layout block (`projection::ProjectionSpec`, FORMAT.md "The
 # world's layout") is linked, not mirrored (docs/choices-topology.md TP10). Private, pinned like
 # mic-native; Deep Time master 3bf532d1. LGPL-3.0-or-later.
