@@ -244,11 +244,8 @@ pub fn run(c: &FactionConfig) -> Measured {
         let _ = std::fs::remove_dir_all(&p.dir);
         (p.saves, idx)
     });
-    let per_save = |f: &dyn Fn(&Saves) -> u64| {
-        paged
-            .as_ref()
-            .map(|(s, _)| f(s) as f64 / s.n.max(1) as f64)
-    };
+    let per_save =
+        |f: &dyn Fn(&Saves) -> u64| paged.as_ref().map(|(s, _)| f(s) as f64 / s.n.max(1) as f64);
     Measured {
         cpu_ns_per_day: cpu.map(|c| c / days),
         wall_ns_per_day: Some(wall / days),
@@ -273,9 +270,7 @@ pub fn run(c: &FactionConfig) -> Measured {
         loads_per_day: c.paged.map(|_| rows.loads as f64 / days),
         evictions_per_day: c.paged.map(|_| rows.evictions as f64 / days),
         over_budget_checks: c.paged.map(|_| rows.over_budget),
-        save_ms_per_day: paged
-            .as_ref()
-            .map(|(s, _)| s.wall_ns as f64 / 1e6 / days),
+        save_ms_per_day: paged.as_ref().map(|(s, _)| s.wall_ns as f64 / 1e6 / days),
         save_cpu_ms_per_day: paged.as_ref().map(|(s, _)| s.cpu_ns as f64 / 1e6 / days),
         save_bytes_per_save: per_save(&|s| s.bytes),
         save_log_bytes_per_save: per_save(&|s| s.log_bytes),

@@ -1335,10 +1335,10 @@ impl Conflict {
             // Only the factions and places that changed are touched (their pages dirtied).
             let kept = old_id == Some(id);
             for f in &old {
-                if !kept || !affects.iter().any(|a| a.0 == *f) {
-                    if let Some(o) = old_id {
-                        self.factions.row_mut(*f).remove_reach(key.1, o);
-                    }
+                if (!kept || !affects.iter().any(|a| a.0 == *f))
+                    && let Some(o) = old_id
+                {
+                    self.factions.row_mut(*f).remove_reach(key.1, o);
                 }
             }
             for (f, _) in &affects {
@@ -1347,10 +1347,10 @@ impl Conflict {
                 }
             }
             for c in &old_places {
-                if !kept || new_places.binary_search(c).is_err() {
-                    if let Some(o) = old_id {
-                        self.places.remove(*c, o);
-                    }
+                if (!kept || new_places.binary_search(c).is_err())
+                    && let Some(o) = old_id
+                {
+                    self.places.remove(*c, o);
                 }
             }
             for c in &new_places {
