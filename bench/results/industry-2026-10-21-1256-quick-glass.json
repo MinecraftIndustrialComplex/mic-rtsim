@@ -1,0 +1,861 @@
+{
+  "bench": "industry",
+  "flat_ratio": 4.0,
+  "glass": [
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 673353.0,
+        "edges": 11,
+        "lp_skipped": 0,
+        "lp_solves": 1,
+        "lp_tight": 5,
+        "nodes": 10,
+        "rounds": 1,
+        "sheets_l": 0.11764705882352941,
+        "solve_cpu_ns": 216877.0
+      },
+      "sweep": "glass_nodes"
+    },
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 1640047.0,
+        "edges": 110,
+        "lp_skipped": 0,
+        "lp_solves": 1,
+        "lp_tight": 5,
+        "nodes": 100,
+        "rounds": 1,
+        "sheets_l": 1.1764705882352942,
+        "solve_cpu_ns": 1299869.0
+      },
+      "sweep": "glass_nodes"
+    },
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 13885582.0,
+        "edges": 1100,
+        "lp_skipped": 0,
+        "lp_solves": 1,
+        "lp_tight": 5,
+        "nodes": 1000,
+        "rounds": 1,
+        "sheets_l": 11.764705882352942,
+        "solve_cpu_ns": 12953625.0
+      },
+      "sweep": "glass_nodes"
+    },
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 159866150.0,
+        "edges": 11000,
+        "lp_skipped": 0,
+        "lp_solves": 1,
+        "lp_tight": 5,
+        "nodes": 10000,
+        "rounds": 1,
+        "sheets_l": 117.6470588235294,
+        "solve_cpu_ns": 145850339.0
+      },
+      "sweep": "glass_nodes"
+    },
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 701405.0,
+        "edges": 11,
+        "lp_skipped": 0,
+        "lp_solves": 3,
+        "lp_tight": 3,
+        "nodes": 10,
+        "rounds": 1,
+        "sheets_l": 0.0625,
+        "solve_cpu_ns": 453841.0
+      },
+      "sweep": "glass_slack"
+    },
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 3602688.0,
+        "edges": 110,
+        "lp_skipped": 0,
+        "lp_solves": 3,
+        "lp_tight": 3,
+        "nodes": 100,
+        "rounds": 1,
+        "sheets_l": 0.625,
+        "solve_cpu_ns": 3545820.0
+      },
+      "sweep": "glass_slack"
+    },
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 34504310.0,
+        "edges": 1100,
+        "lp_skipped": 0,
+        "lp_solves": 3,
+        "lp_tight": 3,
+        "nodes": 1000,
+        "rounds": 1,
+        "sheets_l": 6.25,
+        "solve_cpu_ns": 35432040.0
+      },
+      "sweep": "glass_slack"
+    },
+    {
+      "point": {
+        "converged": true,
+        "cpu_ns": 370934950.0,
+        "edges": 11000,
+        "lp_skipped": 0,
+        "lp_solves": 3,
+        "lp_tight": 3,
+        "nodes": 10000,
+        "rounds": 1,
+        "sheets_l": 62.5,
+        "solve_cpu_ns": 394721378.0
+      },
+      "sweep": "glass_slack"
+    }
+  ],
+  "glass_oscillation": [
+    {
+      "counters": {
+        "breakpoints": 0,
+        "cycles": 0,
+        "districts": 1,
+        "glass": 0,
+        "model": 0,
+        "oscillations": 0,
+        "regimes": 0
+      },
+      "cpu_ns_per_day": 297.5,
+      "days": 10,
+      "fallbacks": [
+        "Unsettled"
+      ],
+      "name": "narrow_band",
+      "what": "switch band of 1 under a tick's flow of 8: press 8 a tick, consumer 4 a tick, on 21, off 20"
+    },
+    {
+      "counters": {
+        "breakpoints": 3,
+        "cycles": 0,
+        "districts": 1,
+        "glass": 0,
+        "model": 0,
+        "oscillations": 0,
+        "regimes": 3
+      },
+      "cpu_ns_per_day": 25859.4,
+      "days": 10,
+      "fallbacks": [
+        "Unsettled"
+      ],
+      "name": "no_band",
+      "what": "switch on and off at the same level (100): press 1/10, consumer 1/20"
+    },
+    {
+      "counters": {
+        "breakpoints": 7,
+        "cycles": 1,
+        "districts": 1,
+        "glass": 1,
+        "model": 2,
+        "oscillations": 0,
+        "regimes": 8
+      },
+      "cpu_ns_per_day": 31318.8,
+      "days": 10,
+      "fallbacks": [],
+      "name": "two_switches_one_store",
+      "what": "two switches on one store gating two presses (1/10 at 100..20, 1/7 at 77..33), consumer 1/13"
+    },
+    {
+      "counters": {
+        "breakpoints": 6,
+        "cycles": 0,
+        "districts": 1,
+        "glass": 1,
+        "model": 2,
+        "oscillations": 0,
+        "regimes": 7
+      },
+      "cpu_ns_per_day": 17908.5,
+      "days": 10,
+      "fallbacks": [],
+      "name": "opposed_switches",
+      "what": "one press stopped above 60 (off at 40) and run only above 50 (off at 45), consumer 1/20"
+    },
+    {
+      "counters": {
+        "breakpoints": 12,
+        "cycles": 2,
+        "districts": 1,
+        "glass": 1,
+        "model": 2,
+        "oscillations": 0,
+        "regimes": 14
+      },
+      "cpu_ns_per_day": 57008.9,
+      "days": 10,
+      "fallbacks": [],
+      "name": "two_loops_same",
+      "what": "two independent switched loops of one period (3,200 ticks) in other phases"
+    },
+    {
+      "counters": {
+        "breakpoints": 12,
+        "cycles": 2,
+        "districts": 1,
+        "glass": 1,
+        "model": 2,
+        "oscillations": 0,
+        "regimes": 14
+      },
+      "cpu_ns_per_day": 45429.2,
+      "days": 10,
+      "fallbacks": [],
+      "name": "two_loops_2to1",
+      "what": "two independent switched loops, periods 3,200 and 6,400 ticks (bands 80 and 160)"
+    },
+    {
+      "counters": {
+        "breakpoints": 12,
+        "cycles": 2,
+        "districts": 1,
+        "glass": 1,
+        "model": 2,
+        "oscillations": 0,
+        "regimes": 14
+      },
+      "cpu_ns_per_day": 57049.0,
+      "days": 10,
+      "fallbacks": [],
+      "name": "two_loops_odd",
+      "what": "two independent switched loops, periods 3,200 and about 2,786 ticks"
+    },
+    {
+      "counters": {
+        "breakpoints": 30,
+        "cycles": 5,
+        "districts": 1,
+        "glass": 1,
+        "model": 2,
+        "oscillations": 0,
+        "regimes": 35
+      },
+      "cpu_ns_per_day": 260506.7,
+      "days": 10,
+      "fallbacks": [],
+      "name": "five_loops",
+      "what": "five independent switched loops, incommensurate periods"
+    }
+  ],
+  "machine": {
+    "cpu": "AMD RYZEN AI MAX PRO 390 w/ Radeon 8050S",
+    "hostname": "nixUltra",
+    "kernel": "7.2.10",
+    "loadavg": "91.80 55.63 30.87 80/6492 3036305",
+    "logical_cpus": 24,
+    "mem_total_bytes": 50268049408,
+    "os": "linux"
+  },
+  "only": "glass_",
+  "quick": true,
+  "slope_tolerance": 0.1,
+  "sweeps": [
+    {
+      "declared": 1.0,
+      "flat": false,
+      "metric": "cpu_ns_per_compile",
+      "name": "glass_nodes",
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 673353.0,
+          "heap_bytes": null,
+          "n": 10,
+          "settles": 0,
+          "setup_ms": 0.0
+        },
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 1640047.0,
+          "heap_bytes": null,
+          "n": 100,
+          "settles": 0,
+          "setup_ms": 0.0
+        },
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 13885582.0,
+          "heap_bytes": null,
+          "n": 1000,
+          "settles": 0,
+          "setup_ms": 0.0
+        },
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 159866150.0,
+          "heap_bytes": null,
+          "n": 10000,
+          "settles": 0,
+          "setup_ms": 0.0
+        }
+      ],
+      "ratio": 237.41804076019562,
+      "slope": 0.8054248943600417
+    },
+    {
+      "declared": 1.0,
+      "flat": false,
+      "metric": "cpu_ns_per_compile",
+      "name": "glass_slack",
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 701405.0,
+          "heap_bytes": null,
+          "n": 10,
+          "settles": 0,
+          "setup_ms": 0.0
+        },
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 3602688.0,
+          "heap_bytes": null,
+          "n": 100,
+          "settles": 0,
+          "setup_ms": 0.0
+        },
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 34504310.0,
+          "heap_bytes": null,
+          "n": 1000,
+          "settles": 0,
+          "setup_ms": 0.0
+        },
+        {
+          "breakpoints": 0,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 370934950.0,
+          "heap_bytes": null,
+          "n": 10000,
+          "settles": 0,
+          "setup_ms": 0.0
+        }
+      ],
+      "ratio": 528.8456027544714,
+      "slope": 0.9151233386942907
+    },
+    {
+      "declared": 0.0,
+      "flat": true,
+      "metric": "cpu_ns_per_day",
+      "name": "glass_items",
+      "on_glass": true,
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": 21634.6,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 1,
+          "settles": 12,
+          "setup_ms": 0.15734599999999999
+        },
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": 18268.3,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 10,
+          "settles": 12,
+          "setup_ms": 0.112862
+        },
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": 19214.1,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 100,
+          "settles": 12,
+          "setup_ms": 0.12214
+        },
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": 17187.2,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 1000,
+          "settles": 12,
+          "setup_ms": 0.082686
+        }
+      ],
+      "ratio": 1.258762334760752,
+      "slope": -0.027790930612367325
+    },
+    {
+      "declared": 0.0,
+      "flat": true,
+      "metric": "cpu_ns_per_read",
+      "name": "glass_elapsed",
+      "on_glass": true,
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 7,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 182693.0,
+          "glass": {
+            "breakpoints": 7,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 7
+          },
+          "heap_bytes": null,
+          "n": 1,
+          "settles": 14,
+          "setup_ms": 0.6121120000000001
+        },
+        {
+          "breakpoints": 7,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 184677.0,
+          "glass": {
+            "breakpoints": 7,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 7
+          },
+          "heap_bytes": null,
+          "n": 10,
+          "settles": 14,
+          "setup_ms": 0.41620300000000005
+        },
+        {
+          "breakpoints": 7,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 167445.0,
+          "glass": {
+            "breakpoints": 7,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 7
+          },
+          "heap_bytes": null,
+          "n": 100,
+          "settles": 14,
+          "setup_ms": 0.349668
+        },
+        {
+          "breakpoints": 7,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 177072.0,
+          "glass": {
+            "breakpoints": 7,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 7
+          },
+          "heap_bytes": null,
+          "n": 1000,
+          "settles": 14,
+          "setup_ms": 0.516833
+        }
+      ],
+      "ratio": 1.1029114037445131,
+      "slope": -0.008325667159692874
+    },
+    {
+      "declared": 0.0,
+      "flat": true,
+      "metric": "cpu_ns_per_read",
+      "name": "glass_periodic",
+      "on_glass": true,
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 179286.0,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 10,
+          "settles": 12,
+          "setup_ms": 0.097634
+        },
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 157646.0,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 100,
+          "settles": 12,
+          "setup_ms": 0.083797
+        },
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 162706.0,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 1000,
+          "settles": 12,
+          "setup_ms": 0.08655299999999999
+        },
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 150402.0,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 10000,
+          "settles": 12,
+          "setup_ms": 0.062137000000000005
+        },
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": null,
+          "cpu_ns_per_read": 145833.0,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 1,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 6
+          },
+          "heap_bytes": null,
+          "n": 100000,
+          "settles": 12,
+          "setup_ms": 0.068389
+        }
+      ],
+      "ratio": 1.22939252432577,
+      "slope": -0.019981048020882852
+    },
+    {
+      "declared": 1.0,
+      "flat": false,
+      "metric": "cpu_ns_per_day",
+      "name": "glass_regimes",
+      "on_glass": true,
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 6,
+          "cpu_ns_per_day": 31448.666666666668,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 6,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 9
+          },
+          "heap_bytes": null,
+          "n": 1,
+          "settles": 21,
+          "setup_ms": 0.14359
+        },
+        {
+          "breakpoints": 60,
+          "cpu_ns_per_day": 242624.66666666666,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 60,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 90
+          },
+          "heap_bytes": null,
+          "n": 10,
+          "settles": 210,
+          "setup_ms": 0.075392
+        },
+        {
+          "breakpoints": 600,
+          "cpu_ns_per_day": 2508094.3333333335,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 600,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 900
+          },
+          "heap_bytes": null,
+          "n": 100,
+          "settles": 2100,
+          "setup_ms": 0.256472
+        },
+        {
+          "breakpoints": 6000,
+          "cpu_ns_per_day": 24389172.0,
+          "cpu_ns_per_read": null,
+          "glass": {
+            "breakpoints": 6000,
+            "cycles": 0,
+            "districts": 1,
+            "glass": 1,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 9000
+          },
+          "heap_bytes": null,
+          "n": 1000,
+          "settles": 21000,
+          "setup_ms": 0.243539
+        }
+      ],
+      "ratio": 775.5232442286901,
+      "slope": 0.9683193372692426
+    },
+    {
+      "declared": 0.0,
+      "flat": true,
+      "metric": "cpu_ns_per_day",
+      "name": "glass_quiet",
+      "on_glass": true,
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 200,
+          "cpu_ns_per_day": 252569.5,
+          "cpu_ns_per_read": null,
+          "engine_heap_bytes": 47232,
+          "glass": {
+            "breakpoints": 200,
+            "cycles": 0,
+            "districts": 20,
+            "glass": 20,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 300
+          },
+          "heap_bytes": 499882,
+          "n": 10,
+          "settles": 700,
+          "setup_ms": 14.909317999999999
+        },
+        {
+          "breakpoints": 200,
+          "cpu_ns_per_day": 253003.6,
+          "cpu_ns_per_read": null,
+          "engine_heap_bytes": 172608,
+          "glass": {
+            "breakpoints": 200,
+            "cycles": 0,
+            "districts": 110,
+            "glass": 110,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 300
+          },
+          "heap_bytes": 2863144,
+          "n": 100,
+          "settles": 700,
+          "setup_ms": 47.488271
+        },
+        {
+          "breakpoints": 200,
+          "cpu_ns_per_day": 285274.0,
+          "cpu_ns_per_read": null,
+          "engine_heap_bytes": 1402816,
+          "glass": {
+            "breakpoints": 200,
+            "cycles": 0,
+            "districts": 1010,
+            "glass": 1010,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 300
+          },
+          "heap_bytes": 26434196,
+          "n": 1000,
+          "settles": 700,
+          "setup_ms": 509.069878
+        }
+      ],
+      "ratio": 1.1294871312648598,
+      "slope": 0.026440643589900503
+    },
+    {
+      "declared": 1.0,
+      "flat": false,
+      "metric": "heap_bytes",
+      "name": "glass_quiet",
+      "on_glass": true,
+      "pass": true,
+      "points": [
+        {
+          "breakpoints": 200,
+          "cpu_ns_per_day": 252569.5,
+          "cpu_ns_per_read": null,
+          "engine_heap_bytes": 47232,
+          "glass": {
+            "breakpoints": 200,
+            "cycles": 0,
+            "districts": 20,
+            "glass": 20,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 300
+          },
+          "heap_bytes": 499882,
+          "n": 10,
+          "settles": 700,
+          "setup_ms": 14.909317999999999
+        },
+        {
+          "breakpoints": 200,
+          "cpu_ns_per_day": 253003.6,
+          "cpu_ns_per_read": null,
+          "engine_heap_bytes": 172608,
+          "glass": {
+            "breakpoints": 200,
+            "cycles": 0,
+            "districts": 110,
+            "glass": 110,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 300
+          },
+          "heap_bytes": 2863144,
+          "n": 100,
+          "settles": 700,
+          "setup_ms": 47.488271
+        },
+        {
+          "breakpoints": 200,
+          "cpu_ns_per_day": 285274.0,
+          "cpu_ns_per_read": null,
+          "engine_heap_bytes": 1402816,
+          "glass": {
+            "breakpoints": 200,
+            "cycles": 0,
+            "districts": 1010,
+            "glass": 1010,
+            "model": 2,
+            "oscillations": 0,
+            "regimes": 300
+          },
+          "heap_bytes": 26434196,
+          "n": 1000,
+          "settles": 700,
+          "setup_ms": 509.069878
+        }
+      ],
+      "ratio": 52.88087188576504,
+      "slope": 0.8616493035343198
+    }
+  ],
+  "when": "2026-10-21T12:56:19Z"
+}

@@ -3039,6 +3039,77 @@ mod replay_path {
         e.check_books().expect("books");
     }
 
+    /// A bounded good measured inside its window [L, U] is calibrated, not a residual (GLASSBOX.md
+    /// §5.3, choice G2-57): a residual there books the output from nothing (the exit run's
+    /// package_loop made clay balls from no clay, the clay's own window being too narrow to take
+    /// any). Only a production above U is a learned source, by its excess over U.
+    #[test]
+    fn a_bounded_good_inside_its_window_takes_no_residual() {
+        let bounded = |good, measured: f64, predicted: f64, (lo, hi): (f64, f64)| {
+            crate::glass::check::GoodResult {
+                good,
+                class: class::BOUNDED,
+                why: (0, 0),
+                in_l: 0.0,
+                in_u: 0.0,
+                out_l: 0.0,
+                out_u: 0.0,
+                predicted,
+                lo,
+                hi,
+                measured,
+                sigma: 0.0,
+                q: 1.0,
+                verdict: verdict::PASS,
+                samples: 20,
+            }
+        };
+        // Sheets measured at 0.15 a tick (inside [0.1, 0.2]) and at 0.3 (0.1 above U).
+        for (measured, learned) in [(0.15, 0u32), (0.3, 1)] {
+            let (b, _) = press_line();
+            let mut s = setup(&b, 2);
+            sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[]]);
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            pass(&mut e);
+            let c = e
+                .glass
+                .districts
+                .get_mut(&D)
+                .and_then(|g| g.compiled.as_mut())
+                .expect("a compile");
+            let w = c.passed.as_mut().expect("passed");
+            w.goods = vec![
+                bounded(BRASS, -0.1, -0.1, (-0.1, 0.0)),
+                bounded(SHEET, measured, 0.1, (0.1, 0.2)),
+            ];
+            w.stores = vec![(0, BRASS, -0.1, -0.1), (1, SHEET, measured, 0.1)];
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            let r = e.glass.report(D).expect("a compile");
+            assert_eq!(r.replay.model, replay_model::GLASS, "measured {measured}");
+            assert_eq!(r.replay.learned_sources, learned, "measured {measured}");
+            e.advance_to(Tick(3200));
+            let st = e.sim_stock(D).expect("replaying");
+            let made = st.get(SHEET);
+            let used = 1000 - st.get(BRASS);
+            // The press makes a sheet a brass: the calibrated good makes nothing beside it.
+            assert!((295..=300).contains(&used), "measured {measured}: {st:?}");
+            if learned == 0 {
+                assert!(made <= used, "measured {measured}: {st:?}");
+            } else {
+                // The learned source adds its excess over U, 0.1 a tick, and no more.
+                assert!(
+                    (made - used - 300).abs() <= 2,
+                    "measured {measured}: {st:?}"
+                );
+            }
+            e.check_books().expect("books");
+        }
+    }
+
     /// Corpus 6, precision_mechanisms (the exit run's loop factory): the host's only sheet supply
     /// is round the belt loop. Replayed while away it makes what the solve gives, 4/5 of a
     /// mechanism per sheet at a sheet per 64 ticks, never above it.

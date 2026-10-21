@@ -1156,12 +1156,23 @@ impl Part {
             {
                 continue;
             }
-            let mut m = gr.measured;
-            if gr.class == report::class::BOUNDED && gr.lo.is_finite() && gr.hi.is_finite() {
-                m = m.clamp(gr.lo.min(gr.hi), gr.hi.max(gr.lo));
-            }
+            let m = gr.measured;
             let s = m.signum() * (m.abs() - z * gr.sigma.max(0.0)).max(0.0);
-            let r = s - gr.predicted;
+            // A bounded good inside [L, U] is the model's, calibrated (§5.3), never a residual:
+            // goods are tied to each other by recipes, and a residual on one alone books it from
+            // nothing (or loses it) when its partners' windows say otherwise. Only a production
+            // above U is something unmodelled producing: its excess over U is a learned source
+            // (I9, choice G2-57). The unbounded goods (a black box's) take measured minus
+            // predicted, the residual node of G-B13.
+            let r = if gr.class == report::class::BOUNDED {
+                let hi = gr.hi.max(gr.lo);
+                if !hi.is_finite() || s <= hi || s <= 0.0 {
+                    continue;
+                }
+                s - hi
+            } else {
+                s - gr.predicted
+            };
             if r.abs() < NET_EPS {
                 continue;
             }
