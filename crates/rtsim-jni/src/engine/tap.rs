@@ -178,8 +178,11 @@ impl Counters {
         for (id, [units, rows, total, longest]) in ids.zip(by.iter()) {
             if *units > 0 {
                 out.push((format!("unit_nanos_max.{id}"), *longest));
-                out.push((format!("nanos_per_row.{id}"), total / (*rows).max(1)));
                 out.push((format!("rows_per_unit.{id}"), rows / units));
+                if *rows > 0 {
+                    // Over its empty units too: a unit's own cost, spread over the rows.
+                    out.push((format!("nanos_per_row.{id}"), total / rows));
+                }
             }
         }
         out
@@ -264,6 +267,8 @@ pub(super) struct Tap {
     pos: usize,
     cycle_start: Option<Instant>,
     cycles: u64,
+    /// This cycle's units are all encoded and the cycle is counted; the next waits for its period.
+    cycle_counted: bool,
     /// Units and sample regions of the focus pass under way.
     focus: VecDeque<PartKey>,
     sample_queue: VecDeque<RegionKey>,
@@ -534,6 +539,8 @@ enum Job {
     Sample(RegionKey),
     Unit(PartKey),
     Wrap,
+    /// A whole cycle is done within its period: nothing to do until the period is over.
+    Rest,
 }
 
 fn next_job(tap: &mut Tap, flush: bool, now: Instant) -> Job {
@@ -556,7 +563,28 @@ fn next_job(tap: &mut Tap, flush: bool, now: Instant) -> Job {
         tap.pos += 1;
         return Job::Unit(tap.queue[tap.pos - 1]);
     }
+    // At most one cycle a period: the commit takes the mailbox once a period, so a faster cycle
+    // would only encode again what the commit has not taken yet.
+    if !flush && !tap.queue.is_empty() && tap.cycle_start.is_some_and(|t| now - t < PERIOD) {
+        return Job::Rest;
+    }
     Job::Wrap
+}
+
+/// A whole cycle: counted once, with its length (from its first unit to its last).
+fn count_cycle(tap: &mut Tap, c: &Counters, now: Instant) {
+    if tap.cycle_counted {
+        return;
+    }
+    tap.cycle_counted = true;
+    tap.cycles += 1;
+    let ms = tap
+        .cycle_start
+        .map_or(0, |t| now.duration_since(t).as_millis() as u64);
+    tap.mailbox.cycles = tap.cycles;
+    tap.mailbox.cycle_ms = ms;
+    c.cycles.store(tap.cycles, Ordering::Release);
+    c.cycle_ms.store(ms, Ordering::Release);
 }
 
 /// The focus pass: the units whose rows were last in a focus region, and the regions' samples.
@@ -698,6 +726,10 @@ fn run_job(
             tap.mailbox.units.insert(key, enc);
         }
         Job::Wrap => return wrap(tap, source, c, flush, now),
+        Job::Rest => {
+            count_cycle(tap, c, now);
+            return false;
+        }
     }
     true
 }
@@ -758,14 +790,7 @@ fn encode_unit(
 /// False when there is nothing to encode, or a flush's cycle is done.
 fn wrap(tap: &mut Tap, source: &Source, c: &Counters, flush: bool, now: Instant) -> bool {
     if !tap.queue.is_empty() {
-        tap.cycles += 1;
-        let ms = tap
-            .cycle_start
-            .map_or(0, |t| now.duration_since(t).as_millis() as u64);
-        tap.mailbox.cycles = tap.cycles;
-        tap.mailbox.cycle_ms = ms;
-        c.cycles.store(tap.cycles, Ordering::Release);
-        c.cycle_ms.store(ms, Ordering::Release);
+        count_cycle(tap, c, now);
         if flush {
             tap.queue.clear();
             tap.pos = 0;
@@ -801,6 +826,7 @@ fn wrap(tap: &mut Tap, source: &Source, c: &Counters, flush: bool, now: Instant)
     tap.queue = units;
     tap.pos = 0;
     tap.cycle_start = Some(now);
+    tap.cycle_counted = false;
     if tap.queue.is_empty() {
         // Nothing to encode: an empty world's cycle is whole at once.
         tap.cycles = tap.cycles.max(1);
