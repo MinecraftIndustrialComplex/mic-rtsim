@@ -15,6 +15,7 @@ use rtsim_archive::{Archive, ArchiveReader, Dictionary, Pending};
 fn st(obs_seq: u64, wall_ms: u64) -> Stamp {
     Stamp {
         obs_seq,
+        serial: obs_seq,
         tick: obs_seq * 1_000,
         wall_ms,
     }
@@ -228,8 +229,8 @@ fn rollback_cuts_chunks_above_the_selected_generation() {
     // generation 20 and cuts.
     drop(a);
     let mut a = Archive::open(dir.path()).unwrap();
-    assert_eq!(a.cut_above(20).unwrap(), 1);
-    assert_eq!(a.cut_above(20).unwrap(), 0);
+    assert_eq!(a.cut_above_serial(20).unwrap(), 1);
+    assert_eq!(a.cut_above_serial(20).unwrap(), 0);
     assert!(!dir.files().contains(&chunk_name(2)));
     drop(a);
     let mut a = Archive::open(dir.path()).unwrap();
@@ -545,6 +546,51 @@ fn legs_place_movers_at_any_tick_across_chunks() {
             r.entries()[0].header.last_end
         ),
         (150, 1_124)
+    );
+}
+
+#[test]
+fn a_replan_passes_over_the_rest_of_the_old_leg() {
+    let dir = Dir::new("replan");
+    let mut a = Archive::open(dir.path()).unwrap();
+    let mut dict = Dictionary::new();
+    let mut p = Pending::new();
+    // Dragon 1 books a long leg; dragon 2 flies alongside; two legs have no subject.
+    p.push(&leg(&mut dict, 100, 1_024, 1));
+    p.push(&leg(&mut dict, 100, 1_024, 2));
+    p.push(&leg(&mut dict, 100, 1_024, 0));
+    p.push(&leg(&mut dict, 200, 1_024, 0));
+    a.flush(p.take(), st(1, 0), Some(&dict)).unwrap();
+    // A later save: dragon 1 replans at 300 onto a short leg, in a chunk of its own.
+    let mut p = Pending::new();
+    p.push(&leg(&mut dict, 300, 8, 1));
+    a.flush(p.take(), st(2, 0), Some(&dict)).unwrap();
+    let r = ArchiveReader::open(dir.path(), None).unwrap().unwrap();
+    let at = |t| {
+        r.legs_at(t)
+            .unwrap()
+            .into_iter()
+            .map(|l| (l.subject.value, l.t0, l.at(t)))
+            .collect::<Vec<_>>()
+    };
+    // Before the replan, the old leg.
+    assert_eq!(
+        at(228),
+        [
+            (0, 100, (128.0, -128.0)),
+            (0, 200, (28.0, -28.0)),
+            (1, 100, (128.0, -128.0)),
+            (2, 100, (128.0, -128.0))
+        ]
+    );
+    // Both legs cover 304: the replan is where dragon 1 is.
+    assert_eq!(at(304)[2], (1, 300, (512.0, -512.0)));
+    assert_eq!(at(304).len(), 4);
+    // After the short leg ends, the old one does not come back.
+    let later = at(612);
+    assert_eq!(
+        later.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(),
+        [(0, 100), (0, 200), (2, 100)]
     );
 }
 
