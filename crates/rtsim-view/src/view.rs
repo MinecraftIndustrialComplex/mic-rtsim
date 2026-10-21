@@ -30,7 +30,7 @@ use crate::surveyor::SurveyorTiles;
 pub type HeapProbe = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Blocks of margin around a frame's content.
-const PAD: f64 = 64.0;
+pub(crate) const PAD: f64 = 64.0;
 
 /// One save, served.
 pub struct View {
@@ -65,7 +65,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
@@ -85,12 +85,12 @@ pub fn frame_id(saved: &Saved, frame: u32) -> String {
 }
 
 /// The engine's dimension number in an archive frame name (`dim3`).
-fn archive_frame(name: &str) -> Option<u32> {
+pub(crate) fn archive_frame(name: &str) -> Option<u32> {
     name.strip_prefix("dim")?.parse().ok()
 }
 
 /// "minecraft:the_nether" as "The Nether".
-fn frame_label(id: &str, frame: u32) -> String {
+pub(crate) fn frame_label(id: &str, frame: u32) -> String {
     if id.starts_with("dim") && id[3..].parse::<u32>().is_ok() {
         return format!("Dimension {frame}");
     }
@@ -113,7 +113,7 @@ fn slug(id: &str) -> String {
         .collect()
 }
 
-fn union(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
+pub(crate) fn union(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
     match a {
         None => b,
         Some(a) => [

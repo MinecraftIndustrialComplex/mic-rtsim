@@ -10,6 +10,7 @@
 //! - [`surveyor`]: Surveyor's terrain summaries as the base map over HABITAT (V5).
 //! - [`layers`], [`parts`]: rtsim-layers' builders over a save, and the one reader that draws
 //!   parts (a save's or the live view store's) into scenes.
+//! - [`live`]: the live source (V4): the server's view store, its lease, and the save behind it.
 
 pub mod cards;
 pub mod events;
@@ -18,6 +19,7 @@ pub mod industry;
 pub mod journal;
 pub mod keys;
 pub mod layers;
+pub mod live;
 pub mod load;
 pub mod parts;
 pub mod surveyor;
