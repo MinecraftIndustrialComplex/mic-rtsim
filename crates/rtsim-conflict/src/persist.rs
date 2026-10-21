@@ -992,7 +992,8 @@ impl Conflict {
                 self.cells.len()
             ));
         }
-        if self.by_key.values().any(|f| *f as usize >= n) || self.cells.iter().any(|e| e.1 as usize >= n)
+        if self.by_key.values().any(|f| *f as usize >= n)
+            || self.cells.iter().any(|e| e.1 as usize >= n)
         {
             return bad("an index names a faction past the table".into());
         }
@@ -1177,7 +1178,9 @@ impl Conflict {
             }
             let v = r.u16()?;
             if v != META_VERSION {
-                return bad(format!("meta page version {v}, this build reads {META_VERSION}"));
+                return bad(format!(
+                    "meta page version {v}, this build reads {META_VERSION}"
+                ));
             }
             Ok(())
         })();
@@ -1189,8 +1192,7 @@ impl Conflict {
         .map_err(fmt)?;
         r.finish_check().map_err(fmt)?;
         let (bf, bs, bp) = split(budget);
-        c.factions.rows =
-            PagedRows::open(FACTION_TABLE, FACTIONS_PER_PAGE, source.clone(), bf, nf);
+        c.factions.rows = PagedRows::open(FACTION_TABLE, FACTIONS_PER_PAGE, source.clone(), bf, nf);
         c.sources.rows = PagedRows::open(SOURCE_TABLE, SOURCES_PER_PAGE, source.clone(), bs, ns);
         c.places.rows = PagedRows::open(PLACE_TABLE, PLACES_PER_PAGE, source.clone(), bp, np);
         c.store = Some(source);

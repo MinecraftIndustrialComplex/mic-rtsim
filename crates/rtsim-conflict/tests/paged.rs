@@ -133,12 +133,22 @@ fn many_factions_paged_equal_the_resident_run() {
         b.run_to(end, 6);
         assert!(a.c.stats.events > 500, "{} events", a.c.stats.events);
         assert_eq!(a.hashes.len(), 4);
-        assert_eq!(a.hashes, b.hashes, "seed {seed}: the hashes every three days");
+        assert_eq!(
+            a.hashes, b.hashes,
+            "seed {seed}: the hashes every three days"
+        );
         assert_eq!(a.end_hashes(), b.end_hashes(), "seed {seed}: at the end");
         assert_eq!(a.c.stats, b.c.stats);
         let rs = b.c.row_stats();
-        assert!(rs.evictions > 0 && rs.loads > 0, "pages really went: {rs:?}");
-        assert_eq!(a.c.row_stats().evictions, 0, "the resident run pages nothing");
+        assert!(
+            rs.evictions > 0 && rs.loads > 0,
+            "pages really went: {rs:?}"
+        );
+        assert_eq!(
+            a.c.row_stats().evictions,
+            0,
+            "the resident run pages nothing"
+        );
         // At a step boundary after a save the budget holds: nothing is dirty.
         save(&mut b.c, b.store.as_ref().unwrap());
         assert!(

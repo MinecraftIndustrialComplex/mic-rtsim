@@ -153,14 +153,20 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
         Tick(20),
     );
     assert!(c.feud(f, p).unwrap().g.level[SignalKind::Logging.index()] > 0.0);
-    assert_eq!(c.feud(f, s).unwrap().g.level[SignalKind::Logging.index()], 0.0);
+    assert_eq!(
+        c.feud(f, s).unwrap().g.level[SignalKind::Logging.index()],
+        0.0
+    );
     c.signal(
         &mut w,
         log(q, SignalKind::Building, synth::FOREST_POS),
         Tick(25),
     );
     assert!(c.feud(f, q).unwrap().g.level[SignalKind::Building.index()] > 0.0);
-    assert_eq!(c.feud(f, p).unwrap().g.level[SignalKind::Building.index()], 0.0);
+    assert_eq!(
+        c.feud(f, p).unwrap().g.level[SignalKind::Building.index()],
+        0.0
+    );
     // An unowned act reported by the plugin, (0, 0): the settlers'.
     let o = Obs::Signal(boundary::TerritorySignal {
         faction: synth::CAMP,
@@ -172,14 +178,20 @@ fn p14_direct_acts_count_per_player_and_unowned_signals_go_to_the_settlers() {
     });
     c.ingest(&mut w, &mut NoInfrastructure, &o, Tick(30));
     assert!(c.feud(f, s).unwrap().g.level[SignalKind::Mining.index()] > 0.0);
-    assert_eq!(c.feud(f, p).unwrap().g.level[SignalKind::Mining.index()], 0.0);
+    assert_eq!(
+        c.feud(f, p).unwrap().g.level[SignalKind::Mining.index()],
+        0.0
+    );
     // Far from any territory nothing is held against anyone.
     c.signal(
         &mut w,
         log(p, SignalKind::Mining, Pos::new(0, 9_000, 9_000)),
         Tick(40),
     );
-    assert_eq!(c.feud(f, p).unwrap().g.level[SignalKind::Mining.index()], 0.0);
+    assert_eq!(
+        c.feud(f, p).unwrap().g.level[SignalKind::Mining.index()],
+        0.0
+    );
 }
 
 #[test]
