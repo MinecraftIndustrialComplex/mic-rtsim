@@ -36,7 +36,10 @@ use crate::world::{Item, Member, World};
 /// The industry engine behind the boundary: everything industry lives there, and the step calls
 /// it at its observe, simulate, write and save points (docs/industry-boundary.md).
 mod industry;
-pub use industry::{IndustryStats, KEY_LINK as KEY_INDUSTRY_LINK, MODULE_INDUSTRY, glass_offline};
+pub use industry::{
+    IndustryStats, KEY_LINK as KEY_INDUSTRY_LINK, MODULE_INDUSTRY, glass_offline,
+    glass_replay_offline,
+};
 /// Phase 1 behind the boundary: the phase 1 world (settle, trade, travel, knowledge), its
 /// observations, commands and pages (docs/boundary.md §4, §5).
 mod phase1;
