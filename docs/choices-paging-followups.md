@@ -10,8 +10,8 @@ and paged indexes in the kernel, and paging wired into rtsim-jni.
 Before: every market's breakpoints fall on trade-quantum boundaries (`Market::next_breakpoint`
 returns `quantum.at(..)`), so one tick wakes every market, and a market page changed since the
 last save cannot leave. At 4,096 markets under a 4 MiB budget the resident market rows peaked at
-15.8 MB. The lead's decision: stagger market wakes by page, keeping each market's trade cadence
-and shifting only its phase.
+15.8 MB. Ben's decision (DECISIONS.md PF-M, "Stagger by page", 2026-10-21): stagger market
+wakes by page, keeping each market's trade cadence and shifting only its phase.
 
 | # | Choice | Why |
 |---|---|---|
