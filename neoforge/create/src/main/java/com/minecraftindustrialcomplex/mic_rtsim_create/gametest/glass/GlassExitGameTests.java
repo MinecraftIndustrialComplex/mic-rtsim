@@ -152,7 +152,7 @@ public final class GlassExitGameTests {
             run.done = true;
             return;
         }
-        run.last = r == null ? "no complete compile, " + run.rec.size() + " records kept" : r.summary();
+        run.last = r == null ? "no complete compile, " + run.rec.size() + " records kept" : r.summary() + "; " + r.checksum().summary();
         if (run.ticks % 1200 == 0)
             IndustryKit.record("glass exit " + f.name(), "status", run.last);
         if (r == null || r.windowsCompleted() == 0 || r.verdict() == GlassReport.NONE || r.windowStart() < run.phaseStart)

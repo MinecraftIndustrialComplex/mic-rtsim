@@ -154,6 +154,7 @@ public final class DistrictDiagnostics {
             return List.of(Component.literal("  glass: no complete compile yet"));
         List<MutableComponent> out = new java.util.ArrayList<>();
         out.add(Component.literal("  glass: " + r.summary()));
+        out.add(Component.literal("  glass checksum: " + r.checksum().summary()));
         for (GlassReport.Good g : r.goods().stream().limit(MAX_LISTED).toList()) {
             String name = ind.goodName(g.good());
             out.add(Component.literal("    " + g.describe(name == null ? "good " + g.good() : name)));

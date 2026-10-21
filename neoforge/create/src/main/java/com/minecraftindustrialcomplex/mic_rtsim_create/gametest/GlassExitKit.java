@@ -102,6 +102,7 @@ public final class GlassExitKit {
     public static List<String> judge(String test, GlassReport r, java.util.function.IntFunction<String> names) {
         List<String> failed = new ArrayList<>();
         IndustryKit.record(test, "glass", r.summary());
+        IndustryKit.record(test, "glass checksum", r.checksum().summary());
         for (GlassReport.Good g : r.goods()) {
             String name = names.apply(g.good());
             IndustryKit.record(test, "glass good", g.describe(name == null ? "good " + g.good() : name));
