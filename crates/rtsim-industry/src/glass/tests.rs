@@ -1515,6 +1515,13 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
 /// Corpus 6's compile with the andesite funnel moving a sheet per `funnel` ticks onto a feeder belt
 /// that takes an entry per `feeder` ticks (64 at 8 RPM, 8 at 64 RPM).
 fn precision_mechanisms_fed(perm: &[u32; 19], funnel: u32, feeder: u32) -> (Graph, [u32; 5]) {
+    let (b, stores) = precision_builder(perm, funnel, feeder);
+    (b.graph(), stores)
+}
+
+/// [`precision_mechanisms_fed`]'s builder: the stores are inventories 0 (cogs, zinc here), 1
+/// (golden sheets), 2 (nuggets, coal), 3 (large cogs, copper) and 4 (the output).
+fn precision_builder(perm: &[u32; 19], funnel: u32, feeder: u32) -> (B, [u32; 5]) {
     let mut b = B::default();
     let r = b.recipe(
         &[(SHEET, 1), (COAL, 5), (ZINC, 5), (COPPER, 5)],
@@ -1601,7 +1608,7 @@ fn precision_mechanisms_fed(perm: &[u32; 19], funnel: u32, feeder: u32) -> (Grap
     through(&mut b, n(16), n(18));
     b.edge_k(EdgeKind::Belt, n(18), n(17), &[]);
     b.edge_k(EdgeKind::Belt, n(12), n(18), &[]);
-    (b.graph(), [n(11), n(9), n(10), n(13), n(8)])
+    (b, [n(11), n(9), n(10), n(13), n(8)])
 }
 
 #[test]
@@ -2965,6 +2972,60 @@ mod replay_path {
         assert!(end <= 2000, "{st:?}");
         e.advance_to(Tick(60_000));
         assert_eq!(e.sim_stock(D).expect("replaying").get(SHEET), end);
+        e.check_books().expect("books");
+    }
+
+    /// Corpus 6, precision_mechanisms (the exit run's loop factory): the host's only sheet supply
+    /// is round the belt loop. Replayed while away it makes what the solve gives, 4/5 of a
+    /// mechanism per sheet at a sheet per 64 ticks, never above it.
+    #[test]
+    fn a_sequenced_loop_replays_its_mechanisms_while_away() {
+        let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+        let (b, _) = precision_builder(&identity, 9, 64);
+        let mut s = setup(&b, 5);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[
+                &[(ZINC, 1000)],
+                &[(SHEET, 1000)],
+                &[(COAL, 1000)],
+                &[(COPPER, 1000)],
+                &[],
+            ],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        // 6,400 ticks: 100 sheets, 80 mechanisms, less the start's hold of 113 ticks (the
+        // funnel, the feeder, and the whole loop as a bound). Each hold coming due is a
+        // breakpoint, and none is an oscillation: holds key on what the regime could run, so the
+        // host's other inputs are not held again when the sheets' hold comes due.
+        e.advance_to(Tick(6600));
+        let r = e.glass.report(D).expect("a compile");
+        let st = e
+            .sim_stock(D)
+            .unwrap_or_else(|| panic!("{r:?} {:?}", e.glass.districts[&D].fallback));
+        let made = st.get(BRASS);
+        assert!((77..=79).contains(&made), "{st:?}");
+        // A sheet in 4/75 comes back; 5 parts a product, a zinc in 30 back.
+        let rounds = 1000 - st.get(SHEET);
+        assert!((92..=94).contains(&rounds), "{st:?}");
+        assert!((487..=490).contains(&(1000 - st.get(ZINC))), "{st:?}");
+        assert_eq!(r.replay.oscillations, 0);
+        assert!(r.replay.breakpoints <= 8, "{:?}", r.replay);
         e.check_books().expect("books");
     }
 

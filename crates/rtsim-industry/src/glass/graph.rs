@@ -85,13 +85,16 @@ pub struct Graph {
     pub back: Vec<bool>,
     /// Nodes in a component of more than one node, or with an edge to themselves.
     pub cyclic: Vec<bool>,
+    /// Each node's strongly connected component, numbered in topological order.
+    pub component: Vec<u32>,
     pub cycles: u32,
     /// The longest path latency in ticks: edge latencies plus first cycles (§4.4).
     pub longest_latency: u64,
     /// Per node: the longest latency from it to the stores its output reaches (its own cycle, the
     /// first cycle where it has one, then edge latencies and the cycles of the nodes after it, to
     /// the first store on each path): how long a start of the node takes to arrive (§4.4, choice
-    /// G2-6).
+    /// G2-6). A loop's members share a bound: every cycle and internal edge latency of the loop,
+    /// then its slowest exit, which no simple path through it exceeds.
     pub down_latency: Vec<u64>,
     /// Nodes that couple inputs or regimes: machines with a recipe of two inputs or more, nodes
     /// with two goods in-edges or more, and boilers that drive a domain (`glass.solveRoundsMax`).
@@ -210,6 +213,7 @@ impl Graph {
             order: Vec::new(),
             back: Vec::new(),
             cyclic: vec![false; n],
+            component: vec![0; n],
             cycles: 0,
             longest_latency: 0,
             down_latency: vec![0; n],
@@ -367,6 +371,7 @@ impl Graph {
         // A heat edge inside a component is not cut: the heater's duty is then the previous
         // round's (`solve.rs`).
         self.order = order;
+        self.component = comp_of;
     }
 
     /// The longest path latency over the order (back edges dropped).
@@ -404,22 +409,40 @@ impl Graph {
                     .unwrap_or(0)
             })
             .collect();
+        // Components in reverse topological order: `order` keeps each one's members together.
         let mut down = vec![0u64; n];
-        for &v in self.order.iter().rev() {
-            let mut after = 0u64;
-            for &e in self.out_g.of(v) {
-                if self.back[e as usize] {
+        let mut i = self.order.len();
+        while i > 0 {
+            let c = self.component[self.order[i - 1] as usize];
+            let mut j = i;
+            while j > 0 && self.component[self.order[j - 1] as usize] == c {
+                j -= 1;
+            }
+            let members = &self.order[j..i];
+            // A path ends at the first store it reaches, in the loop or out of it.
+            let (mut inner, mut after) = (0u64, 0u64);
+            for &v in members {
+                if self.nodes[v as usize].kind == NodeKind::Store {
                     continue;
                 }
-                let ed = &self.edges[e as usize];
-                let tail = if self.nodes[ed.to as usize].kind == NodeKind::Store {
-                    0
-                } else {
-                    down[ed.to as usize]
-                };
-                after = after.max(u64::from(ed.latency) + tail);
+                inner += cycle[v as usize];
+                for &e in self.out_g.of(v) {
+                    let ed = &self.edges[e as usize];
+                    let w = ed.to as usize;
+                    let lat = u64::from(ed.latency);
+                    if self.nodes[w].kind == NodeKind::Store {
+                        after = after.max(lat);
+                    } else if self.component[w] == c {
+                        inner += lat;
+                    } else {
+                        after = after.max(lat + down[w]);
+                    }
+                }
             }
-            down[v as usize] = cycle[v as usize] + after;
+            for &v in members {
+                down[v as usize] = inner + after;
+            }
+            i = j;
         }
         self.down_latency = down;
         for &v in &self.order {
@@ -635,9 +658,29 @@ mod tests {
         assert_eq!(g.cyclic, vec![false, true, true, false]);
         assert_eq!(g.cycles, 1);
         assert_eq!(g.longest_latency, 13);
-        // Downstream: the back edge is dropped, and no store ends a path here.
-        assert_eq!(g.down_latency, vec![13, 8, 1, 0]);
+        // Downstream, no store ending a path here: the loop {1, 2} counts all its own latency (7
+        // and 3, a bound on any path through it) and then its exit (1).
+        assert_eq!(g.component, vec![0, 1, 1, 2]);
+        assert_eq!(g.down_latency, vec![16, 11, 11, 0]);
         let _ = NONE;
+    }
+
+    #[test]
+    fn a_path_through_a_loop_ends_at_its_store() {
+        // A machine 1 taking from store 0 and putting back into it (2 then 3 ticks), and store 0
+        // also feeding 2 -> store 3: the machine's path ends at the store, not past it.
+        let mut nodes: Vec<GraphNode> = (0..4).map(node).collect();
+        nodes[0].kind = NodeKind::Store;
+        nodes[3].kind = NodeKind::Store;
+        let edges = vec![
+            edge(0, 0, 1, 2),
+            edge(1, 1, 0, 3),
+            edge(2, 0, 2, 4),
+            edge(3, 2, 3, 1),
+        ];
+        let g = Graph::build(end(4, 4), nodes, edges, vec![], vec![]).expect("valid");
+        assert_eq!(g.component[0], g.component[1]);
+        assert_eq!((g.down_latency[1], g.down_latency[2]), (3, 1));
     }
 
     #[test]
