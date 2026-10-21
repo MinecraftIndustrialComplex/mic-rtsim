@@ -840,7 +840,9 @@ public final class GlassCalibrationGameTests {
      * lava), {@code a} the arm (its targets set once all exist). An operation is the output chest gaining
      * items. Model: {@code fanTicks(16) + chuteHandOff(gravity, armMoveTicks, false)}, the mean of a
      * three-actor loop: 159.5 at 256 RPM, where {@code cfa} (a cyclic order) should give 159 and {@code afc}
-     * (the reverse) 160.
+     * (the reverse) 160. Measured (stub, one run): 256 RPM cfa 159.000, afc 160.000 (single periods 157 to
+     * 162, centred on those); 64 RPM cfa 170.824, afc 172.118 against 171 and 172 (single periods two
+     * groups, 165 to 167 and 174 to 176, the arm's lazy-tick phase; 17 periods, so a few tenths of noise).
      */
     static Run fanDepotArm(GameTestHelper h, int target, int rpm, String order) {
         int time = AllConfigs.server().kinetics.fanProcessingTime.get();
