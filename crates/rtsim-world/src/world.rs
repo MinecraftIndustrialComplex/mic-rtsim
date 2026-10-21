@@ -45,8 +45,6 @@ pub type MarketTable = rtsim_kernel::lazy::PagedLazyTable<Market, MarketCodec>;
 
 /// The page table of the market rows (docs/choices-paging-modules.md, "Page tables").
 pub const TABLE_MARKETS: u16 = 0x5010;
-/// The page table of a paged world's meta page (id 0): everything but the market rows.
-pub const TABLE_META: u16 = 0x5012;
 /// Markets per page. PLACEHOLDER 1: a market row is 1 to 7 KB resident (its goods), about a
 /// page already, and a market touched dirties only itself (docs/choices-paging-followups.md PF3).
 pub const MARKETS_PER_PAGE: u64 = 1;

@@ -13,7 +13,10 @@ use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_ecology::tunables::PreyKind;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::{Decode, Encode};
-use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
+
+/// The meta page's key: rtsim-jni's herds page (table 0x4800, id 0).
+const META: PageKey = PageKey::new(0x4800, 0);
 use rtsim_settle::Pos;
 use rtsim_travel::legs::LegIndex;
 use std::sync::{Arc, RwLock};
@@ -424,7 +427,7 @@ fn store(tag: &str) -> (Store, std::path::PathBuf) {
 /// A paged save: the meta and the changed row pages in one commit, then the budget.
 fn save_paged(h: &mut Herds, store: &Store) {
     let mut b = SaveBatch::new();
-    let t = h.save_paged(&mut b);
+    let t = h.save_paged(&mut b, META);
     store.write().unwrap().commit(b, 0).expect("commit");
     h.saved(t);
     h.enforce_budget();
@@ -456,7 +459,7 @@ proptest! {
         save_paged(&mut b.h, &st);
         let mut c = Rig {
             legs: LegIndex::from_bytes(&b.legs.to_bytes()).expect("legs load"),
-            h: Herds::open_paged(HerdTunables::default(), Box::new(Valley::default()), st.clone(), BUDGET)
+            h: Herds::open_paged(st.clone(), BUDGET, META, HerdTunables::default(), Box::new(Valley::default()))
                 .expect("herds open"),
             fake: b.fake.clone(),
         };
@@ -768,7 +771,7 @@ fn quiet_save_bytes(n: usize) -> usize {
     let mut bytes = 0;
     for _ in 0..2 {
         let mut b = SaveBatch::new();
-        let t = h.save_paged(&mut b);
+        let t = h.save_paged(&mut b, META);
         bytes = b.raw_bytes();
         st.write().unwrap().commit(b, 0).expect("commit");
         h.saved(t);

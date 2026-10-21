@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use proptest::prelude::*;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::build::Genesis;
 use rtsim_trade::{GoodId, MILLI};
@@ -272,10 +272,13 @@ fn tmpdir(tag: &str) -> std::path::PathBuf {
 
 type Store = Arc<RwLock<PageStore>>;
 
+/// The meta page's key: where rtsim-jni keeps the world's (table 0x5001, id 0, PF12).
+const META: PageKey = PageKey::new(0x5001, 0);
+
 /// A paged save: the meta page and the changed market pages in one commit, then the budget.
 fn save_paged(w: &mut World, store: &Store) {
     let mut b = SaveBatch::new();
-    let t = w.save_paged(&mut b);
+    let t = w.save_paged(&mut b, META);
     store.write().unwrap().commit(b, 0).expect("commit");
     w.saved(t);
     w.enforce_budget();
@@ -311,7 +314,7 @@ proptest! {
                 save_paged(&mut b, &store);
                 let (goods, gids) = synth::goods();
                 let book = synth::recipes(&gids);
-                b = World::open_paged(cfg(seed), goods, book, store.clone(), BUDGET)
+                b = World::open_paged(store.clone(), BUDGET, META, cfg(seed), goods, book)
                     .expect("the pages open");
                 a.run_until(Tick(t.0 - 1));
                 prop_assert_eq!(b.state_hash(), a.state_hash());
