@@ -1,0 +1,6 @@
+{
+  "group": "lamp",
+  "culture": "ribbit",
+  "cap": { "per_residents": 2 },
+  "variants": [ { "template": "ribbits:decor/lamp_post", "processors": "ribbits:main" } ]
+}

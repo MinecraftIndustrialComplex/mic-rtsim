@@ -26,6 +26,8 @@ public final class Obs {
     public static final int VILLAGE_CENSUS = 0x0020;
     /** Phase 1 (latest-wins): vanilla's own gossip in a loaded village, read back on census. */
     public static final int VILLAGE_GOSSIP = 0x0021;
+    /** Phase 1 (latest-wins): the works catalogue (SINK.md §4.2), sent once a session. */
+    public static final int WORK_CATALOG = 0x0022;
 
     public static final int MATERIALIZED = 0x0100;
     public static final int SPAWN_REJECTED = 0x0101;
@@ -71,6 +73,8 @@ public final class Obs {
     public static final int DICT_TEMPLATE = 7;
     /** A structure processor list, e.g. {@code ribbits:main}. */
     public static final int DICT_PROCESSORS = 8;
+    /** A works catalogue kind (SINK.md §4.2), e.g. {@code mic_rtsim:plains_lamp}. */
+    public static final int DICT_WORK = 9;
 
     /**
      * SESSION_START. The first record of a session's first hand-over. The two journal fields are
@@ -511,6 +515,39 @@ public final class Obs {
 
         /** The meeting point is a meeting POI (a bell) the census found, not the start piece's centre. */
         public static final int FLAG_MEETING_POI = 1;
+    }
+
+    /**
+     * WORK_CATALOG (latest-wins, aux 0; sent as a preamble once a session and after a data reload). The works catalogue (SINK.md §4.2) in one record, each
+     * template's items read from its palette. A kind is {@link #DEF} bytes, then its variants; a
+     * variant is {@link #VARIANT} bytes, then its items.
+     */
+    public static final class WorkCatalog {
+        public static final int N = 8;            // u32 kinds
+        public static final int DEFS = 16;
+        public static final int DEF = 32;
+        public static final int D_ID = 0;         // u32 dictionary (DICT_WORK)
+        public static final int D_GROUP = 4;      // u32: 0 lamp, 1 decor, 2 golem
+        public static final int D_CULTURE = 8;    // u32 dictionary (DICT_CULTURE)
+        public static final int D_STYLE = 12;     // u32 dictionary (DICT_STRUCTURE), 0 = every village of the culture
+        public static final int D_CAP = 16;       // u32: CAP_*
+        public static final int D_CAP_N = 20;     // u32
+        public static final int D_VARIANTS = 24;  // u32
+        public static final int VARIANT = 24;
+        public static final int V_PLACE = 0;      // u32: PLACE_*
+        public static final int V_WHAT = 4;       // u32 dictionary: DICT_TEMPLATE or DICT_BODY
+        public static final int V_PROCESSORS = 8; // u32 dictionary (DICT_PROCESSORS), 0 = none
+        public static final int V_BLOCKS = 12;    // u32 blocks placed (bodies spawned)
+        public static final int V_ITEMS = 16;     // u32 items n, then n x (u32 item dictionary id, u32 count)
+        public static final int ITEM = 8;
+
+        public static final int GROUP_LAMP = 0;
+        public static final int GROUP_DECOR = 1;
+        public static final int GROUP_GOLEM = 2;
+        public static final int CAP_PER_RESIDENTS = 1;
+        public static final int CAP_FIXED = 2;
+        public static final int PLACE_TEMPLATE = 1;
+        public static final int PLACE_BODY = 2;
     }
 
     /** VILLAGE_GOSSIP (latest-wins). Vanilla's own gossip about players, summed over the census's residents. */

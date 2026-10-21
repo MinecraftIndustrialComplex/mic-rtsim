@@ -285,5 +285,7 @@ public final class Cmd {
 
         /** Spawn at the resident slot of house {@code HOUSE}; wait for the house if it is still being built. */
         public static final int FLAG_AT_HOUSE = 1;
+        /** Spawn at the village's meeting point (a bought work's body: SINK.md's golems). */
+        public static final int FLAG_AT_VILLAGE = 2;
     }
 }

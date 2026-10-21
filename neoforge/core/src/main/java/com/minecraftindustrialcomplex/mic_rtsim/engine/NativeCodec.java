@@ -75,6 +75,12 @@ import java.util.UUID;
  *   <li>28 HERD_FOUND: str name, str species, u32 dimension (Java's id), i32 x, i32 z, u64 count, u64
  *       seed (0: the herds' own). A herd founded there when the engine takes the order (an engine
  *       opened with {@code FLAG_TEST} only: nothing in the game founds herds yet).</li>
+ *   <li>30 WORKS_GRANT: u64 village, i64 amount. Coin (thousandths of the village's own currency) put
+ *       straight into a phase 1 village's works purse (SINK.md), ledgered as minted (an engine opened
+ *       with {@code FLAG_TEST} only).</li>
+ *   <li>31 WORKS_RAID: u64 village, u32 tribute (0 or 1). A dragon raided the village: it buys golems
+ *       first for a season, and with tribute its purse is the dragon's (an engine opened with
+ *       {@code FLAG_TEST} only).</li>
  * </ul>
  *
  * <p><b>The received log</b>: entries of u64 handover, u64 obsSeq (0 if not journaled), u32 flags
@@ -108,6 +114,9 @@ final class NativeCodec {
     // 26: SHIP_COMMAND (no Java encoder: no ships plugin yet).
     static final int HERD_COMMAND = 27;
     static final int HERD_FOUND = 28;
+    // 29: CONFLICT_COMMAND (no Java encoder here).
+    static final int WORKS_GRANT = 30;
+    static final int WORKS_RAID = 31;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -325,6 +334,20 @@ final class NativeCodec {
         Orders phase1Advance(long ticks) {
             begin(P1_ADVANCE);
             u64(ticks);
+            return end();
+        }
+
+        Orders worksGrant(long village, long amount) {
+            begin(WORKS_GRANT);
+            u64(village);
+            u64(amount);
+            return end();
+        }
+
+        Orders worksRaid(long village, boolean tribute) {
+            begin(WORKS_RAID);
+            u64(village);
+            u32(tribute ? 1 : 0);
             return end();
         }
 
