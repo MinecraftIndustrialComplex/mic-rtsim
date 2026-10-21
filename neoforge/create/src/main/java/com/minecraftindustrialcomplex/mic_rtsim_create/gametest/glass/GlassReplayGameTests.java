@@ -14,6 +14,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassReport;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.GlassExitKit;
+import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.GlassKit;
 import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -491,6 +492,7 @@ public final class GlassReplayGameTests {
             }
         }
         IndustryKit.record(run.test, "eligible", run.eligibleBy + " at " + run.now() + ", " + since + " ticks after the build");
+        dumpCompile(run);
         snapshot1(run, fr);
         leave(run);
     }
@@ -863,7 +865,53 @@ public final class GlassReplayGameTests {
     }
 
     /** Engine notes logged per test at most; the rest are counted. */
-    static final int NOTES = 40;
+    static final int NOTES = 400;
+
+    /**
+     * The far copy's compile as the engine got it, one {@code graph} line per node, edge, recipe and domain
+     * ({@link GlassExitKit#dump}), and the edges on a cycle of the graph (each edge u to v where v reaches u):
+     * the compile record does not say which edges the solver takes as back edges, but a back edge is one of
+     * these.
+     */
+    static void dumpCompile(Run run) {
+        GlassKit.Graph g = GlassKit.latest(run.fd, run.rec.records());
+        if (g == null) {
+            IndustryKit.record(run.test, "graph", "no compile received");
+            return;
+        }
+        for (String line : GlassExitKit.dump(g))
+            IndustryKit.record(run.test, "graph", line);
+        int n = g.nodes().size();
+        List<List<Integer>> out = new ArrayList<>();
+        for (int i = 0; i < n; i++)
+            out.add(new ArrayList<>());
+        for (GlassKit.Edge e : g.edges())
+            if (e.from() >= 0 && e.from() < n && e.to() >= 0 && e.to() < n)
+                out.get(e.from()).add(e.to());
+        List<String> cyc = new ArrayList<>();
+        for (GlassKit.Edge e : g.edges()) {
+            if (e.from() < 0 || e.from() >= n || e.to() < 0 || e.to() >= n)
+                continue;
+            boolean[] seen = new boolean[n];
+            java.util.ArrayDeque<Integer> q = new java.util.ArrayDeque<>();
+            q.add(e.to());
+            seen[e.to()] = true;
+            boolean back = false;
+            while (!q.isEmpty() && !back) {
+                int u = q.poll();
+                if (u == e.from())
+                    back = true;
+                for (int v : out.get(u))
+                    if (!seen[v]) {
+                        seen[v] = true;
+                        q.add(v);
+                    }
+            }
+            if (back)
+                cyc.add("e" + e.index() + " n" + e.from() + "->n" + e.to());
+        }
+        IndustryKit.record(run.test, "graph cycles", cyc.isEmpty() ? "none: the graph is acyclic" : cyc.size() + " edges on a cycle: " + cyc);
+    }
 
     /**
      * Logs the engine's notes about the far district since the first snapshot and says why it replayed

@@ -171,6 +171,71 @@ public final class IndustryGameTests {
     }
 
     /**
+     * I7, I8: the engine knows a district chunk is loaded only from IND_CHUNK_LOADED. A district made in chunks
+     * that are already loaded (their ChunkEvent.Load came before the district) reports each of them after its
+     * declaration, and one that grows reports the chunk it gained, once: the chunks with an IND_CHUNK_LOADED
+     * since the test began are Java's loaded set after the detection and after the change. Without them a
+     * partly loaded district (one chunk not ticking) replayed its running chunks too, and its reconciles waited
+     * for a load that never came (the G2 exit test's partial variant).
+     */
+    @GameTest(template = YARD, batch = "industry_24", timeoutTicks = 400)
+    public static void aDistrictMadeInLoadedChunksReportsThemLoaded(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        long start = helper.getLevel().getGameTime();
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos chestPos = new BlockPos(bx - 1, y, z);
+        set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        BlockState shaft = block("create:shaft").defaultBlockState().setValue(BlockStateProperties.AXIS, Direction.Axis.X);
+        for (int x = bx; x <= bx + 3; x++)
+            set(helper, new BlockPos(x, y, z), shaft);
+        playerPlaced(helper, chestPos);
+        long[] id = {0};
+        BlockPos far = new BlockPos(bx + 16, y, z);
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, chestPos);
+                    check("the chest's chunk is in a district", d != null);
+                    check("the district has the two chunks the shaft touches, not " + d.chunks.size(), d.chunks.size() == 2);
+                    id[0] = d.id;
+                    checkLoadedReported(d, start, 2);
+                })
+                .thenExecute(() -> {
+                    record("aDistrictMadeInLoadedChunksReportsThemLoaded", "detected", ind().district(id[0]) + ", loads "
+                            + loadsReported(id[0], start));
+                    for (int x = bx + 4; x <= bx + 16; x++)
+                        set(helper, new BlockPos(x, y, z), shaft);
+                    ind().districts().rescanNow(helper.getLevel());
+                })
+                .thenWaitUntil(() -> {
+                    District d = ind().district(id[0]);
+                    check("the district grew to three chunks, not " + d.chunks.size(), d.chunks.size() == 3 && d.chunks.contains(chunk(far)));
+                    checkLoadedReported(d, start, 3);
+                    record("aDistrictMadeInLoadedChunksReportsThemLoaded", "grown", d + ", loads " + loadsReported(d.id, start));
+                })
+                .thenSucceed();
+    }
+
+    /** The district's IND_CHUNK_LOADED since {@code from}: chunk to how many times it was reported. */
+    private static Map<Long, Integer> loadsReported(long district, long from) {
+        Map<Long, Integer> out = new HashMap<>();
+        for (ByteBuffer r : received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, district))
+            if (r.getLong(Obs.GAME_TIME) >= from)
+                out.merge(ChunkPos.asLong(r.getInt(IndRecords.ChunkLoaded.X), r.getInt(IndRecords.ChunkLoaded.Z)), 1, Integer::sum);
+        return out;
+    }
+
+    /** Every chunk of {@code d} is loaded (Java's set), each reported loaded exactly once since {@code from}. */
+    private static void checkLoadedReported(District d, long from, int chunks) {
+        check("Java counts " + chunks + " loaded chunks, not " + ind().districts().loadedChunks(d), ind().districts().loadedChunks(d) == chunks);
+        Map<Long, Integer> loads = loadsReported(d.id, from);
+        for (long c : d.chunks)
+            check("chunk " + new ChunkPos(c) + " of the district was reported loaded once, not " + loads.getOrDefault(c, 0) + " times",
+                    loads.getOrDefault(c, 0) == 1);
+        check("only the district's chunks were reported loaded: " + loads.keySet(), d.chunks.containsAll(loads.keySet()));
+    }
+
+    /**
      * A real Create station on a real track graph: the district is named after it (GlobalStation.name),
      * and IND_STATION carries the station's id, district and name.
      */
