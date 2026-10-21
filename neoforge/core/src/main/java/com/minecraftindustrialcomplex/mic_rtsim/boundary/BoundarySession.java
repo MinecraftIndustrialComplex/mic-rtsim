@@ -36,6 +36,8 @@ public final class BoundarySession {
     private final long gameTimeAtStart;
     private final long journalFirstAtStart;
     private final long worldNextAtStart;
+    /** The engine's pages lack observations the journal no longer holds ({@link #observationsLost()}). */
+    private final boolean observationsLost;
     private long durableReported;
     private volatile long durablePending;
 
@@ -62,6 +64,7 @@ public final class BoundarySession {
         this.journalFirstAtStart = journal.firstSeq();
         this.worldNextAtStart = journal.nextObsSeq();
         this.start = engine.start(journal.lastAppliedCmdSeq());
+        this.observationsLost = observationsLost(start.pagesObsSeq(), journalFirstAtStart, worldNextAtStart);
         journal.reserveBeyond(start.pagesObsSeq());
         this.replayUpTo = journal.nextObsSeq() - 1;
         this.handover = new Handover(engine);
@@ -81,6 +84,31 @@ public final class BoundarySession {
 
     public SessionStart start() {
         return start;
+    }
+
+    /**
+     * True when the engine's pages lack observations the journal no longer holds: the pages were deleted
+     * (SRV2's sim reset, {@code world/rtsim/} removed while the world kept its journal) or are older than
+     * the world's journal (restored from another backup). The engine says the same in its log ("the
+     * journal starts at observation N but the pages only include M"). What the bridge announced once and
+     * remembers in the world as announced (a district's declaration, a village's adoption, a base's mark)
+     * is then unknown to the engine, so the modules announce it again at this session's start.
+     */
+    public boolean observationsLost() {
+        return observationsLost;
+    }
+
+    /**
+     * The kernel's {@code Replay::reconcile} on Java's side: observations are lost when the journal's
+     * first sequence ({@link Journal#firstSeq}, 0 for an empty journal, which the engine reads as the
+     * world's next sequence) is past the one after the pages, unless the pages are ahead of the world
+     * save (P29), which loses nothing.
+     */
+    public static boolean observationsLost(long pagesObsSeq, long journalFirst, long worldNext) {
+        if (worldNext <= pagesObsSeq)
+            return false;
+        long first = journalFirst == 0 ? worldNext : journalFirst;
+        return first > pagesObsSeq + 1;
     }
 
     /** Called with each acknowledgement (the highest sequence the engine's saved pages include). */
