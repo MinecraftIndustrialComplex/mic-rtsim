@@ -182,6 +182,15 @@ public final class NativeEngine implements ScriptedEngine {
     /** The glass check of a record stream on a fresh industry engine; null without a complete compile. */
     private static native double[] nGlassOffline(byte[] records, long district);
 
+    /** The chunk reconciles a fresh industry engine would send a district over a record stream: (inventory, good, delta) triples. */
+    private static native long[] nGlassReplayOffline(byte[] records, long district);
+
+    /** The industry engine's log lines about a district from a tick on, joined by newlines; "" when none. */
+    private static native String nIndustryNotes(long handle, long district, long from);
+
+    /** The same lines from a fresh industry engine over a record stream. */
+    private static native String nGlassNotesOffline(byte[] records, long district, long from);
+
     /** A hold on the engine's buffer memory for one Java buffer; {@link #nReleaseBuffers} gives it back. */
     private static native long nHoldBuffers(long handle);
 
@@ -616,6 +625,42 @@ public final class NativeEngine implements ScriptedEngine {
     public static double[] glassOffline(byte[] records, long district) {
         ensureLoaded();
         return nGlassOffline(records, district);
+    }
+
+    /**
+     * The replay of a record stream (as {@link #glassOffline} takes it) on a fresh industry engine: every
+     * IND_CHUNK_RECONCILE that engine would send {@code district}, once per op id, flattened to triples
+     * {@code (inventory, good, delta)} at indices {@code 3i, 3i + 1, 3i + 2}: the inventory's index in the
+     * district, the good's dictionary id (Java's DICT_GOOD id, as {@code Industry.goodName} reads it) and the
+     * signed count. Empty when there are none. Nothing applies them: the stub engine's G2 exit GameTests add
+     * them to what the world did. Loads the natives; throws IllegalStateException when they cannot load.
+     */
+    public static long[] glassReplayOffline(byte[] records, long district) {
+        ensureLoaded();
+        return nGlassReplayOffline(records, district);
+    }
+
+    /**
+     * The industry engine's own log lines about {@code district} from game time {@code from} on, oldest
+     * first, each {@code "<tick> <words>"} (replay starts, breakpoints, "glass replay falls back: ..."):
+     * the G2 exit GameTests log why a district replayed the way it did. Empty unless the engine keeps its
+     * log (test sessions). Between steps.
+     */
+    public synchronized List<String> industryNotes(long district, long from) {
+        return lines(nIndustryNotes(live(), district, from));
+    }
+
+    /**
+     * {@link #industryNotes} of the fresh industry engine of {@link #glassOffline} over a record stream (the
+     * stub engine's G2 exit GameTests). Loads the natives; throws IllegalStateException when they cannot load.
+     */
+    public static List<String> glassNotesOffline(byte[] records, long district, long from) {
+        ensureLoaded();
+        return lines(nGlassNotesOffline(records, district, from));
+    }
+
+    private static List<String> lines(String joined) {
+        return joined == null || joined.isEmpty() ? List.of() : List.of(joined.split("\n"));
     }
 
     /** {@link #habitatInfo}'s fields (docs/boundary.md §10, {@code Engine::habitat_info}). */

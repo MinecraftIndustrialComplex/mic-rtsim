@@ -777,7 +777,8 @@ public final class Districts {
                 for (long c : chunks)
                     if (level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)) != null)
                         ls.add(c);
-                loaded.put(id, ls);
+                LongOpenHashSet before = loaded.put(id, ls);
+                reportLoaded(level, d, ls, before, now);
                 ind.sampler.revisionChanged(d);
             }
         }
@@ -1160,8 +1161,23 @@ public final class Districts {
         loaded.put(d.id, ls);
         d.revision++;
         declare(d, ind.gameTime());
+        reportLoaded(level, d, ls, null, ind.gameTime());
         d.loadDirty = true;
         return d;
+    }
+
+    /**
+     * The engine learns that a district chunk is loaded from IND_CHUNK_LOADED alone (I7, I8), sent at its
+     * ChunkEvent.Load and at a session start. A chunk that was already loaded when it joined the district
+     * (a new district, or one that grew) had its load before the district existed: it reports now, after
+     * the declaration, as at a session start. Without it the engine counts the chunk unloaded until it next
+     * loads: a partly loaded district replays its running chunks too, and their reconciles wait for a load
+     * that never comes. Chunks the district already had ({@code before}) reported at their own load.
+     */
+    private void reportLoaded(ServerLevel level, District d, LongOpenHashSet chunks, LongOpenHashSet before, long time) {
+        for (long c : chunks)
+            if (before == null || !before.contains(c))
+                ind.reconciler.chunkLoaded(level, level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)), d, time);
     }
 
     /** GameTests: adds a chunk to a district as if detection had kept it (an unloaded member chunk). */

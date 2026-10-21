@@ -949,6 +949,24 @@ impl Engine {
             .report(DistrictId(district))
             .map(|r| r.to_f64s())
     }
+
+    /// The industry engine's own log lines about `district` from tick `from` on, oldest first,
+    /// one `"<tick> <words>"` per line (replay starts, breakpoints, "glass replay falls back: ..."):
+    /// the G2 exit GameTests log why a district replayed the way it did. Empty unless the engine
+    /// keeps its log (test sessions). Between steps.
+    pub fn industry_notes(&self, district: u64, from: u64) -> Vec<String> {
+        let st = lock(&self.state);
+        notes(&st.industry.engine, district, from)
+    }
+}
+
+fn notes(engine: &Industry, district: u64, from: u64) -> Vec<String> {
+    engine
+        .log
+        .iter()
+        .filter(|e| e.district == district && e.tick >= from)
+        .map(|e| format!("{} {}", e.tick, e.what))
+        .collect()
 }
 
 /// The glass check offline, for the stub engine's GameTests (choice GB80): a fresh industry engine
@@ -957,7 +975,58 @@ impl Engine {
 /// the link does, and returns `district`'s report as [`Engine::glass_report`] would. The engine
 /// is deterministic, so the stub's run is checked by the same code as the native one.
 pub fn glass_offline(stream: &[u8], district: u64) -> Result<Option<Vec<f64>>, String> {
+    // Commands go nowhere offline: nothing applies them, as in G1 nothing changes the world.
+    let engine = offline(stream, |_| {})?;
+    Ok(engine
+        .glass
+        .report(DistrictId(district))
+        .map(|r| r.to_f64s()))
+}
+
+/// The replay offline, for the stub engine's G2 exit GameTests: the engine of [`glass_offline`]
+/// over the same `stream`, and every IND_CHUNK_RECONCILE it would have sent `district`, once per
+/// op id (a pending reconcile is resent at the chunk's next load with its op id), as flat triples
+/// `(inventory, good, delta)`: the inventory's index in the district, the good's dictionary id
+/// and the signed count. Nothing applies them offline, so the engine keeps every one pending; the
+/// world's IND_RECONCILE_RESULTs in the stream close them as on the native engine. After the last
+/// record the engine steps one tick, so a reconcile planned for the step after a chunk's load
+/// (coverage settles once a tick's records are in, I7) is not missed.
+pub fn glass_replay_offline(stream: &[u8], district: u64) -> Result<Vec<i64>, String> {
+    let d = DistrictId(district);
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut take = |cmds: Vec<Cmd>| {
+        for c in cmds {
+            if let Cmd::ChunkReconcile(r) = c
+                && r.district == d
+                && seen.insert(r.op)
+            {
+                for x in &r.deltas {
+                    out.extend([i64::from(x.inventory), i64::from(x.good.0), x.delta]);
+                }
+            }
+        }
+    };
+    let mut engine = offline(stream, &mut take)?;
+    let next = engine.now() + 1;
+    engine.advance_to(next);
+    take(engine.drain_commands());
+    Ok(out)
+}
+
+/// The engine log offline: [`Engine::industry_notes`] of the engine of [`glass_offline`] over
+/// `stream`, for the stub engine's G2 exit GameTests.
+pub fn glass_notes_offline(stream: &[u8], district: u64, from: u64) -> Result<Vec<String>, String> {
+    let engine = offline(stream, |_| {})?;
+    Ok(notes(&engine, district, from))
+}
+
+/// The record loop of [`glass_offline`] and [`glass_replay_offline`]: a fresh engine ingests every
+/// industry record of `stream` and `each` gets the commands drained after each one. The engine
+/// keeps its log, as in a test session ([`glass_notes_offline`]); the log changes nothing else.
+fn offline(stream: &[u8], mut each: impl FnMut(Vec<Cmd>)) -> Result<Industry, String> {
     let mut engine = Industry::new(0, Tunables::default(), Tick::ZERO);
+    engine.log_enabled = true;
     let mut started = false;
     let mut at = 0;
     while at < stream.len() {
@@ -1003,13 +1072,9 @@ pub fn glass_offline(stream: &[u8], district: u64) -> Result<Option<Vec<f64>>, S
             engine.advance_to(t.at);
         }
         engine.ingest(&t);
-        // Commands go nowhere offline: nothing applies them, as in G1 nothing changes the world.
-        engine.drain_commands();
+        each(engine.drain_commands());
     }
-    Ok(engine
-        .glass
-        .report(DistrictId(district))
-        .map(|r| r.to_f64s()))
+    Ok(engine)
 }
 
 // ---- tests ----------------------------------------------------------------------------------
@@ -1048,6 +1113,12 @@ mod tests {
         stream.extend_from_slice(&[0x01, 0x00, 0x08, 0x00, 0, 0, 0, 0]);
         assert_eq!(glass_offline(&stream, 5), Ok(None));
         assert!(glass_offline(&stream[..stream.len() - 3], 5).is_err());
+        // The replay offline reads the same loop: no district, no reconcile (tests/industry.rs runs
+        // a mill through it).
+        assert_eq!(glass_replay_offline(&stream, 5), Ok(Vec::new()));
+        assert!(glass_replay_offline(&stream[..stream.len() - 3], 5).is_err());
+        assert_eq!(glass_notes_offline(&stream, 5, 0), Ok(Vec::new()));
+        assert!(glass_notes_offline(&stream[..stream.len() - 3], 5, 0).is_err());
     }
 
     #[test]

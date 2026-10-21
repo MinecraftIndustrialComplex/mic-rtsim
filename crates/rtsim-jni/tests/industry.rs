@@ -272,6 +272,77 @@ fn a_mill_learns_replays_and_reconciles_through_the_native_engine() {
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// Per good, the deltas of a district's chunk reconciles, once per op id.
+fn reconcile_sums<'a>(
+    cmds: impl IntoIterator<Item = &'a Cmd>,
+) -> std::collections::BTreeMap<u32, i64> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut sums = std::collections::BTreeMap::new();
+    for c in cmds {
+        if let Cmd::ChunkReconcile(r) = c
+            && r.district == MILL
+            && seen.insert(r.op)
+        {
+            for x in &r.deltas {
+                *sums.entry(x.good.0).or_insert(0) += x.delta;
+            }
+        }
+    }
+    sums
+}
+
+/// The replay offline (`glass_replay_offline`, the stub engine's G2 exit GameTests): a fresh
+/// engine over the records the native engine received sends the mill the reconcile the native
+/// engine sent, give or take a batch (it steps at each record's time, the link at each hand-over).
+#[test]
+fn the_offline_replay_sends_the_reconciles_the_native_engine_sent() {
+    let (_dir, mut j) = mill_engine("ind-replay-offline");
+    let ids = mill(
+        &mut j,
+        20_000,
+        &[(0.0, true), (1.0, false), (3.0, true)],
+        true,
+    );
+    let mut stream = Vec::new();
+    let mut keep = |j: &Java| {
+        for r in j.received() {
+            if !r.skipped {
+                stream.extend_from_slice(&r.bytes);
+            }
+        }
+    };
+    while j.mc().t < day(3.0) + 2_000 {
+        let to = j.mc().t + 1_000;
+        j.mc_run_until(to);
+        keep(&j);
+    }
+    let live = reconcile_sums(j.ind_commands.iter().map(|c| &c.2));
+    assert_eq!(industry(&j.e, |ie| ie.stats.reconciles), 1);
+    assert!(
+        live.get(&ids.bar.0).copied().unwrap_or(0) > 3_000,
+        "two days of bars: {live:?}"
+    );
+    let flat =
+        rtsim_jni::engine::glass_replay_offline(&stream, MILL.0).expect("the stream decodes");
+    assert_eq!(flat.len() % 3, 0);
+    let mut offline = std::collections::BTreeMap::new();
+    for t in flat.as_chunks::<3>().0 {
+        assert!(t[0] == 0 || t[0] == 1, "the mill's two vaults: {t:?}");
+        *offline.entry(t[1] as u32).or_insert(0) += t[2];
+    }
+    eprintln!("live {live:?}, offline {offline:?}, {} bytes", stream.len());
+    for g in live.keys().chain(offline.keys()) {
+        let (l, o) = (
+            live.get(g).copied().unwrap_or(0),
+            offline.get(g).copied().unwrap_or(0),
+        );
+        assert!((l - o).abs() <= 8, "good {g}: live {l}, offline {o}");
+    }
+    // A cut stream is refused, not replayed in part.
+    assert!(rtsim_jni::engine::glass_replay_offline(&stream[..stream.len() - 3], MILL.0).is_err());
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// What a crash leaves: the engine at its pages, the world at its save, maybe a chunk saved ahead.
 enum Crash {
     /// The world saved after the reconcile was applied and its result journaled; the pages hold it.
