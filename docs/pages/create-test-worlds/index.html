@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big Create Test Worlds</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --good: #2d6a3e;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 960px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; }
+h3 { font-size: 19px; margin: 22px 0 6px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.label { font-size: 15px; color: var(--muted); margin: 0 0 4px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.scroll { overflow-x: auto; margin: 12px 0 8px; -webkit-overflow-scrolling: touch; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+table.wide { min-width: 860px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td.num, th.num { text-align: right; }
+td .src { display: block; color: var(--muted); font-size: 14px; }
+.state { font-weight: 600; }
+.state.used { color: var(--good); }
+.cap { font-size: 15px; color: var(--muted); margin: 6px 0 16px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#catches">Catches</a>
+  <a href="#decided">Decided</a>
+  <a href="#ranked">All worlds</a>
+  <a href="#searched">Searched</a>
+  <a href="#gated">Gated</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">One public SMP world is big enough: TBSMP Season 2, on archive.org</h1>
+  <p class="dek" data-ss-id="dek">From two surveys on 21 October 2026: seven worlds this morning, an SMP search this afternoon. These worlds are for private local testing only; no world files are on this page.</p>
+  <p class="lead" data-ss-id="lead"><strong>TBSMP Season 2</strong> (The Broken Script SMP) is public on <a href="https://archive.org/details/world_202606">archive.org</a> with no login: an 8.67 GB zip that unpacks to a 13.5 GB world. It runs Minecraft 1.21.1 on NeoForge with Create 6.0.6 and 144 mods, and 1,041 players joined it over its life. It is the only public world found that is both a multiplayer SMP and a Create 6 world, and it is far bigger than any other in chunks, track and Create machines. Only the rail counts lose: PR #9513 has more trains and stations, Alvedon more stations and signals.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-chunks"><div class="n">2.10M</div><div class="t">chunks in 11 dimensions</div></div>
+    <div class="tile" data-ss-id="kpi-be"><div class="n">138k</div><div class="t">Create block entities, of 3.45M in all</div></div>
+    <div class="tile" data-ss-id="kpi-trains"><div class="n">55 <small>/ 101</small></div><div class="t">trains / stations, on 140 km of track</div></div>
+    <div class="tile" data-ss-id="kpi-logistics"><div class="n">591 <small>/ 450</small></div><div class="t">packagers / package frogports</div></div>
+    <div class="tile" data-ss-id="kpi-vaults"><div class="n">9,193</div><div class="t">item vaults, and 1,339 mechanical crafters</div></div>
+  </div>
+</header>
+
+<section id="catches" data-ss-id="catches" data-ss-section>
+  <h2 data-ss-id="catches-h">Only its overworld and nether load on our pack</h2>
+  <ul data-ss-id="catches-list">
+    <li><strong>9 of its 11 dimensions</strong> come from mods we lack (The Broken Script, a CoD-style dimension mod, and three old copies). Keeping the overworld and nether leaves about 0.66M block entities, about 113.6k of them Create.</li>
+    <li><strong>Where the trains are is unknown.</strong> The audit read the track file but not which dimension each train sits in, so the 55 may not all survive the cut.</li>
+    <li><strong>Most of the overworld is not Create.</strong> Of its 633,008 block entities, 263,395 are FramedBlocks, 160,393 vanilla and 33,421 Lootr. Blocks from mods we lack become air; Create blocks survive.</li>
+    <li><strong>Four patch releases behind:</strong> Create 6.0.6, against the pack's 6.0.10.</li>
+  </ul>
+</section>
+
+<section id="decided" data-ss-id="decided" data-ss-section>
+  <h2 data-ss-id="decided-h">Decided: it becomes the next stress world</h2>
+  <div class="box" data-ss-id="decided-box">
+    <p data-ss-id="decided-p">Its overworld and nether get imported onto the pack (Create 6.0.6 to 6.0.10) and run with and without rtsim, in pairs, like the earlier stress runs. It is queued behind today's builds. This can be undone, so it is not a question for you.</p>
+  </div>
+  <p data-ss-id="decided-why">It answers part of what the generator was for (ST2): 112k Create block entities and 8,222 vaults in one overworld is real player-built industry, not a synthetic lattice.</p>
+</section>
+
+<section id="ranked" data-ss-id="ranked" data-ss-section>
+  <h2 data-ss-id="ranked-h">Thirteen worlds found: four used, one queued, the rest too small or too lossy</h2>
+  <p data-ss-id="ranked-intro">Ranked by stress value for rtsim, weighed against the cost of putting each on the pack (1.21.1, NeoForge 21.1.249, Create 6.0.10).</p>
+  <div class="scroll" data-ss-id="ranked-wrap">
+  <table class="wide" data-ss-id="ranked-table">
+    <thead><tr><th>World</th><th>Versions</th><th class="num">Size</th><th class="num">Trains / stations</th><th class="num">Track</th><th class="num">Create BEs</th><th>Upgrade cost</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><strong>TBSMP Season 2</strong><span class="src">archive.org</span></td><td>1.21.1 NeoForge, Create 6.0.6, 144 mods</td><td class="num">13.5 GB</td><td class="num">55 / 101</td><td class="num">140.4 km</td><td class="num">138,125</td><td>Medium: 9 dimensions and foreign blocks dropped</td><td class="state">Audited; stress run queued</td></tr>
+      <tr><td><strong>Create PR #9513</strong> train-collision test<span class="src">GitHub PR attachment</span></td><td>1.21.1 NeoForge, 6.0.9</td><td class="num">42 MB</td><td class="num">180 / 181</td><td class="num">15.3 km</td><td class="num">1,107</td><td>None</td><td class="state used">Used in stress runs</td></tr>
+      <tr><td><strong>Swedish Panda "Alvedon"</strong> metro<span class="src">Dropbox, from YouTube</span></td><td>1.19.2 Forge, 0.5.1.i, 45 mods</td><td class="num">705 MB</td><td class="num">57 / 150</td><td class="num">130.7 km</td><td class="num">43,183</td><td>Heavy: 68% of block entities lost, Steam 'n' Rails track remapped</td><td class="state used">Used in stress runs</td></tr>
+      <tr><td><strong>Mysda "This is Create"</strong><span class="src">Mediafire, from YouTube</span></td><td>1.21.1 NeoForge, 6.0.4</td><td class="num">59 MB</td><td class="num">3 / 6</td><td class="num">1.5 km</td><td class="num">5,488</td><td>None</td><td class="state used">Used in stress runs</td></tr>
+      <tr><td><strong>Greggi "Milano Centrale"</strong><span class="src">Mediafire</span></td><td>1.19.2, 0.5.x</td><td class="num">203 MB</td><td class="num">18 / 9</td><td class="num">24.6 km</td><td class="num">498</td><td>Datafixer only; ran clean</td><td class="state used">Used as the upgrade test</td></tr>
+      <tr><td><strong>ATM10 Season 2</strong> (Sen's Network)<span class="src">archive.org</span></td><td>1.21.1 NeoForge, 504 mods</td><td class="num">12.1 GB zip</td><td class="num">4 / 19</td><td class="num">42.0 km</td><td class="num">1,554 in a sample</td><td>Heavy: a 504-mod pack</td><td class="state">Sampled; not downloaded, little Create</td></tr>
+      <tr><td><strong>Warsaw Public Transport</strong><span class="src">Create issue 6679</span></td><td>1.20.1 Forge, 0.5.1.f, 89 mods</td><td class="num">168 MB</td><td class="num">3 / 10</td><td class="num">21.0 km</td><td class="num">3,172</td><td>Heavy: every rail is Steam 'n' Rails</td><td class="state">Audited; rejected</td></tr>
+      <tr><td><strong>Create issue 7596</strong> routing test<span class="src">GitHub issue attachment</span></td><td>1.21.1 NeoForge, 6.0.1</td><td class="num">28 MB</td><td class="num">1 / 4</td><td class="num">0.3 km</td><td class="num">142</td><td>None</td><td class="state">Kept as a 6.0.1 save</td></tr>
+      <tr><td><strong>RagePlaysGames "1000 Days"</strong><span class="src">Google Drive</span></td><td>1.19.2, 0.5.x</td><td class="num">partial</td><td class="num">3 / 8</td><td class="num">3.3 km</td><td class="num">not read</td><td>Datafixer only</td><td class="state">Partial (Drive quota); rejected</td></tr>
+      <tr><td><strong>ATM10 Season 3</strong><span class="src">archive.org</span></td><td>1.21.1 NeoForge, 505 mods</td><td class="num">9.3 GB zip</td><td class="num">1 / 1</td><td class="num">0.6 km</td><td class="num">not read</td><td>Not assessed</td><td class="state">Sampled; rejected</td></tr>
+      <tr><td><strong>SkippyZii SMP S2</strong><span class="src">archive.org</span></td><td>not read</td><td class="num">23.3 GB zip</td><td class="num">tiny</td><td class="num">not read</td><td class="num">not read</td><td>Not assessed</td><td class="state">Rejected on its track file</td></tr>
+      <tr><td><strong>SkippyZii SMP S1</strong><span class="src">archive.org</span></td><td>not read</td><td class="num">36.6 GB zip</td><td class="num">tiny</td><td class="num">not read</td><td class="num">not read</td><td>Not assessed</td><td class="state">Rejected: over the 25 GB cap</td></tr>
+      <tr><td><strong>The Funnier SMP</strong> 1.3 to 1.6<span class="src">archive.org, 5 archives</span></td><td>not read</td><td class="num">2.6 to 2.9 GB each</td><td class="num">a handful</td><td class="num">not read</td><td class="num">not read</td><td>Not assessed</td><td class="state">Rejected on its track file</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="ranked-cap">"Tiny" and "a handful" come from the zipped size of each world's Create track file, read remotely without downloading the world.</p>
+  <p data-ss-id="ranked-runs">The four used worlds showed (docs/stress-worlds-results.md): rtsim at 0.2 to 0.5% of the server thread, four bugs fixed, the glass box passing on Mysda's 2,779-node factory, and station learning on Alvedon's metro.</p>
+</section>
+
+<section id="searched" data-ss-id="searched" data-ss-section>
+  <h2 data-ss-id="searched-h">The search covered archive.org, GitHub, YouTube and the mod sites</h2>
+  <div class="scroll" data-ss-id="searched-wrap">
+  <table data-ss-id="searched-table">
+    <thead><tr><th>Where</th><th>How</th><th>Found</th></tr></thead>
+    <tbody>
+      <tr><td>archive.org</td><td>14 query shapes, about 2,023 Minecraft items; every zip over 100 MB checked for Create's data files by reading its directory remotely</td><td>9 hits in 5 items; TBSMP S2 is the only big network</td></tr>
+      <tr><td>GitHub</td><td>Create's issue and PR attachments; repo search</td><td>PR #9513, issues 6679 and 7596; no SMP world</td></tr>
+      <tr><td>YouTube</td><td>Video descriptions scanned for download links</td><td>Alvedon, Mysda, Greggi, Rage; the rest gated or modpack links</td></tr>
+      <tr><td>CurseForge</td><td>Worlds search; Create SMP modpack pages</td><td>The worlds search ignores its query; modpacks only</td></tr>
+      <tr><td>Web and social</td><td>Planet Minecraft, reddit, Lemmy, Mastodon, Bluesky, forums; Hugging Face</td><td>No new Create SMP world</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="searched-cap">Blocked: Planet Minecraft and Patreon (Cloudflare 403), reddit, Google Drive (daily quota). Discord was not joined.</p>
+</section>
+
+<section id="gated" data-ss-id="gated" data-ss-section>
+  <h2 data-ss-id="gated-h">The famous Create worlds are behind Patreon or Discord</h2>
+  <div class="scroll" data-ss-id="gated-wrap">
+  <table data-ss-id="gated-table">
+    <thead><tr><th>World</th><th>Where it is</th><th>Price</th></tr></thead>
+    <tbody>
+      <tr><td>sbeev, "Create'a Colony" 4000-day world (retired as too laggy)</td><td>Patreon only; the modpack is public</td><td>A Patreon tier; amount not seen</td></tr>
+      <tr><td>Just Create SMP, seasons 1 and 2</td><td>Modpacks public on CurseForge; no public world found</td><td>Unknown</td></tr>
+      <tr><td>Stam1o (Giant Train Network, 1000 Days)</td><td>Discord, with Patreon behind it</td><td>Unknown</td></tr>
+      <tr><td>disruptive builds, Dejojotheawsome, ImagineerDave, LifeOre</td><td>Patreon or Discord</td><td>Unknown</td></tr>
+      <tr><td>Create SMP servers (create-smp.com, The Create SMP, The World SMP)</td><td>Live servers; server packs only</td><td>Not offered</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p data-ss-id="gated-st2">None was bought or asked for, as ST2 says (no paid worlds for now). No price was recorded because Patreon refuses scripted fetches. If a bigger real world is ever needed, sbeev's is the one with a known lag history.</p>
+</section>
+
+<details data-ss-id="sources" data-ss-react="off">
+  <summary>Sources</summary>
+  <ul>
+    <li>mic-rtsim main at d8fdaea: research/stress-worlds-smp-2026-10-21.md (sections 1 to 6) and research/stress-worlds-2026-10-21.md (sections 1 to 8); audit numbers from research/stress-worlds-2026-10-21-data/audits/ (audit_world.py over every region file, 0 read errors).</li>
+    <li>docs/stress-worlds-results.md sections 1, 4 and 5, for the four worlds used in stress runs.</li>
+    <li>DECISIONS.md rows ST1 and ST2.</li>
+    <li>TBSMP Season 2: archive.org/details/world_202606 (uploaded by a season 2 player, dated 2025-12-18). Create PR #9513: github.com/Creators-of-Create/Create/pull/9513.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">Built for Ben from the mic-rtsim research notes on 21 October 2026. Private page.</footer>
+
+</body>
+</html>

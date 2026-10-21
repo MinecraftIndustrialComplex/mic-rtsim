@@ -1,0 +1,2945 @@
+{
+ "base": "/home/greencheetah/mic-stress-worlds/_peek/s2full",
+ "world_root": "/home/greencheetah/mic-stress-worlds/_peek/s2full",
+ "total_bytes": 123029625,
+ "level": {
+  "top_keys": [
+   "Data",
+   "fml"
+  ],
+  "data_keys": [
+   "Difficulty",
+   "thunderTime",
+   "BorderSize",
+   "neoDayTimePerTick",
+   "LastPlayed",
+   "allowCommands",
+   "BorderCenterX",
+   "initialized",
+   "confirmedExperimentalSettings",
+   "BorderWarningBlocks",
+   "hardcore",
+   "version",
+   "ServerBrands",
+   "SpawnX",
+   "GameType",
+   "BorderSafeZone",
+   "SpawnAngle",
+   "LevelName",
+   "forgeLifecycle",
+   "Time",
+   "ScheduledEvents",
+   "clearWeatherTime",
+   "WanderingTraderId",
+   "neoDayTimeFraction",
+   "BorderDamagePerBlock",
+   "WanderingTraderSpawnDelay",
+   "thundering",
+   "WasModded",
+   "BorderWarningTime",
+   "WanderingTraderSpawnChance",
+   "SpawnY",
+   "SpawnZ",
+   "bei_ExtraDragonFight",
+   "BorderSizeLerpTime",
+   "raining",
+   "WorldGenSettings",
+   "rainTime",
+   "DataPacks",
+   "DataVersion",
+   "GameRules",
+   "DragonFight",
+   "Player",
+   "DifficultyLocked",
+   "DayTime",
+   "BorderCenterZ",
+   "BorderSizeLerpTarget",
+   "Version",
+   "CustomBossEvents"
+  ],
+  "LevelName": "New World Server",
+  "DataVersion": 3955,
+  "version": 19133,
+  "WasModded": 1,
+  "GameType": 0,
+  "DayTime": 60979900,
+  "Time": 270628227,
+  "LastPlayed": 1768910428903,
+  "Version": {
+   "Id": 3955,
+   "Name": "1.21.1",
+   "Series": "main",
+   "Snapshot": 0
+  },
+  "ServerBrands": [
+   "neoforge"
+  ],
+  "DataPacks": {
+   "Enabled": [
+    "modularbees:dynamic_data",
+    "create:dynamic_data",
+    "mod/the_bumblezone:datapacks/productive_bees_compat",
+    "vanilla",
+    "mod_data",
+    "file/spectator conduit power v1.1.12 (MC 1.21-1.21.6).zip",
+    "file/spectator night vision v1.1.12 (MC 1.21-1.21.6).zip",
+    "file/track raw statistics v1.7.8 (MC 1.21-1.21.6).zip",
+    "file/track statistics v1.1.14 (MC 1.21-1.21.6).zip",
+    "file/sawmill.zip",
+    "mod/explorify",
+    "sawmill:sawmill_recipes",
+    "supplementaries:generated_pack",
+    "harverstable_corals",
+    "silkless_corals",
+    "mod/dyenamicsandfriends:compat_packs/productivebees/",
+    "mod/dyenamicsandfriends:compat_packs/productivemetalworks/",
+    "mod/dyenamicsandfriends:compat_packs/connectedglass/",
+    "mod/dyenamicsandfriends:compat_packs/comforts/",
+    "mod/dyenamicsandfriends:compat_packs/elevatorid/",
+    "mod/dyenamicsandfriends:compat_packs/regions_unexplored/",
+    "mod/dyenamicsandfriends:compat_packs/sophisticatedbackpacks/",
+    "mod/dyenamicsandfriends:compat_packs/create/",
+    "mod/dyenamicsandfriends:compat_packs/the_bumblezone/",
+    "mod/dyenamicsandfriends:compat_packs/luminax/",
+    "mod/dyenamicsandfriends:compat_packs/cookingforblockheads/",
+    "mod/dyenamicsandfriends:compat_packs/botanypots/",
+    "mod/dyenamicsandfriends:compat_packs/chromacarvings/",
+    "create_dragons_plus:runtime",
+    "modern_industrialization/generated",
+    "openloader//AMP/Minecraft/datapacks/sawmill.zip",
+    "t_and_t:resources/t_and_t_waystones_patch",
+    "file/queentig_soph_templates"
+   ],
+   "Disabled": [
+    "bundle",
+    "trade_rebalance",
+    "mod/enderio_machines:data/enderio_machines/datapacks/farming_station",
+    "mod/enderio_machines:data/enderio_machines/datapacks/enderface",
+    "mod/compactmachines:data/compactmachines/datapacks/basic_templates",
+    "mod/compactmachines:data/compactmachines/datapacks/room_upgrades",
+    "mod/tempad:required_location_upgrade",
+    "builtin/aether_temporary_freezing",
+    "builtin/aether_ruined_portal",
+    "mod/forbidden_arcanus:data/forbidden_arcanus/datapacks/preview",
+    "mod/enderio_armory:data/enderio_armory/datapacks/armory_rewrite"
+   ]
+  },
+  "seed": -1603704584,
+  "dimensions": [
+   "the_bumblezone:the_bumblezone",
+   "minecraft:the_nether",
+   "minecraft:overworld",
+   "minecraft:the_end",
+   "allthemodium:the_beyond",
+   "allthemodium:the_other",
+   "mahoutsukai:reality_marble",
+   "deeperdarker:otherside",
+   "irons_spellbooks:pocket_dimension",
+   "aether:the_aether",
+   "compactmachines:compact_world",
+   "twilightforest:twilight_forest",
+   "undergarden:undergarden",
+   "eternal_starlight:starlight",
+   "iceandfire:dread_land",
+   "allthemodium:mining"
+  ],
+  "fml_keys": [
+   "LoadingModList"
+  ],
+  "forge_mod_list": [
+   [
+    "betterdungeons",
+    "1.21.1-NeoForge-5.1.4"
+   ],
+   [
+    "disenchanting_table",
+    "5.0.2"
+   ],
+   [
+    "simplemagnets",
+    "1.1.12+c"
+   ],
+   [
+    "integratedterminals",
+    "1.6.21"
+   ],
+   [
+    "integratedterminalscompat",
+    "1.0.0"
+   ],
+   [
+    "enderio_base",
+    "8.0.7-alpha"
+   ],
+   [
+    "mffs",
+    "5.4.25"
+   ],
+   [
+    "endercore",
+    "8.0.7-alpha"
+   ],
+   [
+    "neoforge",
+    "21.1.215"
+   ],
+   [
+    "modernfix",
+    "5.25.1+mc1.21.1"
+   ],
+   [
+    "evilcraft",
+    "1.2.79"
+   ],
+   [
+    "evilcraftcompat",
+    "1.1.0"
+   ],
+   [
+    "yungsapi",
+    "1.21.1-NeoForge-5.1.6"
+   ],
+   [
+    "mcwstairs",
+    "1.0.1"
+   ],
+   [
+    "gateways",
+    "5.1.0"
+   ],
+   [
+    "universalgrid",
+    "1.21.1-0.2.3"
+   ],
+   [
+    "betterfortresses",
+    "1.21.1-NeoForge-3.1.5"
+   ],
+   [
+    "cloth_config",
+    "15.0.140"
+   ],
+   [
+    "sawmill",
+    "1.21-1.7.1"
+   ],
+   [
+    "supplementaries",
+    "1.21-3.4.20"
+   ],
+   [
+    "refinedstorage",
+    "2.0.0"
+   ],
+   [
+    "industrialforegoing",
+    "1.21-3.6.36"
+   ],
+   [
+    "handcrafted",
+    "4.0.3"
+   ],
+   [
+    "repurposed_structures",
+    "7.5.17+1.21.1-neoforge"
+   ],
+   [
+    "bcc",
+    "21.1.5"
+   ],
+   [
+    "jupiter",
+    "2.2.2"
+   ],
+   [
+    "camol",
+    "1.21.1-0.3.0"
+   ],
+   [
+    "heyberryshutup",
+    "1.21.0-2.0.4"
+   ],
+   [
+    "integratedscripting",
+    "1.0.19"
+   ],
+   [
+    "spark",
+    "1.10.124"
+   ],
+   [
+    "yungsextras",
+    "1.21.1-NeoForge-5.1.1"
+   ],
+   [
+    "omegaconfig",
+    "1.5.1"
+   ],
+   [
+    "noisium",
+    "2.3.0+mc1.21-1.21.1"
+   ],
+   [
+    "tombstone",
+    "9.4.8"
+   ],
+   [
+    "extrastorage",
+    "5.0.7"
+   ],
+   [
+    "accessories",
+    "1.1.0-beta.48+1.21.1"
+   ],
+   [
+    "cumulus_menus",
+    "2.0.7"
+   ],
+   [
+    "naturesaura",
+    "41.9"
+   ],
+   [
+    "mcwroofs",
+    "2.3.2"
+   ],
+   [
+    "transition",
+    "1.0.7"
+   ],
+   [
+    "betterendisland",
+    "1.21.1-NeoForge-3.1.2"
+   ],
+   [
+    "nitrogen_internals",
+    "1.1.25"
+   ],
+   [
+    "the_bumblezone",
+    "7.11.6+1.21.1-neoforge"
+   ],
+   [
+    "enderio_machines",
+    "8.0.7-alpha"
+   ],
+   [
+    "journeymap_api",
+    "2.0.0"
+   ],
+   [
+    "sfm",
+    "4.28.0"
+   ],
+   [
+    "transfer_labels",
+    "0.1.7"
+   ],
+   [
+    "mcwlights",
+    "1.1.2"
+   ],
+   [
+    "betterjungletemples",
+    "1.21.1-NeoForge-3.1.2"
+   ],
+   [
+    "byzantine",
+    "44.1"
+   ],
+   [
+    "smartbrainlib",
+    "1.16.11"
+   ],
+   [
+    "bellsandwhistles",
+    "0.4.7-1.21.1"
+   ],
+   [
+    "rechiseled",
+    "1.1.6+a"
+   ],
+   [
+    "lithium",
+    "0.15.0+mc1.21.1"
+   ],
+   [
+    "attributefix",
+    "21.1.3"
+   ],
+   [
+    "caelus",
+    "7.0.1+1.21.1"
+   ],
+   [
+    "allthecompressed",
+    "4.3.0"
+   ],
+   [
+    "mcwholidays",
+    "1.1.1"
+   ],
+   [
+    "laserbridges",
+    "5.3"
+   ],
+   [
+    "compactmachines",
+    "7.0.68"
+   ],
+   [
+    "utilityvest",
+    "1.1.0"
+   ],
+   [
+    "botanypots",
+    "21.1.41"
+   ],
+   [
+    "farmingforblockheads",
+    "21.1.10"
+   ],
+   [
+    "rechiseledcreate",
+    "1.0.2+a"
+   ],
+   [
+    "craterlib",
+    "2.1.5"
+   ],
+   [
+    "sdlink",
+    "3.3.3"
+   ],
+   [
+    "additional_lights",
+    "2.1.10"
+   ],
+   [
+    "fusion",
+    "1.2.11+b"
+   ],
+   [
+    "extradisks",
+    "1.21.1-4.0.14"
+   ],
+   [
+    "edivadlib",
+    "3.0.0"
+   ],
+   [
+    "sophisticatedbackpackscreateintegration",
+    "0.1.5"
+   ],
+   [
+    "integratedcrafting",
+    "1.3.4"
+   ],
+   [
+    "dungeons_arise",
+    "2.1.68"
+   ],
+   [
+    "minecraft",
+    "1.21.1"
+   ],
+   [
+    "voicechat",
+    "1.21.1-2.6.4"
+   ],
+   [
+    "voicechat_api",
+    "2.6.0"
+   ],
+   [
+    "refinedtypes",
+    "1.21.1-0.2.9"
+   ],
+   [
+    "terrablender",
+    "4.1.0.8"
+   ],
+   [
+    "livingthings",
+    "1.21.1-2.3.0"
+   ],
+   [
+    "pamhc2crops",
+    "1.0.2"
+   ],
+   [
+    "alltheleaks",
+    "1.1.4+1.21.1-neoforge"
+   ],
+   [
+    "cleanswing",
+    "1.9"
+   ],
+   [
+    "corgilib",
+    "5.0.0.7"
+   ],
+   [
+    "sushigocrafting",
+    "0.6.5"
+   ],
+   [
+    "domum_ornamentum",
+    "1.0.223-snapshot"
+   ],
+   [
+    "notenoughanimations",
+    "1.10.6"
+   ],
+   [
+    "flywheel",
+    "1.0.5"
+   ],
+   [
+    "luminax",
+    "1.3.1"
+   ],
+   [
+    "experiencelib",
+    "1.1.1"
+   ],
+   [
+    "bhc",
+    "1.21.1-1.2.3"
+   ],
+   [
+    "securitycraft",
+    "1.10.1"
+   ],
+   [
+    "almostunified",
+    "1.21.1-1.3.0"
+   ],
+   [
+    "wits",
+    "1.3.0+1.21-neoforge"
+   ],
+   [
+    "immediatelyfast",
+    "1.6.7+1.21.1"
+   ],
+   [
+    "lambdynlights_api",
+    "4.5.1+1.21.1"
+   ],
+   [
+    "structory_towers",
+    "1.0.14"
+   ],
+   [
+    "appleskin",
+    "3.0.7+mc1.21"
+   ],
+   [
+    "lootr",
+    "1.21-1.10.35.95"
+   ],
+   [
+    "occultism",
+    "1.197.0"
+   ],
+   [
+    "refinedstorage_curios_integration",
+    "1.0.0"
+   ],
+   [
+    "allthetweaks",
+    "2.7.7"
+   ],
+   [
+    "cosmeticarmorreworked",
+    "1.21.1-v1-neoforge"
+   ],
+   [
+    "morered",
+    "6.0.0.3"
+   ],
+   [
+    "kuma_api",
+    "21.0.7"
+   ],
+   [
+    "advancedperipherals",
+    "0.7.57b"
+   ],
+   [
+    "towntalk",
+    "1.2.0"
+   ],
+   [
+    "fireproofboats",
+    "1.21.1-1.0.4"
+   ],
+   [
+    "betteroceanmonuments",
+    "1.21.1-NeoForge-4.1.2"
+   ],
+   [
+    "rolling_gate",
+    "1.1.0+build.64"
+   ],
+   [
+    "sophisticatedcore",
+    "1.3.89"
+   ],
+   [
+    "glassential",
+    "3.3.2"
+   ],
+   [
+    "placebo",
+    "9.9.1"
+   ],
+   [
+    "wstweaks",
+    "10.1.1"
+   ],
+   [
+    "fastfurnace",
+    "9.0.1"
+   ],
+   [
+    "cobweb",
+    "1.4.0"
+   ],
+   [
+    "bookshelf",
+    "21.1.78"
+   ],
+   [
+    "sophisticatedbackpacks",
+    "3.25.14"
+   ],
+   [
+    "immeng",
+    "1.1.0-beta"
+   ],
+   [
+    "mcwdoors",
+    "1.1.2"
+   ],
+   [
+    "moreredxcctcompat",
+    "1.21.1-1.3.0"
+   ],
+   [
+    "utilitarian",
+    "1.21.1-0.17.0"
+   ],
+   [
+    "scalablelux",
+    "0.1.0.1+neoforge.1cb1e91"
+   ],
+   [
+    "melody",
+    "1.0.10"
+   ],
+   [
+    "fzzy_config",
+    "0.7.3+1.21+neoforge"
+   ],
+   [
+    "chipped",
+    "4.0.2"
+   ],
+   [
+    "rechiseled_chipped",
+    "1.3"
+   ],
+   [
+    "mcwbridges",
+    "3.1.1"
+   ],
+   [
+    "tempad",
+    "3.0.4"
+   ],
+   [
+    "hostilenetworks",
+    "6.3.0"
+   ],
+   [
+    "jearchaeology",
+    "1.21.1-1.1.6"
+   ],
+   [
+    "olympus",
+    "1.0.18"
+   ],
+   [
+    "fuelgoeshere",
+    "1.21.1-1.2.0"
+   ],
+   [
+    "simplylight",
+    "1.5.3"
+   ],
+   [
+    "industrialforegoingsouls",
+    "1.10.5"
+   ],
+   [
+    "lionfishapi",
+    "2.6"
+   ],
+   [
+    "memorysettings",
+    "5.9"
+   ],
+   [
+    "cataclysm",
+    "3.16"
+   ],
+   [
+    "blockui",
+    "1.0.206-1.21.1-snapshot"
+   ],
+   [
+    "structurize",
+    "1.0.796-1.21.1-snapshot"
+   ],
+   [
+    "tiab",
+    "6.5.0"
+   ],
+   [
+    "mysticalcustomization",
+    "6.0.0"
+   ],
+   [
+    "elevatorid",
+    "1.21.1-1.11.4"
+   ],
+   [
+    "create_hypertube",
+    "0.3.0"
+   ],
+   [
+    "bridgingmod",
+    "2.6.2+1.21.1"
+   ],
+   [
+    "hardenedarmadillos",
+    "1.21.1-0.2.0"
+   ],
+   [
+    "aiimprovements",
+    "0.5.3"
+   ],
+   [
+    "cupboard",
+    "2.9"
+   ],
+   [
+    "ars_ocultas",
+    "2.2.0"
+   ],
+   [
+    "undergarden",
+    "0.9.3"
+   ],
+   [
+    "monolib",
+    "2.1.0"
+   ],
+   [
+    "framework",
+    "0.13.5"
+   ],
+   [
+    "bwncr",
+    "3.20.3"
+   ],
+   [
+    "observable",
+    "5.4.4"
+   ],
+   [
+    "atlas_api",
+    "1.21.1-1.2.0"
+   ],
+   [
+    "pamhc2trees",
+    "1.0.4"
+   ],
+   [
+    "redstonepen",
+    "1.11.42"
+   ],
+   [
+    "dyenamics",
+    "1.21.1-3.4.2"
+   ],
+   [
+    "commonnetworking",
+    "1.0.18-1.21.1"
+   ],
+   [
+    "reap",
+    "1.21.1-1.1.2"
+   ],
+   [
+    "illagerwarship",
+    "1.0.1"
+   ],
+   [
+    "resourcefullibkt",
+    "2.0.2"
+   ],
+   [
+    "clumps",
+    "19.0.0.1"
+   ],
+   [
+    "artifacts",
+    "13.1.0"
+   ],
+   [
+    "explorerscompass",
+    "1.21.1-3.0.3-neoforge"
+   ],
+   [
+    "toastcontrol",
+    "9.0.1"
+   ],
+   [
+    "mininggadgets",
+    "1.18.6"
+   ],
+   [
+    "theurgy_kubejs",
+    "1.5.1"
+   ],
+   [
+    "trophymanager",
+    "1.21.1-2.3.0"
+   ],
+   [
+    "akashictome",
+    "1.8-29"
+   ],
+   [
+    "xycraft_core",
+    "0.7.53"
+   ],
+   [
+    "repeatable_trial_vaults",
+    "1.0.2"
+   ],
+   [
+    "mysticalagriculture",
+    "8.0.20"
+   ],
+   [
+    "craftingtweaks",
+    "21.1.6"
+   ],
+   [
+    "endermanoverhaul",
+    "2.0.2"
+   ],
+   [
+    "apothic_spawners",
+    "1.3.2"
+   ],
+   [
+    "enderio_conduits",
+    "8.0.7-alpha"
+   ],
+   [
+    "chunkyborder",
+    "1.2.18"
+   ],
+   [
+    "chunky",
+    "1.4.23"
+   ],
+   [
+    "ftbjeiextras",
+    "21.1.7"
+   ],
+   [
+    "enderio",
+    "8.0.7-alpha"
+   ],
+   [
+    "easy_villagers",
+    "1.21.1-1.1.39"
+   ],
+   [
+    "reliquary",
+    "2.0.62"
+   ],
+   [
+    "mes",
+    "2.0.0"
+   ],
+   [
+    "polyeng",
+    "0.4.1"
+   ],
+   [
+    "fastbench",
+    "9.1.3"
+   ],
+   [
+    "fluxnetworks",
+    "8.0.0"
+   ],
+   [
+    "irons_spellbooks",
+    "1.21.1-3.14.8"
+   ],
+   [
+    "mr_playtimestatistics",
+    "1.21.x-zh-CN-1.0.1"
+   ],
+   [
+    "buildinggadgets2",
+    "1.3.9"
+   ],
+   [
+    "minecolonies",
+    "1.1.1218-1.21.1-snapshot"
+   ],
+   [
+    "pylons",
+    "5.2.1"
+   ],
+   [
+    "ferritecore",
+    "7.0.2"
+   ],
+   [
+    "functionalstorage",
+    "1.21.1-1.5.5"
+   ],
+   [
+    "modularrouters",
+    "13.2.3"
+   ],
+   [
+    "silentgems",
+    "5.1.2.1"
+   ],
+   [
+    "rarcompat",
+    "0.9.6"
+   ],
+   [
+    "overloadedarmorbar",
+    "2"
+   ],
+   [
+    "create_enchantment_industry",
+    "2.2.5b"
+   ],
+   [
+    "openloader",
+    "21.1.5"
+   ],
+   [
+    "flickerfix",
+    "4.0.1"
+   ],
+   [
+    "productivetrees",
+    "1.21.1-0.7.1"
+   ],
+   [
+    "createaddition",
+    "1.5.9"
+   ],
+   [
+    "supermartijn642configlib",
+    "1.1.8"
+   ],
+   [
+    "quarryplus",
+    "21.1.141"
+   ],
+   [
+    "additionalentityattributes",
+    "2.0.0+1.21.1"
+   ],
+   [
+    "underground_villages",
+    "4.0.3"
+   ],
+   [
+    "variantsandventures",
+    "1.0.19"
+   ],
+   [
+    "playeranimator",
+    "2.0.1+1.21.1"
+   ],
+   [
+    "ponder",
+    "1.0.64"
+   ],
+   [
+    "mcwwindows",
+    "2.4.1"
+   ],
+   [
+    "ironjetpacks",
+    "8.0.11"
+   ],
+   [
+    "ctm",
+    "1.21-1.2.1+3"
+   ],
+   [
+    "everythingcopper",
+    "1.21.1-2.4.5"
+   ],
+   [
+    "powah",
+    "6.2.7"
+   ],
+   [
+    "cabletiers",
+    "1.21.1-0.6.9"
+   ],
+   [
+    "rangedpumps",
+    "1.3.0"
+   ],
+   [
+    "ae2importexportcard",
+    "1.21.1-1.4.1"
+   ],
+   [
+    "balm",
+    "21.0.55"
+   ],
+   [
+    "prickle",
+    "21.1.11"
+   ],
+   [
+    "moderndynamics",
+    "0.9.6"
+   ],
+   [
+    "crash_assistant",
+    "1.10.23"
+   ],
+   [
+    "mysticalagradditions",
+    "8.0.10"
+   ],
+   [
+    "ctov",
+    "3.6.0"
+   ],
+   [
+    "eternal_starlight",
+    "0.6.1-hotfix+1.21.1+neoforge"
+   ],
+   [
+    "athena",
+    "4.0.2"
+   ],
+   [
+    "stylecolonies",
+    "1.15.43-1.21.1"
+   ],
+   [
+    "novillagerdm",
+    "6.0.0"
+   ],
+   [
+    "lmft",
+    "1.1.1+1.21.9"
+   ],
+   [
+    "alltheores",
+    "3.1.8"
+   ],
+   [
+    "glodium",
+    "1.21-2.2-neoforge"
+   ],
+   [
+    "torchmaster",
+    "21.1.9"
+   ],
+   [
+    "sussysniffers",
+    "1.21.1-0.1.3"
+   ],
+   [
+    "botanytrees",
+    "21.1.1"
+   ],
+   [
+    "explorify",
+    "1.6.4"
+   ],
+   [
+    "ironfurnaces",
+    "4.3.2"
+   ],
+   [
+    "pvptoggle",
+    "1.0-SNAPSHOT"
+   ],
+   [
+    "mcwtrpdoors",
+    "1.1.5"
+   ],
+   [
+    "silentgear",
+    "4.0.30"
+   ],
+   [
+    "supermartijn642corelib",
+    "1.1.18+a"
+   ],
+   [
+    "apothic_attributes",
+    "2.9.0"
+   ],
+   [
+    "resourcefulconfig",
+    "3.0.11"
+   ],
+   [
+    "servercore",
+    "1.5.10+1.21.1"
+   ],
+   [
+    "curios",
+    "9.5.1+1.21.1"
+   ],
+   [
+    "searchables",
+    "1.0.2"
+   ],
+   [
+    "measurements",
+    "3.0.3"
+   ],
+   [
+    "silicone_dolls",
+    "1.0.0+build.49"
+   ],
+   [
+    "worldedit",
+    "7.3.8+6939-7d32b45"
+   ],
+   [
+    "adventure_platform_neoforge",
+    "6.0.0"
+   ],
+   [
+    "deimos",
+    "2.5"
+   ],
+   [
+    "mcwfurnitures",
+    "3.4.1"
+   ],
+   [
+    "conditional_mixin",
+    "0.6.4"
+   ],
+   [
+    "apothic_enchanting",
+    "1.5.0"
+   ],
+   [
+    "apotheosis",
+    "8.4.1"
+   ],
+   [
+    "mekanisticrouters",
+    "1.1.1"
+   ],
+   [
+    "infiniverse",
+    "2.0.1.0"
+   ],
+   [
+    "codechickenlib",
+    "4.6.1.526"
+   ],
+   [
+    "brandonscore",
+    "3.2.1.309"
+   ],
+   [
+    "bettermineshafts",
+    "1.21.1-NeoForge-5.1.1"
+   ],
+   [
+    "crafting_on_a_stick",
+    "1.21.0.2"
+   ],
+   [
+    "ae2jeiintegration",
+    "1.2.0"
+   ],
+   [
+    "mekanismcovers",
+    "1.3-BETA+1.21"
+   ],
+   [
+    "kubejstweaks",
+    "1.0.5"
+   ],
+   [
+    "formationsnether",
+    "1.0.5"
+   ],
+   [
+    "jei",
+    "19.25.1.332"
+   ],
+   [
+    "multipiston",
+    "1.2.58-1.21.1"
+   ],
+   [
+    "lithostitched",
+    "1.5.0"
+   ],
+   [
+    "mekanism",
+    "10.7.17"
+   ],
+   [
+    "laserio",
+    "1.9.11"
+   ],
+   [
+    "mekmm",
+    "1.2.0-SNAPSHOT+a955da4"
+   ],
+   [
+    "mekanismgenerators",
+    "10.7.17"
+   ],
+   [
+    "gmut",
+    "6.4"
+   ],
+   [
+    "minimotd",
+    "2.1.3"
+   ],
+   [
+    "invtweaks",
+    "1.21.1-1.3.2"
+   ],
+   [
+    "naturescompass",
+    "1.21.1-3.0.2-neoforge"
+   ],
+   [
+    "jumpboat",
+    "1.21.0-1.0.5"
+   ],
+   [
+    "catjammies",
+    "1.21-1.7.1"
+   ],
+   [
+    "pneumaticcraft",
+    "8.2.13"
+   ],
+   [
+    "iceandfire",
+    "1.1"
+   ],
+   [
+    "luckperms",
+    "5.4.150"
+   ],
+   [
+    "bfcrmod",
+    "4.0.1"
+   ],
+   [
+    "formations",
+    "1.0.4"
+   ],
+   [
+    "crystalix",
+    "2.2.1"
+   ],
+   [
+    "mcwpaths",
+    "1.1.1"
+   ],
+   [
+    "zerocore",
+    "1.21.1-2.4.20"
+   ],
+   [
+    "formationsoverworld",
+    "1.0.5"
+   ],
+   [
+    "tablist",
+    "1.1"
+   ],
+   [
+    "fabric_api_base",
+    "0.4.42+d1308dedd1"
+   ],
+   [
+    "mousetweaks",
+    "2.26.1"
+   ],
+   [
+    "immersiveengineering",
+    "12.4.2-194"
+   ],
+   [
+    "nochatreports",
+    "1.21.1-v2.9.1"
+   ],
+   [
+    "allthemodium",
+    "2.9.5"
+   ],
+   [
+    "ohthetreesyoullgrow",
+    "5.1.2"
+   ],
+   [
+    "spectrelib",
+    "0.17.2+1.21"
+   ],
+   [
+    "create_aquatic_ambitions",
+    "2.0.2"
+   ],
+   [
+    "kotlinforforge",
+    "5.10.0"
+   ],
+   [
+    "pipez",
+    "1.21.1-1.2.19"
+   ],
+   [
+    "integrateddynamics",
+    "1.29.6"
+   ],
+   [
+    "integrateddynamicscompat",
+    "1.0.0"
+   ],
+   [
+    "pamhc2foodcore",
+    "1.0.4"
+   ],
+   [
+    "itemcollectors",
+    "1.1.10"
+   ],
+   [
+    "imfast",
+    "1.0.2"
+   ],
+   [
+    "polymorph",
+    "1.1.0+1.21.1"
+   ],
+   [
+    "railcraft",
+    "1.2.9"
+   ],
+   [
+    "enderio_conduits_modded",
+    "8.0.7-alpha"
+   ],
+   [
+    "connectedglass",
+    "1.1.14"
+   ],
+   [
+    "constructionstick",
+    "1.2.3"
+   ],
+   [
+    "hyperbox",
+    "6.0.0.1"
+   ],
+   [
+    "aquaculture",
+    "2.7.14"
+   ],
+   [
+    "refinedstorage_jei_integration",
+    "1.0.0"
+   ],
+   [
+    "mns",
+    "2.0.1"
+   ],
+   [
+    "cristellib",
+    "3.0.2.1"
+   ],
+   [
+    "cyclopscore",
+    "1.27.2"
+   ],
+   [
+    "refinedstorage_quartz_arsenal",
+    "1.0.6"
+   ],
+   [
+    "betterwitchhuts",
+    "1.21.1-NeoForge-4.1.1"
+   ],
+   [
+    "netherportalfix",
+    "21.1.1"
+   ],
+   [
+    "geckolib",
+    "4.8.2"
+   ],
+   [
+    "biomeswevegone",
+    "2.5.1"
+   ],
+   [
+    "creeperoverhaul",
+    "4.0.6"
+   ],
+   [
+    "ars_nouveau",
+    "5.10.6"
+   ],
+   [
+    "sauce",
+    "0.0.13.42"
+   ],
+   [
+    "ars_polymorphia",
+    "1.0.3"
+   ],
+   [
+    "ars_elemental",
+    "0.7.6.9"
+   ],
+   [
+    "ars_elemancy",
+    "1.11"
+   ],
+   [
+    "not_enough_glyphs",
+    "4.2.3.0"
+   ],
+   [
+    "ars_technica",
+    "2.4.0"
+   ],
+   [
+    "aether",
+    "1.5.10"
+   ],
+   [
+    "pocketstorage",
+    "1.2.5"
+   ],
+   [
+    "incontrol",
+    "1.21-10.2.1"
+   ],
+   [
+    "connectivity",
+    "7.2"
+   ],
+   [
+    "cookingforblockheads",
+    "21.1.17"
+   ],
+   [
+    "controlling",
+    "19.0.5"
+   ],
+   [
+    "potionsmaster",
+    "0.7.1-packdev"
+   ],
+   [
+    "storagedelight",
+    "25.06.24-1.21-neoforge"
+   ],
+   [
+    "relics",
+    "0.10.7.5"
+   ],
+   [
+    "starbunclemania",
+    "1.5.2"
+   ],
+   [
+    "generatorgalore",
+    "1.21.1-1.6.3"
+   ],
+   [
+    "nuggets",
+    "1.0.10.41"
+   ],
+   [
+    "herbsandharvest",
+    "1.0.0"
+   ],
+   [
+    "grandpower",
+    "3.0.2"
+   ],
+   [
+    "refinedstorage_mekanism_integration",
+    "1.1.1"
+   ],
+   [
+    "botanypotsmystical",
+    "21.1.11"
+   ],
+   [
+    "dummmmmmy",
+    "1.21-2.0.11"
+   ],
+   [
+    "twilightforest",
+    "4.7.3196"
+   ],
+   [
+    "mob_grinding_utils",
+    "1.1.10+mc1.21.1"
+   ],
+   [
+    "common_storage_lib_data",
+    "0.0.7"
+   ],
+   [
+    "arseng",
+    "2.1.1-beta"
+   ],
+   [
+    "farmersdelight",
+    "1.2.9"
+   ],
+   [
+    "entangled",
+    "1.3.20+a"
+   ],
+   [
+    "commoncapabilities",
+    "2.11.2"
+   ],
+   [
+    "crashutilities",
+    "9.0.4"
+   ],
+   [
+    "getittogetherdrops",
+    "1.4"
+   ],
+   [
+    "mcwfences",
+    "1.2.0"
+   ],
+   [
+    "xycraft_world",
+    "0.7.53"
+   ],
+   [
+    "xycraft_machines",
+    "0.7.53"
+   ],
+   [
+    "wirelesschargers",
+    "1.0.9+a"
+   ],
+   [
+    "pamhc2foodextended",
+    "1.0.0"
+   ],
+   [
+    "dysoncubeproject",
+    "1.0.2"
+   ],
+   [
+    "actuallyadditions",
+    "1.3.22"
+   ],
+   [
+    "patchouli",
+    "1.21.1-92-NEOFORGE"
+   ],
+   [
+    "ars_additions",
+    "1.21.1-21.2.3"
+   ],
+   [
+    "allthearcanistgear",
+    "1.21.1-21.3.2"
+   ],
+   [
+    "ars_controle",
+    "1.21.1-1.6.12"
+   ],
+   [
+    "sophisticatedstoragecreateintegration",
+    "0.1.13"
+   ],
+   [
+    "integratedtunnels",
+    "1.9.2"
+   ],
+   [
+    "integratedtunnelscompat",
+    "1.9.2"
+   ],
+   [
+    "ftbultimine",
+    "2101.1.12"
+   ],
+   [
+    "betterstrongholds",
+    "1.21.1-NeoForge-5.1.3"
+   ],
+   [
+    "mifa",
+    "2.1.0"
+   ],
+   [
+    "resourcefullib",
+    "3.0.12"
+   ],
+   [
+    "chromacarvings",
+    "1.21.1-0.2.0"
+   ],
+   [
+    "mekanismtools",
+    "10.7.17"
+   ],
+   [
+    "deeperdarker",
+    "1.3.5"
+   ],
+   [
+    "architectury",
+    "13.0.8"
+   ],
+   [
+    "mostructures",
+    "1.6.0+1.21.1"
+   ],
+   [
+    "achiopt",
+    "2.1.0"
+   ],
+   [
+    "accelerateddecay",
+    "21.0.0"
+   ],
+   [
+    "uranus",
+    "2.3.1"
+   ],
+   [
+    "ftblibrary",
+    "2101.1.28"
+   ],
+   [
+    "ftbfiltersystem",
+    "21.1.3"
+   ],
+   [
+    "ftbteams",
+    "2101.1.7"
+   ],
+   [
+    "ftbranks",
+    "2101.1.3"
+   ],
+   [
+    "ftbessentials",
+    "2101.1.8"
+   ],
+   [
+    "ftbchunks",
+    "2101.1.13"
+   ],
+   [
+    "ftbquests",
+    "2101.1.19"
+   ],
+   [
+    "computercraft",
+    "1.116.2"
+   ],
+   [
+    "draconicevolution",
+    "3.1.4.630"
+   ],
+   [
+    "bigreactors",
+    "1.21.1-2.4.26"
+   ],
+   [
+    "refurbished_furniture",
+    "1.0.20"
+   ],
+   [
+    "productivebees",
+    "1.21.1-13.11.1"
+   ],
+   [
+    "modularbees",
+    "1.21.1-2.3-neoforge"
+   ],
+   [
+    "productivemetalworks",
+    "1.21.1-1.13.2"
+   ],
+   [
+    "sgearmetalworks",
+    "1.21.1-1.4.6"
+   ],
+   [
+    "dyenamicsandfriends",
+    "1.21.1-2.2.2"
+   ],
+   [
+    "trashcans",
+    "1.0.18+c"
+   ],
+   [
+    "moogs_structures",
+    "1.1.0-1.21-1.21.1"
+   ],
+   [
+    "justdirethings",
+    "1.5.5"
+   ],
+   [
+    "modder_name_lib",
+    "2025.10.21"
+   ],
+   [
+    "rebind_narrator",
+    "2025.10.21"
+   ],
+   [
+    "polylib",
+    "2100.1.0-build.183"
+   ],
+   [
+    "shrink",
+    "2.0.1.47"
+   ],
+   [
+    "t_and_t",
+    "1.13.7"
+   ],
+   [
+    "merrymaking",
+    "1.21.1-13"
+   ],
+   [
+    "yeetusexperimentus",
+    "87.0.0"
+   ],
+   [
+    "irons_jewelry",
+    "1.21.1-1.5.3"
+   ],
+   [
+    "ftbquestslangsplitter",
+    "1.0.5"
+   ],
+   [
+    "villagesandpillages",
+    "1.0.3"
+   ],
+   [
+    "rhino",
+    "2101.2.7-build.81"
+   ],
+   [
+    "kubejs",
+    "2101.7.2-build.348"
+   ],
+   [
+    "ftbxmodcompat",
+    "21.1.6"
+   ],
+   [
+    "occultism_kubejs",
+    "1.10.0"
+   ],
+   [
+    "rootsclassic",
+    "1.21.1-1.5.6"
+   ],
+   [
+    "owo",
+    "0.12.15.5-beta.1+1.21"
+   ],
+   [
+    "oritech",
+    "0.19.6"
+   ],
+   [
+    "oracle_index",
+    "0.5.0"
+   ],
+   [
+    "cucumber",
+    "8.0.15"
+   ],
+   [
+    "trashslot",
+    "21.1.4"
+   ],
+   [
+    "amendments",
+    "1.21-2.0.9"
+   ],
+   [
+    "blueflame",
+    "1.21.1-1.1.1"
+   ],
+   [
+    "sophisticatedstorage",
+    "1.5.16"
+   ],
+   [
+    "octolib",
+    "0.5.0.1"
+   ],
+   [
+    "mss",
+    "2.0.0"
+   ],
+   [
+    "allthewizardgear",
+    "1.21.1-1.1.11"
+   ],
+   [
+    "productivelib",
+    "1.21.0-0.1.28"
+   ],
+   [
+    "trender",
+    "1.0.8"
+   ],
+   [
+    "ponderjs",
+    "1.21.1-2.3.0"
+   ],
+   [
+    "create",
+    "6.0.8"
+   ],
+   [
+    "ars_creo",
+    "5.1.0"
+   ],
+   [
+    "create_dragons_plus",
+    "1.8.5"
+   ],
+   [
+    "framedblocks",
+    "10.5.1"
+   ],
+   [
+    "waystones",
+    "21.1.24"
+   ],
+   [
+    "structory",
+    "1.3.13"
+   ],
+   [
+    "fastsuite",
+    "6.0.5"
+   ],
+   [
+    "journeymap",
+    "1.21.1-6.0.0-beta.52"
+   ],
+   [
+    "comforts",
+    "9.0.4+1.21.1"
+   ],
+   [
+    "dimstorage",
+    "9.1.0"
+   ],
+   [
+    "dungeoncrawl",
+    "2.3.15"
+   ],
+   [
+    "charginggadgets",
+    "1.14.1"
+   ],
+   [
+    "cobblegengalore",
+    "1.21.1-0.2.8"
+   ],
+   [
+    "xycraft_override",
+    "0.7.53"
+   ],
+   [
+    "mcjtylib",
+    "1.21-9.0.19"
+   ],
+   [
+    "rftoolsbase",
+    "1.21-6.0.10"
+   ],
+   [
+    "rftoolspower",
+    "1.21-7.0.5"
+   ],
+   [
+    "rftoolsbuilder",
+    "1.21-7.0.4"
+   ],
+   [
+    "restrictions",
+    "1.21-7.0.3"
+   ],
+   [
+    "xnet",
+    "1.21-7.0.6"
+   ],
+   [
+    "rftoolsstorage",
+    "1.21-6.0.4"
+   ],
+   [
+    "betterdeserttemples",
+    "1.21.1-NeoForge-4.1.5"
+   ],
+   [
+    "guideme",
+    "21.1.15"
+   ],
+   [
+    "mahoutsukai",
+    "1.21.1-v1.36.20"
+   ],
+   [
+    "enderstorage",
+    "2.13.0.191"
+   ],
+   [
+    "factory_blocks",
+    "1.4.0+mc1.21.1"
+   ],
+   [
+    "interdimensionalwirelesstransmitter",
+    "1.21.1-0.1.5"
+   ],
+   [
+    "rftoolsutility",
+    "1.21-7.0.10"
+   ],
+   [
+    "enchdesc",
+    "21.1.9"
+   ],
+   [
+    "moonlight",
+    "1.21-2.26.6"
+   ],
+   [
+    "cloudglass",
+    "1.0.1"
+   ],
+   [
+    "toolbelt",
+    "2.2.7"
+   ],
+   [
+    "titanium",
+    "4.0.40"
+   ],
+   [
+    "regions_unexplored",
+    "0.5.6.1"
+   ],
+   [
+    "bibliobiomes",
+    "1.6.0"
+   ],
+   [
+    "silentlib",
+    "10.5.1"
+   ],
+   [
+    "jade",
+    "15.10.3+neoforge"
+   ],
+   [
+    "ae2",
+    "19.2.17"
+   ],
+   [
+    "soulplied_energistics",
+    "1.0.2"
+   ],
+   [
+    "aeinfinitybooster",
+    "1.21.1-1.0.0.52"
+   ],
+   [
+    "ae2ct",
+    "1.21.1-1.1.1"
+   ],
+   [
+    "ae2netanalyser",
+    "1.21-2.1.3-neoforge"
+   ],
+   [
+    "ae2wtlib",
+    "19.3.0"
+   ],
+   [
+    "extendedae",
+    "1.21-2.2.25-neoforge"
+   ],
+   [
+    "megacells",
+    "4.10.1"
+   ],
+   [
+    "expandedae",
+    "2.1.1"
+   ],
+   [
+    "ae2addonlib",
+    "1.0.3-1.21.1"
+   ],
+   [
+    "advanced_ae",
+    "1.6.7-1.21.1"
+   ],
+   [
+    "ae2wtlib_api",
+    "19.3.0"
+   ],
+   [
+    "enderdrives",
+    "1.4.4"
+   ],
+   [
+    "appflux",
+    "1.21-2.1.3-neoforge"
+   ],
+   [
+    "merequester",
+    "1.21.1-1.4.1"
+   ],
+   [
+    "modern_industrialization",
+    "2.4.0"
+   ],
+   [
+    "ars_unification",
+    "1.2.16"
+   ],
+   [
+    "tesseract_api",
+    "1.11.0-1.21.1"
+   ],
+   [
+    "little_big_redstone",
+    "1.4.11-beta-1.21.1"
+   ],
+   [
+    "extended_industrialization",
+    "1.15.22-1.21.1"
+   ],
+   [
+    "industrialization_overdrive",
+    "1.10.7+1.21.1"
+   ],
+   [
+    "forbidden_arcanus",
+    "2.6.1"
+   ],
+   [
+    "valhelsia_core",
+    "1.1.5"
+   ],
+   [
+    "bibliowoods",
+    "1.6.0"
+   ],
+   [
+    "bibliocraft",
+    "1.6.2"
+   ],
+   [
+    "enderio_armory",
+    "8.0.7-alpha"
+   ],
+   [
+    "theurgy",
+    "1.68.0"
+   ],
+   [
+    "stevescarts",
+    "1.2.16"
+   ],
+   [
+    "treetap",
+    "1.21.1-0.4.5"
+   ],
+   [
+    "nullscape",
+    "1.2.14"
+   ],
+   [
+    "modonomicon",
+    "1.117.2"
+   ],
+   [
+    "cryonicconfig",
+    "1.0.0+mc1.21.10"
+   ],
+   [
+    "mvs",
+    "5.0.2"
+   ],
+   [
+    "chisel",
+    "2.0.0+mc1.21.1"
+   ],
+   [
+    "yet_another_config_lib_v3",
+    "3.8.0+1.21.1-neoforge"
+   ],
+   [
+    "solcarrot",
+    "1.16.5"
+   ],
+   [
+    "moredragoneggs",
+    "5.0"
+   ],
+   [
+    "appmek",
+    "1.6.3"
+   ],
+   [
+    "expandability",
+    "12.0.0"
+   ],
+   [
+    "xtonesreworked",
+    "1.1.1-1.21.1"
+   ],
+   [
+    "shiny",
+    "1.21.1-1.2.5"
+   ],
+   [
+    "sophisticatedstorageinmotion",
+    "0.10.24"
+   ]
+  ]
+ },
+ "tracks": {
+  "file_bytes": 77667,
+  "DataVersion": 3955,
+  "trains": 4,
+  "carriages": 10,
+  "trains_with_schedule": 1,
+  "schedule_entries": 2,
+  "trains_moving_at_save": 1,
+  "trains_derailed": 1,
+  "carriages_with_passengers": 0,
+  "bogey_types": {
+   "create:small_bogey": 18
+  },
+  "graphs": 19,
+  "nodes": 1372,
+  "edges": 1366,
+  "stations": 19,
+  "signals": 11,
+  "observers": 0,
+  "track_chord_length_blocks": 41973,
+  "edge_materials": {
+   "create:andesite": 1366
+  },
+  "curved_edges": 0,
+  "per_graph": [
+   {
+    "nodes": 374,
+    "edges": 378,
+    "stations": 5,
+    "signals": 10,
+    "observers": 0,
+    "chord_length_blocks": 11333
+   },
+   {
+    "nodes": 323,
+    "edges": 323,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 10864
+   },
+   {
+    "nodes": 306,
+    "edges": 306,
+    "stations": 2,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 9741
+   },
+   {
+    "nodes": 102,
+    "edges": 102,
+    "stations": 7,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 3523
+   },
+   {
+    "nodes": 92,
+    "edges": 91,
+    "stations": 0,
+    "signals": 1,
+    "observers": 0,
+    "chord_length_blocks": 2956
+   },
+   {
+    "nodes": 77,
+    "edges": 80,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 1783
+   },
+   {
+    "nodes": 20,
+    "edges": 20,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 369
+   },
+   {
+    "nodes": 17,
+    "edges": 16,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 220
+   },
+   {
+    "nodes": 11,
+    "edges": 10,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 397
+   },
+   {
+    "nodes": 10,
+    "edges": 9,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 279
+   },
+   {
+    "nodes": 7,
+    "edges": 6,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 162
+   },
+   {
+    "nodes": 7,
+    "edges": 6,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 61
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 50
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 68
+   },
+   {
+    "nodes": 5,
+    "edges": 4,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 68
+   },
+   {
+    "nodes": 4,
+    "edges": 3,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 80
+   },
+   {
+    "nodes": 3,
+    "edges": 2,
+    "stations": 1,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 14
+   },
+   {
+    "nodes": 2,
+    "edges": 1,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 2
+   },
+   {
+    "nodes": 2,
+    "edges": 1,
+    "stations": 0,
+    "signals": 0,
+    "observers": 0,
+    "chord_length_blocks": 2
+   }
+  ],
+  "signal_blocks": 836,
+  "signal_edge_groups": null,
+  "dimension_palette": [
+   "minecraft:overworld",
+   "allthemodium:the_beyond"
+  ],
+  "other_keys": [
+   "DimensionPalette",
+   "Trains",
+   "RailGraphs",
+   "SignalBlocks"
+  ]
+ },
+ "data_files": [
+  [
+   "create_logistics.dat",
+   464
+  ],
+  [
+   "create_tracks.dat",
+   77667
+  ]
+ ],
+ "playerdata_files": 0,
+ "datapacks": [],
+ "top_level_entries": [
+  "data",
+  "level.dat",
+  "region"
+ ],
+ "dimensions": {
+  "minecraft:overworld": {
+   "region_files": 8,
+   "region_bytes": 122933248,
+   "chunks": 8107,
+   "errors": 0,
+   "err_sample": null,
+   "inhabited_chunks_gt_1200": 8107,
+   "inhabited_ticks": 4576160322,
+   "dataversions": {
+    "3955": 8107
+   },
+   "block_entities_total": 26505,
+   "block_entities_by_type": {
+    "framedblocks:framed_tile": 6083,
+    "lootr:lootr_chest": 2539,
+    "lootr:lootr_barrel": 1681,
+    "minecraft:bed": 1004,
+    "domum_ornamentum:materially_retexturable": 961,
+    "create:fake_track": 932,
+    "minecraft:mob_spawner": 924,
+    "minecraft:campfire": 677,
+    "ae2:cable_bus": 589,
+    "minecraft:skull": 540,
+    "ae2:growth_accelerator": 496,
+    "productivetrees:pollinated_leaves": 446,
+    "ae2:crystal_resonance_generator": 422,
+    "minecraft:furnace": 405,
+    "advanced_ae:quantum_core": 343,
+    "mekanism:bounding_block": 330,
+    "productivebees:solitary_nest": 327,
+    "minecraft:banner": 297,
+    "apotheosis:boss_spawner": 274,
+    "functionalstorage:dark_oak_1": 272,
+    "naturesaura:aura_bloom": 233,
+    "bigreactors:reactorglass": 215,
+    "mekanism:elite_universal_cable": 209,
+    "immersiveengineering:cloche_dummy": 208,
+    "ars_nouveau:portal": 181,
+    "bigreactors:reactorfuelrod": 175,
+    "minecraft:chest": 172,
+    "pipez:universal_pipe": 170,
+    "sfm:cable_facade": 168,
+    "minecraft:decorated_pot": 160,
+    "minecraft:sign": 155,
+    "minecraft:barrel": 155,
+    "minecraft:smoker": 153,
+    "minecraft:blast_furnace": 152,
+    "bigreactors:reactorcasing": 141,
+    "create:flap_display": 132,
+    "extendedae:wireless_connect": 124,
+    "elevatorid:elevator_tile": 118,
+    "create:fluid_tank": 116,
+    "sophisticatedstorage:chest": 113,
+    "minecraft:lectern": 108,
+    "immersiveengineering:cloche_master": 104,
+    "extendedae:assembler_matrix_glass": 100,
+    "extendedae:assembler_matrix_crafter": 95,
+    "ae2:controller": 92,
+    "oritech:addon_entity": 87,
+    "minecraft:dispenser": 82,
+    "create:belt": 80,
+    "mekanism:ultimate_universal_cable": 77,
+    "pipez:item_pipe": 77,
+    "evilcraft:blood_stain": 75,
+    "create:track": 73,
+    "torchmaster:feral_flare_lantern": 71,
+    "extendedae:assembler_matrix_frame": 68,
+    "minecraft:brushable_block": 64,
+    "productivetrees:stripper": 63,
+    "mekanism:basic_universal_cable": 62,
+    "lootr:lootr_trapped_chest": 61,
+    "easy_villagers:iron_farm": 59,
+    "minecraft:beehive": 57,
+    "productivebees:advanced_hive": 50,
+    "extendedae:assembler_matrix_wall": 50,
+    "minecraft:brewing_stand": 49,
+    "productivebees:expansion_box": 46,
+    "ars_nouveau:arcane_pedestal": 43,
+    "amendments:wall_lantern": 42,
+    "immersiveengineering:connectorstructural": 41,
+    "create:simple_kinetic": 34,
+    "supplementaries:flower_box": 34,
+    "extendedae:ex_inscriber": 33,
+    "extendedae:ex_pattern_provider": 33,
+    "fluxnetworks:flux_point": 32,
+    "ae2:molecular_assembler": 32,
+    "ae2:drive": 31,
+    "minecraft:jukebox": 30,
+    "minecraft:trial_spawner": 30,
+    "functionalstorage:compacting_drawer": 30,
+    "productivebees:feeder": 30,
+    "ae2:pattern_provider": 30,
+    "minecolonies:rack": 29,
+    "waystones:waystone": 28,
+    "mob_grinding_utils:saw": 28,
+    "powah:energizing_rod": 28,
+    "ae2:quantum_ring": 27,
+    "computercraft:monitor_normal": 27,
+    "functionalstorage:oak_1": 27,
+    "mekanismgenerators:advanced_solar_generator": 26,
+    "immersiveengineering:structuralarm": 26,
+    "extendedae:assembler_matrix_pattern": 25,
+    "bigreactors:reactorcontrolrod": 25,
+    "advanced_ae:adv_pattern_provider": 22,
+    "oritech:machine_core_entity": 22,
+    "ars_nouveau:imbuement_chamber": 21,
+    "framedblocks:framed_double_slope": 20,
+    "mekanism:advanced_universal_cable": 19,
+    "productivebees:bumble_bee_nest": 19,
+    "minecraft:vault": 19,
+    "ars_nouveau:sconce": 17,
+    "create:deployer": 17,
+    "extendedae:circuit_cutter": 16,
+    "mysticalagriculture:infusion_pedestal": 16,
+    "ae2:crafting_unit": 16,
+    "pylons:harvester_pylon": 15,
+    "redstonepen:tet_track": 15,
+    "mekanismgenerators:wind_generator": 14,
+    "create:gearbox": 14,
+    "create:track_signal": 14,
+    "pneumaticcraft:compressed_iron_block": 14,
+    "minecraft:sculk_sensor": 13,
+    "sophisticatedstorage:barrel": 13,
+    "create:copycat": 12,
+    "enderstorage:ender_chest": 12,
+    "justdirethings:itemcollectorbe": 12,
+    "create:mechanical_crafter": 12,
+    "framedblocks:framed_double_tile": 12,
+    "create:encased_shaft": 12,
+    "minecraft:enchanting_table": 12,
+    "rftoolsutility:screen": 12,
+    "trophymanager:trophy": 11,
+    "minecraft:hopper": 11
+   },
+   "block_entities_by_namespace": {
+    "framedblocks": 6117,
+    "minecraft": 5294,
+    "lootr": 4281,
+    "ae2": 1762,
+    "create": 1554,
+    "domum_ornamentum": 961,
+    "mekanism": 745,
+    "extendedae": 562,
+    "bigreactors": 561,
+    "productivetrees": 510,
+    "productivebees": 496,
+    "immersiveengineering": 384,
+    "advanced_ae": 371,
+    "functionalstorage": 350,
+    "ars_nouveau": 295,
+    "apotheosis": 279,
+    "pipez": 255,
+    "naturesaura": 233,
+    "sfm": 189,
+    "sophisticatedstorage": 127,
+    "oritech": 120,
+    "elevatorid": 118,
+    "evilcraft": 79,
+    "torchmaster": 71,
+    "easy_villagers": 65,
+    "computercraft": 51,
+    "mekanismgenerators": 43,
+    "amendments": 42,
+    "supplementaries": 42,
+    "modern_industrialization": 38,
+    "fluxnetworks": 36,
+    "mob_grinding_utils": 36,
+    "powah": 36,
+    "minecolonies": 33,
+    "waystones": 31,
+    "justdirethings": 31,
+    "mysticalagriculture": 30,
+    "pneumaticcraft": 21,
+    "ironfurnaces": 19,
+    "hostilenetworks": 19,
+    "pylons": 18,
+    "rftoolsutility": 15,
+    "redstonepen": 15,
+    "enderstorage": 12,
+    "trophymanager": 11,
+    "regions_unexplored": 9,
+    "mcwfurnitures": 9,
+    "productivemetalworks": 9,
+    "silentgear": 8,
+    "farmingforblockheads": 8,
+    "enderio": 8,
+    "createaddition": 7,
+    "generatorgalore": 6,
+    "advancedperipherals": 6,
+    "railcraft": 5,
+    "integrateddynamics": 5,
+    "megacells": 5,
+    "apothic_enchanting": 4,
+    "ars_additions": 4,
+    "dimstorage": 4,
+    "xycraft_machines": 4,
+    "farmersdelight": 3,
+    "cookingforblockheads": 3,
+    "twilightforest": 3,
+    "trashcans": 3,
+    "compactmachines": 3,
+    "industrialforegoing": 3,
+    "refurbished_furniture": 3,
+    "extended_industrialization": 3,
+    "reliquary": 2,
+    "securitycraft": 2,
+    "iceandfire": 2,
+    "modularrouters": 2,
+    "comforts": 2,
+    "mahoutsukai": 1,
+    "utilitarian": 1,
+    "irons_spellbooks": 1,
+    "allthemodium": 1,
+    "botanypots": 1,
+    "appflux": 1,
+    "itemcollectors": 1,
+    "sophisticatedbackpacks": 1,
+    "actuallyadditions": 1,
+    "tombstone": 1,
+    "disenchanting_table": 1,
+    "bibliocraft": 1
+   },
+   "blocks_by_namespace": {
+    "minecraft": 776356071,
+    "forbidden_arcanus": 4320212,
+    "regions_unexplored": 4128130,
+    "alltheores": 3270056,
+    "xycraft_world": 2750702,
+    "create": 1518427,
+    "mysticalagriculture": 1042680,
+    "biomeswevegone": 1010214,
+    "modern_industrialization": 522315,
+    "theurgy": 445701,
+    "silentgems": 338930,
+    "powah": 238627,
+    "actuallyadditions": 215652,
+    "evilcraft": 182612,
+    "oritech": 145857,
+    "silentgear": 124378,
+    "chipped": 86450,
+    "railcraft": 63300,
+    "rftoolsbase": 26310,
+    "pneumaticcraft": 25379,
+    "luminax": 23434,
+    "merrymaking": 23213,
+    "irons_spellbooks": 18160,
+    "herbsandharvest": 11736,
+    "ars_nouveau": 7400,
+    "torchmaster": 6866,
+    "framedblocks": 6118,
+    "pamhc2trees": 4375,
+    "lootr": 4283,
+    "supplementaries": 4274,
+    "ars_elemental": 2697,
+    "ae2": 2539,
+    "integrateddynamics": 2449,
+    "immersiveengineering": 2017,
+    "mahoutsukai": 1811,
+    "farmersdelight": 1543,
+    "crystalix": 1341,
+    "pamhc2crops": 1169,
+    "factory_blocks": 1102,
+    "connectedglass": 1067,
+    "domum_ornamentum": 975,
+    "chisel": 783,
+    "mekanism": 745,
+    "pipez": 665,
+    "rechiseled": 627,
+    "extendedae": 562,
+    "bigreactors": 561,
+    "productivetrees": 510,
+    "productivebees": 496,
+    "advanced_ae": 371,
+    "mcwroofs": 368,
+    "functionalstorage": 350,
+    "farmingforblockheads": 325,
+    "mob_grinding_utils": 306,
+    "minecolonies": 298,
+    "sushigocrafting": 294,
+    "apotheosis": 281,
+    "naturesaura": 233,
+    "sfm": 229,
+    "twilightforest": 163,
+    "mcwlights": 152,
+    "mcwstairs": 139,
+    "sophisticatedstorage": 127,
+    "mcwpaths": 127,
+    "productivemetalworks": 124,
+    "elevatorid": 118,
+    "mysticalagradditions": 85,
+    "simplylight": 66,
+    "easy_villagers": 65,
+    "apothic_enchanting": 53,
+    "computercraft": 51,
+    "mekanismgenerators": 43,
+    "amendments": 43,
+    "refurbished_furniture": 43,
+    "mcwfences": 40,
+    "justdirethings": 37,
+    "fluxnetworks": 36,
+    "waystones": 31,
+    "mcwbridges": 30,
+    "undergarden": 29,
+    "utilitarian": 27,
+    "handcrafted": 22,
+    "cataclysm": 20,
+    "extended_industrialization": 20,
+    "ironfurnaces": 19,
+    "hostilenetworks": 19,
+    "pylons": 18,
+    "mcwdoors": 18,
+    "rftoolsutility": 15,
+    "redstonepen": 15,
+    "rftoolsbuilder": 13,
+    "enderstorage": 12,
+    "trophymanager": 11,
+    "mcwfurnitures": 11,
+    "iceandfire": 9,
+    "allthemodium": 8,
+    "enderio": 8,
+    "createaddition": 7,
+    "create_dragons_plus": 7,
+    "generatorgalore": 6,
+    "advancedperipherals": 6,
+    "megacells": 5,
+    "occultism": 4,
+    "ars_additions": 4,
+    "dimstorage": 4,
+    "xycraft_machines": 4,
+    "kubejs": 4,
+    "comforts": 4,
+    "cookingforblockheads": 3,
+    "trashcans": 3,
+    "compactmachines": 3,
+    "sawmill": 3,
+    "industrialforegoing": 3,
+    "reliquary": 2,
+    "securitycraft": 2,
+    "modularrouters": 2,
+    "irons_jewelry": 1,
+    "botanypots": 1,
+    "appflux": 1,
+    "itemcollectors": 1,
+    "sophisticatedbackpacks": 1,
+    "tombstone": 1,
+    "disenchanting_table": 1,
+    "bibliocraft": 1,
+    "eternal_starlight": 1
+   },
+   "blocks_top_non_vanilla": {
+    "forbidden_arcanus:darkstone": 4187624,
+    "xycraft_world:kivi": 2373904,
+    "regions_unexplored:silt_dirt": 1054363,
+    "biomeswevegone:lush_dirt": 685622,
+    "regions_unexplored:larch_leaves": 507344,
+    "alltheores:fluorite_ore": 389398,
+    "regions_unexplored:peat_dirt": 379175,
+    "regions_unexplored:silt_grass_block": 377740,
+    "create:limestone": 365484,
+    "mysticalagriculture:inferium_ore": 356240,
+    "mysticalagriculture:deepslate_prosperity_ore": 341332,
+    "theurgy:sal_ammoniac_ore": 320641,
+    "alltheores:deepslate_uranium_ore": 314974,
+    "regions_unexplored:orange_maple_leaves": 273624,
+    "create:ochrum": 271033,
+    "regions_unexplored:argillite": 270522,
+    "create:crimsite": 260304,
+    "regions_unexplored:red_maple_leaves": 248141,
+    "alltheores:deepslate_silver_ore": 244285,
+    "alltheores:deepslate_osmium_ore": 241242,
+    "biomeswevegone:lush_grass_block": 237248,
+    "alltheores:tin_ore": 236366,
+    "alltheores:aluminum_ore": 233370,
+    "mysticalagriculture:deepslate_inferium_ore": 231581,
+    "create:asurine": 217480,
+    "actuallyadditions:black_quartz_ore": 215549,
+    "modern_industrialization:deepslate_antimony_ore": 211621,
+    "create:veridium": 211007,
+    "alltheores:zinc_ore": 202149,
+    "regions_unexplored:maple_leaves": 197562,
+    "modern_industrialization:antimony_ore": 185170,
+    "create:scoria": 169148,
+    "silentgems:deepslate_chaos_ore": 163742,
+    "alltheores:deepslate_fluorite_ore": 152241,
+    "alltheores:deepslate_lead_ore": 146148,
+    "alltheores:osmium_ore": 142897,
+    "alltheores:silver_ore": 139144,
+    "alltheores:deepslate_sulfur_ore": 129931,
+    "theurgy:deepslate_sal_ammoniac_ore": 125060,
+    "oritech:still_oil_block": 123502,
+    "regions_unexplored:peat_grass_block": 121895,
+    "silentgear:deepslate_bort_ore": 120812,
+    "evilcraft:dark_ore_deepslate": 109948,
+    "regions_unexplored:larch_log": 104418,
+    "mysticalagriculture:prosperity_ore": 103014,
+    "alltheores:deepslate_zinc_ore": 99608,
+    "modern_industrialization:deepslate_tungsten_ore": 96630,
+    "regions_unexplored:medium_grass": 95798,
+    "alltheores:deepslate_tin_ore": 95133,
+    "alltheores:deepslate_aluminum_ore": 88069,
+    "alltheores:lead_ore": 83550,
+    "powah:deepslate_uraninite_ore_poor": 82911,
+    "regions_unexplored:maple_log": 76354,
+    "powah:uraninite_ore_poor": 72526,
+    "evilcraft:dark_ore": 71440,
+    "powah:deepslate_uraninite_ore": 60077,
+    "forbidden_arcanus:deepslate_arcane_crystal_ore": 59580,
+    "forbidden_arcanus:runic_deepslate": 57909,
+    "xycraft_world:xychorium_ore_stone_dark": 55068,
+    "xycraft_world:xychorium_ore_stone_green": 54581,
+    "xycraft_world:xychorium_ore_stone_blue": 54341,
+    "xycraft_world:xychorium_ore_stone_red": 54097,
+    "xycraft_world:xychorium_ore_stone_light": 53844,
+    "alltheores:deepslate_nickel_ore": 50797,
+    "railcraft:quarried_stone": 47507,
+    "silentgems:deepslate_topaz_ore": 47121,
+    "alltheores:deepslate_iridium_ore": 45078,
+    "regions_unexplored:golden_larch_leaves": 44595,
+    "regions_unexplored:peat_mud": 37762,
+    "regions_unexplored:silver_birch_leaves": 37684,
+    "silentgems:chaos_ore": 37571,
+    "alltheores:peridot_ore": 35125,
+    "regions_unexplored:volcanic_ash": 33442,
+    "regions_unexplored:pine_leaves": 30892,
+    "alltheores:nickel_ore": 29566,
+    "chipped:coal_block_bricks": 28746,
+    "alltheores:ruby_ore": 28096,
+    "silentgems:topaz_ore": 26622,
+    "rftoolsbase:dimensionalshard_overworld": 26310,
+    "pneumaticcraft:oil": 25161,
+    "regions_unexplored:dropleaf_plant": 24092,
+    "chipped:rounded_coal_block_bricks": 23850,
+    "luminax:white_luminax_block": 23387,
+    "modern_industrialization:tungsten_ore": 23095,
+    "chipped:cracked_coal_block_bricks": 21680,
+    "merrymaking:spruce_leaves_holly": 21575,
+    "regions_unexplored:maple_branch": 21449,
+    "regions_unexplored:argillite_grass_block": 21370,
+    "alltheores:deepslate_platinum_ore": 21349,
+    "xycraft_world:xychorium_ore_deepslate_green": 19743,
+    "xycraft_world:xychorium_ore_deepslate_blue": 19693,
+    "xycraft_world:xychorium_ore_deepslate_light": 19615,
+    "xycraft_world:xychorium_ore_deepslate_red": 19425,
+    "xycraft_world:xychorium_ore_deepslate_dark": 18924,
+    "alltheores:sapphire_ore": 18729,
+    "irons_spellbooks:deepslate_mithril_ore": 18125,
+    "regions_unexplored:silver_birch_leaf_pile": 18034,
+    "alltheores:uranium_ore": 17087,
+    "regions_unexplored:orange_maple_leaf_pile": 16165,
+    "alltheores:sulfur_ore": 15941,
+    "regions_unexplored:red_maple_leaf_pile": 15744,
+    "alltheores:cinnabar_ore": 15648,
+    "silentgems:deepslate_heliodor_ore": 15526,
+    "silentgems:deepslate_alexandrite_ore": 15490,
+    "silentgems:deepslate_turquoise_ore": 15440,
+    "silentgems:deepslate_iolite_ore": 15368,
+    "regions_unexplored:maple_leaf_pile": 15091,
+    "powah:uraninite_ore": 14607,
+    "regions_unexplored:mossy_stone": 14230,
+    "alltheores:deepslate_peridot_ore": 13835,
+    "biomeswevegone:maple_leaves": 13742,
+    "create:cut_deepslate_bricks": 13629,
+    "biomeswevegone:prairie_grass": 11969,
+    "alltheores:deepslate_ruby_ore": 11132,
+    "regions_unexplored:silver_birch_log": 9998,
+    "oritech:still_fuel_block": 9599,
+    "alltheores:iridium_ore": 9293,
+    "regions_unexplored:apple_oak_leaves": 8757,
+    "herbsandharvest:fruit_leaves": 8649,
+    "powah:deepslate_uraninite_ore_dense": 8422,
+    "biomeswevegone:tall_prairie_grass": 8373,
+    "railcraft:saltpeter_ore": 8069,
+    "railcraft:abyssal_paver_stairs": 7719,
+    "regions_unexplored:stone_bud": 7594,
+    "oritech:deepslate_uranium_ore": 7407,
+    "regions_unexplored:peat_podzol": 7347,
+    "alltheores:deepslate_sapphire_ore": 6883,
+    "torchmaster:invisible_light": 6793,
+    "regions_unexplored:dropleaf": 6701,
+    "create:track": 6367,
+    "forbidden_arcanus:stella_arcanum": 6288,
+    "regions_unexplored:bladed_grass": 6222,
+    "alltheores:deepslate_cinnabar_ore": 6152,
+    "alltheores:platinum_ore": 5633,
+    "biomeswevegone:red_maple_leaves": 5482,
+    "regions_unexplored:pine_log": 5400,
+    "biomeswevegone:clover_patch": 5094,
+    "forbidden_arcanus:arcane_crystal_ore": 4853,
+    "regions_unexplored:peat_coarse_dirt": 4433,
+    "modern_industrialization:deepslate_monazite_ore": 4387,
+    "biomeswevegone:white_allium_petal_block": 4235,
+    "supplementaries:urn": 4182,
+    "regions_unexplored:purple_coneflower": 4051,
+    "biomeswevegone:maple_log": 3574,
+    "biomeswevegone:tall_allium": 3414,
+    "regions_unexplored:corpse_flower": 3056,
+    "framedblocks:framed_stairs": 3052,
+    "regions_unexplored:bladed_tall_grass": 2633,
+    "biomeswevegone:leaf_pile": 2612,
+    "lootr:lootr_chest": 2539
+   },
+   "blocks_distinct_ids": 1908,
+   "entities_by_type": {},
+   "entities_by_namespace": {},
+   "contraption_entities": 0,
+   "contraption_blocks_total": 0,
+   "contraption_biggest": [],
+   "regions": {
+    "-1,-1": {
+     "chunks": 1024,
+     "be": 6244,
+     "create_be": 589,
+     "inhabited_chunks": 1024,
+     "bytes": 15720448
+    },
+    "-1,0": {
+     "chunks": 1024,
+     "be": 4550,
+     "create_be": 154,
+     "inhabited_chunks": 1024,
+     "bytes": 14901248
+    },
+    "-3,-2": {
+     "chunks": 1024,
+     "be": 1554,
+     "create_be": 0,
+     "inhabited_chunks": 1024,
+     "bytes": 15126528
+    },
+    "-8,-2": {
+     "chunks": 939,
+     "be": 971,
+     "create_be": 0,
+     "inhabited_chunks": 939,
+     "bytes": 14188544
+    },
+    "0,0": {
+     "chunks": 1024,
+     "be": 6277,
+     "create_be": 505,
+     "inhabited_chunks": 1024,
+     "bytes": 15204352
+    },
+    "1,0": {
+     "chunks": 1024,
+     "be": 1243,
+     "create_be": 0,
+     "inhabited_chunks": 1024,
+     "bytes": 14213120
+    },
+    "2,0": {
+     "chunks": 1024,
+     "be": 2051,
+     "create_be": 253,
+     "inhabited_chunks": 1024,
+     "bytes": 16478208
+    },
+    "3,0": {
+     "chunks": 1024,
+     "be": 3615,
+     "create_be": 60,
+     "inhabited_chunks": 1024,
+     "bytes": 17100800
+    }
+   }
+  }
+ },
+ "elapsed_s": 3.9
+}

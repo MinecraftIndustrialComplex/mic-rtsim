@@ -375,9 +375,7 @@ impl Mark {
     pub fn id(&self) -> Option<&str> {
         match self {
             Mark::Point { id, .. } | Mark::Leg { id, .. } => Some(id),
-            Mark::Path { id, .. } | Mark::Edge { id, .. } | Mark::Area { id, .. } => {
-                id.as_deref()
-            }
+            Mark::Path { id, .. } | Mark::Edge { id, .. } | Mark::Area { id, .. } => id.as_deref(),
             _ => None,
         }
     }
@@ -430,7 +428,13 @@ impl Mark {
                 opt_str(w, g);
                 opt_str(w, l);
             }
-            Mark::Path { id, p, ci, c, w: wd } => {
+            Mark::Path {
+                id,
+                p,
+                ci,
+                c,
+                w: wd,
+            } => {
                 opt_str(w, id);
                 w.var_u64(p.len() as u64);
                 for q in p {
@@ -597,8 +601,10 @@ impl Mark {
             },
             kind::CELL => {
                 let (x0, z0, size) = (r.f64()?, r.f64()?, r.f64()?);
-                let w = u32::try_from(r.var_u64()?).map_err(|_| CodecError::Invalid("cell w".into()))?;
-                let h = u32::try_from(r.var_u64()?).map_err(|_| CodecError::Invalid("cell h".into()))?;
+                let w = u32::try_from(r.var_u64()?)
+                    .map_err(|_| CodecError::Invalid("cell w".into()))?;
+                let h = u32::try_from(r.var_u64()?)
+                    .map_err(|_| CodecError::Invalid("cell h".into()))?;
                 let n = r.len_prefix(1)?;
                 let mut v = Vec::with_capacity(n);
                 for _ in 0..n {
