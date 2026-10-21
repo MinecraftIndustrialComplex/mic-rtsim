@@ -71,6 +71,7 @@ impl World {
     ) -> Result<Quote, Refusal> {
         self.run_until(at);
         let (up, down) = self.markup(i, player);
+        self.release(i, at);
         let region = self.nodes[i].region;
         let result = self
             .markets
@@ -132,6 +133,7 @@ impl World {
     /// news by the next caravans.
     pub fn base_trade(&mut self, i: usize, g: GoodId, price: Price, at: Tick) {
         self.run_until(at);
+        self.release(i, at);
         let region = self.nodes[i].region;
         self.markets
             .apply(region, at, |m, at| m.record_base_trade(g, price, at))

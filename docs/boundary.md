@@ -585,14 +585,19 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      resent like transfers. Caravans and touring bands a player can see are materialized as C25
      groups (SPAWN_GROUP with `FLAG_SURFACE`, cargo in the chests), steered toward where the sim
      walks them, and captured back when no player is near or the sim's caravan moved on.
-   - **Pages** (choices S1 to S7 in docs/overnight-choices-persist.md). Table 0x5001: a snapshot
-     of the world (`World::save`) in 1 MiB pieces; table 0x5000: the meta page and the inputs since
-     the snapshot in chunks of 1,024. `start` reads the snapshot and replays only that tail, then
-     checks the state hash against the one saved. A save writes the meta page and the tail chunks
-     not yet on disk, or a new snapshot when the tail reaches 1,024 inputs or a world day, or the
-     world changed outside the log (the dragons). Pages this build cannot read are dropped with a
-     loud log and the phase 1 world starts afresh (`when_pages_unreadable`, S5; Ben chose "Drop and
-     start fresh").
+   - **Pages** (choices S1 to S7 in docs/overnight-choices-persist.md, PF12 to PF21 in
+     docs/choices-paging-followups.md). Table 0x5000: the link's meta page and the inputs since the
+     snapshot in chunks of 1,024. A snapshot is the world's paged save (its meta page at 0x5001 id
+     0, its row tables, the markets' among them, at 0x5010 and up: the pages changed since the last
+     snapshot) and the link's own part (the village index and the censused villages) in 1 MiB
+     pieces at 0x5001 id 1 and up. `start` opens the world on its pages (rows read as they are
+     needed, under `Config.row_budget`) and replays only the tail, then in TEST mode checks the
+     state hash against the one saved. A save writes the meta page and the tail chunks not yet on
+     disk, or a snapshot when the tail reaches 1,024 inputs or a world day, the world changed
+     outside the log (the dragons), or the world's rows are over their budget with every resident
+     page changed. Pages this build cannot read are dropped with a loud log, deleted at start, and
+     the phase 1 world starts afresh (`when_pages_unreadable`, S5; Ben chose "Drop and start
+     fresh").
    - **The switch** (C25; U10, Ben: "Ignore everything"; choice PR13). Phase 1 runs only with all
      four of its modules on (knowledge, settlements, trade, travel). Switched off it captures every
      puppet back (one last write), drops what was queued for the session, ignores its records
@@ -624,10 +629,13 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      core's counter, after the core's, the industry's and phase 1's; all are per session (a lost
      adoption or discard is decided again when Java reports the body again). The species and the
      dimension go through the engine's dictionary.
-   - **Pages.** Table 0x4400: one page, `Dragons::save` with its state hash (checked on load). While
-     there is a dragon or a lair the phase 1 link snapshots at every save, in the same commit. A
-     dragons page without the phase 1 world it was saved with, or one this build cannot read, is
-     dropped loudly and the dragons start afresh.
+   - **Pages** (PF12 to PF21 in docs/choices-paging-followups.md). Table 0x4400: the meta page
+     at id 0, and in TEST mode the state hash at id 1 (checked on load); the rows, the wheel and
+     the indexes at 0x4410 and up, read as they are needed under `Config.row_budget`. A save writes
+     the meta page and the pages changed since the last one. While there is a dragon or a lair the
+     phase 1 link snapshots at every save, in the same commit. Dragon pages without the phase 1
+     world they were saved with, or ones this build cannot read, are dropped loudly and deleted
+     at start, and the dragons start afresh.
    - **The switch** (C25, `Module.ECOLOGY`, bit 4; choice U10 in
      docs/overnight-choices-integrate2.md): off, the dragons ignore their records, run and write
      nothing and keep the page they had; on again, their bodies of before are gone and they run on.
@@ -656,10 +664,11 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      kept or resent. Body kinds, the dimension and cargo items go through the engine's dictionary.
      A merchant embodied across a docking gets its next voyage's hold (SHIP_CARGO, U18), its op id
      from the ship, epoch and voyage (allocator 0x53).
-   - **Pages.** Table 0x5300: one page, `Ships::save` with its state hash (checked on load). While
-     there are ships, docks or havens the phase 1 link snapshots at every save, in the same commit.
-     A ships page without the phase 1 world it was saved with, or one this build cannot read, is
-     dropped loudly and the ships start afresh.
+   - **Pages.** Table 0x5300 as the dragons' 0x4400 (the meta page at id 0, the TEST hash at id 1,
+     the rows and indexes at 0x5310 and up). While there are ships, docks or havens the phase 1
+     link snapshots at every save, in the same commit. Ship pages without the phase 1 world they
+     were saved with, or ones this build cannot read, are dropped loudly and deleted at start, and
+     the ships start afresh.
    - **The switch** (C25, `Module.SHIPS`, bit 6; U10): as the dragons'.
    - **Tests.** Order 26 (`SHIP_COMMAND`, TEST mode only) queues a ship command record with Java's
      body, item and dimension ids as the ships' own (U15), for a future plugin's GameTests. The
@@ -691,9 +700,10 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **Commands.** HERD_MATERIALIZE, STEER and DESPAWN take sequences from the core's counter after
      every other module's; all are per session, none kept or resent, none with an op id. The species
      and the dimension go through the engine's dictionary.
-   - **Pages.** Table 0x4800: one page, `Herds::save` with its state hash (checked on load). While
-     there are herds the phase 1 link snapshots at every save, in the same commit. A herds page
-     without the phase 1 world it was saved with, or one this build cannot read, is dropped loudly.
+   - **Pages.** Table 0x4800 as the dragons' 0x4400 (the meta page at id 0, the TEST hash at id 1,
+     the rows, the wheel and the claims at 0x4810 and up). While there are herds the phase 1 link
+     snapshots at every save, in the same commit. Herd pages without the phase 1 world they were
+     saved with, or ones this build cannot read, are dropped loudly and deleted at start.
    - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule).
    - **Prey.** With the dragons running too, the dragons run with the herds as prey
      (`Dragons::run_until_with_herds`, Y7).
@@ -728,10 +738,10 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      module's; all are per session (K2-27), none kept, resent or with an op id. TERRITORY goes
      again for every faction at a session start. Body kinds, the dimension and the tribute item go
      through the engine's dictionary; deadlines and arrivals are game time.
-   - **Pages.** Table 0x4300: one page, `Conflict::save` with its state hash (checked on load).
-     While the conflict is active the phase 1 link snapshots at every save, in the same commit. A
-     page without the phase 1 world it was saved with, or one this build cannot read, is dropped
-     loudly.
+   - **Pages.** Table 0x4300 as the dragons' 0x4400 (the meta page at id 0, the TEST hash at id 1,
+     the rows, the wheel and the indexes at 0x4310 and up). While the conflict is active the phase
+     1 link snapshots at every save, in the same commit. Pages without the phase 1 world they were
+     saved with, or ones this build cannot read, are dropped loudly and deleted at start.
    - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
    - **Tests.** Order 29 (`CONFLICT_COMMAND`, TEST mode) queues a conflict command record with
      Java's ids as the conflict's own (C2-15). The Rust fake Java side (`tests/common`,
@@ -1254,7 +1264,7 @@ The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the d
 ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
 stay as they are; these three are next to the herds'. **Dictionary kind 0x20** (each direction, as
 §2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12 are untouched.
-**Pages**: table 0x4300 ('C'), one page with `Conflict::save` and its state hash, as the ships'
+**Pages**: table 0x4300 ('C'), the meta page at id 0 and the rows at 0x4310 and up, as the ships'
 0x5300 (§5 item 15).
 
 ### 9.2 Ids and dictionaries

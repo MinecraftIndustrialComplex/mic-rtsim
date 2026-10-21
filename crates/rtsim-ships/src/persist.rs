@@ -17,9 +17,9 @@
 //! # Two forms (docs/choices-paging-modules.md, PM-S rows)
 //!
 //! - **One blob** ([`Ships::save`], [`Ships::load`]): the row tables written whole, rows in key
-//!   order ([`PagedArena::encode_all`]), then the resident state. What rtsim-jni writes as page
-//!   0x5300/0 until it wires paging, and what [`Ships::state_hash`] hashes: equal for equal
-//!   engines, paged or not.
+//!   order ([`PagedArena::encode_all`]), then the resident state. What the resident tests and
+//!   tools save, and what [`Ships::state_hash`] hashes: equal for equal engines, paged or not
+//!   (rtsim-jni pages the ships, from page 0x5300/0).
 //! - **Paged** ([`Ships::save_paged`], [`Ships::open_paged`]): a meta page with the resident state
 //!   and each row table's layout, count and next index, beside the row tables' dirty pages (ships
 //!   0x5310, lane threats 0x5311). The port network (docks, lanes, services, the flow graph that

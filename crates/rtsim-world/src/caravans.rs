@@ -184,7 +184,7 @@ impl World {
         // The destination's arrivals change where the hole starts and ends. The start can be the
         // very next boundary, in which case the destination must re-read its inflows now.
         for first in [lo, dep + 1] {
-            let wake = q.at(first + lag - 1).max(at);
+            let wake = self.phased(q.at(first + lag - 1), to).max(at);
             self.schedule(wake, Ev::Wake(to));
         }
         self.stats.promotions += 1;
@@ -626,6 +626,7 @@ impl World {
         let stage = car.stage;
         let home = car.home;
         let holder = car.holder;
+        self.release(node, at);
         // What it saw, it tells (gossip moves with travellers).
         let mut cursor = rtsim_knowledge::BoardCursor::default();
         let packet = self.knowledge.packet_since(holder, &mut cursor);
