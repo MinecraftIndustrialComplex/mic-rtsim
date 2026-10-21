@@ -14,6 +14,9 @@ edges (Create falls back to andesite for an unknown material): a ghost graph. Th
   * Steam 'n' Rails bogeys to Create's, and foreign schedule instructions and conditions (see
     fix_schedules: Create 6.0.10 cannot save a train holding one).
 
+With `--schedules-only` it touches nothing but the trains' schedules in data/create_tracks.dat (also
+repairs a world an older version of this script left with mismatched condition progress).
+
 With `--drop NS` (repeatable) it also turns every palette entry of namespace NS into air and removes NS's block
 entities: what the server does anyway with a missing mod, minus one "Skipping BlockEntity" error line per
 block entity (StressA has 150,000 Framed Blocks block entities).
@@ -122,9 +125,20 @@ def fix_schedules(trains):
             nc = (new_cur or 0) % max(1, len(keep))
             if nc != cur:
                 rt["CurrentEntry"] = nbtlib.Int(nc)
-                for k in ("ConditionProgress", "ConditionContext"):
-                    if k in rt:
-                        del rt[k]
+                st["current_entry_moved"] = st.get("current_entry_moved", 0) + 1
+        # A train waiting at a station (State POST_TRANSIT) ticks one progress counter and one context
+        # per condition group of its current entry, and Create throws IndexOutOfBounds in tickConditions
+        # when the lists are shorter (seen on StressA after an entry was dropped). Fresh lists, as
+        # Create's own destinationReached makes them, when the sizes do not match. (Before and in transit
+        # the lists are empty until Create starts the instruction or arrives.)
+        cur = int(rt.get("CurrentEntry", 0))
+        n = len(entries[cur].get("Conditions", [])) if cur < len(entries) else 0
+        prog = rt.get("ConditionProgress", [])
+        ctx = rt.get("ConditionContext", [])
+        if str(rt.get("State", "")) == "POST_TRANSIT" and (len(prog) != n or len(ctx) != n):
+            rt["ConditionProgress"] = nbtlib.IntArray([0] * n)
+            rt["ConditionContext"] = nbtlib.List[nbtlib.Compound]([nbtlib.Compound() for _ in range(n)])
+            st["progress_resized"] = st.get("progress_resized", 0) + 1
     return st
 
 
@@ -186,7 +200,8 @@ def main():
     needles = [b"railways:"] + [d.encode() + b":" for d in drop]
     stats = {"chunks_changed": 0, "regions_changed": 0}
     reg = os.path.join(world, "region")
-    for f in sorted(os.listdir(reg)):
+    only_schedules = "--schedules-only" in sys.argv
+    for f in ([] if only_schedules else sorted(os.listdir(reg))):
         if not f.endswith(".mca"):
             continue
         path = os.path.join(reg, f)
@@ -225,8 +240,9 @@ def main():
                 for v in t:
                     walk(v)
 
-        walk(nb["data"]["RailGraphs"])
-        walk(nb["data"]["Trains"])  # travelling points carry edge data too
+        if not only_schedules:
+            walk(nb["data"]["RailGraphs"])
+            walk(nb["data"]["Trains"])  # travelling points carry edge data too
         # Bogeys: Create 6.0.10's CarriageBogey.read casts BLOCK.get(Type) to AbstractBogeyBlock, so an
         # unknown bogey block (air) is a ClassCastException, not a fallback. Map them to Create's own.
         bogeys = {}
