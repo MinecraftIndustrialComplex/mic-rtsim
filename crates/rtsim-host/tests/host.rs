@@ -1385,7 +1385,7 @@ fn outboxes_bounded(s: &Soak) {
 
 /// The whole state over a soak: the pages and the heap flat once the world settles. It failed
 /// before the leg index purged its past windows (docs/choices-leg-purge.md LP1): the phase 1
-/// world's meta page (table 0x5001) grew from 62 KB on day 10 to 671 KB on day 1,000 with one
+/// world's meta page (table 0x5001) grew from 62 KB on day 10 to 706 KB on day 1,000 with one
 /// dragon flying, and the heap with it (VIEWER.md §12.4).
 #[test]
 fn a_thousand_days_at_max_keeps_the_state_bounded() {
