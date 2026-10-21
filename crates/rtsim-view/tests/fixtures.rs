@@ -2,10 +2,12 @@
 //! The save viewer on real saves (VIEWER.md §16, V1's exit test): GameTest worlds the mod wrote,
 //! each its `rtsim/` pages and `data/mic_rtsim_journal.dat`, copied as they were.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, run from mic-rtsim commit 82ee152 (in
-//!   812009f, main when V1 began). Villages, roads, a caravan, news, two herds, a district.
-//! - `tests/data/create`: neoforge/create's GameTest world (`world.reused-0435`), run from
-//!   commit 42370b8 (the deploy rehearsal branch). Every module's pages, mostly empty.
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 6638edc
+//!   (feat/viewer with main's money sink, whose phase 1 snapshot format replaced the first one).
+//!   Villages, roads, news, herds and their routes, a district; no caravan is on the road when the
+//!   server stops (the harness world draws caravans).
+//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run. Every
+//!   module's pages, mostly empty: herds, districts and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
 //! and these folders are replaced by a fresh GameTest run.
@@ -87,9 +89,9 @@ fn the_core_gametest_save_draws_every_layer_and_writes_nothing() {
             "settle.villages",
             "trade.prices",
             "travel.roads",
-            "travel.caravans",
             "travel.messengers",
             "ecology.herds",
+            "ecology.herd_routes",
             "industry.districts",
         ],
     );
@@ -99,11 +101,6 @@ fn the_core_gametest_save_draws_every_layer_and_writes_nothing() {
 fn the_create_gametest_save_draws_every_layer_and_writes_nothing() {
     view_fixture(
         "create",
-        &[
-            "ecology.herds",
-            "ecology.herd_routes",
-            "industry.districts",
-            "industry.stations",
-        ],
+        &["ecology.herds", "industry.districts", "industry.stations"],
     );
 }

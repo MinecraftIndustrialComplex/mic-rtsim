@@ -364,6 +364,7 @@ impl World {
     }
 
     /// Coin spent on works and paid as tribute in the whole world, per currency.
+    #[allow(clippy::type_complexity)]
     pub fn works_totals(&self) -> (Vec<(GoodId, i128)>, Vec<(GoodId, i128)>) {
         let mut spent: std::collections::BTreeMap<GoodId, i128> = Default::default();
         let mut tribute: std::collections::BTreeMap<GoodId, i128> = Default::default();
