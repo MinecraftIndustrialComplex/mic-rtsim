@@ -24,6 +24,8 @@ public final class GlassCorpus {
             new PressSheetsFactory(),
             new MillstoneFlourFactory(),
             new SawShaftsFactory(),
+            new PrecisionMechanismFactory(),
+            new CrafterGridFactory(),
             new BrassTunnelsFactory()
     );
 
