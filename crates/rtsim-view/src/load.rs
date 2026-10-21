@@ -78,6 +78,16 @@ pub struct Module {
     pub hash: Option<(u64, Option<u64>)>,
 }
 
+impl Module {
+    /// Whether the state read back is the one a TEST save wrote: `Some(false)` means the viewer
+    /// decodes the module differently from the engine (a bug: what it draws may be wrong), `None`
+    /// that the save wrote no hash to compare with.
+    pub fn hash_matches(&self) -> Option<bool> {
+        self.hash
+            .and_then(|(now, saved)| saved.map(|saved| saved == now))
+    }
+}
+
 /// The phase 1 world as the link restores it: its snapshot, then the input tail replayed.
 pub struct Phase1 {
     pub world: World,
@@ -580,8 +590,7 @@ fn world_parts() -> (
     rtsim_trade::Goods,
     rtsim_trade::labour::RecipeBook,
 ) {
-    let (goods, ids) = rtsim_world::synth::goods();
-    let book = rtsim_world::synth::recipes(&ids);
+    let (goods, book) = rtsim_world::catalogue::catalogue();
     (WorldConfig::new(p1::WORLD_SEED), goods, book)
 }
 

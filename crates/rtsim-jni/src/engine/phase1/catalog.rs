@@ -4,7 +4,8 @@
 //! house templates.
 //!
 //! **Every table here is a PLACEHOLDER** (choice V5): the goods and recipes are rtsim-world's
-//! synthetic catalogue (`rtsim_world::synth`), mapped onto vanilla items; a village's resources
+//! catalogue (`rtsim_world::catalogue`, which the viewer reads pages back with), mapped onto
+//! vanilla items; a village's resources
 //! follow its structure (plains farm, taiga shears and smelts, ...), since nothing the bridge
 //! observes says what land a village works. P9 and P18 replace them with measured ones.
 
@@ -75,8 +76,7 @@ pub const PACK_SLOTS: u32 = 27;
 
 impl Catalog {
     pub fn new() -> Catalog {
-        let (goods, ids) = synth::goods();
-        let book = synth::recipes(&ids);
+        let (goods, book) = rtsim_world::catalogue::catalogue();
         let items = goods
             .ids()
             .map(|g| {
