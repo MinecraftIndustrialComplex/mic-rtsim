@@ -8,6 +8,7 @@
     "ChunkMapInvoker",
     "EntitySaveMixin",
     "EntitySectionManagerAccessor",
+    "LevelChunkAccessor",
     "LevelChunkTickGateMixin",
     "LlamaInvoker",
     "MerchantOfferAccessor",

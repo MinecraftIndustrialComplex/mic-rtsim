@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.journal;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ChunkMapInvoker;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.LevelChunkAccessor;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>So each such chunk is noted here ({@link #dependsOn}) when the record is committed. When the journal's
  * file is about to be written ({@link JournalSavedData#save(java.io.File, net.minecraft.core.HolderLookup.Provider)},
- * on the server thread), every noted chunk that is still unsaved goes through vanilla's own
+ * on the server thread), every noted chunk that is still in its level and unsaved goes through vanilla's own
  * {@code ChunkMap.save} (whatever the cooldown), and a task queued on NeoForge's SavedData IO chain right
  * before the journal's own write waits until those levels' chunk IO workers have written and flushed
  * everything queued so far ({@code IOWorker.synchronize(true)}, the flush vanilla's shutdown save uses). The
@@ -103,9 +104,17 @@ public final class ChunkWriteBarrier {
         for (LevelChunk c : chunks) {
             if (!(c.getLevel() instanceof ServerLevel level) || level.noSave())
                 continue; // a level that is not saving writes no chunk; nothing to wait for
-            if (c.isUnsaved()) {
-                ((ChunkMapInvoker) level.getChunkSource().chunkMap).mic_rtsim$save(c);
-                forcedSaves++;
+            // Only an instance still in its level is saved: one that left was saved by its unload task, and
+            // writing it again could put stale contents over a newer instance's. Its write may still be queued:
+            // the wait below covers it.
+            if (((LevelChunkAccessor) c).mic_rtsim$loaded() && c.isUnsaved()) {
+                try {
+                    ((ChunkMapInvoker) level.getChunkSource().chunkMap).mic_rtsim$save(c);
+                    forcedSaves++;
+                } catch (RuntimeException e) {
+                    // vanilla reports its own save failures; anything else must not stop the world's save
+                    MicRtsim.LOGGER.error("[mic_rtsim] saving chunk {} before the journal", c.getPos(), e);
+                }
             }
             levels.add(level);
         }
@@ -137,8 +146,9 @@ public final class ChunkWriteBarrier {
                 late.incrementAndGet();
                 MicRtsim.LOGGER.error("[mic_rtsim] a chunk write the journal depends on failed; the journal is written anyway", e.getCause());
             } catch (InterruptedException e) {
+                // Only a shutting-down IO pool interrupts. The flag is not set again: the journal's write may run
+                // on this thread next, and an interrupted thread fails every FileChannel call.
                 late.incrementAndGet();
-                Thread.currentThread().interrupt();
             } catch (RuntimeException e) {
                 late.incrementAndGet();
                 MicRtsim.LOGGER.error("[mic_rtsim] waiting for the chunk writes the journal depends on", e);
