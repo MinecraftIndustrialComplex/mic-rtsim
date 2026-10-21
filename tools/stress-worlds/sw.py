@@ -7,15 +7,17 @@
                                                              boot an earlier run's saved world again
                                                              (reload or uninstall check)
 
-Stdlib only. Every server runs under nice 10 on its own ports (26100 + slot), from a reflink copy of
+Another pack: --base <server dir> --runs <dir> --jars <dir> (the NeoForge version is read from the
+base's libraries). Stdlib only. Every server runs under nice 10 on its own ports (26100 + slot), from a reflink copy of
 ~/mic-stress-worlds/srv/base (the current pack, dc49fe7, NeoForge 21.1.249, plus spark) and a reflink
 copy of the world. The world sources stay untouched. Results go to <run>/sw-result.json.
 
 A pair starts its arms 5 s apart and runs the same scene in parallel threads, so both share the
 laptop's load; compare per sample. Scenes are JSON:
 
-    {"forceload": [[x1, z1, x2, z2], ...],       block coordinates, overworld, added 10 s apart
-     "adopt": [[x, y, z, radius], ...],          rtsim district adopt (rtsim arms only)
+    {"forceload": [[x1, z1, x2, z2], ...],       block coordinates, added 10 s apart; an optional fifth
+                                                 element names the dimension (default minecraft:overworld)
+     "adopt": [[x, y, z, radius], ...],          rtsim district adopt (rtsim arms only), optional dimension
      "idle": 60, "settle": 120, "busy": 300, "sample": 5,
      "unload_reload": 90,                        forceload remove all, wait, add again, wait
      "info_max": 12}                             districts to ask for info
@@ -195,6 +197,14 @@ def set_props(path, kv):
     open(path, "w").write("\n".join(out) + "\n")
 
 
+def neoforge_version(d):
+    vs = sorted(os.listdir(f"{d}/libraries/net/neoforged/neoforge"))
+    vs = [v for v in vs if os.path.isfile(f"{d}/libraries/net/neoforged/neoforge/{v}/unix_args.txt")]
+    if len(vs) != 1:
+        raise SystemExit(f"want one NeoForge under {d}/libraries, found {vs}")
+    return vs[0]
+
+
 def world_root(src):
     """The directory holding level.dat (downloads wrap it in a folder)."""
     if os.path.isfile(os.path.join(src, "level.dat")):
@@ -225,7 +235,8 @@ def prep(run, world, rtsim, slot, xmx="6G", world_from_run=None):
         "level-name": "world", "motd": f"stress {run}", "max-tick-time": "-1", "online-mode": "false",
         "view-distance": 8, "simulation-distance": 8, "server-ip": "127.0.0.1", "sync-chunk-writes": "false",
         "level-seed": "", "spawn-protection": 0})
-    set_props(f"{d}/config/voicechat/voicechat-server.properties", {"port": 26300 + slot})
+    if os.path.exists(f"{d}/config/voicechat/voicechat-server.properties"):
+        set_props(f"{d}/config/voicechat/voicechat-server.properties", {"port": 26300 + slot})
     open(f"{d}/user_jvm_args.txt", "w").write(
         f"-Xms2G\n-Xmx{xmx}\n-XX:+UseG1GC\n-Xlog:gc*:file=gc.log:time,uptime:filecount=2,filesize=20M\n")
     os.makedirs(f"{d}/kubejs/server_scripts", exist_ok=True)
@@ -263,7 +274,7 @@ class Server:
         os.makedirs(f"{self.dir}/logs", exist_ok=True)
         con = open(f"{self.dir}/console.log", "w")
         args = ["nice", "-n", "10", JAVA, "@user_jvm_args.txt",
-                "@libraries/net/neoforged/neoforge/21.1.249/unix_args.txt", "nogui"] + self.extra_args
+                f"@libraries/net/neoforged/neoforge/{neoforge_version(self.dir)}/unix_args.txt", "nogui"] + self.extra_args
         self.t0 = time.time()
         self.proc = subprocess.Popen(args, cwd=self.dir, stdout=con, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL)
@@ -379,9 +390,11 @@ class Server:
 
 
 def forceload(s, boxes, add=True):
-    for (x1, z1, x2, z2) in boxes:
-        out = s.cmd(f"execute in minecraft:overworld run forceload {'add' if add else 'remove'} {x1} {z1} {x2} {z2}")
-        s.ev("forceload", add=add, box=[x1, z1, x2, z2], out=out[:200])
+    for b in boxes:
+        x1, z1, x2, z2 = b[:4]
+        dim = b[4] if len(b) > 4 else "minecraft:overworld"
+        out = s.cmd(f"execute in {dim} run forceload {'add' if add else 'remove'} {x1} {z1} {x2} {z2}")
+        s.ev("forceload", add=add, box=list(b), out=out[:200])
 
 
 def scene_run(s, sc, profile_s, barrier=None):
@@ -399,9 +412,11 @@ def scene_run(s, sc, profile_s, barrier=None):
     s.ev("forceloaded")
     time.sleep(sc.get("settle", 120) / 2)
     if s.rtsim:
-        for (x, y, z, r) in sc.get("adopt", []):
-            out = s.cmd(f"execute in minecraft:overworld positioned {x} {y} {z} run rtsim district adopt {r}")
-            s.ev("adopt", at=[x, y, z, r], out=out)
+        for b in sc.get("adopt", []):
+            x, y, z, r = b[:4]
+            dim = b[4] if len(b) > 4 else "minecraft:overworld"
+            out = s.cmd(f"execute in {dim} positioned {x} {y} {z} run rtsim district adopt {r}")
+            s.ev("adopt", at=list(b), out=out)
             log(s.run, "adopt", x, z, r, out.strip()[:120])
     time.sleep(sc.get("settle", 120) / 2)
     s.rtsim_report("settled", sc.get("info_max", 12))
@@ -499,7 +514,14 @@ def main():
     ap.add_argument("--no-rtsim", action="store_true")
     ap.add_argument("--world-from-run")
     ap.add_argument("--need-gb", type=float, default=0)
+    ap.add_argument("--base", help="server dir to copy (default ~/mic-stress-worlds/srv/base)")
+    ap.add_argument("--runs", help="where run dirs go (default ~/mic-stress-worlds/runs)")
+    ap.add_argument("--jars", help="rtsim jars for rtsim arms (default ~/mic-stress-worlds/jars/current)")
     a = ap.parse_args()
+    global BASE, RUNS, JARS
+    BASE = os.path.expanduser(a.base) if a.base else BASE
+    RUNS = os.path.expanduser(a.runs) if a.runs else RUNS
+    JARS = os.path.expanduser(a.jars) if a.jars else JARS
     if a.cmd == "upgrade":
         # A 1.19.2 world through vanilla's DataFixer on the pack server (--forceUpgrade), no rtsim; the
         # world's own serverconfig (1.19.2 mod configs) is dropped so the pack's defaultconfigs apply.
