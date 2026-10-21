@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn Steam 'n' Rails track into Create andesite track in a COPY of a 1.19.2 world (option A clean-up).
 
-    python3 -I remap_tracks.py <world_copy_dir> [--dry-run]
+    python3 -I remap_tracks.py <world_copy_dir> [--dry-run] [--drop NAMESPACE ...]
 
 The pack has no Steam 'n' Rails, so its track blocks would load as air while the track graph keeps the
 edges (Create falls back to andesite for an unknown material): a ghost graph. This rewrites, in place:
@@ -10,9 +10,15 @@ edges (Create falls back to andesite for an unknown material): a ghost graph. Th
     to `create:track` with the same properties (the blocks share TrackBlock's state properties, and
     their block entities are already `create:track`);
   * every `Material: "railways:*"` in a track block entity's bezier connections to `create:andesite`;
-  * every edge material `railways:*` in data/create_tracks.dat to `create:andesite`.
+  * every edge material `railways:*` in data/create_tracks.dat to `create:andesite`;
+  * Steam 'n' Rails bogeys to Create's, and foreign schedule instructions and conditions (see
+    fix_schedules: Create 6.0.10 cannot save a train holding one).
 
-Only chunks whose bytes mention `railways:` are parsed and re-encoded; a region file is rewritten only
+With `--drop NS` (repeatable) it also turns every palette entry of namespace NS into air and removes NS's block
+entities: what the server does anyway with a missing mod, minus one "Skipping BlockEntity" error line per
+block entity (StressA has 150,000 Framed Blocks block entities).
+
+Only chunks whose bytes mention `railways:` (or a dropped namespace) are parsed and re-encoded; a region file is rewritten only
 when one of its chunks changed (sectors laid out again, timestamps kept). Needs nbtlib. Never run it on
 an original download.
 """
@@ -31,7 +37,7 @@ KEEP = {"railways:track_buffer", "railways:track_buffer_wood_variant", "railways
         "railways:track_switch_andesite", "railways:track_switch_brass"}  # not track pieces
 
 
-def remap_palette(chunk, stats):
+def remap_palette(chunk, stats, drop=()):
     changed = False
     for sec in chunk.get("sections", []):
         bs = sec.get("block_states")
@@ -39,12 +45,27 @@ def remap_palette(chunk, stats):
             continue
         for e in bs.get("palette", []):
             n = str(e["Name"])
+            if drop and n.split(":", 1)[0] in drop:
+                e["Name"] = String("minecraft:air")
+                if "Properties" in e:
+                    del e["Properties"]
+                stats["dropped_palette"] = stats.get("dropped_palette", 0) + 1
+                changed = True
+                continue
             if n.startswith(TRACK_PREFIX) and n not in KEEP and not n.startswith("railways:track_switch"):
                 e["Name"] = String("create:track")
                 stats["palette"] = stats.get("palette", 0) + 1
                 names = stats.setdefault("names", {})
                 names[n] = names.get(n, 0) + 1
                 changed = True
+    if drop and "block_entities" in chunk:
+        bes = chunk["block_entities"]
+        keep = [be for be in bes if str(be.get("id", "")).split(":", 1)[0] not in drop]
+        if len(keep) != len(bes):
+            stats["dropped_bes"] = stats.get("dropped_bes", 0) + len(bes) - len(keep)
+            bes.clear()
+            bes.extend(keep)
+            changed = True
     for be in chunk.get("block_entities", []):
         for c in be.get("Connections", []) if "Connections" in be else []:
             m = str(c.get("Material", ""))
@@ -53,6 +74,58 @@ def remap_palette(chunk, stats):
                 stats["be_materials"] = stats.get("be_materials", 0) + 1
                 changed = True
     return changed
+
+
+def fix_schedules(trains):
+    """Create 6.0.10 reads an unknown schedule instruction or wait condition as null and then throws a
+    NullPointerException in Train.write on every save (seen on StressA: Create Railways Navigator's).
+    A delay-like foreign condition becomes create:delay with its Value and TimeUnit; any other foreign
+    condition is dropped; an entry whose instruction is foreign is dropped (CurrentEntry follows, and
+    the condition progress resets when the current entry changes)."""
+    st = {}
+    for tr in trains:
+        rt = tr.get("Runtime")
+        if rt is None or "Schedule" not in rt:
+            continue
+        entries = rt["Schedule"].get("Entries", [])
+        keep = []
+        cur = int(rt.get("CurrentEntry", 0))
+        new_cur = None
+        for i, e in enumerate(entries):
+            ins = str(e["Instruction"]["Id"])
+            if not ins.startswith("create:"):
+                st["dropped_entry " + ins] = st.get("dropped_entry " + ins, 0) + 1
+                continue
+            for cl in e.get("Conditions", []):
+                kept = []
+                for c in cl:
+                    cid = str(c["Id"])
+                    if cid.startswith("create:"):
+                        kept.append(c)
+                        continue
+                    d = c.get("Data", nbtlib.Compound())
+                    if "Value" in d and "TimeUnit" in d:
+                        c["Id"] = String("create:delay")
+                        c["Data"] = nbtlib.Compound({"Value": d["Value"], "TimeUnit": d["TimeUnit"]})
+                        kept.append(c)
+                        st["as_delay " + cid] = st.get("as_delay " + cid, 0) + 1
+                    else:
+                        st["dropped_condition " + cid] = st.get("dropped_condition " + cid, 0) + 1
+                cl.clear()
+                cl.extend(kept)
+            if new_cur is None and i >= cur:
+                new_cur = len(keep)
+            keep.append(e)
+        if len(keep) != len(entries):
+            entries.clear()
+            entries.extend(keep)
+            nc = (new_cur or 0) % max(1, len(keep))
+            if nc != cur:
+                rt["CurrentEntry"] = nbtlib.Int(nc)
+                for k in ("ConditionProgress", "ConditionContext"):
+                    if k in rt:
+                        del rt[k]
+    return st
 
 
 def read_region(path):
@@ -109,6 +182,8 @@ def decode(ct, payload):
 def main():
     world = sys.argv[1]
     dry = "--dry-run" in sys.argv
+    drop = {sys.argv[i + 1] for i, x in enumerate(sys.argv) if x == "--drop"}
+    needles = [b"railways:"] + [d.encode() + b":" for d in drop]
     stats = {"chunks_changed": 0, "regions_changed": 0}
     reg = os.path.join(world, "region")
     for f in sorted(os.listdir(reg)):
@@ -119,10 +194,10 @@ def main():
         dirty = False
         for i, (ct, payload) in list(chunks.items()):
             raw = decode(ct, payload)
-            if b"railways:" not in raw:
+            if not any(n in raw for n in needles):
                 continue
             nb = nbtlib.File.parse(io.BytesIO(raw))
-            if remap_palette(nb, stats):
+            if remap_palette(nb, stats, drop):
                 buf = io.BytesIO()
                 nb.write(buf)
                 chunks[i] = (2, zlib.compress(buf.getvalue()))
@@ -170,7 +245,8 @@ def main():
                     if bd is not None and str(bd.get("BogeyStyle", "")).startswith("railways:"):
                         bd["BogeyStyle"] = String("create:standard")
         stats["bogeys"] = bogeys
-        n = n[0] + sum(bogeys.values())
+        stats["schedules"] = fix_schedules(nb["data"]["Trains"])
+        n = n[0] + sum(bogeys.values()) + sum(stats["schedules"].values())
         stats["graph_materials"] = n
         if not dry and n:
             nb.save(tracks)
