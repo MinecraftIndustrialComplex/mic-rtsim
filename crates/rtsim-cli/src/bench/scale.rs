@@ -118,6 +118,12 @@ pub struct Measured {
     /// dragon sweep: per dragon).
     #[serde(default)]
     pub cpu_ns_per_unit_day: Option<f64>,
+    /// Paged module runs: saves per sim day, and of those the extra saves the budget asked for
+    /// (every resident page changed since the last save).
+    #[serde(default)]
+    pub saves_per_day: Option<f64>,
+    #[serde(default)]
+    pub pressure_saves_per_day: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,14 +280,22 @@ impl Baseline {
         }
         if matches!(sweep.vary, Vary::Herds | Vary::Members) {
             let members = sweep.vary == Vary::Members;
+            // The wide sweeps (`herds-wide`, `herds-paged`) grow the valley with the herds.
+            let wide = sweep.vary == Vary::Herds && sweep.name != "herds";
             return Spec::Herds(super::herds::HerdsConfig {
                 herds: if members { HERD_BASE } else { value },
                 members: if members { value } else { MEMBER_BASE },
                 warmup_days: 8,
-                // A decision per herd per sub-season (8 days): three sub-seasons' worth per point.
-                days: self.days.max(3) * 8,
+                // A decision per herd per sub-season (8 days): three sub-seasons' worth per point;
+                // the wide sweeps one (their burst of decisions), as they reach 16,384 herds.
+                days: if wide { 8 } else { self.days.max(3) * 8 },
                 gap_days: 10_000,
                 seed: self.seed,
+                wide,
+                paged: sweep.paged.then(|| super::herds::HerdsPaging {
+                    budget_bytes: HERDS_BUDGET,
+                    save_every_ticks: self.save_every_ticks,
+                }),
             });
         }
         if sweep.vary == Vary::Ships {
@@ -776,7 +790,63 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
                     Metric::Heap,
                     1.1,
                     1.0,
-                    "herds are resident rows with their grazed forage cells (paging, A16, is not built yet)",
+                    "herds are resident rows with their grazed forage cells here; herds-paged pages them",
+                ),
+            ],
+        },
+        // The same herds in a valley that widens with them (one fixed density), resident: the
+        // before of herds-paged.
+        Sweep {
+            name: "herds-wide".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Herds,
+            regions: None,
+            paged: false,
+            // 16,384 resident herds take minutes a repeat: the paged sweep alone goes there.
+            values: vec![256, 1_024, 4_096],
+            contracts: vec![
+                contract(
+                    Metric::CpuPerUnit,
+                    flat,
+                    0.0,
+                    "as the herds sweep, at a fixed density: one sub-season's burst of decisions per point",
+                ),
+                contract(
+                    Metric::Heap,
+                    1.1,
+                    1.0,
+                    "resident rows: about 3 KB a herd with its region index entries and grazed forage cells",
+                ),
+            ],
+        },
+        // Paged herds (docs/choices-paging-modules.md): herd rows, forage cells and the region
+        // index page under a budget, stepped tick by tick, autosaved, and saved again whenever
+        // every resident page is changed.
+        Sweep {
+            name: "herds-paged".into(),
+            model: ModelKind::Dyadic,
+            vary: Vary::Herds,
+            regions: None,
+            paged: true,
+            values: pick(&[256, 1_024, 4_096, 16_384], &[256, 1_024, 4_096]),
+            contracts: vec![
+                contract(
+                    Metric::Resident,
+                    HERDS_RESIDENT_SLOPE,
+                    0.0,
+                    "resident row pages are held to the budget plus what one tick changes: the herds of a row page decide on consecutive ticks, so a tick dirties a page or two of herds and the forage pages under their footprints, and a save frees them",
+                ),
+                contract(
+                    Metric::Heap,
+                    HERDS_HEAP_SLOPE,
+                    0.0,
+                    "the budget, the store's bounded index cache and overlay, and what stays resident by design: the wheel's pending decision per herd (about 40 bytes)",
+                ),
+                contract(
+                    Metric::CpuPerUnit,
+                    flat,
+                    0.0,
+                    "the same decisions as herds-wide, plus a page load per page of herds and forage a sub-season",
                 ),
             ],
         },
@@ -850,6 +920,14 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
 /// denser camps feel more of each other's smog and plunder each other more (behaviour). At least
 /// this many villages. PLACEHOLDER 16.
 const FACTION_VILLAGES_MIN: u64 = 16;
+
+/// The paged herd sweep's row budget. PLACEHOLDER 1 MiB: under the rows of every point but the
+/// first.
+const HERDS_BUDGET: u64 = 1 << 20;
+
+/// Declared slopes of the paged herd sweep, from its first runs (docs/choices-paging-modules.md).
+const HERDS_RESIDENT_SLOPE: f64 = 0.15;
+const HERDS_HEAP_SLOPE: f64 = 0.4;
 
 /// Members per herd held fixed while the herd sweep varies herds. PLACEHOLDER 5,000.
 const MEMBER_BASE: u64 = 5_000;
