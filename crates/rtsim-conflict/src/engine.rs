@@ -30,9 +30,9 @@ use rtsim_ecology::infra::Infrastructure;
 use rtsim_industry::ids::DistrictId;
 use rtsim_industry::threat::{Loads, Threat, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_kernel::handle::{Arena, Handle};
+use rtsim_kernel::handle::Handle;
+use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
-use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, Temperament, Trait};
 use rtsim_settle::{NodeKind, Pos};
 use rtsim_space::topology::{SharedTopologies, Topology};
@@ -525,10 +525,11 @@ pub struct Conflict {
     /// Factions by index, each with its feuds and the sources that reach it (paged rows, table
     /// 0x4310: [`crate::tables`]).
     pub factions: FactionTable,
-    /// Factions by key (resident, saved: an index from id to row).
-    pub(crate) by_key: BTreeMap<u64, u32>,
-    /// Factions by cell of their camp (resident, saved: an index from position to id).
-    pub(crate) cells: BTreeSet<((u16, i32, i32), u32)>,
+    /// Factions by key (resident, saved in pages of its own: an index from id to row, PF10).
+    pub(crate) by_key: PagedMap<u64, u32>,
+    /// Factions by cell of their camp (resident, saved in pages of its own: an index from
+    /// position to id, PF10). A set: the values are empty.
+    pub(crate) cells: PagedMap<((u16, i32, i32), u32), ()>,
     /// Feuds in every faction's row.
     pub(crate) feud_count: u64,
     /// Continuous sources (paged rows, table 0x4312, through a resident index by key).
@@ -540,8 +541,9 @@ pub struct Conflict {
     /// Pages loaded when a budget check last ended over budget with nothing it could evict:
     /// until a load or a save makes a page evictable, another check would find nothing either.
     pub(crate) budget_mark: Option<u64>,
-    pub parties: Arena<Party>,
-    pub(crate) wheel: TimingWheel<Ev>,
+    /// Parties in flight (resident, saved in pages of their own, PF10).
+    pub parties: ResidentArena<Party>,
+    pub(crate) wheel: PagedWheel<Ev>,
     /// Players seen through the interest areas: their UUIDs.
     pub(crate) players: BTreeMap<ActorId, Uuid>,
     pub(crate) applied_ops: BTreeSet<u64>,
@@ -615,15 +617,15 @@ impl Conflict {
             tun,
             cultures,
             factions: FactionTable::default(),
-            by_key: BTreeMap::new(),
-            cells: BTreeSet::new(),
+            by_key: PagedMap::new(),
+            cells: PagedMap::new(),
             feud_count: 0,
             sources: SourceTable::default(),
             places: PlaceIndex::default(),
             store: None,
             budget_mark: None,
-            parties: Arena::new(),
-            wheel: TimingWheel::new(now),
+            parties: ResidentArena::new(),
+            wheel: PagedWheel::new(now),
             players: BTreeMap::new(),
             applied_ops: BTreeSet::new(),
             settlers: Handle::NULL,
@@ -864,7 +866,7 @@ impl Conflict {
         let f = self.factions.push(x);
         self.by_key.insert(key, f);
         let cell = self.cell_of(pos);
-        self.cells.insert((cell, f));
+        self.cells.insert((cell, f), ());
         let t = self.territory(f);
         self.outbox.push(t);
         self.schedule_plunder(f, at);
@@ -984,7 +986,7 @@ impl Conflict {
         for (cx, cz) in cells {
             let c = (pos.frame, cx, cz);
             {
-                for &(_, f) in self.cells.range((c, 0)..=(c, u32::MAX)) {
+                for (&(_, f), ()) in self.cells.range((c, 0)..=(c, u32::MAX)) {
                     let x = &self.factions[f as usize];
                     let d = tdist(t, pxz(x.pos), pxz(pos));
                     let r = f64::from(x.radius);
