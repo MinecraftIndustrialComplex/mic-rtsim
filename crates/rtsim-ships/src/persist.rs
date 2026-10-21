@@ -22,8 +22,12 @@
 //!   engines, paged or not.
 //! - **Paged** ([`Ships::save_paged`], [`Ships::open_paged`]): a meta page with the resident state
 //!   and each row table's layout, count and next index, beside the row tables' dirty pages (ships
-//!   0x5310, lane threats 0x5311). Opening reads the meta page and leaves every row page on disk
-//!   until something reads it.
+//!   0x5310, lane threats 0x5311). The port network (docks, lanes, services, the flow graph that
+//!   stays resident and grows with the world) is resident state too, but it changes only when a
+//!   port, a haven's network or a navy joins, so it has its own page ([`NETWORK_KEY`], 0x5312),
+//!   written by the saves after it changed and not by the others: a save's bytes are what changed
+//!   plus a meta page that does not grow with the network. Opening reads the meta and network
+//!   pages and leaves every row page on disk until something reads it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -40,7 +44,7 @@ use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, LaneThreat, Navy, PState, Pirate, PlayerView, Promoted, Role,
+    Booked, Ev, Haven, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView, Promoted, Role,
     SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats, ShipTickets, Ships,
     Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
@@ -59,6 +63,8 @@ const ROWS_INLINE: u8 = 0;
 /// The row tables are in their own pages; only their layouts and counts follow
 /// ([`Ships::save_paged`]).
 const ROWS_PAGED: u8 = 1;
+/// The network's own page ([`NETWORK_KEY`]).
+const NETWORK: u8 = 2;
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -906,7 +912,17 @@ impl Ships {
         w.u8(ROWS_INLINE);
         self.ships.encode_all(&mut w);
         self.threats.encode_all(&mut w);
+        self.put_network(&mut w);
         self.put_resident(&mut w);
+        w.into_bytes()
+    }
+
+    /// The network's page of a paged save.
+    fn save_network(&self) -> Vec<u8> {
+        let mut w = Writer::with_capacity(4096 + self.lanes.len() * 64);
+        w.u32(MAGIC);
+        w.u8(NETWORK);
+        self.put_network(&mut w);
         w.into_bytes()
     }
 
@@ -927,11 +943,9 @@ impl Ships {
     }
 
     /// Everything but the row tables.
-    fn put_resident(&self, w: &mut Writer) {
-        let w = &mut *w;
-        w.u64(self.seed);
-        w.u64(self.now.0);
-        w.bool(self.built);
+    /// The port network: docks, lanes, services with their ships' key ranges, and the lints and
+    /// berth counts its building found.
+    fn put_network(&self, w: &mut Writer) {
         put_usize(w, self.docks.len());
         self.docks.iter().for_each(|d| put_dock(w, d));
         put_usize(w, self.lanes.len());
@@ -939,6 +953,58 @@ impl Ships {
         put_usize(w, self.services.len());
         self.services.iter().for_each(|s| put_service(w, s));
         put_ranges(w, &self.service_ships);
+        let l = &self.lints;
+        for v in [l.too_long, l.no_water_path, l.too_roundabout, l.over_degree] {
+            w.var_u64(u64::from(v));
+        }
+        put_usize(w, l.docks_not_on_water.len());
+        l.docks_not_on_water
+            .iter()
+            .for_each(|d| w.var_u64(u64::from(*d)));
+        put_usize(w, self.over_berths.len());
+        for (d, k) in &self.over_berths {
+            w.var_u64(u64::from(*d));
+            w.var_u64(u64::from(*k));
+        }
+    }
+
+    /// What [`Ships::put_network`] wrote, into `self`.
+    fn get_network(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        self.docks = (0..r.len_prefix(6)?)
+            .map(|_| get_dock(r))
+            .collect::<codec::Result<Vec<_>>>()?;
+        self.lanes = (0..r.len_prefix(6)?)
+            .map(|_| get_lane(r))
+            .collect::<codec::Result<Vec<_>>>()?;
+        self.services = (0..r.len_prefix(8)?)
+            .map(|_| get_service(r))
+            .collect::<codec::Result<Vec<_>>>()?;
+        self.service_ships = get_ranges(r, self.services.len())?;
+        let mut lints = NetworkLints {
+            too_long: get_u32(r)?,
+            no_water_path: get_u32(r)?,
+            too_roundabout: get_u32(r)?,
+            over_degree: get_u32(r)?,
+            docks_not_on_water: Vec::new(),
+        };
+        for _ in 0..r.len_prefix(1)? {
+            lints.docks_not_on_water.push(get_u32(r)?);
+        }
+        self.lints = lints;
+        let mut over_berths = Vec::new();
+        for _ in 0..r.len_prefix(2)? {
+            over_berths.push((get_u32(r)?, get_u32(r)?));
+        }
+        self.over_berths = over_berths;
+        Ok(())
+    }
+
+    /// Everything resident but the network and the row tables.
+    fn put_resident(&self, w: &mut Writer) {
+        let w = &mut *w;
+        w.u64(self.seed);
+        w.u64(self.now.0);
+        w.bool(self.built);
         put_usize(w, self.havens.len());
         for h in &self.havens {
             put_usize(w, h.node);
@@ -997,19 +1063,6 @@ impl Ships {
         }
         put_ledger(w, &self.ledger);
         put_stats(w, &self.stats);
-        let l = &self.lints;
-        for v in [l.too_long, l.no_water_path, l.too_roundabout, l.over_degree] {
-            w.var_u64(u64::from(v));
-        }
-        put_usize(w, l.docks_not_on_water.len());
-        l.docks_not_on_water
-            .iter()
-            .for_each(|d| w.var_u64(u64::from(*d)));
-        put_usize(w, self.over_berths.len());
-        for (d, k) in &self.over_berths {
-            w.var_u64(u64::from(*d));
-            w.var_u64(u64::from(*k));
-        }
         put_usize(w, self.outbox.len());
         self.outbox.iter().for_each(|c| put_cmd(w, c));
     }
@@ -1028,7 +1081,10 @@ impl Ships {
         let ships: PagedArena<Ship> = PagedArena::decode_all(SHIP_TABLE, SHIP_ROWS_PER_PAGE, r)?;
         let threats: PagedRows<LaneThreat> =
             PagedRows::decode_all(THREAT_TABLE, THREAT_ROWS_PER_PAGE, r)?;
+        let mut net = Ships::new(0, tun.clone(), Tick::ZERO);
+        net.get_network(r)?;
         let mut s = Self::get_resident(r, tun)?;
+        s.take_network(net);
         s.ships = ships;
         s.threats = threats;
         s.rebuild_indexes()?;
@@ -1041,21 +1097,12 @@ impl Ships {
         Ok(s)
     }
 
-    /// The resident state [`Ships::put_resident`] wrote, with empty row tables.
+    /// The resident state [`Ships::put_resident`] wrote, with an empty network and empty row
+    /// tables.
     fn get_resident(r: &mut Reader<'_>, tun: ShipTunables) -> codec::Result<Ships> {
         let seed = r.u64()?;
         let now = Tick(r.u64()?);
         let built = r.bool()?;
-        let docks = (0..r.len_prefix(6)?)
-            .map(|_| get_dock(r))
-            .collect::<codec::Result<Vec<_>>>()?;
-        let lanes = (0..r.len_prefix(6)?)
-            .map(|_| get_lane(r))
-            .collect::<codec::Result<Vec<_>>>()?;
-        let services = (0..r.len_prefix(8)?)
-            .map(|_| get_service(r))
-            .collect::<codec::Result<Vec<_>>>()?;
-        let service_ships = get_ranges(r, services.len())?;
         let mut havens = Vec::new();
         for _ in 0..r.len_prefix(6)? {
             let node = get_usize(r)?;
@@ -1145,20 +1192,6 @@ impl Ships {
         }
         let ledger = get_ledger(r)?;
         let stats = get_stats(r)?;
-        let mut lints = NetworkLints {
-            too_long: get_u32(r)?,
-            no_water_path: get_u32(r)?,
-            too_roundabout: get_u32(r)?,
-            over_degree: get_u32(r)?,
-            docks_not_on_water: Vec::new(),
-        };
-        for _ in 0..r.len_prefix(1)? {
-            lints.docks_not_on_water.push(get_u32(r)?);
-        }
-        let mut over_berths = Vec::new();
-        for _ in 0..r.len_prefix(2)? {
-            over_berths.push((get_u32(r)?, get_u32(r)?));
-        }
         let mut outbox = Vec::new();
         for _ in 0..r.len_prefix(1)? {
             outbox.push(get_cmd(r)?);
@@ -1167,10 +1200,6 @@ impl Ships {
             return bad(format!("{} trailing bytes", r.remaining()));
         }
         let mut s = Ships::new(seed, tun, now);
-        s.docks = docks;
-        s.lanes = lanes;
-        s.services = services;
-        s.service_ships = service_ships;
         s.havens = havens;
         s.navies = navies;
         s.wheel = wheel;
@@ -1184,11 +1213,19 @@ impl Ships {
         s.observed = observed;
         s.ledger = ledger;
         s.stats = stats;
-        s.lints = lints;
-        s.over_berths = over_berths;
         s.outbox = outbox;
         s.built = built;
         Ok(s)
+    }
+
+    /// Moves `from`'s network into this engine.
+    fn take_network(&mut self, from: Ships) {
+        self.docks = from.docks;
+        self.lanes = from.lanes;
+        self.services = from.services;
+        self.service_ships = from.service_ships;
+        self.lints = from.lints;
+        self.over_berths = from.over_berths;
     }
 
     /// The indexes that are pure functions of the resident tables (the network), and the
@@ -1239,6 +1276,7 @@ impl Ships {
         let (s, t) = split_budget(budget);
         self.ships.rows_mut().attach(source.clone(), s);
         self.threats.attach(source, t);
+        self.network_dirty = true;
     }
 
     pub fn is_paged(&self) -> bool {
@@ -1269,19 +1307,26 @@ impl Ships {
         self.threats = PagedRows::decode_all(THREAT_TABLE, threats_per_page, &mut r).expect("ours");
     }
 
-    /// One paged save: the meta page at `meta_key` (everything resident, and each row table's
-    /// layout, count and next index) and every row page changed since it was last written, into
-    /// `batch`. Hand the tickets back with [`Ships::saved`] once the commit is durable, or
-    /// [`Ships::save_failed`]. `meta_key` must not be in the row tables (0x5310, 0x5311).
+    /// One paged save: the meta page at `meta_key` (everything resident but the network, and
+    /// each row table's layout, count and next index), the network's page ([`NETWORK_KEY`]) if
+    /// the network changed since it was last written, and every row page changed since it was
+    /// last written, into `batch`. Hand the tickets back with [`Ships::saved`] once the commit is
+    /// durable, or [`Ships::save_failed`]. `meta_key` must not be in the ships' own tables
+    /// (0x5310 to 0x5312).
     pub fn save_paged(&mut self, batch: &mut SaveBatch, meta_key: PageKey) -> ShipTickets {
         assert!(
-            meta_key.table() != SHIP_TABLE && meta_key.table() != THREAT_TABLE,
-            "the ships' meta page in a row table"
+            ![SHIP_TABLE, THREAT_TABLE, NETWORK_KEY.table()].contains(&meta_key.table()),
+            "the ships' meta page in one of their own tables"
         );
         batch.put(meta_key, &self.save_meta());
+        let network = std::mem::take(&mut self.network_dirty);
+        if network {
+            batch.put(NETWORK_KEY, &self.save_network());
+        }
         ShipTickets {
             ships: self.ships.rows_mut().save_dirty(batch),
             threats: self.threats.save_dirty(batch),
+            network,
         }
     }
 
@@ -1295,6 +1340,7 @@ impl Ships {
     pub fn save_failed(&mut self, t: ShipTickets) {
         self.ships.rows_mut().save_failed(t.ships);
         self.threats.save_failed(t.threats);
+        self.network_dirty |= t.network;
     }
 
     /// An engine saved by [`Ships::save_paged`] at `meta_key`: the meta page is read, the row
@@ -1331,7 +1377,17 @@ impl Ships {
         let ship_next = r.u32().map_err(&fmt)?;
         let threat_per = per(r).map_err(&fmt)?;
         let threat_len = r.var_u64().map_err(&fmt)?;
-        let mut s = Self::get_resident(r, tun).map_err(&fmt)?;
+        let mut s = Self::get_resident(r, tun.clone()).map_err(&fmt)?;
+        let raw = source
+            .read(NETWORK_KEY)?
+            .ok_or_else(|| PageError::Format("no ships network page".into()))?;
+        let fmt = page_format("the ships' network page");
+        let mut r = Reader::new(&raw);
+        if r.u32().map_err(&fmt)? != MAGIC || r.u8().map_err(&fmt)? != NETWORK {
+            return Err(PageError::Format("not a ships network page".into()));
+        }
+        s.get_network(&mut r).map_err(&fmt)?;
+        r.finish().map_err(&fmt)?;
         let (sb, tb) = split_budget(budget);
         s.ships = PagedArena::open(
             SHIP_TABLE,

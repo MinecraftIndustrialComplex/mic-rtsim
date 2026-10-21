@@ -265,6 +265,8 @@ pub const THREAT_TABLE: u16 = 0x5311;
 pub const SHIP_ROWS_PER_PAGE: u64 = 16;
 /// Lane threat rows per page. PLACEHOLDER 64 (a threat row is about 20 bytes encoded).
 pub const THREAT_ROWS_PER_PAGE: u64 = 64;
+/// The port network's page in a paged save: written only by saves after it changed.
+pub const NETWORK_KEY: rtsim_kernel::page::PageKey = rtsim_kernel::page::PageKey::new(0x5312, 0);
 
 /// A service's ships: `n` consecutive row keys from `first` (they are created together and
 /// handles are never reused, so the range is the whole index: nothing per ship).
@@ -286,12 +288,19 @@ impl ShipRange {
 pub struct ShipTickets {
     pub(crate) ships: SaveTicket,
     pub(crate) threats: SaveTicket,
+    /// The save wrote the network's page.
+    pub(crate) network: bool,
 }
 
 impl ShipTickets {
     /// Row pages the save wrote.
     pub fn pages(&self) -> usize {
         self.ships.pages() + self.threats.pages()
+    }
+
+    /// Whether the save wrote the network's page (it changed since the last).
+    pub fn wrote_network(&self) -> bool {
+        self.network
     }
 }
 
@@ -482,6 +491,9 @@ pub struct Ships {
     pub log: Vec<LogEntry>,
     pub(crate) now: Tick,
     pub(crate) built: bool,
+    /// The network changed since a paged save last wrote it (not saved: a paged save clears it,
+    /// attaching a store sets it).
+    pub(crate) network_dirty: bool,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
     /// Lanes are built under the topology the network sees when it is built.
     pub topo: SharedTopologies,
@@ -573,6 +585,7 @@ impl Ships {
             log: Vec::new(),
             now,
             built: false,
+            network_dirty: false,
             topo: rtsim_space::topology::all_flat(),
         }
     }
@@ -757,6 +770,7 @@ impl Ships {
         if node >= w.nodes.len() || !w.nodes[node].kind.is_storehouse() || medium == Medium::Road {
             return None;
         }
+        self.network_dirty = true;
         let frame = w.nodes[node].pos.frame;
         let (mut x, mut y, mut z) = dock;
         if medium == Medium::Sea {
@@ -902,6 +916,7 @@ impl Ships {
             return;
         }
         self.built = true;
+        self.network_dirty = true;
         let mut groups: BTreeMap<(u16, Medium), Vec<u32>> = BTreeMap::new();
         for (i, d) in self.docks.iter().enumerate() {
             groups
@@ -1139,6 +1154,7 @@ impl Ships {
         mask: &dyn WaterMask,
         at: Tick,
     ) -> Option<u32> {
+        self.network_dirty = true;
         let d = self.docks[dock as usize].clone();
         let mut others: Vec<(u64, u32)> = self
             .docks
@@ -1210,6 +1226,7 @@ impl Ships {
         if walk.hops.is_empty() {
             return None;
         }
+        self.network_dirty = true;
         let nv = self.navies.len() as u32;
         let index = self.services.len();
         let dock_ticks = self.tun.dock_ticks;
@@ -3860,6 +3877,21 @@ impl Ships {
             + self.services.iter().map(|s| s.heap_bytes()).sum::<usize>()
             + self.service_ships.capacity() * size_of::<ShipRange>();
         [("docks", docks), ("lanes", lanes), ("services", services)]
+    }
+
+    /// A copy of the resident network (docks, lanes, services and their indexes) for a bench to
+    /// weigh with its allocator, checking [`Ships::network_breakdown`]'s estimate.
+    #[doc(hidden)]
+    pub fn clone_network(&self) -> Box<dyn std::any::Any> {
+        Box::new((
+            self.docks.clone(),
+            self.lanes.clone(),
+            self.services.clone(),
+            self.lane_hops.clone(),
+            self.lane_cells.clone(),
+            self.dock_of.clone(),
+            self.service_ships.clone(),
+        ))
     }
 
     /// Resident state besides the rows and the network: the wheel, havens, navies, players, the
