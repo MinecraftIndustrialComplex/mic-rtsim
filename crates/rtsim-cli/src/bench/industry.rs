@@ -8,6 +8,8 @@
 //! | `quiet` | same | same | live heap | 1 | a district's model, boundary list and books are state |
 //! | `busy` | districts that starve and restock daily | | CPU per sim day | 1 | cost grows with breakpoints and arrivals |
 //! | `elapsed` | days a replaying district goes unread | one district | CPU per catch-up read | 0 (flat) | catch-up never grows with elapsed time |
+//! | `glass_nodes` | nodes per district (10 to 10,000) | one district, ten-node cells | compile + first solve CPU | 1 | GLASSBOX.md §9.3, rounds fixed (`bench/glass.rs`) |
+//! | `glass_slack` | same, a forced split per cell | same | same | 1 | the same with an LP per good |
 //!
 //! Each point runs in this process, after the previous point's engine is dropped, three times
 //! (quick: once) keeping the median. CPU is this thread's CPU time. Tolerances are PLACEHOLDERS,
@@ -367,6 +369,42 @@ pub fn run(opts: Options) -> i32 {
         p.cpu_ns_per_read
     }));
 
+    // The glass box's compile and first solve (GLASSBOX.md §9.3): without routing slack (the
+    // linear bound meets L, no LP) and with it (a forced split per cell, an LP per good).
+    let glass_sizes: Vec<u64> = vec![10, 100, 1_000, 10_000];
+    let mut glass_points: Vec<(&'static str, super::glass::GlassPoint)> = Vec::new();
+    for (name, slack) in [("glass_nodes", false), ("glass_slack", true)] {
+        let pts: Vec<super::glass::GlassPoint> = glass_sizes
+            .iter()
+            .map(|&n| {
+                let mut v: Vec<super::glass::GlassPoint> = (0..repeats)
+                    .map(|_| super::glass::point(n, slack))
+                    .collect();
+                v.sort_by(|a, b| a.cpu_ns.total_cmp(&b.cpu_ns));
+                v.swap_remove(v.len() / 2)
+            })
+            .collect();
+        out.push(sweep(
+            name,
+            "cpu_ns_per_compile",
+            1.0,
+            false,
+            pts.iter()
+                .map(|p| Point {
+                    n: p.nodes,
+                    cpu_ns_per_day: None,
+                    cpu_ns_per_read: Some(p.cpu_ns),
+                    heap_bytes: None,
+                    setup_ms: 0.0,
+                    breakpoints: 0,
+                    settles: 0,
+                })
+                .collect(),
+            |p| p.cpu_ns_per_read,
+        ));
+        glass_points.extend(pts.into_iter().map(|p| (name, p)));
+    }
+
     let mut ok = true;
     println!(
         "{:<8} {:<16} {:>10} {:>14} {:>14} {:>9} {:>9}",
@@ -400,6 +438,32 @@ pub fn run(opts: Options) -> i32 {
         );
         ok &= s.pass;
     }
+    println!(
+        "{:<12} {:>8} {:>8} {:>14} {:>12} {:>7} {:>9} {:>10} {:>8}",
+        "glass",
+        "nodes",
+        "edges",
+        "compile+solve",
+        "solve",
+        "rounds",
+        "LP solves",
+        "LP skipped",
+        "LP tight"
+    );
+    for (name, p) in &glass_points {
+        println!(
+            "{:<12} {:>8} {:>8} {:>11.0} us {:>9.0} us {:>7} {:>9} {:>10} {:>8}",
+            name,
+            p.nodes,
+            p.edges,
+            p.cpu_ns / 1e3,
+            p.solve_cpu_ns / 1e3,
+            p.rounds,
+            p.lp_solves,
+            p.lp_skipped,
+            p.lp_tight
+        );
+    }
     if let Some(dir) = &opts.out {
         let _ = std::fs::create_dir_all(dir);
         let (when, stamp) = super::scale::now_utc();
@@ -415,6 +479,10 @@ pub fn run(opts: Options) -> i32 {
             "slope_tolerance": SLOPE_TOLERANCE,
             "flat_ratio": FLAT_RATIO,
             "sweeps": out,
+            "glass": glass_points
+                .iter()
+                .map(|(name, p)| serde_json::json!({ "sweep": name, "point": p }))
+                .collect::<Vec<_>>(),
         });
         if let Err(e) = std::fs::write(
             &path,

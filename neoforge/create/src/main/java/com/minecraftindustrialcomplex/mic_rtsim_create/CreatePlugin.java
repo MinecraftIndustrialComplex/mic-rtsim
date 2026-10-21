@@ -165,6 +165,12 @@ public final class CreatePlugin implements IndustryPlugin {
         return true;
     }
 
+    /** The glass box's extractor (GLASSBOX.md §7.1): Create's machines, logistics and kinetics as a graph. */
+    @Override
+    public com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassExtractor glass() {
+        return com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.INSTANCE;
+    }
+
     @Override
     public StockAccess access(ServerLevel level, District.Inventory inventory) {
         if ((inventory.kind() & IndRecords.Inventory.KIND_POSTBOX) == 0)
