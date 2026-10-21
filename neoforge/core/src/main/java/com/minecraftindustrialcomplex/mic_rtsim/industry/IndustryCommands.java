@@ -265,6 +265,11 @@ public final class IndustryCommands {
                 "ports: sessions " + p.sessionPorts + ", tosses " + p.tossPorts + ", pickups " + p.pickupPorts + ", broken stock " + p.brokenPorts
                         + ", unattributed sessions " + p.unattributed,
                 "commands applied " + ind.commandsApplied + ", failed " + ind.commandsFailed));
+        for (IndustryPlugin plugin : IndustryApi.PLUGINS) {
+            String line = plugin.perfLine();
+            if (line != null)
+                say(ctx, line);
+        }
         return 1;
     }
 }

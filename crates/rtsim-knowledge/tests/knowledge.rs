@@ -321,3 +321,36 @@ fn same_seed_same_state() {
     // The world seed reaches decay through the sentiment draws and is written in the state.
     assert_ne!(run(11), run(12));
 }
+
+/// The event archive (VIEWER.md §10.1): every report is archived as it is made, at its own place,
+/// who did it to whom, under a registered knowledge kind; nothing while the tape is off.
+#[test]
+fn every_report_is_archived_as_made() {
+    use rtsim_archive::record::{kinds_on, rows_on};
+    use rtsim_archive::{Row, kinds};
+    let mut w = world(4);
+    let base = robbery(&w, w.oakford, 0);
+    let report = |kind, at| Report {
+        kind,
+        at: Tick(at),
+        ..base
+    };
+    w.k.record(report(ReportKind::Theft, 5));
+    assert!(w.k.tape.is_empty(), "off by default");
+    w.k.tape.set_on(true);
+    for (i, kind) in ReportKind::ALL.into_iter().enumerate() {
+        w.k.record(report(kind, 100 + i as u64));
+    }
+    let got = kinds_on(&w.k.tape);
+    let want: Vec<_> = kinds::of_group("knowledge").collect();
+    assert_eq!(got, want, "one registered kind per report kind");
+    for (k, dim, r) in rows_on(&w.k.tape) {
+        let Row::Event(e) = r else {
+            panic!("{} is a leg", k.name())
+        };
+        assert_eq!((dim, e.x, e.z), (0, 100, 200));
+        assert_eq!(e.subject.value, w.player.to_bits());
+        assert_eq!(e.object.value, w.oakford.to_bits());
+        assert_eq!(e.magnitude, i32::from(SEVERITY_UNIT));
+    }
+}

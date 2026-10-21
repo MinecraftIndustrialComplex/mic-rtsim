@@ -513,25 +513,10 @@ fn villages(cx: &Ctx, out: &mut Out) -> Option<String> {
     None
 }
 
-/// A market's mean price over its goods' anchors.
+/// A market's mean price over its goods' anchors (rtsim-trade's, which the archive's trade shifts
+/// follow too).
 pub fn price_index(m: &rtsim_trade::Market) -> Option<f64> {
-    if !m.is_storehouse() {
-        return None;
-    }
-    let mut sum = 0.0;
-    let mut n = 0u32;
-    for (g, _) in m.goods.iter().enumerate() {
-        let g = rtsim_trade::GoodId(g as u16);
-        if Some(g) == m.currency {
-            continue;
-        }
-        let a = m.anchor(g);
-        if a > 0 {
-            sum += m.price(g) as f64 / a as f64;
-            n += 1;
-        }
-    }
-    (n > 0).then(|| sum / f64::from(n))
+    m.price_index()
 }
 
 fn prices(cx: &Ctx, out: &mut Out) -> Option<String> {

@@ -117,7 +117,7 @@ Mod ids follow P1. Every hook below is verified unless marked (Appendix A).
 
 | Plugin | Mod (version) | Hooks | Phase |
 |---|---|---|---|
-| built in (core) | vanilla 1.21.1 | `WanderingTrader`, `TraderLlama`, `Merchant.getOffers/overrideOffers/notifyTrade`, `Villager.getGossips()` (`GossipContainer.add/remove`), village structures by `StructureTags.VILLAGE`, gamerule `doTraderSpawning`, `ServerLevel.isPositionEntityTicking`, `EntityJoinLevelEvent`, `AnimalTameEvent` | 1 |
+| built in (core) | vanilla 1.21.1 | `WanderingTrader`, `TraderLlama`, `Merchant.getOffers/overrideOffers/notifyTrade`, `Villager.getGossips()` (`GossipContainer.add/remove`), village structures by `StructureTags.VILLAGE`, `WanderingTraderSpawner.tick` (cancelled by a mixin, C8a), `ServerLevel.isPositionEntityTicking`, `EntityJoinLevelEvent`, `AnimalTameEvent` | 1 |
 | `mic_rtsim_ribbits` | Ribbits 4.1.6 | `RibbitEntity` (`Merchant`: `getOffers`, `overrideOffers`, `restock`; `getHomePosition`; `setRibbitData(RibbitData(profession, umbrellaType, instrument))`); a mixin on `RibbitApplyBuffGoal`; `RibbitPlayMusicGoal` around a `masterRibbit`; structure `ribbits:ribbit_village`; the 14 templates under `data/ribbits/structure/houses` | 1 |
 | `mic_rtsim_carryon` | Carry On 2.2.6.13 | `tschipp.carryon.events.EntityPickupEvent(ServerPlayer, Entity)`, cancellable, posted on `NeoForge.EVENT_BUS` | 1 (A10) |
 | `mic_rtsim_iceandfire` | Ice and Fire CE 2.1-beta.1 | `iceandfire:fire_dragon`, `ice_dragon`, `lightning_dragon`; `DragonBaseEntity` NBT (`AgeTicks`, `Hunger`, `Gender`, `Variant`, `HomeAreaX/Y/Z`); `IafDragonFlightManager.setFlightTarget(Vec3)`; tag `dragon_targets`; roost and cave structures | 2 |
@@ -534,8 +534,9 @@ scheduler can run modules in parallel.
 potato server can shed a module and Ben can bisect a perf regression.
 - **A module that is off** registers no systems and takes no observations. Its pages stay on disk
   untouched.
-- **Switching off trade or travel gives traders back to vanilla:** the bridge sets `doTraderSpawning`
-  back to true, so vanilla's random wandering traders return (C8 applies only while the sim owns them).
+- **Switching off trade or travel gives traders back to vanilla:** the veto on vanilla's trader spawner
+  (C8a) lifts at the spawner's next tick, so vanilla's random wandering traders return. The bridge never
+  writes `doTraderSpawning`, so there is nothing to restore (C8 applies only while the sim owns them).
 - **A module that others need** cannot be on without them; the config check names the missing one.
 
 **Ways to extend, most common first:** datapack data (goods, cultures, body kinds, species, ship
@@ -686,8 +687,8 @@ puppet may be seen appearing (UNVERIFIED geometry; a GameTest checks it, risk R1
 - Fill trader llama chests with the caravan's cargo when it materializes (C21, §8.6).
 - Write trade offers and uses for adopted villagers, ribbit merchants and sim merchants (§8.5).
 - Write slights and fair trades into villagers' gossip (C20, §8.7).
-- Set `doTraderSpawning` to false when the sim takes the traders, and back to true when trade or travel
-  is switched off (C8, C25).
+- Cancel vanilla's `WanderingTraderSpawner` (a mixin on `tick`) while trade and travel are both on, and
+  never write `doTraderSpawning` (C8, C8a, C25).
 - Place structure templates under the block quota, never over player-placed blocks (§8.8).
 - Industry: reconcile deltas and apply attack damage on chunk load (INDUSTRY.md §5, §13.7).
 - Later: Surveyor landmarks, Numismatics balances, Create package offline buffers.
@@ -707,7 +708,7 @@ Verified means seen in the pinned jar or source (Appendix A). The rest is marked
 | Caravan merchant body | vanilla `WanderingTrader` | `Merchant.overrideOffers(MerchantOffers)`, `notifyTrade`; `setDespawnDelay`; `wander_target` NBT |
 | Caravan pack animals and their cargo (C21) | vanilla `TraderLlama` | leashed to the trader by `setLeashedTo(trader, true)`; strength 1 to 5; chest inventory 3 rows × strength columns (`getInventoryColumns`) |
 | Rescues (C24) | vanilla `Zombie` | zombies target `AbstractVillager`, which `WanderingTrader` extends, so caravans are attacked with no sim content |
-| Owning all traders (C8) | vanilla | gamerule `doTraderSpawning` (`GameRules.RULE_DO_TRADER_SPAWNING`), read by `WanderingTraderSpawner` |
+| Owning all traders (C8, C8a) | vanilla | `WanderingTraderSpawner.tick(ServerLevel, boolean, boolean)`, cancelled at its head by a mixin while trade and travel are on; the gamerule `doTraderSpawning` is read by the same method and never written |
 | Villager trades through the treasury (C14) | vanilla `Villager` | `getOffers`, `overrideOffers`, `notifyTrade`; `restock` needs a mixin; `MerchantOffer` uses and max uses |
 | Reputation, prices and golems (C20) | vanilla gossip | `GossipContainer.add(UUID, GossipType, int)`; `GossipType` weights; `updateSpecialPrices(Player)` lowers or raises prices by reputation; `DefendVillageTargetGoal` targets a player with reputation ≤ −100 |
 | Ribbit merchants, bands, sorcerers | Ribbits 4.1.6 (LGPLv3, by YUNG; needs YUNG's API and GeckoLib) | `RibbitEntity extends AgeableMob implements GeoEntity, Merchant`; `setRibbitData`; goals GoHome, Stroll, Fish, WaterCrops, PlayMusic, ApplyBuff |
@@ -789,9 +790,11 @@ Decided: C6 to C9, C11 to C14, C20 to C26. Ribbits has extra high priority (D5).
 - **Ribbit caravans:** ribbit merchants (`RibbitData` profession merchant). Ribbits have no pack
   animals, so a ribbit caravan's capacity is a TUNABLE (P18). Where a ribbit caravan's cargo is, and
   what a killed ribbit merchant drops, is **Proposal P31 (Ben)**.
-- **The sim owns every wandering trader** (C8). The bridge sets `doTraderSpawning` to false when the sim
-  starts. Switching off the trade or travel module sets it back to true (C25, §5.4). Removing the sim
-  mod leaves the gamerule false until someone resets it.
+- **The sim owns every wandering trader** (C8). While trade and travel are both on, the bridge cancels
+  vanilla's `WanderingTraderSpawner` (C8a), and it never writes `doTraderSpawning`. Switching off the
+  trade or travel module lets the spawner run again (C25, §5.4); removing the sim mod gives traders back
+  with no admin step; an admin's own `doTraderSpawning false` stays false either way. The caravan
+  traders the sim spawns itself, and traders other mods spawn, are not touched.
 - **No mods are added for phase 1** (C11).
 
 ### 8.4 The economy (C13)
@@ -1064,7 +1067,8 @@ ribbit house from YUNG's templates stands at the edge of the village, with a new
    the engine captured (C21).
 6. A caravan group never splits: no llama is left frozen without its trader, at chunk edges or under
    the spawn quota (C25).
-7. Switching the trade module off restores vanilla wandering trader spawning (C25).
+7. Switching the trade module off restores vanilla wandering trader spawning (C25, C8a): the veto lifts
+   and the gamerule was never written.
 8. Conservation holds: goods and money totals match after a soak with scripted players.
 9. Perf gates (P24) are green on the potato profile, capped and uncapped, and on the Windows PC.
 10. The 1-worker and 8-worker replays of the same flight recording give the same hash.
@@ -1498,6 +1502,12 @@ source trees. Facts from the 2026-10-19 review or another session say so.
     `WanderingTraderSpawner`. It checks every 1,200 ticks, tries every 24,000 ticks at 25% chance rising
     by 25 to 75%, spawns two trader llamas within 4 blocks leashed to the trader, and sets
     `setDespawnDelay(48000)`.
+  - `WanderingTraderSpawner.tick(ServerLevel, boolean, boolean)` (a `CustomSpawner`, the overworld's only)
+    reads the gamerule first and returns 0 when it is false, before it touches its countdown, its chance
+    or the level data's trader fields; the spawn itself is a private method that spawns with
+    `MobSpawnType.EVENT` and fires `FinalizeSpawnEvent` with no spawner identity. The C8a veto is a mixin
+    returning 0 at the head of `tick`, which is what the gamerule does. Checked in the mapped source
+    on 2026-10-21.
   - `TraderLlama.maybeDespawn` copies its trader's despawn delay minus 1 and discards itself at 0 or
     below; it never despawns when tamed, leashed to anything but a trader, or ridden by one player.
     `Llama` strength is 1 to 5; `getInventoryColumns()` is the strength when chested.

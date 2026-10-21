@@ -20,12 +20,16 @@
 //! that becomes a grudge, a grudge raid on the unwatched farm resolved by the industry engine, the
 //! kill and the heir's grudge, the heir hunting the player, a bored departure, and winter shifting
 //! the prey from roads to villages.
+//!
+//! It also counts the event archive's rows (R, VIEWER.md §10.4): the tapes of the world (both), the
+//! dragons and the farm's industry engine are on and drained every step.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
+use rtsim_archive::record::Meter;
 use rtsim_ecology::boundary::{self, Cmd, Obs};
 use rtsim_ecology::calendar::{Calendar, Season};
 use rtsim_ecology::dragon::{LairKind, dragon_of};
@@ -40,6 +44,8 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::Pos;
 use rtsim_world::World;
 use serde::Serialize;
+
+use super::archive::{Rate, drain_world, world_on};
 
 pub struct Options {
     pub days: u64,
@@ -270,18 +276,30 @@ struct Out {
     commands: Vec<(u64, String)>,
     wire_bytes: u64,
     tunables: DragonTunables,
+    /// The archive rows the run's engines took per game day.
+    archive: Rate,
+}
+
+/// Counts and empties every tape the run has.
+fn drain(m: &mut Meter, w: &mut World, d: &mut Dragons, f: &mut FakeWorld) {
+    drain_world(m, w);
+    m.drain(&mut d.tape);
+    m.drain(&mut f.engine.tape);
 }
 
 pub fn main(o: Options) -> i32 {
     let started = Instant::now();
     let phases = script();
     let (mut w, ids) = synth::world(o.seed);
+    world_on(&mut w);
+    let mut meter = Meter::new();
     let tun = DragonTunables {
         calendar: Calendar::starting_in(Season::Autumn),
         ..Default::default()
     };
     let mut dragons = Dragons::new(o.seed, tun, Tick::ZERO);
     dragons.log_enabled = true;
+    dragons.tape.set_on(true);
     // The plugin's item dictionary for hoard records.
     dragons.define_item(1, Item::World(ids.emerald));
     dragons.define_item(2, Item::World(ids.gold));
@@ -289,6 +307,7 @@ pub fn main(o: Options) -> i32 {
     dragons.define_herd_body(40, ids.cattle);
     synth::populate(&mut w, &mut dragons, &synth::lairs(), Tick::ZERO);
     let mut fake = farm(o.seed, &phases);
+    fake.engine.tape.set_on(true);
     let mut index = DistrictIndex::default();
     let mut iaf = FakeIaf::new(PLAYER);
     let player = dragons.player(&mut w, PLAYER);
@@ -405,6 +424,7 @@ pub fn main(o: Options) -> i32 {
                 );
             }
         }
+        drain(&mut meter, &mut w, &mut dragons, &mut fake);
         t = next;
         if t >= end {
             break;
@@ -423,6 +443,7 @@ pub fn main(o: Options) -> i32 {
         }
         dragons.run_until(&mut w, &mut link, settle);
     }
+    drain(&mut meter, &mut w, &mut dragons, &mut fake);
     let now = w.now();
 
     // ---- checks ----
@@ -620,9 +641,11 @@ pub fn main(o: Options) -> i32 {
         commands: iaf.commands.clone(),
         wire_bytes: iaf.wire_bytes,
         tunables: dragons.tun.clone(),
+        archive: Rate::new(&meter, o.days as f64),
     };
     if !o.quiet {
         print_report(&out, &w);
+        out.archive.print(None);
     }
     if let Some(path) = &o.out {
         if let Some(dir) = path.parent() {

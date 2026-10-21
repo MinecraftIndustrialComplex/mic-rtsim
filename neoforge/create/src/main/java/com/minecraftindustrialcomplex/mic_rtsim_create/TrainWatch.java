@@ -70,6 +70,7 @@ public final class TrainWatch {
     private static final Map<UUID, Industry.GoodsCounter> MAIL = new HashMap<>();
 
     static long arrivals;
+    static long simulatedArrivals;
     static long departures;
     static long cargoPorts;
 
@@ -120,6 +121,8 @@ public final class TrainWatch {
             ind.commit(r);
             AT_STATION.put(train.id, new Stop(CreateIds.of(station.id), d.id, dim, simulated, cargo, ind.gameTime()));
             arrivals++;
+            if (simulated)
+                simulatedArrivals++;
         } catch (RuntimeException e) {
             MicRtsim.LOGGER.error("[mic_rtsim_create] observing a train's arrival failed", e);
         }
@@ -385,5 +388,11 @@ public final class TrainWatch {
 
     public static long arrivals() {
         return arrivals;
+    }
+
+    /** For {@code /rtsim district perf}: what the train hooks journaled this session. */
+    static String perfLine() {
+        return "trains: " + arrivals + " arrivals at district stations (" + simulatedArrivals + " simulated), " + departures
+                + " departures, " + cargoPorts + " cargo ports, " + SEEN.size() + " trains seen, " + AT_STATION.size() + " at a station";
     }
 }

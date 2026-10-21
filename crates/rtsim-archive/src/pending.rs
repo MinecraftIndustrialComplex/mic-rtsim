@@ -125,6 +125,11 @@ impl Pending {
         self.dropped.no_frame += 1;
     }
 
+    /// Counts rows dropped before they reached the buffer (a full tape).
+    pub fn count(&mut self, d: &Dropped) {
+        self.dropped.add(d);
+    }
+
     /// Everything pushed since the last take, leaving the buffer empty.
     pub fn take(&mut self) -> Batch {
         self.payload_bytes = 0;

@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rtsim_archive::{At, Kind, Tape, kinds};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{Encode, Writer};
 use rtsim_kernel::handle::Handle;
@@ -119,6 +120,24 @@ pub struct Knowledge {
     pub(crate) deaths: TimingWheel<ActorId>,
     pub(crate) counters: Counters,
     pub(crate) vanilla: Vec<VanillaGossip>,
+    /// The event archive's recorder (VIEWER.md §10.1): every report as it is made. Off until the
+    /// host turns it on; not state.
+    pub tape: Tape,
+}
+
+/// A report kind's archive kind.
+pub fn archive_kind(kind: ReportKind) -> Kind {
+    match kind {
+        ReportKind::Assault => kinds::KNOWLEDGE_ASSAULT,
+        ReportKind::Killing => kinds::KNOWLEDGE_KILLING,
+        ReportKind::Robbery => kinds::KNOWLEDGE_ROBBERY,
+        ReportKind::Theft => kinds::KNOWLEDGE_THEFT,
+        ReportKind::Trade => kinds::KNOWLEDGE_TRADE,
+        ReportKind::Rescue => kinds::KNOWLEDGE_RESCUE,
+        ReportKind::ResidentAssault => kinds::KNOWLEDGE_RESIDENT_ASSAULT,
+        ReportKind::ResidentKilling => kinds::KNOWLEDGE_RESIDENT_KILLING,
+        ReportKind::Encroachment => kinds::KNOWLEDGE_ENCROACHMENT,
+    }
 }
 
 impl Knowledge {
@@ -140,6 +159,7 @@ impl Knowledge {
             notables: BTreeMap::new(),
             deaths: TimingWheel::new(Tick::ZERO),
             vanilla: Vec::new(),
+            tape: Tape::new(),
         }
     }
 
@@ -219,6 +239,15 @@ impl Knowledge {
         if self.actors.is_player(report.who) || self.actors.is_player(report.whom) {
             report.flags |= FLAG_PLAYER;
         }
+        // Archived as made, whether or not the table keeps it: who did it to whom, the severity.
+        let p = report.place;
+        self.tape.event(
+            archive_kind(report.kind),
+            At::new(report.at.0, u32::from(p.frame), p.x, p.z),
+            u128::from(report.who.to_bits()),
+            u128::from(report.whom.to_bits()),
+            i64::from(report.severity),
+        );
         let expires = report.at + self.tunables.lifetime(report.kind);
         match self.reports.insert(report.pack(), expires) {
             Inserted::Stored(id) => id,

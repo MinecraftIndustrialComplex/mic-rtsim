@@ -285,6 +285,11 @@ pub struct World {
     /// Every market event, when enabled ([`World::enable_trace`]). Diagnostics only: it grows
     /// with time.
     pub trace: Option<Vec<TraceRow>>,
+    /// The event archive's recorder (VIEWER.md §10.1, [`crate::archive`]): off until the host
+    /// turns it on; not state.
+    pub tape: rtsim_archive::Tape,
+    /// Each market's price index at its last trade shift row (archive only, not state).
+    pub(crate) shift_seen: BTreeMap<usize, f64>,
     /// Players the bridge reported (UUIDs, positions, interest areas).
     pub players: BTreeMap<ActorId, crate::interest::PlayerState>,
     /// Which roads pass near a place.
@@ -439,6 +444,8 @@ impl World {
             mint_cost,
             now: Tick::ZERO,
             trace: None,
+            tape: rtsim_archive::Tape::new(),
+            shift_seen: BTreeMap::new(),
             players: BTreeMap::new(),
             roads: rtsim_travel::RoadIndex::new(),
             bands: Vec::new(),
@@ -607,6 +614,16 @@ impl World {
         let i = self.nodes.len();
         // Genesis stock is ledgered in the line books, as at build.
         self.add_node(sid, &d, m, costs, local);
+        if !matches!(d.kind, NodeKind::PlayerBase { .. }) {
+            let (place, id) = (self.node_at(i, at), self.node_id(i));
+            self.tape.event(
+                rtsim_archive::kinds::SETTLE_JOINED,
+                place,
+                id,
+                0,
+                i64::from(d.pop),
+            );
+        }
         for &(j, len, dq, border) in &links {
             self.add_edge(i, j, len, dq, border);
             if border {
@@ -800,6 +817,9 @@ impl World {
         // table's wheel got there in the last `next_due`).
         let _ = self.wheel.pop_until(to);
         self.now = self.now.max(to);
+        // The leg index every module books in is the world's: its past windows' stale bookings go
+        // once a game day (docs/choices-leg-purge.md LP1, LP2), exactly, so at any stride.
+        self.legs.purge_due(self.now);
         self.markets.rows_mut().enforce_budget();
     }
 

@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "mic-viewer"
 version = "0.1.0"
-source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=cc213668d3fb65f8783d541b7457c6c106660dde#cc213668d3fb65f8783d541b7457c6c106660dde"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=58c66c667f6be8ea3ccbcf7bade33d9b80ba362a#58c66c667f6be8ea3ccbcf7bade33d9b80ba362a"
 dependencies = [
  "png",
  "serde",
@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "mic-viewer-surveyor"
 version = "0.1.0"
-source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=cc213668d3fb65f8783d541b7457c6c106660dde#cc213668d3fb65f8783d541b7457c6c106660dde"
+source = "git+ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git?rev=58c66c667f6be8ea3ccbcf7bade33d9b80ba362a#58c66c667f6be8ea3ccbcf7bade33d9b80ba362a"
 dependencies = [
  "flate2",
  "mic-viewer",
@@ -676,9 +676,12 @@ version = "0.0.1"
 dependencies = [
  "crc32fast",
  "libc",
+ "mic-native-rt",
  "mic-viewer",
+ "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
+ "rtsim-host",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
@@ -698,6 +701,7 @@ name = "rtsim-conflict"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-ecology",
  "rtsim-industry",
  "rtsim-kernel",
@@ -716,6 +720,7 @@ name = "rtsim-ecology"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
@@ -729,11 +734,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtsim-host"
+version = "0.0.1"
+dependencies = [
+ "flate2",
+ "mic-native-host",
+ "mic-native-rt",
+ "mic-viewer",
+ "rtsim-archive",
+ "rtsim-conflict",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-jni",
+ "rtsim-kernel",
+ "rtsim-ships",
+ "rtsim-space",
+ "rtsim-travel",
+ "rtsim-view",
+ "rtsim-world",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rtsim-industry"
 version = "0.0.1"
 dependencies = [
  "microlp",
  "proptest",
+ "rtsim-archive",
  "rtsim-kernel",
  "rtsim-space",
  "serde",
@@ -748,8 +777,10 @@ dependencies = [
  "mic-native-host",
  "mic-native-rt",
  "proptest",
+ "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
+ "rtsim-host",
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
@@ -775,6 +806,7 @@ name = "rtsim-knowledge"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-kernel",
 ]
 
@@ -792,6 +824,7 @@ name = "rtsim-ships"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-ecology",
  "rtsim-industry",
  "rtsim-kernel",
@@ -848,6 +881,7 @@ dependencies = [
  "rtsim-archive",
  "rtsim-conflict",
  "rtsim-ecology",
+ "rtsim-host",
  "rtsim-industry",
  "rtsim-jni",
  "rtsim-kernel",
@@ -867,6 +901,7 @@ name = "rtsim-world"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "rtsim-archive",
  "rtsim-kernel",
  "rtsim-knowledge",
  "rtsim-settle",

@@ -529,107 +529,74 @@ fn an_engine_failure_publishes_empty_buffers_flagged_failed() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
-// ---- phase 1 (docs/boundary.md §4) ----------------------------------------------------------------
-
-const PLAYER: (u64, u64) = (0x1111_2222_3333_4444, 0x5555_6666_7777_8888);
-const EMERALD: &str = "minecraft:emerald";
-
-impl Java {
-    /// Journals a VILLAGE_ADOPTED for a village whose meeting point is (x, z).
-    fn adopt(&mut self, village: u64, structure: &str, culture: &str, pieces: u32, x: i32, z: i32) {
-        let dim = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
-        let st = self.dict_id(wire::DICT_STRUCTURE, structure);
-        let cu = self.dict_id(wire::DICT_CULTURE, culture);
-        use obs::village_adopted as k;
-        self.journal(obs::VILLAGE_ADOPTED, k::SIZE, 0, |r| {
-            wire::put_u64(r, k::VILLAGE, village);
-            wire::put_u32(r, k::DIM, dim);
-            wire::put_u32(r, k::STRUCTURE, st);
-            wire::put_u32(r, k::CULTURE, cu);
-            wire::put_u32(r, k::PIECES, pieces);
-            wire::put_i32(r, k::MIN_X, x - 20);
-            wire::put_i32(r, k::MIN_Y, 60);
-            wire::put_i32(r, k::MIN_Z, z - 20);
-            wire::put_i32(r, k::MAX_X, x + 20);
-            wire::put_i32(r, k::MAX_Y, 80);
-            wire::put_i32(r, k::MAX_Z, z + 20);
-            wire::put_i32(r, k::MEET_X, x);
-            wire::put_i32(r, k::MEET_Y, 64);
-            wire::put_i32(r, k::MEET_Z, z);
-        });
-    }
-
-    /// The engine dictionary's name for an id the commands used.
-    fn cmd_name(&self, kind: u32, id: u32) -> String {
-        self.cmd_dict.get(&(kind, id)).cloned().unwrap_or_default()
-    }
-
-    fn p1_of(&self, kind: u16) -> Vec<Vec<u8>> {
-        self.p1
-            .iter()
-            .filter(|(k, _)| *k == kind)
-            .map(|(_, b)| b.clone())
-            .collect()
-    }
-
-    /// A TRADE with a puppet merchant: the player paid `cost` and got `result`.
-    #[allow(clippy::too_many_arguments)]
-    fn trade_with(
-        &mut self,
-        agent: u64,
-        epoch: u32,
-        side: u32,
-        cost: (&str, i32),
-        result: (&str, i32),
-        op: u64,
-    ) -> u64 {
-        let a = self.dict_id(wire::DICT_ITEM, cost.0);
-        let r_ = self.dict_id(wire::DICT_ITEM, result.0);
-        use obs::trade as k;
-        self.journal(obs::TRADE, k::SIZE, side, |r| {
-            wire::put_u64(r, k::OP_ID, op);
-            wire::put_u64(r, k::AGENT, agent);
-            wire::put_u32(r, k::EPOCH, epoch);
-            wire::put_u64(r, k::PLAYER_MOST, PLAYER.0);
-            wire::put_u64(r, k::PLAYER_LEAST, PLAYER.1);
-            wire::put_u32(r, k::COST_A_ITEM, a);
-            wire::put_i32(r, k::COST_A_COUNT, cost.1);
-            wire::put_u32(r, k::RESULT_ITEM, r_);
-            wire::put_i32(r, k::RESULT_COUNT, result.1);
-        })
-    }
-
-    /// A CARGO_CHANGED: `items` taken out of member `member`'s cargo by the player.
-    fn robbed(
-        &mut self,
-        agent: u64,
-        epoch: u32,
-        member: u32,
-        items: &[(&str, i32)],
-        op: u64,
-    ) -> u64 {
-        let ids: Vec<u32> = items
-            .iter()
-            .map(|(n, _)| self.dict_id(wire::DICT_ITEM, n))
-            .collect();
-        use obs::cargo_changed as k;
-        self.journal(obs::CARGO_CHANGED, k::size(items.len()), member, |r| {
-            wire::put_u64(r, k::OP_ID, op);
-            wire::put_u64(r, k::AGENT, agent);
-            wire::put_u32(r, k::EPOCH, epoch);
-            wire::put_u32(r, k::FLAGS, k::FLAG_BY_PROXIMITY);
-            wire::put_u64(r, k::PLAYER_MOST, PLAYER.0);
-            wire::put_u64(r, k::PLAYER_LEAST, PLAYER.1);
-            wire::put_u32(r, k::ITEM_COUNT, items.len() as u32);
-            for (i, ((_, n), id)) in items.iter().zip(&ids).enumerate() {
-                let it = k::ITEMS + i * obs::item::SIZE;
-                wire::put_u32(r, it + obs::item::SLOT, u32::MAX);
-                wire::put_u32(r, it + obs::item::ITEM, *id);
-                wire::put_i32(r, it + obs::item::COUNT, -*n);
-            }
-        })
+/// A save whose write fails partway poisons the page store; the store reopens in place from its
+/// files and the engine runs on (docs/choices-leg-purge.md LP10): the failed save is never
+/// acknowledged, the next one is, and the world restarts from those pages. A torn log record
+/// leaves the store at the save before; a failed cleanup, at the failed save itself.
+#[test]
+fn a_save_failing_partway_costs_that_save_not_the_engine() {
+    use rtsim_kernel::page::Fault;
+    for fault in [Fault::TornLog, Fault::BeforeCleanup] {
+        let dir = tmpdir(&format!("poisoned-{fault:?}"));
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        for i in 0..5 {
+            j.transfer(wire::JAVA_OP_BIT | (100 + i), 1, 2, 1);
+        }
+        j.idle();
+        j.idle();
+        let first = j.next_obs - 1;
+        e.inject_store_fault(Some(fault));
+        e.request_save(first);
+        j.run_until("the failed save", |j| j.e.stats_array()[15] >= 1);
+        assert_eq!(
+            e.durable_obs_seq(),
+            0,
+            "{fault:?}: a failed save is not acknowledged"
+        );
+        assert!(!j.acks.contains(&first), "{fault:?}");
+        for i in 0..5 {
+            j.transfer(wire::JAVA_OP_BIT | (200 + i), 1, 2, 1);
+        }
+        j.idle();
+        j.idle();
+        assert!(
+            e.protocol_error().is_none(),
+            "{fault:?}: {:?}",
+            e.protocol_error()
+        );
+        let world = j.world_save();
+        let through = j.next_obs - 1;
+        e.request_save(through);
+        j.run_until("the next save", |j| j.e.durable_obs_seq() >= through);
+        j.run_until("its acknowledgement", |j| j.acks.contains(&through));
+        assert_eq!(e.stats_array()[15], 1, "{fault:?}: one failure");
+        assert!(
+            e.protocol_error().is_none(),
+            "{fault:?}: {:?}",
+            e.protocol_error()
+        );
+        e.close(false, Duration::from_secs(5)).unwrap();
+        let e2 = engine(&dir, wire::MIN_CAPACITY);
+        let mut j2 = Java::open(e2.clone(), world);
+        j2.idle();
+        assert!(
+            e2.protocol_error().is_none(),
+            "{fault:?}: {:?}",
+            e2.protocol_error()
+        );
+        assert_eq!(
+            e2.durable_obs_seq(),
+            through,
+            "{fault:?}: the pages restart at the save"
+        );
+        e2.close(true, Duration::from_secs(5)).unwrap();
     }
 }
+
+// ---- phase 1 (docs/boundary.md §4) ----------------------------------------------------------------
+
+const EMERALD: &str = "minecraft:emerald";
 
 fn p1_stat(e: &Engine, i: usize) -> u64 {
     e.phase1_stats()[i]
@@ -900,7 +867,13 @@ struct TestWork<'a> {
     items: &'a [(&'a str, u32)],
 }
 
-impl Java {
+/// The works' records as Java writes them (a trait: the fake Java is rtsim-host's).
+trait Works {
+    fn work_catalog(&mut self, kinds: &[TestWork<'_>]);
+    fn census(&mut self, village: u64, residents: u32, golems: u32);
+}
+
+impl Works for Java {
     /// A WORK_CATALOG record (latest wins) in the open buffer, after the DICTs it uses.
     fn work_catalog(&mut self, kinds: &[TestWork<'_>]) {
         use obs::work_catalog as k;
