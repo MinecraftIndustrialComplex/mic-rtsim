@@ -170,6 +170,12 @@ public final class GraphBuilder {
             return this;
         }
 
+        /** An unlimited entry ({@code ticksNum} 0) naming {@code recipe}: the recipe is the node's, at no limit. */
+        public Node unlimited(int level, int recipe) {
+            rates.add(new int[] {level, recipe, 1, 0, 1, 0});
+            return this;
+        }
+
         public int rateCount() {
             return rates.size();
         }
@@ -352,6 +358,25 @@ public final class GraphBuilder {
 
     public List<Edge> edges() {
         return edges;
+    }
+
+    /**
+     * Moves an edge's head to {@code to}, keeping its index and every other field (an extractor that
+     * merges nodes after its edges exist, as a sequenced assembly line becomes one node).
+     */
+    public Edge retarget(Edge e, int to) {
+        if (to == NONE)
+            throw new IllegalArgumentException("an edge needs both ends: " + e.from + " -> " + to);
+        Edge n = new Edge(e.index, e.kind, e.from, to);
+        n.order = e.order;
+        n.flags = e.flags;
+        n.capNum = e.capNum;
+        n.capDen = e.capDen;
+        n.latency = e.latency;
+        n.param = e.param;
+        n.filter.addAll(e.filter);
+        edges.set(e.index, n);
+        return n;
     }
 
     // ---- recipes --------------------------------------------------------------------------------

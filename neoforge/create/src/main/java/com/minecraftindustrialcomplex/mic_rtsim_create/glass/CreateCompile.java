@@ -147,6 +147,12 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     record Craft(int recipe, int batch, Cyc cycle) {}
 
+    /** A sequenced assembly step's recipe: its sequence, its unrolled step (0-based) and the unrolled length. */
+    record SeqStep(String id, int step, int total) {}
+
+    /** Recipe index to its sequenced step, for the recipes {@code Recipes.stepRecipe} made. */
+    final Int2ObjectOpenHashMap<SeqStep> seqSteps = new Int2ObjectOpenHashMap<>();
+
     /** The compile's view of one of its nodes. */
     static final class Info {
         final K kind;
@@ -213,6 +219,8 @@ final class CreateCompile implements GlassExtractor.Compile {
     private final Long2ObjectOpenHashMap<List<Object[]>> fanAt = new Long2ObjectOpenHashMap<>();
     private int sink = NONE;
     private int boundedNodes;
+    /** Belt movers under an andesite tunnel: their in-edges carry the belt's stack as the entry size. */
+    private final IntArrayList andesiteMovers = new IntArrayList();
 
     private static Long2IntOpenHashMap intMap() {
         Long2IntOpenHashMap m = new Long2IntOpenHashMap();
@@ -1664,7 +1672,8 @@ final class CreateCompile implements GlassExtractor.Compile {
         GraphBuilder.Edge obs = edge(GlassRecords.Edge.OBSERVE, observed, i.node.index);
         if (obs != null && f != null && !f.getFilter().isEmpty())
             edgeTests.put(obs, new EdgeTest(f::test, f::test));
-        i.node.params(sw.onWhenAbove, sw.offWhenBelow, sw.isInverted() ? 1 : 0, Math.max(0, sw.currentLevel));
+        // flags: 1 inverted, 2 on at compile (the state before inversion, which holds between the thresholds)
+        i.node.params(sw.onWhenAbove, sw.offWhenBelow, (sw.isInverted() ? 1 : 0) | (sw.getState() ? 2 : 0), Math.max(0, sw.currentLevel));
         // Powered = on XOR inverted; a gated block stops while powered (GB: the param already holds the inversion).
         long param = sw.isInverted() ? GlassRecords.Edge.CONTROL_RUN_WHEN_ON : GlassRecords.Edge.CONTROL_STOP_WHEN_ON;
         for (int t : redstoneTargets(sw.getBlockPos(), toTarget)) {
@@ -1816,7 +1825,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             bounded(mi.node); // the group's other tunnels (parallel belts) are not merged in G1
         } else {
             mi.node.rule(GlassRecords.Rule.ANDESITE_SPLIT);
-            int order = 0;
+            andesiteMovers.add(m);
+            // the main line is the first out-edge (§9.3): the belt's own link has order 1, the sides after it
+            int order = 2;
             for (Direction d : Direction.Plane.HORIZONTAL) {
                 if (d.getAxis() == movement.getAxis() || !t.flaps.containsKey(d))
                     continue;
@@ -1956,6 +1967,158 @@ final class CreateCompile implements GlassExtractor.Compile {
                     e.filter(gid);
             }
         }
+        collapseSequenced(reach);
+    }
+
+    /** Whether edge {@code e} carries {@code gid} by its materialized filter. */
+    private static boolean carries(GraphBuilder.Edge e, int gid) {
+        if (e.filter.isEmpty())
+            return true;
+        return e.filter.contains(gid) != ((e.flags & GlassRecords.Edge.DENY) != 0);
+    }
+
+    /**
+     * A sequenced assembly becomes one SEQUENCED machine (§9.3, the solver's GB15): the machine doing step
+     * 0 carries the whole sequence unrolled (its base input, every step's other inputs summed over the
+     * unrolled steps, the last step's result pool), and the line's other machines lose their steps. Their
+     * other feeders (a deployer's chute, a spout's pipe: the in-edges carrying none of the line's own
+     * goods) move to that machine. Its rate is one product per the busiest machine's work, the sum of the
+     * cycles of the steps it does: items on a loop pipeline, so the line runs at its slowest machine, not
+     * at the sum of every step (GB40). Every machine of the line is PASS_THROUGH: what it no longer works
+     * goes on. A sequence with a step no machine here does stays per step (it never finishes).
+     */
+    private void collapseSequenced(IntOpenHashSet[] reach) {
+        if (seqSteps.isEmpty())
+            return;
+        TreeMap<String, TreeMap<Integer, Info>> lines = new TreeMap<>();
+        for (Info i : infos.values())
+            if (i.node != null)
+                for (Craft c : i.crafts) {
+                    SeqStep st = seqSteps.get(c.recipe());
+                    if (st != null)
+                        lines.computeIfAbsent(st.id(), k -> new TreeMap<>()).put(i.node.index, i);
+                }
+        for (var line : lines.entrySet()) {
+            String id = line.getKey();
+            List<Info> ms = new ArrayList<>(line.getValue().values());
+            int total = -1;
+            Info host = null;
+            IntArrayList firsts = new IntArrayList();
+            TreeMap<Integer, Integer> later = new TreeMap<>();
+            for (Info m : ms)
+                for (Craft c : m.crafts) {
+                    SeqStep st = seqSteps.get(c.recipe());
+                    if (st == null || !st.id().equals(id))
+                        continue;
+                    total = st.total();
+                    if (st.step() == 0) {
+                        if (!firsts.contains(c.recipe()))
+                            firsts.add(c.recipe());
+                        if (host == null)
+                            host = m;
+                    } else
+                        later.putIfAbsent(st.step(), c.recipe());
+                }
+            if (host == null || total <= 0 || later.size() != total - 1)
+                continue;
+            IntOpenHashSet own = new IntOpenHashSet();
+            for (int r : firsts)
+                own.add(g.recipe(r).inputs.get(0).good());
+            for (int r : later.values())
+                own.add(g.recipe(r).inputs.get(0).good());
+            GraphBuilder.Recipe last = later.isEmpty() ? null : g.recipe(later.lastEntry().getValue());
+            IntArrayList unrolled = new IntArrayList();
+            for (int r0 : firsts) {
+                GraphBuilder.Recipe first = g.recipe(r0);
+                int heat = first.heat;
+                long duration = first.duration;
+                // other inputs by (good, flags): consumed ones summed, catalysts once
+                TreeMap<Long, Rat> extra = new TreeMap<>();
+                List<GraphBuilder.Recipe> steps = new ArrayList<>();
+                steps.add(first);
+                for (int r : later.values())
+                    steps.add(g.recipe(r));
+                for (GraphBuilder.Recipe sr : steps) {
+                    heat = Math.max(heat, sr.heat);
+                    duration += sr == first ? 0 : sr.duration;
+                    for (int k = 1; k < sr.inputs.size(); k++) {
+                        GraphBuilder.Term t = sr.inputs.get(k);
+                        long key = ((long) t.good() << 32) | (t.flags() & 0xFFFF_FFFFL);
+                        Rat amt = Rat.of(t.num(), t.den());
+                        boolean catalyst = (t.flags() & GlassRecords.Recipe.TERM_CATALYST) != 0;
+                        extra.merge(key, amt, (x, y) -> catalyst ? (x.toDouble() >= y.toDouble() ? x : y) : x.add(y));
+                    }
+                }
+                GraphBuilder.Recipe u = new GraphBuilder.Recipe(GlassRecords.RecipeType.SEQUENCED, heat,
+                        (int) Math.min(Integer.MAX_VALUE, duration), g.name(id));
+                u.in(first.inputs.get(0).good(), 1, 1);
+                for (var e : extra.entrySet())
+                    u.in((int) (e.getKey() >> 32), e.getValue().num(), e.getValue().den(), (int) (long) e.getKey());
+                for (GraphBuilder.Term t : (last == null ? first : last).outputs)
+                    u.out(t.good(), t.num(), t.den(), t.flags());
+                int idx = g.recipe(u);
+                if (!unrolled.contains(idx))
+                    unrolled.add(idx);
+            }
+            // each machine's work per product: its steps' cycles, one per unrolled step it does
+            java.util.IdentityHashMap<Info, List<Cyc>> work = new java.util.IdentityHashMap<>();
+            for (Info m : ms) {
+                IntOpenHashSet seen = new IntOpenHashSet();
+                List<Cyc> cs = new ArrayList<>();
+                for (Craft c : m.crafts) {
+                    SeqStep st = seqSteps.get(c.recipe());
+                    if (st != null && st.id().equals(id) && seen.add(st.step()) && c.cycle() != null)
+                        cs.add(c.cycle());
+                }
+                work.put(m, cs);
+            }
+            final Info h = host;
+            Cyc cycle = (rpm, n) -> {
+                Rat worst = null;
+                for (Info m : ms) {
+                    float r = m == h ? rpm
+                            : m.domain != NONE && m.domain == h.domain && !h.ratio.isZero()
+                                    ? (float) Math.abs(rpm * m.ratio.toDouble() / h.ratio.toDouble()) : m.rpmNow;
+                    if (m.kinetic && r <= 0)
+                        return null;
+                    Rat sum = Rat.ZERO;
+                    for (Cyc c : work.get(m)) {
+                        Rat t = c.ticks(r, 1);
+                        if (t == null)
+                            return null;
+                        sum = sum.add(t);
+                    }
+                    if (worst == null || sum.toDouble() > worst.toDouble())
+                        worst = sum;
+                }
+                return worst == null || worst.isZero() ? null : worst;
+            };
+            for (Info m : ms) {
+                m.crafts.removeIf(c -> {
+                    SeqStep st = seqSteps.get(c.recipe());
+                    return st != null && st.id().equals(id);
+                });
+                m.node.flag(GlassRecords.Node.PASS_THROUGH);
+            }
+            for (int u : unrolled)
+                host.crafts.add(new Craft(u, 1, cycle));
+            host.node.model = GlassRecords.Model.SEQUENCED;
+            for (GraphBuilder.Edge e : new ArrayList<>(g.edges())) {
+                Info to = infos.get(e.to);
+                if (to == null || to == host || !work.containsKey(to))
+                    continue;
+                if (e.kind == GlassRecords.Edge.CONTROL || e.kind == GlassRecords.Edge.OBSERVE || e.kind == GlassRecords.Edge.HEAT)
+                    continue;
+                boolean lineEdge = false;
+                for (int gid : reach[e.from])
+                    if (own.contains(gid) && carries(e, gid)) {
+                        lineEdge = true;
+                        break;
+                    }
+                if (!lineEdge)
+                    g.retarget(e, host.node.index);
+            }
+        }
     }
 
     private boolean passes(EdgeTest t, int gid) {
@@ -2036,6 +2199,9 @@ final class CreateCompile implements GlassExtractor.Compile {
                         s = Math.min(s, f.unitBatch);
                 }
             b.stack = s;
+            for (GraphBuilder.Edge e : g.edges())
+                if (andesiteMovers.contains(e.to) && b.movers.contains(e.to) && e.kind != GlassRecords.Edge.CONTROL)
+                    e.param(s); // the andesite tunnel's entry size n (§9.3: its first in-edge's param)
             for (int m : b.movers) {
                 Info mi = infos.get(m);
                 mi.moverBatch = s;
@@ -2065,8 +2231,14 @@ final class CreateCompile implements GlassExtractor.Compile {
                     }
                 }
                 for (Craft c : i.crafts) {
-                    if (c.cycle() == null)
+                    if (c.cycle() == null) {
+                        // in place or endless (a fan zone on a moving belt, a creative source, a water
+                        // source): an unlimited entry, so that the recipe is the node's (§9.3: a machine's
+                        // recipes are exactly those its entries name)
+                        i.node.unlimited(l, c.recipe());
+                        any = true;
                         continue;
+                    }
                     int n = c.batch() == FEEDER_BATCH ? feederBatch(i) : c.batch();
                     Rat t = safe(c.cycle(), rpm, n);
                     if (t != null && n > 0) {

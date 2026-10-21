@@ -298,6 +298,8 @@ final class Recipes {
             extra.accept(r);
         advance(c, r, s);
         c.addCraft(i, r, 1, c.cycle(i, s.next().getProcessingDuration(), 1), gid);
+        c.seqSteps.put(c.g.recipe(r), new CreateCompile.SeqStep(s.id().toString(), s.step(),
+                s.recipe().getSequence().size() * s.recipe().getLoops()));
     }
 
     // ---- saw (recipeIndex rotation) --------------------------------------------------------------
