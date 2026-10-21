@@ -132,4 +132,22 @@ marked PLACEHOLDER is not measured; UNVERIFIED marks what no test has confirmed.
 
 ## For Ben
 
-Nothing yet.
+Three questions came up while building G1. None blocks it, and each can be reversed.
+
+1. **Side insertion onto a belt (GB72).** GLASSBOX.md §3.3 says items already on a belt pass before a side
+   insertion. Create's `canInsertAtFromSide` only checks earlier insertions from the same side, so a side
+   feed merges into the traffic going through. A sequenced-assembly loop fed faster than its machines
+   jams; it does not settle at capacity as §3.4 says. Measured in corpus 6.
+   - Recommended: model the rule as Create has it, and treat an over-fed loop as stalled.
+   - Alternative: keep §3.4's capacity rule and mark such loops bounded.
+   - What G1 does: the corpus loop is fed below its machines' capacity (GB71), and the solver bounds side
+     insertion (GB14), which is closer to the alternative. Either way, §3.3 and §3.4 need your edit.
+2. **The package loop tests the chain, not the packager (GB75).** The loop's rate is set by its clock.
+   The packager only shows that it keeps up.
+   - Recommended, and built: keep it, since it checks the logistics chain end to end at a known rate.
+   - Alternative: add a second design where the packager's own 21-tick cycle is the bottleneck.
+3. **The sheep check is weak (GB76).** Its 3-sigma band is about plus or minus 49% over a 7,200-tick
+   window. The model may run about 10% low (UNVERIFIED).
+   - Recommended, and built: accept it for G1, since mob farms are learned sources (G-B17).
+   - Alternative: run this factory over about 43,000 ticks for a 20% band. That breaks the brief's
+     7,200-tick cap on windows.
