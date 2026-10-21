@@ -845,8 +845,13 @@ public final class GlassReplayGameTests {
             if (!pass)
                 failed.add(g + " (" + clsName + ": control " + c + ", simulated " + s + ", tolerance " + String.format(Locale.ROOT, "%.0f", tol) + ")");
         }
-        // A control that moved nothing makes every row pass whatever the replay did: the run proves nothing.
-        if (moved == 0)
+        // A control that moved nothing makes every row pass whatever the replay did: the run proves nothing,
+        // unless the factory is built to stall (GB72's over-fed loop): then the rows check the replay made nothing.
+        boolean stallExpected = !run.control.expect().isEmpty()
+                && run.control.expect().stream().allMatch(e -> e.lo() == 0 && e.hi() == 0);
+        if (moved == 0 && stallExpected)
+            IndustryKit.record(test, "stall", "the control moved nothing, as the factory expects: every row checks |simulated| <= slack");
+        else if (moved == 0)
             run.failures.add(run.f.name() + ": the control changed no good over the span (stalled or empty): nothing to compare");
         MicRtsim.LOGGER.info(String.format(Locale.ROOT, "[gametest] %s: %d goods (%d moved in the control, %d weak %s) over %d ticks (%d away), engine %s, eligible by %s, replay %s (why: %s), %s",
                 test, judged, moved, weak.size(), weak, span, run.forcedAt - run.unloadedAt, run.stub ? "stub (offline replay)" : "native", run.eligibleBy, run.awaySummary,
