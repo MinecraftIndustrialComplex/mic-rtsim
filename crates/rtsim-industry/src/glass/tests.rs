@@ -3283,13 +3283,11 @@ mod replay_path {
     /// A partial load with the cut the other way (I7, G-B6): the brass store and the press are
     /// simulated, the sheet store runs and has room for 312 sheets (8 slots, 200 sheets). A fully
     /// loaded factory stops pressing once the store is full, so the replay may carry at most that
-    /// room across the cut (G-B2's ceiling), and the reload owes nothing more. Today the live
-    /// store's room is a flag from the compile's regime, not an amount: a store that reads full
-    /// gates the press at once (4 slots: nothing pressed), one with room takes every sheet, so the
-    /// press presses all 1,000 brass into the cut's `Stock` and the reload owes what does not fit
-    /// (docs/choices-glassbox-g2.md, Known bugs; the straddle smoke's water in the m7 exit runs).
+    /// room across the cut (G-B2's ceiling), and the reload owes nothing more. Before choice G2-66
+    /// the live store's room was a flag from the compile's regime, not an amount: one with any
+    /// room took every sheet, so the press pressed all 1,000 brass into the cut's `Stock` and the
+    /// reload owed what did not fit (the straddle smoke's water in the m7 exit runs too).
     #[test]
-    #[ignore = "known bug: the cut from a simulated sender into a live store is not capped"]
     fn a_cut_into_a_live_store_carries_no_more_than_its_room() {
         let (mut b, p) = press_line();
         let far = BlockPos::new(32, 64, 0);
@@ -3357,8 +3355,9 @@ mod replay_path {
         e.advance_to(Tick(20_000));
         let st = e.sim_stock(D).expect("replaying");
         let pressed = 1000 - st.get(BRASS);
+        // The room fills (the seal is not the store reading full at once).
         assert!(
-            pressed <= 312 + 1,
+            (300..=312 + 1).contains(&pressed),
             "pressed {pressed} into 312 of room: {st:?}"
         );
         let mut cmds = feed(
@@ -3377,9 +3376,118 @@ mod replay_path {
         cmds.extend(e.drain_commands());
         let d = deltas(&cmds);
         let landed = d.get(&(1, SHEET)).copied().unwrap_or(0);
-        assert!(landed <= 312, "{d:?}");
+        assert!((300..=312).contains(&landed), "pressed {pressed}: {d:?}");
         let owed = e.district(D).expect("known").owed.get(SHEET);
         assert_eq!(owed, 0, "the district owes {owed} sheets");
+        e.check_books().expect("books");
+    }
+
+    /// The cut into a live mover (choice G2-66): the press is simulated, the chute it pushes into
+    /// and the sheet store run. A chute holds nothing a reload could place, so its room is 0: the
+    /// cut good seals at once, the press stays off while away, the brass stays, and the reload
+    /// lands and owes nothing.
+    #[test]
+    fn a_cut_into_a_live_mover_carries_nothing() {
+        let mut b = B::default();
+        let input = b.store(0);
+        let out = b.store(1);
+        let press = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+        let p = b.machine(model::PRESS, press, 1, 10);
+        let chute = b.node(
+            NodeKind::Mover,
+            model::CHUTE,
+            0,
+            vec![RateEntry {
+                flags: rate_flags::SHARED,
+                ..entry(None, 16, 7)
+            }],
+        );
+        b.edge(input, p);
+        b.edge_k(EdgeKind::Chute, p, chute, &[]);
+        b.edge_k(EdgeKind::Chute, chute, out, &[]);
+        b.window = 2000;
+        let far = BlockPos::new(32, 64, 0);
+        b.nodes[p as usize].pos = far;
+        b.nodes[input as usize].pos = far;
+        let mut s = setup(&b, 2);
+        for t in &mut s {
+            if let Obs::Inventory(decl) = &mut t.obs {
+                if decl.index == 0 {
+                    decl.pos = far;
+                } else {
+                    decl.item_slots = 8;
+                }
+            }
+        }
+        let near = BlockPos::default().chunk(0);
+        let away = far.chunk(0);
+        for c in [near, away] {
+            s.push(at(
+                0,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: c,
+                    applied_epoch: 0,
+                },
+            ));
+        }
+        sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[(SHEET, 200)]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::ChunkUnloaded {
+                    district: D,
+                    chunk: away,
+                },
+            ),
+        );
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::LoadState {
+                    district: D,
+                    state: LoadState::Partial,
+                    ticking_chunks: 1,
+                    total_chunks: 2,
+                },
+            ),
+        );
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.cut_edges, 1);
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 1000, "pressed into a chute: {st:?}");
+        let mut cmds = feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: away,
+                    applied_epoch: 0,
+                },
+            ),
+        );
+        cmds.extend(feed(&mut e, &load_state(20_000, LoadState::Live)));
+        e.advance_to(Tick(20_001));
+        cmds.extend(e.drain_commands());
+        let d = deltas(&cmds);
+        assert_eq!(d.get(&(1, SHEET)).copied().unwrap_or(0), 0, "{d:?}");
+        assert_eq!(e.district(D).expect("known").owed.get(SHEET), 0);
         e.check_books().expect("books");
     }
 
