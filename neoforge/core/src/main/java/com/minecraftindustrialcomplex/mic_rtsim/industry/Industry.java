@@ -65,6 +65,13 @@ public final class Industry {
     private boolean started;
     /** True once the module has been on and then switched off: switching on again announces everything (U10). */
     private boolean wasOff;
+    /**
+     * True until the module's first start in this session. At that start, an engine whose pages lack
+     * observations the journal no longer holds (a sim reset: {@code world/rtsim/} deleted, the world's
+     * data kept) is told everything as after U10: each district's declaration is in the world's
+     * {@code mic_rtsim_industry.dat} as sent, but the engine never got it.
+     */
+    private boolean firstStart = true;
 
     // counters for /rtsim district perf and the GameTests
     long commandsApplied;
@@ -140,7 +147,12 @@ public final class Industry {
         }
         if (!started) {
             started = true;
-            boolean again = wasOff;
+            boolean lost = firstStart && boundary.observationsLost();
+            firstStart = false;
+            if (lost)
+                MicRtsim.LOGGER.warn("[mic_rtsim] industry: the engine's pages lack observations the journal no longer holds"
+                        + " (a sim reset?): {} districts are announced again", districts.all().size());
+            boolean again = wasOff || lost;
             wasOff = false;
             if (again)
                 forgetAnnounced();
