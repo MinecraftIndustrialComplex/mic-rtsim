@@ -73,8 +73,10 @@ An Opus review of the kernel diff found no critical bug and five major ones. Fix
 Not fixed tonight (known, with the fix the review proposed):
 - **Two saves in flight lose changes**: `saving` is a bool, so the first ticket back unpins a page a
   later snapshot still holds. Fix: a snapshot number per page; `saved` unpins only its own.
+  **Fixed 2026-10-20: PM1 in docs/choices-paging-modules.md.**
 - **An IO error inside a step drops the step's popped wakes and mail.** Fix: re-book what was
   popped (wakes at their booked time, mail in the mail wheel) before returning, or load first.
+  **Fixed 2026-10-20: PM2 in docs/choices-paging-modules.md** (load first, and rewind the wheels).
 - A dropped `SaveTicket` pins its pages forever; a bad page in a compaction candidate stops every
   later save; heap accounting ignores catch-up changes (latent: no model reports heap); mail that
   lags the table lands at an eviction-dependent time (clamp to the window start); a model whose

@@ -36,5 +36,8 @@ pub mod timetable;
 pub mod tunables;
 pub mod water;
 
-pub use engine::{Role, Ship, ShipId, ShipStats, Ships, Status};
+pub use engine::{
+    NETWORK_KEY, Role, SHIP_TABLE, Ship, ShipId, ShipStats, ShipTickets, Ships, Status,
+    THREAT_TABLE,
+};
 pub use tunables::{MediumTunables, ShipTunables};

@@ -1,0 +1,170 @@
+sweep    model    value | cpu ms/day catchup us  commits |  heap MiB   rss MiB  peak MiB |   save KiB   incr KiB | slots/day conserved
+latent   herd      10e3 |       2.06          -        - |       2.8       6.5       6.5 |      306.3      309.3 |      6170 ok
+latent   herd       1e6 |       2.47          -        - |       2.8       6.2       6.2 |      339.8      344.6 |      6170 ok
+latent   herd     100e6 |       5.39          -        - |       2.8       6.4       6.4 |      385.6      391.7 |      6170 ok
+latent   herd      10e9 |       3.86          -        - |       2.8       6.5       6.5 |      425.8      433.6 |      6170 ok
+latent   herd    1000e9 |       3.44          -        - |       2.8       6.3       6.3 |      465.8      474.6 |      6170 ok
+regions  closed     100 |       0.95          -        - |       0.4       4.5       4.5 |        2.2        2.1 |         0 ok
+regions  closed     1e3 |       0.91          -        - |       0.5       4.6       4.6 |       20.6       20.6 |         0 ok
+regions  closed    10e3 |       1.19          -        - |       1.9       5.3       5.3 |      196.2      199.3 |         0 ok
+regions  closed   100e3 |       1.46          -        - |      13.0      14.3      14.3 |     1218.1      916.4 |         0 ok
+regions  closed     1e6 |       1.76          -        - |     102.1     101.8     101.8 |     8970.1     1148.7 |         0 ok
+regions  herd       100 |       1.05          -        - |       0.4       5.0       5.0 |        4.5        4.3 |       100 ok
+regions  herd       1e3 |       1.93          -        - |       0.5       5.1       5.1 |       40.6       40.7 |       985 ok
+regions  herd      10e3 |       5.67          -        - |       2.8       6.3       6.3 |      368.8      374.1 |      6170 ok
+regions  herd     100e3 |       4.80          -        - |      20.0      20.0      20.0 |     2358.1     1743.3 |     10424 ok
+regions  herd       1e6 |       3.41          -        - |     158.1     155.4     155.4 |    19646.4     2441.7 |     11225 ok
+events   herd        10 |       1.05          -        - |       2.5       6.2       6.2 |      202.6       35.6 |       363 ok
+events   herd       100 |       1.82          -        - |       2.5       6.1       6.1 |      244.7      180.3 |      1253 ok
+events   herd       1e3 |       5.92          -        - |       2.8       6.5       6.5 |      368.8      374.1 |      6170 ok
+events   herd      10e3 |      11.04          -        - |       5.5       8.7       8.7 |      386.2      388.2 |      9844 ok
+events   herd     100e3 |      27.69          -        - |      50.8      34.6      34.6 |      384.5      386.7 |     10001 ok
+elapsed  closed       1 |          -      0.006      0.0 |       6.4      10.5      10.5 |          -          - |         - n/a
+elapsed  closed      10 |          -      0.006      0.0 |       6.4      10.5      10.5 |          -          - |         - n/a
+elapsed  closed     100 |          -      0.006      0.0 |       6.4      10.5      10.5 |          -          - |         - n/a
+elapsed  closed     1e3 |          -      0.006      0.0 |       6.4      10.6      10.6 |          -          - |         - n/a
+elapsed  closed    10e3 |          -      0.006      0.0 |       6.4      10.4      10.4 |          -          - |         - n/a
+elapsed  herd         1 |          -      0.696      1.0 |       0.1       4.6       4.6 |          -          - |         - n/a
+elapsed  herd        10 |          -      5.867     10.0 |       0.1       4.6       4.6 |          -          - |         - n/a
+elapsed  herd       100 |          -     58.215    100.0 |       0.1       4.3       4.3 |          -          - |         - n/a
+elapsed  herd       1e3 |          -    637.186   1000.0 |       0.1       4.6       4.6 |          -          - |         - n/a
+elapsed  herd      10e3 |          -   5499.401  10000.0 |       0.1       4.4       4.4 |          -          - |         - n/a
+age      closed       1 |       1.53          -        - |      13.0      14.2      14.2 |     1218.1      916.4 |         0 ok
+age      closed      10 |       1.60          -        - |      13.1      14.3      14.3 |     1427.0     1074.8 |         0 ok
+age      closed     100 |       1.28          -        - |      13.5      14.9      14.9 |     2076.5     1539.9 |         0 ok
+age      closed     1e3 |       1.26          -        - |      15.8      17.4      17.4 |     2310.3     1672.6 |         0 ok
+age      herd         1 |       3.94          -        - |      20.0      19.8      19.8 |     2358.1     1743.3 |     10424 ok
+age      herd        10 |       7.97          -        - |      20.1      20.0      20.0 |     2628.9     1960.5 |     25450 ok
+age      herd       100 |      24.87          -        - |      20.5      20.6      20.6 |     3582.2     2646.7 |     87724 ok
+age      herd       1e3 |      20.78          -        - |      22.8      23.1      23.1 |     4002.6     2887.2 |     99809 ok
+latent   dyadic    10e3 |       1.45          -        - |       3.9       7.0       7.0 |      311.5      315.0 |         0 ok
+latent   dyadic     1e6 |       1.47          -        - |       3.9       7.1       7.1 |      315.1      318.6 |         0 ok
+latent   dyadic   100e6 |       1.74          -        - |       3.9       6.9       6.9 |      330.3      333.8 |         0 ok
+latent   dyadic    10e9 |       1.96          -        - |       3.9       7.0       7.0 |      335.0      338.5 |         0 ok
+latent   dyadic  1000e9 |       1.44          -        - |       3.9       7.1       7.1 |      340.4      343.9 |         0 ok
+regions  dyadic     100 |       0.83          -        - |       0.4       5.0       5.0 |        3.8        3.7 |         0 ok
+regions  dyadic     1e3 |       1.14          -        - |       0.6       5.0       5.0 |       34.1       34.2 |         0 ok
+regions  dyadic    10e3 |       1.61          -        - |       3.9       7.2       7.2 |      328.3      331.9 |         0 ok
+regions  dyadic   100e3 |       1.47          -        - |      29.0      26.9      26.9 |     2199.9     1630.1 |         0 ok
+regions  dyadic     1e6 |       1.76          -        - |     230.1     224.2     224.2 |    17775.0     2221.0 |         0 ok
+elapsed  dyadic       1 |          -     10.275      0.0 |       0.1       4.6       4.6 |          -          - |         - n/a
+elapsed  dyadic      10 |          -     10.142      0.0 |       0.1       4.4       4.4 |          -          - |         - n/a
+elapsed  dyadic     100 |          -      9.314      0.0 |       0.1       4.4       4.4 |          -          - |         - n/a
+elapsed  dyadic     1e3 |          -      6.779      0.0 |       0.1       4.3       4.3 |          -          - |         - n/a
+elapsed  dyadic    10e3 |          -      2.819      0.0 |       0.1       4.4       4.4 |          -          - |         - n/a
+age      dyadic       1 |       1.58          -        - |      29.0      26.9      26.9 |     2199.9     1630.1 |         0 ok
+age      dyadic      10 |       1.48          -        - |      29.1      26.9      26.9 |     2473.6     1847.3 |         0 ok
+age      dyadic     100 |       1.33          -        - |      29.5      27.5      27.5 |     3280.3     2424.2 |         0 ok
+age      dyadic     1e3 |       1.22          -        - |      31.8      30.2      30.2 |     3589.2     2590.9 |         0 ok
+paged    closed   100e3 |       7.69          -        - |       5.0      11.7      11.7 |     2481.4          - |         0 ok
+paged    closed     1e6 |      16.78          -        - |       6.5      20.7      25.0 |    17839.2          - |         0 ok
+paged    closed    10e6 |      29.17          -        - |       7.7      20.8      20.8 |   132500.1          - |         0 ok
+paged    closed   100e6 |     128.91          -        - |       7.9      21.0      21.1 |  1203257.7          - |         0 ok
+paged    herd     100e3 |      22.95          -        - |       4.9      13.1      13.1 |     3873.4          - |     10424 ok
+paged    herd       1e6 |      30.78          -        - |       6.5      22.1      25.4 |    31794.9          - |     11225 ok
+paged    herd      10e6 |      43.42          -        - |       7.6      23.9      27.1 |   248982.0          - |     11162 ok
+paged    herd     100e6 |      95.31          -        - |       7.8      24.0      26.9 |  2340846.4          - |     11305 ok
+paged    dyadic   100e3 |      73.48          -        - |       4.9      13.9      13.9 |     3763.4          - |         0 ok
+paged    dyadic     1e6 |     122.52          -        - |       6.5      24.2      27.5 |    30772.4          - |         0 ok
+paged    dyadic    10e6 |     131.80          -        - |       7.6      25.6      28.9 |   234750.2          - |         0 ok
+markets  closed      16 |       0.73          -        - |       0.3       5.4       5.4 |          -          - |         0 ok
+markets  closed      64 |       2.78          -        - |       1.0       6.3       6.3 |          -          - |         0 ok
+markets  closed     256 |      17.03          -        - |       4.1       9.8       9.8 |          -          - |         0 ok
+markets  closed     1e3 |     135.91          -        - |      16.6      24.1      24.1 |          -          - |         0 ok
+markets  closed     4e3 |     887.96          -        - |      67.4      79.9      79.9 |          -          - |         0 ok
+edges    closed       1 |       3.59          -        - |       3.8       9.2       9.2 |          -          - |         0 ok
+edges    closed       2 |      20.63          -        - |       6.1      11.8      11.8 |          -          - |         0 ok
+edges    closed       4 |      72.50          -        - |       8.2      14.6      14.6 |          -          - |         0 ok
+edges    closed       8 |     236.14          -        - |      12.5      19.9      19.9 |          -          - |         0 ok
+edges    closed      16 |    1020.65          -        - |      24.7      35.6      35.6 |          -          - |         0 ok
+dragons  closed       8 |      60.83          -        - |       5.4      11.7      11.7 |          -          - |         0 ok
+dragons  closed      32 |      97.52          -        - |       7.3      13.2      13.2 |          -          - |         0 ok
+dragons  closed     128 |     148.50          -        - |      12.2      18.2      18.2 |          -          - |         0 ok
+dragons  closed     512 |     246.29          -        - |      23.1      29.3      29.3 |          -          - |         0 ok
+ships    closed       1 |       0.04          -        - |       3.4       9.8       9.8 |       14.7          - |         0 ok
+ships    closed       2 |       0.04          -        - |       3.1       9.6       9.6 |       17.2          - |         0 ok
+ships    closed       4 |       0.04          -        - |       3.2       9.6       9.6 |       22.2          - |         0 ok
+ships    closed       8 |       0.04          -        - |       3.7       9.8       9.8 |       32.1          - |         0 ok
+ships    closed      16 |       0.04          -        - |       4.0      10.2      10.2 |       48.4          - |         0 ok
+herds    dyadic       4 |       2.47      0.041        - |       0.2       6.0       6.0 |       65.0          - |         0 ok
+herds    dyadic      16 |       8.68      0.064        - |       0.4       5.9       5.9 |      133.5          - |         0 ok
+herds    dyadic      64 |      31.83      0.138        - |       0.7       6.3       6.3 |      187.0          - |         0 ok
+herds    dyadic     256 |     117.51      0.121        - |       1.3       7.1       7.1 |      264.0          - |         0 ok
+members  dyadic     100 |      10.60      0.086        - |       0.1       5.7       5.7 |       20.1          - |         0 ok
+members  dyadic     1e3 |      10.09      0.081        - |       0.2       5.7       5.7 |       66.4          - |         0 ok
+members  dyadic    10e3 |       8.89      0.076        - |       0.5       6.1       6.1 |      167.6          - |         0 ok
+members  dyadic   100e3 |       9.65      0.077        - |       0.6       6.1       6.1 |      195.1          - |         0 ok
+members  dyadic     1e6 |       9.97      0.076        - |       0.6       6.4       6.4 |      197.1          - |         0 ok
+factions closed      16 |       0.24          -        - |       1.5       7.6       7.6 |        7.1          - |         0 ok
+factions closed      64 |       1.20          -        - |       7.4      13.7      13.7 |       25.1          - |         0 ok
+factions closed     256 |       6.28          -        - |      40.0      46.4      46.4 |       99.9          - |         0 ok
+factions closed     1e3 |      26.51          -        - |     200.9     208.1     208.1 |      405.6          - |         0 ok
+
+paged    model  regions |  step ms/d heap MiB  res MiB   budget  idx KiB | loads/day evict/day prefetch/hit | save cpu/d  KiB/save    log B
+paged    closed   100e3 |       7.69      5.0      4.0      4.0      133 |       351       674     323/323 |      15.1     497.0    14817
+paged    closed     1e6 |      16.78      6.5      4.0      4.0     1536 |       932      1777     844/844 |      19.4     826.6    27408
+paged    closed    10e6 |      29.17      7.7      4.0      4.0     2717 |       994      1891     897/897 |      27.3     681.7    24488
+paged    closed   100e6 |     128.91      7.9      4.0      4.0     2875 |      1000      1902     903/903 |      56.8     675.0    24738
+paged    herd     100e3 |      22.95      4.9      4.0      4.0      133 |       649      1238     589/589 |      23.4     876.2    14870
+paged    herd       1e6 |      30.78      6.5      4.0      4.0     1536 |       962      1835     873/872 |      28.4    1382.0    25929
+paged    herd      10e6 |      43.42      7.6      4.0      4.0     2718 |       996      1896     900/900 |      40.6    1198.1    23878
+paged    herd     100e6 |      95.31      7.8      4.0      4.0     2881 |      1000      1904     904/903 |      67.3    1340.6    26239
+paged    dyadic   100e3 |      73.48      4.9      5.3      4.0      133 |      1282      1980     699/531 |      44.3     851.8    14835
+paged    dyadic     1e6 |     122.52      6.5      6.1      4.0     1536 |      2273      3156     883/594 |      57.1    1359.2    26174
+paged    dyadic    10e6 |     131.80      7.6      6.2      4.0     2708 |      2016      2917     902/600 |      80.0    1162.7    24471
+
+sweep    model  metric       slope  declared  SCALE.md  max/min  bound  verdict
+latent   herd   cpu          0.032      0.10      0.00     2.62    4.0  ok
+latent   herd   heap         0.000      0.10      0.00     1.00    4.0  ok
+latent   herd   save         0.023      0.10      0.00     1.52    4.0  ok
+regions  closed cpu          0.074      0.15      0.00     1.93    4.0  ok
+regions  closed heap         0.626      1.10      1.00   260.16      -  ok
+regions  closed save         0.898      1.10      1.00  4012.82      -  ok
+regions  herd   cpu          0.142      1.00      0.00     5.40      -  ok  (declared above SCALE.md; see note)
+regions  herd   heap         0.677      1.10      1.00   395.95      -  ok
+regions  herd   save         0.905      1.10      1.00  4409.90      -  ok
+events   herd   cpu          0.362      1.10      1.00    26.36      -  ok
+elapsed  closed catchup     -0.006      0.10      0.00     1.08    4.0  ok
+elapsed  herd   catchup      0.983      1.10      0.00  7898.42      -  ok  (declared above SCALE.md; see note)
+age      closed cpu         -0.034      0.15      0.00     1.27    4.0  ok
+age      herd   cpu          0.266      1.00      0.00     6.31      -  ok  (declared above SCALE.md; see note)
+latent   dyadic cpu          0.006      0.10      0.00     1.36    4.0  ok
+latent   dyadic heap         0.000      0.10      0.00     1.00    4.0  ok
+regions  dyadic cpu          0.076      0.15      0.00     2.11    4.0  ok
+regions  dyadic heap         0.718      1.10      1.00   563.85      -  ok
+regions  dyadic save         0.914      1.10      1.00  4630.27      -  ok
+elapsed  dyadic catchup     -0.130      0.15      0.00     3.64    4.0  ok
+age      dyadic cpu         -0.038      0.15      0.00     1.30    4.0  ok
+paged    closed resident     0.000      0.10      0.00     1.00    4.0  ok
+paged    closed heap         0.068      0.10      0.00     1.59    4.0  ok
+paged    closed cpu          0.391      0.35      0.00    16.75      -  FAIL  (declared above SCALE.md; see note)
+paged    closed saveincr     0.031      0.35      0.00     1.66      -  ok  (declared above SCALE.md; see note)
+paged    herd   resident     0.000      0.10      0.00     1.00    4.0  ok
+paged    herd   heap         0.068      0.10      0.00     1.59    4.0  ok
+paged    herd   cpu          0.200      0.35      0.00     4.15      -  ok  (declared above SCALE.md; see note)
+paged    herd   saveincr     0.049      0.35      0.00     1.58      -  ok  (declared above SCALE.md; see note)
+paged    dyadic resident     0.034      0.10      0.00     1.17    4.0  ok
+paged    dyadic heap         0.094      0.10      0.00     1.54    4.0  ok
+paged    dyadic cpu          0.127      0.35      0.00     1.79      -  ok  (declared above SCALE.md; see note)
+paged    dyadic saveincr     0.068      0.35      0.00     1.60      -  ok  (declared above SCALE.md; see note)
+markets  closed cpu          1.305      1.30      1.00  1209.69      -  FAIL  (declared above SCALE.md; see note)
+markets  closed heap         0.973      1.10      1.00   206.90      -  ok
+edges    closed cpu          1.982      2.10      1.00   284.05      -  ok  (declared above SCALE.md; see note)
+dragons  closed cpuperunit    -0.026      0.10      0.00     1.11    4.0  ok
+dragons  closed heap         0.353      1.10      1.00     4.31      -  ok
+ships    closed cpu          0.015      0.10      0.00     1.06    4.0  ok
+ships    closed heap         0.076      1.10      1.00     1.31      -  ok
+herds    dyadic cpuperunit    -0.071      0.10      0.00     1.35    4.0  ok
+herds    dyadic heap         0.448      1.10      1.00     6.73      -  ok
+members  dyadic cpu         -0.007      0.10      0.00     1.19    4.0  ok
+members  dyadic heap         0.204      0.30      0.00     6.30      -  ok  (declared above SCALE.md; see note)
+members  dyadic catchup     -0.013      0.10      0.00     1.14    4.0  ok
+factions closed eventsperunit     0.006      0.10      0.00     1.04    4.0  ok
+factions closed cpuperunit     0.134      0.20      0.00     1.69      -  ok  (declared above SCALE.md; see note)
+factions closed heap         1.188      1.10      1.00   137.68      -  FAIL
+wrote /tmp/paging-bench/v2/scale-2026-10-21-0641-full-potato-before.json
+scale check FAILED: 3 contract(s) exceeded, 0 run(s) broke an invariant
+  paged Closed Cpu: slope 0.391 (declared 0.35), max/min 16.75 (bound -)
+  markets Closed Cpu: slope 1.305 (declared 1.3), max/min 1209.69 (bound -)
+  factions Closed Heap: slope 1.188 (declared 1.1), max/min 137.68 (bound -)
+exit 1

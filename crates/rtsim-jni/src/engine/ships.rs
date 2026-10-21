@@ -51,7 +51,9 @@ use crate::wire::{self, Rec, RecordWriter, obs};
 pub const TABLE: u16 = 0x5300;
 pub const KEY_SHIPS: PageKey = PageKey::new(TABLE, 0);
 const MAGIC: u32 = u32::from_le_bytes(*b"RTSH");
-const VERSION: u16 = 1;
+/// 2 since the ships' rows moved to paged tables (rtsim-ships RTS2: rows in key order, each
+/// service's ships a key range).
+const VERSION: u16 = 2;
 
 /// Java's module bit the ships run under (`config/Module.java`: SHIPS is ordinal 6).
 pub const MODULE_SHIPS: u32 = 1 << 6;

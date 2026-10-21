@@ -1,0 +1,24 @@
+sweep    model    value | cpu ms/day catchup us  commits |  heap MiB   rss MiB  peak MiB |   save KiB   incr KiB | slots/day conserved
+markets  closed      16 |       0.77          -        - |       0.3       5.5       5.5 |          -          - |         0 ok
+markets  closed      64 |       2.46          -        - |       1.0       6.3       6.3 |          -          - |         0 ok
+markets  closed     256 |      16.96          -        - |       4.1       9.7       9.7 |          -          - |         0 ok
+markets  closed     1e3 |      78.93          -        - |      16.6      23.9      23.9 |          -          - |         0 ok
+markets  closed     4e3 |     902.06          -        - |      67.4      79.7      79.7 |          -          - |         0 ok
+dragons  closed       8 |     146.35          -        - |       5.4      11.7      11.7 |          -          - |         0 ok
+dragons  closed      32 |     204.58          -        - |       7.3      13.1      13.1 |          -          - |         0 ok
+dragons  closed     128 |     331.90          -        - |      12.2      17.9      17.9 |          -          - |         0 ok
+dragons  closed     512 |     505.36          -        - |      23.1      29.3      29.3 |          -          - |         0 ok
+ships    closed       1 |       0.10          -        - |       3.4       9.8       9.8 |       14.7          - |         0 ok
+ships    closed       2 |       0.10          -        - |       3.1       9.5       9.5 |       17.2          - |         0 ok
+ships    closed       4 |       0.10          -        - |       3.2       9.5       9.5 |       22.2          - |         0 ok
+ships    closed       8 |       0.08          -        - |       3.7       9.7       9.7 |       32.1          - |         0 ok
+ships    closed      16 |       0.09          -        - |       4.0      10.1      10.1 |       48.4          - |         0 ok
+
+sweep    model  metric       slope  declared  SCALE.md  max/min  bound  verdict
+markets  closed cpu          1.270      1.30      1.00  1176.93      -  ok  (declared above SCALE.md; see note)
+markets  closed heap         0.973      1.10      1.00   206.90      -  ok
+dragons  closed cpuperunit    -0.093      0.10      0.00     1.54    4.0  ok
+dragons  closed heap         0.353      1.10      1.00     4.31      -  ok
+ships    closed cpu         -0.064      0.10      0.00     1.22    4.0  ok
+ships    closed heap         0.076      1.10      1.00     1.31      -  ok
+wrote /tmp/paging-bench/v2/scale-2026-10-21-0646-full-potato-swap-before.json

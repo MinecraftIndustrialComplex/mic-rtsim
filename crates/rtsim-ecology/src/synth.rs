@@ -515,7 +515,9 @@ pub struct Body {
 }
 
 /// The plugin's side, headless: commands through the codec in, observations through the codec
-/// out, each a tick or more late (docs/boundary.md §1.2).
+/// out, each a tick or more late (docs/boundary.md §1.2). Cloned, it is the same plugin at the
+/// same moment (a restore test copies it with the engine's save).
+#[derive(Clone)]
 pub struct FakeIaf {
     pub dict: SpeciesDict,
     pub bodies: BTreeMap<u64, Body>,

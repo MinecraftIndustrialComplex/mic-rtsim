@@ -39,7 +39,8 @@ pub mod species;
 pub mod synth;
 pub mod tunables;
 
-pub use dragon::{Dragon, DragonId, Lair, LairId, LairKind};
+pub use dragon::{Dragon, DragonId, Lair, LairId, LairKind, Lairs};
 pub use engine::{DragonStats, Dragons, NewDragon};
+pub use persist::{DragonsPaging, DragonsTickets};
 pub use species::{Gender, Species};
 pub use tunables::{DragonTunables, PreyKind};
