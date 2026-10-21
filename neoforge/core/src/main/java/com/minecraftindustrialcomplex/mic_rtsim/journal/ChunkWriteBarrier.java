@@ -107,8 +107,12 @@ public final class ChunkWriteBarrier {
     void beforeJournalWrite() {
         if (chunks.isEmpty())
             return;
+        long armNanos = System.nanoTime();
+        java.util.Map<ServerLevel, List<net.minecraft.world.level.ChunkPos>> probePos = new java.util.LinkedHashMap<>();
         Set<ServerLevel> levels = new LinkedHashSet<>();
         for (LevelChunk c : chunks) {
+            if (c.getLevel() instanceof ServerLevel pl)
+                probePos.computeIfAbsent(pl, k -> new ArrayList<>()).add(c.getPos());
             if (!(c.getLevel() instanceof ServerLevel level) || level.noSave())
                 continue; // a level that is not saving writes no chunk; nothing to wait for
             // Only an instance still in its level is saved: one that left was saved by its unload task, and
@@ -127,11 +131,26 @@ public final class ChunkWriteBarrier {
         }
         chunks.clear();
         List<CompletableFuture<Void>> writes = new ArrayList<>(levels.size());
+        List<Object[]> probes = new ArrayList<>();
+        long[] c0 = {IOProbe.stores.get(), IOProbe.loads.get(), IOProbe.scans.get(), IOProbe.runStores.get(), IOProbe.runStoreNanos.get()};
+        IOProbe.maxPending.set(0);
         for (ServerLevel level : levels) {
             ChunkMap map = level.getChunkSource().chunkMap;
             ChunkScanAccess scanner = map.chunkScanner();
             if (scanner instanceof IOWorker worker) {
-                writes.add(worker.synchronize(true));
+                Object[] pr = new Object[6];
+                pr[0] = level.dimension().location().toString();
+                pr[1] = probePos.getOrDefault(level, List.of());
+                if (worker instanceof IOProbe.Worker pw)
+                    pr[2] = pw.mic_rtsim$probe((List<net.minecraft.world.level.ChunkPos>) pr[1], armNanos);
+                long[] syncW = {-1}, syncF = {-1};
+                pr[3] = syncW;
+                pr[4] = syncF;
+                worker.synchronize(false).whenComplete((v, t) -> syncW[0] = System.nanoTime() - armNanos);
+                CompletableFuture<Void> sf = worker.synchronize(true);
+                sf.whenComplete((v, t) -> syncF[0] = System.nanoTime() - armNanos);
+                probes.add(pr);
+                writes.add(sf);
             } else if (!warnedScanner) {
                 warnedScanner = true;
                 MicRtsim.LOGGER.warn("[mic_rtsim] {}'s chunk storage is not vanilla's IOWorker ({}): the journal cannot wait for its chunk writes",
@@ -145,10 +164,43 @@ public final class ChunkWriteBarrier {
         // Never throws: an exception in a task of NeoForge's chain would skip every SavedData write after it.
         IOUtilities.withIOWorker(() -> {
             long start = System.nanoTime();
+            long chainDelay = start - armNanos;
+            List<long[]> landed = new ArrayList<>();
+            StringBuilder pb = new StringBuilder();
+            for (Object[] pr : probes) {
+                try {
+                    if (pr[2] instanceof CompletableFuture<?> pf) {
+                        Object[] o = (Object[]) pf.get(60, TimeUnit.SECONDS);
+                        pb.append(" [").append(pr[0]).append(" fgDelayMs=").append((Long) o[0] / 1_000_000).append(" pendingAtFg=").append(o[1])
+                                .append(" mailboxAtArm=").append(o[2]).append(" mailboxAtFg=").append(o[3]).append(" ours=");
+                        List<?> pos = (List<?>) pr[1];
+                        for (int i = 0; i < pos.size(); i++) {
+                            int idx = (Integer) o[4 + 2 * i];
+                            long[] f = (long[]) o[5 + 2 * i];
+                            if (f != null)
+                                landed.add(f);
+                            pb.append(pos.get(i)).append("@").append(idx).append(f == null ? "(not pending)" : "").append(",");
+                        }
+                        pb.append("]");
+                    }
+                } catch (Exception e) {
+                    pb.append(" probe failed ").append(e);
+                }
+            }
             try {
                 all.get(WAIT_SECONDS, TimeUnit.SECONDS);
                 long ms = (System.nanoTime() - start) / 1_000_000;
                 lastWaitMillis.set(ms);
+                StringBuilder lb = new StringBuilder();
+                for (long[] l : landed)
+                    lb.append(l[0] / 1_000_000).append(",");
+                StringBuilder sb = new StringBuilder();
+                for (Object[] pr : probes)
+                    sb.append(" ").append(pr[0]).append(" syncWritesMs=").append(((long[]) pr[3])[0] / 1_000_000).append(" syncFlushMs=").append(((long[]) pr[4])[0] / 1_000_000);
+                long[] c1 = {IOProbe.stores.get(), IOProbe.loads.get(), IOProbe.scans.get(), IOProbe.runStores.get(), IOProbe.runStoreNanos.get()};
+                long rs = c1[3] - c0[3];
+                MicRtsim.LOGGER.info("[mic_rtsim] JBPROBE chainDelayMs={} waitMs={} oursLandedMs=[{}]{}{} stores={} loads={} scans={} runStores={} runStoreAvgUs={} maxPending={}",
+                        chainDelay / 1_000_000, ms, lb, sb, pb, c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2], rs, rs == 0 ? 0 : (c1[4] - c0[4]) / rs / 1000, IOProbe.maxPending.get());
                 if (ms > 5_000)
                     MicRtsim.LOGGER.info("[mic_rtsim] the journal's write waited {} ms for the chunk writes it depends on", ms);
             } catch (TimeoutException e) {
