@@ -803,7 +803,8 @@ fn archive_job(
     let t = Instant::now();
     if cur.names != Some(names) {
         cur.names = Some(names);
-        let mut w = PartWriter::new(part_kind::ARCHIVE_ROWS, 0, u64::MAX, false);
+        // One key per unit, so the part's own key is the directory's.
+        let mut w = PartWriter::new(part_kind::ARCHIVE_ROWS, 0, 1, false);
         let mut b = Writer::new();
         for (tag, list) in [(0u8, dict.kinds()), (1u8, dict.frames())] {
             for (i, name) in list.iter().enumerate() {
@@ -811,7 +812,13 @@ fn archive_job(
                 b.u8(tag);
                 b.var_u64(i as u64);
                 b.bytes(name.as_bytes());
-                w.push_raw(0, 0, [0.0, 0.0], row_kind::ARCHIVE_NAME, b.as_bytes());
+                w.push_raw(
+                    ARCHIVE_NAMES,
+                    0,
+                    [0.0, 0.0],
+                    row_kind::ARCHIVE_NAME,
+                    b.as_bytes(),
+                );
             }
         }
         put_archive(tap, key(ARCHIVE_NAMES), w, now, c, t);
@@ -822,12 +829,12 @@ fn archive_job(
     }
     let u = cur.done / ARCHIVE_PER_UNIT;
     let end = rows.len().min((u + 1) * ARCHIVE_PER_UNIT);
-    let mut w = PartWriter::new(part_kind::ARCHIVE_ROWS, 0, u64::MAX, false);
+    let mut w = PartWriter::new(part_kind::ARCHIVE_ROWS, 0, 1, false);
     for raw in &rows[u * ARCHIVE_PER_UNIT..end] {
         let (x, z) = rtsim_archive::row::points(raw)[0];
         let frame = u32::from(rtsim_archive::row::frame(raw));
         w.push_raw(
-            0,
+            u as u64,
             frame,
             [f64::from(x), f64::from(z)],
             row_kind::ARCHIVE_ROW,
@@ -1255,5 +1262,46 @@ mod tests {
         io.archive_units = Some(2);
         assert!(io.keeps(&m(1)) && !io.keeps(&m(5)));
         assert!(io.keeps(&a(1)) && !io.keeps(&a(2)) && io.keeps(&a(ARCHIVE_NAMES)));
+    }
+
+    #[test]
+    fn the_focus_pass_takes_the_units_last_seen_in_a_focus_region() {
+        let mut tap = Tap::default();
+        let r = |rx, rz| RegionKey { frame: 0, rx, rz };
+        let (a, b, c) = (
+            PartKey::unit(1, 3),
+            PartKey::unit(2, 0),
+            PartKey::unit(1, 9),
+        );
+        tap.regions.insert(c, vec![r(0, 0), r(4, 4)]);
+        tap.regions.insert(a, vec![r(0, 0)]);
+        tap.regions.insert(b, vec![r(1, 0)]);
+        let sample = |reg: RegionKey| PartKey {
+            kind: part_kind::SAMPLES,
+            layer: 0,
+            unit: reg.pack(),
+            region: None,
+        };
+        let enc = || Encoded {
+            resident: true,
+            at: 0,
+            parts: Vec::new(),
+        };
+        tap.mailbox.units.insert(sample(r(1, 0)), enc());
+        tap.mailbox.units.insert(sample(r(4, 4)), enc());
+        tap.mailbox.units.insert(a, enc());
+        *lock(&tap.shared.focus) = vec![r(4, 4), r(0, 0)];
+        refill_focus(&mut tap, Instant::now());
+        // Units in a focus region, in key order; each focus region's samples.
+        assert_eq!(Vec::from(tap.focus.clone()), vec![a, c]);
+        assert_eq!(Vec::from(tap.sample_queue.clone()), vec![r(0, 0), r(4, 4)]);
+        assert_eq!(
+            tap.mailbox.samples,
+            Some([r(0, 0).pack(), r(4, 4).pack()].into())
+        );
+        // A region out of focus loses its samples' slot, not the units'.
+        assert!(!tap.mailbox.units.contains_key(&sample(r(1, 0))));
+        assert!(tap.mailbox.units.contains_key(&sample(r(4, 4))));
+        assert!(tap.mailbox.units.contains_key(&a));
     }
 }
