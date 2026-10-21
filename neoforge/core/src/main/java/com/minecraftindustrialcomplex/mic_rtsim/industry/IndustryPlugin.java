@@ -30,6 +30,20 @@ public interface IndustryPlugin {
         return false;
     }
 
+    /**
+     * Whether this block entity is a <i>machine</i> that starts a district: true seeds, false never does
+     * (storage, transmission, transport and decoration of this plugin's own: a vault, a shaft, a belt),
+     * null has no opinion and the core's generic rule decides (a modded block entity that ticks on the
+     * server and has an item, fluid or energy capability). Vanilla blocks and anything in
+     * {@code #mic_rtsim:district_stock} or {@code #mic_rtsim:district_not_seed} never seed whatever
+     * this says. The default: what {@link #isIndustrial} recognises seeds, the rest has no opinion.
+     * Seeding is a separate question from {@link #isIndustrial}: an industrial block entity that does not
+     * seed still joins a district that has a seed, and still joins the chunks it touches.
+     */
+    default Boolean seed(BlockEntity be) {
+        return isIndustrial(be) ? Boolean.TRUE : null;
+    }
+
     /** Positions joined to this block entity beyond touching (chain conveyor connections, wires). */
     default void links(BlockEntity be, Consumer<BlockPos> out) {}
 

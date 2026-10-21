@@ -4,6 +4,17 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
+import com.simibubi.create.content.equipment.armor.BacktankBlockEntity;
+import com.simibubi.create.content.fluids.pipes.valve.FluidValveBlockEntity;
+import com.simibubi.create.content.kinetics.base.DirectionalShaftHalvesBlockEntity;
+import com.simibubi.create.content.kinetics.chainDrive.ChainGearshiftBlockEntity;
+import com.simibubi.create.content.kinetics.clock.CuckooClockBlockEntity;
+import com.simibubi.create.content.kinetics.flywheel.FlywheelBlockEntity;
+import com.simibubi.create.content.kinetics.gantry.GantryShaftBlockEntity;
+import com.simibubi.create.content.kinetics.gauge.GaugeBlockEntity;
+import com.simibubi.create.content.kinetics.simpleRelays.SimpleKineticBlockEntity;
+import com.simibubi.create.content.kinetics.speedController.SpeedControllerBlockEntity;
+import com.simibubi.create.content.trains.display.FlapDisplayBlockEntity;
 import com.simibubi.create.content.fluids.pipes.FluidPipeBlockEntity;
 import com.simibubi.create.content.fluids.pipes.StraightPipeBlockEntity;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
@@ -71,6 +82,34 @@ public final class CreatePlugin implements IndustryPlugin {
                 || be instanceof FactoryPanelBlockEntity || be instanceof ThresholdSwitchBlockEntity || be instanceof SmartObserverBlockEntity
                 || be instanceof StationBlockEntity || be instanceof PackagePortBlockEntity || be instanceof IMultiBlockEntityContainer
                 || be instanceof DepotBlockEntity || be instanceof BasinBlockEntity || be instanceof CrateBlockEntity;
+    }
+
+    /**
+     * DS-10: what starts a district. Machines: kinetic generators (water wheels, windmill bearings, hand
+     * cranks, motors, steam engines) and every kinetic block that does work (presses, mixers, millstones,
+     * crushing wheels, saws, drills, deployers, arms, fans, pumps, crafters, bearings and pulleys), and
+     * packagers. Not seeds, though industrial and so members and links: <b>transmission</b> (a bare shaft, cogwheel,
+     * gearbox, clutch, gearshift, chain drive, speed controller, gauge: rotation that goes nowhere is no
+     * factory, and a player's rotary decoration is not either), <b>transport</b> (belts, chain conveyors,
+     * chutes, funnels, tunnels, pipes, valves), <b>storage</b> (vaults and tanks by the tags, depots, basins,
+     * crates), the logistics controls (stock tickers and links, factory panels, switches, observers, package
+     * ports) and stations (trains are another module's), decoration (flywheels, clocks, flap displays,
+     * backtanks). Create block entities this plugin does not list (a spout, an item drain, a portable
+     * storage interface) have no opinion here: the core's rule takes them as machines when they tick and
+     * hold items or fluids.
+     */
+    @Override
+    public Boolean seed(BlockEntity be) {
+        if (!isIndustrial(be))
+            return null;
+        if (be instanceof KineticBlockEntity)
+            return !(be instanceof SimpleKineticBlockEntity || be instanceof DirectionalShaftHalvesBlockEntity
+                    || be instanceof ChainGearshiftBlockEntity || be instanceof SpeedControllerBlockEntity
+                    || be instanceof GaugeBlockEntity || be instanceof BeltBlockEntity || be instanceof ChainConveyorBlockEntity
+                    || be instanceof FluidValveBlockEntity || be instanceof GantryShaftBlockEntity
+                    || be instanceof FlywheelBlockEntity || be instanceof CuckooClockBlockEntity
+                    || be instanceof FlapDisplayBlockEntity || be instanceof BacktankBlockEntity);
+        return be instanceof PackagerBlockEntity;
     }
 
     @Override

@@ -60,8 +60,13 @@ public final class EnderTransmissionGameTests {
                     place(helper.getLevel(), itemB, "item_transmitter", 3, "items-" + tag);
                     place(helper.getLevel(), rotA, "energy_transmitter", 4, "rotation-" + tag);
                     place(helper.getLevel(), rotB, "energy_transmitter", 4, "rotation-" + tag);
-                    for (BlockPos p : all)
+                    // Transmitters are wiring and never seed: a machine in each chunk is the seed.
+                    for (BlockPos p : all) {
                         playerPlaced(helper, p);
+                        BlockPos machine = p.offset(2, 0, 0);
+                        helper.getLevel().setBlock(machine, com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MACHINE.get().defaultBlockState(), 3);
+                        playerPlaced(helper, machine);
+                    }
                 })
                 .thenWaitUntil(() -> {
                     District items = districtAt(helper, itemA), rotation = districtAt(helper, rotA);

@@ -11,14 +11,21 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import org.patryk3211.powergrid.electricity.base.IElectricEntity;
 import org.patryk3211.powergrid.electricity.battery.BatteryBlockEntity;
+import org.patryk3211.powergrid.electricity.deviceconnector.DeviceConnectorBlockEntity;
+import org.patryk3211.powergrid.electricity.socket.SocketBlockEntity;
+import org.patryk3211.powergrid.electricity.wireconnector.ConnectorBlockEntity;
+import org.patryk3211.powergrid.electricity.wireconnector.CordJunctionBlockEntity;
 
 /**
  * Power Grid for the district sampler.
  *
  * <ul>
  *   <li><b>Industrial:</b> every electric block entity ({@code IElectricEntity}: generators, motors,
- *       batteries, connectors, switches, transformers), so they seed districts. Wires do not merge districts
- *       (I13: lines couple districts, they do not join them).</li>
+ *       batteries, connectors, switches, transformers). Wires do not merge districts (I13: lines couple
+ *       districts, they do not join them).</li>
+ *   <li><b>Seeds (DS-10):</b> the machines among them: generators, motors, heaters, fans, pumps, lamps,
+ *       transformers, switches. Not a battery (storage, below) and not the wiring (wire connectors, cord
+ *       junctions, device connectors, sockets): a bank of batteries or a pylon on its own is not a factory.</li>
  *   <li><b>Batteries</b> are boundary stock (INDUSTRY.md §7): a plugin inventory at the battery (a
  *       multiblock's controller, which Create's plugin finds through {@code IMultiBlockEntityContainer}),
  *       holding the good {@code e/0/powergrid:joule}, the battery's energy in whole joules (Power Grid keeps
@@ -34,6 +41,14 @@ public final class PowerGridPlugin implements IndustryPlugin {
     @Override
     public boolean isIndustrial(BlockEntity be) {
         return be instanceof IElectricEntity;
+    }
+
+    @Override
+    public Boolean seed(BlockEntity be) {
+        if (!(be instanceof IElectricEntity))
+            return null;
+        return !(be instanceof BatteryBlockEntity || be instanceof ConnectorBlockEntity || be instanceof CordJunctionBlockEntity
+                || be instanceof DeviceConnectorBlockEntity || be instanceof SocketBlockEntity);
     }
 
     @Override

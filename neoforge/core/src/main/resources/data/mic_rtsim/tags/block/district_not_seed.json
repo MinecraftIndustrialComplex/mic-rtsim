@@ -1,0 +1,109 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "sophisticatedbackpacks:backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:copper_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:iron_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:gold_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:diamond_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:netherite_backpack",
+      "required": false
+    },
+    {
+      "id": "numismatics:vendor",
+      "required": false
+    },
+    {
+      "id": "numismatics:creative_vendor",
+      "required": false
+    },
+    {
+      "id": "numismatics:salepoint",
+      "required": false
+    },
+    {
+      "id": "numismatics:brass_depositor",
+      "required": false
+    },
+    {
+      "id": "numismatics:andesite_depositor",
+      "required": false
+    },
+    {
+      "id": "createdieselgenerators:oil_barrel",
+      "required": false
+    },
+    {
+      "id": "createdieselgenerators:canister",
+      "required": false
+    },
+    {
+      "id": "destroy:element_tank",
+      "required": false
+    },
+    {
+      "id": "destroy:beaker",
+      "required": false
+    },
+    {
+      "id": "destroy:flask",
+      "required": false
+    },
+    {
+      "id": "destroy:jar",
+      "required": false
+    },
+    {
+      "id": "destroy:round_bottomed_flask",
+      "required": false
+    },
+    {
+      "id": "destroy:measuring_cylinder",
+      "required": false
+    },
+    {
+      "id": "destroy:test_tube_rack",
+      "required": false
+    },
+    {
+      "id": "create_enchantment_industry:experience_lantern",
+      "required": false
+    },
+    {
+      "id": "create_dragons_plus:fragile_fluid_tank",
+      "required": false
+    },
+    {
+      "id": "create_dragons_plus:levitite_fragile_fluid_tank",
+      "required": false
+    },
+    {
+      "id": "createmetallurgy:casting_basin",
+      "required": false
+    },
+    {
+      "id": "createmetallurgy:casting_table",
+      "required": false
+    },
+    {
+      "id": "mic_rtsim:test_store",
+      "required": false
+    }
+  ]
+}

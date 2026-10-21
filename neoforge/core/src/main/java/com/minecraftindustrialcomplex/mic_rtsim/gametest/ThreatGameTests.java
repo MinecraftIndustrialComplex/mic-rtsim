@@ -58,7 +58,7 @@ public final class ThreatGameTests {
     }
 
     /**
-     * I21's survey on a flat yard: a furnace (a machine) in a district seeded by a chest. In the open the
+     * I21's survey on a flat yard: a machine in a district whose stock is a chest (the machine seeds it, DS-10). In the open the
      * smallest set of columns that seals the furnace is its four neighbours (gaps 4, perimeter 4); a closed
      * cobblestone ring two blocks above the floor seals it (gaps 0); a one-column doorway is one gap; a stone
      * block over the furnace roofs it; the dark spawnable count is measured (block light 0) and falls when
@@ -79,7 +79,7 @@ public final class ThreatGameTests {
         helper.startSequence()
                 .thenExecute(() -> {
                     set(helper, chest, Blocks.CHEST.defaultBlockState());
-                    set(helper, furnace, Blocks.FURNACE.defaultBlockState());
+                    set(helper, furnace, TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                     playerPlaced(helper, furnace);
                 })
@@ -218,7 +218,7 @@ public final class ThreatGameTests {
         long[] dark = {0};
         helper.startSequence()
                 .thenExecute(() -> {
-                    set(helper, chest, Blocks.CHEST.defaultBlockState());
+                    set(helper, chest, TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                 })
                 .thenWaitUntil(() -> {
@@ -284,7 +284,7 @@ public final class ThreatGameTests {
         long[] id = {0};
         helper.startSequence()
                 .thenExecute(() -> {
-                    set(helper, chest, Blocks.CHEST.defaultBlockState());
+                    set(helper, chest, TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                     for (int dx = -1; dx <= 1; dx++)
                         for (int dz = -1; dz <= 1; dz++)
@@ -356,7 +356,7 @@ public final class ThreatGameTests {
         helper.startSequence()
                 .thenExecute(() -> {
                     set(helper, chest, Blocks.CHEST.defaultBlockState());
-                    set(helper, furnace, Blocks.FURNACE.defaultBlockState());
+                    set(helper, furnace, TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                     playerPlaced(helper, furnace);
                 })
@@ -369,7 +369,7 @@ public final class ThreatGameTests {
                 .thenExecute(() -> {
                     edits[0] = received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, id[0]).size();
                     check("no survey asked before the edits", !ind().threats().surveyAsked(id[0]));
-                    set(helper, machine, Blocks.FURNACE.defaultBlockState());
+                    set(helper, machine, TestMachines.MACHINE.get().defaultBlockState());
                     FakePlayer deployer = FakePlayerFactory.getMinecraft(level);
                     NeoForge.EVENT_BUS.post(new BlockEvent.EntityPlaceEvent(BlockSnapshot.create(level.dimension(), level, machine),
                             level.getBlockState(machine.below()), deployer));
@@ -378,7 +378,7 @@ public final class ThreatGameTests {
                 })
                 .thenIdle(5)
                 .thenExecute(() -> {
-                    check("a machine's furnace is no seed", !level.getChunkAt(machine).getData(IndustryAttachments.SEEDS.get()).contains(machine.asLong()));
+                    check("a machine's block is no seed", !level.getChunkAt(machine).getData(IndustryAttachments.SEEDS.get()).contains(machine.asLong()));
                     NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(level, machine, level.getBlockState(machine), player));
                     check("a player's edit asks for a survey", ind().threats().surveyAsked(id[0]));
                     playerPlaced(helper, machine);
@@ -395,7 +395,7 @@ public final class ThreatGameTests {
                     record("machineEditsAreNoPlayerEdits", "new edits (" + engineName() + ")", fresh.size() + ", the player's " + players);
                     check("only the player's break and placement are edits: " + fresh.size() + " new, " + players + " the player's",
                             fresh.size() == 2 && players == 2);
-                    check("a player's furnace is a seed", level.getChunkAt(machine).getData(IndustryAttachments.SEEDS.get()).contains(machine.asLong()));
+                    check("a player's machine is a seed", level.getChunkAt(machine).getData(IndustryAttachments.SEEDS.get()).contains(machine.asLong()));
                 })
                 .thenSucceed();
     }
