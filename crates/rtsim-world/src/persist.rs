@@ -39,12 +39,8 @@ use crate::config::WorldConfig;
 use crate::interest::PlayerState;
 use crate::ribbits::{Band, Growth, PlaceHouse, SentimentSnapshot, SpawnResident};
 use crate::world::{
-    Command, Ev, MARKETS_PER_PAGE, Node, Outside, PacketData, Stats, TABLE_MARKETS, TABLE_META,
-    Via, World,
+    Command, Ev, MARKETS_PER_PAGE, Node, Outside, PacketData, Stats, TABLE_MARKETS, Via, World,
 };
-
-/// The meta page of a paged world.
-pub const META_PAGE: PageKey = PageKey::new(TABLE_META, 0);
 
 /// RTW2: the market rows moved to the end, as a row table (paging).
 const MAGIC: u32 = u32::from_le_bytes(*b"RTW2");
@@ -613,11 +609,16 @@ impl World {
         self.markets.rows_mut().attach(source, budget);
     }
 
-    /// The meta page and every market page changed since the last save, into `batch`; the pages
-    /// stay pinned until the ticket comes back ([`World::saved`], [`World::save_failed`]).
-    pub fn save_paged(&mut self, batch: &mut SaveBatch) -> SaveTicket {
+    /// The meta page (under `meta_key`, the caller's: not in the market table) and every market
+    /// page changed since the last save, into `batch`; the pages stay pinned until the ticket
+    /// comes back ([`World::saved`], [`World::save_failed`]).
+    pub fn save_paged(&mut self, batch: &mut SaveBatch, meta_key: PageKey) -> SaveTicket {
+        assert!(
+            meta_key.table() != TABLE_MARKETS,
+            "the world's meta page {meta_key:?} inside the market table"
+        );
         let w = self.save_meta();
-        batch.put(META_PAGE, w.as_bytes());
+        batch.put(meta_key, w.as_bytes());
         self.markets.rows_mut().save_dirty(batch)
     }
 
@@ -641,18 +642,20 @@ impl World {
         r.is_paged() && r.resident_bytes() > r.budget()
     }
 
-    /// Opens a world [`World::save_paged`] wrote: the meta page is read, no market page is.
+    /// Opens a world [`World::save_paged`] wrote under `meta_key`: the meta page is read, no
+    /// market page is.
     pub fn open_paged(
+        source: std::sync::Arc<dyn PageSource>,
+        budget: usize,
+        meta_key: PageKey,
         cfg: WorldConfig,
         goods: Goods,
         book: RecipeBook,
-        source: std::sync::Arc<dyn PageSource>,
-        budget: usize,
     ) -> codec::Result<World> {
         let raw = source
-            .read(META_PAGE)
+            .read(meta_key)
             .map_err(|e| CodecError::Invalid(format!("world meta page: {e}")))?
-            .ok_or_else(|| CodecError::Invalid("no world meta page".into()))?;
+            .ok_or_else(|| CodecError::Invalid(format!("no world meta page at {meta_key:?}")))?;
         Self::load_with(cfg, goods, book, &raw, Some((source, budget)))
     }
 
