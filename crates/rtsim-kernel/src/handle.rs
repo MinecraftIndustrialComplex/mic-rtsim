@@ -228,7 +228,10 @@ impl<T> Arena<T> {
     }
 
     /// Live entries whose index is in `indices`, in index order.
-    pub fn iter_range(&self, indices: std::ops::Range<u64>) -> impl Iterator<Item = (Handle<T>, &T)> {
+    pub fn iter_range(
+        &self,
+        indices: std::ops::Range<u64>,
+    ) -> impl Iterator<Item = (Handle<T>, &T)> {
         let n = self.slots.len() as u64;
         let (lo, hi) = (indices.start.min(n) as usize, indices.end.min(n) as usize);
         self.slots[lo..hi.max(lo)]
