@@ -139,13 +139,30 @@ def farm(args):
 
 
 def closed_form(base, H, cap, K=1, check=2.0):
-    """Steady pressure and interval when every arrival is killed at once (EQUILIBRIUM.md 8.3)."""
-    P = 1.0
+    """Steady pressure and kills per year when every arrival at a site of K is killed within `check`
+    days (EQUILIBRIUM.md 3.3): each kill adds 1/K, so P* = (1/K) / (1 - 2^(-gap/H)) with
+    gap = min(cap, base 2^P*) + check, one kill per gap."""
+    f = lambda P: P - (1.0 / K) / (1.0 - 2 ** (-(min(cap, base * 2 ** P) + check) / H))
+    lo, hi = 0.0, 64.0                  # f rises with P, so bisect for its one root
     for _ in range(200):
-        gap = K * min(cap, base * 2 ** P) + check
-        P = 1.0 / (1.0 - 2 ** (-gap / H))
-    gap = K * min(cap, base * 2 ** P) + check
-    return {"P": round(P, 3), "days_per_wipe": round(gap, 1), "per_year": round(YEAR * K / gap, 2)}
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if f(mid) < 0 else (lo, mid)
+    P = 0.5 * (lo + hi)
+    gap = min(cap, base * 2 ** P) + check
+    return {"P": round(P, 3), "days_per_kill": round(gap, 1), "per_year": round(YEAR / gap, 2)}
+
+
+def closed_forms():
+    return {
+        "lair (base 20, cap 192)": closed_form(20, 96, 192),
+        "den (base 24, cap 192)": closed_form(24, 96, 192),
+        "den, MOWZIE base 6 with pressure (cap 192)": closed_form(6, 96, 192),
+        "den, MOWZIE draft (6 days flat)": {"per_year": round(YEAR / 8, 2)},
+        "grove member, K=7 (base 6, cap 96)": closed_form(6, 96, 96, K=7),
+        "village settlers, K=12, pairs (base 16, cap 192)": closed_form(16, 96, 192, K=6),
+        "den, H=48": closed_form(24, 48, 192),
+        "den, H=192": closed_form(24, 192, 192),
+    }
 
 
 def unattended(args):
@@ -226,7 +243,7 @@ def main():
             jobs.append((steady, ("baseline", "roamer", S2, Y, 41, {"dragon_eat": 0.6 * mult})))
         for fr in (0.0, 0.05, 0.25, 1.0):
             jobs.append((killall, ("proposed", "herds", S2, Y, 51, min(20, Y // 3), {"frontier_rate": fr})))
-        for ff in (0.05, 0.2):
+        for ff in (0.0, 0.2):
             jobs.append((killall, ("proposed", "herds", S2, Y, 51, min(20, Y // 3), {"founders_frac": ff})))
             jobs.append((killall, ("proposed", "herds_local", S2, Y, 52, min(20, Y // 3), {"founders_frac": ff})))
         jobs.append((killall, ("proposed", "herds", S2, Y, 51, min(20, Y // 3), {"loaded_regrow_rate": 2.0})))
@@ -238,6 +255,10 @@ def main():
             jobs.append((killall, ("proposed", "villages", S2, Y, 71, min(20, Y // 3), {"settler_base": sb})))
         for sl in (0.2, 0.35, 0.5):
             jobs.append((steady, ("proposed", "roamer", S2, Y, 81, {"dragon_eat": 9.6, "starve_leave": sl})))
+    if want("disperse"):
+        for dd, dt, df in ((0.8, 0.5, 0.02), (0.8, 0.5, 0.1), (0.4, 0.25, 0.02), (0.4, 0.25, 0.1)):
+            over = {"disperse_donor": dd, "disperse_thin": dt, "disperse_frac": df}
+            jobs.append((killall, ("proposed", "herds_local", S2, Y, 52, min(20, Y // 3), over)))
     if want("strategy"):
         for sigma in (6.0, 9.0, 12.0):
             for mode in ("ladder", "gate"):
@@ -252,12 +273,7 @@ def main():
         for name, args, res in pool.imap_unordered(call, jobs):
             results.setdefault(name, []).append(res)
             print(f"[{time.time() - t0:7.0f}s] {name} {args[:3]}", flush=True)
-    results["closed_form"] = {
-        "lair (base 20)": closed_form(20, 96, 192),
-        "den (base 24)": closed_form(24, 96, 192),
-        "den MOWZIE draft (6, no pressure)": {"per_year": round(YEAR / 8, 2)},
-        "grove K=7 (6 per member)": closed_form(6, 96, 96, K=7),
-    }
+    results["closed_form"] = closed_forms()
     os.makedirs(OUT, exist_ok=True)
     name = ("results-quick" if q else "results") + ("-" + "-".join(sorted(only)) if only else "") + ".json"
     with open(os.path.join(OUT, name), "w") as f:
