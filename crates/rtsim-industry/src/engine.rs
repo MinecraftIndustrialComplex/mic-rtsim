@@ -476,6 +476,30 @@ impl Engine {
         self.districts.values()
     }
 
+    /// The districts with ids in `ids`, in id order (the viewer's tap encodes a range at a time).
+    pub fn districts_in(&self, ids: std::ops::Range<u64>) -> impl Iterator<Item = &District> {
+        self.districts
+            .range(DistrictId(ids.start)..DistrictId(ids.end))
+            .map(|(_, d)| d)
+    }
+
+    /// Whether district `d` replays (is in a replay cluster), without building its member set.
+    pub fn replays(&self, d: DistrictId) -> bool {
+        self.cluster_of.contains_key(&d)
+    }
+
+    /// The station declarations with ids in `ids`, in id order.
+    pub fn stations_in(&self, ids: std::ops::Range<u64>) -> impl Iterator<Item = &StationDecl> {
+        self.stations
+            .range(StationId(ids.start)..StationId(ids.end))
+            .map(|(_, s)| &s.decl)
+    }
+
+    /// One station's declaration.
+    pub fn station_decl(&self, id: StationId) -> Option<&StationDecl> {
+        self.stations.get(&id).map(|s| &s.decl)
+    }
+
     pub fn lines(&self) -> &BTreeMap<(StationId, StationId), LineEdge> {
         &self.lines
     }

@@ -738,6 +738,7 @@ name = "rtsim-host"
 version = "0.0.1"
 dependencies = [
  "flate2",
+ "libc",
  "mic-native-host",
  "mic-native-rt",
  "mic-viewer",
@@ -747,6 +748,7 @@ dependencies = [
  "rtsim-industry",
  "rtsim-jni",
  "rtsim-kernel",
+ "rtsim-parts",
  "rtsim-ships",
  "rtsim-space",
  "rtsim-travel",
@@ -773,6 +775,7 @@ dependencies = [
 name = "rtsim-jni"
 version = "0.0.1"
 dependencies = [
+ "crc32fast",
  "jni",
  "mic-native-host",
  "mic-native-rt",
@@ -784,6 +787,8 @@ dependencies = [
  "rtsim-industry",
  "rtsim-kernel",
  "rtsim-knowledge",
+ "rtsim-layers",
+ "rtsim-parts",
  "rtsim-settle",
  "rtsim-ships",
  "rtsim-space",
@@ -808,6 +813,32 @@ dependencies = [
  "proptest",
  "rtsim-archive",
  "rtsim-kernel",
+]
+
+[[package]]
+name = "rtsim-layers"
+version = "0.0.1"
+dependencies = [
+ "rtsim-conflict",
+ "rtsim-ecology",
+ "rtsim-industry",
+ "rtsim-kernel",
+ "rtsim-parts",
+ "rtsim-settle",
+ "rtsim-ships",
+ "rtsim-trade",
+ "rtsim-travel",
+ "rtsim-world",
+]
+
+[[package]]
+name = "rtsim-parts"
+version = "0.0.1"
+dependencies = [
+ "crc32fast",
+ "rtsim-kernel",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -886,6 +917,8 @@ dependencies = [
  "rtsim-jni",
  "rtsim-kernel",
  "rtsim-knowledge",
+ "rtsim-layers",
+ "rtsim-parts",
  "rtsim-settle",
  "rtsim-ships",
  "rtsim-space",
