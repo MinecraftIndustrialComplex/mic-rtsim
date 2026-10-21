@@ -313,6 +313,7 @@ impl Baseline {
                 days: self.days * 5,
                 seed: self.seed,
                 observer: false,
+                roam: false,
                 paged: None,
             });
         }

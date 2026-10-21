@@ -11,13 +11,14 @@
 //!
 //! **The grid sweeps** (`ships-grid`, `ships-paged`; A16, docs/choices-paging-modules.md PM-S):
 //! the port grid grows (49 to 6,400 ports at sixteen ships a service, about 400 to 51,000 ships)
-//! with a player touring the docks, one an hour, and the fake plugin answering, so ships are seen,
-//! embodied and released all over the grid. `ships-paged` runs the same points with the ship rows
-//! and lane threats paged to a page store under a fixed budget, saved every autosave interval and
-//! whenever every resident page has changed (`Ships::needs_save`, PM7): its row tables' resident
-//! bytes are held to the budget whatever the ship count, while the
-//! network (docks, lanes, services: the flow graph, resident) grows with the ports and is reported
-//! apart (`network_bytes`).
+//! with a player touring the 7 x 7 docks around the haven, one an hour, and the fake plugin
+//! answering, so ships are seen, embodied and released: the same play at every size, the rest of
+//! the world unwatched. `ships-paged` runs the same points with the ship rows and lane threats
+//! paged to a page store under a fixed budget, saved every autosave interval and whenever every
+//! resident page has changed (`Ships::needs_save`, PM7): its row tables' resident bytes are held
+//! to the budget whatever the ship count, while the network (docks, lanes, services: the flow
+//! graph, resident) grows with the ports and is reported apart (`network_bytes`). A roaming
+//! player (`ShipsConfig::roam`, one-off runs) visits every dock instead.
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -46,6 +47,11 @@ pub struct ShipsConfig {
     /// A player touring the docks, one an hour, with the fake plugin answering (the grid sweeps).
     #[serde(default)]
     pub observer: bool,
+    /// The player roams every dock of the grid instead of the 7 x 7 docks around the haven: a
+    /// fresh dock most hours, so what it costs grows with the grid until it never comes back
+    /// within a save interval (one-off measurements; the sweeps tour the fixed block).
+    #[serde(default)]
+    pub roam: bool,
     /// The ships' row tables paged to a page store (A16).
     #[serde(default)]
     pub paged: Option<PagedShips>,
@@ -150,6 +156,7 @@ pub fn grid_config(ports: u64, paged: bool, days: u64, seed: u64, save_every: u6
         days,
         seed,
         observer: true,
+        roam: false,
         paged: paged.then_some(PagedShips {
             budget_bytes: PAGED_BUDGET_BYTES,
             save_every,
@@ -250,6 +257,29 @@ pub fn run(c: &ShipsConfig) -> Measured {
 /// The player of the grid sweeps.
 const TOURIST: (u64, u64) = (0x6121, 0xB);
 
+/// Docks on a side of the block the player tours: the smallest grid's side, so the smallest grid
+/// is all block and every grid gives the player the same docks around the same haven.
+const TOUR_SIDE: i32 = 7;
+
+/// The docks the player visits, in order (a stride coprime to the grid sizes reaches them all):
+/// the `TOUR_SIDE` block around the haven (the grid's middle), or every dock when roaming.
+fn tour_stops(s: &Ships, side: u64, roam: bool) -> Vec<(i32, i32)> {
+    let mid = (side / 2) as i32;
+    let near = |d: &rtsim_ships::network::Dock| {
+        // ocean_grid's ports sit 1,200 blocks apart, nudged by less than 200.
+        let (gx, gz) = (d.x.div_euclid(1_200), d.z.div_euclid(1_200));
+        roam || ((gx - mid).abs() <= TOUR_SIDE / 2 && (gz - mid).abs() <= TOUR_SIDE / 2)
+    };
+    let stops: Vec<(i32, i32)> = s
+        .docks
+        .iter()
+        .filter(|d| near(d))
+        .map(|d| (d.x, d.z))
+        .collect();
+    assert!(!stops.is_empty(), "the tour has docks");
+    stops
+}
+
 /// Ticks per step of the grid sweeps' loop (the fake plugin's resolution).
 const STEP: u64 = 100;
 
@@ -327,6 +357,7 @@ fn tour(
     s: &mut Ships,
     fake: &mut FakeShips,
     mask: &rtsim_ships::water::AllWater,
+    stops: &[(i32, i32)],
     pager: &mut Option<Pager>,
     t: &mut Tick,
     to: Tick,
@@ -343,8 +374,7 @@ fn tour(
     while *t < to {
         if t.0.is_multiple_of(1_000) {
             let hour = (t.0 / 1_000) as usize;
-            let d = &s.docks[hour * 7 % s.docks.len()];
-            let (x, z) = (d.x, d.z);
+            let (x, z) = stops[hour * 11 % stops.len()];
             fake.set_player(TOURIST, f64::from(x), f64::from(z));
             let at = *t;
             timed(cpu, &mut || {
@@ -401,6 +431,7 @@ fn run_grid(c: &ShipsConfig) -> Measured {
     let copy = s.clone_network();
     let network_copy = sys::heap_live().saturating_sub(h0);
     drop(copy);
+    let stops = tour_stops(&s, c.side, c.roam);
     let mut pager = c.paged.as_ref().map(Pager::open);
     if let Some(p) = pager.as_mut() {
         s.attach_store(
@@ -414,7 +445,7 @@ fn run_grid(c: &ShipsConfig) -> Measured {
     let mut t = Tick::ZERO;
     let mut none = None;
     tour(
-        &mut w, &mut s, &mut fake, &mask, &mut pager, &mut t, warm, &mut none,
+        &mut w, &mut s, &mut fake, &mask, &stops, &mut pager, &mut t, warm, &mut none,
     );
     let before = s.stats;
     s.reset_row_stats();
@@ -427,7 +458,7 @@ fn run_grid(c: &ShipsConfig) -> Measured {
     let wall0 = Instant::now();
     let mut cpu = sys::thread_cpu_ns().map(|_| 0.0);
     tour(
-        &mut w, &mut s, &mut fake, &mask, &mut pager, &mut t, end, &mut cpu,
+        &mut w, &mut s, &mut fake, &mask, &stops, &mut pager, &mut t, end, &mut cpu,
     );
     let wall = wall0.elapsed().as_nanos() as f64;
     let days = c.days as f64;
@@ -449,6 +480,16 @@ fn run_grid(c: &ShipsConfig) -> Measured {
             save_counts = Some(((p.saves - n0) as f64, (p.pressure - p0) as f64));
             // At a step boundary after a save, the budget holds: nothing is dirty.
             p.save(&mut s, false);
+            // A save with nothing changed writes the meta page alone (the resident state).
+            let b1 = p.bytes;
+            p.save(&mut s, false);
+            eprintln!(
+                "  the meta page alone: {} bytes stored ({} havens, {} navies, {} pending events)",
+                p.bytes - b1,
+                s.havens.len(),
+                s.navies.len(),
+                s.pending_events()
+            );
             let budget = c.paged.as_ref().map_or(0, |p| p.budget_bytes);
             if s.rows_resident_bytes() as u64 > budget {
                 failures.push(format!(
@@ -486,7 +527,8 @@ fn run_grid(c: &ShipsConfig) -> Measured {
         failures.push(format!("conservation: {conservation}"));
     }
     let paged = c.paged.is_some();
-    let cpu_ns = cpu.map(|x| x - save_cpu.unwrap_or(0.0));
+    // Saves run outside the timed calls: `cpu` is the engine's own work, saves apart.
+    let cpu_ns = cpu;
     Measured {
         cpu_ns_per_day: cpu_ns.map(|x| x / days),
         wall_ns_per_day: Some(wall / days),
