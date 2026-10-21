@@ -66,6 +66,16 @@ public final class CreateGlass implements GlassExtractor {
     private final it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<BlockState> stateHash =
             new it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<>();
 
+    /** A fan recipe's name before the good: {@code create:fan_blasting/}, or an addon type's {@code garnished:fan_freezing/}. */
+    public static String fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.FanProcessingType type) {
+        if (type == com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.SMOKING)
+            return "create:fan_smoking/";
+        if (type == com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.BLASTING)
+            return "create:fan_blasting/";
+        net.minecraft.resources.ResourceLocation id = com.simibubi.create.api.registry.CreateBuiltInRegistries.FAN_PROCESSING_TYPE.getKey(type);
+        return id == null ? "create:fan_other/" : id.getNamespace() + ":fan_" + id.getPath() + "/";
+    }
+
     /** True when {@code c} or a superclass is one of Create's (an addon's block entity built on Create's). */
     static boolean isCreateClass(Class<?> c) {
         for (; c != null; c = c.getSuperclass())
