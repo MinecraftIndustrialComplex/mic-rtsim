@@ -334,6 +334,18 @@ compiled every glass box again on boot and logged no rtsim error.
   fingerprint pass has (256), finishing over several ticks, and key its cache by `long` position.
   (b) Stagger the periodic pass, one district at a time: a smaller change, but no help for a mass
   chunk load. (c) Leave it.
+  **Built as option (a) (DS-11).** Measured on Alvedon with the same jar and only the budget changed
+  (256 against 10,000,000, which is the old one-tick detection): the biggest detection reads 960 block
+  entities; its longest tick fell from 16.1 ms to 11.1 ms (277 block entities, a cold first look: about
+  40 us a block entity, against 17 us for the whole pass in one tick), and the total detection time did
+  not change (66.5 ms against 68.8 ms over the same 41 detections). The 39-district pass that took
+  89 to 160 ms no longer exists on Alvedon: DS-10 stopped storage seeding, so the world has 4 districts
+  and a full pass is 0.1 to 5 ms. A GameTest of nine chunks with 1,800 inert block entities
+  (`aBigDetectionsLongestTickIsBelowTheOneCallTime`) measures 1.3 to 1.5 ms in one call and a 0.4 to
+  0.5 ms longest tick at the default budget over 5 ticks. The pair 'before' (main at 42fec21) against
+  'after' (the branch) on Alvedon's few-adopt scene showed 109 against 89 ms of detection in the settle
+  window; a 320-adopt scene was too noisy to read (0.99 to 2.19 s for the same code under a loaded
+  laptop).
 - **The engine's learned line edges cannot be seen in game.** Station arrivals and departures show
   in `/rtsim district perf`, but the line edges the engine builds from them (trips, travel time,
   cargo between two district stations) have no command. A `district info` line would make station
