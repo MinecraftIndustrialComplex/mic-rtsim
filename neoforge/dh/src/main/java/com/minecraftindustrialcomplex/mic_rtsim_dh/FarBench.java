@@ -44,8 +44,11 @@ final class FarBench {
             || Integer.getInteger("mic_rtsim.farbench.bandDragons", 0) > 0;
     private static final int SIMULATION = Integer.getInteger("mic_rtsim.farbench.sim", BAND ? 5 : 12);
 
-    /** Client ticks in the world before the profile starts: DH builds its flat LODs and every train is placed. */
-    private static final int WARMUP_TICKS = 900;
+    /**
+     * Client ticks in the world before the profile starts: DH builds its flat LODs and every train is placed
+     * ({@code mic_rtsim.farbench.warmup}; longer to let the JIT compile the server's far feed sweep).
+     */
+    private static final int WARMUP_TICKS = Math.max(900, Integer.getInteger("mic_rtsim.farbench.warmup", 900));
     /** Client ticks the profile window lasts; vanilla's profiler stops itself after 10 seconds. */
     private static final int PROFILE_TICKS = 260;
     private static final int LOG_EVERY = 100;
