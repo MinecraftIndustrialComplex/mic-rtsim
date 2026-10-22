@@ -138,6 +138,10 @@ public final class IndustryKit {
             for (int cz = minCz - 1; cz <= maxCz + 1; cz++) {
                 if (level.getChunkSource().getChunkNow(cx, cz) == null)
                     continue;
+                // A station an earlier test left is an anchor (DS-10): it would join this test's district.
+                for (net.minecraft.world.level.block.entity.BlockEntity be : new java.util.ArrayList<>(level.getChunk(cx, cz).getBlockEntities().values()))
+                    if (be instanceof com.simibubi.create.content.trains.station.StationBlockEntity)
+                        level.removeBlock(be.getBlockPos(), false);
                 for (int x = 0; x < 16; x++)
                     for (int z = 0; z < 16; z++)
                         for (int up = 8; up < 14; up++) {
