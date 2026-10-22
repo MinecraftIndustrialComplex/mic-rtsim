@@ -3465,15 +3465,21 @@ impl Ships {
             >= i64::from(self.tun.pirate_hold_slots) * 1000;
         let hull = self.ships[p].hull_milli < 400;
         if full || hull {
-            let plan = self.bump(p);
-            self.schedule(
-                at,
-                Ev::Bored {
-                    ship: p,
-                    plan,
-                    reason: if full { 2 } else { 3 },
-                },
-            );
+            self.leave_now(p, if full { 2 } else { 3 }, at);
+        }
+    }
+
+    /// Sends a hunting pirate home at `at` (C24). One already homebound, resting or outbound
+    /// keeps its plan: a late report (a fight resolved in view after the hunt ran out) must not
+    /// make its next event stale, or it would idle forever with nothing booked.
+    fn leave_now(&mut self, s: ShipId, reason: u32, at: Tick) {
+        let hunting = self.ships[s]
+            .pirate
+            .as_ref()
+            .is_some_and(|p| matches!(p.state, PState::Hunting { .. }));
+        if hunting {
+            let plan = self.bump(s);
+            self.schedule(at, Ev::Bored { ship: s, plan, reason });
         }
     }
 
@@ -4146,15 +4152,7 @@ impl Ships {
                     .is_some_and(|x| x.is_active() && x.crew > 0)
                     && self.haven_of(a).is_some()
                 {
-                    let plan = self.bump(a);
-                    self.schedule(
-                        at,
-                        Ev::Bored {
-                            ship: a,
-                            plan,
-                            reason: if f.outcome == 1 { 1 } else { 3 },
-                        },
-                    );
+                    self.leave_now(a, if f.outcome == 1 { 1 } else { 3 }, at);
                 }
             }
             Obs::PortFound(p) => {

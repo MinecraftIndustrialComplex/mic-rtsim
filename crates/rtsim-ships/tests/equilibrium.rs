@@ -12,7 +12,7 @@ use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::renewal::Pressure;
 use rtsim_ships::boundary::{self, By, Obs};
-use rtsim_ships::engine::{Ship, ShipId, Status};
+use rtsim_ships::engine::{PState, Ship, ShipId, Status};
 use rtsim_ships::synth::{self, Coastal, FakeShips, Script};
 use rtsim_ships::{Role, ShipTunables, Ships};
 use rtsim_travel::Medium;
@@ -376,6 +376,75 @@ fn a_haven_with_no_lane_worth_hunting_rests() {
             "seed {seed}: sailed to {sails:?}, escorted {guarded:?}"
         );
     });
+}
+
+
+/// A fight in view can be reported after the hunt ran out and the pirate left for home. That
+/// late report once made the pirate's homecoming stale (the fight sent it home again, and a
+/// pirate not hunting ignores that), so it idled forever with nothing booked: seed 4 of
+/// `sim ships` lost both its pirates that way. Now the pirate gets home, rests and sails again.
+#[test]
+fn a_late_fight_report_never_strands_a_pirate() {
+    let out = per_seed(&seeds(), |seed| {
+        let mut c = coast(seed);
+        let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
+        let step = TICKS_PER_DAY / 24;
+        let state = |c: &Coastal, p: ShipId| {
+            c.ships
+                .ship(p)
+                .and_then(|x| x.pirate.as_ref())
+                .map(|x| x.state)
+        };
+        // The first pirate on its way home.
+        let mut t = Tick::ZERO;
+        let (p, arrive) = loop {
+            t = t + step;
+            assert!(t < Tick::from_days(90), "seed {seed}: no pirate went home");
+            idle(&mut c, &mut fake, t);
+            let found = c.ships.havens[c.haven as usize].ships.iter().find_map(|&p| {
+                match state(&c, p) {
+                    Some(PState::Homebound { arrive }) if arrive > t + step => Some((p, arrive)),
+                    _ => None,
+                }
+            });
+            if let Some(f) = found {
+                break f;
+            }
+        };
+        let crew = c.ships.ship(p).expect("the pirate").crew;
+        let victim = c
+            .ships
+            .ships
+            .iter()
+            .find(|(_, x)| matches!(x.role, Role::Merchant) && x.is_active())
+            .map(|(id, _)| id)
+            .expect("a merchant");
+        let fight = Obs::Fight(boundary::Fight {
+            attacker: Ship::agent(p),
+            defender: Ship::agent(victim),
+            outcome: 1,
+            attacker_crew: (crew, crew),
+            defender_crew: (2, 1),
+            attacker_hull_milli: 1000,
+            defender_hull_milli: 1000,
+        });
+        c.ships.ingest(&mut c.world, &fight, &c.mask, t);
+        // It gets home, rests and sails again within 20 days of landing.
+        let mut sailed = false;
+        while !sailed && t < arrive + 20 * TICKS_PER_DAY {
+            t = t + step;
+            idle(&mut c, &mut fake, t);
+            sailed = t > arrive
+                && matches!(
+                    state(&c, p),
+                    Some(PState::Outbound { .. } | PState::Hunting { .. })
+                );
+        }
+        assert!(sailed, "seed {seed}: pirate {p:?} stranded as {:?}", state(&c, p));
+        c.ships.check_indexes().expect("indexes hold");
+        day(t)
+    });
+    assert_eq!(out.len(), 30);
 }
 
 /// One stretch (a century, or a decade in the everyday cut) of the unattended run.
