@@ -443,16 +443,18 @@ final class Recipes {
             r.in(gid, 1, 1);
             outputs(c, r, p.getRollableResults(), 1);
         } else {
-            // smoking and blasting are deterministic: the type's own process() on one item
+            // smoking and blasting are deterministic: the type's own process() on one item. So is an addon's
+            // type (Garnished's freezing and dye blowing), named by its registry id, not as blasting
             List<ItemStack> out = type.process(one, level);
             if (out == null)
                 return;
-            int code = type == AllFanProcessingTypes.SMOKING ? GlassRecords.RecipeType.SMOKING : GlassRecords.RecipeType.BLASTING;
+            int code = type == AllFanProcessingTypes.SMOKING ? GlassRecords.RecipeType.SMOKING
+                    : type == AllFanProcessingTypes.BLASTING ? GlassRecords.RecipeType.BLASTING : GlassRecords.RecipeType.OTHER;
             // blasting through a blaze burner needs it burning (heat FADING or more: BlastingType.isValidAt);
             // the zone has a HEAT edge from it (CreateCompile.fanHeatEdge, GB44)
             boolean burner = x.length > 3 && x[3] != null;
             r = new GraphBuilder.Recipe(code, code == GlassRecords.RecipeType.BLASTING && burner ? GlassRecords.Heat.NEEDS_HEATED : GlassRecords.Heat.NONE, 0,
-                    c.g.name((code == GlassRecords.RecipeType.SMOKING ? "create:fan_smoking/" : "create:fan_blasting/") + c.g.goodName(one)));
+                    c.g.name(CreateGlass.fanRecipePrefix(type) + c.g.goodName(one)));
             r.in(gid, 1, 1);
             for (ItemStack o : out)
                 if (!o.isEmpty())
