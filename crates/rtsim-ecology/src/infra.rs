@@ -58,6 +58,20 @@ pub struct DistrictSignals {
     pub fuel_mb: i64,
 }
 
+/// An oil well (OG-9e): a pumpjack's oil deposit (CDG's or Destroy's) its district's latest sweep
+/// sampled, not dry, at the sampled chunk's canonical centre. A district that is not loaded keeps its
+/// last sweep's wells. It wakes the oil nests in reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Well {
+    pub district: DistrictId,
+    pub frame: u16,
+    pub x: i64,
+    pub z: i64,
+    /// mB left, unless `infinite`.
+    pub remaining: i64,
+    pub infinite: bool,
+}
+
 /// A booked train leg a dragon's leg can meet: the train, and the window both are under way in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrainSighting {
@@ -127,6 +141,10 @@ pub trait Infrastructure {
     /// What a dragon senses of `district` (OG-8). Nothing by default.
     fn signals(&mut self, _district: DistrictId, _fuels: &[String]) -> DistrictSignals {
         DistrictSignals::default()
+    }
+    /// Every oil well that drills (OG-9e), by district id. None by default.
+    fn wells(&mut self) -> Vec<Well> {
+        Vec::new()
     }
 }
 
@@ -461,6 +479,37 @@ impl Infrastructure for IndustryLink<'_> {
 
     fn good_name(&self, g: Good) -> Option<String> {
         self.engine.goods().get(&g).map(|i| i.name.clone())
+    }
+
+    fn wells(&mut self) -> Vec<Well> {
+        let topo = self.index.topo.clone();
+        let mut out = Vec::new();
+        for d in self.engine.districts() {
+            for s in d.deposits.values() {
+                let oil = matches!(
+                    s.plugin,
+                    DepositPluginId::DieselOil | DepositPluginId::DestroyCrude
+                );
+                // A sample of an older sweep is a well that is gone (choices-oilgate.md OGC71).
+                if !oil || s.sweep != d.last_sweep || !(s.infinite || s.remaining > 0) {
+                    continue;
+                }
+                let frame = d.dim as u16;
+                let (x, z) = topo.of(frame).canonical(
+                    i64::from(s.chunk.x) * 16 + 8,
+                    i64::from(s.chunk.z) * 16 + 8,
+                );
+                out.push(Well {
+                    district: d.id,
+                    frame,
+                    x,
+                    z,
+                    remaining: s.remaining,
+                    infinite: s.infinite,
+                });
+            }
+        }
+        out
     }
 
     fn trains_crossed(

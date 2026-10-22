@@ -2,8 +2,8 @@
 
 **Status:** an audit of the gate as built on main at 02c2096 (2026-10-21; OILGATE.md,
 docs/choices-oilgate.md). Ben answered §5 as DECISIONS.md OGB-6 to OGB-8. **The fix set is built
-(2026-10-22) except F6:** F1 to F5 and F7 to F9, each marked in §4 with its choices (OGC46 to OGC66)
-and tests. F6, the underground half (OG-9e), is not built. §1 to §3 below still read the gate as it
+(2026-10-22):** F1 to F9, each marked in §4 with its choices (OGC46 to OGC66; F6, the underground half
+as OG-9e's oil nests, OGC70 onward) and tests. §1 to §3 below still read the gate as it
 was at 02c2096. Neither
 mic-rtsim nor Deep Time is in `pack/mods` yet, so this reads the gate as it will be once both ship, with
 OILGATE.md's defaults and Ben's answers of 2026-10-21 (DECISIONS.md OGB-1 to OGB-5: reserve 600, refuel
@@ -38,11 +38,11 @@ So the gate passes when both hold:
   - F3: sense by chunks, not by the district's centre.
   - F4: a roof delays a flyer instead of stopping it (Ben).
   - F5: survey what is loaded.
-  - F6: build OG-9e's deep layer.
+  - F6: build OG-9e's deep layer (built: the oil nests).
   - F9: watched raids do damage too, as P28 decided.
   - After those: F7 (name the builders) and PF1 (ethanol, Ben).
-- **None of it is built.** Not one row of §2 has an integration test; §4 lists the unit tests each fix
-  would bring.
+- **None of it was built at the audit.** Not one row of §2 had an integration test; §4 lists the unit
+  tests each fix would bring. All of it is built now (2026-10-22), each fix marked in §4.
 
 ## 1. How the gate sees a well, link by link
 
@@ -117,7 +117,7 @@ facts were read in the jars of the Prism instance "Minecraft Industiral Complex-
 | C1 | **Roof it.** Build a shed over the pumpjack. | **Open** for blocks | A flyer breaks only roofless blocks, fewer as more machines are roofed (`threat.rs:355-363`, `:520-537`): OG-11 as approved. A fully roofed well loses nothing. Only theft reaches it. | High once a pumpjack has burned once. |
 | C2 | **Keep nothing there.** Pump straight into the link or a pipe home. | **Open** with C1 | Theft at the field drinks only the fuel stock of the districts it senses (`oil.rs:886-897`). With C1 and an empty tank a raid takes nothing and breaks nothing. | Medium. |
 | C3 | **Be bigger than the loaded area.** A long pipeline, or a well joined to a far base (B2) while the chunks between stay unloaded. | **Open** | A survey runs only when every chunk of the district is loaded (`Threats.java:441`). With no survey there is no exposed block set, so a raid breaks nothing (`threat.rs:528`). | Medium; it comes free with B2. |
-| C4 | **Go underground.** Reach the oil from a cave or shaft below y 15. | **Open** | Machines underground are roofed (C1). In Control spawns nothing below y 15 (OILGATE.md §3.2), field flights roll only at y 15 or higher (`oil.rs:539-541`), and the deep layer (OG-9e) is not built. | High: players mine anyway, and the pipe goes to bedrock. |
+| C4 | **Go underground.** Reach the oil from a cave or shaft below y 15. | **Open** (closed by F6, built 2026-10-22) | Machines underground are roofed (C1). In Control spawns nothing below y 15 (OILGATE.md §3.2), field flights roll only at y 15 or higher (`oil.rs:539-541`), and the deep layer (OG-9e) is not built. | High: players mine anyway, and the pipe goes to bedrock. |
 | C5 | **Stand guard.** Stay at the well; when a dragon comes, wait it out. | **Open** for blocks | A raid on a watched district brings the dragon for real, and a watched dragon breaks no blocks (`infra.rs:6-8`, R19). Ice and Fire griefing is off, which also stops its `digWhenStuck` (`pack/config/iceandfire/iaf-common.json`). This contradicts P28 as Ben decided it ("Buildings take bounded sim damage, watched or not", PLAN.md §9). | Medium. |
 | C6 | **Live far away.** Keep the home base more than 512 blocks from the well. | **Open** for the player | `sense` names only players whose P26 home is within 512 blocks of the district (`oil.rs:1024-1037`, `engine.rs:95`). The well is still raided; its builder is never hunted. | High, by geography. |
 
@@ -259,6 +259,20 @@ which needs the whole area. Not Ben.
 **F6. The underground half, as decided** (C4). OG-9e's Death Worm oil nest,
 asleep until a pumpjack drills, is already Ben's decision and its seams exist
 (`docs/choices-oilgate.md`, the seam section). Build it. Nothing new to decide.
+**Built** (docs/choices-oilgate.md OGC70 onward; OILGATE.md §4.6 "As built"). Every oil cell of 8 by
+8 chunks gets a nest on its first oil chunk's load: a chamber 20 to 60 blocks down with a spawner
+heart, asleep until a pumpjack's deposit sample of the latest sweep lies within 128 blocks. Awake, it
+hatches 2 Death Worms, renews them by EQUILIBRIUM.md §2.2's shared rule while drilling lasts, and raids
+the districts in reach as the fifth threat class `Burrowing`, which walls, turrets and guards do not
+stop: underground machines first, then machines, never one on an armoured floor, and nothing stolen.
+A watched district gets the real worms too. A roofed or buried well is now hurt from below, so C1's
+deep cover and C4's shaft both meet the nests. Tests: 14 engine tests in
+`crates/rtsim-ecology/tests/nests.rs` (EQUILIBRIUM.md S10's `kill_all_nests` and `asleep_nest_holds`
+among them), `burrowers_pass_walls_and_turrets_and_spare_armoured_floors` (threat.rs), and 8
+iceandfire GameTests in `NestGameTests` (OGC84 to OGC102). The native one,
+`theEngineWakesItsNestByAWell`, is the whole loop: asleep with no well, a drilling well wakes it and
+two worms appear, a player kills both, the regrowth wait holds while the well is stopped, and a worm
+regrows once it drills again.
 
 **F7. Name the builders** (C6). `sense` names the players who placed or broke blocks in the district
 in the last `grudge_window` days (PLACEHOLDER 10; the industry engine journals every `IND_EDIT` with

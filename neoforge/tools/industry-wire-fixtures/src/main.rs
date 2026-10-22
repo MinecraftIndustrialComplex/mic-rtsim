@@ -558,6 +558,8 @@ fn code_tables(out: &mut String) {
         ("MACHINE".to_string(), BlockFlags::MACHINE),
         ("INVENTORY".to_string(), BlockFlags::INVENTORY),
         ("ROOF".to_string(), BlockFlags::ROOF),
+        ("SUBTERRANEAN".to_string(), BlockFlags::SUBTERRANEAN),
+        ("ARMOURED".to_string(), BlockFlags::ARMOURED),
     ];
     table(out, "block_flags", &rows);
 

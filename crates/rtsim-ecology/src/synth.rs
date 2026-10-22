@@ -569,6 +569,13 @@ pub struct FakeIaf {
     /// PLACE_LAIR commands carried out: each places a roost 48 blocks east of the asked point and
     /// reports it (LAIR_FOUND), as the bridge's placement and its next lair scan would.
     pub placed: u64,
+    /// Oil nests (OG-9e) by id: worms alive or owed, as the plugin's nest data would hold them.
+    /// PLACE_NEST answers NEST_FOUND with a heart under the chunk's centre, `depth` blocks below
+    /// y 64, unless `nest_no_room`; NEST_RENEW adds its count.
+    pub nests: BTreeMap<u64, u32>,
+    pub nest_no_room: bool,
+    /// NEST_SORTIE commands received.
+    pub sorties: u32,
 }
 
 impl FakeIaf {
@@ -590,6 +597,9 @@ impl FakeIaf {
             breaths: 0,
             ground_oil: BTreeMap::new(),
             placed: 0,
+            nests: BTreeMap::new(),
+            nest_no_room: false,
+            sorties: 0,
         }
     }
 
@@ -763,8 +773,48 @@ impl FakeIaf {
                         );
                     }
                 }
+                Cmd::PlaceNest(p) => {
+                    let placed = !self.nest_no_room;
+                    if placed {
+                        self.nests.entry(p.nest).or_insert(0);
+                    }
+                    self.push(
+                        at + 20,
+                        Obs::NestFound(boundary::NestFound {
+                            nest: p.nest,
+                            placed,
+                            dimension: p.dimension,
+                            heart: if placed {
+                                (p.cx * 16 + 8, 64 - p.depth as i32, p.cz * 16 + 8)
+                            } else {
+                                (0, 0, 0)
+                            },
+                        }),
+                    );
+                }
+                Cmd::NestRenew(n) => *self.nests.entry(n.nest).or_insert(0) += n.count,
+                Cmd::NestSortie(_) => self.sorties += 1,
                 Cmd::Discard(_) => {}
             }
+        }
+    }
+
+    /// A player kills `count` of nest `nest`'s worms (NEST_LOSS, cause Player).
+    pub fn kill_worms(&mut self, nest: u64, count: u32, at: Tick) {
+        let have = self.nests.entry(nest).or_insert(0);
+        let count = count.min(*have);
+        *have -= count;
+        if count > 0 {
+            let player = self.player;
+            self.push(
+                at,
+                Obs::NestLoss(boundary::NestLoss {
+                    nest,
+                    count,
+                    cause: rtsim_kernel::renewal::LossCause::Player.code(),
+                    player,
+                }),
+            );
         }
     }
 

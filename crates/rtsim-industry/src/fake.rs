@@ -1543,7 +1543,7 @@ pub fn survey(
         roofed_machines: roofed,
         kill_machines_at_gaps: 0,
         turret_strength: turrets,
-        guards: [0; ThreatClass::COUNT],
+        guards: [0; ThreatClass::SURVEYED],
         ammo_good: None,
         ammo_per_engagement: 0,
     }
