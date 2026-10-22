@@ -318,7 +318,7 @@ pub struct SpawnSample {
     /// Dark spawnable blocks in the observed area (district plus ring).
     pub dark_blocks: u64,
     /// Natural hostile spawns per class (`FinalizeSpawnEvent`, spawn type NATURAL).
-    pub spawns: [u32; ThreatClass::COUNT],
+    pub spawns: [u32; ThreatClass::SURVEYED],
 }
 
 /// A real fight in a district (I21 calibration).
@@ -348,6 +348,12 @@ impl BlockFlags {
     /// The top block over a roofed machine, within the survey's roof reach: a flyer can break it
     /// (OGB-7). Always with [`Self::ROOFLESS`].
     pub const ROOF: u32 = 16;
+    /// A machine or inventory under five or more blocks of cover: underground, where an oil nest's
+    /// worms (`ThreatClass::Burrowing`, OG-9e) strike first.
+    pub const SUBTERRANEAN: u32 = 32;
+    /// A machine or inventory standing on `#mic_rtsim:armoured_floor` (within four blocks under it): out
+    /// of a burrowing attacker's reach (OG-9e).
+    pub const ARMOURED: u32 = 64;
 
     pub fn has(self, bit: u32) -> bool {
         self.0 & bit != 0
@@ -380,8 +386,8 @@ pub struct DefenceSurvey {
     pub roofed_machines: u32,
     pub kill_machines_at_gaps: u32,
     /// Auto-firing turret strength against each class, ammunition permitting.
-    pub turret_strength: [f32; ThreatClass::COUNT],
-    pub guards: [u32; ThreatClass::COUNT],
+    pub turret_strength: [f32; ThreatClass::SURVEYED],
+    pub guards: [u32; ThreatClass::SURVEYED],
     pub ammo_good: Option<Good>,
     pub ammo_per_engagement: u32,
 }

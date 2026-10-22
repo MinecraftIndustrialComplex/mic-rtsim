@@ -36,6 +36,12 @@ public final class ThreatClasses {
      */
     public static final TagKey<Block> ARMOURED_FLOOR = TagKey.create(Registries.BLOCK,
             ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "armoured_floor"));
+    /**
+     * Block entities a burrowing attacker leaves alone wherever they stand (OG-9e): a well's own blocks,
+     * since the nest is after the machines and the well is what feeds it. Surveyed as armoured.
+     */
+    public static final TagKey<Block> BURROW_SPARED = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "burrow_spared"));
 
     private static TagKey<EntityType<?>> tag(String path) {
         return TagKey.create(Registries.ENTITY_TYPE, ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, path));
