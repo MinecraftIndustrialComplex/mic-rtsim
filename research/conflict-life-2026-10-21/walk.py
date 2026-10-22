@@ -159,6 +159,44 @@ def alone(years_full=3):
     return L
 
 
+def alliances():
+    """Section 2.16: a valley's pacts told whole, from the seed whose joint fights are the median; then
+    every joint party at the fortress over the 16 fortress seeds."""
+    sc = run.scenarios(50 * YEAR)["alone"]
+    worlds = [model.World(sc, "life", s).run() for s in SEEDS]
+
+    def joint(w):
+        return sum(1 for e in w.events if e["act"] in run.FIGHT and e.get("ally"))
+
+    def told(e):
+        return (e["act"] in ("pact", "call", "pact_end") or (e["act"] in run.FIGHT and e.get("ally"))
+                or (e["act"] in run.FIGHT and "broke the oath" in e.get("reason", "")))
+
+    w, x, med = median_seed(worlds, joint)
+    sworn = sum(1 for e in w.events if e["act"] == "pact" and e.get("accepted"))
+    L = ["## Two camps swear against a third\n",
+         f"No player; the valley of section 3.5. Seed {w.seed}: {x} joint fights in 50 years against a median "
+         f"of {med:.0f} over 16 seeds, and {sworn} pacts sworn. Every pact, call, joint fight, end of a pact "
+         "and broken oath in the 50 years:\n"]
+    for e in w.events:
+        if told(e):
+            ln = run.fmt(w, e)
+            if ln:
+                L.append(f"- {ln}")
+    sc = run.scenarios(50 * YEAR)["fortress"]
+    L.append("\nEvery joint party at the fortress (Ben, defence 80, 40 while he is away) in the 16 fortress "
+             "seeds:\n")
+    n = 0
+    for s in SEEDS:
+        wf = model.World(sc, "life", s).run()
+        for e in wf.events:
+            if e["act"] in run.FIGHT and e.get("ally") and e["tgt"] == "P:Ben":
+                L.append(f"- seed {s}: {run.fmt(wf, e)}")
+                n += 1
+    L.append(f"\n{n} joint parties at the fortress in 16 x 50 years.\n")
+    return L
+
+
 def main():
     L = ["# Walkthroughs (life model)\n",
          "Written by `walk.py`. Days are game days: a year is 96 days, four seasons of 24.\n"]
@@ -186,6 +224,7 @@ def main():
               "player near it (blame spill, 0.3). The headline count is fights on Bea.",
               tables=[("Bea", {"P:Bea"}), ("Ash", {"P:Ash"})], list_all={"P:Bea"})
     L += alone()
+    L += alliances()
     with open(os.path.join(OUT, "walkthroughs.md"), "w") as fh:
         fh.write("\n".join(L) + "\n")
 

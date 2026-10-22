@@ -238,6 +238,9 @@ belonging to it, and a **pressure** P:
     own route: placed at the farthest ticking point on that route back from the target, it walks the
     rest, instead of today's waves on the arc 112 blocks out. That point is at least 160 blocks off
     along an axis at a simulation distance of 10, and at least 128 at 8.
+  - **A joint attack** (CONFLICT-LIFE.md §2.16) is two such parties, each its own camp's members on its
+    own route with its own BAND_MARCH; the rule holds for each contingent, and the two share one
+    spawn quota of 16 members (CL-D49).
 - **Bounds.** n never exceeds K. The sim never creates a site: sites are the structures the world
   generated (C22), or the herd ranges the world model sampled.
 - **The oil gate** (OILGATE.md on main) adds two dragon sources near oil fields, and they are its
@@ -493,7 +496,8 @@ as today (Y20).
 
 - **Site:** the camp; K = the culture's `pool_cap` (goblin 60, bandit 40, raider 50).
 - **Losses:** warriors killed by a player, at home or in a party, add `killed/K`; war-party losses to
-  another faction or a village add nothing.
+  another faction or a village add nothing. In a joint attack (CONFLICT-LIFE.md §2.16) each camp books
+  only its own contingent's dead, against its own K.
 - **Renewal (Regrow):** recruits at `recruits_per_day / 2^P` (goblin 2, bandit 1.5, raider 2): word
   gets around that the camp is a death trap. Closed form between events: P is read at the last event
   that touched the pool (a muster, a loss, a census), so the pool stays linear in time.
@@ -706,7 +710,9 @@ follow it.
     a living member away is counted with its party and not recalled, and a party ends only at its own
     home or at its last death. Removals are clamped to the bodies the census finds (a world that ran
     without rtsim may have lost them already). The cost is UR-1's: once its camp has come in, a member
-    is away for the rest of its march, and an uninstall then loses it (§2.3).
+    is away for the rest of its march, and an uninstall then loses it (§2.3). A joint attack
+    (CONFLICT-LIFE.md §2.16) is two parties: the rule holds for each contingent, and a camp that comes
+    in has only its own contingent's bodies taken.
 12. **§4.10 item 5 and §7, tests:** `sim mowzie` reports in the `sim census` format (§4, slice S1), and
     the plan adds `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form` (60 years, about
     1.8 a year: §3.3's 1.79 closed form, the figure MOWZIE.md's "Loot supply" states for a den and,

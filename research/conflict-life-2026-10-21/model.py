@@ -143,10 +143,32 @@ class Culture:
                                     # (today's Haven fields pool_cap / 4, engine haven_defence_per_pop 1.0)
     heir_wait: bool = False         # the chief comes back only after min(192, 6 x 2^P_chief) days
     one_by_one: bool = False        # warriors refill one at a time, each after min(96, 6 x 2^P) days
+    ally_w: float = 1.0             # how readily the culture makes alliances (0: never, the Frostmaw)
 
 
 def P(size, strength, carry):
     return (size, strength, carry)
+
+
+def muster_of(c, home, rung):
+    """The party a rung sends from `home` members: (members, strength, carry). With a unit make-up,
+    `send_party` floors each unit's share (engine.rs 2240-2247); otherwise in proportion. A camp
+    weighing what an ally could send passes the members it believes the ally has at home."""
+    size, A0, carry = c.party[rung]
+    if size <= 0:
+        return 0, A0, carry
+    units = (c.units or {}).get(rung)
+    q = min(1.0, home / size)
+    if units:
+        counts = [math.floor(k * q + 1e-9) for k, _ in units]
+        n = sum(counts)
+        return n, sum(k * s for k, (_, s) in zip(counts, units)), carry * n / size
+    n = min(home, size)
+    return n, A0 * n / size, carry * n / size
+
+
+SIZE_ORDER = (8, 4, 5)              # band, raid, invasion: smallest first
+ACT_OF = {8: "band", 4: "raid", 5: "invasion"}
 
 
 GOBLIN = Culture(
@@ -164,7 +186,8 @@ BANDIT = Culture(
     tribute_per_g=1.0, tribute_relief=0.8, respite=5, cowed=4, chief_days=90, home_str=1.1 * 1.5,
     eat=0.1, plunder_mean=6,
     bold=0.45, aggr=0.45, soc=0.6, spread=0.15, tau=2.0, greed=1.2, pride_half=24, fear_w=1.5,
-    fear_half=30, glory_w=3, restless_days=150, wake_days=14, effort=4, demand_bias=6, ambush_w=1.6)
+    fear_half=30, glory_w=3, restless_days=150, wake_days=14, effort=4, demand_bias=6, ambush_w=1.6,
+    ally_w=1.2)
 RAIDER = Culture(
     name="raider", pool_cap=50, recruits=2.0,
     party={3: P(2, 2.4, 12), 4: P(12, 16.2, 96), 5: P(23, 36.0, 180), 6: P(31, 56.4, 244), 8: P(8, 10.8, 64)},
@@ -173,7 +196,7 @@ RAIDER = Culture(
     eat=0.1, plunder_mean=8,
     bold=0.6, aggr=0.6, soc=0.35, spread=0.15, tau=2.5, greed=0.9, pride_w=20, pride_half=96,
     refusal_pride=0.8, insult_pride=1.0, fear_w=1.0, fear_half=24, glory_w=7, restless_days=120,
-    wake_days=20, effort=4, demand_bias=2, oath=10, preempt_w=10)
+    wake_days=20, effort=4, demand_bias=2, oath=10, preempt_w=10, ally_w=0.8)
 UMVUTHANA = Culture(
     name="umvuthana", pool_cap=7, recruits=7 / 16.5,
     party={3: P(0, 2.6, 0), 4: P(4, 3.8, 24), 5: P(8, 7.6, 48), 6: P(8, 7.6, 48), 8: P(0, 2.6, 8)},
@@ -196,7 +219,7 @@ FROSTMAW = Culture(
     council=False, bold=0.5, aggr=0.5, soc=0.1, spread=0.25, tau=3.0, greed=1.0, pride_w=25,
     pride_half=96, insult_pride=1.5, fear_w=1.0, fear_half=16, glory_w=0, restless_days=1e9,
     wake_days=30, effort=14, demand_bias=-99, scout_w=0, warn_w=8, ambush_w=1.0,
-    kin_grudge=80.0, kin_pride=2.0)
+    kin_grudge=80.0, kin_pride=2.0, ally_w=0.0)
 
 CULTURES = {c.name: c for c in (GOBLIN, BANDIT, RAIDER, UMVUTHANA, FROSTMAW)}
 HATES = {"goblin": {"human", "bandit"}, "bandit": {"human", "ribbit"},
@@ -251,6 +274,18 @@ class Rel:
     floor: float = 0.0               # the strongest party of ours it destroyed: it is at least that strong
     floor_t: float = 0.0
     last_warn: float = -1e9
+    # an alliance with this camp (section 2.16): sworn until, by which chief, against whom
+    ally_until: float = -1.0
+    ally_by: int = -1
+    ally_name: str = ""
+    ally_vs: str = ""
+    ally_since: float = -1.0
+    ally_open: bool = False          # a pact is running (the lapse is logged once)
+    ka: float = 1.0                  # calls this ally answered, Beta(ka, kb) with the calls it refused
+    kb: float = 1.0
+    strain: float = 0.0              # grievances inside the alliance; it breaks above strain_break
+    pact_refused: float = -1e9       # the day this camp last turned our offer down
+    hurt: float = 0.0                # our members this neighbour killed, halving over 96 days (danger)
     # ladder and gate state
     step: int = 0
     next_ok: float = 0.0
@@ -323,20 +358,8 @@ class Faction:
         return t >= self.chief_back
 
     def muster(self, rung):
-        """The party a rung sends from the members at home: (members, strength, carry). With a unit
-        make-up, `send_party` floors each unit's share (engine.rs 2240-2247); otherwise in proportion."""
-        size, A0, carry = self.c.party[rung]
-        home = self.home()
-        if size <= 0:
-            return 0, A0, carry
-        units = (self.c.units or {}).get(rung)
-        q = min(1.0, home / size)
-        if units:
-            counts = [math.floor(k * q + 1e-9) for k, _ in units]
-            n = sum(counts)
-            return n, sum(k * s for k, (_, s) in zip(counts, units)), carry * n / size
-        n = min(home, size)
-        return n, A0 * n / size, carry * n / size
+        """The party a rung sends from the members at home: (members, strength, carry)."""
+        return muster_of(self.c, self.home(), rung)
 
     def home(self):
         return max(0.0, self.pool - self.away)
@@ -432,6 +455,9 @@ class World:
         self.sc = sc
         self.mode = mode
         self.rng = np.random.default_rng(seed)
+        # alliances draw from a stream of their own, so a world with alliances off is the same world
+        # draw for draw, and one with them on stays the same until an alliance first enters a sitting
+        self.arng = np.random.default_rng([seed, 0xA11E])
         self.seed = seed
         self.t = 0
         self.events = []            # every act: dict
@@ -658,8 +684,16 @@ class World:
             r.s2 = min(1.0, r.s2 + self.life["belief_drift"] * (self.life["wall_drift"] if x in self.players else 1.0))
             r.ta = 1 + (r.ta - 1) * 2 ** (-1 / 192)
             r.tb = 1 + (r.tb - 1) * 2 ** (-1 / 192)
+            if r.hurt > 0:
+                r.hurt *= 2 ** (-1 / 96)
             for m in r.memories:
                 m[0] *= 2 ** (-1 / (4 * c.pride_half))
+            if r.ally_open or r.strain > 0 or r.ka != 1.0 or r.kb != 1.0:
+                r.ka = 1 + (r.ka - 1) * 2 ** (-1 / 192)
+                r.kb = 1 + (r.kb - 1) * 2 ** (-1 / 192)
+                r.strain *= 2 ** (-1 / self.life["strain_half"])
+                if r.ally_open and t >= r.ally_until:
+                    self.end_pact(f, x, "lapsed")
         if f.pool <= 1.0 and c.name != "frostmaw":
             n = self.low_run.get(f.id, 0) + 1
             self.low_run[f.id] = n
@@ -740,12 +774,15 @@ class World:
                 if rng.random() < rate:
                     victim, doer = (fa, fb) if rng.random() < 0.5 else (fb, fa)
                     k = float(min(max(victim.pool - 1, 0), rng.integers(1, 3)))
+                    if self.allied(fa, b):
+                        continue           # allies' hunters share the border (the draws are kept)
                     victim.pool -= k
                     self.log(victim, "clash", doer.id, reason=f"{doer.name}'s hunters killed {k:.0f} of "
                              f"{victim.name}'s at the border", dead=k)
                     rr = victim.rel.get(doer.id)
                     if rr is not None:
                         rr.g += 15 + victim.c.kill_w * k
+                        rr.hurt += k
                         rr.W = min(2.0, rr.W + 0.3 * (1 - rr.W / 2))
                         self.remember(victim, doer.id, 1.0 + k / 2,
                                       f"{doer.name}'s hunters killed {k:.0f} of ours at the border {self.when(t)}")
@@ -790,13 +827,15 @@ class World:
                 keep.append(item)
         self.news = keep
 
-    def spread_news(self, about, kind, true_d, exclude=None):
+    def spread_news(self, about, kind, true_d, exclude=None, rng=None):
         """Word of a camp's weakness reaches the factions that know it, late and inexact (the one that
         did the harm saw it for itself)."""
+        rng = rng or self.rng
+        ex = exclude if isinstance(exclude, (set, tuple, list)) else {exclude}
         for f in self.factions.values():
-            if about in f.rel and f.id != exclude:
-                obs = max(0.5, true_d) * math.exp(self.rng.normal(0, self.life["rumour_sd"]))
-                self.news.append((self.t + self.rng.exponential(6.0), f.id, kind, about, obs))
+            if about in f.rel and f.id not in ex:
+                obs = max(0.5, true_d) * math.exp(rng.normal(0, self.life["rumour_sd"]))
+                self.news.append((self.t + rng.exponential(6.0), f.id, kind, about, obs))
 
     def observe(self, r, d, sd):
         """Kalman step on the log-normal belief."""
@@ -856,6 +895,7 @@ class World:
             return
         r = f.rel[who]
         r.g += f.c.kill_w * k
+        r.hurt += k
         r.W = min(2.0, r.W + 0.3 * min(k, 5) / 5 + 0.2)
         f.fear = min(1.0, f.fear + k / max(f.c.pool_cap, 1))
         self.remember(f, who, 1.0 + k / 5, text if who == pid else text.replace(self.tname(pid), self.tname(who)))
@@ -973,6 +1013,7 @@ class World:
             rr = g.rel.setdefault(f.id, Rel(f.id))
             small = act == "skirmish"
             rr.g += g.c.kill_w * kd + (10 if small else 20)
+            rr.hurt += kd
             rr.W = min(2.0, rr.W + (0.3 if small else 0.6) * (1 - rr.W / 2))   # each insult adds less
             g.fear = min(1.0, g.fear + kd / max(g.c.pool_cap, 1) * 2)
             g.last_fight = t
@@ -1009,9 +1050,13 @@ class World:
         if r is not None:
             self.look(r, x)
         self.touches += 1 + (x in self.factions)
+        if x in self.factions and self.life["alliances"]:
+            if self.allied(f, x):
+                self.betray(f, x)
+            self.provoke_allies(x, f)
         return e
 
-    def demand(self, f, x, T, X, speaker="", reason=""):
+    def demand(self, f, x, T, X, speaker="", reason="", ally=None):
         """An envoy asks x for T now; the answer comes back the same day in the model."""
         t = self.t
         r = f.rel[x]
@@ -1034,8 +1079,10 @@ class World:
         if self.mode == "life" and not killed:
             self.observe(r, self.target_defence(x), 0.3)    # the envoy party walked to the base and saw it
             self.look(r, x)
+        if ally is not None:
+            e["ally"] = ally[0]
         if pays:
-            f.stores += T
+            f.stores += T if ally is None else T * ally[2]
             r.ta += 1
             if self.mode == "ladder":
                 # settle (engine.rs 1897-1916): relief, back to Notice, held there for the respite
@@ -1051,6 +1098,8 @@ class World:
                 r.truce_by = f.chief().uid
                 r.truce_name = f.chief().name
             self.remember(f, x, 0.5, f"{self.tname(x)} paid {T:.0f} {self.when(t)}", hostile=False)
+            if ally is not None:
+                self.share_tribute(f, x, T, ally)
         else:
             r.tb += 1
             r.refused_at = t
@@ -1171,14 +1220,20 @@ class World:
             return self.factions[x].c.name in HATES[f.c.name] and not self.factions[x].dead
         return False
 
-    def expected_loss(self, f, x, rung):
+    def expected_loss(self, f, x, rung, ally=None):
         """What the rung's party would truly take from x now (the engine's fight is certain): the
-        survivors' carry if it wins, nothing if it loses. A scripted payer pays up to this."""
+        survivors' carry if it wins, nothing if it loses. A scripted payer pays up to this. With an
+        ally named in the threat, the ally's true party fights beside it."""
         n, A, carry = f.muster(rung)
         if f.c.name == "frostmaw":
             n, A, carry = 1, f.c.party[rung][1], f.c.party[rung][2]
         if rung == 5 and f.c.invasion_pride > 0 and f.has_chief(self.t):
             A += f.c.chief_str
+        if ally is not None and self.allied(f, ally[0]) and not self.factions[ally[0]].dead:
+            hp = self.help_rung(self.factions[ally[0]], x, rung)
+            if hp is not None:
+                A += hp[1]
+                carry += hp[2]
         win, la, _ = battle(A, self.target_defence(x), "square" if x in self.players else "linear")
         return min(carry * (1 - la), self.target_stock(x)) if win else 0.0
 
@@ -1292,8 +1347,9 @@ class World:
             # a hothead always calls the council over an insult; a cool chief may let it pass (the restless
             # clock can still bring it back)
             p_attend = {"provoked": 0.5 + 0.5 * aggr, "refused": 0.3 + 0.6 * aggr, "news": 0.7,
-                        "caravan": self.life["caravan_attend"], "train": 1.0}[kind]
-            if self.rng.random() < p_attend:
+                        "caravan": self.life["caravan_attend"], "train": 1.0, "allied": 1.0}[kind]
+            # a new pact is always sat on (and draws nothing from the world's stream)
+            if kind == "allied" or self.rng.random() < p_attend:
                 self.decide(f, kind, about)
                 woke = True
         if t >= f.next_wake:
@@ -1348,7 +1404,7 @@ class World:
         def value(take):
             return min(take, room) * vloot + max(0.0, take - room) * L["surplus"]
 
-        if kind in ("caravan", "train", "provoked", "refused", "news"):
+        if kind in ("caravan", "train", "provoked", "refused", "news", "allied"):
             matters = [about] if about in f.rel else []
         else:
             matters = [x for x in f.rel if x != "CARAVAN"]
@@ -1378,8 +1434,15 @@ class World:
             if x in self.players and r.ta > 1.5:
                 # a raid on a tributary ends the tribute: what the payments were worth, by its record
                 penalty += L["tributary"] * (r.ta - 1) / (r.ta + r.tb - 2 + 1e-9)
-            if x in self.factions and r.sigma == 0:
+            if x in self.factions and r.sigma == 0 and not (L["alliances"] and self.sworn_vs(f, x)):
+                # (an oath sworn against x has made it an enemy already)
                 penalty += L["peace_cost"] * (1 - min(1.0, g / 30)) * (1 - min(1.0, r.W))
+            if r.ally_open:
+                # falling on a sworn ally breaks the oath: as a truce does, and more (section 2.16)
+                penalty += c.oath * (1.5 - aggr) * (L["sworn_mult"] if f.chief().uid == r.ally_by else 1.0) \
+                    + L["betray_cost"]
+            if x in self.factions and L["alliances"]:
+                penalty += self.deterrence(f, x)
             preempt = 0.0
             if x in self.factions and c.preempt_w > 0:
                 # what it believes of the neighbour's numbers, against its own
@@ -1387,6 +1450,10 @@ class World:
                 ratio = math.exp(r.mu) / (tc.home_str * tc.guard_share) / max(f.pool, 1.0)
                 preempt = c.preempt_w * min(1.0, max(0.0, ratio - 1.2))
             threat = None          # the war act an envoy can name, even one pride has not yet unlocked
+            bound = ()             # rungs an oath sends beside an ally (section 2.16)
+            if war_ok and L["alliances"] and L["oath_binds"] and c.ally_w > 0 and x not in ("RAIL", "CARAVAN"):
+                bound = {rg for B, _ in self.allies_against(f, x) for rg in SIZE_ORDER
+                         if self.believed_help(f, B, rg) is not None}
             if war_ok:
                 sizes = (8, 4, 5) if c.name != "frostmaw" else (4,)
                 law = "square" if x in self.players else "linear"
@@ -1434,7 +1501,7 @@ class World:
                     opt = (u, act, x, (n, A, carry, chief_leads, why, pw, take))
                     if threat is None or u > threat[0]:
                         threat = opt
-                    if not gated and (best is None or u > best[0]):
+                    if not gated and rung not in bound and (best is None or u > best[0]):
                         best = opt
                 if x in self.factions and c.name != "frostmaw" and c.party[8][0] > 0 and f.home() >= 4:
                     n, A, carry = f.muster(8)
@@ -1454,24 +1521,45 @@ class World:
                            "pride": pride * hope, "glory": glory, "preempt": preempt}
                     if best is None or u > best[0]:
                         best = (u, "skirmish", x, (n, A, carry * 0.25, False, why, pw, take))
+                if L["alliances"] and c.ally_w > 0 and x not in ("RAIL", "CARAVAN"):
+                    # beside a sworn ally (section 2.16): the ally's help as the camp believes it, at the
+                    # chance that the ally comes (its record of coming); if it does not, the party goes
+                    # alone when that is worth it and turns home when not
+                    mot = (rev, pride, glory, preempt, penalty)
+                    solo_u = best[0] if best is not None else None
+                    for B, rB in self.allies_against(f, x):
+                        for wu, act, info, gated in self.war_options(f, x, Dhat, stock, mot, fearm, B):
+                            u = self.call_worth(rB, wu, info[13])
+                            opt = (u, act, x, info)
+                            if L["joint_demand"] and (threat is None or u > threat[0]):
+                                threat = opt
+                            if not gated and (best is None or u > best[0]):
+                                best = opt
+                    pact = self.pact_option(f, x, Dhat, stock, mot, fearm, soc, aggr, solo_u)
+                    if pact is not None and (best is None or pact[0] > best[0]):
+                        best = pact
             # demand: an envoy, where the threat is credible and no tribute is running
             if (threat is not None and threat[1] != "ambush" and self.can_pay(x) and t >= r.paid_until
                     and t - r.refused_at > 12 and c.demand_bias > -50):
                 war_u = threat[0]
-                n, A, carry, _, _, pw, take = threat[3]
+                n, A, carry, _, _, pw, take = threat[3][:7]
+                joint = threat[3][7:] if len(threat[3]) > 7 else None   # (ally, its rung, n, A, carry, take)
                 if pw > 0.25:
-                    X = pw * take                                   # what the camp believes x stands to lose
+                    X = pw * (take if joint is None else joint[5])  # what the camp believes x stands to lose
                     material = war_u - (rev + threat[3][4]["pride"] + glory + preempt - penalty)
                     T_min = max(1.0, material / max(vloot, 1e-6))   # the war's worth to the camp, in items
                     if T_min < X:
                         k = 0.25 + 0.4 * aggr + 0.15 * h            # an aggressive speaker asks nearer the top
                         T = T_min + k * (X - T_min)
                         trust = r.ta / (r.ta + r.tb)
-                        u = trust * value(T) * (1 + c.demand_bias / 10) + (1 - trust) * 0.9 * max(0.0, war_u) \
+                        share = 1.0 if joint is None else carry / (carry + joint[4])   # the ally takes its part
+                        vT = value(T) if joint is None else value(T * share)
+                        u = trust * vT * (1 + c.demand_bias / 10) + (1 - trust) * 0.9 * max(0.0, war_u) \
                             + 0.3 * pride - 0.5 * c.effort - 3 * L["effort_member"]
                         if best is None or u > best[0]:
                             rung = {"raid": 4, "invasion": 5, "band": 8}[threat[1]]
-                            best = (u, "demand", x, (T, X, trust, rung))
+                            ally = None if joint is None else (joint[0], joint[1], share)
+                            best = (u, "demand", x, (T, X, trust, rung, ally))
             if c.scout_w > 0 and x != "CARAVAN":
                 relev = g / (g + 50) + h * (stock > 0) + 0.5 * (kind == "news")
                 u = c.scout_w * math.sqrt(r.s2) * relev - 0.8 * c.effort
@@ -1514,6 +1602,32 @@ class World:
         tn = self.tname(x)
         if act in ("raid", "invasion", "band", "ambush", "skirmish"):
             n, A, carry, chief_leads, why, pw = info[:6]
+            help = None
+            alone_note = ""
+            if len(info) > 7:
+                # a joint party: the ally is called first, and answers by its own lights
+                y, AB_hat = info[7], info[10]
+                B = self.factions[y]
+                ans, help = self.answer_call(B, f, x, {"band": 8, "raid": 4, "invasion": 5}[act], (n, A, carry))
+                rB = f.rel[y]
+                self.log(f, "call", y, reason=f"{v.name} called {B.name} against {tn}", answer=ans, vs=x,
+                         speaker=f"{v.name} ({v.role})", occasion=kind, u_join=self.call_u[0],
+                         u_refuse=self.call_u[1])
+                self.touches += 1
+                if ans != "join":
+                    if ans == "refuse":
+                        rB.kb += 1
+                        rB.strain += 1
+                        rB.W = min(2.0, rB.W + 0.2)
+                        self.remember(f, y, 1.0, f"{B.name} would not come against {tn} {self.when(t)}")
+                        if rB.ally_open and rB.strain > self.life["strain_break"]:
+                            self.end_pact(f, y, "refused")
+                    if info[13] <= -self.life["call_effort"]:
+                        return                     # the party turns home
+                    help = None                    # it goes alone
+                    alone_note = f"; {B.name} {'would not' if ans == 'refuse' else 'could not'} come, so it went alone"
+                else:
+                    rB.ka += 1
             pos = {k: w for k, w in why.items() if w > 0}
             tot = sum(pos.values()) or 1.0
             drivers = sorted((k for k, w in pos.items() if w >= self.life["driver_share"] * tot),
@@ -1528,6 +1642,11 @@ class World:
                 second = self.story_reason(f, x, r, drivers[1], "restless", about)
                 if second not in reason:
                     reason += "; and " + second
+            if r.ally_open:
+                ch = f.chief()
+                oath = f"the oath sworn with {tn} against {self.tname(r.ally_vs)}"
+                reason += (f"; {ch.name} broke {oath}" if ch.uid == r.ally_by else
+                           f"; {ch.name} had not sworn {oath}")
             if self.t < r.truce_until:
                 ch = f.chief()
                 if ch.uid == r.truce_by:
@@ -1536,8 +1655,14 @@ class World:
                     reason += f"; this {ch.name} had not sworn the last one's truce"
                 else:
                     reason += f"; {ch.name} had not sworn {r.truce_name}'s truce"
-            e = self.send(f, x, n, A, carry, act, reason, speaker=f"{v.name} ({v.role})",
-                          chief_leads=chief_leads or (act == "invasion" and c.name == "raider"))
+            if help is None:
+                e = self.send(f, x, n, A, carry, act, reason + alone_note, speaker=f"{v.name} ({v.role})",
+                              chief_leads=chief_leads or (act == "invasion" and c.name == "raider"))
+            else:
+                reason += f"; beside {B.name}, sworn against {tn}"
+                e = self.joint_send(f, x, (n, A, carry), chief_leads or (act == "invasion" and c.name == "raider"),
+                                    B, help, act, reason, speaker=f"{v.name} ({v.role})")
+                self.after_joint(f, B, x, e, AB_hat)
             e["motive"] = top
             e["drivers"] = drivers
             e["occasion"] = kind
@@ -1551,11 +1676,25 @@ class World:
                     v.standing = max(0.2, v.standing * 0.7)
                     f.voices[-1].standing = min(3.0, f.voices[-1].standing + 0.3)
         elif act == "demand":
-            T, X, trust, rung = info
+            T, X, trust, rung, ally = info
             reason = self.story_reason(f, x, r, "demand", kind, about)
-            e = self.demand(f, x, T, self.expected_loss(f, x, rung), speaker=f"{v.name} ({v.role})", reason=reason)
+            if ally is not None:
+                reason += f"; {self.factions[ally[0]].name} would come with us"
+            e = self.demand(f, x, T, self.expected_loss(f, x, rung, ally), speaker=f"{v.name} ({v.role})",
+                            reason=reason, ally=ally)
             e["motive"] = "demand"
             e["occasion"] = kind
+        elif act == "pact":
+            y, why, solo_u = info
+            B = self.factions[y]
+            ok = self.answer_pact(B, f, x)
+            if ok:
+                self.swear(f, B, x)
+            else:
+                f.rel[y].pact_refused = t
+            self.touches += 1
+            self.log(f, "pact", y, reason=f"{v.name} sent to {B.name} to swear against {tn}", accepted=ok, vs=x,
+                     speaker=f"{v.name} ({v.role})", occasion=kind)
         elif act == "scout":
             self.scout(f, x, f"{v.name} wanted to know how strong {tn} is", speaker=f"{v.name} ({v.role})")
             self.events[-1]["occasion"] = kind
@@ -1602,7 +1741,8 @@ class World:
         news = (f"word came that {tn} was away; " if x in self.players else
                 "word came that the trains ride without guards; " if x == "RAIL" else f"word came that {tn} was weak; ")
         occ = {"provoked": "", "refused": "", "news": news,
-               "caravan": "a caravan came by; ", "train": "a train came through; ", "restless": ""}[kind]
+               "caravan": "a caravan came by; ", "train": "a train came through; ", "restless": "",
+               "allied": f"newly sworn against {tn}; "}[kind]
         if top == "revenge":
             if mem:
                 return occ + "revenge: " + mem
@@ -1625,6 +1765,531 @@ class World:
                 return occ + f"asking tribute again ({kind_mem[0][2]})"
             return occ + f"asking tribute of {tn}"
         return occ + "loot"
+
+    # ------------------------------------------------------------------------------- alliances
+    # Section 2.16. Every draw here comes from self.arng, never the world's stream.
+    def allied(self, f, x):
+        r = f.rel.get(x)
+        return r is not None and r.ally_open
+
+    def sworn_vs(self, f, x):
+        """f has sworn a pact against x."""
+        return any(rr.ally_open and rr.ally_vs == x for rr in f.rel.values())
+
+    def allies_against(self, f, x):
+        """f's sworn allies against x that reach it and live."""
+        out = []
+        for y, rB in f.rel.items():
+            if rB.ally_open and rB.ally_vs == x:
+                B = self.factions[y]
+                if not B.dead and x in B.rel:
+                    out.append((B, rB))
+        return out
+
+    def council_mean(self, f):
+        """The council's temper with no speaker drawn: how a camp answers what another camp asks of it."""
+        vs = f.voices
+        w = [v.standing for v in vs]
+        tot = sum(w)
+        return tuple(sum(wi * getattr(v, k) for wi, v in zip(w, vs)) / tot for k in ("bold", "aggr", "soc"))
+
+    def mean_dhat(self, f, x, bold):
+        """The camp's guess of x's defence at the middle of its belief (no Thompson draw)."""
+        r = f.rel[x]
+        D = math.exp(r.mu - self.life["bold_shift"] * (bold - 0.5))
+        fl = self.floor_now(f, r) if r.floor > 0 else 0.0
+        if self.t < r.away_until:
+            D *= 0.5
+            fl *= 0.5
+        return max(D, fl)
+
+    def draw_dhat(self, f, x, bold):
+        """decide's Thompson guess of x's defence, drawn on the alliance stream (a council answering an
+        ally's call)."""
+        r = f.rel[x]
+        D = math.exp(r.mu + math.sqrt(r.s2) * self.arng.normal() - self.life["bold_shift"] * (bold - 0.5))
+        fl = self.floor_now(f, r) if r.floor > 0 else 0.0
+        if self.t < r.away_until:
+            D *= 0.5
+            fl *= 0.5
+        return max(D, fl)
+
+    def motives(self, f, x, bold, aggr):
+        """decide's revenge, pride, glory, preempt and penalty toward x, for a council that is not
+        sitting (it answers an ally): the same terms with the council's mean temper."""
+        c, L, t = f.c, self.life, self.t
+        r = f.rel[x]
+        g = r.g
+        rev = c.rev_max * (0.5 + aggr) * g / (g + 100)
+        pride = c.pride_w * (0.5 + aggr) * min(r.W, 1.5)
+        glory = c.glory_w * f.restless(t) * (2.0 if t < f.heir_until else 1.0) * (0.5 + bold)
+        penalty = 0.0
+        if t < r.truce_until:
+            penalty = c.oath * (1.5 - aggr) * (L["sworn_mult"] if f.chief().uid == r.truce_by else 1.0)
+        if x in self.factions and self.factions[x].c.name == c.name:
+            penalty += c.kin_cost
+        if x in self.players and r.ta > 1.5:
+            penalty += L["tributary"] * (r.ta - 1) / (r.ta + r.tb - 2 + 1e-9)
+        if x in self.factions and r.sigma == 0 and not self.sworn_vs(f, x):
+            penalty += L["peace_cost"] * (1 - min(1.0, g / 30)) * (1 - min(1.0, r.W))
+        if r.ally_open:
+            penalty += c.oath * (1.5 - aggr) * (L["sworn_mult"] if f.chief().uid == r.ally_by else 1.0) \
+                + L["betray_cost"]
+        if x in self.factions:
+            penalty += self.deterrence(f, x)
+        preempt = 0.0
+        if x in self.factions and c.preempt_w > 0:
+            tc = self.factions[x].c
+            ratio = math.exp(r.mu) / (tc.home_str * tc.guard_share) / max(f.pool, 1.0)
+            preempt = c.preempt_w * min(1.0, max(0.0, ratio - 1.2))
+        return rev, pride, glory, preempt, penalty
+
+    def war_worth(self, f, x, n, A, carry, carry_all, Dhat, stock, mot, fearm):
+        """decide's worth of a war party, for f's own n members in a fight of strength A (both
+        contingents) that brings home carry_all, of which f keeps its carry's share."""
+        c, L = f.c, self.life
+        h = f.hunger()
+        room = f.store_room()
+        vloot = L["loot_base"] + c.greed * h
+        pw, lw = believed(A, Dhat, "square" if x in self.players else "linear", L["battle_doubt"])
+        lost = n * (pw * lw + (1 - pw))
+        take_all = min(carry_all * (1 - lw), stock)
+        take = take_all * carry / carry_all if carry_all > 0 else 0.0
+        gain = pw * (min(take, room) * vloot + max(0.0, take - room) * L["surplus"])
+        need = pw * min(take, room) * c.greed * h
+        cost = c.warrior_value * lost * fearm + L["effort_member"] * n + c.effort
+        rev, pride, glory, preempt, penalty = mot
+        hope = 0.25 + 0.75 * pw
+        u = gain - cost + rev + pride * hope + glory + preempt - penalty
+        why = {"hunger": need, "loot": gain - need, "revenge": rev, "pride": pride * hope, "glory": glory,
+               "preempt": preempt}
+        return u, pw, take, take_all, why
+
+    def war_options(self, f, x, Dhat, stock, mot, fearm, B):
+        """Each party f could send on x beside B as f believes B would help (B None: alone).
+        Returns [(worth, act, info, gated)], info as decide's war options plus the ally's part."""
+        c, t = f.c, self.t
+        out = []
+        for rung in SIZE_ORDER:
+            size = c.party[rung][0]
+            if size == 0 or f.home() < max(1.0, size / 2):
+                continue
+            n, A, carry = f.muster(rung)
+            if n <= 0 or A <= 0:
+                continue
+            chief_leads = gated = False
+            if rung == 5 and c.invasion_pride > 0:
+                if not f.has_chief(t):
+                    continue
+                gated = f.rel[x].W < c.invasion_pride
+                A += c.chief_str
+                chief_leads = True
+            if B is None:
+                hb = (0, 0.0, 0.0, None)
+            else:
+                hb = self.believed_help(f, B, rung)
+                if hb is None:
+                    continue
+            nB, AB, carryB, rungB = hb
+            u, pw, take, take_all, why = self.war_worth(f, x, n, A + AB, carry, carry + carryB, Dhat, stock, mot,
+                                                        fearm)
+            info = (n, A, carry, chief_leads, why, pw, take)
+            if B is not None:
+                alone = -1e9 if gated else self.war_worth(f, x, n, A, carry, carry, Dhat, stock, mot, fearm)[0]
+                info += (B.id, rungB, nB, AB, carryB, take_all, alone)
+            out.append((u, ACT_OF[rung], info, gated))
+        return out
+
+    def call_worth(self, rB, joint_u, alone_u):
+        """A joint party's worth before the call: beside the ally at the chance it comes (its record),
+        else alone if that is worth more than turning home (which costs the call's effort)."""
+        trust = rB.ka / (rB.ka + rB.kb)
+        return trust * joint_u + (1 - trust) * max(alone_u, -self.life["call_effort"])
+
+    def believed_help(self, f, B, rung):
+        """What f believes ally B would send beside a party of this rung: B's largest party no bigger,
+        from the members f believes B has (its guess of B's defence). The grove's invasion waits on the
+        Umvuthi's own pride, which no ally can count on."""
+        cB = B.c
+        pool_hat = min(cB.pool_cap, math.exp(f.rel[B.id].mu) / (cB.home_str * cB.guard_share))
+        for rr in reversed(SIZE_ORDER[:SIZE_ORDER.index(rung) + 1]):
+            size = cB.party[rr][0]
+            if size <= 0 or pool_hat < max(1.0, size / 2) or (rr == 5 and cB.invasion_pride > 0):
+                continue
+            n, A, carry = muster_of(cB, pool_hat, rr)
+            if n > 0 and A > 0:
+                return n, A, carry, rr
+        return None
+
+    def help_rung(self, B, x, rung):
+        """The largest party B could send when called beside a party of this rung, or None."""
+        hs = self.help_rungs(B, x, rung)
+        return hs[0] if hs else None
+
+    def help_rungs(self, B, x, rung):
+        """The parties B can truly send when called beside a party of this rung, largest first: those
+        no bigger that it can muster today; the grove sends its invasion only with its Umvuthi and
+        wounded pride. Each is (n, A, carry, rung, chief rides)."""
+        cB, t = B.c, self.t
+        out = []
+        for rr in reversed(SIZE_ORDER[:SIZE_ORDER.index(rung) + 1]):
+            size = cB.party[rr][0]
+            if size <= 0 or B.home() < max(1.0, size / 2):
+                continue
+            n, A, carry = B.muster(rr)
+            if n <= 0 or A <= 0:
+                continue
+            chief = rr == 5 and cB.name == "raider"
+            if rr == 5 and cB.invasion_pride > 0:
+                if not B.has_chief(t) or B.rel[x].W < cB.invasion_pride:
+                    continue
+                A += cB.chief_str
+                chief = True
+            out.append((n, A, carry, rr, chief))
+        return out
+
+    def enemy(self, f, x):
+        """x is someone f has a quarrel with: standing hate or industry, a grudge or wounded pride."""
+        r = f.rel.get(x)
+        return r is not None and (r.sigma > 0 or r.g >= 30 or r.W >= 0.5)
+
+    def pact_ok(self, f, y, x):
+        """Could f swear with camp y against x? Both reach each other and x, both quarrel with x (or one
+        does and the other is its kin), y lives and makes alliances, neither is already sworn to the
+        other or to x, and neither is sworn against the other."""
+        if y not in self.factions or y == x or self.allied(f, y) or self.allied(f, x) or self.sworn_vs(f, y):
+            return False
+        B = self.factions[y]
+        if B.dead or B.c.ally_w <= 0 or f.id not in B.rel or x not in B.rel or self.allied(B, x) \
+                or self.sworn_vs(B, f.id):
+            return False
+        if x in self.factions and self.factions[x].dead:
+            return False
+        ef, eb = self.enemy(f, x), self.enemy(B, x)
+        return (ef and eb) or (f.c.name == B.c.name and (ef or eb))
+
+    def affinity(self, f, B, aggr):
+        """What swearing with B is worth to f for who B is: kin, hated, and old grudges and insults."""
+        L, c = self.life, f.c
+        a = L["kin_pact"] if f.c.name == B.c.name else 0.0
+        if B.c.name in HATES[c.name] or c.name in HATES[B.c.name]:
+            a -= L["hate_pact"]
+        ry = f.rel[B.id]
+        return a - c.rev_max * (0.5 + aggr) * ry.g / (ry.g + 100) - c.pride_w * (0.5 + aggr) * min(ry.W, 1.5)
+
+    def danger(self, f, x):
+        """How much f fears x, 0 to 1: the members x killed lately (a tenth of the camp is full danger),
+        and for a camp, how far its strength as f believes it passes f's own defence."""
+        r = f.rel[x]
+        d = min(1.0, r.hurt / (0.1 * max(f.c.pool_cap, 1.0)))
+        if x in self.factions:
+            d = max(d, min(1.0, max(0.0, math.exp(r.mu) / max(f.defence(), 1.0) - 1.0)))
+        return d
+
+    def guard(self, f, B, x):
+        """What B at f's side is worth against x for safety alone: the danger, by B's strength against
+        x's, as f believes both."""
+        dz = self.danger(f, x)
+        if dz <= 0:
+            return 0.0
+        ratio = math.exp(f.rel[B.id].mu - f.rel[x].mu) if x in self.factions else 1.0
+        return self.life["ally_guard"] * dz * min(1.0, ratio)
+
+    def deterrence(self, f, x):
+        """What falling on camp x costs f for x's sworn allies that f knows and that can reach f: each
+        counts by its strength against f's own defence, as f believes it."""
+        tg = self.factions[x]
+        cost = 0.0
+        for y, ry in tg.rel.items():
+            if ry.ally_open and y != f.id and y in f.rel and f.id in self.factions[y].rel \
+                    and not self.factions[y].dead:
+                cost += self.life["deter"] * min(1.0, math.exp(f.rel[y].mu) / max(f.defence(), 1.0))
+        return cost
+
+    def pact_worth(self, f, B, x, Dhat, stock, mot, fearm, soc, aggr, solo_u):
+        """What a pact with B against x is worth to f: the gain of the best joint war it would allow, at
+        the chance B comes, over the best war f can make alone (none is 0), and B's worth for safety
+        against x (guard); scaled by the culture's taste for alliances and the council's sociability;
+        then who B is, and the effort of asking. Returns (worth, reason): the reason is the sum of the
+        gain and the guard, which must be above 0 for the camp to ask."""
+        ry = f.rel[B.id]
+        opts = [self.call_worth(ry, o[0], o[2][13]) for o in self.war_options(f, x, Dhat, stock, mot, fearm, B)
+                if not o[3]]
+        gain = max(opts) - max(0.0, solo_u if solo_u is not None else 0.0) if opts else 0.0
+        why = max(0.0, gain) + self.guard(f, B, x)
+        u = f.c.ally_w * (0.5 + soc) * why + self.affinity(f, B, aggr) - self.life["pact_effort"]
+        return u, why
+
+    def pact_option(self, f, x, Dhat, stock, mot, fearm, soc, aggr, solo_u):
+        """The sitting's best offer of a pact against x, or None: a candidate it is calm toward, who did
+        not turn it down in the last 48 days."""
+        t = self.t
+        best = None
+        for y, ry in f.rel.items():
+            if y not in self.factions or ry.g >= 30 or ry.W >= 0.5 or t - ry.pact_refused < 48:
+                continue
+            if not self.pact_ok(f, y, x):
+                continue
+            u, why = self.pact_worth(f, self.factions[y], x, Dhat, stock, mot, fearm, soc, aggr, solo_u)
+            # a camp sends to swear only when, as it sees x today, it would do better or be safer beside y
+            if why > 0 and (best is None or u > best[0]):
+                best = (u, "pact", x, (y, why, solo_u))
+        return best
+
+    def answer_pact(self, B, f, x):
+        """B's answer to f's offer, by its council's mean temper and its mean belief of x: the same
+        worth f weighed, from B's side, through B's logit against refusing (0). A camp that is asked
+        weighs the pact even when it sees no joint war worth making today."""
+        rb = B.rel.get(f.id)
+        if rb is None or rb.g >= 30 or rb.W >= 0.5 or not self.pact_ok(B, f.id, x):
+            self.arng.random()
+            return False
+        bold, aggr, soc = self.council_mean(B)
+        Dh = self.mean_dhat(B, x, bold)
+        stock = self.believed_stock(x, B.rel[x])
+        mot = self.motives(B, x, bold, aggr)
+        fearm = 1 + B.c.fear_w * B.fear * (1.5 - bold)
+        solo = [o[0] for o in self.war_options(B, x, Dh, stock, mot, fearm, None) if not o[3]]
+        u, _ = self.pact_worth(B, f, x, Dh, stock, mot, fearm, soc, aggr, max(solo) if solo else None)
+        tau = B.c.tau * self.life["tau_mult"] * (0.75 + 0.5 * aggr)
+        return self.arng.random() < 1 / (1 + math.exp(min(50.0, -u / tau)))
+
+    def answer_call(self, B, f, x, rung, own):
+        """B is called to fight x beside f's party `own` (n, A, carry). It sends the party it can muster
+        that is worth most to it, no bigger than the caller's (help_rungs), or refuses: joining is
+        weighed as its own war beside f's party, against what refusing costs its honour. A camp that
+        cannot send refuses with no blame. Returns (join, refuse or busy; its party)."""
+        t = self.t
+        self.call_u = (None, None)
+        if B.dead or t < B.busy_until or not self.allied(f, B.id) or x not in B.rel:
+            return "busy", None
+        hps = self.help_rungs(B, x, rung)
+        if not hps:
+            return "busy", None
+        # the caller's envoy tells what it knows of x, and B's council sits on it with a guess of its own
+        a, b = f.rel[x], B.rel[x]
+        self.observe(b, math.exp(a.mu), math.sqrt(a.s2 + 0.09))
+        b.floor, b.floor_t = max(self.floor_now(B, b), self.floor_now(f, a)), t
+        bold, aggr, soc = self.council_mean(B)
+        Dh = self.draw_dhat(B, x, bold)
+        stock = self.believed_stock(x, B.rel[x])
+        mot = self.motives(B, x, bold, aggr)
+        fearm = 1 + B.c.fear_w * B.fear * (1.5 - bold)
+        n, A, carry = own
+        u_join, hp = max(((self.war_worth(B, x, h[0], h[1] + A, h[2], h[2] + carry, Dh, stock, mot, fearm)[0], h)
+                          for h in hps), key=lambda q: q[0])
+        # refusing shames the oath, as breaking a truce does in part: most for the chief who swore it
+        rB = B.rel[f.id]
+        u_ref = -self.life["call_honour"] * B.c.oath * (1.5 - aggr) * \
+            (self.life["sworn_mult"] if B.chief().uid == rB.ally_by else 1.0)
+        tau = B.c.tau * self.life["tau_mult"] * (0.75 + 0.5 * aggr)
+        p = 1 / (1 + math.exp(max(-50.0, min(50.0, (u_ref - u_join) / tau))))
+        self.call_u = (round(u_join, 1), round(u_ref, 1))
+        return ("join" if self.arng.random() < p else "refuse"), hp
+
+    def swear(self, f, B, x):
+        """f and B swear against x until a lapse drawn now; each tells the other what it knows of x and
+        sits on it within a few days."""
+        t, ar = self.t, self.arng
+        until = t + ar.exponential(self.life["pact_days"])
+        for me, other in ((f, B), (B, f)):
+            rr = me.rel[other.id]
+            rr.ally_open = True
+            rr.ally_until = until
+            rr.ally_by = me.chief().uid
+            rr.ally_name = me.chief().name
+            rr.ally_vs = x
+            rr.ally_since = t
+            rr.strain = 0.0
+        a, b = f.rel[x], B.rel[x]
+        am, as2, bm, bs2 = a.mu, a.s2, b.mu, b.s2
+        self.observe(a, math.exp(bm), math.sqrt(bs2 + 0.09))
+        self.observe(b, math.exp(am), math.sqrt(as2 + 0.09))
+        fl = max(self.floor_now(f, a), self.floor_now(B, b))
+        for rr in (a, b):
+            rr.floor, rr.floor_t = fl, t
+        for me in (f, B):
+            self.occasion(me, "allied", x, delay=1 + ar.exponential(2.0))
+        self.touches += 2
+
+    def end_pact(self, f, y, why):
+        t = self.t
+        r = f.rel[y]
+        rr = self.factions[y].rel.get(f.id)
+        for q in (r, rr):
+            if q is not None:
+                q.ally_open = False
+                q.ally_until = -1.0
+                q.strain = 0.0
+        self.log(f, "pact_end", y, reason=f"the pact of {f.name} and {self.factions[y].name} against "
+                 f"{self.tname(r.ally_vs)} ended ({why})", why=why, days=round(t - r.ally_since), vs=r.ally_vs)
+
+    def betray(self, f, y):
+        """f fell on its sworn ally y: the pact ends, y takes it as the gravest insult, and every camp
+        that knows f trusts its word less."""
+        t = self.t
+        g = self.factions[y]
+        self.end_pact(f, y, "betrayed")
+        rr = g.rel.get(f.id)
+        if rr is not None:
+            rr.W = min(2.0, rr.W + 1.0)
+            rr.g += 40
+            self.remember(g, f.id, 3.0, f"{f.name} broke its oath and fell on us {self.when(t)}")
+        for h in self.factions.values():
+            if h.id != f.id and f.id in h.rel:
+                h.rel[f.id].kb += 1
+
+    def provoke_allies(self, x, attacker):
+        """An attack on camp x angers x's sworn allies at the attacker; one sworn to both is torn."""
+        tg = self.factions[x]
+        for y, ry in tg.rel.items():
+            if not ry.ally_open or y == attacker.id:
+                continue
+            h = self.factions[y]
+            rh = h.rel.get(attacker.id)
+            if h.dead or rh is None:
+                continue
+            rh.g += 10
+            rh.W = min(2.0, rh.W + 0.2)
+            self.remember(h, attacker.id, 1.0, f"{attacker.name} raided {tg.name}, our ally, {self.when(self.t)}")
+            if rh.ally_open:
+                rh.strain += 1
+                if rh.strain > self.life["strain_break"]:
+                    self.end_pact(h, attacker.id, "torn")
+            self.occasion(h, "provoked", attacker.id, delay=1 + self.arng.exponential(2 + 4 * (1 - h.chief().aggr)))
+
+    def joint_send(self, f, x, own, chief_leads, B, help, act, reason, speaker=""):
+        """f and its ally B fight x together: one fight on the sum of both contingents (the engine's
+        fight, certain); each loses the same share of its members; the take is split by carry; each camp
+        books its own dead (and, at a player's base, its own pressure). Returns the event."""
+        t, ar = self.t, self.arng
+        n, A, carry = own
+        nB, AB, carryB, rungB, chiefB = help
+        d = self.target_defence(x)
+        win, la, ld = battle(A + AB, d, "square" if x in self.players else "linear")
+        dead, deadB = round(n * la, 1), round(nB * la, 1)
+        e = self.log(f, act, x, reason=reason, speaker=speaker, win=win, dead=dead, size=n, A=round(A, 1),
+                     d=round(d, 1), ally=B.id, ally_size=nB, ally_dead=deadB, ally_A=round(AB, 1),
+                     ally_act=ACT_OF[rungB])
+        away = x in self.players and t < self.players[x].away_until
+        tn = self.tname(x)
+        loot_all = min((carry + carryB) * (1 - la), self.target_stock(x)) if win else 0.0
+        betrayers = [g for g in (f, B) if x in self.factions and self.allied(g, x)]
+        for g, other, k, kdead, kcarry, lead in ((f, B, n, dead, carry, chief_leads),
+                                                  (B, f, nB, deadB, carryB, chiefB)):
+            g.last_fight = t
+            g.busy_until = t + 2
+            g.pool = max(0.0, g.pool - kdead)
+            back = k - kdead
+            if back > 0:
+                g.out.append((t + ar.uniform(1, 3), back, lead and win))
+                g.away += back
+                g.chief_out = g.chief_out or (lead and win)
+            g.fear = min(1.0, g.fear + kdead / max(g.c.pool_cap, 1) * 2 + (0.2 if not win else 0))
+            r = g.rel.get(x)
+            if r is not None:
+                self.observe(r, 2 * d if away else d, 0.3 if away else 0.15)
+            if win:
+                g.stores += loot_all * kcarry / (carry + carryB)
+                if r is not None:
+                    r.g *= 0.5
+                    r.W *= 0.3
+            elif r is not None:
+                r.cowed_until = t + g.c.cowed
+                r.floor = max(self.floor_now(g, r), (A + AB) * (2.0 if away else 1.0))
+                r.floor_t = t
+                r.W = min(2.0, 0.6 * r.W + 0.2)
+                nd = f"{kdead:.0f}"
+                what = (f"we lost {nd} at {tn} beside {other.name}" if nd != "0"
+                        else f"{tn} drove us and {other.name} off")
+                self.remember(g, x, 1.0 + kdead / 5, f"{what} {self.when(t)}")
+            if lead and g.c.council and g.has_chief(t):
+                if not win or ar.random() < 0.1 * la:
+                    killer = x if x in self.players or x in self.factions else None
+                    self.succeed(g, killer, f"fell leading the attack on {tn}")
+            if x in self.players:
+                self.player_loss(g, kdead)
+                if r is not None and kdead > 0:
+                    r.g += g.c.kill_w * kdead
+        if win:
+            e["loot"] = round(loot_all, 1)
+            e["ally_loot"] = round(loot_all * carryB / (carry + carryB), 1)
+        if x in self.factions:
+            tg = self.factions[x]
+            kd = tg.home() * tg.c.guard_share * ld
+            tg.pool = max(0.0, tg.pool - kd)
+            if win:
+                tg.stores -= loot_all
+            for g, other, Ag in ((f, B, A), (B, f, AB)):
+                rr = tg.rel.setdefault(g.id, Rel(g.id))
+                rr.g += tg.c.kill_w * kd * Ag / (A + AB) + 20
+                rr.hurt += kd * Ag / (A + AB)
+                rr.W = min(2.0, rr.W + 0.6 * (1 - rr.W / 2))
+                self.remember(tg, g.id, 1.5 + kd / 5, f"{g.name} and {other.name} raided us {self.when(t)}")
+                self.occasion(tg, "provoked", g.id, delay=1 + ar.exponential(2 + 4 * (1 - tg.chief().aggr)))
+            tg.fear = min(1.0, tg.fear + kd / max(tg.c.pool_cap, 1) * 2)
+            tg.last_fight = t
+            self.spread_news(x, "weak", tg.defence(), exclude={f.id, B.id}, rng=ar)
+        elif x in self.villages:
+            if win:
+                self.villages[x]["stock"] -= loot_all
+        elif x in self.players:
+            p = self.players[x]
+            if win:
+                p.stock -= loot_all
+            if p.kind == "adaptive" and win:
+                p.d += 6.0
+            if p.kind == "adaptive":
+                p.quiet = 0
+        for g in (f, B):
+            r = g.rel.get(x)
+            if r is not None:
+                self.look(r, x)
+        self.touches += 2 + (x in self.factions)
+        if x in self.factions:
+            for g in betrayers:
+                self.betray(g, x)
+            self.provoke_allies(x, f)
+            self.provoke_allies(x, B)
+        return e
+
+    def after_joint(self, f, B, x, e, AB_hat):
+        """What a joint fight leaves inside the pact: a win draws the two together, a defeat strains it
+        (the ally most, who followed), and an ally that sent less than was counted on is resented."""
+        rf, rb = f.rel[B.id], B.rel.get(f.id)
+        if e["win"]:
+            if rb is not None:
+                rb.ka += 1
+                rb.strain = max(0.0, rb.strain - 0.5)
+            rf.strain = max(0.0, rf.strain - 0.5)
+        else:
+            if rb is not None:
+                rb.strain += 1
+            rf.strain += 0.5
+        if e["ally_A"] < 0.8 * AB_hat:
+            rf.strain += 1
+            self.remember(f, B.id, 1.0, f"{B.name} sent too few against {self.tname(x)} {self.when(self.t)}")
+        if rf.ally_open and (rf.strain > self.life["strain_break"]
+                             or (rb is not None and rb.strain > self.life["strain_break"])):
+            self.end_pact(f, B.id, "strained")
+
+    def share_tribute(self, f, x, T, ally):
+        """A tribute paid under a joint threat: the ally takes its part and is bound by the same truce."""
+        y, _, share = ally
+        B = self.factions[y]
+        rb = B.rel.get(x)
+        B.stores += T * (1 - share)
+        if rb is None:
+            return
+        r = f.rel[x]
+        rb.ta += 1
+        rb.paid_until = r.paid_until
+        rb.truce_until = r.truce_until
+        rb.truce_by = B.chief().uid
+        rb.truce_name = B.chief().name
+        rb.g *= 1 - max(B.c.tribute_relief, 0.3)
+        rb.W *= 0.3
+        self.remember(B, x, 0.5, f"{self.tname(x)} paid us and {f.name} {T:.0f} {self.when(self.t)}", hostile=False)
 
     # ------------------------------------------------------------------------------- run
     def run(self):
@@ -1669,6 +2334,21 @@ LIFE_DEFAULTS = {
     "field_share": 0.15,        # share of a camp's strength out in the field, where a skirmish finds it
     "peace_cost": 8.0,          # falling on a camp with no quarrel and no old hate: making an enemy
     "driver_share": 0.25,       # a motive is named when it is at least this share of the push
+    # alliances (section 2.16); with "alliances" off the world is the one before them, draw for draw
+    "alliances": True,
+    "joint_demand": True,       # an envoy may name a joint war party as the threat
+    "pact_days": 192.0,         # mean days a pact runs before it lapses (exponential)
+    "hate_pact": 10.0,          # cost of swearing with a camp whose culture hates ours, or that ours hates
+    "kin_pact": 4.0,            # worth of swearing with a camp of our own culture
+    "pact_effort": 3.0,         # cost of sending to swear
+    "oath_binds": True,         # a party on the sworn foe calls the ally: it does not march alone first
+    "call_effort": 1.0,         # cost of calling an ally who does not come
+    "call_honour": 1.0,         # refusing a sworn ally's call costs this share of breaking a truce
+    "strain_break": 2.0,        # a pact breaks when the grievances inside it pass this
+    "strain_half": 96.0,        # days for that strain to halve
+    "betray_cost": 10.0,        # what falling on a sworn ally costs beyond the oath
+    "ally_guard": 8.0,          # what an ally is worth against a neighbour the camp fears, at full danger
+    "deter": 4.0,               # what each sworn ally of a camp adds to the cost of attacking it
 }
 
 

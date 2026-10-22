@@ -1,0 +1,192 @@
+# Alliances on against off, paired by seed (CONFLICT-LIFE.md 4.5). 64 seeds x 50 years.
+# extra/paired.py, then extra/base_an.py base.json
+== alone (64 seeds)
+  off: fights 7.324 camp 1.160 extinct 0.000 endless 0.000
+  on: fights 7.361 camp 1.158 extinct 0.000 endless 0.000
+  off frost_rail: ; gob_rail 0.000
+  off killed: 
+  off frostmaw fights: 
+  off joint: R1 0.0000 (won 0.0000)
+  on frost_rail: ; gob_rail 0.000
+  on killed: 
+  on frostmaw fights: 
+  on joint: R1 0.0363 (won 0.0359)
+== farmer (64 seeds)
+  off: fights 9.285 camp 1.186 extinct 0.000 endless 0.000
+  on: fights 9.333 camp 1.167 extinct 0.000 endless 0.000
+  P:Ben off: fights/yr 1.919 lost/yr 0.018 share lost 0.01 loot 92.32
+  P:Ben on: fights/yr 1.929 lost/yr 0.021 share lost 0.01 loot 92.88
+    paired on-off fights/yr +0.0100 (sd 0.2369, same 4/64, sign p 0.70)
+  off frost_rail: ; gob_rail 0.000
+  off killed: F1 1.725, F2 0.484
+  off frostmaw fights: F1|P:Ben 0.510, F2|P:Ben 1.391
+  off joint: R1 0.0000 (won 0.0000)
+  on frost_rail: ; gob_rail 0.000
+  on killed: F1 1.730, F2 0.490
+  on frostmaw fights: F1|P:Ben 0.497, F2|P:Ben 1.411
+  on joint: R1 0.0300 (won 0.0297)
+== fortress (64 seeds)
+  off: fights 7.292 camp 1.112 extinct 0.000 endless 0.000
+  on: fights 7.289 camp 1.103 extinct 0.000 endless 0.000
+  P:Ben off: fights/yr 0.125 lost/yr 0.125 share lost 1.00 loot 0.00
+  P:Ben on: fights/yr 0.125 lost/yr 0.121 share lost 0.97 loot 1.01
+    paired on-off fights/yr -0.0003 (sd 0.0556, same 9/64, sign p 0.18)
+  off frost_rail: ; gob_rail 0.000
+  off killed: 
+  off frostmaw fights: 
+  off joint: P:Ben 0.0000 (won 0.0000), R1 0.0000 (won 0.0000)
+  on frost_rail: ; gob_rail 0.000
+  on killed: 
+  on frostmaw fights: 
+  on joint: P:Ben 0.0072 (won 0.0041), R1 0.0322 (won 0.0319)
+== multi (64 seeds)
+  off: fights 4.905 camp 0.580 extinct 0.000 endless 0.000
+  on: fights 4.837 camp 0.571 extinct 0.000 endless 0.000
+  P:Ash off: fights/yr 0.333 lost/yr 0.133 share lost 0.40 loot 24.53
+  P:Ash on: fights/yr 0.322 lost/yr 0.132 share lost 0.41 loot 23.62
+    paired on-off fights/yr -0.0116 (sd 0.0811, same 9/64, sign p 0.79)
+  P:Bea off: fights/yr 0.140 lost/yr 0.001 share lost 0.00 loot 24.67
+  P:Bea on: fights/yr 0.141 lost/yr 0.001 share lost 0.00 loot 24.83
+    paired on-off fights/yr +0.0012 (sd 0.0669, same 9/64, sign p 0.59)
+  off frost_rail: ; gob_rail 0.000
+  off killed: 
+  off frostmaw fights: 
+  off joint: P:Ash 0.0000 (won 0.0000), R1 0.0000 (won 0.0000)
+  on frost_rail: ; gob_rail 0.000
+  on killed: 
+  on frostmaw fights: 
+  on joint: P:Ash 0.0034 (won 0.0025), R1 0.0128 (won 0.0125)
+== railway (64 seeds)
+  off: fights 8.259 camp 0.752 extinct 0.000 endless 0.000
+  on: fights 8.396 camp 0.776 extinct 0.000 endless 0.000
+  P:rail off: fights/yr 0.167 lost/yr 0.000 share lost 0.00 loot 20.39
+  P:rail on: fights/yr 0.161 lost/yr 0.000 share lost 0.00 loot 19.44
+    paired on-off fights/yr -0.0059 (sd 0.0733, same 6/64, sign p 0.69)
+  off frost_rail: ambush 0.362, guards 0.048, warn 2.193; gob_rail 2.537
+  off killed: 
+  off frostmaw fights: F2|RAIL 0.362
+  off joint: R1 0.0000 (won 0.0000)
+  on frost_rail: ambush 0.368, guards 0.045, warn 2.180; gob_rail 2.542
+  on killed: 
+  on frostmaw fights: F2|RAIL 0.368
+  on joint: R1 0.0116 (won 0.0116)
+
+# The warm arm: extra/warm_an.py base.json warm.json
+== alone 64
+ off: fights 7.324 camp 1.160 extinct 0.000 endless 0.000
+   joint: {}
+   ally a year: {'busy': 0.0, 'calls': 0.0, 'joined': 0.0, 'joint': 0.0, 'joint_camp': 0.0, 'joint_demands': 0.0, 'joint_lost': 0.0, 'joint_player': 0.0, 'joint_player_lost': 0.0, 'joint_village': 0.0, 'offers': 0.0, 'refused': 0.0, 'sworn': 0.0}
+   ends a world-year: {}
+   pairs: []
+ on: fights 7.361 camp 1.158 extinct 0.000 endless 0.000
+   joint: {'R1': (0.0363, 0.0359)}
+   ally a year: {'busy': 0.0041, 'calls': 0.0775, 'joined': 0.0362, 'joint': 0.0362, 'joint_camp': 0.0362, 'joint_demands': 0.0, 'joint_lost': 0.0003, 'joint_player': 0.0, 'joint_player_lost': 0.0, 'joint_village': 0.0, 'offers': 0.2291, 'refused': 0.0372, 'sworn': 0.1462}
+   pact days median 105.0 mean 148 n 457
+   ends a world-year: {'lapsed': 0.115, 'betrayed': 0.0256, 'refused': 0.0022}
+   pairs: [('G1-G2 vs R1', 468)]
+ warm: fights 7.101 camp 1.076 extinct 0.000 endless 0.000
+   joint: {'R1': (0.0497, 0.0491), 'G1': (0.0022, 0.0019), 'G2': (0.0003, 0.0003)}
+   ally a year: {'busy': 0.0041, 'calls': 0.1144, 'joined': 0.0522, 'joint': 0.0522, 'joint_camp': 0.0522, 'joint_demands': 0.0, 'joint_lost': 0.0009, 'joint_player': 0.0, 'joint_player_lost': 0.0, 'joint_village': 0.0, 'offers': 0.3491, 'refused': 0.0581, 'sworn': 0.1638}
+   pact days median 174.5 mean 238 n 496
+   ends a world-year: {'lapsed': 0.1003, 'betrayed': 0.0519, 'strained': 0.0006, 'refused': 0.0022}
+   pairs: [('G1-G2 vs R1', 508), ('B1-R1 vs G1', 9), ('G1-R1 vs G2', 4), ('G2-R1 vs G1', 2), ('G1-R1 vs B1', 1)]
+== fortress 64
+ off: fights 7.292 camp 1.112 extinct 0.000 endless 0.000
+   joint: {}
+   P:Ben: fights 0.125 lost 0.125 share 1.00 loot 0.00
+   ally a year: {'busy': 0.0, 'calls': 0.0, 'joined': 0.0, 'joint': 0.0, 'joint_camp': 0.0, 'joint_demands': 0.0, 'joint_lost': 0.0, 'joint_player': 0.0, 'joint_player_lost': 0.0, 'joint_village': 0.0, 'offers': 0.0, 'refused': 0.0, 'sworn': 0.0}
+   ends a world-year: {}
+   pairs: []
+ on: fights 7.289 camp 1.103 extinct 0.000 endless 0.000
+   joint: {'R1': (0.0322, 0.0319), 'P:Ben': (0.0072, 0.0041)}
+   P:Ben: fights 0.125 lost 0.121 share 0.97 loot 1.01
+   ally a year: {'busy': 0.0034, 'calls': 0.0922, 'joined': 0.0394, 'joint': 0.0394, 'joint_camp': 0.0322, 'joint_demands': 0.0228, 'joint_lost': 0.0034, 'joint_player': 0.0072, 'joint_player_lost': 0.0031, 'joint_village': 0.0, 'offers': 0.4569, 'refused': 0.0494, 'sworn': 0.1688}
+   pact days median 101.0 mean 154 n 533
+   ends a world-year: {'lapsed': 0.1359, 'betrayed': 0.0269, 'refused': 0.0034, 'strained': 0.0003}
+   pairs: [('G1-G2 vs R1', 513), ('G2-R1 vs P:Ben', 15), ('G2-U1 vs P:Ben', 12)]
+ warm: fights 7.232 camp 1.085 extinct 0.000 endless 0.000
+   joint: {'P:Ben': (0.0113, 0.0044), 'R1': (0.0581, 0.0581), 'B1': (0.0009, 0.0009), 'G1': (0.0025, 0.0025)}
+   P:Ben: fights 0.127 lost 0.123 share 0.97 loot 0.98
+   ally a year: {'busy': 0.0047, 'calls': 0.1516, 'joined': 0.0728, 'joint': 0.0728, 'joint_camp': 0.0616, 'joint_demands': 0.0437, 'joint_lost': 0.0069, 'joint_player': 0.0112, 'joint_player_lost': 0.0069, 'joint_village': 0.0, 'offers': 0.5656, 'refused': 0.0741, 'sworn': 0.18}
+   pact days median 175.0 mean 248 n 549
+   ends a world-year: {'lapsed': 0.1144, 'betrayed': 0.0512, 'refused': 0.005, 'strained': 0.0009}
+   pairs: [('G1-G2 vs R1', 512), ('G2-U1 vs P:Ben', 23), ('G2-R1 vs P:Ben', 19), ('B1-R1 vs G1', 14), ('G1-R1 vs B1', 5), ('G2-R1 vs G1', 2)]
+== multi 64
+ off: fights 4.905 camp 0.580 extinct 0.000 endless 0.000
+   joint: {}
+   P:Ash: fights 0.333 lost 0.133 share 0.40 loot 24.53
+   P:Bea: fights 0.140 lost 0.001 share 0.00 loot 24.67
+   ally a year: {'busy': 0.0, 'calls': 0.0, 'joined': 0.0, 'joint': 0.0, 'joint_camp': 0.0, 'joint_demands': 0.0, 'joint_lost': 0.0, 'joint_player': 0.0, 'joint_player_lost': 0.0, 'joint_village': 0.0, 'offers': 0.0, 'refused': 0.0, 'sworn': 0.0}
+   ends a world-year: {}
+   pairs: []
+ on: fights 4.837 camp 0.571 extinct 0.000 endless 0.000
+   joint: {'R1': (0.0128, 0.0125), 'P:Ash': (0.0034, 0.0025)}
+   P:Ash: fights 0.322 lost 0.132 share 0.41 loot 23.62
+   P:Bea: fights 0.141 lost 0.001 share 0.00 loot 24.83
+   ally a year: {'busy': 0.0006, 'calls': 0.0322, 'joined': 0.0163, 'joint': 0.0163, 'joint_camp': 0.0128, 'joint_demands': 0.0072, 'joint_lost': 0.0013, 'joint_player': 0.0034, 'joint_player_lost': 0.0009, 'joint_village': 0.0, 'offers': 0.2119, 'refused': 0.0153, 'sworn': 0.0887}
+   pact days median 90.0 mean 135 n 279
+   ends a world-year: {'lapsed': 0.0737, 'refused': 0.0009, 'betrayed': 0.0122, 'strained': 0.0003}
+   pairs: [('G1-G2 vs R1', 280), ('G1-R1 vs P:Ash', 4)]
+ warm: fights 4.872 camp 0.556 extinct 0.000 endless 0.000
+   joint: {'P:Bea': (0.0003, 0.0003), 'P:Ash': (0.0444, 0.035), 'R1': (0.0216, 0.0216), 'G1': (0.0003, 0.0003), 'B1': (0.0003, 0.0003)}
+   P:Ash: fights 0.372 lost 0.139 share 0.37 loot 33.19
+   P:Bea: fights 0.129 lost 0.000 share 0.00 loot 22.87
+   ally a year: {'busy': 0.0016, 'calls': 0.1412, 'joined': 0.0669, 'joint': 0.0669, 'joint_camp': 0.0222, 'joint_demands': 0.1559, 'joint_lost': 0.0094, 'joint_player': 0.0447, 'joint_player_lost': 0.0094, 'joint_village': 0.0, 'offers': 1.0606, 'refused': 0.0728, 'sworn': 0.1153}
+   pact days median 163.5 mean 249 n 346
+   ends a world-year: {'lapsed': 0.0719, 'betrayed': 0.02, 'refused': 0.0128, 'strained': 0.0034}
+   pairs: [('G1-G2 vs R1', 282), ('G1-R1 vs P:Ash', 72), ('G1-R1 vs P:Bea', 11), ('G1-R1 vs B1', 3), ('B1-R1 vs G1', 1)]
+
+# Pacts held at once: extra/bloc.py
+alone worlds by most pacts any camp held at once: {1: 64} pairs: [('G1-G2', 468)] against: [('R1', 468)]
+fortress worlds by most pacts any camp held at once: {1: 54, 2: 10} pairs: [('G1-G2', 513), ('G2-R1', 15), ('G2-U1', 12)] against: [('R1', 513), ('P:Ben', 27)]
+farmer worlds by most pacts any camp held at once: {1: 64} pairs: [('G1-G2', 480)] against: [('R1', 480)]
+railway worlds by most pacts any camp held at once: {1: 64} pairs: [('G1-G2', 388)] against: [('R1', 388)]
+multi worlds by most pacts any camp held at once: {1: 64} pairs: [('G1-G2', 280), ('G1-R1', 4)] against: [('R1', 280), ('P:Ash', 4)]
+
+# Umvuthana invasions on Ben at the farmer: extra/umv.py
+inv 65 won 0 fell same day 65 worlds 39
+[('word came that player Ben was away; honour: player Ben refus', 6), ('honour: player Ben refused our envoy in the summer of year 1', 5), ('honour: player Ben refused our envoy in the winter of year 1', 4), ('honour: player Ben refused our envoy in the spring of year 1', 4), ('honour: player Ben refused our envoy in the autumn of year 2', 4), ('honour: player Ben refused our envoy in the spring of year 2', 4), ('honour: player Ben refused our envoy in the spring of year 4', 3), ('honour: player Ben refused our envoy in the summer of year 4', 3)]
+[('the Umvuthi (chief)', 27), ('the Bliss mask (war)', 9), ('the Rage mask (war)', 7), ('the Faith mask (elder)', 6), ('the Misery mask (war)', 4), ('the Fear mask (war)', 3), ('the Rage mask (elder)', 3), ('the Fear mask (elder)', 2)]
+
+# Betrayals in the valley: extra/betray.py
+betrayals 82
+pairs Counter({('G2', 'G1'): 56, ('G1', 'G2'): 26})
+acts Counter({'invasion': 82})
+drivers [(('hunger',), 81), (('hunger', 'loot'), 1)]
+hunger in drivers 82
+not sworn 59 broke own 23
+
+# One knob at a time, and the warm arm paired (4.5, CL-7): extra/knobs_an.py base.json knobs.json warm.json
+# arms: long pact_days 384, easy pact_effort 1, kin6 kin_pact 6, hate6 hate_pact 6 (multi and fortress); warm all four (alone, fortress, multi); 64 seeds x 50 years
+alone on n 64: camp fights 1.158 (paired +0.0000, p 1); sworn 0.1462 offers 0.2291 joint 0.0362 demands 0.0000; pact median 105; betrayed 0.0256
+alone warm n 64: camp fights 1.076 (paired -0.0822, p 0.098); sworn 0.1638 offers 0.3491 joint 0.0522 demands 0.0000; pact median 174; betrayed 0.0519
+fortress on n 64: camp fights 1.103 (paired +0.0000, p 1); sworn 0.1688 offers 0.4569 joint 0.0394 demands 0.0228; pact median 101; betrayed 0.0269
+   P:Ben: fights 0.125 (paired +0.0000, p 1); loot 1.01 (paired +0.00, p 1); joint 0.0072 won 0.0041; pacts against 27
+fortress easy n 64: camp fights 1.089 (paired -0.0141, p 0.9); sworn 0.1844 offers 0.4781 joint 0.0528 demands 0.0269; pact median 106; betrayed 0.0244
+   P:Ben: fights 0.130 (paired +0.0053, p 0.5); loot 0.59 (paired -0.42, p 0.39); joint 0.0078 won 0.0031; pacts against 37
+fortress hate6 n 64: camp fights 1.101 (paired -0.0019, p 0.79); sworn 0.1762 offers 0.5444 joint 0.0422 demands 0.0244; pact median 94; betrayed 0.0306
+   P:Ben: fights 0.122 (paired -0.0028, p 0.58); loot 1.30 (paired +0.30, p 0.79); joint 0.0084 won 0.0053; pacts against 27
+fortress kin6 n 64: camp fights 1.086 (paired -0.0169, p 0.43); sworn 0.1797 offers 0.4428 joint 0.0416 demands 0.0109; pact median 92; betrayed 0.0288
+   P:Ben: fights 0.124 (paired -0.0013, p 0.39); loot 0.62 (paired -0.39, p 0.29); joint 0.0047 won 0.0025; pacts against 19
+fortress long n 64: camp fights 1.075 (paired -0.0278, p 0.79); sworn 0.1453 offers 0.3828 joint 0.0519 demands 0.0184; pact median 164; betrayed 0.0456
+   P:Ben: fights 0.114 (paired -0.0113, p 0.076); loot 0.41 (paired -0.60, p 0.27); joint 0.0056 won 0.0019; pacts against 22
+fortress warm n 64: camp fights 1.085 (paired -0.0178, p 1); sworn 0.1800 offers 0.5656 joint 0.0728 demands 0.0437; pact median 175; betrayed 0.0512
+   P:Ben: fights 0.127 (paired +0.0022, p 0.79); loot 0.98 (paired -0.02, p 1); joint 0.0112 won 0.0044; pacts against 42
+multi on n 64: camp fights 0.571 (paired +0.0000, p 1); sworn 0.0887 offers 0.2119 joint 0.0163 demands 0.0072; pact median 90; betrayed 0.0122
+   P:Ash: fights 0.322 (paired +0.0000, p 1); loot 23.62 (paired +0.00, p 1); joint 0.0034 won 0.0025; pacts against 4
+   P:Bea: fights 0.141 (paired +0.0000, p 1); loot 24.83 (paired +0.00, p 1); joint 0.0000 won 0.0000; pacts against 0
+multi easy n 64: camp fights 0.588 (paired +0.0169, p 0.9); sworn 0.0988 offers 0.3050 joint 0.0209 demands 0.0128; pact median 99; betrayed 0.0181
+   P:Ash: fights 0.327 (paired +0.0050, p 0.69); loot 24.34 (paired +0.71, p 0.9); joint 0.0069 won 0.0050; pacts against 12
+   P:Bea: fights 0.117 (paired -0.0244, p 0.0091); loot 20.60 (paired -4.22, p 0.0044); joint 0.0000 won 0.0000; pacts against 1
+multi hate6 n 64: camp fights 0.578 (paired +0.0072, p 0.38); sworn 0.0894 offers 0.6538 joint 0.0266 demands 0.0491; pact median 88; betrayed 0.0125
+   P:Ash: fights 0.334 (paired +0.0125, p 0.29); loot 27.09 (paired +3.47, p 0.16); joint 0.0144 won 0.0100; pacts against 30
+   P:Bea: fights 0.139 (paired -0.0019, p 0.3); loot 24.84 (paired +0.02, p 0.26); joint 0.0000 won 0.0000; pacts against 4
+multi kin6 n 64: camp fights 0.572 (paired +0.0009, p 0.67); sworn 0.0994 offers 0.2216 joint 0.0181 demands 0.0075; pact median 98; betrayed 0.0166
+   P:Ash: fights 0.342 (paired +0.0206, p 0.14); loot 25.00 (paired +1.38, p 0.4); joint 0.0031 won 0.0022; pacts against 6
+   P:Bea: fights 0.140 (paired -0.0016, p 1); loot 24.59 (paired -0.24, p 1); joint 0.0000 won 0.0000; pacts against 0
+multi long n 64: camp fights 0.540 (paired -0.0313, p 0.53); sworn 0.0778 offers 0.1903 joint 0.0163 demands 0.0059; pact median 168; betrayed 0.0191
+   P:Ash: fights 0.322 (paired -0.0000, p 0.87); loot 24.90 (paired +1.27, p 0.23); joint 0.0025 won 0.0022; pacts against 3
+   P:Bea: fights 0.146 (paired +0.0050, p 1); loot 25.86 (paired +1.04, p 0.76); joint 0.0000 won 0.0000; pacts against 0
+multi warm n 64: camp fights 0.556 (paired -0.0150, p 0.52); sworn 0.1153 offers 1.0606 joint 0.0669 demands 0.1559; pact median 164; betrayed 0.0200
+   P:Ash: fights 0.372 (paired +0.0503, p 0.00018); loot 33.19 (paired +9.56, p 7.7e-05); joint 0.0444 won 0.0350; pacts against 72
+   P:Bea: fights 0.129 (paired -0.0122, p 0.37); loot 22.87 (paired -1.95, p 0.45); joint 0.0003 won 0.0003; pacts against 11
