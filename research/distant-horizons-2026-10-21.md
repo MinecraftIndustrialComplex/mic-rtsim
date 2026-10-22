@@ -27,13 +27,15 @@ flipbook, or is rebuilt when its heading changes.
 | **Airships** | Loaded player ships: **doable now** (plugin work). Ships flying between bases while nobody is near: **doable with sim work** (VOYAGE). NPC fleets: **not until they have bodies** (P8). | The ship's blocky silhouette at 2-block resolution, moving smoothly, re-cut when it turns. Inside Sable's 320-block range it becomes the real ship. |
 | **Windmills and factories** | **Doable with plugin work.** Spinning at the last real speed needs no sim work. Stopping when the sim says the factory stopped needs your call on I18. | The sails, which the far view does not show at all today, turning in 22.5 degree steps. Lit windows at night already come from the far terrain itself (U). |
 | **Smoke and fire under attack** | **Doable with sim work** (one new engine record for war events). | Orange glowing specks over the raided base or village, flickering, under a dark column of rising puffs that thins out. Real damage (broken machines) appears when the chunk next loads. Villages get smoke but no real scars unless you decide otherwise. |
+| **War bands on the march** | **Doable with sim work** (one route record per march; the engine already knows each march's route and times). | A column two abreast in its culture's colours, creeping along the road from its camp, bobbing as it walks; an Umvuthana Invasion led by a taller figure in sun-mask gold. Visible within about a kilometre. Near you it becomes the real band where the column was. |
 
 **First visible slice:** trains, client side only, from Create's own map sync (`TrainMapSyncClient`), which
 already sends every train's carriage positions to any client that asks. No server change, no sim change.
 
 **What you decide (section 15.1):** whether the server may stream sim state to opted-in clients (PLAN §4.10
 says no today); how I18 reads for a far view; moving to DH 3.3.3 so clients have far terrain at all (the
-Chunky trap); whether raids leave real scars.
+Chunky trap); whether raids leave real scars; how the Umvuthi is shown when its band is met on the
+march.
 
 **Limits worth knowing up front:**
 
@@ -298,8 +300,7 @@ query gives the far ground height where fire and smoke should sit.
     last 16. The archive keeps 32-byte rows for raids, ambushes and dragon flights.
   - A village raid takes goods and people from its market. It changes no blocks.
 - **What is missing:** an engine-to-Java war event record: kind, place, radius, start tick, intensity (from
-  `destroyed` and `machine_lost`, or the village's losses). Optionally, later, each party's polyline so an
-  army can be seen marching.
+  `destroyed` and `machine_lost`, or the village's losses). The march before the fight is section 4.6.
 - **As boxes:**
   - **Fire:** 10 to 30 small orange and yellow boxes on the ground over the district, at block light 15,
     unshaded, SSAO off, in 2 or 3 groups that swap and dim (block light 15 down to 12) at random. Ground height
@@ -308,14 +309,81 @@ query gives the far ground height where fire and smoke should sit.
     column climbs without rebuilding boxes. Opaque first; translucent once tested (3.2).
   - **How long:** the fight resolves in an instant, but the effect lasts: fire for a while scaled by
     intensity, smoke longer and thinning. All clients see the same thing, because times come from the server.
-  - **Before the fight (later):** a raiding party as a cluster of dark specks on its polyline, with torch-like
-    ILLUMINATED dots at night.
+  - **Before the fight:** the band's march, section 4.6.
 - **Terrain repo:** no scorch marks (section 3.7). Real damage reaches a player's far view after the chunk
   loads and the reconcile runs: that player's DH re-reads the chunk. Whether DH then pushes the change to
   other players' far views is U.
 - **Mismatch to know about:** a raided village smokes, then looks untouched when you ride in, because the sim
   changes no blocks there and the reconcile never places fire. That is decision 4.
 - **Verdict: doable with sim work** (the event record).
+
+### 4.6 War bands on the march
+
+Ben decided (MOWZIE, 2026-10-21) that a Mowzie grove's Invasion band, with the Umvuthi when it leads,
+visibly marches from its grove toward the player: "Possibly being able to see them coming via DH." The
+same case covers every faction's war band in the conflict engine and in the lifelike conflict design
+(branch `plan/conflict-life`: goblin, bandit and raider camps and the two Mowzie cultures, marching on
+players, villages and each other).
+
+- **What the sim knows (V, `crates/rtsim-conflict/src/engine.rs` on main):**
+  - Every party out of its camp (envoy, scouts, raid, invasion, siege, plunder) has its whole march at
+    departure: `Party.route` (waypoints on the road graph) and `Party.times` (the tick at each), with
+    `party_pos(p, t)` (line 2400) giving its position at any tick in closed form. Each segment is booked as
+    a straight leg in the shared leg index (`book_leg`, line 2338), the same `Path` dragons use. Nothing is
+    stepped; the route changes only on events (seen, lurking, recall, a rout, arrival).
+  - It also knows the band's make-up: `units` (alive per unit, each with a body kind from the culture),
+    `kind`, `faction`, and `chief` (the war chief rides). MOWZIE's rework adds which party kinds a chief
+    rides with (`chief_rides`: the Umvuthi only on an Invasion, and only when its grove is out).
+  - March speed is a culture value: 0.02 blocks a tick for goblins and the two Mowzie cultures (goblin's
+    PLACEHOLDER, MOWZIE §4.1), 0.03 for bandits and raiders (`data/cultures/*.json`). At 0.02 a band covers
+    480 blocks in a Minecraft day.
+  - Java learns nothing about a party until a player meets it (BAND_MATERIALIZE, `docs/boundary.md`
+    0x8803).
+- **What is missing:** one engine-to-Java record per march: party id, culture, kind, frame, the chief flag,
+  unit counts by body kind, and the route as waypoints with ticks. Sent at departure and on each change, with
+  a GONE when the party ends. About 48 + 8 per unit kind + 16 per waypoint bytes, so about 400 bytes for a
+  20-waypoint march (E). It is the same "far mover" family as the dragon leg record (4.2), decoded in core.
+  This is the sim work; the positions already exist.
+- **As boxes:**
+  - **The column.** Warriors two abreast, about 1.5 blocks between rows, laid along the current segment.
+    One box per row (2 warriors), so a 26-warrior invasion is about 13 boxes and a strip about 20 blocks
+    long (E). Each row sits at its own point on the route, so a diagonal or a bend needs no rotation: the
+    column simply follows the road. Rows go in two groups that bob half a block out of step, so the column
+    reads as walking even though it barely moves.
+  - **Colours by culture and body:** Umvuthana in their mask colours, raptor packs as a lower, faster-looking
+    cluster beside the column, goblins green, bandits brown, raiders grey; the Frostmaw, a culture of one, a
+    single large pale figure (E: palette to be picked against the far terrain).
+  - **The leader.** When `chief` is set, one taller group in the column's middle: for the Umvuthi a box of
+    its 1.5 by 3.2 size (MOWZIE §4.5) topped with sun-mask gold. It does not glow: under DH's built-in
+    shader only light makes things bright, and inventing a glow would show what eyes would not.
+  - **Size against distance (E):** at a 70 degree field of view on a 1080-pixel screen one pixel covers
+    about 0.0013 times the distance in blocks. So a 3-wide column is a few pixels at 800 blocks and a speck
+    at 1,500; individual warriors are lost beyond about 300, which is inside vanilla range anyway. Seeing
+    a band coming therefore means seeing it within about a kilometre, which at 0.02 blocks a tick is about
+    two Minecraft days of warning. A dust haze over the column (pale boxes in dry biomes such as the
+    Umvuthana's savanna) would carry farther; it is optional and what eyes would see.
+  - **Night:** the column is as dark as the land under it. No torches are invented.
+  - **Per band:** 3 groups (two row groups and the leader), 3 draws, about 15 to 20 boxes (E).
+- **The hand-over (V, `seen`, line 3602):** a march leg meeting a player's leg in the shared index books
+  `Ev::Seen` at the meeting tick. `seen` embodies the band at `party_pos`, on the player's side of a seam
+  (TP11), up to `spawn_quota` 16 members (`tunables.rs:94`), then steers it waypoint by waypoint with
+  BAND_STEER at march speed, and `book_unseen` takes it back where its walk leaves the area.
+  - The real band appears where the proxy is, so there is no jump in place. The proxy hides when the feed
+    says the party is embodied and the client has its puppets, or its chunk is loaded on the client.
+  - **Seam: fewer bodies than boxes.** A band bigger than the quota shrinks at the meeting: a 26-warrior
+    column becomes 16 real warriors. The rest stay in the sim's count.
+  - **Seam: the Umvuthi.** MOWZIE never sends the Umvuthi to a band met on the march; it appears only at a
+    base under attack, on a war seat 168 blocks out, beyond the 160 blocks a client tracks it from. So a
+    gold leader drawn in a far column would vanish when the column is met. That is decision 5.
+  - **Other players far from an embodied band** see it drawn from its puppets' positions, sampled at 1 Hz
+    on the server, as for embodied dragons.
+  - **At the target:** a fight where a player watches is real. An unwatched one resolves at once and becomes a
+    war event (4.5) at the target, whether that is a base, a village or another faction's camp.
+- **Not drawn:** a band mustering at its camp and a band walking home. Neither is ever embodied when met
+  (`seen` skips the Mustering and Home phases), so a player who rode up to one would find nothing.
+- **Terrain repo:** no.
+- **Verdict: doable with sim work** (the route record). MOWZIE's rework already gives each march its
+  positions over time; the far view needs only that record and a decision on the Umvuthi seam.
 
 ## 5. Real versus simulated: who draws what, and the hand-over
 
@@ -327,6 +395,7 @@ in render distance. **Proxies draw only what moves or burns, and only where vani
 | Train carriage | Create carriage entity | Create's server position (phase 1: Create's map sync) | the client has that carriage's entity, or its point is in a chunk the client has loaded |
 | Dragon, flying | Ice and Fire entity, once embodied within 160 blocks of a player | engine leg | the client has the entity (network id sent with the proxy) |
 | Dragon, embodied near another player | the same entity | Ice and Fire plugin, 1 Hz | the client has the entity |
+| War band on the march | its puppets, once `seen` within 160 blocks of a player | the engine's route record; puppets sampled at 1 Hz once embodied | the party is embodied and the client has its puppets, or its chunk is loaded on the client |
 | Player airship | Sable sub-level within 320 blocks | Sable plugin, silhouette plus 1 Hz pose | the client's Sable container has the sub-level |
 | Windmill sails | the contraption entity | the cached silhouette and speed | the bearing's chunk is loaded on the client |
 | Fire and smoke | nothing (no fire is placed) | war event | it is in a chunk the client has loaded, or its end tick passed |
@@ -375,6 +444,8 @@ in render distance. **Proxies draw only what moves or burns, and only where vani
 - **Server to client, `far`:** a batch of records:
   - `LEG` (id, kind, style, start and end point, start and end tick): dragons, later parties and ships. About
     60 bytes, sent once per leg.
+  - `ROUTE` (id, culture, kind, chief flag, unit counts, waypoints with ticks): war bands (4.6). About 400
+    bytes, sent once per march and again on a change.
   - `SAMPLE` (id, tick, position, heading; for trains, two points per carriage): about 30 bytes per object
     per second.
   - `SHAPE` (id, merged boxes in local cells with palette colours): once per object per subscriber. About 2
@@ -418,7 +489,7 @@ in render distance. **Proxies draw only what moves or burns, and only where vani
   pre-render check per registered group and one instanced draw per active group. No rotation maths, no
   per-frame buffer uploads.
 - **Box counts (E):** carriage 1 to 10, dragon about 20 across 4 groups, windmill about 100 per pose, ship
-  100 to 300, a burning district 30 to 60. DH's own debug code builds a 10,000-box group, so tens of
+  100 to 300, a burning district 30 to 60, a marching band 15 to 20 across 3 groups. DH's own debug code builds a 10,000-box group, so tens of
   thousands of boxes are within what DH expects; what costs on a weak PC is draws, not boxes.
 - **Tiers (a client option, E, to be measured):**
 
@@ -545,6 +616,7 @@ https://distant-horizons-team.gitlab.io/distant-horizons/.
 | Airships | Sable sub-levels, its 320-block tracking and sync near the player | the silhouette cutter; pose sampler; VOYAGE for unloaded travel |
 | Windmills | Create's windmill bearing, contraption and speed while loaded | the capture cache; the pose cutter |
 | War | conflict engine events, `Damage`, reconcile on chunk load | the event record; fire and smoke boxes |
+| War bands | the engine's routes and `party_pos`, its meeting and embodiment (`seen`), Mowzie and other pack mobs as the real bodies | the route record; the column and leader boxes |
 | Ground height | DH terrain repo column reads | nothing |
 | Networking | NeoForge optional payloads; vanilla game-time sync | the two payloads and their filter |
 | Settings | DH's own render distance and generic-rendering switch | a detail tier option |
@@ -566,6 +638,10 @@ You stand on your base's roof at dusk with vanilla render distance 12 and DH at 
   A raid has just resolved there. The specks flicker for a while and go out; the smoke thins later. When you
   ride down, the market is poorer, but no house is burned (unless decision 4 says
   otherwise).
+- **South-west, at dawn,** a dark strip lies on the road out of the Umvuthana grove 800 blocks away: a
+  column two abreast, a taller figure in sun-mask gold in its middle. It hardly seems to move, but by
+  evening it has crossed the river. When it comes within 160 blocks of you, the real masked warriors are
+  there on the road where the column was.
 - **West, 1,500 blocks away,** your friend's airship lifts off their base: a blocky silhouette that slides
   across the sky and turns in steps. When it comes within 320 blocks the real ship takes its place, ideally
   without a visible jump.
@@ -595,8 +671,9 @@ Each phase ends with something you can look at in game.
    cache; the pose cutter and flipbook on the client. Spins at the last real speed unless decision 2 says
    otherwise.
 4. **War.** Builds: the engine's war event record from `raid_district`, `raid_node` and `ambush`; fire and
-   smoke on the client with ground height from the terrain repo; later, marching parties from their
-   polylines.
+   smoke on the client with ground height from the terrain repo. Then war bands on the march (4.6): the
+   engine's route record, the column and leader boxes, the hide on embodiment, and decision 5's answer for
+   the Umvuthi.
 5. **Airships.** Builds: a Sable plugin source for loaded and held sub-levels (silhouette and pose); the yaw
    re-cut on the client. Ships moving between bases while unloaded arrive with VOYAGE, not here.
 6. **Later, when they exist in the world:** NPC fleets (after P8 gives them bodies) and far herds (PLAN
@@ -612,6 +689,7 @@ Each phase ends with something you can look at in game.
 | **Create:** `TrainMapSync` packet contents, rates, requester cache, client map, no config gate; windmill bearing and contraption accessors; carriage tracking 15 chunks, bearing contraption 20 | That carriage proxies meet the real carriage without a visible jump |
 | **Sable:** 320-block tracking default, sync packets, `HoldingSubLevel` freeze | Accessors for a held ship's pose and bounds; whether plot chunks appear in DH terrain |
 | **Sim:** dragon legs and constants; conflict events and damage; no fire placed; ship timetables; glass box solution not exported | Ice and Fire draw size per stage; whether train raid records carry a position |
+| **Conflict:** party route and times, `party_pos`, legs in the shared index, `seen` embodies at the party's place up to quota 16, march speeds by culture | How far a column is really visible (pixel arithmetic only); how MOWZIE's rework changes the march |
 | **Iris source:** generic program swap, `dh_terrain` fallback, only "Clouds" cancelled | How a given shader pack lights and blends our boxes |
 | **Pack:** DH 3.3.1 and Chunky both `side = "both"`; no Iris, no SSRD; no Sable config. **DH source:** the Chunky disable at 3.3.0 to 3.3.2 and its 3.3.3 fix | That this pack's clients really have no far terrain today |
 
@@ -638,6 +716,11 @@ Each phase ends with something you can look at in game.
    only lasting marks stay what the reconcile does now (machines broken, stores taken), and villages show
    none. Alternative: the reconcile also swaps some surface blocks of a raided district or village for burnt
    ones (no fire placed). That changes world blocks the player built. *Yours.*
+5. **The Umvuthi when its band is met on the march.** Recommended: MOWZIE's rework seats the Umvuthi out of
+   sight behind a band met on the march, as it already does at a base (a war seat beyond the 160 blocks a
+   client tracks it from), and the far view draws the gold leader at that seat until the client sees the
+   body. Alternative: the far view draws the leader only until the band is met, and it vanishes then.
+   *Changes the MOWZIE design, so yours.*
 
 ### 15.2 Choices I made (each can be undone)
 
@@ -658,5 +741,7 @@ Each phase ends with something you can look at in game.
 - **NPC ships are not drawn** until P8 gives them bodies.
 - **Windmills spin at the last real speed** until decision 2.
 - **Opaque smoke first;** translucent only after it is seen to work.
+- **War bands:** a column two abreast, one box per row, bobbing in two groups; colours by culture; no
+  invented torches or glow; mustering and homebound bands not drawn, because neither is ever embodied.
 - **Macs and generic rendering off:** the client does not subscribe; one log line, no setting changed.
 - Wrote this note only. No code, pack or DECISIONS.md change.
