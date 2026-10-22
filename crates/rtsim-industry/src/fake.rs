@@ -517,7 +517,7 @@ impl FakeWorld {
                 district: id,
                 revision: rev,
                 part: 0,
-                chunks,
+                chunks: chunks.clone(),
             });
             for i in invs {
                 self.send(Obs::Inventory(InventoryDecl {
@@ -533,13 +533,25 @@ impl FakeWorld {
             }
             if let Some(s) = self.districts[di].survey.clone() {
                 self.send(Obs::Survey(s));
-                let blocks = self.districts[di].exposed.clone();
-                self.send(Obs::SurveyBlocks {
-                    district: id,
-                    revision: rev,
-                    part: 0,
-                    blocks,
-                });
+                // One part per chunk, every chunk of the district, as the Java survey sends them (F5).
+                let mut by_chunk: BTreeMap<(i32, i32), Vec<ExposedBlock>> =
+                    chunks.iter().map(|&c| (c, Vec::new())).collect();
+                for b in &self.districts[di].exposed {
+                    by_chunk
+                        .entry((b.pos.x >> 4, b.pos.z >> 4))
+                        .or_default()
+                        .push(*b);
+                }
+                for (chunk, blocks) in by_chunk {
+                    self.send(Obs::SurveyBlocks {
+                        district: id,
+                        revision: rev,
+                        part: 0,
+                        chunk,
+                        partial: false,
+                        blocks,
+                    });
+                }
             }
         }
         for (sink, src) in self.power_links.clone() {
