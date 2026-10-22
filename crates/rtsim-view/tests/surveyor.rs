@@ -89,6 +89,13 @@ fn surveyor_draws_one_block_a_pixel_over_habitat() {
         f.bounds[0] <= 1_024.0 && f.bounds[2] >= 1_536.0,
         "the frame holds the map"
     );
+    // The page opens on what was built, inside the map, not on the map's whole region.
+    let home = f.home.expect("a home where the save's marks are");
+    assert!(
+        home[0] >= f.bounds[0] && home[2] <= f.bounds[2],
+        "{home:?} in {:?}",
+        f.bounds
+    );
 
     // Zoom 0: four tiles of 256 blocks cover the region, a recorded column a pixel.
     let region = Surveyor::open(data("surveyor"))

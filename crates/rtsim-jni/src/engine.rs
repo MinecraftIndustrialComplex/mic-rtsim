@@ -80,9 +80,13 @@ pub use paging::DEFAULT_ROW_BUDGET;
 /// The event archive (VIEWER.md §10): the modules' tapes, flushed with each save.
 mod archive;
 pub use archive::{DIR as ARCHIVE_DIR, KEY as ARCHIVE_KEY, dir as archive_dir};
+/// The view tap (VIEWER.md §5.2): the layers as parts in the step's slack while a viewer holds
+/// the lease, committed into the view store on the IO lane.
+pub mod tap;
 /// The page layout rtsim-view mirrors in its `keys.rs` (it cannot link this crate); its test
 /// (`crates/rtsim-view/tests/harness.rs`) compares every value here with its own.
 pub mod mirrored {
+    pub use super::archive::KEY as ARCHIVE_SERIAL;
     pub use super::conflict::KEY_CONFLICT;
     pub use super::dragons::KEY_DRAGONS;
     pub use super::herds::KEY_HERDS;
@@ -303,6 +307,8 @@ pub struct Stats {
     /// Rows and bytes waiting in the archive's buffer for the next save. Not in Java's array.
     pub archive_pending_rows: AtomicU64,
     pub archive_pending_bytes: AtomicU64,
+    /// The view tap's counters (`tap.rs`). Not in Java's array.
+    pub tap: tap::Counters,
 }
 
 pub const STATS_LEN: usize = 16;
@@ -358,6 +364,8 @@ struct State {
     archive_on: bool,
     /// The serial of the last save that took the recorder's rows (`archive::KEY`).
     archive_serial: u64,
+    /// The view tap's cursor and mailbox (`tap.rs`).
+    tap: tap::Tap,
 }
 
 impl State {
@@ -394,6 +402,7 @@ impl State {
             archive: rtsim_archive::Recorder::default(),
             archive_on: false,
             archive_serial: 0,
+            tap: tap::Tap::default(),
         }
     }
 
@@ -755,6 +764,15 @@ impl Engine {
             l(&s.commands_written),
             l(&s.save_failures),
         ]
+    }
+
+    /// TEST mode: the view lease read now and every layer encoded and committed into the view
+    /// store at once, waited for (`tap::flush`). Errors when no lease is live.
+    pub fn view_tap_flush(self: &Arc<Self>) -> Result<(), String> {
+        if !self.cfg.test {
+            return Err("view_tap_flush needs an engine opened in TEST mode".into());
+        }
+        tap::flush(self)
     }
 
     /// Makes the page store's next writes fail at `fault` (tests only: a failed save, then the
@@ -1150,10 +1168,14 @@ impl Engine {
                 }
             }
         }
-        self.stats
-            .last_step_nanos
-            .store(t0.elapsed().as_nanos() as u64, Ordering::Release);
+        let nanos = t0.elapsed().as_nanos() as u64;
+        self.stats.last_step_nanos.store(nanos, Ordering::Release);
         self.stats.steps_done.fetch_add(1, Ordering::AcqRel);
+        // The view tap, in the slack after the step: not step time, and gone the moment step
+        // h + 1 arrives (`tap.rs`).
+        if !self.failed.load(Ordering::Acquire) {
+            tap::after_step(self, h, nanos);
+        }
     }
 
     /// After a failure: hand the buffers back empty with the FAILED flag, so the bridge is never
@@ -1359,9 +1381,12 @@ impl Engine {
         // the release store of `consumed = h`, which follows this read.
         let area = unsafe { o.area(used) };
         let mut recs = Records::new(area);
+        let mut ticks = 0;
         for rec in &mut recs {
+            ticks += u32::from(rec.kind == obs::TICK);
             self.observe(st, h, &rec);
         }
+        st.tap.ticks(ticks);
         if let Some(e) = recs.error() {
             self.set_protocol_error(format!("step {h}: {e}; the rest of the buffer was skipped"));
         }

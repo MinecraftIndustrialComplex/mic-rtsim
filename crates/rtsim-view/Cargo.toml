@@ -20,10 +20,15 @@ rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
 rtsim-space.workspace = true
+# The layers and their part format, shared with the engine's tap (VIEWER.md §4.3).
+rtsim-parts.workspace = true
+rtsim-layers.workspace = true
 # The event archive, read only (VIEWER.md §10.6).
 rtsim-archive = { path = "../rtsim-archive" }
 mic-viewer.workspace = true
 mic-viewer-surveyor.workspace = true
+# Create's rail and factories, read from the save (docs/viewer/industry-map.md).
+mic-viewer-create.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 flate2.workspace = true

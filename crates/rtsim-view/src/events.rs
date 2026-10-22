@@ -9,7 +9,7 @@ use std::path::Path;
 
 use mic_viewer::api::{EventKind, EventRow, EventsAnswer, Histogram, LegRow, Tick};
 use mic_viewer::viewer::{EventQuery, MAX_BUCKETS};
-use rtsim_archive::row::{Event, Handle, Leg, Row, Severity};
+use rtsim_archive::row::{Event, Handle, Leg, RawRow, Row, Severity};
 use rtsim_archive::{ArchiveReader, Record, dir_for, kinds};
 
 /// Save-to-tick pairs the histogram sends at most beyond its buckets.
@@ -282,6 +282,71 @@ impl Events {
     }
 }
 
+/// An archive row the live view store carries before a save takes it (VIEWER.md §10.3), as the
+/// page reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LiveRow {
+    Event(EventRow),
+    Leg(LegRow),
+}
+
+impl LiveRow {
+    /// Its tick (a leg's start).
+    pub fn t(&self) -> Tick {
+        match self {
+            LiveRow::Event(e) => e.t,
+            LiveRow::Leg(l) => l.t0,
+        }
+    }
+
+    pub fn kind(&self) -> &str {
+        match self {
+            LiveRow::Event(e) => &e.kind,
+            LiveRow::Leg(l) => &l.kind,
+        }
+    }
+}
+
+/// A pending row read with the engine dictionary's kind names and the page's frame ids (by archive
+/// frame number). The store does not carry the dictionary's handles or the rows' payloads, so a
+/// subject the dictionary holds (a UUID) is not named and the text is empty until the save that
+/// takes the row.
+pub fn live_row(raw: &RawRow, kinds: &[String], frames: &[String]) -> LiveRow {
+    let kind = |k: u16| {
+        kinds
+            .get(usize::from(k))
+            .cloned()
+            .unwrap_or_else(|| format!("kind{k}"))
+    };
+    let id = |h: Handle| (!h.dict && h.value != 0).then(|| h.value.to_string());
+    match Row::decode(raw) {
+        Row::Event(e) => LiveRow::Event(EventRow {
+            t: e.tick as Tick,
+            kind: kind(e.kind),
+            sev: sev(e.severity),
+            x: f64::from(e.x),
+            z: f64::from(e.z),
+            subject: id(e.subject),
+            object: id(e.object),
+            mag: i64::from(e.magnitude),
+            text: String::new(),
+            frame: frames.get(usize::from(e.frame)).cloned(),
+        }),
+        Row::Leg(l) => LiveRow::Leg(LegRow {
+            t0: l.t0 as Tick,
+            t1: l.end() as Tick,
+            kind: kind(l.kind),
+            subject: id(l.subject),
+            p: vec![[
+                f64::from(l.x0),
+                f64::from(l.z0),
+                f64::from(l.x1),
+                f64::from(l.z1),
+            ]],
+        }),
+    }
+}
+
 /// A query's half-open `from..to` as the archive's inclusive ticks; `None` when empty.
 fn span(from: Tick, to: Tick) -> Option<(u64, u64)> {
     let t0 = from.max(0) as u64;
@@ -319,7 +384,7 @@ fn whole(v: &[f64]) -> Vec<u64> {
 }
 
 /// A kind's label, group, colour and usual severity: the registry's, else from its name.
-fn kind_info(name: &str) -> EventKind {
+pub fn kind_info(name: &str) -> EventKind {
     let group = kinds::group(name).to_owned();
     let (label, severity) = match kinds::info(name) {
         Some(k) => (k.label.to_owned(), sev(k.severity)),
