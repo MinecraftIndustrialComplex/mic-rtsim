@@ -1101,7 +1101,7 @@ For Deep Time's coordinator to review.
   engine's, so a world that only ran industry (the iron line) shows its day, not day 0.
 - **A district card** on the harness's iron line, two days in: its rates, its replay process with
   the district whose power it needs, and the other district of its cluster. A long label wraps at
-  60% of the row (mic-viewer 58c66c6) instead of squeezing its value to a letter a line.
+  60% of the row (mic-viewer 499c0ba) instead of squeezing its value to a letter a line.
 
   ![A district card, dark theme](docs/viewer/district-card-dark.png)
   ![The same card, light theme](docs/viewer/district-card-light.png)

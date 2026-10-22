@@ -106,7 +106,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#plan">Plan</a>
   <a href="#now">Building now</a>
   <a href="#tbsmp">TBSMP run</a>
-  <a href="#decide">Your decisions</a>
+  <a href="#decide">Your answers</a>
 </nav>
 
 <main>
@@ -120,7 +120,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <div class="tile" data-ss-id="kpi-fixes"><div class="n">4</div><div class="t">small generic fixes before a non-Create pack works</div></div>
     <div class="tile" data-ss-id="kpi-week"><div class="n">S</div><div class="t">size of each of those four (slices G0 to G3): under about 500 lines</div></div>
     <div class="tile" data-ss-id="kpi-cap"><div class="n">48</div><div class="t">goods per factory before learning loses its structure</div></div>
-    <div class="tile" data-ss-id="kpi-decisions"><div class="n">4</div><div class="t">decisions for you, at the end</div></div>
+    <div class="tile" data-ss-id="kpi-decisions"><div class="n">4</div><div class="t">decisions, all answered as recommended</div></div>
   </div>
 </header>
 
@@ -190,71 +190,57 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <section id="now" data-ss-id="now" data-ss-section>
   <h2 data-ss-id="now-h">Building now, without asking: G0 to G3</h2>
   <div class="box" data-ss-id="now-box">
-    <p data-ss-id="now-p1">They start after today's district fix (DS-10, branch fix/district-seeds) lands, whatever you answer to decision 1. Each is small and can be undone:</p>
+    <p data-ss-id="now-p1">The district fix they waited on (DS-10: only machines start a district) is on main since 02c2096. Each is small and can be undone:</p>
     <ul data-ss-id="now-list">
       <li><strong>G1 and G2</strong> fix MIC itself: the district seed fix, automatic adoption, the storage list, and screens that no longer wipe learning.</li>
       <li><strong>G0</strong> is what the Create addon needs, and it puts industry tunables in the server config.</li>
       <li><strong>G3</strong> is one tag file. The MIC pack has no Pipez, SFM or AE2, so it pays off only on other packs.</li>
     </ul>
-    <p data-ss-id="now-p2">If you choose "no" on decision 1, G0 and G3 are the only throwaway work.</p>
+    <p data-ss-id="now-p2">You chose "a by-product" (GA-1), so the slices after these are the ones that also serve MIC or the addon: G4, G6, G7, G8 and G10. The per-mod plugins (G5, G9) wait until a non-MIC release is on the table.</p>
   </div>
 </section>
 
 <section id="tbsmp" data-ss-id="tbsmp" data-ss-section>
-  <h2 data-ss-id="tbsmp-h">The TBSMP run, still in progress, settles the size questions but not the mod ones</h2>
-  <p data-ss-id="tbsmp-status">Its branch (feat/tbsmp-compat) is building the Create and Carry On plugins against TBSMP's Create 6.0.6. No results yet. It will settle:</p>
+  <h2 data-ss-id="tbsmp-h">The TBSMP run finished: rtsim works on someone else's Create pack, and most size questions stay open</h2>
+  <p data-ss-id="tbsmp-status">rtsim ran on TBSMP Season 2's own pack with all 11 dimensions, with no rtsim error or warning, at about 0.6 ms a tick. Four areas were adopted by command, not the whole world, so it answers less about size than hoped. <a href="https://spacesheep.dev/@benmac/rtsim-create-test-worlds">The full result is on the test worlds page</a>.</p>
   <ol data-ss-id="tbsmp-list">
-    <li><strong>Version spread:</strong> whether the Create plugin works on a Create older than its pin, the first test of rtsim on someone else's pack.</li>
-    <li><strong>Detection at scale:</strong> the rescan and adoption cost on 633k overworld block entities, which says whether spread detection (G6) is urgent.</li>
-    <li><strong>District count and memory:</strong> how many districts a real SMP makes, and so whether paging districts is needed now.</li>
-    <li><strong>Goods growth:</strong> how many goods a 144-mod world mints, with Sophisticated Backpacks and Storage in it.</li>
+    <li><strong>Version spread:</strong> not tested. The test moved the world to Create 6.0.10, rtsim's pin, rather than run rtsim on 6.0.6. Three small fixes covered the Create addons MIC lacks.</li>
+    <li><strong>Detection at scale:</strong> 7 detection runs took 237 ms in all over the four areas. A whole-world rescan was not measured. Spreading the rescan over several ticks, part of G6, is being built anyway (ST3).</li>
+    <li><strong>District count and memory:</strong> the four areas made 6 districts holding 1,142 inventories. Live heap after GC rose 17 MB (2,474 to 2,491 MB), and rtsim's save directory was 138 kB.</li>
+    <li><strong>Goods growth:</strong> not reported by the run.</li>
   </ol>
-  <p data-ss-id="tbsmp-not">It cannot test non-Create factories, because TBSMP is a Create pack. That needs a Mekanism or AE2 world; the ATM10 Season 2 sample is the candidate.</p>
+  <p data-ss-id="tbsmp-not">It could not test non-Create factories, because TBSMP is a Create pack. That needs a Mekanism or AE2 world; the ATM10 Season 2 sample is the candidate.</p>
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
-  <h2 data-ss-id="decide-h">Four decisions are yours, recommendation first</h2>
+  <h2 data-ss-id="decide-h">You took the recommendation on all four</h2>
+  <p data-ss-id="decide-when">Answered on 21 October 2026 (DECISIONS.md GA-1 to GA-4).</p>
 
   <div class="decision" data-ss-id="d-goal">
     <h3 data-ss-id="d-goal-h">1. Is "any pack" a goal?</h3>
-    <p class="rec" data-ss-id="d-goal-rec">Recommended: a by-product. Build only the slices that also serve MIC or the Create addon (G0, G1, G2, G4, G6, G7, G8, G10), and leave the per-mod plugins until a non-MIC release is on the table.</p>
-    <ul data-ss-id="d-goal-alts">
-      <li>An active goal: also build G3, G5 and G9 now: the pipe tag (S), the storage-network plugins (M each, EnderStorage S) and the wire and deposit plugins (S each).</li>
-      <li>No: keep rtsim MIC-only and skip G0 and G3.</li>
-    </ul>
+    <p class="rec" data-ss-id="d-goal-rec">A by-product (GA-1). Build only the slices that also serve MIC or the Create addon (G0, G1, G2, G4, G6, G7, G8, G10), and leave the per-mod plugins for AE2, RS2, Mekanism and IE until a non-MIC release is on the table.</p>
   </div>
 
   <div class="decision" data-ss-id="d-networks">
     <h3 data-ss-id="d-networks-h">2. How storage networks and wireless links are modelled</h3>
-    <p class="rec" data-ss-id="d-networks-rec">Recommended: a shared store in Rust (G4). Districts stay small, and the network is one store with ports.</p>
-    <ul data-ss-id="d-networks-alts">
-      <li>Merge every district on one network into one, as Ender Transmission does today. No extra work, but giant half-loaded districts follow, and the 48-good cap.</li>
-      <li>Freeze any district attached to a network.</li>
-    </ul>
+    <p class="rec" data-ss-id="d-networks-rec">A shared store in Rust with ports (GA-2, slice G4). Districts stay small, and a district trades with the network's store.</p>
   </div>
 
   <div class="decision" data-ss-id="d-model">
     <h3 data-ss-id="d-model-h">3. The machine model for non-Create mods</h3>
-    <p class="rec" data-ss-id="d-model-rec">Recommended: recipe-constrained learning first (G7), recipe-based exact replay later (G11). No per-mod Java until a pack needs exactness.</p>
-    <ul data-ss-id="d-model-alts">
-      <li>Per-mod exact models now, starting with Mekanism.</li>
-      <li>Learned rates only, forever, for non-Create mods.</li>
-    </ul>
+    <p class="rec" data-ss-id="d-model-rec">Recipe-constrained learning first (GA-3, slice G7), recipe-based exact replay later (G11). No per-mod Java until a pack needs exactness.</p>
   </div>
 
   <div class="decision" data-ss-id="d-release">
     <h3 data-ss-id="d-release-h">4. Release shape for a non-MIC pack</h3>
-    <p class="rec" data-ss-id="d-release-rec">Recommended: nothing public until you say so (REL-1). Build G0 and the in-tree parts of G12, so a release is a switch, not a project.</p>
-    <ul data-ss-id="d-release-alts">
-      <li>Plan a public "rtsim industry" mod, with mic-native and deeptime-format made public or vendored.</li>
-      <li>Ship rtsim industry only inside the Create addon.</li>
-    </ul>
+    <p class="rec" data-ss-id="d-release-rec">Nothing public for a non-MIC pack until you say so (GA-4). G0 and the in-tree parts of G12 are built so a release is a switch, not a project.</p>
   </div>
 </section>
 
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
+    <li>Your answers: DECISIONS.md GA-1 to GA-4 and ST3 (b2bb407); the note's section 10, marked answered (50d0f5b); DS-10 on main (02c2096); docs/stress-tbsmp-results.md sections 1, 4 and 5 (88b3e3b).</li>
     <li>mic-rtsim main at 5578751: research/generalize-any-pack-2026-10-21.md, sections 0 to 12 (an assessment of main at 03022e8).</li>
     <li>Code it cites: Districts.java (capabilities, seeds, stock tag, closure), PlayerPorts.java (screen discards), learn.rs and tunables.rs (the learner and its 48-good cap), Goods.java (data-component goods), obs.rs (PowerLink), GLASSBOX.md (8.6 KB per district), RtsimConfig.java (modules).</li>
     <li>Mod facts from each mod's 1.21.1 source on GitHub: AE2, Refined Storage 2, Mekanism 10.7.19, Immersive Engineering, Pipez, FTB Chunks, GTCEu Modern, Modern Industrialization, EnderStorage, Flux Networks, JEI and EMI; Thermal from teamcofh.com and the CoFH branches. Unverified points are listed in the note's section 12.</li>

@@ -80,6 +80,23 @@ registry the phase 1 crates will register with (PLAN.md §5.4). Paging under a r
 (A16), incremental two-generation saves and the parallel step are in the kernel (`paging`, `page`,
 `bsp`), not yet used by the modules; their open ends are in `docs/overnight-choices-kernel2.md`.
 
+## For server admins
+
+**Heap.** Give the server at least 8 GB, with `-Xms` equal to `-Xmx` (`-Xms8G -Xmx8G` in
+`user_jvm_args.txt`). On big Create worlds at `-Xmx6G` the live heap sits near G1's marking threshold,
+and background GC costs 10 to 16 ms of CPU per tick (`docs/stress-worlds-results.md` §8). The pack's
+`scripts/setup_server.py` sets this when it installs the server (`--heap SIZE` to choose, `--no-heap`
+to skip; it never lowers a larger `-Xmx`). To set it by hand, and for the rest of a deploy, see
+`docs/deploy-rehearsal-omegasrv.md` §8.5.
+
+**Do not bring a 1.19.2 world.** Upgrading a 1.19.2 Create world to 1.21.1 loses item data inside
+modded block entities. Copycats, toolboxes, deployers and chutes come back as count 1 with no
+components, and a deployer or chute holding more than one item keeps one. Create 6 also zeroes the old
+station, signal and curve positions. This is Create and Minecraft, not rtsim. Start a new world. If
+you must migrate, work on a copy and run `tools/stress-worlds/remap_tracks.py --positions-only` before
+the world's first Create 6 load; it fixes the positions only, not the item data. The numbers are in
+`docs/stress-worlds-results.md` ("Item data lost by the 1.19.2 to 1.21.1 upgrade").
+
 ## Build and test
 
 Everything runs in the flake's dev shell (Rust 1.98.1, JDK 21). The dev shell only sees files git
