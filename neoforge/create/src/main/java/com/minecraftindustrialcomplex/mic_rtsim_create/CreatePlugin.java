@@ -114,6 +114,9 @@ public final class CreatePlugin implements IndustryPlugin {
     public Boolean seed(BlockEntity be) {
         if (!isIndustrial(be))
             return null;
+        Boolean anchor = ContraptionAnchors.works(be);
+        if (anchor != null)
+            return anchor;
         if (be instanceof KineticBlockEntity)
             return !(be instanceof SimpleKineticBlockEntity || be instanceof DirectionalShaftHalvesBlockEntity
                     || be instanceof ChainGearshiftBlockEntity || be instanceof SpeedControllerBlockEntity
@@ -123,6 +126,12 @@ public final class CreatePlugin implements IndustryPlugin {
                     || be instanceof FlapDisplayBlockEntity || be instanceof BacktankBlockEntity
                     || isSource(be) || isMover(be));
         return be instanceof PackagerBlockEntity;
+    }
+
+    /** The anchor of a contraption (bearing, piston, pulley, gantry shaft) can come to seed: see {@link ContraptionAnchors}. */
+    @Override
+    public boolean mayBecomeSeed(BlockEntity be) {
+        return ContraptionAnchors.isAnchor(be);
     }
 
     /**

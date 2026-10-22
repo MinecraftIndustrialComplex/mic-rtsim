@@ -293,7 +293,18 @@ pub struct District {
     pub hold_until: Option<Tick>,
     /// Makes an older hold's wake stale.
     pub hold_stamp: u32,
+    /// The players who built here lately (IND_EDIT: a block placed or broken, or a machine
+    /// configured), each with its latest such edit, the latest last; at most [`EDITORS_KEPT`].
+    /// The oil gate's dragons name them (choices-oilgate.md OGC54).
+    pub editors: Vec<((u64, u64), Tick)>,
 }
+
+/// Builders a district keeps (OGC54). PLACEHOLDER.
+pub const EDITORS_KEPT: usize = 8;
+
+/// A district page starts with this (OGC54: "IDS2" is the first format with one; before it a
+/// district page had no magic and no editors). No older page opens.
+pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS2");
 
 /// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -349,6 +360,7 @@ impl District {
             approach: None,
             hold_until: None,
             hold_stamp: 0,
+            editors: Vec::new(),
         }
     }
 
@@ -392,6 +404,16 @@ impl District {
         // TUNABLE, PLACEHOLDER: the ledger keeps the last 8 reconciles and 16 attacks.
         if self.reports.len() > 8 {
             self.reports.pop_front();
+        }
+    }
+
+    /// `player` built here at `at` (OGC54): it moves to the end of [`District::editors`], and the
+    /// longest quiet one goes past [`EDITORS_KEPT`].
+    pub fn note_editor(&mut self, player: (u64, u64), at: Tick) {
+        self.editors.retain(|(p, _)| *p != player);
+        self.editors.push((player, at));
+        if self.editors.len() > EDITORS_KEPT {
+            self.editors.remove(0);
         }
     }
 
@@ -700,7 +722,7 @@ fn weight(goods: &impl GoodLookup, g: Good) -> i64 {
 // ---- persistence (src/persist.rs) -------------------------------------------------------------
 
 mod persist_impls {
-    use rtsim_kernel::codec::{Reader, Result, Writer};
+    use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 
     use super::*;
     use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
@@ -836,6 +858,7 @@ mod persist_impls {
 
     impl Persist for District {
         fn put(&self, w: &mut Writer) {
+            w.u32(DISTRICT_MAGIC);
             self.id.put(w);
             self.revision.put(w);
             self.dim.put(w);
@@ -877,8 +900,15 @@ mod persist_impls {
             self.approach.put(w);
             self.hold_until.put(w);
             self.hold_stamp.put(w);
+            self.editors.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
+            let magic = r.u32()?;
+            if magic != DISTRICT_MAGIC {
+                return Err(CodecError::Invalid(format!(
+                    "district page magic {magic:#010x}, not {DISTRICT_MAGIC:#010x}: an older format"
+                )));
+            }
             Ok(District {
                 id: Persist::get(r)?,
                 revision: Persist::get(r)?,
@@ -921,7 +951,36 @@ mod persist_impls {
                 approach: Persist::get(r)?,
                 hold_until: Persist::get(r)?,
                 hold_stamp: Persist::get(r)?,
+                editors: Persist::get(r)?,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persist::{from_bytes, to_bytes};
+
+    /// A district keeps its latest builders, each at its latest edit, and saves them (OGC54); a
+    /// page without the magic is an older format and does not open.
+    #[test]
+    fn a_district_keeps_and_saves_its_latest_builders() {
+        let mut d = District::new(DistrictId(3));
+        for k in 0..(EDITORS_KEPT as u64 + 2) {
+            d.note_editor((k, k), Tick(k * 10));
+        }
+        d.note_editor((4, 4), Tick(500));
+        assert_eq!(d.editors.len(), EDITORS_KEPT);
+        assert_eq!(d.editors.last(), Some(&((4, 4), Tick(500))));
+        assert!(
+            !d.editors.iter().any(|(p, _)| *p == (0, 0) || *p == (1, 1)),
+            "the two longest quiet went: {:?}",
+            d.editors
+        );
+        let bytes = to_bytes(&d);
+        let back: District = from_bytes(&bytes).unwrap();
+        assert_eq!(back, d);
+        assert!(from_bytes::<District>(&bytes[4..]).is_err());
     }
 }

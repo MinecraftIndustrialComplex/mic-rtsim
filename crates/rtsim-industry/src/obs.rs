@@ -345,6 +345,9 @@ impl BlockFlags {
     pub const ROOFLESS: u32 = 2;
     pub const MACHINE: u32 = 4;
     pub const INVENTORY: u32 = 8;
+    /// The top block over a roofed machine, within the survey's roof reach: a flyer can break it
+    /// (OGB-7). Always with [`Self::ROOFLESS`].
+    pub const ROOF: u32 = 16;
 
     pub fn has(self, bit: u32) -> bool {
         self.0 & bit != 0
@@ -472,10 +475,15 @@ pub enum Obs {
     SpawnSample(SpawnSample),
     Fight(FightObserved),
     Survey(DefenceSurvey),
+    /// One chunk's exposed blocks (the oil gate audit's F5): part 0 replaces the chunk's rows, later
+    /// parts add to them. `partial`: a survey of a partly loaded district, which has no walk, so the
+    /// chunk's wall faces stay.
     SurveyBlocks {
         district: DistrictId,
         revision: u32,
         part: u32,
+        chunk: (i32, i32),
+        partial: bool,
         blocks: Vec<ExposedBlock>,
     },
 }
