@@ -81,6 +81,7 @@ def world_stats(w):
     cc = np.zeros(years)
     lost_year = np.zeros(years)
     cat = collections.Counter()
+    cat_lost = collections.Counter()
     for e in fights:
         y = min(years - 1, e["t"] // YEAR)
         per_year[y] += 1
@@ -89,13 +90,16 @@ def world_stats(w):
         x = e["tgt"]
         if x in w.factions:
             cc[y] += 1
-            cat["camp"] += 1
+            k = "camp"
         elif x in w.villages:
-            cat["village"] += 1
+            k = "village"
         elif x in w.players:
-            cat["player"] += 1
+            k = "player"
         else:
-            cat["train_or_caravan"] += 1
+            k = "train_or_caravan"
+        cat[k] += 1
+        if not e.get("win"):
+            cat_lost[k] += 1
     # endless war: one pair of factions, either way round, with no 96-day gap for five years running
     endless = False
     by_pair = collections.defaultdict(list)
@@ -157,6 +161,7 @@ def world_stats(w):
         "fights": len(fights),
         "lost": int(sum(1 for e in fights if not e.get("win"))),
         "cat": dict(cat),
+        "cat_lost": dict(cat_lost),
         "endless": endless,
         "surge": surge,
         "extinct": extinct,
@@ -338,11 +343,13 @@ def summarize(rows):
                 cvf.append(float(np.std(fr) / np.mean(fr)))
         ov = [overlap(rs[i]["story"], rs[i + 1]["story"]) for i in range(len(rs) - 1)]
         cat = collections.Counter()
+        cat_lost = collections.Counter()
         mot = collections.Counter()
         occ = collections.Counter()
         drv = collections.Counter()
         for r in rs:
             cat.update(r["cat"])
+            cat_lost.update(r.get("cat_lost", {}))
             mot.update(r["motives"])
             occ.update(r["occasions"])
             drv.update(r["drivers"])
@@ -356,6 +363,7 @@ def summarize(rows):
             "lost_share": lost / fights if fights else float("nan"),
             "lost_per_year": float(ly.mean()),
             "by_target": {k: v / (len(rs) * years) for k, v in cat.items()},
+            "lost_share_by_target": {k: cat_lost[k] / v for k, v in cat.items() if v},
             "extinct": float(np.mean([r["extinct"] for r in rs])),
             "endless": float(np.mean([r["endless"] for r in rs])),
             "surge": float(np.mean([r["surge"] for r in rs])),

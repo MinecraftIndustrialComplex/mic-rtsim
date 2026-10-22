@@ -1,6 +1,6 @@
 # Conflict-life model: results
 
-64 seeds per scenario and mode, 50 game years each; run took 273.7 s. `ladder` is today's engine (EQ-5 (c)), `gate` is EQUILIBRIUM 2.5 (EQ-5 (a)), `life` is CONFLICT-LIFE.md.
+64 seeds per scenario and mode, 50 game years each; run took 322.8 s. `ladder` is today's engine (EQ-5 (c)), `gate` is EQUILIBRIUM 2.5 (EQ-5 (a)), `life` is CONFLICT-LIFE.md.
 
 ## Fights per world-year, losses, stability
 
@@ -106,40 +106,40 @@ A driver is any motive that was at least a quarter of the push toward the fight;
 | multi_nospill | loot 0.41, hunger 0.27, glory 0.19, pride 0.13, revenge 0.00, preempt 0.00 | loot 0.59, glory 0.34, hunger 0.29, pride 0.15, revenge 0.02, preempt 0.00 | 0.24 | restless 0.78, caravan 0.15, provoked 0.04, refused 0.02, news 0.01 |
 | railway | loot 0.54, hunger 0.28, glory 0.10, pride 0.07, revenge 0.02, preempt 0.00 | loot 0.71, hunger 0.31, glory 0.21, revenge 0.13, pride 0.09, preempt 0.00 | 0.32 | restless 0.56, train 0.29, caravan 0.11, provoked 0.02, refused 0.01, news 0.01 |
 
-## Fights by target (a world-year)
+## Fights by target (a world-year; in brackets, the share the attacker lost)
 
 | Scenario | Mode | Camps | Villages | Players | Trains and caravans |
 |---|---|---|---|---|---|
-| alone | ladder | 10.11 | 19.80 | 0.00 | 0.00 |
-| alone | gate | 0.00 | 11.54 | 0.00 | 0.00 |
-| alone | life | 2.26 | 6.31 | 0.00 | 1.59 |
+| alone | ladder | 10.11 (0.98) | 19.80 (0.18) | 0.00 | 0.00 |
+| alone | gate | 0.00 | 11.54 (0.17) | 0.00 | 0.00 |
+| alone | life | 2.26 (0.52) | 6.31 (0.09) | 0.00 | 1.59 (0.05) |
 | duel_adaptive | ladder | 0.00 | 0.00 | 0.00 | 0.00 |
 | duel_adaptive | gate | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_adaptive | life | 0.00 | 0.00 | 0.03 | 0.00 |
-| duel_fortress | ladder | 0.00 | 0.00 | 8.96 | 0.00 |
+| duel_adaptive | life | 0.00 | 0.00 | 0.03 (0.14) | 0.00 |
+| duel_fortress | ladder | 0.00 | 0.00 | 8.96 (0.99) | 0.00 |
 | duel_fortress | gate | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_fortress | life | 0.00 | 0.00 | 0.11 | 0.00 |
-| duel_stubborn | ladder | 0.00 | 0.00 | 21.38 | 0.00 |
-| duel_stubborn | gate | 0.00 | 0.00 | 12.45 | 0.00 |
-| duel_stubborn | life | 0.00 | 0.00 | 3.19 | 0.00 |
+| duel_fortress | life | 0.00 | 0.00 | 0.11 (0.84) | 0.00 |
+| duel_stubborn | ladder | 0.00 | 0.00 | 21.38 (0.22) | 0.00 |
+| duel_stubborn | gate | 0.00 | 0.00 | 12.45 (0.22) | 0.00 |
+| duel_stubborn | life | 0.00 | 0.00 | 3.19 (0.05) | 0.00 |
 | duel_weak | ladder | 0.00 | 0.00 | 0.00 | 0.00 |
 | duel_weak | gate | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_weak | life | 0.00 | 0.00 | 0.09 | 0.00 |
-| farmer | ladder | 10.09 | 19.89 | 0.10 | 0.00 |
-| farmer | gate | 0.00 | 11.57 | 0.15 | 0.00 |
-| farmer | life | 2.20 | 6.19 | 0.94 | 1.58 |
-| fortress | ladder | 7.26 | 19.85 | 2.97 | 0.00 |
-| fortress | gate | 0.00 | 11.52 | 0.07 | 0.00 |
-| fortress | life | 1.97 | 5.86 | 0.34 | 1.56 |
-| multi | ladder | 7.41 | 17.10 | 8.85 | 0.00 |
-| multi | gate | 0.00 | 11.56 | 4.67 | 0.00 |
-| multi | life | 1.60 | 4.73 | 0.50 | 1.21 |
-| multi_nospill | ladder | 7.41 | 17.10 | 8.85 | 0.00 |
-| multi_nospill | gate | 0.00 | 11.56 | 4.67 | 0.00 |
-| multi_nospill | life | 1.59 | 4.72 | 0.49 | 1.18 |
-| railway | ladder | 10.08 | 19.91 | 0.00 | 0.00 |
-| railway | gate | 0.00 | 11.54 | 0.00 | 22.05 |
-| railway | life | 1.91 | 5.10 | 0.16 | 4.80 |
+| duel_weak | life | 0.00 | 0.00 | 0.09 (0.04) | 0.00 |
+| farmer | ladder | 10.09 (0.98) | 19.89 (0.18) | 0.10 (0.26) | 0.00 |
+| farmer | gate | 0.00 | 11.57 (0.18) | 0.15 (0.32) | 0.00 |
+| farmer | life | 2.20 (0.54) | 6.19 (0.09) | 0.94 (0.30) | 1.58 (0.05) |
+| fortress | ladder | 7.26 (0.98) | 19.85 (0.18) | 2.97 (0.89) | 0.00 |
+| fortress | gate | 0.00 | 11.52 (0.17) | 0.07 (0.72) | 0.00 |
+| fortress | life | 1.97 (0.55) | 5.86 (0.10) | 0.34 (0.66) | 1.56 (0.05) |
+| multi | ladder | 7.41 (0.99) | 17.10 (0.20) | 8.85 (0.88) | 0.00 |
+| multi | gate | 0.00 | 11.56 (0.17) | 4.67 (0.81) | 0.00 |
+| multi | life | 1.60 (0.50) | 4.73 (0.10) | 0.50 (0.44) | 1.21 (0.07) |
+| multi_nospill | ladder | 7.41 (0.99) | 17.10 (0.20) | 8.85 (0.88) | 0.00 |
+| multi_nospill | gate | 0.00 | 11.56 (0.17) | 4.67 (0.81) | 0.00 |
+| multi_nospill | life | 1.59 (0.50) | 4.72 (0.10) | 0.49 (0.44) | 1.18 (0.06) |
+| railway | ladder | 10.08 (0.98) | 19.91 (0.18) | 0.00 | 0.00 |
+| railway | gate | 0.00 | 11.54 (0.17) | 0.00 | 22.05 (0.18) |
+| railway | life | 1.91 (0.54) | 5.10 (0.09) | 0.16 (0.32) | 4.80 (0.17) |
 
 ## Each player's share (a year)
 

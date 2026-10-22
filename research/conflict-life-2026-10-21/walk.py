@@ -42,7 +42,9 @@ def touches(w, e, focus):
     return False
 
 
-def walk(name, focus_of, metric, years, title, note, **change):
+def walk(name, focus_of, metric, years, title, note, tables=None, list_all=None, **change):
+    """tables: (label, set of targets) for the decade tables, default one table for the whole focus.
+    list_all: a set of targets whose every fight over the 50 years is listed after the tables."""
     sc = replace(run.scenarios(50 * YEAR)[name], **change)
     worlds = [model.World(sc, "life", s).run() for s in SEEDS]
     w, x, med = median_seed(worlds, metric)
@@ -56,17 +58,32 @@ def walk(name, focus_of, metric, years, title, note, **change):
             if ln:
                 L.append(f"- {ln}")
     # the whole run, by decade
-    L.append("\nThe whole 50 years, by decade (fights aimed at the focus; attackers killed there):\n")
-    L.append("| Decade | Fights | Of them lost | Attackers killed | Envoys | Paid |")
-    L.append("|---|---|---|---|---|---|")
-    for d in range(5):
-        es = [e for e in w.events if d * 10 * YEAR <= e["t"] < (d + 1) * 10 * YEAR and e["tgt"] in focus]
-        fs = [e for e in es if e["act"] in run.FIGHT]
-        dm = [e for e in es if e["act"] == "demand"]
-        L.append(f"| {d * 10 + 1}-{d * 10 + 10} | {len(fs)} | {sum(1 for e in fs if not e.get('win'))} | "
-                 f"{sum(e.get('dead', 0) for e in fs):.0f} | {len(dm)} | {sum(1 for e in dm if e.get('paid'))} |")
+    for label, who in (tables or [(None, focus)]):
+        head = f"fights aimed at {label}" if label else "fights aimed at the focus"
+        L.append(f"\nThe whole 50 years, by decade ({head}; attackers killed there):\n")
+        L.append("| Decade | Fights | Of them lost | Attackers killed | Envoys | Paid |")
+        L.append("|---|---|---|---|---|---|")
+        for d in range(5):
+            es = [e for e in w.events if d * 10 * YEAR <= e["t"] < (d + 1) * 10 * YEAR and e["tgt"] in who]
+            fs = [e for e in es if e["act"] in run.FIGHT]
+            dm = [e for e in es if e["act"] == "demand"]
+            L.append(f"| {d * 10 + 1}-{d * 10 + 10} | {len(fs)} | {sum(1 for e in fs if not e.get('win'))} | "
+                     f"{sum(e.get('dead', 0) for e in fs):.0f} | {len(dm)} | {sum(1 for e in dm if e.get('paid'))} |")
+        by = collections.Counter((w.factions[e["f"]].name, e["act"]) for e in w.events
+                                 if e["tgt"] in who and e["f"] in w.factions)
+        L.append("\nEverything aimed there over the 50 years, by faction and act: "
+                 + "; ".join(f"{a} {k} {n}" for (a, k), n in sorted(by.items())) + ".")
+    if list_all:
+        L.append("\nEvery fight on " + ", ".join(sorted(run_name(w, t) for t in list_all)) + " in the 50 years:\n")
+        for e in w.events:
+            if e["act"] in run.FIGHT and e["tgt"] in list_all:
+                L.append(f"- {run.fmt(w, e)}")
     L.append("")
     return L
+
+
+def run_name(w, t):
+    return w.tname(t)
 
 
 def rail_sweep():
@@ -166,7 +183,8 @@ def main():
               "Ash (defence 50) hunts Ashpit's goblins every few weeks and kills its envoys; Bea (defence 8) "
               "lives near Ash, pays what she is asked, and has done nothing. Both are in reach of Ashpit and "
               "the Grey Outpost. A camp that cannot tell who killed its warriors sometimes blames the other "
-              "player near it (blame spill, 0.15). The headline count is fights on Bea.")
+              "player near it (blame spill, 0.3). The headline count is fights on Bea.",
+              tables=[("Bea", {"P:Bea"}), ("Ash", {"P:Ash"})], list_all={"P:Bea"})
     L += alone()
     with open(os.path.join(OUT, "walkthroughs.md"), "w") as fh:
         fh.write("\n".join(L) + "\n")

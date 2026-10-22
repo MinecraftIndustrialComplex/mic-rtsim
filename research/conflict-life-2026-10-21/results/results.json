@@ -1,7 +1,7 @@
 {
  "seeds": 64,
  "years": 50,
- "seconds": 273.7,
+ "seconds": 322.8,
  "summary": {
   "alone/gate": {
    "worlds": 64,
@@ -22,6 +22,9 @@
    "lost_per_year": 2.0009375,
    "by_target": {
     "village": 11.5403125
+   },
+   "lost_share_by_target": {
+    "village": 0.17338676920577323
    },
    "extinct": 0.0,
    "endless": 0.0,
@@ -90,6 +93,10 @@
     "village": 19.800625,
     "camp": 10.1078125
    },
+   "lost_share_by_target": {
+    "village": 0.17900318803068085,
+    "camp": 0.9799350749729479
+   },
    "extinct": 0.0,
    "endless": 1.0,
    "surge": 0.0,
@@ -157,6 +164,11 @@
     "village": 6.310625,
     "train_or_caravan": 1.5928125,
     "camp": 2.26
+   },
+   "lost_share_by_target": {
+    "village": 0.08834307219966327,
+    "train_or_caravan": 0.05218756131057485,
+    "camp": 0.5243362831858407
    },
    "extinct": 0.0,
    "endless": 0.0625,
@@ -235,6 +247,7 @@
    "lost_share": NaN,
    "lost_per_year": 0.0,
    "by_target": {},
+   "lost_share_by_target": {},
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -307,6 +320,7 @@
    "lost_share": NaN,
    "lost_per_year": 0.0,
    "by_target": {},
+   "lost_share_by_target": {},
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -380,6 +394,9 @@
    "lost_per_year": 0.0040625,
    "by_target": {
     "player": 0.0284375
+   },
+   "lost_share_by_target": {
+    "player": 0.14285714285714285
    },
    "extinct": 0.0,
    "endless": 0.0,
@@ -465,6 +482,7 @@
    "lost_share": NaN,
    "lost_per_year": 0.0,
    "by_target": {},
+   "lost_share_by_target": {},
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -538,6 +556,9 @@
    "lost_per_year": 8.8753125,
    "by_target": {
     "player": 8.960625
+   },
+   "lost_share_by_target": {
+    "player": 0.9904791797447164
    },
    "extinct": 0.0,
    "endless": 0.0,
@@ -618,6 +639,9 @@
    "lost_per_year": 0.0925,
    "by_target": {
     "player": 0.11
+   },
+   "lost_share_by_target": {
+    "player": 0.8409090909090909
    },
    "extinct": 0.0,
    "endless": 0.0,
@@ -704,6 +728,9 @@
    "by_target": {
     "player": 12.4503125
    },
+   "lost_share_by_target": {
+    "player": 0.2201751964057127
+   },
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -784,6 +811,9 @@
    "by_target": {
     "player": 21.375
    },
+   "lost_share_by_target": {
+    "player": 0.22211988304093566
+   },
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -863,6 +893,9 @@
    "lost_per_year": 0.1509375,
    "by_target": {
     "player": 3.19375
+   },
+   "lost_share_by_target": {
+    "player": 0.04726027397260274
    },
    "extinct": 0.0,
    "endless": 0.0,
@@ -951,6 +984,7 @@
    "lost_share": NaN,
    "lost_per_year": 0.0,
    "by_target": {},
+   "lost_share_by_target": {},
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -1023,6 +1057,7 @@
    "lost_share": NaN,
    "lost_per_year": 0.0,
    "by_target": {},
+   "lost_share_by_target": {},
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -1096,6 +1131,9 @@
    "lost_per_year": 0.00375,
    "by_target": {
     "player": 0.0928125
+   },
+   "lost_share_by_target": {
+    "player": 0.04040404040404041
    },
    "extinct": 0.0,
    "endless": 0.0,
@@ -1184,6 +1222,10 @@
     "village": 11.5684375,
     "player": 0.1503125
    },
+   "lost_share_by_target": {
+    "village": 0.17607174694076014,
+    "player": 0.316008316008316
+   },
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -1257,6 +1299,11 @@
     "village": 19.8871875,
     "camp": 10.0903125,
     "player": 0.104375
+   },
+   "lost_share_by_target": {
+    "village": 0.18119392196608997,
+    "camp": 0.9796525132398031,
+    "player": 0.26047904191616766
    },
    "extinct": 0.0,
    "endless": 1.0,
@@ -1332,6 +1379,12 @@
     "player": 0.9421875,
     "village": 6.194375,
     "camp": 2.1971875
+   },
+   "lost_share_by_target": {
+    "train_or_caravan": 0.05477555863159976,
+    "player": 0.2988391376451078,
+    "village": 0.09237211179497529,
+    "camp": 0.5398947518133979
    },
    "extinct": 0.0,
    "endless": 0.078125,
@@ -1420,6 +1473,10 @@
     "village": 11.52125,
     "player": 0.07125
    },
+   "lost_share_by_target": {
+    "village": 0.1746772268634046,
+    "player": 0.7192982456140351
+   },
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -1493,6 +1550,11 @@
     "village": 19.85375,
     "player": 2.96875,
     "camp": 7.2565625
+   },
+   "lost_share_by_target": {
+    "village": 0.17909085185418372,
+    "player": 0.8862105263157894,
+    "camp": 0.9837646957495371
    },
    "extinct": 0.0,
    "endless": 1.0,
@@ -1568,6 +1630,12 @@
     "player": 0.3440625,
     "train_or_caravan": 1.5590625,
     "camp": 1.9690625
+   },
+   "lost_share_by_target": {
+    "village": 0.09790844093479885,
+    "player": 0.6603088101725704,
+    "train_or_caravan": 0.052916416115454,
+    "camp": 0.5451515632439295
    },
    "extinct": 0.0,
    "endless": 0.046875,
@@ -1656,6 +1724,10 @@
     "village": 11.563125,
     "player": 4.668125
    },
+   "lost_share_by_target": {
+    "village": 0.1732609048159559,
+    "player": 0.8149685366180212
+   },
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -1732,6 +1804,11 @@
     "village": 17.0959375,
     "player": 8.8503125,
     "camp": 7.41375
+   },
+   "lost_share_by_target": {
+    "village": 0.19513042206664594,
+    "player": 0.8842201899650436,
+    "camp": 0.9860900354071827
    },
    "extinct": 0.0,
    "endless": 1.0,
@@ -1810,6 +1887,12 @@
     "camp": 1.6021875,
     "train_or_caravan": 1.21,
     "village": 4.7265625
+   },
+   "lost_share_by_target": {
+    "player": 0.4414694894146949,
+    "camp": 0.497366881217086,
+    "train_or_caravan": 0.06534090909090909,
+    "village": 0.10386776859504132
    },
    "extinct": 0.0,
    "endless": 0.0625,
@@ -1901,6 +1984,10 @@
     "village": 11.563125,
     "player": 4.668125
    },
+   "lost_share_by_target": {
+    "village": 0.1732609048159559,
+    "player": 0.8149685366180212
+   },
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -1977,6 +2064,11 @@
     "village": 17.0959375,
     "player": 8.8503125,
     "camp": 7.41375
+   },
+   "lost_share_by_target": {
+    "village": 0.19513042206664594,
+    "player": 0.8842201899650436,
+    "camp": 0.9860900354071827
    },
    "extinct": 0.0,
    "endless": 1.0,
@@ -2055,6 +2147,12 @@
     "village": 4.72375,
     "train_or_caravan": 1.1775,
     "camp": 1.591875
+   },
+   "lost_share_by_target": {
+    "player": 0.4437299035369775,
+    "village": 0.09830643027255888,
+    "train_or_caravan": 0.059447983014861996,
+    "camp": 0.5
    },
    "extinct": 0.0,
    "endless": 0.078125,
@@ -2146,6 +2244,10 @@
     "train_or_caravan": 22.0459375,
     "village": 11.53625
    },
+   "lost_share_by_target": {
+    "train_or_caravan": 0.17795228712773045,
+    "village": 0.1733936504496695
+   },
    "extinct": 0.0,
    "endless": 0.0,
    "surge": 0.0,
@@ -2218,6 +2320,10 @@
    "by_target": {
     "village": 19.9096875,
     "camp": 10.08375
+   },
+   "lost_share_by_target": {
+    "village": 0.180172968561159,
+    "camp": 0.9804140324779967
    },
    "extinct": 0.0,
    "endless": 1.0,
@@ -2293,6 +2399,12 @@
     "village": 5.1015625,
     "camp": 1.908125,
     "player": 0.164375
+   },
+   "lost_share_by_target": {
+    "train_or_caravan": 0.1659616010413277,
+    "village": 0.09451761102603369,
+    "camp": 0.5370127743203407,
+    "player": 0.31749049429657794
    },
    "extinct": 0.0,
    "endless": 0.046875,
