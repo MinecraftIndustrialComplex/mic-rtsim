@@ -1213,3 +1213,180 @@ fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
     assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
+
+// ---- saves write what changed (docs/choices-industry-dirty-pages.md) ----------------------------
+
+/// The mill and `extra` more like it, each with its own vaults 4,096 blocks east of the one
+/// before, all learned while loaded from day 0 and replaying while away from day 1.
+fn mills(j: &mut Java, extra: u64) {
+    mill_with(j, 20_000, &[(0.0, true), (1.0, false)], true, |_, w, d| {
+        for i in 1..=extra {
+            let mut c = d.clone();
+            let id = DistrictId(100 + i);
+            let dx = 4_096 * i as i32;
+            c.id = id;
+            c.name = format!("Mill {i}");
+            for inv in &mut c.inventories {
+                inv.pos.x += dx;
+            }
+            for b in &mut c.exposed {
+                b.pos.x += dx;
+            }
+            for r in &mut c.recipes {
+                r.machine.x += dx;
+            }
+            c.survey = Some(survey(id, 0, 0, 0, 0, 1, [0.0; 4]));
+            w.districts.push(c);
+        }
+    });
+    let all: Vec<usize> = (0..=extra as usize).collect();
+    j.mc_mut().visits = vec![
+        Visit {
+            from: day(0.0),
+            at: all,
+        },
+        Visit {
+            from: day(1.0),
+            at: vec![],
+        },
+    ];
+}
+
+/// One save, taken at the next tick's step; the world waits (no step) until it is durable, so the
+/// engine still holds what it saved. The industry pages it wrote, their bytes, and those it
+/// deleted.
+fn industry_save(j: &mut Java) -> (u64, u64, u64) {
+    use std::sync::atomic::Ordering::Acquire;
+    let done = j.e.stats.saves_done.load(Acquire);
+    j.e.order(vec![Order::SaveAtNextStep]).unwrap();
+    j.mc_tick();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while j.e.stats.saves_done.load(Acquire) == done {
+        assert!(std::time::Instant::now() < deadline, "the save never committed");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    j.e.with_industry(|_, s| (s.save_pages, s.save_bytes, s.save_deleted))
+}
+
+/// The industry pages the store in `dir` holds, by key (the engine closed).
+fn stored_industry_pages(dir: &std::path::Path) -> Vec<(u64, Vec<u8>)> {
+    use rtsim_kernel::page::{Durability, PageKey, PageStore};
+    let mut store = PageStore::open(dir, Durability::NoSync).unwrap();
+    let mut out = Vec::new();
+    for table in rtsim_jni::engine::INDUSTRY_TABLES {
+        for id in store.table_ids(table).unwrap() {
+            let k = PageKey::new(table, id);
+            out.push((k.0, store.get(k).unwrap().expect("listed")));
+        }
+    }
+    out.sort();
+    out
+}
+
+fn industry_pages(e: &Engine) -> Vec<(u64, Vec<u8>)> {
+    let mut v: Vec<(u64, Vec<u8>)> = industry(e, |ie| {
+        ie.snapshot().into_iter().map(|(k, b)| (k.0, b)).collect()
+    });
+    v.sort();
+    v
+}
+
+/// Industry saves write only the pages changed since the save before: with every mill replaying
+/// while away, a save 400 ticks after the one before writes the globals page and the link's and
+/// no district's, at 1 mill as at 16; the first save after the unload wrote every mill's.
+#[test]
+fn a_quiet_industry_save_is_flat_in_the_district_count() {
+    let quiet = |extra: u64| {
+        let (_dir, mut j) = mill_engine("ind-quiet");
+        mills(&mut j, extra);
+        j.mc_run_until(day(1.5));
+        let first = industry_save(&mut j);
+        let replaying = industry(&j.e, |ie| ie.districts().filter(|d| d.sim.is_some()).count());
+        assert_eq!(replaying as u64, 1 + extra, "every mill replays");
+        let t = j.mc().t;
+        j.mc_run_until(t + 400);
+        let quiet = industry_save(&mut j);
+        assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+        j.e.close(true, Duration::from_secs(5)).unwrap();
+        (first, quiet)
+    };
+    let ((first_1, quiet_1), (first_16, quiet_16)) = (quiet(0), quiet(15));
+    eprintln!(
+        "industry saves (pages, bytes, deleted): 1 mill {first_1:?} then {quiet_1:?}; 16 mills {first_16:?} then {quiet_16:?}"
+    );
+    assert!(first_16.0 > first_1.0, "the first save writes every mill's pages");
+    assert_eq!(quiet_1.0, 2, "the globals page and the link's");
+    assert_eq!(quiet_16.0, 2, "the globals page and the link's");
+    assert_eq!((quiet_1.2, quiet_16.2), (0, 0));
+}
+
+/// A district Java removes leaves the store with the next save: its pages are deleted in that
+/// commit (no index read: the engine marked them), and the engine started again from the store
+/// has no trace of it.
+#[test]
+fn a_removed_district_leaves_the_store_with_the_next_save() {
+    use rtsim_industry::persist::{DISTRICT_TABLE, GLASS_TABLE};
+    use rtsim_kernel::page::{Durability, PageKey, PageStore};
+    let (dir, mut j) = mill_engine("ind-removed");
+    mills(&mut j, 1);
+    j.mc_run_until(day(1.5));
+    industry_save(&mut j);
+    let other = DistrictId(101);
+    let t = j.mc().t;
+    j.industry_obs(&Timed {
+        at: t,
+        obs: Obs::DistrictRemoved { district: other },
+    });
+    let (_, _, deleted) = industry_save(&mut j);
+    assert!(deleted >= 1, "its pages are deleted");
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    {
+        let store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        assert!(store.contains(PageKey::new(DISTRICT_TABLE, MILL.0)), "the mill stays");
+        assert!(!store.contains(PageKey::new(DISTRICT_TABLE, other.0)));
+        assert!(!store.contains(PageKey::new(GLASS_TABLE, other.0)));
+    }
+    let e = engine(&dir, 256 * 1024);
+    let j = Java::open(e.clone(), j.world_save());
+    assert_eq!(
+        industry(&e, |ie| ie.districts().map(|d| d.id).collect::<Vec<_>>()),
+        vec![MILL]
+    );
+    drop(j);
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// A save whose write fails hands its industry pages back: the next save writes them again, and
+/// the store then holds the engine that saved, page for page.
+#[test]
+fn a_failed_industry_save_is_written_again_by_the_next() {
+    use rtsim_kernel::page::Fault;
+    let (dir, mut j) = mill_engine("ind-failed");
+    mills(&mut j, 3);
+    j.mc_run_until(day(0.9));
+    industry_save(&mut j);
+    // The unload: every mill's pages change, in a save that fails.
+    j.mc_run_until(day(1.2));
+    let failures = j.e.stats_array()[15];
+    j.e.inject_store_fault(Some(Fault::TornLog));
+    j.e.order(vec![Order::SaveAtNextStep]).unwrap();
+    j.mc_tick();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while j.e.stats_array()[15] == failures {
+        assert!(std::time::Instant::now() < deadline, "the save never failed");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let lost = j.e.with_industry(|_, s| s.save_pages);
+    assert!(lost > 2, "the failed save had district pages: {lost}");
+    // A tick from the failed save to the next: it writes the lost pages again.
+    let (pages, _, _) = industry_save(&mut j);
+    assert!(pages >= lost, "the next save writes the lost pages again: {pages} of {lost}");
+    let saved = industry_pages(&j.e);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    assert!(
+        stored_industry_pages(&dir) == saved,
+        "the store holds the engine that saved"
+    );
+}

@@ -98,6 +98,11 @@ pub struct IndustryStats {
     pub threats: u64,
     /// Industry records ignored while the module was switched off (U10).
     pub ignored: u64,
+    /// The last save's industry pages (docs/choices-industry-dirty-pages.md): those written (the
+    /// globals page and the link's included), their bytes, and those deleted.
+    pub save_pages: u64,
+    pub save_bytes: u64,
+    pub save_deleted: u64,
 }
 
 /// The industry side of one session.
@@ -929,6 +934,10 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 pub(super) fn save(st: &mut State) -> ChangedPages {
     let mut c = st.industry.engine.save_changed();
     c.put.push((KEY_LINK, encode_link(&st.industry)));
+    let s = &mut st.industry.stats;
+    s.save_pages = c.put.len() as u64;
+    s.save_bytes = c.put.iter().map(|(_, b)| b.len() as u64).sum();
+    s.save_deleted = c.delete.len() as u64;
     c
 }
 
