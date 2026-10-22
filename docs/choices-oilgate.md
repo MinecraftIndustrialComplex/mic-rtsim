@@ -160,6 +160,9 @@ By night the field flights beat In Control's dragon at site 1 on every measure: 
 hit later and less by night (OGC35's morning runs had them at 260.7 and 334.0 a minute, first hit 676
 and 563), and the drawn visitors do not. Site 2 is safe in both arms, and site 3 (no oil) has no
 dragon in B, as designed. One sample, so this shows the direction, not a median.
+In that run the suite's later lair test (`aLairsDragonIsAdoptedAndItsHoardRobbed`) read its dragon's
+DRAGON_MATERIALIZED before it was sent and crashed the server; it now waits for the record. Without
+`-Pog10` all 20 iceandfire tests passed.
 
 ## Lairs near oil (OG-7)
 
