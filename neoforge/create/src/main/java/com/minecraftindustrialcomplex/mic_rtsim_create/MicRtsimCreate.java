@@ -17,8 +17,9 @@ import org.slf4j.Logger;
  *
  * <p>On clients it is also the far view's train source ({@code client.MicRtsimCreateClient}): Create trains
  * beyond the vanilla view go into the core's far registry for a renderer such as mic_rtsim_dh to draw, as the
- * player's eyes would see them (DECISIONS.md DH-1, DH-2). That reads Create's own train map sync; no server
- * change. {@link FarTrainBench} lays out synthetic trains for the far-view bench, and only with its property.
+ * player's eyes would see them (DECISIONS.md DH-1, DH-2). With the core's far feed on the server, the trains
+ * come from {@link TrainFeedSource} once a second; without it, the client reads Create's own train map sync.
+ * {@link FarTrainBench} lays out synthetic trains for the far-view bench, and only with its property.
  */
 @Mod(MicRtsimCreate.MODID)
 public final class MicRtsimCreate {
@@ -33,6 +34,8 @@ public final class MicRtsimCreate {
         IndustryApi.registerCommand(IndRecords.IND_WRITE_PACKAGE, WritePackages::accept);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::joined);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::left);
+        // The far feed's trains (docs/boundary.md §12.3): read on the server, sent to subscribers only
+        com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerFarSource(new TrainFeedSource());
         if (FarTrainBench.ENABLED)
             FarTrainBench.register();
     }

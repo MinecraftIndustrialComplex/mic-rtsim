@@ -59,6 +59,7 @@ public final class RtsimCommands {
                 com.minecraftindustrialcomplex.mic_rtsim.bridge.TickCost.summary(),
                 "modules: " + Integer.toBinaryString(RtsimConfig.effectiveMask()),
                 "phase 1: " + s.phase1.describe() + enginePhase1(s),
+                "far feed: " + com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed.describe() + "; legs " + s.farLegs.describe(),
                 com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatSampler.INSTANCE.summary());
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
         return 1;
