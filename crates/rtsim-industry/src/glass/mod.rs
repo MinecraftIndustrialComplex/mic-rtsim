@@ -7,8 +7,10 @@
 //! rationals ([`q`]), and checks it against the boundary measurement for one window ([`check`],
 //! G-B14). Nothing it computes changes the world: the replay still runs the C19 black box.
 //!
-//! **Not persisted (GB4).** Java resends the last compile periodically, so a restarted engine
-//! has its graph again within `glass.resendTicks`; windows restart after a session start anyway.
+//! **Paged (G2-9).** Each district's glass state is a page of its own ([`page`]): the compile, its
+//! passed window and the glass replay's regime state, so a restart keeps the glass replay instead
+//! of dropping the district to the black box. Java numbers each session's compiles from 1: after
+//! a session start the first END that compiles the same factory keeps the compile held (G2-81).
 //!
 //! **Per tick: nothing.** A compile solves when it arrives; a sweep integrates its interval and
 //! adds one sample (O(stores × goods)), and solves again only when the regime it reads (stores'
@@ -20,6 +22,7 @@ pub mod check;
 pub mod codec;
 pub mod graph;
 pub mod lp;
+pub mod page;
 pub mod q;
 pub mod records;
 pub mod replay;
@@ -52,6 +55,9 @@ pub struct GlassStats {
     pub not_compilable: u64,
     /// Complete compiles whose indices did not hold together (`graph::Invalid`): dropped.
     pub compiles_invalid: u64,
+    /// A new session's first compile of the same factory: the compile held is kept under its
+    /// number (G2-81).
+    pub compiles_kept: u64,
     pub solves: u64,
     pub windows_completed: u64,
     pub windows_failed: u64,
@@ -84,6 +90,78 @@ fn empty_view<'a>(
     }
 }
 
+/// Does a new session's compile describe the factory the held compile does (G2-81)? The same
+/// END (fingerprint, the test Java itself uses for "the compile still holds", G-B3; revision,
+/// frame, window and counts) but for its number, a resend flag and the ticks it spanned, and the
+/// same records but for the compile number and what is the factory's state at the compile rather
+/// than its build ([`state_slots`]; a domain's level, live stress and live capacity).
+/// A node's `params` that are its state at the compile, not its build: a heater's burn left and
+/// heat level, a controller's output and the level it read. The rest (thresholds, burn per fuel,
+/// a tank's size, a source's moments) are its build.
+fn state_slots(kind: records::NodeKind) -> &'static [usize] {
+    match kind {
+        records::NodeKind::Heater => &[0, 1],
+        records::NodeKind::Controller => &[2, 3],
+        _ => &[],
+    }
+}
+
+fn same_factory(held: &graph::Graph, c: &store::Complete) -> bool {
+    use records::end_flags::RESEND;
+    let (a, b) = (&held.end, &c.end);
+    let head = |x: records::GraphHead, y: records::GraphHead| {
+        x.district == y.district && x.index == y.index
+    };
+    let end = records::GraphEnd {
+        compile: b.compile,
+        flags: b.flags,
+        compile_ticks: b.compile_ticks,
+        ..*a
+    } == *b
+        && a.flags & !RESEND == b.flags & !RESEND;
+    let node = |x: &records::GraphNode, y: &records::GraphNode| {
+        let mut params = x.params;
+        for &i in state_slots(x.kind) {
+            params[i] = y.params[i];
+        }
+        head(x.head, y.head)
+            && records::GraphNode {
+                head: y.head,
+                params,
+                ..x.clone()
+            } == *y
+    };
+    let edge = |x: &records::GraphEdge, y: &records::GraphEdge| {
+        head(x.head, y.head)
+            && records::GraphEdge {
+                head: y.head,
+                ..x.clone()
+            } == *y
+    };
+    let recipe = |x: &records::GraphRecipe, y: &records::GraphRecipe| {
+        head(x.head, y.head)
+            && records::GraphRecipe {
+                head: y.head,
+                ..x.clone()
+            } == *y
+    };
+    let domain = |x: &records::GraphDomain, y: &records::GraphDomain| {
+        head(x.head, y.head)
+            && x.network == y.network
+            && x.driver == y.driver
+            && x.flags == y.flags
+            && x.levels == y.levels
+            && x.members == y.members
+    };
+    fn all<T>(x: &[T], y: &[T], f: impl Fn(&T, &T) -> bool) -> bool {
+        x.len() == y.len() && x.iter().zip(y).all(|(x, y)| f(x, y))
+    }
+    end && all(&held.nodes, &c.nodes, node)
+        && all(&held.edges, &c.edges, edge)
+        && all(&held.recipes, &c.recipes, recipe)
+        && all(&held.domains, &c.domains, domain)
+}
+
 impl Glass {
     /// One glass record. `view` is the district as the engine knows it (None before its
     /// IND_DISTRICT).
@@ -98,7 +176,13 @@ impl Glass {
         self.records += 1;
         let d = g.district();
         let dg = self.districts.entry(d).or_default();
-        let held = dg.compiled.as_ref().map(|c| c.graph.end.compile);
+        // After a session start, the held compile's number is the last session's: Java's new
+        // numbers are neither older nor a resend of it (G2-81).
+        let held = dg
+            .compiled
+            .as_ref()
+            .filter(|_| !dg.numbers_reset)
+            .map(|c| c.graph.end.compile);
         match g {
             GlassObs::Node(n) => dg.asm.node(n.clone(), held),
             GlassObs::Edge(e) => dg.asm.edge(e.clone(), held),
@@ -106,6 +190,25 @@ impl Glass {
             GlassObs::Domain(x) => dg.asm.domain(x.clone(), held),
             GlassObs::End(end) => {
                 let (outcome, complete) = dg.asm.end(end, held);
+                if matches!(outcome, EndOutcome::Complete | EndOutcome::NotCompilable) {
+                    let reset = std::mem::take(&mut dg.numbers_reset);
+                    if let (true, Some(c), Some(comp)) =
+                        (reset, complete.as_ref(), dg.compiled.as_mut())
+                        && same_factory(&comp.graph, c)
+                    {
+                        // The same factory as the compile held: it stays, with its passed window
+                        // and its replay, under the new session's number (Java names probes and
+                        // compiles by it). Java forgot the probe set.
+                        comp.graph.end.compile = c.end.compile;
+                        comp.probe_set.clear();
+                        comp.probes.clear();
+                        if let Some(rp) = dg.replay.as_mut() {
+                            rp.renumber(c.end.compile);
+                        }
+                        self.stats.compiles_kept += 1;
+                        return;
+                    }
+                }
                 match outcome {
                     EndOutcome::Complete => {
                         let c = complete.expect("complete");
@@ -239,6 +342,7 @@ impl Glass {
             }
             dg.asm = store::Assembler::default();
             dg.ticking.clear();
+            dg.numbers_reset = dg.compiled.is_some();
         }
     }
 

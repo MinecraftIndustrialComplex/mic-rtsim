@@ -575,7 +575,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    engine runs inside the step. Its records (0x0040 to 0x005F, 0x0400 to 0x04FF, 0x8400 to 0x84FF)
    and dictionaries (0x10 to 0x12) are its own; its kept commands share the transfers' resend rules
    (their sequences from the same counter, resent merged in sequence order); its pages are tables
-   0x4900 to 0x4902 and page 1:0x49.
+   0x4900 to 0x4903 and page 1:0x49.
 
 10. **Phase 1** (`engine/phase1.rs`, choices V1 to V28 in docs/overnight-choices-phase1jni.md): the
    phase 1 world (`rtsim-world`: settle, trade, travel, knowledge) runs inside the step.
@@ -1240,7 +1240,9 @@ them is P8: a structure (a harbour piece, an airship tower), a marker block, or 
 - **Navies** (M2's recommendation) sail patrol services whose presence lowers the lanes' hazard;
   players' escorts add to it (`Ships::set_escort`, for a future plugin).
 - **Losses come back**: a lost merchant or navy ship relaunches at its home dock in its own slot; a
-  haven rebuilds a pirate ship when its crew pool can man one; captured crews join the pool.
+  haven refits a pirate ship's slot after `min(96, 4 x 2^P)` days once its crew pool can man it;
+  hires and captured crews fill the pool up to 18 (EQUILIBRIUM.md §2.4.6, slice S8). A pirate hunts
+  only a lane worth it, and with none rests in port.
 
 ## 8. Herds (PLAN.md §10.2; the core's vanilla herd adapter)
 
@@ -1754,3 +1756,127 @@ manifest's `projection.edges[].iso` (FORMAT.md "The world's layout").
   edge. Java takes every target as its image nearest the body each time it steers.
 - **Edge_stop** (TP12): nothing is materialized across a stopped seam, targets go round it, and
   bodies are dematerialized before they would cross it.
+
+## 12. The far view: FAR_LEG and the far feed (research/distant-horizons-2026-10-21.md §6; docs/choices-dh-feed.md)
+
+What moves far from a player, for a client with a far renderer (`mic_rtsim_dh` on Distant Horizons). The
+engine says what each dragon is doing (FAR_LEG, §12.1), the server gathers that with what moves in the game
+(Ice and Fire's embodied dragons, Create's trains, §12.3), and sends each subscribed client once a second
+what changed in its view (§12.2). Choices are DHT25 and up in `docs/choices-dh-feed.md`.
+
+### 12.1 Kind ranges (reserved) and FAR_LEG
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x00D0 to 0x00DF | Java to engine | far view latest-wins observations (none yet) |
+| 0x0C00 to 0x0CFF | Java to engine | far view journaled observations (none yet) |
+| 0x8C00 to 0x8CFF | engine to Java | far view commands (`cmdSeq` at 8) |
+
+0x00C0 to 0x00CF, 0x0A00 to 0x0BFF and 0x8A00 to 0x8BFF stay free for the next simulation families
+(DHT26).
+
+**FAR_LEG (0x8C00, aux = state, size 80).** Reference codec `crates/rtsim-ecology/src/far.rs`, read by
+the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides (`far::tests` and
+`FarLegsTest`).
+
+| Offset | Type | Field |
+|---|---|---|
+| 16 | u64 | agent (the dragon's agent id, as DRAGON_MATERIALIZE's) |
+| 24 | u32 | body: the species' entity type (dictionary 3) |
+| 28 | u32 | dimension (dictionary 1) |
+| 32 | u8 | kind: 1 dragon (the core's `FarKind`) |
+| 33 | u8 | variant: the colour, 0 to 3 within the species |
+| 34 | u8 | stage, 1 to 5, at the record's time |
+| 35 | u8 | reserved |
+| 36 | i32 | y |
+| 40, 44, 48, 52 | i32 | x0, z0, x1, z1 |
+| 56, 64 | i64 | t0, t1, game time |
+| 72 | u32 | radius: a hunt's circle in blocks (at least 24, PLACEHOLDER); 0 otherwise |
+| 76 | u32 | reserved |
+
+| aux | State | Meaning |
+|---|---|---|
+| 0 | GONE | the dragon no longer exists (died, or its row was removed): forget it; only the agent is set |
+| 1 | FLY | flying a straight leg from (x0, y, z0) at t0 to (x1, y, z1) at t1 |
+| 2 | HUNT | hunting around (x0, z0) at height y until t1, drawn circling at `radius` |
+| 3 | ROOST | at rest at (x0, y, z0): its lair, or where it settled; x1 = x0, z1 = z0 |
+| 4 | BODY | embodied (or leaving its body): the entity is the truth; (x0, y, z0) is where the engine last had it |
+
+- **When the engine sends it** (DHT27): every dragon at a session start, in one bounded pass over the
+  rows (as HABITAT_KNOWN's resend, §10.5), then one record whenever what a dragon does changes: a leg
+  booked or cancelled, a state tracked, a dragon created or removed. Nothing passes over every dragon on
+  a step. An engine whose far feed is off marks nothing; rtsim-jni turns it on at every session start.
+- **Positions are chart positions** (TP11): an end may lie past a seam. The link turns engine ticks into
+  game time when it writes the record.
+- **What Java does with it**: the session keeps the last record per dragon (`RtsimSession.farLegs`, not
+  saved) and the far feed draws it. A BODY record is never drawn: the body's own source gives the same id
+  at a higher priority (§12.3). A record whose dimension the dictionary does not name drops the dragon;
+  a short record or an unknown state counts as malformed. Switching the ecology module off clears the
+  table and drops any record still on its way (the engine drops its own queue, GONE records included);
+  the engine resends every dragon when the module comes back. A changed dragon whose page will not load
+  is skipped and counted (`far_read_failed`): Java draws its last leg until it next changes.
+
+### 12.2 The payloads and the far feed's message
+
+Two NeoForge payloads, both registered optional (`PayloadRegistrar.optional()`), so a client without them
+joins a server with them and the other way round. Neither goes through the engine.
+
+- **`mic_rtsim:far_sub`**, client to server: five varints, `version` (1), `radius` (blocks, at most
+  16,384, PLACEHOLDER), `tier` (0 OFF, 1 LOW, 2 MEDIUM, 3 HIGH), `budget` (objects, capped by the tier at
+  0, 48, 128 and 320, PLACEHOLDER) and `kinds` (a mask of `1 << kind`: 2 dragons, 4 carriages). Radius,
+  budget or kinds 0 unsubscribes. A subscription of another version is ignored. A client sends it only
+  when the server has the channel, at most once a second, and only when it changed.
+- **`mic_rtsim:far`**, server to client: one byte array (at most 1 MiB), a far feed message, once a second
+  while subscribed and something changed (the first one always).
+
+The message (`far/FarWire.java`; unsigned LEB128 varints, `zig` a zigzag varint):
+
+```
+u8 version (1), varint flags (1 RESET), varlong gameTime, string dimension, zig ox, oy, oz, varint count, records
+INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb
+LEG    2: handle, u8 state, zig y-oy, zig x0-ox, zig z0-oz, zig x1-ox, zig z1-oz, zig t0-gameTime, varlong t1-t0, varint radius
+SAMPLE 3: handle, u8 state, zig lx-8ox, zig ly-8oy, zig lz-8oz, zig tx-lx, zig ty-ly, zig tz-lz
+REAL   4: handle, zig entity (-1: none)
+GONE   5: handle
+```
+
+- **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
+  use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE
+  frees the handle, and GONE records come first in a message so their handles can be reused in it. The
+  hold covers the hand-over's gap: a dragon whose body was just captured is in neither source until the
+  engine's next leg lands, and comes back on its own handle.
+- **Positions** are relative to the header's origin (the subscriber's block): legs in whole blocks,
+  samples in eighths of a block with the trailing point relative to the leading one. Times are relative
+  to the header's game time.
+- **Only what changed** (`far/FarView.java`): an INTRO when an object is new or its looks changed, a LEG
+  when the leg changed, a SAMPLE when it moved by an eighth of a block, a REAL when its entity id changed.
+  RESET tells the client to forget every object first. The server sends it on every subscription (a
+  client subscribes again when its wants change or a message did not decode) and on a new dimension,
+  and then everything the filter chose.
+- **On the client** (`client/FarFeedReceiver.java`): legs become far registry movers on the far clock,
+  timed through the client's game time; a hunt circles at 0.5 blocks a tick (PLACEHOLDER), spiralling
+  onto its circle over 40 ticks from where the dragon was drawn and turning the way it was flying. A
+  mover moves from where it was drawn to each new sample over the next second, so the view runs a second
+  behind the server. A message that does not decode drops every object, and the client subscribes again,
+  so the server's RESET brings them back.
+
+### 12.3 Sources and the filter
+
+A `FarSource` (`RtsimApi.registerFarSource`) says what moves in a level; the feed asks each once a second
+for each level a subscriber is in, and none when nobody is subscribed.
+
+| Source | Ids | What it gives |
+|---|---|---|
+| the engine's legs (core, priority 0) | the dragon's agent id | FLY, HUNT and ROOST legs from FAR_LEG |
+| Ice and Fire's bodies (`mic_rtsim_iceandfire`, priority 10) | the dragon's agent id | each puppet's body as a sample, FLY or ROOST, with its entity's network id |
+| Create's trains (`mic_rtsim_create`, priority 0) | `0x54 << 56`, 48 bits of the train's id, the carriage index | every carriage's leading and trailing points, read as Create's map sync reads them, with its entity's network id while the server has one |
+
+- **One item per id**: the highest priority wins, so a dragon's body replaces its leg on the same handle
+  and gives it back when it goes (the hand-over, research note §5).
+- **The image nearest the subscriber**: through a seam, each item is moved to its image nearest the
+  subscriber before it is filtered (§11).
+- **The filter** (`far/FarFilter.java`): the kinds the subscriber draws, within its radius plus 64 blocks
+  at this game time, dragons first and then nearest first, up to its budget.
+- **The entity id** lets a client hide the proxy while it has the real entity near it; a carriage
+  between the server's simulation distance and the client's render distance has no entity, and the
+  client draws it there itself (DHT33).

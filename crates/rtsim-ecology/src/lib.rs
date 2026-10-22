@@ -16,6 +16,7 @@
 //! - [`boundary`]: the records the Ice and Fire plugin speaks (docs/boundary.md §6) and their
 //!   codec.
 //! - [`engine`]: [`engine::Dragons`], every dragon's life as events on one timing wheel.
+//! - [`far`]: the far view's dragon legs (FAR_LEG), marked as dragons change.
 //! - [`synth`]: a synthetic world for tests, the CLI and the bench. Scaffolding.
 //! - [`herds`]: migrating herds of vanilla animals (PLAN.md §10.2): forage, migration, latent
 //!   members with derived identity, materialization, and the prey dragons and players hunt.
@@ -32,6 +33,7 @@ pub mod boundary;
 pub mod calendar;
 pub mod dragon;
 pub mod engine;
+pub mod far;
 pub mod flight;
 pub mod herds;
 pub mod homes;

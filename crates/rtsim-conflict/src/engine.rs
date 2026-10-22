@@ -720,6 +720,18 @@ impl Conflict {
         self.now
     }
 
+    /// The census (EQUILIBRIUM.md S1) now: `conflict.camp`, K its culture's pool cap, its members
+    /// the whole warriors in its pool. No pressure, no break and no booked recruit yet (slice S7):
+    /// P reads 0 and renewals 0.
+    pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
+        let mut c = rtsim_kernel::census::KindCensus::new("conflict.camp");
+        for f in 0..self.factions.len() as u32 {
+            let pool = self.pool_at(f, self.now).max(0.0).floor() as u64;
+            c.site(pool, u64::from(self.culture(f).def.pool_cap), false, 0.0);
+        }
+        vec![c]
+    }
+
     pub fn next_due(&self) -> Option<Tick> {
         self.wheel.next_due()
     }

@@ -113,9 +113,28 @@ public final class AdoptGameTests {
         return ms;
     }
 
+    /**
+     * Districts with a chunk in the area {@link #build} clears. An earlier test's machine just outside it can come
+     * back as a district of its own during this one (forgetAll clears the seeds of chunks in districts only), and
+     * where it lands depends on how many tests the GameTest grid holds.
+     */
+    private static int districtsInYard(GameTestHelper helper) {
+        BlockPos centre = inChunk(helper, 0, 0);
+        int cx = (centre.getX() >> 4) + 4, cz = (centre.getZ() >> 4) + 2;
+        int n = 0;
+        for (District d : ind().districts().all())
+            for (long c : d.chunks)
+                if (Math.abs(ChunkPos.getX(c) - cx) <= 4 && Math.abs(ChunkPos.getZ(c) - cz) <= 4) {
+                    n++;
+                    break;
+                }
+        return n;
+    }
+
     private static void checkBefore(GameTestHelper helper, BlockPos[] ms) {
         check("a detection is not running", !ind().districts().rescanning());
-        check("three districts: X, Y and Z, not " + ind().districts().all().size(), ind().districts().all().size() == 3);
+        int n = districtsInYard(helper);
+        check("three districts: X, Y and Z, not " + n, n == 3);
         check("the bridge machine is in no district", districtAt(helper, ms[PLACED.length]) == null);
         check("the lone machine is in no district", districtAt(helper, ms[PLACED.length + 1]) == null);
     }
@@ -138,7 +157,8 @@ public final class AdoptGameTests {
         check("the lone machine is a district of its own", lone != null && lone != xy && lone.chunks.size() == 1 && lone.seeds() == 1);
         District z = districtAt(helper, ms[3]);
         check("Z is the district it was, not redeclared", z != null && z.id == zId && z.revision == zRevision && z.chunks.size() == 4);
-        check("three districts, not " + districts.all().size(), districts.all().size() == 3);
+        int n = districtsInYard(helper);
+        check("three districts, not " + n, n == 3);
 
         districts.rescanNow(helper.getLevel());
         long fullLooked = districts.lastRescanLooked();

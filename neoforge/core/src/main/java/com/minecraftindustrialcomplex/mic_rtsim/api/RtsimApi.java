@@ -50,6 +50,14 @@ public final class RtsimApi {
     }
 
     /**
+     * Adds a far feed source (docs/boundary.md §12.3): what moves in a level, drawn for players whose far
+     * renderer subscribed. Any time; the feed asks it once a second per level a subscriber is in.
+     */
+    public static void registerFarSource(com.minecraftindustrialcomplex.mic_rtsim.far.FarSource source) {
+        com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed.addSource(source);
+    }
+
+    /**
      * Registers a topology source (a world mod that glues a level's edges, Deep Time's layout) asked
      * before Toroidal World's shape and the world border (TP18). Call during mod construction.
      */

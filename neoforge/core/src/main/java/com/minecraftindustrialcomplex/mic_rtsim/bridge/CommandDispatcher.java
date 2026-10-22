@@ -176,6 +176,12 @@ final class CommandDispatcher implements Handover.CommandSink {
                 // Industry commands (0x8400 to 0x84FF, docs/industry-boundary.md §4) go to the module.
                 if (com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.isIndustryCommand(kind) && session.industry != null)
                     return session.industry.accept(b, at, kind, size, aux, this::engineName);
+                // The far view's range (0x8C00 to 0x8CFF, docs/boundary.md §12): the engine's dragon legs.
+                if (com.minecraftindustrialcomplex.mic_rtsim.far.FarLegs.isFarCommand(kind)) {
+                    if (session.farLegs.accept(b, at, kind, size, aux, this::engineName))
+                        applied++;
+                    return true;
+                }
                 // A plugin's own range (the dragons' 0x8500 to 0x85FF, docs/boundary.md §6.4).
                 com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin plugin =
                         com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.forCommand(kind);

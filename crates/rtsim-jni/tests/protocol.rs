@@ -1854,6 +1854,74 @@ mod dragons {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The far view's FAR_LEG (docs/boundary.md §12, DHT27): every dragon at a session start,
+    /// then one record whenever what it does changes, named in the session's dictionary and timed
+    /// in game time.
+    #[test]
+    fn far_legs_follow_a_dragon_from_its_body_to_its_lair() {
+        use rtsim_ecology::far::{FAR_KIND_DRAGON, FarState};
+        let dir = tmpdir("dragons-far");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let first = adoptions(&j);
+        assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
+        let (agent, epoch) = (first[0].agent, first[0].epoch);
+        let last = |j: &Java| *j.far.iter().rev().find(|r| r.agent == agent).expect("a far leg");
+        let body = last(&j);
+        assert_eq!(body.state, FarState::Body, "an adopted dragon is a body in the game");
+        assert_eq!(body.kind, FAR_KIND_DRAGON);
+        assert_eq!(
+            j.cmd_dict.get(&(wire::DICT_BODY, body.body)).map(String::as_str),
+            Some("iceandfire:fire_dragon"),
+            "its species in the engine's dictionary"
+        );
+        assert_eq!(
+            j.cmd_dict.get(&(wire::DICT_DIMENSION, body.dimension)).map(String::as_str),
+            Some(OVERWORLD)
+        );
+        assert!((1..=5).contains(&body.stage));
+
+        // Captured, it is abstract again: at its lair, or on a leg in game time.
+        let seen = j.far.len();
+        j.dragon_obs(&captured(agent, epoch, dim, 210.0));
+        j.idle();
+        let after = last(&j);
+        assert!(j.far.len() > seen, "a change sends a record");
+        assert_ne!(after.state, FarState::Body, "{after:?}");
+        assert!(
+            after.t0 <= j.game_time && after.t0 >= j.game_time - 200,
+            "times are game time: {} at {}",
+            after.t0,
+            j.game_time
+        );
+        if after.state == FarState::Roost {
+            assert_eq!((after.x0, after.z0), (HOME.0, HOME.2), "it rests at its lair");
+        }
+
+        // Quiet steps send nothing.
+        let quiet = j.far.len();
+        j.idle();
+        j.idle();
+        assert_eq!(j.far.len(), quiet, "no change, no record");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+
     /// C25 (U10): with the ecology module switched off mid-session the dragons ignore their
     /// records (a hoard robbery), decide nothing (a player at the lair sees no dragon) and keep
     /// the page they had at the switch; switched on again they run on and the player sees the
