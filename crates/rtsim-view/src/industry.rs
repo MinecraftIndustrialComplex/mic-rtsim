@@ -40,6 +40,10 @@ pub struct DistrictSummary {
     pub attacks: u32,
     pub inventories: u32,
     pub watched: bool,
+    /// Its chunks, sorted.
+    pub chunk_list: Vec<(i32, i32)>,
+    /// Its chunks' outline in chunk corners (`rtsim_layers::industry::chunk_outline`).
+    pub outline: Vec<Vec<[i32; 2]>>,
 }
 
 impl DistrictSummary {
@@ -166,6 +170,33 @@ impl IndustryView {
             .map_or_else(|| format!("good {}", g.0), |i| i.name.clone())
     }
 
+    /// A good as words for a card: `minecraft:iron_ingot` as "Iron ingot" (a component hash
+    /// after `#` dropped).
+    pub fn good_title(&self, g: Good) -> String {
+        match self.goods.get(&g) {
+            Some(i) => {
+                mic_viewer_create::tags::humanize(i.name.split('#').next().unwrap_or(&i.name))
+            }
+            None => format!("Good {}", g.0),
+        }
+    }
+
+    /// The unit a good is counted in: items, millibuckets, or an energy's own unit.
+    pub fn good_unit(&self, g: Good) -> &'static str {
+        match self.goods.get(&g).map(|i| i.class) {
+            Some(rtsim_industry::ids::GoodClass::Fluid) => "mB",
+            Some(rtsim_industry::ids::GoodClass::Item) | None => "items",
+            Some(_) => "units",
+        }
+    }
+
+    /// A station's name from Java's dictionary in `names`, or its number.
+    pub fn station_title(&self, names: &crate::journal::Names, id: u64) -> String {
+        self.station(id)
+            .and_then(|s| names.get(crate::keys::DICT_NAME, s.name))
+            .map_or_else(|| format!("Station {id}"), str::to_owned)
+    }
+
     /// One district as the engine would inspect it, from an engine restored for it alone (its
     /// cluster's other members' pages are not read: their pools and processes live in the cluster
     /// page).
@@ -229,6 +260,8 @@ fn summarize(d: &District) -> DistrictSummary {
         attacks: d.attacks.len() as u32,
         inventories: d.inventories.len() as u32,
         watched: d.watched,
+        chunk_list: d.chunks.iter().copied().collect(),
+        outline: rtsim_layers::industry::chunk_outline(&d.chunks),
     }
 }
 
@@ -244,6 +277,7 @@ impl IndustrySource for IndustryView {
                 chunks: d.chunks,
                 chunk_box: d.chunk_box,
                 state: d.state,
+                outline: d.outline.clone(),
             });
         }
     }

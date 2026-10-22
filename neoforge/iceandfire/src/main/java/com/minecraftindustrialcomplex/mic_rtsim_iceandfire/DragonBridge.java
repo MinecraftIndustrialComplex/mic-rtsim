@@ -33,6 +33,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.bus.api.ICancellableEvent;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -71,6 +72,12 @@ public final class DragonBridge implements SessionPlugin {
     public static final int CLAMP_MARGIN = 8;
     /** A DEPART with timeout 0 is captured after this many ticks at most (PLACEHOLDER, choice Z11). */
     public static final int DEFAULT_DEPART_TIMEOUT = 6000;
+    /** A puppet's breaths are summed into one DRAGON_BREATHS at most this often (OILGATE.md §4.3). */
+    public static final int BREATH_INTERVAL = 20;
+    /** Fire events this many ticks apart or more are two bursts in a puppet's breath log (GameTests). */
+    public static final int BURST_GAP = 6;
+    /** Bursts kept per puppet in the breath log (GameTests). */
+    public static final int BURSTS_KEPT = 64;
 
     private DragonBridge() {}
 
@@ -97,6 +104,17 @@ public final class DragonBridge implements SessionPlugin {
         Snapshot precaptured;
         Death pendingDeath;
         boolean removing;
+        /** The oil reserve the engine gave the body (MAT_OIL), spent a point a breath; -1 breathes freely. */
+        int oil = -1;
+        /** Breaths since the last DRAGON_BREATHS. */
+        int pendingBreaths;
+        long lastBreathFlush;
+        /**
+         * The game tick of the last fire event paid for (a charge spawned on that tick is the same breath), or,
+         * with {@link DragonConfig#breathPerBurst}, of the last one inside a paid burst.
+         */
+        long lastFireTick = Long.MIN_VALUE;
+        final Breath breath = new Breath();
 
         Puppet(long agent, int epoch, Entity entity, long now) {
             this.agent = agent;
@@ -108,6 +126,52 @@ public final class DragonBridge implements SessionPlugin {
 
         DragonBaseEntity dragon() {
             return entity instanceof DragonBaseEntity d ? d : null;
+        }
+    }
+
+    /**
+     * What one puppet's fire did this session (GameTests and logs): every fire event and charge seen,
+     * what was paid from the reserve, what was stopped, and the last bursts (fire events less than
+     * {@link #BURST_GAP} ticks apart, with the charges spawned among them).
+     */
+    public static final class Breath {
+        public int events, eventsPaid, eventsCancelled, chargesWithEvent, chargesPaid, chargesStopped, reported;
+        /** Fire events and charges inside a paid burst ({@link DragonConfig#breathPerBurst} only). */
+        public int inBurst;
+        long lastSeen = Long.MIN_VALUE;
+        public final ArrayDeque<Burst> bursts = new ArrayDeque<>();
+
+        void saw(long now, boolean event, boolean charge) {
+            if (bursts.isEmpty() || now - lastSeen >= BURST_GAP) {
+                bursts.addLast(new Burst(now));
+                if (bursts.size() > BURSTS_KEPT)
+                    bursts.removeFirst();
+            }
+            lastSeen = now;
+            Burst b = bursts.peekLast();
+            b.last = now;
+            if (event)
+                b.events++;
+            if (charge)
+                b.charges++;
+        }
+    }
+
+    /** Fire events less than {@link #BURST_GAP} ticks apart, and the charges among them. */
+    public static final class Burst {
+        public final long start;
+        public long last;
+        public int events, charges;
+
+        Burst(long start) {
+            this.start = start;
+            this.last = start;
+        }
+
+        @Override
+        public String toString() {
+            return events + " events" + (charges > 0 ? " + " + charges + " charge" + (charges > 1 ? "s" : "") : "") + " over "
+                    + (last - start + 1) + " ticks";
         }
     }
 
@@ -144,10 +208,31 @@ public final class DragonBridge implements SessionPlugin {
     /** Prey a puppet picked up: the village it was taken from (0 none), for its DRAGON_ATE. */
     private final Map<UUID, Long> pickedUpFrom = new HashMap<>();
     public final Lairs lairs = new Lairs(this);
+    /** PLACE_LAIR (OG-7). */
+    public final LairPlacer placer = new LairPlacer(this);
+    /** OIL_SURVEY answers and new chunks' oil (OG-2). */
+    public final OilSampler sampler = new OilSampler(this);
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, adopted, discarded, captured, died, hurtRecords, ateRecords, untagged, stateRecords,
-            steered, malformed;
+            steered, malformed, breathRecords, breathsReported, fireCancelled, chargesStopped, oilConfigs;
+    /** The flags of the last OIL_CONFIG sent this session (-1 none). */
+    public int oilConfigSent = -1;
+    /** The obsSeq of this session's first OIL_CONFIG (the one sent at session start); -1 before it. */
+    public long sessionOilConfigSeq = -1;
+    /** The flags of each body's DRAGON_MATERIALIZE this session, the last 1,024 agents (GameTests). */
+    private final Map<Long, Integer> materializeFlags = new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, Integer> eldest) {
+            return size() > 1024;
+        }
+    };
+
+    /** The flags of {@code agent}'s last DRAGON_MATERIALIZE this session that made a body; -1 none. */
+    public int materializeFlagsOf(long agent) {
+        Integer f = materializeFlags.get(agent);
+        return f == null ? -1 : f;
+    }
 
     public RtsimSession session() {
         return session;
@@ -172,13 +257,35 @@ public final class DragonBridge implements SessionPlugin {
         meals.clear();
         pickedUpFrom.clear();
         lairs.clear();
+        placer.clear();
+        sampler.clear();
+        materializeFlags.clear();
         materialized = rejected = adopted = discarded = captured = died = hurtRecords = ateRecords = untagged = stateRecords = steered = malformed = 0;
+        breathRecords = breathsReported = fireCancelled = chargesStopped = oilConfigs = 0;
+        oilConfigSent = -1;
+        sessionOilConfigSeq = -1;
         // Java's dictionary names the species and lair structures from the start (docs/boundary.md §6.2).
         for (String sp : IafDragons.SPECIES)
             s.dictId(Obs.DICT_BODY, sp);
         for (String[] pair : IafDragons.LAIRS)
             for (String l : pair)
                 s.dictId(Obs.DICT_STRUCTURE, l);
+        // The oil gate's switches, before the session's first PLAYER (the core reports players at the end
+        // of a tick, and no tick has run yet).
+        sendOilConfig(DragonConfig.oilFlags(), s.gameTime());
+    }
+
+    /**
+     * OIL_CONFIG: the oil gate's switches ({@link DragonConfig#oilFlags}); the engine takes the last one
+     * it gets. Sent at session start, and again by a GameTest that changes a switch.
+     */
+    public void sendOilConfig(int flags, long now) {
+        ByteBuffer r = session.boundary().beginJournaled(DragonRecords.OIL_CONFIG, DragonRecords.OilConfig.SIZE, flags, now);
+        long seq = session.boundary().commit(r);
+        if (oilConfigs == 0)
+            sessionOilConfigSeq = seq;
+        oilConfigSent = flags;
+        oilConfigs++;
     }
 
     @Override
@@ -307,6 +414,17 @@ public final class DragonBridge implements SessionPlugin {
                         new UUID(b.getLong(at + Discard.ENTITY_MOST), b.getLong(at + Discard.ENTITY_LEAST)), now);
                 yield true;
             }
+            case DragonRecords.PLACE_LAIR -> {
+                placer.request(b.getLong(at + DragonRecords.PlaceLair.FIELD), names.name(Obs.DICT_DIMENSION, b.getInt(at + DragonRecords.PlaceLair.DIM)),
+                        names.name(Obs.DICT_STRUCTURE, b.getInt(at + DragonRecords.PlaceLair.STRUCTURE)), b.getInt(at + DragonRecords.PlaceLair.X),
+                        b.getInt(at + DragonRecords.PlaceLair.Z), b.getInt(at + DragonRecords.PlaceLair.RADIUS));
+                yield true;
+            }
+            case DragonRecords.OIL_SURVEY -> {
+                sampler.survey(names.name(Obs.DICT_DIMENSION, b.getInt(at + DragonRecords.OilSurvey.DIM)), b.getInt(at + DragonRecords.OilSurvey.X),
+                        b.getInt(at + DragonRecords.OilSurvey.Z), b.getInt(at + DragonRecords.OilSurvey.RADIUS), now);
+                yield true;
+            }
             default -> {
                 malformed++;
                 yield true;
@@ -387,6 +505,9 @@ public final class DragonBridge implements SessionPlugin {
         d.setPersistenceRequired();
         d.setData(RtsimAttachments.AGENT, new AgentTag(agent, epoch));
         Puppet p = new Puppet(agent, epoch, d, now);
+        if ((flags & Materialize.FLAG_OIL) != 0)
+            p.oil = Math.max(0, b.getInt(at + Materialize.OIL));
+        p.lastBreathFlush = now;
         register(p);
         if (!level.addFreshEntity(d)) {
             unregister(p);
@@ -402,12 +523,14 @@ public final class DragonBridge implements SessionPlugin {
         }
         if ((flags & Materialize.FLAG_HOSTILE) != 0) {
             UUID target = new UUID(b.getLong(at + Materialize.TARGET_PLAYER_MOST), b.getLong(at + Materialize.TARGET_PLAYER_LEAST));
-            ServerPlayer player = session.server().getPlayerList().getPlayer(target);
-            if (player != null && player.level() == level && !player.isSpectator())
+            // The level's own players: a GameTest's players stand in the level, not in the player list.
+            Player player = level.getPlayerByUUID(target);
+            if (player != null && !player.isSpectator())
                 d.setTarget(player);
         }
         journalMaterialized(p, level, now);
         materialized++;
+        materializeFlags.put(agent, flags);
         return true;
     }
 
@@ -579,6 +702,8 @@ public final class DragonBridge implements SessionPlugin {
         if (s != session || s.failed())
             return;
         lairs.drain(now);
+        placer.tick(now);
+        sampler.tick(now);
         lairs.scanChests(now);
         reportUntagged(now);
         endOfTickRecords(now);
@@ -629,10 +754,120 @@ public final class DragonBridge implements SessionPlugin {
                 capture(p, DragonRecords.Dematerialized.COMMAND, now);
                 continue;
             }
+            if (p.oil == 0)
+                IafDragons.withoutFire(d); // bite and claws (OG-13)
             steerTick(p, d);
+            if (p.pendingBreaths > 0 && now - p.lastBreathFlush >= BREATH_INTERVAL)
+                flushBreaths(p, now);
             if (now - p.lastState >= STATE_INTERVAL)
                 state(p, d, level, now);
         }
+    }
+
+    // ---- fire (OILGATE.md §4.3, OG-4, OG-13) ----------------------------------------------------
+
+    /**
+     * Ice and Fire's DragonFireEvent (lowest priority, not cancelled so far): one breath of a puppet's
+     * fire. A body carrying a reserve pays a point for it; at zero the fire is cancelled, so the dragon
+     * fights with bite and claws. A body without one breathes freely and nothing is counted.
+     */
+    void onFire(DragonBaseEntity d, ICancellableEvent event) {
+        Puppet p = live(d);
+        if (p == null)
+            return;
+        long now = d.level().getGameTime();
+        p.breath.events++;
+        p.breath.saw(now, true, false);
+        if (p.oil < 0)
+            return;
+        if (inPaidBurst(p, now)) {
+            p.breath.inBurst++;
+            p.lastFireTick = now;
+            return;
+        }
+        if (p.oil == 0) {
+            event.setCanceled(true);
+            p.breath.eventsCancelled++;
+            fireCancelled++;
+            IafDragons.withoutFire(d);
+            return;
+        }
+        p.oil--;
+        p.pendingBreaths++;
+        p.breath.eventsPaid++;
+        p.lastFireTick = now;
+    }
+
+    /** With {@link DragonConfig#breathPerBurst}: {@code now} is inside the burst the last point paid for. */
+    private static boolean inPaidBurst(Puppet p, long now) {
+        return DragonConfig.breathPerBurst() && p.lastFireTick != Long.MIN_VALUE && now - p.lastFireTick < BURST_GAP;
+    }
+
+    /**
+     * A puppet's fire charge joining its level. The hover blast's charge comes out of a breath already
+     * paid on this tick; the ground charge Ice and Fire shoots with no event is a breath of its own,
+     * paid here, and stopped (the join cancelled) when the reserve is empty.
+     */
+    void onCharge(DragonBaseEntity d, ICancellableEvent event) {
+        Puppet p = live(d);
+        if (p == null)
+            return;
+        long now = d.level().getGameTime();
+        boolean paid = p.lastFireTick == now;
+        p.breath.saw(now, false, true);
+        if (paid || p.oil < 0) {
+            p.breath.chargesWithEvent += paid ? 1 : 0;
+            return;
+        }
+        if (inPaidBurst(p, now)) {
+            p.breath.inBurst++;
+            p.lastFireTick = now;
+            return;
+        }
+        if (p.oil == 0) {
+            event.setCanceled(true);
+            p.breath.chargesStopped++;
+            chargesStopped++;
+            IafDragons.withoutFire(d);
+            return;
+        }
+        p.oil--;
+        p.pendingBreaths++;
+        p.breath.chargesPaid++;
+        p.lastFireTick = now;
+    }
+
+    /** DRAGON_BREATHS: a puppet's breaths since its last report. Before anything that ends its embodiment. */
+    private void flushBreaths(Puppet p, long now) {
+        p.lastBreathFlush = now;
+        if (p.pendingBreaths <= 0)
+            return;
+        ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_BREATHS, DragonRecords.Breaths.SIZE, p.pendingBreaths, now);
+        r.putLong(DragonRecords.Breaths.AGENT, p.agent);
+        r.putInt(DragonRecords.Breaths.EPOCH, p.epoch);
+        session.boundary().commit(r);
+        p.breath.reported += p.pendingBreaths;
+        breathsReported += p.pendingBreaths;
+        breathRecords++;
+        p.pendingBreaths = 0;
+    }
+
+    /** The reserve a live puppet has left (-1 when it breathes freely, or no such puppet). GameTests. */
+    public int oilOf(long agent) {
+        Puppet p = byAgent.get(agent);
+        return p == null ? -1 : p.oil;
+    }
+
+    /** A live puppet's breaths not yet reported (GameTests). */
+    public int pendingBreathsOf(long agent) {
+        Puppet p = byAgent.get(agent);
+        return p == null ? 0 : p.pendingBreaths;
+    }
+
+    /** A live puppet's breath log, or null. GameTests. */
+    public Breath breathOf(long agent) {
+        Puppet p = byAgent.get(agent);
+        return p == null ? null : p.breath;
     }
 
     /**
@@ -734,6 +969,7 @@ public final class DragonBridge implements SessionPlugin {
             e.discard();
         }
         flushMeals(now); // what it ate, before the capture ends its embodiment
+        flushBreaths(p, now); // and the fire it breathed
         int dim = s == null ? 0 : session.dimId(s.dimension());
         ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DEMATERIALIZED, DragonRecords.Dematerialized.SIZE, reason, now);
         r.putLong(DragonRecords.Dematerialized.AGENT, p.agent);
@@ -831,6 +1067,7 @@ public final class DragonBridge implements SessionPlugin {
                 continue;
             }
             Entity e = p.entity;
+            flushBreaths(p, now);
             ResourceKey<Level> dimKey = e.level().dimension();
             int dim = session.dimId(dimKey);
             ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DIED, DragonRecords.Died.SIZE, p.pendingDeath.killerKind(), now);
@@ -1010,6 +1247,7 @@ public final class DragonBridge implements SessionPlugin {
         if (p == null)
             return;
         p.pendingDeath = null;
+        flushBreaths(p, now);
         int dim = session.dimId(e.level().dimension());
         ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DIED, DragonRecords.Died.SIZE, DragonRecords.ATTACKER_NONE, now);
         r.putLong(DragonRecords.Died.AGENT, p.agent);

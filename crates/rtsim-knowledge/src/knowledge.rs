@@ -136,6 +136,7 @@ pub fn archive_kind(kind: ReportKind) -> Kind {
         ReportKind::Rescue => kinds::KNOWLEDGE_RESCUE,
         ReportKind::ResidentAssault => kinds::KNOWLEDGE_RESIDENT_ASSAULT,
         ReportKind::ResidentKilling => kinds::KNOWLEDGE_RESIDENT_KILLING,
+        ReportKind::Encroachment => kinds::KNOWLEDGE_ENCROACHMENT,
     }
 }
 

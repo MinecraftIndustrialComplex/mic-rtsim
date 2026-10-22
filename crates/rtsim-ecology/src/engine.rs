@@ -65,7 +65,8 @@ use crate::flight::{self, dragon_owner, owner_dragon, owner_player, player_owner
 use crate::herds::{HerdId, Herds};
 use crate::homes::Homes;
 use crate::index::PreyIndex;
-use crate::infra::Infrastructure;
+use crate::infra::{DistrictSite, Infrastructure};
+use crate::oil::{OilIndex, Roll};
 use crate::prey::{Item, PreyClass, PreyLedger};
 use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
@@ -91,7 +92,7 @@ pub const DEPART_TIMEOUT: u32 = 2_400;
 const ROAD_MARGIN: u32 = 150;
 
 /// A player's home is raided within this many blocks of its centre: one region (P26).
-const HOME_RADIUS: i64 = 512;
+pub(crate) const HOME_RADIUS: i64 = 512;
 
 /// Crossings looked at per leg at most (bounds a leg's cost). PLACEHOLDER 4.
 const MAX_CROSSINGS: usize = 4;
@@ -178,6 +179,16 @@ pub(crate) enum Ev {
     Death {
         d: DragonId,
     },
+    /// The dwell on an oil field ends (OG-5): the reserve is full.
+    RefuelEnd {
+        d: DragonId,
+        plan: u32,
+    },
+    /// A dimension's field-flight roll (OG-3, §4.2).
+    FieldRoll {
+        frame: u16,
+        plan: u32,
+    },
     /// A tributary village's next season's payment to the lair that raided it (SINK.md §4.6),
     /// stale unless `stamp` is still the village's tribute row's.
     Tribute {
@@ -220,6 +231,25 @@ pub struct DragonStats {
     /// Meetings not materialized because the dragon is across an edge_stop seam from the player
     /// (TP12): no body crosses one.
     pub seen_across_stop: u64,
+    /// The oil gate (OILGATE.md §4): oil chunks indexed, fields (a gauge), field-flight rolls and
+    /// the dragons they drew, dwells on a field that filled the reserve, raids that drank fuel and
+    /// the mB drunk, breaths reported, raids with passes lacking fire, Encroachment reports made,
+    /// grudge raids on a district, lairs placed near oil, visitors that left the sim, and oil
+    /// surveys asked for.
+    pub oil_chunks: u64,
+    pub fields: u64,
+    pub field_rolls: u64,
+    pub field_draws: u64,
+    pub refuels: u64,
+    pub oil_raids: u64,
+    pub oil_drunk_mb: u64,
+    pub breaths: u64,
+    pub dry_raids: u64,
+    pub encroachments: u64,
+    pub district_target_raids: u64,
+    pub lairs_placed: u64,
+    pub visitors_left: u64,
+    pub surveys: u64,
     /// Tribute payments a village made to a lair (SINK.md §4.6), the raid's first one included.
     pub tributes: u64,
     /// Tribute rows dropped: the purse dry or the lair vacant.
@@ -277,6 +307,16 @@ pub struct HuntRecord {
     pub target: String,
     pub food: i32,
     pub taken: Vec<(String, i64)>,
+}
+
+/// What [`Dragons::raid_sites`] did: the food and goods taken, whether any raid landed, and the
+/// watched district it stopped at.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Raided {
+    pub food: i32,
+    pub taken: Vec<(String, i64)>,
+    pub any: bool,
+    pub watched: Option<DistrictSite>,
 }
 
 /// A new dragon: from a lair's adoption, a hatching, a respawn, or a scenario.
@@ -363,6 +403,19 @@ pub struct Dragons {
     /// The herds, lent for the length of [`Dragons::run_until_with_herds`] (not saved: the
     /// caller owns and saves them).
     pub(crate) wild: Option<Herds>,
+    /// The oil field index (OG-2): resident, saved in pages of its own (0x4417, 0x4418).
+    pub oil: OilIndex,
+    /// Players' last reported positions with their height, for field flights (OG-3). Bounded:
+    /// stale entries go once it holds more than a few dozen. Saved in the meta page.
+    pub(crate) presence: BTreeMap<ActorId, (Pos, i32, Tick)>,
+    /// Each dimension's field-flight process. Saved in the meta page.
+    pub(crate) rolls: BTreeMap<u16, Roll>,
+    /// The districts sensed (OG-8), by their actor: a grudge against one is a raid on it. Saved
+    /// in the meta page.
+    pub(crate) districts: BTreeMap<ActorId, (u64, Pos)>,
+    /// The oil gate's switches (`boundary::OIL_FIELD_FLIGHTS`, `OIL_PLACE_LAIRS`): the tunables'
+    /// until the plugin's OIL_CONFIG.
+    pub oil_flags: u32,
     /// Villages that pay a lair tribute, by village node (SINK.md §4.6). Saved in the meta page.
     pub(crate) tribute: BTreeMap<u32, TributeRow>,
     /// The last tribute row's stamp: never reused, so an old row's event is stale. Saved.
@@ -378,7 +431,7 @@ fn day_of(t: Tick) -> f64 {
     t.0 as f64 / TICKS_PER_DAY as f64
 }
 
-fn place(p: Pos, y: i32) -> Place {
+pub(crate) fn place(p: Pos, y: i32) -> Place {
     Place::new(
         p.frame,
         p.x,
@@ -388,7 +441,7 @@ fn place(p: Pos, y: i32) -> Place {
 }
 
 /// Where and when an event happened, for the event archive.
-fn spot(at: Tick, pos: Pos) -> At {
+pub(crate) fn spot(at: Tick, pos: Pos) -> At {
     At::new(at.0, u32::from(pos.frame), pos.x, pos.z)
 }
 
@@ -398,7 +451,7 @@ fn aid(a: ActorId) -> u128 {
 }
 
 /// A dragon's archive id: its handle's plain bits.
-fn did(d: DragonId) -> u128 {
+pub(crate) fn did(d: DragonId) -> u128 {
     u128::from(d.to_bits())
 }
 
@@ -414,11 +467,11 @@ fn items_text(items: &[(String, i64)]) -> String {
 /// What a hunt was on, for the event archive: the prey's place where the caller knows it (else
 /// the dragon's own), and its id where it has a real one (a herd, a village's key, a player's
 /// actor; 0 for a road or nothing).
-struct Quarry {
-    kind: PreyKind,
-    name: String,
-    pos: Option<Pos>,
-    id: u128,
+pub(crate) struct Quarry {
+    pub kind: PreyKind,
+    pub name: String,
+    pub pos: Option<Pos>,
+    pub id: u128,
 }
 
 /// The same 64-bit stand-in for a player's UUID the phase 1 world uses (its `uuid_hash`), so one
@@ -454,7 +507,7 @@ impl Dragons {
     }
 
     /// The regions a canonical rectangle widened by `r` covers on `frame`, across seams.
-    fn regions_near(&self, frame: u16, r: Rect) -> Vec<(i64, i64)> {
+    pub(crate) fn regions_near(&self, frame: u16, r: Rect) -> Vec<(i64, i64)> {
         let mut out = Vec::new();
         for part in self.topo(frame).fold_rect(r) {
             let (x0, z0, x1, z1) = part.grid_cells(rtsim_travel::legs::REGION_BLOCKS);
@@ -502,11 +555,22 @@ impl Dragons {
             next_seed: 0,
             now,
             wild: None,
+            oil: OilIndex::default(),
+            presence: BTreeMap::new(),
+            rolls: BTreeMap::new(),
+            districts: BTreeMap::new(),
+            oil_flags: 0,
             tribute: BTreeMap::new(),
             tribute_stamp: 0,
             placing: BTreeMap::new(),
             chests: BTreeMap::new(),
         }
+        .with_oil_flags()
+    }
+
+    fn with_oil_flags(mut self) -> Self {
+        self.oil_flags = self.tun.oil.flags;
+        self
     }
 
     pub fn now(&self) -> Tick {
@@ -553,7 +617,7 @@ impl Dragons {
         self.lair_by_key.get(&key).copied()
     }
 
-    fn note(&mut self, at: Tick, kind: &'static str, d: Option<DragonId>, what: String) {
+    pub(crate) fn note(&mut self, at: Tick, kind: &'static str, d: Option<DragonId>, what: String) {
         if !self.log_enabled {
             return;
         }
@@ -567,7 +631,7 @@ impl Dragons {
         });
     }
 
-    fn schedule(&mut self, at: Tick, ev: Ev) {
+    pub(crate) fn schedule(&mut self, at: Tick, ev: Ev) {
         self.wheel.schedule(at.max(self.wheel.now()), ev);
     }
 
@@ -584,7 +648,7 @@ impl Dragons {
         id
     }
 
-    fn uuid_of(&self, p: ActorId) -> Uuid {
+    pub(crate) fn uuid_of(&self, p: ActorId) -> Uuid {
         self.players.get(&p).map_or((0, 0), |v| v.uuid)
     }
 
@@ -684,6 +748,10 @@ impl Dragons {
             last_grudge: None,
             carried: BTreeMap::new(),
             rest: n.at,
+            oil: self.tun.oil.capacity,
+            oil_at: at,
+            visitor: None,
+            sensed: Vec::new(),
         };
         let d = self.dragons.insert(row);
         self.schedule(at + left, Ev::Death { d });
@@ -1087,7 +1155,7 @@ impl Dragons {
                     return;
                 }
                 self.stats.seen += 1;
-                self.materialize(w, d, player, false, None, at);
+                self.materialize(w, d, player, false, false, None, at);
             }
             Ev::Depart { d, plan, reason } => {
                 if self.live(d, plan) {
@@ -1120,6 +1188,12 @@ impl Dragons {
                 );
                 self.remove(w, d, at);
             }
+            Ev::RefuelEnd { d, plan } => {
+                if self.live(d, plan) {
+                    self.refuel_end(w, d, at);
+                }
+            }
+            Ev::FieldRoll { frame, plan } => self.field_roll(w, frame, plan, at),
             Ev::Tribute { node, stamp } => {
                 let Some(row) = self.tribute.get(&node).copied() else {
                     self.stats.stale += 1;
@@ -1139,7 +1213,7 @@ impl Dragons {
     }
 
     /// Keeps [`Dragons::embodied`] in step with `d`'s state: called after every change of state.
-    fn track(&mut self, d: DragonId) {
+    pub(crate) fn track(&mut self, d: DragonId) {
         if self.dragons.get(d).is_some_and(Dragon::is_embodied) {
             self.embodied.insert(d);
         } else {
@@ -1149,7 +1223,7 @@ impl Dragons {
 
     /// Keeps [`Dragons::vacant`] in step with lair `l`: called after every change of its
     /// occupants or its vacancy.
-    fn track_lair(&mut self, l: LairId) {
+    pub(crate) fn track_lair(&mut self, l: LairId) {
         if self
             .lairs
             .get(l)
@@ -1161,7 +1235,7 @@ impl Dragons {
         }
     }
 
-    fn live(&mut self, d: DragonId, plan: u32) -> bool {
+    pub(crate) fn live(&mut self, d: DragonId, plan: u32) -> bool {
         let ok = self.dragons.get(d).is_some_and(|x| x.plan == plan);
         if !ok {
             self.stats.stale += 1;
@@ -1171,7 +1245,7 @@ impl Dragons {
 
     // ---- legs ------------------------------------------------------------------------------------
 
-    fn book_leg(&mut self, w: &mut World, d: DragonId, path: Path, y: i32) {
+    pub(crate) fn book_leg(&mut self, w: &mut World, d: DragonId, path: Path, y: i32) {
         self.stats.legs += 1;
         // Every dragon is named: a flight or a stay at prey is a named mover's leg.
         self.tape.leg(
@@ -1214,13 +1288,13 @@ impl Dragons {
         }
     }
 
-    fn bump(&mut self, d: DragonId) -> u32 {
+    pub(crate) fn bump(&mut self, d: DragonId) -> u32 {
         let x = self.dragons.get_mut(d).expect("live");
         x.plan = x.plan.wrapping_add(1);
         x.plan
     }
 
-    fn target_pos(&self, w: &World, t: Target) -> Pos {
+    pub(crate) fn target_pos(&self, w: &World, t: Target) -> Pos {
         match t {
             Target::Road { x, z, edge, .. } => {
                 let frame = w.nodes[w.edges[edge as usize].a].pos.frame;
@@ -1229,6 +1303,7 @@ impl Dragons {
             Target::Village { node } => w.nodes[node as usize].pos,
             Target::Home { frame, x, z, .. } => Pos::new(frame, x, z),
             Target::Herd { frame, x, z, .. } => Pos::new(frame, x, z),
+            Target::District { frame, x, z, .. } => Pos::new(frame, x, z),
         }
     }
 
@@ -1242,12 +1317,13 @@ impl Dragons {
                 None => x.position(&self.topo, &self.lairs, self.now),
             },
             Purpose::Claim(l) => (self.lairs[l as usize].pos, self.lairs[l as usize].y),
+            Purpose::Refuel { frame, x, z, .. } => (Pos::new(frame, x, z), cruise),
         }
     }
 
     /// Flies from where it is now to `to` for `purpose`: one leg, one event at its end, and a
     /// crossing event for each road a hungry dragon passes over.
-    fn fly(&mut self, w: &mut World, d: DragonId, purpose: Purpose, at: Tick) {
+    pub(crate) fn fly(&mut self, w: &mut World, d: DragonId, purpose: Purpose, at: Tick) {
         let (to, _) = self.purpose_pos(w, d, purpose);
         let (from, _) = self.dragons[d].position(&self.topo, &self.lairs, at);
         let sp = self.tun.species(self.dragons[d].species).clone();
@@ -1324,10 +1400,12 @@ impl Dragons {
         let sp = self.tun.species(x.species).clone();
         let stage = x.stage(&sp, at);
         let passes = sp.passes[stage.index()].max(1);
+        let seed = x.seed;
+        let op = self.oil_passes(d, passes, at);
         let threat = Threat {
             id: fnv1a64(
                 &[
-                    x.seed.to_le_bytes(),
+                    seed.to_le_bytes(),
                     at.0.to_le_bytes(),
                     train.0.to_le_bytes(),
                 ]
@@ -1336,7 +1414,7 @@ impl Dragons {
             source: ThreatSource::Dragon,
             class: ThreatClass::Flying,
             count: passes,
-            strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
+            strength: f64::from(passes) * sp.strength_per_pass[stage.index()] * op.factor,
             target: ThreatTarget::Train(train),
             loads: None,
             at,
@@ -1345,6 +1423,15 @@ impl Dragons {
             return;
         };
         self.stats.train_raids += 1;
+        if op.burn > 0 {
+            self.dragons
+                .get_mut(d)
+                .expect("live")
+                .burn_oil(&self.tun.oil, op.burn, at);
+        }
+        if op.dry {
+            self.stats.dry_raids += 1;
+        }
         let mut food = 0;
         let mut taken = Vec::new();
         for (g, n) in loot.iter() {
@@ -1450,18 +1537,26 @@ impl Dragons {
 
     /// Settles at its lair: one `Hungry` event, and no leg (a visiting player finds it through
     /// the lair index).
-    fn roost(&mut self, w: &mut World, d: DragonId, at: Tick) {
+    pub(crate) fn roost(&mut self, w: &mut World, d: DragonId, at: Tick) {
         let plan = self.bump(d);
         let hunt_below = self.tun.hunt_below;
         let rest = self.tun.rest_ticks.max(1);
         let here = self.dragons[d].position(&self.topo, &self.lairs, at);
+        let gated = self.oil_gated(d);
         let x = self.dragons.get_mut(d).expect("live");
         x.state = State::Roosting;
         // A dragon with a lair rests at it; one without rests where it landed (with no resting
         // place it would stand at the origin).
         x.rest = if x.lair.is_none() { Some(here) } else { None };
         x.bout = 0;
-        let t = x.hungry_at(&self.tun, hunt_below, at).max(at + rest);
+        let mut t = x.hungry_at(&self.tun, hunt_below, at);
+        // A fire dragon also wakes when its reserve runs low (OG-4); one already low waits for
+        // hunger, which weighs refuelling with food.
+        let o = &self.tun.oil;
+        if gated && x.oil_level(o, at) > o.refuel_below {
+            t = t.min(x.oil_low_at(o, o.refuel_below, at));
+        }
+        let t = t.max(at + rest);
         // At rest it books nothing in the leg index: players find it through the lair.
         self.cancel_leg(w, d);
         self.track(d);
@@ -1523,7 +1618,7 @@ impl Dragons {
     // ---- choosing prey -----------------------------------------------------------------------------
 
     /// Picks the best prey and flies to it. `chain` counts hunts already made in this bout.
-    fn decide(&mut self, w: &mut World, d: DragonId, at: Tick, chain: u8) {
+    pub(crate) fn decide(&mut self, w: &mut World, d: DragonId, at: Tick, chain: u8) {
         self.dragons.get_mut(d).expect("live").bout = chain;
         self.stats.decisions += 1;
         let x = &self.dragons[d];
@@ -1536,10 +1631,43 @@ impl Dragons {
                 .get_mut(d)
                 .expect("live")
                 .set_fullness(full, at);
+            self.dragons.get_mut(d).expect("live").set_oil(
+                &self.tun.oil,
+                self.tun.oil.capacity,
+                at,
+            );
             self.roost(w, d, at);
             return;
         }
-        match self.choose(w, d, at) {
+        // Low on oil (OG-4, OG-5): fed, it flies to drink (with no oil in reach it waits for
+        // hunger); hungry, refuelling is weighed with the best prey.
+        let low = self.oil_low(d, at);
+        let refuel = if low { self.refuel_choice(d, at) } else { None };
+        let best = if low && self.dragons[d].fullness_at(&self.tun, at) >= self.tun.hunt_below {
+            match refuel {
+                Some((p, u)) => {
+                    self.refuel_now(w, d, p, u, at);
+                    return;
+                }
+                None => {
+                    let plan = self.bump(d);
+                    let t = self.dragons[d]
+                        .hungry_at(&self.tun, self.tun.hunt_below, at)
+                        .max(at + 1);
+                    self.schedule(t, Ev::Hungry { d, plan });
+                    return;
+                }
+            }
+        } else {
+            self.choose(w, d, at)
+        };
+        if let Some((p, u)) = refuel
+            && best.is_none_or(|b| u >= b.2)
+        {
+            self.refuel_now(w, d, p, u, at);
+            return;
+        }
+        match best {
             Some((t, kind, u)) => {
                 let x = self.dragons.get_mut(d).expect("live");
                 x.bout = chain + 1;
@@ -1621,18 +1749,42 @@ impl Dragons {
         } else {
             w.knowledge.sentiment_snapshot(x.actor, at)
         };
+        // A district it sensed near oil (OG-8) it raids where it is.
         for (target, v) in grudges {
-            if v > self.tun.grudge_below || !w.knowledge.actors().is_player(target) {
+            if v > self.tun.grudge_below {
                 continue;
             }
-            let Some(home) = self.homes.home(target, at) else {
+            let (goal, gpos) = if w.knowledge.actors().is_player(target) {
+                let Some(home) = self.homes.home(target, at) else {
+                    continue;
+                };
+                (
+                    Target::Home {
+                        player: target,
+                        frame: home.pos.frame,
+                        x: home.pos.x,
+                        z: home.pos.z,
+                    },
+                    home.pos,
+                )
+            } else if let Some(&(id, p)) = self.districts.get(&target) {
+                (
+                    Target::District {
+                        district: id,
+                        frame: p.frame,
+                        x: p.x,
+                        z: p.z,
+                    },
+                    p,
+                )
+            } else {
                 continue;
             };
             // A home in another dimension is out of reach, whatever its coordinates.
-            if home.pos.frame != origin.frame {
+            if gpos.frame != origin.frame {
                 continue;
             }
-            let dist = flight::dist(t, (ox, oz), (i64::from(home.pos.x), i64::from(home.pos.z)));
+            let dist = flight::dist(t, (ox, oz), (i64::from(gpos.x), i64::from(gpos.z)));
             if dist > f64::from(sp.grudge_range) {
                 continue;
             }
@@ -1642,14 +1794,9 @@ impl Dragons {
                 / 127.0;
             let w_season = f64::from(self.tun.season_weight(season, PreyKind::Grudge)) / 100.0;
             offer(
-                Target::Home {
-                    player: target,
-                    frame: home.pos.frame,
-                    x: home.pos.x,
-                    z: home.pos.z,
-                },
+                goal,
                 PreyKind::Grudge,
-                pull * w_season + need * 0.1 - cost(home.pos),
+                pull * w_season + need * 0.1 - cost(gpos),
             );
         }
         // Villages' livestock.
@@ -1807,6 +1954,7 @@ impl Dragons {
                 .as_ref()
                 .and_then(|h| h.herd(HerdId::from_bits(herd)))
                 .map_or_else(|| format!("herd {herd:#x}"), |x| x.name.clone()),
+            Target::District { district, .. } => format!("district {district}"),
         }
     }
 
@@ -1844,13 +1992,17 @@ impl Dragons {
     /// The nearest roost of `d`'s species with nobody in it and nobody on the way. Looks up the
     /// lair cells within range (one range query per row of regions), never every lair, and reads
     /// only the vacant ones' rows ([`Dragons::vacant`]).
-    fn vacant_lair(&self, d: DragonId, at: Tick) -> Option<LairId> {
+    pub(crate) fn vacant_lair(&self, d: DragonId, at: Tick) -> Option<LairId> {
         let x = &self.dragons[d];
         let (p, _) = x.position(&self.topo, &self.lairs, at);
         let range = self.tun.species(x.species).grudge_range;
         let r = i64::from(range);
         let (px, pz) = (i64::from(p.x), i64::from(p.z));
         let t = self.topo(p.frame);
+        // A fire dragon weighs the lair's distance to oil with its own (OG-7): a lair with no oil
+        // in reach comes after every one with some.
+        let oily = self.oil_gated(d);
+        let reach = i64::from(self.tun.oil.lair_reach);
         let mut best: Option<(f64, LairId)> = None;
         for (rx, rz) in self.regions_near(p.frame, Rect::around(px, pz, r)) {
             if let Some(ls) = self.lair_cells.get(&(p.frame, rx, rz)) {
@@ -1870,8 +2022,17 @@ impl Dragons {
                     if dd > f64::from(range) {
                         continue;
                     }
-                    if best.is_none_or(|b| dd.total_cmp(&b.0).then(i.cmp(&b.1)).is_lt()) {
-                        best = Some((dd, i));
+                    let key = if oily {
+                        let (lx, lz) = (i64::from(l.pos.x), i64::from(l.pos.z));
+                        dd + self
+                            .oil
+                            .near(t, p.frame, lx, lz, reach)
+                            .map_or(1e9, |n| n.dist)
+                    } else {
+                        dd
+                    };
+                    if best.is_none_or(|b| key.total_cmp(&b.0).then(i.cmp(&b.1)).is_lt()) {
+                        best = Some((key, i));
                     }
                 }
             }
@@ -1893,6 +2054,12 @@ impl Dragons {
             }
             Purpose::Hunt(t @ Target::Home { .. }) => {
                 self.raid_home(w, infra, d, t, at);
+            }
+            Purpose::Hunt(t @ Target::District { .. }) => {
+                self.raid_district(w, infra, d, t, at);
+            }
+            Purpose::Refuel { field, frame, x, z } => {
+                self.refuel_arrive(w, infra, d, field, frame, x, z, at)
             }
             Purpose::Hunt(t) => {
                 let sp = self.tun.species(self.dragons[d].species).clone();
@@ -1926,7 +2093,9 @@ impl Dragons {
                 let (f, t, v) = self.hunt_village(w, d, node as usize, at);
                 (f, t, v, PreyKind::Village)
             }
-            Target::Home { .. } => (0, Vec::new(), Vec::new(), PreyKind::Grudge),
+            Target::Home { .. } | Target::District { .. } => {
+                (0, Vec::new(), Vec::new(), PreyKind::Grudge)
+            }
             Target::Herd { herd, x, z, .. } => {
                 let need = {
                     let x = &self.dragons[d];
@@ -1980,7 +2149,7 @@ impl Dragons {
         }
     }
 
-    fn feed(&mut self, d: DragonId, at: Tick, food: i32, victims: &[ActorId]) {
+    pub(crate) fn feed(&mut self, d: DragonId, at: Tick, food: i32, victims: &[ActorId]) {
         // Nothing to change: leave the row (and its page) clean.
         if food <= 0 && victims.is_empty() {
             return;
@@ -2005,6 +2174,7 @@ impl Dragons {
             Target::Village { node } => u128::from(w.nodes[node as usize].key),
             Target::Home { player, .. } => aid(player),
             Target::Road { .. } => 0,
+            Target::District { district, .. } => u128::from(district),
         };
         Quarry {
             kind,
@@ -2014,7 +2184,7 @@ impl Dragons {
         }
     }
 
-    fn record_hunt(
+    pub(crate) fn record_hunt(
         &mut self,
         at: Tick,
         d: DragonId,
@@ -2109,7 +2279,7 @@ impl Dragons {
         self.ledger.take(Item::World(g), amount, class)
     }
 
-    fn hoard(&mut self, d: DragonId, item: Item, amount: i64) {
+    pub(crate) fn hoard(&mut self, d: DragonId, item: Item, amount: i64) {
         if amount <= 0 {
             return;
         }
@@ -2279,143 +2449,196 @@ impl Dragons {
         else {
             return;
         };
-        let x0 = &self.dragons[d];
-        let sp = self.tun.species(x0.species).clone();
-        let stage = x0.stage(&sp, at);
         let sites = infra.districts_near(frame, i64::from(x), i64::from(z), HOME_RADIUS);
-        let mut food = 0;
-        let mut taken = Vec::new();
-        let mut any = false;
-        for site in sites.into_iter().take(self.tun.raid_districts) {
-            if site.watched {
-                // The player is there: a real fight. Materialize at the district, with what it
-                // already ate at unwatched districts on the way (the ledger has it).
-                if any {
-                    self.feed(d, at, food, &[]);
-                    let quarry = Quarry {
-                        kind: PreyKind::Grudge,
-                        name: format!("the home of player {}", player.to_bits()),
-                        pos: Some(site.pos),
-                        id: aid(player),
-                    };
-                    self.record_hunt(at, d, quarry, food, taken);
-                }
-                let p = site.pos;
-                self.materialize(w, d, player, true, Some((p, sp.cruise_y)), at);
-                return;
-            }
-            let passes = sp.passes[stage.index()].max(1);
-            let threat = Threat {
-                id: fnv1a64(
-                    &[
-                        self.dragons[d].seed.to_le_bytes(),
-                        at.0.to_le_bytes(),
-                        site.id.0.to_le_bytes(),
-                    ]
-                    .concat(),
-                ),
-                source: ThreatSource::Dragon,
-                class: ThreatClass::Flying,
-                count: passes,
-                strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
-                target: ThreatTarget::District(site.id),
-                loads: None,
-                at,
-            };
-            let Some(o) = infra.raid(&threat) else {
-                continue;
-            };
-            any = true;
-            self.stats.district_raids += 1;
-            let mut gained = 0;
-            let first = taken.len();
-            for (g, n) in o.stolen.iter() {
-                let name = infra
-                    .good_name(g)
-                    .unwrap_or_else(|| format!("good {}", g.0));
-                let class = self.tun.prey.class(&name, false);
-                gained += self.ledger.take(Item::Industry(g), n, class);
-                if matches!(class, PreyClass::Valuable) {
-                    self.hoard(d, Item::Industry(g), n);
-                }
-                taken.push((name, n));
-            }
-            food += gained;
-            let loot = &taken[first..];
-            let stolen: i64 = loot.iter().map(|(_, n)| *n).sum();
-            // A raid that took nothing and broke nothing is a minor row.
-            let severity = if stolen > 0 || o.destroyed_blocks > 0 {
-                Severity::Major
-            } else {
-                Severity::Minor
-            };
-            self.tape
-                .event_as(
-                    kinds::DRAGONS_RAID,
-                    severity,
-                    spot(at, site.pos),
-                    did(d),
-                    u128::from(site.id.0),
-                    stolen,
-                )
-                .text(|| {
-                    format!(
-                        "{} blocks destroyed, took {}{}",
-                        o.destroyed_blocks,
-                        if loot.is_empty() {
-                            "nothing".to_string()
-                        } else {
-                            items_text(loot)
-                        },
-                        o.skipped
-                            .map_or(String::new(), |s| format!(" (skipped: {s})"))
-                    )
-                });
-            // Defences that stopped passes wound it; an abstract raid never kills a dragon (a
-            // death needs a real fight), so it keeps at least a tenth of its health.
-            let max = self.dragons[d].max_health(&sp, at);
-            let h = self.dragons[d].health_at(&sp, at);
-            let wound =
-                max * (self.tun.raid_wound_milli as f32 / 1000.0) * (1.0 - o.survived as f32);
-            self.dragons
-                .get_mut(d)
-                .expect("live")
-                .set_health((h - wound).max(max * 0.1), at);
-            self.note(
-                at,
-                "raid",
-                Some(d),
-                format!(
-                    "raids district {} (unwatched): survived {:.2}{}{}, {} blocks destroyed{}",
-                    site.id.0,
-                    o.survived,
-                    o.floor.map_or(String::new(), |f| format!(
-                        ", floored by an observed fight at {f:.2}"
-                    )),
-                    if o.untested {
-                        ", untested defences"
-                    } else {
-                        ""
-                    },
-                    o.destroyed_blocks,
-                    o.skipped
-                        .map_or(String::new(), |s| format!(", skipped: {s}"))
-                ),
-            );
-        }
-        self.feed(d, at, food, &[]);
-        let quarry = Quarry {
+        let r = self.raid_sites(infra, d, sites, at);
+        let quarry = |pos: Pos| Quarry {
             kind: PreyKind::Grudge,
             name: format!("the home of player {}", player.to_bits()),
-            pos: Some(Pos::new(frame, x, z)),
+            pos: Some(pos),
             id: aid(player),
         };
-        self.record_hunt(at, d, quarry, food, taken);
-        if !any {
+        if let Some(site) = r.watched {
+            // The player is there: a real fight. Materialize at the district, with what it
+            // already ate at unwatched districts on the way (the ledger has it).
+            if r.any {
+                self.feed(d, at, r.food, &[]);
+                self.record_hunt(at, d, quarry(site.pos), r.food, r.taken);
+            }
+            let cruise = self.tun.species(self.dragons[d].species).cruise_y;
+            self.materialize(w, d, player, true, false, Some((site.pos, cruise)), at);
+            return;
+        }
+        self.feed(d, at, r.food, &[]);
+        self.record_hunt(at, d, quarry(Pos::new(frame, x, z)), r.food, r.taken);
+        if !r.any {
             let x = self.dragons.get_mut(d).expect("live");
             x.fruitless = x.fruitless.saturating_add(1);
         }
         self.fly(w, d, Purpose::Home, at);
+    }
+
+    /// Raids `sites` in order, at most `raid_districts` of them, through the threat interface;
+    /// stops at the first watched one (the caller materializes there).
+    pub(crate) fn raid_sites(
+        &mut self,
+        infra: &mut dyn Infrastructure,
+        d: DragonId,
+        sites: Vec<DistrictSite>,
+        at: Tick,
+    ) -> Raided {
+        let mut r = Raided::default();
+        for site in sites.into_iter().take(self.tun.raid_districts) {
+            if site.watched {
+                r.watched = Some(site);
+                break;
+            }
+            if let Some(gained) = self.raid_site(infra, d, site, &mut r.taken, at) {
+                r.any = true;
+                r.food += gained;
+            }
+        }
+        r
+    }
+
+    /// One unwatched district raided: a threat of the dragon's passes. A fire dragon's passes
+    /// burn oil, those beyond its reserve strike without fire (OG-13), and its theft drinks fuel
+    /// first, up to the reserve's room (OG-5). Defences that stopped passes wound it.
+    fn raid_site(
+        &mut self,
+        infra: &mut dyn Infrastructure,
+        d: DragonId,
+        site: DistrictSite,
+        taken: &mut Vec<(String, i64)>,
+        at: Tick,
+    ) -> Option<i32> {
+        let x0 = &self.dragons[d];
+        let sp = self.tun.species(x0.species).clone();
+        let stage = x0.stage(&sp, at);
+        let passes = sp.passes[stage.index()].max(1);
+        let op = self.oil_passes(d, passes, at);
+        let threat = Threat {
+            id: fnv1a64(
+                &[
+                    self.dragons[d].seed.to_le_bytes(),
+                    at.0.to_le_bytes(),
+                    site.id.0.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+            source: ThreatSource::Dragon,
+            class: ThreatClass::Flying,
+            count: passes,
+            strength: f64::from(passes) * sp.strength_per_pass[stage.index()] * op.factor,
+            target: ThreatTarget::District(site.id),
+            loads: None,
+            at,
+        };
+        let o = if op.room_mb > 0 {
+            infra.raid_drinking(&threat, &self.tun.oil.fuels, op.room_mb)
+        } else {
+            infra.raid(&threat)
+        }?;
+        self.stats.district_raids += 1;
+        if o.skipped.is_none() {
+            if op.burn > 0 {
+                self.dragons
+                    .get_mut(d)
+                    .expect("live")
+                    .burn_oil(&self.tun.oil, op.burn, at);
+            }
+            if op.dry {
+                self.stats.dry_raids += 1;
+            }
+        }
+        let drinking = op.room_mb > 0;
+        let mut gained = 0;
+        let mut drunk = 0i64;
+        let first = taken.len();
+        for (g, n) in o.stolen.iter() {
+            let name = infra
+                .good_name(g)
+                .unwrap_or_else(|| format!("good {}", g.0));
+            let (class, fuel) = self.stolen_class(&name, drinking);
+            gained += self.ledger.take(Item::Industry(g), n, class);
+            if fuel {
+                drunk += n;
+            } else if matches!(class, PreyClass::Valuable) {
+                self.hoard(d, Item::Industry(g), n);
+            }
+            taken.push((name, n));
+        }
+        self.drink(d, drunk, at);
+        let loot = &taken[first..];
+        let stolen: i64 = loot.iter().map(|(_, n)| *n).sum();
+        // A raid that took nothing and broke nothing is a minor row.
+        let severity = if stolen > 0 || o.destroyed_blocks > 0 {
+            Severity::Major
+        } else {
+            Severity::Minor
+        };
+        self.tape
+            .event_as(
+                kinds::DRAGONS_RAID,
+                severity,
+                spot(at, site.pos),
+                did(d),
+                u128::from(site.id.0),
+                stolen,
+            )
+            .text(|| {
+                format!(
+                    "{} blocks destroyed, took {}{}",
+                    o.destroyed_blocks,
+                    if loot.is_empty() {
+                        "nothing".to_string()
+                    } else {
+                        items_text(loot)
+                    },
+                    o.skipped
+                        .map_or(String::new(), |s| format!(" (skipped: {s})"))
+                )
+            });
+        // An abstract raid never kills a dragon (a death needs a real fight), so it keeps at
+        // least a tenth of its health.
+        let max = self.dragons[d].max_health(&sp, at);
+        let h = self.dragons[d].health_at(&sp, at);
+        let wound = max * (self.tun.raid_wound_milli as f32 / 1000.0) * (1.0 - o.survived as f32);
+        self.dragons
+            .get_mut(d)
+            .expect("live")
+            .set_health((h - wound).max(max * 0.1), at);
+        self.note(
+            at,
+            "raid",
+            Some(d),
+            format!(
+                "raids district {} (unwatched): survived {:.2}{}{}, {} blocks destroyed{}{}{}",
+                site.id.0,
+                o.survived,
+                o.floor.map_or(String::new(), |f| format!(
+                    ", floored by an observed fight at {f:.2}"
+                )),
+                if o.untested {
+                    ", untested defences"
+                } else {
+                    ""
+                },
+                o.destroyed_blocks,
+                if op.dry {
+                    ", some passes without fire"
+                } else {
+                    ""
+                },
+                if drunk > 0 {
+                    format!(", drank {drunk} mB")
+                } else {
+                    String::new()
+                },
+                o.skipped
+                    .map_or(String::new(), |s| format!(", skipped: {s}"))
+            ),
+        );
+        Some(gained)
     }
 
     // ---- the boundary: materializing and what comes back -----------------------------------------
@@ -2432,8 +2655,7 @@ impl Dragons {
         let grudge =
             w.knowledge.sentiment(self.dragons[d].actor, player, at) <= self.tun.grudge_below;
         // It harasses when it hunts here: at its prey, or flying to prey near the player.
-        let near = |t: Target| {
-            let tp = self.target_pos(w, t);
+        let near = |tp: Pos| {
             self.homes.last_seen(player).is_some_and(|(p, _)| {
                 flight::dist(
                     self.topo(p.frame),
@@ -2442,28 +2664,38 @@ impl Dragons {
                 ) <= f64::from(2 * self.tun.view_radius)
             })
         };
+        // A field flight's dragon harasses whoever it meets (In Control's are hostile).
+        let visitor = self.dragons[d].visitor.is_some();
         let harass = grudge
+            || visitor
             || match self.dragons[d].state {
                 State::Hunting { .. } => true,
                 State::Flying(Purpose::Hunt(Target::Home { player: p, .. })) => p == player,
-                State::Flying(Purpose::Hunt(t)) => near(t),
+                State::Flying(Purpose::Hunt(t)) => near(self.target_pos(w, t)),
+                // Flying to drink at a field near the player: it comes in person (OGC19).
+                State::Flying(Purpose::Refuel { frame, x, z, .. }) => near(Pos::new(frame, x, z)),
                 _ => false,
             };
-        self.materialize(w, d, player, harass, None, at);
+        self.materialize(w, d, player, harass, visitor, None, at);
     }
 
     /// Makes the dragon a Minecraft entity near `player`: the plugin spawns it with its NBT from
     /// engine state. A harassing dragon books a departure for when it gets bored (C24); one
     /// passing through books its time to cross the view; one at home stays while it is seen.
-    fn materialize(
+    /// `hostile` makes it attack `player` on sight without a grudge (a field flight's dragon, a
+    /// raid on a district it hates). A fire dragon's body carries its oil reserve (MAT_OIL).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn materialize(
         &mut self,
         w: &mut World,
         d: DragonId,
         player: ActorId,
         harass: bool,
+        hostile: bool,
         at_pos: Option<(Pos, i32)>,
         at: Tick,
     ) {
+        let gated = self.oil_gated(d);
         let (pos, y) =
             at_pos.unwrap_or_else(|| self.dragons[d].position(&self.topo, &self.lairs, at));
         // Near a seam the body appears at the image on the player's side (TP11); across an
@@ -2547,9 +2779,15 @@ impl Dragons {
         if home {
             flags |= boundary::MAT_SLEEPING;
         }
-        if grudge {
+        if grudge || hostile {
             flags |= boundary::MAT_HOSTILE;
         }
+        let oil = if gated {
+            flags |= boundary::MAT_OIL;
+            x.oil_level(&self.tun.oil, at)
+        } else {
+            0
+        };
         let cmd = boundary::Materialize {
             agent: agent_of(d),
             epoch,
@@ -2570,7 +2808,12 @@ impl Dragons {
                 let g = local(target);
                 (g.0 as f64, f64::from(sp.cruise_y), g.1 as f64)
             },
-            target_player: if grudge { self.uuid_of(player) } else { (0, 0) },
+            target_player: if grudge || hostile {
+                self.uuid_of(player)
+            } else {
+                (0, 0)
+            },
+            oil,
         };
         self.outbox.push(Cmd::Materialize(cmd));
         self.stats.materialized += 1;
@@ -2693,7 +2936,7 @@ impl Dragons {
         self.track(d);
     }
 
-    fn embodied(&self, agent: u64, epoch: u32) -> Option<DragonId> {
+    pub(crate) fn embodied(&self, agent: u64, epoch: u32) -> Option<DragonId> {
         let d = dragon_of(agent)?;
         let x = self.dragons.get(d)?;
         match x.state {
@@ -2727,7 +2970,12 @@ impl Dragons {
                     boundary::SpeciesDict::structure_name(l.species, l.kind),
                     l.lair
                 );
+                let new = !self.lair_by_key.contains_key(&l.lair);
                 self.add_lair(w, l.lair, &name, l.species, l.kind, pos, l.home.1, at);
+                // A new fire lair asks for the oil around it before its chunks generate (OG-2).
+                if new && self.tun.species(l.species).uses_oil {
+                    self.survey(l.dimension, pos.x, pos.z);
+                }
             }
             Obs::Untagged(u) => self.untagged(w, u, at),
             Obs::Materialized(m) => {
@@ -2788,6 +3036,9 @@ impl Dragons {
             }
             Obs::HoardRobbed(h) => self.robbed(w, h, at),
             Obs::Ate(a) => self.ate(w, a, at),
+            Obs::OilChunks(o) => self.oil_chunks(o, at),
+            Obs::Breaths(b) => self.breaths(b, at),
+            Obs::OilConfig(c) => self.oil_flags = c.flags,
             Obs::LairChest(c) => {
                 if let Some(l) = self.lair_of_key(c.lair) {
                     let chest = Chest {
@@ -3089,11 +3340,21 @@ impl Dragons {
         };
         let purpose = match purpose {
             Purpose::Claim(l) => Purpose::Claim(l),
-            Purpose::Hunt(t) if !left && !matches!(t, Target::Home { .. }) => Purpose::Hunt(t),
+            Purpose::Refuel { .. } => purpose,
+            Purpose::Hunt(t)
+                if !left && !matches!(t, Target::Home { .. } | Target::District { .. }) =>
+            {
+                Purpose::Hunt(t)
+            }
             _ => Purpose::Home,
         };
         self.dragons.get_mut(d).expect("live").state = State::Flying(purpose);
         self.track(d);
+        // A field flight's dragon that left a player's view is done with its visit.
+        if left && self.dragons[d].visitor.is_some() {
+            self.visitor_done(w, d, at);
+            return;
+        }
         let at_home = match (purpose, self.dragons[d].lair) {
             (Purpose::Home, Some(l)) => {
                 let (p, _) = self.dragons[d].position(&self.topo, &self.lairs, at);
@@ -3312,7 +3573,8 @@ impl Dragons {
 
     /// Takes a dead dragon out: its lair may stand empty (the respawn clock starts), its kin
     /// lose a link and re-point their heirs.
-    fn remove(&mut self, w: &mut World, d: DragonId, at: Tick) {
+    pub(crate) fn remove(&mut self, w: &mut World, d: DragonId, at: Tick) {
+        self.end_visit(d);
         self.release_claim(d, at);
         self.cancel_leg(w, d);
         // A body still in the world goes with it.
@@ -3367,7 +3629,7 @@ impl Dragons {
         }
     }
 
-    fn leave_lair(&mut self, w: &mut World, d: DragonId, at: Tick) {
+    pub(crate) fn leave_lair(&mut self, w: &mut World, d: DragonId, at: Tick) {
         let Some(l) = self.dragons.get(d).and_then(|x| x.lair) else {
             return;
         };
@@ -3945,6 +4207,9 @@ impl Dragons {
             wr.u64(u64::from(x.plan));
             wr.u64(u64::from(x.epoch));
             wr.u64(x.lair.map_or(u64::MAX, u64::from));
+            wr.raw(&x.oil.to_le_bytes());
+            wr.u64(x.oil_at.0);
+            wr.u64(x.visitor.map_or(u64::MAX, u64::from));
             if let Some(l) = x.leg {
                 for v in [l.path.x0, l.path.z0, l.path.x1, l.path.z1] {
                     wr.raw(&v.to_le_bytes());
@@ -3996,6 +4261,9 @@ impl Dragons {
                 wr.raw(&v.to_le_bytes());
             }
         }
+        wr.u64(self.oil.chunks);
+        wr.u64(u64::from(self.oil.next_field));
+        wr.u64(u64::from(self.oil.live));
         fnv1a64(wr.as_bytes())
     }
 
@@ -4017,6 +4285,8 @@ impl Dragons {
             ("wheel", self.wheel.heap_bytes()),
             ("homes", self.homes.heap_bytes()),
             ("prey index", self.index.heap_bytes()),
+            ("oil index", self.oil.heap_bytes()),
+            ("oil gate maps", self.oil_gate_bytes()),
             (
                 "log and players",
                 self.log.capacity() * std::mem::size_of::<LogEntry>()

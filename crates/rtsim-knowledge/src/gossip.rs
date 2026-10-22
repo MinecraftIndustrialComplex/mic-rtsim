@@ -53,6 +53,9 @@ pub fn vanilla_mapping(kind: ReportKind) -> (GossipType, i32) {
         ReportKind::Trade => (GossipType::Trading, 2),
         // PLACEHOLDER: vanilla keeps major positive for curing a zombie villager.
         ReportKind::Rescue => (GossipType::MinorPositive, 25),
+        // PLACEHOLDER: only dragons witness encroachment, so no village writes it; minor negative
+        // keeps the mapping total (choices-oilgate.md OGC3).
+        ReportKind::Encroachment => (GossipType::MinorNegative, 25),
     }
 }
 
