@@ -60,15 +60,18 @@ pub(crate) const DIST_TAG: u64 = 0x4449_5354 << 32; // "DIST"
 /// Players' presence entries kept before the stale ones are dropped.
 const PRESENCE_KEPT: usize = 32;
 
-/// The oil gate's tunables. Every number is a PLACEHOLDER until OG-10's measurement.
+/// The oil gate's tunables. Every number but the reserve's two (Ben's, OGB-2) is a PLACEHOLDER
+/// until OG-10's measurement.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OilTunables {
-    /// Reserve points when full (OILGATE.md §4.3).
+    /// Reserve points when full (OILGATE.md §4.3). Ben's 600 (OGB-2): a point a fire event and a
+    /// fight about five streams of 35 to 41 events, so a full reserve lasts about three fights.
     pub capacity: i32,
     /// Ticks per point lost with time: the pack's `hungerTickRate`, so oil and food keep one
     /// rhythm.
     pub tick_rate: u64,
-    /// A reserve at or below this is low: the dragon wakes for it and weighs refuelling.
+    /// A reserve at or below this is low: the dragon wakes for it and weighs refuelling. Ben's
+    /// 240 (OGB-2): about one fight left.
     pub refuel_below: i32,
     /// Blocks from where it is to the oil chunk it flies to, at most.
     pub refuel_reach: u32,
@@ -110,9 +113,9 @@ pub struct OilTunables {
 impl Default for OilTunables {
     fn default() -> Self {
         OilTunables {
-            capacity: 100,
+            capacity: 600,
             tick_rate: 3_000,
-            refuel_below: 40,
+            refuel_below: 240,
             refuel_reach: 3_000,
             refuel_dwell_ticks: 1_000,
             dry_strength_milli: 500,

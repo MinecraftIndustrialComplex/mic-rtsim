@@ -107,6 +107,7 @@ public final class IndustryPluginGameTests {
     public static void aWrittenPackageGoesIntoAnOfflineBuffer(GameTestHelper helper) {
         fastConfig();
         forgetAll(helper);
+        IndustryKit.forget(helper);
         int y = floorY(helper);
         BlockPos origin = helper.absolutePos(BlockPos.ZERO);
         int zr = origin.getZ() + 10;
@@ -180,6 +181,7 @@ public final class IndustryPluginGameTests {
     public static void aWrittenPackageGoesIntoALoadedPostbox(GameTestHelper helper) {
         fastConfig();
         forgetAll(helper);
+        IndustryKit.forget(helper);
         BlockPos postbox = inChunk(helper, 4, 4);
         BlockPos chest = inChunk(helper, 7, 4);
         long op = engineOp();
@@ -189,8 +191,8 @@ public final class IndustryPluginGameTests {
                 .thenExecute(() -> {
                     helper.getLevel().setBlock(postbox, block("create:white_postbox").defaultBlockState(), 3);
                     helper.getLevel().setBlock(chest, Blocks.CHEST.defaultBlockState(), 3);
-                    playerPlaced(helper, chest);
-                    playerPlaced(helper, postbox);
+                    IndustryKit.playerPlaced(helper, chest);
+                    IndustryKit.playerPlaced(helper, postbox);
                 })
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, postbox);
@@ -249,6 +251,7 @@ public final class IndustryPluginGameTests {
     public static void mailAtALoadedDistrictIsAPackageNotACargoPort(GameTestHelper helper) {
         fastConfig();
         forgetAll(helper);
+        IndustryKit.forget(helper);
         BlockPos postbox = inChunk(helper, 4, 4);
         BlockPos chest = inChunk(helper, 7, 4);
         long[] id = {0};
@@ -265,8 +268,8 @@ public final class IndustryPluginGameTests {
                 .thenExecute(() -> {
                     helper.getLevel().setBlock(postbox, block("create:white_postbox").defaultBlockState(), 3);
                     helper.getLevel().setBlock(chest, Blocks.CHEST.defaultBlockState(), 3);
-                    playerPlaced(helper, chest);
-                    playerPlaced(helper, postbox);
+                    IndustryKit.playerPlaced(helper, chest);
+                    IndustryKit.playerPlaced(helper, postbox);
                 })
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, postbox);
@@ -322,6 +325,7 @@ public final class IndustryPluginGameTests {
     public static void aGaugeNetworkAcrossDistrictsIsWarned(GameTestHelper helper) {
         fastConfig();
         forgetAll(helper);
+        IndustryKit.forget(helper);
         ServerLevel level = helper.getLevel();
         BlockPos origin = helper.absolutePos(BlockPos.ZERO);
         long homeChunk = ChunkPos.asLong((origin.getX() >> 4) + 8000, (origin.getZ() >> 4));

@@ -768,7 +768,7 @@ public final class ReconcileAheadGameTests {
                     id[0] = d.id;
                 }))
                 .thenWaitUntil(io(() -> check("B is not loaded (four chunks from a forced chunk)", level.getChunkSource().getChunkNow(bx, az) == null)))
-                .thenExecute(() -> ind().districts().addChunkForTest(ind().district(id[0]), ChunkPos.asLong(bx, az)))
+                .thenExecute(() -> ind().districts().addSeededChunkForTest(ind().district(id[0]), ChunkPos.asLong(bx, az)))
                 .thenWaitUntil(io(() -> check("partly loaded", ind().district(id[0]).loadState() == IndRecords.LoadState.PARTIAL)))
                 .thenExecute(() -> {
                     // West of A, 120 blocks from A's west edge: the district's box is 120 away, B is 184 away.

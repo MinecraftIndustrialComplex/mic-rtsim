@@ -1,0 +1,149 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "create:depot"
+    },
+    {
+      "id": "create:basin"
+    },
+    {
+      "id": "create:creative_crate"
+    },
+    {
+      "id": "create:creative_fluid_tank"
+    },
+    {
+      "id": "create:white_toolbox"
+    },
+    {
+      "id": "create:orange_toolbox"
+    },
+    {
+      "id": "create:magenta_toolbox"
+    },
+    {
+      "id": "create:light_blue_toolbox"
+    },
+    {
+      "id": "create:yellow_toolbox"
+    },
+    {
+      "id": "create:lime_toolbox"
+    },
+    {
+      "id": "create:pink_toolbox"
+    },
+    {
+      "id": "create:gray_toolbox"
+    },
+    {
+      "id": "create:light_gray_toolbox"
+    },
+    {
+      "id": "create:cyan_toolbox"
+    },
+    {
+      "id": "create:purple_toolbox"
+    },
+    {
+      "id": "create:blue_toolbox"
+    },
+    {
+      "id": "create:brown_toolbox"
+    },
+    {
+      "id": "create:green_toolbox"
+    },
+    {
+      "id": "create:red_toolbox"
+    },
+    {
+      "id": "create:black_toolbox"
+    },
+    {
+      "id": "create_connected:inventory_access_port",
+      "required": false
+    },
+    {
+      "id": "create_connected:inventory_bridge",
+      "required": false
+    },
+    {
+      "id": "create_connected:creative_fluid_vessel",
+      "required": false
+    },
+    {
+      "id": "createdeco:black_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:blue_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:brown_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:cyan_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:gray_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:green_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:light_blue_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:light_gray_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:lime_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:magenta_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:orange_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:pink_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:purple_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:red_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:white_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createdeco:yellow_shipping_container",
+      "required": false
+    },
+    {
+      "id": "createpropulsion:platinum_fluid_tank",
+      "required": false
+    },
+    {
+      "id": "createpropulsion:platinum_fluid_vessel",
+      "required": false
+    }
+  ]
+}

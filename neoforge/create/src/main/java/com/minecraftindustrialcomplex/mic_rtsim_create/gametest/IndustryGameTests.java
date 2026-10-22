@@ -370,7 +370,7 @@ public final class IndustryGameTests {
                 .thenExecute(() -> {
                     // An unloaded member chunk far away: every later sweep is partial, not live.
                     District d = ind().district(id[0]);
-                    ind().districts().addChunkForTest(d, ChunkPos.asLong((bx >> 4) + 4000, (z >> 4) + 4000));
+                    ind().districts().addSeededChunkForTest(d, ChunkPos.asLong((bx >> 4) + 4000, (z >> 4) + 4000));
                 })
                 .thenWaitUntil(() -> {
                     boolean partial = false;

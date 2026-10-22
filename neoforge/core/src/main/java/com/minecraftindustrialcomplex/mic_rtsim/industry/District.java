@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
@@ -33,6 +34,13 @@ public final class District {
     public final long id;
     public final ResourceKey<Level> dim;
     public final LongOpenHashSet chunks = new LongOpenHashSet();
+    /**
+     * Per member chunk, the seeds (machines a player placed) it held when detection last saw it loaded.
+     * A district with no seed in any member chunk dissolves; the count is what lets detection decide that
+     * for chunks that are unloaded, without loading them. A chunk absent from the map held none (storage,
+     * a hopper chain, a belt: a member for what it touches, not for what it is).
+     */
+    public final Long2IntOpenHashMap seedCounts = new Long2IntOpenHashMap();
     /** Set by {@code /rtsim district rename}; wins over the station name. */
     public String customName;
     /** The first station's name (lowest position), else null. */
@@ -109,6 +117,14 @@ public final class District {
             minCz = Math.min(minCz, z);
             maxCz = Math.max(maxCz, z);
         }
+    }
+
+    /** The seeds of the member chunks together. */
+    public int seeds() {
+        int n = 0;
+        for (int v : seedCounts.values())
+            n += v;
+        return n;
     }
 
     /** The inventory at a position, or null. */

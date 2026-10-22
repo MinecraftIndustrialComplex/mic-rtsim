@@ -211,20 +211,20 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#cost">Cost</a>
   <a href="#checked">Checked</a>
   <a href="#decided">Decided</a>
-  <a href="#decide">Decide</a>
+  <a href="#decide">Answers</a>
 </nav>
 
 <main>
 
 <header data-ss-id="page-header">
-  <h1 data-ss-id="headline">A Frostmaw that hunts your trains and a tribe that wants your gold: the plan is ready, and 7 decisions are yours</h1>
-  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (e4b7a3a). It went through three adversarial reviews against the Mowzie's Mobs 1.8.2, Create 6.0.10 and engine sources, then four further checks. The third review found every earlier problem fixed and one blocker, since fixed. The fourth to sixth checks found gaps in how a camp keeps its bodies in step with the sim, each fixed. The seventh, "not S tier yet", found three more. Rather than patch again, the author is rewriting the camp-body sync as one reconciler, with stated invariants and a crash table. Nothing is built.</p>
+  <h1 data-ss-id="headline">A Frostmaw that hunts your trains and a tribe that wants your gold: you answered all 7 decisions, and the plan is being reworked for one of them</h1>
+  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (e4b7a3a). It went through three adversarial reviews against the Mowzie's Mobs 1.8.2, Create 6.0.10 and engine sources, then four further checks. The third review found every earlier problem fixed and one blocker, since fixed. The fourth to sixth checks found gaps in how a camp keeps its bodies in step with the sim, each fixed. The seventh, "not S tier yet", found three more. Rather than patch again, the author is rewriting the camp-body sync as one reconciler, with stated invariants and a crash table. You answered its seven decisions on 21 October. For MZ-3 you chose to have the Umvuthi lead the Invasion in person, so the plan is being reworked for that, and an eighth review follows. Nothing is built.</p>
   <p class="lead" data-ss-id="lead">Two Mowzie's bosses become rtsim factions. A Frostmaw in the snow comes to hate a railway through its range: the more trains, the angrier it gets, until it waits beside your track, robs passing trains and freezes riders off their seats. An Umvuthana grove in the savanna becomes a tribe that sends an envoy for gold, then raptor hunters and a war band. Both come back after you kill them, both are left as Mowzie's made them if rtsim is removed, and a faction with nothing happening costs nothing.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-factions"><div class="n">2</div><div class="t">factions: Frostmaw dens in the snow, Umvuthana groves in the savanna</div></div>
     <div class="tile" data-ss-id="kpi-calm"><div class="n">9 <small>days</small></div><div class="t">from cutting a busy line to 4 legs a day until the raids stop</div></div>
-    <div class="tile" data-ss-id="kpi-heir"><div class="n">6 <small>days</small></div><div class="t">until a new Frostmaw moves into a den you emptied, at the draft rate</div></div>
-    <div class="tile" data-ss-id="kpi-decide"><div class="n">7</div><div class="t">decisions for you, each with a recommendation</div></div>
+    <div class="tile" data-ss-id="kpi-heir"><div class="n">12 <small>days</small></div><div class="t">until a new Frostmaw moves into a den you emptied: your 6-day base, doubled by pressure (EQ-4)</div></div>
+    <div class="tile" data-ss-id="kpi-decide"><div class="n">7</div><div class="t">decisions answered, six as recommended</div></div>
   </div>
 </header>
 
@@ -479,7 +479,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="renewal" data-ss-id="renewal" data-ss-section>
-  <h2 data-ss-id="renewal-h">Kill a boss and it comes back: a new Frostmaw in 6 days for now, a thinned grove whole in 3.5</h2>
+  <h2 data-ss-id="renewal-h">Kill a boss and it comes back: the draft says a new Frostmaw in 6 days and a thinned grove whole in 3.5</h2>
   <div class="scroll" data-ss-id="renew-wrap">
   <table class="stack" data-ss-id="renew-table">
     <thead><tr><th>What comes back</th><th>How fast</th><th>Where you see it</th></tr></thead>
@@ -509,7 +509,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </ul>
 
   <div class="box" data-ss-id="equilibrium">
-    <p><strong>The rates are placeholders until the population equilibrium design sets them.</strong> That design is now on main (EQUILIBRIUM.md, 3590249) and waits for your review on its own page. Under it a den farmed without pause yields about one Frostmaw a game year, not the 12 to 16 this plan's draft rates give, and a den left alone for three game years waits about as long as the first time. Whether a new Frostmaw takes 24 days or this plan's 6 is its question EQ-4. This plan adopts its rules once you approve them.</p>
+    <p><strong>The rates in this section are the draft's.</strong> You answered the population equilibrium plan's questions on 21 October, and the reworked plan takes its rules: one renewal rule for every kind (EQ-6), and a killed Frostmaw back on this plan's 6-day base, doubled by pressure up to 192 days (EQ-4 (b)). That is 12 days after a first kill and about 1.8 Frostmaw a year from a den farmed without pause, not the 12 to 16 the draft rates give. A den left alone for three game years waits about as long as the first time.</p>
   </div>
 </section>
 
@@ -628,82 +628,56 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
-  <h2 data-ss-id="decide-h">Seven decisions for you, recommended option first</h2>
-  <p data-ss-id="decide-intro">MZ-1 comes first because it blocks every conflict plugin, goblins included.</p>
+  <h2 data-ss-id="decide-h">You answered all seven on 21 October</h2>
+  <p data-ss-id="decide-intro">Six as recommended. MZ-3 went the other way, so the plan is being reworked for it and an eighth review follows.</p>
+
+  <div class="decision" data-ss-id="mz3">
+    <h3>MZ-3: which bosses leave home</h3>
+    <p class="rec">Your answer: (b) the Umvuthi also leads the Invasion in person.</p>
+    <p class="why">Not the recommendation, which kept the Umvuthi at its grove. Leading raids needs a puppet form for the Umvuthi and its memory of who traded with it moved into the engine. The plan is being reworked for this, and an eighth review follows. Until then, the rest of this page still has you fight the Umvuthi only at its grove.</p>
+  </div>
 
   <div class="decision" data-ss-id="mz1">
     <h3>MZ-1: where the conflict module's Java half lives</h3>
-    <p class="rec">Recommended: (a) a plain ConflictBridge in the core owns the conflict records and the territory map. The Mowzie plugin registers bodies, finds camps and counts them; the Create plugin samples trains.</p>
-    <p class="why">Why: the first plugin to register a kind owns it, so if the Mowzie plugin owned the range, a later goblin plugin would collide with it.</p>
-    <p class="alt-h">Alternative</p>
-    <ul><li>(b) The Mowzie plugin owns the conflict range itself.</li></ul>
+    <p class="rec">Your answer, as recommended: (a) a plain ConflictBridge in the core owns the conflict records and the territory map.</p>
+    <p class="why">The Mowzie plugin registers bodies, finds camps and counts them; the Create plugin samples trains. A later goblin plugin cannot collide with it.</p>
   </div>
 
   <div class="decision" data-ss-id="mz4">
     <h3>MZ-4: after a boss dies, and which Mowzie's items stay (with MZ-7 and MZ-10)</h3>
-    <p class="rec">Recommended: (a) heirs come back, the new Frostmaw after 6 days with its crystal. Keep Mowzie's drops, masks, trades and the crystal steal.</p>
-    <p class="why">Why: dens stay dangerous and worth a visit, and the ice crystal and Sol Visage become renewable at one per heir. The pack's gun recipes need a supply of ice crystal (<code>tacz_new_recipes.js:994</code>), and stealing then killing still yields only one crystal per heir. This goes against the pack README's TODO to remove boss mods' items.</p>
-    <p class="alt-h">Alternatives</p>
-    <ul>
-      <li>(b) The heir arrives without its crystal: no crystal renewal, and after its first death a den is melee only, so walls hold it and riders are safe.</li>
-      <li>(c) Heirs with crystals, but Mowzie's items removed as the README says: masks, trades and drops go, tribute is the only peace with the tribe, and stealing the crystal disarms but gives nothing.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) heirs come back with their crystal, and Mowzie's drops, masks, trades and the crystal steal stay.</p>
+    <p class="why">With EQ-4 (b), a new Frostmaw comes 12 days after a first kill, slower each time you farm the den. The ice crystal and Sol Visage stay renewable at one per heir, which the pack's gun recipes need (<code>tacz_new_recipes.js:994</code>). This goes against the pack README's TODO to remove boss mods' items.</p>
   </div>
 
   <div class="decision" data-ss-id="mz5">
     <h3>MZ-5: what an ambush does to a train</h3>
-    <p class="rec">Recommended: (a) cargo destroyed, at most 64 items a train a day and 10% of a leg, the same watched or not. Watched, it swipes passing carriages and its ice balls unseat riders.</p>
-    <p class="why">Why: trains pass through a Frostmaw, so a bounded cargo loss is the cost that bites whether or not you are there, with no change to Create's trains.</p>
-    <p class="alt-h">Alternatives</p>
-    <ul>
-      <li>(b) A forced stop: a mixin on Create's train holds it at the spot, so riders must face it and unwatched legs arrive late.</li>
-      <li>(c) A delay only: legs arrive late and no cargo is lost.</li>
-      <li>(d) Riders only, as in Mowzie's today: unwatched trains lose nothing.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) cargo destroyed, at most 64 items a train a day and 10% of a leg, the same watched or not.</p>
+    <p class="why">Watched, the Frostmaw also swipes passing carriages and its ice balls unseat riders. Create's trains are unchanged.</p>
   </div>
 
   <div class="decision" data-ss-id="mz13">
     <h3>MZ-13: whom a line's grudge falls on</h3>
-    <p class="rec">Recommended: (a) the train's owner, the player who assembled it (Create's <code>Train.owner</code>); for a train with no owner, whoever spends most time at the line's stations.</p>
-    <p class="why">Why: in multiplayer, the station rule alone can blame a bystander.</p>
-    <p class="alt-h">Alternative</p>
-    <ul><li>(b) Always whoever spends most time in the stations' chunks.</li></ul>
+    <p class="rec">Your answer, as recommended: (a) the train's owner, the player who assembled it (Create's <code>Train.owner</code>).</p>
+    <p class="why">For a train with no owner, P14 decides: whoever spends most time at the line's stations.</p>
   </div>
 
   <div class="decision" data-ss-id="mz11">
     <h3>MZ-11: the grove's people</h3>
-    <p class="rec">Recommended: (a) the real warriors: saved as vanilla at home, counted each time the grove loads, tagged only while away.</p>
-    <p class="why">Why: killing them at the grove shrinks its raids, and an uninstall leaves the grove as it was.</p>
-    <p class="alt-h">Alternative</p>
-    <ul><li>(b) Leave them vanilla and keep a separate abstract pool: the grove looks the same whatever happens.</li></ul>
-  </div>
-
-  <div class="decision" data-ss-id="mz3">
-    <h3>MZ-3: which bosses leave home</h3>
-    <p class="rec">Recommended: (a) the Frostmaw only; you fight the Umvuthi at its grove.</p>
-    <p class="why">Why: the Umvuthi stays a plain Mowzie's entity with its own memory of who traded with it. Leading raids would need a puppet form and moving that memory into the engine.</p>
-    <p class="alt-h">Alternatives</p>
-    <ul>
-      <li>(b) The Umvuthi also leads the Invasion in person.</li>
-      <li>(c) Neither leaves home.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) the real warriors, saved as vanilla at home, counted each time the grove loads, tagged only while away.</p>
+    <p class="why">Killing them at the grove shrinks its raids, and an uninstall leaves the grove as it was.</p>
   </div>
 
   <div class="decision" data-ss-id="mz6">
     <h3>MZ-6: the tribe's tribute</h3>
-    <p class="rec">Recommended: (a) gold nuggets, a new good, priced by value: half an emerald's worth per point of grievance, at 9 nuggets an emerald until markets set a price. That is 135 nuggets at the Envoy threshold.</p>
-    <p class="why">Why: gold nuggets are already the grove's own trading currency on screen.</p>
-    <p class="alt-h">Alternatives</p>
-    <ul>
-      <li>(b) Emeralds, as goblins ask: no new good.</li>
-      <li>(c) Gold ingots, priced the same way: 15 at the Envoy threshold, in coarser steps.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) gold nuggets, a new good, priced by value.</p>
+    <p class="why">Half an emerald's worth per point of grievance, at 9 nuggets an emerald until markets set a price: 135 nuggets at the Envoy threshold.</p>
   </div>
 </section>
 
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
+    <li>Your answers of 21 October: MZ-1, MZ-3 (b), MZ-4, MZ-5, MZ-6, MZ-11 and MZ-13, sent by the coordinator; EQ-4 (b) and EQ-6 from DECISIONS.md on branch plan/conflict-life (311db56, 849a410).</li>
     <li>MOWZIE.md on mic-rtsim main at e4b7a3a (merged at 24213d4, blocker fixed at cb9f3b9, check fixes at 710950e, 05542c6 and b1ffbfc), sections 0 to 8: the player's view, reuse table and ledger, the design (rail meter, ambush, tribe, UR-1, renewal, strength), walkthroughs A to E, cost model, tests and decisions. Nothing in it was run in a game; "verified" there means read in code or data.</li>
     <li>The three adversarial review notes and the later checks: the first review on the original plan, the second at be38b77 after the first revision, the third on main at 24213d4; the fourth check on cb9f3b9, the fifth on 710950e, the sixth on 05542c6, the seventh on e4b7a3a. They read decompiled Mowzie's Mobs 1.8.2 (sha512 matched to the pack), Create 6.0.10, TaCZ 1.1.8-hotfix-r6, Create Big Cannons, Create Radars, vanilla 1.21.1 and the rtsim engine.</li>
     <li>The meter curve: recomputed here from the plan's section 4.3 (a meter with a 2-day time constant, a tolerance of 2 legs a day, a 10% push band with a 1-leg floor and a daily resync, a 6-day grievance half-life), median of 8 runs with passes jittered by up to 40% of the headway.</li>

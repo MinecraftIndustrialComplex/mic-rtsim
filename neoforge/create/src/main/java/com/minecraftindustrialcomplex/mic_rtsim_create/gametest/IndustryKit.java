@@ -128,8 +128,34 @@ public final class IndustryKit {
         BlockPos a = helper.absolutePos(BlockPos.ZERO), b = helper.absolutePos(new BlockPos(33, 0, 33));
         int minCx = Math.min(a.getX(), b.getX()) >> 4, maxCx = Math.max(a.getX(), b.getX()) >> 4;
         int minCz = Math.min(a.getZ(), b.getZ()) >> 4, maxCz = Math.max(a.getZ(), b.getZ()) >> 4;
+        // Load the ring around the yard first: an unloaded chunk would keep an earlier test's seeds on disk and
+        // bring them back when it loads mid-test.
+        for (int cx = minCx - 1; cx <= maxCx + 1; cx++)
+            for (int cz = minCz - 1; cz <= maxCz + 1; cz++)
+                helper.getLevel().getChunk(cx, cz);
         ind().districts().forgetAllForTest(helper.getLevel());
         ind().districts().forgetArea(helper.getLevel(), minCx - 1, minCz - 1, maxCx + 1, maxCz + 1);
+        // The marker machines playerPlaced left above an earlier test's blocks would seed this one.
+        ServerLevel level = helper.getLevel();
+        net.minecraft.world.level.block.Block marker = com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MARKER.get();
+        int y0 = floorY(helper);
+        for (int cx = minCx - 1; cx <= maxCx + 1; cx++)
+            for (int cz = minCz - 1; cz <= maxCz + 1; cz++) {
+                if (level.getChunkSource().getChunkNow(cx, cz) == null)
+                    continue;
+                // Machines, stations and shafts an earlier test left on the same ground (the yard template does not
+                // clear them): they would join this test's districts as members, and a station is an anchor (DS-10).
+                for (net.minecraft.world.level.block.entity.BlockEntity be : new java.util.ArrayList<>(level.getChunk(cx, cz).getBlockEntities().values()))
+                    if (be.getBlockPos().getY() >= y0 - 1 && be.getBlockPos().getY() < y0 + 16)
+                        level.removeBlock(be.getBlockPos(), false);
+                for (int x = 0; x < 16; x++)
+                    for (int z = 0; z < 16; z++)
+                        for (int up = 8; up < 14; up++) {
+                            BlockPos m = new BlockPos(cx * 16 + x, y0 + up, cz * 16 + z);
+                            if (level.getBlockState(m).is(marker))
+                                level.setBlock(m, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 3);
+                        }
+            }
     }
 
     /** Sets a block at an absolute position. */
@@ -139,6 +165,34 @@ public final class IndustryKit {
 
     /** What a player placing the block at {@code abs} fires (BlockEvent.EntityPlaceEvent), with a server player (a NeoForge FakePlayer is a machine). */
     public static void playerPlaced(GameTestHelper helper, BlockPos abs) {
+        playerPlacedBare(helper, abs);
+        ServerLevel level = helper.getLevel();
+        // DS-10: storage and vanilla blocks never seed a district. A block that is no seed itself (a chest, a vault, a
+        // hopper) gets the core's marker machine in the same chunk, high above the test, so the district it stands for
+        // still exists; the marker has no inventory and no ticker, so it changes nothing else.
+        // Not while the industry module is off (a test of the switch), and not into a chunk that already has a seed
+        // (its machine, or an earlier marker): one is enough, and a second would be one more IND_EDIT.
+        Industry industry = com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi.current();
+        if (industry == null)
+            return;
+        net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(abs);
+        if (be != null && industry.districts().seed(level, be, new java.util.HashMap<>()))
+            return;
+        if (level.getChunkAt(abs).getData(com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments.SEEDS.get()).positions().length > 0)
+            return;
+        for (int up = 8; up < 14; up++) {
+            BlockPos m = abs.above(up);
+            if (!level.getBlockState(m).isAir())
+                continue;
+            level.setBlock(m, com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MARKER.get().defaultBlockState(), 3);
+            NeoForge.EVENT_BUS.post(new BlockEvent.EntityPlaceEvent(BlockSnapshot.create(level.dimension(), level, m),
+                    level.getBlockState(m.below()), com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
+            return;
+        }
+    }
+
+    /** The place event alone, with no marker machine: for the tests of the seed rule itself. */
+    public static void playerPlacedBare(GameTestHelper helper, BlockPos abs) {
         ServerLevel level = helper.getLevel();
         NeoForge.EVENT_BUS.post(new BlockEvent.EntityPlaceEvent(BlockSnapshot.create(level.dimension(), level, abs),
                 level.getBlockState(abs.below()), com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.editor(level)));
