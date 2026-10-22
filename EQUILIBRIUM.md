@@ -1,7 +1,8 @@
 # Equilibrium and renewal: worlds that settle, and kinds that come back
 
 **Status:** design for Ben's review, 2026-10-21. Nothing is built and no engine code changes here.
-Ben approves this design before code. Branch `plan/equilibrium`, based on main `f20234e`.
+Ben approves this design before code. Ben answered EQ-1 to EQ-6 on 2026-10-21 (§5.1): EQ-1 to EQ-3 and EQ-6
+as recommended, EQ-4 (b), and EQ-5 rejected in favour of `CONFLICT-LIFE.md`. Branch `plan/equilibrium`, based on main `f20234e`.
 
 **Ben's request (2026-10-21):** "Ensuring worlds actually reach a nash equilibrium between tribes /
 animals, etc. It would also be nice if we had abilities for mobs to spawn back in. I.E. If the player
@@ -11,7 +12,7 @@ dragons, villages, etc."
 **Binding here:** D1 (judge only by late-game runtime cost on a weak PC: closed forms, scheduled
 events, per-site bookkeeping, no per-tick scans, no cost that grows with time or dead history), D3 (no
 bespoke entities, blocks or items), D4 (plugins per mod), P3 (the engine owns the truth, puppets are
-never saved; EQ-2 asks Ben to reopen it for roosting dragons, as MOWZIE §4.9 does for dens and groves),
+never saved; Ben reopened it for roosting dragons with EQ-2 (a), as MOWZIE §4.9 does for dens and groves),
 P13 (the oil gate stays dangerous), A10 (a creature a player takes leaves the sim), C2 (no villager bodies for now), C22
 (villages join at structure generation), M1 (dragon pairs breed in their lair), P12 (what dragons
 prey on), R18a and OG-1 (natural dragons left alone), OG-9e (the oil nest with a Death Worm body),
@@ -43,10 +44,10 @@ Calendar used throughout: a game day is 24,000 ticks (20 real minutes); a game y
   residents, pirate fleets, Frostmaw and Death Worms do not come back.
 - **Farming slows itself down.** Each site remembers how hard players have hit it lately: a pressure
   that rises with every kill and halves every game year. The wait for the next arrival doubles with
-  each unit of pressure, up to a cap. A den farmed without pause yields about one Frostmaw a year (the
-  MOWZIE draft gives 12 to 16); a lair farmed without pause about one dragon a year (4.8 today). Leave
-  the site alone and its pressure halves every game year; three quiet years bring the wait back to
-  within a fifth of the first. A kill by the player's pet, trap or turret counts as his, and luring a
+  each unit of pressure, up to a cap. A den farmed without pause yields about 1.8 Frostmaw a year (Ben
+  chose MOWZIE's 6-day base, EQ-4 (b); the flat 6-day draft gives 12 to 16); a lair farmed without
+  pause about one dragon a year (4.8 today). Leave the site alone and its pressure halves every game
+  year; three quiet years bring a lair's wait back to within a fifth of its first. A kill by the player's pet, trap or turret counts as his, and luring a
   creature away from home costs its site the same as killing it (§2.2, §2.3).
 - **Herds settle.** Births slow as a herd fills its range (a Beverton-Holt term), so herds sit at a
   steady share of their range whatever the forage tuning, with no winner-take-all and no extinctions
@@ -58,11 +59,13 @@ Calendar used throughout: a game day is 24,000 ticks (20 real minutes); a game y
 - **Villages come back, and the economy sees the real number of villagers.** A village emptied of
   villagers gets a pair of settlers 32 game days later (longer after repeated killing) and grows back
   toward its beds over about five game years. Today a dead village stays dead while the economy believes it is full.
-- **Factions pick fights they expect to win.** A war party goes out only when the faction expects to
-  gain more than it loses against what it believes of the target's defence. A strong base sees scouts
-  and no raids; a weak one is first offered terms it can afford; a player who refuses and stays weak
-  is raided at a steady rate. Today's grievance ladder sends raid after losing raid at a fortress (13
-  to 14 wars a year in the model) and drives an arms race against a player who keeps building walls.
+- **When factions fight is CONFLICT-LIFE.md's.** This design proposed a gate (a war party goes out only
+  when it is worth sending against what the faction believes of the target, §2.5). Ben rejected it on
+  2026-10-21 with the other two EQ-5 options ("All of these systems feel a bit too formulaic"), and
+  `CONFLICT-LIFE.md` replaces §2.5. What stays from here: today's grievance ladder sends raid after
+  losing raid at a fortress (13 to 14 wars a year in the model) and drives an arms race against a
+  player who keeps building walls, and the renewal and pressure rules for camps (§2.4.5) hold whatever
+  decides the fights.
 - **Pirates no longer die out.** Havens hire crews up to a cap and hunt only routes they can win.
   Today a haven's crew pool refills only from captures, so a fleet that loses its ships is gone.
 - **A server left alone for ten real years keeps every kind alive at a steady share,** and the number
@@ -75,15 +78,17 @@ Calendar used throughout: a game day is 24,000 ticks (20 real minutes); a game y
 ### 1.2 Walkthroughs
 
 **Killing every Frostmaw in a region.** Ben clears the four dens of a snowy range in a week. Each den's
-pressure goes to 1 (§2.2), so each will receive a migrant 48 days after its kill (`24 x 2^1`). Each
+pressure goes to 1 (§2.2), so each will receive a migrant 12 days after its kill (`6 x 2^1`; the base
+is MOWZIE's 6 days, EQ-4 (b), Ben 2026-10-21). Each
 Frostmaw's notable dies and its heir takes the grudges (MOWZIE §4.2), so the range's anger at the rail
 line does not end with the bodies. On day 48 or later, the first time each den loads with no player
 inside 128 blocks, a Frostmaw lies asleep at the den's spot; MOWZIE's crystal question (MZ-4) decides
-whether it carries one. Ben kills all four again on day 50: pressure is now `1 + 2^(-50/96) = 1.70`,
-so the next migrants come after 78 days. A third round lifts it to about 2 and the wait to about 94
-days; held there, each den yields about one Frostmaw a year (§3.3: 0.99 a year, the model 1.02). If he
-then leaves the range alone, the pressure halves each game year: a kill after one quiet year brings a
-migrant in about 95 days, after two in 67, after three in 57; 48 days is the floor a first kill gets. What he sees in the census (`rtsim-cli sim census` or the viewer): the
+whether it carries one. Ben kills all four again on day 14: pressure is now `1 + 2^(-14/96) = 1.90`,
+so the next migrants come after 22 days. A third round lifts it to about 2.6 and the wait to 36 days,
+a fourth to 3.0 and 47; held there, the wait settles near 52 days and each den yields about 1.8
+Frostmaw a year (§3.3: 1.79 a year closed form, the model 1.83). If he then leaves the range alone,
+the pressure halves each game year: a kill after one quiet year brings a migrant in about 35 days,
+after two in 21, after three in 16; 12 days is the floor a first kill gets. What he sees in the census (`rtsim-cli sim census` or the viewer): the
 dens marked empty with their due days, and the range's heirs.
 
 **Farming dragons at one lair.** Ben camps at a fire roost and kills each dragon as it lands. Today the
@@ -111,7 +116,7 @@ two, vanilla breeding refills the village while a player is near (beds and food,
 the sim grows it toward its beds while it is unloaded (§2.4.3). Unvisited, it is back to 90% in about
 480 game days in the model (438 to 534 across seeds): five game years, under seven real days of uptime. If Ben keeps killing every pair, the pairs keep coming,
 more slowly: about three pairs a year. Zombie sieges, raids and dragons do not add pressure; only
-player kills do. This walkthrough depends on question EQ-1.
+player kills do. This walkthrough is EQ-1 (a), Ben's answer.
 
 **A server left alone for ten real years.** Nobody logs in from the day the last player leaves. No
 chunk loads, so everything runs abstract. Dragons age out at 400 days and their lairs stand empty 20
@@ -216,6 +221,16 @@ belonging to it, and a **pressure** P:
     loader) would never see a next load. So when a wait ends with the site already loaded, the plugin
     runs the census there and then and places the arrival if no player is within 128 blocks; if one is,
     it tries again a game day later (one wheel entry).
+  - **A war party on the march is not an arrival** (MZ-15, MOWZIE.md §4.16). An arrival adds a member
+    the site did not have; a party's members are its camp's own, out on a route that BAND_MARCH holds
+    and the far view draws from about a kilometre away. So the 128-block rule does not apply to it: its
+    bodies are placed where its march puts them as they come inside the ticking area, the column's
+    head 133 to 160 blocks off at a simulation distance of 10 and 101 to 131 at 8, and nothing appears
+    that was not already walking toward the player. A party that reaches a watched target with no
+    bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its own
+    route: placed at the farthest ticking point on that route back from the target, it walks the rest,
+    instead of today's waves on the arc 112 blocks out. That point is past 128 blocks at a simulation
+    distance of 10; at 8 it can be as near as 113, the nearest a server that short allows.
 - **Bounds.** n never exceeds K. The sim never creates a site: sites are the structures the world
   generated (C22), or the herd ranges the world model sampled.
 - **The oil gate** (OILGATE.md on main) adds two dragon sources near oil fields, and they are its
@@ -446,7 +461,7 @@ as today (Y20).
   hours) and is back to 90% in about five game years (480 days in the model, under seven real days of uptime); a murder-farmed village keeps getting pairs,
   about three a year.
 - **Body:** vanilla. Settlers and grown villagers are ordinary villagers once placed; the sim owns
-  none of them (C2 holds in that sense; EQ-1 asks Ben whether that is what C2 meant).
+  none of them (C2 holds in that sense; Ben's EQ-1 (a) accepts this reading of C2).
 - **Cost:** one wheel entry per village below 2; the logistic is evaluated at load. The village pop
   changes on census, a rare event, so `sim quiet` stays quiet (tested, §4).
 
@@ -478,11 +493,11 @@ as today (Y20).
 - **Break and refound:** a camp whose pool is below 10% of its cap while P is at least 2 breaks: its
   survivors scatter and its node goes quiet. After `min(384, 48 x 2^P)` days a new band takes the empty
   camp with a quarter of the cap (Frontier). A faction can never break another; only players do.
-- **(b):** war parties and plunders go through the gate (§2.5).
+- **(b):** when war parties and plunders go out is `CONFLICT-LIFE.md`'s (EQ-5: Ben rejected the gate
+  of §2.5); the pool they draw on is this section's.
 - **Bounds:** pool at most its cap; factions at most the camps found.
 - **What the player sees:** a camp he keeps emptying recruits more and more slowly, then breaks and
-  stands empty for two to four game years; feuds between camps become opportunistic (a camp falls on a neighbour the
-  player or a dragon has just weakened).
+  stands empty for two to four game years. How camps feud with each other is `CONFLICT-LIFE.md`'s.
 - **Body:** there is no camp mod in the pack (Goblin's Tyranny is absent; the camp structure ids in
   the conflict culture files are unverified), so only parties have bodies (puppets). No Java exists
   yet for conflict; these rules bind the engine now and the plugin when it is written.
@@ -515,22 +530,25 @@ The MOWZIE plan models both as conflict cultures; this design sets their renewal
 for it). §2.6 lists exactly what MOWZIE.md must change to match.
 
 - **Frostmaw den:** K = 1. A Frostmaw lost to a player (§2.2: killed at home or away, by him, his pet
-  or his trap, or lured away and missing, §2.3) adds 1. After `min(192, 24 x 2^P)` days a migrant from
+  or his trap, or lured away and missing, §2.3) adds 1. After `min(192, 6 x 2^P)` days a migrant from
   the range's unexplored side (Frontier) is placed asleep at the den's spot at the next unwatched load
   (OnLoad; MOWZIE's HOME_SPAWN). The chief notable succeeds at once (records only), as MOWZIE has it.
-  Base 24 against MOWZIE's 6 is EQ-4.
+  The base is MOWZIE's 6 days (EQ-4 (b), Ben, 2026-10-21).
 - **The crystal:** whether a migrant holds one is MOWZIE's MZ-4. Under MZ-4 (a), crystals come at the
-  den's yield: about one a year from a den farmed without pause. A robbed Frostmaw stays in its den
+  den's yield: about 1.8 a year from a den farmed without pause. A robbed Frostmaw stays in its den
   (MOWZIE keeps it persistent) and is still a member: theft is not a loss, so the den refills only
   after its Frostmaw dies or goes missing.
 - **Umvuthana grove:** K = the census count at first load (5 to 9). Warriors refill one at a time,
   each after `min(96, 6 x 2^P)` days, with `P += killed/K`; from the grove's edge farthest from any
   player when loaded (WalkIn), or at the next load (OnLoad).
-- **The Umvuthi (Heir):** after the later of MOWZIE's cowed time and `min(192, 24 x 2^P_chief)` days,
-  one warrior takes up the mask: at the next unwatched load the plugin removes one warrior body and
-  places the Umvuthi at the fire pit, as MOWZIE §4.6 already places a new chief (finalized as a
-  structure spawn, restricted to the pit). The grove's count falls by one. A grove with no warrior
-  waits for one first.
+- **The Umvuthi (Heir):** after the later of MOWZIE's cowed time and `min(192, 6 x 2^P_chief)` days
+  (MZ-14 (a), Ben, 2026-10-21: the Frostmaw's base of 6, EQ-4 (b)), one warrior takes up the mask: at
+  the next unwatched load the plugin removes one warrior body and places the Umvuthi on its throne, 18
+  blocks from the fire pit (`UmvuthanaGrovePieces.java:276-288`), at the throne spot and direction the
+  census recorded, as MOWZIE §4.6 already places a new chief (finalized as a structure spawn,
+  restricted to the throne spot). The grove's count falls by one. A grove with no warrior waits for
+  one first. The heir comes 12 days after a first kill, and a grove farmed without pause gives about
+  1.8 Sol Visages a game year, the den's rate (MOWZIE.md, "Loot supply").
 - **Raptors:** MOWZIE's raptor packs take a district's vanilla animals (owed hunts, MZ-8) and a
   village's livestock goods (plunder), never the sim's herds. Vanilla animals are outside the sim (Y20)
   and goods are the market's, so the herd balance needs nothing from them. If a later plan lets parties
@@ -574,6 +592,10 @@ a road exists; a base is a pop-0 node. Unchanged.
 
 ### 2.5 The strategy gate (b)
 
+**Rejected (EQ-5, Ben, 2026-10-21):** "All of these systems feel a bit too formulaic, come up with
+something that feels more life like." `CONFLICT-LIFE.md` replaces this section; it is kept as the
+record of option (a) and as one of the two baselines CONFLICT-LIFE.md measures itself against.
+
 Today a faction's grievance against a player climbs a six-rung ladder (notice, envoy, scouts, raid,
 invasion, siege; goblin thresholds 10, 30, 50, 70, 140, 260); each threshold crossed sends the next
 rung once the pool holds half its party, war rungs repeat while grievance stays up, and every raider
@@ -589,8 +611,10 @@ consider a rung) and adds a best response:
    defence it met after every fight, and decaying back to a prior (15) with a half-life of 96 days
    when nothing is learnt.
 2. **Expected value of a war rung** against `D̂`: `EV = p x min(carry, stock) - warrior_value x
-   E[warriors lost] + revenge`, with `p = A^2 / (A^2 + D̂^2)` (Lanchester's square law, as `threat.rs`
-   already uses), `warrior_value` 3 loot items, and **revenge bounded:** `10 x g / (g + 100)` for
+   E[warriors lost] + revenge`, with `p = A^2 / (A^2 + D̂^2)`, the gate's own belief of its chance (not
+   the engine's: the abstract fight draws nothing, the stronger side wins, by `village_outcome`'s
+   linear law, `engine.rs:4343-4365`, or `threat.rs`'s square law where turrets dominate,
+   `rtsim-industry threat.rs:403-427`; CONFLICT-LIFE.md §2.1), `warrior_value` 3 loot items, and **revenge bounded:** `10 x g / (g + 100)` for
    grievance g, so hate alone never pays for a suicide raid.
 3. **Terms first.** If the best rung has `EV > 0` and grievance has reached the envoy rung, the faction
    sends an envoy demanding `T = (EV + X) / 2`, the midpoint of the bargaining range between what the
@@ -601,10 +625,10 @@ consider a rung) and adds a best response:
 4. **Otherwise hold, and probe.** With no rung worth sending, the faction holds. Every 48 days at the
    scouts rung it sends scouts, which refresh its belief.
 5. **Faction against faction:** the same EV rule, with the target camp's pool as the defence. A party
-   of 12 against a camp at strength (40 to 60) wins one time in 12 to 27 (the square law), so camps at strength never
+   of 12 against a camp at strength (40 to 60) has a p of one in 12 to 27, and in the engine it never wins (the fight is certain), so camps at strength never
    attack each other: the background feuds of today (2 to 20 a world-year in the model) stop in a world
    with no player, and a camp falls on a neighbour only after a player, a dragon or a break has thinned
-   it (§3.6). EQ-5 asks Ben whether that is what he wants.
+   it (§3.6). Ben rejected this with the rest of EQ-5 (§5.1).
 
 The gate is a best response to a belief, so its outcomes are stationary for each kind of player (§3.5):
 a fortress gets scouts and no raids, a weak base pays tribute and is not raided, a player who adapts
@@ -617,29 +641,31 @@ Pirates use the same rule for route choice (§2.4.6). Dragons do not bargain: tr
 ### 2.6 What MOWZIE.md must match
 
 `plan/mowzie` is not edited here. At `be38b77`, MOWZIE.md must change these to match this design.
-Another session is revising MOWZIE.md now; its uncommitted copy already splits §4.9's census into
-the dead left behind, the living away and the rest, which item 11 builds on.
+MOWZIE.md on main has since taken them up through MZ-15 (`c0d6563`, the Invasion marches visibly),
+which is Ben's later and explicit choice: where the two differ, MZ-15 wins, and items 8 and 11 now
+follow it.
 
 1. **§4.2 and §4.10, the Frostmaw body:** `recruits_per_day` 1/6 (a new Frostmaw 6 days after a death)
-   becomes the shared rule: `min(192, 24 x 2^P)` days, P per den with H 96, `P += 1` for each Frostmaw
+   becomes the shared rule: `min(192, 6 x 2^P)` days, P per den with H 96, `P += 1` for each Frostmaw
    lost to a player (§2.2: at home or away, by him, his pet or his trap, or missing). Not age (MOWZIE's
-   `chief_lifespan_days` 1,000,000 stays). Base 24 or 6 is EQ-4.
+   `chief_lifespan_days` 1,000,000 stays). The base is 6 (EQ-4 (b), Ben, 2026-10-21).
 2. **§4.5 and §4.10, grove warriors:** the refill at `recruits_per_day` 2 (a grove of 7 whole in 3.5
    days) becomes one warrior at a time, each after `min(96, 6 x 2^P)` days, `P += killed/K`. War-party
    losses refill by the same rule (it is one pool).
 3. **§4.5, §4.6 and §4.10, the Umvuthi:** "6 days, scaled by boldness, after the cowed time" becomes an
-   Heir: after the later of the cowed time and `min(192, 24 x 2^P_chief)` days, a warrior of the grove
-   takes up the mask. §4.6's placement stays (HOME_SPAWN with the chief flag at the first unwatched
-   load, at the fire pit, finalized as a structure spawn) and gains one thing: at that load the plugin
-   removes one warrior body, and the grove's count falls by one. None while the grove has no warrior.
+   Heir: after the later of the cowed time and `min(192, 6 x 2^P_chief)` days (MZ-14 (a), Ben,
+   2026-10-21), a warrior of the grove takes up the mask. §4.6's placement stays (HOME_SPAWN with the
+   chief flag at the first unwatched load, on its throne at the throne spot, 18 blocks from the fire
+   pit, finalized as a structure spawn) and gains one thing: at that load the plugin removes one
+   warrior body, and the grove's count falls by one. None while the grove has no warrior.
 4. **Every place that states the six-day refill or the fractional pool:** ledger 6 (the pool refilling
    while pool plus away is under the cap), §4.2's body bullet ("ready six days later"), walkthrough A
    step 8 ("Six days later a new Frostmaw", "Killing buys a week"), walkthrough D (the pool at 0.4 on
    day 12, reaching 1 on day 15.5, "the six empty days"), §7 sim runs 1 and 6 ("the body six days
    later", "a body after six days"), the "Robbed Frostmaw" reason ("a crystal every six days") and
-   MZ-4 (a) ("the body after 6 days"). Under EQ-4 (a) each reads 48 days after a first kill, about one
-   a year farmed.
-5. **MZ-4 and EQ-4:** MZ-4 (a)'s delay is EQ-4's question; MZ-4 keeps the crystal, the drops, masks and
+   MZ-4 (a) ("the body after 6 days"). Under EQ-4 (b) each reads 12 days after a first kill, the
+   wait doubling with pressure, about 1.8 a year farmed.
+5. **MZ-4 and EQ-4:** MZ-4 (a)'s delay is EQ-4's answer (6 days, doubling with pressure); MZ-4 keeps the crystal, the drops, masks and
    the steal. With MZ-4 (a), crystals renew at the den's farmed yield (§2.4.7). A robbed Frostmaw stays
    a member: the steal is not a loss and starts no wait.
 6. **§4.9, a den found empty:** "starts with an empty pool" gains "at the cap wait (`Pressure::at_cap`)
@@ -649,7 +675,10 @@ the dead left behind, the living away and the rest, which item 11 builds on.
    away (§2.3). The ledger's times are world game time (§2.3).
 8. **§4.9 and §4.10, arrivals:** HOME_SPAWN never places into a camp with a player within 128 blocks;
    a den's Frostmaw is OnLoad only (asleep), a grove's warriors may WalkIn from the far edge. A camp
-   that never unloads gets its census and arrival when the wait ends (§2.2).
+   that never unloads gets its census and arrival when the wait ends (§2.2). A war party on the march
+   is not an arrival (§2.2, MZ-15): its bodies come where BAND_MARCH puts them as they enter the
+   ticking area, at whatever distance that is, and one that reaches a watched target with no bodies
+   walks in along its route from the ticking edge instead of appearing on the 112-block arc.
 9. **Events and kill credit:** every death report carries `LossCause` and the credited player
    (§2.2's four cases; CAMP_DEATH's killer is vanilla's kill credit or the killer's owner, and an
    unclaimed death of the Frostmaw or the Umvuthi is the player's); HOME_CENSUS is the SITE_CENSUS and
@@ -659,13 +688,16 @@ the dead left behind, the living away and the rest, which item 11 builds on.
 11. **§4.9, the census:** step 3's "the missing ones died unseen, and the pool loses them" becomes
     **missing** (§2.3): a player's loss unless rtsim was absent since the last census, its UUID kept,
     and a missing body that reappears is home again or a stray whose death raises the den's or grove's
-    pressure. The removals of step 1 take only the dead left behind (the living away are recalled, as
-    the uncommitted copy has it; at `be38b77` §4.9 removes a left-behind body "whether that member is
-    still away or has died since"), clamped to the bodies the census finds (a world that ran without
-    rtsim may have lost them already).
+    pressure. The removals of step 1 take every body a party on the road left behind, its member alive
+    or dead, and the census never ends the party (MZ-15, MOWZIE.md §4.9 and §4.16): the march goes on,
+    a living member away is counted with its party and not recalled, and a party ends only at its own
+    home or at its last death. Removals are clamped to the bodies the census finds (a world that ran
+    without rtsim may have lost them already). The cost is UR-1's: once its camp has come in, a member
+    is away for the rest of its march, and an uninstall then loses it (§2.3).
 12. **§4.10 item 5 and §7, tests:** `sim mowzie` reports in the `sim census` format (§4, slice S1), and
-    the plan adds `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form` (60 years, at most
-    1.1 a year), and the GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`,
+    the plan adds `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form` (60 years, about
+    1.8 a year: §3.3's 1.79 closed form, the figure MOWZIE.md's "Loot supply" states for a den and,
+    under MZ-14 (a), for a grove's Sol Visages), and the GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`,
     `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss` and
     `anUmvuthiHeirTakesAWarrior`.
 13. **§4.10's "what this plan needs" list** is answered: caps (1 per den, the census per grove, no
@@ -701,8 +733,8 @@ the dead left behind, the living away and the rest, which item 11 builds on.
 | 5 | Site ledger SavedData (world game time, relative hand-over) and FOUND events carrying it | core Java, each plugin | M |
 | 6 | Kill credit in every bridge (§2.2's four cases), taming reported with its player | core Java, `neoforge/iceandfire`, the Mowzie and village bridges | S |
 | 7 | Missing members and strays: home-body UUIDs, `EntityJoinLevelEvent` reconcile, the no-unload census | core Java, each plugin with home bodies | M |
-| 8 | Dragon home bodies (if EQ-2 a): vanilla roosting body, puppet away, lair census | `neoforge/iceandfire` | L |
-| 9 | Village census both ways, frontier settlers, unloaded growth (if EQ-1 a or b) | `rtsim-world`, `rtsim-jni` phase 1, core `village/` | M |
+| 8 | Dragon home bodies (EQ-2 a, decided): vanilla roosting body, puppet away, lair census | `neoforge/iceandfire` | L |
+| 9 | Village census both ways, frontier settlers, unloaded growth (EQ-1 a, decided) | `rtsim-world`, `rtsim-jni` phase 1, core `village/` | M |
 | 10 | Ribbit refill before build, pop on spawn, settlers | `rtsim-world` ribbits | S |
 | 11 | Conflict pressure, break and refound, the gate | `rtsim-conflict` | M |
 | 12 | Haven hires and cap, refit pressure, EV lanes | `rtsim-ships` | S |
@@ -759,7 +791,10 @@ killing. 24 seeds for the steady runs, 16 for the rest, 60 years; 8 seeds for 26
 adaptive (starts at 12, adds 6 after each lost defence, sheds 1 per 24 quiet days).
 
 `run.py` runs everything (`nice -n 10 python3 run.py --jobs 4`, about 5 minutes) and `summarize.py`
-writes `results/summary.md`.
+writes `results/summary.md`. The model's `den_base` default is still 24; the base-6 numbers for EQ-4 (b)
+come from the same runners with `{"den_base": 6.0}` (`run.farm(("proposed", "den", 16, 60, 31,
+{"den_base": 6.0}))` and `run.killall(("proposed", "dens", 16, 60, 21, 20, {"den_base": 6.0}))`, run on
+2026-10-21 after Ben's answer).
 
 ### 3.2 Herd births: Beverton-Holt
 
@@ -786,13 +821,13 @@ side falls as P rises, so there is one root (`run.py: closed_form`, bisection). 
 | Site | base, cap (days), K | P* after a kill | days per arrival | arrivals a year | model, 60 years farmed |
 |---|---|---|---|---|---|
 | Lair (today's base) | 20, 192, 1 | 2.12 | 89 | **1.08** | 1.12 (today: 4.80) |
-| Frostmaw den (proposed) | 24, 192, 1 | 1.99 | 97 | **0.99** | 1.02 |
-| Frostmaw den, MOWZIE's base 6 with pressure | 6, 192, 1 | 3.11 | 54 | 1.79 | |
-| Frostmaw den, MOWZIE's draft (6 days flat) | 6, 6, 1 | none | 6 to 8 | 12 to 16 | 16.0 |
+| Frostmaw den (EQ-4 (b), Ben 2026-10-21: MOWZIE's base 6 with pressure) | 6, 192, 1 | 3.11 | 54 | **1.79** | 1.83 |
+| Frostmaw den, base 24 (EQ-4 (a), not chosen) | 24, 192, 1 | 1.99 | 97 | 0.99 | 1.02 |
+| Frostmaw den, MOWZIE's draft (6 days flat, EQ-4 (c)) | 6, 6, 1 | none | 6 to 8 | 12 to 16 | 16.0 |
 | Umvuthana grove, per warrior | 6, 96, 7 | 1.27 | 16.5 | **5.8** warriors | 6.05 (flat 6 days: 12.1) |
 | Village settlers, pairs | 16, 192, 12 (a pair adds 2/12) | 0.84 | 30.6 | **3.1** pairs | 6.6 villagers |
-| Den with H 48 | 24, 192, 1 | 1.55 | 72 | 1.33 | 1.35 |
-| Den with H 192 | 24, 192, 1 | 2.52 | 140 | 0.69 | 0.72 |
+| Den with H 48 (base 24) | 24, 192, 1 | 1.55 | 72 | 1.33 | 1.35 |
+| Den with H 192 (base 24) | 24, 192, 1 | 2.52 | 140 | 0.69 | 0.72 |
 
 The model's farmer checks every 2 days, so its kill comes 0 to 2 days after an arrival; that is why the
 6-day flat den gives 16 a year in the model and 12 in the closed form with c = 2.
@@ -816,6 +851,9 @@ Type III switching alone (no refuge) stops most extinctions at the engine's appe
 times it (§3.6); the refuge is what makes extinction impossible.
 
 ### 3.5 The gate
+
+Ben rejected the gate (EQ-5, 2026-10-21). This section stays as the measurement of options (a) and
+(c) that `CONFLICT-LIFE.md` compares its own model against.
 
 `game.py` runs one goblin faction (pool 60, recruits 2 a day, today's rung thresholds, dwells and
 party sizes) against one player base for 50 game years over 64 seeds. σ is the grievance the base's
@@ -865,7 +903,7 @@ roamer explores and kills everything it meets):
 | Herd ranges extinct per world, 60 years | 6.0 | 3.6 | 15.3 | 0 | 0 | 0 |
 | Lairs held | 0.95 | 0.83 | 0.93 | 0.95 | 0.61 | 0.89 |
 | Villagers over beds | 0.82 | 0.85 | 0.85 | 1.00 | 0.94 | 0.98 |
-| Frostmaw dens held | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 0.93 |
+| Frostmaw dens held (proposed at base 24; base 6 holds more) | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 0.93 |
 | Grove warriors over cap | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 0.94 |
 | Nest worms over cap | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 0.94 |
 | Camp pools over cap | 1.00 | 1.00 | 0.97 | 1.00 | 1.00 | 0.97 |
@@ -885,7 +923,7 @@ roamer explores and kills everything it meets):
   beds and nothing grows an unloaded village. Where a player loads villages and sieges take villagers,
   the sim's own count runs 6% (homebody) to 15% (roamer) above the real one, since a census can only
   raise it.
-- **Factions stop feuding by habit:** under the gate a camp falls on a neighbour only when the
+- **Factions stop feuding by habit:** under the gate (rejected, EQ-5) a camp falls on a neighbour only when the
   neighbour is weak (0.34 feuds a world-year with a roamer thinning camps, none without).
 - **Pirates survive:** today, with no player, the median world still has 0.29 of its slots manned in
   years 30 to 60 (0 to 0.92 across seeds) and none after the first century (below); with a player
@@ -899,7 +937,7 @@ roamer explores and kills everything it meets):
 | Kind | Today | Proposed: days to 50% | Days to 90% | End over the control |
 |---|---|---|---|---|
 | Dragons | 24 days (the 20-day respawn) | 48 | 48 [48, 72] | 1.01 |
-| Frostmaw dens | never | 72 | 72 [72, 78] | 1.00 |
+| Frostmaw dens (base 6, EQ-4 (b); base 24 gave 72 and 72 [72, 78]) | never | 24 | 24 [24, 24] | 1.00 |
 | Umvuthana groves | never | 48 | 96 [90, 96] | 1.00 |
 | Oil nests | never | 48 | 72 [48, 72] | 1.00 |
 | Camps | 48 days (the linear refill) | 48 | 48 [48, 72] | 1.00 |
@@ -992,9 +1030,9 @@ GameTest lock.
 | S2 | Herds: density term, refuge in `predate`, spring dispersal, frontier founding, tombstone removal | `herds_settle_without_forage_tuning` (forage headroom 1 to 4 gives one band), `predation_never_takes_a_herd_below_refuge`, `kill_all_herds` (world wipe: half back within 25 years, all ranges alive by 40), `local_wipe_refills_from_neighbours`, the property tests extended (founding is a booked source) | S0, S1 |
 | S3 | Site ledger (world game time, relative hand-over) and SITE_FOUND carrying it; kill credit in every bridge; missing members and strays; the no-unload census | GameTests `resetKeepsAFarmedSiteFarmed`, `siteFoundEmptyWithoutLedgerWaitsTheCap`, `reinstallKeepsPressure` (the engine's clock restarts, the wait does not shorten), `uninstallLeavesHomeBodies`, `petKillRaisesPressure`, `trapKillAtABossSiteIsAPlayerLoss`, `tameIsAPlayerLoss`, `aLuredBodyIsAPlayerLossAndAStraysDeathCounts`, `aForceLoadedSiteRefillsWhenUnwatched` | S0 |
 | S4 | Dragons: lair pressure, fed share, starve-leave, arrival gate, newcomer direction, oil visitors only into due lairs | `kill_all_dragons` (90% back within 72 days), `farmed_lair_yields_closed_form` (60 years, at most 1.2 a year), `starving_dragon_leaves_and_returns_when_fed`, `visitor_claims_only_a_due_lair`, `long_horizon_dragons_and_herds_with_kills` (60 years, roamer script, the §3.6 bands); GameTest `resetDoesNotMintADragon` | S2, S3 |
-| S5 | Dragon home bodies (EQ-2 a): vanilla while roosting, puppet away, lair census | GameTests `roostingDragonIsSavedByVanilla`, `awayDragonIsAPuppetAndTheCensusReconciles`, `uninstallKeepsRoostingDragons`, `aDragonLuredFromItsLairIsMissingNotDead` | S4, EQ-2 |
-| S6 | Villages and Ribbits (EQ-1): census both ways, settlers, unloaded growth, Ribbit refill before build, pop on spawn | `kill_all_villagers` (settlers in 32 days, 90% within 600), `village_pop_follows_census_down`, `kill_all_ribbits` (90% within 300), `sim_quiet_stays_quiet_with_settlers`; GameTests `settlersWalkInFromTheExploredEdge`, `noArrivalIntoAWatchedVillage` | S1, EQ-1 |
-| S7 | Conflict: pressure on recruits, break and refound, the gate (EQ-5) | `kill_all_camps` (90% within 96 days), `farmed_camp_breaks_and_refounds`, `fortress_gets_probes_not_raids`, `weak_base_is_offered_terms_first`, `no_ratchet_over_50_years` (the adaptive base's defence and wars flat across decades) | S0, EQ-5 |
+| S5 | Dragon home bodies (EQ-2 a): vanilla while roosting, puppet away, lair census | GameTests `roostingDragonIsSavedByVanilla`, `awayDragonIsAPuppetAndTheCensusReconciles`, `uninstallKeepsRoostingDragons`, `aDragonLuredFromItsLairIsMissingNotDead` | S4 (EQ-2 a, decided) |
+| S6 | Villages and Ribbits (EQ-1): census both ways, settlers, unloaded growth, Ribbit refill before build, pop on spawn | `kill_all_villagers` (settlers in 32 days, 90% within 600), `village_pop_follows_census_down`, `kill_all_ribbits` (90% within 300), `sim_quiet_stays_quiet_with_settlers`; GameTests `settlersWalkInFromTheExploredEdge`, `noArrivalIntoAWatchedVillage` | S1 (EQ-1 a, decided) |
+| S7 | Conflict: pressure on recruits, break and refound; when parties go out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the gate) | `kill_all_camps` (90% within 96 days), `farmed_camp_breaks_and_refounds` | S0 |
 | S8 | Ships: hires and cap, refit pressure, EV lanes | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band) | S0 |
 | S9 | MOWZIE on the shared rule (in its plan, §2.6) | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` | S0, S3, MOWZIE |
 | S10 | Oil nests on the shared rule (with OG-9e's build) | `kill_all_nests` (regrow only while drilled), `asleep_nest_holds` | S0, OG-9e |
@@ -1013,6 +1051,19 @@ Each question lists its options with the recommended one first. Everything in §
 undone; these cannot, or are Ben's (decisions of his this reopens, body ownership, a world-save format,
 boss loot, how fights feel, an interface another plan must follow).
 
+**Decided (Ben, 2026-10-21).** The options as they were put to him are kept below the table.
+
+| Id | Question | Decided (Ben, 2026-10-21) | What follows |
+|---|---|---|---|
+| EQ-1 | How does an emptied village come back? | **(a) Settlers plus growth while unloaded.** | §2.4.3 and §2.4.4 as written: a family of two from beyond the explored edge 32 days after a player empties a village, growth toward its beds while unloaded, the same pair for Ribbit villages. C2 and M3/M4 are reopened to that extent. Slice S6 is unblocked. |
+| EQ-2 | Where does a dragon's body live? | **(a) A vanilla body while it roosts at its lair, a puppet while away.** | P3 is reopened for roosting dragons (and, with MOWZIE §4.9, for dens and groves). An uninstall leaves the roosting dragons; a reset finds them by census. Slice S5 is unblocked. |
+| EQ-3 | Where does the site ledger live? | **(a) World SavedData `mic_rtsim_sites.dat`, beside `mic_rtsim_villages.dat`.** | §2.3 as written: one file, about 32 bytes a site, outside `world/rtsim/`. |
+| EQ-4 | How fast does a killed Frostmaw come back? | **(b) MOWZIE's 6 days, doubling with pressure** (not the recommended 24). | `min(192, 6 x 2^P)`: 12 days after a first kill, about 1.8 a year farmed (§3.3: 1.79 closed form, the model 1.83), a world-wide wipe back within one 24-day census (§3.6). §1.1, §1.2, §2.4.7, §2.6 and §3.3 carry the base-6 numbers; MOWZIE.md is being changed to match by its own author. |
+| EQ-5 | When do factions fight? | **None of (a), (b) or (c).** "All of these systems feel a bit too formulaic, come up with something that feels more life like." Scope: only faction fighting; renewal and pressure stay as designed here. | `CONFLICT-LIFE.md` is the redesign and replaces §2.5; §3.5 stays as the measurement of (a) and (c) it compares against. Camps keep §2.4.5's pressure, break and refound. |
+| EQ-6 | One renewal rule for every kind, in `rtsim-kernel`? | **(a) Yes: one shared rule in `rtsim-kernel::renewal`.** | §2.2 as written: `rtsim-kernel::renewal` owns pressure, delay and the closed forms; every engine and species plan (MOWZIE first, §2.6) uses it with its own numbers. |
+
+**The options as put to Ben (EQ-1 to EQ-6).**
+
 | Id | Question | Options | Why it is Ben's |
 |---|---|---|---|
 | EQ-1 | **How does an emptied village come back?** (reopens C2 "no villager bodies for now" and M3/M4 "growth is ribbit houses only"; covers Ribbit villages too, whose ribbits cannot breed) | (a) **Settlers plus growth while unloaded (Recommended):** a family of two from beyond the explored edge, 32 days after a player empties the village (16 if nothing a player did emptied it, longer after repeated killing); then the sim grows the village toward its beds while unloaded and places the difference as ordinary vanilla villagers at the next unwatched load. Back to 90% in about five game years unvisited (480 days in the model). Ribbit villages get the same pair, then refill through their houses. (b) Settlers only: a pair arrives, and only vanilla breeding while a player is near grows it; an unvisited village stays at two (a Ribbit village still refills through its houses). (c) Neither: only the census fix, so the economy sees the real count, and a dead village stays dead. | The sim would place villagers and ribbits, which C2 and M3/M4 set aside for later. None of the options founds new villages (that stays with C22 and P22), and none takes villagers from another village (§2.4.3). |
@@ -1027,12 +1078,12 @@ boss loot, how fights feel, an interface another plan must follow).
 | Choice | Why |
 |---|---|
 | Only player-caused losses raise pressure | So the world does not learn to empty itself: an unattended server stays full, and a dragon eating a herd or a camp losing a feud does not slow its own renewal. |
-| Half-life 96 days (one game year), counted per site | A farmed one-member site settles near one arrival a year (§3.3); a site left alone three years is back within a fifth of its first wait. H is the knob that sets the farmed yield. |
+| Half-life 96 days (one game year), counted per site | A farmed one-member site settles at one or two arrivals a year (a lair 1.1, a den 1.8 on its 6-day base, §3.3); a lair left alone three years is back within a fifth of its first wait (a den within a third: 16 days against 12). H is the knob that sets the farmed yield. |
 | A player's loss is vanilla's kill credit (his hit in the last 100 ticks, his pet), every A10 removal, and for boss kinds any death no wild mob is credited with | A10: a creature a player takes leaves the sim, a loss to its site. Pets, traps and turrets are how a player farms without swinging a sword; for the boss kinds an unclaimed death in a loaded chunk is almost always his doing, while for villagers and herds zombies and falls are common and stay unpressured. |
 | A home body missing at a census is a player's loss while rtsim ran throughout; it stays tracked, and a stray's death counts | A body can leave home only while its chunk is loaded, which is a player's doing; this makes luring cost what killing costs, and keeps one body from being counted twice. |
 | A running wait is not pushed out by more losses | One wheel entry per wait and no rescheduling; the pressure from the extra losses sets the next wait. |
 | A site that never unloads gets its census and arrival when its wait ends | Otherwise a den or lair under a chunk loader would never refill. |
-| No shunning (a site that refuses arrivals for good) | Pressure alone holds a farmed site to about one a year, and a permanent "never again" is the extinction this design removes. |
+| No shunning (a site that refuses arrivals for good) | Pressure alone holds a farmed site to one or two a year, and a permanent "never again" is the extinction this design removes. |
 | Beverton-Holt births for herds | A stable fixed point at K with no overshoot, whatever the forage tuning (§3.6: forage headroom 1 to 4 gives the same band). |
 | Prey switching plus a refuge of max(8, 10% of K) | The refuge makes extinction by dragons impossible at any appetite tried (up to 64 times today's); switching alone does not (§3.7). |
 | Starve-leave below 0.35 and arrival only at 0.5 of need | No effect on the bands in the sweeps (§3.7), and they keep a dragon from sitting in an eaten-out valley. |
@@ -1041,15 +1092,15 @@ boss loot, how fights feel, an interface another plan must follow).
 | Herd dispersal: 5% of the adults of herds above 0.4 K to neighbours below 0.25 K, each spring | Both thresholds sit below the predated steady state (0.6 K); with the first run's 0.8 K and 0.5 K dispersal seldom fired, and a local wipe took 15 to 17 years to half instead of 10 to 13 (§3.7). |
 | Frontier herds: `max(12, 0.05 K)` animals at 0.25 per range-year; the tombstone, region mark and name guard go | A world-wide wipe is half back in 14 to 15 years (21 with 12 founders); with no frontier at all it never comes back (§3.7). |
 | Herd refill speed stays biology's (one calving a year) | Faster means placing animals that no birth explains; a larger frontier group (a fifth of K) cuts a world-wipe's time to half by about 40% (888 days against 1,464, §3.7) and can be turned on later. |
-| Village pop follows the census both ways | Today the economy believes in villagers that are dead; this is a fix as much as a choice, and it holds whatever EQ-1 decides. |
+| Village pop follows the census both ways | Today the economy believes in villagers that are dead; this is a fix as much as a choice, and it holds whatever EQ-1 had decided (Ben chose (a)). |
 | Settlers are a family from beyond the explored edge; no village gives any | Taking two from a donor would mean removing vanilla villagers the player may have traded with, cured or named (C2, A10); villagers carry no loot, so a frontier family mints nothing that matters. |
 | Growth inside a site (villagers breeding, a village's growth while unloaded, the Ribbit refill) and haven hires are not slowed by pressure | They are bounded by beds, houses and the crew cap and carry no boss loot; pressure throttles what comes from outside (settlers, migrants, newcomers, refits). |
 | Ribbit residents booked when they exist; refill before building | Today pop is booked before the house exists, and houses never empty; growth stays Ribbit houses only (M3/M4). |
-| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. |
+| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, 101 to 131 blocks off at a simulation distance of 8, having walked toward the player from about a kilometre in the far view; one that reaches a watched target bodiless walks in along its route from the ticking edge. |
 | Camps break at pressure 2 with the pool under 10%, and refound after `min(384, 48 x 2^P)` days with a quarter of the cap | A camp the player keeps emptying goes quiet for months instead of feeding him warriors for ever; only players break camps. |
 | Pirate crew pools capped at 18 and fed by hires at 0.25 a day; refit after `min(96, 4 x 2^P)`; a haven with no lane worth hunting rests | Today the pool has no source but captures, so fleets die out; the cap keeps a haven from hoarding crews; a haven that rests is the best response to strong lanes, and a lane's odds move with escorts and navy. |
 | Merchant and navy ships unchanged | They are the economy's carriers, not a population; their 2-day refill already works. |
-| The gate's numbers: warrior value 3 items, revenge at most 10, belief half-life 96 days, a probe every 48 days | They make a fortress quiet and a weak base pay; §3.5. |
+| ~~The gate's numbers~~ (gone with EQ-5's answer; CONFLICT-LIFE.md sets its own) | Ben rejected the gate, 2026-10-21. |
 | Natural Death Worms and natural dragons stay outside the sim | R18a and OG-1: the sim adopts only what it places or finds at sites. |
 | Notables unchanged | Already a generational arena; dead notables cost nothing. |
 | Districts are made only by players | §2.4.10: making them would place machines (D3) and mint the player's kind of property (UR-1). |
