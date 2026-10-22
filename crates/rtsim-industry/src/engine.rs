@@ -1046,6 +1046,11 @@ impl Engine {
             .or_insert_with(|| District::new(e.district));
         use crate::glass::report::discard;
         let Some(buf) = dist.sweep.take() else {
+            // A sweep that sampled nothing still happened: what an older sweep sampled is gone
+            // (an oil well whose pumpjack was broken, choices-oilgate.md OGC71).
+            if e.records == 0 {
+                dist.last_sweep = e.sweep;
+            }
             self.glass
                 .discard(at, e.district, discard::NO_SWEEP, &self.tun.glass);
             return;
