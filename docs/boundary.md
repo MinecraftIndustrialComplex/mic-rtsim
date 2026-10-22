@@ -1077,7 +1077,7 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   the flights replace In Control's fire dragon, OGC46) and `placeLairs` (default true).
 - **Sends the player's y** in PLAYER (already there, §2.3): field flights roll only for players at or
   above y 15 (In Control's `minheight`).
-- **Keeps the oil nests** (OG-9e, OILGATE.md §4.6, OGC84 onward): a PLACE_NEST waits in the saved
+- **Keeps the oil nests** (OG-9e, OILGATE.md §4.6, OGC84 to OGC102): a PLACE_NEST waits in the saved
   state until its chunk is loaded, then carves a 9 by 9 chamber whose sand floor lies `depth` blocks
   under the chunk's ocean-floor heightmap, only where the chamber and its shell are natural ground with
   no fluid and no block entity (up to 8 seeded spots), sets an inert Death Worm spawner as its heart and
@@ -1108,7 +1108,7 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   nearest fire lair in reach senses every district with a chunk near a field, with no flight
   (OGC52, OGC53). The industry engine keeps each district's last builders from IND_EDIT, saved with
   it (OGC54).
-- **Oil nests** (when OIL_CONFIG flag 4 is set, OGC70 to OGC84): an oil chunk new to the index founds
+- **Oil nests** (when OIL_CONFIG flag 4 is set, OGC70 to OGC83): an oil chunk new to the index founds
   a nest in its cell of 8 by 8 chunks and sends PLACE_NEST. A nest is asleep until a pumpjack's
   deposit sample of its district's latest sweep lies within reach of the heart; awake, it hatches K
   worms, renews lost ones by EQUILIBRIUM.md §2.2's rule while drilling lasts, and raids the districts
