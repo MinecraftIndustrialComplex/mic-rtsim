@@ -87,14 +87,25 @@ def main():
                 print(f"   rtsim {key}: {rep.get('n_districts')} districts, "
                       f"{sum(d['inventories'] for d in rep.get('districts', []))} inventories"
                       + (f"; {trains[0]}" if trains else ""))
+                tc = rep.get("tick_cost")
+                if tc:
+                    print(f"   rtsim {key} tick cost: {tc['ticks']} ticks, mean {tc['mean_us']:.1f} us, p50 {tc['p50_us']:.1f}, "
+                          f"p99 {tc['p99_us']:.1f}, p99.9 {tc['p999_us']:.1f}, worst {tc['worst_us']:.1f} us at tick {tc['worst_at']}")
             summary[n] = r
-        arms = {n.rsplit("-", 1)[1]: r for n, r in rs.items()}
-        if len(rs) == 2:
-            a_, b_ = [rs[n] for n in names]
-            if "on" in arms and "off" in arms:
-                on, off, kind = arms["on"], arms["off"], "on-off"
-            else:
-                on, off, kind = b_, a_, "A/A (B-A)"
+        # A pair is one comparison; a triple off,on,on (or on,on,off) is two on-off comparisons and an
+        # A/A control between the two on arms (choice SG15).
+        comps = []
+        offs = [n for n in names if n.endswith("-off") and n in rs]
+        ons = [n for n in names if n.endswith("-on") and n in rs]
+        if len(rs) == 2 and len(offs) == 1:
+            comps.append((rs[ons[0]], rs[offs[0]], "on-off"))
+        elif len(rs) == 2:
+            a_, b_ = [rs[n] for n in names if n in rs]
+            comps.append((b_, a_, "A/A (B-A)"))
+        elif len(offs) == 1 and len(ons) == 2:
+            comps += [(rs[ons[0]], rs[offs[0]], "on-off"), (rs[ons[1]], rs[offs[0]], "on-off"),
+                      (rs[ons[1]], rs[ons[0]], "A/A (on2-on1)")]
+        for on, off, kind in comps:
             for wk, wv in on.get("windows", {}).items():
                 ov = off.get("windows", {}).get(wk)
                 if not ov:

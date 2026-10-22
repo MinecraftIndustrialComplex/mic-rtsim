@@ -132,6 +132,7 @@ public final class BridgeEvents {
     private static final java.util.concurrent.ConcurrentLinkedQueue<Entity> LOADED_ENTITIES = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     private static void onServerTick(ServerTickEvent.Post event) {
+        long t0 = System.nanoTime();
         RtsimSession s = RtsimSession.current();
         boolean live = s != null && !s.failed();
         for (net.minecraft.world.level.chunk.LevelChunk c; (c = LOADED_CHUNKS.poll()) != null; )
@@ -142,6 +143,7 @@ public final class BridgeEvents {
                 s.reassert(e);
         if (s != null)
             s.endOfTick();
+        TickCost.post(System.nanoTime() - t0, event.getServer().overworld().getGameTime());
     }
 
     private static void onChunkLoad(net.neoforged.neoforge.event.level.ChunkEvent.Load event) {
