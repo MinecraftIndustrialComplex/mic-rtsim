@@ -31,7 +31,8 @@ public final class RtsimCommands {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("rtsim")
                 .requires(src -> src.hasPermission(2))
-                .then(Commands.literal("perf").executes(RtsimCommands::perf))
+                .then(Commands.literal("perf").executes(RtsimCommands::perf)
+                        .then(Commands.literal("reset").executes(RtsimCommands::perfReset)))
                 .then(Commands.literal("village").executes(RtsimCommands::village))
                 .then(Commands.literal("stub")
                         .then(Commands.literal("caravan").executes(RtsimCommands::stubCaravan))
@@ -55,10 +56,18 @@ public final class RtsimCommands {
                         + ", captured " + s.capturedGroups() + ", taken " + s.takes() + ", died " + s.deaths()
                         + ", removed by others " + s.removedByOther() + ", stale copies discarded " + s.staleDiscarded(),
                 "puppet pass: " + s.passNanos() / 1000 + " us last tick; dropped latest-wins records " + b.droppedRecords(),
+                com.minecraftindustrialcomplex.mic_rtsim.bridge.TickCost.summary(),
                 "modules: " + Integer.toBinaryString(RtsimConfig.effectiveMask()),
                 "phase 1: " + s.phase1.describe() + enginePhase1(s),
                 com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatSampler.INSTANCE.summary());
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
+        return 1;
+    }
+
+    /** {@code /rtsim perf reset}: the tick cost's window starts again (stress-world measurements). */
+    private static int perfReset(CommandContext<CommandSourceStack> ctx) {
+        com.minecraftindustrialcomplex.mic_rtsim.bridge.TickCost.reset();
+        ctx.getSource().sendSuccess(() -> Component.literal("mic_rtsim: tick cost reset"), false);
         return 1;
     }
 
