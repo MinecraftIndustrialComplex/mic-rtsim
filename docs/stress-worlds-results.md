@@ -706,21 +706,24 @@ journal; neither is fixed here.
 
 Recommended option first in each.
 
-1. **Exchange rules miss the unload** (10.5): the dock starts 4 to 6 ticks before
-   `Train.arriveAt`, so the arrival snapshot comes after the unload. (a) Recommended: take the
-   arrival snapshot on the final approach, once the train is braking for the station and before a
-   PSI can dock (a hook in Create's navigation). (b) Diff each departure against the train's
-   previous departure: no new hook, but a stop at a station outside any district would be booked to
-   the next district station.
-2. **Simulated calls take from the factories and fill the carriage** (10.5). (a) Recommended: give
-   each station its port inventories (the containers its PSIs reach) and book simulated exchanges
-   on those. (b) Cap a simulated load at the edge's learned cargo per trip. (c) Keep the
-   district-wide booking but prefer containers that feed no machine. (b) is the smallest change
-   and fixes the 1,664-item legs; only (a) stops the reconcile starving factories.
-3. **The detection tick on many districts** (10.4): a full pass of 0.2 to 0.45 s at 200 districts,
-   and adopts that grow with the district count. (a) Recommended: land the budgeted rescan and
-   re-measure on syn200. (b) Also limit an adopt's work to its own neighbourhood.
-4. **A 1.2 to 3.6 s tick at the start of every rtsim session:** it coincides with a C2ME
+1. **Exchange rules miss the unload** (10.5). **Decided (a), fixed (10.8).** The dock starts 4 to 6
+   ticks before `Train.arriveAt`, so the arrival snapshot comes after the unload. (a) Recommended:
+   take the arrival snapshot on the final approach, once the train is braking for the station and
+   before a PSI can dock (a hook in Create's navigation). (b) Diff each departure against the
+   train's previous departure: no new hook, but a stop at a station outside any district would be
+   booked to the next district station.
+2. **Simulated calls take from the factories and fill the carriage** (10.5). **Decided (a) with (b),
+   fixed (10.8).** (a) Recommended: give each station its port inventories (the containers its PSIs
+   reach) and book simulated exchanges on those. (b) Cap a simulated load at the edge's learned
+   cargo per trip. (c) Keep the district-wide booking but prefer containers that feed no machine.
+   (b) is the smallest change and fixes the 1,664-item legs; only (a) stops the reconcile starving
+   factories.
+3. **The detection tick on many districts** (10.4). **(a) landed as DS-11; syn40 re-measured in
+   10.8.** A full pass of 0.2 to 0.45 s at 200 districts, and adopts that grow with the district
+   count. (a) Recommended: land the budgeted rescan and re-measure on syn200. (b) Also limit an
+   adopt's work to its own neighbourhood.
+4. **A 1.2 to 3.6 s tick at the start of every rtsim session.** **Profiled (a): Project
+   Atmosphere's, reached through rtsim's habitat sampler (10.8).** It coincides with a C2ME
    density-function compile on the server thread (1.0 to 3.3 s). Both arms log such compiles in
    their first half minute, the off arms one and the rtsim arms two (sg40a, sg200a). So one compile
    per boot is the pack's, and the rtsim arms' second falls inside rtsim's tick handlers. (a)
@@ -768,3 +771,5 @@ Recommended option first in each.
 | SG34 | A simulated load is at most the median of the station's last 8 loaded calls' amounts of that good (placeholder window); unloads are not capped | the coordinator's (b), about 30 items here; the median ignores the first thin calls and a catch-up call after an absence |
 | SG35 | Before a station call on a black-box span, the replay's change so far is placed in the ports by the reconcile's own plan (as their `held`), and the span's base moves with it | otherwise a port's bookings from earlier calls grow without bound while the replay's change waits for the reconcile, and a load finds nothing to take |
 | SG36 | The first-tick stall is reported, not fixed: it is Project Atmosphere's region forecast (a fresh `RandomState` that C2ME compiles), reached through rtsim's habitat sampler and mic_climate | the cost is PA's and C2ME's; any first temperature query in a new region pays it |
+| SG37 | The fixes' GameTest (`stationcargo.saw_shafts`) builds the glass corpus' saw shafts factory far from the yard and a port as the generator builds one, runs a synthetic train, and records its dock by hand (`TrainWatch.dockedForTest`) | a synthetic train has no carriage entity, so no interface can dock; the rest (ports walk, simulated call, reload, reconcile) is the real path |
+| SG38 | `tools/stress-worlds/stock.py` reads the saved worlds' chests and port vaults, off arm first | factory stock and port vaults are the coordinator's question; no command lists them, and the saved world is what a player would find |
