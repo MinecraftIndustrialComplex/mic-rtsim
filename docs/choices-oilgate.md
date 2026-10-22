@@ -9,7 +9,12 @@ OG-9d) is not built; its seam is described at the end.
 The engine side is `crates/rtsim-ecology/src/oil.rs` (the index, field flights, refuelling, lairs,
 sensing) with hooks in `engine.rs`, `dragon.rs` and `persist.rs`; the drinking raid and the roof
 gate are in `crates/rtsim-industry` (`threat_drinking`, `threat::roof_pass`). Every number is a
-PLACEHOLDER until OG-10's measurement and the fire-event count set it.
+PLACEHOLDER until OG-10's measurement and the fire-event count set it, except the reserve's capacity
+and refuel level, which are Ben's (OGB-2).
+
+Ben answered the For Ben questions on 2026-10-21 (DECISIONS.md OGB-1 to OGB-5): question 1 gave way to
+his own bar, which docs/oilgate-cheese-audit.md judges the gate against; questions 2, 3 and 5 took (a);
+he skipped 4, so it is taken as recommended. OGB-2 and OGB-5 are built (OGC44, OGC45).
 
 ## The roof gate (OG-11)
 
@@ -35,7 +40,8 @@ total: only dragons witness encroachment, so no village ever passes it on.
 **OGC4. Fire dragons only.** `SpeciesData::uses_oil` is true for fire, false for ice and lightning:
 their breath has no fuel in the pack's story.
 
-**OGC5. The reserve's numbers.** Capacity 100 points; one point lost per 3,000 ticks (the pack's
+**OGC5. The reserve's numbers.** Capacity 600 points, low at 240 (Ben, 2026-10-21, OGB-2; built
+first as 100 and 40); one point lost per 3,000 ticks (the pack's
 `hungerTickRate`, so oil and food keep one rhythm); one point per breath while embodied
 (DRAGON_BREATHS) and one per raid pass while abstract. A closed form like `fullness`: `oil` and
 `oil_at` on `Dragon`, no per-tick work.
@@ -50,8 +56,8 @@ starts on a full reserve, and each one roosting gets a wake at the time its rese
 refuel level, so the gate does not wait for some other event to wake it.
 
 **OGC13. A roosting fire dragon wakes for oil only from above the refuel level.** At roost it is
-woken at the earlier of hunger and the time its reserve reaches `refuel_below` (40), the latter only
-when it is above 40 now; one already low waits for hunger, whose decision weighs refuelling with
+woken at the earlier of hunger and the time its reserve reaches `refuel_below` (240), the latter only
+when it is above 240 now; one already low waits for hunger, whose decision weighs refuelling with
 food (OGC14).
 
 **OGC18. A dry dragon strikes at half strength.** A raid pass without oil counts at
@@ -167,7 +173,7 @@ what it needs: the tests share one engine and a reused world.
 **OGC29. A breath is a fire event.** One point per `DragonFireEvent`, and per ground charge Ice and
 Fire shoots without an event; a charge inside a paid stream is not paid twice. Ice and Fire fires an
 event every tick of a stream, so a stream costs about 35 to 41 points (measured below) and a full
-reserve of 100 lasts about three streams. The other reading, a point a burst, is the test-only
+reserve of 600 (OGB-2) about fifteen streams, three fights of five. The other reading, a point a burst, is the test-only
 `breathPerBurst` switch (OG-10's arm C); it makes a reserve last about 40 times as long. See For Ben 2.
 
 **OGC30. A dry dragon fights with bite and claws.** At zero the plugin cancels its fire events and
@@ -179,7 +185,7 @@ its prey only as a passenger, and a guarded mock player never rides.
 **OGC31. The oil sampler's budget.** New chunks and surveys share 4 samples a tick (`samplesPerTick`)
 and 2 ms; one sample always runs, so a tick with work pays at least one source call. Only chunks with
 oil are sent, up to 1,024 to an OIL_CHUNKS record, at the end of the tick; a chunk is sampled at most
-once a session.
+once a session. A Diesel sample first looks at 504 noise biomes, not 12,800 (OGC45).
 
 **OGC32. Oil sources and the lair placer.** Oil mods answer base oil per chunk through
 `RtsimApi.registerOilSource` (`OilSource`, `OilSources.forLevel`); Create: Diesel Generators' plugin
@@ -211,6 +217,43 @@ survey covers up to 13,000 chunks, so one survey would have added about 80 ms to
 notes any other; a noted chunk is sampled the first time it loads this session, under the same budget.
 The survey still covers its whole radius, as players reach it. A chunk saved before this session and
 never loaded again stays unknown, as it would without a survey.
+
+**OGC44. Ben's reserve, and the tests that keep the first one.** `OilTunables::default` is capacity 600
+and `refuel_below` 240 (OGB-2): a low dragon drinks every 360 points, 1,080,000 ticks (45 days) of the
+slow drain if it never fights. The oilgate integration tests (`tests/oilgate.rs`, `quick_oil`) keep
+100 and 40 so their schedules stay short, and the closed-form unit test pins 100; the tests that read
+the capacity from the tunables (the protocol test's "a drawn dragon arrives full") run on 600. Every
+other number is unchanged.
+
+**OGC45. The Diesel source's first look (OGB-5).** `CdgOilSource.baseOil` asks `CdgFirstLook` before
+`getBaseOilAmount`. `BiomeManager.getBiome` gives a block the biome of one of the 8 noise cells around
+it (x - 2 >> 2 or the next, the same in y and z), so the cells x `(minX - 2) >> 2` to
+`((maxX - 2) >> 2) + 1`, likewise in z and for y 60 to 109, hold every biome CDG's 12,800 points can
+read: 504 lookups through the level's own `getNoiseBiome`, the same values `getBiome` reads in memory
+or not. No oil biome (`#createdieselgenerators:oil_biomes`, the pack's `#c:is_desert`) among them: the
+answer is 0. Any other chunk gets the exact call, so the look never changes an answer; it only skips
+work. It stands aside, and every chunk gets the exact call, when its answer could differ:
+- CDG's config lets a chunk without an oil biome hold oil (normal chunks on and their multiplier
+  above 0, or a threshold of 0 or less). The pack's config has the normal multiplier at 0.
+- KubeJS is loaded and a script listens to CDG's oil-chunk event (`CDGKubeJSPlugin.OIL_CHUNKS`, read
+  by reflection on every call, since a reload can add one). The pack has no such script. If the field
+  cannot be read, the look stands aside for the session and says so once in the log.
+- Deep Time is installed (`OilSources.deepTimeInstalled`): its mixin answers at the head of
+  `getBaseOilAmount` in its levels. This is coarser than needed, since a Deep Time install's other
+  dimensions could take the look; asking `isDeepTimeLevel` per level is the finer form.
+
+The dieselgenerators GameTest `theFirstLookAgreesWithGetBaseOilAmount` checks it two ways. On vanilla's
+overworld multi-noise biomes for the level's seed (the GameTest world is one flat biome), at 65 chunks
+around an oil biome's edge and 25 at random, the cells must hold every biome CDG's points read through
+`BiomeManager`, and every chunk with an oil biome for CDG must pass the look. On the level, under the
+pack's rule (CDG's normal multiplier set to 0 for the check and put back), the source must answer what
+`getBaseOilAmount` does, chunk for chunk, and under CDG's own defaults the look must stand aside.
+First run (stub engine, 2026-10-21): 90 noise chunks, 55 with an oil biome for CDG, 35 skipped by the
+look, none passed without one; the look took 2.4 ms a chunk (with its early exit) against 128.6 ms for
+CDG's 12,800 points on the same uncached biomes. On the level 57 chunks agreed with `getBaseOilAmount`,
+but none took the skip: the flat preset's one biome is plains, which CDG's own tag (the GameTest
+server's; the pack replaces it with `#c:is_desert`) counts as oil, so the skip is checked only on the
+noise biomes. Under CDG's defaults (normal multiplier 1.3) the look stood aside.
 
 ## GameTests (OGC34, OGC36 to OGC40, OGC42)
 
@@ -275,7 +318,7 @@ First hit by any hostile at site 1: A 165 and 291, B 185 and 184.
 dragon hit comes 40 to 50% later and B brings a third to a half of A's distinct dragons. Site 2 passes
 trivially (nothing reaches the sealed pocket in either arm); site 3 falls, as designed. OILGATE.md §4.8
 asks for medians over several runs by day and night; these are two runs by day, so the verdict is
-early, but both runs fail the same two measures. Field flights stay off (For Ben 1).
+early, but both runs fail the same two measures. Field flights stay off (For Ben 1, now OGB-1 and the cheese audit).
 
 **Fire events per stream** (a 30-day fire dragon, native): ground fire came in 14 bursts, mostly 33 to
 38 events over 40 to 44 ticks, with 2 charges inside them; scorch in 12 bursts of 41 events over 41
@@ -300,11 +343,33 @@ Nothing of the deep layer exists. What it will hang on:
   is its placement, and OIL_CHUNKS source 3 (a deposit sample: defined, sent by nothing) is one way
   a drilled chunk could reach the engine. `ThreatClass` has four classes; `Burrowing` is not added.
 
-## For Ben
+## The audit's fixes: seeds and the survey (F1, F4, F5)
 
-Recommended option first in each.
+docs/oilgate-cheese-audit.md §4's F1, F4 and F5. F4 builds OGB-7 (Ben, 2026-10-21); F1 and F5 are
+reversible code choices.
 
-1. **OG-10 failed at site 1, so field flights stay off.** B matched A's damage per minute but its
+**OGC60. A pumpjack hole seeds its own district, whoever set it down (F1).** DS-10 seeds a district
+only where a player placed a machine; the pumpjack hole is the one exception, since a hole is the only
+way to pump crude. `IndustrySeeds.record` (core) writes a seed with no player: it adds the block
+entity to its chunk's seeds when `Districts.seed` calls it a seed and asks for a rescan of the chunk.
+The dieselgenerators plugin calls it for every pumpjack hole a loading chunk holds (`HoleSeeds`), and
+from `PumpjackHoleSeedMixin` at the hole's first server tick, retrying each tick until the industry
+module answers, so a hole a contraption, a Schematicannon, a Deployer, a ship or a command sets down
+is seen at once. The plugin's `seed()` answers true for the hole; a pack can still tag it
+`#mic_rtsim:district_not_seed`. The rest of a dropped-off base joins by connection, as any machine
+does. Not widened: no other block seeds without a player (the wider forms would amend DS-10 and are
+Ben's). GameTest `aPumpjackHoleSeedsWithNoPlayer` (dieselgenerators, on the stub): a hole set down
+with `level.setBlock` and no player is in its chunk's seeds, and a district forms around it.
+
+## For Ben (answered 2026-10-21)
+
+Recommended option first in each. Ben's answers are DECISIONS.md OGB-1 to OGB-5; the new questions
+are in docs/oilgate-cheese-audit.md §5.
+
+1. **Superseded (OGB-1).** Ben judged In Control's dragons possibly overkill and set his own bar: a
+   real oil pipeline must be infeasible and cheesing it hard for a semi-casual player.
+   docs/oilgate-cheese-audit.md judges the gate against that bar and asks the follow-up. The question
+   as it stood: **OG-10 failed at site 1, so field flights stay off.** B matched A's damage per minute but its
    first dragon hit came 40 to 50% later and it brought a third to a half of A's distinct dragons
    (OGC35's table). (a) Keep `fieldFlights` false and In Control's fire dragon rules as they are; raise
    the field flights' draw (`flight_chance_milli` 100 to 250 and `flight_cap_field` 8 to 12, both
@@ -313,17 +378,17 @@ Recommended option first in each.
    which B already meets, and switch now (remove the fire dragon from In Control's `spawner.json` and
    both `spawn.json` rules; the proposal files are in `neoforge/iceandfire/pack-proposal/`). (c) Turn
    flights on alongside In Control (danger roughly doubles at oil sites until the rule goes).
-2. **The reserve's numbers (OGC5, OGC18, OGC29) are placeholders.** A stream of fire costs 35 to 41
+2. **Answered (a), built (OGB-2, OGC44).** **The reserve's numbers (OGC5, OGC18, OGC29) are placeholders.** A stream of fire costs 35 to 41
    points at a point a fire event, so the reserve of 100 lasts about three streams. (a) Keep a point a
    fire event and size the reserve from fights: if a fight is about five streams, three fights are
    about 600 points (capacity 600, refuel below 240). (b) Charge a point a burst (the arm C switch) and
    keep 100: about 100 streams, so a dragon is almost never dry. (c) Keep 100 at a point a fire event:
    a dragon is dry after about three streams and finishes most fights with bite and claws.
-3. **Drinking ignores the theft cap (OGC8).** (a) Keep: a dry dragon may take up to 100,000 mB (its
+3. **Answered (a) (OGB-3; at the reserve of 600 the room is up to 600,000 mB).** **Drinking ignores the theft cap (OGC8).** (a) Keep: a dry dragon may take up to 100,000 mB (its
    whole room) from one raid; the tank is the lure. (b) Hold drinking to the item theft cap (10%).
-4. **A visitor's lost body ends its visit (OGC11).** (a) Keep: after a restart the field flights
+4. **Ben skipped, taken as recommended: (a) (OGB-4).** **A visitor's lost body ends its visit (OGC11).** (a) Keep: after a restart the field flights
    draw again from fresh rolls. (b) Keep visitors through a session end as wanderers.
-5. **Sampling new chunks costs about 3 ms a tick while players explore (OGC31).** Diesel Generators'
+5. **Answered (a), built (OGB-5, OGC45).** **Sampling new chunks costs about 3 ms a tick while players explore (OGC31).** Diesel Generators'
    `getBaseOilAmount` makes 12,800 biome lookups a chunk (3.2 ms mean in memory, 14.8 ms at most), and
    one sample always runs in a tick with work. (a) Give the Diesel source a cheap first look (skip a
    chunk none of whose biomes can hold oil under the pack's rule) and keep the exact call for the rest;

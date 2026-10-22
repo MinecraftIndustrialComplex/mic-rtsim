@@ -24,6 +24,7 @@ public final class MicRtsim {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public MicRtsim(IEventBus modBus, ModContainer container) {
+        com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.register(modBus);
         RtsimConfig.register(container);
         RtsimAttachments.register(modBus);
         BridgeEvents.register(modBus);

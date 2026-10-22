@@ -36,6 +36,14 @@ import java.util.TreeMap;
 public final class IndustryData extends SavedData {
     public static final String FILE = "mic_rtsim_industry";
 
+    /**
+     * 2: districts carry their seed counts per chunk (DS-10: only machines seed). A save from before has
+     * none, so detection finds no seed in its unloaded chunks and drops those districts as it reaches
+     * them; the loaded ones are seeded again from their chunks' machines. No migration (nothing is
+     * released): a world from before wants a fresh start, or has its districts rebuilt.
+     */
+    public static final int FORMAT = 2;
+
     /** Districts by id, in id order. */
     final TreeMap<Long, District> districts = new TreeMap<>();
     long nextId = 1;
@@ -79,6 +87,7 @@ public final class IndustryData extends SavedData {
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
+        tag.putInt("format", FORMAT);
         tag.putLong("nextId", nextId);
         ListTag list = new ListTag();
         for (District d : districts.values()) {
@@ -86,6 +95,13 @@ public final class IndustryData extends SavedData {
             t.putLong("id", d.id);
             t.putString("dim", d.dim.location().toString());
             t.putLongArray("chunks", d.chunks.toLongArray());
+            long[] seeds = new long[d.seedCounts.size() * 2];
+            int sk = 0;
+            for (it.unimi.dsi.fastutil.longs.Long2IntMap.Entry e : d.seedCounts.long2IntEntrySet()) {
+                seeds[sk++] = e.getLongKey();
+                seeds[sk++] = e.getIntValue();
+            }
+            t.putLongArray("seeds", seeds);
             if (d.customName != null)
                 t.putString("customName", d.customName);
             if (d.stationName != null)
@@ -159,6 +175,10 @@ public final class IndustryData extends SavedData {
 
     public static IndustryData load(CompoundTag tag, HolderLookup.Provider registries) {
         IndustryData data = new IndustryData();
+        if (tag.getInt("format") < FORMAT && !tag.getList("districts", Tag.TAG_COMPOUND).isEmpty())
+            com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.warn(
+                    "mic_rtsim: industry data format {} (now {}): districts without a recorded machine are dissolved as detection reaches them",
+                    tag.getInt("format"), FORMAT);
         data.nextId = Math.max(1, tag.getLong("nextId"));
         for (Tag raw : tag.getList("districts", Tag.TAG_COMPOUND)) {
             CompoundTag t = (CompoundTag) raw;
@@ -168,6 +188,9 @@ public final class IndustryData extends SavedData {
             District d = new District(t.getLong("id"), dim);
             for (long c : t.getLongArray("chunks"))
                 d.chunks.add(c);
+            long[] seeds = t.getLongArray("seeds");
+            for (int i = 0; i + 1 < seeds.length; i += 2)
+                d.seedCounts.put(seeds[i], (int) seeds[i + 1]);
             if (t.contains("customName"))
                 d.customName = t.getString("customName");
             if (t.contains("stationName"))

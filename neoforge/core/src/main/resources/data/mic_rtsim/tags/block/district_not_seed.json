@@ -1,0 +1,421 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "sophisticatedbackpacks:backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:copper_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:iron_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:gold_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:diamond_backpack",
+      "required": false
+    },
+    {
+      "id": "sophisticatedbackpacks:netherite_backpack",
+      "required": false
+    },
+    {
+      "id": "numismatics:vendor",
+      "required": false
+    },
+    {
+      "id": "numismatics:creative_vendor",
+      "required": false
+    },
+    {
+      "id": "numismatics:salepoint",
+      "required": false
+    },
+    {
+      "id": "numismatics:brass_depositor",
+      "required": false
+    },
+    {
+      "id": "numismatics:andesite_depositor",
+      "required": false
+    },
+    {
+      "id": "createdieselgenerators:oil_barrel",
+      "required": false
+    },
+    {
+      "id": "createdieselgenerators:canister",
+      "required": false
+    },
+    {
+      "id": "destroy:element_tank",
+      "required": false
+    },
+    {
+      "id": "destroy:beaker",
+      "required": false
+    },
+    {
+      "id": "destroy:flask",
+      "required": false
+    },
+    {
+      "id": "destroy:jar",
+      "required": false
+    },
+    {
+      "id": "destroy:round_bottomed_flask",
+      "required": false
+    },
+    {
+      "id": "destroy:measuring_cylinder",
+      "required": false
+    },
+    {
+      "id": "destroy:test_tube_rack",
+      "required": false
+    },
+    {
+      "id": "create_enchantment_industry:experience_lantern",
+      "required": false
+    },
+    {
+      "id": "create_dragons_plus:fragile_fluid_tank",
+      "required": false
+    },
+    {
+      "id": "create_dragons_plus:levitite_fragile_fluid_tank",
+      "required": false
+    },
+    {
+      "id": "createmetallurgy:casting_basin",
+      "required": false
+    },
+    {
+      "id": "createmetallurgy:casting_table",
+      "required": false
+    },
+    {
+      "id": "mic_rtsim:test_store",
+      "required": false
+    },
+    {
+      "id": "overgeared:alloy_furnace",
+      "required": false
+    },
+    {
+      "id": "overgeared:nether_alloy_furnace",
+      "required": false
+    },
+    {
+      "id": "overgeared:casting_furnace",
+      "required": false
+    },
+    {
+      "id": "overgeared:smithing_anvil",
+      "required": false
+    },
+    {
+      "id": "overgeared:stone_anvil",
+      "required": false
+    },
+    {
+      "id": "overgeared:tier_a_smithing_anvil",
+      "required": false
+    },
+    {
+      "id": "overgeared:tier_b_smithing_anvil",
+      "required": false
+    },
+    {
+      "id": "cobblemon:campfire",
+      "required": false
+    },
+    {
+      "id": "cobblemon:soul_campfire",
+      "required": false
+    },
+    {
+      "id": "cobblemon:fossil_analyzer",
+      "required": false
+    },
+    {
+      "id": "cobblemon:restoration_tank",
+      "required": false
+    },
+    {
+      "id": "cobblemon:tm_machine",
+      "required": false
+    },
+    {
+      "id": "iceandfire:dragonforge_fire_core",
+      "required": false
+    },
+    {
+      "id": "iceandfire:dragonforge_ice_core",
+      "required": false
+    },
+    {
+      "id": "iceandfire:dragonforge_lightning_core",
+      "required": false
+    },
+    {
+      "id": "legendarysurvivaloverhaul:heater",
+      "required": false
+    },
+    {
+      "id": "legendarysurvivaloverhaul:cooler",
+      "required": false
+    },
+    {
+      "id": "exposure:lightroom",
+      "required": false
+    },
+    {
+      "id": "simpleradio:radiosmither",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:controller",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:storage_link",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:storage_io",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:storage_input",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:storage_output",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:decoration_table",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:acacia_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:bamboo_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:birch_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:cherry_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:crimson_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:dark_oak_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:jungle_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:mangrove_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:oak_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:spruce_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:warped_storage_connector",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:barrel",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:chest",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:shulker_box",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:copper_barrel",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:copper_chest",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:copper_shulker_box",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:iron_barrel",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:iron_chest",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:iron_shulker_box",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:gold_barrel",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:gold_chest",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:gold_shulker_box",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:diamond_barrel",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:diamond_chest",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:diamond_shulker_box",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:netherite_barrel",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:netherite_chest",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:netherite_shulker_box",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_barrel_1",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_barrel_2",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_barrel_3",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_barrel_4",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_copper_barrel_1",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_copper_barrel_2",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_copper_barrel_3",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_copper_barrel_4",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_iron_barrel_1",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_iron_barrel_2",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_iron_barrel_3",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_iron_barrel_4",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_gold_barrel_1",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_gold_barrel_2",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_gold_barrel_3",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_gold_barrel_4",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_diamond_barrel_1",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_diamond_barrel_2",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_diamond_barrel_3",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_diamond_barrel_4",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_netherite_barrel_1",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_netherite_barrel_2",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_netherite_barrel_3",
+      "required": false
+    },
+    {
+      "id": "sophisticatedstorage:limited_netherite_barrel_4",
+      "required": false
+    }
+  ]
+}

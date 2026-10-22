@@ -60,7 +60,7 @@ public final class DestroyGameTests {
         ResourceLocation gh = ResourceLocation.parse("destroy:greenhouse"), smog = ResourceLocation.parse("destroy:smog");
         helper.startSequence()
                 .thenExecute(() -> {
-                    set(helper, chest, Blocks.CHEST.defaultBlockState());
+                    set(helper, chest, com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.MACHINE.get().defaultBlockState());
                     playerPlaced(helper, chest);
                     set(helper, pump, block("destroy:pumpjack").defaultBlockState());
                     LevelChunk c = helper.getLevel().getChunkAt(pump);
