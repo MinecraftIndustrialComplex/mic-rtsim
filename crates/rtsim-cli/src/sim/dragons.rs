@@ -12,8 +12,10 @@
 //!
 //! **The scripted player** moves between places on a timetable; its interest area is booked in the
 //! leg index at each move, and its position feeds the home counter (P26). It reacts to dragons by
-//! name when they materialize near it: it wounds Cinderjaw on the road, later kills it at home, and
-//! watches the rest. It robs a hoard once.
+//! name when they materialize near it: it goes out to meet Cinderjaw on the road it hunts and
+//! wounds it there, later kills it at home, and watches the rest. It robs a hoard once. The road
+//! meeting is found rather than timed: which road Cinderjaw hunts, and when, follows the whole
+//! world, so a fixed day and road went stale with every change to phase 1's trade (R27a).
 //!
 //! **What it checks** (exit 1 on a failure): conservation with predation (the world, the ledger,
 //! the hoards, the industry books and the fake world's own totals), and the story's beats: a wound
@@ -32,7 +34,7 @@ use std::time::Instant;
 use rtsim_archive::record::Meter;
 use rtsim_ecology::boundary::{self, Cmd, Obs};
 use rtsim_ecology::calendar::{Calendar, Season};
-use rtsim_ecology::dragon::{LairKind, dragon_of};
+use rtsim_ecology::dragon::{LairKind, Purpose, State, Target, dragon_of};
 use rtsim_ecology::engine::{DragonStats, Dragons, HuntRecord, LogEntry};
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink};
 use rtsim_ecology::prey::Item;
@@ -97,9 +99,26 @@ fn bad(why: &str) -> ExitCode {
 const PLAYER: (u64, u64) = (0x1111, 0x2222);
 use synth::FARM;
 
-/// Where the player is, from a day on, and what it does to dragons it meets.
+/// When a phase begins.
+#[derive(Clone, Copy)]
+enum Start {
+    /// On this day.
+    Day(f64),
+    /// So many days after the phase before it began.
+    After(f64),
+    /// When the dragon of this name is out hunting on a road, on day `from` or later: the player
+    /// hears where and goes to that point of the road. On day `latest` it goes to the phase's own
+    /// place, met or not (and the story's checks fail honestly).
+    Meet {
+        dragon: &'static str,
+        from: f64,
+        latest: f64,
+    },
+}
+
+/// Where the player is, from the phase's start on, and what it does to dragons it meets.
 struct Phase {
-    from_day: f64,
+    start: Start,
     place: &'static str,
     x: i32,
     z: i32,
@@ -109,10 +128,13 @@ struct Phase {
     rob: Option<u64>,
 }
 
+/// The player's timetable. The road meeting is found, not timed: where and when Cinderjaw hunts a
+/// road follows the whole world (phase 1's trade sets the roads' food), so a fixed day and road
+/// stop meeting it whenever the world changes (overnight choice R27a).
 fn script() -> Vec<Phase> {
     vec![
         Phase {
-            from_day: 0.0,
+            start: Start::Day(0.0),
             place: "home (the farm)",
             x: 300,
             z: 1300,
@@ -121,7 +143,11 @@ fn script() -> Vec<Phase> {
             rob: None,
         },
         Phase {
-            from_day: 3.2,
+            start: Start::Meet {
+                dragon: "Cinderjaw",
+                from: 3.2,
+                latest: 12.0,
+            },
             place: "the Ashby to Fernwick road",
             x: 490,
             z: 655,
@@ -136,7 +162,7 @@ fn script() -> Vec<Phase> {
             rob: None,
         },
         Phase {
-            from_day: 4.5,
+            start: Start::After(1.3),
             place: "Brindle",
             x: 0,
             z: 0,
@@ -145,7 +171,7 @@ fn script() -> Vec<Phase> {
             rob: None,
         },
         Phase {
-            from_day: 7.0,
+            start: Start::After(2.5),
             place: "home (the farm)",
             x: 300,
             z: 1300,
@@ -154,7 +180,7 @@ fn script() -> Vec<Phase> {
             rob: None,
         },
         Phase {
-            from_day: 18.0,
+            start: Start::Day(18.0),
             place: "Highmoor",
             x: 1400,
             z: -400,
@@ -163,7 +189,7 @@ fn script() -> Vec<Phase> {
             rob: None,
         },
         Phase {
-            from_day: 21.0,
+            start: Start::Day(21.0),
             place: "Marrowdale",
             x: -600,
             z: -700,
@@ -172,7 +198,7 @@ fn script() -> Vec<Phase> {
             rob: None,
         },
         Phase {
-            from_day: 24.0,
+            start: Start::Day(24.0),
             place: "Rimefang Roost",
             x: -500,
             z: -1500,
@@ -181,7 +207,7 @@ fn script() -> Vec<Phase> {
             rob: Some(102),
         },
         Phase {
-            from_day: 25.0,
+            start: Start::Day(25.0),
             place: "home (the farm)",
             x: 300,
             z: 1300,
@@ -196,16 +222,57 @@ fn day(d: f64) -> Tick {
     Tick((d * TICKS_PER_DAY as f64) as u64)
 }
 
-/// The farm (`synth::farm`), loaded while the player is home.
-fn farm(seed: u64, phases: &[Phase]) -> FakeWorld {
-    let visits = phases
-        .iter()
-        .map(|p| Visit {
-            from: day(p.from_day),
-            at: if p.farm_loaded { vec![0] } else { Vec::new() },
-        })
-        .collect();
-    synth::farm(seed, [0.0; 4], visits)
+/// The tick by which phase `p` begins, the phase before it having begun at `began`.
+fn due(p: &Phase, began: Tick) -> Tick {
+    match p.start {
+        Start::Day(d) => day(d),
+        Start::After(n) => began + day(n).0,
+        Start::Meet { latest, .. } => day(latest),
+    }
+}
+
+/// Where the dragon of this name hunts on a road, if it is out hunting one (flying there or
+/// there): the road's edge and the point.
+fn hunting_road(dragons: &Dragons, name: &str) -> Option<(u32, i32, i32)> {
+    let (_, d) = dragons.dragons.iter().find(|(_, d)| d.name == name)?;
+    match d.state {
+        State::Flying(Purpose::Hunt(Target::Road { edge, x, z, .. }))
+        | State::Hunting {
+            target: Target::Road { edge, x, z, .. },
+            ..
+        } => Some((edge, x, z)),
+        _ => None,
+    }
+}
+
+fn road_name(w: &World, edge: u32) -> String {
+    let e = &w.edges[edge as usize];
+    format!(
+        "the {} to {} road",
+        synth::village_name(w.nodes[e.a].key),
+        synth::village_name(w.nodes[e.b].key)
+    )
+}
+
+/// The farm (`synth::farm`), loaded while the player is home: the first phase's visit here, the
+/// rest pushed as the player moves.
+fn farm(seed: u64, first: &Phase) -> FakeWorld {
+    synth::farm(seed, [0.0; 4], vec![visit(first, Tick::ZERO)])
+}
+
+/// The dragon a meeting phase looks for.
+fn meet_name(p: &Phase) -> &'static str {
+    match p.start {
+        Start::Meet { dragon, .. } => dragon,
+        _ => "",
+    }
+}
+
+fn visit(p: &Phase, from: Tick) -> Visit {
+    Visit {
+        from,
+        at: if p.farm_loaded { vec![0] } else { Vec::new() },
+    }
 }
 
 #[derive(Serialize)]
@@ -306,7 +373,7 @@ pub fn main(o: Options) -> i32 {
     // The plugin's body dictionary: entity type 40 is `minecraft:cow`, a village herd's cattle.
     dragons.define_herd_body(40, ids.cattle);
     synth::populate(&mut w, &mut dragons, &synth::lairs(), Tick::ZERO);
-    let mut fake = farm(o.seed, &phases);
+    let mut fake = farm(o.seed, &phases[0]);
     fake.engine.tape.set_on(true);
     let mut index = DistrictIndex::default();
     let mut iaf = FakeIaf::new(PLAYER);
@@ -328,22 +395,29 @@ pub fn main(o: Options) -> i32 {
     let end = Tick::from_days(o.days);
     let mut t = Tick::ZERO;
     let mut phase = 0usize;
+    // When the current phase began, and where the player is in it.
+    let mut began = Tick::ZERO;
+    let mut here = Pos::new(0, phases[0].x, phases[0].z);
     let mut next_obs = Tick::ZERO;
     let mut robbed = false;
-    let start = &phases[0];
     dragons.player_stays(
         &mut w,
         PLAYER,
-        Pos::new(0, start.x, start.z),
+        here,
         Tick::ZERO,
-        day(phases[1].from_day),
+        due(&phases[1], Tick::ZERO),
     );
     loop {
-        let phase_end = phases.get(phase + 1).map_or(end, |p| day(p.from_day));
+        let phase_end = phases.get(phase + 1).map_or(end, |p| due(p, began));
+        // A meeting can begin the next phase from its first day: wake then to look.
+        let meet_from = phases.get(phase + 1).and_then(|p| match p.start {
+            Start::Meet { from, .. } => Some(day(from)).filter(|&f| f > t),
+            _ => None,
+        });
         let rob_at = phases[phase]
             .rob
             .filter(|_| !robbed)
-            .map(|_| day(phases[phase].from_day + 0.5));
+            .map(|_| began + day(0.5).0);
         let mut next = [
             Some(end),
             dragons.next_due(),
@@ -351,6 +425,7 @@ pub fn main(o: Options) -> i32 {
             Some(phase_end),
             Some(next_obs),
             rob_at,
+            meet_from,
         ]
         .into_iter()
         .flatten()
@@ -387,7 +462,6 @@ pub fn main(o: Options) -> i32 {
             }
             iaf.apply(vec![c], next);
         }
-        let here = Pos::new(0, phases[phase].x, phases[phase].z);
         if next >= next_obs {
             dragons.observe_player(&mut w, PLAYER, here, next);
             next_obs = next + 1_200;
@@ -405,22 +479,37 @@ pub fn main(o: Options) -> i32 {
                 }),
             );
         }
-        if next >= phase_end && phase + 1 < phases.len() {
+        let met = phases.get(phase + 1).and_then(|p| match p.start {
+            Start::Meet { dragon, from, .. } if next >= day(from) => hunting_road(&dragons, dragon),
+            _ => None,
+        });
+        if (next >= phase_end || met.is_some()) && phase + 1 < phases.len() {
             iaf.player_leaves(next);
             dragons.player_left(&mut w, player);
             phase += 1;
+            began = next;
             let p = &phases[phase];
+            let place = match met {
+                Some((edge, x, z)) => {
+                    here = Pos::new(0, x, z);
+                    format!("{}, where {} hunts", road_name(&w, edge), meet_name(p))
+                }
+                None => {
+                    here = Pos::new(0, p.x, p.z);
+                    p.place.to_string()
+                }
+            };
+            fake.visits.push(visit(p, next));
             iaf.village_here = synth::VILLAGES
                 .iter()
                 .find(|v| p.place == v.1)
                 .map(|v| (v.0, 40, 2));
-            let until = phases.get(phase + 1).map_or(end, |q| day(q.from_day));
-            dragons.player_stays(&mut w, PLAYER, Pos::new(0, p.x, p.z), next, until);
+            let until = phases.get(phase + 1).map_or(end, |q| due(q, began));
+            dragons.player_stays(&mut w, PLAYER, here, next, until);
             if !o.quiet {
                 println!(
-                    "{:7.2}  the player goes to {}",
+                    "{:7.2}  the player goes to {place}",
                     next.0 as f64 / TICKS_PER_DAY as f64,
-                    p.place
                 );
             }
         }
@@ -785,4 +874,22 @@ fn print_report(o: &Out, _w: &World) {
         );
     }
     println!("wall {:.0} ms, {} wire bytes", o.wall_ms, o.wire_bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default run tells the whole story. It stood failing for days unseen when the road
+    /// meeting was a fixed day and road (R27a): the scenario runs nowhere else.
+    #[test]
+    fn the_default_run_passes_every_check() {
+        let o = Options {
+            days: 48,
+            seed: 7,
+            out: None,
+            quiet: true,
+        };
+        assert_eq!(main(o), 0, "a story check failed: run `rtsim-cli sim dragons`");
+    }
 }
