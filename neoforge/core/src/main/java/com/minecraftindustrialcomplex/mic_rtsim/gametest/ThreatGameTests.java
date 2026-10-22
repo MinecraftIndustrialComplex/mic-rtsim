@@ -58,12 +58,46 @@ public final class ThreatGameTests {
     }
 
     /**
+     * The district's exposed blocks as the engine holds them, from every IND_SURVEY_BLOCKS sent for it in
+     * order: a chunk's part 0 replaces that chunk's rows (a partial survey keeps its wall faces), its later
+     * parts add (threat.rs {@code Defence::survey_blocks}). Each row is {x, y, z, flags}.
+     */
+    static List<int[]> exposedRows(long district) {
+        java.util.Map<Long, List<int[]>> byChunk = new java.util.LinkedHashMap<>();
+        for (ByteBuffer r : received(IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.DISTRICT, district)) {
+            long c = net.minecraft.world.level.ChunkPos.asLong(r.getInt(IndRecords.SurveyBlocks.CHUNK_X), r.getInt(IndRecords.SurveyBlocks.CHUNK_Z));
+            List<int[]> rows = byChunk.computeIfAbsent(c, k -> new java.util.ArrayList<>());
+            if (r.getInt(IndRecords.SurveyBlocks.PART) == 0) {
+                boolean partial = (r.getInt(IndRecords.SurveyBlocks.FLAGS) & IndRecords.SurveyBlocks.PARTIAL) != 0;
+                rows.removeIf(row -> !partial || (row[3] & IndRecords.SurveyBlocks.FLAG_PERIMETER) == 0);
+            }
+            for (int i = 0; i < aux(r); i++) {
+                int at = IndRecords.SurveyBlocks.BLOCKS + i * IndRecords.SurveyBlocks.BLOCK;
+                rows.add(new int[] {r.getInt(at + IndRecords.SurveyBlocks.B_X), r.getInt(at + IndRecords.SurveyBlocks.B_Y),
+                        r.getInt(at + IndRecords.SurveyBlocks.B_Z), r.getInt(at + IndRecords.SurveyBlocks.B_FLAGS)});
+            }
+        }
+        List<int[]> all = new java.util.ArrayList<>();
+        byChunk.values().forEach(all::addAll);
+        return all;
+    }
+
+    /** The flags of the exposed row at {@code p}, or -1 when none is listed there. */
+    static int rowFlags(List<int[]> rows, BlockPos p) {
+        for (int[] r : rows)
+            if (r[0] == p.getX() && r[1] == p.getY() && r[2] == p.getZ())
+                return r[3];
+        return -1;
+    }
+
+    /**
      * I21's survey on a flat yard: a machine in a district whose stock is a chest (the machine seeds it, DS-10). In the open the
      * smallest set of columns that seals the furnace is its four neighbours (gaps 4, perimeter 4); a closed
      * cobblestone ring two blocks above the floor seals it (gaps 0); a one-column doorway is one gap; a stone
-     * block over the furnace roofs it; the dark spawnable count is measured (block light 0) and falls when
-     * torches light the yard. IND_SURVEY carries each, and IND_SURVEY_BLOCKS lists the wall faces, the
-     * machine and the chest.
+     * block three over the furnace is a roof a flyer reaches (OGB-7): the machine counts as open and the stone
+     * is listed as a roof row; a second stone ten over it is cover beyond reach, which roofs the machine and
+     * drops the roof row; the dark spawnable count is measured (block light 0) and falls when torches light
+     * the yard. IND_SURVEY carries each, and IND_SURVEY_BLOCKS lists the wall faces, the machine and the chest.
      */
     @GameTest(template = YARD, batch = "threat_1", timeoutTicks = 1200)
     public static void theDefenceSurveyMeasuresWallsRoofsAndDark(GameTestHelper helper) {
@@ -143,7 +177,24 @@ public final class ThreatGameTests {
                 .thenWaitUntil(() -> {
                     check("a fourth survey", surveyCount(id[0]) > n[0]);
                     long[] s = survey(id[0]);
-                    check("the furnace is roofed", s[4] == 1);
+                    List<int[]> rows = exposedRows(id[0]);
+                    int roof = rowFlags(rows, furnace.above(3)), machine = rowFlags(rows, furnace);
+                    record("theDefenceSurveyMeasuresWallsRoofsAndDark", "roof in reach", java.util.Arrays.toString(s) + "; roof row flags " + roof + ", machine row flags " + machine);
+                    check("a roof three up is in a flyer's reach: not roofed (" + s[4] + "), one roof in reach (" + s[20] + ")", s[4] == 0 && s[20] == 1);
+                    check("the roof is a roof row with sky access", roof == (IndRecords.SurveyBlocks.FLAG_ROOF | IndRecords.SurveyBlocks.FLAG_ROOFLESS));
+                    check("the machine under it has no sky access", machine >= 0 && (machine & IndRecords.SurveyBlocks.FLAG_ROOFLESS) == 0);
+                    // Cover ten up: the top block is past roofReachBlocks (8). The sky light sources the survey
+                    // reads change with the block, so no wait for the light engine.
+                    set(helper, furnace.above(10), Blocks.STONE.defaultBlockState());
+                    n[0] = surveyCount(id[0]);
+                    ind().threats().surveySoon(ind().district(id[0]));
+                })
+                .thenWaitUntil(() -> {
+                    check("a fifth survey", surveyCount(id[0]) > n[0]);
+                    long[] s = survey(id[0]);
+                    check("cover ten up shields: roofed " + s[4] + ", in reach " + s[20], s[4] == 1 && s[20] == 0);
+                    List<int[]> rows = exposedRows(id[0]);
+                    check("no roof row any more", rows.stream().noneMatch(r -> (r[3] & IndRecords.SurveyBlocks.FLAG_ROOF) != 0));
                     roofed[0] = s[4];
                     for (int x = 0; x < 16; x += 4)
                         for (int z = 0; z < 16; z += 4)
@@ -165,23 +216,21 @@ public final class ThreatGameTests {
                     ind().threats().surveySoon(ind().district(id[0]));
                 })
                 .thenWaitUntil(() -> {
-                    check("a fifth survey", surveyCount(id[0]) > n[0]);
+                    check("a sixth survey", surveyCount(id[0]) > n[0]);
                     long[] s = survey(id[0]);
                     record("theDefenceSurveyMeasuresWallsRoofsAndDark", "lit", java.util.Arrays.toString(s));
                     check("torches leave fewer dark blocks: " + s[2] + " < " + open[0], s[2] < open[0]);
                     lit[0] = s[2];
                     List<ByteBuffer> surveys = received(IndRecords.IND_SURVEY, IndRecords.Survey.DISTRICT, id[0]);
-                    check("IND_SURVEY records", surveys.size() >= 5);
+                    check("IND_SURVEY records", surveys.size() >= 6);
                     ByteBuffer last = surveys.get(surveys.size() - 1);
                     check("the record carries the last survey", last.getInt(IndRecords.Survey.PERIMETER_GAPS) == 1
                             && last.getInt(IndRecords.Survey.ROOFED_MACHINES) == 1 && last.getInt(IndRecords.Survey.DARK_SPAWNABLE) == lit[0]);
                     check("mobGriefing flag", (aux(last) & IndRecords.Survey.FLAG_MOB_GRIEFING) != 0
                             == helper.getLevel().getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_MOBGRIEFING));
-                    List<ByteBuffer> blocks = received(IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.DISTRICT, id[0]);
-                    ByteBuffer part = blocks.get(blocks.size() - 1);
                     int perim = 0, machine = 0, inv = 0;
-                    for (int i = 0; i < aux(part); i++) {
-                        int f = part.getInt(IndRecords.SurveyBlocks.BLOCKS + i * IndRecords.SurveyBlocks.BLOCK + IndRecords.SurveyBlocks.B_FLAGS);
+                    for (int[] row : exposedRows(id[0])) {
+                        int f = row[3];
                         if ((f & IndRecords.SurveyBlocks.FLAG_PERIMETER) != 0)
                             perim++;
                         if ((f & IndRecords.SurveyBlocks.FLAG_MACHINE) != 0)
@@ -194,6 +243,7 @@ public final class ThreatGameTests {
                     check("wall faces are exposed blocks", perim > 0);
                     record("theDefenceSurveyMeasuresWallsRoofsAndDark", "summary", "dark open " + open[0] + ", lit " + lit[0] + "; gaps open 4, closed "
                             + closed[0] + ", doorway " + door[0] + "; roofed " + roofed[0]);
+                    set(helper, furnace.above(10), Blocks.AIR.defaultBlockState());
                     ThreatConfig.setForTest(ThreatConfig.SURVEY_MIN_INTERVAL, null);
                     ThreatConfig.setForTest(ThreatConfig.SURVEY_CHUNKS_PER_TICK, null);
                 })
