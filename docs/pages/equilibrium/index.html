@@ -216,21 +216,21 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#cost">Cost</a>
   <a href="#checked">Checked</a>
   <a href="#decided">Decided</a>
-  <a href="#decide">Decide</a>
+  <a href="#decide">Answers</a>
 </nav>
 
 <main>
 
 <header data-ss-id="page-header">
-  <h1 data-ss-id="headline">Kill every Frostmaw, dragon or villager and new ones come, slower each time you farm them: the world settles, and 6 decisions are yours</h1>
-  <p class="dek" data-ss-id="dek">The population equilibrium and renewal plan, EQUILIBRIUM.md on mic-rtsim main (3590249). One review went through it; its fixes are in and the model was rerun with them. Nothing is built.</p>
+  <h1 data-ss-id="headline">Kill every Frostmaw, dragon or villager and new ones come, slower each time you farm them, and the world settles: you answered all 6 decisions</h1>
+  <p class="dek" data-ss-id="dek">The population equilibrium and renewal plan, EQUILIBRIUM.md on mic-rtsim main (3590249). One review went through it; its fixes are in and the model was rerun with them. You answered its six decisions on 21 October: four as recommended, a faster Frostmaw (EQ-4) and none of the three ways factions fight (EQ-5). Nothing is built.</p>
   <p class="lead" data-ss-id="lead">You asked for two things: a world that settles into a balance between tribes and animals, and a way for the Frostmaw (your Yetis), dragons and villages a player wipes out to come back. One rule does both. Every place a kind lives (a lair, a den, a grove, a village, a herd's range) remembers how hard players have hit it lately, and the next arrival waits longer for each recent kill. Left alone, it forgets within a few game years. Herds stop booming and crashing, dragons stop eating herds out, factions stop throwing raids at walls they cannot beat, and a server left alone for ten real years keeps every kind at a steady share.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-herds"><div class="n">0</div><div class="t">herd ranges die out in 60 game years, whatever the player does (today 4 to 15 per world, for good)</div></div>
-    <div class="tile" data-ss-id="kpi-farm"><div class="n">about 1</div><div class="t">boss a game year from a site you camp and farm (today 4.8 dragons a lair; the Mowzie draft 12 to 16 Frostmaw)</div></div>
-    <div class="tile" data-ss-id="kpi-raids"><div class="n">0</div><div class="t">raids a year on a fortress; it gets scouts (today 13.8 losing wars a year)</div></div>
+    <div class="tile" data-ss-id="kpi-farm"><div class="n">1 to 2</div><div class="t">bosses a game year from a site you camp and farm: about 1 dragon a lair, about 1.8 Frostmaw a den on your 6-day base (today 4.8 dragons a lair; the Mowzie draft 12 to 16 Frostmaw)</div></div>
+    <div class="tile" data-ss-id="kpi-raids"><div class="n">0</div><div class="t">raids a year on a fortress under the gate (today 13.8 losing wars a year); you rejected the gate, and a more lifelike design is in progress (EQ-5)</div></div>
     <div class="tile" data-ss-id="kpi-alone"><div class="n">10 <small>years</small></div><div class="t">of real uptime with nobody on, and every kind holds steady at a flat cost</div></div>
-    <div class="tile" data-ss-id="kpi-decide"><div class="n">6</div><div class="t">decisions for you, each with a recommendation</div></div>
+    <div class="tile" data-ss-id="kpi-decide"><div class="n">6</div><div class="t">decisions answered, four as recommended</div></div>
   </div>
 </header>
 
@@ -280,17 +280,17 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
         <li><span class="d">Day 32</span><span>Two settlers arrive, a family from beyond the explored edge. No other village loses anyone.</span></li>
         <li><span class="d">Then</span><span>Vanilla breeding refills it while you are near; the sim grows it toward its beds while it is unloaded.</span></li>
         <li><span class="d">Day 480</span><span>90% back if nobody visits (438 to 534 across seeds): five game years, under seven real days.</span></li>
-        <li><span class="d">If you farm it</span><span>Pairs keep coming, slower: about three a year. Zombie sieges, raids and dragons slow nothing; only your kills do. This depends on EQ-1.</span></li>
+        <li><span class="d">If you farm it</span><span>Pairs keep coming, slower: about three a year. Zombie sieges, raids and dragons slow nothing; only your kills do. You chose this (EQ-1).</span></li>
       </ol>
     </div>
   </div>
 </section>
 
 <section id="farming" data-ss-id="farming" data-ss-section>
-  <h2 data-ss-id="farm-h">Farming slows itself: about one boss a year from a site you camp</h2>
+  <h2 data-ss-id="farm-h">Farming slows itself: one or two bosses a year from a site you camp</h2>
   <p data-ss-id="farm-rule">Each site keeps one number, its pressure. Every member a player kills or takes adds 1 divided by the site's size: 1 for a den or a lair, a seventh for one warrior of a seven-warrior grove. Pressure halves every game year. When the site is short, the next member comes after the site's base wait doubled once for each unit of pressure, up to a cap. Deaths no player caused add nothing, so a world nobody visits never slows its own renewal.</p>
   <div class="formula" data-ss-id="farm-formula">wait = min(cap, base × 2<sup>pressure</sup>)<br>pressure halves every 96 days</div>
-  <p data-ss-id="farm-den-intro">A Frostmaw den, with a base of 24 days and a cap of 192 (EQ-4), when you kill each newcomer within two days of its arrival, and when you stop:</p>
+  <p data-ss-id="farm-den-intro">A Frostmaw den, with the recommended base of 24 days and a cap of 192, when you kill each newcomer within two days of its arrival, and when you stop. You chose a 6-day base (EQ-4), which brings the next Frostmaw 12 days after a first kill and about 1.8 a year if you farm without pause; the chart is not redrawn for it:</p>
   <figure class="waits" data-ss-id="den-waits">
     <svg class="dg" viewBox="0 0 360 262" role="img" aria-label="Column chart of the wait for the next Frostmaw at one den. While you farm it, killing each newcomer within two days: 48 days after the first kill, 78 after the second, 93 after the third and 95 from the fourth on. After you stop, a kill after one quiet year brings the next in 95 days, after two quiet years 67, after three 57. 48 days is the floor.">
       <text x="0" y="14" class="m">days to the next Frostmaw</text>
@@ -445,7 +445,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li>Camps stop feuding by habit: background camp-on-camp wars fall from 2 to 20 a world-year to 0 to 0.34. A camp falls on a neighbour only once something has thinned it.</li>
     <li>Pirates no longer die out. Havens hire crews up to 18, refit lost ships, and hunt only routes they can win.</li>
   </ul>
-  <p data-ss-id="factions-eq5">Whether a strong base should still get a fight a season is EQ-5.</p>
+  <p data-ss-id="factions-eq5"><strong>You rejected the gate (EQ-5)</strong>, with the other two options, as "a bit too formulaic", and asked for something more lifelike. The redesign covers faction fighting only, and its design is in progress. Renewal and pressure stay as this page has them. This section shows the gate as it was proposed.</p>
 </section>
 
 <section id="alone" data-ss-id="alone" data-ss-section>
@@ -562,9 +562,9 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <section id="mowzie" data-ss-id="mowzie-changes" data-ss-section>
   <h2 data-ss-id="mowzie-h">What this changes in the Mowzie plan</h2>
-  <p data-ss-id="mowzie-p">The <a href="https://spacesheep.dev/@benmac/rtsim-mowzie">Mowzie's Mobs factions page</a> shows the draft rates, and MOWZIE.md on main still has them. If you take this plan, MOWZIE.md makes 14 changes to match it. The ones you would notice:</p>
+  <p data-ss-id="mowzie-p">The <a href="https://spacesheep.dev/@benmac/rtsim-mowzie">Mowzie's Mobs factions page</a> shows the draft rates, and MOWZIE.md on main still has them. With your answers, MOWZIE.md changes to match this plan. The ones you would notice:</p>
   <ul data-ss-id="mowzie-list">
-    <li>A killed Frostmaw is replaced after 48 days, not 6, and about once a year if farmed (EQ-4 sets the base). The Mowzie page's "6 days" tile is the draft.</li>
+    <li>A killed Frostmaw is replaced 12 days after a first kill, not 6, and about 1.8 times a year if farmed: you kept the Mowzie plan's 6-day base and added the doubling (EQ-4).</li>
     <li>Grove warriors come back one at a time, each after 6 days doubled by the grove's pressure, instead of a whole grove in three and a half days.</li>
     <li>A new Umvuthi is an heir: a warrior of the grove takes up the mask, and the grove has one warrior fewer.</li>
     <li>Crystals renew at the den's farmed yield. Robbing a Frostmaw is not a kill and starts no wait.</li>
@@ -620,79 +620,44 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
-  <h2 data-ss-id="decide-h">Your 6 decisions</h2>
-  <p data-ss-id="decide-p">Each reopens one of your decisions, or sets something another plan must follow, a world-save format, boss loot or how fights feel. The recommended option is first.</p>
+  <h2 data-ss-id="decide-h">You answered all 6 on 21 October</h2>
+  <p data-ss-id="decide-p">Four as recommended. EQ-4 kept the Mowzie plan's 6-day base, and EQ-5 rejected all three options.</p>
 
   <div class="decision" data-ss-id="eq1">
     <h3>EQ-1. How does an emptied village come back?</h3>
-    <p class="rec">Recommended: (a) settlers, then growth while unloaded.</p>
+    <p class="rec">Your answer, as recommended: (a) settlers, then growth while unloaded.</p>
     <p>A family of two from beyond the explored edge 32 days after a player empties the village (16 if nothing a player did emptied it, longer after repeated killing). Then the sim grows the village toward its beds while unloaded and places the difference as ordinary vanilla villagers at the next load nobody watches. Back to 90% in about five game years, under seven real days. Ribbit villages get the same pair, then refill through their houses.</p>
-    <p class="why"><strong>Why it is yours:</strong> the sim would place villagers and ribbits, which you set aside for later ("don't need villagers rn"; C2), and growth beyond Ribbit houses (M3/M4). No option founds new villages or takes villagers from another.</p>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) Settlers only: a pair arrives, and only vanilla breeding near a player grows it. An unvisited village stays at two.</li>
-      <li>(c) Neither: only the census fix, so the economy sees the real count, and a dead village stays dead.</li>
-    </ul>
+    <p class="why">This reopens C2 and M3/M4 to that extent.</p>
   </div>
 
   <div class="decision" data-ss-id="eq2">
     <h3>EQ-2. Where does a dragon's body live?</h3>
-    <p class="rec">Recommended: (a) a vanilla body while it roosts at its lair, a puppet while away.</p>
-    <p>The same rule the Mowzie plan takes for dens and groves, so one answer covers both. The engine still owns the counts, the pressure and every body away from home. An uninstall leaves the roosting dragons where Ice and Fire put them, and a reset finds them by census.</p>
-    <p class="why"><strong>Why it is yours:</strong> it reopens P3 (the engine owns the truth and its entities are never saved by vanilla), and it changes what an uninstall leaves in the world.</p>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) A puppet always, as today, plus the site ledger: a reset cannot mint a dragon, but an uninstall leaves every lair empty.</li>
-      <li>(c) A puppet always and no ledger, as today: a reset gives every empty lair a dragon 20 days later.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) a vanilla body while it roosts at its lair, a puppet while away.</p>
+    <p>An uninstall leaves the roosting dragons where Ice and Fire put them, and a reset finds them by census. This reopens P3 for roosting bodies.</p>
   </div>
 
   <div class="decision" data-ss-id="eq3">
     <h3>EQ-3. Where does the site ledger live?</h3>
-    <p class="rec">Recommended: (a) one world save file, <code>mic_rtsim_sites.dat</code>, beside the village file.</p>
+    <p class="rec">Your answer, as recommended: (a) one world save file, <code>mic_rtsim_sites.dat</code>, beside the village file.</p>
     <p>About 32 bytes a site, outside <code>world/rtsim/</code>, so a reset keeps it and an uninstall leaves one inert file.</p>
-    <p class="why"><strong>Why it is yours:</strong> it is a format in the world save, and it decides what a reset can mint.</p>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) A NeoForge data attachment on each site's chunk: travels with the chunk, but is read only when the chunk loads, and vanilla strips unknown attachments while rtsim is out.</li>
-      <li>(c) No ledger: a site found empty after a reset waits the 192-day cap, and a member that died away from its unloaded home comes back after a reset.</li>
-    </ul>
   </div>
 
   <div class="decision" data-ss-id="eq4">
     <h3>EQ-4. How fast does a killed Frostmaw come back?</h3>
-    <p class="rec">Recommended: (a) 24 days, doubling with pressure.</p>
-    <p>48 days after a first kill, about one a year if farmed. The Mowzie plan's MZ-4 (a) states 6 days and defers to this.</p>
-    <p class="why"><strong>Why it is yours:</strong> the Frostmaw is a boss, and this sets the supply of its drops.</p>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) The Mowzie plan's 6 days, doubling with pressure: 12 days after a first kill, about 1.8 a year farmed.</li>
-      <li>(c) The Mowzie draft, 6 days flat: 12 to 16 a year farmed.</li>
-    </ul>
+    <p class="rec">Your answer: (b) the Mowzie plan's 6 days, doubling with pressure.</p>
+    <p>12 days after a first kill, at most 192, and about 1.8 a year from a den farmed without pause (1.79 by the closed form, 1.83 in the model). Not the recommended 24 days, about one a year. The den chart above still shows the 24-day base.</p>
   </div>
 
   <div class="decision" data-ss-id="eq5">
     <h3>EQ-5. When do factions fight?</h3>
-    <p class="rec">Recommended: (a) the gate.</p>
-    <p>A war party goes out only when it is worth sending against what the faction believes of the target; terms first; scouts every 48 days otherwise. A fortress sees scouts, never raids. Camps at strength stop fighting each other too: background feuds fall from 2 to 20 a world-year to 0 to 0.34.</p>
-    <p class="why"><strong>Why it is yours:</strong> it sets what a strong base experiences, quiet under (a) or a fight a season under (b), and whether the world has wars of its own when no player is near.</p>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) The gate plus one glory raid a season whenever grievance is at the raid rung, worth it or not, and one raid a season on a hated neighbour camp. Each costs the camp warriors it then recruits back.</li>
-      <li>(c) Today's ladder: every rung in turn, with no check that a party can win.</li>
-    </ul>
+    <p class="rec">Your answer: none of the three. "All of these systems feel a bit too formulaic, come up with something that feels more life like."</p>
+    <p>You scoped it to faction fighting only, so renewal and pressure stay as this page designs them. The more lifelike design is in progress.</p>
   </div>
 
   <div class="decision" data-ss-id="eq6">
     <h3>EQ-6. One renewal rule for every kind, in <code>rtsim-kernel</code>?</h3>
-    <p class="rec">Recommended: (a) yes.</p>
-    <p><code>rtsim-kernel::renewal</code> owns the pressure, the wait and the closed forms. Every engine and species plan uses it with its own numbers, the Mowzie plan first.</p>
-    <p class="why"><strong>Why it is yours:</strong> it is an interface that binds the Mowzie plan and every later species plan.</p>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) Each engine keeps its own rule, and only the event contract is shared.</li>
-      <li>(c) Pressure only for boss sites (lairs, dens, the Umvuthi); everything else keeps a flat refill.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) yes.</p>
+    <p><code>rtsim-kernel::renewal</code> owns the pressure, the wait and the closed forms. Every engine and species plan uses it with its own numbers, the Mowzie plan first. It binds the Mowzie plan and every later species plan.</p>
   </div>
 </section>
 
@@ -704,6 +669,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><code>research/equilibrium-2026-10-21/</code>: <code>model.py</code>, <code>game.py</code>, <code>run.py</code>.</li>
     <li><code>research/population-inventory-2026-10-21.md</code>: how every population is born, dies and comes back today.</li>
     <li><code>MOWZIE.md</code> on main (cb9f3b9) and <code>DECISIONS.md</code> (C2, P3, M1, M3/M4, R18a, OG-1, UR-1).</li>
+    <li>Your answers: <code>DECISIONS.md</code> rows EQ-1 to EQ-6 on branch plan/conflict-life (311db56, 849a410).</li>
   </ul>
 </details>
 
