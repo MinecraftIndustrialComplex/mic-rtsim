@@ -711,6 +711,12 @@ the engine counts them; a player kills both, the engine books 2 lost to players 
 regrowth wait starts; the well stops, the nest sleeps and the wait stays put for 240 ticks with no
 worm; the well drills again and a worm regrows.
 
+**OGC103. The dragon steering test sets morning.** A GameTest server's daylight cycle runs, and with
+the nest tests added the suite reached `aDragonMaterializesWithTheEnginesStateAndSteersToItsTarget`
+at night (day time 13461), when Ice and Fire lands a fire dragon to sleep: it failed in every native
+run. It now sets day time 1000 at its start; the whole iceandfire suite then passes on the native
+engine, 28 of 28 (the merged head). The stub had passed 28 of 28 before the change.
+
 ## The audit's fixes: seeds and the survey (F1, F4, F5)
 
 docs/oilgate-cheese-audit.md §4's F1, F4 and F5. F4 builds OGB-7 (Ben, 2026-10-21); F1 and F5 are
