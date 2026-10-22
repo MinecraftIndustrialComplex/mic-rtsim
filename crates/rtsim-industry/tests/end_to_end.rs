@@ -5,9 +5,11 @@
 use rtsim_industry::cmd::Cmd;
 use rtsim_industry::engine::DistrictState;
 use rtsim_industry::fake::{FDistrict, FInventory, FakeWorld, Recipe, Visit};
-use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec};
+use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec, StationId};
 use rtsim_industry::obs::{InvKind, NotLearnable, Obs, ReconcileResult, Timed};
-use rtsim_industry::scenario::{INGOT, IronLine, iron_line, run_iron_line};
+use rtsim_industry::scenario::{
+    INGOT, IronLine, ORE_COAST, iron_line, iron_line_world, run_iron_line,
+};
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 
@@ -341,6 +343,117 @@ fn the_iron_line_conserves_and_meets_ib() {
         s as f64 >= 0.9 * c as f64,
         "the replay made far less: {s} vs {c}"
     );
+}
+
+/// SG33 to SG35 (the drained factories of stress-worlds results §10.6): a simulated stop books on
+/// its own station's ports, never on the district's stock. The Ore Coast gains a factory's input
+/// chest of ore that never goes near the station. The line runs and learns, the player leaves,
+/// and the ore train slows, so more is made between calls than any real call moved (not so much
+/// that the vault fills: the reconcile's plan then puts the drill's overflow in the chest, which
+/// counts as a receiver of ore from its first sample). Every simulated load is at most the
+/// learned amount, and after the reloads the chest holds what it held. The old exchange took a
+/// whole carriage from the district's stock, chest included.
+#[test]
+fn simulated_stops_book_only_on_their_ports() {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let mut w = iron_line_world(cfg, Tunables::default());
+    w.districts[ORE_COAST].inventories.push(FInventory {
+        index: 1,
+        pos: BlockPos::new(1_600, 64, 8),
+        kind: InvKind::ITEMS,
+        slots: 27,
+        fluid_cap: 0,
+        energy_cap: 0,
+        contents: GoodVec::from_pairs([(ORE, 500)]),
+        destroyed: false,
+    });
+    w.declare();
+    let cargo =
+        |w: &FakeWorld| -> i64 { w.trains[0].carriages.iter().map(|c| c.cargo.get(ORE)).sum() };
+    let cap_now = |w: &FakeWorld| {
+        w.engine.district(DistrictId(1)).unwrap().exchange[&StationId(1)].load_cap(ORE)
+    };
+    // The player is away from day 1.5 to day 8.5; the loads in that span are simulated.
+    let mut simulated = Vec::new();
+    while w.t < day(8.0) {
+        if w.t == day(1.5) {
+            w.trains[0].travel = 1_400;
+        }
+        let before = cargo(&w);
+        let loaded = w.districts[ORE_COAST].loaded;
+        w.tick();
+        let got = cargo(&w) - before;
+        if got > 0 && !loaded && !w.districts[ORE_COAST].loaded {
+            simulated.push(got);
+        }
+    }
+    let cap = cap_now(&w);
+    assert!(
+        cap > 0 && cap < 27 * 64,
+        "learned from real calls, less than a carriage: {cap}"
+    );
+    assert!(simulated.len() >= 5, "simulated loads {simulated:?}");
+    assert!(
+        simulated.iter().all(|&n| n <= cap),
+        "simulated loads {simulated:?} over the learned {cap}"
+    );
+    assert!(
+        simulated.contains(&cap),
+        "the slowed train finds more than a real call moved: {simulated:?}"
+    );
+    // The player comes back (the backlog's catch-up call is real), leaves, and all reloads.
+    w.run_until(Tick(cfg.days * TICKS_PER_DAY) + 2_000);
+    assert!(
+        cap_now(&w) < 27 * 64,
+        "one catch-up call does not lift the cap: {}",
+        cap_now(&w)
+    );
+    let chest = w.districts[ORE_COAST]
+        .inventories
+        .iter()
+        .find(|i| i.index == 1)
+        .unwrap();
+    assert_eq!(
+        chest.contents.get(ORE),
+        500,
+        "the factory's chest is untouched"
+    );
+    let rule = &w.engine.district(DistrictId(1)).unwrap().exchange[&StationId(1)];
+    assert_eq!(rule.ports, vec![0], "the station's port is the vault");
+    assert_eq!(w.engine.stats.exchanges_portless, 0);
+    assert!(w.engine.stats.arrivals_approach > 0);
+    assert_eq!(w.engine.stats.arrivals_late, 0);
+    w.conservation().unwrap();
+    w.engine.check_books().unwrap();
+}
+
+/// SG33: a station whose ports no loaded call has reported moves nothing while simulated; it
+/// never falls back to the district's stock.
+#[test]
+fn a_station_without_known_ports_moves_nothing() {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let mut w = iron_line_world(cfg, Tunables::default());
+    w.station_ports = false;
+    w.declare();
+    run_iron_line(&mut w, &cfg);
+    assert_eq!(w.engine.stats.exchanges, 0);
+    assert!(w.engine.stats.exchanges_portless > 0);
+    w.conservation().unwrap();
+    w.engine.check_books().unwrap();
 }
 
 #[test]

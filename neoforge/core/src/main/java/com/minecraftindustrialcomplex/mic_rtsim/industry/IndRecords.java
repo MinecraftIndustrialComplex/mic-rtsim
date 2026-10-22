@@ -80,6 +80,7 @@ public final class IndRecords {
     public static final int IND_TRAIN_DEPARTED = 0x0412;
     public static final int IND_STATION = 0x0413;
     public static final int IND_PACKAGE = 0x0414;
+    public static final int IND_STATION_PORTS = 0x0415;
     public static final int IND_RECONCILE_RESULT = 0x0420;
     public static final int IND_CARRIAGE_RESULT = 0x0421;
     public static final int IND_SPAWN_SAMPLE = 0x0430;
@@ -294,13 +295,20 @@ public final class IndRecords {
         public static final int TRAIN = 24;    // u64
         public static final int STATION = 32;  // u64
         public static final int DISTRICT = 40; // u64
-        public static final int ARRIVED_FLAGS = 48;     // u32 (1 simulated)
+        public static final int ARRIVED_FLAGS = 48;     // u32 (1 simulated; 2 or 4: when the cargo was read)
         public static final int ARRIVED_CARRIAGES = 56;
         public static final int DEPARTED_DESTINATION = 48; // u64, 0 none
         public static final int DEPARTED_ETA = 56;         // i64
         public static final int DEPARTED_CARRIAGES = 64;
 
         public static final int FLAG_SIMULATED = 1;
+        /**
+         * The cargo was read before any interface at this station docked (choice SG30). Neither this nor
+         * {@link #FLAG_DEPARTURE}: read at {@code arriveAt}, late, after the interfaces may have moved goods.
+         */
+        public static final int FLAG_APPROACH = 2;
+        /** The cargo is the train's at its departure for this station (choice SG31). */
+        public static final int FLAG_DEPARTURE = 4;
 
         /** Carriage block: u32 index, u32 itemSlots, i64 fluidCapacity, u32 entryCount, u32 reserved, entries. */
         public static final int C_INDEX = 0;
@@ -325,6 +333,20 @@ public final class IndRecords {
         public static final int NAME = 56;     // u32 (NAME)
         // 60: u32 reserved
         public static final int SIZE = 64;
+    }
+
+    /**
+     * IND_STATION_PORTS, aux = n inventories (choice SG32): the district inventories a station's interfaces
+     * serve, found from a loaded call's docked interfaces.
+     */
+    public static final class StationPorts {
+        public static final int STATION = 24;     // u64
+        public static final int DISTRICT = 32;    // u64
+        public static final int INVENTORIES = 40; // n u32 inventory indices
+
+        public static int size(int n) {
+            return (INVENTORIES + 4 * n + 7) & ~7;
+        }
     }
 
     /** IND_PACKAGE, aux = n entries. */
